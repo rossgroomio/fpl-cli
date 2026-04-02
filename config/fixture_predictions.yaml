@@ -1,0 +1,67 @@
+metadata:
+  last_updated: '2026-03-25'
+  notes: Updated from external BGW/DGW schedule (GW33-GW37)
+predicted_blanks:
+- gameweek: 34
+  teams:
+  - ARS
+  - BHA
+  - CHE
+  - NEW
+  confidence: high
+- gameweek: 34
+  teams:
+  - BUR
+  - CRY
+  - LIV
+  - MCI
+  confidence: medium
+- gameweek: 34
+  teams:
+  - BOU
+  - EVE
+  - LEE
+  - WHU
+  confidence: low
+- gameweek: 37
+  teams:
+  - AVL
+  - LIV
+  confidence: low
+predicted_doubles:
+- gameweek: 33
+  teams:
+  - ARS
+  - BHA
+  - CHE
+  - NEW
+  confidence: high
+- gameweek: 33
+  teams:
+  - BUR
+  - CRY
+  - LIV
+  - MCI
+  confidence: medium
+- gameweek: 33
+  teams:
+  - BOU
+  - EVE
+  - LEE
+  - WHU
+  confidence: low
+- gameweek: 35
+  teams:
+  - CRY
+  - MCI
+  confidence: low
+- gameweek: 36
+  teams:
+  - CRY
+  - MCI
+  confidence: high
+- gameweek: 36
+  teams:
+  - AVL
+  - LIV
+  confidence: low

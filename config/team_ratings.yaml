@@ -1,0 +1,119 @@
+# Team Ratings Configuration
+# Scale: 1 (best) to 7 (worst)
+#
+# Attacking ratings: Higher goals scored = lower (better) rating
+# Defensive ratings: Fewer goals conceded = lower (better) rating
+#
+# Used for position-specific FDR calculations:
+# - FWD/MID: Use opponent's defensive rating (attacking opportunity)
+# - DEF/GK: Use opponent's offensive rating (clean sheet likelihood)
+
+metadata:
+  last_updated: '2026-03-25'
+  source: auto_calculated
+  staleness_threshold_days: 30
+  based_on_gws:
+  - 20
+  - 31
+  calculation_method: recent_form
+ratings:
+  ARS:
+    atk_home: 2
+    atk_away: 1
+    def_home: 1
+    def_away: 1
+  AVL:
+    atk_home: 6
+    atk_away: 7
+    def_home: 3
+    def_away: 2
+  BHA:
+    atk_home: 6
+    atk_away: 5
+    def_home: 2
+    def_away: 1
+  BOU:
+    atk_home: 2
+    atk_away: 5
+    def_home: 6
+    def_away: 1
+  BRE:
+    atk_home: 5
+    atk_away: 1
+    def_home: 6
+    def_away: 3
+  BUR:
+    atk_home: 4
+    atk_away: 6
+    def_home: 7
+    def_away: 7
+  CHE:
+    atk_home: 3
+    atk_away: 1
+    def_home: 4
+    def_away: 5
+  CRY:
+    atk_home: 7
+    atk_away: 4
+    def_home: 4
+    def_away: 4
+  EVE:
+    atk_home: 3
+    atk_away: 2
+    def_home: 5
+    def_away: 2
+  FUL:
+    atk_home: 2
+    atk_away: 5
+    def_home: 5
+    def_away: 6
+  LEE:
+    atk_home: 7
+    atk_away: 2
+    def_home: 3
+    def_away: 6
+  LIV:
+    atk_home: 1
+    atk_away: 5
+    def_home: 6
+    def_away: 3
+  MCI:
+    atk_home: 2
+    atk_away: 3
+    def_home: 2
+    def_away: 2
+  MUN:
+    atk_home: 1
+    atk_away: 2
+    def_home: 1
+    def_away: 5
+  NEW:
+    atk_home: 1
+    atk_away: 5
+    def_home: 7
+    def_away: 4
+  NFO:
+    atk_home: 7
+    atk_away: 1
+    def_home: 1
+    def_away: 5
+  SUN:
+    atk_home: 5
+    atk_away: 6
+    def_home: 4
+    def_away: 6
+  TOT:
+    atk_home: 6
+    atk_away: 3
+    def_home: 7
+    def_away: 7
+  WHU:
+    atk_home: 5
+    atk_away: 3
+    def_home: 2
+    def_away: 7
+  WOL:
+    atk_home: 3
+    atk_away: 7
+    def_home: 3
+    def_away: 2

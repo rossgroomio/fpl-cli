@@ -1,0 +1,34 @@
+# Copy to your config directory as settings.yaml (or run: fpl init)
+
+fpl:
+  classic_entry_id: 0
+  draft_league_id: 0
+  draft_entry_id: 0
+  classic_league_id: 0
+
+reports:
+  output_dir: "~/fpl-reports"
+  research_dir: "~/fpl-research"
+
+# LLM providers: configure per role (research + synthesis)
+# Env var overrides: FPL_RESEARCH_PROVIDER, FPL_RESEARCH_MODEL, FPL_SYNTHESIS_PROVIDER, etc.
+#
+# llm:
+#   research:
+#     provider: perplexity          # perplexity | anthropic | openai
+#     model: sonar-pro
+#   synthesis:
+#     provider: anthropic
+#     model: claude-sonnet-4-20250514
+#
+# Switch synthesis to OpenAI:
+#   synthesis:
+#     provider: openai
+#     model: gpt-4o
+#
+# Use a local Ollama instance:
+#   synthesis:
+#     provider: openai
+#     model: llama3
+#     base_url: http://localhost:11434/v1
+#     timeout: 30

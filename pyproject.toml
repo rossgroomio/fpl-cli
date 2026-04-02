@@ -1,0 +1,71 @@
+[project]
+name = "fpl-cli"
+dynamic = ["version"]
+description = "CLI tool for Fantasy Premier League analysis - classic and draft formats"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [{name = "Ross Groom", email = "rossgroom1+tech@gmail.com"}]
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.27.0",
+    "pydantic>=2.5.0",
+    "click>=8.1.0",
+    "rich>=13.7.0",
+    "jinja2>=3.1.0",
+    "pyyaml>=6.0.0",
+    "python-dotenv>=1.0.0",
+    "ruamel.yaml>=0.18.0",
+    "keyring>=24.0.0",
+    "platformdirs>=4.3,<5",
+    "pulp>=2.7",
+]
+
+[project.optional-dependencies]
+scraper = [
+    "playwright>=1.40.0",
+]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.0.0",
+    "respx>=0.21.0",
+    "ruff>=0.1.0",
+    "pyright>=1.1.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/rossgroomio/fpl-cli"
+Repository = "https://github.com/rossgroomio/fpl-cli"
+
+[project.scripts]
+fpl = "fpl_cli.cli:main"
+
+[build-system]
+requires = ["hatchling>=1.21", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "vcs"
+fallback-version = "0.0.0"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "fpl_cli/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["fpl_cli"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["BLE001", "E", "F", "I", "N", "W"]
+
+[tool.ruff.lint.per-file-ignores]
+# Prompts are long strings - line length doesn't apply
+"fpl_cli/prompts/*.py" = ["E501"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]

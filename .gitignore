@@ -1,0 +1,85 @@
+# Credentials and user config (never commit)
+config/*.yaml
+!config/defaults.yaml
+.env
+
+# Generated version file (hatch-vcs)
+fpl_cli/_version.py
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local database
+*.db
+*.sqlite
+
+# Local Claude Code config
+*.local.md
+
+# Cache
+.cache/
+.ruff_cache/
+
+# Data files (squad finances, chip plans)
+/data/
+
+# Working docs (not tracked)
+docs/plans/
+docs/brainstorms/
+docs/solutions/
+docs/ideas/
+docs/positioning.md
+docs/legal-risk-assessment.md
+docs/2026-03-23-security-review-pre-open-source.md
+
+# Local todos
+todos/
+
+# Claude Code (local only)
+.claude/settings.local.json
+.claude/hooks/
+.claude/worktrees/
+.claude/handoffs/
+.agents/skills/legal-risk-assessment/
+.agents/skills/update-fixture-schedule/
+
+# Agentic session logs
+agentic_logs/
+
+# OS
+.DS_Store

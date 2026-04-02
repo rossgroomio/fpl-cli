@@ -1,0 +1,8 @@
+# Manual overrides - layered on top of auto-calculated ratings.
+# These survive auto-refresh cycles and are applied in-memory only.
+#
+# Example:
+# ARS:
+#   def_away: 2
+# MCI:
+#   atk_home: 1
