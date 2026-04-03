@@ -6,7 +6,10 @@ Fantasy Premier League analysis from the terminal. Classic and Draft formats. Fi
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-<img src="docs/images/fpl-player-demo-v1-0.png" alt="fpl player estevo" width="400">
+<img src="docs/images/fpl-player-demo-v1-0.png"
+     alt="FPL player scouting table in fpl-cli showing form, xGI, expected goals, availability flags and Fantasy Premier League data"
+     width="700"
+     style="max-width: 100%; height: auto;">
 
 ## Features
 
