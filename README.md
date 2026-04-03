@@ -8,8 +8,10 @@ Fantasy Premier League analysis from the terminal. Classic and Draft formats. Fi
 
 <img src="docs/images/fpl-player-demo-v1-0.png"
      alt="FPL player scouting table in fpl-cli showing form, xGI, expected goals, availability flags and Fantasy Premier League data"
-     width="700"
+     width="600"
      style="max-width: 100%; height: auto;">
+
+*Example output from `fpl player` — real-time player analysis with form, xGI and availability flags.*
 
 ## Features
 
