@@ -55,8 +55,10 @@ async def _review_resolve_gw(client, gameweek):
             return None
 
         if not gw_data.get("finished"):
-            error_console.print(f"[yellow]Gameweek {gw} is not yet finished[/yellow]")
-            console.print("Use -g/--gameweek to specify a completed gameweek")
+            error_console.print(
+                f"[yellow]Gameweek {gw} is not yet finished"
+                " -- Use -g/--gameweek to specify a completed gameweek[/yellow]"
+            )
             return None
 
     return {"gw": gw, "gw_data": gw_data, "api_current_gw_id": api_current_gw_id}

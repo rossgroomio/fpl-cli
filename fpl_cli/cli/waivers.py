@@ -28,8 +28,9 @@ def waivers_command(output_format: str):
             with json_output_mode() as stdout:
                 emit_json_error("waivers", "No draft_league_id configured in settings.yaml", file=stdout)
             return
-        error_console.print("[yellow]No draft_league_id configured in settings.yaml[/yellow]")
-        console.print("Add your league ID to config/settings.yaml")
+        error_console.print(
+            "[yellow]No draft_league_id configured in settings.yaml -- Add your league ID to settings.yaml[/yellow]"
+        )
         return
 
     async def _run():

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -14,15 +15,6 @@ from fpl_cli.paths import (
     user_config_dir,
     user_data_dir,
 )
-
-
-@pytest.fixture(autouse=True)
-def clear_path_cache():
-    user_config_dir.cache_clear()
-    user_data_dir.cache_clear()
-    yield
-    user_config_dir.cache_clear()
-    user_data_dir.cache_clear()
 
 
 class TestShippedPaths:
@@ -144,3 +136,18 @@ class TestMigrateLegacyFiles:
         _migrate_legacy_files()
 
         assert (dest_data / "debug" / "trace.json").read_text() == '{"ok": true}'
+
+    def test_copy_error_is_handled(self, tmp_path, monkeypatch):
+        """shutil.copy2 raising OSError must not propagate; a warning must be logged."""
+        import shutil
+
+        legacy_cfg, _, _, _ = self._setup(tmp_path, monkeypatch)
+        (legacy_cfg / "settings.yaml").write_text("key: value")
+
+        mock_logger = MagicMock()
+        monkeypatch.setattr(paths_mod, "logger", mock_logger)
+        monkeypatch.setattr(shutil, "copy2", MagicMock(side_effect=OSError("disk full")))
+
+        _migrate_legacy_files()  # must not raise
+
+        mock_logger.warning.assert_called()
