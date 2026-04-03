@@ -17,6 +17,10 @@ from fpl_cli.utils.text import strip_diacritics
         ("Guéhi", "Guehi"),
         ("Sánchez", "Sanchez"),
         ("Cunhã", "Cunha"),
+        ("Kadıoğlu", "Kadioglu"),
+        ("Đalović", "Dalovic"),
+        ("Łukasz", "Lukasz"),
+        ("Ødegaard", "Odegaard"),
     ],
 )
 def test_strip_diacritics(input_text: str, expected: str) -> None:

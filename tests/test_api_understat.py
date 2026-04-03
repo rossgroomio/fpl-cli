@@ -517,8 +517,41 @@ class TestMatchFPLToUnderstat:
         assert result is not None
         assert result["name"] == "Mohamed Salah"
 
-    def test_match_returns_none_for_ambiguous(self):
-        """Test ambiguous match returns None instead of guessing."""
+    def test_match_abbreviated_name_with_dot(self):
+        """Test 'Bruno G.' matches 'Bruno Guimarães' via prefix matching."""
+        players = [
+            {"id": 1, "name": "Bruno Guimarães", "team": "Newcastle United", "position": "M", "minutes": 2000},
+        ]
+        result = match_fpl_to_understat(
+            "Bruno G.", "Newcastle", players,
+            fpl_position="MID", fpl_minutes=2000,
+        )
+        assert result is not None
+        assert result["name"] == "Bruno Guimarães"
+
+    def test_match_dot_initial_multi_word_surname(self):
+        """Test 'E.Le Fee' matches 'Enzo Le Fee' via prefix + exact words."""
+        players = [
+            {"id": 1, "name": "Enzo Le Fee", "team": "Aston Villa", "position": "M", "minutes": 800},
+        ]
+        result = match_fpl_to_understat(
+            "E.Le Fee", "Aston Villa", players,
+            fpl_position="MID", fpl_minutes=800,
+        )
+        assert result is not None
+        assert result["name"] == "Enzo Le Fee"
+
+    def test_match_initial_dot_surname(self, mock_understat_players):
+        """Test 'M.Salah' matches 'Mohamed Salah' via prefix matching."""
+        result = match_fpl_to_understat(
+            "M.Salah", "Liverpool", mock_understat_players,
+            fpl_position="MID", fpl_minutes=1800,
+        )
+        assert result is not None
+        assert result["name"] == "Mohamed Salah"
+
+    def test_match_b_silva_prefers_bernardo(self):
+        """Test 'B. Silva' prefers 'Bernardo Silva' over plain 'Silva'."""
         players = [
             {"id": 1, "name": "Silva", "team": "Manchester City", "position": "M", "minutes": 1500},
             {"id": 2, "name": "Bernardo Silva", "team": "Manchester City", "position": "M", "minutes": 1600},
@@ -527,8 +560,30 @@ class TestMatchFPLToUnderstat:
             "B. Silva", "Man City", players,
             fpl_position="MID", fpl_minutes=1600,
         )
-        if result is not None:
-            assert result["name"] == "Bernardo Silva"
+        assert result is not None
+        assert result["name"] == "Bernardo Silva"
+
+    def test_match_hyphenated_name(self):
+        """Test hyphenated names like 'Alexander-Arnold' match correctly."""
+        players = [
+            {"id": 1, "name": "Trent Alexander-Arnold", "team": "Liverpool", "position": "D", "minutes": 2500},
+        ]
+        result = match_fpl_to_understat(
+            "Alexander-Arnold", "Liverpool", players,
+            fpl_position="DEF", fpl_minutes=2500,
+        )
+        assert result is not None
+        assert result["name"] == "Trent Alexander-Arnold"
+
+    def test_match_no_false_substring(self):
+        """Test 'Son' does not match 'Anderson' (word-level, not substring)."""
+        players = [
+            {"id": 1, "name": "Anderson", "team": "Liverpool", "position": "M", "minutes": 1000},
+        ]
+        result = match_fpl_to_understat(
+            "Son", "Liverpool", players,
+        )
+        assert result is None
 
     def test_match_is_sync(self):
         """match_fpl_to_understat should be a sync function (no async)."""

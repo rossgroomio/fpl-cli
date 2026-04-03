@@ -296,8 +296,11 @@ class UnderstatClient:
 
 
 def _normalise(text: str) -> str:
-    """Strip diacritics and lowercase for cross-source name comparison."""
-    return strip_diacritics(text).lower()
+    """Strip diacritics, punctuation, and lowercase for cross-source name comparison."""
+    text = strip_diacritics(text).lower()
+    text = re.sub(r"[.\-']", " ", text)  # Name separators → spaces
+    text = re.sub(r"[^a-z0-9 ]", "", text)  # Strip remaining punctuation
+    return re.sub(r" +", " ", text).strip()  # Collapse whitespace
 
 
 def match_fpl_to_understat(
@@ -312,18 +315,9 @@ def match_fpl_to_understat(
     Scores candidates on name match quality, position, and minutes played.
     Returns highest-confidence match above threshold, or None.
     """
-    import logging
-
-    logger = logging.getLogger(__name__)
     fpl_name_norm = _normalise(fpl_name)
+    fpl_words = fpl_name_norm.split()
     fpl_team_mapped = TEAM_NAME_MAP.get(fpl_team, fpl_team)
-
-    # Extract initial and surname from "X.Surname" or "X. Surname" FPL web_name format
-    fpl_surname = None
-    fpl_initial = None
-    if "." in fpl_name_norm and len(fpl_name_norm.split(".")[0]) <= 2:
-        fpl_initial = fpl_name_norm.split(".")[0].strip()
-        fpl_surname = fpl_name_norm.split(".")[-1].strip()
 
     best_match = None
     best_score = 0
@@ -334,24 +328,19 @@ def match_fpl_to_understat(
 
         score = 0
         understat_name = _normalise(player["name"])
-        name_parts = understat_name.split()
+        us_words = understat_name.split()
 
-        # Name scoring
+        # Word-overlap name scoring
         if fpl_name_norm == understat_name:
-            score += 10  # Exact match
-        elif fpl_name_norm in understat_name:
-            score += 6  # Substring match
-        elif fpl_name_norm in name_parts:
-            score += 7  # Exact surname match
-        elif fpl_surname and fpl_surname in name_parts:
-            score += 7  # "M.Salah" -> "salah" in ["mohamed", "salah"]
-            # Bonus if initial matches first name (e.g. "B" matches "Bernardo")
-            if fpl_initial and len(name_parts) > 1:
-                other_parts = [p for p in name_parts if p != fpl_surname]
-                if any(p.startswith(fpl_initial) for p in other_parts):
-                    score += 2
+            score += 10  # Exact full match
+        elif fpl_words and all(w in us_words for w in fpl_words):
+            score += 8  # All FPL words found exactly in Understat
+        elif fpl_words and all(
+            any(uw.startswith(fw) for uw in us_words) for fw in fpl_words
+        ):
+            score += 7  # All FPL words are prefixes of Understat words
         else:
-            continue  # No name match at all
+            continue  # No viable name match
 
         # Position bonus
         if fpl_position and player.get("position"):
@@ -376,11 +365,6 @@ def match_fpl_to_understat(
             best_match = player
 
     if best_score < 5:
-        if best_match:
-            logger.warning(
-                "Low-confidence Understat match: %s -> %s (score=%d)",
-                fpl_name, best_match["name"], best_score,
-            )
         return None
 
     return best_match
