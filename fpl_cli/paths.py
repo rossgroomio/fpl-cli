@@ -41,7 +41,6 @@ _USER_DATA_FILES = (
     "team_ratings_prior.yaml",
     "chip_plan.json",
     "team_finances.json",
-    "transfer_plan.json",
 )
 
 

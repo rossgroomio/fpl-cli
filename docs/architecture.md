@@ -541,19 +541,15 @@ fpl_cli/
 ├── season.py                     # Season year detection, TOTAL_GAMEWEEKS, CHIP_SPLIT_GW
 └── constants.py                  # MIN_MINUTES_FOR_PER90
 
-config/
-├── defaults.yaml                 # Committed project defaults (includes custom_analysis: false)
-├── team_ratings.yaml             # Cached team strength ratings
-├── player_prior.yaml             # Cached player priors (season + GW invalidation)
-└── fixture_predictions.yaml      # BGW/DGW predictions
-
-data/
-└── chip_plan.json                # User's chip plan (runtime)
-
-templates/
-├── gw_preview.md.j2              # Preview report template
-├── gw_review.md.j2               # Review report template
-└── gw_league_recap.md.j2         # League recap template
+platformdirs (user_config_dir / user_data_dir)  # macOS: ~/Library/Application Support/fpl-cli/
+├── settings.yaml                 # User overrides, created by `fpl init`
+├── fixture_predictions.yaml      # BGW/DGW predictions (migrated from repo config/)
+├── team_managers.yaml            # Manager name mappings (migrated from repo config/)
+├── team_ratings_overrides.yaml   # Manual per-team axis overrides (migrated from repo config/)
+├── team_ratings.yaml             # Cached team strength ratings (auto-refreshed)
+├── player_prior.yaml             # Cached player priors (generated, season/GW invalidation)
+├── chip_plan.json                # User's chip plan (created via `fpl chips add`)
+└── team_finances.json            # Cached sell prices from scraper (12h TTL)
 ```
 
 ## Agent Skills
@@ -588,13 +584,13 @@ templates/
 
 ```mermaid
 flowchart LR
-    A[config/defaults.yaml] -->|deep merge| C[Effective Config]
-    B["~/Library/.../fpl-cli/settings.yaml<br/>(or FPL_CLI_CONFIG_DIR)"] -->|overrides| C
+    A["fpl_cli/config/defaults.yaml<br/>(shipped with package)"] -->|deep merge| C[Effective Config]
+    B["settings.yaml<br/>(user_config_dir)"] -->|overrides| C
     D["FPL_FORMAT env var"] -->|overrides format| C
-    E[".env API keys"] --> C
+    E[".env<br/>(user_config_dir, then local)"] -->|API keys| C
 ```
 
-User settings deep-merged over committed defaults via `platformdirs`. Format auto-detected from which entry IDs are configured (classic, draft, or both).
+User settings deep-merged over committed defaults via `platformdirs`. `.env` loaded from user config dir first, local `.env` fills gaps (via `python-dotenv`). Format auto-detected from which entry IDs are configured (classic, draft, or both).
 
 ## Design Decisions
 
