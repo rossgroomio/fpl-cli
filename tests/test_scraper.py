@@ -167,6 +167,7 @@ class TestFPLPriceScraper:
 
     async def test_scrape_resolves_env_var_credentials(self):
         """scrape() reads credentials from env vars and passes them to _login."""
+        pytest.importorskip("playwright")
         with patch.dict(os.environ, {"FPL_EMAIL": "test@example.com", "FPL_PASSWORD": "secret"}):
             scraper = FPLPriceScraper()
             mock_login, ctx = self._mock_playwright_stack(scraper)
@@ -180,6 +181,7 @@ class TestFPLPriceScraper:
 
     async def test_scrape_missing_credentials(self):
         """scrape() raises ValueError when no credentials available."""
+        pytest.importorskip("playwright")
         with patch.dict(os.environ, {}, clear=True):
             os.environ.pop("FPL_EMAIL", None)
             os.environ.pop("FPL_PASSWORD", None)
@@ -190,6 +192,7 @@ class TestFPLPriceScraper:
 
     async def test_scrape_keyring_fallback(self):
         """scrape() falls back to keyring when env vars absent."""
+        pytest.importorskip("playwright")
         with patch.dict(os.environ, {}, clear=True):
             os.environ.pop("FPL_EMAIL", None)
             os.environ.pop("FPL_PASSWORD", None)
@@ -211,7 +214,7 @@ class TestFPLPriceScraper:
     def test_cache_file_path(self):
         """Test cache file path is correct."""
         assert CACHE_FILE.name == "team_finances.json"
-        assert "data" in str(CACHE_FILE)
+        assert "fpl-cli" in str(CACHE_FILE)
 
 
 class TestTeamFinancesValidation:

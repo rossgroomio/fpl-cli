@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any, TypedDict
 
 import yaml
 
-from fpl_cli.paths import CONFIG_DIR
+from fpl_cli.paths import user_config_dir
 from fpl_cli.season import get_season_year
 
 logger = logging.getLogger(__name__)
@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from fpl_cli.models.fixture import Fixture
     from fpl_cli.models.team import Team
 
-CONFIG_FILE = CONFIG_DIR / "fixture_predictions.yaml"
+CONFIG_FILE = user_config_dir() / "fixture_predictions.yaml"
 
 
 class Confidence(str, Enum):

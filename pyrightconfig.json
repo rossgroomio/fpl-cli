@@ -1,6 +1,4 @@
 {
-  "pythonVersion": "3.12",
-  "pythonPlatform": "Darwin",
-  "venvPath": ".",
-  "venv": ".venv"
+  "pythonVersion": "3.11",
+  "exclude": ["fpl_cli/scraper"]
 }

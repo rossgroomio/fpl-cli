@@ -10,12 +10,12 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from fpl_cli.paths import DATA_DIR
+from fpl_cli.paths import user_data_dir
 from fpl_cli.season import CHIP_SPLIT_GW
 
 logger = logging.getLogger(__name__)
 
-CHIP_PLAN_FILE = DATA_DIR / "chip_plan.json"
+CHIP_PLAN_FILE = user_data_dir() / "chip_plan.json"
 
 
 class ChipType(str, Enum):

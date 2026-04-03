@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import dataclasses
-import functools
 import os
 from enum import StrEnum
 from pathlib import Path
@@ -13,23 +12,13 @@ import click
 import yaml
 from rich.console import Console
 
-from fpl_cli.paths import CONFIG_DIR
+from fpl_cli.paths import SHIPPED_CONFIG_DIR, user_config_dir
 
 console = Console()
 
 
-@functools.lru_cache(maxsize=1)
 def _user_config_dir() -> Path:
-    from platformdirs import user_config_path
-
-    env = os.environ.get("FPL_CLI_CONFIG_DIR")
-    if env:
-        p = Path(env).expanduser().resolve()
-    else:
-        p = user_config_path("fpl-cli", appauthor=False, ensure_exists=True)
-    if os.name != "nt":
-        p.chmod(0o700)
-    return p
+    return user_config_dir()
 
 
 def _load_yaml_file(path: Path) -> dict[str, Any]:
@@ -105,7 +94,7 @@ def resolve_research_dir(settings: dict[str, Any]) -> Path:
 
 def load_settings() -> dict[str, Any]:
     """Load settings: project defaults, then user overrides."""
-    settings = _load_yaml_file(CONFIG_DIR / "defaults.yaml")
+    settings = _load_yaml_file(SHIPPED_CONFIG_DIR / "defaults.yaml")
     user_settings = _load_yaml_file(_user_config_dir() / "settings.yaml")
     _deep_merge(settings, user_settings)
     return settings
