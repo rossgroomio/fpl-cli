@@ -215,7 +215,7 @@ def ratings_update(since_gw: int | None, dry_run: bool, use_xg: bool):
         console.print(stats_table)
 
         if dry_run:
-            error_console.print("\n[yellow]Dry run - ratings not saved[/yellow]")
+            console.print("\n[dim]Dry run - ratings not saved[/dim]")
         else:
             service.save_ratings(
                 ratings,
