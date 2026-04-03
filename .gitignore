@@ -67,7 +67,6 @@ docs/brainstorms/
 docs/solutions/
 docs/ideas/
 docs/positioning.md
-docs/legal-risk-assessment.md
 
 # Local todos
 todos/
@@ -77,11 +76,6 @@ todos/
 .claude/hooks/
 .claude/worktrees/
 .claude/handoffs/
-.agents/skills/legal-risk-assessment/
-.agents/skills/update-fixture-schedule/
-
-# Agentic session logs
-agentic_logs/
 
 # OS
 .DS_Store
