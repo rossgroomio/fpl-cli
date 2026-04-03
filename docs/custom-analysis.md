@@ -184,9 +184,11 @@ Selects the mathematically optimal 15-player squad using an ILP (Integer Linear 
 
 ### Scoring
 
-**Horizon >= 2** (default, wildcard, season-start): Uses multi-GW quality weights (`VALUE_QUALITY_WEIGHTS`) with form, PPG, npxG/xGI, xGChain, penalty xG, dc_per_90. Subject to early-season shrinkage.
+The solver picks one squad that maximises expected points across the entire horizon - it does not optimise each gameweek independently. This means the per-player baseline score needs to estimate a player's *true underlying level*, which fixture coefficients then scale up or down per gameweek.
 
-**Horizon = 1** (Free Hit, single-GW decisions): Uses single-GW scoring (`GW_SELECTION_WEIGHTS`) - form, npxG/xGI, penalty xG, per-fixture matchup scores. Matchup scoring is baked into the player score, so fixture coefficients are the raw scores directly.
+**Horizon >= 2** (default, wildcard, season-start): Uses multi-GW quality weights (`VALUE_QUALITY_WEIGHTS`) with form (1.3x), PPG (0.8x), npxG/xGI, xGChain, penalty xG, dc_per_90. Subject to early-season shrinkage. PPG and xGChain are included because they're predictive over multi-week windows; form is weighted lower than single-GW to avoid anchoring the entire horizon to a hot streak that mean-reverts.
+
+**Horizon = 1** (Free Hit, single-GW decisions): Uses single-GW scoring (`GW_SELECTION_WEIGHTS`) - form (1.5x), npxG/xGI, penalty xG, per-fixture matchup scores. PPG and xGChain are dropped (not predictive for a single game). No shrinkage applied - single-GW decisions want the strongest current signal. Matchup scoring is baked into the player score, so fixture coefficients are the raw scores directly.
 
 ### Fixture Coefficients
 
@@ -198,11 +200,30 @@ For horizon >= 2, per-player, per-GW fixture coefficients use position-variant s
 | MID | 0.15 |
 | FWD | 0.10 |
 
+**Modifier formula:** `max(0.25, 1.0 - sensitivity × (opponent_fdr - 4) / 3)`. Higher FDR = harder fixture = lower modifier.
+
+**DGW handling:** Both fixture coefficients are summed (player plays twice). If only one fixture is confirmed and a DGW is predicted, the extra fixture is scaled by prediction confidence.
+
+**BGW handling:** No confirmed fixtures + predicted blank: coefficient = `raw_quality × (1 - confidence)`. No prediction data: assumes a normal single fixture.
+
 BGW/DGW confidence scaling applied from `fixture_predictions.yaml`.
 
 ### ILP Solver
 
-Solves 7 independent ILPs (one per valid formation) with constraints:
+Solves 7 independent ILPs (one per valid formation). The objective function maximises the weighted sum of expected contributions across all players and gameweeks:
+
+```
+max Σ(gw) Σ(player) discount[gw] × coeff[player][gw] × (starter[p] + bench_discount × bench[p])
+```
+
+Where:
+- **`coeff[player][gw]`** = raw_quality × fixture_modifier (horizon >= 2), or raw single-GW score (horizon = 1)
+- **`discount[gw]`** = temporal discount weight (see below)
+- **`bench_discount`** = 0.15 (outfield), 0.05 (GK), or 1.0 (Bench Boost GW) - the fractional value of a bench player relative to a starter
+
+**Temporal discounting:** Geometric decay based on free transfers: `rate = 1.0 - 0.04 × FTs`, weights = `rate^gw_offset`. More FTs means more ability to course-correct later, so future gameweeks are discounted more aggressively. 0 FTs = flat weights (equal value across the horizon). 3 FTs: weights decay as [1.0, 0.88, 0.77, 0.68, ...].
+
+Constraints:
 - Budget cap
 - Exactly 2 GK / 5 DEF / 5 MID / 3 FWD
 - Max 3 players per team
@@ -212,7 +233,7 @@ Picks the formation with the best objective value. Captain schedule derived post
 
 ### Chip-Aware Modes
 
-- **`--bench-discount`** (Free Hit): Bench players discounted to near-zero value
+- **`--bench-discount`** (Free Hit): Bench players discounted to near-zero value. Triggers a **two-pass lexicographic solve** per formation: Solve 1 maximises total quality (starters + bench). Solve 2 locks starter quality as a floor and adds a bench cost penalty (`-0.1 × price × bench_assignment`), pushing the solver toward cheaper bench players while maintaining starter quality. On Free Hit you're transferring out anyway, so the bench should be as cheap as possible without degrading starters.
 - **`--bench-boost-gw`**: Bench discount overridden to 1.0 for the specified GW
 - **`--sell-prices`**: Uses actual sell prices for owned players in budget constraint. Budget auto-computed as `sum(sell_prices) + bank` unless `--budget` is explicitly set. Accepts JSON from `fpl squad sell-prices --format json`.
 
