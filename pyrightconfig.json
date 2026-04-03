@@ -1,6 +1,3 @@
 {
-  "pythonVersion": "3.12",
-  "pythonPlatform": "Darwin",
-  "venvPath": ".",
-  "venv": ".venv"
+  "pythonVersion": "3.11"
 }
