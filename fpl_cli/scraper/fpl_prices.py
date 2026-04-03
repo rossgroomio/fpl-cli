@@ -10,7 +10,7 @@ from datetime import datetime
 
 import keyring
 
-from fpl_cli.paths import DATA_DIR
+from fpl_cli.paths import user_data_dir
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +113,7 @@ class TeamFinances:
         )
 
 
-CACHE_FILE = DATA_DIR / "team_finances.json"
+CACHE_FILE = user_data_dir() / "team_finances.json"
 
 
 def save_cache(finances: TeamFinances) -> None:

@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 
-from fpl_cli.paths import CONFIG_DIR
+from fpl_cli.paths import user_data_dir
 from fpl_cli.services.team_ratings import TeamRating
 
 if TYPE_CHECKING:
@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-PRIOR_CONFIG_PATH = CONFIG_DIR / "team_ratings_prior.yaml"
+PRIOR_CONFIG_PATH = user_data_dir() / "team_ratings_prior.yaml"
 REGRESSION_CONSTANT = 6
 BLENDING_CUTOFF_GW = 12
 

@@ -211,7 +211,7 @@ class TestFPLPriceScraper:
     def test_cache_file_path(self):
         """Test cache file path is correct."""
         assert CACHE_FILE.name == "team_finances.json"
-        assert "data" in str(CACHE_FILE)
+        assert "fpl-cli" in str(CACHE_FILE)
 
 
 class TestTeamFinancesValidation:

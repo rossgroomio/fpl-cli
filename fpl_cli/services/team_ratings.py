@@ -17,11 +17,11 @@ from typing import ClassVar
 
 import yaml
 
-from fpl_cli.paths import CONFIG_DIR
+from fpl_cli.paths import user_config_dir, user_data_dir
 
 logger = logging.getLogger(__name__)
 
-OVERRIDES_PATH = CONFIG_DIR / "team_ratings_overrides.yaml"
+OVERRIDES_PATH = user_config_dir() / "team_ratings_overrides.yaml"
 
 
 @dataclass
@@ -91,7 +91,7 @@ class TeamRatingsService:
         rating = service.get_rating("LIV")
     """
 
-    DEFAULT_CONFIG_PATH = CONFIG_DIR / "team_ratings.yaml"
+    DEFAULT_CONFIG_PATH = user_data_dir() / "team_ratings.yaml"
     _refreshed_this_session: ClassVar[bool] = False
 
     def __init__(self, config_path: Path | str | None = None):

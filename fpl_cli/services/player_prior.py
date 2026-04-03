@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 
-from fpl_cli.paths import CONFIG_DIR
+from fpl_cli.paths import user_data_dir
 from fpl_cli.season import get_season_year, vaastav_season
 
 if TYPE_CHECKING:
@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-PRIOR_CONFIG_PATH = CONFIG_DIR / "player_prior.yaml"
+PRIOR_CONFIG_PATH = user_data_dir() / "player_prior.yaml"
 REGRESSION_CONSTANT = 6
 CUTOFF_GW = 10
 PRICE_CONFIDENCE_FACTOR = 0.5
