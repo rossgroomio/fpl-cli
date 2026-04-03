@@ -1,5 +1,5 @@
 [project]
-name = "fpl-cli"
+name = "fplkit"
 dynamic = ["version"]
 description = "CLI tool for Fantasy Premier League analysis - classic and draft formats"
 readme = "README.md"
