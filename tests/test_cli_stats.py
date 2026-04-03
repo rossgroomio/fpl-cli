@@ -272,12 +272,14 @@ class TestStatsDraftOwnership:
         """BOTH format without draft_league_id shows warning."""
         client = _make_client(_sample_players(), _sample_teams())
         runner = CliRunner()
-        ctx_obj = CLIContext(format=Format.BOTH, settings={})
         with (
             patch("fpl_cli.api.fpl.FPLClient", return_value=client),
             patch("fpl_cli.cli._context.load_settings", return_value={"fpl": {}}),
+            patch("fpl_cli.cli.load_settings", return_value={"fpl": {}}),
+            patch("fpl_cli.cli._context.resolve_format", return_value=Format.BOTH),
+            patch("fpl_cli.cli.resolve_format", return_value=Format.BOTH),
         ):
-            result = runner.invoke(main, ["stats"], obj=ctx_obj)
+            result = runner.invoke(main, ["stats"])
         assert "draft_league_id" in result.output
 
     def test_classic_mode_no_draft_column(self):

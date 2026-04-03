@@ -80,7 +80,7 @@ def stats_command(
         explicit_value_sort = False
 
     fmt = ctx.obj.format if isinstance(ctx.obj, CLIContext) else None
-    show_draft = fmt != Format.CLASSIC
+    show_draft = fmt in (Format.DRAFT, Format.BOTH)
 
     position_map = {"GK": PlayerPosition.GOALKEEPER, "DEF": PlayerPosition.DEFENDER,
                     "MID": PlayerPosition.MIDFIELDER, "FWD": PlayerPosition.FORWARD}
