@@ -6,9 +6,20 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from fpl_cli.models.fixture import Fixture
 from fpl_cli.models.player import Player, PlayerPosition, PlayerStatus
 from fpl_cli.models.team import Team
-from fpl_cli.models.fixture import Fixture
+from fpl_cli.paths import user_config_dir, user_data_dir
+
+
+@pytest.fixture(autouse=True)
+def _clear_path_cache():
+    """Prevent stale lru_cache values leaking between tests that alter FPL_CLI_CONFIG_DIR."""
+    user_config_dir.cache_clear()
+    user_data_dir.cache_clear()
+    yield
+    user_config_dir.cache_clear()
+    user_data_dir.cache_clear()
 
 
 # --- Draft-Specific Factories ---

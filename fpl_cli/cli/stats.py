@@ -9,7 +9,7 @@ from collections.abc import Mapping
 import click
 from rich.table import Table
 
-from fpl_cli.cli._context import CLIContext, Format, console, is_custom_analysis_enabled
+from fpl_cli.cli._context import CLIContext, Format, console, error_console, is_custom_analysis_enabled
 from fpl_cli.cli._helpers import _format_sort_value, _validate_team_filter
 from fpl_cli.cli._json import emit_json, json_output_mode, output_format_option
 
@@ -101,7 +101,7 @@ def stats_command(
                 settings = load_settings()
                 draft_league_id = settings.get("fpl", {}).get("draft_league_id")
                 if not draft_league_id:
-                    console.print("[yellow]No draft_league_id configured in settings.yaml[/yellow]")
+                    error_console.print("[yellow]No draft_league_id configured in settings.yaml[/yellow]")
                 else:
                     try:
                         from fpl_cli.agents.common import get_draft_ownership_mapping
@@ -113,7 +113,7 @@ def stats_command(
                                 )
                             )
                     except Exception as e:  # noqa: BLE001 — best-effort enrichment
-                        console.print(f"[yellow]Draft ownership lookup failed: {e}[/yellow]")
+                        error_console.print(f"[yellow]Draft ownership lookup failed: {e}[/yellow]")
 
             # Filter
             team_upper = _validate_team_filter(team, all_teams)
@@ -149,7 +149,7 @@ def stats_command(
                         understat_players = await us_client.get_league_players()
                 except httpx.HTTPError:
                     understat_players = []
-                    console.print("[yellow]Understat unavailable — skipping quality/value scores[/yellow]")
+                    error_console.print("[yellow]Understat unavailable — skipping quality/value scores[/yellow]")
 
                 if understat_players:
                     value_active = True
@@ -236,7 +236,7 @@ def stats_command(
                     with json_output_mode() as stdout:
                         emit_json("stats", [], metadata=metadata, file=stdout)
                     return
-                console.print("[yellow]No players match the given filters.[/yellow]")
+                error_console.print("[yellow]No players match the given filters.[/yellow]")
                 return
 
             if output_format == "json":

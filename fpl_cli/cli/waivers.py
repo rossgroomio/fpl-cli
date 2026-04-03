@@ -9,7 +9,7 @@ import click
 from rich.panel import Panel
 from rich.table import Table
 
-from fpl_cli.cli._context import console, load_settings
+from fpl_cli.cli._context import console, error_console, load_settings
 from fpl_cli.cli._json import emit_json, emit_json_error, json_output_mode, output_format_option
 
 
@@ -28,7 +28,7 @@ def waivers_command(output_format: str):
             with json_output_mode() as stdout:
                 emit_json_error("waivers", "No draft_league_id configured in settings.yaml", file=stdout)
             return
-        console.print("[yellow]No draft_league_id configured in settings.yaml[/yellow]")
+        error_console.print("[yellow]No draft_league_id configured in settings.yaml[/yellow]")
         console.print("Add your league ID to config/settings.yaml")
         return
 
@@ -120,7 +120,7 @@ def waivers_command(output_format: str):
             if exposure_warnings:
                 console.print("")
                 for name, warning in exposure_warnings:
-                    console.print(f"  [yellow]\u26a0 {name}: {warning}[/yellow]")
+                    error_console.print(f"  [yellow]\u26a0 {name}: {warning}[/yellow]")
 
             console.print("")
 

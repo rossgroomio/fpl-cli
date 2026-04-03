@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import click
 
-from fpl_cli.cli._context import console
+from fpl_cli.cli._context import console, error_console
 
 
 @click.group("credentials")
@@ -43,4 +43,4 @@ def credentials_clear():
     if removed:
         console.print(f"[green]\u2713[/green] Removed {removed} credential(s) from keyring")
     else:
-        console.print("[yellow]No credentials found in keyring[/yellow]")
+        error_console.print("[yellow]No credentials found in keyring[/yellow]")

@@ -8,7 +8,7 @@ import asyncio
 import click
 from rich.panel import Panel
 
-from fpl_cli.cli._context import CLIContext, Format, console, get_format, load_settings
+from fpl_cli.cli._context import CLIContext, Format, console, error_console, get_format, load_settings
 from fpl_cli.cli._json import emit_json, emit_json_error, json_output_mode, output_format_option
 from fpl_cli.cli._plan_grid import grid_command
 from fpl_cli.cli.sell_prices import sell_prices_command
@@ -72,7 +72,7 @@ def squad_group(ctx: click.Context, is_draft: bool, output_format: str) -> None:
                 async with FPLDraftClient() as draft_client:
                     squad_players = await get_draft_squad_players(
                         draft_client, all_players, draft_entry_id, gw,
-                        log=lambda msg: console.print(f"[yellow]{msg}[/yellow]"),
+                        log=lambda msg: error_console.print(f"[yellow]{msg}[/yellow]"),
                     )
                 picks = [p.id for p in squad_players]
                 context: dict = {"picks": picks, "format": "draft"}

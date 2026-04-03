@@ -8,7 +8,7 @@ from typing import Any, cast
 import yaml
 from rich.markup import escape as rich_escape
 
-from fpl_cli.cli._context import console
+from fpl_cli.cli._context import console, error_console
 from fpl_cli.cli._fines import FinesLeagueData, FinesTeamPlayer, compute_bench_analysis, evaluate_fines
 from fpl_cli.cli._fines_config import parse_fines_config
 from fpl_cli.cli._helpers import _gw_position_with_half
@@ -386,7 +386,7 @@ async def _review_llm_summarise(
             if research_summary:
                 console.print("[green]  ✓[/green] Community narrative complete")
             else:
-                console.print("[yellow]  ⚠ Research provider returned empty response[/yellow]")
+                error_console.print("[yellow]  ⚠ Research provider returned empty response[/yellow]")
                 research_summary = "Community narrative unavailable: research provider returned an empty response."
 
             if debug and debug_dir:

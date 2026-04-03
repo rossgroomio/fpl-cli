@@ -5,7 +5,7 @@ from __future__ import annotations
 from rich.markup import escape as rich_escape
 from rich.table import Table
 
-from fpl_cli.cli._context import console
+from fpl_cli.cli._context import console, error_console
 from fpl_cli.cli._helpers import (
     _assign_tie_ranks,
     _format_pts_display,
@@ -418,7 +418,7 @@ async def _review_draft(
                 console.print("[dim]Set draft_entry_id in config/settings.yaml to see your draft squad[/dim]")
 
     except Exception as e:  # noqa: BLE001 — display resilience
-        console.print(f"[yellow]Could not fetch draft league data: {rich_escape(str(e))}[/yellow]")
+        error_console.print(f"[yellow]Could not fetch draft league data: {rich_escape(str(e))}[/yellow]")
 
     return {
         "draft_league_data": draft_league_data,

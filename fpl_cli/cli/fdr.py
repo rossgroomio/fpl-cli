@@ -12,7 +12,15 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from fpl_cli.cli._context import CLIContext, Format, console, get_format, is_custom_analysis_enabled, load_settings
+from fpl_cli.cli._context import (
+    CLIContext,
+    Format,
+    console,
+    error_console,
+    get_format,
+    is_custom_analysis_enabled,
+    load_settings,
+)
 from fpl_cli.cli._helpers import _fdr_style
 from fpl_cli.cli._json import emit_json, emit_json_error, json_output_mode, output_format_option
 from fpl_cli.season import TOTAL_GAMEWEEKS
@@ -321,7 +329,7 @@ def fdr_command(
             if use_draft:
                 entry_id = settings.get("fpl", {}).get("draft_entry_id")
                 if not entry_id:
-                    console.print("[yellow]draft_entry_id not configured[/yellow]")
+                    error_console.print("[yellow]draft_entry_id not configured[/yellow]")
                 else:
                     from fpl_cli.api.fpl_draft import FPLDraftClient
                     async with FPLDraftClient() as draft_client:
@@ -347,7 +355,7 @@ def fdr_command(
             else:
                 entry_id = settings.get("fpl", {}).get("classic_entry_id")
                 if not entry_id:
-                    console.print("[yellow]classic_entry_id not configured - cannot show squad exposure[/yellow]")
+                    error_console.print("[yellow]classic_entry_id not configured - cannot show squad exposure[/yellow]")
                 else:
                     async with FPLClient() as client:
                         next_gw_data = await client.get_next_gameweek()
@@ -407,7 +415,7 @@ def fdr_command(
         ratings_service = TeamRatingsService()
         staleness_warning = ratings_service.get_staleness_warning()
         if staleness_warning:
-            console.print(f"[yellow]{staleness_warning}[/yellow]\n")
+            error_console.print(f"[yellow]{staleness_warning}[/yellow]\n")
 
         easy_runs = data["easy_fixture_runs"]
 

@@ -7,7 +7,7 @@ import asyncio
 
 import click
 
-from fpl_cli.cli._context import console
+from fpl_cli.cli._context import console, error_console
 from fpl_cli.cli._json import emit_json, emit_json_error, json_output_mode, output_format_option
 from fpl_cli.cli.player import _build_history_json
 
@@ -36,7 +36,7 @@ def history_command(output_format: str):
                         with json_output_mode() as stdout:
                             emit_json("history", [], file=stdout)
                         return
-                    console.print("[yellow]No historical data found[/yellow]")
+                    error_console.print("[yellow]No historical data found[/yellow]")
                     return
                 if output_format == "json":
                     with json_output_mode() as stdout:

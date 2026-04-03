@@ -10,7 +10,7 @@ import click
 from rich.panel import Panel
 from rich.table import Table
 
-from fpl_cli.cli._context import console, load_settings
+from fpl_cli.cli._context import console, error_console, load_settings
 from fpl_cli.cli._json import emit_json, emit_json_error, json_output_mode, output_format_option
 from fpl_cli.models.chip_plan import ChipPlan, ChipType, PlannedChip, UsedChip
 from fpl_cli.season import TOTAL_GAMEWEEKS
@@ -153,7 +153,7 @@ def chips_remove(gw: int) -> None:
     plan.chips = [c for c in plan.chips if c.gameweek != gw]
 
     if len(plan.chips) == original_count:
-        console.print(f"[yellow]No chip planned for GW{gw}[/yellow]")
+        error_console.print(f"[yellow]No chip planned for GW{gw}[/yellow]")
         return
 
     plan.save()
@@ -385,7 +385,7 @@ def chips_timing(output_format: str) -> None:
             if output_format == "json":
                 emit_json_error("chips-timing", "classic_entry_id not configured")
             else:
-                console.print("[yellow]classic_entry_id not configured[/yellow]")
+                error_console.print("[yellow]classic_entry_id not configured[/yellow]")
             return
 
         if output_format == "json":
@@ -418,7 +418,7 @@ def chips_timing(output_format: str) -> None:
             current_gw = next_gw_data.get("id", 1) if next_gw_data else 1
             last_gw = current_gw - 1
             if last_gw <= 0:
-                console.print("[yellow]No completed gameweek found[/yellow]")
+                error_console.print("[yellow]No completed gameweek found[/yellow]")
                 return
 
             unplayed, planned_by_gw, signals = await _fetch_and_compute(

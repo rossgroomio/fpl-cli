@@ -8,7 +8,7 @@ import asyncio
 import click
 from rich.table import Table
 
-from fpl_cli.cli._context import console
+from fpl_cli.cli._context import console, error_console
 from fpl_cli.cli._helpers import _validate_team_filter
 from fpl_cli.cli._json import emit_json, emit_json_error, json_output_mode, output_format_option
 
@@ -69,7 +69,7 @@ def price_history_command(
                             "window_used": last_n,
                         }, file=stdout)
                     return
-                console.print("[yellow]No price history data available.[/yellow]")
+                error_console.print("[yellow]No price history data available.[/yellow]")
                 return
 
             latest_gw = max(t.latest_gw for t in gw_trends.values())
@@ -136,7 +136,7 @@ def price_history_command(
                             "window_used": last_n,
                         }, file=stdout)
                     return
-                console.print("[yellow]No players match the given filters.[/yellow]")
+                error_console.print("[yellow]No players match the given filters.[/yellow]")
                 return
 
             if output_format == "json":

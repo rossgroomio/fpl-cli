@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, TypedDict
 from rich.markup import escape as rich_escape
 from rich.table import Table
 
-from fpl_cli.cli._context import console
+from fpl_cli.cli._context import console, error_console
 
 if TYPE_CHECKING:
     from fpl_cli.models.fixture import Fixture
@@ -162,7 +162,7 @@ async def _review_global_stats(
             console.print(f"[dim]Could not calculate blankers: {rich_escape(str(e))}[/dim]")
 
     except Exception as e:  # noqa: BLE001 — display resilience
-        console.print(f"[yellow]Could not fetch global stats: {rich_escape(str(e))}[/yellow]")
+        error_console.print(f"[yellow]Could not fetch global stats: {rich_escape(str(e))}[/yellow]")
 
     return global_data
 
@@ -297,7 +297,7 @@ async def _review_fixtures(client, gw, player_map, teams, my_picks_data, *, fixt
             })
 
     except Exception as e:  # noqa: BLE001 — display resilience
-        console.print(f"[yellow]Could not fetch fixture results: {rich_escape(str(e))}[/yellow]")
+        error_console.print(f"[yellow]Could not fetch fixture results: {rich_escape(str(e))}[/yellow]")
 
     return fixtures_data
 
@@ -312,7 +312,7 @@ async def _review_league_table():
             if fd_client.is_configured:
                 league_table_data = await fd_client.get_standings()
     except Exception as e:  # noqa: BLE001 — graceful degradation
-        console.print(f"[yellow]Could not fetch league table: {rich_escape(str(e))}[/yellow]")
+        error_console.print(f"[yellow]Could not fetch league table: {rich_escape(str(e))}[/yellow]")
 
     if league_table_data:
         console.print("\n[bold cyan]## League Table[/bold cyan]")

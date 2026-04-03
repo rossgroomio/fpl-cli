@@ -9,7 +9,7 @@ from pathlib import Path
 import click
 from rich.panel import Panel
 
-from fpl_cli.cli._context import Format, console, get_format, load_settings, resolve_output_dir
+from fpl_cli.cli._context import Format, console, error_console, get_format, load_settings, resolve_output_dir
 from fpl_cli.cli._review_analysis import _review_fixtures, _review_global_stats, _review_league_table
 from fpl_cli.cli._review_classic import _review_classic_league, _review_classic_team, _review_classic_transfers
 from fpl_cli.cli._review_draft import _review_draft
@@ -43,10 +43,10 @@ async def _review_resolve_gw(client, gameweek):
         elif current_gw:
             gw = current_gw["id"] - 1
             if gw < 1:
-                console.print("[yellow]No completed gameweeks yet[/yellow]")
+                error_console.print("[yellow]No completed gameweeks yet[/yellow]")
                 return None
         else:
-            console.print("[yellow]Could not determine current gameweek[/yellow]")
+            error_console.print("[yellow]Could not determine current gameweek[/yellow]")
             return None
 
         gw_data = next((g for g in gameweeks if g["id"] == gw), None)
@@ -55,7 +55,7 @@ async def _review_resolve_gw(client, gameweek):
             return None
 
         if not gw_data.get("finished"):
-            console.print(f"[yellow]Gameweek {gw} is not yet finished[/yellow]")
+            error_console.print(f"[yellow]Gameweek {gw} is not yet finished[/yellow]")
             console.print("Use -g/--gameweek to specify a completed gameweek")
             return None
 
@@ -258,7 +258,7 @@ def review_command(
                 recs = parse_recommendations(recs_path)
 
                 if recs is None:
-                    console.print(f"\n[yellow]No recommendations file found at {recs_path}[/yellow]")
+                    error_console.print(f"\n[yellow]No recommendations file found at {recs_path}[/yellow]")
                 else:
                     recs_comparison = _review_compare_recs(recs, collected_data, player_map, teams)
                     collected_data["recs_comparison"] = recs_comparison
