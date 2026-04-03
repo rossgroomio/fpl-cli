@@ -62,14 +62,20 @@ Understat Analysis:
 Requires Python 3.11+.
 
 ```bash
-git clone https://github.com/rossgroomio/fpl-cli.git
-cd fpl-cli
-python3 -m venv .venv && source .venv/bin/activate
-pip install -e .
+pipx install fplkit
 fpl init
 ```
 
-The setup wizard configures your FPL IDs and optional features. With just an entry ID you get the full data toolkit. See [Configuration](#configuration) for optional tiers.
+`fpl init` configures your FPL IDs and optional features. With just an entry ID you get the full data toolkit. See [Configuration](#configuration) for optional tiers.
+
+**Alternatives:** `uv pip install fplkit` or `pip install fplkit`.
+
+**Browser scraping** (`fpl squad sell-prices --refresh`) needs Playwright:
+
+```bash
+pipx install 'fplkit[scraper]'
+playwright install chromium
+```
 
 ## What You Can Do
 
@@ -269,7 +275,7 @@ fpl fdr --blanks --format json                                # Blank/double GW 
 |-------|-------------|---------------|
 | **gw-prep** | Full gameweek recommendations: fixtures, captain, transfers/waivers, bench order, chip timing. Dispatches parallel Classic + Draft analysis. | Claude Code (full), Codex/Cursor/Copilot (sequential) |
 | **update-gw-prep** | Second-pass addendum after newsletters or new data arrives. Appends updates without modifying baseline recommendations. | All tools (full) |
-| **squad-builder** | Build-from-scratch squad optimisation across 5 modes: Wildcard, Free Hit, Season Start (Classic/Draft), Re-draft. | All tools (full) |
+| **squad-builder** | Build-from-scratch squad optimisation across 5 modes: Wildcard, Free Hit, Season Start (Classic/Draft), Re-draft. | Claude Code (full), Codex/Cursor/Copilot (sequential) |
 
 Skills detect your configured format (classic, draft, or both) and skip irrelevant sections automatically. Each skill's `SKILL.md` contains the full workflow with `<!-- ADAPT: ... -->` comments marking customisation points.
 
@@ -278,3 +284,21 @@ Claude Code discovers skills via `.claude/skills/` (symlink to `.agents/skills/`
 ### Output Style
 
 `.claude/output-styles/fpl-mate.md` provides an opinionated FPL conversation mode - use it when you want to jam on transfer decisions, captaincy, or chip strategy with an AI that pulls data before giving views.
+
+## Development
+
+```bash
+git clone https://github.com/rossgroomio/fpl-cli.git
+cd fpl-cli
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+fpl init
+```
+
+```bash
+ruff check fpl_cli/    # Lint
+pyright fpl_cli/       # Type check
+pytest tests/          # Tests
+```
+
+The `.agents/skills/` scripts import `fpl_cli` internals and require the editable install above - they won't work from a `pipx install`.
