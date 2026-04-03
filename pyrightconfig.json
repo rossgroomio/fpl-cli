@@ -1,3 +1,4 @@
 {
-  "pythonVersion": "3.11"
+  "pythonVersion": "3.11",
+  "exclude": ["fpl_cli/scraper"]
 }
