@@ -75,30 +75,33 @@ def user_data_dir() -> Path:
 
 def _migrate_legacy_files() -> None:
     """One-time migration of files from repo-root config/ and data/ to platformdirs."""
-    for filename in _USER_CONFIG_FILES:
-        src = _LEGACY_CONFIG_DIR / filename
-        dst = user_config_dir() / filename
-        if src.is_file() and not dst.exists():
-            shutil.copy2(src, dst)
-            logger.info("Migrated %s → %s", src, dst)
-
-    for filename in _USER_DATA_FILES:
-        src = _LEGACY_DATA_DIR / filename
-        if not src.is_file():
-            # Some data files lived in config/ (player_prior, team_ratings, team_ratings_prior)
+    try:
+        for filename in _USER_CONFIG_FILES:
             src = _LEGACY_CONFIG_DIR / filename
-        dst = user_data_dir() / filename
-        if src.is_file() and not dst.exists():
-            shutil.copy2(src, dst)
-            logger.info("Migrated %s → %s", src, dst)
+            dst = user_config_dir() / filename
+            if src.is_file() and not dst.exists():
+                shutil.copy2(src, dst)
+                logger.info("Migrated %s → %s", src, dst)
 
-    # Migrate debug/ subdirectory
-    legacy_debug = _LEGACY_DATA_DIR / "debug"
-    if legacy_debug.is_dir():
-        dest_debug = user_data_dir() / "debug"
-        if not dest_debug.exists():
-            shutil.copytree(legacy_debug, dest_debug)
-            logger.info("Migrated %s → %s", legacy_debug, dest_debug)
+        for filename in _USER_DATA_FILES:
+            src = _LEGACY_DATA_DIR / filename
+            if not src.is_file():
+                # Some data files lived in config/ (player_prior, team_ratings, team_ratings_prior)
+                src = _LEGACY_CONFIG_DIR / filename
+            dst = user_data_dir() / filename
+            if src.is_file() and not dst.exists():
+                shutil.copy2(src, dst)
+                logger.info("Migrated %s → %s", src, dst)
+
+        # Migrate debug/ subdirectory
+        legacy_debug = _LEGACY_DATA_DIR / "debug"
+        if legacy_debug.is_dir():
+            dest_debug = user_data_dir() / "debug"
+            if not dest_debug.exists():
+                shutil.copytree(legacy_debug, dest_debug)
+                logger.info("Migrated %s → %s", legacy_debug, dest_debug)
+    except Exception:  # noqa: BLE001 — migration is best-effort; must not break CLI startup
+        logger.warning("Legacy file migration failed", exc_info=True)
 
 
 _migrate_legacy_files()

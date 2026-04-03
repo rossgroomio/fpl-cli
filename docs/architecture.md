@@ -598,7 +598,7 @@ fpl_cli/
 │   └── recommendations.py        # Parse gw{N}-recommendations.md into structured decisions
 ├── scraper/
 │   └── fpl_prices.py             # FPLPriceScraper (needs FPL_EMAIL/FPL_PASSWORD)
-├── paths.py                      # PROJECT_ROOT, CONFIG_DIR, DATA_DIR, TEMPLATE_DIR
+├── paths.py                      # SHIPPED_CONFIG_DIR, TEMPLATE_DIR, user_config_dir(), user_data_dir()
 ├── season.py                     # Season year detection, TOTAL_GAMEWEEKS, CHIP_SPLIT_GW
 └── constants.py                  # MIN_MINUTES_FOR_PER90
 
