@@ -656,3 +656,19 @@ flowchart LR
 ```
 
 User settings deep-merged over committed defaults via `platformdirs`. Format auto-detected from which entry IDs are configured (classic, draft, or both).
+
+## Design Decisions
+
+- **Between-gameweek focus.** No live mid-GW scores - tools like LiveFPL serve that job.
+- **Data first, opinions opt-in.** Core commands show aggregated data from multiple sources. Custom analysis (scoring, rankings, recommendations) is a separate toggle so users can trust the data layer without buying into experimental algorithms.
+- **No transfer planner.** Multi-week transfer sequencing is better in a spreadsheet. The CLI provides the inputs (`fdr`, `chips timing`, `fixtures`).
+- **Draft parity.** Most commands work for both classic and draft formats. Draft support focuses on free-agent pickups via the waiver system - trade recommendations between managers are out of scope.
+- **Agent-friendly.** `--format json` on key commands with a consistent envelope. See [Agent Tools & Skills](../.agents/TOOLS.md).
+- **LLM features are opt-in.** Core analysis works without any API keys. LLM providers add narrative and research capabilities.
+
+## Known Limitations
+
+- **Classic league scoring only.** No Head-to-Head or H2H knock-out league scoring. Both classic and draft formats are supported.
+- **One entry per format.** Configure one classic team and one draft league.
+- **League standings show top 50.** Covers most invitational leagues. Larger leagues see partial results.
+- **Pending transfers not visible.** The FPL API only exposes picks for completed gameweeks.
