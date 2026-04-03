@@ -75,4 +75,6 @@ jobs:
           git add CHANGELOG.md
           git diff --cached --quiet && exit 0
           git commit -m "docs: update CHANGELOG.md [skip ci]"
+          # Non-fast-forward risk: if main advances in the ~30s between tag push and here,
+          # this push fails. Acceptable for a solo project - re-run the job manually if needed.
           git push origin HEAD:main

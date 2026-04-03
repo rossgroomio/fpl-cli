@@ -47,7 +47,11 @@ _USER_DATA_FILES = (
 
 @functools.lru_cache(maxsize=1)
 def user_config_dir() -> Path:
-    """User-editable config directory (platformdirs). Respects FPL_CLI_CONFIG_DIR env var."""
+    """User-editable config directory (platformdirs). Respects FPL_CLI_CONFIG_DIR env var.
+
+    Cached after first call. Tests that change FPL_CLI_CONFIG_DIR must call
+    user_config_dir.cache_clear() first (handled by the autouse fixture in conftest.py).
+    """
     env = os.environ.get("FPL_CLI_CONFIG_DIR")
     if env:
         p = Path(env).expanduser().resolve()
