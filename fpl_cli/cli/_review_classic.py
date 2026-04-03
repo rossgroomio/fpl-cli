@@ -7,7 +7,7 @@ import logging
 from rich.markup import escape as rich_escape
 from rich.table import Table
 
-from fpl_cli.cli._context import console
+from fpl_cli.cli._context import console, error_console
 from fpl_cli.cli._helpers import (
     _assign_tie_ranks,
     _fetch_standings_with_costs,
@@ -130,7 +130,7 @@ async def _review_classic_team(
             team_points_data.sort(key=lambda p: (not p["contributed"], -p["display_points"]))
 
         except Exception as e:  # noqa: BLE001 — display resilience
-            console.print(f"[yellow]Could not fetch your team: {rich_escape(str(e))}[/yellow]")
+            error_console.print(f"[yellow]Could not fetch your team: {rich_escape(str(e))}[/yellow]")
 
     # Display Classic FPL section
     # Team Summary
@@ -193,7 +193,7 @@ async def _review_classic_team(
             console.print(table)
 
     elif entry_id:
-        console.print("[yellow]Could not fetch your team data[/yellow]")
+        error_console.print("[yellow]Could not fetch your team data[/yellow]")
     else:
         console.print("[dim]Set classic_entry_id in config/settings.yaml to see your squad[/dim]")
 
@@ -457,7 +457,7 @@ async def _review_classic_league(
                     console.print(f"  {rank}. {name} - {net} pts")
 
         if transfer_impact:
-            console.print(f"\n[yellow]  ⚠ {transfer_impact}[/yellow]")
+            error_console.print(f"\n[yellow]  ⚠ {transfer_impact}[/yellow]")
 
         # Store for report
         classic_league_data = {
@@ -489,6 +489,6 @@ async def _review_classic_league(
             classic_league_data["user_gw_net_points"] = user_entry_data.get("net_points", user_gw_pts)
 
     except Exception as e:  # noqa: BLE001 — display resilience
-        console.print(f"[yellow]Could not fetch classic league standings: {rich_escape(str(e))}[/yellow]")
+        error_console.print(f"[yellow]Could not fetch classic league standings: {rich_escape(str(e))}[/yellow]")
 
     return classic_league_data

@@ -8,7 +8,7 @@ import click
 import httpx
 from rich.table import Table
 
-from fpl_cli.cli._context import console, load_settings
+from fpl_cli.cli._context import console, error_console, load_settings
 from fpl_cli.cli._helpers import _fdr_style
 from fpl_cli.cli._json import emit_json, json_output_mode, output_format_option
 from fpl_cli.models.player import resolve_player
@@ -70,7 +70,7 @@ def grid_command(gws: int, watch: tuple[str, ...], mode: str, is_draft: bool, ou
                     try:
                         squad_players = await get_draft_squad_players(
                             draft_client, players, draft_entry_id, start_gw,
-                            log=lambda msg: console.print(f"[yellow]{msg}[/yellow]"),
+                            log=lambda msg: error_console.print(f"[yellow]{msg}[/yellow]"),
                         )
                     except Exception as e:  # noqa: BLE001 — display resilience
                         console.print(f"[red]Could not fetch draft squad: {e}[/red]")
@@ -101,7 +101,7 @@ def grid_command(gws: int, watch: tuple[str, ...], mode: str, is_draft: bool, ou
                 if match:
                     watch_players.append(match)
                 else:
-                    console.print(f"[yellow]Watch: '{name}' not found[/yellow]")
+                    error_console.print(f"[yellow]Watch: '{name}' not found[/yellow]")
 
             all_fixtures = await client.get_fixtures()
             fixture_grid: dict[int, dict[int, list[tuple[str, bool]]]] = {}

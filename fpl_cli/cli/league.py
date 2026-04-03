@@ -11,7 +11,7 @@ from rich.markup import escape as rich_escape
 from rich.panel import Panel
 from rich.table import Table
 
-from fpl_cli.cli._context import Format, console, get_format, load_settings
+from fpl_cli.cli._context import Format, console, error_console, get_format, load_settings
 from fpl_cli.cli._helpers import _fetch_standings_with_costs
 
 logger = logging.getLogger(__name__)
@@ -42,7 +42,7 @@ def league_command(ctx: click.Context):
             # Get current GW status
             current_gw = await client.get_current_gameweek()
             if not current_gw:
-                console.print("[yellow]Could not determine current gameweek[/yellow]")
+                error_console.print("[yellow]Could not determine current gameweek[/yellow]")
                 return
 
             gw = current_gw["id"]
@@ -159,7 +159,7 @@ def league_command(ctx: click.Context):
                                 console.print(f"  {i}. {name} - {net} pts")
 
                 except Exception as e:  # noqa: BLE001 — display resilience
-                    console.print(f"[yellow]Could not fetch classic league: {rich_escape(str(e))}[/yellow]")
+                    error_console.print(f"[yellow]Could not fetch classic league: {rich_escape(str(e))}[/yellow]")
 
             elif show_classic and not classic_league_id:
                 console.print("\n[dim]Set classic_league_id in config/settings.yaml for Classic league[/dim]")
@@ -263,7 +263,7 @@ def league_command(ctx: click.Context):
                         console.print(f"  {i}. {name} - {gw_pts} pts")
 
             except Exception as e:  # noqa: BLE001 — display resilience
-                console.print(f"[yellow]Could not fetch draft league: {rich_escape(str(e))}[/yellow]")
+                error_console.print(f"[yellow]Could not fetch draft league: {rich_escape(str(e))}[/yellow]")
 
         elif show_draft and not draft_league_id:
             console.print("\n[dim]Set draft_league_id in config/settings.yaml for Draft league[/dim]")

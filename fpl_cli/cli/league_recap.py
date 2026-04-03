@@ -13,7 +13,7 @@ import click
 from rich.panel import Panel
 
 from fpl_cli.api.providers import ProviderError
-from fpl_cli.cli._context import Format, console, get_format, load_settings, resolve_output_dir
+from fpl_cli.cli._context import Format, console, error_console, get_format, load_settings, resolve_output_dir
 from fpl_cli.cli._league_recap_types import LeagueRecapData
 
 logger = logging.getLogger(__name__)
@@ -153,10 +153,10 @@ def league_recap_command(
                         season_length=TOTAL_GAMEWEEKS,
                     )
                 except ProviderError as e:
-                    console.print(f"[yellow]LLM summarisation failed: {e}[/yellow]")
+                    error_console.print(f"[yellow]LLM summarisation failed: {e}[/yellow]")
                 except Exception:  # noqa: BLE001 — graceful degradation
                     logger.debug("LLM summarisation failed", exc_info=True)
-                    console.print("[yellow]LLM summarisation failed (unexpected error)[/yellow]")
+                    error_console.print("[yellow]LLM summarisation failed (unexpected error)[/yellow]")
 
             # Display key highlights to console
             _render_console_highlights(collected_data)
@@ -282,10 +282,10 @@ async def _recap_llm_summarise(
             collected_data["synthesis_summary"] = synthesis_provider.post_process(synthesis_result.content)
             console.print("[green]  Done[/green] League editorial complete")
         except ProviderError as e:
-            console.print(f"[yellow]  LLM synthesis failed: {e}[/yellow]")
+            error_console.print(f"[yellow]  LLM synthesis failed: {e}[/yellow]")
         except Exception:  # noqa: BLE001 — graceful degradation
             logger.debug("Synthesis provider failed for recap", exc_info=True)
-            console.print("[yellow]  LLM synthesis failed (unexpected error)[/yellow]")
+            error_console.print("[yellow]  LLM synthesis failed (unexpected error)[/yellow]")
 
     if debug and debug_dir:
         (debug_dir / "recap_system.txt").write_text(system_prompt, encoding="utf-8")

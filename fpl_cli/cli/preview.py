@@ -13,6 +13,7 @@ from rich.table import Table
 from fpl_cli.cli._context import (
     Format,
     console,
+    error_console,
     get_format,
     is_custom_analysis_enabled,
     load_settings,
@@ -106,7 +107,7 @@ def preview_command(ctx: click.Context, save: bool, output: str | None, scout: b
                 collected_data["fixtures"] = fixture_result.data
                 console.print("[green]✓[/green] Fixture analysis complete")
             else:
-                console.print(f"[yellow]⚠[/yellow] Fixture analysis: {fixture_result.message}")
+                error_console.print(f"[yellow]⚠[/yellow] Fixture analysis: {fixture_result.message}")
 
             # Get gameweek fixtures (for display)
             gw_fixtures = await client.get_fixtures(gameweek=gw)
@@ -132,7 +133,7 @@ def preview_command(ctx: click.Context, save: bool, output: str | None, scout: b
                 collected_data["stats"] = stats_result.data
                 console.print("[green]✓[/green] Stats analysis complete")
             else:
-                console.print(f"[yellow]⚠[/yellow] Stats analysis: {stats_result.message}")
+                error_console.print(f"[yellow]⚠[/yellow] Stats analysis: {stats_result.message}")
 
             # 3. Price Analysis
             console.print("[dim]Running PriceAgent...[/dim]")
@@ -142,7 +143,7 @@ def preview_command(ctx: click.Context, save: bool, output: str | None, scout: b
                 collected_data["prices"] = price_result.data
                 console.print("[green]✓[/green] Price analysis complete")
             else:
-                console.print(f"[yellow]⚠[/yellow] Price analysis: {price_result.message}")
+                error_console.print(f"[yellow]⚠[/yellow] Price analysis: {price_result.message}")
 
             # 4. Main FPL squad with injury status
             if show_classic and entry_id:
@@ -180,7 +181,7 @@ def preview_command(ctx: click.Context, save: bool, output: str | None, scout: b
                         collected_data["my_squad"] = my_squad
                         console.print("[green]✓[/green] FPL squad fetched")
                 except Exception as e:  # noqa: BLE001 — display resilience
-                    console.print(f"[yellow]⚠[/yellow] Could not fetch FPL squad: {e}")
+                    error_console.print(f"[yellow]⚠[/yellow] Could not fetch FPL squad: {e}")
 
             # 5. Draft squad with injury status
             if show_draft and draft_league_id and draft_entry_id:
@@ -228,9 +229,9 @@ def preview_command(ctx: click.Context, save: bool, output: str | None, scout: b
                     if draft_squad:
                         console.print("[green]✓[/green] Draft squad fetched")
                     else:
-                        console.print("[yellow]⚠[/yellow] Draft squad fetched but no players found")
+                        error_console.print("[yellow]⚠[/yellow] Draft squad fetched but no players found")
                 except Exception as e:  # noqa: BLE001 — display resilience
-                    console.print(f"[yellow]⚠[/yellow] Could not fetch draft squad: {e}")
+                    error_console.print(f"[yellow]⚠[/yellow] Could not fetch draft squad: {e}")
 
         console.print("")
 
@@ -325,7 +326,7 @@ def preview_command(ctx: click.Context, save: bool, output: str | None, scout: b
                     clean_path.write_text(metadata + scout_data["content_clean"], encoding="utf-8")
                     console.print(f"[green]✓[/green] Scout report (clean): {clean_path}")
                 else:
-                    console.print(f"[yellow]⚠[/yellow] Scout analysis: {scout_result.message}")
+                    error_console.print(f"[yellow]⚠[/yellow] Scout analysis: {scout_result.message}")
 
     def _display_preview_summary(data: dict, gw: int, *, custom_on: bool = True):
         """Display a summary of the preview analysis."""

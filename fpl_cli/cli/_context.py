@@ -15,6 +15,7 @@ from rich.console import Console
 from fpl_cli.paths import SHIPPED_CONFIG_DIR, user_config_dir
 
 console = Console()
+error_console = Console(stderr=True)
 
 
 def _user_config_dir() -> Path:

@@ -11,7 +11,7 @@ import click
 import httpx
 from rich.panel import Panel
 
-from fpl_cli.cli._context import Format, console, get_format, is_custom_analysis_enabled, load_settings
+from fpl_cli.cli._context import Format, console, error_console, get_format, is_custom_analysis_enabled, load_settings
 from fpl_cli.cli._helpers import _fdr_style
 from fpl_cli.cli._json import emit_json, json_output_mode, output_format_option
 from fpl_cli.models.player import resolve_players
@@ -112,7 +112,7 @@ def player_command(
                 matches = resolve_players(name, players, teams=team_list)
 
                 if not matches:
-                    console.print(f"[yellow]No players found matching '{name}'[/yellow]")
+                    error_console.print(f"[yellow]No players found matching '{name}'[/yellow]")
                     return
 
                 display = matches[:5]
@@ -382,27 +382,27 @@ def player_command(
                     if detail and p.id in detail_map:
                         _show_match_detail_from_data(detail_map[p.id], p.web_name, teams, p.position_name)
                     elif detail:
-                        console.print("[yellow]No match data available[/yellow]")
+                        error_console.print("[yellow]No match data available[/yellow]")
 
                     if understat:
                         if p.id in understat_data_map:
                             _show_understat_analysis(understat_data_map[p.id], p.web_name)
                         elif p.id not in us_matches:
-                            console.print("[yellow]No Understat match found[/yellow]")
+                            error_console.print("[yellow]No Understat match found[/yellow]")
 
                     if history:
                         h_profile = history_map.get(p.id)
                         if h_profile == "rate_limited":
-                            console.print(
+                            error_console.print(
                                 "[yellow]Historical data unavailable"
                                 " (GitHub rate limit - try again shortly)[/yellow]",
                             )
                         elif h_profile == "network_error":
-                            console.print("[yellow]Historical data unavailable (network error)[/yellow]")
+                            error_console.print("[yellow]Historical data unavailable (network error)[/yellow]")
                         elif h_profile is not None and not isinstance(h_profile, str):
                             _show_player_history(h_profile)
                         else:
-                            console.print("[yellow]No historical data available[/yellow]")
+                            error_console.print("[yellow]No historical data available[/yellow]")
 
             except Exception as e:  # noqa: BLE001 — display resilience
                 console.print(f"[red]Error: {e}[/red]")
@@ -462,7 +462,7 @@ def _show_match_detail_from_data(
     history = player_data.get("history", [])
 
     if not history:
-        console.print("[yellow]No match data available[/yellow]")
+        error_console.print("[yellow]No match data available[/yellow]")
         return
 
     is_gk = position == "GK"
@@ -582,7 +582,7 @@ async def _show_player_fixtures(
 
     fixture_data = await _get_fixture_run_data(player, team, teams, client, mode=mode)
     if not fixture_data:
-        console.print("[yellow]No upcoming gameweeks found[/yellow]")
+        error_console.print("[yellow]No upcoming gameweeks found[/yellow]")
         return
 
     start_gw = fixture_data[0]["gameweek"]
@@ -673,7 +673,7 @@ def _show_understat_analysis(player_data: dict, name: str) -> None:
             days_old = (datetime.now() - through_date).days
             if days_old > 14:
                 staleness_msg = f"Understat data through: {data_through} ({days_old} days ago)"
-                console.print(f"[yellow]{staleness_msg}[/yellow]")
+                error_console.print(f"[yellow]{staleness_msg}[/yellow]")
             else:
                 console.print(f"Understat data through: {data_through}", style="dim")
         except ValueError:
@@ -712,7 +712,7 @@ def _show_understat_analysis(player_data: dict, name: str) -> None:
             table.add_row(f"  {sit}", str(count))
         console.print(table)
     else:
-        console.print("[yellow]No shot data available[/yellow]")
+        error_console.print("[yellow]No shot data available[/yellow]")
 
     # Situation profile
     groups = player_data.get("groups", {})
@@ -747,7 +747,7 @@ def _show_understat_analysis(player_data: dict, name: str) -> None:
             )
         console.print(profile_table)
     else:
-        console.print("[yellow]No situation breakdown available[/yellow]")
+        error_console.print("[yellow]No situation breakdown available[/yellow]")
 
 
 def _show_player_history(profile: PlayerProfile) -> None:

@@ -10,7 +10,7 @@ import click
 from rich.panel import Panel
 from rich.table import Table
 
-from fpl_cli.cli._context import Format, console, get_format
+from fpl_cli.cli._context import Format, console, error_console, get_format
 from fpl_cli.cli._json import emit_json, emit_json_error, json_output_mode, output_format_option
 from fpl_cli.scraper.fpl_prices import TeamFinances
 
@@ -31,7 +31,7 @@ def sell_prices_command(ctx: click.Context, refresh: bool, visible: bool, output
     Credentials: `fpl credentials set` or FPL_EMAIL/FPL_PASSWORD env vars.
     """
     if get_format(ctx) == Format.DRAFT:
-        console.print("[yellow]sell-prices is not available in draft format[/yellow]")
+        error_console.print("[yellow]sell-prices is not available in draft format[/yellow]")
         return
 
     from fpl_cli.scraper.fpl_prices import CACHE_FILE, FPLPriceScraper, load_cache, save_cache
@@ -50,7 +50,7 @@ def sell_prices_command(ctx: click.Context, refresh: bool, visible: bool, output
             _display_finances(cached)
             return
         else:
-            console.print("[yellow]No cached data found. Run with --refresh to scrape.[/yellow]")
+            error_console.print("[yellow]No cached data found. Run with --refresh to scrape.[/yellow]")
             return
 
     import sys
@@ -86,7 +86,7 @@ def sell_prices_command(ctx: click.Context, refresh: bool, visible: bool, output
         finances = result
 
         for warning in finances.warnings:
-            console.print(f"[yellow]Warning: {warning}[/yellow]")
+            error_console.print(f"[yellow]Warning: {warning}[/yellow]")
 
         if finances.is_suspect:
             console.print("\n[bold red]Scrape returned suspect data - likely a failed extraction.[/bold red]")
@@ -96,7 +96,9 @@ def sell_prices_command(ctx: click.Context, refresh: bool, visible: bool, output
                 console.print("[dim]Try with --visible flag to debug the scrape.[/dim]")
             else:
                 save_cache(finances)
-                console.print(f"[yellow]Saved suspect data to {CACHE_FILE} (no valid cache to preserve).[/yellow]")
+                error_console.print(
+                    f"[yellow]Saved suspect data to {CACHE_FILE} (no valid cache to preserve).[/yellow]"
+                )
                 console.print("[dim]Try with --visible flag to debug the scrape.[/dim]")
 
             console.print(Panel.fit("[bold blue]Squad Budget (Suspect)[/bold blue]"))

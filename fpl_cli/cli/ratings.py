@@ -9,7 +9,7 @@ import click
 from rich.panel import Panel
 from rich.table import Table
 
-from fpl_cli.cli._context import console
+from fpl_cli.cli._context import console, error_console
 
 
 @click.group("ratings", invoke_without_command=True)
@@ -37,7 +37,7 @@ def _show_ratings():
     # Check staleness
     warning = service.get_staleness_warning()
     if warning:
-        console.print(f"[yellow]{warning}[/yellow]\n")
+        error_console.print(f"[yellow]{warning}[/yellow]\n")
 
     # Show metadata
     meta = service.metadata
@@ -215,7 +215,7 @@ def ratings_update(since_gw: int | None, dry_run: bool, use_xg: bool):
         console.print(stats_table)
 
         if dry_run:
-            console.print("\n[yellow]Dry run - ratings not saved[/yellow]")
+            error_console.print("\n[yellow]Dry run - ratings not saved[/yellow]")
         else:
             service.save_ratings(
                 ratings,
