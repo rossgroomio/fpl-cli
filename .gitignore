@@ -1,6 +1,9 @@
-# Credentials and user config (never commit)
+# Runtime caches and user secrets (never commit)
 config/*.yaml
-!config/defaults.yaml
+!config/fixture_predictions.yaml
+!config/team_managers.yaml
+!config/team_ratings.yaml
+!config/team_ratings_overrides.yaml
 .env
 
 # Generated version file (hatch-vcs)
@@ -65,7 +68,6 @@ docs/solutions/
 docs/ideas/
 docs/positioning.md
 docs/legal-risk-assessment.md
-docs/2026-03-23-security-review-pre-open-source.md
 
 # Local todos
 todos/

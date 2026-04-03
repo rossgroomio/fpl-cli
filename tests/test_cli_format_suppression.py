@@ -336,7 +336,9 @@ class TestReviewTemplateFormatGating:
     def _render(self, fpl_format: str | None, **kwargs):
         from jinja2 import Environment, FileSystemLoader
 
-        env = Environment(loader=FileSystemLoader("templates"))
+        from fpl_cli.paths import TEMPLATE_DIR
+
+        env = Environment(loader=FileSystemLoader(str(TEMPLATE_DIR)))
         template = env.get_template("gw_review.md.j2")
         defaults = {
             "generated_at": "2026-03-23 12:00",
