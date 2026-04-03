@@ -405,20 +405,51 @@ flowchart TB
     style TF fill:#f1f8e9,stroke:#33691e
 ```
 
-**player_scoring** - Central scoring engine. `prepare_scoring_data()` is the shared entry point for all scoring agents' data preparation - fetches teams, fixtures, next GW, creates TeamRatingsService, and builds a `ScoringContext`, returning everything in a `ScoringData` frozen dataclass. Optional `include_players`/`include_understat`/`include_history` flags control additional data fetching. `include_history` batch-fetches per-GW player history via `get_player_detail()` for all players with minutes > 0, enabling `compute_form_trajectory()` - a median-filtered slope of recent GW points that returns a multiplier (0.8-1.2) applied to the form contribution in all scoring contexts. `ScoringContext` (frozen dataclass) holds pre-fetched data (team map, fixture map, ratings service, optional team form/understat). `build_scoring_context()` constructs it (called internally by `prepare_scoring_data()`). `build_fixture_matchups()` produces per-fixture `FixtureMatchup` objects with opponent FDR (used for captain fixture classification and display; no longer an additive scoring component). `compute_aggregate_matchup()` returns a scalar 3GW average matchup score (used by stats/waiver). All formulas define weights via `StatWeight`-based `QualityWeights` instances for cross-formula comparability. Two scoring families:
+**player_scoring** - Central scoring engine.
 
-- **Ownership family** (target/diff/waiver): All three route through `_calculate_quality_based_score()` / `_calculate_quality_based_raw()` with `TARGET_QUALITY_WEIGHTS`, `DIFFERENTIAL_QUALITY_WEIGHTS`, `WAIVER_QUALITY_WEIGHTS`. Shared flow: quality baseline via `calculate_player_quality_score()`, underperformance regression bonus, 3-GW matchup (scalar average, weight 0.75 via `_matchup_bonus`), availability penalty (-3pt when flagged < 75%). Waiver uses `mins_factor_override` for a stricter combined factor (availability * per-appearance) because draft waivers are a season commitment; target/diff use standard `mins_factor`. Waiver adds position-need and team-stacking adjustments post-quality. All three include `penalty_xG` via `StatWeight`.
-- **Single-GW family** (captain/bench/lineup/allocator horizon=1): `calculate_single_gw_core()` with `GW_SELECTION_WEIGHTS`. Per-fixture matchup scores summed (not averaged), weighted by `matchup_weight` (captain 2.0, bench/lineup/allocator 1.5). Captain and bench share this core; bench adds coverage and set-piece bonuses, normalises via `BENCH_CEILING` (raw `priority_score_raw` exposed in output). Lineup uses `calculate_lineup_score()` + `select_starting_xi()` to pick the optimal starting XI from a 15-man squad. Squad allocator uses `score_all_players_sgw()` when `--horizon 1` to feed single-GW scores as solver coefficients (no fixture coefficient step, no shrinkage). Captain's pen bonus is `StatWeight`-derived. FDR is not an additive component in either family.
+- **Entry point.** `prepare_scoring_data()` fetches teams, fixtures, next GW, creates TeamRatingsService, builds a `ScoringContext`, and returns everything in a `ScoringData` frozen dataclass. Optional flags control additional fetching: `include_players`, `include_understat`, `include_history`.
+- **Form trajectory.** `include_history` batch-fetches per-GW player history via `get_player_detail()` for all players with minutes > 0. `compute_form_trajectory()` calculates a median-filtered slope of recent GW points, returning a multiplier (0.8-1.2) applied to the form contribution in all scoring contexts.
+- **Scoring context.** `ScoringContext` (frozen dataclass) holds pre-fetched data: team map, fixture map, ratings service, optional team form/understat. Built internally by `build_scoring_context()`.
+- **Fixture matchups.** `build_fixture_matchups()` produces per-fixture `FixtureMatchup` objects with opponent FDR (used for captain fixture classification and display; no longer an additive scoring component). `compute_aggregate_matchup()` returns a scalar 3GW average (used by stats/waiver).
+- **Weights.** All formulas define weights via `StatWeight`-based `QualityWeights` instances for cross-formula comparability.
+
+Two scoring families:
+
+- **Ownership family** (target/diff/waiver): routes through `_calculate_quality_based_score()` / `_calculate_quality_based_raw()`.
+  - Weight sets: `TARGET_QUALITY_WEIGHTS`, `DIFFERENTIAL_QUALITY_WEIGHTS`, `WAIVER_QUALITY_WEIGHTS`
+  - Shared flow: quality baseline via `calculate_player_quality_score()`, underperformance regression bonus, 3-GW matchup (scalar average, weight 0.75 via `_matchup_bonus`), availability penalty (-3pt when flagged < 75%)
+  - Waiver divergence: `mins_factor_override` for a stricter combined factor (availability * per-appearance) because draft waivers are a season commitment; target/diff use standard `mins_factor`. Waiver also adds position-need and team-stacking adjustments post-quality.
+  - All three include `penalty_xG` via `StatWeight`
+- **Single-GW family** (captain/bench/lineup/allocator horizon=1): `calculate_single_gw_core()` with `GW_SELECTION_WEIGHTS`.
+  - Per-fixture matchup scores summed (not averaged), weighted by `matchup_weight` (captain 2.0, bench/lineup/allocator 1.5)
+  - Captain and bench share this core; bench adds coverage and set-piece bonuses, normalises via `BENCH_CEILING` (raw `priority_score_raw` exposed in output)
+  - Lineup: `calculate_lineup_score()` + `select_starting_xi()` picks optimal starting XI from a 15-man squad
+  - Squad allocator: `score_all_players_sgw()` when `--horizon 1` feeds single-GW scores as solver coefficients (no fixture coefficient step, no shrinkage)
+  - Captain's pen bonus is `StatWeight`-derived
+  - FDR is not an additive component in either family
 
 `BenchOrderAgent` is enriched with Understat data (npxG, xGChain, penalty_xG) where available.
 
-Both families' normalised scores are subject to early-season confidence shrinkage via `shrink_scores()` (GW1-10). Per-player confidence is derived from prior-season pts/90 (vaastav data) via `player_prior.py`. `prepare_scoring_data(include_prior=True)` fetches priors into `ScoringData.player_priors`; each agent calls `shrink_scores()` between scoring and ranking.
+**Early-season shrinkage.** Both families' normalised scores are subject to confidence shrinkage via `shrink_scores()` (GW1-10). Per-player confidence is derived from prior-season pts/90 (vaastav data) via `player_prior.py`. `prepare_scoring_data(include_prior=True)` fetches priors into `ScoringData.player_priors`; each agent calls `shrink_scores()` between scoring and ranking.
 
-**player_prior** - Bayesian early-season confidence. `generate_player_prior()` computes per-player `prior_strength` (percentile rank of pts/90 within position) and `confidence` (shrinkage control). Price-based fallback for players without PL history. YAML cache (`config/player_prior.yaml`) with season/GW invalidation. Constants: `REGRESSION_CONSTANT=6`, `CUTOFF_GW=10`.
+**player_prior** - Bayesian early-season confidence.
 
-**TeamRatingsService** - Persists team strength ratings (1-7 scale, per axis: atk_home/away, def_home/away) to `config/team_ratings.yaml`. Auto-refreshes when stale. Supports fixture-based and xG-based calculation. Blends with prior ratings before GW5.
+- `generate_player_prior()` computes per-player `prior_strength` (percentile rank of pts/90 within position) and `confidence` (shrinkage control)
+- Price-based fallback for players without PL history
+- YAML cache (`config/player_prior.yaml`) with season/GW invalidation
+- Constants: `REGRESSION_CONSTANT=6`, `CUTOFF_GW=10`
 
-**matchup** - Computes matchup scores (0-10) using team form, opponent form, venue, and position. `compute_3gw_matchup()` applies recency-weighted window `[0.5, 0.3, 0.2]`.
+**TeamRatingsService** - Persists team strength ratings to `config/team_ratings.yaml`.
+
+- **Scale:** 1-7, per axis: atk_home/away, def_home/away
+- Auto-refreshes when stale
+- Supports fixture-based and xG-based calculation
+- Blends with prior ratings before GW5
+
+**matchup** - Computes matchup scores (0-10).
+
+- Inputs: team form, opponent form, venue, position
+- `compute_3gw_matchup()` applies recency-weighted window `[0.5, 0.3, 0.2]`
 
 **FixturePredictionsService** - Reads `config/fixture_predictions.yaml` for predicted BGW/DGW data with confidence levels. Pure functions `find_blank_gameweeks()` / `find_double_gameweeks()` detect from live fixture data.
 
@@ -672,3 +703,4 @@ User settings deep-merged over committed defaults via `platformdirs`. Format aut
 - **One entry per format.** Configure one classic team and one draft league.
 - **League standings show top 50.** Covers most invitational leagues. Larger leagues see partial results.
 - **Pending transfers not visible.** The FPL API only exposes picks for completed gameweeks.
+- **Read-only.** The CLI authenticates with FPL only for price scraping (via Playwright). It will not set your lineup, make transfers, or submit waiver claims on your behalf.
