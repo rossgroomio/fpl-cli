@@ -77,5 +77,8 @@ todos/
 .claude/worktrees/
 .claude/handoffs/
 
+# Untracked skills
+.agents/skills/documentation-writer/
+
 # OS
 .DS_Store

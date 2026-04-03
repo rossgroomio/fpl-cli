@@ -169,4 +169,4 @@ $ pytest tests/          # Tests
 
 ---
 
-[Command Reference](docs/command-reference.md) | [Architecture](docs/architecture.md) | [Agent Tools & Skills](.agents/TOOLS.md)
+[Command Reference](docs/command-reference.md) | [Custom Analysis Guide](docs/custom-analysis.md) | [Architecture](docs/architecture.md) | [Agent Tools & Skills](.agents/TOOLS.md)

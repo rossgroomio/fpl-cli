@@ -1,5 +1,7 @@
 # FPL CLI Architecture
 
+System design and module structure for contributors. For scoring formulas and methodology, see the [Custom Analysis Guide](custom-analysis.md). For command usage, see the [Command Reference](command-reference.md).
+
 ```mermaid
 flowchart TB
     subgraph CLI["CLI Layer"]
@@ -349,111 +351,17 @@ Commands are independently classified by the `custom_analysis` toggle:
 
 ## Services Layer
 
-```mermaid
-flowchart TB
-    subgraph Scoring["player_scoring.py"]
-        direction TB
-        prepare["prepare_scoring_data() → ScoringData"]
-        scoring_ctx["ScoringContext + build_scoring_context()"]
-        build_matchups["build_fixture_matchups()"]
-        compute_agg["compute_aggregate_matchup()"]
-        captain_score["calculate_captain_score()"]
-        target_score["calculate_target_score()"]
-        diff_score["calculate_differential_score()"]
-        waiver_score["calculate_waiver_score()"]
-        bench_score["calculate_bench_score()"]
-        lineup_score["calculate_lineup_score()"]
-        select_xi["select_starting_xi()"]
-        build_eval["build_player_evaluation()"]
-        prepare --> scoring_ctx
-        scoring_ctx --> build_matchups & compute_agg
-    end
+Services live in `fpl_cli/services/` and provide the computation layer between agents and API clients. For scoring formulas, weight definitions, and methodology detail, see the [Custom Analysis Guide](custom-analysis.md#services-overview).
 
-    subgraph Ratings["team_ratings.py"]
-        direction TB
-        svc["TeamRatingsService"]
-        calc["TeamRatingsCalculator"]
-        svc --> calc
-    end
-
-    subgraph Matchup["matchup.py"]
-        direction TB
-        matchup_fn["calculate_matchup_score()"]
-        gw_maps["build_gw_fixture_maps()"]
-        compute_3gw["compute_3gw_matchup()"]
-    end
-
-    subgraph FP["fixture_predictions.py"]
-        direction TB
-        fp_svc["FixturePredictionsService"]
-        find_blank["find_blank_gameweeks()"]
-        find_double["find_double_gameweeks()"]
-    end
-
-    subgraph TF["team_form.py"]
-        tf_fn["calculate_team_form()"]
-    end
-
-    %% Cross-service dependencies
-    Matchup --> TF
-    Ratings --> UnderstatClient & FootballDataClient
-
-    style Scoring fill:#f1f8e9,stroke:#33691e
-    style Ratings fill:#f1f8e9,stroke:#33691e
-    style Matchup fill:#f1f8e9,stroke:#33691e
-    style FP fill:#f1f8e9,stroke:#33691e
-    style TF fill:#f1f8e9,stroke:#33691e
-```
-
-**player_scoring** - Central scoring engine.
-
-- **Entry point.** `prepare_scoring_data()` fetches teams, fixtures, next GW, creates TeamRatingsService, builds a `ScoringContext`, and returns everything in a `ScoringData` frozen dataclass. Optional flags control additional fetching: `include_players`, `include_understat`, `include_history`.
-- **Form trajectory.** `include_history` batch-fetches per-GW player history via `get_player_detail()` for all players with minutes > 0. `compute_form_trajectory()` calculates a median-filtered slope of recent GW points, returning a multiplier (0.8-1.2) applied to the form contribution in all scoring contexts.
-- **Scoring context.** `ScoringContext` (frozen dataclass) holds pre-fetched data: team map, fixture map, ratings service, optional team form/understat. Built internally by `build_scoring_context()`.
-- **Fixture matchups.** `build_fixture_matchups()` produces per-fixture `FixtureMatchup` objects with opponent FDR (used for captain fixture classification and display; no longer an additive scoring component). `compute_aggregate_matchup()` returns a scalar 3GW average (used by stats/waiver).
-- **Weights.** All formulas define weights via `StatWeight`-based `QualityWeights` instances for cross-formula comparability.
-
-Two scoring families:
-
-- **Ownership family** (target/diff/waiver): routes through `_calculate_quality_based_score()` / `_calculate_quality_based_raw()`.
-  - Weight sets: `TARGET_QUALITY_WEIGHTS`, `DIFFERENTIAL_QUALITY_WEIGHTS`, `WAIVER_QUALITY_WEIGHTS`
-  - Shared flow: quality baseline via `calculate_player_quality_score()`, underperformance regression bonus, 3-GW matchup (scalar average, weight 0.75 via `_matchup_bonus`), availability penalty (-3pt when flagged < 75%)
-  - Waiver divergence: `mins_factor_override` for a stricter combined factor (availability * per-appearance) because draft waivers are a season commitment; target/diff use standard `mins_factor`. Waiver also adds position-need and team-stacking adjustments post-quality.
-  - All three include `penalty_xG` via `StatWeight`
-- **Single-GW family** (captain/bench/lineup/allocator horizon=1): `calculate_single_gw_core()` with `GW_SELECTION_WEIGHTS`.
-  - Per-fixture matchup scores summed (not averaged), weighted by `matchup_weight` (captain 2.0, bench/lineup/allocator 1.5)
-  - Captain and bench share this core; bench adds coverage and set-piece bonuses, normalises via `BENCH_CEILING` (raw `priority_score_raw` exposed in output)
-  - Lineup: `calculate_lineup_score()` + `select_starting_xi()` picks optimal starting XI from a 15-man squad
-  - Squad allocator: `score_all_players_sgw()` when `--horizon 1` feeds single-GW scores as solver coefficients (no fixture coefficient step, no shrinkage)
-  - Captain's pen bonus is `StatWeight`-derived
-  - FDR is not an additive component in either family
-
-`BenchOrderAgent` is enriched with Understat data (npxG, xGChain, penalty_xG) where available.
-
-**Early-season shrinkage.** Both families' normalised scores are subject to confidence shrinkage via `shrink_scores()` (GW1-10). Per-player confidence is derived from prior-season pts/90 (vaastav data) via `player_prior.py`. `prepare_scoring_data(include_prior=True)` fetches priors into `ScoringData.player_priors`; each agent calls `shrink_scores()` between scoring and ranking.
-
-**player_prior** - Bayesian early-season confidence.
-
-- `generate_player_prior()` computes per-player `prior_strength` (percentile rank of pts/90 within position) and `confidence` (shrinkage control)
-- Price-based fallback for players without PL history
-- YAML cache (`config/player_prior.yaml`) with season/GW invalidation
-- Constants: `REGRESSION_CONSTANT=6`, `CUTOFF_GW=10`
-
-**TeamRatingsService** - Persists team strength ratings to `config/team_ratings.yaml`.
-
-- **Scale:** 1-7, per axis: atk_home/away, def_home/away
-- Auto-refreshes when stale
-- Supports fixture-based and xG-based calculation
-- Blends with prior ratings before GW5
-
-**matchup** - Computes matchup scores (0-10).
-
-- Inputs: team form, opponent form, venue, position
-- `compute_3gw_matchup()` applies recency-weighted window `[0.5, 0.3, 0.2]`
-
-**FixturePredictionsService** - Reads `config/fixture_predictions.yaml` for predicted BGW/DGW data with confidence levels. Pure functions `find_blank_gameweeks()` / `find_double_gameweeks()` detect from live fixture data.
-
-**team_form** - Calculates rolling form stats (last 6 matches, venue splits, league position).
+| Service | Purpose |
+|---|---|
+| `player_scoring` | Central scoring engine: `prepare_scoring_data()`, all score functions, `shrink_scores()` |
+| `player_prior` | Bayesian early-season confidence (GW1-10 shrinkage) |
+| `team_ratings` | TeamRatingsService + Calculator (1-7 scale, 4 axes) |
+| `matchup` | Fixture matchup scoring (0-10), 3-GW recency-weighted |
+| `fixture_predictions` | BGW/DGW predictions from YAML + live detection |
+| `squad_allocator` | ILP squad allocator (PuLP CBC), horizon-aware, chip-aware |
+| `team_form` | Rolling team form stats (last 6 matches, venue splits) |
 
 ## LLM Provider Abstraction
 
@@ -697,10 +605,3 @@ User settings deep-merged over committed defaults via `platformdirs`. Format aut
 - **Agent-friendly.** `--format json` on key commands with a consistent envelope. See [Agent Tools & Skills](../.agents/TOOLS.md).
 - **LLM features are opt-in.** Core analysis works without any API keys. LLM providers add narrative and research capabilities.
 
-## Known Limitations
-
-- **Classic league scoring only.** No Head-to-Head or H2H knock-out league scoring. Both classic and draft formats are supported.
-- **One entry per format.** Configure one classic team and one draft league.
-- **League standings show top 50.** Covers most invitational leagues. Larger leagues see partial results.
-- **Pending transfers not visible.** The FPL API only exposes picks for completed gameweeks.
-- **Read-only.** The CLI authenticates with FPL only for price scraping (via Playwright). It will not set your lineup, make transfers, or submit waiver claims on your behalf.
