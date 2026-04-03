@@ -86,6 +86,8 @@ class TestWarningsOnStderr:
         mock_error = MagicMock()
         monkeypatch.setattr(fdr_mod, "error_console", mock_error)
         monkeypatch.setattr(fdr_mod, "load_settings", lambda: {})
+        # custom_on=False routes to raw FPL API path (early return) before my_squad check
+        monkeypatch.setattr(fdr_mod, "is_custom_analysis_enabled", lambda _: True)
 
         mock_result = MagicMock()
         mock_result.success = False
