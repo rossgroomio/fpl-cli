@@ -204,22 +204,20 @@ For horizon >= 2, per-player, per-GW fixture coefficients use position-variant s
 
 **DGW handling:** Both fixture coefficients are summed (player plays twice). If only one fixture is confirmed and a DGW is predicted, the extra fixture is scaled by prediction confidence.
 
-**BGW handling:** No confirmed fixtures + predicted blank: coefficient = `raw_quality × (1 - confidence)`. No prediction data: assumes a normal single fixture.
-
-BGW/DGW confidence scaling applied from `fixture_predictions.yaml`.
+**BGW handling:** No confirmed fixtures + predicted blank: coefficient = `raw_quality × (1 - confidence)`. No prediction data: assumes a normal single fixture. Confidence values sourced from `fixture_predictions.yaml`.
 
 ### ILP Solver
 
 Solves 7 independent ILPs (one per valid formation). The objective function maximises the weighted sum of expected contributions across all players and gameweeks:
 
 ```
-max Σ(gw) Σ(player) discount[gw] × coeff[player][gw] × (starter[p] + bench_discount × bench[p])
+max Σ(gw) Σ(p) discount[gw] × coeff[p][gw] × (starter[p] + bench_discount[p] × bench[p])
 ```
 
 Where:
-- **`coeff[player][gw]`** = raw_quality × fixture_modifier (horizon >= 2), or raw single-GW score (horizon = 1)
+- **`coeff[p][gw]`** = raw_quality × fixture_modifier (horizon >= 2), or raw single-GW score (horizon = 1)
 - **`discount[gw]`** = temporal discount weight (see below)
-- **`bench_discount`** = 0.15 (outfield), 0.05 (GK), or 1.0 (Bench Boost GW) - the fractional value of a bench player relative to a starter
+- **`bench_discount[p]`** = fractional value of a bench player relative to a starter: 0.15 (outfield), 0.05 (GK), or 1.0 (Bench Boost GW)
 
 **Temporal discounting:** Geometric decay based on free transfers: `rate = 1.0 - 0.04 × FTs`, weights = `rate^gw_offset`. More FTs means more ability to course-correct later, so future gameweeks are discounted more aggressively. 0 FTs = flat weights (equal value across the horizon). 3 FTs: weights decay as [1.0, 0.88, 0.77, 0.68, ...].
 
@@ -231,10 +229,19 @@ Constraints:
 
 Picks the formation with the best objective value. Captain schedule derived post-hoc (highest-coefficient starter per GW).
 
+### Free Hit: Two-Pass Solve
+
+When all bench discount values are near zero (Free Hit regime, `--bench-discount`), the solver runs a two-pass **lexicographic solve** per formation:
+
+1. **Solve 1** maximises total quality (starters + bench) - the standard objective.
+2. **Solve 2** locks starter quality from Solve 1 as a floor constraint and adds a bench cost penalty (`-0.1 × price × bench_assignment`), pushing the solver toward cheaper bench players.
+
+If Solve 2 maintains starter quality, it wins; otherwise the solver falls back to Solve 1. The rationale: on Free Hit you're transferring out anyway, so the bench should be as cheap as possible without degrading starters.
+
 ### Chip-Aware Modes
 
-- **`--bench-discount`** (Free Hit): Bench players discounted to near-zero value. Triggers a **two-pass lexicographic solve** per formation: Solve 1 maximises total quality (starters + bench). Solve 2 locks starter quality as a floor and adds a bench cost penalty (`-0.1 × price × bench_assignment`), pushing the solver toward cheaper bench players while maintaining starter quality. On Free Hit you're transferring out anyway, so the bench should be as cheap as possible without degrading starters.
-- **`--bench-boost-gw`**: Bench discount overridden to 1.0 for the specified GW
+- **`--bench-discount`**: Override bench discount values per position. Near-zero values trigger the two-pass Free Hit solve above.
+- **`--bench-boost-gw`**: Bench discount overridden to 1.0 for the specified GW (bench players valued equally to starters).
 - **`--sell-prices`**: Uses actual sell prices for owned players in budget constraint. Budget auto-computed as `sum(sell_prices) + bank` unless `--budget` is explicitly set. Accepts JSON from `fpl squad sell-prices --format json`.
 
 ## Early-Season Confidence (GW1-10)
