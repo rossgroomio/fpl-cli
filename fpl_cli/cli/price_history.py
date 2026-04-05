@@ -33,7 +33,14 @@ def price_history_command(
     position: str | None, team: str | None, sort_field: str,
     limit: int, last_n: int | None, reverse: bool, output_format: str,
 ):
-    """Show price trajectory and transfer momentum."""
+    """Show price trajectory and transfer momentum.
+
+    \b
+    Examples:
+      fpl price-history --sort transfer_momentum --limit 10
+      fpl price-history --position FWD --last-n 6 --sort price_slope
+      fpl price-history --team ARS --format json
+    """
     from fpl_cli.api.fpl import FPLClient
     from fpl_cli.api.vaastav import VaastavClient
 

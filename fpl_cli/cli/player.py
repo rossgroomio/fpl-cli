@@ -44,6 +44,12 @@ def player_command(
 
     NAME can be a player name, numeric ID, or 'Name (TEAM)' to disambiguate.
     Shows up to 5 matches when multiple players match.
+
+    \b
+    Examples:
+      fpl player Salah
+      fpl player "Palmer (CHE)" --fixtures --detail
+      fpl player Haaland --understat --history --format json
     """
     from fpl_cli.api.fpl import FPLClient
     from fpl_cli.api.fpl_draft import FPLDraftClient

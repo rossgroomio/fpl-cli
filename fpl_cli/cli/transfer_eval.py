@@ -32,6 +32,11 @@ def transfer_eval_command(ctx: click.Context, out_player: str, in_players: str, 
     Players can be specified by name, player ID, or 'Name (TEAM)' to
     disambiguate (e.g. 'João Pedro (CHE)'). All candidates must match the
     OUT player's position.
+
+    \b
+    Examples:
+      fpl transfer-eval --out Watkins --in "Isak,Havertz,Cunha"
+      fpl transfer-eval --out "João Pedro (CHE)" --in "Palmer,Nkunku" --format json
     """
     from fpl_cli.agents.analysis.transfer_eval import TransferEvalAgent
     from fpl_cli.api.fpl import FPLClient

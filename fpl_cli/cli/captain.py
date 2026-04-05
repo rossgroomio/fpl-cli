@@ -18,7 +18,13 @@ from fpl_cli.cli._json import emit_json, emit_json_error, json_output_mode, outp
 @click.option("--global", "-g", "global_mode", is_flag=True, help="Show global captain picks instead of your squad")
 @output_format_option
 def captain_command(global_mode: bool, output_format: str):
-    """Analyze and rank captain options for next gameweek."""
+    """Analyze and rank captain options for next gameweek.
+
+    \b
+    Examples:
+      fpl captain
+      fpl captain --global --format json
+    """
     from fpl_cli.agents.analysis.captain import CaptainAgent
 
     settings = load_settings()

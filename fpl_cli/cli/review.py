@@ -78,7 +78,15 @@ def review_command(
     gameweek: int | None, save: bool, output: str | None,
     summarise: bool, debug: bool, dry_run: bool, compare_recs: bool,
 ):
-    """Review a completed gameweek - your squad's performance and league standings."""
+    """Review a completed gameweek - your squad's performance and league standings.
+
+    \b
+    Examples:
+      fpl review
+      fpl review --gameweek 30 --save
+      fpl review --summarise --compare-recs
+      fpl review --dry-run --debug
+    """
     from fpl_cli.agents.orchestration.report import ReportAgent
     from fpl_cli.api.fpl import FPLClient
 

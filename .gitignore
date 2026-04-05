@@ -67,6 +67,7 @@ docs/brainstorms/
 docs/solutions/
 docs/ideas/
 docs/positioning.md
+docs/releasing.md
 
 # Local todos
 todos/
@@ -78,7 +79,12 @@ todos/
 .claude/handoffs/
 
 # Untracked skills
+.agents/skills/create-readme/
 .agents/skills/documentation-writer/
+.agents/skills/release-notes/
+.agents/skills/release/
+.agents/skills/senior-data-scientist/
+.agents/skills/data-scientist/
 
 # OS
 .DS_Store

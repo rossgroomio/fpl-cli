@@ -52,7 +52,14 @@ def stats_command(
     limit: int, min_minutes: int, available_only: bool, reverse: bool,
     value: bool, output_format: str,
 ):
-    """List players with filtering and sorting."""
+    """List players with filtering and sorting.
+
+    \b
+    Examples:
+      fpl stats --position MID --sort form --limit 10
+      fpl stats --team ARS --min-minutes 500 --sort expected_goal_involvements
+      fpl stats --value --sort value_score --available-only --format json
+    """
     from fpl_cli.api.fpl import FPLClient
     from fpl_cli.models.player import Player, PlayerPosition, PlayerStatus
 

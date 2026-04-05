@@ -104,6 +104,12 @@ def fdr_command(
     Position filter shows easy runs for specific positions:
     - atk: Best fixtures for attackers (FWD/MID) based on opponent's defensive weakness
     - def: Best fixtures for defenders (DEF/GK) based on opponent's offensive threat
+
+    \b
+    Examples:
+      fpl fdr --position atk --from-gw 32 --to-gw 38
+      fpl fdr --blanks --my-squad
+      fpl fdr --mode opponent --format json
     """
     from fpl_cli.api.fpl import FPLClient
 
