@@ -85,6 +85,6 @@ todos/
 .agents/skills/release/
 .agents/skills/senior-data-scientist/
 .agents/skills/data-scientist/
-
+.agents/skills/fpl-data-scientist/
 # OS
 .DS_Store
