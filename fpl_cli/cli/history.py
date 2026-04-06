@@ -19,9 +19,9 @@ def history_command(output_format: str):
 
     async def _run():
         from fpl_cli.api.fpl import FPLClient
-        from fpl_cli.api.vaastav import VaastavClient
+        from fpl_cli.api.vaastav import VaastavClient, make_vaastav_fetcher
 
-        async with FPLClient() as fpl_client, VaastavClient() as vaastav:
+        async with FPLClient() as fpl_client, make_vaastav_fetcher() as fetcher, VaastavClient(fetcher) as vaastav:
             try:
                 current_players = await fpl_client.get_players()
                 current_codes = {p.code for p in current_players}

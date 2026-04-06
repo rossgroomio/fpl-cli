@@ -6,17 +6,31 @@ import csv
 import io
 import logging
 from dataclasses import dataclass, field
+from datetime import timedelta
 from typing import ClassVar, TypedDict
 
 import httpx
 
+from fpl_cli.api.dataset_fetcher import DatasetFetcher
 from fpl_cli.models.player import POSITION_MAP
 from fpl_cli.season import vaastav_season_range
 
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master/data"
+DEFAULT_TTL = timedelta(hours=4)
 MOMENTUM_WINDOW = 5
+
+
+def make_vaastav_fetcher(ttl: timedelta = DEFAULT_TTL) -> DatasetFetcher:
+    """Create a DatasetFetcher configured for the vaastav GitHub dataset."""
+    from fpl_cli.paths import user_cache_dir
+
+    return DatasetFetcher(
+        base_url=BASE_URL,
+        cache_dir=user_cache_dir() / "datasets",
+        ttl=ttl,
+    )
 
 
 @dataclass
@@ -93,20 +107,22 @@ class VaastavClient:
     # Mirrors TeamRatingsService._refreshed_this_session pattern.
     _session_profiles: ClassVar[dict[int, PlayerProfile] | None] = None
 
+    # Historical seasons are effectively immutable after the season ends.
+    HISTORICAL_TTL = timedelta(days=30)
+
     def __init__(
         self,
+        fetcher: DatasetFetcher,
         seasons: tuple[str, ...] | None = None,
-        timeout: float = 30.0,
     ):
+        self.fetcher = fetcher
         self.seasons = seasons if seasons is not None else vaastav_season_range()
-        self.timeout = timeout
         self._season_data: dict[str, list[SeasonHistory]] | None = None
         self._gw_rows: dict[int, dict[int, _GwRow]] | None = None
-        self._http = httpx.AsyncClient(base_url=BASE_URL, timeout=self.timeout)
 
     async def close(self) -> None:
-        """Close the underlying HTTP client."""
-        await self._http.aclose()
+        """Close the underlying fetcher."""
+        await self.fetcher.close()
 
     async def __aenter__(self):
         return self
@@ -114,18 +130,22 @@ class VaastavClient:
     async def __aexit__(self, *exc):
         await self.close()
 
+    def _is_historical(self, season: str) -> bool:
+        """A season is historical if it's not the latest configured season."""
+        return season != self.seasons[-1]
+
     async def _fetch_csv(
         self, season: str,
     ) -> tuple[str, list[SeasonHistory]]:
+        ttl = self.HISTORICAL_TTL if self._is_historical(season) else None
         try:
-            response = await self._http.get(f"/{season}/players_raw.csv")
-            response.raise_for_status()
+            text = await self.fetcher.get(f"{season}/players_raw.csv", ttl=ttl)
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 404:
                 logger.warning("Vaastav data not available for season %s", season)
                 return season, []
             raise
-        return season, self._parse_csv(response.text, season)
+        return season, self._parse_csv(text, season)
 
     async def _fetch_season_data(self) -> dict[str, list[SeasonHistory]]:
         """Fetch and parse players_raw.csv for all configured seasons.
@@ -288,9 +308,7 @@ class VaastavClient:
 
     async def _fetch_gw_csv(self) -> str:
         season = self.seasons[-1]
-        resp = await self._http.get(f"/{season}/gws/merged_gw.csv")
-        resp.raise_for_status()
-        return resp.text
+        return await self.fetcher.get(f"{season}/gws/merged_gw.csv")
 
     def _parse_gw_rows(self, text: str) -> dict[int, dict[int, _GwRow]]:
         """Parse merged_gw.csv into grouped rows, deduplicating DGW fixtures."""

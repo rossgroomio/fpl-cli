@@ -147,11 +147,9 @@ def player_command(
                 async def _fetch_understat(pid: int, us_id: int, us_client):
                     return pid, await us_client.get_player(us_id)
 
-                async def _fetch_history(pid: int, code: int):
-                    from fpl_cli.api.vaastav import VaastavClient
+                async def _fetch_history(pid: int, code: int, vaastav):
                     try:
-                        async with VaastavClient() as vaastav:
-                            return pid, await vaastav.get_player_history(code)
+                        return pid, await vaastav.get_player_history(code)
                     except httpx.HTTPStatusError as exc:  # noqa: BLE001 — graceful degradation
                         if exc.response.status_code == 429:
                             return pid, "rate_limited"
@@ -169,19 +167,27 @@ def player_command(
                     tasks.extend(_fetch_detail(p.id) for p in display)
                 else:
                     tasks.extend(_fetch_detail(p.id) for p in display if p.id in scored_pids)
+                shared_fetcher = None
                 if history:
-                    tasks.extend(_fetch_history(p.id, p.code) for p in display)
+                    from fpl_cli.api.vaastav import VaastavClient, make_vaastav_fetcher
+                    shared_fetcher = make_vaastav_fetcher()
+                    shared_vaastav = VaastavClient(shared_fetcher)
+                    tasks.extend(_fetch_history(p.id, p.code, shared_vaastav) for p in display)
 
                 # Understat detail needs a single shared client
-                if understat and us_matches:
-                    async with UnderstatClient() as us_detail_client:
-                        us_tasks = [
-                            _fetch_understat(pid, us["id"], us_detail_client)
-                            for pid, us in us_matches.items()
-                        ]
-                        results = await asyncio.gather(*tasks, *us_tasks, return_exceptions=True)
-                else:
-                    results = await asyncio.gather(*tasks, return_exceptions=True) if tasks else []
+                try:
+                    if understat and us_matches:
+                        async with UnderstatClient() as us_detail_client:
+                            us_tasks = [
+                                _fetch_understat(pid, us["id"], us_detail_client)
+                                for pid, us in us_matches.items()
+                            ]
+                            results = await asyncio.gather(*tasks, *us_tasks, return_exceptions=True)
+                    else:
+                        results = await asyncio.gather(*tasks, return_exceptions=True) if tasks else []
+                finally:
+                    if shared_fetcher is not None:
+                        await shared_fetcher.close()
 
                 for r in results:
                     if isinstance(r, BaseException):

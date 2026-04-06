@@ -42,12 +42,12 @@ def price_history_command(
       fpl price-history --team ARS --format json
     """
     from fpl_cli.api.fpl import FPLClient
-    from fpl_cli.api.vaastav import VaastavClient
+    from fpl_cli.api.vaastav import VaastavClient, make_vaastav_fetcher
 
     async def _run():
         import httpx
 
-        async with FPLClient() as fpl_client, VaastavClient() as vaastav:
+        async with FPLClient() as fpl_client, make_vaastav_fetcher() as fetcher, VaastavClient(fetcher) as vaastav:
             # Fetch all data in parallel - GW trends and FPL metadata are independent
             try:
                 current_gw_data, gw_trends, all_players, all_teams = (
