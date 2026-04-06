@@ -90,12 +90,15 @@ async def test_expired_cache_sends_if_none_match_304(fetcher, cache_dir):
     os.utime(cached, (old_time, old_time))
 
     # Mock 304 response
-    respx.get(f"{BASE_URL}/test.csv").mock(
+    route = respx.get(f"{BASE_URL}/test.csv").mock(
         return_value=httpx.Response(304),
     )
 
     result = await fetcher.get("test.csv")
     assert result == SAMPLE_CSV
+    # Verify If-None-Match header was sent with the stored ETag
+    request = route.calls.last.request
+    assert request.headers["If-None-Match"] == '"v1"'
 
 
 @respx.mock
@@ -319,6 +322,39 @@ async def test_transport_error_no_cache_raises(fetcher):
 
     with pytest.raises(httpx.ConnectError):
         await fetcher.get("test.csv")
+
+
+@respx.mock
+async def test_404_no_cache_raises(fetcher):
+    """First fetch returning 404 raises immediately (no cache to fall back on)."""
+    respx.get(f"{BASE_URL}/test.csv").mock(
+        return_value=httpx.Response(404, text="not found"),
+    )
+    with pytest.raises(httpx.HTTPStatusError) as exc_info:
+        await fetcher.get("test.csv")
+    assert exc_info.value.response.status_code == 404
+
+
+@respx.mock
+async def test_500_no_cache_raises(fetcher):
+    """First fetch returning 500 raises immediately (no cache to fall back on)."""
+    respx.get(f"{BASE_URL}/test.csv").mock(
+        return_value=httpx.Response(500, text="server error"),
+    )
+    with pytest.raises(httpx.HTTPStatusError) as exc_info:
+        await fetcher.get("test.csv")
+    assert exc_info.value.response.status_code == 500
+
+
+@respx.mock
+async def test_429_no_cache_raises(fetcher):
+    """First fetch returning 429 raises immediately (no cache to fall back on)."""
+    respx.get(f"{BASE_URL}/test.csv").mock(
+        return_value=httpx.Response(429, text="rate limited"),
+    )
+    with pytest.raises(httpx.HTTPStatusError) as exc_info:
+        await fetcher.get("test.csv")
+    assert exc_info.value.response.status_code == 429
 
 
 # --- Integration ---

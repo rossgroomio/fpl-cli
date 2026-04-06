@@ -61,9 +61,9 @@ class DatasetFetcher:
             httpx.HTTPStatusError: On 4xx responses (always) or 5xx/429 when no cache exists.
             httpx.TransportError: On network failures when no cache exists.
         """
-        effective_ttl = ttl or self.ttl
+        effective_ttl = self.ttl if ttl is None else ttl
         cache_path = self.cache_dir / path
-        etag_path = Path(str(cache_path) + ".etag")
+        etag_path = cache_path.parent / (cache_path.name + ".etag")
 
         # TTL gate: serve from disk if fresh
         if cache_path.is_file():
@@ -88,8 +88,13 @@ class DatasetFetcher:
         if response.status_code == 304:
             if cache_path.is_file():
                 return cache_path.read_text(encoding="utf-8")
-            # Cache file deleted externally; re-fetch unconditionally
-            response = await self._http.get(f"/{path}")
+            # Cache file deleted externally; re-fetch unconditionally (no ETag)
+            try:
+                response = await self._http.get(f"/{path}")
+            except httpx.TransportError:
+                raise
+            if response.status_code == 304:
+                response.raise_for_status()
 
         # 4xx (except 429): always propagate
         if 400 <= response.status_code < 500 and response.status_code != 429:
@@ -111,16 +116,22 @@ class DatasetFetcher:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Atomic write for the data file
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            dir=cache_path.parent,
-            suffix=".tmp",
-            delete=False,
-        ) as f:
-            f.write(text)
-            tmp_path = f.name
-        os.replace(tmp_path, cache_path)
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=cache_path.parent,
+                suffix=".tmp",
+                delete=False,
+            ) as f:
+                f.write(text)
+                tmp_path = f.name
+            os.replace(tmp_path, cache_path)
+        except OSError:
+            if tmp_path and os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+            raise
 
         # ETag sidecar (non-atomic; corruption just means an unconditional GET next time)
         etag = response.headers.get("ETag")
