@@ -53,6 +53,7 @@ For a complete inventory of CLI commands, analysis agents, and skills with JSON 
 - Draft format has no captains, no budget, no transfers, no chips - uses waivers for player acquisition
 
 ## Rules
+- Verify before asserting: don't state that a command, file, function, or data point exists without checking first (read the file, run the command, grep for the name)
 - Find-and-replace: review each replacement in context - don't blindly replace substrings in unrelated identifiers
 - Removing/replacing X: new implementation must have zero dependencies on X
 - Repeated convention violations: suggest a ruff lint rule to enforce automatically

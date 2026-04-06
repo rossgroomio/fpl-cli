@@ -1,11 +1,16 @@
 """Tests for VaastavClient CSV fetching and parsing."""
 from __future__ import annotations
 
+from datetime import timedelta
+from pathlib import Path
+from unittest.mock import MagicMock
+
 import pytest
 import respx
 from httpx import Response
 
-from fpl_cli.api.vaastav import GwTrendProfile, VaastavClient
+from fpl_cli.api.dataset_fetcher import DatasetFetcher
+from fpl_cli.api.vaastav import BASE_URL, GwTrendProfile, VaastavClient
 
 
 @pytest.fixture(autouse=True)
@@ -14,6 +19,20 @@ def _reset_vaastav_session_cache():
     VaastavClient._session_profiles = None
     yield
     VaastavClient._session_profiles = None
+
+
+def _make_fetcher(tmp_path: Path) -> DatasetFetcher:
+    """DatasetFetcher configured for vaastav tests with tmp_path cache."""
+    return DatasetFetcher(
+        base_url=BASE_URL,
+        cache_dir=tmp_path / "cache",
+        ttl=timedelta(hours=4),
+    )
+
+
+def _stub_fetcher() -> MagicMock:
+    """MagicMock fetcher for tests that never call get()."""
+    return MagicMock(spec=DatasetFetcher)
 
 
 # Minimal CSV that mirrors players_raw.csv columns we use
@@ -38,12 +57,12 @@ BASE = VaastavClient.BASE_URL
 
 class TestVaastavClientParsing:
     @respx.mock
-    async def test_fetch_season_data_parses_csv(self):
+    async def test_fetch_season_data_parses_csv(self, tmp_path):
         """CSV rows are parsed into SeasonHistory dataclasses."""
         respx.get(f"{BASE}/2024-25/players_raw.csv").mock(
             return_value=Response(200, text=SAMPLE_CSV)
         )
-        async with VaastavClient(seasons=("2024-25",)) as client:
+        async with VaastavClient(_make_fetcher(tmp_path), seasons=("2024-25",)) as client:
             data = await client._fetch_season_data()
 
         assert "2024-25" in data
@@ -63,7 +82,7 @@ class TestVaastavClientParsing:
         assert salah.season == "2024-25"
 
     @respx.mock
-    async def test_position_mapping(self):
+    async def test_position_mapping(self, tmp_path):
         """element_type integers map to position strings."""
         csv = (
             "code,web_name,element_type,team,total_points,minutes,starts,"
@@ -77,18 +96,18 @@ class TestVaastavClientParsing:
         respx.get(f"{BASE}/2024-25/players_raw.csv").mock(
             return_value=Response(200, text=csv)
         )
-        async with VaastavClient(seasons=("2024-25",)) as client:
+        async with VaastavClient(_make_fetcher(tmp_path), seasons=("2024-25",)) as client:
             data = await client._fetch_season_data()
         positions = {r.element_code: r.position for r in data["2024-25"]}
         assert positions == {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
 
     @respx.mock
-    async def test_in_memory_cache(self):
+    async def test_in_memory_cache(self, tmp_path):
         """Second call uses cached data, no extra HTTP request."""
         route = respx.get(f"{BASE}/2024-25/players_raw.csv").mock(
             return_value=Response(200, text=SAMPLE_CSV)
         )
-        async with VaastavClient(seasons=("2024-25",)) as client:
+        async with VaastavClient(_make_fetcher(tmp_path), seasons=("2024-25",)) as client:
             await client._fetch_season_data()
             await client._fetch_season_data()
         assert route.call_count == 1
@@ -97,7 +116,7 @@ class TestVaastavClientParsing:
 class TestSignalComputation:
     def test_per_90(self):
         """Per-90 calculation matches UnderstatClient convention."""
-        client = VaastavClient()
+        client = VaastavClient(_stub_fetcher())
         assert client._per_90(10.0, 900) == 1.0
         assert client._per_90(5.0, 1800) == 0.25
         assert client._per_90(0.0, 900) == 0.0
@@ -105,31 +124,31 @@ class TestSignalComputation:
 
     def test_compute_trend_three_points(self):
         """Least-squares trend with 3 data points."""
-        client = VaastavClient()
+        client = VaastavClient(_stub_fetcher())
         assert client._compute_trend([4.0, 5.0, 6.0]) == pytest.approx(1.0)
 
     def test_compute_trend_two_points(self):
         """Trend with 2 data points is just the difference."""
-        client = VaastavClient()
+        client = VaastavClient(_stub_fetcher())
         assert client._compute_trend([4.0, 6.0]) == pytest.approx(2.0)
 
     def test_compute_trend_one_point(self):
         """Single data point has no trend."""
-        client = VaastavClient()
+        client = VaastavClient(_stub_fetcher())
         assert client._compute_trend([4.0]) == 0.0
 
     def test_compute_trend_empty(self):
         """Empty list has no trend."""
-        client = VaastavClient()
+        client = VaastavClient(_stub_fetcher())
         assert client._compute_trend([]) == 0.0
 
     def test_compute_trend_declining(self):
         """Declining values produce negative trend."""
-        client = VaastavClient()
+        client = VaastavClient(_stub_fetcher())
         assert client._compute_trend([6.0, 4.0, 2.0]) == pytest.approx(-2.0)
 
     @respx.mock
-    async def test_build_profile_computes_signals(self):
+    async def test_build_profile_computes_signals(self, tmp_path):
         """PlayerProfile has correct computed signals."""
         respx.get(f"{BASE}/2023-24/players_raw.csv").mock(
             return_value=Response(200, text=SAMPLE_CSV_SEASON2)
@@ -137,7 +156,7 @@ class TestSignalComputation:
         respx.get(f"{BASE}/2024-25/players_raw.csv").mock(
             return_value=Response(200, text=SAMPLE_CSV)
         )
-        async with VaastavClient(seasons=("2023-24", "2024-25")) as client:
+        async with VaastavClient(_make_fetcher(tmp_path), seasons=("2023-24", "2024-25")) as client:
             profile = await client.get_player_history(80201)
 
         assert profile is not None
@@ -153,7 +172,7 @@ class TestSignalComputation:
         assert len(profile.minutes_per_start) == 2
 
     @respx.mock
-    async def test_season_below_450_minutes_excluded_from_trend(self):
+    async def test_season_below_450_minutes_excluded_from_trend(self, tmp_path):
         """Seasons with <450 minutes are excluded from signal computation."""
         low_minutes_csv = (
             "code,web_name,element_type,team,total_points,minutes,starts,"
@@ -167,7 +186,7 @@ class TestSignalComputation:
         respx.get(f"{BASE}/2024-25/players_raw.csv").mock(
             return_value=Response(200, text=SAMPLE_CSV)
         )
-        async with VaastavClient(seasons=("2023-24", "2024-25")) as client:
+        async with VaastavClient(_make_fetcher(tmp_path), seasons=("2023-24", "2024-25")) as client:
             profile = await client.get_player_history(80201)
 
         assert profile is not None
@@ -175,7 +194,7 @@ class TestSignalComputation:
         assert len(profile.pts_per_90) == 1  # only 1 qualifying season
 
     @respx.mock
-    async def test_xgi_trend_none_with_insufficient_data(self):
+    async def test_xgi_trend_none_with_insufficient_data(self, tmp_path):
         """xgi_per_90_trend is None when <2 seasons have xG data."""
         no_xg_csv = (
             "code,web_name,element_type,team,total_points,minutes,starts,"
@@ -189,7 +208,7 @@ class TestSignalComputation:
         respx.get(f"{BASE}/2024-25/players_raw.csv").mock(
             return_value=Response(200, text=SAMPLE_CSV)
         )
-        async with VaastavClient(seasons=("2023-24", "2024-25")) as client:
+        async with VaastavClient(_make_fetcher(tmp_path), seasons=("2023-24", "2024-25")) as client:
             profile = await client.get_player_history(80201)
 
         assert profile is not None
@@ -197,22 +216,22 @@ class TestSignalComputation:
         assert profile.xgi_per_90_trend is None
 
     @respx.mock
-    async def test_player_not_found(self):
+    async def test_player_not_found(self, tmp_path):
         """Unknown element_code returns None."""
         respx.get(f"{BASE}/2024-25/players_raw.csv").mock(
             return_value=Response(200, text=SAMPLE_CSV)
         )
-        async with VaastavClient(seasons=("2024-25",)) as client:
+        async with VaastavClient(_make_fetcher(tmp_path), seasons=("2024-25",)) as client:
             profile = await client.get_player_history(99999)
         assert profile is None
 
     @respx.mock
-    async def test_get_all_player_histories(self):
+    async def test_get_all_player_histories(self, tmp_path):
         """Batch returns profiles keyed by element_code."""
         respx.get(f"{BASE}/2024-25/players_raw.csv").mock(
             return_value=Response(200, text=SAMPLE_CSV)
         )
-        async with VaastavClient(seasons=("2024-25",)) as client:
+        async with VaastavClient(_make_fetcher(tmp_path), seasons=("2024-25",)) as client:
             profiles = await client.get_all_player_histories()
 
         assert 80201 in profiles  # Salah
@@ -264,12 +283,12 @@ SAMPLE_JOINER_CSV = _GW_HEADER + (
 
 class TestGwTrendParsing:
     @respx.mock
-    async def test_basic_parsing(self):
+    async def test_basic_parsing(self, tmp_path):
         """merged_gw.csv rows are parsed into GwTrendProfile objects."""
         respx.get(f"{BASE}/2025-26/gws/merged_gw.csv").mock(
             return_value=Response(200, text=SAMPLE_GW_CSV)
         )
-        async with VaastavClient(seasons=("2025-26",)) as client:
+        async with VaastavClient(_make_fetcher(tmp_path), seasons=("2025-26",)) as client:
             trends = await client.get_gw_trends()
 
         assert len(trends) == 2
@@ -289,12 +308,12 @@ class TestGwTrendParsing:
         assert salah.first_gw == 1
 
     @respx.mock
-    async def test_haaland_falling_price(self):
+    async def test_haaland_falling_price(self, tmp_path):
         """Player with falling price has negative price_change and slope."""
         respx.get(f"{BASE}/2025-26/gws/merged_gw.csv").mock(
             return_value=Response(200, text=SAMPLE_GW_CSV)
         )
-        async with VaastavClient(seasons=("2025-26",)) as client:
+        async with VaastavClient(_make_fetcher(tmp_path), seasons=("2025-26",)) as client:
             trends = await client.get_gw_trends()
 
         haaland = trends[200]
@@ -304,12 +323,12 @@ class TestGwTrendParsing:
         assert haaland.price_slope < 0
 
     @respx.mock
-    async def test_dgw_deduplication(self):
+    async def test_dgw_deduplication(self, tmp_path):
         """DGW rows are deduplicated - only one entry per round per player."""
         respx.get(f"{BASE}/2025-26/gws/merged_gw.csv").mock(
             return_value=Response(200, text=SAMPLE_DGW_CSV)
         )
-        async with VaastavClient(seasons=("2025-26",)) as client:
+        async with VaastavClient(_make_fetcher(tmp_path), seasons=("2025-26",)) as client:
             trends = await client.get_gw_trends()
 
         salah = trends[100]
@@ -319,12 +338,12 @@ class TestGwTrendParsing:
         assert salah.latest_gw == 4
 
     @respx.mock
-    async def test_mid_season_joiner(self):
+    async def test_mid_season_joiner(self, tmp_path):
         """Player joining mid-season uses first available GW as baseline."""
         respx.get(f"{BASE}/2025-26/gws/merged_gw.csv").mock(
             return_value=Response(200, text=SAMPLE_JOINER_CSV)
         )
-        async with VaastavClient(seasons=("2025-26",)) as client:
+        async with VaastavClient(_make_fetcher(tmp_path), seasons=("2025-26",)) as client:
             trends = await client.get_gw_trends()
 
         newguy = trends[300]
@@ -336,35 +355,35 @@ class TestGwTrendParsing:
         assert newguy.first_gw == 3
 
     @respx.mock
-    async def test_in_memory_cache(self):
+    async def test_in_memory_cache(self, tmp_path):
         """Second call returns cached data without extra HTTP request."""
         route = respx.get(f"{BASE}/2025-26/gws/merged_gw.csv").mock(
             return_value=Response(200, text=SAMPLE_GW_CSV)
         )
-        async with VaastavClient(seasons=("2025-26",)) as client:
+        async with VaastavClient(_make_fetcher(tmp_path), seasons=("2025-26",)) as client:
             await client.get_gw_trends()
             await client.get_gw_trends()
         assert route.call_count == 1
 
     @respx.mock
-    async def test_empty_csv(self):
+    async def test_empty_csv(self, tmp_path):
         """Empty CSV (header only) returns empty dict."""
         respx.get(f"{BASE}/2025-26/gws/merged_gw.csv").mock(
             return_value=Response(200, text=_GW_HEADER)
         )
-        async with VaastavClient(seasons=("2025-26",)) as client:
+        async with VaastavClient(_make_fetcher(tmp_path), seasons=("2025-26",)) as client:
             trends = await client.get_gw_trends()
         assert trends == {}
 
 
 class TestGwTrendComputation:
     @respx.mock
-    async def test_transfer_momentum_uses_recent_window(self):
+    async def test_transfer_momentum_uses_recent_window(self, tmp_path):
         """Transfer momentum sums transfers_balance over last MOMENTUM_WINDOW GWs."""
         respx.get(f"{BASE}/2025-26/gws/merged_gw.csv").mock(
             return_value=Response(200, text=SAMPLE_GW_CSV)
         )
-        async with VaastavClient(seasons=("2025-26",)) as client:
+        async with VaastavClient(_make_fetcher(tmp_path), seasons=("2025-26",)) as client:
             trends = await client.get_gw_trends()
 
         salah = trends[100]
@@ -372,12 +391,12 @@ class TestGwTrendComputation:
         assert salah.transfer_momentum == 170000
 
     @respx.mock
-    async def test_transfer_momentum_clamped_to_gw_count(self):
+    async def test_transfer_momentum_clamped_to_gw_count(self, tmp_path):
         """When fewer GWs than MOMENTUM_WINDOW, uses all available."""
         respx.get(f"{BASE}/2025-26/gws/merged_gw.csv").mock(
             return_value=Response(200, text=SAMPLE_JOINER_CSV)
         )
-        async with VaastavClient(seasons=("2025-26",)) as client:
+        async with VaastavClient(_make_fetcher(tmp_path), seasons=("2025-26",)) as client:
             trends = await client.get_gw_trends()
 
         newguy = trends[300]
@@ -385,12 +404,12 @@ class TestGwTrendComputation:
         assert newguy.transfer_momentum == 70000
 
     @respx.mock
-    async def test_price_acceleration_rising(self):
+    async def test_price_acceleration_rising(self, tmp_path):
         """Salah's price rises steadily - acceleration should be near zero."""
         respx.get(f"{BASE}/2025-26/gws/merged_gw.csv").mock(
             return_value=Response(200, text=SAMPLE_GW_CSV)
         )
-        async with VaastavClient(seasons=("2025-26",)) as client:
+        async with VaastavClient(_make_fetcher(tmp_path), seasons=("2025-26",)) as client:
             trends = await client.get_gw_trends()
 
         salah = trends[100]
@@ -398,25 +417,25 @@ class TestGwTrendComputation:
         assert abs(salah.price_acceleration) < 0.5
 
     @respx.mock
-    async def test_price_slope_positive_for_rising_player(self):
+    async def test_price_slope_positive_for_rising_player(self, tmp_path):
         """Salah's price slope is positive."""
         respx.get(f"{BASE}/2025-26/gws/merged_gw.csv").mock(
             return_value=Response(200, text=SAMPLE_GW_CSV)
         )
-        async with VaastavClient(seasons=("2025-26",)) as client:
+        async with VaastavClient(_make_fetcher(tmp_path), seasons=("2025-26",)) as client:
             trends = await client.get_gw_trends()
         assert trends[100].price_slope > 0
 
     def test_compute_acceleration_needs_4_points(self):
         """Acceleration returns 0 with fewer than 4 data points."""
-        client = VaastavClient()
+        client = VaastavClient(_stub_fetcher())
         assert client._compute_acceleration([1.0, 2.0, 3.0]) == 0.0
         assert client._compute_acceleration([1.0, 2.0]) == 0.0
         assert client._compute_acceleration([]) == 0.0
 
     def test_compute_acceleration_detects_speedup(self):
         """Acceleration is positive when rate of change increases."""
-        client = VaastavClient()
+        client = VaastavClient(_stub_fetcher())
         # Early: flat (100,100). Recent: rising (100,102,104,106)
         values = [100.0, 100.0, 100.0, 102.0, 104.0, 106.0]
         accel = client._compute_acceleration(values)
@@ -424,7 +443,7 @@ class TestGwTrendComputation:
 
     def test_compute_acceleration_detects_slowdown(self):
         """Acceleration is negative when rate of change decreases."""
-        client = VaastavClient()
+        client = VaastavClient(_stub_fetcher())
         # Early: rising fast (100,104,108). Recent: flat (108,108,108)
         values = [100.0, 104.0, 108.0, 108.0, 108.0, 108.0]
         accel = client._compute_acceleration(values)
@@ -432,26 +451,26 @@ class TestGwTrendComputation:
 
     def test_compute_acceleration_quadratic_input(self):
         """Clearly quadratic input produces a meaningfully positive coefficient."""
-        client = VaastavClient()
+        client = VaastavClient(_stub_fetcher())
         values = [100.0, 100.0, 101.0, 103.0, 106.0, 110.0]
         accel = client._compute_acceleration(values)
         assert accel > 0.1
 
     def test_compute_acceleration_constant_values(self):
         """Constant values return near-zero, not an error."""
-        client = VaastavClient()
+        client = VaastavClient(_stub_fetcher())
         accel = client._compute_acceleration([100.0, 100.0, 100.0, 100.0])
         assert accel == pytest.approx(0, abs=0.1)
 
 
 class TestGwTrendWindowing:
     @respx.mock
-    async def test_last_n_slices_to_recent_gws(self):
+    async def test_last_n_slices_to_recent_gws(self, tmp_path):
         """last_n=4 on 6-GW data returns last 4 GWs only."""
         respx.get(f"{BASE}/2025-26/gws/merged_gw.csv").mock(
             return_value=Response(200, text=SAMPLE_GW_CSV)
         )
-        async with VaastavClient(seasons=("2025-26",)) as client:
+        async with VaastavClient(_make_fetcher(tmp_path), seasons=("2025-26",)) as client:
             trends = await client.get_gw_trends(last_n=4)
 
         salah = trends[100]
@@ -463,12 +482,12 @@ class TestGwTrendWindowing:
         assert salah.price_change == 3
 
     @respx.mock
-    async def test_last_n_momentum_uses_full_window(self):
+    async def test_last_n_momentum_uses_full_window(self, tmp_path):
         """When windowed, momentum sums all balances in the window."""
         respx.get(f"{BASE}/2025-26/gws/merged_gw.csv").mock(
             return_value=Response(200, text=SAMPLE_GW_CSV)
         )
-        async with VaastavClient(seasons=("2025-26",)) as client:
+        async with VaastavClient(_make_fetcher(tmp_path), seasons=("2025-26",)) as client:
             trends = await client.get_gw_trends(last_n=4)
 
         salah = trends[100]
@@ -476,12 +495,12 @@ class TestGwTrendWindowing:
         assert salah.transfer_momentum == 130000
 
     @respx.mock
-    async def test_last_n_larger_than_available_clamps(self):
+    async def test_last_n_larger_than_available_clamps(self, tmp_path):
         """last_n larger than available GWs uses all available."""
         respx.get(f"{BASE}/2025-26/gws/merged_gw.csv").mock(
             return_value=Response(200, text=SAMPLE_JOINER_CSV)
         )
-        async with VaastavClient(seasons=("2025-26",)) as client:
+        async with VaastavClient(_make_fetcher(tmp_path), seasons=("2025-26",)) as client:
             trends = await client.get_gw_trends(last_n=10)
 
         newguy = trends[300]
@@ -489,12 +508,12 @@ class TestGwTrendWindowing:
         assert newguy.first_gw == 3
 
     @respx.mock
-    async def test_different_last_n_reuses_cached_rows(self):
+    async def test_different_last_n_reuses_cached_rows(self, tmp_path):
         """Two calls with different last_n values make only one HTTP request."""
         route = respx.get(f"{BASE}/2025-26/gws/merged_gw.csv").mock(
             return_value=Response(200, text=SAMPLE_GW_CSV)
         )
-        async with VaastavClient(seasons=("2025-26",)) as client:
+        async with VaastavClient(_make_fetcher(tmp_path), seasons=("2025-26",)) as client:
             full = await client.get_gw_trends()
             windowed = await client.get_gw_trends(last_n=4)
 
@@ -503,12 +522,12 @@ class TestGwTrendWindowing:
         assert windowed[100].gw_count == 4
 
     @respx.mock
-    async def test_no_last_n_preserves_momentum_window(self):
+    async def test_no_last_n_preserves_momentum_window(self, tmp_path):
         """Without last_n, momentum uses the hardcoded MOMENTUM_WINDOW."""
         respx.get(f"{BASE}/2025-26/gws/merged_gw.csv").mock(
             return_value=Response(200, text=SAMPLE_GW_CSV)
         )
-        async with VaastavClient(seasons=("2025-26",)) as client:
+        async with VaastavClient(_make_fetcher(tmp_path), seasons=("2025-26",)) as client:
             trends = await client.get_gw_trends()
 
         salah = trends[100]

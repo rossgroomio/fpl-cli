@@ -416,7 +416,7 @@ async def prepare_scoring_data(
 
     if include_prior and players is not None:
         try:
-            from fpl_cli.api.vaastav import VaastavClient
+            from fpl_cli.api.vaastav import VaastavClient, make_vaastav_fetcher
             from fpl_cli.services.player_prior import generate_player_prior, load_cached_priors
 
             cached = load_cached_priors(next_gw_id)
@@ -426,7 +426,7 @@ async def prepare_scoring_data(
                 from fpl_cli.season import vaastav_season
                 from fpl_cli.services.player_prior import _save_prior_cache
 
-                async with VaastavClient() as vaastav:
+                async with make_vaastav_fetcher() as fetcher, VaastavClient(fetcher) as vaastav:
                     profiles = await vaastav.get_all_player_histories()
                 player_priors = generate_player_prior(profiles, players, next_gw_id)
                 _save_prior_cache(player_priors, vaastav_season(), next_gw_id)

@@ -504,10 +504,11 @@ fpl_cli/
 │   ├── action/                   # WaiverAgent
 │   └── orchestration/            # ReportAgent
 ├── api/
+│   ├── dataset_fetcher.py         # DatasetFetcher (disk cache with ETag/TTL for GitHub CSVs)
 │   ├── fpl.py                    # FPLClient (main API, caches bootstrap-static)
 │   ├── fpl_draft.py              # FPLDraftClient
 │   ├── understat.py              # UnderstatClient + match_fpl_to_understat()
-│   ├── vaastav.py                # VaastavClient (historical seasons, GW trends)
+│   ├── vaastav.py                # VaastavClient (historical seasons, GW trends via DatasetFetcher)
 │   ├── football_data.py          # FootballDataClient (standings, match results)
 │   └── providers/                # LLM provider abstraction
 │       ├── _models.py            # LLMResponse, TokenUsage, ProviderError

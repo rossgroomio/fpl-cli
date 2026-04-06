@@ -3,6 +3,7 @@
 Three categories:
 - SHIPPED_CONFIG_DIR / TEMPLATE_DIR: read-only data shipped inside the package
 - user_config_dir() / user_data_dir(): writable dirs via platformdirs (lazy, cached)
+- user_cache_dir(): cache dir via platformdirs (lazy, cached, disposable)
 
 Every module that needs config, data, or templates should import from here.
 """
@@ -58,6 +59,26 @@ def user_config_dir() -> Path:
         from platformdirs import user_config_path
 
         p = user_config_path("fpl-cli", appauthor=False, ensure_exists=True)
+    p.mkdir(parents=True, exist_ok=True)
+    if os.name != "nt":
+        p.chmod(0o700)
+    return p
+
+
+@functools.lru_cache(maxsize=1)
+def user_cache_dir() -> Path:
+    """Disposable cache directory (platformdirs). Respects FPL_CLI_CACHE_DIR env var.
+
+    Cached after first call. Tests that change FPL_CLI_CACHE_DIR must call
+    user_cache_dir.cache_clear() first (handled by the autouse fixture in conftest.py).
+    """
+    env = os.environ.get("FPL_CLI_CACHE_DIR")
+    if env:
+        p = Path(env).expanduser().resolve()
+    else:
+        from platformdirs import user_cache_path
+
+        p = user_cache_path("fpl-cli", appauthor=False, ensure_exists=True)
     p.mkdir(parents=True, exist_ok=True)
     if os.name != "nt":
         p.chmod(0o700)
