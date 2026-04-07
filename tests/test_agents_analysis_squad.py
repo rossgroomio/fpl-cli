@@ -524,6 +524,113 @@ class TestSquadAnalyzerAgentRecommendations:
         assert len(premium_recs) == 1
 
 
+class TestRollingValueRecommendations:
+    """Tests for rolling_pts_per_m underperformer detection."""
+
+    @staticmethod
+    def _make_history(pts_list: list[int], price: int = 60) -> dict[int, list[dict]]:
+        """Build player_histories dict for player id=1."""
+        return {1: [
+            {"round": 20 + i, "minutes": 90, "total_points": pts, "fixture": 100 + i}
+            for i, pts in enumerate(pts_list)
+        ]}
+
+    def test_low_rolling_value_flagged(self):
+        agent = SquadAnalyzerAgent()
+        player = make_player(
+            id=1, web_name="Fader", now_cost=60,
+            position=PlayerPosition.MIDFIELDER, minutes=900,
+        )
+        # 5 fixtures at 2pts each: avg=2, price=6.0m, rolling=2/6=0.33 < 0.4
+        histories = self._make_history([2, 2, 2, 2, 2])
+        recs = agent._generate_recommendations(
+            [player], {}, [], {"team_coverage": {}, "players_by_team": {}}, "classic",
+            player_histories=histories,
+        )
+        rolling_recs = [r for r in recs if r["type"] == "recent_underperformer"]
+        assert len(rolling_recs) == 1
+        assert "Fader" in rolling_recs[0]["message"]
+
+    def test_adequate_rolling_value_not_flagged(self):
+        agent = SquadAnalyzerAgent()
+        player = make_player(
+            id=1, web_name="Steady", now_cost=60,
+            position=PlayerPosition.MIDFIELDER, minutes=900,
+        )
+        # 5 fixtures at 5pts each: avg=5, price=6.0m, rolling=5/6=0.83 >= 0.4
+        histories = self._make_history([5, 5, 5, 5, 5])
+        recs = agent._generate_recommendations(
+            [player], {}, [], {"team_coverage": {}, "players_by_team": {}}, "classic",
+            player_histories=histories,
+        )
+        rolling_recs = [r for r in recs if r["type"] == "recent_underperformer"]
+        assert len(rolling_recs) == 0
+
+    def test_null_rolling_not_flagged(self):
+        """Player with <3 qualifying fixtures not flagged."""
+        agent = SquadAnalyzerAgent()
+        player = make_player(
+            id=1, web_name="NewGuy", now_cost=60,
+            position=PlayerPosition.MIDFIELDER, minutes=100,
+        )
+        histories = self._make_history([6, 8])  # only 2 fixtures
+        recs = agent._generate_recommendations(
+            [player], {}, [], {"team_coverage": {}, "players_by_team": {}}, "classic",
+            player_histories=histories,
+        )
+        rolling_recs = [r for r in recs if r["type"] == "recent_underperformer"]
+        assert len(rolling_recs) == 0
+
+    def test_draft_format_skips_rolling(self):
+        agent = SquadAnalyzerAgent()
+        player = make_player(
+            id=1, web_name="DraftPlayer", now_cost=60,
+            position=PlayerPosition.MIDFIELDER, minutes=900,
+        )
+        histories = self._make_history([2, 2, 2, 2, 2])
+        recs = agent._generate_recommendations(
+            [player], {}, [], {"team_coverage": {}, "players_by_team": {}}, "draft",
+            player_histories=histories,
+        )
+        rolling_recs = [r for r in recs if r["type"] == "recent_underperformer"]
+        assert len(rolling_recs) == 0
+
+    def test_both_season_and_rolling_flags_coexist(self):
+        """Player can have both season and rolling underperformer flags."""
+        agent = SquadAnalyzerAgent()
+        player = make_player(
+            id=1, web_name="DoubleTrouble", now_cost=65, minutes=900,
+            form=4.0, value_season=1.5, position=PlayerPosition.MIDFIELDER,
+        )
+        histories = self._make_history([2, 2, 2, 2, 2], price=65)
+        recs = agent._generate_recommendations(
+            [player], {}, [], {"team_coverage": {}, "players_by_team": {}}, "classic",
+            player_histories=histories,
+        )
+        mid_price_recs = [r for r in recs if r["type"] == "mid_price_underperforming"]
+        rolling_recs = [r for r in recs if r["type"] == "recent_underperformer"]
+        assert len(mid_price_recs) == 1
+        assert len(rolling_recs) == 1
+
+    def test_good_season_poor_rolling(self):
+        """Player with good season value but poor rolling value is caught."""
+        agent = SquadAnalyzerAgent()
+        player = make_player(
+            id=1, web_name="FallenStar", now_cost=60, minutes=900,
+            form=4.0, value_season=5.0, position=PlayerPosition.MIDFIELDER,
+        )
+        # Good season but recent form collapsed
+        histories = self._make_history([1, 1, 2, 1, 2], price=60)
+        recs = agent._generate_recommendations(
+            [player], {}, [], {"team_coverage": {}, "players_by_team": {}}, "classic",
+            player_histories=histories,
+        )
+        mid_price_recs = [r for r in recs if r["type"] == "mid_price_underperforming"]
+        rolling_recs = [r for r in recs if r["type"] == "recent_underperformer"]
+        assert len(mid_price_recs) == 0  # good season value
+        assert len(rolling_recs) == 1  # caught by rolling check
+
+
 # ==============================================================================
 # BENCH ORDER AGENT TESTS
 # ==============================================================================

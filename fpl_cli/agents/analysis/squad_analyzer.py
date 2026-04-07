@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections import defaultdict
 from typing import Any
 
 from fpl_cli.agents.base import Agent, AgentResult, AgentStatus
 from fpl_cli.agents.common import get_actual_squad_picks
 from fpl_cli.api.fpl import FPLClient
+from fpl_cli.services.player_scoring import compute_rolling_pts_per_m
 
 
 class SquadAnalyzerAgent(Agent):
@@ -100,6 +102,15 @@ class SquadAnalyzerAgent(Agent):
 
             self.log(f"Analyzing squad of {len(team_players)} players")
 
+            # Fetch player histories for rolling value (classic only)
+            player_histories: dict[int, list[dict]] = {}
+            if fmt == "classic":
+                tasks = [self.client.get_player_detail(p.id) for p in team_players]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                for p, result in zip(team_players, results):
+                    if isinstance(result, dict):
+                        player_histories[p.id] = result.get("history", [])
+
             # Run analysis
             squad_overview = self._analyze_squad_overview(team_players, team_map, manager_entry, fmt)
             position_analysis = self._analyze_positions(team_players, team_map)
@@ -107,6 +118,7 @@ class SquadAnalyzerAgent(Agent):
             form_analysis = self._analyze_form(team_players, team_map)
             recommendations = self._generate_recommendations(
                 team_players, position_analysis, injury_risks, squad_overview, fmt,
+                player_histories=player_histories,
             )
 
             self.log_success("Squad analysis complete")
@@ -274,6 +286,8 @@ class SquadAnalyzerAgent(Agent):
         injury_risks: list[dict[str, Any]],
         squad_overview: dict[str, Any] | None = None,
         fmt: str = "classic",
+        *,
+        player_histories: dict[int, list[dict]] | None = None,
     ) -> list[dict[str, Any]]:
         """Generate recommendations for team improvement."""
         recommendations = []
@@ -359,9 +373,24 @@ class SquadAnalyzerAgent(Agent):
                 recommendations.append({
                     "priority": "low",
                     "type": "mid_price_underperforming",
-                    "message": f"Mid-price underperformer: {p.web_name} (£{p.price}m) — {p.value_season:.1f} pts/£m",
+                    "message": f"Mid-price underperformer: {p.web_name} (£{p.price}m) — {p.value_season:.1f} Pts/£m",
                     "suggestion": "Consider replacing with a better-value option in this price range",
                 })
+
+        # Rolling value check (classic only)
+        if fmt == "classic" and player_histories:
+            from fpl_cli.cli._context import load_settings as _load_settings
+            rw = int(_load_settings().get("rolling_window", 5))
+            for p in team_players:
+                hist = player_histories.get(p.id, [])
+                rv, _ = compute_rolling_pts_per_m(hist, float(p.now_cost), rw)
+                if rv is not None and rv < 0.4:
+                    recommendations.append({
+                        "priority": "low",
+                        "type": "recent_underperformer",
+                        "message": f"Recent underperformer: {p.web_name} (£{p.price}m) — {rv:.2f} rolling Pts/£m",
+                        "suggestion": "Form has dropped recently — monitor or consider replacing",
+                    })
 
         # Sort by priority
         priority_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}

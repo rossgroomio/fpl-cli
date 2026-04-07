@@ -126,7 +126,7 @@ flowchart TB
     stats --> fpl_client
     scout --> LLMProviders
     captain --> fpl_client
-    squad_analyzer --> fpl_client
+    squad_analyzer -->|"get_player_detail()"| fpl_client
     bench --> fpl_client
     starting_xi --> fpl_client
     transfer_eval --> fpl_client

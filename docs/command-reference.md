@@ -276,11 +276,14 @@ fpl stats -p FWD -s form --available-only            # FWDs by form, excl. unava
 fpl stats --format json -p MID -s expected_goal_involvements  # JSON for agents
 fpl stats --value -p MID                             # MIDs ranked by value/£m
 fpl stats --value --sort quality_score -p FWD        # FWDs by absolute quality
+fpl stats --value --window 3 -p MID                  # Rolling pts/£m over last 3 qualifying GWs
 ```
 
 Filter by position (`-p`), team (`-t`), minimum minutes (`--min-minutes`). Sort by any stat field (`-s`). Use `-r` for ascending. Limit with `-n`. Use `--available-only` / `-a` to exclude injured, suspended, and unavailable players (doubtful kept).
 
-**Value columns** (`--value` / `-v`): Adds Quality (0-100) and Value/£m columns. Default sort switches to `value_score` when active. Requires Understat data - players without a match show `-`. Use with a position filter for best results; scoring all players takes longer. `quality_score` and `value_score` are also available as `--sort` fields when `--value` is active. Requires `custom_analysis: true` - silently ignored when off. See [Quality & Value Scores](custom-analysis.md#quality--value-scores) for methodology.
+**Value columns** (`--value` / `-v`): Adds Quality (0-100), Quality/£m, and Rolling pts/£m columns. Default sort switches to `quality_per_m` when active. Requires Understat data - players without a match show `-`. Use with a position filter for best results; scoring all players takes longer. `quality_score`, `quality_per_m`, `pts_per_m`, `form_per_m`, and `rolling_pts_per_m` are available as `--sort` fields when `--value` is active. Requires `custom_analysis: true` - silently ignored when off. See [Quality & Value Scores](custom-analysis.md#quality--value-scores) for methodology.
+
+**Rolling window** (`--window` / `-w`): Sets the lookback window for `rolling_pts_per_m` (range 3-10, default from config). Only applies when `--value` is active. `rolling_pts_per_m` measures points per million over the last N qualifying fixtures (minutes > 0), capturing recent form-adjusted value.
 
 ### Historical Data
 
@@ -350,9 +353,12 @@ When a player has an Understat match, `fpl player` computes and displays two add
 | Field | Description |
 |---|---|
 | **quality_score** | 0-100 normalised player output quality. See [Quality & Value Scores](custom-analysis.md#quality--value-scores). |
-| **value_score** | `quality_score / price` (per £m). Within-position budget efficiency. See [Quality & Value Scores](custom-analysis.md#quality--value-scores). |
+| **quality_per_m** | `quality_score / price` (per £m). Within-position budget efficiency. See [Quality & Value Scores](custom-analysis.md#quality--value-scores). |
+| **pts_per_m** | `total_points / price` (per £m). Raw season points efficiency. |
+| **form_per_m** | `form / price` (per £m). Recent form efficiency. |
+| **rolling_pts_per_m** | Points per £m over the last N qualifying fixtures (configurable via `--window`). Captures recent form-adjusted value. |
 
-Both fields are `null` when no Understat match exists. In JSON output (`--format json`), they appear under `info.quality_score` and `info.value_score`. In the Rich panel, they appear as `Quality: 85 | Value: 11.3/£m`.
+`quality_score` and `quality_per_m` are `null` when no Understat match exists. In JSON output (`--format json`), they appear under `info.quality_score` and `info.quality_per_m`. In the Rich panel, they appear as `Quality: 85 | Value: 11.3/£m`.
 
 #### Player Detail Flags
 

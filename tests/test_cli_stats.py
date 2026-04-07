@@ -185,7 +185,7 @@ class TestPlayersSort:
             make_player(id=2, web_name="Pricey", team_id=1, value_form=0.5),
         ]
         client = _make_client(players, _sample_teams())
-        result = _run(["--sort", "value_form"], client=client)
+        result = _run(["--sort", "form_per_m"], client=client)
         assert result.exit_code == 0, result.output
         assert result.output.index("Bargain") < result.output.index("Pricey")
 
@@ -238,7 +238,7 @@ class TestPlayersJsonFormat:
         required = {"id", "name", "team", "position", "price", "total_points", "minutes",
                     "goals_scored", "assists", "expected_goal_involvements", "form",
                     "defensive_contribution", "defensive_contribution_per_90",
-                    "value_form", "value_season"}
+                    "form_per_m", "pts_per_m"}
         assert required.issubset(data["data"][0].keys())
 
     def test_json_position_filter(self):
@@ -356,14 +356,14 @@ class TestStatsValueFlag:
         result = _run_with_value()
         assert result.exit_code == 0, result.output
         assert "Quality" in result.output
-        assert "Value/£m" in result.output
+        assert "Quality/£m" in result.output
 
-    def test_value_flag_default_sort_is_value_score(self):
-        """When --value active and no --sort, default sort is value_score descending."""
+    def test_value_flag_default_sort_is_quality_per_m(self):
+        """When --value active and no --sort, default sort is quality_per_m descending."""
         result = _run_with_value()
         assert result.exit_code == 0, result.output
-        # Sort arrow should be on Value/£m column
-        assert "Value/£m" in result.output
+        # Sort arrow should be on Quality/£m column
+        assert "Quality/£m" in result.output
         assert "▼" in result.output
 
     def test_value_flag_explicit_sort_overrides_default(self):
@@ -385,7 +385,7 @@ class TestStatsValueFlag:
         data = json.loads(result.output)
         record = data["data"][0]
         assert "quality_score" in record
-        assert "value_score" in record
+        assert "quality_per_m" in record
 
     def test_no_value_flag_json_excludes_scores(self):
         client = _make_value_client(_sample_players(), _sample_teams())
@@ -394,14 +394,14 @@ class TestStatsValueFlag:
         data = json.loads(result.output)
         record = data["data"][0]
         assert "quality_score" not in record
-        assert "value_score" not in record
+        assert "quality_per_m" not in record
 
     def test_no_value_flag_table_has_no_quality_column(self):
         client = _make_client(_sample_players(), _sample_teams())
         result = _run(client=client)
         assert result.exit_code == 0, result.output
         assert "Quality" not in result.output
-        assert "Value/£m" not in result.output
+        assert "Quality/£m" not in result.output
 
 
 class TestStatsValueNullScores:
@@ -444,10 +444,10 @@ class TestStatsValueNullScores:
         data = json.loads(result.output)
         record = data["data"][0]
         assert record["quality_score"] is None
-        assert record["value_score"] is None
+        assert record["quality_per_m"] is None
 
     def test_null_scored_players_sort_to_bottom(self):
-        """When sorting by value_score, null-scored players appear last."""
+        """When sorting by quality_per_m, null-scored players appear last."""
         # Create one matched and one unmatched player
         players = [
             make_player(id=1, web_name="Scored", team_id=1, position=PlayerPosition.MIDFIELDER,
@@ -483,7 +483,7 @@ class TestStatsValueNullScores:
         unscored_pos = result.output.index("Unscored")
         assert scored_pos < unscored_pos
 
-    def test_price_zero_gives_null_value_score(self):
+    def test_price_zero_gives_null_quality_per_m(self):
         players = [
             make_player(id=1, web_name="Free", team_id=1, position=PlayerPosition.MIDFIELDER,
                         total_points=100, minutes=1000, now_cost=0),
@@ -494,7 +494,7 @@ class TestStatsValueNullScores:
         data = json.loads(result.output)
         record = data["data"][0]
         assert record["quality_score"] is not None
-        assert record["value_score"] is None
+        assert record["quality_per_m"] is None
 
 
 class TestStatsValuePositionWeights:
@@ -520,12 +520,12 @@ class TestStatsValuePositionWeights:
 class TestStatsValueSortReverse:
     """Tests for --reverse with value sort fields."""
 
-    def test_value_score_reverse_sorts_ascending(self):
-        """--sort value_score --reverse puts lowest value first."""
-        result = _run_with_value(["--sort", "value_score", "--reverse", "--format", "json"])
+    def test_quality_per_m_reverse_sorts_ascending(self):
+        """--sort quality_per_m --reverse puts lowest value first."""
+        result = _run_with_value(["--sort", "quality_per_m", "--reverse", "--format", "json"])
         assert result.exit_code == 0, result.output
         data = json.loads(result.output)
-        scores = [r["value_score"] for r in data["data"] if r["value_score"] is not None]
+        scores = [r["quality_per_m"] for r in data["data"] if r["quality_per_m"] is not None]
         assert scores == sorted(scores)
 
     def test_null_scored_players_sort_to_bottom_with_reverse(self):
@@ -564,9 +564,9 @@ class TestStatsValueSortReverse:
 class TestStatsValueSortValidation:
     """Tests for --sort value fields requiring --value flag."""
 
-    def test_sort_value_score_without_value_flag_errors(self):
+    def test_sort_quality_per_m_without_value_flag_errors(self):
         client = _make_client(_sample_players(), _sample_teams())
-        result = _run(["--sort", "value_score"], client=client, custom_analysis=True)
+        result = _run(["--sort", "quality_per_m"], client=client, custom_analysis=True)
         assert result.exit_code != 0
         assert "--value" in result.output
 
@@ -667,7 +667,7 @@ class TestStatsCustomAnalysisToggle:
         result = _run(["--value"], client=client, custom_analysis=False)
         assert result.exit_code == 0, result.output
         assert "Quality" not in result.output
-        assert "Value/£m" not in result.output
+        assert "Quality/£m" not in result.output
         # Players still appear
         assert "Salah" in result.output
 
@@ -675,7 +675,7 @@ class TestStatsCustomAnalysisToggle:
         """When toggle on, --value flag shows quality/value columns (no regression)."""
         result = _run_with_value()
         assert result.exit_code == 0, result.output
-        assert "Quality" in result.output or "Value/£m" in result.output
+        assert "Quality" in result.output or "Quality/£m" in result.output
 
     def test_toggle_off_sort_quality_score_shows_custom_analysis_message(self):
         """When toggle off, --sort quality_score shows custom analysis required message."""
@@ -685,10 +685,10 @@ class TestStatsCustomAnalysisToggle:
         assert "custom analysis" in result.output.lower()
         assert "fpl init" in result.output
 
-    def test_toggle_off_sort_value_score_shows_custom_analysis_message(self):
-        """When toggle off, --sort value_score shows custom analysis required message."""
+    def test_toggle_off_sort_quality_per_m_shows_custom_analysis_message(self):
+        """When toggle off, --sort quality_per_m shows custom analysis required message."""
         client = _make_client(_sample_players(), _sample_teams())
-        result = _run(["--sort", "value_score"], client=client, custom_analysis=False)
+        result = _run(["--sort", "quality_per_m"], client=client, custom_analysis=False)
         assert result.exit_code != 0
         assert "custom analysis" in result.output.lower()
         assert "fpl init" in result.output
@@ -701,5 +701,116 @@ class TestStatsCustomAnalysisToggle:
         data = json.loads(result.output)
         record = data["data"][0]
         assert "quality_score" not in record
-        assert "value_score" not in record
+        assert "quality_per_m" not in record
         assert data["metadata"]["custom_analysis"] is False
+
+
+# ---------------------------------------------------------------------------
+# rolling_pts_per_m tests
+# ---------------------------------------------------------------------------
+
+def _make_history(rounds_pts: list[tuple[int, int]], fixture_start: int = 100) -> list[dict]:
+    """Build fixture history from (round, total_points) tuples; all 90 mins."""
+    return [
+        {"round": r, "minutes": 90, "total_points": pts, "fixture": fixture_start + i}
+        for i, (r, pts) in enumerate(rounds_pts)
+    ]
+
+
+def _make_rolling_client(players=None, teams=None, history=None):
+    """FPLClient mock with player history for rolling tests."""
+    client = _make_value_client(players, teams)
+    if history is not None:
+        client.get_player_detail = AsyncMock(return_value={"history": history})
+    return client
+
+
+class TestStatsRollingPtsPerM:
+    """Tests for rolling_pts_per_m in --value output."""
+
+    def test_value_flag_includes_rolling_column(self):
+        history = _make_history([(20, 6), (21, 8), (22, 4), (23, 10), (24, 7)])
+        client = _make_rolling_client(_sample_players(), _sample_teams(), history)
+        result = _run_with_value(client=client)
+        assert result.exit_code == 0, result.output
+        assert "Rolling" in result.output and "Pts/£m" in result.output
+
+    def test_value_json_includes_rolling_fields(self):
+        history = _make_history([(20, 6), (21, 8), (22, 4), (23, 10), (24, 7)])
+        client = _make_rolling_client(_sample_players(), _sample_teams(), history)
+        result = _run_with_value(["--format", "json"], client=client)
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        record = data["data"][0]
+        assert "rolling_pts_per_m" in record
+        assert "rolling_fixture_count" in record
+
+    def test_sort_by_rolling_descending(self):
+        history = _make_history([(20, 6), (21, 8), (22, 4), (23, 10), (24, 7)])
+        client = _make_rolling_client(_sample_players(), _sample_teams(), history)
+        result = _run_with_value(["-s", "rolling_pts_per_m", "--format", "json"], client=client)
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        scores = [r["rolling_pts_per_m"] for r in data["data"] if r["rolling_pts_per_m"] is not None]
+        assert scores == sorted(scores, reverse=True)
+
+    def test_sort_rolling_reverse_ascending(self):
+        history = _make_history([(20, 6), (21, 8), (22, 4), (23, 10), (24, 7)])
+        client = _make_rolling_client(_sample_players(), _sample_teams(), history)
+        result = _run_with_value(["-s", "rolling_pts_per_m", "--reverse", "--format", "json"],
+                                 client=client)
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        scores = [r["rolling_pts_per_m"] for r in data["data"] if r["rolling_pts_per_m"] is not None]
+        assert scores == sorted(scores)
+
+    def test_window_flag_respected(self):
+        history = _make_history([(18, 2), (19, 3), (20, 4), (21, 5), (22, 6), (23, 7), (24, 8)])
+        client = _make_rolling_client(_sample_players(), _sample_teams(), history)
+        result = _run_with_value(["--window", "3", "--format", "json"], client=client)
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        record = data["data"][0]
+        assert record["rolling_fixture_count"] == 3
+
+    def test_asterisk_when_fewer_fixtures_than_window(self):
+        """Rolling value shows asterisk when fixture_count < window."""
+        history = _make_history([(22, 6), (23, 8), (24, 4)])  # only 3 qualifying
+        client = _make_rolling_client(_sample_players(), _sample_teams(), history)
+        result = _run_with_value(client=client)  # default window=5
+        assert result.exit_code == 0, result.output
+        # Should have asterisk suffix (3 fixtures < window of 5)
+        assert "*" in result.output
+
+    def test_no_asterisk_when_full_window(self):
+        history = _make_history([(20, 6), (21, 8), (22, 4), (23, 10), (24, 7)])
+        client = _make_rolling_client(_sample_players(), _sample_teams(), history)
+        result = _run_with_value(client=client)
+        assert result.exit_code == 0, result.output
+        # No asterisk when fixture count equals window
+        # Check the rolling column values don't have asterisks
+        # (Can't easily assert absence in Rich output without parsing, but check it rendered)
+        assert "Rolling" in result.output and "Pts/£m" in result.output
+
+    def test_null_rolling_for_sparse_history(self):
+        """Player with <3 qualifying fixtures gets null rolling value."""
+        history = _make_history([(23, 6), (24, 8)])  # only 2 qualifying
+        client = _make_rolling_client(_sample_players(), _sample_teams(), history)
+        result = _run_with_value(["--format", "json"], client=client)
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        record = data["data"][0]
+        assert record["rolling_pts_per_m"] is None
+        assert record["rolling_fixture_count"] is None
+
+    def test_sort_rolling_without_value_flag_errors(self):
+        client = _make_client(_sample_players(), _sample_teams())
+        result = _run(["--sort", "rolling_pts_per_m"], client=client, custom_analysis=True)
+        assert result.exit_code != 0
+        assert "--value" in result.output
+
+    def test_window_without_value_silently_ignored(self):
+        """--window without --value doesn't error."""
+        client = _make_client(_sample_players(), _sample_teams())
+        result = _run(["--window", "3"], client=client)
+        assert result.exit_code == 0, result.output

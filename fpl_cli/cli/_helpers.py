@@ -89,7 +89,8 @@ _PLAYERS_FLOAT_FIELDS = {
     "points_per_game", "form", "influence", "creativity", "threat", "ict_index",
     "expected_goals", "expected_assists", "expected_goal_involvements", "expected_goals_conceded",
     "selected_by_percent",
-    "defensive_contribution_per_90", "value_form", "value_season",
+    "defensive_contribution_per_90",
+    "form_per_m", "pts_per_m",
 }
 
 

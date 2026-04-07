@@ -41,7 +41,7 @@ When pulling data for comparison or field extraction, use `--format json` on com
   - `-d` GW-by-GW match performance (FPL API, always fresh)
   - `-u` Understat analysis (shot analysis + situation profile) - use with `-d` for MID/FWD
   - `-H` historical career arc - pts/90, xGI/90, cost trajectory across last 3 seasons
-- `fpl stats` - ranked player list; `-p MID` position filter, `-t ARS` team filter, `-s xGI` sort field (form, ICT, cost, transfers_in_event...), `--min-minutes` appearances filter, `--draft` adds ownership column, `-v` adds quality and value/£m columns (sorts by value by default - use with position filter for best results)
+- `fpl stats` - ranked player list; `-p MID` position filter, `-t ARS` team filter, `-s xGI` sort field (form, ICT, cost, transfers_in_event...), `--min-minutes` appearances filter, `--draft` adds ownership column, `-v` adds quality, quality/£m, and rolling pts/£m columns (sorts by quality/£m by default - use with position filter for best results), `-w N` rolling fixture window (3-10)
 - `fpl fixtures <gw>` - who plays who, difficulty
 - `fpl league` - standings context for risk calibration
 

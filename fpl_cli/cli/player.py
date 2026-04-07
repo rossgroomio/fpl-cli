@@ -15,7 +15,7 @@ from fpl_cli.cli._context import Format, console, error_console, get_format, is_
 from fpl_cli.cli._helpers import _fdr_style
 from fpl_cli.cli._json import emit_json, json_output_mode, output_format_option
 from fpl_cli.models.player import resolve_players
-from fpl_cli.services.player_scoring import compute_quality_value
+from fpl_cli.services.player_scoring import compute_quality_value, compute_rolling_pts_per_m
 
 if TYPE_CHECKING:
     from fpl_cli.api.fpl import FPLClient
@@ -205,8 +205,10 @@ def player_command(
 
                 # Compute quality and value scores (custom analysis only)
                 quality_scores: dict[int, int] = {}
-                value_scores: dict[int, float | None] = {}
+                quality_per_m_scores: dict[int, float | None] = {}
+                rolling_scores: dict[int, tuple[float | None, int | None]] = {}
                 custom_on = is_custom_analysis_enabled(settings)
+                rolling_window = int(settings.get("rolling_window", 5))
                 if custom_on:
                     for p in display:
                         us_match = us_matches.get(p.id)
@@ -221,7 +223,15 @@ def player_command(
                             gw_history=gw_hist or None,
                         )
                         quality_scores[p.id] = q
-                        value_scores[p.id] = v
+                        quality_per_m_scores[p.id] = v
+
+                # Rolling pts/£m from fetched detail history (independent of Understat)
+                for p in display:
+                    player_detail = detail_map.get(p.id)
+                    hist = player_detail.get("history", []) if player_detail else []
+                    rolling_scores[p.id] = compute_rolling_pts_per_m(
+                        hist, float(p.now_cost), rolling_window,
+                    )
 
                 # JSON output mode
                 if output_format == "json":
@@ -291,10 +301,14 @@ def player_command(
                             if custom_on:
                                 if p.id in quality_scores:
                                     player_dict["info"]["quality_score"] = quality_scores[p.id]
-                                    player_dict["info"]["value_score"] = value_scores[p.id]
+                                    player_dict["info"]["quality_per_m"] = quality_per_m_scores[p.id]
                                 else:
                                     player_dict["info"]["quality_score"] = None
-                                    player_dict["info"]["value_score"] = None
+                                    player_dict["info"]["quality_per_m"] = None
+
+                            rv, rc = rolling_scores.get(p.id, (None, None))
+                            player_dict["info"]["rolling_pts_per_m"] = rv
+                            player_dict["info"]["rolling_fixture_count"] = rc
 
                             if fixtures:
                                 player_dict["fixtures"] = await _get_fixture_run_data(
@@ -357,6 +371,12 @@ def player_command(
                         f"Team: {team_name} | Position: {p.position_name}",
                         f"Price: £{p.price:.1f}m | Form: {p.form:.1f}",
                         f"Points: {p.total_points} | PPG: {p.points_per_game:.1f}",
+                    ]
+                    rv, rc = rolling_scores.get(p.id, (None, None))
+                    if rv is not None:
+                        suffix = "*" if rc is not None and rc < rolling_window else ""
+                        lines.append(f"Rolling: {rv}{suffix}/£m")
+                    lines += [
                         f"Goals: {p.goals_scored} | Assists: {p.assists}",
                     ]
                     if is_gk:
@@ -374,9 +394,9 @@ def player_command(
                         lines.append(f"Selected by: {p.selected_by_percent}%")
                     if p.id in quality_scores:
                         q = quality_scores[p.id]
-                        v = value_scores[p.id]
+                        v = quality_per_m_scores[p.id]
                         v_str = f"{v}/£m" if v is not None else "N/A"
-                        lines.append(f"Quality: {q} | Value: {v_str}")
+                        lines.append(f"Quality: {q} | Quality/£m: {v_str}")
                     if draft_line:
                         lines.append(draft_line.rstrip("\n"))
                     lines.append(f"Status: {_status_display(p)}")

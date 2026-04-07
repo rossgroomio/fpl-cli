@@ -775,7 +775,7 @@ def compute_quality_value(
     gw_history: list[dict[str, Any]] | None = None,
     raw: bool = False,
 ) -> tuple[int, float | None] | float:
-    """Compute quality_score and value_score for a single player.
+    """Compute quality_score and quality_per_m for a single player.
 
     Shared by ``fpl player``, ``fpl stats --value``, and the squad
     allocator. Callers handle data fetching; this function owns
@@ -785,7 +785,7 @@ def compute_quality_value(
     (for the ILP solver which needs full precision).
 
     Returns:
-        Default: (quality_score 0-100, value_score or None if price is 0)
+        Default: (quality_score 0-100, quality_per_m or None if price is 0)
         raw=True: raw quality float
     """
     enrichment = build_scoring_enrichment(player, us_match, team_short, gw_history, next_gw_id)
@@ -799,8 +799,43 @@ def compute_quality_value(
     if raw:
         return raw_score
     q_score = normalise_score(raw_score, VALUE_CEILING)
-    v_score = round(q_score / player.price, 1) if player.price > 0 else None
-    return q_score, v_score
+    quality_per_m = round(q_score / player.price, 1) if player.price > 0 else None
+    return q_score, quality_per_m
+
+
+def compute_rolling_pts_per_m(
+    history: list[dict[str, Any]],
+    price: float,
+    window: int = 5,
+) -> tuple[float | None, int | None]:
+    """Rolling points per million from recent fixture history.
+
+    Args:
+        history: Player element-summary history entries (one per fixture).
+        price: Raw price in £0.1m units (e.g. 100 = £10.0m).
+        window: Number of qualifying fixtures to consider.
+
+    Returns:
+        (rolling_pts_per_m, fixture_count) — both None when fewer than 3
+        qualifying fixtures or price <= 0.
+    """
+    if price <= 0:
+        return None, None
+
+    qualifying = [
+        h for h in history
+        if h.get("minutes", 0) > 0
+    ]
+    qualifying.sort(key=lambda h: (-h.get("round", 0), -h.get("fixture", 0)))
+    qualifying = qualifying[:window]
+
+    if len(qualifying) < 3:
+        return None, None
+
+    n = len(qualifying)
+    total_pts = sum(h.get("total_points", 0) for h in qualifying)
+    price_m = price / 10
+    return round(total_pts / n / price_m, 2), n
 
 
 def shrink_scores(

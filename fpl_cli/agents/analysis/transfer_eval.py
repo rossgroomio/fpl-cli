@@ -18,6 +18,7 @@ from fpl_cli.services.player_scoring import (
     calculate_player_quality_score,
     calculate_target_score,
     compute_form_trajectory,
+    compute_rolling_pts_per_m,
     normalise_score,
     prepare_scoring_data,
 )
@@ -102,6 +103,9 @@ class TransferEvalAgent(Agent):
             next_gw_id = data.next_gw_id
 
             # Score all players on both horizons
+            from fpl_cli.cli._context import load_settings
+            rw = int(load_settings().get("rolling_window", 5))
+
             target_scored: list[dict[str, Any]] = []
             lineup_scored: list[dict[str, Any]] = []
 
@@ -113,6 +117,7 @@ class TransferEvalAgent(Agent):
                     understat_by_id=data.understat_lookup,
                     player_histories=data.player_histories,
                     player_priors=data.player_priors,
+                    rolling_window=rw,
                 )
                 target_scored.append(target_entry)
                 lineup_scored.append(lineup_entry)
@@ -171,6 +176,7 @@ class TransferEvalAgent(Agent):
         understat_by_id: dict[int, dict[str, float]] | None = None,
         player_histories: dict[int, list[dict[str, Any]]] | None = None,
         player_priors: dict[int, Any] | None = None,
+        rolling_window: int = 5,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Score a player on both horizons. Returns (target_entry, lineup_entry)."""
         team = context.team_map.get(player.team_id)
@@ -210,7 +216,7 @@ class TransferEvalAgent(Agent):
 
         # Quality score (value dimension): gated on Understat match
         quality_score: int | None = None
-        value_score: float | None = None
+        quality_per_m: float | None = None
         if has_understat:
             q_dict = evaluation.as_quality_dict()
             is_defensive = player.position_name in ("GK", "DEF")
@@ -219,7 +225,7 @@ class TransferEvalAgent(Agent):
             raw = calculate_player_quality_score(q_dict, weights, mins_factor)
             quality_score = normalise_score(raw, VALUE_CEILING)
             if identity.price > 0:
-                value_score = round(quality_score / identity.price, 1)
+                quality_per_m = round(quality_score / identity.price, 1)
 
         # Target score (outlook): returns int
         target = calculate_target_score(evaluation, next_gw_id=next_gw_id)
@@ -248,7 +254,19 @@ class TransferEvalAgent(Agent):
         target_entry["team_short"] = identity.team_short
         target_entry["price"] = identity.price
         target_entry["quality_score"] = quality_score
-        target_entry["value_score"] = value_score
+        target_entry["quality_per_m"] = quality_per_m
+
+        # Rolling pts/£m from history
+        rolling_val: float | None = None
+        rolling_count: int | None = None
+        if player_histories:
+            hist = player_histories.get(player.id, [])
+            if hist:
+                rolling_val, rolling_count = compute_rolling_pts_per_m(
+                    hist, float(player.now_cost), rolling_window,
+                )
+        target_entry["rolling_pts_per_m"] = rolling_val
+        target_entry["rolling_fixture_count"] = rolling_count
 
         return target_entry, lineup_entry
 
@@ -277,5 +295,7 @@ class TransferEvalAgent(Agent):
             "price": target_entry["price"],
             "excluded": lineup_entry.get("excluded", False),
             "quality_score": target_entry["quality_score"],
-            "value_score": target_entry["value_score"],
+            "quality_per_m": target_entry["quality_per_m"],
+            "rolling_pts_per_m": target_entry["rolling_pts_per_m"],
+            "rolling_fixture_count": target_entry["rolling_fixture_count"],
         }
