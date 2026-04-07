@@ -10,7 +10,7 @@ import csv
 import io
 import logging
 from datetime import timedelta
-from typing import ClassVar
+from typing import ClassVar, TypedDict
 
 import httpx
 
@@ -30,6 +30,19 @@ from fpl_cli.season import get_season_year, season_label
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://raw.githubusercontent.com/olbauday/FPL-Core-Insights/main/data"
+
+
+class MatchRecord(TypedDict):
+    """Per-player per-match record joined from playermatchstats.csv + matches.csv."""
+
+    player_id: int
+    gameweek: int
+    xg: float
+    penalties_scored: int
+    penalties_missed: int
+    minutes_played: int
+    opponent_elo: float
+    is_home: bool
 DEFAULT_TTL = timedelta(hours=4)
 
 # Core-Insights uses full position names; map to FPL abbreviations.
@@ -84,6 +97,7 @@ class CoreInsightsClient:
         self._player_lookup: dict[int, _PlayerLookup] | None = None
         self._season_data: dict[str, list[SeasonHistory]] | None = None
         self._gw_rows: dict[int, dict[int, _GwRow]] | None = None
+        self._match_records: dict[int, list[MatchRecord]] | None = None
         self._current_gw: int = 38
 
     async def close(self) -> None:
@@ -120,6 +134,88 @@ class CoreInsightsClient:
 
         self._player_lookup = lookup
         return lookup
+
+    # --- Match-level data ---
+
+    async def get_match_stats(self) -> dict[int, list[MatchRecord]]:
+        """Fetch playermatchstats.csv + matches.csv and return per-player match records.
+
+        Joins on match_id. Filters to tournament="prem". Opponent Elo and gameweek
+        are derived from matches.csv; player xG/penalty stats from playermatchstats.csv.
+        Returns dict keyed by FPL player element_id.
+        """
+        if self._match_records is not None:
+            return self._match_records
+
+        lookup = await self._fetch_player_lookup()
+
+        try:
+            stats_text, matches_text = await asyncio.gather(
+                self.fetcher.get(f"{self._ci_season}/playermatchstats.csv"),
+                self.fetcher.get(f"{self._ci_season}/matches.csv"),
+            )
+        except Exception as exc:  # noqa: BLE001 — graceful degradation: CI CSV unavailable
+            logger.warning("Failed to fetch match-level CSVs: %s", exc)
+            self._match_records = {}
+            return self._match_records
+
+        # Build match lookup: match_id -> match row (prem only)
+        matches: dict[str, dict[str, str]] = {}
+        for row in csv.DictReader(io.StringIO(matches_text)):
+            if row.get("tournament") != "prem":
+                continue
+            mid = row.get("match_id", "")
+            if mid:
+                matches[mid] = row
+
+        # Parse player match stats and join to matches
+        result: dict[int, list[MatchRecord]] = {}
+        for row in csv.DictReader(io.StringIO(stats_text)):
+            try:
+                pid = int(row["player_id"])
+                mid = row["match_id"]
+            except (ValueError, KeyError):
+                continue
+
+            match = matches.get(mid)
+            if match is None:
+                continue  # non-PL match or orphaned row
+
+            player = lookup.get(pid)
+            if player is None:
+                continue
+
+            try:
+                home_elo = float(match["home_team_elo"])
+                away_elo = float(match["away_team_elo"])
+                gameweek = int(match["gameweek"])
+                home_team_code = int(match["home_team"])
+            except (ValueError, KeyError):
+                continue
+
+            is_home = player.team_code == home_team_code
+            opponent_elo = away_elo if is_home else home_elo
+
+            try:
+                xg = float(row["xg"])
+                minutes_played = int(float(row["minutes_played"]))
+            except (ValueError, KeyError):
+                continue
+
+            record: MatchRecord = {
+                "player_id": pid,
+                "gameweek": gameweek,
+                "xg": xg,
+                "penalties_scored": int(float(row.get("penalties_scored") or 0)),
+                "penalties_missed": int(float(row.get("penalties_missed") or 0)),
+                "minutes_played": minutes_played,
+                "opponent_elo": opponent_elo,
+                "is_home": is_home,
+            }
+            result.setdefault(pid, []).append(record)
+
+        self._match_records = result
+        return result
 
     # --- Season aggregates ---
 
