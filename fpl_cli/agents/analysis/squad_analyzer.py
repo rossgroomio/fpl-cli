@@ -359,7 +359,7 @@ class SquadAnalyzerAgent(Agent):
                 recommendations.append({
                     "priority": "low",
                     "type": "mid_price_underperforming",
-                    "message": f"Mid-price underperformer: {p.web_name} (£{p.price}m) — {p.value_season:.1f} pts/£m",
+                    "message": f"Mid-price underperformer: {p.web_name} (£{p.price}m) — {p.value_season:.1f} Pts/£m",
                     "suggestion": "Consider replacing with a better-value option in this price range",
                 })
 

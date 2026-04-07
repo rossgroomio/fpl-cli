@@ -775,7 +775,7 @@ def compute_quality_value(
     gw_history: list[dict[str, Any]] | None = None,
     raw: bool = False,
 ) -> tuple[int, float | None] | float:
-    """Compute quality_score and value_score for a single player.
+    """Compute quality_score and quality_per_m for a single player.
 
     Shared by ``fpl player``, ``fpl stats --value``, and the squad
     allocator. Callers handle data fetching; this function owns
@@ -785,7 +785,7 @@ def compute_quality_value(
     (for the ILP solver which needs full precision).
 
     Returns:
-        Default: (quality_score 0-100, value_score or None if price is 0)
+        Default: (quality_score 0-100, quality_per_m or None if price is 0)
         raw=True: raw quality float
     """
     enrichment = build_scoring_enrichment(player, us_match, team_short, gw_history, next_gw_id)
@@ -799,8 +799,8 @@ def compute_quality_value(
     if raw:
         return raw_score
     q_score = normalise_score(raw_score, VALUE_CEILING)
-    v_score = round(q_score / player.price, 1) if player.price > 0 else None
-    return q_score, v_score
+    quality_per_m = round(q_score / player.price, 1) if player.price > 0 else None
+    return q_score, quality_per_m
 
 
 def shrink_scores(

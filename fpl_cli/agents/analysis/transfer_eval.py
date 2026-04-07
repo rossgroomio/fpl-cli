@@ -210,7 +210,7 @@ class TransferEvalAgent(Agent):
 
         # Quality score (value dimension): gated on Understat match
         quality_score: int | None = None
-        value_score: float | None = None
+        quality_per_m: float | None = None
         if has_understat:
             q_dict = evaluation.as_quality_dict()
             is_defensive = player.position_name in ("GK", "DEF")
@@ -219,7 +219,7 @@ class TransferEvalAgent(Agent):
             raw = calculate_player_quality_score(q_dict, weights, mins_factor)
             quality_score = normalise_score(raw, VALUE_CEILING)
             if identity.price > 0:
-                value_score = round(quality_score / identity.price, 1)
+                quality_per_m = round(quality_score / identity.price, 1)
 
         # Target score (outlook): returns int
         target = calculate_target_score(evaluation, next_gw_id=next_gw_id)
@@ -248,7 +248,7 @@ class TransferEvalAgent(Agent):
         target_entry["team_short"] = identity.team_short
         target_entry["price"] = identity.price
         target_entry["quality_score"] = quality_score
-        target_entry["value_score"] = value_score
+        target_entry["quality_per_m"] = quality_per_m
 
         return target_entry, lineup_entry
 
@@ -277,5 +277,5 @@ class TransferEvalAgent(Agent):
             "price": target_entry["price"],
             "excluded": lineup_entry.get("excluded", False),
             "quality_score": target_entry["quality_score"],
-            "value_score": target_entry["value_score"],
+            "quality_per_m": target_entry["quality_per_m"],
         }

@@ -205,7 +205,7 @@ def player_command(
 
                 # Compute quality and value scores (custom analysis only)
                 quality_scores: dict[int, int] = {}
-                value_scores: dict[int, float | None] = {}
+                quality_per_m_scores: dict[int, float | None] = {}
                 custom_on = is_custom_analysis_enabled(settings)
                 if custom_on:
                     for p in display:
@@ -221,7 +221,7 @@ def player_command(
                             gw_history=gw_hist or None,
                         )
                         quality_scores[p.id] = q
-                        value_scores[p.id] = v
+                        quality_per_m_scores[p.id] = v
 
                 # JSON output mode
                 if output_format == "json":
@@ -291,10 +291,10 @@ def player_command(
                             if custom_on:
                                 if p.id in quality_scores:
                                     player_dict["info"]["quality_score"] = quality_scores[p.id]
-                                    player_dict["info"]["value_score"] = value_scores[p.id]
+                                    player_dict["info"]["quality_per_m"] = quality_per_m_scores[p.id]
                                 else:
                                     player_dict["info"]["quality_score"] = None
-                                    player_dict["info"]["value_score"] = None
+                                    player_dict["info"]["quality_per_m"] = None
 
                             if fixtures:
                                 player_dict["fixtures"] = await _get_fixture_run_data(
@@ -374,9 +374,9 @@ def player_command(
                         lines.append(f"Selected by: {p.selected_by_percent}%")
                     if p.id in quality_scores:
                         q = quality_scores[p.id]
-                        v = value_scores[p.id]
+                        v = quality_per_m_scores[p.id]
                         v_str = f"{v}/£m" if v is not None else "N/A"
-                        lines.append(f"Quality: {q} | Value: {v_str}")
+                        lines.append(f"Quality: {q} | Quality/£m: {v_str}")
                     if draft_line:
                         lines.append(draft_line.rstrip("\n"))
                     lines.append(f"Status: {_status_display(p)}")

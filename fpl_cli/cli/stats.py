@@ -22,8 +22,8 @@ PLAYERS_SORT_FIELDS = [
     "influence", "creativity", "threat", "ict_index",
     "selected_by_percent", "now_cost", "transfers_in_event", "transfers_out_event",
     "defensive_contribution", "defensive_contribution_per_90",
-    "value_form", "value_season",
-    "quality_score", "value_score",
+    "form_per_m", "pts_per_m",
+    "quality_score", "quality_per_m",
 ]
 
 # Core columns shown for every `fpl stats` query.
@@ -31,7 +31,10 @@ PLAYERS_SORT_FIELDS = [
 _PLAYERS_CORE_SORT_FIELDS = {"now_cost": "Price", "minutes": "Mins"}
 
 # Sort fields that require --value flag
-_VALUE_SORT_FIELDS = frozenset({"quality_score", "value_score"})
+_VALUE_SORT_FIELDS = frozenset({"quality_score", "quality_per_m"})
+
+# Sort field names that differ from Player model attribute names
+_SORT_FIELD_ALIASES = {"form_per_m": "value_form", "pts_per_m": "value_season"}
 
 
 @click.command("stats")
@@ -58,7 +61,7 @@ def stats_command(
     Examples:
       fpl stats --position MID --sort form --limit 10
       fpl stats --team ARS --min-minutes 500 --sort expected_goal_involvements
-      fpl stats --value --sort value_score --available-only --format json
+      fpl stats --value --sort quality_per_m --available-only --format json
     """
     from fpl_cli.api.fpl import FPLClient
     from fpl_cli.models.player import Player, PlayerPosition, PlayerStatus
@@ -80,10 +83,10 @@ def stats_command(
         console.print(f"[red]--sort {sort_field} requires the --value flag[/red]")
         raise SystemExit(1)
 
-    # Override default sort to value_score when --value active and --sort not explicit
+    # Override default sort to quality_per_m when --value active and --sort not explicit
     explicit_value_sort = sort_field in _VALUE_SORT_FIELDS
     if value and ctx.get_parameter_source("sort_field") == click.core.ParameterSource.DEFAULT:
-        sort_field = "value_score"
+        sort_field = "quality_per_m"
         explicit_value_sort = False
 
     fmt = ctx.obj.format if isinstance(ctx.obj, CLIContext) else None
@@ -228,7 +231,8 @@ def stats_command(
 
                 filtered.sort(key=_value_key, reverse=not reverse)
             else:
-                filtered.sort(key=lambda p: getattr(p, effective_sort), reverse=not reverse)
+                attr = _SORT_FIELD_ALIASES.get(effective_sort, effective_sort)
+                filtered.sort(key=lambda p: getattr(p, attr), reverse=not reverse)
 
             # Limit
             filtered = filtered[:limit]
@@ -278,12 +282,12 @@ def stats_command(
                             "transfers_out_event": p.transfers_out_event,
                             "defensive_contribution": p.defensive_contribution,
                             "defensive_contribution_per_90": float(p.defensive_contribution_per_90),
-                            "value_form": float(p.value_form),
-                            "value_season": float(p.value_season),
+                            "form_per_m": float(p.value_form),
+                            "pts_per_m": float(p.value_season),
                             **(
                                 {
                                     "quality_score": quality_map.get(p.id),
-                                    "value_score": value_map.get(p.id),
+                                    "quality_per_m": value_map.get(p.id),
                                 }
                                 if value_active
                                 else {}
@@ -322,7 +326,7 @@ def stats_command(
             # Value columns (when --value active and scoring succeeded)
             if value_active:
                 q_header = "Quality" + (arrow if effective_sort == "quality_score" else "")
-                v_header = "Value/£m" + (arrow if effective_sort == "value_score" else "")
+                v_header = "Quality/£m" + (arrow if effective_sort == "quality_per_m" else "")
                 table.add_column(q_header, justify="right")
                 table.add_column(v_header, justify="right")
 
@@ -340,7 +344,8 @@ def stats_command(
                     str(p.minutes),
                 ]
                 if not sort_in_core and not sort_in_value:
-                    row.append(_format_sort_value(effective_sort, getattr(p, effective_sort)))
+                    sort_attr = _SORT_FIELD_ALIASES.get(effective_sort, effective_sort)
+                    row.append(_format_sort_value(effective_sort, getattr(p, sort_attr)))
 
                 if value_active:
                     q = quality_map.get(p.id)

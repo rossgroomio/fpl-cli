@@ -675,17 +675,17 @@ class TestPlayerQualityValueScores:
         info = json.loads(result.output)["data"][0]["info"]
         assert isinstance(info["quality_score"], int)
         assert 0 <= info["quality_score"] <= 100
-        assert isinstance(info["value_score"], float)
-        assert info["value_score"] > 0
+        assert isinstance(info["quality_per_m"], float)
+        assert info["quality_per_m"] > 0
 
     def test_json_no_scores_when_custom_analysis_off(self):
-        """quality_score/value_score absent from JSON when custom analysis off."""
+        """quality_score/quality_per_m absent from JSON when custom analysis off."""
         client, fixture_agent, ratings_svc = _make_mocks()
         result = _run_json([], client, fixture_agent, ratings_svc)
         assert result.exit_code == 0, result.output
         info = json.loads(result.output)["data"][0]["info"]
         assert "quality_score" not in info
-        assert "value_score" not in info
+        assert "quality_per_m" not in info
 
     def test_rich_panel_shows_quality_value_line(self):
         client, fixture_agent, ratings_svc = _make_mocks()
@@ -693,7 +693,7 @@ class TestPlayerQualityValueScores:
         result = _run_with_us_match([], client, fixture_agent, ratings_svc)
         assert result.exit_code == 0, result.output
         assert "Quality:" in result.output
-        assert "Value:" in result.output
+        assert "Quality/£m:" in result.output
 
     def test_rich_panel_no_quality_line_without_understat(self):
         client, fixture_agent, ratings_svc = _make_mocks()
@@ -717,7 +717,7 @@ class TestPlayerQualityValueScores:
         # GK with zeroed attacking stats should score meaningfully lower than elite MID
         assert info["quality_score"] < 55
 
-    def test_zero_price_player_gets_null_value_score(self):
+    def test_zero_price_player_gets_null_quality_per_m(self):
         client, fixture_agent, ratings_svc = _make_mocks()
         client.get_players = AsyncMock(return_value=[
             make_player(id=1, web_name="Salah", team_id=1,
@@ -728,7 +728,7 @@ class TestPlayerQualityValueScores:
         assert result.exit_code == 0, result.output
         info = json.loads(result.output)["data"][0]["info"]
         assert isinstance(info["quality_score"], int)
-        assert info["value_score"] is None
+        assert info["quality_per_m"] is None
 
     def test_form_trajectory_applied_without_detail_flag(self):
         """History is fetched for scoring even without --detail flag."""
@@ -753,4 +753,4 @@ class TestPlayerQualityValueScores:
         assert result.exit_code == 0, result.output
         info = json.loads(result.output)["data"][0]["info"]
         assert "quality_score" not in info
-        assert "value_score" not in info
+        assert "quality_per_m" not in info

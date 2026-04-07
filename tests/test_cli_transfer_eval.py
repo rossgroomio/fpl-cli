@@ -22,7 +22,7 @@ def _make_agent_result(success=True, data=None):
             "fixture_matchups": [{"opponent": "ARS", "fdr": 4}],
             "form": 6.0, "status": "a", "chance_of_playing": 100,
             "price": 10.0, "excluded": False,
-            "quality_score": 72, "value_score": 7.2,
+            "quality_score": 72, "quality_per_m": 7.2,
         },
         "in_players": [
             {
@@ -32,7 +32,7 @@ def _make_agent_result(success=True, data=None):
                 "fixture_matchups": [{"opponent": "BOU", "fdr": 2}],
                 "form": 7.5, "status": "a", "chance_of_playing": 100,
                 "price": 13.0, "excluded": False,
-                "quality_score": 85, "value_score": 6.5,
+                "quality_score": 85, "quality_per_m": 6.5,
             },
             {
                 "id": 30, "web_name": "Mbeumo", "team_short": "BRE",
@@ -41,7 +41,7 @@ def _make_agent_result(success=True, data=None):
                 "fixture_matchups": [{"opponent": "MCI", "fdr": 5}],
                 "form": 5.0, "status": "a", "chance_of_playing": 100,
                 "price": 7.5, "excluded": False,
-                "quality_score": 58, "value_score": 7.7,
+                "quality_score": 58, "quality_per_m": 7.7,
             },
         ],
         "sorted_by": "outlook_delta",
@@ -191,19 +191,19 @@ class TestTransferEvalQualityValue:
         result = _run_cmd(["--out", "Palmer", "--in", "Salah"])
         assert result.exit_code == 0, result.output
         assert "72" in result.output  # Palmer quality_score
-        assert "7.2" in result.output  # Palmer value_score
+        assert "7.2" in result.output  # Palmer quality_per_m
         assert "85" in result.output  # Salah quality_score
 
     def test_draft_shows_quality_omits_value(self):
         result = _run_cmd(["--out", "Palmer", "--in", "Salah"], fmt="draft")
         assert result.exit_code == 0, result.output
         assert "72" in result.output  # quality_score shown
-        assert "Value" not in result.output  # Value column header absent
+        assert "Quality/£m" not in result.output  # Quality/£m column header absent
 
     def test_null_quality_shows_dash(self):
         data = _make_agent_result().data
         data["out_player"]["quality_score"] = None
-        data["out_player"]["value_score"] = None
+        data["out_player"]["quality_per_m"] = None
         agent_result = _make_agent_result(data=data)
         result = _run_cmd(["--out", "Palmer", "--in", "Salah"], agent_result=agent_result)
         assert result.exit_code == 0, result.output
@@ -215,15 +215,15 @@ class TestTransferEvalQualityValue:
         assert "Qual" in result.output  # column header present
 
     def test_quality_present_value_null(self):
-        """Price 0 scenario: quality_score present but value_score null."""
+        """Price 0 scenario: quality_score present but quality_per_m null."""
         data = _make_agent_result().data
-        data["in_players"][0]["value_score"] = None
+        data["in_players"][0]["quality_per_m"] = None
         agent_result = _make_agent_result(data=data)
         result = _run_cmd(["--out", "Palmer", "--in", "Salah,Mbeumo"], agent_result=agent_result)
         assert result.exit_code == 0, result.output
-        # Salah's quality_score (85) still renders even though value_score is None
+        # Salah's quality_score (85) still renders even though quality_per_m is None
         assert "85" in result.output
-        # Mbeumo's value_score (7.7) still renders
+        # Mbeumo's quality_per_m (7.7) still renders
         assert "7.7" in result.output
 
 
@@ -250,10 +250,10 @@ class TestTransferEvalJson:
         data = json.loads(result.output)
         out = data["data"]["out_player"]
         assert out["quality_score"] == 72
-        assert out["value_score"] == 7.2
+        assert out["quality_per_m"] == 7.2
         inp = data["data"]["in_players"][0]
         assert inp["quality_score"] == 85
-        assert inp["value_score"] == 6.5
+        assert inp["quality_per_m"] == 6.5
 
 
 class TestTransferEvalErrors:
@@ -313,7 +313,7 @@ class TestTransferEvalResolution:
                 "fixture_matchups": [{"opponent": "ARS", "fdr": 4}],
                 "form": 7.7, "status": "a", "chance_of_playing": 100,
                 "price": 7.8, "excluded": False,
-                "quality_score": 67, "value_score": 8.6,
+                "quality_score": 67, "quality_per_m": 8.6,
             },
             "in_players": [{
                 "id": 40, "web_name": "Haaland", "team_short": "MCI",
@@ -322,7 +322,7 @@ class TestTransferEvalResolution:
                 "fixture_matchups": [{"opponent": "BOU", "fdr": 2}],
                 "form": 9.0, "status": "a", "chance_of_playing": 100,
                 "price": 15.0, "excluded": False,
-                "quality_score": 90, "value_score": 6.0,
+                "quality_score": 90, "quality_per_m": 6.0,
             }],
             "sorted_by": "outlook_delta",
         })

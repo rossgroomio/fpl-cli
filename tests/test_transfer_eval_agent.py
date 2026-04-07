@@ -316,7 +316,7 @@ class TestTransferEvalAgent:
     # -----------------------------------------------------------------------
 
     async def test_quality_score_non_null_with_understat(self):
-        """MID with Understat match gets non-null quality_score and value_score."""
+        """MID with Understat match gets non-null quality_score and quality_per_m."""
         _, scoring_data = _build_players_and_data()
         # Add Understat data for all players
         scoring_data = dataclasses.replace(scoring_data, understat_lookup={
@@ -340,15 +340,15 @@ class TestTransferEvalAgent:
         out = result.data["out_player"]
         assert isinstance(out["quality_score"], int)
         assert 0 <= out["quality_score"] <= 100
-        assert isinstance(out["value_score"], float)
-        assert out["value_score"] > 0
+        assert isinstance(out["quality_per_m"], float)
+        assert out["quality_per_m"] > 0
 
         for inp in result.data["in_players"]:
             assert isinstance(inp["quality_score"], int)
-            assert isinstance(inp["value_score"], float)
+            assert isinstance(inp["quality_per_m"], float)
 
     async def test_quality_score_null_without_understat(self, standard_data):
-        """Player without Understat match gets null quality_score and value_score."""
+        """Player without Understat match gets null quality_score and quality_per_m."""
         _, scoring_data = standard_data
         # standard_data has understat_lookup=None
 
@@ -366,10 +366,10 @@ class TestTransferEvalAgent:
         assert result.status == AgentStatus.SUCCESS
         out = result.data["out_player"]
         assert out["quality_score"] is None
-        assert out["value_score"] is None
+        assert out["quality_per_m"] is None
 
-    async def test_value_score_null_when_price_zero(self):
-        """Player with price 0 gets quality_score but null value_score."""
+    async def test_quality_per_m_null_when_price_zero(self):
+        """Player with price 0 gets quality_score but null quality_per_m."""
         _, scoring_data = _build_players_and_data()
         # Replace Mbeumo (id=30) with price 0
         assert scoring_data.players is not None
@@ -400,7 +400,7 @@ class TestTransferEvalAgent:
         assert result.status == AgentStatus.SUCCESS
         mbeumo = result.data["in_players"][0]
         assert isinstance(mbeumo["quality_score"], int)
-        assert mbeumo["value_score"] is None
+        assert mbeumo["quality_per_m"] is None
 
     async def test_def_uses_without_xgi_weights(self):
         """DEF player with Understat match uses without_xgi() weights."""

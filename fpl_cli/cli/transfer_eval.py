@@ -189,7 +189,7 @@ def _render_table(data: dict, finances, sell_price: float | None, fmt) -> None:
     table.add_column("Status")
     table.add_column("Quality", justify="right")
     if show_price:
-        table.add_column("Value", justify="right")
+        table.add_column("Quality/£m", justify="right")
         table.add_column("Price", justify="right")
     if has_budget:
         table.add_column("ITB", justify="right")
@@ -209,7 +209,7 @@ def _render_table(data: dict, finances, sell_price: float | None, fmt) -> None:
         _format_quality(out.get("quality_score")),
     ]
     if show_price:
-        out_row.append(_format_value(out.get("value_score")))
+        out_row.append(_format_value(out.get("quality_per_m")))
         out_row.append(f"£{out['price']:.1f}m")
     if has_budget:
         out_row.append("-")
@@ -236,7 +236,7 @@ def _render_table(data: dict, finances, sell_price: float | None, fmt) -> None:
             _format_quality(inp.get("quality_score")),
         ]
         if show_price:
-            row.append(_format_value(inp.get("value_score")))
+            row.append(_format_value(inp.get("quality_per_m")))
             row.append(f"£{inp['price']:.1f}m")
         if has_budget:
             budget = _compute_budget(finances, sell_price, inp["price"])
