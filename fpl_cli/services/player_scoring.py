@@ -423,13 +423,13 @@ async def prepare_scoring_data(
             if cached is not None:
                 player_priors = cached
             else:
-                from fpl_cli.season import vaastav_season
+                from fpl_cli.season import season_label
                 from fpl_cli.services.player_prior import _save_prior_cache
 
                 async with make_vaastav_fetcher() as fetcher, VaastavClient(fetcher) as vaastav:
                     profiles = await vaastav.get_all_player_histories()
                 player_priors = generate_player_prior(profiles, players, next_gw_id)
-                _save_prior_cache(player_priors, vaastav_season(), next_gw_id)
+                _save_prior_cache(player_priors, season_label(), next_gw_id)
         except Exception:  # noqa: BLE001 — graceful degradation: vaastav unavailable
             import logging
 

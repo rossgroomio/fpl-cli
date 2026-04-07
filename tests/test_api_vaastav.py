@@ -10,6 +10,7 @@ import respx
 from httpx import Response
 
 from fpl_cli.api.dataset_fetcher import DatasetFetcher
+from fpl_cli.api.historical_types import compute_acceleration, compute_trend
 from fpl_cli.api.vaastav import BASE_URL, GwTrendProfile, VaastavClient
 
 
@@ -124,28 +125,23 @@ class TestSignalComputation:
 
     def test_compute_trend_three_points(self):
         """Least-squares trend with 3 data points."""
-        client = VaastavClient(_stub_fetcher())
-        assert client._compute_trend([4.0, 5.0, 6.0]) == pytest.approx(1.0)
+        assert compute_trend([4.0, 5.0, 6.0]) == pytest.approx(1.0)
 
     def test_compute_trend_two_points(self):
         """Trend with 2 data points is just the difference."""
-        client = VaastavClient(_stub_fetcher())
-        assert client._compute_trend([4.0, 6.0]) == pytest.approx(2.0)
+        assert compute_trend([4.0, 6.0]) == pytest.approx(2.0)
 
     def test_compute_trend_one_point(self):
         """Single data point has no trend."""
-        client = VaastavClient(_stub_fetcher())
-        assert client._compute_trend([4.0]) == 0.0
+        assert compute_trend([4.0]) == 0.0
 
     def test_compute_trend_empty(self):
         """Empty list has no trend."""
-        client = VaastavClient(_stub_fetcher())
-        assert client._compute_trend([]) == 0.0
+        assert compute_trend([]) == 0.0
 
     def test_compute_trend_declining(self):
         """Declining values produce negative trend."""
-        client = VaastavClient(_stub_fetcher())
-        assert client._compute_trend([6.0, 4.0, 2.0]) == pytest.approx(-2.0)
+        assert compute_trend([6.0, 4.0, 2.0]) == pytest.approx(-2.0)
 
     @respx.mock
     async def test_build_profile_computes_signals(self, tmp_path):
@@ -428,38 +424,33 @@ class TestGwTrendComputation:
 
     def test_compute_acceleration_needs_4_points(self):
         """Acceleration returns 0 with fewer than 4 data points."""
-        client = VaastavClient(_stub_fetcher())
-        assert client._compute_acceleration([1.0, 2.0, 3.0]) == 0.0
-        assert client._compute_acceleration([1.0, 2.0]) == 0.0
-        assert client._compute_acceleration([]) == 0.0
+        assert compute_acceleration([1.0, 2.0, 3.0]) == 0.0
+        assert compute_acceleration([1.0, 2.0]) == 0.0
+        assert compute_acceleration([]) == 0.0
 
     def test_compute_acceleration_detects_speedup(self):
         """Acceleration is positive when rate of change increases."""
-        client = VaastavClient(_stub_fetcher())
         # Early: flat (100,100). Recent: rising (100,102,104,106)
         values = [100.0, 100.0, 100.0, 102.0, 104.0, 106.0]
-        accel = client._compute_acceleration(values)
+        accel = compute_acceleration(values)
         assert accel > 0
 
     def test_compute_acceleration_detects_slowdown(self):
         """Acceleration is negative when rate of change decreases."""
-        client = VaastavClient(_stub_fetcher())
         # Early: rising fast (100,104,108). Recent: flat (108,108,108)
         values = [100.0, 104.0, 108.0, 108.0, 108.0, 108.0]
-        accel = client._compute_acceleration(values)
+        accel = compute_acceleration(values)
         assert accel < 0
 
     def test_compute_acceleration_quadratic_input(self):
         """Clearly quadratic input produces a meaningfully positive coefficient."""
-        client = VaastavClient(_stub_fetcher())
         values = [100.0, 100.0, 101.0, 103.0, 106.0, 110.0]
-        accel = client._compute_acceleration(values)
+        accel = compute_acceleration(values)
         assert accel > 0.1
 
     def test_compute_acceleration_constant_values(self):
         """Constant values return near-zero, not an error."""
-        client = VaastavClient(_stub_fetcher())
-        accel = client._compute_acceleration([100.0, 100.0, 100.0, 100.0])
+        accel = compute_acceleration([100.0, 100.0, 100.0, 100.0])
         assert accel == pytest.approx(0, abs=0.1)
 
 

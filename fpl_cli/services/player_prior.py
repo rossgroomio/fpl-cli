@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any
 import yaml
 
 from fpl_cli.paths import user_data_dir
-from fpl_cli.season import get_season_year, vaastav_season
+from fpl_cli.season import get_season_year, season_label
 
 if TYPE_CHECKING:
     from fpl_cli.api.vaastav import PlayerProfile
@@ -46,7 +46,7 @@ class PlayerPrior:
 
 def _previous_season_label() -> str:
     """Get the vaastav season label for the previous season."""
-    return vaastav_season(get_season_year() - 1)
+    return season_label(get_season_year() - 1)
 
 
 def _extract_prev_season_pts_per_90(
@@ -215,7 +215,7 @@ def load_cached_priors(current_gw: int) -> dict[int, PlayerPrior] | None:
         return None
 
     meta = data.get("metadata", {})
-    current_season = vaastav_season()
+    current_season = season_label()
     if meta.get("season") != current_season:
         logger.info("Player prior cache stale (season %s != %s)", meta.get("season"), current_season)
         return None

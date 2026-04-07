@@ -6,8 +6,8 @@ date using the July cutover (FPL typically opens mid-July for the
 season starting in August).
 
 Format conventions used by external data sources:
-  - Understat: start year as string, e.g. "2025" for 2025/26
-  - Vaastav:   hyphenated, e.g. "2025-26" for 2025/26
+  - Season label (generic): hyphenated, e.g. "2025-26" for 2025/26
+  - Understat:              start year as string, e.g. "2025" for 2025/26
 """
 
 from __future__ import annotations
@@ -56,21 +56,33 @@ def understat_season(year: int | None = None) -> str:
     return str(year if year is not None else get_season_year())
 
 
-def vaastav_season(year: int | None = None) -> str:
-    """Return the Vaastav season identifier (hyphenated format).
+def season_label(year: int | None = None) -> str:
+    """Return the season identifier in hyphenated format.
 
-    >>> vaastav_season(2025)
+    >>> season_label(2025)
     '2025-26'
     """
     y = year if year is not None else get_season_year()
     return f"{y}-{(y + 1) % 100:02d}"
 
 
-def vaastav_season_range(year: int | None = None, count: int = 4) -> tuple[str, ...]:
-    """Return a trailing window of Vaastav season identifiers.
+def season_label_range(year: int | None = None, count: int = 4) -> tuple[str, ...]:
+    """Return a trailing window of season identifiers in hyphenated format.
 
-    >>> vaastav_season_range(2025, count=4)
+    >>> season_label_range(2025, count=4)
     ('2022-23', '2023-24', '2024-25', '2025-26')
     """
     y = year if year is not None else get_season_year()
-    return tuple(vaastav_season(y - count + 1 + i) for i in range(count))
+    return tuple(season_label(y - count + 1 + i) for i in range(count))
+
+
+# -- Backward-compatible aliases ---------------------------------------------
+
+def vaastav_season(year: int | None = None) -> str:
+    """Alias for season_label (backward compatibility)."""
+    return season_label(year)
+
+
+def vaastav_season_range(year: int | None = None, count: int = 4) -> tuple[str, ...]:
+    """Alias for season_label_range (backward compatibility)."""
+    return season_label_range(year, count)
