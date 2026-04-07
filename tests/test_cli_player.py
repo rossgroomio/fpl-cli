@@ -46,10 +46,10 @@ def _make_empty_understat():
     return mock
 
 
-def _run(args, client, fixture_agent, ratings_svc):
+def _run(args, client, fixture_agent, ratings_svc, settings=None):
     runner = CliRunner()
     with (
-        patch("fpl_cli.cli.player.load_settings", return_value={"fpl": {}}),
+        patch("fpl_cli.cli.player.load_settings", return_value=settings or {"fpl": {}}),
         patch("fpl_cli.api.fpl.FPLClient", return_value=client),
         patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=fixture_agent),
         patch("fpl_cli.services.team_ratings.TeamRatingsService", return_value=ratings_svc),
@@ -461,11 +461,11 @@ class TestPlayerUnderstat:
 # --- JSON output tests ---
 
 
-def _run_json(args, client, fixture_agent, ratings_svc):
+def _run_json(args, client, fixture_agent, ratings_svc, settings=None):
     """Run the player command with --format json and return parsed JSON."""
     runner = CliRunner()
     with (
-        patch("fpl_cli.cli.player.load_settings", return_value={"fpl": {}}),
+        patch("fpl_cli.cli.player.load_settings", return_value=settings or {"fpl": {}}),
         patch("fpl_cli.api.fpl.FPLClient", return_value=client),
         patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=fixture_agent),
         patch("fpl_cli.services.team_ratings.TeamRatingsService", return_value=ratings_svc),
@@ -890,13 +890,16 @@ def _make_underperforming_history(current_gw: int = 30, n: int = 7) -> list[dict
     ]
 
 
+_CUSTOM_SETTINGS = {"fpl": {}, "custom_analysis": True}
+
+
 class TestXgiSustainabilityDisplay:
     def test_atk_overperformer_shows_sustainability_line(self):
         client, fixture_agent, ratings_svc = _make_mocks()
         client.get_player_detail = AsyncMock(return_value={
             "history": _make_overperforming_history(),
         })
-        result = _run(["--detail"], client, fixture_agent, ratings_svc)
+        result = _run(["--detail"], client, fixture_agent, ratings_svc, settings=_CUSTOM_SETTINGS)
         assert result.exit_code == 0, result.output
         assert "xGI Sustainability" in result.output
         assert "0.85x form" in result.output
@@ -906,7 +909,7 @@ class TestXgiSustainabilityDisplay:
         client.get_player_detail = AsyncMock(return_value={
             "history": _make_underperforming_history(),
         })
-        result = _run(["--detail"], client, fixture_agent, ratings_svc)
+        result = _run(["--detail"], client, fixture_agent, ratings_svc, settings=_CUSTOM_SETTINGS)
         assert result.exit_code == 0, result.output
         assert "xGI Sustainability" in result.output
         assert "1.15x form" in result.output
@@ -920,7 +923,7 @@ class TestXgiSustainabilityDisplay:
         client.get_player_detail = AsyncMock(return_value={
             "history": _make_overperforming_history(),
         })
-        result = _run(["--detail"], client, fixture_agent, ratings_svc)
+        result = _run(["--detail"], client, fixture_agent, ratings_svc, settings=_CUSTOM_SETTINGS)
         assert result.exit_code == 0, result.output
         assert "xGI Sustainability" not in result.output
 
@@ -930,7 +933,7 @@ class TestXgiSustainabilityDisplay:
         client.get_player_detail = AsyncMock(return_value={
             "history": _make_overperforming_history(n=3),
         })
-        result = _run(["--detail"], client, fixture_agent, ratings_svc)
+        result = _run(["--detail"], client, fixture_agent, ratings_svc, settings=_CUSTOM_SETTINGS)
         assert result.exit_code == 0, result.output
         assert "xGI Sustainability" not in result.output
 
@@ -939,7 +942,7 @@ class TestXgiSustainabilityDisplay:
         client.get_player_detail = AsyncMock(return_value={
             "history": _make_overperforming_history(),
         })
-        result = _run_json(["--detail"], client, fixture_agent, ratings_svc)
+        result = _run_json(["--detail"], client, fixture_agent, ratings_svc, settings=_CUSTOM_SETTINGS)
         assert result.exit_code == 0, result.output
         info = json.loads(result.output)["data"][0]["info"]
         assert "xgi_sustainability" in info

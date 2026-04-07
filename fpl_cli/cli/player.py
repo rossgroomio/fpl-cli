@@ -207,36 +207,31 @@ def player_command(
                 quality_scores: dict[int, int] = {}
                 quality_per_m_scores: dict[int, float | None] = {}
                 rolling_scores: dict[int, tuple[float | None, int | None]] = {}
+                sustainability_scores: dict[int, tuple[float, float]] = {}
                 custom_on = is_custom_analysis_enabled(settings)
                 rolling_window = int(settings.get("rolling_window", 5))
                 if custom_on:
                     for p in display:
                         us_match = us_matches.get(p.id)
-                        if not us_match:
-                            continue
                         team_obj = teams.get(p.team_id)
                         player_detail = detail_map.get(p.id)
                         gw_hist = player_detail.get("history", []) if player_detail else None
-                        q, v = compute_quality_value(
-                            p, us_match, next_gw_id,
-                            team_short=team_obj.short_name if team_obj else "???",
-                            gw_history=gw_hist or None,
+                        if us_match:
+                            q, v = compute_quality_value(
+                                p, us_match, next_gw_id,
+                                team_short=team_obj.short_name if team_obj else "???",
+                                gw_history=gw_hist or None,
+                            )
+                            quality_scores[p.id] = q
+                            quality_per_m_scores[p.id] = v
+                        hist = gw_hist or []
+                        rolling_scores[p.id] = compute_rolling_pts_per_m(
+                            hist, float(p.now_cost), rolling_window,
                         )
-                        quality_scores[p.id] = q
-                        quality_per_m_scores[p.id] = v
-
-                # Rolling pts/£m and xGI sustainability from fetched detail history
-                sustainability_scores: dict[int, tuple[float, float]] = {}
-                for p in display:
-                    player_detail = detail_map.get(p.id)
-                    hist = player_detail.get("history", []) if player_detail else []
-                    rolling_scores[p.id] = compute_rolling_pts_per_m(
-                        hist, float(p.now_cost), rolling_window,
-                    )
-                    if hist and p.position_name in ("MID", "FWD"):
-                        sustainability_scores[p.id] = compute_xgi_sustainability(
-                            hist, next_gw_id, p.position_name,
-                        )
+                        if hist and p.position_name in ("MID", "FWD"):
+                            sustainability_scores[p.id] = compute_xgi_sustainability(
+                                hist, next_gw_id, p.position_name,
+                            )
 
                 # JSON output mode
                 if output_format == "json":
