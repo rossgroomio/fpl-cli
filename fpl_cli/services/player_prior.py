@@ -42,6 +42,7 @@ class PlayerPrior:
     prior_strength: float  # 0.0-1.0, percentile rank of pts/90 within position
     confidence: float  # 0.0-1.0, how much to trust current-season data
     source: str  # "history", "price", "position-average"
+    reliability: float | None = None  # recency-weighted historical availability (None = no history)
 
 
 def _previous_season_label() -> str:
@@ -135,6 +136,7 @@ def generate_player_prior(
     result: dict[int, PlayerPrior] = {}
     for p in players:
         position = POSITION_MAP.get(p.position.value, "MID")
+        profile = profiles.get(p.code)
 
         if p.id in player_pts_map:
             # Has qualifying history
@@ -149,11 +151,13 @@ def generate_player_prior(
             prior_strength = price_pct * PRICE_CONFIDENCE_FACTOR
             source = "price"
 
+        reliability = profile.reliability if profile is not None else None
         confidence = _compute_confidence(current_gw, prior_strength)
         result[p.id] = PlayerPrior(
             prior_strength=round(prior_strength, 4),
             confidence=round(confidence, 4),
             source=source,
+            reliability=reliability,
         )
 
     return result
@@ -191,6 +195,7 @@ def _save_prior_cache(
             "prior_strength": p.prior_strength,
             "confidence": p.confidence,
             "source": p.source,
+            "reliability": p.reliability,
         }
     with tempfile.NamedTemporaryFile(
         mode="w",
@@ -229,5 +234,6 @@ def load_cached_priors(current_gw: int) -> dict[int, PlayerPrior] | None:
             prior_strength=vals["prior_strength"],
             confidence=vals["confidence"],
             source=vals["source"],
+            reliability=vals.get("reliability"),
         )
     return result

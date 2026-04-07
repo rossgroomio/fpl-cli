@@ -94,6 +94,7 @@ def differentials_command(threshold: float, min_minutes: int, output_format: str
             table.add_column("Matchup", justify="right")
             table.add_column("vs Next")
             table.add_column("Score", justify="right")
+            table.add_column("Avail", justify="right")
 
             for p in elite[:12]:
                 own_style = "green" if p["ownership"] < 2 else "cyan"
@@ -102,6 +103,8 @@ def differentials_command(threshold: float, min_minutes: int, output_format: str
                 matchup = p.get("matchup_score", 5.0)
                 matchup_style = "green" if matchup >= 7 else "yellow" if matchup >= 5 else "red"
                 next_opp = p.get("next_opponent") or "-"
+                rel = p.get("reliability")
+                rel_str = f"{rel:.0%}" if rel is not None else "-"
 
                 table.add_row(
                     p["player_name"],
@@ -112,6 +115,7 @@ def differentials_command(threshold: float, min_minutes: int, output_format: str
                     f"[{matchup_style}]{matchup:.1f}[/{matchup_style}]",
                     next_opp,
                     f"[bold]{p['differential_score']:.1f}[/bold]",
+                    rel_str,
                 )
             console.print(table)
 

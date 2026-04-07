@@ -135,3 +135,17 @@ class TestDifferentialsJsonFormat:
         assert result.exit_code == 0, result.output
         assert "Isak" in result.output
         assert "Differential Picks" in result.output
+
+
+class TestDifferentialsReliabilityRendering:
+    def test_reliability_shown_as_percentage(self):
+        stats_result = _make_stats_result()
+        stats_result.data["differentials"]["elite"][0]["reliability"] = 0.72
+        result = _run_differentials(stats_result=stats_result)
+        assert result.exit_code == 0
+        assert "72%" in result.output
+
+    def test_reliability_none_shows_dash(self):
+        result = _run_differentials()
+        assert result.exit_code == 0
+        assert "Avail" in result.output

@@ -109,3 +109,78 @@ class TestStatsAgentNpxGScoring:
         # Both must be positive
         assert score_with > 0
         assert score_without > 0
+
+
+class TestStatsAgentReliability:
+    """Tests for reliability propagation in _find_targets and _compute_differentials."""
+
+    def _make_player(self, player_id: int, ownership: float, position: str = "MID") -> dict:
+        return {
+            "id": player_id,
+            "player_name": f"Player{player_id}",
+            "team_short": "TST",
+            "position": position,
+            "price": 80,
+            "ownership": ownership,
+            "minutes": 2000,
+            "goals": 5,
+            "assists": 3,
+            "GI": 8,
+            "xG": 4.0,
+            "xA": 3.0,
+            "xGI": 7.0,
+            "xG_per_90": 0.2,
+            "xA_per_90": 0.15,
+            "xGI_per_90": 0.35,
+            "goals_minus_xG": 1.0,
+            "assists_minus_xA": 0.0,
+            "GI_minus_xGI": 1.0,
+            "form": 5.0,
+            "total_points": 80,
+            "ppg": 5.0,
+            "dc_per_90": 0.0,
+            "npxG_per_90": None,
+            "xGChain_per_90": None,
+            "xGBuildup_per_90": None,
+            "penalty_xG": None,
+            "penalty_xG_per_90": None,
+            "matchup_score": 5.0,
+            "next_opponent": "CHE",
+        }
+
+    def test_find_targets_includes_reliability_from_priors(self):
+        from fpl_cli.services.player_prior import PlayerPrior
+
+        agent = StatsAgent(config={"gameweeks": 0})
+        agent._player_priors = {
+            1: PlayerPrior(prior_strength=0.5, confidence=0.6, source="history", reliability=0.85),
+        }
+        agent._next_gw_id = 30
+
+        players = [self._make_player(1, ownership=10.0)]
+        result = agent._find_targets(players)
+
+        assert result["all"][0]["reliability"] == pytest.approx(0.85)
+
+    def test_find_targets_reliability_none_when_no_prior(self):
+        agent = StatsAgent(config={"gameweeks": 0})
+        agent._next_gw_id = 30
+
+        players = [self._make_player(1, ownership=10.0)]
+        result = agent._find_targets(players)
+
+        assert result["all"][0]["reliability"] is None
+
+    def test_compute_differentials_includes_reliability_from_priors(self):
+        from fpl_cli.services.player_prior import PlayerPrior
+
+        agent = StatsAgent(config={"gameweeks": 0, "differential_threshold": 15.0, "semi_differential_threshold": 15.0})
+        agent._player_priors = {
+            2: PlayerPrior(prior_strength=0.5, confidence=0.6, source="history", reliability=0.70),
+        }
+        agent._next_gw_id = 30
+
+        players = [self._make_player(2, ownership=5.0)]
+        result = agent._find_differentials(players)
+
+        assert result["all"][0]["reliability"] == pytest.approx(0.70)

@@ -497,6 +497,10 @@ class WaiverAgent(Agent):
                     target, drop_candidate, team_counts
                 )
 
+                priors = getattr(self, "_player_priors", None)
+                target_prior = priors.get(target.get("id", 0)) if priors else None
+                reliability = target_prior.reliability if target_prior is not None else None
+
                 rec: dict[str, Any] = {
                     "priority": len(recommendations) + 1,
                     "target": {
@@ -505,6 +509,7 @@ class WaiverAgent(Agent):
                         "position": pos,
                         "form": target.get("form"),
                         "waiver_score": target.get("waiver_score"),
+                        "reliability": reliability,
                     },
                     "drop": {
                         "name": drop_candidate.get("player_name") if drop_candidate else None,

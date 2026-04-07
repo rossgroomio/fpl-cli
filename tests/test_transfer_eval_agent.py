@@ -516,3 +516,51 @@ class TestTransferEvalAgent:
         expected_quality = normalise_score(raw, VALUE_CEILING)
 
         assert agent_quality == expected_quality
+
+    async def test_reliability_threaded_through_player_priors(self, standard_data):
+        """reliability field from PlayerPrior appears in agent output dict."""
+        from fpl_cli.services.player_prior import PlayerPrior
+
+        _, scoring_data = standard_data
+        priors = {
+            10: PlayerPrior(prior_strength=0.7, confidence=0.8, source="history", reliability=0.85),
+            20: PlayerPrior(prior_strength=0.9, confidence=1.0, source="history", reliability=0.92),
+            30: PlayerPrior(prior_strength=0.5, confidence=0.6, source="price", reliability=None),
+        }
+        scoring_data = dataclasses.replace(scoring_data, player_priors=priors)
+
+        with patch(
+            "fpl_cli.agents.analysis.transfer_eval.prepare_scoring_data",
+            new_callable=AsyncMock,
+            return_value=scoring_data,
+        ):
+            async with TransferEvalAgent() as agent:
+                result = await agent.run({
+                    "out_player_id": 10,
+                    "in_player_ids": [20, 30],
+                })
+
+        assert result.status == AgentStatus.SUCCESS
+        assert result.data["out_player"]["reliability"] == pytest.approx(0.85)
+        in_by_id = {p["id"]: p for p in result.data["in_players"]}
+        assert in_by_id[20]["reliability"] == pytest.approx(0.92)
+        assert in_by_id[30]["reliability"] is None
+
+    async def test_reliability_none_when_no_priors(self, standard_data):
+        """reliability=None in output when player_priors is not provided."""
+        _, scoring_data = standard_data  # player_priors=None
+
+        with patch(
+            "fpl_cli.agents.analysis.transfer_eval.prepare_scoring_data",
+            new_callable=AsyncMock,
+            return_value=scoring_data,
+        ):
+            async with TransferEvalAgent() as agent:
+                result = await agent.run({
+                    "out_player_id": 10,
+                    "in_player_ids": [20],
+                })
+
+        assert result.status == AgentStatus.SUCCESS
+        assert result.data["out_player"]["reliability"] is None
+        assert result.data["in_players"][0]["reliability"] is None

@@ -84,3 +84,17 @@ class TestTargetsJsonFormat:
         assert result.exit_code == 0, result.output
         assert "Salah" in result.output
         assert "Transfer Targets" in result.output
+
+
+class TestTargetsReliabilityRendering:
+    def test_reliability_shown_as_percentage(self):
+        agent_result = _make_agent_result()
+        agent_result.data["targets"]["all"][0]["reliability"] = 0.85
+        result = _run_targets(agent_result=agent_result)
+        assert result.exit_code == 0
+        assert "85%" in result.output
+
+    def test_reliability_none_shows_dash(self):
+        result = _run_targets()
+        assert result.exit_code == 0
+        assert "Avail" in result.output

@@ -564,6 +564,7 @@ class StatsAgent(Agent):
         - Inverse ownership (lower = better differential)
         """
         differentials = []
+        _priors = getattr(self, "_player_priors", None)
 
         for p in players:
             ownership = p["ownership"]
@@ -582,6 +583,7 @@ class StatsAgent(Agent):
             else:
                 tier = "value"  # Semi-differentials 5-15%
 
+            _prior = _priors.get(p["id"]) if _priors else None
             differentials.append({
                 "id": p["id"],
                 "player_name": p["player_name"],
@@ -602,6 +604,7 @@ class StatsAgent(Agent):
                 "matchup_score": p.get("matchup_score", 5.0),
                 "positional_fdr": p.get("positional_fdr"),
                 "next_opponent": p.get("next_opponent"),
+                "reliability": _prior.reliability if _prior is not None else None,
             })
 
         # Apply early-season shrinkage
@@ -657,6 +660,7 @@ class StatsAgent(Agent):
         template/consensus picks.
         """
         targets = []
+        _priors = getattr(self, "_player_priors", None)
 
         for p in players:
             ownership = p["ownership"]
@@ -676,6 +680,7 @@ class StatsAgent(Agent):
             else:
                 tier = "differential"
 
+            _prior = _priors.get(p["id"]) if _priors else None
             targets.append({
                 "id": p["id"],
                 "player_name": p["player_name"],
@@ -696,6 +701,7 @@ class StatsAgent(Agent):
                 "matchup_score": p.get("matchup_score", 5.0),
                 "positional_fdr": p.get("positional_fdr"),
                 "next_opponent": p.get("next_opponent"),
+                "reliability": _prior.reliability if _prior is not None else None,
             })
 
         # Apply early-season shrinkage

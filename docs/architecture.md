@@ -362,7 +362,7 @@ Services live in `fpl_cli/services/` and provide the computation layer between a
 | Service | Purpose |
 |---|---|
 | `player_scoring` | Central scoring engine: `prepare_scoring_data()`, all score functions, `shrink_scores()` |
-| `player_prior` | Bayesian early-season confidence (GW1-10 shrinkage) |
+| `player_prior` | Bayesian early-season confidence (GW1-10 shrinkage); threads `PlayerProfile.reliability` (historical availability rate) through `PlayerPrior` to agents |
 | `team_ratings` | TeamRatingsService + Calculator (1-7 scale, 4 axes) |
 | `matchup` | Fixture matchup scoring (0-10), 3-GW recency-weighted |
 | `fixture_predictions` | BGW/DGW predictions from YAML + live detection |
@@ -516,7 +516,7 @@ fpl_cli/
 │   ├── fpl.py                    # FPLClient (main API, caches bootstrap-static)
 │   ├── fpl_draft.py              # FPLDraftClient
 │   ├── understat.py              # UnderstatClient + match_fpl_to_understat()
-│   ├── historical_types.py       # Shared dataclasses (SeasonHistory, PlayerProfile, GwTrendProfile) + compute_trend/compute_acceleration
+│   ├── historical_types.py       # Shared dataclasses (SeasonHistory, PlayerProfile, GwTrendProfile) + compute_trend/compute_acceleration/compute_reliability
 │   ├── vaastav.py                # VaastavClient (historical seasons 2022-25 via DatasetFetcher)
 │   ├── core_insights.py          # CoreInsightsClient (current season 2025-26+ via DatasetFetcher)
 │   ├── historical.py             # HistoricalDataProvider (composition: vaastav + Core-Insights)

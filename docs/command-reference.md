@@ -98,6 +98,7 @@ Output columns:
 - **Fixtures** - next 3 opponents with FDR
 - **Form** - FPL form (last 30 days PPG)
 - **Status** - availability indicator
+- **Avail** - historical availability rate (recency-weighted starts across previous seasons). Null when no historical data.
 - **Quality** - price-independent player quality (0-100). Uses `VALUE_QUALITY_WEIGHTS`. Null when no Understat match.
 - **Value** - quality per GBP million (`quality_score / price`). Higher = more output per pound. Null when no Understat match or price is 0. *(classic only)*
 - **Price** - current price *(classic only)*

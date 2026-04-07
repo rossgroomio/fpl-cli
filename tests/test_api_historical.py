@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from fpl_cli.api.historical import HistoricalDataProvider, make_historical_provider
-from fpl_cli.api.historical_types import GwTrendProfile, PlayerProfile, SeasonHistory
+from fpl_cli.api.historical_types import GwTrendProfile, PlayerProfile, SeasonHistory, compute_reliability
 
 
 @pytest.fixture(autouse=True)
@@ -56,6 +56,91 @@ def _mock_clients(vaastav_profiles=None, ci_profiles=None, ci_trends=None):
     ci._build_profile = MagicMock(side_effect=_make_profile)
 
     return vaastav, ci
+
+
+def _make_sh(code: int, season: str, starts: int, minutes: int = 2700) -> SeasonHistory:
+    return SeasonHistory(
+        element_code=code, season=season, total_points=100, minutes=minutes,
+        starts=starts, goals=0, assists=0, expected_goals=0.0, expected_assists=0.0,
+        expected_goal_involvements=0.0, start_cost=80, end_cost=90,
+        position="MID", web_name="Test", team_id=1,
+    )
+
+
+class TestComputeReliability:
+    def test_three_seasons_weighted_average(self):
+        """Standard 3-season case with default (3,2,1) weights."""
+        seasons = [
+            _make_sh(1, "2022-23", starts=25),
+            _make_sh(1, "2023-24", starts=30),
+            _make_sh(1, "2024-25", starts=35),
+        ]
+        # Oldest=25, middle=30, newest=35; weights oldest->newest = (1,2,3)
+        # weighted = (25*1 + 30*2 + 35*3) / (38*6) = (25+60+105)/228 = 190/228
+        result = compute_reliability(seasons)
+        assert result == pytest.approx(190 / 228, rel=1e-4)
+
+    def test_single_season_full_starts(self):
+        seasons = [_make_sh(1, "2024-25", starts=38)]
+        assert compute_reliability(seasons) == pytest.approx(1.0)
+
+    def test_no_seasons_returns_none(self):
+        assert compute_reliability([]) is None
+
+    def test_current_season_normalised_denominator(self):
+        """Current season at GW20 uses starts/20, not starts/38."""
+        seasons = [_make_sh(1, "2025-26", starts=18)]
+        result = compute_reliability(seasons, current_season="2025-26", current_gw=20)
+        assert result == pytest.approx(18 / 20)
+
+    def test_current_season_excluded_before_gw10(self):
+        """Current season excluded when current_gw < 10."""
+        seasons = [
+            _make_sh(1, "2024-25", starts=35),
+            _make_sh(1, "2025-26", starts=5),
+        ]
+        result = compute_reliability(seasons, current_season="2025-26", current_gw=5)
+        # Only 2024-25 counts, single season weight = (1,) = 35/38
+        assert result == pytest.approx(35 / 38)
+
+    def test_four_seasons_uses_three_most_recent(self):
+        """Oldest season dropped when 4+ seasons provided."""
+        seasons = [
+            _make_sh(1, "2021-22", starts=10),  # dropped
+            _make_sh(1, "2022-23", starts=25),
+            _make_sh(1, "2023-24", starts=30),
+            _make_sh(1, "2024-25", starts=35),
+        ]
+        result_4 = compute_reliability(seasons)
+        result_3 = compute_reliability(seasons[1:])
+        assert result_4 == result_3
+
+    def test_starts_exceeding_38_clamped_to_1(self):
+        """DGW season: starts > 38 clamps to 1.0."""
+        seasons = [_make_sh(1, "2024-25", starts=42)]
+        assert compute_reliability(seasons) == 1.0
+
+    def test_two_season_weights_truncated(self):
+        """2-season player uses first 2 weights (3, 2); newest gets 3."""
+        seasons = [
+            _make_sh(1, "2023-24", starts=20),
+            _make_sh(1, "2024-25", starts=30),
+        ]
+        # weights[:2] = (3,2); reversed = (2,3); oldest*2, newest*3; total weight=5
+        result = compute_reliability(seasons)
+        assert result == pytest.approx((20 * 2 + 30 * 3) / (38 * 5), rel=1e-4)
+
+    def test_sub_only_player_contributes_zero(self):
+        """Player with 0 starts but minutes >= 450 still contributes 0.0 for that season."""
+        seasons = [_make_sh(1, "2024-25", starts=0, minutes=900)]
+        result = compute_reliability(seasons)
+        assert result == 0.0
+
+    def test_injury_shortened_included_not_excluded(self):
+        """Season with few starts/minutes IS included (not MIN_MINUTES filtered)."""
+        seasons = [_make_sh(1, "2024-25", starts=5, minutes=200)]
+        result = compute_reliability(seasons)
+        assert result == pytest.approx(5 / 38, rel=1e-4)
 
 
 class TestMergedHistories:
