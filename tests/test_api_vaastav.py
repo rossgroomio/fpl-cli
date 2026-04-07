@@ -11,7 +11,7 @@ from httpx import Response
 
 from fpl_cli.api.dataset_fetcher import DatasetFetcher
 from fpl_cli.api.historical_types import compute_acceleration, compute_trend
-from fpl_cli.api.vaastav import BASE_URL, GwTrendProfile, VaastavClient
+from fpl_cli.api.vaastav import BASE_URL, VaastavClient
 
 
 @pytest.fixture(autouse=True)

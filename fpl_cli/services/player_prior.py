@@ -23,7 +23,7 @@ from fpl_cli.paths import user_data_dir
 from fpl_cli.season import get_season_year, season_label
 
 if TYPE_CHECKING:
-    from fpl_cli.api.vaastav import PlayerProfile
+    from fpl_cli.api.historical_types import PlayerProfile
     from fpl_cli.models.player import Player
 
 logger = logging.getLogger(__name__)

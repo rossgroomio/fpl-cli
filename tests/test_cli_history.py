@@ -20,8 +20,8 @@ def _mock_fpl(codes: list[int]):
     return mock
 
 
-def _mock_vaastav(profiles: dict):
-    """Create a mock VaastavClient returning given profiles."""
+def _mock_historical(profiles: dict):
+    """Create a mock HistoricalDataProvider returning given profiles."""
     mock = AsyncMock()
     mock.get_all_player_histories = AsyncMock(return_value=profiles)
     mock.__aenter__ = AsyncMock(return_value=mock)
@@ -67,41 +67,33 @@ def _make_profile(
     return profile
 
 
+def _run_history(args=None, codes=None, profiles=None):
+    """Helper to invoke the history command with mocked providers."""
+    fpl = _mock_fpl([80201] if codes is None else codes)
+    hist = _mock_historical({80201: _make_profile()} if profiles is None else profiles)
+    runner = CliRunner()
+    with (
+        patch("fpl_cli.api.fpl.FPLClient", return_value=fpl),
+        patch("fpl_cli.api.historical.make_historical_provider", return_value=hist),
+    ):
+        return runner.invoke(main, ["history"] + (args or []))
+
+
 class TestHistory:
     def test_outputs_current_season_players_only(self):
-        profile = _make_profile()
-        runner = CliRunner()
-        with (
-            patch("fpl_cli.api.fpl.FPLClient", return_value=_mock_fpl([80201, 99999])),
-            patch("fpl_cli.api.vaastav.VaastavClient", return_value=_mock_vaastav({80201: profile})),
-        ):
-            result = runner.invoke(main, ["history"])
-
+        result = _run_history(codes=[80201, 99999])
         assert result.exit_code == 0, result.output
         assert "Salah" in result.output
         assert "NewPlayer" not in result.output
 
     def test_handles_no_data(self):
-        runner = CliRunner()
-        with (
-            patch("fpl_cli.api.fpl.FPLClient", return_value=_mock_fpl([])),
-            patch("fpl_cli.api.vaastav.VaastavClient", return_value=_mock_vaastav({})),
-        ):
-            result = runner.invoke(main, ["history"])
-
+        result = _run_history(codes=[], profiles={})
         assert result.exit_code == 0, result.output
 
 
 class TestHistoryJson:
     def test_json_output_envelope(self):
-        profile = _make_profile()
-        runner = CliRunner()
-        with (
-            patch("fpl_cli.api.fpl.FPLClient", return_value=_mock_fpl([80201])),
-            patch("fpl_cli.api.vaastav.VaastavClient", return_value=_mock_vaastav({80201: profile})),
-        ):
-            result = runner.invoke(main, ["history", "--format", "json"])
-
+        result = _run_history(["--format", "json"])
         assert result.exit_code == 0, result.output
         data = json.loads(result.output)
         assert data["command"] == "history"
@@ -109,28 +101,14 @@ class TestHistoryJson:
         assert len(data["data"]) == 1
 
     def test_json_profile_fields(self):
-        profile = _make_profile()
-        runner = CliRunner()
-        with (
-            patch("fpl_cli.api.fpl.FPLClient", return_value=_mock_fpl([80201])),
-            patch("fpl_cli.api.vaastav.VaastavClient", return_value=_mock_vaastav({80201: profile})),
-        ):
-            result = runner.invoke(main, ["history", "--format", "json"])
-
+        result = _run_history(["--format", "json"])
         player = json.loads(result.output)["data"][0]
         assert player["name"] == "Salah"
         assert player["code"] == 80201
         assert player["position"] == "MID"
 
     def test_json_season_data(self):
-        profile = _make_profile()
-        runner = CliRunner()
-        with (
-            patch("fpl_cli.api.fpl.FPLClient", return_value=_mock_fpl([80201])),
-            patch("fpl_cli.api.vaastav.VaastavClient", return_value=_mock_vaastav({80201: profile})),
-        ):
-            result = runner.invoke(main, ["history", "--format", "json"])
-
+        result = _run_history(["--format", "json"])
         season = json.loads(result.output)["data"][0]["seasons"][0]
         assert season["season"] == "2024-25"
         assert season["team"] == 14
@@ -144,14 +122,7 @@ class TestHistoryJson:
         assert season["end_cost"] == 130
 
     def test_json_trend_data(self):
-        profile = _make_profile()
-        runner = CliRunner()
-        with (
-            patch("fpl_cli.api.fpl.FPLClient", return_value=_mock_fpl([80201])),
-            patch("fpl_cli.api.vaastav.VaastavClient", return_value=_mock_vaastav({80201: profile})),
-        ):
-            result = runner.invoke(main, ["history", "--format", "json"])
-
+        result = _run_history(["--format", "json"])
         trends = json.loads(result.output)["data"][0]["trends"]
         assert trends["pts_per_90"] == [7.96, 8.52]
         assert trends["pts_per_90_trend"] == 0.56
@@ -160,34 +131,22 @@ class TestHistoryJson:
         assert trends["cost_trajectory"] == 5.0
 
     def test_json_empty_when_no_data(self):
-        runner = CliRunner()
-        with (
-            patch("fpl_cli.api.fpl.FPLClient", return_value=_mock_fpl([])),
-            patch("fpl_cli.api.vaastav.VaastavClient", return_value=_mock_vaastav({})),
-        ):
-            result = runner.invoke(main, ["history", "--format", "json"])
-
+        result = _run_history(["--format", "json"], codes=[], profiles={})
         assert result.exit_code == 0, result.output
         data = json.loads(result.output)
         assert data["command"] == "history"
         assert data["data"] == []
 
     def test_json_skips_profiles_without_pts_per_90(self):
-        """Profiles with empty pts_per_90 are excluded from JSON output."""
         profile_with = _make_profile(web_name="Salah", element_code=80201)
         profile_without = _make_profile(
             web_name="Bench", element_code=12345, pts_per_90=[]
         )
-        runner = CliRunner()
-        with (
-            patch("fpl_cli.api.fpl.FPLClient", return_value=_mock_fpl([80201, 12345])),
-            patch(
-                "fpl_cli.api.vaastav.VaastavClient",
-                return_value=_mock_vaastav({80201: profile_with, 12345: profile_without}),
-            ),
-        ):
-            result = runner.invoke(main, ["history", "--format", "json"])
-
+        result = _run_history(
+            ["--format", "json"],
+            codes=[80201, 12345],
+            profiles={80201: profile_with, 12345: profile_without},
+        )
         data = json.loads(result.output)["data"]
         assert len(data) == 1
         assert data[0]["name"] == "Salah"
@@ -198,29 +157,23 @@ class TestHistoryJson:
         mock_fpl.__aenter__ = AsyncMock(return_value=mock_fpl)
         mock_fpl.__aexit__ = AsyncMock(return_value=False)
 
+        hist = _mock_historical({})
         runner = CliRunner()
         with (
             patch("fpl_cli.api.fpl.FPLClient", return_value=mock_fpl),
-            patch("fpl_cli.api.vaastav.VaastavClient", return_value=_mock_vaastav({})),
+            patch("fpl_cli.api.historical.make_historical_provider", return_value=hist),
         ):
             result = runner.invoke(main, ["history", "--format", "json"])
-
         # emit_json_error raises SystemExit(1)
         assert result.exit_code == 1
 
     def test_json_sorted_by_name(self):
-        """Profiles appear alphabetically by web_name."""
         profile_z = _make_profile(web_name="Zaha", element_code=111)
         profile_a = _make_profile(web_name="Alexander-Arnold", element_code=222)
-        runner = CliRunner()
-        with (
-            patch("fpl_cli.api.fpl.FPLClient", return_value=_mock_fpl([111, 222])),
-            patch(
-                "fpl_cli.api.vaastav.VaastavClient",
-                return_value=_mock_vaastav({111: profile_z, 222: profile_a}),
-            ),
-        ):
-            result = runner.invoke(main, ["history", "--format", "json"])
-
+        result = _run_history(
+            ["--format", "json"],
+            codes=[111, 222],
+            profiles={111: profile_z, 222: profile_a},
+        )
         names = [p["name"] for p in json.loads(result.output)["data"]]
         assert names == ["Alexander-Arnold", "Zaha"]
