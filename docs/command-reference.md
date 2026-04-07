@@ -374,7 +374,7 @@ Both fields default to `0.0` for unavailable/injured players. In JSON output, th
 
 #### Player Detail Flags
 
-**`--detail` (`-d`)**: GW-by-GW match performance from the FPL API. Shows gameweek, opponent, minutes, goals, xG, assists, xA, and points for the last 10 matches.
+**`--detail` (`-d`)**: GW-by-GW match performance from the FPL API. Shows gameweek, opponent, minutes, goals, xG, assists, xA, and points for the last 10 matches. For FWD/MID players with sufficient recent history, also shows xGI sustainability: the per-match GI-xGI divergence and the resulting form modifier (e.g. `xGI Sustainability: +0.18/match -> 0.94x form`).
 
 **`--understat` (`-u`)**: Combined Understat analysis: shot analysis (total shots, shots on target, average xG per shot, body part split, situation breakdown) and situation profile. Includes a data-through date caveat since Understat data can lag behind the live season.
 

@@ -18,8 +18,8 @@ from fpl_cli.services.player_scoring import (
     calculate_player_quality_score,
     calculate_target_score,
     compute_form_trajectory,
-    compute_xgi_sustainability,
     compute_rolling_pts_per_m,
+    compute_xgi_sustainability,
     normalise_score,
     prepare_scoring_data,
 )

@@ -626,7 +626,8 @@ def calculate_player_quality_score(
 
     form_trajectory = player.get("form_trajectory", 1.0)
     xgi_sustainability = player.get("xgi_sustainability", 1.0)
-    score += min(player.get("form", 0) * weights.form.multiplier, weights.form.cap) * form_trajectory * xgi_sustainability
+    capped_form = min(player.get("form", 0) * weights.form.multiplier, weights.form.cap)
+    score += capped_form * form_trajectory * xgi_sustainability
     score += min(player.get("ppg", 0) * weights.ppg.multiplier, weights.ppg.cap)
 
     if weights.dc_per_90.multiplier > 0:

@@ -15,7 +15,7 @@ from fpl_cli.cli._context import Format, console, error_console, get_format, is_
 from fpl_cli.cli._helpers import _fdr_style
 from fpl_cli.cli._json import emit_json, json_output_mode, output_format_option
 from fpl_cli.models.player import resolve_players
-from fpl_cli.services.player_scoring import compute_quality_value, compute_rolling_pts_per_m
+from fpl_cli.services.player_scoring import compute_quality_value, compute_rolling_pts_per_m, compute_xgi_sustainability
 
 if TYPE_CHECKING:
     from fpl_cli.api.fpl import FPLClient
@@ -308,6 +308,13 @@ def player_command(
                                     player_dict["info"]["quality_score"] = None
                                     player_dict["info"]["quality_per_m"] = None
 
+                            p_detail = detail_map.get(p.id)
+                            if p_detail and not is_gk:
+                                hist = p_detail.get("history", [])
+                                sust_mult, sust_div = compute_xgi_sustainability(hist, next_gw_id, p.position_name)
+                                player_dict["info"]["xgi_sustainability"] = round(sust_mult, 4)
+                                player_dict["info"]["xgi_divergence"] = round(sust_div, 4)
+
                             rv, rc = rolling_scores.get(p.id, (None, None))
                             player_dict["info"]["rolling_pts_per_m"] = rv
                             player_dict["info"]["rolling_fixture_count"] = rc
@@ -399,6 +406,14 @@ def player_command(
                         v = quality_per_m_scores[p.id]
                         v_str = f"{v}/£m" if v is not None else "N/A"
                         lines.append(f"Quality: {q} | Quality/£m: {v_str}")
+                    if not is_gk:
+                        p_detail = detail_map.get(p.id)
+                        if p_detail:
+                            hist = p_detail.get("history", [])
+                            sust_mult, sust_div = compute_xgi_sustainability(hist, next_gw_id, p.position_name)
+                            if sust_mult != 1.0:
+                                sign = "+" if sust_div > 0 else ""
+                                lines.append(f"xGI Sustainability: {sign}{sust_div:.2f}/match -> {sust_mult:.2f}x form")
                     if draft_line:
                         lines.append(draft_line.rstrip("\n"))
                     lines.append(f"Status: {_status_display(p)}")
