@@ -54,8 +54,12 @@ def _make_season(
 def _make_profile(
     code: int,
     seasons: list[SeasonHistory] | None = None,
+    reliability: float | None = None,
 ) -> PlayerProfile:
-    return PlayerProfile(element_code=code, web_name="TestPlayer", current_position="MID", seasons=seasons or [])
+    return PlayerProfile(
+        element_code=code, web_name="TestPlayer", current_position="MID",
+        seasons=seasons or [], reliability=reliability,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -218,6 +222,31 @@ class TestGeneratePlayerPrior:
         assert result[1].confidence > 0
 
     @patch("fpl_cli.services.player_prior._previous_season_label", return_value="2024-25")
+    def test_reliability_threaded_from_profile(self, _mock_season):
+        """Player with history profile gets reliability from profile.reliability."""
+        profiles = {100: _make_profile(100, [_make_season(100, "2024-25", 150, 2700)], reliability=0.85)}
+        players = [make_player(id=1, code=100, position=PlayerPosition.MIDFIELDER, now_cost=100)]
+        result = generate_player_prior(profiles, players, current_gw=3)
+        assert result[1].reliability == pytest.approx(0.85)
+
+    @patch("fpl_cli.services.player_prior._previous_season_label", return_value="2024-25")
+    def test_no_profile_gets_none_reliability(self, _mock_season):
+        """Player with no profile (price fallback) gets reliability=None."""
+        profiles: dict = {}
+        players = [make_player(id=1, code=100, position=PlayerPosition.MIDFIELDER, now_cost=100)]
+        result = generate_player_prior(profiles, players, current_gw=3)
+        assert result[1].reliability is None
+
+    @patch("fpl_cli.services.player_prior._previous_season_label", return_value="2024-25")
+    def test_zero_reliability_preserved_not_converted_to_none(self, _mock_season):
+        """Profile with reliability=0.0 gets PlayerPrior.reliability==0.0, not None."""
+        profiles = {100: _make_profile(100, [_make_season(100, "2024-25", 150, 2700)], reliability=0.0)}
+        players = [make_player(id=1, code=100, position=PlayerPosition.MIDFIELDER, now_cost=100)]
+        result = generate_player_prior(profiles, players, current_gw=3)
+        assert result[1].reliability == 0.0
+        assert result[1].reliability is not None
+
+    @patch("fpl_cli.services.player_prior._previous_season_label", return_value="2024-25")
     def test_position_ranking_uses_current_fpl_position(self, _mock_season):
         """Percentile rank uses current FPL position, not historical vaastav position."""
         # Profile has MID position in history but player is now FWD
@@ -274,3 +303,45 @@ class TestPriorCache:
     def test_missing_file_returns_none(self, tmp_path, monkeypatch):
         monkeypatch.setattr("fpl_cli.services.player_prior.PRIOR_CONFIG_PATH", tmp_path / "nope.yaml")
         assert load_cached_priors(3) is None
+
+    def test_reliability_cache_roundtrip(self, tmp_path, monkeypatch):
+        """PlayerPrior.reliability survives save/load cycle."""
+        monkeypatch.setattr("fpl_cli.services.player_prior.PRIOR_CONFIG_PATH", tmp_path / "prior.yaml")
+        monkeypatch.setattr("fpl_cli.services.player_prior.season_label", lambda: "2025-26")
+
+        priors = {1: PlayerPrior(prior_strength=0.75, confidence=0.58, source="history", reliability=0.85)}
+        _save_prior_cache(priors, "2025-26", 3)
+        loaded = load_cached_priors(3)
+
+        assert loaded is not None
+        assert loaded[1].reliability == pytest.approx(0.85)
+
+    def test_reliability_none_cache_roundtrip(self, tmp_path, monkeypatch):
+        """PlayerPrior.reliability=None (no history) is preserved through cache."""
+        monkeypatch.setattr("fpl_cli.services.player_prior.PRIOR_CONFIG_PATH", tmp_path / "prior.yaml")
+        monkeypatch.setattr("fpl_cli.services.player_prior.season_label", lambda: "2025-26")
+
+        priors = {1: PlayerPrior(prior_strength=0.3, confidence=0.4, source="price", reliability=None)}
+        _save_prior_cache(priors, "2025-26", 3)
+        loaded = load_cached_priors(3)
+
+        assert loaded is not None
+        # None serialised as null in YAML; loaded back as None
+        assert loaded[1].reliability is None
+
+    def test_old_cache_without_reliability_loads_as_zero(self, tmp_path, monkeypatch):
+        """Cache files written before reliability field was added load without crashing."""
+        monkeypatch.setattr("fpl_cli.services.player_prior.PRIOR_CONFIG_PATH", tmp_path / "prior.yaml")
+        monkeypatch.setattr("fpl_cli.services.player_prior.season_label", lambda: "2025-26")
+
+        import yaml
+        old_cache = {
+            "metadata": {"season": "2025-26", "gameweek": 3},
+            "priors": {1: {"prior_strength": 0.5, "confidence": 0.6, "source": "history"}},
+        }
+        with open(tmp_path / "prior.yaml", "w") as f:
+            yaml.dump(old_cache, f)
+
+        loaded = load_cached_priors(3)
+        assert loaded is not None
+        assert loaded[1].reliability is None
