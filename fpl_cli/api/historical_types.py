@@ -106,8 +106,9 @@ def compute_reliability(
             When provided and current_gw >= 10, uses current_gw as the
             denominator instead of 38.
         current_gw: Number of GWs played in the current season.
-        weights: Recency weights applied oldest-to-newest (most recent = last
-            element). Truncated to match the number of available seasons.
+        weights: Recency weights where weights[0] applies to the most recent
+            season. Default (3, 2, 1) = newest 3x, middle 2x, oldest 1x.
+            Truncated to match the number of available seasons.
     """
     if not seasons:
         return None
@@ -136,8 +137,7 @@ def compute_reliability(
         rate = s.starts / denominator if denominator > 0 else 0.0
         rates.append(rate)
 
-    # weights[0] = newest, weights[1] = second-newest, etc.
-    # rates are sorted oldest-to-newest, so reverse weights before applying.
+    # Reverse weights so that weights[0] (newest) aligns with rates[-1] (newest).
     w = weights[:len(rates)]
     weighted_sum = sum(r * wt for r, wt in zip(rates, reversed(w)))
     weight_total = sum(w)

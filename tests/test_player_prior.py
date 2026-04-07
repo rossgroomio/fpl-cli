@@ -329,7 +329,7 @@ class TestPriorCache:
         # None serialised as null in YAML; loaded back as None
         assert loaded[1].reliability is None
 
-    def test_old_cache_without_reliability_loads_as_zero(self, tmp_path, monkeypatch):
+    def test_old_cache_without_reliability_loads_as_none(self, tmp_path, monkeypatch):
         """Cache files written before reliability field was added load without crashing."""
         monkeypatch.setattr("fpl_cli.services.player_prior.PRIOR_CONFIG_PATH", tmp_path / "prior.yaml")
         monkeypatch.setattr("fpl_cli.services.player_prior.season_label", lambda: "2025-26")
