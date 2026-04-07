@@ -1,6 +1,6 @@
 # fpl-cli
 
-Fantasy Premier League analysis from the terminal. Classic and Draft formats. Five data sources, one interface.
+Fantasy Premier League analysis from the terminal. Classic and Draft formats. Six data sources, one interface.
 
 [![PyPI](https://img.shields.io/pypi/v/fplkit)](https://pypi.org/project/fplkit/)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/downloads/)
@@ -162,7 +162,7 @@ $ pytest tests/          # Tests
 ```
 
 > [!NOTE]
-> Football data provided by the [Football-Data.org API](https://www.football-data.org/). Player and fixture data is property of the Premier League. Expected goals data is property of [Understat](https://understat.com). Historical data from [vaastav/Fantasy-Premier-League](https://github.com/vaastav/Fantasy-Premier-League) (MIT, 2022-25) and [Core-Insights/Fantasy-Premier-League](https://github.com/Core-Insights/Fantasy-Premier-League) (2025-26+). This tool fetches data at runtime and does not redistribute third-party data.
+> Football data provided by the [Football-Data.org API](https://www.football-data.org/). Player and fixture data is property of the Premier League. Expected goals data is property of [Understat](https://understat.com). Historical data from [vaastav/Fantasy-Premier-League](https://github.com/vaastav/Fantasy-Premier-League) (MIT, 2022-25) and [olbauday/FPL-Core-Insights](https://github.com/olbauday/FPL-Core-Insights) (2025-26+). This tool fetches data at runtime and does not redistribute third-party data.
 
 > [!WARNING]
 > Browser scraping (`fpl squad sell-prices`) uses your FPL login to read sell prices. Automated access may violate FPL website terms - use at your own risk.
