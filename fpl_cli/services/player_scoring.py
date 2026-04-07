@@ -803,6 +803,41 @@ def compute_quality_value(
     return q_score, quality_per_m
 
 
+def compute_rolling_pts_per_m(
+    history: list[dict[str, Any]],
+    price: float,
+    window: int = 5,
+) -> tuple[float | None, int | None]:
+    """Rolling points per million from recent fixture history.
+
+    Args:
+        history: Player element-summary history entries (one per fixture).
+        price: Raw price in £0.1m units (e.g. 100 = £10.0m).
+        window: Number of qualifying fixtures to consider.
+
+    Returns:
+        (rolling_pts_per_m, fixture_count) — both None when fewer than 3
+        qualifying fixtures or price <= 0.
+    """
+    if price <= 0:
+        return None, None
+
+    qualifying = [
+        h for h in history
+        if h.get("minutes", 0) > 0
+    ]
+    qualifying.sort(key=lambda h: (-h.get("round", 0), -h.get("fixture", 0)))
+    qualifying = qualifying[:window]
+
+    if len(qualifying) < 3:
+        return None, None
+
+    n = len(qualifying)
+    total_pts = sum(h.get("total_points", 0) for h in qualifying)
+    price_m = price / 10
+    return round(total_pts / n / price_m, 2), n
+
+
 def shrink_scores(
     scores: list[tuple[int, float, str]],
     prior_map: dict[int, PlayerPrior] | None,

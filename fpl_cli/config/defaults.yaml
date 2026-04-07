@@ -3,6 +3,7 @@
 
 use_net_points: false  # Include transfer hits in gameweek points rankings (classic only; affects league, review, fines)
 custom_analysis: false  # Enable custom scoring algorithms (captain, targets, value scores, Bayesian FDR, etc.)
+rolling_window: 5  # Number of qualifying fixtures for rolling_pts_per_m (3-10)
 
 data_sources:
   cache_ttl: 3600
