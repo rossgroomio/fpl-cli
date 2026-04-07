@@ -47,7 +47,7 @@ _SORT_FIELD_ALIASES = {"form_per_m": "value_form", "pts_per_m": "value_season"}
 @click.option("--min-minutes", type=int, default=0, help="Minimum minutes played")
 @click.option("--available-only", "-a", is_flag=True, help="Exclude injured/suspended/unavailable players")
 @click.option("--reverse", "-r", is_flag=True, help="Sort ascending instead of descending")
-@click.option("--value", "-v", is_flag=True, help="Add quality and value/£m columns (requires Understat data)")
+@click.option("--value", "-v", is_flag=True, help="Add quality, quality/£m, and rolling pts/£m columns (requires Understat data)")
 @click.option("--window", "-w", type=click.IntRange(3, 10), default=None,
               help="Rolling pts/£m fixture window (3-10, default from config)")
 @output_format_option
