@@ -287,7 +287,7 @@ Filter by position (`-p`), team (`-t`), minimum minutes (`--min-minutes`). Sort 
 
 ### Historical Data
 
-Career-arc analysis from the [vaastav/Fantasy-Premier-League](https://github.com/vaastav/Fantasy-Premier-League) dataset, covering 3 seasons (2022-23 onwards).
+Career-arc analysis from the [vaastav/Fantasy-Premier-League](https://github.com/vaastav/Fantasy-Premier-League) (2022-25) and [Core-Insights/Fantasy-Premier-League](https://github.com/Core-Insights/Fantasy-Premier-League) (2025-26+) datasets.
 
 ```bash
 fpl player Salah --history   # Individual career arc
@@ -303,7 +303,7 @@ fpl history --format json
 
 ### Price History
 
-Season-long price trajectory and transfer momentum from vaastav gameweek-level data. Complements `fpl price-changes` (this-GW snapshot) with the historical arc.
+Season-long price trajectory and transfer momentum from historical gameweek-level data. Complements `fpl price-changes` (this-GW snapshot) with the historical arc.
 
 ```bash
 fpl price-history                            # Full season, sorted by price change
@@ -331,7 +331,7 @@ fpl price-history --format json
 
 Sort by: `price_change` (default), `price_slope`, `price_acceleration`, `transfer_momentum`, `price_current`. Descending by default. Use `-r` for ascending. Filter by position (`-p`) or team (`-t`). Limit results with `-l` (default: 30).
 
-When vaastav data is stale (>3 GWs behind), trend/accel/momentum columns are hidden and the command falls back to live API price change only.
+When historical data is stale (>3 GWs behind), trend/accel/momentum columns are hidden and the command falls back to live API price change only.
 
 ### Understat Metrics
 

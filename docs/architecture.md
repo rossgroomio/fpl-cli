@@ -55,6 +55,8 @@ flowchart TB
         draft_client[FPLDraftClient]
         understat_client[UnderstatClient]
         vaastav_client[VaastavClient]
+        core_insights_client[CoreInsightsClient]
+        historical_provider[HistoricalDataProvider]
         football_data[FootballDataClient]
     end
 
@@ -94,6 +96,7 @@ flowchart TB
         draft_api[("Draft API")]
         understat_web[("understat.com")]
         vaastav_gh[("vaastav/FPL<br/>GitHub")]
+        core_insights_gh[("Core-Insights/FPL<br/>GitHub")]
         football_api[("football-data.org")]
         llm_apis[("Claude / OpenAI /<br/>Perplexity APIs")]
         fpl_web[("FPL Website")]
@@ -133,7 +136,9 @@ flowchart TB
     waiver --> draft_client & fpl_client
 
     %% Service -> API connections
-    player_prior --> vaastav_client
+    player_prior --> historical_provider
+    historical_provider --> vaastav_client
+    historical_provider --> core_insights_client
     player_scoring --> player_prior
     team_ratings --> understat_client
     team_ratings --> football_data
@@ -150,6 +155,7 @@ flowchart TB
     draft_client --> draft_api
     understat_client --> understat_web
     vaastav_client --> vaastav_gh
+    core_insights_client --> core_insights_gh
     football_data --> football_api
     scraper --> fpl_web
 
@@ -174,8 +180,8 @@ flowchart TB
     class waiver action
     class report orch
     class player_scoring,team_ratings,matchup,fixture_preds,team_form service
-    class fpl_client,draft_client,understat_client,vaastav_client,football_data,scraper,anthropic_prov,openai_prov,perplexity_prov api
-    class fpl_api,draft_api,understat_web,vaastav_gh,football_api,llm_apis,fpl_web external
+    class fpl_client,draft_client,understat_client,vaastav_client,core_insights_client,historical_provider,football_data,scraper,anthropic_prov,openai_prov,perplexity_prov api
+    class fpl_api,draft_api,understat_web,vaastav_gh,core_insights_gh,football_api,llm_apis,fpl_web external
     class console,obsidian output
 ```
 
@@ -409,7 +415,9 @@ All providers share the `LLMResponse` contract. `OpenAICompatProvider` supports 
 | `FPLClient` | FPL API | Players, fixtures, managers, teams, bootstrap-static (cached) |
 | `FPLDraftClient` | FPL Draft API | Draft leagues, waivers, squad data |
 | `UnderstatClient` | understat.com | npxG, xA, xGChain, xGBuildup per-90 stats |
-| `VaastavClient` | vaastav/FPL GitHub | Historical CSV data (3-4 seasons), price trends, GW-level profiles |
+| `VaastavClient` | vaastav/FPL GitHub | Historical CSV data (3 seasons: 2022-25), price trends, GW-level profiles |
+| `CoreInsightsClient` | Core-Insights/FPL GitHub | Current-season CSV data (2025-26+), season aggregates, GW trends |
+| `HistoricalDataProvider` | Composition layer | Unifies vaastav + Core-Insights via `make_historical_provider()` |
 | `FootballDataClient` | football-data.org | League standings, match results |
 | `FPLPriceScraper` | FPL website | Price change scraping (needs credentials) |
 
@@ -508,7 +516,10 @@ fpl_cli/
 │   ├── fpl.py                    # FPLClient (main API, caches bootstrap-static)
 │   ├── fpl_draft.py              # FPLDraftClient
 │   ├── understat.py              # UnderstatClient + match_fpl_to_understat()
-│   ├── vaastav.py                # VaastavClient (historical seasons, GW trends via DatasetFetcher)
+│   ├── historical_types.py       # Shared dataclasses (SeasonHistory, PlayerProfile, GwTrendProfile) + compute_trend/compute_acceleration
+│   ├── vaastav.py                # VaastavClient (historical seasons 2022-25 via DatasetFetcher)
+│   ├── core_insights.py          # CoreInsightsClient (current season 2025-26+ via DatasetFetcher)
+│   ├── historical.py             # HistoricalDataProvider (composition: vaastav + Core-Insights)
 │   ├── football_data.py          # FootballDataClient (standings, match results)
 │   └── providers/                # LLM provider abstraction
 │       ├── _models.py            # LLMResponse, TokenUsage, ProviderError
@@ -539,7 +550,7 @@ fpl_cli/
 ├── scraper/
 │   └── fpl_prices.py             # FPLPriceScraper (needs FPL_EMAIL/FPL_PASSWORD)
 ├── paths.py                      # SHIPPED_CONFIG_DIR, TEMPLATE_DIR, user_config_dir(), user_data_dir()
-├── season.py                     # Season year detection, TOTAL_GAMEWEEKS, CHIP_SPLIT_GW
+├── season.py                     # season_label() (+ vaastav_season() alias), TOTAL_GAMEWEEKS, CHIP_SPLIT_GW
 └── constants.py                  # MIN_MINUTES_FOR_PER90
 
 platformdirs (user_config_dir / user_data_dir)  # macOS: ~/Library/Application Support/fpl-cli/

@@ -5,21 +5,39 @@ import asyncio
 import csv
 import io
 import logging
-from dataclasses import dataclass, field
 from datetime import timedelta
-from typing import ClassVar, TypedDict
+from typing import ClassVar
 
 import httpx
 
 from fpl_cli.api.dataset_fetcher import DatasetFetcher
+from fpl_cli.api.historical_types import (
+    MOMENTUM_WINDOW,
+    GwTrendProfile,
+    PlayerProfile,
+    SeasonHistory,
+    _GwRow,
+    compute_acceleration,
+    compute_trend,
+)
 from fpl_cli.models.player import POSITION_MAP
-from fpl_cli.season import vaastav_season_range
+from fpl_cli.season import season_label_range
 
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master/data"
 DEFAULT_TTL = timedelta(hours=4)
-MOMENTUM_WINDOW = 5
+
+# Re-export shared types for backward compatibility
+__all__ = [
+    "MOMENTUM_WINDOW",
+    "SeasonHistory",
+    "PlayerProfile",
+    "GwTrendProfile",
+    "_GwRow",
+    "compute_trend",
+    "compute_acceleration",
+]
 
 
 def make_vaastav_fetcher(ttl: timedelta = DEFAULT_TTL) -> DatasetFetcher:
@@ -28,73 +46,9 @@ def make_vaastav_fetcher(ttl: timedelta = DEFAULT_TTL) -> DatasetFetcher:
 
     return DatasetFetcher(
         base_url=BASE_URL,
-        cache_dir=user_cache_dir() / "datasets",
+        cache_dir=user_cache_dir() / "datasets" / "vaastav",
         ttl=ttl,
     )
-
-
-@dataclass
-class SeasonHistory:
-    """One player, one season."""
-
-    element_code: int
-    season: str
-    total_points: int
-    minutes: int
-    starts: int
-    goals: int
-    assists: int
-    expected_goals: float
-    expected_assists: float
-    expected_goal_involvements: float
-    start_cost: int
-    end_cost: int
-    position: str
-    web_name: str
-    team_id: int
-
-
-@dataclass
-class PlayerProfile:
-    """One player across multiple seasons with computed signals."""
-
-    element_code: int
-    web_name: str
-    current_position: str
-    seasons: list[SeasonHistory] = field(default_factory=list)
-    pts_per_90: list[float] = field(default_factory=list)
-    pts_per_90_trend: float = 0.0
-    cost_trajectory: float = 0.0
-    xgi_per_90: list[float] = field(default_factory=list)
-    xgi_per_90_trend: float | None = None
-    minutes_per_start: list[float] = field(default_factory=list)
-
-
-@dataclass
-class GwTrendProfile:
-    """One player's intra-season price and transfer trend signals."""
-
-    element: int
-    web_name: str
-    position: str
-    team_name: str
-    price_start: int
-    price_current: int
-    price_change: int
-    price_slope: float
-    price_acceleration: float
-    transfer_momentum: int
-    gw_count: int
-    latest_gw: int
-    first_gw: int
-
-
-class _GwRow(TypedDict):
-    value: int
-    transfers_balance: int
-    web_name: str
-    position: str
-    team_name: str
 
 
 class VaastavClient:
@@ -116,7 +70,7 @@ class VaastavClient:
         seasons: tuple[str, ...] | None = None,
     ):
         self.fetcher = fetcher
-        self.seasons = seasons if seasons is not None else vaastav_season_range()
+        self.seasons = seasons if seasons is not None else season_label_range()
         self._season_data: dict[str, list[SeasonHistory]] | None = None
         self._gw_rows: dict[int, dict[int, _GwRow]] | None = None
 
@@ -199,21 +153,6 @@ class VaastavClient:
             return 0.0
         return round((stat / minutes) * 90, 2)
 
-    def _compute_trend(self, values: list[float]) -> float:
-        """Least-squares slope across season indices. Positive = improving."""
-        n = len(values)
-        if n <= 1:
-            return 0.0
-        xs = list(range(n))
-        sum_x = sum(xs)
-        sum_y = sum(values)
-        sum_xy = sum(x * y for x, y in zip(xs, values))
-        sum_x2 = sum(x * x for x in xs)
-        denom = n * sum_x2 - sum_x * sum_x
-        if denom == 0:
-            return 0.0
-        return round((n * sum_xy - sum_x * sum_y) / denom, 2)
-
     def _build_profile(
         self, element_code: int, seasons: list[SeasonHistory],
     ) -> PlayerProfile:
@@ -243,11 +182,11 @@ class VaastavClient:
             current_position=latest.position,
             seasons=seasons,
             pts_per_90=pts_per_90,
-            pts_per_90_trend=self._compute_trend(pts_per_90),
-            cost_trajectory=self._compute_trend([float(c) for c in cost_values]),
+            pts_per_90_trend=compute_trend(pts_per_90),
+            cost_trajectory=compute_trend([float(c) for c in cost_values]),
             xgi_per_90=xgi_per_90,
             xgi_per_90_trend=(
-                self._compute_trend(xgi_per_90) if len(xgi_per_90) >= 2 else None
+                compute_trend(xgi_per_90) if len(xgi_per_90) >= 2 else None
             ),
             minutes_per_start=minutes_per_start,
         )
@@ -371,8 +310,8 @@ class VaastavClient:
                 price_start=int(values[0]),
                 price_current=int(values[-1]),
                 price_change=int(values[-1] - values[0]),
-                price_slope=self._compute_trend(values),
-                price_acceleration=self._compute_acceleration(values),
+                price_slope=compute_trend(values),
+                price_acceleration=compute_acceleration(values),
                 transfer_momentum=sum(recent_balances),
                 gw_count=len(sorted_rounds),
                 latest_gw=sorted_rounds[-1],
@@ -380,34 +319,3 @@ class VaastavClient:
             )
 
         return profiles
-
-    def _compute_acceleration(self, values: list[float]) -> float:
-        """Quadratic regression coefficient. Positive = price curve bending upward."""
-        n = len(values)
-        if n < 4:
-            return 0.0
-        # Solve y = a*x^2 + b*x + c via normal equations (Cramer's rule on 3x3)
-        sx = sx2 = sx3 = sx4 = sy = sxy = sx2y = 0.0
-        for i, y in enumerate(values):
-            x = float(i)
-            x2 = x * x
-            sx += x
-            sx2 += x2
-            sx3 += x2 * x
-            sx4 += x2 * x2
-            sy += y
-            sxy += x * y
-            sx2y += x2 * y
-        det = (
-            sx4 * (sx2 * n - sx * sx)
-            - sx3 * (sx3 * n - sx * sx2)
-            + sx2 * (sx3 * sx - sx2 * sx2)
-        )
-        if abs(det) < 1e-12:
-            return 0.0
-        det_a = (
-            sx2y * (sx2 * n - sx * sx)
-            - sx3 * (sxy * n - sx * sy)
-            + sx2 * (sxy * sx - sx2 * sy)
-        )
-        return round(det_a / det, 2)

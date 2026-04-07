@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 from click.testing import CliRunner
 
-from fpl_cli.api.vaastav import GwTrendProfile
+from fpl_cli.api.historical_types import GwTrendProfile
 from fpl_cli.cli import main
 from fpl_cli.models.player import PlayerPosition
 from tests.conftest import make_player, make_team
@@ -85,16 +85,16 @@ def _make_clients(trends=None, players=None, teams=None, current_gw=6):
     fpl.__aenter__ = AsyncMock(return_value=fpl)
     fpl.__aexit__ = AsyncMock(return_value=False)
 
-    vaastav = MagicMock()
-    vaastav.get_gw_trends = AsyncMock(return_value=trends or {})
-    vaastav.__aenter__ = AsyncMock(return_value=vaastav)
-    vaastav.__aexit__ = AsyncMock(return_value=False)
+    historical = MagicMock()
+    historical.get_gw_trends = AsyncMock(return_value=trends or {})
+    historical.__aenter__ = AsyncMock(return_value=historical)
+    historical.__aexit__ = AsyncMock(return_value=False)
 
-    return fpl, vaastav
+    return fpl, historical
 
 
 def _run(args=None, trends=None, players=None, teams=None, current_gw=6):
-    fpl, vaastav = _make_clients(
+    fpl, historical = _make_clients(
         trends=_sample_trends() if trends is None else trends,
         players=players or _sample_players(),
         teams=teams or _sample_teams(),
@@ -103,7 +103,7 @@ def _run(args=None, trends=None, players=None, teams=None, current_gw=6):
     runner = CliRunner()
     with (
         patch("fpl_cli.api.fpl.FPLClient", return_value=fpl),
-        patch("fpl_cli.api.vaastav.VaastavClient", return_value=vaastav),
+        patch("fpl_cli.api.historical.make_historical_provider", return_value=historical),
     ):
         return runner.invoke(main, ["price-history"] + (args or []))
 
@@ -288,24 +288,24 @@ class TestPriceHistoryErrors:
         assert data["metadata"]["is_stale"] is True
 
     def test_fetch_failure_table(self):
-        fpl, vaastav = _make_clients()
-        vaastav.get_gw_trends = AsyncMock(side_effect=httpx.HTTPError("Network error"))
+        fpl, historical = _make_clients()
+        historical.get_gw_trends = AsyncMock(side_effect=httpx.HTTPError("Network error"))
         runner = CliRunner()
         with (
             patch("fpl_cli.api.fpl.FPLClient", return_value=fpl),
-            patch("fpl_cli.api.vaastav.VaastavClient", return_value=vaastav),
+            patch("fpl_cli.api.historical.make_historical_provider", return_value=historical),
         ):
             result = runner.invoke(main, ["price-history"])
         assert result.exit_code != 0
         assert "Failed to fetch" in result.output
 
     def test_fetch_failure_json(self):
-        fpl, vaastav = _make_clients()
-        vaastav.get_gw_trends = AsyncMock(side_effect=httpx.HTTPError("Network error"))
+        fpl, historical = _make_clients()
+        historical.get_gw_trends = AsyncMock(side_effect=httpx.HTTPError("Network error"))
         runner = CliRunner()
         with (
             patch("fpl_cli.api.fpl.FPLClient", return_value=fpl),
-            patch("fpl_cli.api.vaastav.VaastavClient", return_value=vaastav),
+            patch("fpl_cli.api.historical.make_historical_provider", return_value=historical),
         ):
             result = runner.invoke(main, ["price-history", "--format", "json"])
         assert result.exit_code != 0
@@ -316,7 +316,7 @@ class TestPriceHistoryErrors:
 
 class TestPriceHistoryLastN:
     def test_last_n_passes_to_get_gw_trends(self):
-        fpl, vaastav = _make_clients(
+        fpl, historical = _make_clients(
             trends=_sample_trends(),
             players=_sample_players(),
             teams=_sample_teams(),
@@ -324,14 +324,14 @@ class TestPriceHistoryLastN:
         runner = CliRunner()
         with (
             patch("fpl_cli.api.fpl.FPLClient", return_value=fpl),
-            patch("fpl_cli.api.vaastav.VaastavClient", return_value=vaastav),
+            patch("fpl_cli.api.historical.make_historical_provider", return_value=historical),
         ):
             result = runner.invoke(main, ["price-history", "--last-n", "4"])
         assert result.exit_code == 0, result.output
-        vaastav.get_gw_trends.assert_called_once_with(last_n=4)
+        historical.get_gw_trends.assert_called_once_with(last_n=4)
 
     def test_default_passes_none_to_get_gw_trends(self):
-        fpl, vaastav = _make_clients(
+        fpl, historical = _make_clients(
             trends=_sample_trends(),
             players=_sample_players(),
             teams=_sample_teams(),
@@ -339,11 +339,11 @@ class TestPriceHistoryLastN:
         runner = CliRunner()
         with (
             patch("fpl_cli.api.fpl.FPLClient", return_value=fpl),
-            patch("fpl_cli.api.vaastav.VaastavClient", return_value=vaastav),
+            patch("fpl_cli.api.historical.make_historical_provider", return_value=historical),
         ):
             result = runner.invoke(main, ["price-history"])
         assert result.exit_code == 0, result.output
-        vaastav.get_gw_trends.assert_called_once_with(last_n=None)
+        historical.get_gw_trends.assert_called_once_with(last_n=None)
 
     def test_json_window_used_with_last_n(self):
         result = _run(["--last-n", "4", "--format", "json"])

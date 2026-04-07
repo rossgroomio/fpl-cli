@@ -115,13 +115,13 @@ class TestPlayerHistory:
             patch("fpl_cli.api.fpl.FPLClient", return_value=client),
             patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=fixture_agent),
             patch("fpl_cli.services.team_ratings.TeamRatingsService", return_value=ratings_svc),
-            patch("fpl_cli.api.vaastav.VaastavClient") as mock_vaastav_cls,
+            patch("fpl_cli.api.historical.make_historical_provider") as mock_hist,
         ):
-            mock_vaastav = MagicMock()
-            mock_vaastav.get_player_history = AsyncMock(return_value=mock_profile)
-            mock_vaastav.__aenter__ = AsyncMock(return_value=mock_vaastav)
-            mock_vaastav.__aexit__ = AsyncMock(return_value=False)
-            mock_vaastav_cls.return_value = mock_vaastav
+            mock_provider = MagicMock()
+            mock_provider.get_player_history = AsyncMock(return_value=mock_profile)
+            mock_provider.__aenter__ = AsyncMock(return_value=mock_provider)
+            mock_provider.__aexit__ = AsyncMock(return_value=False)
+            mock_hist.return_value = mock_provider
 
             result = runner.invoke(main, ["player", "Salah", "--history"])
 
@@ -142,13 +142,13 @@ class TestPlayerHistory:
             patch("fpl_cli.api.fpl.FPLClient", return_value=client),
             patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=fixture_agent),
             patch("fpl_cli.services.team_ratings.TeamRatingsService", return_value=ratings_svc),
-            patch("fpl_cli.api.vaastav.VaastavClient") as mock_vaastav_cls,
+            patch("fpl_cli.api.historical.make_historical_provider") as mock_hist,
         ):
-            mock_vaastav = MagicMock()
-            mock_vaastav.get_player_history = AsyncMock(return_value=None)
-            mock_vaastav.__aenter__ = AsyncMock(return_value=mock_vaastav)
-            mock_vaastav.__aexit__ = AsyncMock(return_value=False)
-            mock_vaastav_cls.return_value = mock_vaastav
+            mock_provider = MagicMock()
+            mock_provider.get_player_history = AsyncMock(return_value=None)
+            mock_provider.__aenter__ = AsyncMock(return_value=mock_provider)
+            mock_provider.__aexit__ = AsyncMock(return_value=False)
+            mock_hist.return_value = mock_provider
 
             result = runner.invoke(main, ["player", "NewSigning", "--history"])
 
@@ -570,13 +570,13 @@ class TestPlayerJsonOutput:
             patch("fpl_cli.api.fpl.FPLClient", return_value=client),
             patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=fixture_agent),
             patch("fpl_cli.services.team_ratings.TeamRatingsService", return_value=ratings_svc),
-            patch("fpl_cli.api.vaastav.VaastavClient") as mock_vaastav_cls,
+            patch("fpl_cli.api.historical.make_historical_provider") as mock_hist,
         ):
-            mock_vaastav = MagicMock()
-            mock_vaastav.get_player_history = AsyncMock(return_value=mock_profile)
-            mock_vaastav.__aenter__ = AsyncMock(return_value=mock_vaastav)
-            mock_vaastav.__aexit__ = AsyncMock(return_value=False)
-            mock_vaastav_cls.return_value = mock_vaastav
+            mock_provider = MagicMock()
+            mock_provider.get_player_history = AsyncMock(return_value=mock_profile)
+            mock_provider.__aenter__ = AsyncMock(return_value=mock_provider)
+            mock_provider.__aexit__ = AsyncMock(return_value=False)
+            mock_hist.return_value = mock_provider
 
             result = runner.invoke(main, ["player", "Salah", "--history", "--format", "json"])
 

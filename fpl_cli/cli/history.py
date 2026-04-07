@@ -19,13 +19,13 @@ def history_command(output_format: str):
 
     async def _run():
         from fpl_cli.api.fpl import FPLClient
-        from fpl_cli.api.vaastav import VaastavClient, make_vaastav_fetcher
+        from fpl_cli.api.historical import make_historical_provider
 
-        async with FPLClient() as fpl_client, make_vaastav_fetcher() as fetcher, VaastavClient(fetcher) as vaastav:
+        async with FPLClient() as fpl_client, make_historical_provider() as historical:
             try:
                 current_players = await fpl_client.get_players()
                 current_codes = {p.code for p in current_players}
-                all_profiles = await vaastav.get_all_player_histories()
+                all_profiles = await historical.get_all_player_histories()
                 relevant = {
                     code: profile
                     for code, profile in all_profiles.items()

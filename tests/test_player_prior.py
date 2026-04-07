@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from fpl_cli.api.vaastav import PlayerProfile, SeasonHistory
+from fpl_cli.api.historical_types import PlayerProfile, SeasonHistory
 from fpl_cli.models.player import PlayerPosition
 from fpl_cli.services.player_prior import (
     CUTOFF_GW,
@@ -20,7 +20,6 @@ from fpl_cli.services.player_prior import (
     load_cached_priors,
 )
 from tests.conftest import make_player
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -241,7 +240,7 @@ class TestGeneratePlayerPrior:
 class TestPriorCache:
     def test_save_and_load_roundtrip(self, tmp_path, monkeypatch):
         monkeypatch.setattr("fpl_cli.services.player_prior.PRIOR_CONFIG_PATH", tmp_path / "prior.yaml")
-        monkeypatch.setattr("fpl_cli.services.player_prior.vaastav_season", lambda: "2025-26")
+        monkeypatch.setattr("fpl_cli.services.player_prior.season_label", lambda: "2025-26")
 
         priors = {
             1: PlayerPrior(prior_strength=0.75, confidence=0.58, source="history"),
@@ -258,7 +257,7 @@ class TestPriorCache:
 
     def test_stale_season_returns_none(self, tmp_path, monkeypatch):
         monkeypatch.setattr("fpl_cli.services.player_prior.PRIOR_CONFIG_PATH", tmp_path / "prior.yaml")
-        monkeypatch.setattr("fpl_cli.services.player_prior.vaastav_season", lambda: "2025-26")
+        monkeypatch.setattr("fpl_cli.services.player_prior.season_label", lambda: "2025-26")
 
         priors = {1: PlayerPrior(prior_strength=0.5, confidence=0.5, source="history")}
         _save_prior_cache(priors, "2024-25", 3)  # Wrong season
@@ -266,7 +265,7 @@ class TestPriorCache:
 
     def test_stale_gw_returns_none(self, tmp_path, monkeypatch):
         monkeypatch.setattr("fpl_cli.services.player_prior.PRIOR_CONFIG_PATH", tmp_path / "prior.yaml")
-        monkeypatch.setattr("fpl_cli.services.player_prior.vaastav_season", lambda: "2025-26")
+        monkeypatch.setattr("fpl_cli.services.player_prior.season_label", lambda: "2025-26")
 
         priors = {1: PlayerPrior(prior_strength=0.5, confidence=0.5, source="history")}
         _save_prior_cache(priors, "2025-26", 3)

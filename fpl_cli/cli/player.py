@@ -167,11 +167,11 @@ def player_command(
                     tasks.extend(_fetch_detail(p.id) for p in display)
                 else:
                     tasks.extend(_fetch_detail(p.id) for p in display if p.id in scored_pids)
-                async def _gather_with_vaastav():
+                async def _gather_with_historical():
                     if history:
-                        from fpl_cli.api.vaastav import VaastavClient, make_vaastav_fetcher
-                        async with make_vaastav_fetcher() as fetcher, VaastavClient(fetcher) as vaastav:
-                            tasks.extend(_fetch_history(p.id, p.code, vaastav) for p in display)
+                        from fpl_cli.api.historical import make_historical_provider
+                        async with make_historical_provider() as historical:
+                            tasks.extend(_fetch_history(p.id, p.code, historical) for p in display)
                             return await _gather_tasks()
                     return await _gather_tasks()
 
@@ -185,7 +185,7 @@ def player_command(
                             return await asyncio.gather(*tasks, *us_tasks, return_exceptions=True)
                     return await asyncio.gather(*tasks, return_exceptions=True) if tasks else []
 
-                results = await _gather_with_vaastav()
+                results = await _gather_with_historical()
 
                 for r in results:
                     if isinstance(r, BaseException):
