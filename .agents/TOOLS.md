@@ -28,7 +28,7 @@ Errors use `emit_json_error()` with `{"command", "error"}` shape.
 | `status` | Show FPL gameweek status and upcoming deadlines | Yes | General | No | direct-api |
 | `fixtures` | Show fixtures for a gameweek | Yes | General | No | direct-api |
 | `player` | Look up a player's stats, xG, ownership and fixture run | Yes | General | No | direct-api |
-| `stats` | List players with filtering and sorting | Yes | General | No | direct-api |
+| `stats` | List players with filtering and sorting. `--value` adds quality/value per £m columns; `--window N` sets rolling lookback (3-10) for `rolling_pts_per_m` | Yes | General | No | direct-api |
 | `history` | Show historical player performance across seasons | Yes | General | No | direct-api |
 | `league` | Show live league standings for Classic and Draft leagues | No | General | No | direct-api |
 | `fdr` | Analyse fixture difficulty - easy runs, blanks, doubles | Yes | General | No | via-agent |

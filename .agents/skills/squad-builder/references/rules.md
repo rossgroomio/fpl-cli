@@ -33,9 +33,9 @@ After building, note how many of the user's current players (if known) appear in
 ## Value-for-Money
 Available in `fpl player --format json` output when Understat data exists for the player:
 - **quality_score** (0-100): Player output quality normalised against positional ceiling. Form and PPG weighted heavily - measures "current FPL points production rate."
-- **value_score** (quality_score / price per GBPm): Within-position budget efficiency. Higher = more output per pound.
-- When choosing between similarly-ranked candidates at the same position, prefer higher `value_score` to free budget for other slots.
-- `value_score` is not meaningful for cross-position comparison (positional ceilings differ).
+- **quality_per_m** (quality_score / price per GBPm): Within-position budget efficiency. Higher = more output per pound.
+- When choosing between similarly-ranked candidates at the same position, prefer higher `quality_per_m` to free budget for other slots.
+- `quality_per_m` is not meaningful for cross-position comparison (positional ceilings differ).
 - Both fields are `null` for players without Understat data - do not penalise or exclude these players, use other signals instead.
 - **Free Hit note:** Free Hit uses `fpl allocate --horizon 1 --bench-discount 0.01` for a fixture-adjusted, single-GW optimal squad. The solver output is the primary starting point.
 

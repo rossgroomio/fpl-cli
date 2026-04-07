@@ -119,10 +119,10 @@ Issue all reads and CLI commands in a **single parallel tool-call block**:
 - `fpl stats -p FWD -s form --min-minutes 450 -n 15 --available-only --format json`
 - `fpl stats -p DEF -s total_points --min-minutes 450 -n 15 --available-only --format json`
 - `fpl stats -p GK -s points_per_game --min-minutes 450 -n 8 --available-only --format json`
-- `fpl stats --value -p MID -s value_score --min-minutes 450 -n 15 --available-only --format json` (underpriced mids by underlying performance per £m)
-- `fpl stats --value -p FWD -s value_score --min-minutes 450 -n 15 --available-only --format json`
-- `fpl stats --value -p DEF -s value_score --min-minutes 450 -n 15 --available-only --format json`
-- `fpl stats --value -p GK -s value_score --min-minutes 450 -n 8 --available-only --format json`
+- `fpl stats --value -p MID -s quality_per_m --min-minutes 450 -n 15 --available-only --format json` (underpriced mids by underlying performance per £m)
+- `fpl stats --value -p FWD -s quality_per_m --min-minutes 450 -n 15 --available-only --format json`
+- `fpl stats --value -p DEF -s quality_per_m --min-minutes 450 -n 15 --available-only --format json`
+- `fpl stats --value -p GK -s quality_per_m --min-minutes 450 -n 8 --available-only --format json`
 - `fpl stats -s now_cost -r --min-minutes 450 -n 15 --available-only --format json` (cheapest playing options)
 - `fpl stats -s form --min-minutes 315 -n 20 --available-only --format json` (in-form across positions)
 - `fpl stats -s transfers_in_event -n 15 --format json` (transfer momentum)
@@ -144,7 +144,7 @@ Skip missing optional sources gracefully. Store all results for Phase B2.
 ## Phase B2: Candidate Shortlisting (orchestrator, inline)
 No sub-agent needed. The orchestrator already has all Phase B JSON. Extract candidate lists per position:
 
-1. Parse the 4 positional `fpl stats` outputs (MID/FWD/DEF/GK) + 4 `value_score` outputs + form + cheapest
+1. Parse the 4 positional `fpl stats` outputs (MID/FWD/DEF/GK) + 4 `quality_per_m` outputs + form + cheapest
 2. Deduplicate players appearing in multiple lists
 3. Add any player names from scout reports / previews not already in stats
 4. Note which players appear in the `fpl allocate` solver output (JSON field is `web_name`, not `name`)
@@ -152,10 +152,10 @@ No sub-agent needed. The orchestrator already has all Phase B JSON. Extract cand
 
 | Position | Target candidates | Primary stats sources |
 |----------|------------------|-----------------------|
-| GK | 4-6 | GK ppg, GK value_score |
-| DEF | 8-10 | DEF total_points, DEF value_score, cheapest |
-| MID | 8-10 | MID xGI, MID value_score, form, transfers_in |
-| FWD | 6-8 | FWD form, FWD value_score, cheapest |
+| GK | 4-6 | GK ppg, GK quality_per_m |
+| DEF | 8-10 | DEF total_points, DEF quality_per_m, cheapest |
+| MID | 8-10 | MID xGI, MID quality_per_m, form, transfers_in |
+| FWD | 6-8 | FWD form, FWD quality_per_m, cheapest |
 
 Each candidate entry: `{name, team, position, in_allocator_squad: bool}`.
 
@@ -177,10 +177,10 @@ Agent tool parameters (per agent):
 
 | Agent | Stats sources | pFDR column | Allocator picks |
 |-------|--------------|------------|-----------------|
-| GK | GK ppg, GK value_score | DEF | GK entries from allocator |
-| DEF | DEF total_points, DEF value_score | DEF | DEF entries from allocator |
-| MID | MID xGI, MID value_score | ATK | MID entries from allocator |
-| FWD | FWD form, FWD value_score | ATK | FWD entries from allocator |
+| GK | GK ppg, GK quality_per_m | DEF | GK entries from allocator |
+| DEF | DEF total_points, DEF quality_per_m | DEF | DEF entries from allocator |
+| MID | MID xGI, MID quality_per_m | ATK | MID entries from allocator |
+| FWD | FWD form, FWD quality_per_m | ATK | FWD entries from allocator |
 
 Cross-positional data (form, cheapest, transfers_in, price-history, captain) goes to Phase D assembler, not position agents.
 
@@ -207,8 +207,8 @@ Include all of this in the prompt field, populated with position-specific data:
    {this position's primary stat output}
 
    === fpl stats: {POSITION} value score ===
-   {this position's value_score output}
-   Players ranked by underlying performance (Understat xG/xA) per GBPm. High value_score = outperforming price tag.
+   {this position's quality_per_m output}
+   Players ranked by underlying performance (Understat xG/xA) per GBPm. High quality_per_m = outperforming price tag.
 
    === fpl allocate: {POSITION} picks ===
    {only this position's entries from allocator output, including effective_price}
@@ -244,13 +244,13 @@ Include all of this in the prompt field, populated with position-specific data:
    Run `fpl player "{name}" -f -H` **in parallel** for all candidates in your list.
    For season-start modes with no current-season data, also use `fpl history` data passed in context.
 
-7. **Scoring:** Score each candidate against the mode-specific criteria from rules. Use quality_score and value_score when available (null for players without Understat data - don't penalise).
+7. **Scoring:** Score each candidate against the mode-specific criteria from rules. Use quality_score and quality_per_m when available (null for players without Understat data - don't penalise).
 
 8. **Return format:** Return a structured ranked list. Per candidate:
    ```
    {rank}. {name} ({team}) - GBP{effective_price}m
       Form: {form} | PPG: {ppg} | Minutes: {minutes}
-      Quality: {quality_score}/100 | Value: {value_score}
+      Quality: {quality_score}/100 | Value: {quality_per_m}
       Fixtures (next {horizon}): {condensed fixture run}
       Flags: {injury/suspension/rotation risk, if any}
       Allocator pick: {yes/no}

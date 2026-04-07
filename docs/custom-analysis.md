@@ -307,7 +307,13 @@ Available via `fpl stats --value` and `fpl player` when Understat data exists.
 
 **quality_score** (0-100): Normalised player output quality using `VALUE_QUALITY_WEIGHTS`. Weights form and PPG heavily to capture current FPL points production rate. GK/DEF use a defensive variant (dc_per_90 replaces attacking xG stats).
 
-**value_score**: `quality_score / price` (per £m). Within-position budget efficiency - higher means more output per pound. Not meaningful for cross-position comparison. Null when price is 0.
+**quality_per_m**: `quality_score / price` (per £m). Within-position budget efficiency - higher means more output per pound. Not meaningful for cross-position comparison. Null when price is 0.
+
+**pts_per_m**: `total_points / price` (per £m). Raw season points efficiency.
+
+**form_per_m**: `form / price` (per £m). Recent form efficiency.
+
+**rolling_pts_per_m**: Points per £m over the last N qualifying fixtures (configurable via `--window` on `fpl stats`, default from config). Captures recent form-adjusted value using actual points rather than model scores.
 
 ## Services Overview
 
