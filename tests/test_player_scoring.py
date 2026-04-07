@@ -5,11 +5,14 @@ import dataclasses
 import pytest
 
 from fpl_cli.models.player import PlayerPosition, PlayerStatus
+from fpl_cli.services.player_prior import PlayerPrior
 from fpl_cli.services.player_scoring import (
     ATTACKING_POSITIONS,
     DIFFERENTIAL_QUALITY_WEIGHTS,
+    GK_VALUE_CEILING,
     TARGET_CEILING,
     TARGET_QUALITY_WEIGHTS,
+    VALID_FORMATIONS,
     VALUE_CEILING,
     VALUE_QUALITY_WEIGHTS,
     WAIVER_QUALITY_WEIGHTS,
@@ -23,24 +26,23 @@ from fpl_cli.services.player_scoring import (
     build_fixture_matchups,
     build_player_evaluation,
     build_scoring_context,
-    prepare_scoring_data,
     calculate_bench_score,
     calculate_captain_score,
-    calculate_lineup_score,
-    select_starting_xi,
-    VALID_FORMATIONS,
     calculate_differential_score,
+    calculate_lineup_score,
     calculate_mins_factor,
     calculate_player_quality_score,
-    compute_form_trajectory,
-    compute_xgi_sustainability,
     calculate_target_score,
     calculate_waiver_score,
     compute_aggregate_matchup,
+    compute_form_trajectory,
+    compute_xgi_sustainability,
     normalise_score,
+    prepare_scoring_data,
+    select_starting_xi,
+    shrink_scores,
 )
 from tests.conftest import make_player
-
 
 # ---------------------------------------------------------------------------
 # Characterisation snapshot: pins exact output of all 5 formulas before refactor
@@ -532,13 +534,16 @@ class TestCalculateTargetScore:
         assert score == 60
 
     def test_gk_def_path(self):
-        """GK uses without_xgi weights, dc_per_90 active."""
-
+        """GK uses for_gk() weights: xGI zeroed, GK signals active. Score normalised to GK_TARGET_CEILING."""
+        # GK with no saves/xgc/cs data — only form+ppg+matchup contribute
+        # form: min(4.0*1.0, 5)=4.0, ppg: min(4.5*0.5, 4)=2.25
+        # matchup: 6.0*0.75*1.0=4.5 (mins_factor=min(1800/1760,1)=1.0)
+        # raw=10.75, normalise(10.75, GK_TARGET_CEILING=30.4) = round(35.36) = 35
         eval, _ = build_player_evaluation(
             {
                 "position": "GK",
                 "npxG_per_90": 0.0, "xGChain_per_90": 0.0, "xGI_per_90": 0.0,
-                "form": 4.0, "ppg": 4.5, "dc_per_90": 3.0,
+                "form": 4.0, "ppg": 4.5,
                 "GI_minus_xGI": 0.0,
                 "minutes": 1800, "appearances": 22,
             },
@@ -546,7 +551,7 @@ class TestCalculateTargetScore:
             positional_fdr=3.0,
         )
         score = calculate_target_score(eval, next_gw_id=20)
-        assert score == 40
+        assert score == 35
 
     def test_zero_minutes(self):
         """Player with 0 appearances: mins_factor=0, matchup zeroed."""
@@ -860,9 +865,9 @@ class TestThinWrappers:
         assert len(body) <= 10, f"Body has {len(body)} lines: {body}"
 
     def test_differential_is_thin(self):
-        """calculate_differential_score body is < 10 lines."""
+        """calculate_differential_score body stays compact (ceiling selection + delegate)."""
         body = self._body_lines(calculate_differential_score)
-        assert len(body) <= 10, f"Body has {len(body)} lines: {body}"
+        assert len(body) <= 12, f"Body has {len(body)} lines: {body}"
 
     def test_waiver_has_not_regrown(self):
         """calculate_waiver_score stays compact (delegates shared flow to raw)."""
@@ -1361,8 +1366,9 @@ class TestPrepareScoringData:
 
     async def test_include_understat_requires_include_players(self):
         """include_understat=True without include_players raises ValueError."""
-        import pytest
         from unittest.mock import AsyncMock
+
+        import pytest
 
         client = AsyncMock()
         with pytest.raises(ValueError, match="include_understat requires include_players"):
@@ -1444,8 +1450,8 @@ class TestBuildFixtureMatchups:
 
     def test_dgw_returns_two(self):
         """Team with two fixtures returns two FixtureMatchup objects."""
-        from tests.conftest import make_fixture
         from fpl_cli.services.matchup import build_team_fixture_map
+        from tests.conftest import make_fixture
 
         ctx = self._make_context()
         # Add second fixture for ARS
@@ -1489,8 +1495,8 @@ class TestBuildFixtureMatchups:
 
     def test_missing_opponent_in_team_map(self):
         """Opponent not in team_map produces opponent_short='???' and FDR fallback."""
-        from tests.conftest import make_fixture
         from fpl_cli.services.matchup import build_team_fixture_map
+        from tests.conftest import make_fixture
 
         ctx = self._make_context()
         # Fixture with away_team_id=99 not in team_map
@@ -1504,8 +1510,8 @@ class TestBuildFixtureMatchups:
 
     def test_missing_player_team_in_team_map(self):
         """Player team not in team_map produces empty team_short, FDR fallback."""
-        from tests.conftest import make_fixture
         from fpl_cli.services.matchup import build_team_fixture_map
+        from tests.conftest import make_fixture
 
         ctx = self._make_context()
         # Team 99 has a fixture but isn't in team_map
@@ -1521,9 +1527,9 @@ class TestComputeAggregateMatchup:
     """Tests for compute_aggregate_matchup helper."""
 
     def _make_context(self, *, with_gw_maps: bool = True):
+        from fpl_cli.services.matchup import build_gw_fixture_maps, build_team_fixture_map
         from fpl_cli.services.team_ratings import TeamRating, TeamRatingsService
         from tests.conftest import make_fixture, make_team
-        from fpl_cli.services.matchup import build_gw_fixture_maps, build_team_fixture_map
 
         teams = [
             make_team(id=1, name="Arsenal", short_name="ARS"),
@@ -2229,6 +2235,7 @@ class TestPrepareHistoryFetch:
     async def test_include_prior_populates_player_priors(self):
         """include_prior=True populates ScoringData.player_priors."""
         from unittest.mock import patch
+
         from fpl_cli.services.player_prior import PlayerPrior
 
         client = self._make_client()
@@ -2253,9 +2260,6 @@ class TestPrepareHistoryFetch:
 # ---------------------------------------------------------------------------
 # shrink_scores
 # ---------------------------------------------------------------------------
-
-from fpl_cli.services.player_prior import PlayerPrior
-from fpl_cli.services.player_scoring import shrink_scores
 
 
 class TestShrinkScores:
@@ -2699,3 +2703,177 @@ class TestSelectStartingXI:
         result = select_starting_xi(scored)
         assert len(result["starting_xi"]) == 11
         assert len(result["bench"]) == 4
+
+
+# ---------------------------------------------------------------------------
+# GK scoring path — end-to-end integration
+# ---------------------------------------------------------------------------
+
+
+class TestGKScoringPath:
+    """GK-specific scoring path: for_gk() weights, GK signals, GK ceilings.
+
+    Reference GK: form=5.0, ppg=4.0, minutes=1800, appearances=22
+    GK signals (via enrichment): saves_per_90=3.5, xgc_quality=1.2, cs_rate=0.4
+    Signal contributions (TARGET weights):
+      saves: min(3.5*1.5, 6)=5.25, xgc: min(1.2*3, 3.5)=3.5, cs: min(0.4*8, 4)=3.2
+      form: min(5.0*1.0, 5)=5.0, ppg: min(4.0*0.5, 4)=2.0 → quality raw=18.95
+    """
+
+    @staticmethod
+    def _gk_matchup():
+        return FixtureMatchup(
+            opponent_short="SHU", is_home=True, opponent_fdr=2.5,
+            matchup_score=6.0,
+        )
+
+    @staticmethod
+    def _gk_player():
+        return make_player(
+            id=300, web_name="CharGK", team_id=3,
+            position=PlayerPosition.GOALKEEPER,
+            form=5.0, points_per_game=4.0, minutes=1800, total_points=88,
+            expected_goals=0.0, expected_assists=0.0,
+        )
+
+    def _build_gk(self):
+        eval_, identity = build_player_evaluation(
+            self._gk_player(),
+            enrichment={
+                "gk_saves_per_90": 3.5,
+                "gk_xgc_quality": 1.2,
+                "gk_cs_rate": 0.4,
+                "team_short": "LIV",
+            },
+            fixture_matchups=[self._gk_matchup()],
+            matchup_avg_3gw=6.0, positional_fdr=2.5,
+        )
+        return eval_, identity
+
+    def test_gk_target_score(self):
+        """GK target: quality raw=18.95 + matchup 4.5 = 23.45 → normalise(23.45, 30.4)=77."""
+        eval_, _ = self._build_gk()
+        assert calculate_target_score(eval_, next_gw_id=20) == 77
+
+    def test_gk_target_vs_def_score(self):
+        """GK target uses for_gk() and GK_TARGET_CEILING, scoring differently from DEF."""
+        gk_eval, _ = self._build_gk()
+        # DEF characterisation from TestCharacterisationSnapshot._build_def
+        def_eval, _ = build_player_evaluation(
+            make_player(
+                id=200, web_name="CharDEF", team_id=2,
+                position=PlayerPosition.DEFENDER,
+                form=4.5, points_per_game=4.0, minutes=1600, total_points=80,
+                expected_goals=1.0, expected_assists=0.5,
+            ),
+            enrichment={"dc_per_90": 3.5, "team_short": "CHE"},
+            fixture_matchups=[FixtureMatchup(
+                opponent_short="BOU", is_home=False, opponent_fdr=3.5, matchup_score=5.5,
+            )],
+            matchup_avg_3gw=5.5, positional_fdr=3.5,
+        )
+        gk_score = calculate_target_score(gk_eval, next_gw_id=20)
+        def_score = calculate_target_score(def_eval, next_gw_id=20)
+        assert gk_score != def_score  # distinct scoring paths
+
+    def test_gk_signals_flow_through_evaluation(self):
+        """GK signals propagate from enrichment into PlayerEvaluation."""
+        eval_, _ = self._build_gk()
+        assert eval_.gk_saves_per_90 == pytest.approx(3.5)
+        assert eval_.gk_xgc_quality == pytest.approx(1.2)
+        assert eval_.gk_cs_rate == pytest.approx(0.4)
+
+    def test_gk_quality_dict_includes_signals(self):
+        """as_quality_dict() includes all three GK keys."""
+        eval_, _ = self._build_gk()
+        q = eval_.as_quality_dict()
+        assert q["gk_saves_per_90"] == pytest.approx(3.5)
+        assert q["gk_xgc_quality"] == pytest.approx(1.2)
+        assert q["gk_cs_rate"] == pytest.approx(0.4)
+
+    def test_gk_zero_stats_lower_than_with_signals(self):
+        """GK with no save/xgc/cs data scores lower than one with good signals."""
+        with_signals_eval, _ = self._build_gk()
+        no_signals_eval, _ = build_player_evaluation(
+            self._gk_player(),
+            enrichment={"gk_saves_per_90": 0.0, "gk_xgc_quality": 0.0, "gk_cs_rate": 0.0, "team_short": "LIV"},
+            fixture_matchups=[self._gk_matchup()],
+            matchup_avg_3gw=6.0, positional_fdr=2.5,
+        )
+        with_score = calculate_target_score(with_signals_eval, next_gw_id=20)
+        without_score = calculate_target_score(no_signals_eval, next_gw_id=20)
+        assert with_score > without_score
+
+    def test_gk_xgc_quality_guards_zero_minutes(self):
+        """GK enrichment: 0 minutes → gk_xgc_quality=0.0 (not 2.0 from inversion)."""
+        from fpl_cli.services.player_scoring import build_scoring_enrichment
+
+        gk = make_player(
+            id=999, web_name="ZeroMin", team_id=1,
+            position=PlayerPosition.GOALKEEPER,
+            form=4.0, points_per_game=4.0, minutes=0, total_points=0,
+            saves_per_90=0.0, expected_goals_conceded=0.0, clean_sheets=0,
+        )
+        enrichment = build_scoring_enrichment(gk, us_match={}, team_short="TST", gw_history=None, next_gw_id=20)
+        assert enrichment["gk_xgc_quality"] == 0.0
+
+    def test_gk_cs_rate_no_div_zero(self):
+        """GK enrichment: 0 appearances → no ZeroDivisionError (max(appearances, 1) guard)."""
+        from fpl_cli.services.player_scoring import build_scoring_enrichment
+
+        gk = make_player(
+            id=998, web_name="ZeroApp", team_id=1,
+            position=PlayerPosition.GOALKEEPER,
+            form=4.0, points_per_game=0.0, minutes=0, total_points=0,
+            saves_per_90=0.0, expected_goals_conceded=0.0, clean_sheets=0,
+        )
+        enrichment = build_scoring_enrichment(gk, us_match={}, team_short="TST", gw_history=None, next_gw_id=20)
+        assert enrichment["gk_cs_rate"] == 0.0  # 0 cs / max(0, 1) = 0
+
+    def test_def_target_score_unchanged(self):
+        """Regression guard: DEF path (without_xgi) produces same score as before."""
+        from tests.test_player_scoring import TestCharacterisationSnapshot
+        snap = TestCharacterisationSnapshot()
+        def_eval, _ = snap._build_def()
+        assert calculate_target_score(def_eval, next_gw_id=20) == 40
+
+    def test_gk_value_score(self):
+        """GK value path: for_gk() from VALUE_QUALITY_WEIGHTS, normalised to GK_VALUE_CEILING.
+
+        VALUE form=StatWeight(1.3,7), ppg=StatWeight(0.8,5):
+        saves 5.25 + xgc 3.5 + cs 3.2 + form min(6.5,7)=6.5 + ppg min(3.2,5)=3.2 = 21.65
+        normalise(21.65, 28.2)=77
+        """
+        from fpl_cli.services.player_scoring import compute_quality_value
+
+        gk = make_player(
+            id=301, web_name="ValGK", team_id=3,
+            position=PlayerPosition.GOALKEEPER,
+            form=5.0, points_per_game=4.0, minutes=1800, total_points=88,
+            now_cost=50,
+            saves_per_90=3.5, expected_goals_conceded=11.54, clean_sheets=9,
+        )
+        # expected_goals_conceded=11.54 → xgc_per_90=(11.54/1800)*90=0.577 → quality=1.423 → capped 3.5
+        # clean_sheets=9, appearances=88/4.0=22 → cs_rate=9/22=0.409 → cs=min(3.27,4)=3.27
+        # saves_per_90=3.5 → saves=5.25
+        # form=min(6.5,7)=6.5, ppg=min(3.2,5)=3.2 → raw=5.25+3.5+3.27+6.5+3.2=21.72
+        # normalise(21.72, 28.2)=77
+        score, _ = compute_quality_value(gk, us_match={}, next_gw_id=20, team_short="LIV")
+        assert score == 77
+
+    def test_gk_value_uses_gk_ceiling_not_value_ceiling(self):
+        """GK value score is normalised against GK_VALUE_CEILING, not VALUE_CEILING."""
+        from fpl_cli.services.player_scoring import compute_quality_value
+
+        gk = make_player(
+            id=302, web_name="CeilGK", team_id=3,
+            position=PlayerPosition.GOALKEEPER,
+            form=5.0, points_per_game=4.0, minutes=1800, total_points=88,
+            now_cost=50,
+            saves_per_90=3.5, expected_goals_conceded=11.54, clean_sheets=9,
+        )
+        gk_score, _ = compute_quality_value(gk, us_match={}, next_gw_id=20, team_short="LIV")
+        # If normalised against VALUE_CEILING (24.3), score would be 89+
+        # normalise against GK_VALUE_CEILING (28.2) gives 77
+        assert gk_score != normalise_score(21.72, VALUE_CEILING)
+        assert gk_score == pytest.approx(normalise_score(21.72, GK_VALUE_CEILING), abs=1)

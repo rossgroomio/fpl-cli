@@ -305,7 +305,9 @@ Stored in `config/team_ratings.yaml`.
 
 Available via `fpl stats --value` and `fpl player` when Understat data exists.
 
-**quality_score** (0-100): Normalised player output quality using `VALUE_QUALITY_WEIGHTS`. Weights form and PPG heavily to capture current FPL points production rate. GK/DEF use a defensive variant (dc_per_90 replaces attacking xG stats).
+**quality_score** (0-100): Normalised player output quality using `VALUE_QUALITY_WEIGHTS`. Weights form and PPG heavily to capture current FPL points production rate. Position-specific scoring paths diverge for defensive players:
+- **GK**: dedicated signals via `for_gk()` weights — saves per 90, defensive quality (inverted xGC/90, range 0-2), and clean sheet rate. Normalised against `GK_VALUE_CEILING` (28.2).
+- **DEF**: `dc_per_90` (defensive contribution rate) replaces attacking xG stats via `without_xgi()`. Normalised against `VALUE_CEILING` (24.3).
 
 **quality_per_m**: `quality_score / price` (per £m). Within-position budget efficiency - higher means more output per pound. Not meaningful for cross-position comparison. Null when price is 0.
 

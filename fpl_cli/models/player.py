@@ -97,6 +97,8 @@ class Player(BaseModel):
     defensive_contribution: int = 0
     defensive_contribution_per_90: float = 0.0
     penalties_saved: int = 0
+    saves: int = 0
+    saves_per_90: float = 0.0
 
     # Value metrics
     value_form: float = 0.0
