@@ -73,7 +73,7 @@ def targets_command(min_own: float, min_minutes: int, output_format: str):
             table.add_column("Matchup", justify="right")
             table.add_column("vs Next")
             table.add_column("Score", justify="right")
-            table.add_column("Rel", justify="right")
+            table.add_column("Avail", justify="right")
 
             for p in all_targets[:15]:
                 # Color ownership by tier

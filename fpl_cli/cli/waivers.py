@@ -88,7 +88,7 @@ def waivers_command(output_format: str):
             table.add_column("Team")
             table.add_column("Pos")
             table.add_column("Form", justify="right")
-            table.add_column("Rel", justify="right")
+            table.add_column("Avail", justify="right")
             table.add_column("Drop")
             table.add_column("Reasons")
 

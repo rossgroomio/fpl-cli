@@ -187,7 +187,7 @@ def _render_table(data: dict, finances, sell_price: float | None, fmt) -> None:
     table.add_column("Fixtures")
     table.add_column("Form", justify="right")
     table.add_column("Status")
-    table.add_column("Rel", justify="right")
+    table.add_column("Avail", justify="right")
     table.add_column("Quality", justify="right")
     if show_price:
         table.add_column("Quality/£m", justify="right")

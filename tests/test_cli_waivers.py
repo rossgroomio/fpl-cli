@@ -154,4 +154,4 @@ class TestWaiversReliabilityRendering:
         # Default mock target has no reliability key
         result = _run_waivers(agent_result=agent_result)
         assert result.exit_code == 0
-        assert "Rel" in result.output
+        assert "Avail" in result.output

@@ -97,4 +97,4 @@ class TestTargetsReliabilityRendering:
     def test_reliability_none_shows_dash(self):
         result = _run_targets()
         assert result.exit_code == 0
-        assert "Rel" in result.output
+        assert "Avail" in result.output
