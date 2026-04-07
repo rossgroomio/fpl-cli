@@ -15,7 +15,7 @@ Agents inherit `fpl_cli/agents/base.py:Agent`, implement `async run(context: dic
 
 External consumers: `BenchOrderAgent`, `StartingXIAgent`, and `TransferEvalAgent` are imported directly by the gw-prep skill (Obsidian vault) via standalone scripts (`bench_order.py`, `starting_xi.py`, `transfer_eval.py`) that run in fpl-cli's venv. Changes to any agent's interface or import path will break those scripts.
 
-API clients in `fpl_cli/api/`: FPLClient (main API, caches `bootstrap-static/`), fpl_draft, perplexity (needs `PERPLEXITY_API_KEY`), understat (scrapes understat.com for npxG/xGChain/xGBuildup), vaastav (fetches historical CSV data from vaastav/Fantasy-Premier-League GitHub repo - 3 seasons, keyed on `element_code`). Scraper in `fpl_cli/scraper/` (needs `FPL_EMAIL`, `FPL_PASSWORD`). Jinja2 templates in `templates/`.
+API clients in `fpl_cli/api/`: FPLClient (main API, caches `bootstrap-static/`), fpl_draft, perplexity (needs `PERPLEXITY_API_KEY`), understat (scrapes understat.com for npxG/xGChain/xGBuildup), historical data via dual-source architecture: VaastavClient (3 historical seasons 2022-25, keyed on `element_code`) + CoreInsightsClient (current season 2025-26+), composed by `HistoricalDataProvider` (`make_historical_provider()`). Shared types in `historical_types.py` (SeasonHistory, PlayerProfile, GwTrendProfile). Season helper: `season_label()` (alias `vaastav_season()`). Scraper in `fpl_cli/scraper/` (needs `FPL_EMAIL`, `FPL_PASSWORD`). Jinja2 templates in `templates/`.
 
 ### Models (non-obvious aliases)
 - `Player`: `element_type` = position, `team` = team_id, `code` = stable cross-season ID (element_code). Prices in £0.1m units (100 = £10.0m)

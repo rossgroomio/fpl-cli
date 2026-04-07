@@ -15,7 +15,7 @@ Fantasy Premier League analysis from the terminal. Classic and Draft formats. Fi
 
 ## Features
 
-- **Multi-source data** - FPL API, Draft API, Understat (npxG/xGChain), vaastav historical dataset, and football-data.org in one place.
+- **Multi-source data** - FPL API, Draft API, Understat (npxG/xGChain), historical data (vaastav 2022-25 + Core-Insights 2025-26), and football-data.org in one place.
 - **Player scouting** - Filter by any stat, track xG trends, spot underperformers, check fixture runs.
 - **Fixture intelligence** - Bayesian difficulty ratings from actual match results, blank/double GW detection, squad exposure analysis.
 - **Custom analysis** - Captain picks, transfer targets, differentials, waivers, and ILP-optimal squad allocation. Opt-in, off by default.
@@ -162,7 +162,7 @@ $ pytest tests/          # Tests
 ```
 
 > [!NOTE]
-> Football data provided by the [Football-Data.org API](https://www.football-data.org/). Player and fixture data is property of the Premier League. Expected goals data is property of [Understat](https://understat.com). Historical data from [vaastav/Fantasy-Premier-League](https://github.com/vaastav/Fantasy-Premier-League) (MIT). This tool fetches data at runtime and does not redistribute third-party data.
+> Football data provided by the [Football-Data.org API](https://www.football-data.org/). Player and fixture data is property of the Premier League. Expected goals data is property of [Understat](https://understat.com). Historical data from [vaastav/Fantasy-Premier-League](https://github.com/vaastav/Fantasy-Premier-League) (MIT, 2022-25) and [Core-Insights/Fantasy-Premier-League](https://github.com/Core-Insights/Fantasy-Premier-League) (2025-26+). This tool fetches data at runtime and does not redistribute third-party data.
 
 > [!WARNING]
 > Browser scraping (`fpl squad sell-prices`) uses your FPL login to read sell prices. Automated access may violate FPL website terms - use at your own risk.
