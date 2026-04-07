@@ -203,10 +203,12 @@ class TransferEvalAgent(Agent):
             if history:
                 enrichment["form_trajectory"] = compute_form_trajectory(history, next_gw_id)
 
+        reliability: float | None = None
         if player_priors:
             prior = player_priors.get(player.id)
             if prior:
                 enrichment["prior_confidence"] = prior.confidence
+                reliability = prior.reliability
 
         evaluation, identity = build_player_evaluation(
             player,
@@ -250,6 +252,7 @@ class TransferEvalAgent(Agent):
         target_entry["form"] = evaluation.form
         target_entry["status"] = evaluation.status
         target_entry["chance_of_playing"] = evaluation.chance_of_playing
+        target_entry["reliability"] = reliability
         target_entry["web_name"] = identity.web_name
         target_entry["team_short"] = identity.team_short
         target_entry["price"] = identity.price
@@ -298,4 +301,5 @@ class TransferEvalAgent(Agent):
             "quality_per_m": target_entry["quality_per_m"],
             "rolling_pts_per_m": target_entry["rolling_pts_per_m"],
             "rolling_fixture_count": target_entry["rolling_fixture_count"],
+            "reliability": target_entry["reliability"],
         }
