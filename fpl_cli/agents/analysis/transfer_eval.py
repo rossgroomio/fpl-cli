@@ -7,10 +7,8 @@ from typing import TYPE_CHECKING, Any, TypedDict
 from fpl_cli.agents.base import Agent, AgentResult, AgentStatus
 from fpl_cli.api.fpl import FPLClient
 from fpl_cli.services.player_scoring import (
-    GK_VALUE_CEILING,
-    VALUE_CEILING,
-    VALUE_QUALITY_WEIGHTS,
     ScoringContext,
+    _value_weights_and_ceiling,
     apply_shrinkage,
     build_fixture_matchups,
     build_player_evaluation,
@@ -226,15 +224,7 @@ class TransferEvalAgent(Agent):
         quality_per_m: float | None = None
         if has_understat:
             q_dict = evaluation.as_quality_dict()
-            if player.position_name == "GK":
-                te_weights = VALUE_QUALITY_WEIGHTS.for_gk()
-                te_ceiling = GK_VALUE_CEILING
-            elif player.position_name == "DEF":
-                te_weights = VALUE_QUALITY_WEIGHTS.without_xgi()
-                te_ceiling = VALUE_CEILING
-            else:
-                te_weights = VALUE_QUALITY_WEIGHTS
-                te_ceiling = VALUE_CEILING
+            te_weights, te_ceiling = _value_weights_and_ceiling(player.position_name)
             mins_factor = calculate_mins_factor(player.minutes, player.appearances, next_gw_id)
             raw = calculate_player_quality_score(q_dict, te_weights, mins_factor)
             quality_score = normalise_score(raw, te_ceiling)

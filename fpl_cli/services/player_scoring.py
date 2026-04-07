@@ -180,6 +180,7 @@ VALUE_CEILING = 24.3
 
 # GK-specific ceilings — computed from GK signal caps (saves 6, xgc 3.5, cs 4)
 # plus position-appropriate form/ppg caps and matchup/ownership contributions.
+# Note: 1.38 = form_trajectory_max(1.2) * xgi_sustainability_max(1.15)
 # GK_TARGET: saves 6 + xgc 3.5 + cs 4 + form_cap(5)*1.38 + ppg_cap(4) + matchup 6
 GK_TARGET_CEILING = 30.4
 # GK_DIFFERENTIAL: saves 6 + xgc 3.5 + cs 4 + form_cap(7)*1.38 + ppg_cap(4) + ownership 5 + matchup 6
@@ -643,7 +644,8 @@ def calculate_player_quality_score(
 
     mins_factor scales per-90 attacking components (npxG, xGChain, xGI
     fallback, penalty_xG) to discount inflated rates from low-minutes
-    players. Form, ppg, and dc_per_90 are unscaled.
+    players. Form, ppg, dc_per_90, and GK signals (saves, xgc_quality,
+    cs_rate) are unscaled.
     """
     per90 = 0.0
 
@@ -832,13 +834,14 @@ def build_scoring_enrichment(
         (player.expected_goals + player.expected_assists) / minutes_safe * 90
     )
     enrichment["dc_per_90"] = player.defensive_contribution_per_90
-    enrichment["gk_saves_per_90"] = player.saves_per_90
-    if player.minutes > 0:
-        xgc_per_90 = (player.expected_goals_conceded / max(player.minutes, 1)) * 90
-        enrichment["gk_xgc_quality"] = max(0.0, 2.0 - xgc_per_90)
-    else:
-        enrichment["gk_xgc_quality"] = 0.0
-    enrichment["gk_cs_rate"] = player.clean_sheets / max(player.appearances, 1)
+    if player.position_name == "GK":
+        enrichment["gk_saves_per_90"] = player.saves_per_90
+        if player.minutes > 0:
+            xgc_per_90 = (player.expected_goals_conceded / player.minutes) * 90
+            enrichment["gk_xgc_quality"] = max(0.0, 2.0 - xgc_per_90)
+        else:
+            enrichment["gk_xgc_quality"] = 0.0
+        enrichment["gk_cs_rate"] = player.clean_sheets / max(player.appearances, 1)
 
     if gw_history:
         enrichment["form_trajectory"] = compute_form_trajectory(gw_history, next_gw_id)
@@ -849,6 +852,15 @@ def build_scoring_enrichment(
         enrichment["xgi_divergence"] = divergence
 
     return enrichment
+
+
+def _value_weights_and_ceiling(position: str) -> tuple[QualityWeights, float]:
+    """Select VALUE_QUALITY_WEIGHTS variant and ceiling for a position."""
+    if position == "GK":
+        return VALUE_QUALITY_WEIGHTS.for_gk(), GK_VALUE_CEILING
+    if position == "DEF":
+        return VALUE_QUALITY_WEIGHTS.without_xgi(), VALUE_CEILING
+    return VALUE_QUALITY_WEIGHTS, VALUE_CEILING
 
 
 @overload
@@ -901,15 +913,7 @@ def compute_quality_value(
 
     evaluation, _ = build_player_evaluation(player, enrichment=enrichment)
     q_dict = evaluation.as_quality_dict()
-    if player.position_name == "GK":
-        weights = VALUE_QUALITY_WEIGHTS.for_gk()
-        value_ceiling = GK_VALUE_CEILING
-    elif player.position_name == "DEF":
-        weights = VALUE_QUALITY_WEIGHTS.without_xgi()
-        value_ceiling = VALUE_CEILING
-    else:
-        weights = VALUE_QUALITY_WEIGHTS
-        value_ceiling = VALUE_CEILING
+    weights, value_ceiling = _value_weights_and_ceiling(player.position_name)
     mins_factor = calculate_mins_factor(player.minutes, player.appearances, next_gw_id)
     raw_score = calculate_player_quality_score(q_dict, weights, mins_factor)
     if raw:

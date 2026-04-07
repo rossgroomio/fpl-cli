@@ -4,12 +4,16 @@ from math import inf
 
 import pytest
 
-from fpl_cli.services.player_scoring import QualityWeights, StatWeight, calculate_player_quality_score
 from fpl_cli.services.player_scoring import (
     DIFFERENTIAL_QUALITY_WEIGHTS as DIFFERENTIAL_WEIGHTS,
+)
+from fpl_cli.services.player_scoring import (
     TARGET_QUALITY_WEIGHTS as TARGET_WEIGHTS,
+)
+from fpl_cli.services.player_scoring import (
     WAIVER_QUALITY_WEIGHTS as WAIVER_WEIGHTS,
 )
+from fpl_cli.services.player_scoring import StatWeight, calculate_player_quality_score
 
 
 @pytest.fixture

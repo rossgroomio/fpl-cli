@@ -5,12 +5,14 @@ import dataclasses
 import pytest
 
 from fpl_cli.models.player import PlayerPosition, PlayerStatus
+from fpl_cli.services.player_prior import PlayerPrior
 from fpl_cli.services.player_scoring import (
     ATTACKING_POSITIONS,
     DIFFERENTIAL_QUALITY_WEIGHTS,
     GK_VALUE_CEILING,
     TARGET_CEILING,
     TARGET_QUALITY_WEIGHTS,
+    VALID_FORMATIONS,
     VALUE_CEILING,
     VALUE_QUALITY_WEIGHTS,
     WAIVER_QUALITY_WEIGHTS,
@@ -24,24 +26,23 @@ from fpl_cli.services.player_scoring import (
     build_fixture_matchups,
     build_player_evaluation,
     build_scoring_context,
-    prepare_scoring_data,
     calculate_bench_score,
     calculate_captain_score,
-    calculate_lineup_score,
-    select_starting_xi,
-    VALID_FORMATIONS,
     calculate_differential_score,
+    calculate_lineup_score,
     calculate_mins_factor,
     calculate_player_quality_score,
-    compute_form_trajectory,
-    compute_xgi_sustainability,
     calculate_target_score,
     calculate_waiver_score,
     compute_aggregate_matchup,
+    compute_form_trajectory,
+    compute_xgi_sustainability,
     normalise_score,
+    prepare_scoring_data,
+    select_starting_xi,
+    shrink_scores,
 )
 from tests.conftest import make_player
-
 
 # ---------------------------------------------------------------------------
 # Characterisation snapshot: pins exact output of all 5 formulas before refactor
@@ -1365,8 +1366,9 @@ class TestPrepareScoringData:
 
     async def test_include_understat_requires_include_players(self):
         """include_understat=True without include_players raises ValueError."""
-        import pytest
         from unittest.mock import AsyncMock
+
+        import pytest
 
         client = AsyncMock()
         with pytest.raises(ValueError, match="include_understat requires include_players"):
@@ -1448,8 +1450,8 @@ class TestBuildFixtureMatchups:
 
     def test_dgw_returns_two(self):
         """Team with two fixtures returns two FixtureMatchup objects."""
-        from tests.conftest import make_fixture
         from fpl_cli.services.matchup import build_team_fixture_map
+        from tests.conftest import make_fixture
 
         ctx = self._make_context()
         # Add second fixture for ARS
@@ -1493,8 +1495,8 @@ class TestBuildFixtureMatchups:
 
     def test_missing_opponent_in_team_map(self):
         """Opponent not in team_map produces opponent_short='???' and FDR fallback."""
-        from tests.conftest import make_fixture
         from fpl_cli.services.matchup import build_team_fixture_map
+        from tests.conftest import make_fixture
 
         ctx = self._make_context()
         # Fixture with away_team_id=99 not in team_map
@@ -1508,8 +1510,8 @@ class TestBuildFixtureMatchups:
 
     def test_missing_player_team_in_team_map(self):
         """Player team not in team_map produces empty team_short, FDR fallback."""
-        from tests.conftest import make_fixture
         from fpl_cli.services.matchup import build_team_fixture_map
+        from tests.conftest import make_fixture
 
         ctx = self._make_context()
         # Team 99 has a fixture but isn't in team_map
@@ -1525,9 +1527,9 @@ class TestComputeAggregateMatchup:
     """Tests for compute_aggregate_matchup helper."""
 
     def _make_context(self, *, with_gw_maps: bool = True):
+        from fpl_cli.services.matchup import build_gw_fixture_maps, build_team_fixture_map
         from fpl_cli.services.team_ratings import TeamRating, TeamRatingsService
         from tests.conftest import make_fixture, make_team
-        from fpl_cli.services.matchup import build_gw_fixture_maps, build_team_fixture_map
 
         teams = [
             make_team(id=1, name="Arsenal", short_name="ARS"),
@@ -2233,6 +2235,7 @@ class TestPrepareHistoryFetch:
     async def test_include_prior_populates_player_priors(self):
         """include_prior=True populates ScoringData.player_priors."""
         from unittest.mock import patch
+
         from fpl_cli.services.player_prior import PlayerPrior
 
         client = self._make_client()
@@ -2257,9 +2260,6 @@ class TestPrepareHistoryFetch:
 # ---------------------------------------------------------------------------
 # shrink_scores
 # ---------------------------------------------------------------------------
-
-from fpl_cli.services.player_prior import PlayerPrior
-from fpl_cli.services.player_scoring import shrink_scores
 
 
 class TestShrinkScores:
@@ -2800,7 +2800,9 @@ class TestGKScoringPath:
             fixture_matchups=[self._gk_matchup()],
             matchup_avg_3gw=6.0, positional_fdr=2.5,
         )
-        assert calculate_target_score(with_signals_eval, next_gw_id=20) > calculate_target_score(no_signals_eval, next_gw_id=20)
+        with_score = calculate_target_score(with_signals_eval, next_gw_id=20)
+        without_score = calculate_target_score(no_signals_eval, next_gw_id=20)
+        assert with_score > without_score
 
     def test_gk_xgc_quality_guards_zero_minutes(self):
         """GK enrichment: 0 minutes → gk_xgc_quality=0.0 (not 2.0 from inversion)."""
