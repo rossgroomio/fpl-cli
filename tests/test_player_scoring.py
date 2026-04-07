@@ -33,6 +33,7 @@ from fpl_cli.services.player_scoring import (
     calculate_mins_factor,
     calculate_player_quality_score,
     compute_form_trajectory,
+    compute_xgi_sustainability,
     calculate_target_score,
     calculate_waiver_score,
     compute_aggregate_matchup,
@@ -1735,6 +1736,143 @@ class TestComputeFormTrajectory:
         result = compute_form_trajectory(history, current_gw=26)
         # After central removal: [1, 2, 9, 9, 2] -> rising slope -> multiplier > 1.0
         assert result > 1.0
+
+
+# ---------------------------------------------------------------------------
+# compute_xgi_sustainability
+# ---------------------------------------------------------------------------
+
+
+class TestComputeXgiSustainability:
+    """Tests for compute_xgi_sustainability()."""
+
+    @staticmethod
+    def _gw(
+        round_num: int,
+        goals: int = 0,
+        assists: int = 0,
+        xg: float = 0.0,
+        xa: float = 0.0,
+        minutes: int = 90,
+    ) -> dict:
+        return {
+            "round": round_num,
+            "goals_scored": goals,
+            "assists": assists,
+            "expected_goals": str(xg),  # FPL API returns strings
+            "expected_assists": str(xa),
+            "minutes": minutes,
+        }
+
+    def test_overperformer_mid_clamped_to_minimum(self):
+        """MID with GI consistently +0.3/match above xGI -> multiplier 0.85."""
+        history = [self._gw(r, goals=1, xg=0.7) for r in range(20, 27)]
+        mult, div = compute_xgi_sustainability(history, current_gw=26, position="MID")
+        assert mult == pytest.approx(0.85, abs=0.001)
+        assert div == pytest.approx(0.3, abs=0.001)
+
+    def test_underperformer_fwd_clamped_to_maximum(self):
+        """FWD with GI consistently -0.3/match below xGI -> multiplier 1.15."""
+        history = [self._gw(r, xg=0.5, xa=0.3) for r in range(20, 27)]
+        mult, div = compute_xgi_sustainability(history, current_gw=26, position="FWD")
+        assert mult == pytest.approx(1.15, abs=0.001)
+        assert div == pytest.approx(-0.8, abs=0.001)
+
+    def test_neutral_mid_returns_one(self):
+        """MID matching xGI exactly -> multiplier 1.0."""
+        history = [self._gw(r, goals=1, xg=0.7, assists=0, xa=0.3) for r in range(20, 27)]
+        mult, div = compute_xgi_sustainability(history, current_gw=26, position="MID")
+        assert mult == pytest.approx(1.0, abs=0.001)
+        assert div == pytest.approx(0.0, abs=0.001)
+
+    def test_def_position_returns_neutral(self):
+        """DEF -> always (1.0, 0.0) regardless of history."""
+        history = [self._gw(r, goals=1, xg=0.1) for r in range(20, 27)]
+        assert compute_xgi_sustainability(history, current_gw=26, position="DEF") == (1.0, 0.0)
+
+    def test_gk_position_returns_neutral(self):
+        """GK -> always (1.0, 0.0) regardless of history."""
+        history = [self._gw(r, goals=1, xg=0.1) for r in range(20, 27)]
+        assert compute_xgi_sustainability(history, current_gw=26, position="GK") == (1.0, 0.0)
+
+    def test_fewer_than_4_qualifying_returns_neutral(self):
+        history = [self._gw(r, goals=1, xg=0.1) for r in range(24, 27)]
+        assert compute_xgi_sustainability(history, current_gw=26, position="MID") == (1.0, 0.0)
+
+    def test_empty_history_returns_neutral(self):
+        assert compute_xgi_sustainability([], current_gw=26, position="MID") == (1.0, 0.0)
+
+    def test_all_zero_minute_gws_returns_neutral(self):
+        history = [self._gw(r, goals=1, xg=0.1, minutes=0) for r in range(20, 27)]
+        assert compute_xgi_sustainability(history, current_gw=26, position="MID") == (1.0, 0.0)
+
+    def test_extreme_overperformance_clamped(self):
+        """Divergence +1.0/match -> clamped to 0.85."""
+        history = [self._gw(r, goals=2, xg=0.5, xa=0.5) for r in range(20, 27)]
+        mult, _ = compute_xgi_sustainability(history, current_gw=26, position="MID")
+        assert mult == pytest.approx(0.85, abs=0.001)
+
+    def test_extreme_underperformance_clamped(self):
+        """Divergence -1.0/match -> clamped to 1.15."""
+        history = [self._gw(r, xg=1.5) for r in range(20, 27)]
+        mult, _ = compute_xgi_sustainability(history, current_gw=26, position="FWD")
+        assert mult == pytest.approx(1.15, abs=0.001)
+
+    def test_dgw_entries_both_count_as_qualifying(self):
+        """Two entries with same round (DGW) both consume window slots."""
+        # 6 GWs + 1 DGW (2 entries) = 8 entries, but only 7 most recent qualify.
+        # Critical: both DGW entries count and together shift the average.
+        history = [self._gw(r, xg=0.5) for r in range(19, 25)]  # 6 GWs
+        history += [self._gw(25, xg=0.5), self._gw(25, xg=0.5)]  # DGW round 25
+        mult, _ = compute_xgi_sustainability(history, current_gw=26, position="MID")
+        assert mult == pytest.approx(1.15, abs=0.001)  # all underperforming (no goals)
+
+    def test_12_gw_lookback_excludes_old_gws(self):
+        """GWs outside the 12-GW window are excluded."""
+        old = [self._gw(r, goals=2, xg=0.1) for r in range(10, 15)]  # outside window
+        recent = [self._gw(r) for r in range(15, 27)]  # at-rate, inside window
+        history = old + recent
+        mult, _ = compute_xgi_sustainability(history, current_gw=26, position="MID")
+        assert mult == pytest.approx(1.0, abs=0.001)  # old hauls excluded
+
+    def test_exactly_4_qualifying_gws_computes(self):
+        """4 qualifying GWs (minimum) produces a valid computation."""
+        history = [self._gw(r, goals=1, xg=0.5) for r in range(23, 27)]
+        mult, div = compute_xgi_sustainability(history, current_gw=26, position="MID")
+        assert isinstance(mult, float)
+        assert 0.85 <= mult <= 1.15
+        assert div == pytest.approx(0.5, abs=0.001)
+
+    def test_divergence_at_positive_threshold_exactly(self):
+        """Divergence exactly +0.3 -> multiplier exactly 0.85."""
+        history = [self._gw(r, goals=1, xg=0.7) for r in range(20, 27)]
+        mult, div = compute_xgi_sustainability(history, current_gw=26, position="MID")
+        assert div == pytest.approx(0.3, abs=0.001)
+        assert mult == pytest.approx(0.85, abs=0.001)
+
+    def test_divergence_at_negative_threshold_exactly(self):
+        """Divergence exactly -0.3 -> multiplier exactly 1.15."""
+        history = [self._gw(r, xg=0.3) for r in range(20, 27)]
+        mult, div = compute_xgi_sustainability(history, current_gw=26, position="FWD")
+        assert div == pytest.approx(-0.3, abs=0.001)
+        assert mult == pytest.approx(1.15, abs=0.001)
+
+    def test_xg_fields_as_strings_converted_correctly(self):
+        """FPL API returns xG values as strings - must handle float conversion."""
+        history = [
+            {
+                "round": r,
+                "goals_scored": 1,
+                "assists": 0,
+                "expected_goals": "0.45",  # string, not float
+                "expected_assists": "0.10",  # string, not float
+                "minutes": 90,
+            }
+            for r in range(20, 27)
+        ]
+        mult, div = compute_xgi_sustainability(history, current_gw=26, position="MID")
+        assert div == pytest.approx(0.45, abs=0.001)  # 1 - (0.45+0.10)
+        assert mult < 1.0  # overperforming -> regression risk
 
 
 # ---------------------------------------------------------------------------

@@ -18,6 +18,7 @@ from fpl_cli.services.player_scoring import (
     build_player_evaluation,
     calculate_captain_score,
     compute_form_trajectory,
+    compute_xgi_sustainability,
     prepare_scoring_data,
 )
 
@@ -226,6 +227,9 @@ class CaptainAgent(Agent):
         history = histories.get(player.id, [])
         if history:
             enrichment["form_trajectory"] = compute_form_trajectory(history, next_gw_id)
+            sustainability, divergence = compute_xgi_sustainability(history, next_gw_id, player.position_name)
+            enrichment["xgi_sustainability"] = sustainability
+            enrichment["xgi_divergence"] = divergence
 
         # Bayesian prior confidence
         priors = getattr(self, "_player_priors", None)

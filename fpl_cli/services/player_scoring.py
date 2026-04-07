@@ -716,6 +716,51 @@ def compute_form_trajectory(history: list[dict[str, Any]], current_gw: int) -> f
     return 1.2
 
 
+def compute_xgi_sustainability(
+    history: list[dict[str, Any]], current_gw: int, position: str
+) -> tuple[float, float]:
+    """Rolling-window xGI sustainability multiplier for ATK players.
+
+    Computes per-match GI-xGI divergence over recent qualifying GWs and maps
+    it to a bounded multiplier in [0.85, 1.15].  Positive divergence (GI > xGI)
+    indicates overperformance -> regression risk -> multiplier < 1.0.  Negative
+    divergence (GI < xGI) indicates underperformance -> upside -> multiplier > 1.0.
+
+    Returns (multiplier, raw_divergence_per_match).  Returns (1.0, 0.0) for
+    DEF/GK positions or when fewer than 4 qualifying GWs are available.
+
+    Unlike compute_form_trajectory, no median filtering is applied: the hauls
+    that constitute overperformance are the most informative data points.
+    """
+    if position not in ATTACKING_POSITIONS:
+        return 1.0, 0.0
+
+    cutoff = current_gw - 12
+    qualifying = [
+        h
+        for h in history
+        if h.get("minutes", 0) > 0 and h.get("round", 0) > cutoff
+    ]
+    qualifying.sort(key=lambda h: h["round"])
+    qualifying = qualifying[-7:]  # most recent 7
+
+    if len(qualifying) < 4:
+        return 1.0, 0.0
+
+    divergences = [
+        (h.get("goals_scored", 0) + h.get("assists", 0))
+        - (float(h.get("expected_goals", 0) or 0) + float(h.get("expected_assists", 0) or 0))
+        for h in qualifying
+    ]
+    avg_divergence = sum(divergences) / len(divergences)
+
+    # Linear interpolation: divergence=0 -> 1.0, divergence=±0.3 -> 0.85/1.15
+    raw_mult = 1.0 - (avg_divergence / 0.3) * 0.15
+    multiplier = max(0.85, min(1.15, raw_mult))
+
+    return multiplier, avg_divergence
+
+
 def normalise_score(raw: float, ceiling: float) -> int:
     """Normalise a raw score to 0-100 against a ceiling."""
     return min(round(raw / ceiling * 100), 100)
@@ -738,6 +783,11 @@ def build_scoring_enrichment(
 
     if gw_history:
         enrichment["form_trajectory"] = compute_form_trajectory(gw_history, next_gw_id)
+        sustainability, divergence = compute_xgi_sustainability(
+            gw_history, next_gw_id, player.position_name
+        )
+        enrichment["xgi_sustainability"] = sustainability
+        enrichment["xgi_divergence"] = divergence
 
     return enrichment
 
@@ -981,6 +1031,10 @@ class PlayerEvaluation:
     # Bayesian prior confidence (1.0=trust current data fully, <1.0=shrink toward position mean)
     prior_confidence: float = 1.0
 
+    # xGI sustainability (multiplier on form contribution: <1.0=overperforming regression risk,
+    # 1.0=at rate, >1.0=underperforming regression upside). ATK only; DEF/GK default to 1.0.
+    xgi_sustainability: float = 1.0
+
     def as_quality_dict(self) -> dict[str, Any]:
         """Return a dict compatible with calculate_player_quality_score's Mapping interface."""
         return {
@@ -993,6 +1047,7 @@ class PlayerEvaluation:
             "penalty_xG_per_90": self.penalty_xg_per_90,
             "form_trajectory": self.form_trajectory,
             "prior_confidence": self.prior_confidence,
+            "xgi_sustainability": self.xgi_sustainability,
         }
 
 
@@ -1093,6 +1148,7 @@ def build_player_evaluation(
         direct_freekicks_order=_get("direct_freekicks_order"),
         form_trajectory=float(_get("form_trajectory", 1.0) or 1.0),
         prior_confidence=float(_get("prior_confidence", 1.0) or 1.0),
+        xgi_sustainability=float(_get("xgi_sustainability", 1.0) or 1.0),
     )
 
     # Build identity

@@ -19,6 +19,7 @@ from fpl_cli.services.player_scoring import (
     calculate_waiver_score,
     compute_aggregate_matchup,
     compute_form_trajectory,
+    compute_xgi_sustainability,
     prepare_scoring_data,
 )
 
@@ -322,6 +323,9 @@ class WaiverAgent(Agent):
         history = histories.get(player.get("id", 0), [])
         if history:
             enrichment["form_trajectory"] = compute_form_trajectory(history, next_gw_id)
+            sustainability, divergence = compute_xgi_sustainability(history, next_gw_id, player.get("position", "MID"))
+            enrichment["xgi_sustainability"] = sustainability
+            enrichment["xgi_divergence"] = divergence
         priors = getattr(self, "_player_priors", None)
         if priors:
             prior = priors.get(player.get("id", 0))

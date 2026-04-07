@@ -14,6 +14,7 @@ from fpl_cli.services.player_scoring import (
     calculate_lineup_score,
     compute_aggregate_matchup,
     compute_form_trajectory,
+    compute_xgi_sustainability,
     prepare_scoring_data,
     select_starting_xi,
 )
@@ -172,6 +173,9 @@ class StartingXIAgent(Agent):
             history = player_histories.get(player.id, [])
             if history:
                 enrichment["form_trajectory"] = compute_form_trajectory(history, next_gw_id)
+                sustainability, divergence = compute_xgi_sustainability(history, next_gw_id, player.position_name)
+                enrichment["xgi_sustainability"] = sustainability
+                enrichment["xgi_divergence"] = divergence
 
         if player_priors:
             prior = player_priors.get(player.id)

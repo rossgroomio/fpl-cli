@@ -14,6 +14,7 @@ from fpl_cli.services.player_scoring import (
     build_player_evaluation,
     calculate_bench_score,
     compute_form_trajectory,
+    compute_xgi_sustainability,
     prepare_scoring_data,
 )
 
@@ -256,6 +257,9 @@ class BenchOrderAgent(Agent):
             history = player_histories.get(player.id, [])
             if history:
                 enrichment["form_trajectory"] = compute_form_trajectory(history, next_gw_id)
+                sustainability, divergence = compute_xgi_sustainability(history, next_gw_id, player.position_name)
+                enrichment["xgi_sustainability"] = sustainability
+                enrichment["xgi_divergence"] = divergence
 
         if player_priors:
             prior = player_priors.get(player.id)
