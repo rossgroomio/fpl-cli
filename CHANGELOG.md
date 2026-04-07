@@ -1,6 +1,29 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [1.1.0] - 2026-04-07
+
+### Bug Fixes
+
+- wrap migration in try/except, update architecture.md paths
+- CLI hygiene batch (P10-P13) (#4)
+- Understat name matching for abbreviated/punctuated web_names
+- PR #4 code review follow-ups (#5)
+- review fixes - gather resilience, CSV field protection, test gaps
+- correct README data source count and Core-Insights repo URL
+
+### Features
+
+- add cached dataset fetcher with ETag conditional requests (#6)
+- add rolling pts/£m metric and rename value fields (#7)
+- expose ep_next/ep_this (FPL predicted points) (#8)
+- implement CoreInsightsClient for 2025-26 season data
+- add HistoricalDataProvider composition layer, update call sites
+
+### Refactoring
+
+- extract shared types, rename season helpers, separate cache dirs
+
 ## [1.0.0] - 2026-04-03
 
 ### Features
