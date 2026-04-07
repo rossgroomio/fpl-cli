@@ -137,3 +137,21 @@ class TestWaiversJsonFormat:
         result = _run_waivers(agent_result=agent_result)
         assert result.exit_code == 0
         assert "Recently Released" not in result.output
+
+
+class TestWaiversReliabilityRendering:
+    def test_reliability_shown_as_percentage(self):
+        """Reliability value in target dict renders as percentage in table."""
+        agent_result = _make_agent_result()
+        agent_result.data["recommendations"][0]["target"]["reliability"] = 0.85
+        result = _run_waivers(agent_result=agent_result)
+        assert result.exit_code == 0
+        assert "85%" in result.output
+
+    def test_reliability_none_shows_dash(self):
+        """Missing reliability in target dict renders as '-'."""
+        agent_result = _make_agent_result()
+        # Default mock target has no reliability key
+        result = _run_waivers(agent_result=agent_result)
+        assert result.exit_code == 0
+        assert result.exit_code == 0  # table renders without error

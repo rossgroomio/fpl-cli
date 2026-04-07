@@ -88,6 +88,7 @@ def waivers_command(output_format: str):
             table.add_column("Team")
             table.add_column("Pos")
             table.add_column("Form", justify="right")
+            table.add_column("Rel", justify="right")
             table.add_column("Drop")
             table.add_column("Reasons")
 
@@ -101,12 +102,15 @@ def waivers_command(output_format: str):
                 else:
                     drop_str = "-"
 
+                rel = target.get("reliability")
+                rel_str = f"{rel:.0%}" if rel is not None else "-"
                 table.add_row(
                     str(rec["priority"]),
                     target["name"],
                     target["team"],
                     target["position"],
                     f"{target['form']:.1f}",
+                    rel_str,
                     drop_str,
                     ", ".join(rec["reasons"][:2]),
                 )

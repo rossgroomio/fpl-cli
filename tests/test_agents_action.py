@@ -540,6 +540,35 @@ class TestWaiverAgentRecommendations:
         # Should only have one MID recommendation
         assert positions.count("MID") == 1
 
+    def test_reliability_threaded_from_priors(self):
+        """Target dict includes reliability from _player_priors when available."""
+        from fpl_cli.services.player_prior import PlayerPrior
+
+        agent = WaiverAgent()
+        agent._player_priors = {
+            99: PlayerPrior(prior_strength=0.5, confidence=0.6, source="history", reliability=0.85),
+        }
+        waiver_targets = [
+            {"id": 99, "position": "MID", "player_name": "NewMID", "team_short": "ARS", "form": 7.0, "waiver_score": 20, "reasons": []},
+        ]
+        squad_by_position = {"GK": [], "DEF": [], "MID": [{"player_name": "OldMID", "form": 2.0}], "FWD": []}
+
+        recommendations = agent._generate_recommendations(waiver_targets, squad_by_position)
+
+        assert recommendations[0]["target"]["reliability"] == pytest.approx(0.85)
+
+    def test_reliability_none_when_no_priors(self):
+        """Target dict has reliability=None when _player_priors not set."""
+        agent = WaiverAgent()
+        waiver_targets = [
+            {"id": 99, "position": "MID", "player_name": "NewMID", "team_short": "ARS", "form": 7.0, "waiver_score": 20, "reasons": []},
+        ]
+        squad_by_position = {"GK": [], "DEF": [], "MID": [{"player_name": "OldMID", "form": 2.0}], "FWD": []}
+
+        recommendations = agent._generate_recommendations(waiver_targets, squad_by_position)
+
+        assert recommendations[0]["target"]["reliability"] is None
+
 
 class TestWaiverAgentTeamExposure:
     """Tests for team exposure awareness."""
