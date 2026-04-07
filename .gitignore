@@ -1,3 +1,6 @@
+# Local Claude Code instructions (personal, not committed)
+CLAUDE.local.md
+
 # Runtime caches and user secrets (never commit)
 config/*.yaml
 !config/fixture_predictions.yaml
