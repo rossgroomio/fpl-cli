@@ -22,6 +22,7 @@ from fpl_cli.api.historical_types import (
     SeasonHistory,
     _GwRow,
     compute_acceleration,
+    compute_reliability,
     compute_trend,
 )
 from fpl_cli.season import get_season_year, season_label
@@ -83,6 +84,7 @@ class CoreInsightsClient:
         self._player_lookup: dict[int, _PlayerLookup] | None = None
         self._season_data: dict[str, list[SeasonHistory]] | None = None
         self._gw_rows: dict[int, dict[int, _GwRow]] | None = None
+        self._current_gw: int = 38
 
     async def close(self) -> None:
         await self.fetcher.close()
@@ -185,6 +187,8 @@ class CoreInsightsClient:
                 team_id=player.team_code,
             ))
 
+        if best_gw:
+            self._current_gw = max(best_gw.values())
         result = {self._season_label: histories}
         self._season_data = result
         return result
@@ -227,6 +231,11 @@ class CoreInsightsClient:
                 compute_trend(xgi_per_90) if len(xgi_per_90) >= 2 else None
             ),
             minutes_per_start=minutes_per_start,
+            reliability=compute_reliability(
+                seasons,
+                current_season=self._season_label,
+                current_gw=self._current_gw,
+            ),
         )
 
     async def get_all_player_histories(self) -> dict[int, PlayerProfile]:

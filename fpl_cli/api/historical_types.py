@@ -42,6 +42,7 @@ class PlayerProfile:
     xgi_per_90: list[float] = field(default_factory=list)
     xgi_per_90_trend: float | None = None
     minutes_per_start: list[float] = field(default_factory=list)
+    reliability: float | None = None
 
 
 @dataclass
@@ -85,6 +86,65 @@ def compute_trend(values: list[float]) -> float:
     if denom == 0:
         return 0.0
     return round((n * sum_xy - sum_x * sum_y) / denom, 2)
+
+
+def compute_reliability(
+    seasons: list[SeasonHistory],
+    current_season: str | None = None,
+    current_gw: int = 38,
+    weights: tuple[int, ...] = (3, 2, 1),
+) -> float | None:
+    """Recency-weighted historical availability score (0.0-1.0), or None if no data.
+
+    Uses starts/denominator per season as a proxy for availability. All seasons
+    count (no MIN_MINUTES filter) -- low-minute seasons are evidence of poor
+    availability. Seasons are capped at the 3 most recent.
+
+    Args:
+        seasons: All SeasonHistory records for a player (any order).
+        current_season: Label of the in-progress season (e.g. "2025-26").
+            When provided and current_gw >= 10, uses current_gw as the
+            denominator instead of 38.
+        current_gw: Number of GWs played in the current season.
+        weights: Recency weights applied oldest-to-newest (most recent = last
+            element). Truncated to match the number of available seasons.
+    """
+    if not seasons:
+        return None
+
+    sorted_seasons = sorted(seasons, key=lambda s: s.season)
+
+    # Exclude current season if current_gw < 10 (insufficient data)
+    if current_season is not None and current_gw < 10:
+        sorted_seasons = [s for s in sorted_seasons if s.season != current_season]
+
+    if not sorted_seasons:
+        return None
+
+    # Cap at 3 most recent
+    recent = sorted_seasons[-3:]
+
+    if not recent:
+        return None
+
+    rates = []
+    for s in recent:
+        if current_season is not None and s.season == current_season:
+            denominator = current_gw
+        else:
+            denominator = 38
+        rate = s.starts / denominator if denominator > 0 else 0.0
+        rates.append(rate)
+
+    # weights[0] = newest, weights[1] = second-newest, etc.
+    # rates are sorted oldest-to-newest, so reverse weights before applying.
+    w = weights[:len(rates)]
+    weighted_sum = sum(r * wt for r, wt in zip(rates, reversed(w)))
+    weight_total = sum(w)
+    if weight_total == 0:
+        return None
+
+    return min(1.0, weighted_sum / weight_total)
 
 
 def compute_acceleration(values: list[float]) -> float:

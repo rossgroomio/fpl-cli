@@ -168,6 +168,48 @@ class TestSignalComputation:
         assert len(profile.minutes_per_start) == 2
 
     @respx.mock
+    async def test_build_profile_sets_reliability(self, tmp_path):
+        """reliability field is populated from starts data (no MIN_MINUTES filter)."""
+        respx.get(f"{BASE}/2023-24/players_raw.csv").mock(
+            return_value=Response(200, text=SAMPLE_CSV_SEASON2)
+        )
+        respx.get(f"{BASE}/2024-25/players_raw.csv").mock(
+            return_value=Response(200, text=SAMPLE_CSV)
+        )
+        async with VaastavClient(_make_fetcher(tmp_path), seasons=("2023-24", "2024-25")) as client:
+            profile = await client.get_player_history(80201)
+
+        assert profile is not None
+        # Salah: 2023-24 starts=29, 2024-25 starts=31; weights[:2]=(3,2); reversed=(2,3)
+        # oldest*2 + newest*3 / (38*5) = (29*2 + 31*3) / (38*5) = (58+93)/190
+        assert profile.reliability == pytest.approx((29 * 2 + 31 * 3) / (38 * 5), rel=1e-3)
+
+    @respx.mock
+    async def test_reliability_includes_injury_shortened_season(self, tmp_path):
+        """Low-minute season counts toward reliability (not MIN_MINUTES filtered)."""
+        low_minutes_csv = (
+            "code,web_name,element_type,team,total_points,minutes,starts,"
+            "goals_scored,assists,expected_goals,expected_assists,"
+            "expected_goal_involvements,now_cost,cost_change_start\n"
+            "80201,Salah,3,14,20,300,4,1,0,0.8,0.2,1.0,130,0\n"
+        )
+        respx.get(f"{BASE}/2023-24/players_raw.csv").mock(
+            return_value=Response(200, text=low_minutes_csv)
+        )
+        respx.get(f"{BASE}/2024-25/players_raw.csv").mock(
+            return_value=Response(200, text=SAMPLE_CSV)
+        )
+        async with VaastavClient(_make_fetcher(tmp_path), seasons=("2023-24", "2024-25")) as client:
+            profile = await client.get_player_history(80201)
+
+        assert profile is not None
+        # 2 seasons in data, even though 2023-24 has <450 min
+        assert len(profile.seasons) == 2
+        # Both count for reliability: injury season (4 starts) IS included
+        assert profile.reliability is not None
+        assert profile.reliability == pytest.approx((4 * 2 + 31 * 3) / (38 * 5), rel=1e-3)
+
+    @respx.mock
     async def test_season_below_450_minutes_excluded_from_trend(self, tmp_path):
         """Seasons with <450 minutes are excluded from signal computation."""
         low_minutes_csv = (

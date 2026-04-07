@@ -286,6 +286,25 @@ class TestSeasonAggregates:
         assert profiles[206325].current_position == "FWD"
 
     @respx.mock
+    async def test_build_profile_sets_reliability(self, tmp_path):
+        """reliability field is populated; current_gw tracked from max GW in data."""
+        respx.get(f"{BASE}/{CI_SEASON}/players.csv").mock(
+            return_value=Response(200, text=PLAYERS_CSV)
+        )
+        respx.get(f"{BASE}/{CI_SEASON}/playerstats.csv").mock(
+            return_value=Response(200, text=PLAYERSTATS_CSV)
+        )
+        async with CoreInsightsClient(_make_fetcher(tmp_path)) as client:
+            profiles = await client.get_all_player_histories()
+
+        # current_gw = 10 (max GW in test data)
+        assert client._current_gw == 10
+        # Salah has starts=31 at GW10; normalised = 31/10 > 1.0 -> clamped to 1.0
+        assert profiles[80201].reliability == 1.0
+        # Keeper has starts=10 at GW10; normalised = 10/10 = 1.0 -> clamped to 1.0
+        assert profiles[500000].reliability == 1.0
+
+    @respx.mock
     async def test_get_player_history_found(self, tmp_path):
         """Known element_code returns profile with seasons."""
         respx.get(f"{BASE}/{CI_SEASON}/players.csv").mock(

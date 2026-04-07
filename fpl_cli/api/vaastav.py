@@ -18,6 +18,7 @@ from fpl_cli.api.historical_types import (
     SeasonHistory,
     _GwRow,
     compute_acceleration,
+    compute_reliability,
     compute_trend,
 )
 from fpl_cli.models.player import POSITION_MAP
@@ -189,6 +190,7 @@ class VaastavClient:
                 compute_trend(xgi_per_90) if len(xgi_per_90) >= 2 else None
             ),
             minutes_per_start=minutes_per_start,
+            reliability=compute_reliability(seasons),
         )
 
     async def get_player_history(self, element_code: int) -> PlayerProfile | None:
