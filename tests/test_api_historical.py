@@ -183,3 +183,24 @@ class TestContextManager:
 
             vaastav_fetcher.close.assert_called_once()
             ci_fetcher.close.assert_called_once()
+
+    async def test_closes_second_fetcher_even_if_first_raises(self):
+        """If first fetcher.close() raises, second still closes."""
+        with (
+            patch("fpl_cli.api.vaastav.make_vaastav_fetcher") as mock_vf,
+            patch("fpl_cli.api.core_insights.make_core_insights_fetcher") as mock_cf,
+            patch("fpl_cli.api.vaastav.VaastavClient"),
+            patch("fpl_cli.api.core_insights.CoreInsightsClient"),
+        ):
+            vaastav_fetcher = MagicMock()
+            vaastav_fetcher.close = AsyncMock()
+            ci_fetcher = MagicMock()
+            ci_fetcher.close = AsyncMock(side_effect=RuntimeError("close failed"))
+            mock_vf.return_value = vaastav_fetcher
+            mock_cf.return_value = ci_fetcher
+
+            async with make_historical_provider():
+                pass
+
+            ci_fetcher.close.assert_called_once()
+            vaastav_fetcher.close.assert_called_once()

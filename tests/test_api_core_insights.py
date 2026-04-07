@@ -286,6 +286,22 @@ class TestSeasonAggregates:
         assert profiles[206325].current_position == "FWD"
 
     @respx.mock
+    async def test_get_player_history_found(self, tmp_path):
+        """Known element_code returns profile with seasons."""
+        respx.get(f"{BASE}/{CI_SEASON}/players.csv").mock(
+            return_value=Response(200, text=PLAYERS_CSV)
+        )
+        respx.get(f"{BASE}/{CI_SEASON}/playerstats.csv").mock(
+            return_value=Response(200, text=PLAYERSTATS_CSV)
+        )
+        async with CoreInsightsClient(_make_fetcher(tmp_path)) as client:
+            result = await client.get_player_history(80201)
+        assert result is not None
+        assert result.element_code == 80201
+        assert result.web_name == "Salah"
+        assert len(result.seasons) == 1
+
+    @respx.mock
     async def test_get_player_history_not_found(self, tmp_path):
         """Unknown element_code returns None."""
         respx.get(f"{BASE}/{CI_SEASON}/players.csv").mock(

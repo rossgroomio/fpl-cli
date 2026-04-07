@@ -112,7 +112,8 @@ class CoreInsightsClient:
                     position=_POSITION_MAP.get(row["position"], "???"),
                     team_code=int(row["team_code"]),
                 )
-            except (ValueError, KeyError):
+            except (ValueError, KeyError) as exc:
+                logger.debug("Skipping malformed row in players.csv: %s", exc)
                 continue
 
         self._player_lookup = lookup
@@ -156,13 +157,18 @@ class CoreInsightsClient:
                 logger.debug("Player %d in playerstats but not in players.csv, skipping", pid)
                 continue
 
-            now_cost = int(round(float(row["now_cost"]) * 10))
-            cost_change_start = int(round(float(row["cost_change_start"]) * 10))
+            try:
+                now_cost = int(round(float(row["now_cost"]) * 10))
+                cost_change_start = int(round(float(row["cost_change_start"]) * 10))
+                total_points = int(row["total_points"])
+            except (ValueError, KeyError):
+                logger.debug("Skipping player %d: missing/malformed required field", pid)
+                continue
 
             histories.append(SeasonHistory(
                 element_code=player.player_code,
                 season=self._season_label,
-                total_points=int(row["total_points"]),
+                total_points=total_points,
                 minutes=int(row.get("minutes", 0) or 0),
                 starts=int(row.get("starts", 0) or 0),
                 goals=int(row.get("goals_scored", 0) or 0),
@@ -296,10 +302,15 @@ class CoreInsightsClient:
 
         results = await asyncio.gather(
             *(self._fetch_single_gw(gw) for gw in range(1, 39)),
+            return_exceptions=True,
         )
 
         by_player: dict[int, dict[int, _GwRow]] = {}
-        for gw, rows in enumerate(results, start=1):
+        for gw, result in enumerate(results, start=1):
+            if isinstance(result, BaseException):
+                logger.warning("Failed to fetch GW%d: %s", gw, result)
+                continue
+            rows = result
             for row in rows:
                 try:
                     pid = int(row["id"])
