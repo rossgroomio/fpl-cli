@@ -33,6 +33,7 @@ from fpl_cli.services.player_scoring import (
     calculate_mins_factor,
     calculate_player_quality_score,
     compute_form_trajectory,
+    compute_xgi_sustainability,
     calculate_target_score,
     calculate_waiver_score,
     compute_aggregate_matchup,
@@ -121,11 +122,11 @@ class TestCharacterisationSnapshot:
 
     def test_target_mid(self):
         eval_, _ = self._build_mid()
-        assert calculate_target_score(eval_, next_gw_id=20) == 50
+        assert calculate_target_score(eval_, next_gw_id=20) == 53
 
     def test_target_def(self):
         eval_, _ = self._build_def()
-        assert calculate_target_score(eval_, next_gw_id=20) == 38
+        assert calculate_target_score(eval_, next_gw_id=20) == 40
 
     # --- Differential ---
 
@@ -133,13 +134,13 @@ class TestCharacterisationSnapshot:
         eval_, _ = self._build_mid()
         assert calculate_differential_score(
             eval_, semi_differential_threshold=20.0, next_gw_id=20,
-        ) == 54
+        ) == 56
 
     def test_differential_def(self):
         eval_, _ = self._build_def()
         assert calculate_differential_score(
             eval_, semi_differential_threshold=20.0, next_gw_id=20,
-        ) == 42
+        ) == 44
 
     # --- Waiver ---
 
@@ -148,14 +149,14 @@ class TestCharacterisationSnapshot:
         squad = {"MID": [{"form": 4.0}, {"form": 3.0}], "DEF": [{"form": 5.0}, {"form": 4.0}]}
         assert calculate_waiver_score(
             eval_, squad_by_position=squad, next_gw_id=20,
-        ) == 46
+        ) == 48
 
     def test_waiver_def(self):
         eval_, _ = self._build_def()
         squad = {"MID": [{"form": 4.0}, {"form": 3.0}], "DEF": [{"form": 5.0}, {"form": 4.0}]}
         assert calculate_waiver_score(
             eval_, squad_by_position=squad, next_gw_id=20,
-        ) == 37
+        ) == 38
 
     # --- Captain ---
 
@@ -163,7 +164,7 @@ class TestCharacterisationSnapshot:
         eval_, identity = self._build_mid()
         result = calculate_captain_score(eval_, identity, next_gw_id=20)
         assert result is not None
-        assert result["captain_score"] == 77
+        assert result["captain_score"] == 73
         assert result["captain_score_raw"] == 24.58
         assert result["pen_bonus"] == 1.12
 
@@ -171,7 +172,7 @@ class TestCharacterisationSnapshot:
         eval_, identity = self._build_def()
         result = calculate_captain_score(eval_, identity, next_gw_id=20)
         assert result is not None
-        assert result["captain_score"] == 48
+        assert result["captain_score"] == 46
         assert result["captain_score_raw"] == 15.45
 
     # --- Bench ---
@@ -179,13 +180,13 @@ class TestCharacterisationSnapshot:
     def test_bench_mid(self):
         eval_, identity = self._build_mid()
         result = calculate_bench_score(eval_, identity, availability_risks=[], next_gw_id=20)
-        assert result["priority_score"] == 67
+        assert result["priority_score"] == 63
         assert result["priority_score_raw"] == 22.03
 
     def test_bench_def(self):
         eval_, identity = self._build_def()
         result = calculate_bench_score(eval_, identity, availability_risks=[], next_gw_id=20)
-        assert result["priority_score"] == 40
+        assert result["priority_score"] == 38
         assert result["priority_score_raw"] == 13.11
 
 
@@ -203,7 +204,7 @@ class TestNormaliseScore:
         assert normalise_score(50.0, 31.5) == 100
 
     def test_target_ceiling(self):
-        assert normalise_score(16.75, TARGET_CEILING) == 51
+        assert normalise_score(16.75, TARGET_CEILING) == 54
 
 
 class TestCalculateMinsFactorCanonical:
@@ -307,11 +308,11 @@ class TestValueQualityScore:
     """Verify VALUE_QUALITY_WEIGHTS scoring and VALUE_CEILING normalisation."""
 
     def test_elite_mid_normalises_to_85_95(self):
-        """Salah-tier MID: high npxG, strong form, good PPG, on pens."""
+        """Salah-tier MID: high npxG, strong form, good PPG, on pens, xGI-backed."""
         player = {
             "npxG_per_90": 0.55, "xGChain_per_90": 0.65,
             "form": 8.0, "ppg": 7.5, "penalty_xG_per_90": 0.12,
-            "form_trajectory": 1.15,
+            "form_trajectory": 1.15, "xgi_sustainability": 1.15,
         }
         raw = calculate_player_quality_score(player, VALUE_QUALITY_WEIGHTS)
         score = normalise_score(raw, VALUE_CEILING)
@@ -515,7 +516,7 @@ class TestCalculateTargetScore:
     """Characterisation tests for target scoring (exact values from pre-extraction)."""
 
     def test_mid_with_npxg_and_regression(self):
-        """MID with npxG, penalty_xG, underperformance, good FDR and matchup."""
+        """MID with npxG, penalty_xG, good FDR and matchup. Season-level regression bonus removed."""
 
         eval, _ = build_player_evaluation(
             {
@@ -528,7 +529,7 @@ class TestCalculateTargetScore:
             positional_fdr=2.5,
         )
         score = calculate_target_score(eval, next_gw_id=20)
-        assert score == 62
+        assert score == 60
 
     def test_gk_def_path(self):
         """GK uses without_xgi weights, dc_per_90 active."""
@@ -545,7 +546,7 @@ class TestCalculateTargetScore:
             positional_fdr=3.0,
         )
         score = calculate_target_score(eval, next_gw_id=20)
-        assert score == 37
+        assert score == 40
 
     def test_zero_minutes(self):
         """Player with 0 appearances: mins_factor=0, matchup zeroed."""
@@ -557,7 +558,7 @@ class TestCalculateTargetScore:
             },
         )
         score = calculate_target_score(eval, next_gw_id=20)
-        assert score == 21
+        assert score == 23
 
 
 class TestTargetDiffAvailabilityPenalty:
@@ -606,7 +607,7 @@ class TestCalculateDifferentialScore:
     """Characterisation tests for differential scoring."""
 
     def test_low_ownership_mid(self):
-        """Low ownership MID with underperformance and good matchup."""
+        """Low ownership MID with good matchup. Season-level regression bonus removed."""
 
         eval, _ = build_player_evaluation(
             {
@@ -620,7 +621,7 @@ class TestCalculateDifferentialScore:
             positional_fdr=2.5,
         )
         score = calculate_differential_score(eval, semi_differential_threshold=10, next_gw_id=20)
-        assert score == 61
+        assert score == 59
 
     def test_no_matchup_avg_fallback(self):
         """Without matchup_avg_3gw, matchup contribution is 0 (fallback=0.0)."""
@@ -636,7 +637,7 @@ class TestCalculateDifferentialScore:
         score = calculate_differential_score(
             eval, semi_differential_threshold=10, next_gw_id=20,
         )
-        assert score == 37
+        assert score == 38
 
 
 class TestCalculateWaiverScore:
@@ -664,7 +665,7 @@ class TestCalculateWaiverScore:
             eval, squad_by_position=self._squad_by_pos(),
             team_counts=self._team_counts(), next_gw_id=20,
         )
-        assert score == 47
+        assert score == 50
 
     def test_zero_appearances(self):
         eval, _ = build_player_evaluation(
@@ -676,7 +677,7 @@ class TestCalculateWaiverScore:
             eval, squad_by_position=self._squad_by_pos(),
             team_counts=self._team_counts(), next_gw_id=20,
         )
-        assert score == 26
+        assert score == 28
 
     def test_team_stacking_penalty(self):
         eval, _ = build_player_evaluation(
@@ -688,7 +689,7 @@ class TestCalculateWaiverScore:
             eval, squad_by_position=self._squad_by_pos(),
             team_counts=self._team_counts(), next_gw_id=20,
         )
-        assert score == 30
+        assert score == 32
 
     def test_availability_penalty(self):
         eval, _ = build_player_evaluation(
@@ -701,7 +702,7 @@ class TestCalculateWaiverScore:
             eval, squad_by_position=self._squad_by_pos(),
             team_counts=self._team_counts(), next_gw_id=20,
         )
-        assert score == 32
+        assert score == 34
 
     def test_position_need_empty(self):
         eval, _ = build_player_evaluation(
@@ -713,7 +714,7 @@ class TestCalculateWaiverScore:
             eval, squad_by_position=self._squad_by_pos(),
             team_counts=self._team_counts(), next_gw_id=20,
         )
-        assert score == 52
+        assert score == 55
 
     def test_early_season_combined_mins_factor_defaults_to_one(self):
         """Before GW5, combined_mins_factor hardcodes to 1.0 regardless of minutes."""
@@ -729,8 +730,8 @@ class TestCalculateWaiverScore:
         midseason = calculate_waiver_score(
             eval, squad_by_position=squad, team_counts={}, next_gw_id=20,
         )
-        assert early == 41
-        assert midseason == 34
+        assert early == 43
+        assert midseason == 36
         assert early > midseason  # Early season is more generous
 
 
@@ -747,8 +748,10 @@ class TestMatchupBonus:
         assert _matchup_bonus(7.0, 0.0) == 0.0
 
 
-class TestWaiverUnderperformanceBonus:
-    """Tests for underperformance bonus added to waiver scoring."""
+class TestXgiSustainabilityReplacesScoringBonus:
+    """Season-level underperformance bonus (gi_minus_xgi) removed; rolling-window
+    xgi_sustainability multiplier replaces it.  These tests verify the boundary:
+    gi_minus_xgi no longer drives scoring, xgi_sustainability does."""
 
     def _squad_by_pos(self):
         return {
@@ -758,101 +761,76 @@ class TestWaiverUnderperformanceBonus:
             "GK": [{"form": 3.0}],
         }
 
-    def test_underperforming_player_gets_bonus(self):
-        """Player with gi_minus_xgi=-2.5 gets +2.5 bonus."""
+    def _base_eval(self, gi_minus_xgi=0.0):
         eval, _ = build_player_evaluation(
             {"position": "MID", "form": 7.0, "ppg": 5.5, "minutes": 900, "appearances": 10,
              "xGI_per_90": 0.6, "npxG_per_90": 0.4, "xGChain_per_90": 0.5,
-             "GI_minus_xGI": -2.5,
+             "GI_minus_xGI": gi_minus_xgi,
              "status": "a", "team_short": "BHA"},
             matchup_avg_3gw=6.5, positional_fdr=2.5,
         )
-        score_with = calculate_waiver_score(
-            eval, squad_by_position=self._squad_by_pos(),
-            team_counts={}, next_gw_id=20,
-        )
-        # Same player without underperformance
-        eval_no, _ = build_player_evaluation(
-            {"position": "MID", "form": 7.0, "ppg": 5.5, "minutes": 900, "appearances": 10,
-             "xGI_per_90": 0.6, "npxG_per_90": 0.4, "xGChain_per_90": 0.5,
-             "GI_minus_xGI": 0.0,
-             "status": "a", "team_short": "BHA"},
-            matchup_avg_3gw=6.5, positional_fdr=2.5,
-        )
-        score_without = calculate_waiver_score(
-            eval_no, squad_by_position=self._squad_by_pos(),
-            team_counts={}, next_gw_id=20,
-        )
-        assert score_with > score_without
+        return eval
 
-    def test_no_bonus_when_overperforming(self):
-        """Player with gi_minus_xgi=0 gets no underperformance bonus."""
-        eval, _ = build_player_evaluation(
-            {"position": "MID", "form": 7.0, "ppg": 5.5, "minutes": 900, "appearances": 10,
-             "xGI_per_90": 0.6, "npxG_per_90": 0.4, "xGChain_per_90": 0.5,
-             "GI_minus_xGI": 0.0,
-             "status": "a", "team_short": "BHA"},
-            matchup_avg_3gw=6.5, positional_fdr=2.5,
+    def test_gi_minus_xgi_no_longer_drives_scoring(self):
+        """Season-level GI-xGI gap no longer affects waiver score (bonus removed)."""
+        score_under = calculate_waiver_score(
+            self._base_eval(gi_minus_xgi=-2.5),
+            squad_by_position=self._squad_by_pos(), team_counts={}, next_gw_id=20,
         )
-        score = calculate_waiver_score(
-            eval, squad_by_position=self._squad_by_pos(),
-            team_counts={}, next_gw_id=20,
+        score_neutral = calculate_waiver_score(
+            self._base_eval(gi_minus_xgi=0.0),
+            squad_by_position=self._squad_by_pos(), team_counts={}, next_gw_id=20,
         )
-        # Same as the previous nailed_mid test (without team_counts penalty)
-        assert score == 47
+        # Both score identically: season-level bonus is gone
+        assert score_under == score_neutral
 
-    def test_boundary_no_bonus_at_negative_one(self):
-        """Player with gi_minus_xgi=-1.0 exactly does NOT get bonus (threshold is < -1)."""
-        eval_boundary, _ = build_player_evaluation(
+    def test_xgi_sustainability_boosts_underperformer(self):
+        """xgi_sustainability > 1.0 (underperforming: regression upside) raises score."""
+        eval_under, _ = build_player_evaluation(
             {"position": "MID", "form": 7.0, "ppg": 5.5, "minutes": 900, "appearances": 10,
              "xGI_per_90": 0.6, "npxG_per_90": 0.4, "xGChain_per_90": 0.5,
-             "GI_minus_xGI": -1.0,
-             "status": "a", "team_short": "BHA"},
+             "GI_minus_xGI": 0.0, "status": "a", "team_short": "BHA",
+             "xgi_sustainability": 1.15},
             matchup_avg_3gw=6.5, positional_fdr=2.5,
         )
-        eval_zero, _ = build_player_evaluation(
-            {"position": "MID", "form": 7.0, "ppg": 5.5, "minutes": 900, "appearances": 10,
-             "xGI_per_90": 0.6, "npxG_per_90": 0.4, "xGChain_per_90": 0.5,
-             "GI_minus_xGI": 0.0,
-             "status": "a", "team_short": "BHA"},
-            matchup_avg_3gw=6.5, positional_fdr=2.5,
+        score_under = calculate_waiver_score(
+            eval_under, squad_by_position=self._squad_by_pos(), team_counts={}, next_gw_id=20,
         )
-        score_boundary = calculate_waiver_score(
-            eval_boundary, squad_by_position=self._squad_by_pos(),
+        score_neutral = calculate_waiver_score(
+            self._base_eval(), squad_by_position=self._squad_by_pos(),
             team_counts={}, next_gw_id=20,
         )
-        score_zero = calculate_waiver_score(
-            eval_zero, squad_by_position=self._squad_by_pos(),
-            team_counts={}, next_gw_id=20,
-        )
-        assert score_boundary == score_zero
+        assert score_under > score_neutral
 
-    def test_large_underperformance_capped_at_three(self):
-        """Player with gi_minus_xgi=-5.0 gets bonus capped at 3, not 5."""
-        eval_large, _ = build_player_evaluation(
+    def test_xgi_sustainability_discounts_overperformer(self):
+        """xgi_sustainability < 1.0 (overperforming: regression risk) lowers score."""
+        eval_over, _ = build_player_evaluation(
             {"position": "MID", "form": 7.0, "ppg": 5.5, "minutes": 900, "appearances": 10,
              "xGI_per_90": 0.6, "npxG_per_90": 0.4, "xGChain_per_90": 0.5,
-             "GI_minus_xGI": -5.0,
-             "status": "a", "team_short": "BHA"},
+             "GI_minus_xGI": 0.0, "status": "a", "team_short": "BHA",
+             "xgi_sustainability": 0.85},
             matchup_avg_3gw=6.5, positional_fdr=2.5,
         )
-        eval_three, _ = build_player_evaluation(
-            {"position": "MID", "form": 7.0, "ppg": 5.5, "minutes": 900, "appearances": 10,
-             "xGI_per_90": 0.6, "npxG_per_90": 0.4, "xGChain_per_90": 0.5,
-             "GI_minus_xGI": -4.0,
-             "status": "a", "team_short": "BHA"},
-            matchup_avg_3gw=6.5, positional_fdr=2.5,
+        score_over = calculate_waiver_score(
+            eval_over, squad_by_position=self._squad_by_pos(), team_counts={}, next_gw_id=20,
         )
+        score_neutral = calculate_waiver_score(
+            self._base_eval(), squad_by_position=self._squad_by_pos(),
+            team_counts={}, next_gw_id=20,
+        )
+        assert score_over < score_neutral
+
+    def test_gi_minus_xgi_any_value_scores_same_without_history(self):
+        """gi_minus_xgi=-5.0 and -1.0 both score identically (bonus is gone)."""
         score_large = calculate_waiver_score(
-            eval_large, squad_by_position=self._squad_by_pos(),
-            team_counts={}, next_gw_id=20,
+            self._base_eval(gi_minus_xgi=-5.0),
+            squad_by_position=self._squad_by_pos(), team_counts={}, next_gw_id=20,
         )
-        score_three = calculate_waiver_score(
-            eval_three, squad_by_position=self._squad_by_pos(),
-            team_counts={}, next_gw_id=20,
+        score_small = calculate_waiver_score(
+            self._base_eval(gi_minus_xgi=-1.0),
+            squad_by_position=self._squad_by_pos(), team_counts={}, next_gw_id=20,
         )
-        # Both capped at +3 bonus, so scores should be equal
-        assert score_large == score_three
+        assert score_large == score_small
 
 
 class TestThinWrappers:
@@ -926,7 +904,7 @@ class TestCalculateCaptainScore:
         )
         result = calculate_captain_score(eval, identity, next_gw_id=20)
         assert result is not None
-        assert result["captain_score"] == 94
+        assert result["captain_score"] == 89
         assert result["captain_score_raw"] == 30.1
         assert result["pen_bonus"] == 1.6
         assert "Good matchup" in result["reasons"]
@@ -985,7 +963,7 @@ class TestCalculateCaptainScore:
         )
         result = calculate_captain_score(eval, identity, next_gw_id=20)
         assert result is not None
-        assert result["captain_score"] == 62
+        assert result["captain_score"] == 59
         assert result["captain_score_raw"] == 19.91
 
     def test_zero_appearances(self):
@@ -1130,7 +1108,7 @@ class TestCalculateBenchScore:
             availability_risks=[{"position": "MID", "risk_level": 3}],
             next_gw_id=20,
         )
-        assert result["priority_score"] == 71
+        assert result["priority_score"] == 67
         assert result["priority_score_raw"] == 23.33
         assert "Covers risky starter" in result["reasons"]
 
@@ -1160,7 +1138,7 @@ class TestCalculateBenchScore:
             fixture_matchups=[self._fm()],
         )
         result = calculate_bench_score(eval, identity, availability_risks=[], next_gw_id=20)
-        assert result["priority_score"] == 36
+        assert result["priority_score"] == 34
         assert result["priority_score_raw"] == 11.92
         assert "Doubt (25%)" in result["reasons"]
 
@@ -1191,7 +1169,7 @@ class TestCalculateBenchScore:
             fixture_matchups=[self._fm()],
         )
         result = calculate_bench_score(eval, identity, availability_risks=[], next_gw_id=20)
-        assert result["priority_score"] == 63
+        assert result["priority_score"] == 60
         assert result["priority_score_raw"] == 20.94
         assert "Primary penalty taker" in result["reasons"]
 
@@ -1738,6 +1716,143 @@ class TestComputeFormTrajectory:
 
 
 # ---------------------------------------------------------------------------
+# compute_xgi_sustainability
+# ---------------------------------------------------------------------------
+
+
+class TestComputeXgiSustainability:
+    """Tests for compute_xgi_sustainability()."""
+
+    @staticmethod
+    def _gw(
+        round_num: int,
+        goals: int = 0,
+        assists: int = 0,
+        xg: float = 0.0,
+        xa: float = 0.0,
+        minutes: int = 90,
+    ) -> dict:
+        return {
+            "round": round_num,
+            "goals_scored": goals,
+            "assists": assists,
+            "expected_goals": str(xg),  # FPL API returns strings
+            "expected_assists": str(xa),
+            "minutes": minutes,
+        }
+
+    def test_overperformer_mid_clamped_to_minimum(self):
+        """MID with GI consistently +0.3/match above xGI -> multiplier 0.85."""
+        history = [self._gw(r, goals=1, xg=0.7) for r in range(20, 27)]
+        mult, div = compute_xgi_sustainability(history, current_gw=26, position="MID")
+        assert mult == pytest.approx(0.85, abs=0.001)
+        assert div == pytest.approx(0.3, abs=0.001)
+
+    def test_underperformer_fwd_clamped_to_maximum(self):
+        """FWD with GI consistently -0.3/match below xGI -> multiplier 1.15."""
+        history = [self._gw(r, xg=0.5, xa=0.3) for r in range(20, 27)]
+        mult, div = compute_xgi_sustainability(history, current_gw=26, position="FWD")
+        assert mult == pytest.approx(1.15, abs=0.001)
+        assert div == pytest.approx(-0.8, abs=0.001)
+
+    def test_neutral_mid_returns_one(self):
+        """MID matching xGI exactly -> multiplier 1.0."""
+        history = [self._gw(r, goals=1, xg=0.7, assists=0, xa=0.3) for r in range(20, 27)]
+        mult, div = compute_xgi_sustainability(history, current_gw=26, position="MID")
+        assert mult == pytest.approx(1.0, abs=0.001)
+        assert div == pytest.approx(0.0, abs=0.001)
+
+    def test_def_position_returns_neutral(self):
+        """DEF -> always (1.0, 0.0) regardless of history."""
+        history = [self._gw(r, goals=1, xg=0.1) for r in range(20, 27)]
+        assert compute_xgi_sustainability(history, current_gw=26, position="DEF") == (1.0, 0.0)
+
+    def test_gk_position_returns_neutral(self):
+        """GK -> always (1.0, 0.0) regardless of history."""
+        history = [self._gw(r, goals=1, xg=0.1) for r in range(20, 27)]
+        assert compute_xgi_sustainability(history, current_gw=26, position="GK") == (1.0, 0.0)
+
+    def test_fewer_than_4_qualifying_returns_neutral(self):
+        history = [self._gw(r, goals=1, xg=0.1) for r in range(24, 27)]
+        assert compute_xgi_sustainability(history, current_gw=26, position="MID") == (1.0, 0.0)
+
+    def test_empty_history_returns_neutral(self):
+        assert compute_xgi_sustainability([], current_gw=26, position="MID") == (1.0, 0.0)
+
+    def test_all_zero_minute_gws_returns_neutral(self):
+        history = [self._gw(r, goals=1, xg=0.1, minutes=0) for r in range(20, 27)]
+        assert compute_xgi_sustainability(history, current_gw=26, position="MID") == (1.0, 0.0)
+
+    def test_extreme_overperformance_clamped(self):
+        """Divergence +1.0/match -> clamped to 0.85."""
+        history = [self._gw(r, goals=2, xg=0.5, xa=0.5) for r in range(20, 27)]
+        mult, _ = compute_xgi_sustainability(history, current_gw=26, position="MID")
+        assert mult == pytest.approx(0.85, abs=0.001)
+
+    def test_extreme_underperformance_clamped(self):
+        """Divergence -1.0/match -> clamped to 1.15."""
+        history = [self._gw(r, xg=1.5) for r in range(20, 27)]
+        mult, _ = compute_xgi_sustainability(history, current_gw=26, position="FWD")
+        assert mult == pytest.approx(1.15, abs=0.001)
+
+    def test_dgw_entries_both_count_as_qualifying(self):
+        """Two entries with same round (DGW) both consume window slots."""
+        # 6 GWs + 1 DGW (2 entries) = 8 entries, but only 7 most recent qualify.
+        # Critical: both DGW entries count and together shift the average.
+        history = [self._gw(r, xg=0.5) for r in range(19, 25)]  # 6 GWs
+        history += [self._gw(25, xg=0.5), self._gw(25, xg=0.5)]  # DGW round 25
+        mult, _ = compute_xgi_sustainability(history, current_gw=26, position="MID")
+        assert mult == pytest.approx(1.15, abs=0.001)  # all underperforming (no goals)
+
+    def test_12_gw_lookback_excludes_old_gws(self):
+        """GWs outside the 12-GW window are excluded."""
+        old = [self._gw(r, goals=2, xg=0.1) for r in range(10, 15)]  # outside window
+        recent = [self._gw(r) for r in range(15, 27)]  # at-rate, inside window
+        history = old + recent
+        mult, _ = compute_xgi_sustainability(history, current_gw=26, position="MID")
+        assert mult == pytest.approx(1.0, abs=0.001)  # old hauls excluded
+
+    def test_exactly_4_qualifying_gws_computes(self):
+        """4 qualifying GWs (minimum) produces a valid computation."""
+        history = [self._gw(r, goals=1, xg=0.5) for r in range(23, 27)]
+        mult, div = compute_xgi_sustainability(history, current_gw=26, position="MID")
+        assert isinstance(mult, float)
+        assert 0.85 <= mult <= 1.15
+        assert div == pytest.approx(0.5, abs=0.001)
+
+    def test_divergence_at_positive_threshold_exactly(self):
+        """Divergence exactly +0.3 -> multiplier exactly 0.85."""
+        history = [self._gw(r, goals=1, xg=0.7) for r in range(20, 27)]
+        mult, div = compute_xgi_sustainability(history, current_gw=26, position="MID")
+        assert div == pytest.approx(0.3, abs=0.001)
+        assert mult == pytest.approx(0.85, abs=0.001)
+
+    def test_divergence_at_negative_threshold_exactly(self):
+        """Divergence exactly -0.3 -> multiplier exactly 1.15."""
+        history = [self._gw(r, xg=0.3) for r in range(20, 27)]
+        mult, div = compute_xgi_sustainability(history, current_gw=26, position="FWD")
+        assert div == pytest.approx(-0.3, abs=0.001)
+        assert mult == pytest.approx(1.15, abs=0.001)
+
+    def test_xg_fields_as_strings_converted_correctly(self):
+        """FPL API returns xG values as strings - must handle float conversion."""
+        history = [
+            {
+                "round": r,
+                "goals_scored": 1,
+                "assists": 0,
+                "expected_goals": "0.45",  # string, not float
+                "expected_assists": "0.10",  # string, not float
+                "minutes": 90,
+            }
+            for r in range(20, 27)
+        ]
+        mult, div = compute_xgi_sustainability(history, current_gw=26, position="MID")
+        assert div == pytest.approx(0.45, abs=0.001)  # 1 - (0.45+0.10)
+        assert mult < 1.0  # overperforming -> regression risk
+
+
+# ---------------------------------------------------------------------------
 # form_trajectory in scoring functions
 # ---------------------------------------------------------------------------
 
@@ -1888,6 +2003,127 @@ class TestTrajectoryInScoring:
         neutral = calculate_bench_score(eval_neutral, id_n, availability_risks=[], next_gw_id=20)
         rising = calculate_bench_score(eval_rising, id_r, availability_risks=[], next_gw_id=20)
         assert rising["priority_score_raw"] > neutral["priority_score_raw"]
+
+
+# ---------------------------------------------------------------------------
+# xgi_sustainability in scoring functions
+# ---------------------------------------------------------------------------
+
+
+class TestXgiSustainabilityInScoring:
+    """Verify xgi_sustainability multiplier affects scoring in all families."""
+
+    def _mid_player(self):
+        return make_player(
+            id=50, web_name="TestMID", team_id=1,
+            position=PlayerPosition.MIDFIELDER,
+            form=6.0, points_per_game=5.5, minutes=1500, total_points=100,
+        )
+
+    def _mid_matchup(self):
+        return FixtureMatchup(
+            opponent_short="SHU", is_home=True, opponent_fdr=3.0, matchup_score=7.0,
+        )
+
+    def _build_mid(self, sustainability=None):
+        enrichment: dict = {"team_short": "ARS", "xGI_per_90": 0.5}
+        if sustainability is not None:
+            enrichment["xgi_sustainability"] = sustainability
+        eval, identity = build_player_evaluation(
+            self._mid_player(),
+            enrichment=enrichment,
+            fixture_matchups=[self._mid_matchup()],
+            matchup_avg_3gw=6.0, positional_fdr=3.0,
+        )
+        return eval, identity
+
+    def test_overperformer_gets_lower_captain_score(self):
+        """sustainability=0.85 (overperforming) -> lower captain_score_raw than 1.0."""
+        eval_default, id_d = self._build_mid()
+        eval_over, id_o = self._build_mid(sustainability=0.85)
+        result_d = calculate_captain_score(eval_default, id_d, next_gw_id=20)
+        result_o = calculate_captain_score(eval_over, id_o, next_gw_id=20)
+        assert result_d is not None and result_o is not None
+        assert result_o["captain_score_raw"] < result_d["captain_score_raw"]
+
+    def test_underperformer_gets_higher_captain_score(self):
+        """sustainability=1.15 (underperforming, upside) -> higher captain_score_raw."""
+        eval_default, id_d = self._build_mid()
+        eval_under, id_u = self._build_mid(sustainability=1.15)
+        result_d = calculate_captain_score(eval_default, id_d, next_gw_id=20)
+        result_u = calculate_captain_score(eval_under, id_u, next_gw_id=20)
+        assert result_d is not None and result_u is not None
+        assert result_u["captain_score_raw"] > result_d["captain_score_raw"]
+
+    def test_neutral_sustainability_matches_default(self):
+        """sustainability=1.0 produces identical scores to no sustainability data."""
+        eval_neutral, id_n = self._build_mid(sustainability=1.0)
+        eval_default, id_d = self._build_mid()
+        result_n = calculate_captain_score(eval_neutral, id_n, next_gw_id=20)
+        result_d = calculate_captain_score(eval_default, id_d, next_gw_id=20)
+        assert result_n is not None and result_d is not None
+        assert result_n["captain_score_raw"] == result_d["captain_score_raw"]
+
+    def test_target_score_responds_to_sustainability(self):
+        eval_over, _ = self._build_mid(sustainability=0.85)
+        eval_default, _ = self._build_mid()
+        assert calculate_target_score(eval_over, next_gw_id=20) < calculate_target_score(eval_default, next_gw_id=20)
+
+    def test_differential_score_responds_to_sustainability(self):
+        eval_over, _ = self._build_mid(sustainability=0.85)
+        eval_default, _ = self._build_mid()
+        assert (
+            calculate_differential_score(eval_over, semi_differential_threshold=10, next_gw_id=20)
+            < calculate_differential_score(eval_default, semi_differential_threshold=10, next_gw_id=20)
+        )
+
+    def test_waiver_score_responds_to_sustainability(self):
+        eval_over, _ = self._build_mid(sustainability=0.85)
+        eval_default, _ = self._build_mid()
+        assert (
+            calculate_waiver_score(eval_over, squad_by_position={"MID": []}, next_gw_id=20)
+            < calculate_waiver_score(eval_default, squad_by_position={"MID": []}, next_gw_id=20)
+        )
+
+    def test_bench_score_responds_to_sustainability(self):
+        eval_over, id_o = self._build_mid(sustainability=0.85)
+        eval_default, id_d = self._build_mid()
+        bench_over = calculate_bench_score(eval_over, id_o, availability_risks=[], next_gw_id=20)
+        bench_default = calculate_bench_score(eval_default, id_d, availability_risks=[], next_gw_id=20)
+        assert bench_over["priority_score_raw"] < bench_default["priority_score_raw"]
+
+    def test_combined_trajectory_and_sustainability(self):
+        """trajectory=1.2, sustainability=0.85 -> combined ~1.02 form multiplier."""
+        eval_combined, id_c = build_player_evaluation(
+            self._mid_player(),
+            enrichment={"team_short": "ARS", "xGI_per_90": 0.5,
+                        "form_trajectory": 1.2, "xgi_sustainability": 0.85},
+            fixture_matchups=[self._mid_matchup()],
+            matchup_avg_3gw=6.0, positional_fdr=3.0,
+        )
+        eval_neutral, id_n = self._build_mid()
+        result_c = calculate_captain_score(eval_combined, id_c, next_gw_id=20)
+        result_n = calculate_captain_score(eval_neutral, id_n, next_gw_id=20)
+        assert result_c is not None and result_n is not None
+        # 1.2 * 0.85 = 1.02: should be only slightly higher than neutral (1.0)
+        assert result_c["captain_score_raw"] > result_n["captain_score_raw"]
+
+    def test_def_player_sustainability_neutral(self):
+        """DEF player with sustainability 1.0 (default) produces same scores."""
+        def_player = make_player(
+            id=51, web_name="TestDEF", team_id=1,
+            position=PlayerPosition.DEFENDER,
+            form=5.0, points_per_game=4.5, minutes=1500, total_points=80,
+        )
+        eval_default, _ = build_player_evaluation(
+            def_player, enrichment={"team_short": "ARS"},
+            fixture_matchups=[self._mid_matchup()], matchup_avg_3gw=5.5, positional_fdr=3.5,
+        )
+        eval_1_0, _ = build_player_evaluation(
+            def_player, enrichment={"team_short": "ARS", "xgi_sustainability": 1.0},
+            fixture_matchups=[self._mid_matchup()], matchup_avg_3gw=5.5, positional_fdr=3.5,
+        )
+        assert calculate_target_score(eval_default, next_gw_id=20) == calculate_target_score(eval_1_0, next_gw_id=20)
 
 
 # ---------------------------------------------------------------------------

@@ -81,6 +81,8 @@ class PlayerStats(TypedDict):
     appearances: NotRequired[int]
     matchup_avg_3gw: NotRequired[float]
     form_trajectory: NotRequired[float]
+    xgi_sustainability: NotRequired[float]
+    xgi_divergence: NotRequired[float]
 
 
 class WaiverTarget(TypedDict):
@@ -137,3 +139,5 @@ class EnrichedPlayer(TypedDict):
     positional_fdr: NotRequired[float]
     appearances: NotRequired[int]
     form_trajectory: NotRequired[float]
+    xgi_sustainability: NotRequired[float]
+    xgi_divergence: NotRequired[float]

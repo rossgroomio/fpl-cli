@@ -16,6 +16,7 @@ from fpl_cli.services.player_scoring import (
     calculate_target_score,
     compute_aggregate_matchup,
     compute_form_trajectory,
+    compute_xgi_sustainability,
     prepare_scoring_data,
 )
 
@@ -244,11 +245,16 @@ class StatsAgent(Agent):
                 if positional_fdr is not None:
                     ps["positional_fdr"] = positional_fdr
 
-            # Pre-compute form trajectory for all players (avoid recomputing per scorer)
+            # Pre-compute form trajectory and xGI sustainability for all players
             for ps in player_stats:
                 history = self._player_histories.get(ps.get("id", 0), [])
                 if history:
                     ps["form_trajectory"] = compute_form_trajectory(history, self._next_gw_id)
+                    sustainability, divergence = compute_xgi_sustainability(
+                        history, self._next_gw_id, ps.get("position", "MID")
+                    )
+                    ps["xgi_sustainability"] = sustainability
+                    ps["xgi_divergence"] = divergence
 
             # Analyze the data (only compute requested views)
             data: dict[str, Any] = {

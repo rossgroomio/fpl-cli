@@ -19,6 +19,7 @@ from fpl_cli.services.player_scoring import (
     calculate_target_score,
     compute_form_trajectory,
     compute_rolling_pts_per_m,
+    compute_xgi_sustainability,
     normalise_score,
     prepare_scoring_data,
 )
@@ -202,6 +203,9 @@ class TransferEvalAgent(Agent):
             history = player_histories.get(player.id, [])
             if history:
                 enrichment["form_trajectory"] = compute_form_trajectory(history, next_gw_id)
+                sustainability, divergence = compute_xgi_sustainability(history, next_gw_id, player.position_name)
+                enrichment["xgi_sustainability"] = sustainability
+                enrichment["xgi_divergence"] = divergence
 
         reliability: float | None = None
         if player_priors:

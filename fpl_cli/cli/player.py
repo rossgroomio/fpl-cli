@@ -15,7 +15,7 @@ from fpl_cli.cli._context import Format, console, error_console, get_format, is_
 from fpl_cli.cli._helpers import _fdr_style
 from fpl_cli.cli._json import emit_json, json_output_mode, output_format_option
 from fpl_cli.models.player import resolve_players
-from fpl_cli.services.player_scoring import compute_quality_value, compute_rolling_pts_per_m
+from fpl_cli.services.player_scoring import compute_quality_value, compute_rolling_pts_per_m, compute_xgi_sustainability
 
 if TYPE_CHECKING:
     from fpl_cli.api.fpl import FPLClient
@@ -225,13 +225,18 @@ def player_command(
                         quality_scores[p.id] = q
                         quality_per_m_scores[p.id] = v
 
-                # Rolling pts/£m from fetched detail history (independent of Understat)
+                # Rolling pts/£m and xGI sustainability from fetched detail history
+                sustainability_scores: dict[int, tuple[float, float]] = {}
                 for p in display:
                     player_detail = detail_map.get(p.id)
                     hist = player_detail.get("history", []) if player_detail else []
                     rolling_scores[p.id] = compute_rolling_pts_per_m(
                         hist, float(p.now_cost), rolling_window,
                     )
+                    if hist and p.position_name in ("MID", "FWD"):
+                        sustainability_scores[p.id] = compute_xgi_sustainability(
+                            hist, next_gw_id, p.position_name,
+                        )
 
                 # JSON output mode
                 if output_format == "json":
@@ -307,6 +312,11 @@ def player_command(
                                 else:
                                     player_dict["info"]["quality_score"] = None
                                     player_dict["info"]["quality_per_m"] = None
+
+                            if p.id in sustainability_scores:
+                                sust_mult, sust_div = sustainability_scores[p.id]
+                                player_dict["info"]["xgi_sustainability"] = round(sust_mult, 4)
+                                player_dict["info"]["xgi_divergence"] = round(sust_div, 4)
 
                             rv, rc = rolling_scores.get(p.id, (None, None))
                             player_dict["info"]["rolling_pts_per_m"] = rv
@@ -387,6 +397,11 @@ def player_command(
                         lines.append(f"xG: {p.expected_goals:.2f} | xA: {p.expected_assists:.2f}")
                     if understat_line and not is_gk:
                         lines.append(understat_line.rstrip("\n"))
+                    if p.id in sustainability_scores:
+                        sust_mult, sust_div = sustainability_scores[p.id]
+                        if sust_mult != 1.0:
+                            sign = "+" if sust_div > 0 else ""
+                            lines.append(f"xGI Sustainability: {sign}{sust_div:.2f}/match -> {sust_mult:.2f}x form")
                     set_piece_line = _build_set_piece_line(p)
                     if set_piece_line:
                         lines.append(set_piece_line)

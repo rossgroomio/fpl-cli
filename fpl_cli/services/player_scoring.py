@@ -135,21 +135,21 @@ ATTACKING_POSITIONS: frozenset[str] = frozenset({"MID", "FWD"})
 # Normalisation ceilings (SGW theoretical max, MID/FWD path)
 # ---------------------------------------------------------------------------
 
-# Captain: (matchup 8*2.0 + form min(7.5*1.5,10)*1.2 + xGI ~3.5 + pen ~1.2) * pos 1.0 * mins 1.0 + home 1.0
-CAPTAIN_CEILING_SGW = 32.0
-# Target: npxg 8 + xg_chain 3 + form 5*1.2 + ppg 4 + penalty 3 + regression 3 + matchup 6
-TARGET_CEILING = 33.0
-# Differential: npxg 8 + xg_chain 3 + form 7*1.2 + ppg 4 + penalty 3 + ownership 5 + regression 3 + matchup 6
-DIFFERENTIAL_CEILING = 40.4
-# Waiver: quality ~24.4 (form 7*1.2) + regression 3 + matchup 6 + position 5 = 38.4
-WAIVER_CEILING = 38.4
-# Bench: core ~31 (matchup 12 + form 10*1.2 + xGI 4 + pen 2 + home 1) + coverage 2 + set-piece 0.5
-BENCH_CEILING = 33.0
-# Starting XI: same core as bench (matchup 12 + form 10*1.2 + xGI 4 + pen 2 + home 1), no bench bonuses
-STARTING_XI_CEILING = 31.0
-# Value: npxg 8 + xg_chain 2 + form 7*1.2 + ppg 5 + penalty 3 = 26.4 theoretical
-# Practical ceiling ~23.0 (elite MID scores ~20 raw). Validated: Salah-tier -> 87-92/100
-VALUE_CEILING = 23.0
+# Captain: (matchup 8*2.0 + form min(7.5*1.5,10)*1.38 + xGI ~3.5 + pen ~1.2) * pos 1.0 * mins 1.0 + home 1.0
+CAPTAIN_CEILING_SGW = 33.8
+# Target: npxg 8 + xg_chain 3 + form 5*1.38 + ppg 4 + penalty 3 + matchup 6
+TARGET_CEILING = 30.9
+# Differential: npxg 8 + xg_chain 3 + form 7*1.38 + ppg 4 + penalty 3 + ownership 5 + matchup 6
+DIFFERENTIAL_CEILING = 38.7
+# Waiver: quality ~25.7 (form 7*1.38) + matchup 6 + position 5 = 36.7
+WAIVER_CEILING = 36.7
+# Bench: core ~32.8 (matchup 12 + form 10*1.38 + xGI 4 + pen 2 + home 1) + coverage 2 + set-piece 0.5
+BENCH_CEILING = 34.8
+# Starting XI: same core as bench (matchup 12 + form 10*1.38 + xGI 4 + pen 2 + home 1), no bench bonuses
+STARTING_XI_CEILING = 32.8
+# Value: npxg 8 + xg_chain 2 + form 7*1.38 + ppg 5 + penalty 3 = 27.7 theoretical
+# Practical ceiling ~24.3 (elite MID scores ~20 raw). Validated: Salah-tier -> 87-92/100
+VALUE_CEILING = 24.3
 
 # Valid formations: (DEF, MID, FWD). GK always 1.
 # Ordered from most attacking to most defensive for deterministic tiebreaking.
@@ -625,7 +625,9 @@ def calculate_player_quality_score(
     score = per90 * mins_factor
 
     form_trajectory = player.get("form_trajectory", 1.0)
-    score += min(player.get("form", 0) * weights.form.multiplier, weights.form.cap) * form_trajectory
+    xgi_sustainability = player.get("xgi_sustainability", 1.0)
+    capped_form = min(player.get("form", 0) * weights.form.multiplier, weights.form.cap)
+    score += capped_form * form_trajectory * xgi_sustainability
     score += min(player.get("ppg", 0) * weights.ppg.multiplier, weights.ppg.cap)
 
     if weights.dc_per_90.multiplier > 0:
@@ -652,6 +654,20 @@ def calculate_mins_factor(
     return min(minutes / (appearances * 80), 1.0)
 
 
+def _qualifying_window(
+    history: list[dict[str, Any]], current_gw: int, size: int = 7,
+) -> list[dict[str, Any]]:
+    """Recent qualifying GWs: minutes > 0, within 12-GW lookback, most recent *size*."""
+    cutoff = current_gw - 12
+    qualifying = [
+        h
+        for h in history
+        if h.get("minutes", 0) > 0 and h.get("round", 0) > cutoff
+    ]
+    qualifying.sort(key=lambda h: h["round"])
+    return qualifying[-size:]
+
+
 def compute_form_trajectory(history: list[dict[str, Any]], current_gw: int) -> float:
     """Trend multiplier from recent gameweek points history.
 
@@ -661,14 +677,7 @@ def compute_form_trajectory(history: list[dict[str, Any]], current_gw: int) -> f
 
     Returns 1.0 (neutral) when fewer than 4 qualifying GWs are available.
     """
-    cutoff = current_gw - 12
-    qualifying = [
-        h
-        for h in history
-        if h.get("minutes", 0) > 0 and h.get("round", 0) > cutoff
-    ]
-    qualifying.sort(key=lambda h: h["round"])
-    qualifying = qualifying[-7:]  # most recent 7
+    qualifying = _qualifying_window(history, current_gw)
 
     if len(qualifying) < 4:
         return 1.0
@@ -716,6 +725,44 @@ def compute_form_trajectory(history: list[dict[str, Any]], current_gw: int) -> f
     return 1.2
 
 
+def compute_xgi_sustainability(
+    history: list[dict[str, Any]], current_gw: int, position: str
+) -> tuple[float, float]:
+    """Rolling-window xGI sustainability multiplier for ATK players.
+
+    Computes per-match GI-xGI divergence over recent qualifying GWs and maps
+    it to a bounded multiplier in [0.85, 1.15].  Positive divergence (GI > xGI)
+    indicates overperformance -> regression risk -> multiplier < 1.0.  Negative
+    divergence (GI < xGI) indicates underperformance -> upside -> multiplier > 1.0.
+
+    Returns (multiplier, raw_divergence_per_match).  Returns (1.0, 0.0) for
+    DEF/GK positions or when fewer than 4 qualifying GWs are available.
+
+    Unlike compute_form_trajectory, no median filtering is applied: the hauls
+    that constitute overperformance are the most informative data points.
+    """
+    if position not in ATTACKING_POSITIONS:
+        return 1.0, 0.0
+
+    qualifying = _qualifying_window(history, current_gw)
+
+    if len(qualifying) < 4:
+        return 1.0, 0.0
+
+    divergences = [
+        (h.get("goals_scored", 0) + h.get("assists", 0))
+        - (float(h.get("expected_goals", 0) or 0) + float(h.get("expected_assists", 0) or 0))
+        for h in qualifying
+    ]
+    avg_divergence = sum(divergences) / len(divergences)
+
+    # Linear interpolation: divergence=0 -> 1.0, divergence=±0.3 -> 0.85/1.15
+    raw_mult = 1.0 - (avg_divergence / 0.3) * 0.15
+    multiplier = max(0.85, min(1.15, raw_mult))
+
+    return multiplier, avg_divergence
+
+
 def normalise_score(raw: float, ceiling: float) -> int:
     """Normalise a raw score to 0-100 against a ceiling."""
     return min(round(raw / ceiling * 100), 100)
@@ -738,6 +785,11 @@ def build_scoring_enrichment(
 
     if gw_history:
         enrichment["form_trajectory"] = compute_form_trajectory(gw_history, next_gw_id)
+        sustainability, divergence = compute_xgi_sustainability(
+            gw_history, next_gw_id, player.position_name
+        )
+        enrichment["xgi_sustainability"] = sustainability
+        enrichment["xgi_divergence"] = divergence
 
     return enrichment
 
@@ -981,6 +1033,10 @@ class PlayerEvaluation:
     # Bayesian prior confidence (1.0=trust current data fully, <1.0=shrink toward position mean)
     prior_confidence: float = 1.0
 
+    # xGI sustainability (multiplier on form contribution: <1.0=overperforming regression risk,
+    # 1.0=at rate, >1.0=underperforming regression upside). ATK only; DEF/GK default to 1.0.
+    xgi_sustainability: float = 1.0
+
     def as_quality_dict(self) -> dict[str, Any]:
         """Return a dict compatible with calculate_player_quality_score's Mapping interface."""
         return {
@@ -993,6 +1049,7 @@ class PlayerEvaluation:
             "penalty_xG_per_90": self.penalty_xg_per_90,
             "form_trajectory": self.form_trajectory,
             "prior_confidence": self.prior_confidence,
+            "xgi_sustainability": self.xgi_sustainability,
         }
 
 
@@ -1093,6 +1150,7 @@ def build_player_evaluation(
         direct_freekicks_order=_get("direct_freekicks_order"),
         form_trajectory=float(_get("form_trajectory", 1.0) or 1.0),
         prior_confidence=float(_get("prior_confidence", 1.0) or 1.0),
+        xgi_sustainability=float(_get("xgi_sustainability", 1.0) or 1.0),
     )
 
     # Build identity
@@ -1146,8 +1204,8 @@ def _calculate_quality_based_raw(
 ) -> float:
     """Raw ownership-family score before normalisation.
 
-    Computes: quality baseline + ownership bonus + underperformance bonus +
-    matchup bonus + availability penalty. Returns un-normalised float so
+    Computes: quality baseline + ownership bonus + matchup bonus +
+    availability penalty. Returns un-normalised float so
     callers can add formula-specific adjustments before normalising.
 
     *mins_factor_override*: when set, replaces the standard
@@ -1179,10 +1237,6 @@ def _calculate_quality_based_raw(
             (ownership_config["threshold"] - evaluation.ownership)
             / ownership_config["divisor"],
         )
-
-    # Underperformance bonus (players due positive regression)
-    if evaluation.gi_minus_xgi < -1:
-        score += min(abs(evaluation.gi_minus_xgi), 3)
 
     score += _matchup_bonus(evaluation.matchup_avg_3gw, mins_factor)
 
@@ -1351,8 +1405,12 @@ def calculate_single_gw_core(
         for fm in fixture_matchups
     )
 
-    # Form score (capped via weights, then scaled by trajectory)
-    form_score = min(evaluation.form * weights.form.multiplier, weights.form.cap) * evaluation.form_trajectory
+    # Form score (capped via weights, then scaled by trajectory and xGI sustainability)
+    form_score = (
+        min(evaluation.form * weights.form.multiplier, weights.form.cap)
+        * evaluation.form_trajectory
+        * evaluation.xgi_sustainability
+    )
 
     # xGI score: prefer npxG when available (strips penalty noise)
     if evaluation.npxg_per_90 is not None:

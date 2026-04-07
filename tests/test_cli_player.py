@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from click.testing import CliRunner
 
 from fpl_cli.cli import main
@@ -859,3 +861,96 @@ class TestPlayerRollingPtsPerM:
         assert result.exit_code == 0, result.output
         info = json.loads(result.output)["data"][0]["info"]
         assert info["rolling_pts_per_m"] is None
+
+
+# --- xGI sustainability display tests ---
+
+
+def _make_overperforming_history(current_gw: int = 30, n: int = 7) -> list[dict]:
+    """7 GWs where GI exceeds xGI by 0.3/match -> divergence +0.3 -> multiplier 0.85."""
+    return [
+        {
+            "round": current_gw - n + i, "minutes": 90,
+            "goals_scored": 1, "assists": 0,
+            "expected_goals": "0.50", "expected_assists": "0.20",
+        }
+        for i in range(n)
+    ]
+
+
+def _make_underperforming_history(current_gw: int = 30, n: int = 7) -> list[dict]:
+    """7 GWs where xGI exceeds GI by 0.3/match -> divergence -0.3 -> multiplier 1.15."""
+    return [
+        {
+            "round": current_gw - n + i, "minutes": 90,
+            "goals_scored": 0, "assists": 0,
+            "expected_goals": "0.25", "expected_assists": "0.05",
+        }
+        for i in range(n)
+    ]
+
+
+class TestXgiSustainabilityDisplay:
+    def test_atk_overperformer_shows_sustainability_line(self):
+        client, fixture_agent, ratings_svc = _make_mocks()
+        client.get_player_detail = AsyncMock(return_value={
+            "history": _make_overperforming_history(),
+        })
+        result = _run(["--detail"], client, fixture_agent, ratings_svc)
+        assert result.exit_code == 0, result.output
+        assert "xGI Sustainability" in result.output
+        assert "0.85x form" in result.output
+
+    def test_atk_underperformer_shows_sustainability_line(self):
+        client, fixture_agent, ratings_svc = _make_mocks()
+        client.get_player_detail = AsyncMock(return_value={
+            "history": _make_underperforming_history(),
+        })
+        result = _run(["--detail"], client, fixture_agent, ratings_svc)
+        assert result.exit_code == 0, result.output
+        assert "xGI Sustainability" in result.output
+        assert "1.15x form" in result.output
+
+    def test_def_player_shows_no_sustainability_line(self):
+        client, fixture_agent, ratings_svc = _make_mocks()
+        client.get_players = AsyncMock(return_value=[
+            make_player(id=1, web_name="Salah", team_id=1,
+                        position=PlayerPosition.DEFENDER)
+        ])
+        client.get_player_detail = AsyncMock(return_value={
+            "history": _make_overperforming_history(),
+        })
+        result = _run(["--detail"], client, fixture_agent, ratings_svc)
+        assert result.exit_code == 0, result.output
+        assert "xGI Sustainability" not in result.output
+
+    def test_insufficient_history_shows_no_sustainability_line(self):
+        client, fixture_agent, ratings_svc = _make_mocks()
+        # Only 3 qualifying GWs (below 4-GW minimum)
+        client.get_player_detail = AsyncMock(return_value={
+            "history": _make_overperforming_history(n=3),
+        })
+        result = _run(["--detail"], client, fixture_agent, ratings_svc)
+        assert result.exit_code == 0, result.output
+        assert "xGI Sustainability" not in result.output
+
+    def test_json_with_detail_includes_sustainability_fields(self):
+        client, fixture_agent, ratings_svc = _make_mocks()
+        client.get_player_detail = AsyncMock(return_value={
+            "history": _make_overperforming_history(),
+        })
+        result = _run_json(["--detail"], client, fixture_agent, ratings_svc)
+        assert result.exit_code == 0, result.output
+        info = json.loads(result.output)["data"][0]["info"]
+        assert "xgi_sustainability" in info
+        assert "xgi_divergence" in info
+        assert info["xgi_sustainability"] == 0.85
+        assert info["xgi_divergence"] == pytest.approx(0.3, abs=0.01)
+
+    def test_json_without_detail_omits_sustainability_fields(self):
+        client, fixture_agent, ratings_svc = _make_mocks()
+        result = _run_json([], client, fixture_agent, ratings_svc)
+        assert result.exit_code == 0, result.output
+        info = json.loads(result.output)["data"][0]["info"]
+        assert "xgi_sustainability" not in info
+        assert "xgi_divergence" not in info
