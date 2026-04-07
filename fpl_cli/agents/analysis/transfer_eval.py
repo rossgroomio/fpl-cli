@@ -103,6 +103,9 @@ class TransferEvalAgent(Agent):
             next_gw_id = data.next_gw_id
 
             # Score all players on both horizons
+            from fpl_cli.cli._context import load_settings
+            rw = int(load_settings().get("rolling_window", 5))
+
             target_scored: list[dict[str, Any]] = []
             lineup_scored: list[dict[str, Any]] = []
 
@@ -114,6 +117,7 @@ class TransferEvalAgent(Agent):
                     understat_by_id=data.understat_lookup,
                     player_histories=data.player_histories,
                     player_priors=data.player_priors,
+                    rolling_window=rw,
                 )
                 target_scored.append(target_entry)
                 lineup_scored.append(lineup_entry)
@@ -172,6 +176,7 @@ class TransferEvalAgent(Agent):
         understat_by_id: dict[int, dict[str, float]] | None = None,
         player_histories: dict[int, list[dict[str, Any]]] | None = None,
         player_priors: dict[int, Any] | None = None,
+        rolling_window: int = 5,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Score a player on both horizons. Returns (target_entry, lineup_entry)."""
         team = context.team_map.get(player.team_id)
@@ -257,10 +262,8 @@ class TransferEvalAgent(Agent):
         if player_histories:
             hist = player_histories.get(player.id, [])
             if hist:
-                from fpl_cli.cli._context import load_settings
-                rw = int(load_settings().get("rolling_window", 5))
                 rolling_val, rolling_count = compute_rolling_pts_per_m(
-                    hist, float(player.now_cost), rw,
+                    hist, float(player.now_cost), rolling_window,
                 )
         target_entry["rolling_pts_per_m"] = rolling_val
         target_entry["rolling_fixture_count"] = rolling_count
