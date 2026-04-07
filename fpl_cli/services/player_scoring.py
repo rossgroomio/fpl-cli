@@ -135,21 +135,21 @@ ATTACKING_POSITIONS: frozenset[str] = frozenset({"MID", "FWD"})
 # Normalisation ceilings (SGW theoretical max, MID/FWD path)
 # ---------------------------------------------------------------------------
 
-# Captain: (matchup 8*2.0 + form min(7.5*1.5,10)*1.2 + xGI ~3.5 + pen ~1.2) * pos 1.0 * mins 1.0 + home 1.0
-CAPTAIN_CEILING_SGW = 32.0
-# Target: npxg 8 + xg_chain 3 + form 5*1.2 + ppg 4 + penalty 3 + regression 3 + matchup 6
-TARGET_CEILING = 33.0
-# Differential: npxg 8 + xg_chain 3 + form 7*1.2 + ppg 4 + penalty 3 + ownership 5 + regression 3 + matchup 6
-DIFFERENTIAL_CEILING = 40.4
-# Waiver: quality ~24.4 (form 7*1.2) + regression 3 + matchup 6 + position 5 = 38.4
-WAIVER_CEILING = 38.4
-# Bench: core ~31 (matchup 12 + form 10*1.2 + xGI 4 + pen 2 + home 1) + coverage 2 + set-piece 0.5
-BENCH_CEILING = 33.0
-# Starting XI: same core as bench (matchup 12 + form 10*1.2 + xGI 4 + pen 2 + home 1), no bench bonuses
-STARTING_XI_CEILING = 31.0
-# Value: npxg 8 + xg_chain 2 + form 7*1.2 + ppg 5 + penalty 3 = 26.4 theoretical
-# Practical ceiling ~23.0 (elite MID scores ~20 raw). Validated: Salah-tier -> 87-92/100
-VALUE_CEILING = 23.0
+# Captain: (matchup 8*2.0 + form min(7.5*1.5,10)*1.38 + xGI ~3.5 + pen ~1.2) * pos 1.0 * mins 1.0 + home 1.0
+CAPTAIN_CEILING_SGW = 33.8
+# Target: npxg 8 + xg_chain 3 + form 5*1.38 + ppg 4 + penalty 3 + matchup 6
+TARGET_CEILING = 30.9
+# Differential: npxg 8 + xg_chain 3 + form 7*1.38 + ppg 4 + penalty 3 + ownership 5 + matchup 6
+DIFFERENTIAL_CEILING = 38.7
+# Waiver: quality ~25.7 (form 7*1.38) + matchup 6 + position 5 = 36.7
+WAIVER_CEILING = 36.7
+# Bench: core ~32.8 (matchup 12 + form 10*1.38 + xGI 4 + pen 2 + home 1) + coverage 2 + set-piece 0.5
+BENCH_CEILING = 34.8
+# Starting XI: same core as bench (matchup 12 + form 10*1.38 + xGI 4 + pen 2 + home 1), no bench bonuses
+STARTING_XI_CEILING = 32.8
+# Value: npxg 8 + xg_chain 2 + form 7*1.38 + ppg 5 + penalty 3 = 27.7 theoretical
+# Practical ceiling ~24.3 (elite MID scores ~20 raw). Validated: Salah-tier -> 87-92/100
+VALUE_CEILING = 24.3
 
 # Valid formations: (DEF, MID, FWD). GK always 1.
 # Ordered from most attacking to most defensive for deterministic tiebreaking.
@@ -625,7 +625,8 @@ def calculate_player_quality_score(
     score = per90 * mins_factor
 
     form_trajectory = player.get("form_trajectory", 1.0)
-    score += min(player.get("form", 0) * weights.form.multiplier, weights.form.cap) * form_trajectory
+    xgi_sustainability = player.get("xgi_sustainability", 1.0)
+    score += min(player.get("form", 0) * weights.form.multiplier, weights.form.cap) * form_trajectory * xgi_sustainability
     score += min(player.get("ppg", 0) * weights.ppg.multiplier, weights.ppg.cap)
 
     if weights.dc_per_90.multiplier > 0:
@@ -1236,10 +1237,6 @@ def _calculate_quality_based_raw(
             / ownership_config["divisor"],
         )
 
-    # Underperformance bonus (players due positive regression)
-    if evaluation.gi_minus_xgi < -1:
-        score += min(abs(evaluation.gi_minus_xgi), 3)
-
     score += _matchup_bonus(evaluation.matchup_avg_3gw, mins_factor)
 
     # Availability penalty
@@ -1407,8 +1404,12 @@ def calculate_single_gw_core(
         for fm in fixture_matchups
     )
 
-    # Form score (capped via weights, then scaled by trajectory)
-    form_score = min(evaluation.form * weights.form.multiplier, weights.form.cap) * evaluation.form_trajectory
+    # Form score (capped via weights, then scaled by trajectory and xGI sustainability)
+    form_score = (
+        min(evaluation.form * weights.form.multiplier, weights.form.cap)
+        * evaluation.form_trajectory
+        * evaluation.xgi_sustainability
+    )
 
     # xGI score: prefer npxG when available (strips penalty noise)
     if evaluation.npxg_per_90 is not None:
