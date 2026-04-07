@@ -24,6 +24,7 @@ PLAYERS_SORT_FIELDS = [
     "defensive_contribution", "defensive_contribution_per_90",
     "form_per_m", "pts_per_m",
     "quality_score", "quality_per_m", "rolling_pts_per_m",
+    "ep_next", "ep_this",
 ]
 
 # Core columns shown for every `fpl stats` query.
@@ -304,6 +305,8 @@ def stats_command(
                             "defensive_contribution_per_90": float(p.defensive_contribution_per_90),
                             "form_per_m": float(p.value_form),
                             "pts_per_m": float(p.value_season),
+                            "ep_next": float(p.ep_next),
+                            "ep_this": float(p.ep_this),
                             **(
                                 {
                                     "quality_score": quality_map.get(p.id),

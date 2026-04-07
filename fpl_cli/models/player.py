@@ -89,6 +89,10 @@ class Player(BaseModel):
     expected_goal_involvements: float = Field(default=0.0, alias="expected_goal_involvements")
     expected_goals_conceded: float = Field(default=0.0, alias="expected_goals_conceded")
 
+    # FPL predicted points
+    ep_next: float = 0.0
+    ep_this: float = 0.0
+
     # Defensive
     defensive_contribution: int = 0
     defensive_contribution_per_90: float = 0.0

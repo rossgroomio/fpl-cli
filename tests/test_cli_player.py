@@ -608,6 +608,20 @@ class TestPlayerJsonOutput:
         info = json.loads(result.output)["data"][0]["info"]
         assert "set_pieces" not in info
 
+    def test_json_contains_ep_next_and_ep_this(self):
+        client, fixture_agent, ratings_svc = _make_mocks()
+        client.get_players = AsyncMock(return_value=[
+            make_player(id=308, web_name="Salah", first_name="Mohamed",
+                        second_name="Salah", team_id=1,
+                        position=PlayerPosition.MIDFIELDER,
+                        ep_next=7.5, ep_this=3.2),
+        ])
+        result = _run_json([], client, fixture_agent, ratings_svc)
+        assert result.exit_code == 0, result.output
+        info = json.loads(result.output)["data"][0]["info"]
+        assert info["ep_next"] == 7.5
+        assert info["ep_this"] == 3.2
+
     def test_json_multiple_matches_returns_array(self):
         client, fixture_agent, ratings_svc = _make_mocks()
         player_a = make_player(id=1, web_name="M Salah", first_name="Mohamed",
@@ -700,6 +714,19 @@ class TestPlayerQualityValueScores:
         result = _run([], client, fixture_agent, ratings_svc)
         assert result.exit_code == 0, result.output
         assert "Quality:" not in result.output
+
+    def test_rich_panel_shows_ep_next_on_points_line(self):
+        client, fixture_agent, ratings_svc = _make_mocks()
+        client.get_players = AsyncMock(return_value=[
+            make_player(id=308, web_name="Salah", first_name="Mohamed",
+                        second_name="Salah", team_id=1,
+                        position=PlayerPosition.MIDFIELDER,
+                        ep_next=8.5),
+        ])
+        result = _run([], client, fixture_agent, ratings_svc)
+        assert result.exit_code == 0, result.output
+        assert "xPts: 8.5" in result.output
+        assert "ep_this" not in result.output
 
     def test_gk_uses_without_xgi_weights(self):
         """GK quality_score should differ from MID due to without_xgi path."""

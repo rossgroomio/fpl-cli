@@ -205,6 +205,36 @@ class TestPlayersSort:
         assert result.exit_code == 0, result.output
         assert "goals_scored" in result.output
 
+    def test_sort_by_ep_next(self):
+        players = [
+            make_player(id=1, web_name="HighEp", team_id=1, ep_next=8.5),
+            make_player(id=2, web_name="LowEp", team_id=1, ep_next=2.0),
+        ]
+        client = _make_client(players, _sample_teams())
+        result = _run(["--sort", "ep_next"], client=client)
+        assert result.exit_code == 0, result.output
+        assert result.output.index("HighEp") < result.output.index("LowEp")
+
+    def test_sort_by_ep_this(self):
+        players = [
+            make_player(id=1, web_name="HighEpThis", team_id=1, ep_this=7.0),
+            make_player(id=2, web_name="LowEpThis", team_id=1, ep_this=1.5),
+        ]
+        client = _make_client(players, _sample_teams())
+        result = _run(["--sort", "ep_this"], client=client)
+        assert result.exit_code == 0, result.output
+        assert result.output.index("HighEpThis") < result.output.index("LowEpThis")
+
+    def test_sort_ep_next_zero_sorts_to_bottom(self):
+        players = [
+            make_player(id=1, web_name="Injured", team_id=1, ep_next=0.0),
+            make_player(id=2, web_name="Fit", team_id=1, ep_next=5.0),
+        ]
+        client = _make_client(players, _sample_teams())
+        result = _run(["--sort", "ep_next"], client=client)
+        assert result.exit_code == 0, result.output
+        assert result.output.index("Fit") < result.output.index("Injured")
+
 
 class TestPlayersErrors:
     def test_invalid_team_shows_valid_options(self):
@@ -238,7 +268,7 @@ class TestPlayersJsonFormat:
         required = {"id", "name", "team", "position", "price", "total_points", "minutes",
                     "goals_scored", "assists", "expected_goal_involvements", "form",
                     "defensive_contribution", "defensive_contribution_per_90",
-                    "form_per_m", "pts_per_m"}
+                    "form_per_m", "pts_per_m", "ep_next", "ep_this"}
         assert required.issubset(data["data"][0].keys())
 
     def test_json_position_filter(self):

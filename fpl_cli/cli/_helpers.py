@@ -91,6 +91,7 @@ _PLAYERS_FLOAT_FIELDS = {
     "selected_by_percent",
     "defensive_contribution_per_90",
     "form_per_m", "pts_per_m",
+    "ep_next", "ep_this",
 }
 
 
