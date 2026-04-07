@@ -27,8 +27,8 @@ Errors use `emit_json_error()` with `{"command", "error"}` shape.
 | `init` | Set up fpl-cli with your FPL IDs and optional features | No | General | No | direct-api |
 | `status` | Show FPL gameweek status and upcoming deadlines | Yes | General | No | direct-api |
 | `fixtures` | Show fixtures for a gameweek | Yes | General | No | direct-api |
-| `player` | Look up a player's stats, xG, ownership and fixture run | Yes | General | No | direct-api |
-| `stats` | List players with filtering and sorting. `--value` adds quality/value per £m columns; `--window N` sets rolling lookback (3-10) for `rolling_pts_per_m` | Yes | General | No | direct-api |
+| `player` | Look up a player's stats, xG, ownership and fixture run. JSON includes `ep_next` (predicted pts next GW) and `ep_this` (current GW); panel shows `xPts` (ep_next) | Yes | General | No | direct-api |
+| `stats` | List players with filtering and sorting. `--value` adds quality/value per £m columns; `--window N` sets rolling lookback (3-10) for `rolling_pts_per_m`. Sortable by `ep_next`/`ep_this` (FPL predicted points); both in JSON output | Yes | General | No | direct-api |
 | `history` | Show historical player performance across seasons | Yes | General | No | direct-api |
 | `league` | Show live league standings for Classic and Draft leagues | No | General | No | direct-api |
 | `fdr` | Analyse fixture difficulty - easy runs, blanks, doubles | Yes | General | No | via-agent |

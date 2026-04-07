@@ -360,6 +360,17 @@ When a player has an Understat match, `fpl player` computes and displays two add
 
 `quality_score` and `quality_per_m` are `null` when no Understat match exists. In JSON output (`--format json`), they appear under `info.quality_score` and `info.quality_per_m`. In the Rich panel, they appear as `Quality: 85 | Value: 11.3/£m`.
 
+#### FPL Predicted Points
+
+The FPL API provides gameweek point predictions for every player:
+
+| Field | Description |
+|---|---|
+| **ep_next** | FPL's predicted points for the next gameweek. Shown as `xPts` on the Points/PPG panel line. Available as a `--sort` field in `fpl stats`. |
+| **ep_this** | FPL's predicted points for the current gameweek (freezes after GW deadline, enabling predicted-vs-actual comparison with `event_points`). JSON only - not shown in the panel. |
+
+Both fields default to `0.0` for unavailable/injured players. In JSON output, they appear under `info.ep_next` and `info.ep_this` for `fpl player`, and as top-level record fields in `fpl stats --format json`.
+
 #### Player Detail Flags
 
 **`--detail` (`-d`)**: GW-by-GW match performance from the FPL API. Shows gameweek, opponent, minutes, goals, xG, assists, xA, and points for the last 10 matches.
