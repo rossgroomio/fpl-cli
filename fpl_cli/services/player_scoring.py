@@ -51,10 +51,13 @@ class QualityWeights:
     ppg: StatWeight
     dc_per_90: StatWeight = dataclasses.field(default_factory=lambda: StatWeight(0, 0))
     penalty_xg: StatWeight = dataclasses.field(default_factory=lambda: StatWeight(0, 0))
+    gk_saves_per_90: StatWeight = dataclasses.field(default_factory=lambda: StatWeight(0, 0))
+    gk_xgc_quality: StatWeight = dataclasses.field(default_factory=lambda: StatWeight(0, 0))
+    gk_cs_rate: StatWeight = dataclasses.field(default_factory=lambda: StatWeight(0, 0))
 
     @functools.lru_cache(maxsize=None)
     def without_xgi(self) -> QualityWeights:
-        """Return a copy with xGI-family weights zeroed and DC/90 activated (for GK/DEF)."""
+        """Return a copy with xGI-family weights zeroed and DC/90 activated (for DEF)."""
         zero = StatWeight(0, 0)
         return dataclasses.replace(
             self,
@@ -63,6 +66,30 @@ class QualityWeights:
             xgi_fallback=zero,
             dc_per_90=StatWeight(0.5, 2),
             penalty_xg=zero,
+            gk_saves_per_90=zero,
+            gk_xgc_quality=zero,
+            gk_cs_rate=zero,
+        )
+
+    @functools.lru_cache(maxsize=None)
+    def for_gk(self) -> QualityWeights:
+        """Return a copy with GK-specific signals activated (for GK scoring path).
+
+        Zeroes: xGI family, dc_per_90, penalty_xg.
+        Activates: gk_saves_per_90, gk_xgc_quality, gk_cs_rate.
+        Preserves: form, ppg from the parent instance.
+        """
+        zero = StatWeight(0, 0)
+        return dataclasses.replace(
+            self,
+            npxg=zero,
+            xg_chain=zero,
+            xgi_fallback=zero,
+            dc_per_90=zero,
+            penalty_xg=zero,
+            gk_saves_per_90=StatWeight(1.5, 6),
+            gk_xgc_quality=StatWeight(3.0, 3.5),
+            gk_cs_rate=StatWeight(8.0, 4.0),
         )
 
 
@@ -150,6 +177,17 @@ STARTING_XI_CEILING = 32.8
 # Value: npxg 8 + xg_chain 2 + form 7*1.38 + ppg 5 + penalty 3 = 27.7 theoretical
 # Practical ceiling ~24.3 (elite MID scores ~20 raw). Validated: Salah-tier -> 87-92/100
 VALUE_CEILING = 24.3
+
+# GK-specific ceilings — computed from GK signal caps (saves 6, xgc 3.5, cs 4)
+# plus position-appropriate form/ppg caps and matchup/ownership contributions.
+# GK_TARGET: saves 6 + xgc 3.5 + cs 4 + form_cap(5)*1.38 + ppg_cap(4) + matchup 6
+GK_TARGET_CEILING = 30.4
+# GK_DIFFERENTIAL: saves 6 + xgc 3.5 + cs 4 + form_cap(7)*1.38 + ppg_cap(4) + ownership 5 + matchup 6
+GK_DIFFERENTIAL_CEILING = 38.2
+# GK_WAIVER: saves 6 + xgc 3.5 + cs 4 + form_cap(7)*1.38 + ppg_cap(4.8) + matchup 6 + position_need 5
+GK_WAIVER_CEILING = 39.0
+# GK_VALUE: saves 6 + xgc 3.5 + cs 4 + form_cap(7)*1.38 + ppg_cap(5) (no matchup for value)
+GK_VALUE_CEILING = 28.2
 
 # Valid formations: (DEF, MID, FWD). GK always 1.
 # Ordered from most attacking to most defensive for deterministic tiebreaking.
@@ -634,6 +672,18 @@ def calculate_player_quality_score(
         dc = player.get("dc_per_90", 0) or 0
         score += min(dc * weights.dc_per_90.multiplier, weights.dc_per_90.cap)
 
+    if weights.gk_saves_per_90.multiplier > 0:
+        sv = player.get("gk_saves_per_90", 0) or 0
+        score += min(sv * weights.gk_saves_per_90.multiplier, weights.gk_saves_per_90.cap)
+
+    if weights.gk_xgc_quality.multiplier > 0:
+        xgc_q = player.get("gk_xgc_quality", 0) or 0
+        score += min(xgc_q * weights.gk_xgc_quality.multiplier, weights.gk_xgc_quality.cap)
+
+    if weights.gk_cs_rate.multiplier > 0:
+        cs = player.get("gk_cs_rate", 0) or 0
+        score += min(cs * weights.gk_cs_rate.multiplier, weights.gk_cs_rate.cap)
+
     return score
 
 
@@ -782,6 +832,13 @@ def build_scoring_enrichment(
         (player.expected_goals + player.expected_assists) / minutes_safe * 90
     )
     enrichment["dc_per_90"] = player.defensive_contribution_per_90
+    enrichment["gk_saves_per_90"] = player.saves_per_90
+    if player.minutes > 0:
+        xgc_per_90 = (player.expected_goals_conceded / max(player.minutes, 1)) * 90
+        enrichment["gk_xgc_quality"] = max(0.0, 2.0 - xgc_per_90)
+    else:
+        enrichment["gk_xgc_quality"] = 0.0
+    enrichment["gk_cs_rate"] = player.clean_sheets / max(player.appearances, 1)
 
     if gw_history:
         enrichment["form_trajectory"] = compute_form_trajectory(gw_history, next_gw_id)
@@ -844,13 +901,20 @@ def compute_quality_value(
 
     evaluation, _ = build_player_evaluation(player, enrichment=enrichment)
     q_dict = evaluation.as_quality_dict()
-    is_defensive = player.position_name in ("GK", "DEF")
-    weights = VALUE_QUALITY_WEIGHTS.without_xgi() if is_defensive else VALUE_QUALITY_WEIGHTS
+    if player.position_name == "GK":
+        weights = VALUE_QUALITY_WEIGHTS.for_gk()
+        value_ceiling = GK_VALUE_CEILING
+    elif player.position_name == "DEF":
+        weights = VALUE_QUALITY_WEIGHTS.without_xgi()
+        value_ceiling = VALUE_CEILING
+    else:
+        weights = VALUE_QUALITY_WEIGHTS
+        value_ceiling = VALUE_CEILING
     mins_factor = calculate_mins_factor(player.minutes, player.appearances, next_gw_id)
     raw_score = calculate_player_quality_score(q_dict, weights, mins_factor)
     if raw:
         return raw_score
-    q_score = normalise_score(raw_score, VALUE_CEILING)
+    q_score = normalise_score(raw_score, value_ceiling)
     quality_per_m = round(q_score / player.price, 1) if player.price > 0 else None
     return q_score, quality_per_m
 
@@ -1037,6 +1101,11 @@ class PlayerEvaluation:
     # 1.0=at rate, >1.0=underperforming regression upside). ATK only; DEF/GK default to 1.0.
     xgi_sustainability: float = 1.0
 
+    # GK-specific signals (zero for non-GKs; weight gate ensures zero contribution)
+    gk_saves_per_90: float = 0.0
+    gk_xgc_quality: float = 0.0
+    gk_cs_rate: float = 0.0
+
     def as_quality_dict(self) -> dict[str, Any]:
         """Return a dict compatible with calculate_player_quality_score's Mapping interface."""
         return {
@@ -1050,6 +1119,9 @@ class PlayerEvaluation:
             "form_trajectory": self.form_trajectory,
             "prior_confidence": self.prior_confidence,
             "xgi_sustainability": self.xgi_sustainability,
+            "gk_saves_per_90": self.gk_saves_per_90,
+            "gk_xgc_quality": self.gk_xgc_quality,
+            "gk_cs_rate": self.gk_cs_rate,
         }
 
 
@@ -1151,6 +1223,9 @@ def build_player_evaluation(
         form_trajectory=float(_get("form_trajectory", 1.0) or 1.0),
         prior_confidence=float(_get("prior_confidence", 1.0) or 1.0),
         xgi_sustainability=float(_get("xgi_sustainability", 1.0) or 1.0),
+        gk_saves_per_90=float(_get("gk_saves_per_90", 0.0) or 0.0),
+        gk_xgc_quality=float(_get("gk_xgc_quality", 0.0) or 0.0),
+        gk_cs_rate=float(_get("gk_cs_rate", 0.0) or 0.0),
     )
 
     # Build identity
@@ -1213,11 +1288,12 @@ def _calculate_quality_based_raw(
     bonus. Used by waiver scoring which applies a stricter combined
     availability factor (season commitment in draft format).
     """
-    effective_weights = (
-        weights
-        if evaluation.position in ATTACKING_POSITIONS
-        else weights.without_xgi()
-    )
+    if evaluation.position in ATTACKING_POSITIONS:
+        effective_weights = weights
+    elif evaluation.position == "GK":
+        effective_weights = weights.for_gk()
+    else:
+        effective_weights = weights.without_xgi()
     mins_factor = (
         mins_factor_override
         if mins_factor_override is not None
@@ -1279,10 +1355,11 @@ def calculate_target_score(
     next_gw_id: int,
 ) -> int:
     """Calculate a target score (pure performance, no ownership bias)."""
+    ceiling = GK_TARGET_CEILING if evaluation.position == "GK" else TARGET_CEILING
     return _calculate_quality_based_score(
         evaluation,
         weights=TARGET_QUALITY_WEIGHTS,
-        ceiling=TARGET_CEILING,
+        ceiling=ceiling,
         next_gw_id=next_gw_id,
     )
 
@@ -1294,10 +1371,11 @@ def calculate_differential_score(
     next_gw_id: int,
 ) -> int:
     """Calculate a differential score for a player."""
+    ceiling = GK_DIFFERENTIAL_CEILING if evaluation.position == "GK" else DIFFERENTIAL_CEILING
     return _calculate_quality_based_score(
         evaluation,
         weights=DIFFERENTIAL_QUALITY_WEIGHTS,
-        ceiling=DIFFERENTIAL_CEILING,
+        ceiling=ceiling,
         next_gw_id=next_gw_id,
         ownership_config={
             "threshold": semi_differential_threshold,
@@ -1361,7 +1439,8 @@ def calculate_waiver_score(
         elif current_count == 2:
             score -= 2
 
-    return normalise_score(score, WAIVER_CEILING)
+    waiver_ceiling = GK_WAIVER_CEILING if evaluation.position == "GK" else WAIVER_CEILING
+    return normalise_score(score, waiver_ceiling)
 
 
 # ---------------------------------------------------------------------------

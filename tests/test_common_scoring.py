@@ -315,3 +315,93 @@ class TestPenaltyXgComponent:
         score = calculate_player_quality_score(defender, weights)
         # form=min(4*1,5)=4, ppg=min(3*0.5,4)=1.5, dc=min(2*0.5,2)=1 → 6.5
         assert score == pytest.approx(6.5)
+
+
+class TestForGkWeights:
+    """for_gk() method — GK scoring path extension."""
+
+    def test_for_gk_zeroes_xgi_family(self):
+        w = TARGET_WEIGHTS.for_gk()
+        assert w.npxg == StatWeight(0, 0)
+        assert w.xg_chain == StatWeight(0, 0)
+        assert w.xgi_fallback == StatWeight(0, 0)
+        assert w.penalty_xg == StatWeight(0, 0)
+
+    def test_for_gk_zeroes_dc_per_90(self):
+        w = TARGET_WEIGHTS.for_gk()
+        assert w.dc_per_90 == StatWeight(0, 0)
+
+    def test_for_gk_activates_gk_signals(self):
+        w = TARGET_WEIGHTS.for_gk()
+        assert w.gk_saves_per_90.multiplier > 0
+        assert w.gk_xgc_quality.multiplier > 0
+        assert w.gk_cs_rate.multiplier > 0
+
+    def test_for_gk_preserves_form_ppg(self):
+        w = TARGET_WEIGHTS.for_gk()
+        assert w.form == TARGET_WEIGHTS.form
+        assert w.ppg == TARGET_WEIGHTS.ppg
+
+    def test_for_gk_different_weights_preserve_different_form_ppg(self):
+        """form/ppg vary across formulas — for_gk() must inherit parent's values."""
+        assert DIFFERENTIAL_WEIGHTS.for_gk().form == DIFFERENTIAL_WEIGHTS.form
+        assert WAIVER_WEIGHTS.for_gk().ppg == WAIVER_WEIGHTS.ppg
+
+    def test_for_gk_cached(self):
+        assert TARGET_WEIGHTS.for_gk() is TARGET_WEIGHTS.for_gk()
+
+    def test_without_xgi_zeroes_gk_fields(self):
+        """Parity trap guard: without_xgi() must not activate GK signals."""
+        w = TARGET_WEIGHTS.without_xgi()
+        assert w.gk_saves_per_90 == StatWeight(0, 0)
+        assert w.gk_xgc_quality == StatWeight(0, 0)
+        assert w.gk_cs_rate == StatWeight(0, 0)
+
+
+class TestGKSignalScoring:
+    """calculate_player_quality_score — GK signal consumption."""
+
+    def test_gk_signals_contribute_to_score(self):
+        """GK signals add correctly when for_gk() weights are used.
+
+        saves: min(3.5*1.5, 6)=5.25, xgc: min(1.2*3, 3.5)=3.5, cs: min(0.4*8, 4)=3.2
+        form: min(5.0*1.0, 5)=5.0, ppg: min(4.0*0.5, 4)=2.0 → 18.95
+        """
+        gk_dict = {
+            "form": 5.0, "ppg": 4.0,
+            "gk_saves_per_90": 3.5,
+            "gk_xgc_quality": 1.2,
+            "gk_cs_rate": 0.4,
+        }
+        score = calculate_player_quality_score(gk_dict, TARGET_WEIGHTS.for_gk())
+        assert score == pytest.approx(18.95)
+
+    def test_atk_weights_ignore_gk_signals(self):
+        """Non-zero GK signals in dict don't affect ATK scoring (zero-default weights)."""
+        base = {"form": 5.0, "ppg": 4.0, "npxG_per_90": 0.3, "xGChain_per_90": 0.5}
+        with_gk = {**base, "gk_saves_per_90": 3.5, "gk_xgc_quality": 1.2, "gk_cs_rate": 0.4}
+        assert (calculate_player_quality_score(base, TARGET_WEIGHTS)
+                == calculate_player_quality_score(with_gk, TARGET_WEIGHTS))
+
+    def test_gk_xgc_quality_capped(self):
+        """gk_xgc_quality capped at 3.5."""
+        gk_dict = {"form": 0, "ppg": 0, "gk_xgc_quality": 10.0, "gk_saves_per_90": 0, "gk_cs_rate": 0}
+        assert calculate_player_quality_score(gk_dict, TARGET_WEIGHTS.for_gk()) == pytest.approx(3.5)
+
+    def test_gk_cs_rate_capped(self):
+        """gk_cs_rate capped at 4.0."""
+        gk_dict = {"form": 0, "ppg": 0, "gk_cs_rate": 10.0, "gk_saves_per_90": 0, "gk_xgc_quality": 0}
+        assert calculate_player_quality_score(gk_dict, TARGET_WEIGHTS.for_gk()) == pytest.approx(4.0)
+
+    def test_gk_saves_capped(self):
+        """gk_saves_per_90 capped at 6.0."""
+        gk_dict = {"form": 0, "ppg": 0, "gk_saves_per_90": 10.0, "gk_xgc_quality": 0, "gk_cs_rate": 0}
+        assert calculate_player_quality_score(gk_dict, TARGET_WEIGHTS.for_gk()) == pytest.approx(6.0)
+
+    def test_gk_zero_signals_form_ppg_only(self):
+        """GK with all-zero signals: only form+ppg contribute.
+
+        form: min(4.0*1.0, 5)=4.0, ppg: min(3.0*0.5, 4)=1.5 → 5.5
+        """
+        gk_dict = {"form": 4.0, "ppg": 3.0, "gk_saves_per_90": 0, "gk_xgc_quality": 0, "gk_cs_rate": 0}
+        assert calculate_player_quality_score(gk_dict, TARGET_WEIGHTS.for_gk()) == pytest.approx(5.5)
