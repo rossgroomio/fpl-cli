@@ -835,13 +835,16 @@ def build_scoring_enrichment(
     )
     enrichment["dc_per_90"] = player.defensive_contribution_per_90
     if player.position_name == "GK":
-        enrichment["gk_saves_per_90"] = player.saves_per_90
+        # Sample-size ramp: per-90 rates are noisy below ~5 full games.
+        # Consistent with waiver availability ramp (minutes / 450).
+        sample_ramp = min(player.minutes / 450, 1.0)
+        enrichment["gk_saves_per_90"] = player.saves_per_90 * sample_ramp
         if player.minutes > 0:
             xgc_per_90 = (player.expected_goals_conceded / player.minutes) * 90
-            enrichment["gk_xgc_quality"] = max(0.0, 2.0 - xgc_per_90)
+            enrichment["gk_xgc_quality"] = max(0.0, 2.0 - xgc_per_90) * sample_ramp
         else:
             enrichment["gk_xgc_quality"] = 0.0
-        enrichment["gk_cs_rate"] = player.clean_sheets / max(player.appearances, 1)
+        enrichment["gk_cs_rate"] = (player.clean_sheets / max(player.appearances, 1)) * sample_ramp
 
     if gw_history:
         enrichment["form_trajectory"] = compute_form_trajectory(gw_history, next_gw_id)

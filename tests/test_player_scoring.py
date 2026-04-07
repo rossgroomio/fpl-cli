@@ -2830,6 +2830,39 @@ class TestGKScoringPath:
         enrichment = build_scoring_enrichment(gk, us_match={}, team_short="TST", gw_history=None, next_gw_id=20)
         assert enrichment["gk_cs_rate"] == 0.0  # 0 cs / max(0, 1) = 0
 
+    def test_gk_sample_ramp_attenuates_low_minutes(self):
+        """GK with 90 minutes gets signals at 20% (90/450) of face value."""
+        from fpl_cli.services.player_scoring import build_scoring_enrichment
+
+        gk = make_player(
+            id=997, web_name="OneApp", team_id=1,
+            position=PlayerPosition.GOALKEEPER,
+            form=4.0, points_per_game=5.0, minutes=90, total_points=5,
+            saves_per_90=4.0, expected_goals_conceded=0.5, clean_sheets=1,
+        )
+        enrichment = build_scoring_enrichment(gk, us_match={}, team_short="TST", gw_history=None, next_gw_id=20)
+        ramp = 90 / 450  # 0.2
+        assert enrichment["gk_saves_per_90"] == pytest.approx(4.0 * ramp)
+        xgc_per_90 = (0.5 / 90) * 90  # = 0.5
+        assert enrichment["gk_xgc_quality"] == pytest.approx((2.0 - xgc_per_90) * ramp)
+        assert enrichment["gk_cs_rate"] == pytest.approx((1 / 1) * ramp)
+
+    def test_gk_sample_ramp_full_at_450_minutes(self):
+        """GK with 450+ minutes gets full signal values (ramp = 1.0)."""
+        from fpl_cli.services.player_scoring import build_scoring_enrichment
+
+        gk = make_player(
+            id=996, web_name="FiveApp", team_id=1,
+            position=PlayerPosition.GOALKEEPER,
+            form=4.0, points_per_game=4.0, minutes=450, total_points=20,
+            saves_per_90=3.0, expected_goals_conceded=4.0, clean_sheets=2,
+        )
+        enrichment = build_scoring_enrichment(gk, us_match={}, team_short="TST", gw_history=None, next_gw_id=20)
+        assert enrichment["gk_saves_per_90"] == pytest.approx(3.0)
+        xgc_per_90 = (4.0 / 450) * 90  # = 0.8
+        assert enrichment["gk_xgc_quality"] == pytest.approx(2.0 - xgc_per_90)
+        assert enrichment["gk_cs_rate"] == pytest.approx(2 / 5)
+
     def test_def_target_score_unchanged(self):
         """Regression guard: DEF path (without_xgi) produces same score as before."""
         from tests.test_player_scoring import TestCharacterisationSnapshot
