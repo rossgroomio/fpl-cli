@@ -190,9 +190,13 @@ def _render_table(data: dict, finances, sell_price: float | None, fmt) -> None:
     table.add_column("Quality", justify="right")
     if show_price:
         table.add_column("Quality/£m", justify="right")
+        table.add_column("Rolling", justify="right")
         table.add_column("Price", justify="right")
     if has_budget:
         table.add_column("ITB", justify="right")
+
+    from fpl_cli.cli._context import load_settings as _load_settings
+    _rolling_window = int(_load_settings().get("rolling_window", 5))
 
     out = data["out_player"]
     fixtures_str = _format_fixtures(out["fixture_matchups"])
@@ -210,6 +214,7 @@ def _render_table(data: dict, finances, sell_price: float | None, fmt) -> None:
     ]
     if show_price:
         out_row.append(_format_value(out.get("quality_per_m")))
+        out_row.append(_format_rolling(out, _rolling_window))
         out_row.append(f"£{out['price']:.1f}m")
     if has_budget:
         out_row.append("-")
@@ -237,6 +242,7 @@ def _render_table(data: dict, finances, sell_price: float | None, fmt) -> None:
         ]
         if show_price:
             row.append(_format_value(inp.get("quality_per_m")))
+            row.append(_format_rolling(inp, _rolling_window))
             row.append(f"£{inp['price']:.1f}m")
         if has_budget:
             budget = _compute_budget(finances, sell_price, inp["price"])
@@ -252,6 +258,15 @@ def _format_quality(score: int | None) -> str:
 
 def _format_value(score: float | None) -> str:
     return f"{score:.1f}" if score is not None else "-"
+
+
+def _format_rolling(player_data: dict, window: int) -> str:
+    rv = player_data.get("rolling_pts_per_m")
+    rc = player_data.get("rolling_fixture_count")
+    if rv is None:
+        return "-"
+    suffix = "*" if rc is not None and rc < window else ""
+    return f"{rv}{suffix}"
 
 
 def _format_delta(delta: int) -> str:

@@ -23,6 +23,7 @@ def _make_agent_result(success=True, data=None):
             "form": 6.0, "status": "a", "chance_of_playing": 100,
             "price": 10.0, "excluded": False,
             "quality_score": 72, "quality_per_m": 7.2,
+            "rolling_pts_per_m": 0.72, "rolling_fixture_count": 5,
         },
         "in_players": [
             {
@@ -33,6 +34,7 @@ def _make_agent_result(success=True, data=None):
                 "form": 7.5, "status": "a", "chance_of_playing": 100,
                 "price": 13.0, "excluded": False,
                 "quality_score": 85, "quality_per_m": 6.5,
+                "rolling_pts_per_m": 0.65, "rolling_fixture_count": 5,
             },
             {
                 "id": 30, "web_name": "Mbeumo", "team_short": "BRE",
@@ -42,6 +44,7 @@ def _make_agent_result(success=True, data=None):
                 "form": 5.0, "status": "a", "chance_of_playing": 100,
                 "price": 7.5, "excluded": False,
                 "quality_score": 58, "quality_per_m": 7.7,
+                "rolling_pts_per_m": 0.93, "rolling_fixture_count": 4,
             },
         ],
         "sorted_by": "outlook_delta",
@@ -107,10 +110,10 @@ class TestTransferEvalTable:
     def test_table_output_includes_columns(self):
         result = _run_cmd(["--out", "Palmer", "--in", "Salah,Mbeumo"])
         assert result.exit_code == 0, result.output
-        # Rich may truncate names in narrow terminals; check for prefix
-        assert "Palm" in result.output
-        assert "Salah" in result.output
-        assert "Mbeu" in result.output
+        # Rich truncates names in narrow terminals; check for shortest unique prefix
+        assert "Pal" in result.output
+        assert "Sal" in result.output
+        assert "Mbe" in result.output
 
     def test_draft_format_omits_price(self):
         result = _run_cmd(["--out", "Palmer", "--in", "Salah"], fmt="draft")
@@ -314,6 +317,7 @@ class TestTransferEvalResolution:
                 "form": 7.7, "status": "a", "chance_of_playing": 100,
                 "price": 7.8, "excluded": False,
                 "quality_score": 67, "quality_per_m": 8.6,
+                "rolling_pts_per_m": 1.0, "rolling_fixture_count": 5,
             },
             "in_players": [{
                 "id": 40, "web_name": "Haaland", "team_short": "MCI",
@@ -323,6 +327,7 @@ class TestTransferEvalResolution:
                 "form": 9.0, "status": "a", "chance_of_playing": 100,
                 "price": 15.0, "excluded": False,
                 "quality_score": 90, "quality_per_m": 6.0,
+                "rolling_pts_per_m": 0.8, "rolling_fixture_count": 5,
             }],
             "sorted_by": "outlook_delta",
         })

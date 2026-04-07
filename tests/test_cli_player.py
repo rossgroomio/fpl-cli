@@ -754,3 +754,81 @@ class TestPlayerQualityValueScores:
         info = json.loads(result.output)["data"][0]["info"]
         assert "quality_score" not in info
         assert "quality_per_m" not in info
+
+
+class TestPlayerRollingPtsPerM:
+    """Tests for rolling_pts_per_m in fpl player output."""
+
+    def test_json_includes_rolling_with_history(self):
+        """rolling_pts_per_m and rolling_fixture_count in JSON when history available."""
+        client, fixture_agent, ratings_svc = _make_mocks()
+        client.get_player_detail = AsyncMock(return_value={
+            "history": [
+                {"round": gw, "minutes": 90, "total_points": 6, "fixture": 100 + gw}
+                for gw in range(20, 25)
+            ],
+        })
+        result = _run_with_us_match([], client, fixture_agent, ratings_svc, json_mode=True)
+        assert result.exit_code == 0, result.output
+        info = json.loads(result.output)["data"][0]["info"]
+        assert "rolling_pts_per_m" in info
+        assert "rolling_fixture_count" in info
+        assert info["rolling_fixture_count"] == 5
+
+    def test_json_null_rolling_with_sparse_history(self):
+        """rolling_pts_per_m null when <3 qualifying fixtures."""
+        client, fixture_agent, ratings_svc = _make_mocks()
+        client.get_player_detail = AsyncMock(return_value={
+            "history": [
+                {"round": 23, "minutes": 90, "total_points": 6, "fixture": 200},
+                {"round": 24, "minutes": 90, "total_points": 8, "fixture": 201},
+            ],
+        })
+        result = _run_with_us_match([], client, fixture_agent, ratings_svc, json_mode=True)
+        assert result.exit_code == 0, result.output
+        info = json.loads(result.output)["data"][0]["info"]
+        assert info["rolling_pts_per_m"] is None
+        assert info["rolling_fixture_count"] is None
+
+    def test_rich_panel_shows_rolling_with_history(self):
+        client, fixture_agent, ratings_svc = _make_mocks()
+        client.get_player_detail = AsyncMock(return_value={
+            "history": [
+                {"round": gw, "minutes": 90, "total_points": 6, "fixture": 100 + gw}
+                for gw in range(20, 25)
+            ],
+        })
+        result = _run_with_us_match([], client, fixture_agent, ratings_svc)
+        assert result.exit_code == 0, result.output
+        assert "Rolling:" in result.output
+        assert "/£m" in result.output
+
+    def test_rich_panel_asterisk_when_fewer_fixtures(self):
+        """Asterisk shown when fixture_count < window."""
+        client, fixture_agent, ratings_svc = _make_mocks()
+        client.get_player_detail = AsyncMock(return_value={
+            "history": [
+                {"round": gw, "minutes": 90, "total_points": 6, "fixture": 100 + gw}
+                for gw in range(22, 25)  # 3 fixtures, window default is 5
+            ],
+        })
+        result = _run_with_us_match([], client, fixture_agent, ratings_svc)
+        assert result.exit_code == 0, result.output
+        assert "*" in result.output
+
+    def test_json_null_rolling_when_price_zero(self):
+        client, fixture_agent, ratings_svc = _make_mocks()
+        client.get_players = AsyncMock(return_value=[
+            make_player(id=1, web_name="Salah", team_id=1,
+                        position=PlayerPosition.MIDFIELDER, now_cost=0)
+        ])
+        client.get_player_detail = AsyncMock(return_value={
+            "history": [
+                {"round": gw, "minutes": 90, "total_points": 6, "fixture": 100 + gw}
+                for gw in range(20, 25)
+            ],
+        })
+        result = _run_with_us_match([], client, fixture_agent, ratings_svc, json_mode=True)
+        assert result.exit_code == 0, result.output
+        info = json.loads(result.output)["data"][0]["info"]
+        assert info["rolling_pts_per_m"] is None

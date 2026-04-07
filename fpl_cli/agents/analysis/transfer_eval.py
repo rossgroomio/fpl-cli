@@ -18,6 +18,7 @@ from fpl_cli.services.player_scoring import (
     calculate_player_quality_score,
     calculate_target_score,
     compute_form_trajectory,
+    compute_rolling_pts_per_m,
     normalise_score,
     prepare_scoring_data,
 )
@@ -250,6 +251,20 @@ class TransferEvalAgent(Agent):
         target_entry["quality_score"] = quality_score
         target_entry["quality_per_m"] = quality_per_m
 
+        # Rolling pts/£m from history
+        rolling_val: float | None = None
+        rolling_count: int | None = None
+        if player_histories:
+            hist = player_histories.get(player.id, [])
+            if hist:
+                from fpl_cli.cli._context import load_settings
+                rw = int(load_settings().get("rolling_window", 5))
+                rolling_val, rolling_count = compute_rolling_pts_per_m(
+                    hist, float(player.now_cost), rw,
+                )
+        target_entry["rolling_pts_per_m"] = rolling_val
+        target_entry["rolling_fixture_count"] = rolling_count
+
         return target_entry, lineup_entry
 
     @staticmethod
@@ -278,4 +293,6 @@ class TransferEvalAgent(Agent):
             "excluded": lineup_entry.get("excluded", False),
             "quality_score": target_entry["quality_score"],
             "quality_per_m": target_entry["quality_per_m"],
+            "rolling_pts_per_m": target_entry["rolling_pts_per_m"],
+            "rolling_fixture_count": target_entry["rolling_fixture_count"],
         }
