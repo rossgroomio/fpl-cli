@@ -815,6 +815,70 @@ def compute_xgi_sustainability(
     return multiplier, avg_divergence
 
 
+def compute_adjusted_npxg(
+    match_records: list[Any],
+    current_gw: int,
+    median_elo: float,
+) -> float | None:
+    """Opponent-adjusted npxG/90 over a rolling 7-match/12-GW window.
+
+    Normalises each match's xG by the opponent's Elo relative to the league
+    median. Factor capped at [0.80, 1.25] to limit early-season noise.
+    npxG per match = xg - (penalties_scored + penalties_missed) * 0.76.
+
+    Returns None when fewer than 4 qualifying matches (same threshold as
+    form_trajectory), triggering fallback to raw Understat npxG_per_90.
+    """
+    cutoff = current_gw - 12
+    qualifying = [
+        m for m in match_records
+        if m.get("minutes_played", 0) > 0 and m.get("gameweek", 0) > cutoff
+    ]
+    qualifying.sort(key=lambda m: m["gameweek"])
+    window = qualifying[-7:]
+
+    if len(window) < 4:
+        return None
+
+    total_adjusted = 0.0
+    total_minutes = 0
+
+    for m in window:
+        opp_elo = m.get("opponent_elo", median_elo)
+        if opp_elo <= 0:
+            opp_elo = median_elo
+        factor = max(0.80, min(1.25, median_elo / opp_elo))
+
+        xg = m.get("xg", 0.0)
+        penalties = m.get("penalties_scored", 0) + m.get("penalties_missed", 0)
+        npxg = xg - penalties * 0.76
+        total_adjusted += npxg * factor
+        total_minutes += m.get("minutes_played", 0)
+
+    if total_minutes == 0:
+        return None
+
+    return total_adjusted / (total_minutes / 90)
+
+
+def build_adjusted_npxg_lookup(
+    all_match_records: dict[int, list[Any]],
+    current_gw: int,
+    median_elo: float,
+) -> dict[int, float]:
+    """Build per-player adjusted npxG/90 lookup from season match data.
+
+    Returns dict keyed by FPL element_id. Players with insufficient data
+    (< 4 qualifying matches) are absent; callers fall back to raw npxG_per_90.
+    """
+    result: dict[int, float] = {}
+    for player_id, records in all_match_records.items():
+        value = compute_adjusted_npxg(records, current_gw, median_elo)
+        if value is not None:
+            result[player_id] = value
+    return result
+
+
 def normalise_score(raw: float, ceiling: float) -> int:
     """Normalise a raw score to 0-100 against a ceiling."""
     return min(round(raw / ceiling * 100), 100)

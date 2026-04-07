@@ -8,6 +8,8 @@ from fpl_cli.models.player import PlayerPosition, PlayerStatus
 from fpl_cli.services.player_prior import PlayerPrior
 from fpl_cli.services.player_scoring import (
     ATTACKING_POSITIONS,
+    build_adjusted_npxg_lookup,
+    compute_adjusted_npxg,
     DIFFERENTIAL_QUALITY_WEIGHTS,
     GK_VALUE_CEILING,
     TARGET_CEILING,
@@ -2910,3 +2912,165 @@ class TestGKScoringPath:
         # normalise against GK_VALUE_CEILING (28.2) gives 77
         assert gk_score != normalise_score(21.72, VALUE_CEILING)
         assert gk_score == pytest.approx(normalise_score(21.72, GK_VALUE_CEILING), abs=1)
+
+
+# ---------------------------------------------------------------------------
+# compute_adjusted_npxg / build_adjusted_npxg_lookup
+# ---------------------------------------------------------------------------
+
+def _make_match(
+    gameweek: int,
+    xg: float,
+    minutes_played: int,
+    opponent_elo: float,
+    penalties_scored: int = 0,
+    penalties_missed: int = 0,
+) -> dict:
+    return {
+        "gameweek": gameweek,
+        "xg": xg,
+        "minutes_played": minutes_played,
+        "opponent_elo": opponent_elo,
+        "penalties_scored": penalties_scored,
+        "penalties_missed": penalties_missed,
+    }
+
+
+MEDIAN_ELO = 1700.0
+
+
+class TestComputeAdjustedNpxg:
+    def test_adjustment_scales_up_against_strong_opponent(self):
+        """xG against high-Elo opponent is scaled up (factor > 1)."""
+        # opponent_elo=1600 < median=1700 => factor = 1700/1600 = 1.0625
+        records = [_make_match(gw, xg=0.40, minutes_played=90, opponent_elo=1600.0)
+                   for gw in range(1, 8)]
+        result = compute_adjusted_npxg(records, current_gw=10, median_elo=MEDIAN_ELO)
+        raw_per_90 = 0.40  # xg/90 raw
+        assert result is not None
+        assert result > raw_per_90  # adjusted up for tough opponents
+
+    def test_adjustment_scales_down_against_weak_opponent(self):
+        """xG against low-Elo opponent is scaled down (factor < 1)."""
+        # opponent_elo=1800 > median=1700 => factor = 1700/1800 = 0.944
+        records = [_make_match(gw, xg=0.40, minutes_played=90, opponent_elo=1800.0)
+                   for gw in range(1, 8)]
+        result = compute_adjusted_npxg(records, current_gw=10, median_elo=MEDIAN_ELO)
+        raw_per_90 = 0.40
+        assert result is not None
+        assert result < raw_per_90  # adjusted down for easy opponents
+
+    def test_equal_elo_factor_is_one(self):
+        """opponent_elo == median_elo => factor 1.0, adjusted == raw."""
+        records = [_make_match(gw, xg=0.50, minutes_played=90, opponent_elo=MEDIAN_ELO)
+                   for gw in range(1, 8)]
+        result = compute_adjusted_npxg(records, current_gw=10, median_elo=MEDIAN_ELO)
+        assert result == pytest.approx(0.50, abs=1e-6)
+
+    def test_cap_floor_at_0_80(self):
+        """Very high opponent Elo capped at factor 0.80."""
+        # opponent_elo=2500 would give factor 1700/2500=0.68 < 0.80 -> capped at 0.80
+        records = [_make_match(gw, xg=0.50, minutes_played=90, opponent_elo=2500.0)
+                   for gw in range(1, 8)]
+        result = compute_adjusted_npxg(records, current_gw=10, median_elo=MEDIAN_ELO)
+        assert result == pytest.approx(0.50 * 0.80, abs=1e-6)
+
+    def test_cap_ceiling_at_1_25(self):
+        """Very low opponent Elo capped at factor 1.25."""
+        # opponent_elo=500 would give factor 1700/500=3.4 > 1.25 -> capped at 1.25
+        records = [_make_match(gw, xg=0.50, minutes_played=90, opponent_elo=500.0)
+                   for gw in range(1, 8)]
+        result = compute_adjusted_npxg(records, current_gw=10, median_elo=MEDIAN_ELO)
+        assert result == pytest.approx(0.50 * 1.25, abs=1e-6)
+
+    def test_penalties_reduce_npxg(self):
+        """Penalty attempts are subtracted: npxG = xG - penalties * 0.76."""
+        # 1 scored, 0 missed -> npxg = 0.76 - 1*0.76 = 0.0, factor 1.0
+        records = [_make_match(gw, xg=0.76, minutes_played=90, opponent_elo=MEDIAN_ELO,
+                               penalties_scored=1, penalties_missed=0)
+                   for gw in range(1, 8)]
+        result = compute_adjusted_npxg(records, current_gw=10, median_elo=MEDIAN_ELO)
+        assert result == pytest.approx(0.0, abs=1e-6)
+
+    def test_penalties_missed_also_subtracted(self):
+        """Both scored and missed penalties are subtracted."""
+        # 1 scored + 1 missed = 2 total -> npxg = 1.52 - 2*0.76 = 0.0
+        records = [_make_match(gw, xg=1.52, minutes_played=90, opponent_elo=MEDIAN_ELO,
+                               penalties_scored=1, penalties_missed=1)
+                   for gw in range(1, 8)]
+        result = compute_adjusted_npxg(records, current_gw=10, median_elo=MEDIAN_ELO)
+        assert result == pytest.approx(0.0, abs=1e-6)
+
+    def test_fewer_than_4_matches_returns_none(self):
+        """< 4 qualifying matches returns None (triggers fallback)."""
+        records = [_make_match(gw, xg=0.50, minutes_played=90, opponent_elo=MEDIAN_ELO)
+                   for gw in range(1, 4)]  # 3 matches
+        result = compute_adjusted_npxg(records, current_gw=10, median_elo=MEDIAN_ELO)
+        assert result is None
+
+    def test_exactly_4_matches_returns_value(self):
+        """Exactly 4 qualifying matches returns a value (minimum threshold)."""
+        records = [_make_match(gw, xg=0.50, minutes_played=90, opponent_elo=MEDIAN_ELO)
+                   for gw in range(1, 5)]  # 4 matches
+        result = compute_adjusted_npxg(records, current_gw=10, median_elo=MEDIAN_ELO)
+        assert result is not None
+
+    def test_zero_minutes_in_window_returns_none(self):
+        """All matches have 0 minutes_played -> no qualifying matches -> None."""
+        records = [_make_match(gw, xg=0.50, minutes_played=0, opponent_elo=MEDIAN_ELO)
+                   for gw in range(1, 8)]
+        result = compute_adjusted_npxg(records, current_gw=10, median_elo=MEDIAN_ELO)
+        assert result is None
+
+    def test_12gw_lookback_excludes_old_matches(self):
+        """Matches older than 12 GWs back from current_gw are excluded."""
+        # current_gw=20, cutoff=8. GW1-8 excluded, GW9-20 included.
+        old = [_make_match(gw, xg=0.50, minutes_played=90, opponent_elo=MEDIAN_ELO)
+               for gw in range(1, 9)]    # GW1-8: outside window
+        recent = [_make_match(gw, xg=0.30, minutes_played=90, opponent_elo=MEDIAN_ELO)
+                  for gw in range(9, 13)]  # GW9-12: inside window (4 matches)
+        result = compute_adjusted_npxg(old + recent, current_gw=20, median_elo=MEDIAN_ELO)
+        # Should use only 4 recent matches (0.30 xg each), ignoring old 0.50 matches
+        assert result == pytest.approx(0.30, abs=1e-6)
+
+    def test_7_match_window_limit(self):
+        """Only most recent 7 matches used even when more are available."""
+        # 10 matches in window; oldest 3 have xg=1.0, newest 7 have xg=0.20
+        old = [_make_match(gw, xg=1.0, minutes_played=90, opponent_elo=MEDIAN_ELO)
+               for gw in range(1, 4)]
+        recent = [_make_match(gw, xg=0.20, minutes_played=90, opponent_elo=MEDIAN_ELO)
+                  for gw in range(4, 11)]
+        result = compute_adjusted_npxg(old + recent, current_gw=15, median_elo=MEDIAN_ELO)
+        assert result == pytest.approx(0.20, abs=1e-6)
+
+    def test_all_matches_outside_lookback_returns_none(self):
+        """All matches before 12-GW lookback returns None."""
+        records = [_make_match(gw, xg=0.50, minutes_played=90, opponent_elo=MEDIAN_ELO)
+                   for gw in range(1, 8)]
+        result = compute_adjusted_npxg(records, current_gw=25, median_elo=MEDIAN_ELO)
+        assert result is None
+
+
+class TestBuildAdjustedNpxgLookup:
+    def test_returns_dict_keyed_by_player_id(self):
+        records = {
+            100: [_make_match(gw, xg=0.50, minutes_played=90, opponent_elo=MEDIAN_ELO)
+                  for gw in range(1, 8)],
+            200: [_make_match(gw, xg=0.30, minutes_played=90, opponent_elo=MEDIAN_ELO)
+                  for gw in range(1, 8)],
+        }
+        result = build_adjusted_npxg_lookup(records, current_gw=10, median_elo=MEDIAN_ELO)
+        assert set(result.keys()) == {100, 200}
+        assert result[100] == pytest.approx(0.50, abs=1e-6)
+        assert result[200] == pytest.approx(0.30, abs=1e-6)
+
+    def test_player_with_insufficient_data_absent(self):
+        """Player with < 4 qualifying matches excluded from lookup."""
+        records = {
+            100: [_make_match(gw, xg=0.50, minutes_played=90, opponent_elo=MEDIAN_ELO)
+                  for gw in range(1, 8)],
+            999: [_make_match(1, xg=0.50, minutes_played=90, opponent_elo=MEDIAN_ELO)],
+        }
+        result = build_adjusted_npxg_lookup(records, current_gw=10, median_elo=MEDIAN_ELO)
+        assert 100 in result
+        assert 999 not in result
