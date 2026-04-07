@@ -394,6 +394,14 @@ def player_command(
                         lines.append(f"xG: {p.expected_goals:.2f} | xA: {p.expected_assists:.2f}")
                     if understat_line and not is_gk:
                         lines.append(understat_line.rstrip("\n"))
+                    if not is_gk:
+                        p_detail = detail_map.get(p.id)
+                        if p_detail:
+                            hist = p_detail.get("history", [])
+                            sust_mult, sust_div = compute_xgi_sustainability(hist, next_gw_id, p.position_name)
+                            if sust_mult != 1.0:
+                                sign = "+" if sust_div > 0 else ""
+                                lines.append(f"xGI Sustainability: {sign}{sust_div:.2f}/match -> {sust_mult:.2f}x form")
                     set_piece_line = _build_set_piece_line(p)
                     if set_piece_line:
                         lines.append(set_piece_line)
@@ -406,14 +414,6 @@ def player_command(
                         v = quality_per_m_scores[p.id]
                         v_str = f"{v}/£m" if v is not None else "N/A"
                         lines.append(f"Quality: {q} | Quality/£m: {v_str}")
-                    if not is_gk:
-                        p_detail = detail_map.get(p.id)
-                        if p_detail:
-                            hist = p_detail.get("history", [])
-                            sust_mult, sust_div = compute_xgi_sustainability(hist, next_gw_id, p.position_name)
-                            if sust_mult != 1.0:
-                                sign = "+" if sust_div > 0 else ""
-                                lines.append(f"xGI Sustainability: {sign}{sust_div:.2f}/match -> {sust_mult:.2f}x form")
                     if draft_line:
                         lines.append(draft_line.rstrip("\n"))
                     lines.append(f"Status: {_status_display(p)}")
