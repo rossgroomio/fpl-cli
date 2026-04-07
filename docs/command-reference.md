@@ -98,6 +98,7 @@ Output columns:
 - **Fixtures** - next 3 opponents with FDR
 - **Form** - FPL form (last 30 days PPG)
 - **Status** - availability indicator
+- **Rel** - historical availability rate (recency-weighted starts across previous seasons). Null when no historical data.
 - **Quality** - price-independent player quality (0-100). Uses `VALUE_QUALITY_WEIGHTS`. Null when no Understat match.
 - **Value** - quality per GBP million (`quality_score / price`). Higher = more output per pound. Null when no Understat match or price is 0. *(classic only)*
 - **Price** - current price *(classic only)*
@@ -134,6 +135,8 @@ fpl waivers --format json
 Identifies squad weaknesses by position, ranks available free agents by waiver score, suggests who to drop for each pickup. This covers the waiver wire (unclaimed players) only - trade recommendations between managers are not in scope.
 
 Waiver score combines xGI, form, PPG, and 3-GW matchup quality, normalised to 0-100. Uses a stricter minutes factor than target/differential because draft waivers are a season commitment. Subject to [early-season shrinkage](custom-analysis.md#early-season-confidence-gw1-10). See [Waiver Score](custom-analysis.md#waiver-score) for the full formula.
+
+Output columns include **Rel** (historical availability rate) for each target - showing recency-weighted starts history as a percentage. Null when no historical data is available.
 
 ## Fixture & Strategic Planning
 
