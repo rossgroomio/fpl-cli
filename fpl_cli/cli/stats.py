@@ -23,7 +23,7 @@ PLAYERS_SORT_FIELDS = [
     "selected_by_percent", "now_cost", "transfers_in_event", "transfers_out_event",
     "defensive_contribution", "defensive_contribution_per_90",
     "form_per_m", "pts_per_m",
-    "quality_score", "quality_per_m",
+    "quality_score", "quality_per_m", "rolling_pts_per_m",
 ]
 
 # Core columns shown for every `fpl stats` query.
@@ -31,7 +31,7 @@ PLAYERS_SORT_FIELDS = [
 _PLAYERS_CORE_SORT_FIELDS = {"now_cost": "Price", "minutes": "Mins"}
 
 # Sort fields that require --value flag
-_VALUE_SORT_FIELDS = frozenset({"quality_score", "quality_per_m"})
+_VALUE_SORT_FIELDS = frozenset({"quality_score", "quality_per_m", "rolling_pts_per_m"})
 
 # Sort field names that differ from Player model attribute names
 _SORT_FIELD_ALIASES = {"form_per_m": "value_form", "pts_per_m": "value_season"}
@@ -48,12 +48,14 @@ _SORT_FIELD_ALIASES = {"form_per_m": "value_form", "pts_per_m": "value_season"}
 @click.option("--available-only", "-a", is_flag=True, help="Exclude injured/suspended/unavailable players")
 @click.option("--reverse", "-r", is_flag=True, help="Sort ascending instead of descending")
 @click.option("--value", "-v", is_flag=True, help="Add quality and value/£m columns (requires Understat data)")
+@click.option("--window", "-w", type=click.IntRange(3, 10), default=None,
+              help="Rolling pts/£m fixture window (3-10, default from config)")
 @output_format_option
 @click.pass_context
 def stats_command(
     ctx: click.Context, position: str | None, team: str | None, sort_field: str,
     limit: int, min_minutes: int, available_only: bool, reverse: bool,
-    value: bool, output_format: str,
+    value: bool, window: int | None, output_format: str,
 ):
     """List players with filtering and sorting.
 
@@ -66,8 +68,11 @@ def stats_command(
     from fpl_cli.api.fpl import FPLClient
     from fpl_cli.models.player import Player, PlayerPosition, PlayerStatus
 
-    # Gate --value behind custom_analysis toggle
+    # Resolve rolling window from CLI flag or config
     settings = ctx.obj.settings if isinstance(ctx.obj, CLIContext) else {}
+    rolling_window = window if window is not None else int(settings.get("rolling_window", 5))
+
+    # Gate --value behind custom_analysis toggle
     custom_on = is_custom_analysis_enabled(settings)
     if not custom_on:
         if sort_field in _VALUE_SORT_FIELDS:
@@ -146,13 +151,14 @@ def stats_command(
             # Value scoring pipeline (when --value active)
             quality_map: dict[int, int] = {}
             value_map: dict[int, float | None] = {}
+            rolling_map: dict[int, tuple[float | None, int | None]] = {}
             value_active = False
 
             if value and filtered:
                 import httpx
 
                 from fpl_cli.api.understat import UnderstatClient, match_fpl_to_understat
-                from fpl_cli.services.player_scoring import compute_quality_value
+                from fpl_cli.services.player_scoring import compute_quality_value, compute_rolling_pts_per_m
 
                 try:
                     async with UnderstatClient() as us_client:
@@ -208,6 +214,13 @@ def stats_command(
                         quality_map[p.id] = q
                         value_map[p.id] = v
 
+                    # Compute rolling pts/£m from fetched histories
+                    for p in filtered:
+                        hist = player_histories.get(p.id, [])
+                        rolling_map[p.id] = compute_rolling_pts_per_m(
+                            hist, float(p.now_cost), rolling_window,
+                        )
+
             # Fall back from value sort if scoring failed
             effective_sort = sort_field
             if sort_field in _VALUE_SORT_FIELDS and not value_active:
@@ -219,9 +232,15 @@ def stats_command(
 
             # Sort
             if effective_sort in _VALUE_SORT_FIELDS:
-                score_map: Mapping[int, int | float | None] = (
-                    quality_map if effective_sort == "quality_score" else value_map
-                )
+                if effective_sort == "rolling_pts_per_m":
+                    rolling_score_map: dict[int, float | None] = {
+                        pid: val for pid, (val, _) in rolling_map.items()
+                    }
+                    score_map: Mapping[int, int | float | None] = rolling_score_map
+                elif effective_sort == "quality_score":
+                    score_map = quality_map
+                else:
+                    score_map = value_map
                 # Null-scored players sort to bottom regardless of direction
                 bottom = float("-inf") if not reverse else float("inf")
 
@@ -288,6 +307,8 @@ def stats_command(
                                 {
                                     "quality_score": quality_map.get(p.id),
                                     "quality_per_m": value_map.get(p.id),
+                                    "rolling_pts_per_m": rolling_map.get(p.id, (None, None))[0],
+                                    "rolling_fixture_count": rolling_map.get(p.id, (None, None))[1],
                                 }
                                 if value_active
                                 else {}
@@ -327,8 +348,10 @@ def stats_command(
             if value_active:
                 q_header = "Quality" + (arrow if effective_sort == "quality_score" else "")
                 v_header = "Quality/£m" + (arrow if effective_sort == "quality_per_m" else "")
+                r_header = "Rolling Pts/£m" + (arrow if effective_sort == "rolling_pts_per_m" else "")
                 table.add_column(q_header, justify="right")
                 table.add_column(v_header, justify="right")
+                table.add_column(r_header, justify="right")
 
             # Draft ownership column
             has_draft_col = show_draft and main_to_draft_id
@@ -352,6 +375,12 @@ def stats_command(
                     v = value_map.get(p.id)
                     row.append(str(q) if q is not None else "-")
                     row.append(str(v) if v is not None else "-")
+                    rv, rc = rolling_map.get(p.id, (None, None))
+                    if rv is not None:
+                        suffix = "*" if rc is not None and rc < rolling_window else ""
+                        row.append(f"{rv}{suffix}")
+                    else:
+                        row.append("-")
 
                 if has_draft_col:
                     draft_pid = main_to_draft_id.get(p.id)

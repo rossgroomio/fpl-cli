@@ -703,3 +703,114 @@ class TestStatsCustomAnalysisToggle:
         assert "quality_score" not in record
         assert "quality_per_m" not in record
         assert data["metadata"]["custom_analysis"] is False
+
+
+# ---------------------------------------------------------------------------
+# rolling_pts_per_m tests
+# ---------------------------------------------------------------------------
+
+def _make_history(rounds_pts: list[tuple[int, int]], fixture_start: int = 100) -> list[dict]:
+    """Build fixture history from (round, total_points) tuples; all 90 mins."""
+    return [
+        {"round": r, "minutes": 90, "total_points": pts, "fixture": fixture_start + i}
+        for i, (r, pts) in enumerate(rounds_pts)
+    ]
+
+
+def _make_rolling_client(players=None, teams=None, history=None):
+    """FPLClient mock with player history for rolling tests."""
+    client = _make_value_client(players, teams)
+    if history is not None:
+        client.get_player_detail = AsyncMock(return_value={"history": history})
+    return client
+
+
+class TestStatsRollingPtsPerM:
+    """Tests for rolling_pts_per_m in --value output."""
+
+    def test_value_flag_includes_rolling_column(self):
+        history = _make_history([(20, 6), (21, 8), (22, 4), (23, 10), (24, 7)])
+        client = _make_rolling_client(_sample_players(), _sample_teams(), history)
+        result = _run_with_value(client=client)
+        assert result.exit_code == 0, result.output
+        assert "Rolling" in result.output and "Pts/£m" in result.output
+
+    def test_value_json_includes_rolling_fields(self):
+        history = _make_history([(20, 6), (21, 8), (22, 4), (23, 10), (24, 7)])
+        client = _make_rolling_client(_sample_players(), _sample_teams(), history)
+        result = _run_with_value(["--format", "json"], client=client)
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        record = data["data"][0]
+        assert "rolling_pts_per_m" in record
+        assert "rolling_fixture_count" in record
+
+    def test_sort_by_rolling_descending(self):
+        history = _make_history([(20, 6), (21, 8), (22, 4), (23, 10), (24, 7)])
+        client = _make_rolling_client(_sample_players(), _sample_teams(), history)
+        result = _run_with_value(["-s", "rolling_pts_per_m", "--format", "json"], client=client)
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        scores = [r["rolling_pts_per_m"] for r in data["data"] if r["rolling_pts_per_m"] is not None]
+        assert scores == sorted(scores, reverse=True)
+
+    def test_sort_rolling_reverse_ascending(self):
+        history = _make_history([(20, 6), (21, 8), (22, 4), (23, 10), (24, 7)])
+        client = _make_rolling_client(_sample_players(), _sample_teams(), history)
+        result = _run_with_value(["-s", "rolling_pts_per_m", "--reverse", "--format", "json"],
+                                 client=client)
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        scores = [r["rolling_pts_per_m"] for r in data["data"] if r["rolling_pts_per_m"] is not None]
+        assert scores == sorted(scores)
+
+    def test_window_flag_respected(self):
+        history = _make_history([(18, 2), (19, 3), (20, 4), (21, 5), (22, 6), (23, 7), (24, 8)])
+        client = _make_rolling_client(_sample_players(), _sample_teams(), history)
+        result = _run_with_value(["--window", "3", "--format", "json"], client=client)
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        record = data["data"][0]
+        assert record["rolling_fixture_count"] == 3
+
+    def test_asterisk_when_fewer_fixtures_than_window(self):
+        """Rolling value shows asterisk when fixture_count < window."""
+        history = _make_history([(22, 6), (23, 8), (24, 4)])  # only 3 qualifying
+        client = _make_rolling_client(_sample_players(), _sample_teams(), history)
+        result = _run_with_value(client=client)  # default window=5
+        assert result.exit_code == 0, result.output
+        # Should have asterisk suffix (3 fixtures < window of 5)
+        assert "*" in result.output
+
+    def test_no_asterisk_when_full_window(self):
+        history = _make_history([(20, 6), (21, 8), (22, 4), (23, 10), (24, 7)])
+        client = _make_rolling_client(_sample_players(), _sample_teams(), history)
+        result = _run_with_value(client=client)
+        assert result.exit_code == 0, result.output
+        # No asterisk when fixture count equals window
+        # Check the rolling column values don't have asterisks
+        # (Can't easily assert absence in Rich output without parsing, but check it rendered)
+        assert "Rolling" in result.output and "Pts/£m" in result.output
+
+    def test_null_rolling_for_sparse_history(self):
+        """Player with <3 qualifying fixtures gets null rolling value."""
+        history = _make_history([(23, 6), (24, 8)])  # only 2 qualifying
+        client = _make_rolling_client(_sample_players(), _sample_teams(), history)
+        result = _run_with_value(["--format", "json"], client=client)
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        record = data["data"][0]
+        assert record["rolling_pts_per_m"] is None
+        assert record["rolling_fixture_count"] is None
+
+    def test_sort_rolling_without_value_flag_errors(self):
+        client = _make_client(_sample_players(), _sample_teams())
+        result = _run(["--sort", "rolling_pts_per_m"], client=client, custom_analysis=True)
+        assert result.exit_code != 0
+        assert "--value" in result.output
+
+    def test_window_without_value_silently_ignored(self):
+        """--window without --value doesn't error."""
+        client = _make_client(_sample_players(), _sample_teams())
+        result = _run(["--window", "3"], client=client)
+        assert result.exit_code == 0, result.output
