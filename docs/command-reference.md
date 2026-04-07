@@ -136,8 +136,6 @@ Identifies squad weaknesses by position, ranks available free agents by waiver s
 
 Waiver score combines xGI, form, PPG, and 3-GW matchup quality, normalised to 0-100. Uses a stricter minutes factor than target/differential because draft waivers are a season commitment. Subject to [early-season shrinkage](custom-analysis.md#early-season-confidence-gw1-10). See [Waiver Score](custom-analysis.md#waiver-score) for the full formula.
 
-Output columns include **Rel** (historical availability rate) for each target - showing recency-weighted starts history as a percentage. Null when no historical data is available.
-
 ## Fixture & Strategic Planning
 
 ### Squad Allocation (Classic only)

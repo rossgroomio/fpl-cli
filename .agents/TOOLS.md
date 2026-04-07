@@ -41,9 +41,9 @@ Errors use `emit_json_error()` with `{"command", "error"}` shape.
 | `captain` | Analyse and rank captain options for next gameweek | Yes | Classic | Yes | via-agent |
 | `differentials` | Find differential picks - high potential, low ownership | Yes | Classic | Yes | via-agent |
 | `targets` | Find transfer targets - high performers across all ownership | Yes | Classic | Yes | via-agent |
-| `transfer-eval` | Compare transfer OUT player against IN candidates; shows Rel (historical availability rate) column | Yes | General | Yes | via-agent |
+| `transfer-eval` | Compare transfer OUT player against IN candidates | Yes | General | Yes | via-agent |
 | `allocate` | Select mathematically optimal 15-player squad within budget | Yes | Classic | Yes | direct-api |
-| `waivers` | Show waiver recommendations for your draft league; shows Rel (historical availability rate) for each target | Yes | Draft | Yes | via-agent |
+| `waivers` | Show waiver recommendations for your draft league | Yes | Draft | Yes | via-agent |
 | `squad` | Analyse your FPL squad health and fixtures | Yes | General | No | via-agent |
 | `squad grid` | Show squad fixture difficulty grid | Yes | General | No | via-agent |
 | `squad sell-prices` | Show squad sell prices and financial breakdown | Yes | Classic | No | direct-api |
