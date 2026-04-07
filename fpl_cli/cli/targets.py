@@ -73,6 +73,7 @@ def targets_command(min_own: float, min_minutes: int, output_format: str):
             table.add_column("Matchup", justify="right")
             table.add_column("vs Next")
             table.add_column("Score", justify="right")
+            table.add_column("Rel", justify="right")
 
             for p in all_targets[:15]:
                 # Color ownership by tier
@@ -88,6 +89,8 @@ def targets_command(min_own: float, min_minutes: int, output_format: str):
                 matchup = p.get("matchup_score", 5.0)
                 matchup_style = "green" if matchup >= 7 else "yellow" if matchup >= 5 else "red"
                 next_opp = p.get("next_opponent") or "-"
+                rel = p.get("reliability")
+                rel_str = f"{rel:.0%}" if rel is not None else "-"
 
                 table.add_row(
                     p["player_name"],
@@ -98,6 +101,7 @@ def targets_command(min_own: float, min_minutes: int, output_format: str):
                     f"[{matchup_style}]{matchup:.1f}[/{matchup_style}]",
                     next_opp,
                     f"[bold]{p['target_score']:.1f}[/bold]",
+                    rel_str,
                 )
             console.print(table)
 
