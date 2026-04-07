@@ -654,6 +654,20 @@ def calculate_mins_factor(
     return min(minutes / (appearances * 80), 1.0)
 
 
+def _qualifying_window(
+    history: list[dict[str, Any]], current_gw: int, size: int = 7,
+) -> list[dict[str, Any]]:
+    """Recent qualifying GWs: minutes > 0, within 12-GW lookback, most recent *size*."""
+    cutoff = current_gw - 12
+    qualifying = [
+        h
+        for h in history
+        if h.get("minutes", 0) > 0 and h.get("round", 0) > cutoff
+    ]
+    qualifying.sort(key=lambda h: h["round"])
+    return qualifying[-size:]
+
+
 def compute_form_trajectory(history: list[dict[str, Any]], current_gw: int) -> float:
     """Trend multiplier from recent gameweek points history.
 
@@ -663,14 +677,7 @@ def compute_form_trajectory(history: list[dict[str, Any]], current_gw: int) -> f
 
     Returns 1.0 (neutral) when fewer than 4 qualifying GWs are available.
     """
-    cutoff = current_gw - 12
-    qualifying = [
-        h
-        for h in history
-        if h.get("minutes", 0) > 0 and h.get("round", 0) > cutoff
-    ]
-    qualifying.sort(key=lambda h: h["round"])
-    qualifying = qualifying[-7:]  # most recent 7
+    qualifying = _qualifying_window(history, current_gw)
 
     if len(qualifying) < 4:
         return 1.0
@@ -737,14 +744,7 @@ def compute_xgi_sustainability(
     if position not in ATTACKING_POSITIONS:
         return 1.0, 0.0
 
-    cutoff = current_gw - 12
-    qualifying = [
-        h
-        for h in history
-        if h.get("minutes", 0) > 0 and h.get("round", 0) > cutoff
-    ]
-    qualifying.sort(key=lambda h: h["round"])
-    qualifying = qualifying[-7:]  # most recent 7
+    qualifying = _qualifying_window(history, current_gw)
 
     if len(qualifying) < 4:
         return 1.0, 0.0
@@ -1204,8 +1204,8 @@ def _calculate_quality_based_raw(
 ) -> float:
     """Raw ownership-family score before normalisation.
 
-    Computes: quality baseline + ownership bonus + underperformance bonus +
-    matchup bonus + availability penalty. Returns un-normalised float so
+    Computes: quality baseline + ownership bonus + matchup bonus +
+    availability penalty. Returns un-normalised float so
     callers can add formula-specific adjustments before normalising.
 
     *mins_factor_override*: when set, replaces the standard
