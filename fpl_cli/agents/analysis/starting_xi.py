@@ -8,6 +8,7 @@ from fpl_cli.agents.base import Agent, AgentResult, AgentStatus
 from fpl_cli.api.fpl import FPLClient
 from fpl_cli.services.player_scoring import (
     ScoringContext,
+    apply_adjusted_npxg,
     apply_shrinkage,
     build_fixture_matchups,
     build_player_evaluation,
@@ -68,12 +69,14 @@ class StartingXIAgent(Agent):
                 self.client,
                 include_players=True, include_understat=True,
                 include_history=True, include_prior=True,
+                include_match_data=True,
             )
             all_players = data.players or []
             player_map = {p.id: p for p in all_players}
             player_histories = data.player_histories or {}
             scoring_context = data.scoring_ctx
             understat_by_id = data.understat_lookup
+            adjusted_npxg_lookup = data.adjusted_npxg_lookup
 
             squad_ids = context["squad"]
             squad_players = [player_map[pid] for pid in squad_ids if pid in player_map]
@@ -96,6 +99,7 @@ class StartingXIAgent(Agent):
                     understat_by_id=understat_by_id,
                     player_histories=player_histories,
                     player_priors=data.player_priors,
+                    adjusted_npxg_lookup=adjusted_npxg_lookup,
                 )
                 scored.append(score_data)
 
@@ -151,6 +155,7 @@ class StartingXIAgent(Agent):
         understat_by_id: dict[int, dict[str, float]] | None = None,
         player_histories: dict[int, list[dict[str, Any]]] | None = None,
         player_priors: dict[int, Any] | None = None,
+        adjusted_npxg_lookup: dict[int, float] | None = None,
     ) -> dict[str, Any]:
         """Score a squad player via the scoring engine."""
         team = context.team_map.get(player.team_id)
@@ -168,6 +173,7 @@ class StartingXIAgent(Agent):
             us_data = understat_by_id.get(player.id)
             if us_data:
                 enrichment.update(us_data)
+        apply_adjusted_npxg(enrichment, player.id, adjusted_npxg_lookup)
 
         if player_histories:
             history = player_histories.get(player.id, [])

@@ -353,11 +353,13 @@ class ScoringData:
     scoring_ctx: ScoringContext
     ratings_service: TeamRatingsService
 
-    # Optional - populated when include_players / include_understat / include_history / include_prior is True
+    # Optional - populated when include_players / include_understat /
+    # include_history / include_prior / include_match_data is True
     players: list[Player] | None = None
     understat_lookup: dict[int, dict[str, float]] | None = None
     player_histories: dict[int, list[dict[str, Any]]] | None = None
     player_priors: dict[int, PlayerPrior] | None = None
+    adjusted_npxg_lookup: dict[int, float] | None = None
 
 
 async def prepare_scoring_data(
@@ -367,6 +369,7 @@ async def prepare_scoring_data(
     include_understat: bool = False,
     include_history: bool = False,
     include_prior: bool = False,
+    include_match_data: bool = False,
 ) -> ScoringData:
     """Fetch common base data and build a ScoringContext.
 
@@ -380,6 +383,8 @@ async def prepare_scoring_data(
         include_understat: Build understat lookup (requires include_players).
         include_history: Fetch per-GW history for players with minutes > 0.
         include_prior: Generate Bayesian player priors (requires include_players).
+        include_match_data: Fetch Core-Insights match-level CSVs and compute the
+            fixture-adjusted npxG lookup (requires include_players).
 
     Raises:
         ValueError: If include_understat or include_prior is True but include_players is False.
@@ -476,6 +481,33 @@ async def prepare_scoring_data(
                 "Failed to generate player priors", exc_info=True,
             )
 
+    adjusted_npxg_lookup: dict[int, float] | None = None
+
+    if include_match_data and players is not None:
+        try:
+            import statistics
+
+            from fpl_cli.api.core_insights import CoreInsightsClient, make_core_insights_fetcher
+
+            async with CoreInsightsClient(make_core_insights_fetcher()) as ci_client:
+                all_match_records = await ci_client.get_match_stats()
+
+            if all_match_records:
+                all_elos = [
+                    r["opponent_elo"]
+                    for records in all_match_records.values()
+                    for r in records
+                ]
+                median_elo = statistics.median(all_elos) if all_elos else 1700.0
+                adjusted_npxg_lookup = build_adjusted_npxg_lookup(
+                    all_match_records, next_gw_id, median_elo,
+                )
+        except Exception:  # noqa: BLE001 — graceful degradation: CI match data unavailable
+            import logging
+            logging.getLogger(__name__).warning(
+                "Failed to compute adjusted npxG lookup", exc_info=True,
+            )
+
     return ScoringData(
         teams=teams,
         team_map=scoring_ctx.team_map,
@@ -489,6 +521,7 @@ async def prepare_scoring_data(
         understat_lookup=understat_lookup,
         player_histories=player_histories,
         player_priors=player_priors,
+        adjusted_npxg_lookup=adjusted_npxg_lookup,
     )
 
 
@@ -879,6 +912,31 @@ def build_adjusted_npxg_lookup(
     return result
 
 
+def apply_adjusted_npxg(
+    enrichment: dict[str, Any],
+    player_id: int,
+    lookup: dict[int, float] | None,
+    player_data: Any = None,
+) -> None:
+    """Override npxG_per_90 in enrichment with fixture-adjusted value.
+
+    Always sets raw_npxG_per_90 (from enrichment, or player_data fallback for
+    agents where Understat data lives in the player dict rather than enrichment).
+    Overrides npxG_per_90 with adjusted value when player_id is in lookup.
+    No-op when lookup is None.
+    """
+    raw = enrichment.get("npxG_per_90")
+    if raw is None and player_data is not None:
+        raw = (
+            player_data.get("npxG_per_90")
+            if isinstance(player_data, dict)
+            else getattr(player_data, "npxG_per_90", None)
+        )
+    enrichment["raw_npxG_per_90"] = raw
+    if lookup and player_id in lookup:
+        enrichment["npxG_per_90"] = lookup[player_id]
+
+
 def normalise_score(raw: float, ceiling: float) -> int:
     """Normalise a raw score to 0-100 against a ceiling."""
     return min(round(raw / ceiling * 100), 100)
@@ -1177,6 +1235,9 @@ class PlayerEvaluation:
     gk_xgc_quality: float = 0.0
     gk_cs_rate: float = 0.0
 
+    # Original Understat npxG/90 before fixture adjustment (None when no Understat data)
+    raw_npxg_per_90: float | None = None
+
     def as_quality_dict(self) -> dict[str, Any]:
         """Return a dict compatible with calculate_player_quality_score's Mapping interface."""
         return {
@@ -1297,6 +1358,7 @@ def build_player_evaluation(
         gk_saves_per_90=float(_get("gk_saves_per_90", 0.0) or 0.0),
         gk_xgc_quality=float(_get("gk_xgc_quality", 0.0) or 0.0),
         gk_cs_rate=float(_get("gk_cs_rate", 0.0) or 0.0),
+        raw_npxg_per_90=_get("raw_npxG_per_90"),
     )
 
     # Build identity

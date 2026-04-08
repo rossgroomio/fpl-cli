@@ -8,6 +8,7 @@ from fpl_cli.models.player import PlayerPosition, PlayerStatus
 from fpl_cli.services.player_prior import PlayerPrior
 from fpl_cli.services.player_scoring import (
     ATTACKING_POSITIONS,
+    apply_adjusted_npxg,
     build_adjusted_npxg_lookup,
     compute_adjusted_npxg,
     DIFFERENTIAL_QUALITY_WEIGHTS,
@@ -3074,3 +3075,77 @@ class TestBuildAdjustedNpxgLookup:
         result = build_adjusted_npxg_lookup(records, current_gw=10, median_elo=MEDIAN_ELO)
         assert 100 in result
         assert 999 not in result
+
+
+class TestApplyAdjustedNpxg:
+    """Tests for apply_adjusted_npxg enrichment helper (Unit 3)."""
+
+    def test_sets_adjusted_when_player_in_lookup(self):
+        enrichment = {"npxG_per_90": 0.30}
+        lookup = {42: 0.22}
+        apply_adjusted_npxg(enrichment, player_id=42, lookup=lookup)
+        assert enrichment["npxG_per_90"] == pytest.approx(0.22)
+
+    def test_sets_raw_alongside_adjusted(self):
+        enrichment = {"npxG_per_90": 0.30}
+        lookup = {42: 0.22}
+        apply_adjusted_npxg(enrichment, player_id=42, lookup=lookup)
+        assert enrichment["raw_npxG_per_90"] == pytest.approx(0.30)
+
+    def test_no_op_when_lookup_is_none(self):
+        enrichment = {"npxG_per_90": 0.30}
+        apply_adjusted_npxg(enrichment, player_id=42, lookup=None)
+        assert enrichment["npxG_per_90"] == pytest.approx(0.30)
+
+    def test_sets_raw_when_lookup_is_none(self):
+        """raw_npxG_per_90 is always written, even when lookup is None."""
+        enrichment = {"npxG_per_90": 0.30}
+        apply_adjusted_npxg(enrichment, player_id=42, lookup=None)
+        assert enrichment["raw_npxG_per_90"] == pytest.approx(0.30)
+
+    def test_player_absent_from_lookup_leaves_npxg_unchanged(self):
+        enrichment = {"npxG_per_90": 0.30}
+        lookup = {99: 0.22}  # player 42 not in lookup
+        apply_adjusted_npxg(enrichment, player_id=42, lookup=lookup)
+        assert enrichment["npxG_per_90"] == pytest.approx(0.30)
+        assert enrichment["raw_npxG_per_90"] == pytest.approx(0.30)
+
+    def test_raw_npxg_none_when_not_in_enrichment(self):
+        """raw_npxG_per_90 is None when npxG_per_90 absent and no player_data."""
+        enrichment: dict = {}
+        apply_adjusted_npxg(enrichment, player_id=42, lookup=None)
+        assert enrichment["raw_npxG_per_90"] is None
+
+    def test_player_data_dict_fallback_for_raw(self):
+        """player_data dict used as fallback when npxG_per_90 absent from enrichment."""
+        enrichment: dict = {}
+        player_data = {"npxG_per_90": 0.25}
+        apply_adjusted_npxg(enrichment, player_id=42, lookup=None, player_data=player_data)
+        assert enrichment["raw_npxG_per_90"] == pytest.approx(0.25)
+
+    def test_player_data_attr_fallback_for_raw(self):
+        """player_data object attribute used as fallback for raw."""
+        class FakePlayer:
+            npxG_per_90 = 0.18
+
+        enrichment: dict = {}
+        apply_adjusted_npxg(enrichment, player_id=42, lookup=None, player_data=FakePlayer())
+        assert enrichment["raw_npxG_per_90"] == pytest.approx(0.18)
+
+    def test_player_data_with_lookup_applies_adjusted(self):
+        """When lookup has the player, adjusted value overrides enrichment."""
+        enrichment: dict = {}
+        player_data = {"npxG_per_90": 0.25}
+        lookup = {42: 0.19}
+        apply_adjusted_npxg(enrichment, player_id=42, lookup=lookup, player_data=player_data)
+        assert enrichment["npxG_per_90"] == pytest.approx(0.19)
+        assert enrichment["raw_npxG_per_90"] == pytest.approx(0.25)
+
+    def test_raw_npxg_propagates_to_player_evaluation(self):
+        """raw_npxg_per_90 field on PlayerEvaluation populated via enrichment."""
+        enrichment = {"npxG_per_90": 0.30}
+        lookup = {42: 0.20}
+        apply_adjusted_npxg(enrichment, player_id=42, lookup=lookup)
+        evaluation, _ = build_player_evaluation(make_player(id=42), enrichment=enrichment)
+        assert evaluation.npxg_per_90 == pytest.approx(0.20)
+        assert evaluation.raw_npxg_per_90 == pytest.approx(0.30)

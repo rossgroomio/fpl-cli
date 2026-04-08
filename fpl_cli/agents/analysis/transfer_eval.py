@@ -9,6 +9,7 @@ from fpl_cli.api.fpl import FPLClient
 from fpl_cli.services.player_scoring import (
     ScoringContext,
     _value_weights_and_ceiling,
+    apply_adjusted_npxg,
     apply_shrinkage,
     build_fixture_matchups,
     build_player_evaluation,
@@ -86,9 +87,11 @@ class TransferEvalAgent(Agent):
                 self.client,
                 include_players=True, include_understat=True,
                 include_history=True, include_prior=True,
+                include_match_data=True,
             )
             all_players = data.players or []
             player_map = {p.id: p for p in all_players}
+            adjusted_npxg_lookup = data.adjusted_npxg_lookup
 
             out_id = context["out_player_id"]
             all_ids = [out_id, *in_player_ids]
@@ -118,6 +121,7 @@ class TransferEvalAgent(Agent):
                     player_histories=data.player_histories,
                     player_priors=data.player_priors,
                     rolling_window=rw,
+                    adjusted_npxg_lookup=adjusted_npxg_lookup,
                 )
                 target_scored.append(target_entry)
                 lineup_scored.append(lineup_entry)
@@ -177,6 +181,7 @@ class TransferEvalAgent(Agent):
         player_histories: dict[int, list[dict[str, Any]]] | None = None,
         player_priors: dict[int, Any] | None = None,
         rolling_window: int = 5,
+        adjusted_npxg_lookup: dict[int, float] | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Score a player on both horizons. Returns (target_entry, lineup_entry)."""
         team = context.team_map.get(player.team_id)
@@ -197,6 +202,7 @@ class TransferEvalAgent(Agent):
             if us_data:
                 enrichment.update(us_data)
                 has_understat = True
+        apply_adjusted_npxg(enrichment, player.id, adjusted_npxg_lookup)
 
         if player_histories:
             history = player_histories.get(player.id, [])

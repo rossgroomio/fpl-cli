@@ -16,6 +16,7 @@ from fpl_cli.models.types import EnrichedPlayer, WaiverTarget
 from fpl_cli.services.player_scoring import (
     apply_shrinkage,
     build_player_evaluation,
+    apply_adjusted_npxg,
     calculate_waiver_score,
     compute_aggregate_matchup,
     compute_form_trajectory,
@@ -171,10 +172,12 @@ class WaiverAgent(Agent):
             data = await prepare_scoring_data(
                 self.fpl_client, include_players=True,
                 include_history=True, include_prior=True,
+                include_match_data=True,
             )
             next_gw_id = data.next_gw_id
             self._player_histories = data.player_histories or {}
             self._player_priors = data.player_priors
+            self._adjusted_npxg_lookup = data.adjusted_npxg_lookup
             scoring_ctx = data.scoring_ctx
 
             # Enrich available players with matchup and FDR
@@ -331,6 +334,12 @@ class WaiverAgent(Agent):
             prior = priors.get(player.get("id", 0))
             if prior:
                 enrichment["prior_confidence"] = prior.confidence
+        apply_adjusted_npxg(
+            enrichment,
+            int(player.get("id") or 0),
+            getattr(self, "_adjusted_npxg_lookup", None),
+            player_data=player,
+        )
         evaluation, _ = build_player_evaluation(
             player,
             enrichment=enrichment,
