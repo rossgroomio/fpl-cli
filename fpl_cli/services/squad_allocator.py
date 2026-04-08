@@ -10,6 +10,7 @@ from fpl_cli.services.player_prior import CUTOFF_GW
 from fpl_cli.services.player_scoring import (
     GW_SELECTION_WEIGHTS,
     VALID_FORMATIONS,
+    apply_adjusted_npxg,
     build_fixture_matchups,
     build_player_evaluation,
     build_scoring_enrichment,
@@ -148,6 +149,7 @@ def score_all_players_sgw(
         team_short = team.short_name if team else "???"
         gw_history = player_histories.get(player.id)
         enrichment = build_scoring_enrichment(player, us_match, team_short, gw_history, next_gw_id)
+        apply_adjusted_npxg(enrichment, player.id, scoring_data.adjusted_npxg_lookup)
 
         matchups = build_fixture_matchups(player.team_id, position, scoring_ctx)
 

@@ -9,6 +9,7 @@ from fpl_cli.api.fpl import FPLClient
 from fpl_cli.services.player_scoring import (
     ScoringContext,
     _value_weights_and_ceiling,
+    apply_adjusted_npxg,
     apply_shrinkage,
     build_fixture_matchups,
     build_player_evaluation,
@@ -86,9 +87,11 @@ class TransferEvalAgent(Agent):
                 self.client,
                 include_players=True, include_understat=True,
                 include_history=True, include_prior=True,
+                include_match_data=True,
             )
             all_players = data.players or []
             player_map = {p.id: p for p in all_players}
+            adjusted_npxg_lookup = data.adjusted_npxg_lookup
 
             out_id = context["out_player_id"]
             all_ids = [out_id, *in_player_ids]
@@ -118,6 +121,7 @@ class TransferEvalAgent(Agent):
                     player_histories=data.player_histories,
                     player_priors=data.player_priors,
                     rolling_window=rw,
+                    adjusted_npxg_lookup=adjusted_npxg_lookup,
                 )
                 target_scored.append(target_entry)
                 lineup_scored.append(lineup_entry)
@@ -177,6 +181,7 @@ class TransferEvalAgent(Agent):
         player_histories: dict[int, list[dict[str, Any]]] | None = None,
         player_priors: dict[int, Any] | None = None,
         rolling_window: int = 5,
+        adjusted_npxg_lookup: dict[int, float] | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Score a player on both horizons. Returns (target_entry, lineup_entry)."""
         team = context.team_map.get(player.team_id)
@@ -197,6 +202,7 @@ class TransferEvalAgent(Agent):
             if us_data:
                 enrichment.update(us_data)
                 has_understat = True
+        apply_adjusted_npxg(enrichment, player.id, adjusted_npxg_lookup)
 
         if player_histories:
             history = player_histories.get(player.id, [])
@@ -273,6 +279,13 @@ class TransferEvalAgent(Agent):
         target_entry["rolling_pts_per_m"] = rolling_val
         target_entry["rolling_fixture_count"] = rolling_count
 
+        # Adjusted npxG context (only when adjustment active)
+        target_entry["raw_npxg_per_90"] = evaluation.raw_npxg_per_90
+        if (evaluation.raw_npxg_per_90 is not None
+                and evaluation.npxg_per_90 is not None
+                and evaluation.npxg_per_90 != evaluation.raw_npxg_per_90):
+            target_entry["adjusted_npxg_per_90"] = round(evaluation.npxg_per_90, 4)
+
         return target_entry, lineup_entry
 
     @staticmethod
@@ -284,7 +297,7 @@ class TransferEvalAgent(Agent):
         gw_delta: int | None,
     ) -> dict[str, Any]:
         """Build a unified player dict from target and lineup scoring results."""
-        return {
+        result: dict[str, Any] = {
             "id": target_entry["id"],
             "web_name": target_entry["web_name"],
             "team_short": target_entry["team_short"],
@@ -305,3 +318,8 @@ class TransferEvalAgent(Agent):
             "rolling_fixture_count": target_entry["rolling_fixture_count"],
             "reliability": target_entry["reliability"],
         }
+        if target_entry.get("raw_npxg_per_90") is not None:
+            result["raw_npxg_per_90"] = round(target_entry["raw_npxg_per_90"], 4)
+        if "adjusted_npxg_per_90" in target_entry:
+            result["adjusted_npxg_per_90"] = target_entry["adjusted_npxg_per_90"]
+        return result

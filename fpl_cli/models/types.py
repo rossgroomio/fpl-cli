@@ -38,6 +38,8 @@ class CaptainCandidate(TypedDict):
     captain_score: int
     captain_score_raw: float
     reasons: list[str]
+    adjusted_npxg_per_90: NotRequired[float]
+    raw_npxg_per_90: NotRequired[float]
 
 
 class PlayerStats(TypedDict):

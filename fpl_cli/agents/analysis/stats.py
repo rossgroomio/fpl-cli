@@ -10,6 +10,7 @@ from fpl_cli.api.fpl import FPLClient
 from fpl_cli.models.types import PlayerStats
 from fpl_cli.services.matchup import calculate_matchup_score
 from fpl_cli.services.player_scoring import (
+    apply_adjusted_npxg,
     apply_shrinkage,
     build_player_evaluation,
     calculate_differential_score,
@@ -60,6 +61,8 @@ class StatsAgent(Agent):
         self.differential_threshold = config.get("differential_threshold", 5.0) if config else 5.0  # < 5% owned
         # < 15% owned
         self.semi_differential_threshold = config.get("semi_differential_threshold", 15.0) if config else 15.0
+
+        self._adjusted_npxg_lookup: dict[int, float] | None = None
 
         # View selection: which analysis views to compute
         raw_views = config.get("views") if config else None
@@ -174,9 +177,11 @@ class StatsAgent(Agent):
             scoring_data = await prepare_scoring_data(
                 self.client, include_players=True,
                 include_history=needs_history, include_prior=True,
+                include_match_data=True,
             )
             self._next_gw_id = scoring_data.next_gw_id
             self._player_priors = scoring_data.player_priors
+            self._adjusted_npxg_lookup = scoring_data.adjusted_npxg_lookup
             if needs_history:
                 self._player_histories = scoring_data.player_histories or {}
             scoring_ctx = scoring_data.scoring_ctx
@@ -641,7 +646,15 @@ class StatsAgent(Agent):
 
     def _calculate_differential_score(self, player: PlayerStats) -> int:
         """Calculate a differential score via the player scoring engine."""
-        enrichment = self._prior_enrichment(player.get("id"))
+        enrichment = self._prior_enrichment(player.get("id")) or {}
+        npxg = player.get("npxG_per_90")
+        if npxg is not None:
+            enrichment["npxG_per_90"] = npxg
+        apply_adjusted_npxg(
+            enrichment,
+            int(player.get("id") or 0),
+            self._adjusted_npxg_lookup,
+        )
         evaluation, _ = build_player_evaluation(
             player,
             enrichment=enrichment or None,
@@ -741,7 +754,15 @@ class StatsAgent(Agent):
 
     def _calculate_target_score(self, player: PlayerStats) -> int:
         """Calculate a target score via the player scoring engine."""
-        enrichment = self._prior_enrichment(player.get("id"))
+        enrichment = self._prior_enrichment(player.get("id")) or {}
+        npxg = player.get("npxG_per_90")
+        if npxg is not None:
+            enrichment["npxG_per_90"] = npxg
+        apply_adjusted_npxg(
+            enrichment,
+            int(player.get("id") or 0),
+            self._adjusted_npxg_lookup,
+        )
         evaluation, _ = build_player_evaluation(
             player,
             enrichment=enrichment or None,

@@ -13,6 +13,7 @@ from fpl_cli.models.player import Player
 from fpl_cli.models.types import CaptainCandidate
 from fpl_cli.services.player_scoring import (
     ScoringContext,
+    apply_adjusted_npxg,
     apply_shrinkage,
     build_fixture_matchups,
     build_player_evaluation,
@@ -44,6 +45,7 @@ class CaptainAgent(Agent):
     def __init__(self, config: dict[str, Any] | None = None):
         super().__init__(config)
         self.client = FPLClient()
+        self._adjusted_npxg_lookup: dict[int, float] | None = None
 
         # Differential thresholds
         self.differential_threshold = config.get("differential_threshold", 10.0) if config else 10.0
@@ -64,11 +66,13 @@ class CaptainAgent(Agent):
             self.client,
             include_players=True, include_understat=True,
             include_history=True, include_prior=True,
+            include_match_data=True,
         )
         all_players = data.players or []
         player_map = {p.id: p for p in all_players}
         self._player_histories = data.player_histories or {}
         self._player_priors = data.player_priors
+        self._adjusted_npxg_lookup = data.adjusted_npxg_lookup
 
         return (
             player_map,
@@ -217,6 +221,7 @@ class CaptainAgent(Agent):
             us_data = understat_by_id.get(player.id)
             if us_data:
                 enrichment.update(us_data)
+        apply_adjusted_npxg(enrichment, player.id, self._adjusted_npxg_lookup)
 
         # xGI_per_90 fallback for players without Understat data
         minutes_safe = max(player.minutes, 1)

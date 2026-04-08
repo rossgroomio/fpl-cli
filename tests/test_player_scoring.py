@@ -4,10 +4,14 @@ import dataclasses
 
 import pytest
 
+from fpl_cli.api.core_insights import MatchRecord
 from fpl_cli.models.player import PlayerPosition, PlayerStatus
 from fpl_cli.services.player_prior import PlayerPrior
 from fpl_cli.services.player_scoring import (
     ATTACKING_POSITIONS,
+    apply_adjusted_npxg,
+    build_adjusted_npxg_lookup,
+    compute_adjusted_npxg,
     DIFFERENTIAL_QUALITY_WEIGHTS,
     GK_VALUE_CEILING,
     TARGET_CEILING,
@@ -2910,3 +2914,330 @@ class TestGKScoringPath:
         # normalise against GK_VALUE_CEILING (28.2) gives 77
         assert gk_score != normalise_score(21.72, VALUE_CEILING)
         assert gk_score == pytest.approx(normalise_score(21.72, GK_VALUE_CEILING), abs=1)
+
+
+# ---------------------------------------------------------------------------
+# compute_adjusted_npxg / build_adjusted_npxg_lookup
+# ---------------------------------------------------------------------------
+
+def _make_match(
+    gameweek: int,
+    xg: float,
+    minutes_played: int,
+    opponent_elo: float,
+    penalties_scored: int = 0,
+    penalties_missed: int = 0,
+) -> MatchRecord:
+    return MatchRecord(
+        player_id=0,
+        gameweek=gameweek,
+        xg=xg,
+        minutes_played=minutes_played,
+        opponent_elo=opponent_elo,
+        penalties_scored=penalties_scored,
+        penalties_missed=penalties_missed,
+        is_home=True,
+    )
+
+
+MEDIAN_ELO = 1700.0
+
+
+class TestComputeAdjustedNpxg:
+    def test_adjustment_scales_up_against_strong_opponent(self):
+        """xG against high-Elo opponent is scaled up (factor > 1)."""
+        # opponent_elo=1600 < median=1700 => factor = 1700/1600 = 1.0625
+        records = [_make_match(gw, xg=0.40, minutes_played=90, opponent_elo=1600.0)
+                   for gw in range(1, 8)]
+        result = compute_adjusted_npxg(records, current_gw=10, median_elo=MEDIAN_ELO)
+        raw_per_90 = 0.40  # xg/90 raw
+        assert result is not None
+        assert result > raw_per_90  # adjusted up for tough opponents
+
+    def test_adjustment_scales_down_against_weak_opponent(self):
+        """xG against low-Elo opponent is scaled down (factor < 1)."""
+        # opponent_elo=1800 > median=1700 => factor = 1700/1800 = 0.944
+        records = [_make_match(gw, xg=0.40, minutes_played=90, opponent_elo=1800.0)
+                   for gw in range(1, 8)]
+        result = compute_adjusted_npxg(records, current_gw=10, median_elo=MEDIAN_ELO)
+        raw_per_90 = 0.40
+        assert result is not None
+        assert result < raw_per_90  # adjusted down for easy opponents
+
+    def test_equal_elo_factor_is_one(self):
+        """opponent_elo == median_elo => factor 1.0, adjusted == raw."""
+        records = [_make_match(gw, xg=0.50, minutes_played=90, opponent_elo=MEDIAN_ELO)
+                   for gw in range(1, 8)]
+        result = compute_adjusted_npxg(records, current_gw=10, median_elo=MEDIAN_ELO)
+        assert result == pytest.approx(0.50, abs=1e-6)
+
+    def test_cap_floor_at_0_80(self):
+        """Very high opponent Elo capped at factor 0.80."""
+        # opponent_elo=2500 would give factor 1700/2500=0.68 < 0.80 -> capped at 0.80
+        records = [_make_match(gw, xg=0.50, minutes_played=90, opponent_elo=2500.0)
+                   for gw in range(1, 8)]
+        result = compute_adjusted_npxg(records, current_gw=10, median_elo=MEDIAN_ELO)
+        assert result == pytest.approx(0.50 * 0.80, abs=1e-6)
+
+    def test_cap_ceiling_at_1_25(self):
+        """Very low opponent Elo capped at factor 1.25."""
+        # opponent_elo=500 would give factor 1700/500=3.4 > 1.25 -> capped at 1.25
+        records = [_make_match(gw, xg=0.50, minutes_played=90, opponent_elo=500.0)
+                   for gw in range(1, 8)]
+        result = compute_adjusted_npxg(records, current_gw=10, median_elo=MEDIAN_ELO)
+        assert result == pytest.approx(0.50 * 1.25, abs=1e-6)
+
+    def test_penalties_reduce_npxg(self):
+        """Penalty attempts are subtracted: npxG = xG - penalties * 0.76."""
+        # 1 scored, 0 missed -> npxg = 0.76 - 1*0.76 = 0.0, factor 1.0
+        records = [_make_match(gw, xg=0.76, minutes_played=90, opponent_elo=MEDIAN_ELO,
+                               penalties_scored=1, penalties_missed=0)
+                   for gw in range(1, 8)]
+        result = compute_adjusted_npxg(records, current_gw=10, median_elo=MEDIAN_ELO)
+        assert result == pytest.approx(0.0, abs=1e-6)
+
+    def test_penalties_missed_also_subtracted(self):
+        """Both scored and missed penalties are subtracted."""
+        # 1 scored + 1 missed = 2 total -> npxg = 1.52 - 2*0.76 = 0.0
+        records = [_make_match(gw, xg=1.52, minutes_played=90, opponent_elo=MEDIAN_ELO,
+                               penalties_scored=1, penalties_missed=1)
+                   for gw in range(1, 8)]
+        result = compute_adjusted_npxg(records, current_gw=10, median_elo=MEDIAN_ELO)
+        assert result == pytest.approx(0.0, abs=1e-6)
+
+    def test_fewer_than_4_matches_returns_none(self):
+        """< 4 qualifying matches returns None (triggers fallback)."""
+        records = [_make_match(gw, xg=0.50, minutes_played=90, opponent_elo=MEDIAN_ELO)
+                   for gw in range(1, 4)]  # 3 matches
+        result = compute_adjusted_npxg(records, current_gw=10, median_elo=MEDIAN_ELO)
+        assert result is None
+
+    def test_exactly_4_matches_returns_value(self):
+        """Exactly 4 qualifying matches returns a value (minimum threshold)."""
+        records = [_make_match(gw, xg=0.50, minutes_played=90, opponent_elo=MEDIAN_ELO)
+                   for gw in range(1, 5)]  # 4 matches
+        result = compute_adjusted_npxg(records, current_gw=10, median_elo=MEDIAN_ELO)
+        assert result is not None
+
+    def test_zero_minutes_in_window_returns_none(self):
+        """All matches have 0 minutes_played -> no qualifying matches -> None."""
+        records = [_make_match(gw, xg=0.50, minutes_played=0, opponent_elo=MEDIAN_ELO)
+                   for gw in range(1, 8)]
+        result = compute_adjusted_npxg(records, current_gw=10, median_elo=MEDIAN_ELO)
+        assert result is None
+
+    def test_12gw_lookback_excludes_old_matches(self):
+        """Matches older than 12 GWs back from current_gw are excluded."""
+        # current_gw=20, cutoff=8. GW1-8 excluded, GW9-20 included.
+        old = [_make_match(gw, xg=0.50, minutes_played=90, opponent_elo=MEDIAN_ELO)
+               for gw in range(1, 9)]    # GW1-8: outside window
+        recent = [_make_match(gw, xg=0.30, minutes_played=90, opponent_elo=MEDIAN_ELO)
+                  for gw in range(9, 13)]  # GW9-12: inside window (4 matches)
+        result = compute_adjusted_npxg(old + recent, current_gw=20, median_elo=MEDIAN_ELO)
+        # Should use only 4 recent matches (0.30 xg each), ignoring old 0.50 matches
+        assert result == pytest.approx(0.30, abs=1e-6)
+
+    def test_7_match_window_limit(self):
+        """Only most recent 7 matches used even when more are available."""
+        # 10 matches in window; oldest 3 have xg=1.0, newest 7 have xg=0.20
+        old = [_make_match(gw, xg=1.0, minutes_played=90, opponent_elo=MEDIAN_ELO)
+               for gw in range(1, 4)]
+        recent = [_make_match(gw, xg=0.20, minutes_played=90, opponent_elo=MEDIAN_ELO)
+                  for gw in range(4, 11)]
+        result = compute_adjusted_npxg(old + recent, current_gw=15, median_elo=MEDIAN_ELO)
+        assert result == pytest.approx(0.20, abs=1e-6)
+
+    def test_all_matches_outside_lookback_returns_none(self):
+        """All matches before 12-GW lookback returns None."""
+        records = [_make_match(gw, xg=0.50, minutes_played=90, opponent_elo=MEDIAN_ELO)
+                   for gw in range(1, 8)]
+        result = compute_adjusted_npxg(records, current_gw=25, median_elo=MEDIAN_ELO)
+        assert result is None
+
+
+class TestBuildAdjustedNpxgLookup:
+    def test_returns_dict_keyed_by_player_id(self):
+        records = {
+            100: [_make_match(gw, xg=0.50, minutes_played=90, opponent_elo=MEDIAN_ELO)
+                  for gw in range(1, 8)],
+            200: [_make_match(gw, xg=0.30, minutes_played=90, opponent_elo=MEDIAN_ELO)
+                  for gw in range(1, 8)],
+        }
+        result = build_adjusted_npxg_lookup(records, current_gw=10, median_elo=MEDIAN_ELO)
+        assert set(result.keys()) == {100, 200}
+        assert result[100] == pytest.approx(0.50, abs=1e-6)
+        assert result[200] == pytest.approx(0.30, abs=1e-6)
+
+    def test_player_with_insufficient_data_absent(self):
+        """Player with < 4 qualifying matches excluded from lookup."""
+        records = {
+            100: [_make_match(gw, xg=0.50, minutes_played=90, opponent_elo=MEDIAN_ELO)
+                  for gw in range(1, 8)],
+            999: [_make_match(1, xg=0.50, minutes_played=90, opponent_elo=MEDIAN_ELO)],
+        }
+        result = build_adjusted_npxg_lookup(records, current_gw=10, median_elo=MEDIAN_ELO)
+        assert 100 in result
+        assert 999 not in result
+
+
+class TestApplyAdjustedNpxg:
+    """Tests for apply_adjusted_npxg enrichment helper (Unit 3)."""
+
+    def test_sets_adjusted_when_player_in_lookup(self):
+        enrichment = {"npxG_per_90": 0.30}
+        lookup = {42: 0.22}
+        apply_adjusted_npxg(enrichment, player_id=42, lookup=lookup)
+        assert enrichment["npxG_per_90"] == pytest.approx(0.22)
+
+    def test_sets_raw_alongside_adjusted(self):
+        enrichment = {"npxG_per_90": 0.30}
+        lookup = {42: 0.22}
+        apply_adjusted_npxg(enrichment, player_id=42, lookup=lookup)
+        assert enrichment["raw_npxG_per_90"] == pytest.approx(0.30)
+
+    def test_no_op_when_lookup_is_none(self):
+        enrichment = {"npxG_per_90": 0.30}
+        apply_adjusted_npxg(enrichment, player_id=42, lookup=None)
+        assert enrichment["npxG_per_90"] == pytest.approx(0.30)
+
+    def test_sets_raw_when_lookup_is_none(self):
+        """raw_npxG_per_90 is always written, even when lookup is None."""
+        enrichment = {"npxG_per_90": 0.30}
+        apply_adjusted_npxg(enrichment, player_id=42, lookup=None)
+        assert enrichment["raw_npxG_per_90"] == pytest.approx(0.30)
+
+    def test_player_absent_from_lookup_leaves_npxg_unchanged(self):
+        enrichment = {"npxG_per_90": 0.30}
+        lookup = {99: 0.22}  # player 42 not in lookup
+        apply_adjusted_npxg(enrichment, player_id=42, lookup=lookup)
+        assert enrichment["npxG_per_90"] == pytest.approx(0.30)
+        assert enrichment["raw_npxG_per_90"] == pytest.approx(0.30)
+
+    def test_raw_npxg_none_when_not_in_enrichment(self):
+        """raw_npxG_per_90 is None when npxG_per_90 absent from enrichment."""
+        enrichment: dict = {}
+        apply_adjusted_npxg(enrichment, player_id=42, lookup=None)
+        assert enrichment["raw_npxG_per_90"] is None
+
+    def test_pre_populated_npxg_with_lookup(self):
+        """Caller pre-populates npxG_per_90 in enrichment; lookup overrides it."""
+        enrichment: dict = {"npxG_per_90": 0.25}
+        lookup = {42: 0.19}
+        apply_adjusted_npxg(enrichment, player_id=42, lookup=lookup)
+        assert enrichment["npxG_per_90"] == pytest.approx(0.19)
+        assert enrichment["raw_npxG_per_90"] == pytest.approx(0.25)
+
+    def test_raw_npxg_propagates_to_player_evaluation(self):
+        """raw_npxg_per_90 field on PlayerEvaluation populated via enrichment."""
+        enrichment = {"npxG_per_90": 0.30}
+        lookup = {42: 0.20}
+        apply_adjusted_npxg(enrichment, player_id=42, lookup=lookup)
+        evaluation, _ = build_player_evaluation(make_player(id=42), enrichment=enrichment)
+        assert evaluation.npxg_per_90 == pytest.approx(0.20)
+        assert evaluation.raw_npxg_per_90 == pytest.approx(0.30)
+
+
+def _make_fm(score=7.0, fdr=2.5):
+    return FixtureMatchup(
+        opponent_short="SHU", is_home=True, opponent_fdr=fdr,
+        matchup_score=score,
+        matchup_breakdown={
+            "matchup_score": score, "attack_matchup": 6.0, "defence_matchup": 5.0,
+            "form_differential": 0.2, "position_differential": 0.1, "reasoning": [],
+        },
+    )
+
+
+class TestCaptainCandidateAdjustedNpxgFields:
+    """Unit 5: adjusted npxG context in CaptainCandidate output."""
+
+    def _make_eval_with_adjusted(self, adjusted: float, raw: float):
+        enrichment = {
+            "npxG_per_90": adjusted, "raw_npxG_per_90": raw,
+            "xGChain_per_90": 0.5, "xGI_per_90": 0.4, "team_short": "ARS",
+        }
+        evaluation, identity = build_player_evaluation(
+            make_player(id=1, position=PlayerPosition.FORWARD,
+                        form=6.0, points_per_game=5.5, minutes=1800),
+            enrichment=enrichment,
+            fixture_matchups=[_make_fm()],
+        )
+        return evaluation, identity
+
+    def test_captain_output_includes_raw_npxg_when_present(self):
+        eval_, identity = self._make_eval_with_adjusted(adjusted=0.20, raw=0.30)
+        result = calculate_captain_score(eval_, identity, next_gw_id=20)
+        assert result is not None
+        assert "raw_npxg_per_90" in result
+        assert result["raw_npxg_per_90"] == pytest.approx(0.30, abs=1e-4)
+
+    def test_captain_output_includes_adjusted_when_differs_from_raw(self):
+        eval_, identity = self._make_eval_with_adjusted(adjusted=0.20, raw=0.30)
+        result = calculate_captain_score(eval_, identity, next_gw_id=20)
+        assert result is not None
+        assert "adjusted_npxg_per_90" in result
+        assert result["adjusted_npxg_per_90"] == pytest.approx(0.20, abs=1e-4)
+
+    def test_captain_output_omits_adjusted_when_equal_to_raw(self):
+        """No adjustment active: adjusted equals raw -> field absent."""
+        eval_, identity = self._make_eval_with_adjusted(adjusted=0.30, raw=0.30)
+        result = calculate_captain_score(eval_, identity, next_gw_id=20)
+        assert result is not None
+        assert "raw_npxg_per_90" in result
+        assert "adjusted_npxg_per_90" not in result
+
+    def test_captain_output_omits_npxg_fields_when_no_understat(self):
+        """No Understat data: both fields absent from output."""
+        evaluation, identity = build_player_evaluation(
+            make_player(id=1, position=PlayerPosition.FORWARD,
+                        form=6.0, points_per_game=5.5, minutes=1800),
+            fixture_matchups=[_make_fm()],
+        )
+        result = calculate_captain_score(evaluation, identity, next_gw_id=20)
+        assert result is not None
+        assert "raw_npxg_per_90" not in result
+        assert "adjusted_npxg_per_90" not in result
+
+
+class TestTransferEvalAdjustedNpxgFields:
+    """Unit 5: adjusted npxG context in TransferEvalAgent output dicts."""
+
+    def _make_target_entry_with_adjusted(self, adjusted: float | None, raw: float | None) -> dict:
+        entry: dict = {
+            "id": 1, "web_name": "Salah", "team_short": "LIV", "position": "MID",
+            "target_score": 60, "fixture_matchups": [], "form": 7.0,
+            "status": "a", "chance_of_playing": None, "reliability": None,
+            "price": 13.5, "quality_score": 80, "quality_per_m": 5.9,
+            "rolling_pts_per_m": 4.2, "rolling_fixture_count": 5,
+            "raw_npxg_per_90": raw,
+        }
+        if adjusted is not None and raw is not None and adjusted != raw:
+            entry["adjusted_npxg_per_90"] = round(adjusted, 4)
+        return entry
+
+    def _make_lineup_entry(self) -> dict:
+        return {"lineup_score": 45, "excluded": False}
+
+    def test_transfer_player_dict_includes_raw_when_present(self):
+        from fpl_cli.agents.analysis.transfer_eval import TransferEvalAgent
+        target = self._make_target_entry_with_adjusted(adjusted=0.22, raw=0.30)
+        lineup = self._make_lineup_entry()
+        result = TransferEvalAgent._build_player_dict(target, lineup, outlook_delta=5, gw_delta=2)
+        assert "raw_npxg_per_90" in result
+        assert result["raw_npxg_per_90"] == pytest.approx(0.30, abs=1e-4)
+
+    def test_transfer_player_dict_includes_adjusted_when_differs(self):
+        from fpl_cli.agents.analysis.transfer_eval import TransferEvalAgent
+        target = self._make_target_entry_with_adjusted(adjusted=0.22, raw=0.30)
+        lineup = self._make_lineup_entry()
+        result = TransferEvalAgent._build_player_dict(target, lineup, outlook_delta=5, gw_delta=2)
+        assert "adjusted_npxg_per_90" in result
+        assert result["adjusted_npxg_per_90"] == pytest.approx(0.22, abs=1e-4)
+
+    def test_transfer_player_dict_omits_npxg_fields_when_none(self):
+        from fpl_cli.agents.analysis.transfer_eval import TransferEvalAgent
+        target = self._make_target_entry_with_adjusted(adjusted=None, raw=None)
+        lineup = self._make_lineup_entry()
+        result = TransferEvalAgent._build_player_dict(target, lineup, outlook_delta=5, gw_delta=2)
+        assert "raw_npxg_per_90" not in result
+        assert "adjusted_npxg_per_90" not in result

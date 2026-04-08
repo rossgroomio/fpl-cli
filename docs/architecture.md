@@ -361,7 +361,7 @@ Services live in `fpl_cli/services/` and provide the computation layer between a
 
 | Service | Purpose |
 |---|---|
-| `player_scoring` | Central scoring engine: `prepare_scoring_data()`, all score functions, `shrink_scores()`. Form modifiers: `compute_form_trajectory()` (direction over recent GWs) and `compute_xgi_sustainability()` (ATK-only rolling xGI divergence -> [0.85, 1.15] multiplier) |
+| `player_scoring` | Central scoring engine: `prepare_scoring_data()`, all score functions, `shrink_scores()`. Form modifiers: `compute_form_trajectory()` (direction over recent GWs) and `compute_xgi_sustainability()` (ATK-only rolling xGI divergence -> [0.85, 1.15] multiplier). Fixture-adjusted npxG: `compute_adjusted_npxg()` / `build_adjusted_npxg_lookup()` normalise historical xG by opponent Elo; `apply_adjusted_npxg()` overwrites `npxG_per_90` in agent enrichment when data is available |
 | `player_prior` | Bayesian early-season confidence (GW1-10 shrinkage); threads `PlayerProfile.reliability` (historical availability rate) through `PlayerPrior` to agents |
 | `team_ratings` | TeamRatingsService + Calculator (1-7 scale, 4 axes) |
 | `matchup` | Fixture matchup scoring (0-10), 3-GW recency-weighted |
@@ -416,7 +416,7 @@ All providers share the `LLMResponse` contract. `OpenAICompatProvider` supports 
 | `FPLDraftClient` | FPL Draft API | Draft leagues, waivers, squad data |
 | `UnderstatClient` | understat.com | npxG, xA, xGChain, xGBuildup per-90 stats |
 | `VaastavClient` | vaastav/FPL GitHub | Historical CSV data (3 seasons: 2022-25), price trends, GW-level profiles |
-| `CoreInsightsClient` | Core-Insights/FPL GitHub | Current-season CSV data (2025-26+), season aggregates, GW trends |
+| `CoreInsightsClient` | Core-Insights/FPL GitHub | Current-season CSV data (2025-26+), season aggregates, GW trends, per-GW match-level xG + Elo (from `By Tournament/Premier League/GW{n}/`) |
 | `HistoricalDataProvider` | Composition layer | Unifies vaastav + Core-Insights via `make_historical_provider()` |
 | `FootballDataClient` | football-data.org | League standings, match results |
 | `FPLPriceScraper` | FPL website | Price change scraping (needs credentials) |

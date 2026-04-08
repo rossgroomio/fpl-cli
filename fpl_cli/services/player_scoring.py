@@ -15,6 +15,7 @@ from math import inf
 from typing import TYPE_CHECKING, Any, Literal, overload
 
 if TYPE_CHECKING:
+    from fpl_cli.api.core_insights import MatchRecord
     from fpl_cli.models.player import Player
     from fpl_cli.models.types import CaptainCandidate, FixtureDetail
     from fpl_cli.services.fixture_predictions import PredictionLookup
@@ -353,11 +354,13 @@ class ScoringData:
     scoring_ctx: ScoringContext
     ratings_service: TeamRatingsService
 
-    # Optional - populated when include_players / include_understat / include_history / include_prior is True
+    # Optional - populated when include_players / include_understat /
+    # include_history / include_prior / include_match_data is True
     players: list[Player] | None = None
     understat_lookup: dict[int, dict[str, float]] | None = None
     player_histories: dict[int, list[dict[str, Any]]] | None = None
     player_priors: dict[int, PlayerPrior] | None = None
+    adjusted_npxg_lookup: dict[int, float] | None = None
 
 
 async def prepare_scoring_data(
@@ -367,6 +370,7 @@ async def prepare_scoring_data(
     include_understat: bool = False,
     include_history: bool = False,
     include_prior: bool = False,
+    include_match_data: bool = False,
 ) -> ScoringData:
     """Fetch common base data and build a ScoringContext.
 
@@ -380,6 +384,8 @@ async def prepare_scoring_data(
         include_understat: Build understat lookup (requires include_players).
         include_history: Fetch per-GW history for players with minutes > 0.
         include_prior: Generate Bayesian player priors (requires include_players).
+        include_match_data: Fetch Core-Insights match-level CSVs and compute the
+            fixture-adjusted npxG lookup (requires include_players).
 
     Raises:
         ValueError: If include_understat or include_prior is True but include_players is False.
@@ -476,6 +482,11 @@ async def prepare_scoring_data(
                 "Failed to generate player priors", exc_info=True,
             )
 
+    adjusted_npxg_lookup: dict[int, float] | None = None
+
+    if include_match_data and players is not None:
+        adjusted_npxg_lookup = await fetch_adjusted_npxg_lookup(next_gw_id)
+
     return ScoringData(
         teams=teams,
         team_map=scoring_ctx.team_map,
@@ -489,6 +500,7 @@ async def prepare_scoring_data(
         understat_lookup=understat_lookup,
         player_histories=player_histories,
         player_priors=player_priors,
+        adjusted_npxg_lookup=adjusted_npxg_lookup,
     )
 
 
@@ -815,6 +827,119 @@ def compute_xgi_sustainability(
     return multiplier, avg_divergence
 
 
+async def fetch_adjusted_npxg_lookup(current_gw: int) -> dict[int, float] | None:
+    """Fetch Core-Insights match data and build the adjusted npxG lookup.
+
+    Owns the CoreInsightsClient lifecycle, median Elo computation, and lookup
+    construction. Returns None on any failure (graceful degradation).
+    """
+    try:
+        import statistics
+
+        from fpl_cli.api.core_insights import CoreInsightsClient, make_core_insights_fetcher
+
+        async with CoreInsightsClient(make_core_insights_fetcher()) as ci_client:
+            all_match_records = await ci_client.get_match_stats(current_gw)
+
+        if not all_match_records:
+            return None
+
+        all_elos = [
+            r["opponent_elo"]
+            for records in all_match_records.values()
+            for r in records
+        ]
+        median_elo = statistics.median(all_elos) if all_elos else 1700.0
+        return build_adjusted_npxg_lookup(all_match_records, current_gw, median_elo)
+    except Exception:  # noqa: BLE001 — graceful degradation: CI match data unavailable
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "Failed to compute adjusted npxG lookup", exc_info=True,
+        )
+        return None
+
+
+def compute_adjusted_npxg(
+    match_records: list[MatchRecord],
+    current_gw: int,
+    median_elo: float,
+) -> float | None:
+    """Opponent-adjusted npxG/90 over a rolling 7-match/12-GW window.
+
+    Normalises each match's xG by the opponent's Elo relative to the league
+    median. Factor capped at [0.80, 1.25] to limit early-season noise.
+    npxG per match = xg - (penalties_scored + penalties_missed) * 0.76.
+
+    Returns None when fewer than 4 qualifying matches (same threshold as
+    form_trajectory), triggering fallback to raw Understat npxG_per_90.
+    """
+    cutoff = current_gw - 12
+    qualifying = [
+        m for m in match_records
+        if m.get("minutes_played", 0) > 0 and m.get("gameweek", 0) > cutoff
+    ]
+    qualifying.sort(key=lambda m: m["gameweek"])
+    window = qualifying[-7:]
+
+    if len(window) < 4:
+        return None
+
+    total_adjusted = 0.0
+    total_minutes = 0
+
+    for m in window:
+        opp_elo = m.get("opponent_elo", median_elo)
+        if opp_elo <= 0:
+            opp_elo = median_elo
+        factor = max(0.80, min(1.25, median_elo / opp_elo))
+
+        xg = m.get("xg", 0.0)
+        penalties = m.get("penalties_scored", 0) + m.get("penalties_missed", 0)
+        npxg = xg - penalties * 0.76
+        total_adjusted += npxg * factor
+        total_minutes += m.get("minutes_played", 0)
+
+    if total_minutes == 0:
+        return None
+
+    return total_adjusted / (total_minutes / 90)
+
+
+def build_adjusted_npxg_lookup(
+    all_match_records: dict[int, list[MatchRecord]],
+    current_gw: int,
+    median_elo: float,
+) -> dict[int, float]:
+    """Build per-player adjusted npxG/90 lookup from season match data.
+
+    Returns dict keyed by FPL element_id. Players with insufficient data
+    (< 4 qualifying matches) are absent; callers fall back to raw npxG_per_90.
+    """
+    result: dict[int, float] = {}
+    for player_id, records in all_match_records.items():
+        value = compute_adjusted_npxg(records, current_gw, median_elo)
+        if value is not None:
+            result[player_id] = value
+    return result
+
+
+def apply_adjusted_npxg(
+    enrichment: dict[str, Any],
+    player_id: int,
+    lookup: dict[int, float] | None,
+) -> None:
+    """Override npxG_per_90 in enrichment with fixture-adjusted value.
+
+    Always sets raw_npxG_per_90 from enrichment (callers must ensure
+    npxG_per_90 is present before calling).
+    Overrides npxG_per_90 with adjusted value when player_id is in lookup.
+    """
+    enrichment["raw_npxG_per_90"] = enrichment.get("npxG_per_90")
+    if lookup and player_id in lookup:
+        enrichment["npxG_per_90"] = lookup[player_id]
+
+
 def normalise_score(raw: float, ceiling: float) -> int:
     """Normalise a raw score to 0-100 against a ceiling."""
     return min(round(raw / ceiling * 100), 100)
@@ -1113,6 +1238,9 @@ class PlayerEvaluation:
     gk_xgc_quality: float = 0.0
     gk_cs_rate: float = 0.0
 
+    # Original Understat npxG/90 before fixture adjustment (None when no Understat data)
+    raw_npxg_per_90: float | None = None
+
     def as_quality_dict(self) -> dict[str, Any]:
         """Return a dict compatible with calculate_player_quality_score's Mapping interface."""
         return {
@@ -1233,6 +1361,7 @@ def build_player_evaluation(
         gk_saves_per_90=float(_get("gk_saves_per_90", 0.0) or 0.0),
         gk_xgc_quality=float(_get("gk_xgc_quality", 0.0) or 0.0),
         gk_cs_rate=float(_get("gk_cs_rate", 0.0) or 0.0),
+        raw_npxg_per_90=_get("raw_npxG_per_90"),
     )
 
     # Build identity
@@ -1660,6 +1789,11 @@ def calculate_captain_score(
         "captain_score_raw": round(captain_score_raw, 2),
         "reasons": reasons,
     }
+    if evaluation.raw_npxg_per_90 is not None:
+        result["raw_npxg_per_90"] = round(evaluation.raw_npxg_per_90, 4)
+        if (evaluation.npxg_per_90 is not None
+                and evaluation.npxg_per_90 != evaluation.raw_npxg_per_90):
+            result["adjusted_npxg_per_90"] = round(evaluation.npxg_per_90, 4)
     return result
 
 
