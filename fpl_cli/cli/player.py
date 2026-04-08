@@ -15,7 +15,7 @@ from fpl_cli.cli._context import Format, console, error_console, get_format, is_
 from fpl_cli.cli._helpers import _fdr_style
 from fpl_cli.cli._json import emit_json, json_output_mode, output_format_option
 from fpl_cli.models.player import resolve_players
-from fpl_cli.services.player_scoring import compute_quality_value, compute_rolling_pts_per_m, compute_xgi_sustainability
+from fpl_cli.services.player_scoring import build_adjusted_npxg_lookup, compute_quality_value, compute_rolling_pts_per_m, compute_xgi_sustainability
 
 if TYPE_CHECKING:
     from fpl_cli.api.fpl import FPLClient
@@ -208,9 +208,32 @@ def player_command(
                 quality_per_m_scores: dict[int, float | None] = {}
                 rolling_scores: dict[int, tuple[float | None, int | None]] = {}
                 sustainability_scores: dict[int, tuple[float, float]] = {}
+                adjusted_npxg_scores: dict[int, float] = {}
                 custom_on = is_custom_analysis_enabled(settings)
                 rolling_window = int(settings.get("rolling_window", 5))
                 if custom_on:
+                    try:
+                        import statistics
+
+                        from fpl_cli.api.core_insights import CoreInsightsClient, make_core_insights_fetcher
+
+                        async with CoreInsightsClient(make_core_insights_fetcher()) as ci_client:
+                            all_match_records = await ci_client.get_match_stats()
+
+                        if all_match_records:
+                            all_elos = [
+                                r["opponent_elo"]
+                                for records in all_match_records.values()
+                                for r in records
+                            ]
+                            median_elo = statistics.median(all_elos) if all_elos else 1700.0
+                            lookup = build_adjusted_npxg_lookup(all_match_records, next_gw_id, median_elo)
+                            for p in display:
+                                if p.id in lookup:
+                                    adjusted_npxg_scores[p.id] = lookup[p.id]
+                    except Exception:  # noqa: BLE001 — graceful degradation: CI match data unavailable
+                        logger.warning("Failed to compute adjusted npxG lookup", exc_info=True)
+
                     for p in display:
                         us_match = us_matches.get(p.id)
                         team_obj = teams.get(p.team_id)
@@ -307,6 +330,12 @@ def player_command(
                                 else:
                                     player_dict["info"]["quality_score"] = None
                                     player_dict["info"]["quality_per_m"] = None
+                                if not is_gk and us_match:
+                                    raw_npxg = us_match.get("npxG_per_90")
+                                    adj_npxg = adjusted_npxg_scores.get(p.id)
+                                    player_dict["info"]["raw_npxg_per_90"] = raw_npxg
+                                    if adj_npxg is not None:
+                                        player_dict["info"]["adjusted_npxg_per_90"] = round(adj_npxg, 4)
 
                             if p.id in sustainability_scores:
                                 sust_mult, sust_div = sustainability_scores[p.id]
@@ -392,6 +421,11 @@ def player_command(
                         lines.append(f"xG: {p.expected_goals:.2f} | xA: {p.expected_assists:.2f}")
                     if understat_line and not is_gk:
                         lines.append(understat_line.rstrip("\n"))
+                    if custom_on and not is_gk and us_match:
+                        raw_npxg = us_match.get("npxG_per_90")
+                        adj_npxg = adjusted_npxg_scores.get(p.id)
+                        if adj_npxg is not None and raw_npxg is not None:
+                            lines.append(f"adj. npxG/90: {adj_npxg:.3f} (raw: {raw_npxg:.3f})")
                     if p.id in sustainability_scores:
                         sust_mult, sust_div = sustainability_scores[p.id]
                         if sust_mult != 1.0:
