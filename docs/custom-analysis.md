@@ -316,7 +316,7 @@ For each completed match within a 7-match / 12-GW rolling window:
 3. **Adjusted per-90**: `(npxg × factor) / minutes × 90` per match, averaged over qualifying matches
 4. Players with fewer than 4 qualifying matches fall back to raw Understat npxG/90
 
-The median Elo is computed fresh from the season's match data each run. Elo ratings come from `matches.csv` in the Core-Insights dataset.
+The median Elo is computed fresh from the season's match data each run. Elo ratings come from per-gameweek `matches.csv` files in the Core-Insights dataset (`By Tournament/Premier League/GW{n}/`).
 
 ### Display
 

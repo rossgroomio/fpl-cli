@@ -839,7 +839,7 @@ async def fetch_adjusted_npxg_lookup(current_gw: int) -> dict[int, float] | None
         from fpl_cli.api.core_insights import CoreInsightsClient, make_core_insights_fetcher
 
         async with CoreInsightsClient(make_core_insights_fetcher()) as ci_client:
-            all_match_records = await ci_client.get_match_stats()
+            all_match_records = await ci_client.get_match_stats(current_gw)
 
         if not all_match_records:
             return None

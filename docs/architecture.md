@@ -416,7 +416,7 @@ All providers share the `LLMResponse` contract. `OpenAICompatProvider` supports 
 | `FPLDraftClient` | FPL Draft API | Draft leagues, waivers, squad data |
 | `UnderstatClient` | understat.com | npxG, xA, xGChain, xGBuildup per-90 stats |
 | `VaastavClient` | vaastav/FPL GitHub | Historical CSV data (3 seasons: 2022-25), price trends, GW-level profiles |
-| `CoreInsightsClient` | Core-Insights/FPL GitHub | Current-season CSV data (2025-26+), season aggregates, GW trends, match-level xG + Elo (`playermatchstats.csv`, `matches.csv`) |
+| `CoreInsightsClient` | Core-Insights/FPL GitHub | Current-season CSV data (2025-26+), season aggregates, GW trends, per-GW match-level xG + Elo (from `By Tournament/Premier League/GW{n}/`) |
 | `HistoricalDataProvider` | Composition layer | Unifies vaastav + Core-Insights via `make_historical_provider()` |
 | `FootballDataClient` | football-data.org | League standings, match results |
 | `FPLPriceScraper` | FPL website | Price change scraping (needs credentials) |

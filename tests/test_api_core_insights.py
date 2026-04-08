@@ -491,67 +491,104 @@ class TestGwTrendWindowing:
         assert salah.transfer_momentum == 170000
 
 
-# --- Match-level CSV fixtures ---
+# --- Match-level CSV fixtures (per-GW structure) ---
 
-# home_team=14 (Liverpool, Salah's team), away_team=13 (Man City)
-# GW1 PL match; GW2 row is Champions League (filtered out)
-MATCHES_CSV = (
+# Per-GW fixtures mirror the Core-Insights layout:
+#   By Tournament/Premier League/GW{n}/matches.csv
+#   By Tournament/Premier League/GW{n}/playermatchstats.csv
+
+_PL_PREFIX = f"{CI_SEASON}/By Tournament/Premier League"
+
+GW1_MATCHES = (
     "match_id,gameweek,tournament,home_team,away_team,home_team_elo,away_team_elo\n"
-    "m1,1,prem,14,13,1800.0,1750.0\n"           # Salah home vs Man City
-    "m2,2,prem,13,14,1760.0,1810.0\n"           # Salah away at Man City
-    "m3,3,ucl,14,99,1800.0,1600.0\n"            # non-PL: filtered out
-    "m4,4,prem,1,14,1550.0,1820.0\n"            # Salah away at weak team
+    "m1,1,prem,14,13,1800.0,1750.0\n"  # Liverpool (14) home vs Man City (13)
+)
+GW1_STATS = (
+    "player_id,match_id,minutes_played,xg,penalties_scored,penalties_missed\n"
+    "100,m1,90,0.60,1,0\n"   # Salah home vs Man City; scored a pen
+    "200,m1,90,0.80,0,0\n"   # Haaland same match
 )
 
-PLAYERMATCHSTATS_CSV = (
-    "player_id,match_id,minutes_played,xg,penalties_scored,penalties_missed\n"
-    "100,m1,90,0.60,1,0\n"    # Salah home vs Man City; scored a pen
-    "100,m2,45,0.20,0,0\n"    # Salah away at Man City; subbed off
-    "100,m3,90,0.40,0,0\n"    # non-PL match; should be excluded by join
-    "100,m4,90,0.50,0,1\n"    # Salah away at weak team; missed a pen
-    "200,m1,90,0.80,0,0\n"    # Haaland same match
+GW2_MATCHES = (
+    "match_id,gameweek,tournament,home_team,away_team,home_team_elo,away_team_elo\n"
+    "m2,2,prem,13,14,1760.0,1810.0\n"  # Man City home vs Liverpool
 )
+GW2_STATS = (
+    "player_id,match_id,minutes_played,xg,penalties_scored,penalties_missed\n"
+    "100,m2,45,0.20,0,0\n"   # Salah away at Man City; subbed off
+)
+
+GW4_MATCHES = (
+    "match_id,gameweek,tournament,home_team,away_team,home_team_elo,away_team_elo\n"
+    "m4,4,prem,1,14,1550.0,1820.0\n"   # Weak team (1) home vs Liverpool
+)
+GW4_STATS = (
+    "player_id,match_id,minutes_played,xg,penalties_scored,penalties_missed\n"
+    "100,m4,90,0.50,0,1\n"   # Salah away at weak team; missed a pen
+)
+
+# current_gw for tests: 6 means we fetch GWs 1-5 (last 12 capped to available)
+TEST_CURRENT_GW = 6
+
+
+def _mock_gw(gw: int, matches_csv: str, stats_csv: str):
+    """Mock both per-GW CSV endpoints for a single gameweek."""
+    respx.get(f"{BASE}/{_PL_PREFIX}/GW{gw}/matches.csv").mock(
+        return_value=Response(200, text=matches_csv)
+    )
+    respx.get(f"{BASE}/{_PL_PREFIX}/GW{gw}/playermatchstats.csv").mock(
+        return_value=Response(200, text=stats_csv)
+    )
+
+
+def _mock_gw_404(gw: int):
+    """Mock a gameweek where CSVs are not yet available."""
+    respx.get(f"{BASE}/{_PL_PREFIX}/GW{gw}/matches.csv").mock(
+        return_value=Response(404)
+    )
+    respx.get(f"{BASE}/{_PL_PREFIX}/GW{gw}/playermatchstats.csv").mock(
+        return_value=Response(404)
+    )
+
+
+def _mock_players():
+    respx.get(f"{BASE}/{CI_SEASON}/players.csv").mock(
+        return_value=Response(200, text=PLAYERS_CSV)
+    )
+
+
+def _mock_standard_gws():
+    """Mock GW1, GW2, GW4 with data; GW3, GW5 as 404 (not yet played)."""
+    _mock_gw(1, GW1_MATCHES, GW1_STATS)
+    _mock_gw(2, GW2_MATCHES, GW2_STATS)
+    _mock_gw_404(3)
+    _mock_gw(4, GW4_MATCHES, GW4_STATS)
+    _mock_gw_404(5)
 
 
 class TestMatchStats:
     @respx.mock
-    async def test_happy_path_join_and_prem_filter(self, tmp_path):
-        """PL matches joined correctly; non-PL match excluded."""
-        respx.get(f"{BASE}/{CI_SEASON}/players.csv").mock(
-            return_value=Response(200, text=PLAYERS_CSV)
-        )
-        respx.get(f"{BASE}/{CI_SEASON}/playermatchstats.csv").mock(
-            return_value=Response(200, text=PLAYERMATCHSTATS_CSV)
-        )
-        respx.get(f"{BASE}/{CI_SEASON}/matches.csv").mock(
-            return_value=Response(200, text=MATCHES_CSV)
-        )
+    async def test_happy_path_joins_across_gameweeks(self, tmp_path):
+        """Per-GW CSVs joined correctly across multiple gameweeks."""
+        _mock_players()
+        _mock_standard_gws()
 
         async with CoreInsightsClient(_make_fetcher(tmp_path)) as client:
-            result = await client.get_match_stats()
+            result = await client.get_match_stats(TEST_CURRENT_GW)
 
-        # Salah (pid=100) should have 3 PL records (m1, m2, m4); m3 is UCL
         assert 100 in result
         salah_records = result[100]
         assert len(salah_records) == 3
-        match_ids_gws = {r["gameweek"] for r in salah_records}
-        assert match_ids_gws == {1, 2, 4}
+        assert {r["gameweek"] for r in salah_records} == {1, 2, 4}
 
     @respx.mock
     async def test_opponent_elo_home_player(self, tmp_path):
         """Home player gets away team's Elo as opponent_elo; is_home=True."""
-        respx.get(f"{BASE}/{CI_SEASON}/players.csv").mock(
-            return_value=Response(200, text=PLAYERS_CSV)
-        )
-        respx.get(f"{BASE}/{CI_SEASON}/playermatchstats.csv").mock(
-            return_value=Response(200, text=PLAYERMATCHSTATS_CSV)
-        )
-        respx.get(f"{BASE}/{CI_SEASON}/matches.csv").mock(
-            return_value=Response(200, text=MATCHES_CSV)
-        )
+        _mock_players()
+        _mock_standard_gws()
 
         async with CoreInsightsClient(_make_fetcher(tmp_path)) as client:
-            result = await client.get_match_stats()
+            result = await client.get_match_stats(TEST_CURRENT_GW)
 
         gw1 = next(r for r in result[100] if r["gameweek"] == 1)
         assert gw1["is_home"] is True
@@ -560,18 +597,11 @@ class TestMatchStats:
     @respx.mock
     async def test_opponent_elo_away_player(self, tmp_path):
         """Away player gets home team's Elo as opponent_elo; is_home=False."""
-        respx.get(f"{BASE}/{CI_SEASON}/players.csv").mock(
-            return_value=Response(200, text=PLAYERS_CSV)
-        )
-        respx.get(f"{BASE}/{CI_SEASON}/playermatchstats.csv").mock(
-            return_value=Response(200, text=PLAYERMATCHSTATS_CSV)
-        )
-        respx.get(f"{BASE}/{CI_SEASON}/matches.csv").mock(
-            return_value=Response(200, text=MATCHES_CSV)
-        )
+        _mock_players()
+        _mock_standard_gws()
 
         async with CoreInsightsClient(_make_fetcher(tmp_path)) as client:
-            result = await client.get_match_stats()
+            result = await client.get_match_stats(TEST_CURRENT_GW)
 
         gw2 = next(r for r in result[100] if r["gameweek"] == 2)
         assert gw2["is_home"] is False
@@ -580,18 +610,11 @@ class TestMatchStats:
     @respx.mock
     async def test_npxg_fields_parsed(self, tmp_path):
         """penalties_scored, penalties_missed, xg, minutes_played parsed correctly."""
-        respx.get(f"{BASE}/{CI_SEASON}/players.csv").mock(
-            return_value=Response(200, text=PLAYERS_CSV)
-        )
-        respx.get(f"{BASE}/{CI_SEASON}/playermatchstats.csv").mock(
-            return_value=Response(200, text=PLAYERMATCHSTATS_CSV)
-        )
-        respx.get(f"{BASE}/{CI_SEASON}/matches.csv").mock(
-            return_value=Response(200, text=MATCHES_CSV)
-        )
+        _mock_players()
+        _mock_standard_gws()
 
         async with CoreInsightsClient(_make_fetcher(tmp_path)) as client:
-            result = await client.get_match_stats()
+            result = await client.get_match_stats(TEST_CURRENT_GW)
 
         gw1 = next(r for r in result[100] if r["gameweek"] == 1)
         assert gw1["xg"] == 0.60
@@ -610,18 +633,11 @@ class TestMatchStats:
             "player_id,match_id,minutes_played,xg\n"
             "100,m1,90,0.50\n"
         )
-        respx.get(f"{BASE}/{CI_SEASON}/players.csv").mock(
-            return_value=Response(200, text=PLAYERS_CSV)
-        )
-        respx.get(f"{BASE}/{CI_SEASON}/playermatchstats.csv").mock(
-            return_value=Response(200, text=stats_no_pen)
-        )
-        respx.get(f"{BASE}/{CI_SEASON}/matches.csv").mock(
-            return_value=Response(200, text=MATCHES_CSV)
-        )
+        _mock_players()
+        _mock_gw(1, GW1_MATCHES, stats_no_pen)
 
         async with CoreInsightsClient(_make_fetcher(tmp_path)) as client:
-            result = await client.get_match_stats()
+            result = await client.get_match_stats(2)
 
         gw1 = result[100][0]
         assert gw1["penalties_scored"] == 0
@@ -634,77 +650,57 @@ class TestMatchStats:
             "player_id,match_id,minutes_played,xg,penalties_scored,penalties_missed\n"
             "100,orphan_id,90,0.5,0,0\n"
         )
-        respx.get(f"{BASE}/{CI_SEASON}/players.csv").mock(
-            return_value=Response(200, text=PLAYERS_CSV)
-        )
-        respx.get(f"{BASE}/{CI_SEASON}/playermatchstats.csv").mock(
-            return_value=Response(200, text=stats_orphan)
-        )
-        respx.get(f"{BASE}/{CI_SEASON}/matches.csv").mock(
-            return_value=Response(200, text=MATCHES_CSV)
-        )
+        _mock_players()
+        _mock_gw(1, GW1_MATCHES, stats_orphan)
 
         async with CoreInsightsClient(_make_fetcher(tmp_path)) as client:
-            result = await client.get_match_stats()
+            result = await client.get_match_stats(2)
+
+        assert 100 not in result
+
+    @respx.mock
+    async def test_single_gw_404_skipped_others_still_parsed(self, tmp_path):
+        """404 on one GW is tolerated; other GWs still parsed."""
+        _mock_players()
+        _mock_gw(1, GW1_MATCHES, GW1_STATS)
+        _mock_gw_404(2)
+
+        async with CoreInsightsClient(_make_fetcher(tmp_path)) as client:
+            result = await client.get_match_stats(3)
+
+        assert 100 in result
+        assert len(result[100]) == 1
+        assert result[100][0]["gameweek"] == 1
+
+    @respx.mock
+    async def test_all_gws_404_returns_empty(self, tmp_path):
+        """All GWs 404 returns empty dict, no exception."""
+        _mock_players()
+        _mock_gw_404(1)
+        _mock_gw_404(2)
+
+        async with CoreInsightsClient(_make_fetcher(tmp_path)) as client:
+            result = await client.get_match_stats(3)
 
         assert result == {}
 
     @respx.mock
-    async def test_playermatchstats_404_returns_empty(self, tmp_path):
-        """404 on playermatchstats.csv returns empty dict, no exception."""
-        respx.get(f"{BASE}/{CI_SEASON}/players.csv").mock(
-            return_value=Response(200, text=PLAYERS_CSV)
+    async def test_caching_no_second_fetch(self, tmp_path):
+        """Second call returns cached result without additional HTTP requests."""
+        _mock_players()
+        route = respx.get(f"{BASE}/{_PL_PREFIX}/GW1/matches.csv").mock(
+            return_value=Response(200, text=GW1_MATCHES)
         )
-        respx.get(f"{BASE}/{CI_SEASON}/playermatchstats.csv").mock(
-            return_value=Response(404)
-        )
-        respx.get(f"{BASE}/{CI_SEASON}/matches.csv").mock(
-            return_value=Response(200, text=MATCHES_CSV)
+        respx.get(f"{BASE}/{_PL_PREFIX}/GW1/playermatchstats.csv").mock(
+            return_value=Response(200, text=GW1_STATS)
         )
 
         async with CoreInsightsClient(_make_fetcher(tmp_path)) as client:
-            result = await client.get_match_stats()
-
-        assert result == {}
-
-    @respx.mock
-    async def test_matches_404_returns_empty(self, tmp_path):
-        """404 on matches.csv returns empty dict, no exception."""
-        respx.get(f"{BASE}/{CI_SEASON}/players.csv").mock(
-            return_value=Response(200, text=PLAYERS_CSV)
-        )
-        respx.get(f"{BASE}/{CI_SEASON}/playermatchstats.csv").mock(
-            return_value=Response(200, text=PLAYERMATCHSTATS_CSV)
-        )
-        respx.get(f"{BASE}/{CI_SEASON}/matches.csv").mock(
-            return_value=Response(404)
-        )
-
-        async with CoreInsightsClient(_make_fetcher(tmp_path)) as client:
-            result = await client.get_match_stats()
-
-        assert result == {}
-
-    @respx.mock
-    async def test_caching_no_second_http_request(self, tmp_path):
-        """Second call returns cached result without additional HTTP request."""
-        players_route = respx.get(f"{BASE}/{CI_SEASON}/players.csv").mock(
-            return_value=Response(200, text=PLAYERS_CSV)
-        )
-        stats_route = respx.get(f"{BASE}/{CI_SEASON}/playermatchstats.csv").mock(
-            return_value=Response(200, text=PLAYERMATCHSTATS_CSV)
-        )
-        matches_route = respx.get(f"{BASE}/{CI_SEASON}/matches.csv").mock(
-            return_value=Response(200, text=MATCHES_CSV)
-        )
-
-        async with CoreInsightsClient(_make_fetcher(tmp_path)) as client:
-            first = await client.get_match_stats()
-            second = await client.get_match_stats()
+            first = await client.get_match_stats(2)
+            second = await client.get_match_stats(2)
 
         assert first is second
-        assert stats_route.call_count == 1
-        assert matches_route.call_count == 1
+        assert route.call_count == 1
 
 
 class TestFactory:

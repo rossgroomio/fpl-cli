@@ -139,11 +139,16 @@ class CoreInsightsClient:
 
     # --- Match-level data ---
 
-    async def get_match_stats(self) -> dict[int, list[MatchRecord]]:
-        """Fetch playermatchstats.csv + matches.csv and return per-player match records.
+    def _gw_path(self, gw: int, filename: str) -> str:
+        """Build the per-GW CSV path under By Tournament/Premier League."""
+        return f"{self._ci_season}/By Tournament/Premier League/GW{gw}/{filename}"
 
-        Joins on match_id. Filters to tournament="prem". Opponent Elo and gameweek
-        are derived from matches.csv; player xG/penalty stats from playermatchstats.csv.
+    async def get_match_stats(self, current_gw: int) -> dict[int, list[MatchRecord]]:
+        """Fetch per-GW playermatchstats.csv + matches.csv for recent gameweeks.
+
+        Fetches from ``By Tournament/Premier League/GW{n}/`` for the last 12
+        completed gameweeks (matching the rolling window used by
+        compute_adjusted_npxg). Joins on match_id within each GW.
         Returns dict keyed by FPL player element_id.
         """
         if self._match_records is not None:
@@ -151,70 +156,85 @@ class CoreInsightsClient:
 
         lookup = await self._fetch_player_lookup()
 
+        # Fetch last 12 GWs concurrently (2 files per GW)
+        first_gw = max(1, current_gw - 12)
+        gw_range = range(first_gw, current_gw)
+        fetch_tasks = []
+        for gw in gw_range:
+            fetch_tasks.append(self.fetcher.get(self._gw_path(gw, "matches.csv")))
+            fetch_tasks.append(self.fetcher.get(self._gw_path(gw, "playermatchstats.csv")))
+
         try:
-            stats_text, matches_text = await asyncio.gather(
-                self.fetcher.get(f"{self._ci_season}/playermatchstats.csv"),
-                self.fetcher.get(f"{self._ci_season}/matches.csv"),
-            )
+            raw_results = await asyncio.gather(*fetch_tasks, return_exceptions=True)
         except Exception as exc:  # noqa: BLE001 — graceful degradation: CI CSV unavailable
             logger.warning("Failed to fetch match-level CSVs: %s", exc)
             self._match_records = {}
             return self._match_records
 
-        # Build match lookup: match_id -> match row (prem only)
+        # Build match lookup from all GW matches.csv files
         matches: dict[str, dict[str, str]] = {}
-        for row in csv.DictReader(io.StringIO(matches_text)):
-            if row.get("tournament") != "prem":
+        all_stats_text: list[str] = []
+        for i, gw in enumerate(gw_range):
+            matches_result = raw_results[i * 2]
+            stats_result = raw_results[i * 2 + 1]
+            if isinstance(matches_result, BaseException):
+                logger.debug("GW%d matches.csv unavailable: %s", gw, matches_result)
                 continue
-            mid = row.get("match_id", "")
-            if mid:
-                matches[mid] = row
+            if isinstance(stats_result, BaseException):
+                logger.debug("GW%d playermatchstats.csv unavailable: %s", gw, stats_result)
+                continue
+            for row in csv.DictReader(io.StringIO(matches_result)):
+                mid = row.get("match_id", "")
+                if mid:
+                    matches[mid] = row
+            all_stats_text.append(stats_result)
 
         # Parse player match stats and join to matches
         result: dict[int, list[MatchRecord]] = {}
-        for row in csv.DictReader(io.StringIO(stats_text)):
-            try:
-                pid = int(row["player_id"])
-                mid = row["match_id"]
-            except (ValueError, KeyError):
-                continue
+        for stats_text in all_stats_text:
+            for row in csv.DictReader(io.StringIO(stats_text)):
+                try:
+                    pid = int(row["player_id"])
+                    mid = row["match_id"]
+                except (ValueError, KeyError):
+                    continue
 
-            match = matches.get(mid)
-            if match is None:
-                continue  # non-PL match or orphaned row
+                match = matches.get(mid)
+                if match is None:
+                    continue
 
-            player = lookup.get(pid)
-            if player is None:
-                continue
+                player = lookup.get(pid)
+                if player is None:
+                    continue
 
-            try:
-                home_elo = float(match["home_team_elo"])
-                away_elo = float(match["away_team_elo"])
-                gameweek = int(match["gameweek"])
-                home_team_code = int(match["home_team"])
-            except (ValueError, KeyError):
-                continue
+                try:
+                    home_elo = float(match["home_team_elo"])
+                    away_elo = float(match["away_team_elo"])
+                    gameweek = int(float(match["gameweek"]))
+                    home_team_code = int(float(match["home_team"]))
+                except (ValueError, KeyError):
+                    continue
 
-            is_home = player.team_code == home_team_code
-            opponent_elo = away_elo if is_home else home_elo
+                is_home = player.team_code == home_team_code
+                opponent_elo = away_elo if is_home else home_elo
 
-            try:
-                xg = float(row["xg"])
-                minutes_played = int(float(row["minutes_played"]))
-            except (ValueError, KeyError):
-                continue
+                try:
+                    xg = float(row["xg"])
+                    minutes_played = int(float(row["minutes_played"]))
+                except (ValueError, KeyError):
+                    continue
 
-            record: MatchRecord = {
-                "player_id": pid,
-                "gameweek": gameweek,
-                "xg": xg,
-                "penalties_scored": int(float(row.get("penalties_scored") or 0)),
-                "penalties_missed": int(float(row.get("penalties_missed") or 0)),
-                "minutes_played": minutes_played,
-                "opponent_elo": opponent_elo,
-                "is_home": is_home,
-            }
-            result.setdefault(pid, []).append(record)
+                record: MatchRecord = {
+                    "player_id": pid,
+                    "gameweek": gameweek,
+                    "xg": xg,
+                    "penalties_scored": int(float(row.get("penalties_scored") or 0)),
+                    "penalties_missed": int(float(row.get("penalties_missed") or 0)),
+                    "minutes_played": minutes_played,
+                    "opponent_elo": opponent_elo,
+                    "is_home": is_home,
+                }
+                result.setdefault(pid, []).append(record)
 
         self._match_records = result
         return result
