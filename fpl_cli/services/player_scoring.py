@@ -1786,6 +1786,11 @@ def calculate_captain_score(
         "captain_score_raw": round(captain_score_raw, 2),
         "reasons": reasons,
     }
+    if evaluation.raw_npxg_per_90 is not None:
+        result["raw_npxg_per_90"] = round(evaluation.raw_npxg_per_90, 4)
+        if (evaluation.npxg_per_90 is not None
+                and evaluation.npxg_per_90 != evaluation.raw_npxg_per_90):
+            result["adjusted_npxg_per_90"] = round(evaluation.npxg_per_90, 4)
     return result
 
 

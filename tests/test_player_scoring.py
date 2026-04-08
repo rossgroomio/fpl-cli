@@ -3149,3 +3149,109 @@ class TestApplyAdjustedNpxg:
         evaluation, _ = build_player_evaluation(make_player(id=42), enrichment=enrichment)
         assert evaluation.npxg_per_90 == pytest.approx(0.20)
         assert evaluation.raw_npxg_per_90 == pytest.approx(0.30)
+
+
+def _make_fm(score=7.0, fdr=2.5):
+    return FixtureMatchup(
+        opponent_short="SHU", is_home=True, opponent_fdr=fdr,
+        matchup_score=score,
+        matchup_breakdown={
+            "matchup_score": score, "attack_matchup": 6.0, "defence_matchup": 5.0,
+            "form_differential": 0.2, "position_differential": 0.1, "reasoning": [],
+        },
+    )
+
+
+class TestCaptainCandidateAdjustedNpxgFields:
+    """Unit 5: adjusted npxG context in CaptainCandidate output."""
+
+    def _make_eval_with_adjusted(self, adjusted: float, raw: float):
+        enrichment = {
+            "npxG_per_90": adjusted, "raw_npxG_per_90": raw,
+            "xGChain_per_90": 0.5, "xGI_per_90": 0.4, "team_short": "ARS",
+        }
+        evaluation, identity = build_player_evaluation(
+            make_player(id=1, position=PlayerPosition.FORWARD,
+                        form=6.0, points_per_game=5.5, minutes=1800),
+            enrichment=enrichment,
+            fixture_matchups=[_make_fm()],
+        )
+        return evaluation, identity
+
+    def test_captain_output_includes_raw_npxg_when_present(self):
+        eval_, identity = self._make_eval_with_adjusted(adjusted=0.20, raw=0.30)
+        result = calculate_captain_score(eval_, identity, next_gw_id=20)
+        assert result is not None
+        assert "raw_npxg_per_90" in result
+        assert result["raw_npxg_per_90"] == pytest.approx(0.30, abs=1e-4)
+
+    def test_captain_output_includes_adjusted_when_differs_from_raw(self):
+        eval_, identity = self._make_eval_with_adjusted(adjusted=0.20, raw=0.30)
+        result = calculate_captain_score(eval_, identity, next_gw_id=20)
+        assert result is not None
+        assert "adjusted_npxg_per_90" in result
+        assert result["adjusted_npxg_per_90"] == pytest.approx(0.20, abs=1e-4)
+
+    def test_captain_output_omits_adjusted_when_equal_to_raw(self):
+        """No adjustment active: adjusted equals raw -> field absent."""
+        eval_, identity = self._make_eval_with_adjusted(adjusted=0.30, raw=0.30)
+        result = calculate_captain_score(eval_, identity, next_gw_id=20)
+        assert result is not None
+        assert "raw_npxg_per_90" in result
+        assert "adjusted_npxg_per_90" not in result
+
+    def test_captain_output_omits_npxg_fields_when_no_understat(self):
+        """No Understat data: both fields absent from output."""
+        evaluation, identity = build_player_evaluation(
+            make_player(id=1, position=PlayerPosition.FORWARD,
+                        form=6.0, points_per_game=5.5, minutes=1800),
+            fixture_matchups=[_make_fm()],
+        )
+        result = calculate_captain_score(evaluation, identity, next_gw_id=20)
+        assert result is not None
+        assert "raw_npxg_per_90" not in result
+        assert "adjusted_npxg_per_90" not in result
+
+
+class TestTransferEvalAdjustedNpxgFields:
+    """Unit 5: adjusted npxG context in TransferEvalAgent output dicts."""
+
+    def _make_target_entry_with_adjusted(self, adjusted: float | None, raw: float | None) -> dict:
+        entry: dict = {
+            "id": 1, "web_name": "Salah", "team_short": "LIV", "position": "MID",
+            "target_score": 60, "fixture_matchups": [], "form": 7.0,
+            "status": "a", "chance_of_playing": None, "reliability": None,
+            "price": 13.5, "quality_score": 80, "quality_per_m": 5.9,
+            "rolling_pts_per_m": 4.2, "rolling_fixture_count": 5,
+            "raw_npxg_per_90": raw,
+        }
+        if adjusted is not None and raw is not None and adjusted != raw:
+            entry["adjusted_npxg_per_90"] = round(adjusted, 4)
+        return entry
+
+    def _make_lineup_entry(self) -> dict:
+        return {"lineup_score": 45, "excluded": False}
+
+    def test_transfer_player_dict_includes_raw_when_present(self):
+        from fpl_cli.agents.analysis.transfer_eval import TransferEvalAgent
+        target = self._make_target_entry_with_adjusted(adjusted=0.22, raw=0.30)
+        lineup = self._make_lineup_entry()
+        result = TransferEvalAgent._build_player_dict(target, lineup, outlook_delta=5, gw_delta=2)
+        assert "raw_npxg_per_90" in result
+        assert result["raw_npxg_per_90"] == pytest.approx(0.30, abs=1e-4)
+
+    def test_transfer_player_dict_includes_adjusted_when_differs(self):
+        from fpl_cli.agents.analysis.transfer_eval import TransferEvalAgent
+        target = self._make_target_entry_with_adjusted(adjusted=0.22, raw=0.30)
+        lineup = self._make_lineup_entry()
+        result = TransferEvalAgent._build_player_dict(target, lineup, outlook_delta=5, gw_delta=2)
+        assert "adjusted_npxg_per_90" in result
+        assert result["adjusted_npxg_per_90"] == pytest.approx(0.22, abs=1e-4)
+
+    def test_transfer_player_dict_omits_npxg_fields_when_none(self):
+        from fpl_cli.agents.analysis.transfer_eval import TransferEvalAgent
+        target = self._make_target_entry_with_adjusted(adjusted=None, raw=None)
+        lineup = self._make_lineup_entry()
+        result = TransferEvalAgent._build_player_dict(target, lineup, outlook_delta=5, gw_delta=2)
+        assert "raw_npxg_per_90" not in result
+        assert "adjusted_npxg_per_90" not in result

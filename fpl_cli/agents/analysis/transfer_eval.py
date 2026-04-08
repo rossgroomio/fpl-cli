@@ -279,6 +279,13 @@ class TransferEvalAgent(Agent):
         target_entry["rolling_pts_per_m"] = rolling_val
         target_entry["rolling_fixture_count"] = rolling_count
 
+        # Adjusted npxG context (only when adjustment active)
+        target_entry["raw_npxg_per_90"] = evaluation.raw_npxg_per_90
+        if (evaluation.raw_npxg_per_90 is not None
+                and evaluation.npxg_per_90 is not None
+                and evaluation.npxg_per_90 != evaluation.raw_npxg_per_90):
+            target_entry["adjusted_npxg_per_90"] = round(evaluation.npxg_per_90, 4)
+
         return target_entry, lineup_entry
 
     @staticmethod
@@ -290,7 +297,7 @@ class TransferEvalAgent(Agent):
         gw_delta: int | None,
     ) -> dict[str, Any]:
         """Build a unified player dict from target and lineup scoring results."""
-        return {
+        result: dict[str, Any] = {
             "id": target_entry["id"],
             "web_name": target_entry["web_name"],
             "team_short": target_entry["team_short"],
@@ -311,3 +318,8 @@ class TransferEvalAgent(Agent):
             "rolling_fixture_count": target_entry["rolling_fixture_count"],
             "reliability": target_entry["reliability"],
         }
+        if target_entry.get("raw_npxg_per_90") is not None:
+            result["raw_npxg_per_90"] = round(target_entry["raw_npxg_per_90"], 4)
+        if "adjusted_npxg_per_90" in target_entry:
+            result["adjusted_npxg_per_90"] = target_entry["adjusted_npxg_per_90"]
+        return result
