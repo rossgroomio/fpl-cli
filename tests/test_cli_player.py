@@ -963,40 +963,8 @@ class TestXgiSustainabilityDisplay:
 # Adjusted npxG display tests (Unit 4)
 # ---------------------------------------------------------------------------
 
-def _make_ci_client_mock(match_records: dict) -> MagicMock:
-    """CoreInsightsClient mock returning given match records."""
-    mock = MagicMock()
-    mock.get_match_stats = AsyncMock(return_value=match_records)
-    mock.__aenter__ = AsyncMock(return_value=mock)
-    mock.__aexit__ = AsyncMock(return_value=False)
-    return mock
-
-
-def _make_ci_match_records(player_id: int, adjusted_npxg: float, n: int = 7, current_gw: int = 30) -> dict:
-    """Build enough qualifying match records to produce a non-None adjusted npxG value.
-
-    Records are placed in recent GWs (within the 12-GW lookback window of current_gw).
-    """
-    median_elo = 1700.0
-    return {
-        player_id: [
-            {
-                "player_id": player_id,
-                "gameweek": current_gw - n + i,  # recent GWs within 12-GW lookback
-                "xg": adjusted_npxg,  # xg per match (full 90) — factor = 1.0 at median Elo
-                "penalties_scored": 0,
-                "penalties_missed": 0,
-                "minutes_played": 90,
-                "opponent_elo": median_elo,
-                "is_home": True,
-            }
-            for i in range(n)
-        ]
-    }
-
-
-def _run_with_adjusted_npxg(args, client, fixture_agent, ratings_svc, match_records, json_mode=False):
-    """Run player command with mocked CoreInsightsClient and Understat."""
+def _run_with_adjusted_npxg(args, client, fixture_agent, ratings_svc, npxg_lookup, json_mode=False):
+    """Run player command with mocked fetch_adjusted_npxg_lookup and Understat."""
     us_match = _make_us_match()
     runner = CliRunner()
     mock_understat = MagicMock()
@@ -1007,7 +975,6 @@ def _run_with_adjusted_npxg(args, client, fixture_agent, ratings_svc, match_reco
     mock_understat.__aenter__ = AsyncMock(return_value=mock_understat)
     mock_understat.__aexit__ = AsyncMock(return_value=False)
 
-    ci_mock = _make_ci_client_mock(match_records)
     cmd_args = ["player", "Salah"]
     if json_mode:
         cmd_args += ["--format", "json"]
@@ -1020,8 +987,7 @@ def _run_with_adjusted_npxg(args, client, fixture_agent, ratings_svc, match_reco
         patch("fpl_cli.services.team_ratings.TeamRatingsService", return_value=ratings_svc),
         patch("fpl_cli.api.understat.UnderstatClient", return_value=mock_understat),
         patch("fpl_cli.api.understat.match_fpl_to_understat", return_value=us_match),
-        patch("fpl_cli.api.core_insights.CoreInsightsClient", return_value=ci_mock),
-        patch("fpl_cli.api.core_insights.make_core_insights_fetcher", return_value=MagicMock()),
+        patch("fpl_cli.cli.player.fetch_adjusted_npxg_lookup", new_callable=AsyncMock, return_value=npxg_lookup),
     ):
         return runner.invoke(main, cmd_args)
 
@@ -1032,8 +998,8 @@ class TestAdjustedNpxgDisplay:
     def test_json_includes_adjusted_and_raw_when_custom_on(self):
         client, fixture_agent, ratings_svc = _make_mocks()
         client.get_player_detail = AsyncMock(return_value={"history": []})
-        records = _make_ci_match_records(player_id=1, adjusted_npxg=0.22)
-        result = _run_with_adjusted_npxg([], client, fixture_agent, ratings_svc, records, json_mode=True)
+        lookup = {1: 0.22}  # player ID 1 -> adjusted npxG 0.22
+        result = _run_with_adjusted_npxg([], client, fixture_agent, ratings_svc, lookup, json_mode=True)
         assert result.exit_code == 0, result.output
         info = json.loads(result.output)["data"][0]["info"]
         assert "adjusted_npxg_per_90" in info
@@ -1052,8 +1018,8 @@ class TestAdjustedNpxgDisplay:
         """No adjusted field when player absent from lookup (fallback to raw)."""
         client, fixture_agent, ratings_svc = _make_mocks()
         client.get_player_detail = AsyncMock(return_value={"history": []})
-        records = _make_ci_match_records(player_id=999, adjusted_npxg=0.22)  # wrong player ID
-        result = _run_with_adjusted_npxg([], client, fixture_agent, ratings_svc, records, json_mode=True)
+        lookup = {999: 0.22}  # wrong player ID - player 1 not in lookup
+        result = _run_with_adjusted_npxg([], client, fixture_agent, ratings_svc, lookup, json_mode=True)
         assert result.exit_code == 0, result.output
         info = json.loads(result.output)["data"][0]["info"]
         assert "adjusted_npxg_per_90" not in info
@@ -1062,8 +1028,8 @@ class TestAdjustedNpxgDisplay:
     def test_rich_panel_shows_adj_npxg_line_when_custom_on(self):
         client, fixture_agent, ratings_svc = _make_mocks()
         client.get_player_detail = AsyncMock(return_value={"history": []})
-        records = _make_ci_match_records(player_id=1, adjusted_npxg=0.22)
-        result = _run_with_adjusted_npxg([], client, fixture_agent, ratings_svc, records)
+        lookup = {1: 0.22}
+        result = _run_with_adjusted_npxg([], client, fixture_agent, ratings_svc, lookup)
         assert result.exit_code == 0, result.output
         assert "adj. npxG/90:" in result.output
         assert "(raw:" in result.output
@@ -1072,7 +1038,7 @@ class TestAdjustedNpxgDisplay:
         """adj. npxG line absent when no match records for this player."""
         client, fixture_agent, ratings_svc = _make_mocks()
         client.get_player_detail = AsyncMock(return_value={"history": []})
-        records = _make_ci_match_records(player_id=999, adjusted_npxg=0.22)  # wrong player ID
-        result = _run_with_adjusted_npxg([], client, fixture_agent, ratings_svc, records)
+        lookup = {999: 0.22}  # wrong player ID
+        result = _run_with_adjusted_npxg([], client, fixture_agent, ratings_svc, lookup)
         assert result.exit_code == 0, result.output
         assert "adj. npxG/90:" not in result.output

@@ -43,6 +43,8 @@ class MatchRecord(TypedDict):
     minutes_played: int
     opponent_elo: float
     is_home: bool
+
+
 DEFAULT_TTL = timedelta(hours=4)
 
 # Core-Insights uses full position names; map to FPL abbreviations.

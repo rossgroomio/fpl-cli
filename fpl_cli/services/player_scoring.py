@@ -15,6 +15,7 @@ from math import inf
 from typing import TYPE_CHECKING, Any, Literal, overload
 
 if TYPE_CHECKING:
+    from fpl_cli.api.core_insights import MatchRecord
     from fpl_cli.models.player import Player
     from fpl_cli.models.types import CaptainCandidate, FixtureDetail
     from fpl_cli.services.fixture_predictions import PredictionLookup
@@ -484,29 +485,7 @@ async def prepare_scoring_data(
     adjusted_npxg_lookup: dict[int, float] | None = None
 
     if include_match_data and players is not None:
-        try:
-            import statistics
-
-            from fpl_cli.api.core_insights import CoreInsightsClient, make_core_insights_fetcher
-
-            async with CoreInsightsClient(make_core_insights_fetcher()) as ci_client:
-                all_match_records = await ci_client.get_match_stats()
-
-            if all_match_records:
-                all_elos = [
-                    r["opponent_elo"]
-                    for records in all_match_records.values()
-                    for r in records
-                ]
-                median_elo = statistics.median(all_elos) if all_elos else 1700.0
-                adjusted_npxg_lookup = build_adjusted_npxg_lookup(
-                    all_match_records, next_gw_id, median_elo,
-                )
-        except Exception:  # noqa: BLE001 — graceful degradation: CI match data unavailable
-            import logging
-            logging.getLogger(__name__).warning(
-                "Failed to compute adjusted npxG lookup", exc_info=True,
-            )
+        adjusted_npxg_lookup = await fetch_adjusted_npxg_lookup(next_gw_id)
 
     return ScoringData(
         teams=teams,
@@ -848,8 +827,41 @@ def compute_xgi_sustainability(
     return multiplier, avg_divergence
 
 
+async def fetch_adjusted_npxg_lookup(current_gw: int) -> dict[int, float] | None:
+    """Fetch Core-Insights match data and build the adjusted npxG lookup.
+
+    Owns the CoreInsightsClient lifecycle, median Elo computation, and lookup
+    construction. Returns None on any failure (graceful degradation).
+    """
+    try:
+        import statistics
+
+        from fpl_cli.api.core_insights import CoreInsightsClient, make_core_insights_fetcher
+
+        async with CoreInsightsClient(make_core_insights_fetcher()) as ci_client:
+            all_match_records = await ci_client.get_match_stats()
+
+        if not all_match_records:
+            return None
+
+        all_elos = [
+            r["opponent_elo"]
+            for records in all_match_records.values()
+            for r in records
+        ]
+        median_elo = statistics.median(all_elos) if all_elos else 1700.0
+        return build_adjusted_npxg_lookup(all_match_records, current_gw, median_elo)
+    except Exception:  # noqa: BLE001 — graceful degradation: CI match data unavailable
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "Failed to compute adjusted npxG lookup", exc_info=True,
+        )
+        return None
+
+
 def compute_adjusted_npxg(
-    match_records: list[Any],
+    match_records: list[MatchRecord],
     current_gw: int,
     median_elo: float,
 ) -> float | None:
@@ -895,7 +907,7 @@ def compute_adjusted_npxg(
 
 
 def build_adjusted_npxg_lookup(
-    all_match_records: dict[int, list[Any]],
+    all_match_records: dict[int, list[MatchRecord]],
     current_gw: int,
     median_elo: float,
 ) -> dict[int, float]:
@@ -916,23 +928,14 @@ def apply_adjusted_npxg(
     enrichment: dict[str, Any],
     player_id: int,
     lookup: dict[int, float] | None,
-    player_data: Any = None,
 ) -> None:
     """Override npxG_per_90 in enrichment with fixture-adjusted value.
 
-    Always sets raw_npxG_per_90 (from enrichment, or player_data fallback for
-    agents where Understat data lives in the player dict rather than enrichment).
+    Always sets raw_npxG_per_90 from enrichment (callers must ensure
+    npxG_per_90 is present before calling).
     Overrides npxG_per_90 with adjusted value when player_id is in lookup.
-    No-op when lookup is None.
     """
-    raw = enrichment.get("npxG_per_90")
-    if raw is None and player_data is not None:
-        raw = (
-            player_data.get("npxG_per_90")
-            if isinstance(player_data, dict)
-            else getattr(player_data, "npxG_per_90", None)
-        )
-    enrichment["raw_npxG_per_90"] = raw
+    enrichment["raw_npxG_per_90"] = enrichment.get("npxG_per_90")
     if lookup and player_id in lookup:
         enrichment["npxG_per_90"] = lookup[player_id]
 

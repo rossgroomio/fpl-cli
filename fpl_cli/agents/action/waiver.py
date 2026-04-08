@@ -14,9 +14,9 @@ from fpl_cli.api.fpl import FPLClient
 from fpl_cli.api.fpl_draft import FPLDraftClient
 from fpl_cli.models.types import EnrichedPlayer, WaiverTarget
 from fpl_cli.services.player_scoring import (
+    apply_adjusted_npxg,
     apply_shrinkage,
     build_player_evaluation,
-    apply_adjusted_npxg,
     calculate_waiver_score,
     compute_aggregate_matchup,
     compute_form_trajectory,
@@ -42,6 +42,7 @@ class WaiverAgent(Agent):
         super().__init__(config)
         self.client = FPLDraftClient()
         self.fpl_client = FPLClient()
+        self._adjusted_npxg_lookup: dict[int, float] | None = None
         self.league_id = config.get("draft_league_id") if config else None
         self.entry_id = config.get("draft_entry_id") if config else None
 
@@ -334,11 +335,14 @@ class WaiverAgent(Agent):
             prior = priors.get(player.get("id", 0))
             if prior:
                 enrichment["prior_confidence"] = prior.confidence
+        if "npxG_per_90" not in enrichment:
+            npxg = player.get("npxG_per_90")
+            if npxg is not None:
+                enrichment["npxG_per_90"] = npxg
         apply_adjusted_npxg(
             enrichment,
             int(player.get("id") or 0),
-            getattr(self, "_adjusted_npxg_lookup", None),
-            player_data=player,
+            self._adjusted_npxg_lookup,
         )
         evaluation, _ = build_player_evaluation(
             player,

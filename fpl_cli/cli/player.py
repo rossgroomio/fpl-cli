@@ -15,7 +15,12 @@ from fpl_cli.cli._context import Format, console, error_console, get_format, is_
 from fpl_cli.cli._helpers import _fdr_style
 from fpl_cli.cli._json import emit_json, json_output_mode, output_format_option
 from fpl_cli.models.player import resolve_players
-from fpl_cli.services.player_scoring import build_adjusted_npxg_lookup, compute_quality_value, compute_rolling_pts_per_m, compute_xgi_sustainability
+from fpl_cli.services.player_scoring import (
+    compute_quality_value,
+    compute_rolling_pts_per_m,
+    compute_xgi_sustainability,
+    fetch_adjusted_npxg_lookup,
+)
 
 if TYPE_CHECKING:
     from fpl_cli.api.fpl import FPLClient
@@ -212,27 +217,11 @@ def player_command(
                 custom_on = is_custom_analysis_enabled(settings)
                 rolling_window = int(settings.get("rolling_window", 5))
                 if custom_on:
-                    try:
-                        import statistics
-
-                        from fpl_cli.api.core_insights import CoreInsightsClient, make_core_insights_fetcher
-
-                        async with CoreInsightsClient(make_core_insights_fetcher()) as ci_client:
-                            all_match_records = await ci_client.get_match_stats()
-
-                        if all_match_records:
-                            all_elos = [
-                                r["opponent_elo"]
-                                for records in all_match_records.values()
-                                for r in records
-                            ]
-                            median_elo = statistics.median(all_elos) if all_elos else 1700.0
-                            lookup = build_adjusted_npxg_lookup(all_match_records, next_gw_id, median_elo)
-                            for p in display:
-                                if p.id in lookup:
-                                    adjusted_npxg_scores[p.id] = lookup[p.id]
-                    except Exception:  # noqa: BLE001 — graceful degradation: CI match data unavailable
-                        logger.warning("Failed to compute adjusted npxG lookup", exc_info=True)
+                    lookup = await fetch_adjusted_npxg_lookup(next_gw_id)
+                    if lookup:
+                        for p in display:
+                            if p.id in lookup:
+                                adjusted_npxg_scores[p.id] = lookup[p.id]
 
                     for p in display:
                         us_match = us_matches.get(p.id)

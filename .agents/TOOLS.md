@@ -27,7 +27,7 @@ Errors use `emit_json_error()` with `{"command", "error"}` shape.
 | `init` | Set up fpl-cli with your FPL IDs and optional features | No | General | No | direct-api |
 | `status` | Show FPL gameweek status and upcoming deadlines | Yes | General | No | direct-api |
 | `fixtures` | Show fixtures for a gameweek | Yes | General | No | direct-api |
-| `player` | Look up a player's stats, xG, ownership and fixture run. JSON includes `ep_next` (predicted pts next GW) and `ep_this` (current GW); panel shows `xPts` (ep_next). `--detail` (`-d`) shows GW-by-GW performance and, for FWD/MID with sufficient history, xGI sustainability (per-match GI-xGI divergence -> form modifier) | Yes | General | No | direct-api |
+| `player` | Look up a player's stats, xG, ownership and fixture run. JSON includes `ep_next` (predicted pts next GW) and `ep_this` (current GW); panel shows `xPts` (ep_next). `--detail` (`-d`) shows GW-by-GW performance and, for FWD/MID with sufficient history, xGI sustainability (per-match GI-xGI divergence -> form modifier). With `custom_analysis`: JSON adds `info.adjusted_npxg_per_90` (fixture-adjusted) and `info.raw_npxg_per_90` (Understat season avg); panel shows `adj. npxG/90: X.XXX (raw: Y.YYY)` | Yes | General | No | direct-api |
 | `stats` | List players with filtering and sorting. `--value` adds quality/value per £m columns; `--window N` sets rolling lookback (3-10) for `rolling_pts_per_m`. Sortable by `ep_next`/`ep_this` (FPL predicted points); both in JSON output | Yes | General | No | direct-api |
 | `history` | Show historical player performance across seasons | Yes | General | No | direct-api |
 | `league` | Show live league standings for Classic and Draft leagues | No | General | No | direct-api |
@@ -38,10 +38,10 @@ Errors use `emit_json_error()` with `{"command", "error"}` shape.
 | `preview` | Run full pre-gameweek analysis and generate report | No | General | No | via-agent |
 | `review` | Review a completed gameweek - squad performance and standings | No | General | No | via-agent |
 | `league-recap` | Recap a completed gameweek - awards, standings, and banter | No | General | No | via-agent |
-| `captain` | Analyse and rank captain options for next gameweek | Yes | Classic | Yes | via-agent |
+| `captain` | Analyse and rank captain options for next gameweek. JSON candidates include `adjusted_npxg_per_90` and `raw_npxg_per_90` when fixture adjustment is active | Yes | Classic | Yes | via-agent |
 | `differentials` | Find differential picks - high potential, low ownership | Yes | Classic | Yes | via-agent |
 | `targets` | Find transfer targets - high performers across all ownership | Yes | Classic | Yes | via-agent |
-| `transfer-eval` | Compare transfer OUT player against IN candidates | Yes | General | Yes | via-agent |
+| `transfer-eval` | Compare transfer OUT player against IN candidates. JSON includes `adjusted_npxg_per_90` and `raw_npxg_per_90` per player when fixture adjustment is active | Yes | General | Yes | via-agent |
 | `allocate` | Select mathematically optimal 15-player squad within budget | Yes | Classic | Yes | direct-api |
 | `waivers` | Show waiver recommendations for your draft league | Yes | Draft | Yes | via-agent |
 | `squad` | Analyse your FPL squad health and fixtures | Yes | General | No | via-agent |

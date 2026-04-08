@@ -62,6 +62,8 @@ class StatsAgent(Agent):
         # < 15% owned
         self.semi_differential_threshold = config.get("semi_differential_threshold", 15.0) if config else 15.0
 
+        self._adjusted_npxg_lookup: dict[int, float] | None = None
+
         # View selection: which analysis views to compute
         raw_views = config.get("views") if config else None
         if raw_views:
@@ -645,11 +647,13 @@ class StatsAgent(Agent):
     def _calculate_differential_score(self, player: PlayerStats) -> int:
         """Calculate a differential score via the player scoring engine."""
         enrichment = self._prior_enrichment(player.get("id")) or {}
+        npxg = player.get("npxG_per_90")
+        if npxg is not None:
+            enrichment["npxG_per_90"] = npxg
         apply_adjusted_npxg(
             enrichment,
             int(player.get("id") or 0),
-            getattr(self, "_adjusted_npxg_lookup", None),
-            player_data=player,
+            self._adjusted_npxg_lookup,
         )
         evaluation, _ = build_player_evaluation(
             player,
@@ -751,11 +755,13 @@ class StatsAgent(Agent):
     def _calculate_target_score(self, player: PlayerStats) -> int:
         """Calculate a target score via the player scoring engine."""
         enrichment = self._prior_enrichment(player.get("id")) or {}
+        npxg = player.get("npxG_per_90")
+        if npxg is not None:
+            enrichment["npxG_per_90"] = npxg
         apply_adjusted_npxg(
             enrichment,
             int(player.get("id") or 0),
-            getattr(self, "_adjusted_npxg_lookup", None),
-            player_data=player,
+            self._adjusted_npxg_lookup,
         )
         evaluation, _ = build_player_evaluation(
             player,

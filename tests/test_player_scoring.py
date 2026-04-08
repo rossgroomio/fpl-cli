@@ -4,6 +4,7 @@ import dataclasses
 
 import pytest
 
+from fpl_cli.api.core_insights import MatchRecord
 from fpl_cli.models.player import PlayerPosition, PlayerStatus
 from fpl_cli.services.player_prior import PlayerPrior
 from fpl_cli.services.player_scoring import (
@@ -2926,15 +2927,17 @@ def _make_match(
     opponent_elo: float,
     penalties_scored: int = 0,
     penalties_missed: int = 0,
-) -> dict:
-    return {
-        "gameweek": gameweek,
-        "xg": xg,
-        "minutes_played": minutes_played,
-        "opponent_elo": opponent_elo,
-        "penalties_scored": penalties_scored,
-        "penalties_missed": penalties_missed,
-    }
+) -> MatchRecord:
+    return MatchRecord(
+        player_id=0,
+        gameweek=gameweek,
+        xg=xg,
+        minutes_played=minutes_played,
+        opponent_elo=opponent_elo,
+        penalties_scored=penalties_scored,
+        penalties_missed=penalties_missed,
+        is_home=True,
+    )
 
 
 MEDIAN_ELO = 1700.0
@@ -3111,33 +3114,16 @@ class TestApplyAdjustedNpxg:
         assert enrichment["raw_npxG_per_90"] == pytest.approx(0.30)
 
     def test_raw_npxg_none_when_not_in_enrichment(self):
-        """raw_npxG_per_90 is None when npxG_per_90 absent and no player_data."""
+        """raw_npxG_per_90 is None when npxG_per_90 absent from enrichment."""
         enrichment: dict = {}
         apply_adjusted_npxg(enrichment, player_id=42, lookup=None)
         assert enrichment["raw_npxG_per_90"] is None
 
-    def test_player_data_dict_fallback_for_raw(self):
-        """player_data dict used as fallback when npxG_per_90 absent from enrichment."""
-        enrichment: dict = {}
-        player_data = {"npxG_per_90": 0.25}
-        apply_adjusted_npxg(enrichment, player_id=42, lookup=None, player_data=player_data)
-        assert enrichment["raw_npxG_per_90"] == pytest.approx(0.25)
-
-    def test_player_data_attr_fallback_for_raw(self):
-        """player_data object attribute used as fallback for raw."""
-        class FakePlayer:
-            npxG_per_90 = 0.18
-
-        enrichment: dict = {}
-        apply_adjusted_npxg(enrichment, player_id=42, lookup=None, player_data=FakePlayer())
-        assert enrichment["raw_npxG_per_90"] == pytest.approx(0.18)
-
-    def test_player_data_with_lookup_applies_adjusted(self):
-        """When lookup has the player, adjusted value overrides enrichment."""
-        enrichment: dict = {}
-        player_data = {"npxG_per_90": 0.25}
+    def test_pre_populated_npxg_with_lookup(self):
+        """Caller pre-populates npxG_per_90 in enrichment; lookup overrides it."""
+        enrichment: dict = {"npxG_per_90": 0.25}
         lookup = {42: 0.19}
-        apply_adjusted_npxg(enrichment, player_id=42, lookup=lookup, player_data=player_data)
+        apply_adjusted_npxg(enrichment, player_id=42, lookup=lookup)
         assert enrichment["npxG_per_90"] == pytest.approx(0.19)
         assert enrichment["raw_npxG_per_90"] == pytest.approx(0.25)
 
