@@ -358,6 +358,7 @@ When a player has an Understat match, `fpl player` computes and displays two add
 | **pts_per_m** | `total_points / price` (per £m). Raw season points efficiency. |
 | **form_per_m** | `form / price` (per £m). Recent form efficiency. |
 | **rolling_pts_per_m** | Points per £m over the last N qualifying fixtures (configurable via `--window`). Captures recent form-adjusted value. |
+| **adj. npxG/90** | Fixture-adjusted non-penalty xG per 90: npxG normalised by opponent Elo over a rolling window. Shown alongside raw when the adjustment changes the value. See [Fixture-Adjusted npxG](custom-analysis.md#fixture-adjusted-npxg). |
 
 `quality_score` and `quality_per_m` are `null` when no Understat match exists. In JSON output (`--format json`), they appear under `info.quality_score` and `info.quality_per_m`. In the Rich panel, they appear as `Quality: 85 | Value: 11.3/£m`.
 

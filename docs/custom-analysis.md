@@ -301,6 +301,35 @@ Current-season data is blended with a prior from the previous season's Understat
 
 Stored in `config/team_ratings.yaml`.
 
+## Fixture-Adjusted npxG
+
+The scoring pipeline normally consumes npxG/90 as a flat season average from Understat. A player with a soft early schedule accumulates a high rate and also earns a strong matchup score — double-counting fixture difficulty.
+
+Fixture-adjusted npxG normalises historical xG by the Elo strength of each opponent before computing the per-90 rate. This isolates fixture difficulty to the matchup component alone.
+
+### How it works
+
+For each completed match within a 7-match / 12-GW rolling window:
+
+1. **npxG approximation**: `xg - (penalties_scored + penalties_missed) × 0.76` (removes penalty xG from the Core-Insights match total)
+2. **Adjustment factor**: `median_elo / opponent_elo`, capped at [0.80, 1.25] — a match against a 1900-Elo side is scaled up; a match against an 800-Elo side is scaled down
+3. **Adjusted per-90**: `(npxg × factor) / minutes × 90` per match, averaged over qualifying matches
+4. Players with fewer than 4 qualifying matches fall back to raw Understat npxG/90
+
+The median Elo is computed fresh from the season's match data each run. Elo ratings come from `matches.csv` in the Core-Insights dataset.
+
+### Display
+
+When `custom_analysis: true` and match data is available, `fpl player` shows:
+
+```
+adj. npxG/90: 0.312 (raw: 0.385)
+```
+
+The existing `npxG` panel line continues to show the raw Understat season total. In JSON output, `info.adjusted_npxg_per_90` and `info.raw_npxg_per_90` are added when custom analysis is enabled. Captain and transfer evaluation agent outputs include both fields when an adjustment is active.
+
+If Core-Insights data is unavailable, the pipeline falls back to raw npxG/90 with no error surfaced to users.
+
 ## Quality & Value Scores
 
 Available via `fpl stats --value` and `fpl player` when Understat data exists.
