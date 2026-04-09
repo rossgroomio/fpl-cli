@@ -163,7 +163,8 @@ ATTACKING_POSITIONS: frozenset[str] = frozenset({"MID", "FWD"})
 # Normalisation ceilings (SGW theoretical max, MID/FWD path)
 # ---------------------------------------------------------------------------
 
-# Captain: (matchup 8*2.0 + form min(7.5*1.5,10)*1.38 + xGI ~3.5 + pen ~1.2) * pos 1.0 * mins 1.0 + home 1.0 + cv_lineup 0.375
+# Captain: (matchup 8*2.0 + form min(7.5*1.5,10)*1.38 + xGI ~3.5 + pen ~1.2)
+#   * pos 1.0 * mins 1.0 + home 1.0 + cv_lineup 0.375
 CAPTAIN_CEILING_SGW = 34.2
 # Target: npxg 8 + xg_chain 3 + form 5*1.38 + ppg 4 + penalty 3 + matchup 6 + cv_target 0.75
 TARGET_CEILING = 31.7
@@ -210,7 +211,8 @@ CONSISTENCY_PHASE_IN_END = 10
 
 def _consistency_phase(gw: int) -> float:
     """Linear phase-in factor for consistency bonuses (0.0 at GW5, 1.0 at GW10+)."""
-    return min(1.0, max(0.0, (gw - CONSISTENCY_PHASE_IN_START) / (CONSISTENCY_PHASE_IN_END - CONSISTENCY_PHASE_IN_START)))
+    window = CONSISTENCY_PHASE_IN_END - CONSISTENCY_PHASE_IN_START
+    return min(1.0, max(0.0, (gw - CONSISTENCY_PHASE_IN_START) / window))
 
 
 # Valid formations: (DEF, MID, FWD). GK always 1.
