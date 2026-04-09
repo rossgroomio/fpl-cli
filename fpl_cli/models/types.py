@@ -37,6 +37,7 @@ class CaptainCandidate(TypedDict):
     pen_bonus: float
     captain_score: int
     captain_score_raw: float
+    cv_xgi_percentile: float
     reasons: list[str]
     adjusted_npxg_per_90: NotRequired[float]
     raw_npxg_per_90: NotRequired[float]

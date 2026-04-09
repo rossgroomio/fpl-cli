@@ -361,7 +361,7 @@ Services live in `fpl_cli/services/` and provide the computation layer between a
 
 | Service | Purpose |
 |---|---|
-| `player_scoring` | Central scoring engine: `prepare_scoring_data()`, all score functions, `shrink_scores()`. Form modifiers: `compute_form_trajectory()` (direction over recent GWs) and `compute_xgi_sustainability()` (ATK-only rolling xGI divergence -> [0.85, 1.15] multiplier). Fixture-adjusted npxG: `compute_adjusted_npxg()` / `build_adjusted_npxg_lookup()` normalise historical xG by opponent Elo; `apply_adjusted_npxg()` overwrites `npxG_per_90` in agent enrichment when data is available |
+| `player_scoring` | Central scoring engine: `prepare_scoring_data()`, all score functions, `shrink_scores()`. Form modifiers: `compute_form_trajectory()` (direction over recent GWs) and `compute_xgi_sustainability()` (ATK-only rolling xGI divergence -> [0.85, 1.15] multiplier). Fixture-adjusted npxG: `compute_adjusted_npxg()` / `build_adjusted_npxg_lookup()` normalise historical xG by opponent Elo; `apply_adjusted_npxg()` overwrites `npxG_per_90` in agent enrichment when data is available. Consistency signals: `build_consistency_lookup()` computes 5 per-player signals (CV-xGI percentile, blank rate, floor percentile, involvement rate, GK consistency) with GW6-10 phase-in; additive bonuses per scoring family (target/waiver cv*1.5, differential inverted cv*0.75, lineup cv*0.75, bench floor*1.5+inv*0.75) |
 | `player_prior` | Bayesian early-season confidence (GW1-10 shrinkage); threads `PlayerProfile.reliability` (historical availability rate) through `PlayerPrior` to agents |
 | `team_ratings` | TeamRatingsService + Calculator (1-7 scale, 4 axes) |
 | `matchup` | Fixture matchup scoring (0-10), 3-GW recency-weighted |
@@ -527,7 +527,7 @@ fpl_cli/
 │       ├── openai_compat.py      # OpenAICompatProvider (OpenAI, Groq, Together, Ollama)
 │       └── perplexity.py         # PerplexityProvider (extends OpenAICompat)
 ├── services/
-│   ├── player_scoring.py         # Scoring engines + prepare_scoring_data() + shrink_scores()
+│   ├── player_scoring.py         # Scoring engines + prepare_scoring_data() + shrink_scores() + consistency signals
 │   ├── player_prior.py           # Player prior (Bayesian early-season confidence)
 │   ├── team_ratings.py           # TeamRatingsService + Calculator (1-7 scale)
 │   ├── team_ratings_prior.py     # Pre-GW5 prior ratings for blending

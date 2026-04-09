@@ -83,7 +83,7 @@ class TestCaptainCharacterisation:
         result = calculate_captain_score(evaluation, identity, next_gw_id=20)
         assert result is not None
         # Pin: captain_score and raw for regression detection
-        assert result["captain_score"] == 90
+        assert result["captain_score"] == 89
         assert result["captain_score_raw"] == 30.5
 
     def test_mid_moderate_form(self):
@@ -102,7 +102,7 @@ class TestCaptainCharacterisation:
         )
         result = calculate_captain_score(evaluation, identity, next_gw_id=20)
         assert result is not None
-        assert result["captain_score"] == 59
+        assert result["captain_score"] == 58
         assert result["captain_score_raw"] == 19.88
 
     def test_def_with_clean_sheet_potential(self):
@@ -163,7 +163,7 @@ class TestBenchCharacterisation:
             next_gw_id=20,
         )
         # Pin: priority_score for regression detection (uses single-GW core + coverage bonus)
-        assert result["priority_score"] == 67
+        assert result["priority_score"] == 63
         assert result["priority_score_raw"] == 23.33
 
     def test_weak_matchup_small_bonus(self):
@@ -180,7 +180,7 @@ class TestBenchCharacterisation:
         result = calculate_bench_score(
             evaluation, identity, availability_risks=[], next_gw_id=20,
         )
-        assert result["priority_score"] == 35
+        assert result["priority_score"] == 33
         assert result["priority_score_raw"] == 12.03
 
     def test_def_home_easy_fixture(self):
@@ -197,7 +197,7 @@ class TestBenchCharacterisation:
         result = calculate_bench_score(
             evaluation, identity, availability_risks=[], next_gw_id=20,
         )
-        assert result["priority_score"] == 53
+        assert result["priority_score"] == 50
         assert result["priority_score_raw"] == 18.49
 
     def test_bgw_no_fixture_bonus(self):
@@ -239,7 +239,7 @@ class TestTargetCharacterisation:
             positional_fdr=2.5,
         )
         score = calculate_target_score(evaluation, next_gw_id=20)
-        assert score == 60
+        assert score == 58
 
     def test_def_with_dc_per_90(self):
         """DEF uses without_xgi weights, dc_per_90 active."""
@@ -255,7 +255,7 @@ class TestTargetCharacterisation:
             positional_fdr=3.0,
         )
         score = calculate_target_score(evaluation, next_gw_id=20)
-        assert score == 43
+        assert score == 42
 
 
 # ---------------------------------------------------------------------------
@@ -290,7 +290,7 @@ class TestWaiverCharacterisation:
             team_counts=self._team_counts(), next_gw_id=20,
         )
         # FWD position is empty -> +5 bonus, but ARS stacking -> -5
-        assert score == 46
+        assert score == 45
 
     def test_mid_no_penalties(self):
         """MID without stacking penalty, nailed starter."""
@@ -304,7 +304,7 @@ class TestWaiverCharacterisation:
             evaluation, squad_by_position=self._squad_by_pos(),
             team_counts=self._team_counts(), next_gw_id=20,
         )
-        assert score == 50
+        assert score == 48
 
     def test_def_with_dc_per_90(self):
         """DEF uses without_xgi weights, dc_per_90 active."""
@@ -318,7 +318,7 @@ class TestWaiverCharacterisation:
             evaluation, squad_by_position=self._squad_by_pos(),
             team_counts=self._team_counts(), next_gw_id=20,
         )
-        assert score == 50
+        assert score == 49
 
 
 # ---------------------------------------------------------------------------
