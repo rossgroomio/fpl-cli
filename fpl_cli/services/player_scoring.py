@@ -163,18 +163,18 @@ ATTACKING_POSITIONS: frozenset[str] = frozenset({"MID", "FWD"})
 # Normalisation ceilings (SGW theoretical max, MID/FWD path)
 # ---------------------------------------------------------------------------
 
-# Captain: (matchup 8*2.0 + form min(7.5*1.5,10)*1.38 + xGI ~3.5 + pen ~1.2) * pos 1.0 * mins 1.0 + home 1.0
-CAPTAIN_CEILING_SGW = 33.8
-# Target: npxg 8 + xg_chain 3 + form 5*1.38 + ppg 4 + penalty 3 + matchup 6
-TARGET_CEILING = 30.9
-# Differential: npxg 8 + xg_chain 3 + form 7*1.38 + ppg 4 + penalty 3 + ownership 5 + matchup 6
-DIFFERENTIAL_CEILING = 38.7
-# Waiver: quality ~25.7 (form 7*1.38) + matchup 6 + position 5 = 36.7
-WAIVER_CEILING = 36.7
-# Bench: core ~32.8 (matchup 12 + form 10*1.38 + xGI 4 + pen 2 + home 1) + coverage 2 + set-piece 0.5
-BENCH_CEILING = 34.8
-# Starting XI: same core as bench (matchup 12 + form 10*1.38 + xGI 4 + pen 2 + home 1), no bench bonuses
-STARTING_XI_CEILING = 32.8
+# Captain: (matchup 8*2.0 + form min(7.5*1.5,10)*1.38 + xGI ~3.5 + pen ~1.2) * pos 1.0 * mins 1.0 + home 1.0 + cv_lineup 0.375
+CAPTAIN_CEILING_SGW = 34.2
+# Target: npxg 8 + xg_chain 3 + form 5*1.38 + ppg 4 + penalty 3 + matchup 6 + cv_target 0.75
+TARGET_CEILING = 31.7
+# Differential: npxg 8 + xg_chain 3 + form 7*1.38 + ppg 4 + penalty 3 + ownership 5 + matchup 6 + cv_diff 0.375
+DIFFERENTIAL_CEILING = 39.1
+# Waiver: quality ~25.7 (form 7*1.38) + matchup 6 + position 5 + cv_target 0.75 = 37.5
+WAIVER_CEILING = 37.5
+# Bench: core ~32.8 + cv_lineup 0.375 + coverage 2 + set-piece 0.5 + floor 0.75 + inv 0.375 = 36.8
+BENCH_CEILING = 36.8
+# Starting XI: core ~32.8 + cv_lineup 0.375, no bench bonuses
+STARTING_XI_CEILING = 33.2
 # Value: npxg 8 + xg_chain 2 + form 7*1.38 + ppg 5 + penalty 3 = 27.7 theoretical
 # Practical ceiling ~24.3 (elite MID scores ~20 raw). Validated: Salah-tier -> 87-92/100
 VALUE_CEILING = 24.3

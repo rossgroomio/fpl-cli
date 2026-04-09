@@ -141,11 +141,11 @@ class TestCharacterisationSnapshot:
 
     def test_target_mid(self):
         eval_, _ = self._build_mid()
-        assert calculate_target_score(eval_, next_gw_id=20) == 53
+        assert calculate_target_score(eval_, next_gw_id=20) == 52
 
     def test_target_def(self):
         eval_, _ = self._build_def()
-        assert calculate_target_score(eval_, next_gw_id=20) == 40
+        assert calculate_target_score(eval_, next_gw_id=20) == 39
 
     # --- Differential ---
 
@@ -168,7 +168,7 @@ class TestCharacterisationSnapshot:
         squad = {"MID": [{"form": 4.0}, {"form": 3.0}], "DEF": [{"form": 5.0}, {"form": 4.0}]}
         assert calculate_waiver_score(
             eval_, squad_by_position=squad, next_gw_id=20,
-        ) == 48
+        ) == 47
 
     def test_waiver_def(self):
         eval_, _ = self._build_def()
@@ -183,7 +183,7 @@ class TestCharacterisationSnapshot:
         eval_, identity = self._build_mid()
         result = calculate_captain_score(eval_, identity, next_gw_id=20)
         assert result is not None
-        assert result["captain_score"] == 73
+        assert result["captain_score"] == 72
         assert result["captain_score_raw"] == 24.58
         assert result["pen_bonus"] == 1.12
 
@@ -191,7 +191,7 @@ class TestCharacterisationSnapshot:
         eval_, identity = self._build_def()
         result = calculate_captain_score(eval_, identity, next_gw_id=20)
         assert result is not None
-        assert result["captain_score"] == 46
+        assert result["captain_score"] == 45
         assert result["captain_score_raw"] == 15.45
 
     # --- Bench ---
@@ -199,13 +199,13 @@ class TestCharacterisationSnapshot:
     def test_bench_mid(self):
         eval_, identity = self._build_mid()
         result = calculate_bench_score(eval_, identity, availability_risks=[], next_gw_id=20)
-        assert result["priority_score"] == 63
+        assert result["priority_score"] == 60
         assert result["priority_score_raw"] == 22.03
 
     def test_bench_def(self):
         eval_, identity = self._build_def()
         result = calculate_bench_score(eval_, identity, availability_risks=[], next_gw_id=20)
-        assert result["priority_score"] == 38
+        assert result["priority_score"] == 36
         assert result["priority_score_raw"] == 13.11
 
 
@@ -223,7 +223,7 @@ class TestNormaliseScore:
         assert normalise_score(50.0, 31.5) == 100
 
     def test_target_ceiling(self):
-        assert normalise_score(16.75, TARGET_CEILING) == 54
+        assert normalise_score(16.75, TARGET_CEILING) == 53
 
 
 class TestCalculateMinsFactorCanonical:
@@ -548,7 +548,7 @@ class TestCalculateTargetScore:
             positional_fdr=2.5,
         )
         score = calculate_target_score(eval, next_gw_id=20)
-        assert score == 60
+        assert score == 58
 
     def test_gk_def_path(self):
         """GK uses for_gk() weights: xGI zeroed, GK signals active. Score normalised to GK_TARGET_CEILING."""
@@ -580,7 +580,7 @@ class TestCalculateTargetScore:
             },
         )
         score = calculate_target_score(eval, next_gw_id=20)
-        assert score == 23
+        assert score == 22
 
 
 class TestTargetDiffAvailabilityPenalty:
@@ -643,7 +643,7 @@ class TestCalculateDifferentialScore:
             positional_fdr=2.5,
         )
         score = calculate_differential_score(eval, semi_differential_threshold=10, next_gw_id=20)
-        assert score == 59
+        assert score == 58
 
     def test_no_matchup_avg_fallback(self):
         """Without matchup_avg_3gw, matchup contribution is 0 (fallback=0.0)."""
@@ -687,7 +687,7 @@ class TestCalculateWaiverScore:
             eval, squad_by_position=self._squad_by_pos(),
             team_counts=self._team_counts(), next_gw_id=20,
         )
-        assert score == 50
+        assert score == 48
 
     def test_zero_appearances(self):
         eval, _ = build_player_evaluation(
@@ -699,7 +699,7 @@ class TestCalculateWaiverScore:
             eval, squad_by_position=self._squad_by_pos(),
             team_counts=self._team_counts(), next_gw_id=20,
         )
-        assert score == 28
+        assert score == 27
 
     def test_team_stacking_penalty(self):
         eval, _ = build_player_evaluation(
@@ -711,7 +711,7 @@ class TestCalculateWaiverScore:
             eval, squad_by_position=self._squad_by_pos(),
             team_counts=self._team_counts(), next_gw_id=20,
         )
-        assert score == 32
+        assert score == 31
 
     def test_availability_penalty(self):
         eval, _ = build_player_evaluation(
@@ -724,7 +724,7 @@ class TestCalculateWaiverScore:
             eval, squad_by_position=self._squad_by_pos(),
             team_counts=self._team_counts(), next_gw_id=20,
         )
-        assert score == 34
+        assert score == 33
 
     def test_position_need_empty(self):
         eval, _ = build_player_evaluation(
@@ -736,7 +736,7 @@ class TestCalculateWaiverScore:
             eval, squad_by_position=self._squad_by_pos(),
             team_counts=self._team_counts(), next_gw_id=20,
         )
-        assert score == 55
+        assert score == 53
 
     def test_early_season_combined_mins_factor_defaults_to_one(self):
         """Before GW5, combined_mins_factor hardcodes to 1.0 regardless of minutes."""
@@ -752,8 +752,8 @@ class TestCalculateWaiverScore:
         midseason = calculate_waiver_score(
             eval, squad_by_position=squad, team_counts={}, next_gw_id=20,
         )
-        assert early == 43
-        assert midseason == 36
+        assert early == 42
+        assert midseason == 35
         assert early > midseason  # Early season is more generous
 
 
@@ -926,7 +926,7 @@ class TestCalculateCaptainScore:
         )
         result = calculate_captain_score(eval, identity, next_gw_id=20)
         assert result is not None
-        assert result["captain_score"] == 89
+        assert result["captain_score"] == 88
         assert result["captain_score_raw"] == 30.1
         assert result["pen_bonus"] == 1.6
         assert "Good matchup" in result["reasons"]
@@ -985,7 +985,7 @@ class TestCalculateCaptainScore:
         )
         result = calculate_captain_score(eval, identity, next_gw_id=20)
         assert result is not None
-        assert result["captain_score"] == 59
+        assert result["captain_score"] == 58
         assert result["captain_score_raw"] == 19.91
 
     def test_zero_appearances(self):
@@ -1130,7 +1130,7 @@ class TestCalculateBenchScore:
             availability_risks=[{"position": "MID", "risk_level": 3}],
             next_gw_id=20,
         )
-        assert result["priority_score"] == 67
+        assert result["priority_score"] == 63
         assert result["priority_score_raw"] == 23.33
         assert "Covers risky starter" in result["reasons"]
 
@@ -1160,7 +1160,7 @@ class TestCalculateBenchScore:
             fixture_matchups=[self._fm()],
         )
         result = calculate_bench_score(eval, identity, availability_risks=[], next_gw_id=20)
-        assert result["priority_score"] == 34
+        assert result["priority_score"] == 32
         assert result["priority_score_raw"] == 11.92
         assert "Doubt (25%)" in result["reasons"]
 
@@ -1176,7 +1176,7 @@ class TestCalculateBenchScore:
             fixture_matchups=[self._fm(fdr=2.0, matchup_score=8.0), self._fm(fdr=2.5, matchup_score=7.0)],
         )
         result = calculate_bench_score(eval, identity, availability_risks=[], next_gw_id=20)
-        assert result["priority_score"] == 100
+        assert result["priority_score"] == 95
         assert result["priority_score_raw"] == 34.98
 
     def test_penalty_taker(self):
@@ -1191,7 +1191,7 @@ class TestCalculateBenchScore:
             fixture_matchups=[self._fm()],
         )
         result = calculate_bench_score(eval, identity, availability_risks=[], next_gw_id=20)
-        assert result["priority_score"] == 60
+        assert result["priority_score"] == 57
         assert result["priority_score_raw"] == 20.94
         assert "Primary penalty taker" in result["reasons"]
 
@@ -2885,7 +2885,7 @@ class TestGKScoringPath:
         from tests.test_player_scoring import TestCharacterisationSnapshot
         snap = TestCharacterisationSnapshot()
         def_eval, _ = snap._build_def()
-        assert calculate_target_score(def_eval, next_gw_id=20) == 40
+        assert calculate_target_score(def_eval, next_gw_id=20) == 39
 
     def test_gk_value_score(self):
         """GK value path: for_gk() from VALUE_QUALITY_WEIGHTS, normalised to GK_VALUE_CEILING.
