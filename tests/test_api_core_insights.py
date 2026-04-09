@@ -504,9 +504,11 @@ GW1_MATCHES = (
     "m1,1,prem,14,13,1800.0,1750.0\n"  # Liverpool (14) home vs Man City (13)
 )
 GW1_STATS = (
-    "player_id,match_id,minutes_played,xg,penalties_scored,penalties_missed\n"
-    "100,m1,90,0.60,1,0\n"   # Salah home vs Man City; scored a pen
-    "200,m1,90,0.80,0,0\n"   # Haaland same match
+    "player_id,match_id,minutes_played,xg,xa,penalties_scored,penalties_missed,"
+    "total_shots,chances_created,touches_opposition_box,clearances,blocks,"
+    "interceptions,tackles_won,recoveries,saves,xgot_faced,goals_prevented\n"
+    "100,m1,90,0.60,0.30,1,0,4,2,8,0,0,0,0,0,0,0.0,0.0\n"
+    "200,m1,90,0.80,0.10,0,0,5,1,10,0,0,0,0,0,0,0.0,0.0\n"
 )
 
 GW2_MATCHES = (
@@ -514,8 +516,9 @@ GW2_MATCHES = (
     "m2,2,prem,13,14,1760.0,1810.0\n"  # Man City home vs Liverpool
 )
 GW2_STATS = (
-    "player_id,match_id,minutes_played,xg,penalties_scored,penalties_missed\n"
-    "100,m2,45,0.20,0,0\n"   # Salah away at Man City; subbed off
+    "player_id,match_id,minutes_played,xg,xa,penalties_scored,penalties_missed,"
+    "total_shots,chances_created,touches_opposition_box\n"
+    "100,m2,45,0.20,0.15,0,0,2,1,3\n"
 )
 
 GW4_MATCHES = (
@@ -523,8 +526,9 @@ GW4_MATCHES = (
     "m4,4,prem,1,14,1550.0,1820.0\n"   # Weak team (1) home vs Liverpool
 )
 GW4_STATS = (
-    "player_id,match_id,minutes_played,xg,penalties_scored,penalties_missed\n"
-    "100,m4,90,0.50,0,1\n"   # Salah away at weak team; missed a pen
+    "player_id,match_id,minutes_played,xg,xa,penalties_scored,penalties_missed,"
+    "total_shots,chances_created,touches_opposition_box\n"
+    "100,m4,90,0.50,0.20,0,1,3,2,6\n"
 )
 
 # current_gw for tests: 6 means we fetch GWs 1-5 (last 12 capped to available)
@@ -625,6 +629,75 @@ class TestMatchStats:
         gw4 = next(r for r in result[100] if r["gameweek"] == 4)
         assert gw4["penalties_scored"] == 0
         assert gw4["penalties_missed"] == 1
+
+    @respx.mock
+    async def test_extended_fields_parsed(self, tmp_path):
+        """New extended fields (xa, shots, involvement, GK) parsed correctly."""
+        _mock_players()
+        _mock_standard_gws()
+
+        async with CoreInsightsClient(_make_fetcher(tmp_path)) as client:
+            result = await client.get_match_stats(TEST_CURRENT_GW)
+
+        gw1 = next(r for r in result[100] if r["gameweek"] == 1)
+        assert gw1["xa"] == 0.30
+        assert gw1["total_shots"] == 4
+        assert gw1["chances_created"] == 2
+        assert gw1["touches_opposition_box"] == 8
+
+    @respx.mock
+    async def test_missing_xa_defaults_to_zero(self, tmp_path):
+        """Row without xa column defaults to 0.0."""
+        stats_no_xa = (
+            "player_id,match_id,minutes_played,xg\n"
+            "100,m1,90,0.50\n"
+        )
+        _mock_players()
+        _mock_gw(1, GW1_MATCHES, stats_no_xa)
+
+        async with CoreInsightsClient(_make_fetcher(tmp_path)) as client:
+            result = await client.get_match_stats(2)
+
+        gw1 = result[100][0]
+        assert gw1["xa"] == 0.0
+        assert gw1["total_shots"] == 0
+        assert gw1["clearances"] == 0
+        assert gw1["saves"] == 0
+
+    @respx.mock
+    async def test_missing_saves_empty_string_parses_as_zero(self, tmp_path):
+        """Empty string for saves parses as 0."""
+        stats_empty_saves = (
+            "player_id,match_id,minutes_played,xg,saves\n"
+            "100,m1,90,0.50,\n"
+        )
+        _mock_players()
+        _mock_gw(1, GW1_MATCHES, stats_empty_saves)
+
+        async with CoreInsightsClient(_make_fetcher(tmp_path)) as client:
+            result = await client.get_match_stats(2)
+
+        gw1 = result[100][0]
+        assert gw1["saves"] == 0
+
+    @respx.mock
+    async def test_extended_fields_missing_columns_default(self, tmp_path):
+        """When CSV lacks extended columns entirely, all default to 0."""
+        _mock_players()
+        _mock_gw(1, GW1_MATCHES, (
+            "player_id,match_id,minutes_played,xg\n"
+            "100,m1,90,0.50\n"
+        ))
+
+        async with CoreInsightsClient(_make_fetcher(tmp_path)) as client:
+            result = await client.get_match_stats(2)
+
+        gw1 = result[100][0]
+        assert gw1["xa"] == 0.0
+        assert gw1["tackles_won"] == 0
+        assert gw1["xgot_faced"] == 0.0
+        assert gw1["goals_prevented"] == 0.0
+        assert gw1["recoveries"] == 0
 
     @respx.mock
     async def test_missing_penalties_field_defaults_to_zero(self, tmp_path):

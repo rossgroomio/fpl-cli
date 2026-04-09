@@ -16,10 +16,11 @@ from fpl_cli.cli._helpers import _fdr_style
 from fpl_cli.cli._json import emit_json, json_output_mode, output_format_option
 from fpl_cli.models.player import resolve_players
 from fpl_cli.services.player_scoring import (
+    build_npxg_lookup_from_records,
     compute_quality_value,
     compute_rolling_pts_per_m,
     compute_xgi_sustainability,
-    fetch_adjusted_npxg_lookup,
+    fetch_match_records,
 )
 
 if TYPE_CHECKING:
@@ -217,8 +218,9 @@ def player_command(
                 custom_on = is_custom_analysis_enabled(settings)
                 rolling_window = int(settings.get("rolling_window", 5))
                 if custom_on:
-                    lookup = await fetch_adjusted_npxg_lookup(next_gw_id)
-                    if lookup:
+                    match_data = await fetch_match_records(next_gw_id)
+                    if match_data:
+                        lookup = build_npxg_lookup_from_records(match_data, next_gw_id)
                         for p in display:
                             if p.id in lookup:
                                 adjusted_npxg_scores[p.id] = lookup[p.id]

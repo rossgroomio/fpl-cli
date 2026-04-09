@@ -360,6 +360,7 @@ class ScoringData:
     understat_lookup: dict[int, dict[str, float]] | None = None
     player_histories: dict[int, list[dict[str, Any]]] | None = None
     player_priors: dict[int, PlayerPrior] | None = None
+    match_records: dict[int, list[MatchRecord]] | None = None
     adjusted_npxg_lookup: dict[int, float] | None = None
 
 
@@ -482,10 +483,15 @@ async def prepare_scoring_data(
                 "Failed to generate player priors", exc_info=True,
             )
 
+    match_records: dict[int, list[MatchRecord]] | None = None
     adjusted_npxg_lookup: dict[int, float] | None = None
 
     if include_match_data and players is not None:
-        adjusted_npxg_lookup = await fetch_adjusted_npxg_lookup(next_gw_id)
+        match_records = await fetch_match_records(next_gw_id)
+        if match_records:
+            adjusted_npxg_lookup = build_npxg_lookup_from_records(
+                match_records, next_gw_id,
+            )
 
     return ScoringData(
         teams=teams,
@@ -500,6 +506,7 @@ async def prepare_scoring_data(
         understat_lookup=understat_lookup,
         player_histories=player_histories,
         player_priors=player_priors,
+        match_records=match_records,
         adjusted_npxg_lookup=adjusted_npxg_lookup,
     )
 
@@ -827,37 +834,49 @@ def compute_xgi_sustainability(
     return multiplier, avg_divergence
 
 
-async def fetch_adjusted_npxg_lookup(current_gw: int) -> dict[int, float] | None:
-    """Fetch Core-Insights match data and build the adjusted npxG lookup.
+async def fetch_match_records(
+    current_gw: int,
+) -> dict[int, list[MatchRecord]] | None:
+    """Fetch Core-Insights match-level CSVs and return raw records.
 
-    Owns the CoreInsightsClient lifecycle, median Elo computation, and lookup
-    construction. Returns None on any failure (graceful degradation).
+    Owns the CoreInsightsClient lifecycle. Returns None on any failure
+    (graceful degradation). Callers use the records to build derived
+    lookups (adjusted npxG, consistency signals).
     """
     try:
-        import statistics
-
         from fpl_cli.api.core_insights import CoreInsightsClient, make_core_insights_fetcher
 
         async with CoreInsightsClient(make_core_insights_fetcher()) as ci_client:
             all_match_records = await ci_client.get_match_stats(current_gw)
 
-        if not all_match_records:
-            return None
-
-        all_elos = [
-            r["opponent_elo"]
-            for records in all_match_records.values()
-            for r in records
-        ]
-        median_elo = statistics.median(all_elos) if all_elos else 1700.0
-        return build_adjusted_npxg_lookup(all_match_records, current_gw, median_elo)
+        return all_match_records or None
     except Exception:  # noqa: BLE001 — graceful degradation: CI match data unavailable
         import logging
 
         logging.getLogger(__name__).warning(
-            "Failed to compute adjusted npxG lookup", exc_info=True,
+            "Failed to fetch match records", exc_info=True,
         )
         return None
+
+
+def build_npxg_lookup_from_records(
+    all_match_records: dict[int, list[MatchRecord]],
+    current_gw: int,
+) -> dict[int, float]:
+    """Build adjusted npxG lookup from pre-fetched match records.
+
+    Computes median Elo from the records, then delegates to
+    ``build_adjusted_npxg_lookup``.
+    """
+    import statistics
+
+    all_elos = [
+        r["opponent_elo"]
+        for records in all_match_records.values()
+        for r in records
+    ]
+    median_elo = statistics.median(all_elos) if all_elos else 1700.0
+    return build_adjusted_npxg_lookup(all_match_records, current_gw, median_elo)
 
 
 def compute_adjusted_npxg(

@@ -38,11 +38,26 @@ class MatchRecord(TypedDict):
     player_id: int
     gameweek: int
     xg: float
+    xa: float
     penalties_scored: int
     penalties_missed: int
     minutes_played: int
     opponent_elo: float
     is_home: bool
+    # Attacking involvement (FWD/MID)
+    total_shots: int
+    chances_created: int
+    touches_opposition_box: int
+    # Defensive involvement (DEF)
+    clearances: int
+    blocks: int
+    interceptions: int
+    tackles_won: int
+    recoveries: int
+    # GK consistency
+    saves: int
+    xgot_faced: float
+    goals_prevented: float
 
 
 DEFAULT_TTL = timedelta(hours=4)
@@ -228,11 +243,23 @@ class CoreInsightsClient:
                     "player_id": pid,
                     "gameweek": gameweek,
                     "xg": xg,
+                    "xa": float(row.get("xa") or 0),
                     "penalties_scored": int(float(row.get("penalties_scored") or 0)),
                     "penalties_missed": int(float(row.get("penalties_missed") or 0)),
                     "minutes_played": minutes_played,
                     "opponent_elo": opponent_elo,
                     "is_home": is_home,
+                    "total_shots": int(float(row.get("total_shots") or 0)),
+                    "chances_created": int(float(row.get("chances_created") or 0)),
+                    "touches_opposition_box": int(float(row.get("touches_opposition_box") or 0)),
+                    "clearances": int(float(row.get("clearances") or 0)),
+                    "blocks": int(float(row.get("blocks") or 0)),
+                    "interceptions": int(float(row.get("interceptions") or 0)),
+                    "tackles_won": int(float(row.get("tackles_won") or 0)),
+                    "recoveries": int(float(row.get("recoveries") or 0)),
+                    "saves": int(float(row.get("saves") or 0)),
+                    "xgot_faced": float(row.get("xgot_faced") or 0),
+                    "goals_prevented": float(row.get("goals_prevented") or 0),
                 }
                 result.setdefault(pid, []).append(record)
 
