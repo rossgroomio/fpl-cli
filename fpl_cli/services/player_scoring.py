@@ -1377,6 +1377,24 @@ def apply_adjusted_npxg(
         enrichment["npxG_per_90"] = lookup[player_id]
 
 
+def apply_consistency(
+    enrichment: dict[str, Any],
+    player_id: int,
+    lookup: dict[int, ConsistencySignals] | None,
+) -> None:
+    """Inject consistency signal fields into enrichment dict."""
+    if not lookup:
+        return
+    signals = lookup.get(player_id)
+    if signals is None:
+        return
+    enrichment["cv_xgi_percentile"] = signals.cv_xgi_percentile
+    enrichment["blank_rate"] = signals.blank_rate
+    enrichment["floor_percentile"] = signals.floor_percentile
+    enrichment["involvement_rate"] = signals.involvement_rate
+    enrichment["gk_consistency_percentile"] = signals.gk_consistency_percentile
+
+
 def normalise_score(raw: float, ceiling: float) -> int:
     """Normalise a raw score to 0-100 against a ceiling."""
     return min(round(raw / ceiling * 100), 100)
@@ -1388,6 +1406,8 @@ def build_scoring_enrichment(
     team_short: str,
     gw_history: list[dict[str, Any]] | None,
     next_gw_id: int,
+    *,
+    consistency_lookup: dict[int, ConsistencySignals] | None = None,
 ) -> dict[str, Any]:
     """Build the enrichment dict shared by quality and single-GW scoring paths."""
     enrichment: dict[str, Any] = {"team_short": team_short, **us_match}
@@ -1416,6 +1436,9 @@ def build_scoring_enrichment(
         enrichment["xgi_sustainability"] = sustainability
         enrichment["xgi_divergence"] = divergence
 
+    if consistency_lookup:
+        apply_consistency(enrichment, int(getattr(player, "id", 0)), consistency_lookup)
+
     return enrichment
 
 
@@ -1437,6 +1460,7 @@ def compute_quality_value(
     team_short: str = ...,
     gw_history: list[dict[str, Any]] | None = ...,
     raw: Literal[False] = ...,
+    consistency_lookup: dict[int, ConsistencySignals] | None = ...,
 ) -> tuple[int, float | None]: ...
 
 
@@ -1449,6 +1473,7 @@ def compute_quality_value(
     team_short: str = ...,
     gw_history: list[dict[str, Any]] | None = ...,
     raw: Literal[True],
+    consistency_lookup: dict[int, ConsistencySignals] | None = ...,
 ) -> float: ...
 
 
@@ -1460,6 +1485,7 @@ def compute_quality_value(
     team_short: str = "???",
     gw_history: list[dict[str, Any]] | None = None,
     raw: bool = False,
+    consistency_lookup: dict[int, ConsistencySignals] | None = None,
 ) -> tuple[int, float | None] | float:
     """Compute quality_score and quality_per_m for a single player.
 
@@ -1474,7 +1500,10 @@ def compute_quality_value(
         Default: (quality_score 0-100, quality_per_m or None if price is 0)
         raw=True: raw quality float
     """
-    enrichment = build_scoring_enrichment(player, us_match, team_short, gw_history, next_gw_id)
+    enrichment = build_scoring_enrichment(
+        player, us_match, team_short, gw_history, next_gw_id,
+        consistency_lookup=consistency_lookup,
+    )
 
     evaluation, _ = build_player_evaluation(player, enrichment=enrichment)
     q_dict = evaluation.as_quality_dict()
@@ -1678,6 +1707,13 @@ class PlayerEvaluation:
     # Original Understat npxG/90 before fixture adjustment (None when no Understat data)
     raw_npxg_per_90: float | None = None
 
+    # Consistency signals (Phase 1: display only, not used in scoring yet)
+    cv_xgi_percentile: float = 0.5
+    blank_rate: float | None = None
+    floor_percentile: float = 0.5
+    involvement_rate: float | None = None
+    gk_consistency_percentile: float = 0.5
+
     def as_quality_dict(self) -> dict[str, Any]:
         """Return a dict compatible with calculate_player_quality_score's Mapping interface."""
         return {
@@ -1799,6 +1835,11 @@ def build_player_evaluation(
         gk_xgc_quality=float(_get("gk_xgc_quality", 0.0) or 0.0),
         gk_cs_rate=float(_get("gk_cs_rate", 0.0) or 0.0),
         raw_npxg_per_90=_get("raw_npxG_per_90"),
+        cv_xgi_percentile=float(_get("cv_xgi_percentile", 0.5) or 0.5),
+        blank_rate=_get("blank_rate"),
+        floor_percentile=float(_get("floor_percentile", 0.5) or 0.5),
+        involvement_rate=_get("involvement_rate"),
+        gk_consistency_percentile=float(_get("gk_consistency_percentile", 0.5) or 0.5),
     )
 
     # Build identity

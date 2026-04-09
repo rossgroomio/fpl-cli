@@ -11,6 +11,7 @@ from fpl_cli.models.types import PlayerStats
 from fpl_cli.services.matchup import calculate_matchup_score
 from fpl_cli.services.player_scoring import (
     apply_adjusted_npxg,
+    apply_consistency,
     apply_shrinkage,
     build_player_evaluation,
     calculate_differential_score,
@@ -63,6 +64,7 @@ class StatsAgent(Agent):
         self.semi_differential_threshold = config.get("semi_differential_threshold", 15.0) if config else 15.0
 
         self._adjusted_npxg_lookup: dict[int, float] | None = None
+        self._consistency_lookup: dict[int, Any] | None = None
 
         # View selection: which analysis views to compute
         raw_views = config.get("views") if config else None
@@ -182,6 +184,7 @@ class StatsAgent(Agent):
             self._next_gw_id = scoring_data.next_gw_id
             self._player_priors = scoring_data.player_priors
             self._adjusted_npxg_lookup = scoring_data.adjusted_npxg_lookup
+            self._consistency_lookup = scoring_data.consistency_lookup
             if needs_history:
                 self._player_histories = scoring_data.player_histories or {}
             scoring_ctx = scoring_data.scoring_ctx
@@ -650,11 +653,9 @@ class StatsAgent(Agent):
         npxg = player.get("npxG_per_90")
         if npxg is not None:
             enrichment["npxG_per_90"] = npxg
-        apply_adjusted_npxg(
-            enrichment,
-            int(player.get("id") or 0),
-            self._adjusted_npxg_lookup,
-        )
+        pid = int(player.get("id") or 0)
+        apply_adjusted_npxg(enrichment, pid, self._adjusted_npxg_lookup)
+        apply_consistency(enrichment, pid, self._consistency_lookup)
         evaluation, _ = build_player_evaluation(
             player,
             enrichment=enrichment or None,
@@ -758,11 +759,9 @@ class StatsAgent(Agent):
         npxg = player.get("npxG_per_90")
         if npxg is not None:
             enrichment["npxG_per_90"] = npxg
-        apply_adjusted_npxg(
-            enrichment,
-            int(player.get("id") or 0),
-            self._adjusted_npxg_lookup,
-        )
+        pid = int(player.get("id") or 0)
+        apply_adjusted_npxg(enrichment, pid, self._adjusted_npxg_lookup)
+        apply_consistency(enrichment, pid, self._consistency_lookup)
         evaluation, _ = build_player_evaluation(
             player,
             enrichment=enrichment or None,

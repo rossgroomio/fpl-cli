@@ -11,7 +11,9 @@ from fpl_cli.services.player_scoring import (
     ATTACKING_POSITIONS,
     NEUTRAL_SIGNALS,
     _assign_percentile_ranks,
+    ConsistencySignals,
     apply_adjusted_npxg,
+    apply_consistency,
     build_adjusted_npxg_lookup,
     build_consistency_lookup,
     compute_adjusted_npxg,
@@ -3687,3 +3689,67 @@ class TestBuildConsistencyLookup:
         assert NEUTRAL_SIGNALS.floor_percentile == 0.5
         assert NEUTRAL_SIGNALS.involvement_rate is None
         assert NEUTRAL_SIGNALS.gk_consistency_percentile == 0.5
+
+
+# ---------------------------------------------------------------------------
+# apply_consistency + PlayerEvaluation consistency fields
+# ---------------------------------------------------------------------------
+
+
+class TestApplyConsistency:
+    def test_injects_all_fields(self):
+        enrichment: dict = {}
+        lookup = {42: ConsistencySignals(
+            cv_xgi_percentile=0.8, blank_rate=0.2,
+            floor_percentile=0.7, involvement_rate=0.9,
+            gk_consistency_percentile=0.5,
+        )}
+        apply_consistency(enrichment, 42, lookup)
+        assert enrichment["cv_xgi_percentile"] == 0.8
+        assert enrichment["blank_rate"] == 0.2
+        assert enrichment["floor_percentile"] == 0.7
+        assert enrichment["involvement_rate"] == 0.9
+
+    def test_missing_player_no_injection(self):
+        enrichment: dict = {}
+        lookup = {99: ConsistencySignals()}
+        apply_consistency(enrichment, 42, lookup)
+        assert "cv_xgi_percentile" not in enrichment
+
+    def test_none_lookup_no_injection(self):
+        enrichment: dict = {}
+        apply_consistency(enrichment, 42, None)
+        assert "cv_xgi_percentile" not in enrichment
+
+
+class TestPlayerEvaluationConsistencyFields:
+    def test_neutral_defaults_when_no_enrichment(self):
+        player = make_player(id=1)
+        evaluation, _ = build_player_evaluation(player)
+        assert evaluation.cv_xgi_percentile == 0.5
+        assert evaluation.blank_rate is None
+        assert evaluation.floor_percentile == 0.5
+        assert evaluation.involvement_rate is None
+        assert evaluation.gk_consistency_percentile == 0.5
+
+    def test_enrichment_populates_fields(self):
+        player = make_player(id=1)
+        enrichment = {
+            "cv_xgi_percentile": 0.9,
+            "blank_rate": 0.15,
+            "floor_percentile": 0.75,
+            "involvement_rate": 0.85,
+            "gk_consistency_percentile": 0.6,
+        }
+        evaluation, _ = build_player_evaluation(player, enrichment=enrichment)
+        assert evaluation.cv_xgi_percentile == 0.9
+        assert evaluation.blank_rate == 0.15
+        assert evaluation.floor_percentile == 0.75
+        assert evaluation.involvement_rate == 0.85
+        assert evaluation.gk_consistency_percentile == 0.6
+
+    def test_frozen_immutable(self):
+        player = make_player(id=1)
+        evaluation, _ = build_player_evaluation(player)
+        with pytest.raises(AttributeError):
+            evaluation.cv_xgi_percentile = 0.9  # type: ignore[misc]

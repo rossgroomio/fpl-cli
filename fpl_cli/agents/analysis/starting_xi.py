@@ -9,6 +9,7 @@ from fpl_cli.api.fpl import FPLClient
 from fpl_cli.services.player_scoring import (
     ScoringContext,
     apply_adjusted_npxg,
+    apply_consistency,
     apply_shrinkage,
     build_fixture_matchups,
     build_player_evaluation,
@@ -77,6 +78,7 @@ class StartingXIAgent(Agent):
             scoring_context = data.scoring_ctx
             understat_by_id = data.understat_lookup
             adjusted_npxg_lookup = data.adjusted_npxg_lookup
+            consistency_lookup = data.consistency_lookup
 
             squad_ids = context["squad"]
             squad_players = [player_map[pid] for pid in squad_ids if pid in player_map]
@@ -100,6 +102,7 @@ class StartingXIAgent(Agent):
                     player_histories=player_histories,
                     player_priors=data.player_priors,
                     adjusted_npxg_lookup=adjusted_npxg_lookup,
+                    consistency_lookup=consistency_lookup,
                 )
                 scored.append(score_data)
 
@@ -156,6 +159,7 @@ class StartingXIAgent(Agent):
         player_histories: dict[int, list[dict[str, Any]]] | None = None,
         player_priors: dict[int, Any] | None = None,
         adjusted_npxg_lookup: dict[int, float] | None = None,
+        consistency_lookup: dict[int, Any] | None = None,
     ) -> dict[str, Any]:
         """Score a squad player via the scoring engine."""
         team = context.team_map.get(player.team_id)
@@ -174,6 +178,7 @@ class StartingXIAgent(Agent):
             if us_data:
                 enrichment.update(us_data)
         apply_adjusted_npxg(enrichment, player.id, adjusted_npxg_lookup)
+        apply_consistency(enrichment, player.id, consistency_lookup)
 
         if player_histories:
             history = player_histories.get(player.id, [])
