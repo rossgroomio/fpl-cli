@@ -1,6 +1,22 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [1.2.0] - 2026-04-09
+
+### Bug Fixes
+
+- gate xGI sustainability behind custom_analysis flag
+- attenuate GK signals for low-minutes keepers
+
+### Features
+
+- add player reliability metric (#10)
+- add rolling-window xGI sustainability signal (#11)
+- add GK-specific quality scoring path (#12)
+- fixture-adjusted npxG to remove double-counting (#13)
+- add consistency index signals (Phase 1) (#14)
+- wire consistency signals into scoring (Phase 2) (#15)
+
 ## [1.1.0] - 2026-04-07
 
 ### Bug Fixes
