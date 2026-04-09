@@ -964,7 +964,7 @@ class TestXgiSustainabilityDisplay:
 # ---------------------------------------------------------------------------
 
 def _run_with_adjusted_npxg(args, client, fixture_agent, ratings_svc, npxg_lookup, json_mode=False):
-    """Run player command with mocked fetch_adjusted_npxg_lookup and Understat."""
+    """Run player command with mocked fetch_match_records and Understat."""
     us_match = _make_us_match()
     runner = CliRunner()
     mock_understat = MagicMock()
@@ -980,6 +980,10 @@ def _run_with_adjusted_npxg(args, client, fixture_agent, ratings_svc, npxg_looku
         cmd_args += ["--format", "json"]
     cmd_args += args
 
+    # Return sentinel match records so the npxg branch activates,
+    # then mock build_npxg_lookup_from_records to return the desired lookup.
+    mock_records = {"_sentinel": []} if npxg_lookup else None
+
     with (
         patch("fpl_cli.cli.player.load_settings", return_value=_CUSTOM_SETTINGS),
         patch("fpl_cli.api.fpl.FPLClient", return_value=client),
@@ -987,7 +991,8 @@ def _run_with_adjusted_npxg(args, client, fixture_agent, ratings_svc, npxg_looku
         patch("fpl_cli.services.team_ratings.TeamRatingsService", return_value=ratings_svc),
         patch("fpl_cli.api.understat.UnderstatClient", return_value=mock_understat),
         patch("fpl_cli.api.understat.match_fpl_to_understat", return_value=us_match),
-        patch("fpl_cli.cli.player.fetch_adjusted_npxg_lookup", new_callable=AsyncMock, return_value=npxg_lookup),
+        patch("fpl_cli.cli.player.fetch_match_records", new_callable=AsyncMock, return_value=mock_records),
+        patch("fpl_cli.cli.player.build_npxg_lookup_from_records", return_value=npxg_lookup or {}),
     ):
         return runner.invoke(main, cmd_args)
 

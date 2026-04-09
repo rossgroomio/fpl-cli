@@ -5,6 +5,10 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from fpl_cli.services.player_scoring import ConsistencySignals
 
 import click
 from rich.table import Table
@@ -155,6 +159,7 @@ def stats_command(
             quality_map: dict[int, int] = {}
             value_map: dict[int, float | None] = {}
             rolling_map: dict[int, tuple[float | None, int | None]] = {}
+            con_lookup: dict[int, ConsistencySignals] = {}
             value_active = False
 
             if value and filtered:
@@ -223,6 +228,23 @@ def stats_command(
                         rolling_map[p.id] = compute_rolling_pts_per_m(
                             hist, float(p.now_cost), rolling_window,
                         )
+
+                    # Build consistency lookup for display
+                    from fpl_cli.services.player_scoring import (
+                        build_consistency_lookup,
+                        compute_median_elo,
+                        fetch_match_records,
+                    )
+                    match_data = await fetch_match_records(next_gw_id)
+                    if match_data:
+                        median_elo = compute_median_elo(match_data)
+                        pos_map = {p.id: p.position_name for p in filtered}
+                        con_lookup = build_consistency_lookup(
+                            match_data, player_histories, pos_map,
+                            next_gw_id, median_elo,
+                        )
+                    else:
+                        con_lookup = {}
 
             # Fall back from value sort if scoring failed
             effective_sort = sort_field
@@ -354,9 +376,11 @@ def stats_command(
                 q_header = "Quality" + (arrow if effective_sort == "quality_score" else "")
                 v_header = "Quality/£m" + (arrow if effective_sort == "quality_per_m" else "")
                 r_header = "Rolling Pts/£m" + (arrow if effective_sort == "rolling_pts_per_m" else "")
+                c_header = "Con" + (arrow if effective_sort == "con" else "")
                 table.add_column(q_header, justify="right")
                 table.add_column(v_header, justify="right")
                 table.add_column(r_header, justify="right")
+                table.add_column(c_header, justify="right")
 
             # Draft ownership column
             has_draft_col = show_draft and main_to_draft_id
@@ -384,6 +408,17 @@ def stats_command(
                     if rv is not None:
                         suffix = "*" if rc is not None and rc < rolling_window else ""
                         row.append(f"{rv}{suffix}")
+                    else:
+                        row.append("-")
+                    # Consistency
+                    signals = con_lookup.get(p.id)
+                    if signals is not None:
+                        con_val = (
+                            signals.gk_consistency_percentile
+                            if p.position_name == "GK"
+                            else signals.cv_xgi_percentile
+                        )
+                        row.append(str(round(con_val * 100)))
                     else:
                         row.append("-")
 

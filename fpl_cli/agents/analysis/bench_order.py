@@ -8,8 +8,10 @@ from fpl_cli.agents.base import Agent, AgentResult, AgentStatus
 from fpl_cli.api.fpl import FPLClient
 from fpl_cli.models.player import FORMATION_LIMITS, PlayerStatus
 from fpl_cli.services.player_scoring import (
+    ConsistencySignals,
     ScoringContext,
     apply_adjusted_npxg,
+    apply_consistency,
     apply_shrinkage,
     build_fixture_matchups,
     build_player_evaluation,
@@ -78,6 +80,7 @@ class BenchOrderAgent(Agent):
             team_map = data.team_map
             understat_by_id = data.understat_lookup
             adjusted_npxg_lookup = data.adjusted_npxg_lookup
+            consistency_lookup = data.consistency_lookup
 
             bench_ids = context["bench"]
             bench_players = [player_map[pid] for pid in bench_ids if pid in player_map]
@@ -99,6 +102,7 @@ class BenchOrderAgent(Agent):
                     player_histories=player_histories,
                     player_priors=data.player_priors,
                     adjusted_npxg_lookup=adjusted_npxg_lookup,
+                    consistency_lookup=consistency_lookup,
                 )
                 scored_bench.append(score_data)
 
@@ -245,6 +249,7 @@ class BenchOrderAgent(Agent):
         player_histories: dict[int, list[dict[str, Any]]] | None = None,
         player_priors: dict[int, Any] | None = None,
         adjusted_npxg_lookup: dict[int, float] | None = None,
+        consistency_lookup: dict[int, ConsistencySignals] | None = None,
     ) -> dict[str, Any]:
         """Score a bench player via the scoring engine."""
         team = context.team_map.get(player.team_id)
@@ -258,6 +263,7 @@ class BenchOrderAgent(Agent):
             if us_data:
                 enrichment.update(us_data)
         apply_adjusted_npxg(enrichment, player.id, adjusted_npxg_lookup)
+        apply_consistency(enrichment, player.id, consistency_lookup)
 
         if player_histories:
             history = player_histories.get(player.id, [])

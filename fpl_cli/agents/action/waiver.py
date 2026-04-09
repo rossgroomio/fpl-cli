@@ -14,7 +14,9 @@ from fpl_cli.api.fpl import FPLClient
 from fpl_cli.api.fpl_draft import FPLDraftClient
 from fpl_cli.models.types import EnrichedPlayer, WaiverTarget
 from fpl_cli.services.player_scoring import (
+    ConsistencySignals,
     apply_adjusted_npxg,
+    apply_consistency,
     apply_shrinkage,
     build_player_evaluation,
     calculate_waiver_score,
@@ -43,6 +45,7 @@ class WaiverAgent(Agent):
         self.client = FPLDraftClient()
         self.fpl_client = FPLClient()
         self._adjusted_npxg_lookup: dict[int, float] | None = None
+        self._consistency_lookup: dict[int, ConsistencySignals] | None = None
         self.league_id = config.get("draft_league_id") if config else None
         self.entry_id = config.get("draft_entry_id") if config else None
 
@@ -179,6 +182,7 @@ class WaiverAgent(Agent):
             self._player_histories = data.player_histories or {}
             self._player_priors = data.player_priors
             self._adjusted_npxg_lookup = data.adjusted_npxg_lookup
+            self._consistency_lookup = data.consistency_lookup
             scoring_ctx = data.scoring_ctx
 
             # Enrich available players with matchup and FDR
@@ -339,11 +343,9 @@ class WaiverAgent(Agent):
             npxg = player.get("npxG_per_90")
             if npxg is not None:
                 enrichment["npxG_per_90"] = npxg
-        apply_adjusted_npxg(
-            enrichment,
-            int(player.get("id") or 0),
-            self._adjusted_npxg_lookup,
-        )
+        pid = int(player.get("id") or 0)
+        apply_adjusted_npxg(enrichment, pid, self._adjusted_npxg_lookup)
+        apply_consistency(enrichment, pid, self._consistency_lookup)
         evaluation, _ = build_player_evaluation(
             player,
             enrichment=enrichment,
@@ -518,6 +520,10 @@ class WaiverAgent(Agent):
                 target_prior = priors.get(target.get("id", 0)) if priors else None
                 reliability = target_prior.reliability if target_prior is not None else None
 
+                con_lookup = getattr(self, "_consistency_lookup", None)
+                con_signals = con_lookup.get(target.get("id", 0)) if con_lookup else None
+                con_pct = con_signals.cv_xgi_percentile if con_signals is not None else None
+
                 rec: dict[str, Any] = {
                     "priority": len(recommendations) + 1,
                     "target": {
@@ -527,6 +533,7 @@ class WaiverAgent(Agent):
                         "form": target.get("form"),
                         "waiver_score": target.get("waiver_score"),
                         "reliability": reliability,
+                        "cv_xgi_percentile": con_pct,
                     },
                     "drop": {
                         "name": drop_candidate.get("player_name") if drop_candidate else None,

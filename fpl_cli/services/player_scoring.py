@@ -338,6 +338,20 @@ async def build_understat_by_player_id(
 
 
 @dataclasses.dataclass(frozen=True)
+class ConsistencySignals:
+    """Per-player consistency signal values (Phase 1: display only)."""
+
+    cv_xgi_percentile: float = 0.5
+    blank_rate: float | None = None
+    floor_percentile: float = 0.5
+    involvement_rate: float | None = None
+    gk_consistency_percentile: float = 0.5
+
+
+NEUTRAL_SIGNALS = ConsistencySignals()
+
+
+@dataclasses.dataclass(frozen=True)
 class ScoringData:
     """Pre-fetched base data shared across all scoring agents.
 
@@ -360,7 +374,9 @@ class ScoringData:
     understat_lookup: dict[int, dict[str, float]] | None = None
     player_histories: dict[int, list[dict[str, Any]]] | None = None
     player_priors: dict[int, PlayerPrior] | None = None
+    match_records: dict[int, list[MatchRecord]] | None = None
     adjusted_npxg_lookup: dict[int, float] | None = None
+    consistency_lookup: dict[int, ConsistencySignals] | None = None
 
 
 async def prepare_scoring_data(
@@ -482,10 +498,22 @@ async def prepare_scoring_data(
                 "Failed to generate player priors", exc_info=True,
             )
 
+    match_records: dict[int, list[MatchRecord]] | None = None
     adjusted_npxg_lookup: dict[int, float] | None = None
+    consistency_lookup: dict[int, ConsistencySignals] | None = None
 
     if include_match_data and players is not None:
-        adjusted_npxg_lookup = await fetch_adjusted_npxg_lookup(next_gw_id)
+        match_records = await fetch_match_records(next_gw_id)
+        if match_records:
+            median_elo = compute_median_elo(match_records)
+            adjusted_npxg_lookup = build_adjusted_npxg_lookup(
+                match_records, next_gw_id, median_elo,
+            )
+            position_map = {p.id: p.position_name for p in players}
+            consistency_lookup = build_consistency_lookup(
+                match_records, player_histories, position_map,
+                next_gw_id, median_elo,
+            )
 
     return ScoringData(
         teams=teams,
@@ -500,7 +528,9 @@ async def prepare_scoring_data(
         understat_lookup=understat_lookup,
         player_histories=player_histories,
         player_priors=player_priors,
+        match_records=match_records,
         adjusted_npxg_lookup=adjusted_npxg_lookup,
+        consistency_lookup=consistency_lookup,
     )
 
 
@@ -827,37 +857,450 @@ def compute_xgi_sustainability(
     return multiplier, avg_divergence
 
 
-async def fetch_adjusted_npxg_lookup(current_gw: int) -> dict[int, float] | None:
-    """Fetch Core-Insights match data and build the adjusted npxG lookup.
+# ---------------------------------------------------------------------------
+# Consistency signal computation
+# ---------------------------------------------------------------------------
 
-    Owns the CoreInsightsClient lifecycle, median Elo computation, and lookup
-    construction. Returns None on any failure (graceful degradation).
+_CONSISTENCY_MIN_MATCHES = 6
+
+
+def compute_median_elo(
+    match_records: dict[int, list[MatchRecord]],
+) -> float:
+    """Median opponent Elo across all match records, or 1700.0 if empty."""
+    import statistics
+
+    all_elos = [
+        r["opponent_elo"]
+        for records in match_records.values()
+        for r in records
+    ]
+    return statistics.median(all_elos) if all_elos else 1700.0
+
+
+def _elo_adjusted_xgis(
+    window: list[MatchRecord], median_elo: float,
+) -> list[float]:
+    """Elo-adjusted xGI values for each match in the window."""
+    adjusted: list[float] = []
+    for m in window:
+        opp_elo = m.get("opponent_elo", median_elo)
+        if opp_elo <= 0:
+            opp_elo = median_elo
+        factor = max(0.80, min(1.25, median_elo / opp_elo))
+        adjusted.append((m.get("xg", 0.0) + m.get("xa", 0.0)) * factor)
+    return adjusted
+
+
+_CONSISTENCY_MIN_MINUTES = 60
+
+
+def _match_record_window(
+    match_records: list[MatchRecord], current_gw: int, size: int = 7,
+) -> list[MatchRecord]:
+    """Recent qualifying match records: minutes >= 60, within 12-GW lookback, most recent *size*.
+
+    The 60-minute threshold excludes cameo appearances whose low xGI
+    reflects limited playing time rather than output inconsistency.
+    Aligns with FPL's meaningful-appearance boundary.
+    """
+    cutoff = current_gw - 12
+    qualifying = [
+        m for m in match_records
+        if m.get("minutes_played", 0) >= _CONSISTENCY_MIN_MINUTES
+        and m.get("gameweek", 0) > cutoff
+    ]
+    qualifying.sort(key=lambda m: m["gameweek"])
+    return qualifying[-size:]
+
+
+def compute_cv_xgi(
+    match_records: list[MatchRecord],
+    current_gw: int,
+    median_elo: float,
+) -> float | None:
+    """CV of Elo-adjusted xGI over rolling window.
+
+    Returns None when fewer than 6 qualifying matches or mean xGI is zero.
+    """
+    import statistics
+
+    window = _match_record_window(match_records, current_gw)
+    if len(window) < _CONSISTENCY_MIN_MATCHES:
+        return None
+
+    adjusted_xgis = _elo_adjusted_xgis(window, median_elo)
+
+    mean = statistics.mean(adjusted_xgis)
+    if mean == 0:
+        return None
+
+    return statistics.stdev(adjusted_xgis) / mean
+
+
+def compute_cv_xgi_fallback(
+    history: list[dict[str, Any]], current_gw: int,
+) -> float | None:
+    """CV of raw xGI from FPL API history (no Elo adjustment).
+
+    Fallback for players without Core-Insights match records.
+    """
+    import statistics
+
+    qualifying = _qualifying_window(history, current_gw)
+    if len(qualifying) < _CONSISTENCY_MIN_MATCHES:
+        return None
+
+    xgis = [
+        float(h.get("expected_goals", 0) or 0)
+        + float(h.get("expected_assists", 0) or 0)
+        for h in qualifying
+    ]
+
+    mean = statistics.mean(xgis)
+    if mean == 0:
+        return None
+
+    return statistics.stdev(xgis) / mean
+
+
+def compute_blank_rate(
+    history: list[dict[str, Any]], current_gw: int,
+) -> float | None:
+    """Fraction of qualifying matches with total_points <= 2 (appearance only).
+
+    Always from FPL API history. Returns None when fewer than 6 qualifying GWs.
+    """
+    qualifying = _qualifying_window(history, current_gw)
+    if len(qualifying) < _CONSISTENCY_MIN_MATCHES:
+        return None
+
+    blanks = sum(1 for h in qualifying if h.get("total_points", 0) <= 2)
+    return blanks / len(qualifying)
+
+
+def compute_floor_xgi(
+    match_records: list[MatchRecord],
+    current_gw: int,
+    median_elo: float,
+) -> float | None:
+    """25th percentile of Elo-adjusted per-match xGI.
+
+    Returns None when fewer than 6 qualifying matches.
+    """
+    window = _match_record_window(match_records, current_gw)
+    if len(window) < _CONSISTENCY_MIN_MATCHES:
+        return None
+
+    adjusted_xgis = sorted(_elo_adjusted_xgis(window, median_elo))
+    idx = (len(adjusted_xgis) - 1) * 0.25
+    lower = int(idx)
+    frac = idx - lower
+    if lower + 1 < len(adjusted_xgis):
+        return adjusted_xgis[lower] * (1 - frac) + adjusted_xgis[lower + 1] * frac
+    return adjusted_xgis[lower]
+
+
+def compute_floor_xgi_fallback(
+    history: list[dict[str, Any]], current_gw: int,
+) -> float | None:
+    """25th percentile of raw xGI from FPL API history."""
+    qualifying = _qualifying_window(history, current_gw)
+    if len(qualifying) < _CONSISTENCY_MIN_MATCHES:
+        return None
+
+    xgis = sorted(
+        float(h.get("expected_goals", 0) or 0)
+        + float(h.get("expected_assists", 0) or 0)
+        for h in qualifying
+    )
+
+    idx = (len(xgis) - 1) * 0.25
+    lower = int(idx)
+    frac = idx - lower
+    if lower + 1 < len(xgis):
+        return xgis[lower] * (1 - frac) + xgis[lower + 1] * frac
+    return xgis[lower]
+
+
+def compute_involvement_rate(
+    match_records: list[MatchRecord] | None,
+    history: list[dict[str, Any]],
+    current_gw: int,
+    position: str,
+) -> float | None:
+    """Position-specific involvement rate over rolling window.
+
+    ATK (FWD/MID): Core-Insights only. Involved = shots >= 1 OR chances >= 1
+        OR opposition box touches >= 3.
+    DEF: Primary Core-Insights (CBIT + tackles >= 6), fallback FPL API.
+    GK: Returns None (handled by compute_gk_consistency).
+    """
+    if position == "GK":
+        return None
+
+    if position in ATTACKING_POSITIONS:
+        if not match_records:
+            return None
+        window = _match_record_window(match_records, current_gw)
+        if len(window) < _CONSISTENCY_MIN_MATCHES:
+            return None
+        involved = sum(
+            1
+            for m in window
+            if (
+                m.get("total_shots", 0) >= 1
+                or m.get("chances_created", 0) >= 1
+                or m.get("touches_opposition_box", 0) >= 3
+            )
+        )
+        return involved / len(window)
+
+    # DEF
+    if match_records:
+        window = _match_record_window(match_records, current_gw)
+        if len(window) >= _CONSISTENCY_MIN_MATCHES:
+            involved = sum(
+                1
+                for m in window
+                if (
+                    m.get("clearances", 0)
+                    + m.get("blocks", 0)
+                    + m.get("interceptions", 0)
+                    + m.get("tackles_won", 0)
+                ) >= 6
+            )
+            return involved / len(window)
+
+    # DEF fallback: FPL API history
+    qualifying = _qualifying_window(history, current_gw)
+    if len(qualifying) < _CONSISTENCY_MIN_MATCHES:
+        return None
+
+    involved = sum(
+        1
+        for h in qualifying
+        if (
+            int(h.get("clearances_blocks_interceptions", 0) or 0)
+            + int(h.get("tackles", 0) or 0)
+        ) >= 6
+    )
+    return involved / len(qualifying)
+
+
+def compute_gk_consistency(
+    match_records: list[MatchRecord],
+    current_gw: int,
+) -> float | None:
+    """CV of saves per 90 from Core-Insights match data.
+
+    Returns None when fewer than 6 qualifying matches.
+    """
+    import statistics
+
+    window = _match_record_window(match_records, current_gw)
+    if len(window) < _CONSISTENCY_MIN_MATCHES:
+        return None
+
+    saves_per_90: list[float] = []
+    for m in window:
+        minutes = m.get("minutes_played", 0)
+        if minutes == 0:
+            continue
+        saves_per_90.append(m.get("saves", 0) / (minutes / 90))
+
+    if len(saves_per_90) < _CONSISTENCY_MIN_MATCHES:
+        return None
+
+    mean = statistics.mean(saves_per_90)
+    if mean == 0:
+        return None
+
+    return statistics.stdev(saves_per_90) / mean
+
+
+_MIN_PERCENTILE_POOL = 15
+
+
+def _assign_percentile_ranks(
+    values: dict[int, float], *, invert: bool = False,
+) -> dict[int, float]:
+    """Convert raw values to percentile ranks with average-rank tie handling.
+
+    When *invert* is True, lower raw values get higher percentiles
+    (used for CV where low = consistent = good).
+    """
+    if len(values) < _MIN_PERCENTILE_POOL:
+        return {pid: 0.5 for pid in values}
+
+    sorted_items = sorted(values.items(), key=lambda x: x[1])
+    n = len(sorted_items)
+
+    # Assign ordinal ranks, then average ties
+    ordinal: dict[int, int] = {}
+    for rank, (pid, _) in enumerate(sorted_items):
+        ordinal[pid] = rank
+
+    # Group by value to handle ties
+    by_value: dict[float, list[int]] = {}
+    for pid, val in sorted_items:
+        by_value.setdefault(val, []).append(pid)
+
+    avg_ranks: dict[int, float] = {}
+    for pids in by_value.values():
+        avg = sum(ordinal[p] for p in pids) / len(pids)
+        for p in pids:
+            avg_ranks[p] = avg
+
+    result: dict[int, float] = {}
+    for pid in values:
+        pct = avg_ranks[pid] / (n - 1) if n > 1 else 0.5
+        result[pid] = (1.0 - pct) if invert else pct
+
+    return result
+
+
+def build_consistency_lookup(
+    match_records: dict[int, list[MatchRecord]] | None,
+    player_histories: dict[int, list[dict[str, Any]]] | None,
+    positions: dict[int, str],
+    current_gw: int,
+    median_elo: float,
+) -> dict[int, ConsistencySignals]:
+    """Build per-player consistency signals with position-relative percentiles.
+
+    Two-phase: (1) compute raw per-player values, (2) batch percentile
+    conversion within position groups. Players with < 6 qualifying matches
+    are excluded from the percentile pool and absent from the result
+    (callers use NEUTRAL_SIGNALS default).
+    """
+    mr = match_records or {}
+    ph = player_histories or {}
+    all_pids = set(mr.keys()) | set(ph.keys())
+
+    # Phase 1: raw per-player values
+    raw_cvs: dict[int, float] = {}
+    raw_floors: dict[int, float] = {}
+    raw_blank_rates: dict[int, float] = {}
+    raw_involvement: dict[int, float] = {}
+    raw_gk_cv: dict[int, float] = {}
+
+    for pid in all_pids:
+        pos = positions.get(pid, "???")
+        records = mr.get(pid)
+        history = ph.get(pid, [])
+
+        # CV-xGI: primary from match records, fallback from FPL API
+        cv = None
+        if records:
+            cv = compute_cv_xgi(records, current_gw, median_elo)
+        if cv is None and history:
+            cv = compute_cv_xgi_fallback(history, current_gw)
+        if cv is not None:
+            raw_cvs[pid] = cv
+
+        # Blank rate: always from FPL API history
+        br = compute_blank_rate(history, current_gw) if history else None
+        if br is not None:
+            raw_blank_rates[pid] = br
+
+        # Floor: primary from match records, fallback from FPL API
+        floor = None
+        if records:
+            floor = compute_floor_xgi(records, current_gw, median_elo)
+        if floor is None and history:
+            floor = compute_floor_xgi_fallback(history, current_gw)
+        if floor is not None:
+            raw_floors[pid] = floor
+
+        # Involvement rate
+        inv = compute_involvement_rate(records, history, current_gw, pos)
+        if inv is not None:
+            raw_involvement[pid] = inv
+
+        # GK consistency
+        if pos == "GK" and records:
+            gk_cv = compute_gk_consistency(records, current_gw)
+            if gk_cv is not None:
+                raw_gk_cv[pid] = gk_cv
+
+    # Phase 2: percentile conversion by position group
+    pos_groups: dict[str, dict[int, float]] = {}
+    for pid, cv in raw_cvs.items():
+        pos = positions.get(pid, "???")
+        pos_groups.setdefault(pos, {})[pid] = cv
+
+    cv_percentiles: dict[int, float] = {}
+    for group in pos_groups.values():
+        cv_percentiles.update(_assign_percentile_ranks(group, invert=True))
+
+    # Floor percentiles by position (higher floor = higher percentile)
+    floor_pos_groups: dict[str, dict[int, float]] = {}
+    for pid, floor in raw_floors.items():
+        pos = positions.get(pid, "???")
+        floor_pos_groups.setdefault(pos, {})[pid] = floor
+
+    floor_percentiles: dict[int, float] = {}
+    for group in floor_pos_groups.values():
+        floor_percentiles.update(_assign_percentile_ranks(group, invert=False))
+
+    # GK consistency percentiles (single group)
+    gk_percentiles = _assign_percentile_ranks(raw_gk_cv, invert=True)
+
+    # Assemble ConsistencySignals per player
+    result: dict[int, ConsistencySignals] = {}
+    qualifying_pids = set(cv_percentiles.keys()) | set(raw_blank_rates.keys()) | set(
+        floor_percentiles.keys()
+    ) | set(raw_involvement.keys()) | set(gk_percentiles.keys())
+
+    for pid in qualifying_pids:
+        result[pid] = ConsistencySignals(
+            cv_xgi_percentile=cv_percentiles.get(pid, 0.5),
+            blank_rate=raw_blank_rates.get(pid),
+            floor_percentile=floor_percentiles.get(pid, 0.5),
+            involvement_rate=raw_involvement.get(pid),
+            gk_consistency_percentile=gk_percentiles.get(pid, 0.5),
+        )
+
+    return result
+
+
+async def fetch_match_records(
+    current_gw: int,
+) -> dict[int, list[MatchRecord]] | None:
+    """Fetch Core-Insights match-level CSVs and return raw records.
+
+    Owns the CoreInsightsClient lifecycle. Returns None on any failure
+    (graceful degradation). Callers use the records to build derived
+    lookups (adjusted npxG, consistency signals).
     """
     try:
-        import statistics
-
         from fpl_cli.api.core_insights import CoreInsightsClient, make_core_insights_fetcher
 
         async with CoreInsightsClient(make_core_insights_fetcher()) as ci_client:
             all_match_records = await ci_client.get_match_stats(current_gw)
 
-        if not all_match_records:
-            return None
-
-        all_elos = [
-            r["opponent_elo"]
-            for records in all_match_records.values()
-            for r in records
-        ]
-        median_elo = statistics.median(all_elos) if all_elos else 1700.0
-        return build_adjusted_npxg_lookup(all_match_records, current_gw, median_elo)
+        return all_match_records or None
     except Exception:  # noqa: BLE001 — graceful degradation: CI match data unavailable
         import logging
 
         logging.getLogger(__name__).warning(
-            "Failed to compute adjusted npxG lookup", exc_info=True,
+            "Failed to fetch match records", exc_info=True,
         )
         return None
+
+
+def build_npxg_lookup_from_records(
+    all_match_records: dict[int, list[MatchRecord]],
+    current_gw: int,
+) -> dict[int, float]:
+    """Build adjusted npxG lookup from pre-fetched match records.
+
+    Computes median Elo from the records, then delegates to
+    ``build_adjusted_npxg_lookup``.
+    """
+    median_elo = compute_median_elo(all_match_records)
+    return build_adjusted_npxg_lookup(all_match_records, current_gw, median_elo)
 
 
 def compute_adjusted_npxg(
@@ -940,6 +1383,24 @@ def apply_adjusted_npxg(
         enrichment["npxG_per_90"] = lookup[player_id]
 
 
+def apply_consistency(
+    enrichment: dict[str, Any],
+    player_id: int,
+    lookup: dict[int, ConsistencySignals] | None,
+) -> None:
+    """Inject consistency signal fields into enrichment dict."""
+    if not lookup:
+        return
+    signals = lookup.get(player_id)
+    if signals is None:
+        return
+    enrichment["cv_xgi_percentile"] = signals.cv_xgi_percentile
+    enrichment["blank_rate"] = signals.blank_rate
+    enrichment["floor_percentile"] = signals.floor_percentile
+    enrichment["involvement_rate"] = signals.involvement_rate
+    enrichment["gk_consistency_percentile"] = signals.gk_consistency_percentile
+
+
 def normalise_score(raw: float, ceiling: float) -> int:
     """Normalise a raw score to 0-100 against a ceiling."""
     return min(round(raw / ceiling * 100), 100)
@@ -951,6 +1412,8 @@ def build_scoring_enrichment(
     team_short: str,
     gw_history: list[dict[str, Any]] | None,
     next_gw_id: int,
+    *,
+    consistency_lookup: dict[int, ConsistencySignals] | None = None,
 ) -> dict[str, Any]:
     """Build the enrichment dict shared by quality and single-GW scoring paths."""
     enrichment: dict[str, Any] = {"team_short": team_short, **us_match}
@@ -979,6 +1442,9 @@ def build_scoring_enrichment(
         enrichment["xgi_sustainability"] = sustainability
         enrichment["xgi_divergence"] = divergence
 
+    if consistency_lookup:
+        apply_consistency(enrichment, int(getattr(player, "id", 0)), consistency_lookup)
+
     return enrichment
 
 
@@ -1000,6 +1466,7 @@ def compute_quality_value(
     team_short: str = ...,
     gw_history: list[dict[str, Any]] | None = ...,
     raw: Literal[False] = ...,
+    consistency_lookup: dict[int, ConsistencySignals] | None = ...,
 ) -> tuple[int, float | None]: ...
 
 
@@ -1012,6 +1479,7 @@ def compute_quality_value(
     team_short: str = ...,
     gw_history: list[dict[str, Any]] | None = ...,
     raw: Literal[True],
+    consistency_lookup: dict[int, ConsistencySignals] | None = ...,
 ) -> float: ...
 
 
@@ -1023,6 +1491,7 @@ def compute_quality_value(
     team_short: str = "???",
     gw_history: list[dict[str, Any]] | None = None,
     raw: bool = False,
+    consistency_lookup: dict[int, ConsistencySignals] | None = None,
 ) -> tuple[int, float | None] | float:
     """Compute quality_score and quality_per_m for a single player.
 
@@ -1037,7 +1506,10 @@ def compute_quality_value(
         Default: (quality_score 0-100, quality_per_m or None if price is 0)
         raw=True: raw quality float
     """
-    enrichment = build_scoring_enrichment(player, us_match, team_short, gw_history, next_gw_id)
+    enrichment = build_scoring_enrichment(
+        player, us_match, team_short, gw_history, next_gw_id,
+        consistency_lookup=consistency_lookup,
+    )
 
     evaluation, _ = build_player_evaluation(player, enrichment=enrichment)
     q_dict = evaluation.as_quality_dict()
@@ -1241,6 +1713,13 @@ class PlayerEvaluation:
     # Original Understat npxG/90 before fixture adjustment (None when no Understat data)
     raw_npxg_per_90: float | None = None
 
+    # Consistency signals (Phase 1: display only, not used in scoring yet)
+    cv_xgi_percentile: float = 0.5
+    blank_rate: float | None = None
+    floor_percentile: float = 0.5
+    involvement_rate: float | None = None
+    gk_consistency_percentile: float = 0.5
+
     def as_quality_dict(self) -> dict[str, Any]:
         """Return a dict compatible with calculate_player_quality_score's Mapping interface."""
         return {
@@ -1362,6 +1841,11 @@ def build_player_evaluation(
         gk_xgc_quality=float(_get("gk_xgc_quality", 0.0) or 0.0),
         gk_cs_rate=float(_get("gk_cs_rate", 0.0) or 0.0),
         raw_npxg_per_90=_get("raw_npxG_per_90"),
+        cv_xgi_percentile=float(_get("cv_xgi_percentile", 0.5) or 0.5),
+        blank_rate=_get("blank_rate"),
+        floor_percentile=float(_get("floor_percentile", 0.5) or 0.5),
+        involvement_rate=_get("involvement_rate"),
+        gk_consistency_percentile=float(_get("gk_consistency_percentile", 0.5) or 0.5),
     )
 
     # Build identity
@@ -1760,6 +2244,13 @@ def calculate_captain_score(
     if evaluation.status != "a" and evaluation.chance_of_playing is not None:
         reasons.append(f"Flagged ({evaluation.chance_of_playing}% chance)")
 
+    # Blank rate reason (display only)
+    if evaluation.blank_rate is not None:
+        if evaluation.blank_rate >= 0.6:
+            reasons.append(f"Blanks in {evaluation.blank_rate:.0%} of recent matches")
+        elif evaluation.blank_rate <= 0.15:
+            reasons.append(f"Returns in {1 - evaluation.blank_rate:.0%} of recent matches")
+
     primary = matchup_scores[0] if matchup_scores else {}
     result: CaptainCandidate = {
         "id": identity.id,
@@ -1861,6 +2352,12 @@ def calculate_bench_score(
     ):
         score += 0.25
         reasons.append("Set-piece taker")
+
+    # Floor-driven consistency reason (display only)
+    if evaluation.floor_percentile >= 0.7:
+        reasons.append("Consistent performer")
+    elif evaluation.floor_percentile <= 0.3:
+        reasons.append("Volatile output")
 
     raw_score = round(score, 2)
     return {

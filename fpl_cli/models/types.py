@@ -85,6 +85,7 @@ class PlayerStats(TypedDict):
     form_trajectory: NotRequired[float]
     xgi_sustainability: NotRequired[float]
     xgi_divergence: NotRequired[float]
+    cv_xgi_percentile: NotRequired[float]
 
 
 class WaiverTarget(TypedDict):

@@ -73,6 +73,7 @@ def targets_command(min_own: float, min_minutes: int, output_format: str):
             table.add_column("Matchup", justify="right")
             table.add_column("vs Next")
             table.add_column("Score", justify="right")
+            table.add_column("Con", justify="right")
             table.add_column("Avail", justify="right")
 
             for p in all_targets[:15]:
@@ -92,6 +93,9 @@ def targets_command(min_own: float, min_minutes: int, output_format: str):
                 rel = p.get("reliability")
                 rel_str = f"{rel:.0%}" if rel is not None else "-"
 
+                con = p.get("cv_xgi_percentile")
+                con_str = str(round(con * 100)) if con is not None else "-"
+
                 table.add_row(
                     p["player_name"],
                     p["team_short"],
@@ -101,6 +105,7 @@ def targets_command(min_own: float, min_minutes: int, output_format: str):
                     f"[{matchup_style}]{matchup:.1f}[/{matchup_style}]",
                     next_opp,
                     f"[bold]{p['target_score']:.1f}[/bold]",
+                    con_str,
                     rel_str,
                 )
             console.print(table)

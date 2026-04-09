@@ -369,12 +369,13 @@ def _run_with_value(args=None, client=None, us_match=None):
     mock_understat.__aenter__ = AsyncMock(return_value=mock_understat)
     mock_understat.__aexit__ = AsyncMock(return_value=False)
 
-    runner = CliRunner()
+    runner = CliRunner(env={"COLUMNS": "200"})
     with (
         patch("fpl_cli.api.fpl.FPLClient", return_value=client),
         patch("fpl_cli.api.understat.UnderstatClient", return_value=mock_understat),
         patch("fpl_cli.api.understat.match_fpl_to_understat", return_value=us_match),
         patch("fpl_cli.cli.stats.is_custom_analysis_enabled", return_value=True),
+        patch("fpl_cli.services.player_scoring.fetch_match_records", new_callable=AsyncMock, return_value=None),
     ):
         return runner.invoke(main, ["stats", "--value"] + (args or []))
 
