@@ -38,9 +38,9 @@ Errors use `emit_json_error()` with `{"command", "error"}` shape.
 | `preview` | Run full pre-gameweek analysis and generate report | No | General | No | via-agent |
 | `review` | Review a completed gameweek - squad performance and standings | No | General | No | via-agent |
 | `league-recap` | Recap a completed gameweek - awards, standings, and banter | No | General | No | via-agent |
-| `captain` | Analyse and rank captain options for next gameweek. JSON candidates include `adjusted_npxg_per_90` and `raw_npxg_per_90` when fixture adjustment is active | Yes | Classic | Yes | via-agent |
-| `differentials` | Find differential picks - high potential, low ownership | Yes | Classic | Yes | via-agent |
-| `targets` | Find transfer targets - high performers across all ownership | Yes | Classic | Yes | via-agent |
+| `captain` | Analyse and rank captain options for next gameweek. JSON candidates include `adjusted_npxg_per_90` and `raw_npxg_per_90` when fixture adjustment is active. Consistency tiebreaker (CV-xGI percentile) phased in GW6-10 | Yes | Classic | Yes | via-agent |
+| `differentials` | Find differential picks - high potential, low ownership. Inverted consistency bonus (volatile players score higher, phased in GW6-10) | Yes | Classic | Yes | via-agent |
+| `targets` | Find transfer targets - high performers across all ownership. Consistency bonus (CV-xGI percentile, phased in GW6-10) | Yes | Classic | Yes | via-agent |
 | `transfer-eval` | Compare transfer OUT player against IN candidates. JSON includes `adjusted_npxg_per_90` and `raw_npxg_per_90` per player when fixture adjustment is active | Yes | General | Yes | via-agent |
 | `allocate` | Select mathematically optimal 15-player squad within budget | Yes | Classic | Yes | direct-api |
 | `waivers` | Show waiver recommendations for your draft league | Yes | Draft | Yes | via-agent |

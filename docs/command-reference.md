@@ -57,7 +57,7 @@ fpl captain --format json
 
 Output columns: Score, Atk, Def, Form±, Pos±.
 
-Score combines position-weighted matchup quality, recent form (with trajectory adjustment), and xGI per 90. DGW players are scored across both fixtures. See [Captain Score](custom-analysis.md#captain-score) for the full formula, [Matchup Scoring](custom-analysis.md#matchup-scoring) for column definitions.
+Score combines position-weighted matchup quality, recent form (with trajectory adjustment), xGI per 90, and a consistency tiebreaker (CV-xGI percentile, phased in GW6-10). DGW players are scored across both fixtures. See [Captain Score](custom-analysis.md#captain-score) for the full formula, [Matchup Scoring](custom-analysis.md#matchup-scoring) for column definitions.
 
 ### Transfer Targets
 
@@ -75,7 +75,7 @@ Groups players into tiers:
 - **Popular** (15-30% owned): Emerging picks
 - **Differential** (<15% owned): Low-ownership value
 
-Target score combines xG metrics, form, PPG, and 3-GW matchup quality, normalised to 0-100. Subject to [early-season shrinkage](custom-analysis.md#early-season-confidence-gw1-10). See [Target Score](custom-analysis.md#target-score) for the full formula.
+Target score combines xG metrics, form, PPG, 3-GW matchup quality, and consistency (CV-xGI percentile bonus, phased in GW6-10), normalised to 0-100. Subject to [early-season shrinkage](custom-analysis.md#early-season-confidence-gw1-10). See [Target Score](custom-analysis.md#target-score) for the full formula.
 
 ### Transfer Evaluation
 
@@ -121,7 +121,7 @@ fpl differentials -m 200     # Require 200+ minutes played
 fpl differentials --format json  # JSON envelope (metadata: {gameweek})
 ```
 
-Differential score combines xG metrics, form, ownership bonus, and 3-GW matchup quality, normalised to 0-100. Subject to [early-season shrinkage](custom-analysis.md#early-season-confidence-gw1-10). See [Differential Score](custom-analysis.md#differential-score) for the full formula.
+Differential score combines xG metrics, form, ownership bonus, 3-GW matchup quality, and consistency (inverted CV-xGI bonus - volatile players score higher, phased in GW6-10), normalised to 0-100. Subject to [early-season shrinkage](custom-analysis.md#early-season-confidence-gw1-10). See [Differential Score](custom-analysis.md#differential-score) for the full formula.
 
 ### Waiver Recommendations
 
@@ -134,7 +134,7 @@ fpl waivers --format json
 
 Identifies squad weaknesses by position, ranks available free agents by waiver score, suggests who to drop for each pickup. This covers the waiver wire (unclaimed players) only - trade recommendations between managers are not in scope.
 
-Waiver score combines xGI, form, PPG, and 3-GW matchup quality, normalised to 0-100. Uses a stricter minutes factor than target/differential because draft waivers are a season commitment. Subject to [early-season shrinkage](custom-analysis.md#early-season-confidence-gw1-10). See [Waiver Score](custom-analysis.md#waiver-score) for the full formula.
+Waiver score combines xGI, form, PPG, 3-GW matchup quality, and consistency (CV-xGI percentile bonus, phased in GW6-10), normalised to 0-100. Uses a stricter minutes factor than target/differential because draft waivers are a season commitment. Subject to [early-season shrinkage](custom-analysis.md#early-season-confidence-gw1-10). See [Waiver Score](custom-analysis.md#waiver-score) for the full formula.
 
 ## Fixture & Strategic Planning
 
