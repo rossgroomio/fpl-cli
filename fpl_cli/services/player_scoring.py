@@ -1072,8 +1072,7 @@ def compute_involvement_rate(
         1
         for h in qualifying
         if (
-            int(h.get("clean_sheets", 0))  # CBI proxy not in FPL API
-            + int(h.get("clearances_blocks_interceptions", 0) or 0)
+            int(h.get("clearances_blocks_interceptions", 0) or 0)
             + int(h.get("tackles", 0) or 0)
         ) >= 6
     )
