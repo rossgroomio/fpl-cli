@@ -39,7 +39,14 @@ from fpl_cli.services.player_scoring import (
     calculate_target_score,
     calculate_waiver_score,
     compute_aggregate_matchup,
+    compute_blank_rate,
+    compute_cv_xgi,
+    compute_cv_xgi_fallback,
+    compute_floor_xgi,
+    compute_floor_xgi_fallback,
     compute_form_trajectory,
+    compute_gk_consistency,
+    compute_involvement_rate,
     compute_xgi_sustainability,
     normalise_score,
     prepare_scoring_data,
@@ -3265,3 +3272,257 @@ class TestTransferEvalAdjustedNpxgFields:
         result = TransferEvalAgent._build_player_dict(target, lineup, outlook_delta=5, gw_delta=2)
         assert "raw_npxg_per_90" not in result
         assert "adjusted_npxg_per_90" not in result
+
+
+# ---------------------------------------------------------------------------
+# Consistency signal computation
+# ---------------------------------------------------------------------------
+
+
+class TestComputeCvXgi:
+    def test_stable_series_returns_low_cv(self):
+        records = [
+            _make_match(gw, xg=0.3, xa=0.1, minutes_played=90, opponent_elo=MEDIAN_ELO)
+            for gw in range(1, 8)
+        ]
+        result = compute_cv_xgi(records, current_gw=10, median_elo=MEDIAN_ELO)
+        assert result is not None
+        assert result == 0.0  # identical values -> zero CV
+
+    def test_volatile_series_returns_high_cv(self):
+        xgis = [0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.3]
+        records = [
+            _make_match(gw, xg=x, xa=0.1, minutes_played=90, opponent_elo=MEDIAN_ELO)
+            for gw, x in enumerate(xgis, start=1)
+        ]
+        result = compute_cv_xgi(records, current_gw=10, median_elo=MEDIAN_ELO)
+        assert result is not None
+        assert result > 1.0  # highly volatile
+
+    def test_fewer_than_6_returns_none(self):
+        records = [
+            _make_match(gw, xg=0.4, xa=0.1, minutes_played=90, opponent_elo=MEDIAN_ELO)
+            for gw in range(1, 6)
+        ]
+        assert compute_cv_xgi(records, current_gw=10, median_elo=MEDIAN_ELO) is None
+
+    def test_all_zeros_returns_none(self):
+        records = [
+            _make_match(gw, xg=0.0, xa=0.0, minutes_played=90, opponent_elo=MEDIAN_ELO)
+            for gw in range(1, 8)
+        ]
+        assert compute_cv_xgi(records, current_gw=10, median_elo=MEDIAN_ELO) is None
+
+    def test_single_nonzero_in_window_returns_high_cv(self):
+        records = [
+            _make_match(gw, xg=0.0 if gw < 7 else 0.5, xa=0.0, minutes_played=90, opponent_elo=MEDIAN_ELO)
+            for gw in range(1, 8)
+        ]
+        result = compute_cv_xgi(records, current_gw=10, median_elo=MEDIAN_ELO)
+        assert result is not None
+        assert result > 2.0
+
+    def test_elo_adjustment_changes_values(self):
+        records = [
+            _make_match(gw, xg=0.4, xa=0.1, minutes_played=90, opponent_elo=1500.0)
+            for gw in range(1, 8)
+        ]
+        result = compute_cv_xgi(records, current_gw=10, median_elo=MEDIAN_ELO)
+        assert result is not None
+        # All same opponent -> still zero CV (uniform adjustment)
+        assert result == 0.0
+
+    def test_dgw_records_both_counted(self):
+        records = [
+            _make_match(gw, xg=0.3, xa=0.1, minutes_played=90, opponent_elo=MEDIAN_ELO)
+            for gw in range(1, 7)
+        ]
+        # Add second match in GW6 (DGW)
+        records.append(
+            _make_match(6, xg=0.5, xa=0.2, minutes_played=90, opponent_elo=MEDIAN_ELO)
+        )
+        result = compute_cv_xgi(records, current_gw=10, median_elo=MEDIAN_ELO)
+        assert result is not None
+        assert result > 0.0  # DGW introduces variance
+
+
+class TestComputeCvXgiFallback:
+    def test_produces_cv_without_elo(self):
+        history = [
+            {"round": gw, "minutes": 90, "expected_goals": 0.3, "expected_assists": 0.1}
+            for gw in range(1, 8)
+        ]
+        result = compute_cv_xgi_fallback(history, current_gw=10)
+        assert result is not None
+        assert result == 0.0  # identical values
+
+    def test_fewer_than_6_returns_none(self):
+        history = [
+            {"round": gw, "minutes": 90, "expected_goals": 0.3, "expected_assists": 0.1}
+            for gw in range(1, 4)
+        ]
+        assert compute_cv_xgi_fallback(history, current_gw=10) is None
+
+    def test_all_zeros_returns_none(self):
+        history = [
+            {"round": gw, "minutes": 90, "expected_goals": 0.0, "expected_assists": 0.0}
+            for gw in range(1, 8)
+        ]
+        assert compute_cv_xgi_fallback(history, current_gw=10) is None
+
+
+class TestComputeBlankRate:
+    def test_happy_path(self):
+        # pts <= 2 at GW1(2), GW3(1), GW5(2), GW7(2) = 4 blanks
+        history = [
+            {"round": gw, "minutes": 90, "total_points": pts}
+            for gw, pts in [(1, 2), (2, 8), (3, 1), (4, 6), (5, 2), (6, 10), (7, 2)]
+        ]
+        result = compute_blank_rate(history, current_gw=10)
+        assert result is not None
+        assert result == pytest.approx(4 / 7)
+
+    def test_def_with_blanks(self):
+        history = [
+            {"round": gw, "minutes": 90, "total_points": pts}
+            for gw, pts in [(1, 6), (2, 6), (3, 2), (4, 6), (5, 6), (6, 2), (7, 6)]
+        ]
+        result = compute_blank_rate(history, current_gw=10)
+        assert result is not None
+        assert result == pytest.approx(2 / 7)
+
+    def test_fewer_than_6_returns_none(self):
+        history = [
+            {"round": gw, "minutes": 90, "total_points": 5}
+            for gw in range(1, 4)
+        ]
+        assert compute_blank_rate(history, current_gw=10) is None
+
+
+class TestComputeFloorXgi:
+    def test_happy_path_p25(self):
+        xg_vals = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
+        records = [
+            _make_match(gw, xg=x, xa=0.0, minutes_played=90, opponent_elo=MEDIAN_ELO)
+            for gw, x in enumerate(xg_vals, start=1)
+        ]
+        result = compute_floor_xgi(records, current_gw=10, median_elo=MEDIAN_ELO)
+        assert result is not None
+        # p25 of [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7] = index 1.5 -> 0.25
+        assert result == pytest.approx(0.25, abs=0.01)
+
+    def test_fewer_than_6_returns_none(self):
+        records = [
+            _make_match(gw, xg=0.3, xa=0.0, minutes_played=90, opponent_elo=MEDIAN_ELO)
+            for gw in range(1, 4)
+        ]
+        assert compute_floor_xgi(records, current_gw=10, median_elo=MEDIAN_ELO) is None
+
+
+class TestComputeFloorXgiFallback:
+    def test_happy_path_p25(self):
+        xg_vals = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
+        history = [
+            {"round": gw, "minutes": 90, "expected_goals": x, "expected_assists": 0.0}
+            for gw, x in enumerate(xg_vals, start=1)
+        ]
+        result = compute_floor_xgi_fallback(history, current_gw=10)
+        assert result is not None
+        assert result == pytest.approx(0.25, abs=0.01)
+
+
+class TestComputeInvolvementRate:
+    def test_atk_happy_path(self):
+        records = [
+            _make_match(gw, xg=0.3, minutes_played=90, opponent_elo=MEDIAN_ELO,
+                        total_shots=2, chances_created=1, touches_opposition_box=5)
+            for gw in range(1, 8)
+        ]
+        result = compute_involvement_rate(records, [], current_gw=10, position="FWD")
+        assert result == pytest.approx(1.0)
+
+    def test_atk_partial_involvement(self):
+        records = []
+        for gw in range(1, 8):
+            if gw <= 5:
+                records.append(_make_match(gw, xg=0.3, minutes_played=90, opponent_elo=MEDIAN_ELO,
+                                           total_shots=2))
+            else:
+                records.append(_make_match(gw, xg=0.0, minutes_played=90, opponent_elo=MEDIAN_ELO))
+        result = compute_involvement_rate(records, [], current_gw=10, position="MID")
+        assert result is not None
+        assert result == pytest.approx(5 / 7)
+
+    def test_def_core_insights(self):
+        records = [
+            _make_match(gw, xg=0.0, minutes_played=90, opponent_elo=MEDIAN_ELO,
+                        clearances=3, blocks=1, interceptions=1, tackles_won=tw)
+            for gw, tw in [(1, 3), (2, 1), (3, 4), (4, 2), (5, 1), (6, 3), (7, 0)]
+        ]
+        # CBIT+tackles: 8, 6, 9, 7, 6, 8, 5 -> 6 involved (>= 6)
+        result = compute_involvement_rate(records, [], current_gw=10, position="DEF")
+        # Only GW7 (sum=5) is not involved
+        expected = 6 / 7
+        assert result == pytest.approx(expected)
+
+    def test_def_fallback_to_fpl_api(self):
+        history = [
+            {"round": gw, "minutes": 90,
+             "clearances_blocks_interceptions": cbi, "tackles": t}
+            for gw, cbi, t in [
+                (1, 4, 3), (2, 2, 1), (3, 5, 2), (4, 3, 1),
+                (5, 4, 2), (6, 5, 3), (7, 1, 1),
+            ]
+        ]
+        result = compute_involvement_rate(None, history, current_gw=10, position="DEF")
+        # CBI+tackles: 7, 3, 7, 4, 6, 8, 2 -> 4 involved
+        assert result == pytest.approx(4 / 7)
+
+    def test_gk_returns_none(self):
+        assert compute_involvement_rate([], [], current_gw=10, position="GK") is None
+
+    def test_atk_no_records_returns_none(self):
+        assert compute_involvement_rate(None, [], current_gw=10, position="FWD") is None
+
+    def test_fewer_than_6_returns_none(self):
+        records = [
+            _make_match(gw, xg=0.3, minutes_played=90, opponent_elo=MEDIAN_ELO,
+                        total_shots=2)
+            for gw in range(1, 4)
+        ]
+        assert compute_involvement_rate(records, [], current_gw=10, position="FWD") is None
+
+
+class TestComputeGkConsistency:
+    def test_stable_saves_returns_low_cv(self):
+        records = [
+            _make_match(gw, xg=0.0, minutes_played=90, opponent_elo=MEDIAN_ELO, saves=3)
+            for gw in range(1, 8)
+        ]
+        result = compute_gk_consistency(records, current_gw=10)
+        assert result is not None
+        assert result == 0.0  # identical saves/90
+
+    def test_variable_saves_returns_positive_cv(self):
+        save_counts = [1, 5, 2, 6, 3, 4, 7]
+        records = [
+            _make_match(gw, xg=0.0, minutes_played=90, opponent_elo=MEDIAN_ELO, saves=s)
+            for gw, s in enumerate(save_counts, start=1)
+        ]
+        result = compute_gk_consistency(records, current_gw=10)
+        assert result is not None
+        assert result > 0.3  # meaningfully variable
+
+    def test_fewer_than_6_returns_none(self):
+        records = [
+            _make_match(gw, xg=0.0, minutes_played=90, opponent_elo=MEDIAN_ELO, saves=3)
+            for gw in range(1, 4)
+        ]
+        assert compute_gk_consistency(records, current_gw=10) is None
+
+    def test_zero_saves_returns_none(self):
+        records = [
+            _make_match(gw, xg=0.0, minutes_played=90, opponent_elo=MEDIAN_ELO, saves=0)
+            for gw in range(1, 8)
+        ]
+        assert compute_gk_consistency(records, current_gw=10) is None

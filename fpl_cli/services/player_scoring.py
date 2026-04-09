@@ -834,6 +834,248 @@ def compute_xgi_sustainability(
     return multiplier, avg_divergence
 
 
+# ---------------------------------------------------------------------------
+# Consistency signal computation
+# ---------------------------------------------------------------------------
+
+_CONSISTENCY_MIN_MATCHES = 6
+
+
+def _match_record_window(
+    match_records: list[MatchRecord], current_gw: int, size: int = 7,
+) -> list[MatchRecord]:
+    """Recent qualifying match records: minutes > 0, within 12-GW lookback, most recent *size*."""
+    cutoff = current_gw - 12
+    qualifying = [
+        m for m in match_records
+        if m.get("minutes_played", 0) > 0 and m.get("gameweek", 0) > cutoff
+    ]
+    qualifying.sort(key=lambda m: m["gameweek"])
+    return qualifying[-size:]
+
+
+def compute_cv_xgi(
+    match_records: list[MatchRecord],
+    current_gw: int,
+    median_elo: float,
+) -> float | None:
+    """CV of Elo-adjusted xGI over rolling window.
+
+    Returns None when fewer than 6 qualifying matches or mean xGI is zero.
+    """
+    import statistics
+
+    window = _match_record_window(match_records, current_gw)
+    if len(window) < _CONSISTENCY_MIN_MATCHES:
+        return None
+
+    adjusted_xgis: list[float] = []
+    for m in window:
+        opp_elo = m.get("opponent_elo", median_elo)
+        if opp_elo <= 0:
+            opp_elo = median_elo
+        factor = max(0.80, min(1.25, median_elo / opp_elo))
+        xgi = (m.get("xg", 0.0) + m.get("xa", 0.0)) * factor
+        adjusted_xgis.append(xgi)
+
+    mean = statistics.mean(adjusted_xgis)
+    if mean == 0:
+        return None
+
+    return statistics.stdev(adjusted_xgis) / mean
+
+
+def compute_cv_xgi_fallback(
+    history: list[dict[str, Any]], current_gw: int,
+) -> float | None:
+    """CV of raw xGI from FPL API history (no Elo adjustment).
+
+    Fallback for players without Core-Insights match records.
+    """
+    import statistics
+
+    qualifying = _qualifying_window(history, current_gw)
+    if len(qualifying) < _CONSISTENCY_MIN_MATCHES:
+        return None
+
+    xgis = [
+        float(h.get("expected_goals", 0) or 0)
+        + float(h.get("expected_assists", 0) or 0)
+        for h in qualifying
+    ]
+
+    mean = statistics.mean(xgis)
+    if mean == 0:
+        return None
+
+    return statistics.stdev(xgis) / mean
+
+
+def compute_blank_rate(
+    history: list[dict[str, Any]], current_gw: int,
+) -> float | None:
+    """Fraction of qualifying matches with total_points <= 2 (appearance only).
+
+    Always from FPL API history. Returns None when fewer than 6 qualifying GWs.
+    """
+    qualifying = _qualifying_window(history, current_gw)
+    if len(qualifying) < _CONSISTENCY_MIN_MATCHES:
+        return None
+
+    blanks = sum(1 for h in qualifying if h.get("total_points", 0) <= 2)
+    return blanks / len(qualifying)
+
+
+def compute_floor_xgi(
+    match_records: list[MatchRecord],
+    current_gw: int,
+    median_elo: float,
+) -> float | None:
+    """25th percentile of Elo-adjusted per-match xGI.
+
+    Returns None when fewer than 6 qualifying matches.
+    """
+    window = _match_record_window(match_records, current_gw)
+    if len(window) < _CONSISTENCY_MIN_MATCHES:
+        return None
+
+    adjusted_xgis: list[float] = []
+    for m in window:
+        opp_elo = m.get("opponent_elo", median_elo)
+        if opp_elo <= 0:
+            opp_elo = median_elo
+        factor = max(0.80, min(1.25, median_elo / opp_elo))
+        xgi = (m.get("xg", 0.0) + m.get("xa", 0.0)) * factor
+        adjusted_xgis.append(xgi)
+
+    adjusted_xgis.sort()
+    idx = (len(adjusted_xgis) - 1) * 0.25
+    lower = int(idx)
+    frac = idx - lower
+    if lower + 1 < len(adjusted_xgis):
+        return adjusted_xgis[lower] * (1 - frac) + adjusted_xgis[lower + 1] * frac
+    return adjusted_xgis[lower]
+
+
+def compute_floor_xgi_fallback(
+    history: list[dict[str, Any]], current_gw: int,
+) -> float | None:
+    """25th percentile of raw xGI from FPL API history."""
+    qualifying = _qualifying_window(history, current_gw)
+    if len(qualifying) < _CONSISTENCY_MIN_MATCHES:
+        return None
+
+    xgis = sorted(
+        float(h.get("expected_goals", 0) or 0)
+        + float(h.get("expected_assists", 0) or 0)
+        for h in qualifying
+    )
+
+    idx = (len(xgis) - 1) * 0.25
+    lower = int(idx)
+    frac = idx - lower
+    if lower + 1 < len(xgis):
+        return xgis[lower] * (1 - frac) + xgis[lower + 1] * frac
+    return xgis[lower]
+
+
+def compute_involvement_rate(
+    match_records: list[MatchRecord] | None,
+    history: list[dict[str, Any]],
+    current_gw: int,
+    position: str,
+) -> float | None:
+    """Position-specific involvement rate over rolling window.
+
+    ATK (FWD/MID): Core-Insights only. Involved = shots >= 1 OR chances >= 1
+        OR opposition box touches >= 3.
+    DEF: Primary Core-Insights (CBIT + tackles >= 6), fallback FPL API.
+    GK: Returns None (handled by compute_gk_consistency).
+    """
+    if position == "GK":
+        return None
+
+    if position in ATTACKING_POSITIONS:
+        if not match_records:
+            return None
+        window = _match_record_window(match_records, current_gw)
+        if len(window) < _CONSISTENCY_MIN_MATCHES:
+            return None
+        involved = sum(
+            1
+            for m in window
+            if (
+                m.get("total_shots", 0) >= 1
+                or m.get("chances_created", 0) >= 1
+                or m.get("touches_opposition_box", 0) >= 3
+            )
+        )
+        return involved / len(window)
+
+    # DEF
+    if match_records:
+        window = _match_record_window(match_records, current_gw)
+        if len(window) >= _CONSISTENCY_MIN_MATCHES:
+            involved = sum(
+                1
+                for m in window
+                if (
+                    m.get("clearances", 0)
+                    + m.get("blocks", 0)
+                    + m.get("interceptions", 0)
+                    + m.get("tackles_won", 0)
+                ) >= 6
+            )
+            return involved / len(window)
+
+    # DEF fallback: FPL API history
+    qualifying = _qualifying_window(history, current_gw)
+    if len(qualifying) < _CONSISTENCY_MIN_MATCHES:
+        return None
+
+    involved = sum(
+        1
+        for h in qualifying
+        if (
+            int(h.get("clean_sheets", 0))  # CBI proxy not in FPL API
+            + int(h.get("clearances_blocks_interceptions", 0) or 0)
+            + int(h.get("tackles", 0) or 0)
+        ) >= 6
+    )
+    return involved / len(qualifying)
+
+
+def compute_gk_consistency(
+    match_records: list[MatchRecord],
+    current_gw: int,
+) -> float | None:
+    """CV of saves per 90 from Core-Insights match data.
+
+    Returns None when fewer than 6 qualifying matches.
+    """
+    import statistics
+
+    window = _match_record_window(match_records, current_gw)
+    if len(window) < _CONSISTENCY_MIN_MATCHES:
+        return None
+
+    saves_per_90: list[float] = []
+    for m in window:
+        minutes = m.get("minutes_played", 0)
+        if minutes == 0:
+            continue
+        saves_per_90.append(m.get("saves", 0) / (minutes / 90))
+
+    if len(saves_per_90) < _CONSISTENCY_MIN_MATCHES:
+        return None
+
+    mean = statistics.mean(saves_per_90)
+    if mean == 0:
+        return None
+
+    return statistics.stdev(saves_per_90) / mean
+
+
 async def fetch_match_records(
     current_gw: int,
 ) -> dict[int, list[MatchRecord]] | None:
