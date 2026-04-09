@@ -217,6 +217,7 @@ def player_command(
                 adjusted_npxg_scores: dict[int, float] = {}
                 custom_on = is_custom_analysis_enabled(settings)
                 rolling_window = int(settings.get("rolling_window", 5))
+                consistency_lookup: dict = {}
                 if custom_on:
                     match_data = await fetch_match_records(next_gw_id)
                     if match_data:
@@ -246,6 +247,28 @@ def player_command(
                             sustainability_scores[p.id] = compute_xgi_sustainability(
                                 hist, next_gw_id, p.position_name,
                             )
+
+                    # Build consistency lookup from match records + histories
+                    if match_data:
+                        import statistics as _stats
+
+                        from fpl_cli.services.player_scoring import build_consistency_lookup
+
+                        all_elos = [
+                            r["opponent_elo"]
+                            for records in match_data.values()
+                            for r in records
+                        ]
+                        median_elo = _stats.median(all_elos) if all_elos else 1700.0
+                        pos_map = {p.id: p.position_name for p in display}
+                        hist_map = {
+                            p.id: (detail_map.get(p.id) or {}).get("history", [])
+                            for p in display
+                        }
+                        consistency_lookup = build_consistency_lookup(
+                            match_data, hist_map, pos_map,
+                            next_gw_id, median_elo,
+                        )
 
                 # JSON output mode
                 if output_format == "json":
@@ -336,6 +359,16 @@ def player_command(
                             rv, rc = rolling_scores.get(p.id, (None, None))
                             player_dict["info"]["rolling_pts_per_m"] = rv
                             player_dict["info"]["rolling_fixture_count"] = rc
+
+                            con_signals = consistency_lookup.get(p.id)
+                            if con_signals is not None:
+                                player_dict["info"]["cv_xgi_percentile"] = round(con_signals.cv_xgi_percentile, 4)
+                                player_dict["info"]["blank_rate"] = con_signals.blank_rate
+                                player_dict["info"]["floor_percentile"] = round(con_signals.floor_percentile, 4)
+                                player_dict["info"]["involvement_rate"] = con_signals.involvement_rate
+                                player_dict["info"]["gk_consistency_percentile"] = round(
+                                    con_signals.gk_consistency_percentile, 4,
+                                )
 
                             if fixtures:
                                 player_dict["fixtures"] = await _get_fixture_run_data(
@@ -434,6 +467,17 @@ def player_command(
                         v = quality_per_m_scores[p.id]
                         v_str = f"{v}/£m" if v is not None else "N/A"
                         lines.append(f"Quality: {q} | Quality/£m: {v_str}")
+                    con_signals = consistency_lookup.get(p.id)
+                    if con_signals is not None:
+                        con_parts = [f"Con: {round(con_signals.cv_xgi_percentile * 100)}"]
+                        if con_signals.blank_rate is not None:
+                            con_parts.append(f"Blanks: {con_signals.blank_rate:.0%}")
+                        con_parts.append(f"Floor: {round(con_signals.floor_percentile * 100)}")
+                        if con_signals.involvement_rate is not None:
+                            con_parts.append(f"Inv: {con_signals.involvement_rate:.0%}")
+                        if p.position_name == "GK":
+                            con_parts.append(f"GK Con: {round(con_signals.gk_consistency_percentile * 100)}")
+                        lines.append(" | ".join(con_parts))
                     if draft_line:
                         lines.append(draft_line.rstrip("\n"))
                     lines.append(f"Status: {_status_display(p)}")

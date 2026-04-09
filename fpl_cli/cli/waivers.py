@@ -89,6 +89,7 @@ def waivers_command(output_format: str):
             table.add_column("Pos")
             table.add_column("Form", justify="right")
             table.add_column("Avail", justify="right")
+            table.add_column("Con", justify="right")
             table.add_column("Drop")
             table.add_column("Reasons")
 
@@ -104,6 +105,9 @@ def waivers_command(output_format: str):
 
                 rel = target.get("reliability")
                 rel_str = f"{rel:.0%}" if rel is not None else "-"
+                con = target.get("cv_xgi_percentile")
+                con_str = str(round(con * 100)) if con is not None else "-"
+
                 table.add_row(
                     str(rec["priority"]),
                     target["name"],
@@ -111,6 +115,7 @@ def waivers_command(output_format: str):
                     target["position"],
                     f"{target['form']:.1f}",
                     rel_str,
+                    con_str,
                     drop_str,
                     ", ".join(rec["reasons"][:2]),
                 )

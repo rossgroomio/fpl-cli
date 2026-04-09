@@ -2238,6 +2238,13 @@ def calculate_captain_score(
     if evaluation.status != "a" and evaluation.chance_of_playing is not None:
         reasons.append(f"Flagged ({evaluation.chance_of_playing}% chance)")
 
+    # Blank rate reason (display only)
+    if evaluation.blank_rate is not None:
+        if evaluation.blank_rate >= 0.6:
+            reasons.append(f"Blanks in {evaluation.blank_rate:.0%} of recent matches")
+        elif evaluation.blank_rate <= 0.15:
+            reasons.append(f"Returns in {1 - evaluation.blank_rate:.0%} of recent matches")
+
     primary = matchup_scores[0] if matchup_scores else {}
     result: CaptainCandidate = {
         "id": identity.id,
@@ -2339,6 +2346,12 @@ def calculate_bench_score(
     ):
         score += 0.25
         reasons.append("Set-piece taker")
+
+    # Floor-driven consistency reason (display only)
+    if evaluation.floor_percentile >= 0.7:
+        reasons.append("Consistent performer")
+    elif evaluation.floor_percentile <= 0.3 and evaluation.floor_percentile != 0.5:
+        reasons.append("Volatile output")
 
     raw_score = round(score, 2)
     return {

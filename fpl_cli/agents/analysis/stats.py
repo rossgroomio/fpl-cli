@@ -619,6 +619,7 @@ class StatsAgent(Agent):
                 "positional_fdr": p.get("positional_fdr"),
                 "next_opponent": p.get("next_opponent"),
                 "reliability": _prior.reliability if _prior is not None else None,
+                "cv_xgi_percentile": self._get_consistency_percentile(p["id"]),
             })
 
         # Apply early-season shrinkage
@@ -722,6 +723,7 @@ class StatsAgent(Agent):
                 "positional_fdr": p.get("positional_fdr"),
                 "next_opponent": p.get("next_opponent"),
                 "reliability": _prior.reliability if _prior is not None else None,
+                "cv_xgi_percentile": self._get_consistency_percentile(p["id"]),
             })
 
         # Apply early-season shrinkage
@@ -772,6 +774,14 @@ class StatsAgent(Agent):
             evaluation,
             next_gw_id=self._next_gw_id,
         )
+
+    def _get_consistency_percentile(self, player_id: int | None) -> float | None:
+        """Get CV-xGI percentile for a player, or None if unavailable."""
+        lookup = getattr(self, "_consistency_lookup", None)
+        if not lookup or player_id is None:
+            return None
+        signals = lookup.get(player_id)
+        return signals.cv_xgi_percentile if signals is not None else None
 
     def _prior_enrichment(self, player_id: int | None) -> dict[str, Any] | None:
         """Build enrichment dict with prior_confidence if available."""
