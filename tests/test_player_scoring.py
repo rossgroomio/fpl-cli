@@ -9,8 +9,11 @@ from fpl_cli.models.player import PlayerPosition, PlayerStatus
 from fpl_cli.services.player_prior import PlayerPrior
 from fpl_cli.services.player_scoring import (
     ATTACKING_POSITIONS,
+    NEUTRAL_SIGNALS,
+    _assign_percentile_ranks,
     apply_adjusted_npxg,
     build_adjusted_npxg_lookup,
+    build_consistency_lookup,
     compute_adjusted_npxg,
     DIFFERENTIAL_QUALITY_WEIGHTS,
     GK_VALUE_CEILING,
@@ -3526,3 +3529,161 @@ class TestComputeGkConsistency:
             for gw in range(1, 8)
         ]
         assert compute_gk_consistency(records, current_gw=10) is None
+
+
+# ---------------------------------------------------------------------------
+# Percentile ranks + build_consistency_lookup
+# ---------------------------------------------------------------------------
+
+
+class TestAssignPercentileRanks:
+    def test_inverted_lowest_value_gets_highest_percentile(self):
+        values = {1: 0.1, 2: 0.5, 3: 0.9}
+        # Need 15+ for real percentiles, pad with more
+        for i in range(4, 20):
+            values[i] = 0.3 + i * 0.01
+        result = _assign_percentile_ranks(values, invert=True)
+        assert result[1] > result[3]  # lowest CV -> highest percentile
+
+    def test_below_min_pool_all_neutral(self):
+        values = {1: 0.1, 2: 0.5, 3: 0.9}
+        result = _assign_percentile_ranks(values, invert=True)
+        assert all(v == 0.5 for v in result.values())
+
+    def test_ties_get_same_percentile(self):
+        values = {}
+        for i in range(1, 16):
+            values[i] = 0.5 if i <= 3 else 0.3 + i * 0.01
+        result = _assign_percentile_ranks(values, invert=False)
+        assert result[1] == result[2] == result[3]
+
+    def test_exactly_15_computes_percentiles(self):
+        values = {i: float(i) for i in range(1, 16)}
+        result = _assign_percentile_ranks(values, invert=False)
+        assert result[1] == pytest.approx(0.0)
+        assert result[15] == pytest.approx(1.0)
+
+    def test_all_identical_values_get_neutral(self):
+        values = {i: 0.5 for i in range(1, 20)}
+        result = _assign_percentile_ranks(values, invert=True)
+        assert all(v == pytest.approx(0.5) for v in result.values())
+
+
+class TestBuildConsistencyLookup:
+    def _make_fwd_records(self, pid: int, xg_vals: list[float]):
+        return [
+            _make_match(gw, xg=x, xa=0.1, minutes_played=90, opponent_elo=MEDIAN_ELO,
+                        total_shots=2, chances_created=1)
+            for gw, x in enumerate(xg_vals, start=1)
+        ]
+
+    def test_happy_path_20_fwd_players(self):
+        """20 FWD players with varying CVs produce percentiles spanning 0-1."""
+        match_records: dict[int, list] = {}
+        positions: dict[int, str] = {}
+        histories: dict[int, list] = {}
+        for pid in range(1, 21):
+            volatility = pid * 0.05
+            xg_vals = [0.3 + (volatility if gw % 2 == 0 else -volatility) for gw in range(7)]
+            match_records[pid] = self._make_fwd_records(pid, xg_vals)
+            positions[pid] = "FWD"
+            histories[pid] = [
+                {"round": gw, "minutes": 90, "total_points": 5}
+                for gw in range(1, 8)
+            ]
+
+        result = build_consistency_lookup(
+            match_records, histories, positions, current_gw=10, median_elo=MEDIAN_ELO,
+        )
+        assert len(result) > 0
+        percentiles = [s.cv_xgi_percentile for s in result.values()]
+        assert min(percentiles) < 0.2
+        assert max(percentiles) > 0.8
+
+    def test_lowest_cv_gets_highest_percentile(self):
+        """Most consistent player (lowest CV) gets percentile closest to 1.0."""
+        match_records: dict[int, list] = {}
+        positions: dict[int, str] = {}
+        histories: dict[int, list] = {}
+        for pid in range(1, 21):
+            if pid == 1:
+                xg_vals = [0.4] * 7  # perfectly consistent
+            else:
+                xg_vals = [0.4 + (pid * 0.1 if gw % 2 == 0 else 0) for gw in range(7)]
+            match_records[pid] = self._make_fwd_records(pid, xg_vals)
+            positions[pid] = "FWD"
+            histories[pid] = [
+                {"round": gw, "minutes": 90, "total_points": 5}
+                for gw in range(1, 8)
+            ]
+
+        result = build_consistency_lookup(
+            match_records, histories, positions, current_gw=10, median_elo=MEDIAN_ELO,
+        )
+        # Player 1 has CV = 0 (all identical) -> should get highest percentile
+        assert result[1].cv_xgi_percentile == pytest.approx(1.0)
+
+    def test_player_without_records_uses_fallback(self):
+        """Player with FPL API history but no match records enters the lookup."""
+        match_records: dict[int, list] = {}
+        positions: dict[int, str] = {}
+        histories: dict[int, list] = {}
+        # 19 players with varying match records
+        for pid in range(1, 20):
+            volatility = pid * 0.05
+            xg_vals = [0.3 + (volatility if gw % 2 == 0 else -volatility) for gw in range(7)]
+            match_records[pid] = self._make_fwd_records(pid, xg_vals)
+            positions[pid] = "FWD"
+            histories[pid] = [
+                {"round": gw, "minutes": 90, "total_points": 5}
+                for gw in range(1, 8)
+            ]
+        # Player 20: history only, no match records, with varying xGI
+        positions[20] = "FWD"
+        histories[20] = [
+            {"round": gw, "minutes": 90, "total_points": 5,
+             "expected_goals": 0.2 + gw * 0.05, "expected_assists": 0.1}
+            for gw in range(1, 8)
+        ]
+
+        result = build_consistency_lookup(
+            match_records, histories, positions, current_gw=10, median_elo=MEDIAN_ELO,
+        )
+        assert 20 in result  # fallback path included player in lookup
+
+    def test_position_group_below_15_gets_neutral(self):
+        """Position group with fewer than 15 qualifying players -> all get 0.5 percentile."""
+        match_records: dict[int, list] = {}
+        positions: dict[int, str] = {}
+        histories: dict[int, list] = {}
+        for pid in range(1, 11):  # only 10 GKs
+            match_records[pid] = [
+                _make_match(gw, xg=0.0, minutes_played=90, opponent_elo=MEDIAN_ELO, saves=3)
+                for gw in range(1, 8)
+            ]
+            positions[pid] = "GK"
+            histories[pid] = [
+                {"round": gw, "minutes": 90, "total_points": 5}
+                for gw in range(1, 8)
+            ]
+
+        result = build_consistency_lookup(
+            match_records, histories, positions, current_gw=10, median_elo=MEDIAN_ELO,
+        )
+        for pid in range(1, 11):
+            if pid in result:
+                assert result[pid].gk_consistency_percentile == 0.5
+
+    def test_no_data_player_absent_from_lookup(self):
+        """Player with no records and no history is absent from the lookup."""
+        result = build_consistency_lookup(
+            {}, {}, {42: "FWD"}, current_gw=10, median_elo=MEDIAN_ELO,
+        )
+        assert 42 not in result
+
+    def test_neutral_signals_has_correct_defaults(self):
+        assert NEUTRAL_SIGNALS.cv_xgi_percentile == 0.5
+        assert NEUTRAL_SIGNALS.blank_rate is None
+        assert NEUTRAL_SIGNALS.floor_percentile == 0.5
+        assert NEUTRAL_SIGNALS.involvement_rate is None
+        assert NEUTRAL_SIGNALS.gk_consistency_percentile == 0.5
