@@ -468,14 +468,14 @@ def player_command(
                     if con_signals is not None:
                         con_parts: list[str] = []
                         if p.position_name == "GK":
+                            con_parts.append(f"GK Con: {round(con_signals.gk_consistency_percentile * 100)}")
                             if con_signals.blank_rate is not None:
                                 con_parts.append(f"Blanks: {con_signals.blank_rate:.0%}")
-                            con_parts.append(f"GK Con: {round(con_signals.gk_consistency_percentile * 100)}")
                         else:
                             con_parts.append(f"Con: {round(con_signals.cv_xgi_percentile * 100)}")
+                            con_parts.append(f"Floor: {round(con_signals.floor_percentile * 100)}")
                             if con_signals.blank_rate is not None:
                                 con_parts.append(f"Blanks: {con_signals.blank_rate:.0%}")
-                            con_parts.append(f"Floor: {round(con_signals.floor_percentile * 100)}")
                             if con_signals.involvement_rate is not None:
                                 con_parts.append(f"Inv: {con_signals.involvement_rate:.0%}")
                         if con_parts:
