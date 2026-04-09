@@ -16,7 +16,9 @@ from fpl_cli.cli._helpers import _fdr_style
 from fpl_cli.cli._json import emit_json, json_output_mode, output_format_option
 from fpl_cli.models.player import resolve_players
 from fpl_cli.services.player_scoring import (
+    ConsistencySignals,
     build_npxg_lookup_from_records,
+    compute_median_elo,
     compute_quality_value,
     compute_rolling_pts_per_m,
     compute_xgi_sustainability,
@@ -217,7 +219,7 @@ def player_command(
                 adjusted_npxg_scores: dict[int, float] = {}
                 custom_on = is_custom_analysis_enabled(settings)
                 rolling_window = int(settings.get("rolling_window", 5))
-                consistency_lookup: dict = {}
+                consistency_lookup: dict[int, ConsistencySignals] = {}
                 if custom_on:
                     match_data = await fetch_match_records(next_gw_id)
                     if match_data:
@@ -250,16 +252,9 @@ def player_command(
 
                     # Build consistency lookup from match records + histories
                     if match_data:
-                        import statistics as _stats
-
                         from fpl_cli.services.player_scoring import build_consistency_lookup
 
-                        all_elos = [
-                            r["opponent_elo"]
-                            for records in match_data.values()
-                            for r in records
-                        ]
-                        median_elo = _stats.median(all_elos) if all_elos else 1700.0
+                        median_elo = compute_median_elo(match_data)
                         pos_map = {p.id: p.position_name for p in display}
                         hist_map = {
                             p.id: (detail_map.get(p.id) or {}).get("history", [])
@@ -365,10 +360,12 @@ def player_command(
                                 player_dict["info"]["cv_xgi_percentile"] = round(con_signals.cv_xgi_percentile, 4)
                                 player_dict["info"]["blank_rate"] = con_signals.blank_rate
                                 player_dict["info"]["floor_percentile"] = round(con_signals.floor_percentile, 4)
-                                player_dict["info"]["involvement_rate"] = con_signals.involvement_rate
-                                player_dict["info"]["gk_consistency_percentile"] = round(
-                                    con_signals.gk_consistency_percentile, 4,
-                                )
+                                if p.position_name != "GK":
+                                    player_dict["info"]["involvement_rate"] = con_signals.involvement_rate
+                                if p.position_name == "GK":
+                                    player_dict["info"]["gk_consistency_percentile"] = round(
+                                        con_signals.gk_consistency_percentile, 4,
+                                    )
 
                             if fixtures:
                                 player_dict["fixtures"] = await _get_fixture_run_data(

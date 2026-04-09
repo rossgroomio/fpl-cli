@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, TypedDict
 from fpl_cli.agents.base import Agent, AgentResult, AgentStatus
 from fpl_cli.api.fpl import FPLClient
 from fpl_cli.services.player_scoring import (
+    ConsistencySignals,
     ScoringContext,
     _value_weights_and_ceiling,
     apply_adjusted_npxg,
@@ -185,7 +186,7 @@ class TransferEvalAgent(Agent):
         player_priors: dict[int, Any] | None = None,
         rolling_window: int = 5,
         adjusted_npxg_lookup: dict[int, float] | None = None,
-        consistency_lookup: dict[int, Any] | None = None,
+        consistency_lookup: dict[int, ConsistencySignals] | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Score a player on both horizons. Returns (target_entry, lineup_entry)."""
         team = context.team_map.get(player.team_id)

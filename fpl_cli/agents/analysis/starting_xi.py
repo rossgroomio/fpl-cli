@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 from fpl_cli.agents.base import Agent, AgentResult, AgentStatus
 from fpl_cli.api.fpl import FPLClient
 from fpl_cli.services.player_scoring import (
+    ConsistencySignals,
     ScoringContext,
     apply_adjusted_npxg,
     apply_consistency,
@@ -159,7 +160,7 @@ class StartingXIAgent(Agent):
         player_histories: dict[int, list[dict[str, Any]]] | None = None,
         player_priors: dict[int, Any] | None = None,
         adjusted_npxg_lookup: dict[int, float] | None = None,
-        consistency_lookup: dict[int, Any] | None = None,
+        consistency_lookup: dict[int, ConsistencySignals] | None = None,
     ) -> dict[str, Any]:
         """Score a squad player via the scoring engine."""
         team = context.team_map.get(player.team_id)

@@ -5,6 +5,10 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from fpl_cli.services.player_scoring import ConsistencySignals
 
 import click
 from rich.table import Table
@@ -155,7 +159,7 @@ def stats_command(
             quality_map: dict[int, int] = {}
             value_map: dict[int, float | None] = {}
             rolling_map: dict[int, tuple[float | None, int | None]] = {}
-            con_lookup: dict = {}
+            con_lookup: dict[int, ConsistencySignals] = {}
             value_active = False
 
             if value and filtered:
@@ -228,17 +232,12 @@ def stats_command(
                     # Build consistency lookup for display
                     from fpl_cli.services.player_scoring import (
                         build_consistency_lookup,
+                        compute_median_elo,
                         fetch_match_records,
                     )
                     match_data = await fetch_match_records(next_gw_id)
                     if match_data:
-                        import statistics as _stats
-                        all_elos = [
-                            r["opponent_elo"]
-                            for records in match_data.values()
-                            for r in records
-                        ]
-                        median_elo = _stats.median(all_elos) if all_elos else 1700.0
+                        median_elo = compute_median_elo(match_data)
                         pos_map = {p.id: p.position_name for p in filtered}
                         con_lookup = build_consistency_lookup(
                             match_data, player_histories, pos_map,

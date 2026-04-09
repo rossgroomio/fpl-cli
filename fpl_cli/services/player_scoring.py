@@ -505,14 +505,7 @@ async def prepare_scoring_data(
     if include_match_data and players is not None:
         match_records = await fetch_match_records(next_gw_id)
         if match_records:
-            import statistics as _stats
-
-            all_elos = [
-                r["opponent_elo"]
-                for records in match_records.values()
-                for r in records
-            ]
-            median_elo = _stats.median(all_elos) if all_elos else 1700.0
+            median_elo = compute_median_elo(match_records)
             adjusted_npxg_lookup = build_adjusted_npxg_lookup(
                 match_records, next_gw_id, median_elo,
             )
@@ -871,6 +864,34 @@ def compute_xgi_sustainability(
 _CONSISTENCY_MIN_MATCHES = 6
 
 
+def compute_median_elo(
+    match_records: dict[int, list[MatchRecord]],
+) -> float:
+    """Median opponent Elo across all match records, or 1700.0 if empty."""
+    import statistics
+
+    all_elos = [
+        r["opponent_elo"]
+        for records in match_records.values()
+        for r in records
+    ]
+    return statistics.median(all_elos) if all_elos else 1700.0
+
+
+def _elo_adjusted_xgis(
+    window: list[MatchRecord], median_elo: float,
+) -> list[float]:
+    """Elo-adjusted xGI values for each match in the window."""
+    adjusted: list[float] = []
+    for m in window:
+        opp_elo = m.get("opponent_elo", median_elo)
+        if opp_elo <= 0:
+            opp_elo = median_elo
+        factor = max(0.80, min(1.25, median_elo / opp_elo))
+        adjusted.append((m.get("xg", 0.0) + m.get("xa", 0.0)) * factor)
+    return adjusted
+
+
 def _match_record_window(
     match_records: list[MatchRecord], current_gw: int, size: int = 7,
 ) -> list[MatchRecord]:
@@ -899,14 +920,7 @@ def compute_cv_xgi(
     if len(window) < _CONSISTENCY_MIN_MATCHES:
         return None
 
-    adjusted_xgis: list[float] = []
-    for m in window:
-        opp_elo = m.get("opponent_elo", median_elo)
-        if opp_elo <= 0:
-            opp_elo = median_elo
-        factor = max(0.80, min(1.25, median_elo / opp_elo))
-        xgi = (m.get("xg", 0.0) + m.get("xa", 0.0)) * factor
-        adjusted_xgis.append(xgi)
+    adjusted_xgis = _elo_adjusted_xgis(window, median_elo)
 
     mean = statistics.mean(adjusted_xgis)
     if mean == 0:
@@ -969,16 +983,7 @@ def compute_floor_xgi(
     if len(window) < _CONSISTENCY_MIN_MATCHES:
         return None
 
-    adjusted_xgis: list[float] = []
-    for m in window:
-        opp_elo = m.get("opponent_elo", median_elo)
-        if opp_elo <= 0:
-            opp_elo = median_elo
-        factor = max(0.80, min(1.25, median_elo / opp_elo))
-        xgi = (m.get("xg", 0.0) + m.get("xa", 0.0)) * factor
-        adjusted_xgis.append(xgi)
-
-    adjusted_xgis.sort()
+    adjusted_xgis = sorted(_elo_adjusted_xgis(window, median_elo))
     idx = (len(adjusted_xgis) - 1) * 0.25
     lower = int(idx)
     frac = idx - lower
@@ -1286,14 +1291,7 @@ def build_npxg_lookup_from_records(
     Computes median Elo from the records, then delegates to
     ``build_adjusted_npxg_lookup``.
     """
-    import statistics
-
-    all_elos = [
-        r["opponent_elo"]
-        for records in all_match_records.values()
-        for r in records
-    ]
-    median_elo = statistics.median(all_elos) if all_elos else 1700.0
+    median_elo = compute_median_elo(all_match_records)
     return build_adjusted_npxg_lookup(all_match_records, current_gw, median_elo)
 
 

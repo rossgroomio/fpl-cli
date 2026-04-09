@@ -14,6 +14,7 @@ from fpl_cli.api.fpl import FPLClient
 from fpl_cli.api.fpl_draft import FPLDraftClient
 from fpl_cli.models.types import EnrichedPlayer, WaiverTarget
 from fpl_cli.services.player_scoring import (
+    ConsistencySignals,
     apply_adjusted_npxg,
     apply_consistency,
     apply_shrinkage,
@@ -44,7 +45,7 @@ class WaiverAgent(Agent):
         self.client = FPLDraftClient()
         self.fpl_client = FPLClient()
         self._adjusted_npxg_lookup: dict[int, float] | None = None
-        self._consistency_lookup: dict[int, Any] | None = None
+        self._consistency_lookup: dict[int, ConsistencySignals] | None = None
         self.league_id = config.get("draft_league_id") if config else None
         self.entry_id = config.get("draft_entry_id") if config else None
 

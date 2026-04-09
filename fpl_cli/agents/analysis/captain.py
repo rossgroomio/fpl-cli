@@ -12,6 +12,7 @@ from fpl_cli.api.fpl import FPLClient
 from fpl_cli.models.player import Player
 from fpl_cli.models.types import CaptainCandidate
 from fpl_cli.services.player_scoring import (
+    ConsistencySignals,
     ScoringContext,
     apply_adjusted_npxg,
     apply_consistency,
@@ -47,7 +48,7 @@ class CaptainAgent(Agent):
         super().__init__(config)
         self.client = FPLClient()
         self._adjusted_npxg_lookup: dict[int, float] | None = None
-        self._consistency_lookup: dict[int, Any] | None = None
+        self._consistency_lookup: dict[int, ConsistencySignals] | None = None
 
         # Differential thresholds
         self.differential_threshold = config.get("differential_threshold", 10.0) if config else 10.0
