@@ -357,15 +357,15 @@ def player_command(
 
                             con_signals = consistency_lookup.get(p.id)
                             if con_signals is not None:
-                                player_dict["info"]["cv_xgi_percentile"] = round(con_signals.cv_xgi_percentile, 4)
                                 player_dict["info"]["blank_rate"] = con_signals.blank_rate
-                                player_dict["info"]["floor_percentile"] = round(con_signals.floor_percentile, 4)
-                                if p.position_name != "GK":
-                                    player_dict["info"]["involvement_rate"] = con_signals.involvement_rate
                                 if p.position_name == "GK":
                                     player_dict["info"]["gk_consistency_percentile"] = round(
                                         con_signals.gk_consistency_percentile, 4,
                                     )
+                                else:
+                                    player_dict["info"]["cv_xgi_percentile"] = round(con_signals.cv_xgi_percentile, 4)
+                                    player_dict["info"]["floor_percentile"] = round(con_signals.floor_percentile, 4)
+                                    player_dict["info"]["involvement_rate"] = con_signals.involvement_rate
 
                             if fixtures:
                                 player_dict["fixtures"] = await _get_fixture_run_data(
@@ -466,15 +466,20 @@ def player_command(
                         lines.append(f"Quality: {q} | Quality/£m: {v_str}")
                     con_signals = consistency_lookup.get(p.id)
                     if con_signals is not None:
-                        con_parts = [f"Con: {round(con_signals.cv_xgi_percentile * 100)}"]
-                        if con_signals.blank_rate is not None:
-                            con_parts.append(f"Blanks: {con_signals.blank_rate:.0%}")
-                        con_parts.append(f"Floor: {round(con_signals.floor_percentile * 100)}")
-                        if con_signals.involvement_rate is not None:
-                            con_parts.append(f"Inv: {con_signals.involvement_rate:.0%}")
+                        con_parts: list[str] = []
                         if p.position_name == "GK":
+                            if con_signals.blank_rate is not None:
+                                con_parts.append(f"Blanks: {con_signals.blank_rate:.0%}")
                             con_parts.append(f"GK Con: {round(con_signals.gk_consistency_percentile * 100)}")
-                        lines.append(" | ".join(con_parts))
+                        else:
+                            con_parts.append(f"Con: {round(con_signals.cv_xgi_percentile * 100)}")
+                            if con_signals.blank_rate is not None:
+                                con_parts.append(f"Blanks: {con_signals.blank_rate:.0%}")
+                            con_parts.append(f"Floor: {round(con_signals.floor_percentile * 100)}")
+                            if con_signals.involvement_rate is not None:
+                                con_parts.append(f"Inv: {con_signals.involvement_rate:.0%}")
+                        if con_parts:
+                            lines.append(" | ".join(con_parts))
                     if draft_line:
                         lines.append(draft_line.rstrip("\n"))
                     lines.append(f"Status: {_status_display(p)}")
