@@ -3350,6 +3350,29 @@ class TestComputeCvXgi:
         assert result is not None
         assert result > 0.0  # DGW introduces variance
 
+    def test_cameo_appearances_excluded(self):
+        """Matches with < 60 minutes are excluded from the window."""
+        # 5 full starts + 2 cameos = only 5 qualifying -> None (< 6 min matches)
+        records = [
+            _make_match(gw, xg=0.3, xa=0.1, minutes_played=90, opponent_elo=MEDIAN_ELO)
+            for gw in range(1, 6)
+        ]
+        records.append(_make_match(6, xg=0.0, xa=0.0, minutes_played=17, opponent_elo=MEDIAN_ELO))
+        records.append(_make_match(7, xg=0.1, xa=0.0, minutes_played=45, opponent_elo=MEDIAN_ELO))
+        assert compute_cv_xgi(records, current_gw=10, median_elo=MEDIAN_ELO) is None
+
+    def test_cameo_excluded_but_enough_starts(self):
+        """With 6+ full starts, cameos don't inflate CV."""
+        records = [
+            _make_match(gw, xg=0.3, xa=0.1, minutes_played=90, opponent_elo=MEDIAN_ELO)
+            for gw in range(1, 7)
+        ]
+        # Cameo that would inflate CV if included
+        records.append(_make_match(7, xg=0.0, xa=0.0, minutes_played=17, opponent_elo=MEDIAN_ELO))
+        result = compute_cv_xgi(records, current_gw=10, median_elo=MEDIAN_ELO)
+        assert result is not None
+        assert result == 0.0  # all 6 starts identical -> zero CV
+
 
 class TestComputeCvXgiFallback:
     def test_produces_cv_without_elo(self):

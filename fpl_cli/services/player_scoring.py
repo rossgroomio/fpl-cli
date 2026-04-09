@@ -892,14 +892,23 @@ def _elo_adjusted_xgis(
     return adjusted
 
 
+_CONSISTENCY_MIN_MINUTES = 60
+
+
 def _match_record_window(
     match_records: list[MatchRecord], current_gw: int, size: int = 7,
 ) -> list[MatchRecord]:
-    """Recent qualifying match records: minutes > 0, within 12-GW lookback, most recent *size*."""
+    """Recent qualifying match records: minutes >= 60, within 12-GW lookback, most recent *size*.
+
+    The 60-minute threshold excludes cameo appearances whose low xGI
+    reflects limited playing time rather than output inconsistency.
+    Aligns with FPL's meaningful-appearance boundary.
+    """
     cutoff = current_gw - 12
     qualifying = [
         m for m in match_records
-        if m.get("minutes_played", 0) > 0 and m.get("gameweek", 0) > cutoff
+        if m.get("minutes_played", 0) >= _CONSISTENCY_MIN_MINUTES
+        and m.get("gameweek", 0) > cutoff
     ]
     qualifying.sort(key=lambda m: m["gameweek"])
     return qualifying[-size:]
