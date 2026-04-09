@@ -336,6 +336,13 @@ def stats_command(
                                     "quality_per_m": value_map.get(p.id),
                                     "rolling_pts_per_m": rolling_map.get(p.id, (None, None))[0],
                                     "rolling_fixture_count": rolling_map.get(p.id, (None, None))[1],
+                                    "cv_xgi_percentile": (
+                                        s.gk_consistency_percentile
+                                        if p.position_name == "GK"
+                                        else s.cv_xgi_percentile
+                                    )
+                                    if (s := con_lookup.get(p.id))
+                                    else None,
                                 }
                                 if value_active
                                 else {}

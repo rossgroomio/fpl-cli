@@ -3246,7 +3246,7 @@ class TestTransferEvalAdjustedNpxgFields:
             "status": "a", "chance_of_playing": None, "reliability": None,
             "price": 13.5, "quality_score": 80, "quality_per_m": 5.9,
             "rolling_pts_per_m": 4.2, "rolling_fixture_count": 5,
-            "raw_npxg_per_90": raw,
+            "cv_xgi_percentile": 0.5, "raw_npxg_per_90": raw,
         }
         if adjusted is not None and raw is not None and adjusted != raw:
             entry["adjusted_npxg_per_90"] = round(adjusted, 4)

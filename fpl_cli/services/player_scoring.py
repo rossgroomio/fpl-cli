@@ -1745,7 +1745,7 @@ class PlayerEvaluation:
     gk_consistency_percentile: float = 0.5
 
     def as_quality_dict(self) -> dict[str, Any]:
-        """Return a dict compatible with calculate_player_quality_score's Mapping interface."""
+        """Return a dict of evaluation fields for quality scoring and display."""
         return {
             "npxG_per_90": self.npxg_per_90,
             "xGChain_per_90": self.xg_chain_per_90,
@@ -2328,6 +2328,7 @@ def calculate_captain_score(
         "pen_bonus": pen_bonus,
         "captain_score": captain_score,
         "captain_score_raw": round(captain_score_raw, 2),
+        "cv_xgi_percentile": evaluation.cv_xgi_percentile,
         "reasons": reasons,
     }
     if evaluation.raw_npxg_per_90 is not None:
