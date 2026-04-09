@@ -255,7 +255,7 @@ def player_command(
                         from fpl_cli.services.player_scoring import build_consistency_lookup
 
                         median_elo = compute_median_elo(match_data)
-                        pos_map = {p.id: p.position_name for p in display}
+                        pos_map = {p.id: p.position_name for p in players}
                         hist_map = {
                             p.id: (detail_map.get(p.id) or {}).get("history", [])
                             for p in display
