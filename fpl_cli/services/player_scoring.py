@@ -2347,7 +2347,7 @@ def calculate_bench_score(
     # Floor-driven consistency reason (display only)
     if evaluation.floor_percentile >= 0.7:
         reasons.append("Consistent performer")
-    elif evaluation.floor_percentile <= 0.3 and evaluation.floor_percentile != 0.5:
+    elif evaluation.floor_percentile <= 0.3:
         reasons.append("Volatile output")
 
     raw_score = round(score, 2)
