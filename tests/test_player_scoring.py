@@ -11,6 +11,7 @@ from fpl_cli.services.player_scoring import (
     ATTACKING_POSITIONS,
     NEUTRAL_SIGNALS,
     _assign_percentile_ranks,
+    _consistency_phase,
     ConsistencySignals,
     apply_adjusted_npxg,
     apply_consistency,
@@ -3776,3 +3777,170 @@ class TestPlayerEvaluationConsistencyFields:
         evaluation, _ = build_player_evaluation(player)
         with pytest.raises(AttributeError):
             evaluation.cv_xgi_percentile = 0.9  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: consistency scoring integration
+# ---------------------------------------------------------------------------
+
+
+class TestConsistencyPhaseIn:
+    def test_before_window_zero(self):
+        assert _consistency_phase(5) == 0.0
+        assert _consistency_phase(1) == 0.0
+
+    def test_after_window_full(self):
+        assert _consistency_phase(10) == 1.0
+        assert _consistency_phase(38) == 1.0
+
+    def test_midpoint(self):
+        assert _consistency_phase(8) == pytest.approx(0.6)
+
+    def test_start_boundary(self):
+        assert _consistency_phase(6) == pytest.approx(0.2)
+
+
+class TestConsistencyScoringIntegration:
+    """Verify consistency signals affect all scoring families."""
+
+    @staticmethod
+    def _matchup():
+        return FixtureMatchup(
+            opponent_short="SHU", is_home=True, opponent_fdr=3.0, matchup_score=7.0,
+        )
+
+    def _build_mid(self, cv=0.5, floor=0.5, involvement=None):
+        enrichment = {
+            "team_short": "ARS", "xGI_per_90": 0.5,
+            "cv_xgi_percentile": cv,
+            "floor_percentile": floor,
+        }
+        if involvement is not None:
+            enrichment["involvement_rate"] = involvement
+        return build_player_evaluation(
+            make_player(
+                id=50, web_name="TestMID", team_id=1,
+                position=PlayerPosition.MIDFIELDER,
+                form=6.0, points_per_game=5.5, minutes=1500, total_points=100,
+            ),
+            enrichment=enrichment,
+            fixture_matchups=[self._matchup()],
+            matchup_avg_3gw=6.0, positional_fdr=3.0,
+        )
+
+    # -- Target family --
+
+    def test_target_consistent_scores_higher(self):
+        eval_con, _ = self._build_mid(cv=0.9)
+        eval_vol, _ = self._build_mid(cv=0.1)
+        assert calculate_target_score(eval_con, next_gw_id=20) > calculate_target_score(eval_vol, next_gw_id=20)
+
+    def test_target_neutral_no_change(self):
+        eval_a, _ = self._build_mid(cv=0.5)
+        eval_b, _ = self._build_mid(cv=0.5)
+        assert calculate_target_score(eval_a, next_gw_id=20) == calculate_target_score(eval_b, next_gw_id=20)
+
+    # -- Differential family (inverted) --
+
+    def test_differential_volatile_scores_higher(self):
+        eval_vol, _ = self._build_mid(cv=0.1)
+        eval_con, _ = self._build_mid(cv=0.9)
+        assert (
+            calculate_differential_score(eval_vol, semi_differential_threshold=10, next_gw_id=20)
+            > calculate_differential_score(eval_con, semi_differential_threshold=10, next_gw_id=20)
+        )
+
+    # -- Waiver family --
+
+    def test_waiver_consistent_scores_higher(self):
+        eval_con, _ = self._build_mid(cv=0.9)
+        eval_vol, _ = self._build_mid(cv=0.1)
+        assert (
+            calculate_waiver_score(eval_con, squad_by_position={"MID": []}, next_gw_id=20)
+            > calculate_waiver_score(eval_vol, squad_by_position={"MID": []}, next_gw_id=20)
+        )
+
+    # -- Bench family --
+
+    def test_bench_high_floor_scores_higher(self):
+        eval_hi, id_hi = self._build_mid(floor=0.9)
+        eval_lo, id_lo = self._build_mid(floor=0.1)
+        bench_hi = calculate_bench_score(eval_hi, id_hi, availability_risks=[], next_gw_id=20)
+        bench_lo = calculate_bench_score(eval_lo, id_lo, availability_risks=[], next_gw_id=20)
+        assert bench_hi["priority_score_raw"] > bench_lo["priority_score_raw"]
+
+    def test_bench_involvement_adds_bonus(self):
+        eval_inv, id_inv = self._build_mid(involvement=0.9)
+        eval_none, id_none = self._build_mid(involvement=0.5)
+        bench_inv = calculate_bench_score(eval_inv, id_inv, availability_risks=[], next_gw_id=20)
+        bench_none = calculate_bench_score(eval_none, id_none, availability_risks=[], next_gw_id=20)
+        assert bench_inv["priority_score_raw"] > bench_none["priority_score_raw"]
+
+    def test_bench_no_involvement_no_crash(self):
+        """involvement_rate=None should not crash."""
+        eval_no, id_no = self._build_mid(involvement=None)
+        result = calculate_bench_score(eval_no, id_no, availability_risks=[], next_gw_id=20)
+        assert result["priority_score_raw"] > 0
+
+    # -- Captain / lineup (single-GW tiebreaker) --
+
+    def test_captain_consistent_scores_higher(self):
+        eval_con, id_con = self._build_mid(cv=0.9)
+        eval_vol, id_vol = self._build_mid(cv=0.1)
+        cap_con = calculate_captain_score(eval_con, id_con, next_gw_id=20)
+        cap_vol = calculate_captain_score(eval_vol, id_vol, next_gw_id=20)
+        assert cap_con is not None and cap_vol is not None
+        assert cap_con["captain_score_raw"] > cap_vol["captain_score_raw"]
+
+    def test_lineup_consistent_scores_higher(self):
+        eval_con, id_con = self._build_mid(cv=0.9)
+        eval_vol, id_vol = self._build_mid(cv=0.1)
+        lu_con = calculate_lineup_score(eval_con, id_con, next_gw_id=20)
+        lu_vol = calculate_lineup_score(eval_vol, id_vol, next_gw_id=20)
+        assert lu_con["lineup_score_raw"] > lu_vol["lineup_score_raw"]
+
+    # -- Phase-in --
+
+    def test_no_effect_at_gw5(self):
+        eval_con, _ = self._build_mid(cv=0.9)
+        eval_neut, _ = self._build_mid(cv=0.5)
+        assert calculate_target_score(eval_con, next_gw_id=5) == calculate_target_score(eval_neut, next_gw_id=5)
+
+    def test_partial_effect_at_gw8(self):
+        eval_con, _ = self._build_mid(cv=0.9)
+        eval_neut, _ = self._build_mid(cv=0.5)
+        # At GW8, phase=0.6, so there should be some but not full effect
+        score_con = calculate_target_score(eval_con, next_gw_id=8)
+        score_neut = calculate_target_score(eval_neut, next_gw_id=8)
+        score_con_full = calculate_target_score(eval_con, next_gw_id=20)
+        score_neut_full = calculate_target_score(eval_neut, next_gw_id=20)
+        # Partial effect: gap at GW8 should be smaller than gap at GW20
+        gap_8 = score_con - score_neut
+        gap_20 = score_con_full - score_neut_full
+        assert gap_8 >= 0
+        assert gap_20 >= gap_8
+
+    def test_bench_no_effect_at_gw5(self):
+        eval_hi, id_hi = self._build_mid(floor=0.9)
+        eval_lo, id_lo = self._build_mid(floor=0.1)
+        bench_hi = calculate_bench_score(eval_hi, id_hi, availability_risks=[], next_gw_id=5)
+        bench_lo = calculate_bench_score(eval_lo, id_lo, availability_risks=[], next_gw_id=5)
+        assert bench_hi["priority_score_raw"] == bench_lo["priority_score_raw"]
+
+    # -- Neutral signals produce zero change --
+
+    def test_neutral_consistency_no_scoring_impact(self):
+        """All signals at 0.5 / None should produce identical scores."""
+        eval_a, id_a = self._build_mid(cv=0.5, floor=0.5, involvement=None)
+        eval_b, _ = self._build_mid()  # defaults
+        assert calculate_target_score(eval_a, next_gw_id=20) == calculate_target_score(eval_b, next_gw_id=20)
+
+    # -- as_quality_dict includes consistency --
+
+    def test_as_quality_dict_includes_consistency(self):
+        eval_con, _ = self._build_mid(cv=0.8, floor=0.7, involvement=0.9)
+        qd = eval_con.as_quality_dict()
+        assert qd["cv_xgi_percentile"] == 0.8
+        assert qd["floor_percentile"] == 0.7
+        assert qd["involvement_rate"] == 0.9
+        assert qd["gk_consistency_percentile"] == 0.5
