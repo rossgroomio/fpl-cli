@@ -191,6 +191,28 @@ GK_WAIVER_CEILING = 39.0
 # GK_VALUE: saves 6 + xgc 3.5 + cs 4 + form_cap(7)*1.38 + ppg_cap(5) (no matchup for value)
 GK_VALUE_CEILING = 28.2
 
+# ---------------------------------------------------------------------------
+# Consistency scoring magnitudes (Phase 2)
+# ---------------------------------------------------------------------------
+# All enter as additive bonuses: (signal - 0.5) * magnitude.
+# Phase-in: linear ramp from GW6 (0%) to GW10 (100%).
+
+CONSISTENCY_CV_TARGET = 1.5       # target/waiver: cv_xgi_percentile
+CONSISTENCY_CV_LINEUP = 0.75      # captain/bench/lineup tiebreaker
+CONSISTENCY_CV_DIFF = 0.75        # differential: inverted (0.5 - cv)
+CONSISTENCY_FLOOR_BENCH = 1.5     # bench: floor_percentile
+CONSISTENCY_INV_BENCH = 0.75      # bench: involvement_rate
+
+# Phase-in window: no effect at GW5 or earlier, full effect at GW10+
+CONSISTENCY_PHASE_IN_START = 5
+CONSISTENCY_PHASE_IN_END = 10
+
+
+def _consistency_phase(gw: int) -> float:
+    """Linear phase-in factor for consistency bonuses (0.0 at GW5, 1.0 at GW10+)."""
+    return min(1.0, max(0.0, (gw - CONSISTENCY_PHASE_IN_START) / (CONSISTENCY_PHASE_IN_END - CONSISTENCY_PHASE_IN_START)))
+
+
 # Valid formations: (DEF, MID, FWD). GK always 1.
 # Ordered from most attacking to most defensive for deterministic tiebreaking.
 VALID_FORMATIONS: list[tuple[int, int, int]] = [
@@ -1713,7 +1735,7 @@ class PlayerEvaluation:
     # Original Understat npxG/90 before fixture adjustment (None when no Understat data)
     raw_npxg_per_90: float | None = None
 
-    # Consistency signals (Phase 1: display only, not used in scoring yet)
+    # Consistency signals
     cv_xgi_percentile: float = 0.5
     blank_rate: float | None = None
     floor_percentile: float = 0.5
@@ -1736,6 +1758,10 @@ class PlayerEvaluation:
             "gk_saves_per_90": self.gk_saves_per_90,
             "gk_xgc_quality": self.gk_xgc_quality,
             "gk_cs_rate": self.gk_cs_rate,
+            "cv_xgi_percentile": self.cv_xgi_percentile,
+            "floor_percentile": self.floor_percentile,
+            "involvement_rate": self.involvement_rate,
+            "gk_consistency_percentile": self.gk_consistency_percentile,
         }
 
 
@@ -1896,17 +1922,21 @@ def _calculate_quality_based_raw(
     next_gw_id: int,
     ownership_config: dict[str, float] | None = None,
     mins_factor_override: float | None = None,
+    differential: bool = False,
 ) -> float:
     """Raw ownership-family score before normalisation.
 
     Computes: quality baseline + ownership bonus + matchup bonus +
-    availability penalty. Returns un-normalised float so
-    callers can add formula-specific adjustments before normalising.
+    consistency bonus + availability penalty. Returns un-normalised float
+    so callers can add formula-specific adjustments before normalising.
 
     *mins_factor_override*: when set, replaces the standard
     ``calculate_mins_factor`` result for both quality score and matchup
     bonus. Used by waiver scoring which applies a stricter combined
     availability factor (season commitment in draft format).
+
+    *differential*: when True, inverts the consistency bonus direction
+    (volatile players score higher).
     """
     if evaluation.position in ATTACKING_POSITIONS:
         effective_weights = weights
@@ -1936,6 +1966,15 @@ def _calculate_quality_based_raw(
 
     score += _matchup_bonus(evaluation.matchup_avg_3gw, mins_factor)
 
+    # Consistency bonus (additive, phase-in GW6-10)
+    phase = _consistency_phase(next_gw_id)
+    if phase > 0:
+        cv = evaluation.cv_xgi_percentile
+        if differential:
+            score += (0.5 - cv) * CONSISTENCY_CV_DIFF * phase
+        else:
+            score += (cv - 0.5) * CONSISTENCY_CV_TARGET * phase
+
     # Availability penalty
     if evaluation.status != "a" and evaluation.chance_of_playing is not None and evaluation.chance_of_playing < 75:
         score -= 3
@@ -1950,6 +1989,7 @@ def _calculate_quality_based_score(
     ceiling: float,
     next_gw_id: int,
     ownership_config: dict[str, float] | None = None,
+    differential: bool = False,
 ) -> int:
     """Shared scoring logic for target, differential, and (via raw) waiver.
 
@@ -1960,6 +2000,7 @@ def _calculate_quality_based_score(
         weights=weights,
         next_gw_id=next_gw_id,
         ownership_config=ownership_config,
+        differential=differential,
     )
     return normalise_score(raw, ceiling)
 
@@ -2001,6 +2042,7 @@ def calculate_differential_score(
             "threshold": semi_differential_threshold,
             "divisor": 3,
         },
+        differential=True,
     )
 
 
@@ -2140,7 +2182,13 @@ def calculate_single_gw_core(
     # Flat bonuses (not affected by position multiplier)
     home_bonus = 1.0 if any(fm.is_home for fm in fixture_matchups) else 0.0
 
-    return ceiling_score + home_bonus
+    # Consistency tiebreaker (additive, phase-in GW6-10)
+    phase = _consistency_phase(next_gw_id)
+    consistency_bonus = 0.0
+    if phase > 0:
+        consistency_bonus = (evaluation.cv_xgi_percentile - 0.5) * CONSISTENCY_CV_LINEUP * phase
+
+    return ceiling_score + home_bonus + consistency_bonus
 
 
 def calculate_captain_score(
@@ -2353,7 +2401,13 @@ def calculate_bench_score(
         score += 0.25
         reasons.append("Set-piece taker")
 
-    # Floor-driven consistency reason (display only)
+    # Consistency bonus: floor + involvement (additive, phase-in GW6-10)
+    phase = _consistency_phase(next_gw_id)
+    if phase > 0:
+        score += (evaluation.floor_percentile - 0.5) * CONSISTENCY_FLOOR_BENCH * phase
+        if evaluation.involvement_rate is not None:
+            score += (evaluation.involvement_rate - 0.5) * CONSISTENCY_INV_BENCH * phase
+
     if evaluation.floor_percentile >= 0.7:
         reasons.append("Consistent performer")
     elif evaluation.floor_percentile <= 0.3:
