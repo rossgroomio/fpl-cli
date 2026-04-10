@@ -429,15 +429,22 @@ class TestAllocateCommand:
         expected = normalise_score(sr.selected_players[0].raw_quality, STARTING_XI_CEILING)
         assert first["quality_score"] == expected
 
-    def test_horizon_default_uses_value_ceiling(self):
-        """--horizon 6 (default) JSON output normalises quality using VALUE_CEILING."""
-        from fpl_cli.services.player_scoring import VALUE_CEILING, normalise_score
+    def test_horizon_default_uses_per_player_value_ceiling(self):
+        """--horizon 6 (default) JSON output normalises each player against a
+        position-specific VALUE family ceiling via ``pick_display_ceiling``
+        (todo 006). Matches ``fpl player`` / ``fpl stats --value`` display.
+        """
+        from fpl_cli.services.player_scoring import normalise_score, pick_display_ceiling
 
         sr = _make_squad_result()
         result = _run_allocate(sr, args=["--format", "json"])
         data = json.loads(result.output)
         first = data["data"][0]
-        expected = normalise_score(sr.selected_players[0].raw_quality, VALUE_CEILING)
+        first_player = sr.selected_players[0]
+        expected = normalise_score(
+            first_player.raw_quality,
+            pick_display_ceiling(first_player.position, horizon=6),
+        )
         assert first["quality_score"] == expected
 
     def test_horizon1_suspended_gw1_coefficient_zero(self):
