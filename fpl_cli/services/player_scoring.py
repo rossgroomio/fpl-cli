@@ -90,7 +90,11 @@ class QualityWeights:
             penalty_xg=zero,
             gk_saves_per_90=StatWeight(1.5, 6),
             gk_xgc_quality=StatWeight(3.0, 3.5),
-            gk_cs_rate=StatWeight(8.0, 4.0),
+            # Halved 2026-04-10: was (8.0, 4.0) - a Phase 1 placeholder that
+            # put 50%-CS GKs within 0.8pt of the cap, crowding out xGI signals.
+            # At mult=4 the theoretical cap is unchanged (min(1.0*4, 4)=4) so
+            # ceiling constants stay valid; only sub-cap contributions drop.
+            gk_cs_rate=StatWeight(4.0, 4.0),
         )
 
 

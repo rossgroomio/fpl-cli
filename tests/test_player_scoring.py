@@ -2771,9 +2771,12 @@ class TestGKScoringPath:
         return eval_, identity
 
     def test_gk_target_score(self):
-        """GK target: quality raw=18.95 + matchup 4.5 = 23.45 → normalise(23.45, 30.4)=77."""
+        """GK target: (quality raw 17.35 * 0.7) + matchup 4.5 = 16.645; normalise(16.645, 23.08)=72.
+
+        Post-2026-04-10: position multiplier on ownership path + gk_cs_rate halved.
+        """
         eval_, _ = self._build_gk()
-        assert calculate_target_score(eval_, next_gw_id=20) == 77
+        assert calculate_target_score(eval_, next_gw_id=20) == 72
 
     def test_gk_target_vs_def_score(self):
         """GK target uses for_gk() and GK_TARGET_CEILING, scoring differently from DEF."""
@@ -2894,10 +2897,10 @@ class TestGKScoringPath:
     def test_gk_value_score(self):
         """GK value path: for_gk() from VALUE_QUALITY_WEIGHTS, normalised to GK_VALUE_CEILING.
 
-        Post-2026-04-10 position multiplier applies:
-        raw quality components = saves 5.25 + xgc 3.5 + cs 3.2 + form 6.5 + ppg 3.2 = 21.65
-        attenuated = 21.65 * 0.7 = 15.155
-        normalise(15.155, 19.71) = 77
+        Post-2026-04-10 (position multiplier + gk_cs_rate halved):
+        saves 5.25 + xgc 3.5 + cs 1.636 + form 6.5 + ppg 3.2 ≈ 20.09
+        attenuated = 20.09 * 0.7 = 14.06
+        normalise(14.06, 19.71) = 71
         """
         from fpl_cli.services.player_scoring import compute_quality_value
 
@@ -2909,11 +2912,11 @@ class TestGKScoringPath:
             saves_per_90=3.5, expected_goals_conceded=11.54, clean_sheets=9,
         )
         score, _ = compute_quality_value(gk, us_match={}, next_gw_id=20, team_short="LIV")
-        assert score == 77
+        assert score == 71
 
     def test_gk_value_uses_gk_ceiling_not_value_ceiling(self):
-        """GK value score is normalised against GK_VALUE_CEILING, not VALUE_CEILING."""
-        from fpl_cli.services.player_scoring import POSITION_SCORE_MULTIPLIER, compute_quality_value
+        """GK value score normalised against GK_VALUE_CEILING, not VALUE_CEILING."""
+        from fpl_cli.services.player_scoring import compute_quality_value
 
         gk = make_player(
             id=302, web_name="CeilGK", team_id=3,
@@ -2923,9 +2926,11 @@ class TestGKScoringPath:
             saves_per_90=3.5, expected_goals_conceded=11.54, clean_sheets=9,
         )
         gk_score, _ = compute_quality_value(gk, us_match={}, next_gw_id=20, team_short="LIV")
-        raw_attenuated = 21.72 * POSITION_SCORE_MULTIPLIER["GK"]
-        assert gk_score != normalise_score(raw_attenuated, VALUE_CEILING)
-        assert gk_score == pytest.approx(normalise_score(raw_attenuated, GK_VALUE_CEILING), abs=1)
+        # Recover raw from the normalised score and confirm it would not
+        # normalise against VALUE_CEILING (the MID/FWD anchor).
+        raw = (gk_score / 100) * GK_VALUE_CEILING
+        assert gk_score != normalise_score(raw, VALUE_CEILING)
+        assert gk_score == pytest.approx(normalise_score(raw, GK_VALUE_CEILING), abs=1)
 
 
 # ---------------------------------------------------------------------------
