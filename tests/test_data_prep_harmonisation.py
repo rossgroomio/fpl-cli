@@ -253,8 +253,8 @@ class TestTargetCharacterisation:
             positional_fdr=3.0,
         )
         score = calculate_target_score(evaluation, next_gw_id=20)
-        # Post-2026-04-10 position multiplier: DEF attenuated by 0.85 (was 42).
-        assert score == 44
+        # DEF normalised against DEF_TARGET_CEILING (empirical without_xgi cap × 0.85 + matchup).
+        assert score == 70
 
 
 # ---------------------------------------------------------------------------
@@ -317,8 +317,8 @@ class TestWaiverCharacterisation:
             evaluation, squad_by_position=self._squad_by_pos(),
             team_counts=self._team_counts(), next_gw_id=20,
         )
-        # Post-2026-04-10 position multiplier: DEF attenuated by 0.85 (was 49).
-        assert score == 52
+        # DEF normalised against DEF_WAIVER_CEILING (empirical without_xgi cap × 0.85 + bonuses).
+        assert score == 67
 
 
 # ---------------------------------------------------------------------------

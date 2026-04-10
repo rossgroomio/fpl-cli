@@ -32,7 +32,7 @@ After building, note how many of the user's current players (if known) appear in
 
 ## Value-for-Money
 Available in `fpl player --format json` output when Understat data exists for the player:
-- **quality_score** (0-100): Player output quality normalised against positional ceiling. Form and PPG weighted heavily - measures "current FPL points production rate."
+- **quality_score** (0-100): Player output quality normalised against a **position-specific** ceiling. Treat as an **elite-within-position** index: a GK or DEF scoring 90 is "top of their position", not "better than an 85-rated MID/FWD". Raw quality is attenuated by a position multiplier (GK 0.7, DEF 0.85) and DEF/GK use dedicated signal sets (`without_xgi()` / `for_gk()`), so cross-position comparisons of `quality_score` are not meaningful. Form and PPG weighted heavily.
 - **quality_per_m** (quality_score / price per GBPm): Within-position budget efficiency. Higher = more output per pound.
 - When choosing between similarly-ranked candidates at the same position, prefer higher `quality_per_m` to free budget for other slots.
 - `quality_per_m` is not meaningful for cross-position comparison (positional ceilings differ).

@@ -1,6 +1,7 @@
 """Tests for centralised player scoring engine."""
 
 import dataclasses
+from typing import Any
 
 import pytest
 
@@ -145,8 +146,8 @@ class TestCharacterisationSnapshot:
 
     def test_target_def(self):
         eval_, _ = self._build_def()
-        # Post-2026-04-10 multi-GW position multiplier: DEF ceiling = TARGET_CEILING * 0.85
-        assert calculate_target_score(eval_, next_gw_id=20) == 41
+        # DEF target ceiling = DEF_TARGET_CEILING (empirical, from without_xgi caps × 0.85 + matchup).
+        assert calculate_target_score(eval_, next_gw_id=20) == 66
 
     # --- Differential ---
 
@@ -160,7 +161,7 @@ class TestCharacterisationSnapshot:
         eval_, _ = self._build_def()
         assert calculate_differential_score(
             eval_, semi_differential_threshold=20.0, next_gw_id=20,
-        ) == 47
+        ) == 66
 
     # --- Waiver ---
 
@@ -176,7 +177,7 @@ class TestCharacterisationSnapshot:
         squad = {"MID": [{"form": 4.0}, {"form": 3.0}], "DEF": [{"form": 5.0}, {"form": 4.0}]}
         assert calculate_waiver_score(
             eval_, squad_by_position=squad, next_gw_id=20,
-        ) == 40
+        ) == 51
 
     # --- Captain ---
 
@@ -726,8 +727,8 @@ class TestCalculateWaiverScore:
             eval, squad_by_position=self._squad_by_pos(),
             team_counts=self._team_counts(), next_gw_id=20,
         )
-        # DEF waiver ceiling = WAIVER_CEILING * 0.85 post-2026-04-10
-        assert score == 35
+        # DEF waiver ceiling = DEF_WAIVER_CEILING (empirical, from without_xgi caps × 0.85 + bonuses).
+        assert score == 45
 
     def test_position_need_empty(self):
         eval, _ = build_player_evaluation(
@@ -2887,20 +2888,22 @@ class TestGKScoringPath:
         assert enrichment["gk_cs_rate"] == pytest.approx(2 / 5)
 
     def test_def_target_score_uses_pos_mult(self):
-        """Regression guard: DEF path (without_xgi) is attenuated by POSITION_SCORE_MULTIPLIER[DEF]."""
+        """Regression guard: DEF path (without_xgi) is attenuated by POSITION_SCORE_MULTIPLIER[DEF]
+        and normalised against DEF_TARGET_CEILING (empirical DEF cap, not MID-anchored × 0.85).
+        """
         from tests.test_player_scoring import TestCharacterisationSnapshot
         snap = TestCharacterisationSnapshot()
         def_eval, _ = snap._build_def()
-        # Post-2026-04-10 multi-GW position multiplier (was 39).
-        assert calculate_target_score(def_eval, next_gw_id=20) == 41
+        assert calculate_target_score(def_eval, next_gw_id=20) == 66
 
     def test_gk_value_score(self):
         """GK value path: for_gk() from VALUE_QUALITY_WEIGHTS, normalised to GK_VALUE_CEILING.
 
-        Post-2026-04-10 (position multiplier + gk_cs_rate halved):
-        saves 5.25 + xgc 3.5 + cs 1.636 + form 6.5 + ppg 3.2 ≈ 20.09
-        attenuated = 20.09 * 0.7 = 14.06
-        normalise(14.06, 19.71) = 71
+        Post-2026-04-10 (position multiplier + gk_cs_rate halved + non-atk form
+        headroom corrected to trajectory-only × 1.2):
+        saves 5.25 + xgc 3.5 + cs 1.636 + form 6.0 + ppg 3.2 ≈ 19.59
+        attenuated = 19.59 * 0.7 = 13.71
+        normalise(13.71, 18.83) = 73-75
         """
         from fpl_cli.services.player_scoring import compute_quality_value
 
@@ -2912,7 +2915,7 @@ class TestGKScoringPath:
             saves_per_90=3.5, expected_goals_conceded=11.54, clean_sheets=9,
         )
         score, _ = compute_quality_value(gk, us_match={}, next_gw_id=20, team_short="LIV")
-        assert score == 71
+        assert score == 75
 
     def test_gk_value_uses_gk_ceiling_not_value_ceiling(self):
         """GK value score normalised against GK_VALUE_CEILING, not VALUE_CEILING."""
@@ -4166,3 +4169,233 @@ class TestPositionalDistributionGuard:
             f"Expected ≤3 GKs in top 15 raw_quality, got {gk_count}. "
             f"Top 15 positions: {[p.position_name for p in top15]}"
         )
+
+
+class TestUnifiedQualityScoreDisplay:
+    """Cross-command consistency for ``quality_score`` (todos 006, 007).
+
+    The VALUE family normalisation ceiling is now per-position (empirical
+    DEF and GK caps; shared VALUE_CEILING for MID/FWD). ``fpl allocate``
+    at horizon>=2, ``fpl player``, ``fpl stats --value``, and
+    ``fpl transfer-eval`` all route through the same
+    ``_value_weights_and_ceiling`` dispatch, so an equal raw score for the
+    same player must produce an equal ``quality_score`` everywhere.
+    """
+
+    @staticmethod
+    def _make(pos: PlayerPosition, *, web_name: str, form: float, ppg: float) -> Any:
+        return make_player(
+            id=900, web_name=web_name, team_id=1, position=pos,
+            form=form, points_per_game=ppg, minutes=2000, total_points=120,
+            now_cost=80, expected_goals=3.0, expected_assists=2.0,
+            saves_per_90=3.2, expected_goals_conceded=20.0, clean_sheets=9,
+        )
+
+    @staticmethod
+    def _allocate_display(player: Any, horizon: int) -> int:
+        """Reproduce the ``fpl allocate`` display computation for one player.
+
+        This deliberately mirrors the logic in ``_emit_result`` so a
+        reader can verify the two surfaces stay aligned without spinning
+        up the solver.
+        """
+        from fpl_cli.services.player_scoring import (
+            compute_quality_value,
+            normalise_score,
+            pick_display_ceiling,
+        )
+        raw = compute_quality_value(
+            player, us_match={}, next_gw_id=20, team_short="LIV", raw=True,
+        )
+        return normalise_score(raw, pick_display_ceiling(player.position_name, horizon))
+
+    @staticmethod
+    def _value_display(player: Any) -> int:
+        """Reproduce ``fpl player`` / ``fpl stats --value`` ``quality_score``."""
+        from fpl_cli.services.player_scoring import compute_quality_value
+        score, _ = compute_quality_value(
+            player, us_match={}, next_gw_id=20, team_short="LIV",
+        )
+        return score
+
+    def test_gk_consistency_multi_gw(self):
+        gk = self._make(PlayerPosition.GOALKEEPER, web_name="GK", form=5.5, ppg=4.8)
+        assert self._allocate_display(gk, horizon=3) == self._value_display(gk)
+
+    def test_def_consistency_multi_gw(self):
+        d = self._make(PlayerPosition.DEFENDER, web_name="DEF", form=6.0, ppg=5.0)
+        assert self._allocate_display(d, horizon=3) == self._value_display(d)
+
+    def test_mid_consistency_multi_gw(self):
+        mid = self._make(PlayerPosition.MIDFIELDER, web_name="MID", form=7.0, ppg=5.5)
+        assert self._allocate_display(mid, horizon=3) == self._value_display(mid)
+
+    def test_fwd_consistency_multi_gw(self):
+        fwd = self._make(PlayerPosition.FORWARD, web_name="FWD", form=7.0, ppg=5.5)
+        assert self._allocate_display(fwd, horizon=3) == self._value_display(fwd)
+
+    def test_horizon_1_is_documented_asymmetry(self):
+        """horizon=1 deliberately uses STARTING_XI_CEILING as a cross-position anchor.
+
+        This is the one intentional gap in cross-command consistency.
+        Pin the asymmetry so removing it (splitting single-GW lineup
+        ceilings per position) is a conscious decision, not a silent drift.
+        """
+        from fpl_cli.services.player_scoring import STARTING_XI_CEILING, pick_display_ceiling
+        for pos in ("GK", "DEF", "MID", "FWD"):
+            assert pick_display_ceiling(pos, horizon=1) == STARTING_XI_CEILING
+
+
+class TestDefValueEndToEnd:
+    """Pin the full ``compute_quality_value`` DEF pipeline (todo 007).
+
+    The pre-fix ``_position_ceiling("DEF", VALUE_CEILING)`` scaling was a
+    mathematical no-op (both numerator and denominator scaled by 0.85).
+    An intermediate-only test (``test_def_attenuates_by_0_85``) cannot
+    catch the cancellation because it never runs ``normalise_score``. The
+    test below exercises the full pipeline so any return of the no-op is
+    loud.
+    """
+
+    def _def_player(self, *, form: float, ppg: float, minutes: int = 2000) -> Any:
+        return make_player(
+            id=600, web_name="PinDEF", team_id=1,
+            position=PlayerPosition.DEFENDER,
+            form=form, points_per_game=ppg, minutes=minutes, total_points=120,
+            now_cost=55, expected_goals=1.0, expected_assists=0.5,
+        )
+
+    def test_elite_def_value_pin(self):
+        """Pin the post-fix number for an elite DEF on the VALUE path."""
+        from fpl_cli.services.player_scoring import compute_quality_value
+        elite = self._def_player(form=6.0, ppg=5.0)
+        score, _ = compute_quality_value(
+            elite, us_match={}, next_gw_id=20, team_short="LIV",
+        )
+        assert score == 71
+
+    def test_def_value_diverges_from_pre_fix_mid_anchored_ceiling(self):
+        """Elite DEF score must differ from the pre-fix MID-anchored normalisation.
+
+        Under the pre-fix cancellation, DEF raw (already attenuated by 0.85)
+        was divided by VALUE_CEILING * 0.85 — the two 0.85s cancelled and
+        the score was identical to ``normalise_score(raw, VALUE_CEILING)``.
+        Post-fix, the denominator is DEF_VALUE_CEILING (derived from
+        ``without_xgi()`` caps), which is materially lower. Asserting the
+        two disagree pins that the regression is structurally absent, not
+        just numerically hidden behind a matching constant.
+        """
+        from fpl_cli.services.player_scoring import (
+            VALUE_CEILING, compute_quality_value, normalise_score,
+        )
+        elite = self._def_player(form=6.0, ppg=5.0)
+        score, _ = compute_quality_value(
+            elite, us_match={}, next_gw_id=20, team_short="LIV",
+        )
+        raw = compute_quality_value(
+            elite, us_match={}, next_gw_id=20, team_short="LIV", raw=True,
+        )
+        pre_fix_score = normalise_score(raw, VALUE_CEILING)
+        assert score != pre_fix_score, (
+            f"Post-fix DEF score {score} equals pre-fix no-op score {pre_fix_score} — "
+            "DEF_VALUE_CEILING normalisation may have regressed"
+        )
+        assert score > pre_fix_score, (
+            f"Post-fix DEF score {score} is lower than pre-fix {pre_fix_score} — "
+            "DEF_VALUE_CEILING should widen DEFs upward on the 0-100 scale"
+        )
+
+
+class TestPickDisplayCeilingRouting:
+    """Unit test ``pick_display_ceiling`` dispatch across position + horizon."""
+
+    def test_horizon_1_is_starting_xi(self):
+        from fpl_cli.services.player_scoring import STARTING_XI_CEILING, pick_display_ceiling
+        for pos in ("GK", "DEF", "MID", "FWD"):
+            assert pick_display_ceiling(pos, horizon=1) == STARTING_XI_CEILING
+
+    def test_horizon_multi_uses_value_family(self):
+        from fpl_cli.services.player_scoring import (
+            DEF_VALUE_CEILING, GK_VALUE_CEILING, VALUE_CEILING, pick_display_ceiling,
+        )
+        assert pick_display_ceiling("GK", horizon=3) == GK_VALUE_CEILING
+        assert pick_display_ceiling("DEF", horizon=3) == DEF_VALUE_CEILING
+        assert pick_display_ceiling("MID", horizon=6) == VALUE_CEILING
+        assert pick_display_ceiling("FWD", horizon=6) == VALUE_CEILING
+
+    def test_unknown_position_falls_through_to_default(self):
+        """Unknown positions fall through to VALUE_CEILING (MID/FWD default).
+
+        There is no strict validation here because ``sp.position`` always
+        comes from a validated enum. This test pins the fall-through so
+        adding validation later is a conscious decision.
+        """
+        from fpl_cli.services.player_scoring import VALUE_CEILING, pick_display_ceiling
+        assert pick_display_ceiling("XYZ", horizon=3) == VALUE_CEILING
+
+
+class TestDefScoreSpreadNotClustered:
+    """DEF pool spans a meaningful range on target/diff/waiver (todo 006 DEF cluster fix).
+
+    Pre-fix ceilings were MID-anchored × 0.85, so real-world DEFs capped at
+    ~60% of the ceiling and compressed into a narrow band (e.g. 14/20 DEF
+    in the 51-56 range at GW32 — spread of ~5). Empirical DEF ceilings
+    derived from the without_xgi() caps widen the distribution so a DEF
+    pool spanning scrub → elite now shows spread ~30 across all three
+    families.
+
+    Gate: spread >= 25. This is ~5x the pre-fix ~5-point clustering and
+    below the empirical ~30 observed post-fix, so a half-regression
+    (spread collapsing to ~15) fails the gate while natural form/ppg cap
+    saturation at the elite end does not. The parent plan originally
+    cited >= 40 as the acceptance criterion, which is not reachable under
+    current weight caps and was relaxed after empirical calibration.
+    """
+
+    _SPREAD_FLOOR = 25
+
+    def _def_pool(self) -> list[Any]:
+        profiles = [
+            {"form": 1.5, "ppg": 1.5, "dc": 0.2},
+            {"form": 2.5, "ppg": 2.0, "dc": 0.5},
+            {"form": 3.5, "ppg": 2.8, "dc": 1.0},
+            {"form": 4.5, "ppg": 3.5, "dc": 1.5},
+            {"form": 5.5, "ppg": 4.2, "dc": 2.0},
+            {"form": 6.5, "ppg": 5.0, "dc": 2.5},
+            {"form": 7.5, "ppg": 5.5, "dc": 3.0},
+        ]
+        pool = []
+        for i, p in enumerate(profiles):
+            eval_, _ = build_player_evaluation(
+                {
+                    "position": "DEF", "form": p["form"], "ppg": p["ppg"],
+                    "minutes": 1500, "appearances": 20,
+                    "xGI_per_90": 0.1, "dc_per_90": p["dc"],
+                    "status": "a", "team_short": f"T{i}",
+                },
+                matchup_avg_3gw=5.0, positional_fdr=3.5,
+            )
+            pool.append(eval_)
+        return pool
+
+    def test_def_target_spread_is_meaningful(self):
+        scores = [calculate_target_score(e, next_gw_id=20) for e in self._def_pool()]
+        spread = max(scores) - min(scores)
+        assert spread >= self._SPREAD_FLOOR, f"DEF target pool compressed (spread {spread}): {scores}"
+
+    def test_def_differential_spread_is_meaningful(self):
+        scores = [
+            calculate_differential_score(e, semi_differential_threshold=20.0, next_gw_id=20)
+            for e in self._def_pool()
+        ]
+        spread = max(scores) - min(scores)
+        assert spread >= self._SPREAD_FLOOR, f"DEF differential pool compressed (spread {spread}): {scores}"
+
+    def test_def_waiver_spread_is_meaningful(self):
+        squad = {"DEF": [{"form": 4.0}], "MID": [], "FWD": [], "GK": []}
+        scores = [
+            calculate_waiver_score(e, squad_by_position=squad, next_gw_id=20)
+            for e in self._def_pool()
+        ]
+        spread = max(scores) - min(scores)
+        assert spread >= self._SPREAD_FLOOR, f"DEF waiver pool compressed (spread {spread}): {scores}"

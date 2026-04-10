@@ -429,16 +429,43 @@ class TestAllocateCommand:
         expected = normalise_score(sr.selected_players[0].raw_quality, STARTING_XI_CEILING)
         assert first["quality_score"] == expected
 
-    def test_horizon_default_uses_value_ceiling(self):
-        """--horizon 6 (default) JSON output normalises quality using VALUE_CEILING."""
-        from fpl_cli.services.player_scoring import VALUE_CEILING, normalise_score
+    def test_horizon_default_uses_per_player_value_ceiling(self):
+        """--horizon 6 (default) JSON output normalises each player against a
+        position-specific VALUE family ceiling via ``pick_display_ceiling``.
+        Matches ``fpl player`` / ``fpl stats --value`` display.
+
+        Asserts across GK, DEF, MID, and FWD so a regression restoring a
+        single cross-position ceiling (or silently dropping DEF dispatch)
+        fails loudly. The central fix of this PR is DEF_VALUE_CEILING
+        replacing MID-anchored VALUE_CEILING * 0.85 — exercising only
+        ``selected_players[0]`` (always a GK) would miss that path.
+        """
+        from fpl_cli.services.player_scoring import normalise_score, pick_display_ceiling
 
         sr = _make_squad_result()
         result = _run_allocate(sr, args=["--format", "json"])
         data = json.loads(result.output)
-        first = data["data"][0]
-        expected = normalise_score(sr.selected_players[0].raw_quality, VALUE_CEILING)
-        assert first["quality_score"] == expected
+
+        rows_by_id = {row["id"]: row for row in data["data"]}
+
+        # One assertion per position: GK, DEF, MID, FWD. _make_squad_result
+        # places them in insertion order 2 GK / 5 DEF / 5 MID / 3 FWD.
+        samples = {
+            "GK": sr.selected_players[0],   # GK1
+            "DEF": sr.selected_players[2],  # DEF1
+            "MID": sr.selected_players[7],  # MID1
+            "FWD": sr.selected_players[12], # FWD1
+        }
+        for pos, sp in samples.items():
+            row = rows_by_id[sp.player.id]
+            expected = normalise_score(
+                sp.raw_quality,
+                pick_display_ceiling(sp.position, horizon=6),
+            )
+            assert row["quality_score"] == expected, (
+                f"{pos} quality_score {row['quality_score']} != expected {expected} "
+                f"(raw={sp.raw_quality}, position={sp.position})"
+            )
 
     def test_horizon1_suspended_gw1_coefficient_zero(self):
         """--horizon 1 with suspended GW1 player produces coefficient 0.0."""
