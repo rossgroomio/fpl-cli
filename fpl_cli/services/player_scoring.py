@@ -180,17 +180,25 @@ STARTING_XI_CEILING = 33.2
 # Practical ceiling ~24.3 (elite MID scores ~20 raw). Validated: Salah-tier -> 87-92/100
 VALUE_CEILING = 24.3
 
-# GK-specific ceilings — computed from GK signal caps (saves 6, xgc 3.5, cs 4)
-# plus position-appropriate form/ppg caps and matchup/ownership contributions.
+# GK-specific ceilings — quality components attenuated by POSITION_SCORE_MULTIPLIER[GK]=0.7
+# (applied inside calculate_player_quality_score), non-quality bonuses (matchup, ownership,
+# position_need) added un-attenuated. Derived empirically per
+# docs/solutions/logic-errors/ceiling-arithmetic-compounds-across-weight-changes.md
 # Note: 1.38 = form_trajectory_max(1.2) * xgi_sustainability_max(1.15)
-# GK_TARGET: saves 6 + xgc 3.5 + cs 4 + form_cap(5)*1.38 + ppg_cap(4) + matchup 6
-GK_TARGET_CEILING = 30.4
-# GK_DIFFERENTIAL: saves 6 + xgc 3.5 + cs 4 + form_cap(7)*1.38 + ppg_cap(4) + ownership 5 + matchup 6
-GK_DIFFERENTIAL_CEILING = 38.2
-# GK_WAIVER: saves 6 + xgc 3.5 + cs 4 + form_cap(7)*1.38 + ppg_cap(4.8) + matchup 6 + position_need 5
-GK_WAIVER_CEILING = 39.0
-# GK_VALUE: saves 6 + xgc 3.5 + cs 4 + form_cap(7)*1.38 + ppg_cap(5) (no matchup for value)
-GK_VALUE_CEILING = 28.2
+# Realistic elite GK contribution: ~70-80% of ceiling (cs_rate typically 30-55%, not 100%).
+#
+# GK_TARGET: (saves 6 + xgc 3.5 + cs 4 + form_cap(5)*1.38 + ppg_cap(4)) * 0.7 + matchup 6
+#          = 24.4 * 0.7 + 6 = 23.08
+GK_TARGET_CEILING = 23.08
+# GK_DIFFERENTIAL: (saves 6 + xgc 3.5 + cs 4 + form_cap(7)*1.38 + ppg_cap(4)) * 0.7
+#                + ownership 5 + matchup 6 = 27.16 * 0.7 + 11 = 30.01
+GK_DIFFERENTIAL_CEILING = 30.01
+# GK_WAIVER: (saves 6 + xgc 3.5 + cs 4 + form_cap(7)*1.38 + ppg_cap(4.8)) * 0.7
+#          + matchup 6 + position_need 5 = 27.96 * 0.7 + 11 = 30.57
+GK_WAIVER_CEILING = 30.57
+# GK_VALUE: (saves 6 + xgc 3.5 + cs 4 + form_cap(7)*1.38 + ppg_cap(5)) * 0.7 = 28.16 * 0.7 = 19.71
+# (no matchup for value family — compute_quality_value skips _calculate_quality_based_raw)
+GK_VALUE_CEILING = 19.71
 
 # ---------------------------------------------------------------------------
 # Consistency scoring magnitudes (Phase 2)
@@ -702,6 +710,8 @@ def calculate_player_quality_score(
     player: Mapping[str, Any],
     weights: QualityWeights,
     mins_factor: float = 1.0,
+    *,
+    position: str | None = None,
 ) -> float:
     """Shared baseline quality score from form, PPG, and xGI/npxG.
 
@@ -712,6 +722,12 @@ def calculate_player_quality_score(
     fallback, penalty_xG) to discount inflated rates from low-minutes
     players. Form, ppg, dc_per_90, and GK signals (saves, xgc_quality,
     cs_rate) are unscaled.
+
+    When *position* is supplied, the final score is attenuated by
+    POSITION_SCORE_MULTIPLIER[position] so GK/DEF scores reflect their
+    lower per-GW point potential relative to MID/FWD. Default None
+    preserves legacy behaviour for formula unit tests that pass naked
+    dicts without a position tag.
     """
     per90 = 0.0
 
@@ -751,6 +767,9 @@ def calculate_player_quality_score(
     if weights.gk_cs_rate.multiplier > 0:
         cs = player.get("gk_cs_rate", 0) or 0
         score += min(cs * weights.gk_cs_rate.multiplier, weights.gk_cs_rate.cap)
+
+    if position is not None:
+        score *= POSITION_SCORE_MULTIPLIER.get(position, 1.0)
 
     return score
 
@@ -1472,12 +1491,28 @@ def build_scoring_enrichment(
     return enrichment
 
 
+def _position_ceiling(position: str, base_ceiling: float) -> float:
+    """Scale a MID/FWD-calibrated ceiling by the position multiplier.
+
+    Single source of truth for cross-family positional ceiling attenuation
+    in the multi-GW (ownership) scoring path. GK ceilings are already
+    computed empirically with the multiplier baked in, so callers must not
+    pass GK-specific ceilings here.
+    """
+    return base_ceiling * POSITION_SCORE_MULTIPLIER.get(position, 1.0)
+
+
+def _ownership_family_ceiling(position: str, base_ceiling: float, gk_ceiling: float) -> float:
+    """Pick GK or position-scaled ceiling for the target/diff/waiver dispatch."""
+    return gk_ceiling if position == "GK" else _position_ceiling(position, base_ceiling)
+
+
 def _value_weights_and_ceiling(position: str) -> tuple[QualityWeights, float]:
     """Select VALUE_QUALITY_WEIGHTS variant and ceiling for a position."""
     if position == "GK":
         return VALUE_QUALITY_WEIGHTS.for_gk(), GK_VALUE_CEILING
     if position == "DEF":
-        return VALUE_QUALITY_WEIGHTS.without_xgi(), VALUE_CEILING
+        return VALUE_QUALITY_WEIGHTS.without_xgi(), _position_ceiling("DEF", VALUE_CEILING)
     return VALUE_QUALITY_WEIGHTS, VALUE_CEILING
 
 
@@ -1539,7 +1574,9 @@ def compute_quality_value(
     q_dict = evaluation.as_quality_dict()
     weights, value_ceiling = _value_weights_and_ceiling(player.position_name)
     mins_factor = calculate_mins_factor(player.minutes, player.appearances, next_gw_id)
-    raw_score = calculate_player_quality_score(q_dict, weights, mins_factor)
+    raw_score = calculate_player_quality_score(
+        q_dict, weights, mins_factor, position=player.position_name,
+    )
     if raw:
         return raw_score
     q_score = normalise_score(raw_score, value_ceiling)
@@ -1955,7 +1992,10 @@ def _calculate_quality_based_raw(
     )
 
     score = calculate_player_quality_score(
-        evaluation.as_quality_dict(), effective_weights, mins_factor,
+        evaluation.as_quality_dict(),
+        effective_weights,
+        mins_factor,
+        position=evaluation.position,
     )
 
     # Ownership bonus (differential only)
@@ -2018,7 +2058,7 @@ def calculate_target_score(
     next_gw_id: int,
 ) -> int:
     """Calculate a target score (pure performance, no ownership bias)."""
-    ceiling = GK_TARGET_CEILING if evaluation.position == "GK" else TARGET_CEILING
+    ceiling = _ownership_family_ceiling(evaluation.position, TARGET_CEILING, GK_TARGET_CEILING)
     return _calculate_quality_based_score(
         evaluation,
         weights=TARGET_QUALITY_WEIGHTS,
@@ -2034,7 +2074,7 @@ def calculate_differential_score(
     next_gw_id: int,
 ) -> int:
     """Calculate a differential score for a player."""
-    ceiling = GK_DIFFERENTIAL_CEILING if evaluation.position == "GK" else DIFFERENTIAL_CEILING
+    ceiling = _ownership_family_ceiling(evaluation.position, DIFFERENTIAL_CEILING, GK_DIFFERENTIAL_CEILING)
     return _calculate_quality_based_score(
         evaluation,
         weights=DIFFERENTIAL_QUALITY_WEIGHTS,
@@ -2103,7 +2143,7 @@ def calculate_waiver_score(
         elif current_count == 2:
             score -= 2
 
-    waiver_ceiling = GK_WAIVER_CEILING if evaluation.position == "GK" else WAIVER_CEILING
+    waiver_ceiling = _ownership_family_ceiling(evaluation.position, WAIVER_CEILING, GK_WAIVER_CEILING)
     return normalise_score(score, waiver_ceiling)
 
 

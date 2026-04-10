@@ -1522,3 +1522,76 @@ class TestPriceOverrides:
         total_savings = sum(result.player_savings.values())
         # Each owned player saves 0.3, total = 0.3 * len(owned)
         assert total_savings == pytest.approx(0.3 * len(result.owned_ids), abs=0.1)
+
+
+class TestFormationChoiceRegression:
+    """Guard against the 5-3-2 GK-captain regression (2026-04-10 plan).
+
+    Feeds solve_squad a synthetic pool whose per-position raw_quality
+    distribution matches what compute_quality_value produces *after* the
+    position multiplier fix. Asserts the solver picks an attacking
+    formation, not the bug symptom 5-3-2 / 5-4-1.
+    """
+
+    ATTACKING_FORMATIONS = frozenset({(3, 5, 2), (3, 4, 3), (4, 3, 3), (4, 4, 2)})
+
+    def _pool_with_attacking_top(self):
+        """Pool where MID/FWD raw_quality > DEF > GK (post-fix shape).
+
+        Enough players per position to satisfy solver slot/team constraints.
+        """
+        players: list[ScoredPlayer] = []
+        coeffs: dict[int, list[float]] = {}
+        pid = 1
+
+        def add(position_enum, position_name, raw, count, price):
+            nonlocal pid
+            for i in range(count):
+                p = make_player(
+                    id=pid,
+                    team_id=(pid % 15) + 1,  # spread teams to avoid 3-per-team cap
+                    position=position_enum,
+                    now_cost=int(price * 10),
+                )
+                players.append(ScoredPlayer(
+                    player=p, raw_quality=raw + i * 0.05, position=position_name,
+                ))
+                coeffs[pid] = [raw + i * 0.05]
+                pid += 1
+
+        # Strong MID cluster (need ≥ 5 for any formation with 5 MIDs)
+        add(PlayerPosition.MIDFIELDER, "MID", raw=15.0, count=8, price=6.0)
+        add(PlayerPosition.FORWARD, "FWD", raw=14.5, count=5, price=7.0)
+        # Solid DEFs at 0.85x quality — need ≥ 5
+        add(PlayerPosition.DEFENDER, "DEF", raw=10.0, count=8, price=5.0)
+        # GKs attenuated to 0.7x — need 2
+        add(PlayerPosition.GOALKEEPER, "GK", raw=8.0, count=4, price=4.5)
+        return players, coeffs
+
+    def test_solver_picks_attacking_formation(self):
+        """Post-fix raw distribution → attacking formation wins."""
+        players, coeffs = self._pool_with_attacking_top()
+        result = solve_squad(players, coeffs, budget=150.0)
+        assert result.status == "optimal"
+
+        starters = [sp for sp in result.selected_players if sp.player.id in result.starter_ids]
+        def_count = sum(1 for sp in starters if sp.position == "DEF")
+        mid_count = sum(1 for sp in starters if sp.position == "MID")
+        fwd_count = sum(1 for sp in starters if sp.position == "FWD")
+        formation = (def_count, mid_count, fwd_count)
+        assert formation in self.ATTACKING_FORMATIONS, (
+            f"Expected attacking formation, got {formation}"
+        )
+
+    def test_highest_coeff_starter_is_outfielder(self):
+        """The single best starter per GW in the post-fix pool is not a GK."""
+        players, coeffs = self._pool_with_attacking_top()
+        result = solve_squad(players, coeffs, budget=150.0)
+        assert result.status == "optimal"
+
+        starter_ids = result.starter_ids
+        starters_sorted = sorted(
+            (sp for sp in result.selected_players if sp.player.id in starter_ids),
+            key=lambda sp: sp.raw_quality, reverse=True,
+        )
+        assert starters_sorted[0].position != "GK"

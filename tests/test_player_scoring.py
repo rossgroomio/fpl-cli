@@ -145,7 +145,8 @@ class TestCharacterisationSnapshot:
 
     def test_target_def(self):
         eval_, _ = self._build_def()
-        assert calculate_target_score(eval_, next_gw_id=20) == 39
+        # Post-2026-04-10 multi-GW position multiplier: DEF ceiling = TARGET_CEILING * 0.85
+        assert calculate_target_score(eval_, next_gw_id=20) == 41
 
     # --- Differential ---
 
@@ -159,7 +160,7 @@ class TestCharacterisationSnapshot:
         eval_, _ = self._build_def()
         assert calculate_differential_score(
             eval_, semi_differential_threshold=20.0, next_gw_id=20,
-        ) == 44
+        ) == 47
 
     # --- Waiver ---
 
@@ -175,7 +176,7 @@ class TestCharacterisationSnapshot:
         squad = {"MID": [{"form": 4.0}, {"form": 3.0}], "DEF": [{"form": 5.0}, {"form": 4.0}]}
         assert calculate_waiver_score(
             eval_, squad_by_position=squad, next_gw_id=20,
-        ) == 38
+        ) == 40
 
     # --- Captain ---
 
@@ -568,7 +569,8 @@ class TestCalculateTargetScore:
             positional_fdr=3.0,
         )
         score = calculate_target_score(eval, next_gw_id=20)
-        assert score == 35
+        # Post-2026-04-10 GK ceiling = 23.08 (was 30.4); quality attenuated by 0.7
+        assert score == 38
 
     def test_zero_minutes(self):
         """Player with 0 appearances: mins_factor=0, matchup zeroed."""
@@ -724,7 +726,8 @@ class TestCalculateWaiverScore:
             eval, squad_by_position=self._squad_by_pos(),
             team_counts=self._team_counts(), next_gw_id=20,
         )
-        assert score == 33
+        # DEF waiver ceiling = WAIVER_CEILING * 0.85 post-2026-04-10
+        assert score == 35
 
     def test_position_need_empty(self):
         eval, _ = build_player_evaluation(
@@ -2880,19 +2883,21 @@ class TestGKScoringPath:
         assert enrichment["gk_xgc_quality"] == pytest.approx(2.0 - xgc_per_90)
         assert enrichment["gk_cs_rate"] == pytest.approx(2 / 5)
 
-    def test_def_target_score_unchanged(self):
-        """Regression guard: DEF path (without_xgi) produces same score as before."""
+    def test_def_target_score_uses_pos_mult(self):
+        """Regression guard: DEF path (without_xgi) is attenuated by POSITION_SCORE_MULTIPLIER[DEF]."""
         from tests.test_player_scoring import TestCharacterisationSnapshot
         snap = TestCharacterisationSnapshot()
         def_eval, _ = snap._build_def()
-        assert calculate_target_score(def_eval, next_gw_id=20) == 39
+        # Post-2026-04-10 multi-GW position multiplier (was 39).
+        assert calculate_target_score(def_eval, next_gw_id=20) == 41
 
     def test_gk_value_score(self):
         """GK value path: for_gk() from VALUE_QUALITY_WEIGHTS, normalised to GK_VALUE_CEILING.
 
-        VALUE form=StatWeight(1.3,7), ppg=StatWeight(0.8,5):
-        saves 5.25 + xgc 3.5 + cs 3.2 + form min(6.5,7)=6.5 + ppg min(3.2,5)=3.2 = 21.65
-        normalise(21.65, 28.2)=77
+        Post-2026-04-10 position multiplier applies:
+        raw quality components = saves 5.25 + xgc 3.5 + cs 3.2 + form 6.5 + ppg 3.2 = 21.65
+        attenuated = 21.65 * 0.7 = 15.155
+        normalise(15.155, 19.71) = 77
         """
         from fpl_cli.services.player_scoring import compute_quality_value
 
@@ -2903,17 +2908,12 @@ class TestGKScoringPath:
             now_cost=50,
             saves_per_90=3.5, expected_goals_conceded=11.54, clean_sheets=9,
         )
-        # expected_goals_conceded=11.54 → xgc_per_90=(11.54/1800)*90=0.577 → quality=1.423 → capped 3.5
-        # clean_sheets=9, appearances=88/4.0=22 → cs_rate=9/22=0.409 → cs=min(3.27,4)=3.27
-        # saves_per_90=3.5 → saves=5.25
-        # form=min(6.5,7)=6.5, ppg=min(3.2,5)=3.2 → raw=5.25+3.5+3.27+6.5+3.2=21.72
-        # normalise(21.72, 28.2)=77
         score, _ = compute_quality_value(gk, us_match={}, next_gw_id=20, team_short="LIV")
         assert score == 77
 
     def test_gk_value_uses_gk_ceiling_not_value_ceiling(self):
         """GK value score is normalised against GK_VALUE_CEILING, not VALUE_CEILING."""
-        from fpl_cli.services.player_scoring import compute_quality_value
+        from fpl_cli.services.player_scoring import POSITION_SCORE_MULTIPLIER, compute_quality_value
 
         gk = make_player(
             id=302, web_name="CeilGK", team_id=3,
@@ -2923,10 +2923,9 @@ class TestGKScoringPath:
             saves_per_90=3.5, expected_goals_conceded=11.54, clean_sheets=9,
         )
         gk_score, _ = compute_quality_value(gk, us_match={}, next_gw_id=20, team_short="LIV")
-        # If normalised against VALUE_CEILING (24.3), score would be 89+
-        # normalise against GK_VALUE_CEILING (28.2) gives 77
-        assert gk_score != normalise_score(21.72, VALUE_CEILING)
-        assert gk_score == pytest.approx(normalise_score(21.72, GK_VALUE_CEILING), abs=1)
+        raw_attenuated = 21.72 * POSITION_SCORE_MULTIPLIER["GK"]
+        assert gk_score != normalise_score(raw_attenuated, VALUE_CEILING)
+        assert gk_score == pytest.approx(normalise_score(raw_attenuated, GK_VALUE_CEILING), abs=1)
 
 
 # ---------------------------------------------------------------------------
@@ -3944,3 +3943,328 @@ class TestConsistencyScoringIntegration:
         assert qd["floor_percentile"] == 0.7
         assert qd["involvement_rate"] == 0.9
         assert qd["gk_consistency_percentile"] == 0.5
+
+
+# ---------------------------------------------------------------------------
+# Position multiplier regression tests (2026-04-10)
+# ---------------------------------------------------------------------------
+
+
+class TestPositionMultiplierLock:
+    """Version-lock POSITION_SCORE_MULTIPLIER and verify attenuation wiring."""
+
+    def test_constant_values_locked(self):
+        """Editing POSITION_SCORE_MULTIPLIER requires an explicit test update."""
+        from fpl_cli.services.player_scoring import POSITION_SCORE_MULTIPLIER
+        assert POSITION_SCORE_MULTIPLIER == {
+            "FWD": 1.0,
+            "MID": 1.0,
+            "DEF": 0.85,
+            "GK": 0.7,
+        }
+
+    def test_position_none_preserves_legacy_behaviour(self):
+        """position=None keeps legacy score (no multiplier)."""
+        player = {"form": 5.0, "ppg": 4.0, "xGI_per_90": 0.5}
+        legacy = calculate_player_quality_score(player, VALUE_QUALITY_WEIGHTS)
+        explicit_none = calculate_player_quality_score(
+            player, VALUE_QUALITY_WEIGHTS, position=None,
+        )
+        assert legacy == pytest.approx(explicit_none)
+
+    def test_mid_position_is_noop(self):
+        """MID multiplier=1.0 so score is unchanged from position=None."""
+        player = {"form": 5.0, "ppg": 4.0, "xGI_per_90": 0.5}
+        base = calculate_player_quality_score(player, VALUE_QUALITY_WEIGHTS)
+        with_mid = calculate_player_quality_score(
+            player, VALUE_QUALITY_WEIGHTS, position="MID",
+        )
+        assert with_mid == pytest.approx(base)
+
+    def test_def_attenuates_by_0_85(self):
+        player = {"form": 5.0, "ppg": 4.0, "xGI_per_90": 0.5}
+        base = calculate_player_quality_score(
+            player, VALUE_QUALITY_WEIGHTS.without_xgi(),
+        )
+        with_def = calculate_player_quality_score(
+            player, VALUE_QUALITY_WEIGHTS.without_xgi(), position="DEF",
+        )
+        assert with_def == pytest.approx(base * 0.85)
+
+    def test_gk_attenuates_by_0_7(self):
+        player = {
+            "form": 5.0, "ppg": 4.0,
+            "gk_saves_per_90": 3.5, "gk_xgc_quality": 1.2, "gk_cs_rate": 0.4,
+        }
+        base = calculate_player_quality_score(player, VALUE_QUALITY_WEIGHTS.for_gk())
+        with_gk = calculate_player_quality_score(
+            player, VALUE_QUALITY_WEIGHTS.for_gk(), position="GK",
+        )
+        assert with_gk == pytest.approx(base * 0.7)
+
+    def test_unknown_position_is_noop(self):
+        """Unknown positions fall back to multiplier 1.0 (safe default)."""
+        player = {"form": 5.0, "ppg": 4.0, "xGI_per_90": 0.5}
+        base = calculate_player_quality_score(player, VALUE_QUALITY_WEIGHTS)
+        with_unknown = calculate_player_quality_score(
+            player, VALUE_QUALITY_WEIGHTS, position="UNKNOWN",
+        )
+        assert with_unknown == pytest.approx(base)
+
+
+class TestParameterisedCeilings:
+    """Each module-level ceiling constant matches its empirical derivation.
+
+    Guards against a future weight change silently invalidating a hard-coded
+    constant without test churn.
+    """
+
+    FORM_MULT = 1.38  # form_trajectory_max(1.2) * xgi_sustainability_max(1.15)
+    MATCHUP_MAX = 6.0  # matchup_avg_3gw max 8.0 * 0.75 * mins_factor 1.0
+    OWNERSHIP_MAX = 5.0  # (semi_differential_threshold 15 - 0) / divisor 3
+    POSITION_NEED_MAX = 5.0
+
+    def _gk_quality_max(self, weights):
+        w = weights.for_gk()
+        return (
+            w.gk_saves_per_90.cap
+            + w.gk_xgc_quality.cap
+            + w.gk_cs_rate.cap
+            + w.form.cap * self.FORM_MULT
+            + w.ppg.cap
+        )
+
+    def test_gk_value_ceiling(self):
+        from fpl_cli.services.player_scoring import (
+            GK_VALUE_CEILING,
+            POSITION_SCORE_MULTIPLIER,
+            VALUE_QUALITY_WEIGHTS,
+        )
+        derived = self._gk_quality_max(VALUE_QUALITY_WEIGHTS) * POSITION_SCORE_MULTIPLIER["GK"]
+        assert GK_VALUE_CEILING == pytest.approx(derived, abs=0.05)
+
+    def test_gk_target_ceiling(self):
+        from fpl_cli.services.player_scoring import (
+            GK_TARGET_CEILING,
+            POSITION_SCORE_MULTIPLIER,
+            TARGET_QUALITY_WEIGHTS,
+        )
+        derived = (
+            self._gk_quality_max(TARGET_QUALITY_WEIGHTS) * POSITION_SCORE_MULTIPLIER["GK"]
+            + self.MATCHUP_MAX
+        )
+        assert GK_TARGET_CEILING == pytest.approx(derived, abs=0.05)
+
+    def test_gk_differential_ceiling(self):
+        from fpl_cli.services.player_scoring import (
+            DIFFERENTIAL_QUALITY_WEIGHTS,
+            GK_DIFFERENTIAL_CEILING,
+            POSITION_SCORE_MULTIPLIER,
+        )
+        derived = (
+            self._gk_quality_max(DIFFERENTIAL_QUALITY_WEIGHTS) * POSITION_SCORE_MULTIPLIER["GK"]
+            + self.OWNERSHIP_MAX
+            + self.MATCHUP_MAX
+        )
+        assert GK_DIFFERENTIAL_CEILING == pytest.approx(derived, abs=0.1)
+
+    def test_gk_waiver_ceiling(self):
+        from fpl_cli.services.player_scoring import (
+            GK_WAIVER_CEILING,
+            POSITION_SCORE_MULTIPLIER,
+            WAIVER_QUALITY_WEIGHTS,
+        )
+        derived = (
+            self._gk_quality_max(WAIVER_QUALITY_WEIGHTS) * POSITION_SCORE_MULTIPLIER["GK"]
+            + self.MATCHUP_MAX
+            + self.POSITION_NEED_MAX
+        )
+        assert GK_WAIVER_CEILING == pytest.approx(derived, abs=0.1)
+
+
+class TestCeilingValidationBands:
+    """Elite and edge-case players produce sensible normalised scores."""
+
+    def _elite_mid(self):
+        # Fernandes-tier: high form, strong xGI, nailed, in-form trajectory
+        return make_player(
+            id=401, web_name="EliteMID", team_id=1,
+            position=PlayerPosition.MIDFIELDER,
+            form=7.5, points_per_game=5.8, minutes=2000, total_points=180,
+            now_cost=95, expected_goals=10.0, expected_assists=8.0,
+        )
+
+    def _elite_fwd(self):
+        # Haaland-tier: xG monster
+        return make_player(
+            id=402, web_name="EliteFWD", team_id=2,
+            position=PlayerPosition.FORWARD,
+            form=7.0, points_per_game=6.2, minutes=1900, total_points=190,
+            now_cost=150, expected_goals=15.0, expected_assists=4.0,
+        )
+
+    def _elite_def(self):
+        return make_player(
+            id=403, web_name="EliteDEF", team_id=3,
+            position=PlayerPosition.DEFENDER,
+            form=6.0, points_per_game=5.0, minutes=2000, total_points=140,
+            now_cost=65, expected_goals=1.5, expected_assists=1.0,
+        )
+
+    def _elite_gk(self):
+        return make_player(
+            id=404, web_name="EliteGK", team_id=4,
+            position=PlayerPosition.GOALKEEPER,
+            form=5.5, points_per_game=4.8, minutes=2000, total_points=120,
+            now_cost=55,
+            saves_per_90=3.5, expected_goals_conceded=18.0, clean_sheets=10,
+        )
+
+    def _score(self, player, *, next_gw_id=20):
+        from fpl_cli.services.player_scoring import compute_quality_value
+        score, _ = compute_quality_value(
+            player, us_match={}, next_gw_id=next_gw_id, team_short="LIV",
+        )
+        return score
+
+    def test_elite_mid_in_band(self):
+        assert 55 <= self._score(self._elite_mid()) <= 100
+
+    def test_elite_fwd_in_band(self):
+        assert 55 <= self._score(self._elite_fwd()) <= 100
+
+    def test_elite_def_in_band(self):
+        # DEF normalises against VALUE_CEILING * 0.85 which is a MID-anchored
+        # ceiling. DEFs can only reach ~50-70/100 because without_xgi() zeroes
+        # npxg/xgi components. Band is lower by design.
+        assert 30 <= self._score(self._elite_def()) <= 100
+
+    def test_elite_gk_in_band(self):
+        assert 55 <= self._score(self._elite_gk()) <= 100
+
+    def test_elite_fwd_outranks_elite_gk_on_raw_quality(self):
+        """Load-bearing regression: Haaland-tier FWD raw > Raya-tier GK raw.
+
+        This is the exact class of bug the stopgap plan fixes — before the
+        position multiplier landed on the multi-GW path, elite GKs were
+        out-ranking elite outfielders in the top-N raw_quality table.
+        """
+        from fpl_cli.services.player_scoring import compute_quality_value
+        fwd_raw = compute_quality_value(
+            self._elite_fwd(), us_match={}, next_gw_id=20, team_short="LIV", raw=True,
+        )
+        gk_raw = compute_quality_value(
+            self._elite_gk(), us_match={}, next_gw_id=20, team_short="LIV", raw=True,
+        )
+        assert fwd_raw > gk_raw
+
+    def test_low_minutes_backup_gk_not_nonsense(self):
+        """Darlow-tier backup: 180 mins, ramp 0.4, still produces sane 0-100 score."""
+        backup_gk = make_player(
+            id=405, web_name="BackupGK", team_id=5,
+            position=PlayerPosition.GOALKEEPER,
+            form=3.0, points_per_game=2.5, minutes=180, total_points=12,
+            now_cost=39,
+            saves_per_90=3.0, expected_goals_conceded=2.5, clean_sheets=1,
+        )
+        score = self._score(backup_gk)
+        assert 0 <= score <= 60
+
+    def test_cold_start_player_in_range(self):
+        """Promoted-team / new signing with no history: form/trajectory defaults.
+
+        Scored across all four positions to confirm the ceiling-normalised
+        output stays in a sensible range when the input signals are sparse.
+        """
+        for pos, code in (
+            (PlayerPosition.MIDFIELDER, 410),
+            (PlayerPosition.FORWARD, 411),
+            (PlayerPosition.DEFENDER, 412),
+            (PlayerPosition.GOALKEEPER, 413),
+        ):
+            player = make_player(
+                id=code, web_name=f"Cold{code}", team_id=code % 20 + 1,
+                position=pos,
+                form=0.0, points_per_game=0.0, minutes=0, total_points=0,
+                now_cost=45, expected_goals=0.0, expected_assists=0.0,
+            )
+            score = self._score(player)
+            assert 0 <= score <= 100, f"{pos.name}: {score}"
+
+    def test_def_raw_is_attenuated_relative_to_itself(self):
+        """DEF raw_quality computed with position kwarg is 0.85x the un-attenuated result.
+
+        Direct check on calculate_player_quality_score bypasses the weight-variant
+        differences between MID (full) and DEF (without_xgi).
+        """
+        player = {
+            "form": 6.0, "ppg": 5.0, "xGI_per_90": 0.0,
+            "npxG_per_90": 0.0, "xGChain_per_90": 0.0, "dc_per_90": 1.5,
+        }
+        w = VALUE_QUALITY_WEIGHTS.without_xgi()
+        base = calculate_player_quality_score(player, w)
+        attenuated = calculate_player_quality_score(player, w, position="DEF")
+        assert attenuated == pytest.approx(base * 0.85, abs=0.01)
+
+
+class TestPositionalDistributionGuard:
+    """Top-N composition under compute_quality_value. Guards against GK dominance."""
+
+    def _build_pool(self):
+        """Synthetic pool spanning positions with realistic parameter ranges."""
+        pool = []
+        # Elite outfielders (MID + FWD) — should dominate top 15
+        for i in range(6):
+            pool.append(make_player(
+                id=500 + i, web_name=f"ElMID{i}", team_id=i + 1,
+                position=PlayerPosition.MIDFIELDER,
+                form=6.5 + i * 0.2, points_per_game=5.0 + i * 0.1,
+                minutes=1800, total_points=130 + i * 10,
+                now_cost=80 + i * 5, expected_goals=8.0, expected_assists=6.0,
+            ))
+        for i in range(6):
+            pool.append(make_player(
+                id=510 + i, web_name=f"ElFWD{i}", team_id=(i + 6) + 1,
+                position=PlayerPosition.FORWARD,
+                form=6.0 + i * 0.2, points_per_game=5.0 + i * 0.1,
+                minutes=1700, total_points=120 + i * 10,
+                now_cost=75 + i * 5, expected_goals=10.0, expected_assists=3.0,
+            ))
+        # Solid DEFs
+        for i in range(6):
+            pool.append(make_player(
+                id=520 + i, web_name=f"SoDEF{i}", team_id=i + 1,
+                position=PlayerPosition.DEFENDER,
+                form=5.0 + i * 0.2, points_per_game=4.5 + i * 0.1,
+                minutes=1800, total_points=100 + i * 5,
+                now_cost=55, expected_goals=1.5, expected_assists=1.0,
+            ))
+        # Elite GKs (the ones that were dominating top 10)
+        for i in range(6):
+            pool.append(make_player(
+                id=530 + i, web_name=f"ElGK{i}", team_id=i + 5,
+                position=PlayerPosition.GOALKEEPER,
+                form=5.0 + i * 0.2, points_per_game=4.5 + i * 0.1,
+                minutes=1800, total_points=100 + i * 5,
+                now_cost=50,
+                saves_per_90=3.5, expected_goals_conceded=16.0,
+                clean_sheets=8 + i,
+            ))
+        return pool
+
+    def test_top_15_has_at_most_three_gks(self):
+        from fpl_cli.services.player_scoring import compute_quality_value
+        pool = self._build_pool()
+        scored = [
+            (p, compute_quality_value(
+                p, us_match={}, next_gw_id=20, team_short="LIV", raw=True,
+            ))
+            for p in pool
+        ]
+        scored.sort(key=lambda pr: pr[1], reverse=True)
+        top15 = [p for p, _ in scored[:15]]
+        gk_count = sum(1 for p in top15 if p.position_name == "GK")
+        assert gk_count <= 3, (
+            f"Expected ≤3 GKs in top 15 raw_quality, got {gk_count}. "
+            f"Top 15 positions: {[p.position_name for p in top15]}"
+        )
