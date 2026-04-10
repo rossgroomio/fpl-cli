@@ -204,24 +204,36 @@ VALUE_CEILING = 24.3
 _MATCHUP_MAX = 6.0           # matchup_avg_3gw max 8.0 * 0.75 * mins_factor 1.0
 _OWNERSHIP_MAX = 5.0         # (semi_differential_threshold 15 - 0) / divisor 3
 _POSITION_NEED_MAX = 5.0     # calculate_waiver_score empty-slot bonus
-# Form multiplier: form_trajectory_max(1.2) * xgi_sustainability_max(1.15).
-_FORM_SUSTAINABILITY_MAX = 1.38
+# Form multipliers applied inside calculate_player_quality_score. The ATK
+# path gets form_trajectory_max(1.2) * xgi_sustainability_max(1.15) = 1.38;
+# GK/DEF paths get form_trajectory_max only because compute_xgi_sustainability
+# returns 1.0 for non-ATK positions. The ATK form ceiling is hand-rolled into
+# the TARGET/DIFFERENTIAL/VALUE constants above (see the `form N*1.38` terms);
+# _NON_ATK_FORM_MAX is used by _gk_quality_cap and _def_quality_cap below.
+_NON_ATK_FORM_MAX = 1.2
+
+# Consistency bonus headroom — added inside _calculate_quality_based_raw.
+# cv_xgi_percentile in [0,1] × magnitude × 0.5 = max bonus. Value family
+# skips _calculate_quality_based_raw entirely and takes no consistency term.
+_CONSISTENCY_MAX_TARGET = 0.75   # (1.0 - 0.5) * CONSISTENCY_CV_TARGET (1.5)
+_CONSISTENCY_MAX_DIFF = 0.375    # (1.0 - 0.5) * CONSISTENCY_CV_DIFF (0.75)
+_CONSISTENCY_MAX_WAIVER = 0.75   # waiver uses CONSISTENCY_CV_TARGET too
 
 
 def _gk_quality_cap(weights: QualityWeights) -> float:
     """Theoretical max of calculate_player_quality_score on the GK path.
 
     Derived from weight caps, pre-attenuation. Matches the signal set
-    evaluated inside calculate_player_quality_score when
-    weights.for_gk() is used: saves, xgc, cs, form (with sustainability
-    bonus), ppg.
+    evaluated inside calculate_player_quality_score when weights.for_gk()
+    is used: saves, xgc, cs, form (trajectory only — xgi_sustainability
+    is always 1.0 for GK, see compute_xgi_sustainability), ppg.
     """
     gk = weights.for_gk()
     return (
         gk.gk_saves_per_90.cap
         + gk.gk_xgc_quality.cap
         + gk.gk_cs_rate.cap
-        + gk.form.cap * _FORM_SUSTAINABILITY_MAX
+        + gk.form.cap * _NON_ATK_FORM_MAX
         + gk.ppg.cap
     )
 
@@ -229,13 +241,14 @@ def _gk_quality_cap(weights: QualityWeights) -> float:
 def _def_quality_cap(weights: QualityWeights) -> float:
     """Theoretical max of calculate_player_quality_score on the DEF path.
 
-    Matches the signal set under weights.without_xgi(): form (with
-    sustainability multiplier), ppg, and dc_per_90. xGI family, GK
-    components and penalty_xg are zeroed by without_xgi().
+    Matches the signal set under weights.without_xgi(): form (trajectory
+    only — xgi_sustainability is always 1.0 for DEF), ppg, and
+    dc_per_90. xGI family, GK components and penalty_xg are zeroed by
+    without_xgi().
     """
     defw = weights.without_xgi()
     return (
-        defw.form.cap * _FORM_SUSTAINABILITY_MAX
+        defw.form.cap * _NON_ATK_FORM_MAX
         + defw.ppg.cap
         + defw.dc_per_90.cap
     )
@@ -248,14 +261,25 @@ def _def_quality_cap(weights: QualityWeights) -> float:
 # empirically by TestCeilingValidationBands (elite-player bounds).
 _GK_MULT = POSITION_SCORE_MULTIPLIER["GK"]
 _DEF_MULT = POSITION_SCORE_MULTIPLIER["DEF"]
-GK_TARGET_CEILING = _gk_quality_cap(TARGET_QUALITY_WEIGHTS) * _GK_MULT + _MATCHUP_MAX
+# Ownership-family ceilings include _CONSISTENCY_MAX_* headroom so a top-pool
+# player with high cv_xgi_percentile does not overflow the ceiling and get
+# silently clamped to 100 (losing the consistency signal's discrimination).
+# MID/FWD TARGET_CEILING / DIFFERENTIAL_CEILING / WAIVER_CEILING already bake
+# this in (see the cv_* terms in their derivation comments above); GK and DEF
+# must add it explicitly because their caps are computed programmatically.
+GK_TARGET_CEILING = (
+    _gk_quality_cap(TARGET_QUALITY_WEIGHTS) * _GK_MULT + _MATCHUP_MAX + _CONSISTENCY_MAX_TARGET
+)
 GK_DIFFERENTIAL_CEILING = (
-    _gk_quality_cap(DIFFERENTIAL_QUALITY_WEIGHTS) * _GK_MULT + _OWNERSHIP_MAX + _MATCHUP_MAX
+    _gk_quality_cap(DIFFERENTIAL_QUALITY_WEIGHTS) * _GK_MULT
+    + _OWNERSHIP_MAX + _MATCHUP_MAX + _CONSISTENCY_MAX_DIFF
 )
 GK_WAIVER_CEILING = (
-    _gk_quality_cap(WAIVER_QUALITY_WEIGHTS) * _GK_MULT + _MATCHUP_MAX + _POSITION_NEED_MAX
+    _gk_quality_cap(WAIVER_QUALITY_WEIGHTS) * _GK_MULT
+    + _MATCHUP_MAX + _POSITION_NEED_MAX + _CONSISTENCY_MAX_WAIVER
 )
-# Value family has no matchup — compute_quality_value skips _calculate_quality_based_raw.
+# Value family has no matchup or consistency — compute_quality_value skips
+# _calculate_quality_based_raw entirely.
 GK_VALUE_CEILING = _gk_quality_cap(VALUE_QUALITY_WEIGHTS) * _GK_MULT
 
 # DEF ceilings: derived from without_xgi() caps, not MID-anchored ceilings.
@@ -263,12 +287,16 @@ GK_VALUE_CEILING = _gk_quality_cap(VALUE_QUALITY_WEIGHTS) * _GK_MULT
 # mathematical no-op on the VALUE family (both numerator and denominator
 # scaled by 0.85) and a MID-anchored ceiling on target/diff/waiver that
 # compressed real DEF pools into a narrow upper band.
-DEF_TARGET_CEILING = _def_quality_cap(TARGET_QUALITY_WEIGHTS) * _DEF_MULT + _MATCHUP_MAX
+DEF_TARGET_CEILING = (
+    _def_quality_cap(TARGET_QUALITY_WEIGHTS) * _DEF_MULT + _MATCHUP_MAX + _CONSISTENCY_MAX_TARGET
+)
 DEF_DIFFERENTIAL_CEILING = (
-    _def_quality_cap(DIFFERENTIAL_QUALITY_WEIGHTS) * _DEF_MULT + _OWNERSHIP_MAX + _MATCHUP_MAX
+    _def_quality_cap(DIFFERENTIAL_QUALITY_WEIGHTS) * _DEF_MULT
+    + _OWNERSHIP_MAX + _MATCHUP_MAX + _CONSISTENCY_MAX_DIFF
 )
 DEF_WAIVER_CEILING = (
-    _def_quality_cap(WAIVER_QUALITY_WEIGHTS) * _DEF_MULT + _MATCHUP_MAX + _POSITION_NEED_MAX
+    _def_quality_cap(WAIVER_QUALITY_WEIGHTS) * _DEF_MULT
+    + _MATCHUP_MAX + _POSITION_NEED_MAX + _CONSISTENCY_MAX_WAIVER
 )
 DEF_VALUE_CEILING = _def_quality_cap(VALUE_QUALITY_WEIGHTS) * _DEF_MULT
 
@@ -1595,13 +1623,14 @@ def _value_weights_and_ceiling(position: str) -> tuple[QualityWeights, float]:
 def pick_display_ceiling(position: str, horizon: int) -> float:
     """Position + horizon aware ceiling for `fpl allocate` display normalisation.
 
-    horizon=1 is the single-GW lineup context and retains STARTING_XI_CEILING
-    as a cross-position anchor — a deliberate asymmetry tracked by todo 013
-    (horizon=1 lineup ceiling position split). horizon>=2 uses the VALUE
-    family ceilings, matching `fpl player` / `fpl stats --value` /
+    At horizon <= 1 (single-GW lineup context) returns STARTING_XI_CEILING as
+    a cross-position anchor — a deliberate asymmetry retained until the
+    single-GW lineup ceilings are split per position. Use ``raw_quality`` if
+    you need a position-agnostic ranking in that context. horizon >= 2 uses
+    the VALUE family ceilings, matching `fpl player` / `fpl stats --value` /
     `fpl transfer-eval` for cross-command consistency.
     """
-    if horizon == 1:
+    if horizon <= 1:
         return STARTING_XI_CEILING
     _, ceiling = _value_weights_and_ceiling(position)
     return ceiling

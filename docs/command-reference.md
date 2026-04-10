@@ -169,7 +169,7 @@ Scores ~500 eligible players, adjusts for fixture difficulty over the planning h
 
 **JSON output fields:** `id`, `web_name`, `team`, `position`, `price`, `quality_score` (0-100), `raw_quality` (float), `role` (starter/bench), `captain_gws`. Metadata includes `formation`, `budget_used`, `budget_remaining`, `captain_schedule`, `solver_status`.
 
-**`quality_score` semantics:** At `--horizon >= 2` each player's `quality_score` is normalised against a position-specific VALUE-family ceiling (matching `fpl player` / `fpl stats --value` / `fpl transfer-eval`), so elite GKs, DEFs, MIDs and FWDs all land in comparable 0-100 bands *within their own position*. At `--horizon 1` a single cross-position `STARTING_XI_CEILING` is used — a deliberate asymmetry retained until the single-GW lineup ceilings are split per position (tracked by todo 013). Use `raw_quality` if you need a position-agnostic ranking.
+**`quality_score` semantics:** At `--horizon >= 2` each player's `quality_score` is normalised against a position-specific VALUE-family ceiling (matching `fpl player` / `fpl stats --value` / `fpl transfer-eval`), so elite GKs, DEFs, MIDs and FWDs all land in comparable 0-100 bands *within their own position*. At `--horizon 1` a single cross-position `STARTING_XI_CEILING` is used — a deliberate asymmetry retained until the single-GW lineup ceilings are split per position; at that horizon, DEFs and GKs display noticeably lower than MIDs/FWDs for the same real-world quality. Use `raw_quality` for a position-agnostic ranking in the single-GW context.
 
 ### Fixture Difficulty (FDR)
 

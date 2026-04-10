@@ -318,7 +318,7 @@ class TestWaiverCharacterisation:
             team_counts=self._team_counts(), next_gw_id=20,
         )
         # DEF normalised against DEF_WAIVER_CEILING (empirical without_xgi cap × 0.85 + bonuses).
-        assert score == 66
+        assert score == 67
 
 
 # ---------------------------------------------------------------------------

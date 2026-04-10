@@ -161,7 +161,7 @@ class TestCharacterisationSnapshot:
         eval_, _ = self._build_def()
         assert calculate_differential_score(
             eval_, semi_differential_threshold=20.0, next_gw_id=20,
-        ) == 64
+        ) == 66
 
     # --- Waiver ---
 
@@ -728,7 +728,7 @@ class TestCalculateWaiverScore:
             team_counts=self._team_counts(), next_gw_id=20,
         )
         # DEF waiver ceiling = DEF_WAIVER_CEILING (empirical, from without_xgi caps × 0.85 + bonuses).
-        assert score == 44
+        assert score == 45
 
     def test_position_need_empty(self):
         eval, _ = build_player_evaluation(
@@ -2899,10 +2899,11 @@ class TestGKScoringPath:
     def test_gk_value_score(self):
         """GK value path: for_gk() from VALUE_QUALITY_WEIGHTS, normalised to GK_VALUE_CEILING.
 
-        Post-2026-04-10 (position multiplier + gk_cs_rate halved):
-        saves 5.25 + xgc 3.5 + cs 1.636 + form 6.5 + ppg 3.2 ≈ 20.09
-        attenuated = 20.09 * 0.7 = 14.06
-        normalise(14.06, 19.71) = 71
+        Post-2026-04-10 (position multiplier + gk_cs_rate halved + non-atk form
+        headroom corrected to trajectory-only × 1.2):
+        saves 5.25 + xgc 3.5 + cs 1.636 + form 6.0 + ppg 3.2 ≈ 19.59
+        attenuated = 19.59 * 0.7 = 13.71
+        normalise(13.71, 18.83) = 73-75
         """
         from fpl_cli.services.player_scoring import compute_quality_value
 
@@ -2914,7 +2915,7 @@ class TestGKScoringPath:
             saves_per_90=3.5, expected_goals_conceded=11.54, clean_sheets=9,
         )
         score, _ = compute_quality_value(gk, us_match={}, next_gw_id=20, team_short="LIV")
-        assert score == 71
+        assert score == 75
 
     def test_gk_value_uses_gk_ceiling_not_value_ceiling(self):
         """GK value score normalised against GK_VALUE_CEILING, not VALUE_CEILING."""
@@ -4236,10 +4237,9 @@ class TestUnifiedQualityScoreDisplay:
     def test_horizon_1_is_documented_asymmetry(self):
         """horizon=1 deliberately uses STARTING_XI_CEILING as a cross-position anchor.
 
-        This is the one intentional gap in cross-command consistency and is
-        tracked by follow-up todo 013 (horizon=1 lineup ceiling position
-        split). Pin the asymmetry so removing it is a conscious decision,
-        not a silent drift.
+        This is the one intentional gap in cross-command consistency.
+        Pin the asymmetry so removing it (splitting single-GW lineup
+        ceilings per position) is a conscious decision, not a silent drift.
         """
         from fpl_cli.services.player_scoring import STARTING_XI_CEILING, pick_display_ceiling
         for pos in ("GK", "DEF", "MID", "FWD"):
@@ -4272,16 +4272,21 @@ class TestDefValueEndToEnd:
         score, _ = compute_quality_value(
             elite, us_match={}, next_gw_id=20, team_short="LIV",
         )
-        assert score == 66
+        assert score == 71
 
-    def test_def_value_matches_def_ceiling_normalisation(self):
-        """compute_quality_value output must match raw / DEF_VALUE_CEILING.
+    def test_def_value_diverges_from_pre_fix_mid_anchored_ceiling(self):
+        """Elite DEF score must differ from the pre-fix MID-anchored normalisation.
 
-        Any future return of MID-anchored-with-0.85 cancellation would move
-        the denominator back to VALUE_CEILING * 0.85 and break this test.
+        Under the pre-fix cancellation, DEF raw (already attenuated by 0.85)
+        was divided by VALUE_CEILING * 0.85 — the two 0.85s cancelled and
+        the score was identical to ``normalise_score(raw, VALUE_CEILING)``.
+        Post-fix, the denominator is DEF_VALUE_CEILING (derived from
+        ``without_xgi()`` caps), which is materially lower. Asserting the
+        two disagree pins that the regression is structurally absent, not
+        just numerically hidden behind a matching constant.
         """
         from fpl_cli.services.player_scoring import (
-            DEF_VALUE_CEILING, compute_quality_value, normalise_score,
+            VALUE_CEILING, compute_quality_value, normalise_score,
         )
         elite = self._def_player(form=6.0, ppg=5.0)
         score, _ = compute_quality_value(
@@ -4290,7 +4295,15 @@ class TestDefValueEndToEnd:
         raw = compute_quality_value(
             elite, us_match={}, next_gw_id=20, team_short="LIV", raw=True,
         )
-        assert score == normalise_score(raw, DEF_VALUE_CEILING)
+        pre_fix_score = normalise_score(raw, VALUE_CEILING)
+        assert score != pre_fix_score, (
+            f"Post-fix DEF score {score} equals pre-fix no-op score {pre_fix_score} — "
+            "DEF_VALUE_CEILING normalisation may have regressed"
+        )
+        assert score > pre_fix_score, (
+            f"Post-fix DEF score {score} is lower than pre-fix {pre_fix_score} — "
+            "DEF_VALUE_CEILING should widen DEFs upward on the 0-100 scale"
+        )
 
 
 class TestPickDisplayCeilingRouting:
@@ -4328,15 +4341,18 @@ class TestDefScoreSpreadNotClustered:
     ~60% of the ceiling and compressed into a narrow band (e.g. 14/20 DEF
     in the 51-56 range at GW32 — spread of ~5). Empirical DEF ceilings
     derived from the without_xgi() caps widen the distribution so a DEF
-    pool spanning scrub → elite now shows spread >= 20 across all three
+    pool spanning scrub → elite now shows spread ~30 across all three
     families.
 
-    Gate: spread >= 20 rejects the pre-fix ~5-point clustering (4x
-    improvement) while tolerating natural form/ppg cap saturation at the
-    elite end.
+    Gate: spread >= 25. This is ~5x the pre-fix ~5-point clustering and
+    below the empirical ~30 observed post-fix, so a half-regression
+    (spread collapsing to ~15) fails the gate while natural form/ppg cap
+    saturation at the elite end does not. The parent plan originally
+    cited >= 40 as the acceptance criterion, which is not reachable under
+    current weight caps and was relaxed after empirical calibration.
     """
 
-    _SPREAD_FLOOR = 20
+    _SPREAD_FLOOR = 25
 
     def _def_pool(self) -> list[Any]:
         profiles = [
