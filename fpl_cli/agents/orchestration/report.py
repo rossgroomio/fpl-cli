@@ -122,9 +122,9 @@ class ReportAgent(Agent):
         """Generate a gameweek preview report."""
         try:
             template = self.jinja_env.get_template("gw_preview.md.j2")
+            data.setdefault("generated_at", datetime.now().strftime("%Y-%m-%d %H:%M"))
             return template.render(
                 gameweek=gameweek,
-                generated_at=datetime.now().strftime("%Y-%m-%d %H:%M"),
                 **data,
             )
         except jinja2.TemplateNotFound:
@@ -367,9 +367,9 @@ class ReportAgent(Agent):
         """Generate a gameweek review report."""
         try:
             template = self.jinja_env.get_template("gw_review.md.j2")
+            data.setdefault("generated_at", datetime.now().strftime("%Y-%m-%d %H:%M"))
             return template.render(
                 gameweek=gameweek,
-                generated_at=datetime.now().strftime("%Y-%m-%d %H:%M"),
                 **data,
             )
         except jinja2.TemplateNotFound:
@@ -589,7 +589,5 @@ class ReportAgent(Agent):
     def _generate_league_recap_report(self, gameweek: int, data: dict[str, Any]) -> str:
         """Generate a league recap report."""
         template = self.jinja_env.get_template("gw_league_recap.md.j2")
-        return template.render(
-            generated_at=datetime.now().strftime("%Y-%m-%d %H:%M"),
-            **data,
-        )
+        data.setdefault("generated_at", datetime.now().strftime("%Y-%m-%d %H:%M"))
+        return template.render(**data)
