@@ -99,7 +99,7 @@ Output columns:
 - **Form** - FPL form (last 30 days PPG)
 - **Status** - availability indicator
 - **Avail** - historical availability rate (recency-weighted starts across previous seasons). Null when no historical data.
-- **Quality** - price-independent player quality (0-100). Uses `VALUE_QUALITY_WEIGHTS`. Null when no Understat match.
+- **Quality** - price-independent player quality (0-100), normalised against a position-specific ceiling. Elite-within-position index — cross-position comparisons not meaningful (GK/DEF/MID/FWD use different ceilings by design). See [Quality & Value Scores](custom-analysis.md#quality--value-scores). Null when no Understat match.
 - **Value** - quality per GBP million (`quality_score / price`). Higher = more output per pound. Null when no Understat match or price is 0. *(classic only)*
 - **Price** - current price *(classic only)*
 - **Budget** - affordability gap: `bank + sell_price - in_price` *(classic only, requires scraper cache)*
@@ -168,6 +168,8 @@ fpl allocate --format json          # JSON output for scripting / skill integrat
 Scores ~500 eligible players, adjusts for fixture difficulty over the planning horizon, then solves for the budget-constrained optimum across all 7 valid formations. See [Squad Allocator](custom-analysis.md#squad-allocator) for scoring methodology, fixture coefficients, and solver detail.
 
 **JSON output fields:** `id`, `web_name`, `team`, `position`, `price`, `quality_score` (0-100), `raw_quality` (float), `role` (starter/bench), `captain_gws`. Metadata includes `formation`, `budget_used`, `budget_remaining`, `captain_schedule`, `solver_status`.
+
+**`quality_score` semantics:** At `--horizon >= 2` each player's `quality_score` is normalised against a position-specific VALUE-family ceiling (matching `fpl player` / `fpl stats --value` / `fpl transfer-eval`), so elite GKs, DEFs, MIDs and FWDs all land in comparable 0-100 bands *within their own position*. At `--horizon 1` a single cross-position `STARTING_XI_CEILING` is used — a deliberate asymmetry retained until the single-GW lineup ceilings are split per position (tracked by todo 013). Use `raw_quality` if you need a position-agnostic ranking.
 
 ### Fixture Difficulty (FDR)
 
@@ -276,7 +278,7 @@ fpl stats --min-minutes 900 -s expected_goals        # Top xG (min 900 mins)
 fpl stats -p FWD -s form --available-only            # FWDs by form, excl. unavailable
 fpl stats --format json -p MID -s expected_goal_involvements  # JSON for agents
 fpl stats --value -p MID                             # MIDs ranked by value/£m
-fpl stats --value --sort quality_score -p FWD        # FWDs by absolute quality
+fpl stats --value --sort quality_score -p FWD        # FWDs ranked by within-position quality_score
 fpl stats --value --window 3 -p MID                  # Rolling pts/£m over last 3 qualifying GWs
 ```
 
