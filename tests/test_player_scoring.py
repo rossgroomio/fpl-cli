@@ -145,8 +145,8 @@ class TestCharacterisationSnapshot:
 
     def test_target_def(self):
         eval_, _ = self._build_def()
-        # Post-2026-04-10 multi-GW position multiplier: DEF ceiling = TARGET_CEILING * 0.85
-        assert calculate_target_score(eval_, next_gw_id=20) == 41
+        # DEF target ceiling = DEF_TARGET_CEILING (empirical, from without_xgi caps × 0.85 + matchup).
+        assert calculate_target_score(eval_, next_gw_id=20) == 66
 
     # --- Differential ---
 
@@ -160,7 +160,7 @@ class TestCharacterisationSnapshot:
         eval_, _ = self._build_def()
         assert calculate_differential_score(
             eval_, semi_differential_threshold=20.0, next_gw_id=20,
-        ) == 47
+        ) == 64
 
     # --- Waiver ---
 
@@ -176,7 +176,7 @@ class TestCharacterisationSnapshot:
         squad = {"MID": [{"form": 4.0}, {"form": 3.0}], "DEF": [{"form": 5.0}, {"form": 4.0}]}
         assert calculate_waiver_score(
             eval_, squad_by_position=squad, next_gw_id=20,
-        ) == 40
+        ) == 51
 
     # --- Captain ---
 
@@ -726,8 +726,8 @@ class TestCalculateWaiverScore:
             eval, squad_by_position=self._squad_by_pos(),
             team_counts=self._team_counts(), next_gw_id=20,
         )
-        # DEF waiver ceiling = WAIVER_CEILING * 0.85 post-2026-04-10
-        assert score == 35
+        # DEF waiver ceiling = DEF_WAIVER_CEILING (empirical, from without_xgi caps × 0.85 + bonuses).
+        assert score == 44
 
     def test_position_need_empty(self):
         eval, _ = build_player_evaluation(
@@ -2887,12 +2887,13 @@ class TestGKScoringPath:
         assert enrichment["gk_cs_rate"] == pytest.approx(2 / 5)
 
     def test_def_target_score_uses_pos_mult(self):
-        """Regression guard: DEF path (without_xgi) is attenuated by POSITION_SCORE_MULTIPLIER[DEF]."""
+        """Regression guard: DEF path (without_xgi) is attenuated by POSITION_SCORE_MULTIPLIER[DEF]
+        and normalised against DEF_TARGET_CEILING (empirical DEF cap, not MID-anchored × 0.85).
+        """
         from tests.test_player_scoring import TestCharacterisationSnapshot
         snap = TestCharacterisationSnapshot()
         def_eval, _ = snap._build_def()
-        # Post-2026-04-10 multi-GW position multiplier (was 39).
-        assert calculate_target_score(def_eval, next_gw_id=20) == 41
+        assert calculate_target_score(def_eval, next_gw_id=20) == 66
 
     def test_gk_value_score(self):
         """GK value path: for_gk() from VALUE_QUALITY_WEIGHTS, normalised to GK_VALUE_CEILING.

@@ -226,11 +226,28 @@ def _gk_quality_cap(weights: QualityWeights) -> float:
     )
 
 
-# GK-specific ceilings — derived at import so a weight change auto-propagates.
-# Quality components attenuated by POSITION_SCORE_MULTIPLIER[GK]; matchup,
-# ownership and position-need bonuses are added un-attenuated. Drift is
-# guarded empirically by TestCeilingValidationBands (elite-player bounds).
+def _def_quality_cap(weights: QualityWeights) -> float:
+    """Theoretical max of calculate_player_quality_score on the DEF path.
+
+    Matches the signal set under weights.without_xgi(): form (with
+    sustainability multiplier), ppg, and dc_per_90. xGI family, GK
+    components and penalty_xg are zeroed by without_xgi().
+    """
+    defw = weights.without_xgi()
+    return (
+        defw.form.cap * _FORM_SUSTAINABILITY_MAX
+        + defw.ppg.cap
+        + defw.dc_per_90.cap
+    )
+
+
+# Position-specific ceilings — derived at import so a weight change
+# auto-propagates. Quality components attenuated by
+# POSITION_SCORE_MULTIPLIER[position]; matchup, ownership and
+# position-need bonuses are added un-attenuated. Drift is guarded
+# empirically by TestCeilingValidationBands (elite-player bounds).
 _GK_MULT = POSITION_SCORE_MULTIPLIER["GK"]
+_DEF_MULT = POSITION_SCORE_MULTIPLIER["DEF"]
 GK_TARGET_CEILING = _gk_quality_cap(TARGET_QUALITY_WEIGHTS) * _GK_MULT + _MATCHUP_MAX
 GK_DIFFERENTIAL_CEILING = (
     _gk_quality_cap(DIFFERENTIAL_QUALITY_WEIGHTS) * _GK_MULT + _OWNERSHIP_MAX + _MATCHUP_MAX
@@ -240,6 +257,20 @@ GK_WAIVER_CEILING = (
 )
 # Value family has no matchup — compute_quality_value skips _calculate_quality_based_raw.
 GK_VALUE_CEILING = _gk_quality_cap(VALUE_QUALITY_WEIGHTS) * _GK_MULT
+
+# DEF ceilings: derived from without_xgi() caps, not MID-anchored ceilings.
+# Replaces the former _position_ceiling("DEF", ...) scaling which produced a
+# mathematical no-op on the VALUE family (both numerator and denominator
+# scaled by 0.85) and a MID-anchored ceiling on target/diff/waiver that
+# compressed real DEF pools into a narrow upper band.
+DEF_TARGET_CEILING = _def_quality_cap(TARGET_QUALITY_WEIGHTS) * _DEF_MULT + _MATCHUP_MAX
+DEF_DIFFERENTIAL_CEILING = (
+    _def_quality_cap(DIFFERENTIAL_QUALITY_WEIGHTS) * _DEF_MULT + _OWNERSHIP_MAX + _MATCHUP_MAX
+)
+DEF_WAIVER_CEILING = (
+    _def_quality_cap(WAIVER_QUALITY_WEIGHTS) * _DEF_MULT + _MATCHUP_MAX + _POSITION_NEED_MAX
+)
+DEF_VALUE_CEILING = _def_quality_cap(VALUE_QUALITY_WEIGHTS) * _DEF_MULT
 
 # ---------------------------------------------------------------------------
 # Consistency scoring magnitudes (Phase 2)
@@ -1528,20 +1559,28 @@ def build_scoring_enrichment(
     return enrichment
 
 
-def _position_ceiling(position: str, base_ceiling: float) -> float:
-    """Scale a MID/FWD-calibrated ceiling by the position multiplier.
-
-    Single source of truth for cross-family positional ceiling attenuation
-    in the multi-GW (ownership) scoring path. GK ceilings are already
-    computed empirically with the multiplier baked in, so callers must not
-    pass GK-specific ceilings here.
-    """
-    return base_ceiling * POSITION_SCORE_MULTIPLIER.get(position, 1.0)
+def _target_ceiling_for(position: str) -> float:
+    if position == "GK":
+        return GK_TARGET_CEILING
+    if position == "DEF":
+        return DEF_TARGET_CEILING
+    return TARGET_CEILING
 
 
-def _ownership_family_ceiling(position: str, base_ceiling: float, gk_ceiling: float) -> float:
-    """Pick GK or position-scaled ceiling for the target/diff/waiver dispatch."""
-    return gk_ceiling if position == "GK" else _position_ceiling(position, base_ceiling)
+def _differential_ceiling_for(position: str) -> float:
+    if position == "GK":
+        return GK_DIFFERENTIAL_CEILING
+    if position == "DEF":
+        return DEF_DIFFERENTIAL_CEILING
+    return DIFFERENTIAL_CEILING
+
+
+def _waiver_ceiling_for(position: str) -> float:
+    if position == "GK":
+        return GK_WAIVER_CEILING
+    if position == "DEF":
+        return DEF_WAIVER_CEILING
+    return WAIVER_CEILING
 
 
 def _value_weights_and_ceiling(position: str) -> tuple[QualityWeights, float]:
@@ -1549,8 +1588,23 @@ def _value_weights_and_ceiling(position: str) -> tuple[QualityWeights, float]:
     if position == "GK":
         return VALUE_QUALITY_WEIGHTS.for_gk(), GK_VALUE_CEILING
     if position == "DEF":
-        return VALUE_QUALITY_WEIGHTS.without_xgi(), _position_ceiling("DEF", VALUE_CEILING)
+        return VALUE_QUALITY_WEIGHTS.without_xgi(), DEF_VALUE_CEILING
     return VALUE_QUALITY_WEIGHTS, VALUE_CEILING
+
+
+def pick_display_ceiling(position: str, horizon: int) -> float:
+    """Position + horizon aware ceiling for `fpl allocate` display normalisation.
+
+    horizon=1 is the single-GW lineup context and retains STARTING_XI_CEILING
+    as a cross-position anchor — a deliberate asymmetry tracked by todo 013
+    (horizon=1 lineup ceiling position split). horizon>=2 uses the VALUE
+    family ceilings, matching `fpl player` / `fpl stats --value` /
+    `fpl transfer-eval` for cross-command consistency.
+    """
+    if horizon == 1:
+        return STARTING_XI_CEILING
+    _, ceiling = _value_weights_and_ceiling(position)
+    return ceiling
 
 
 @overload
@@ -2095,7 +2149,7 @@ def calculate_target_score(
     next_gw_id: int,
 ) -> int:
     """Calculate a target score (pure performance, no ownership bias)."""
-    ceiling = _ownership_family_ceiling(evaluation.position, TARGET_CEILING, GK_TARGET_CEILING)
+    ceiling = _target_ceiling_for(evaluation.position)
     return _calculate_quality_based_score(
         evaluation,
         weights=TARGET_QUALITY_WEIGHTS,
@@ -2111,7 +2165,7 @@ def calculate_differential_score(
     next_gw_id: int,
 ) -> int:
     """Calculate a differential score for a player."""
-    ceiling = _ownership_family_ceiling(evaluation.position, DIFFERENTIAL_CEILING, GK_DIFFERENTIAL_CEILING)
+    ceiling = _differential_ceiling_for(evaluation.position)
     return _calculate_quality_based_score(
         evaluation,
         weights=DIFFERENTIAL_QUALITY_WEIGHTS,
@@ -2180,7 +2234,7 @@ def calculate_waiver_score(
         elif current_count == 2:
             score -= 2
 
-    waiver_ceiling = _ownership_family_ceiling(evaluation.position, WAIVER_CEILING, GK_WAIVER_CEILING)
+    waiver_ceiling = _waiver_ceiling_for(evaluation.position)
     return normalise_score(score, waiver_ceiling)
 
 

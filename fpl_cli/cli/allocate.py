@@ -12,7 +12,7 @@ from rich.table import Table
 
 from fpl_cli.cli._context import console
 from fpl_cli.cli._json import emit_json, emit_json_error, json_output_mode, output_format_option
-from fpl_cli.services.player_scoring import STARTING_XI_CEILING, VALUE_CEILING, normalise_score
+from fpl_cli.services.player_scoring import normalise_score, pick_display_ceiling
 
 if TYPE_CHECKING:
     from fpl_cli.services.squad_allocator import ScoredPlayer, SquadResult
@@ -141,12 +141,11 @@ def allocate_command(
                 console.print(Panel(msg, title="Allocation Failed", border_style="red"))
                 raise SystemExit(1)
 
-        ceiling = STARTING_XI_CEILING if horizon == 1 else VALUE_CEILING
         _emit_result(
             result, scoring_data, scored_players,
             budget, horizon, start_gw, is_json,
             bench_discount=bd, bench_boost_gw=bench_boost_gw,
-            free_transfers=free_transfers, ceiling=ceiling,
+            free_transfers=free_transfers,
         )
 
     asyncio.run(_run())
@@ -164,7 +163,6 @@ def _emit_result(
     bench_discount: dict[str, float] | None = None,
     bench_boost_gw: int | None = None,
     free_transfers: int = 1,
-    ceiling: float = VALUE_CEILING,
 ) -> None:
     """Format and output the solver result."""
     player_lookup = {sp.player.id: sp for sp in result.selected_players}
@@ -181,7 +179,7 @@ def _emit_result(
     ):
         team = team_map.get(sp.player.team_id)
         team_short = team.short_name if team else "???"
-        q_score = normalise_score(sp.raw_quality, ceiling)
+        q_score = normalise_score(sp.raw_quality, pick_display_ceiling(sp.position, horizon))
         role = "starter" if sp.player.id in result.starter_ids else "bench"
         captain_gws = captain_gws_by_player.get(sp.player.id, [])
 
