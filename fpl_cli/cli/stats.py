@@ -101,6 +101,30 @@ def stats_command(
         sort_field = "quality_per_m"
         explicit_value_sort = False
 
+    # --value without -p produces a cross-position ranking that is not meaningful:
+    # quality_score is an elite-within-position index, so ordering elite DEFs against
+    # elite MIDs on quality_per_m actively misleads. Surface the warning in both
+    # channels so tables and JSON pipelines get the same signal:
+    #
+    #   - table mode: human-readable prose on stderr
+    #   - JSON mode:  structured entry in metadata.warnings (agent-native — agents
+    #                 parse JSON, not stderr ANSI)
+    #
+    # The metadata warning is a list of dicts so additional warnings can be added
+    # later without breaking existing consumers.
+    _cross_position_warning = (
+        value
+        and position is None
+        and sort_field in _VALUE_SORT_FIELDS
+    )
+    if _cross_position_warning and output_format != "json":
+        error_console.print(
+            "[yellow]Warning: --value without --position produces a cross-position "
+            "ranking. quality_score and quality_per_m are elite-within-position "
+            "indices; comparing GK/DEF against MID/FWD is not meaningful. "
+            "Re-run with --position GK|DEF|MID|FWD for a reliable ranking.[/yellow]"
+        )
+
     fmt = ctx.obj.format if isinstance(ctx.obj, CLIContext) else None
     show_draft = fmt in (Format.DRAFT, Format.BOTH)
 
@@ -281,10 +305,24 @@ def stats_command(
             # Limit
             filtered = filtered[:limit]
 
+            warnings: list[dict[str, str]] = []
+            if _cross_position_warning:
+                warnings.append({
+                    "code": "cross_position_ranking_not_meaningful",
+                    "message": (
+                        "quality_score and quality_per_m are elite-within-position "
+                        "indices. Sorting across all positions mixes incompatible "
+                        "scales (GK/DEF ceilings differ from MID/FWD). Re-run with "
+                        "--position GK|DEF|MID|FWD for a reliable ranking, or "
+                        "consume raw_quality for a position-agnostic proxy."
+                    ),
+                })
+
             metadata = {"gameweek": None, "format": str(fmt) if fmt else None,
                         "custom_analysis": custom_on,
                         "filters": {"position": position, "sort": sort_field,
-                                    "limit": limit, "min_minutes": min_minutes}}
+                                    "limit": limit, "min_minutes": min_minutes},
+                        "warnings": warnings}
 
             if not filtered:
                 if output_format == "json":

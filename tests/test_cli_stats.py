@@ -608,6 +608,78 @@ class TestStatsValueSortValidation:
         assert "--value" in result.output
 
 
+class TestStatsValueCrossPositionWarning:
+    """--value without -p is misleading; surface the warning in both channels.
+
+    quality_score is an elite-within-position index; ordering elite DEFs
+    against elite MIDs on quality_per_m actively misleads. Tables get
+    prose on stderr for humans. JSON gets a structured entry in
+    ``metadata.warnings`` so agents can detect the condition without
+    parsing ANSI/stderr (agent-native parity).
+    """
+
+    def _invoke(self, args):
+        """Run `fpl stats` with the full --value mock stack."""
+        client = _make_value_client(_sample_players(), _sample_teams())
+        mock_understat = MagicMock()
+        mock_understat.get_league_players = AsyncMock(return_value=[{"id": 100}])
+        mock_understat.__aenter__ = AsyncMock(return_value=mock_understat)
+        mock_understat.__aexit__ = AsyncMock(return_value=False)
+        runner = CliRunner()
+        with (
+            patch("fpl_cli.api.fpl.FPLClient", return_value=client),
+            patch("fpl_cli.api.understat.UnderstatClient", return_value=mock_understat),
+            patch("fpl_cli.api.understat.match_fpl_to_understat", return_value=_make_us_match()),
+            patch("fpl_cli.cli.stats.is_custom_analysis_enabled", return_value=True),
+        ):
+            return runner.invoke(main, ["stats", *args])
+
+    def test_table_mode_no_position_emits_stderr_warning(self):
+        result = self._invoke(["--value"])
+        assert result.exit_code == 0, result.output
+        assert "cross-position ranking" in result.output
+        assert "elite-within-position" in result.output
+
+    def test_table_mode_with_position_no_warning(self):
+        result = self._invoke(["--value", "-p", "MID"])
+        assert result.exit_code == 0, result.output
+        assert "cross-position ranking" not in result.output
+
+    def test_json_mode_no_position_has_metadata_warning(self):
+        """Agent-native: JSON consumers read `metadata.warnings` to detect
+        the same condition without parsing stderr ANSI.
+        """
+        result = self._invoke(["--value", "--format", "json"])
+        assert result.exit_code == 0, result.output
+        # Stderr stays silent in JSON mode to keep machine pipelines clean.
+        assert "cross-position ranking" not in result.output
+        data = json.loads(result.output)
+        warnings = data["metadata"]["warnings"]
+        assert len(warnings) == 1
+        assert warnings[0]["code"] == "cross_position_ranking_not_meaningful"
+        assert "elite-within-position" in warnings[0]["message"]
+        assert "--position" in warnings[0]["message"]
+        assert data["metadata"]["filters"]["position"] is None
+
+    def test_json_mode_with_position_empty_warnings(self):
+        result = self._invoke(["--value", "-p", "MID", "--format", "json"])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["metadata"]["warnings"] == []
+
+    def test_warning_suppressed_without_value_flag(self):
+        """Warning is gated on --value, not --position alone."""
+        result = self._invoke([])
+        assert result.exit_code == 0, result.output
+        assert "cross-position ranking" not in result.output
+
+    def test_json_warning_suppressed_without_value_flag(self):
+        result = self._invoke(["--format", "json"])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["metadata"]["warnings"] == []
+
+
 class TestStatsValueErrorPaths:
     """Tests for error handling in scoring pipeline."""
 
