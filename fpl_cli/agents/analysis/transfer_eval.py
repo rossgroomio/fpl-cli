@@ -9,6 +9,7 @@ from fpl_cli.api.fpl import FPLClient
 from fpl_cli.services.player_scoring import (
     ConsistencySignals,
     ScoringContext,
+    _as_position,
     _value_weights_and_ceiling,
     apply_adjusted_npxg,
     apply_consistency,
@@ -238,7 +239,9 @@ class TransferEvalAgent(Agent):
             q_dict = evaluation.as_quality_dict()
             te_weights, te_ceiling = _value_weights_and_ceiling(player.position_name)
             mins_factor = calculate_mins_factor(player.minutes, player.appearances, next_gw_id)
-            raw = calculate_player_quality_score(q_dict, te_weights, mins_factor)
+            raw = calculate_player_quality_score(
+                q_dict, te_weights, mins_factor, position=_as_position(player.position_name),
+            )
             quality_score = normalise_score(raw, te_ceiling)
             if identity.price > 0:
                 quality_per_m = round(quality_score / identity.price, 1)

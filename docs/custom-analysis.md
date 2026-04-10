@@ -117,16 +117,19 @@ FDR is not an additive component in either scoring family.
 
 #### Position Multiplier
 
-Applies to **ceiling components only** (matchup + form + xGI), not to home/pen bonuses:
+Applies to the quality baseline in **both** scoring families:
+
+1. **Single-GW family** (captain, bench, lineup): multiplies ceiling components (matchup + form + xGI) inside `calculate_single_gw_core`. Home and penalty bonuses are not attenuated.
+2. **Multi-GW ownership family** (target, differential, waiver, value, allocate): multiplies the quality baseline inside `calculate_player_quality_score`. Matchup bonus, ownership bonus and position-need bonus are added un-attenuated on top.
 
 | Position | Multiplier | Rationale |
 |----------|-----------|-----------|
 | FWD | 1.0 | Highest explosive upside per game (49% drop-off from top-1 to top-10 season scores) |
 | MID | 1.0 | Similar ceiling to FWD via goals + clean sheet points |
-| DEF | 0.85 | Consistent accumulators (28% drop-off) but lower single-GW ceiling |
-| GK | 0.7 | Lowest per-game ceiling; value comes from steady accumulation |
+| DEF | 0.85 | Consistent accumulators (28% drop-off) but lower per-GW ceiling |
+| GK | 0.7 | Lowest per-GW ceiling; value comes from steady accumulation |
 
-This means a defender needs a meaningfully better matchup to out-rank a forward as captain. This is intentional: defenders accumulate well over a season (top-10 DEF avg 138 pts vs FWD 131) but captaincy is a single-GW decision where explosive upside matters more.
+The multi-GW path was added on 2026-04-10 to stop cheap GKs (Raya, Kelleher, Darlow) dominating `raw_quality` and forcing the allocator into 5-3-2 / GK-captain solutions. See `docs/plans/2026-04-10-001-fix-multi-gw-scoring-position-rebalance-plan.md` for the empirical rationale and the supersession of the dc-per-90-calibration decision.
 
 #### Normalisation
 
@@ -334,9 +337,10 @@ If Core-Insights data is unavailable, the pipeline falls back to raw npxG/90 wit
 
 Available via `fpl stats --value` and `fpl player` when Understat data exists.
 
-**quality_score** (0-100): Normalised player output quality using `VALUE_QUALITY_WEIGHTS`. Weights form and PPG heavily to capture current FPL points production rate. Position-specific scoring paths diverge for defensive players:
-- **GK**: dedicated signals via `for_gk()` weights — saves per 90, defensive quality (inverted xGC/90, range 0-2), and clean sheet rate. Normalised against `GK_VALUE_CEILING` (28.2).
-- **DEF**: `dc_per_90` (defensive contribution rate) replaces attacking xG stats via `without_xgi()`. Normalised against `VALUE_CEILING` (24.3).
+**quality_score** (0-100): Normalised player output quality using `VALUE_QUALITY_WEIGHTS`. Weights form and PPG heavily to capture current FPL points production rate. Position-specific scoring paths diverge for defensive players, and raw scores are attenuated by `POSITION_SCORE_MULTIPLIER` before normalisation so `quality_score` is an **elite-within-position** index, not an absolute cross-position anchor:
+- **GK**: dedicated signals via `for_gk()` weights — saves per 90, defensive quality (inverted xGC/90, range 0-2), and clean sheet rate. Raw quality attenuated by 0.7 and normalised against `GK_VALUE_CEILING` (19.71). The `gk_cs_rate` multiplier is 4.0 (halved from 8.0 on 2026-04-10) so a 50%-CS keeper contributes 2.0 instead of near-cap 4.0.
+- **DEF**: `dc_per_90` (defensive contribution rate) replaces attacking xG stats via `without_xgi()`. Raw quality attenuated by 0.85 and normalised against the MID/FWD-anchored `VALUE_CEILING` (24.3) via `_position_ceiling`. Elite DEFs land lower on the 0-100 scale than elite MIDs by design.
+- **MID/FWD**: unchanged - multiplier 1.0, ceiling 24.3.
 
 **quality_per_m**: `quality_score / price` (per £m). Within-position budget efficiency - higher means more output per pound. Not meaningful for cross-position comparison. Null when price is 0.
 

@@ -21,7 +21,7 @@ API clients in `fpl_cli/api/`: FPLClient (main API, caches `bootstrap-static/`),
 - `Player`: `element_type` = position, `team` = team_id, `code` = stable cross-season ID (element_code). Prices in £0.1m units (100 = £10.0m)
 - `Fixture`: `gameweek` (alias "event"), `home_team_id`/`away_team_id`
 
-For a complete inventory of CLI commands, analysis agents, and skills with JSON support and format awareness, see `.agents/TOOLS.md`.
+For a complete inventory of CLI commands, analysis agents, and skills with JSON support and format awareness, see `.agents/TOOLS.md`. Skills live in `.agents/skills/`.
 
 ## Conventions
 ### CLI Patterns

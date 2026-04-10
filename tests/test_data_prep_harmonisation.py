@@ -6,8 +6,6 @@ Validates positional FDR numeric range compatibility with existing thresholds.
 
 from __future__ import annotations
 
-from tests.conftest import make_player
-
 from fpl_cli.models.player import PlayerPosition
 from fpl_cli.services.player_scoring import (
     FDR_EASY,
@@ -20,7 +18,7 @@ from fpl_cli.services.player_scoring import (
     calculate_waiver_score,
 )
 from fpl_cli.services.team_ratings import TeamRating, TeamRatingsService
-
+from tests.conftest import make_player
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -255,7 +253,8 @@ class TestTargetCharacterisation:
             positional_fdr=3.0,
         )
         score = calculate_target_score(evaluation, next_gw_id=20)
-        assert score == 42
+        # Post-2026-04-10 position multiplier: DEF attenuated by 0.85 (was 42).
+        assert score == 44
 
 
 # ---------------------------------------------------------------------------
@@ -318,7 +317,8 @@ class TestWaiverCharacterisation:
             evaluation, squad_by_position=self._squad_by_pos(),
             team_counts=self._team_counts(), next_gw_id=20,
         )
-        assert score == 49
+        # Post-2026-04-10 position multiplier: DEF attenuated by 0.85 (was 49).
+        assert score == 52
 
 
 # ---------------------------------------------------------------------------

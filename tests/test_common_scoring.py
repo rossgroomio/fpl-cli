@@ -368,8 +368,9 @@ class TestGKSignalScoring:
     def test_gk_signals_contribute_to_score(self):
         """GK signals add correctly when for_gk() weights are used.
 
-        saves: min(3.5*1.5, 6)=5.25, xgc: min(1.2*3, 3.5)=3.5, cs: min(0.4*8, 4)=3.2
-        form: min(5.0*1.0, 5)=5.0, ppg: min(4.0*0.5, 4)=2.0 → 18.95
+        saves: min(3.5*1.5, 6)=5.25, xgc: min(1.2*3, 3.5)=3.5, cs: min(0.4*4, 4)=1.6
+        form: min(5.0*1.0, 5)=5.0, ppg: min(4.0*0.5, 4)=2.0 → 17.35
+        (gk_cs_rate multiplier halved from 8.0 to 4.0 on 2026-04-10.)
         """
         gk_dict = {
             "form": 5.0, "ppg": 4.0,
@@ -378,7 +379,7 @@ class TestGKSignalScoring:
             "gk_cs_rate": 0.4,
         }
         score = calculate_player_quality_score(gk_dict, TARGET_WEIGHTS.for_gk())
-        assert score == pytest.approx(18.95)
+        assert score == pytest.approx(17.35)
 
     def test_atk_weights_ignore_gk_signals(self):
         """Non-zero GK signals in dict don't affect ATK scoring (zero-default weights)."""
@@ -393,7 +394,7 @@ class TestGKSignalScoring:
         assert calculate_player_quality_score(gk_dict, TARGET_WEIGHTS.for_gk()) == pytest.approx(3.5)
 
     def test_gk_cs_rate_capped(self):
-        """gk_cs_rate capped at 4.0."""
+        """gk_cs_rate capped at 4.0 (cap unchanged by 2026-04-10 multiplier halving)."""
         gk_dict = {"form": 0, "ppg": 0, "gk_cs_rate": 10.0, "gk_saves_per_90": 0, "gk_xgc_quality": 0}
         assert calculate_player_quality_score(gk_dict, TARGET_WEIGHTS.for_gk()) == pytest.approx(4.0)
 

@@ -12,7 +12,7 @@ import dataclasses
 import functools
 from collections.abc import Mapping
 from math import inf
-from typing import TYPE_CHECKING, Any, Literal, overload
+from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
 if TYPE_CHECKING:
     from fpl_cli.api.core_insights import MatchRecord
@@ -90,7 +90,11 @@ class QualityWeights:
             penalty_xg=zero,
             gk_saves_per_90=StatWeight(1.5, 6),
             gk_xgc_quality=StatWeight(3.0, 3.5),
-            gk_cs_rate=StatWeight(8.0, 4.0),
+            # Halved 2026-04-10: was (8.0, 4.0) - a Phase 1 placeholder that
+            # put 50%-CS GKs within 0.8pt of the cap, crowding out xGI signals.
+            # At mult=4 the theoretical cap is unchanged (min(1.0*4, 4)=4) so
+            # ceiling constants stay valid; only sub-cap contributions drop.
+            gk_cs_rate=StatWeight(4.0, 4.0),
         )
 
 
@@ -149,12 +153,26 @@ VALUE_QUALITY_WEIGHTS = QualityWeights(
 )
 
 # Position multiplier: adjusts ceiling for per-game scoring potential (captain + bench)
+Position = Literal["GK", "DEF", "MID", "FWD"]
+
 POSITION_SCORE_MULTIPLIER: dict[str, float] = {
     "FWD": 1.0,
     "MID": 1.0,
     "DEF": 0.85,
     "GK": 0.7,
 }
+
+
+def _as_position(value: str) -> Position:
+    """Narrow an enum-derived position string to the Position literal.
+
+    Raises ValueError on unknown values (e.g. the "???" fallback from
+    Player.position_name when the FPL enum is out of sync). Callers
+    passing a known PlayerPosition-derived string should never trip this.
+    """
+    if value not in POSITION_SCORE_MULTIPLIER:
+        raise ValueError(f"Unknown position: {value!r}")
+    return cast(Position, value)
 
 ATTACKING_POSITIONS: frozenset[str] = frozenset({"MID", "FWD"})
 
@@ -180,17 +198,48 @@ STARTING_XI_CEILING = 33.2
 # Practical ceiling ~24.3 (elite MID scores ~20 raw). Validated: Salah-tier -> 87-92/100
 VALUE_CEILING = 24.3
 
-# GK-specific ceilings — computed from GK signal caps (saves 6, xgc 3.5, cs 4)
-# plus position-appropriate form/ppg caps and matchup/ownership contributions.
-# Note: 1.38 = form_trajectory_max(1.2) * xgi_sustainability_max(1.15)
-# GK_TARGET: saves 6 + xgc 3.5 + cs 4 + form_cap(5)*1.38 + ppg_cap(4) + matchup 6
-GK_TARGET_CEILING = 30.4
-# GK_DIFFERENTIAL: saves 6 + xgc 3.5 + cs 4 + form_cap(7)*1.38 + ppg_cap(4) + ownership 5 + matchup 6
-GK_DIFFERENTIAL_CEILING = 38.2
-# GK_WAIVER: saves 6 + xgc 3.5 + cs 4 + form_cap(7)*1.38 + ppg_cap(4.8) + matchup 6 + position_need 5
-GK_WAIVER_CEILING = 39.0
-# GK_VALUE: saves 6 + xgc 3.5 + cs 4 + form_cap(7)*1.38 + ppg_cap(5) (no matchup for value)
-GK_VALUE_CEILING = 28.2
+# Non-quality bonus caps used when deriving ceiling constants. Keep in sync
+# with _matchup_bonus, the ownership bonus in _calculate_quality_based_raw,
+# and the position-need bonus in calculate_waiver_score.
+_MATCHUP_MAX = 6.0           # matchup_avg_3gw max 8.0 * 0.75 * mins_factor 1.0
+_OWNERSHIP_MAX = 5.0         # (semi_differential_threshold 15 - 0) / divisor 3
+_POSITION_NEED_MAX = 5.0     # calculate_waiver_score empty-slot bonus
+# Form multiplier: form_trajectory_max(1.2) * xgi_sustainability_max(1.15).
+_FORM_SUSTAINABILITY_MAX = 1.38
+
+
+def _gk_quality_cap(weights: QualityWeights) -> float:
+    """Theoretical max of calculate_player_quality_score on the GK path.
+
+    Derived from weight caps, pre-attenuation. Matches the signal set
+    evaluated inside calculate_player_quality_score when
+    weights.for_gk() is used: saves, xgc, cs, form (with sustainability
+    bonus), ppg.
+    """
+    gk = weights.for_gk()
+    return (
+        gk.gk_saves_per_90.cap
+        + gk.gk_xgc_quality.cap
+        + gk.gk_cs_rate.cap
+        + gk.form.cap * _FORM_SUSTAINABILITY_MAX
+        + gk.ppg.cap
+    )
+
+
+# GK-specific ceilings — derived at import so a weight change auto-propagates.
+# Quality components attenuated by POSITION_SCORE_MULTIPLIER[GK]; matchup,
+# ownership and position-need bonuses are added un-attenuated. Drift is
+# guarded empirically by TestCeilingValidationBands (elite-player bounds).
+_GK_MULT = POSITION_SCORE_MULTIPLIER["GK"]
+GK_TARGET_CEILING = _gk_quality_cap(TARGET_QUALITY_WEIGHTS) * _GK_MULT + _MATCHUP_MAX
+GK_DIFFERENTIAL_CEILING = (
+    _gk_quality_cap(DIFFERENTIAL_QUALITY_WEIGHTS) * _GK_MULT + _OWNERSHIP_MAX + _MATCHUP_MAX
+)
+GK_WAIVER_CEILING = (
+    _gk_quality_cap(WAIVER_QUALITY_WEIGHTS) * _GK_MULT + _MATCHUP_MAX + _POSITION_NEED_MAX
+)
+# Value family has no matchup — compute_quality_value skips _calculate_quality_based_raw.
+GK_VALUE_CEILING = _gk_quality_cap(VALUE_QUALITY_WEIGHTS) * _GK_MULT
 
 # ---------------------------------------------------------------------------
 # Consistency scoring magnitudes (Phase 2)
@@ -702,6 +751,8 @@ def calculate_player_quality_score(
     player: Mapping[str, Any],
     weights: QualityWeights,
     mins_factor: float = 1.0,
+    *,
+    position: Position | None = None,
 ) -> float:
     """Shared baseline quality score from form, PPG, and xGI/npxG.
 
@@ -711,7 +762,9 @@ def calculate_player_quality_score(
     mins_factor scales per-90 attacking components (npxG, xGChain, xGI
     fallback, penalty_xG) to discount inflated rates from low-minutes
     players. Form, ppg, dc_per_90, and GK signals (saves, xgc_quality,
-    cs_rate) are unscaled.
+    cs_rate) are unscaled. When *position* is supplied the final score
+    is attenuated by POSITION_SCORE_MULTIPLIER[position]. Default None
+    is for formula unit tests that pass naked dicts without a position.
     """
     per90 = 0.0
 
@@ -751,6 +804,9 @@ def calculate_player_quality_score(
     if weights.gk_cs_rate.multiplier > 0:
         cs = player.get("gk_cs_rate", 0) or 0
         score += min(cs * weights.gk_cs_rate.multiplier, weights.gk_cs_rate.cap)
+
+    if position is not None:
+        score *= POSITION_SCORE_MULTIPLIER[position]
 
     return score
 
@@ -1472,12 +1528,28 @@ def build_scoring_enrichment(
     return enrichment
 
 
+def _position_ceiling(position: str, base_ceiling: float) -> float:
+    """Scale a MID/FWD-calibrated ceiling by the position multiplier.
+
+    Single source of truth for cross-family positional ceiling attenuation
+    in the multi-GW (ownership) scoring path. GK ceilings are already
+    computed empirically with the multiplier baked in, so callers must not
+    pass GK-specific ceilings here.
+    """
+    return base_ceiling * POSITION_SCORE_MULTIPLIER.get(position, 1.0)
+
+
+def _ownership_family_ceiling(position: str, base_ceiling: float, gk_ceiling: float) -> float:
+    """Pick GK or position-scaled ceiling for the target/diff/waiver dispatch."""
+    return gk_ceiling if position == "GK" else _position_ceiling(position, base_ceiling)
+
+
 def _value_weights_and_ceiling(position: str) -> tuple[QualityWeights, float]:
     """Select VALUE_QUALITY_WEIGHTS variant and ceiling for a position."""
     if position == "GK":
         return VALUE_QUALITY_WEIGHTS.for_gk(), GK_VALUE_CEILING
     if position == "DEF":
-        return VALUE_QUALITY_WEIGHTS.without_xgi(), VALUE_CEILING
+        return VALUE_QUALITY_WEIGHTS.without_xgi(), _position_ceiling("DEF", VALUE_CEILING)
     return VALUE_QUALITY_WEIGHTS, VALUE_CEILING
 
 
@@ -1539,7 +1611,9 @@ def compute_quality_value(
     q_dict = evaluation.as_quality_dict()
     weights, value_ceiling = _value_weights_and_ceiling(player.position_name)
     mins_factor = calculate_mins_factor(player.minutes, player.appearances, next_gw_id)
-    raw_score = calculate_player_quality_score(q_dict, weights, mins_factor)
+    raw_score = calculate_player_quality_score(
+        q_dict, weights, mins_factor, position=_as_position(player.position_name),
+    )
     if raw:
         return raw_score
     q_score = normalise_score(raw_score, value_ceiling)
@@ -1955,7 +2029,10 @@ def _calculate_quality_based_raw(
     )
 
     score = calculate_player_quality_score(
-        evaluation.as_quality_dict(), effective_weights, mins_factor,
+        evaluation.as_quality_dict(),
+        effective_weights,
+        mins_factor,
+        position=_as_position(evaluation.position),
     )
 
     # Ownership bonus (differential only)
@@ -2018,7 +2095,7 @@ def calculate_target_score(
     next_gw_id: int,
 ) -> int:
     """Calculate a target score (pure performance, no ownership bias)."""
-    ceiling = GK_TARGET_CEILING if evaluation.position == "GK" else TARGET_CEILING
+    ceiling = _ownership_family_ceiling(evaluation.position, TARGET_CEILING, GK_TARGET_CEILING)
     return _calculate_quality_based_score(
         evaluation,
         weights=TARGET_QUALITY_WEIGHTS,
@@ -2034,7 +2111,7 @@ def calculate_differential_score(
     next_gw_id: int,
 ) -> int:
     """Calculate a differential score for a player."""
-    ceiling = GK_DIFFERENTIAL_CEILING if evaluation.position == "GK" else DIFFERENTIAL_CEILING
+    ceiling = _ownership_family_ceiling(evaluation.position, DIFFERENTIAL_CEILING, GK_DIFFERENTIAL_CEILING)
     return _calculate_quality_based_score(
         evaluation,
         weights=DIFFERENTIAL_QUALITY_WEIGHTS,
@@ -2103,7 +2180,7 @@ def calculate_waiver_score(
         elif current_count == 2:
             score -= 2
 
-    waiver_ceiling = GK_WAIVER_CEILING if evaluation.position == "GK" else WAIVER_CEILING
+    waiver_ceiling = _ownership_family_ceiling(evaluation.position, WAIVER_CEILING, GK_WAIVER_CEILING)
     return normalise_score(score, waiver_ceiling)
 
 
