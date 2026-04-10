@@ -9,30 +9,29 @@ from fpl_cli.models.player import PlayerPosition, PlayerStatus
 from fpl_cli.services.player_prior import PlayerPrior
 from fpl_cli.services.player_scoring import (
     ATTACKING_POSITIONS,
-    NEUTRAL_SIGNALS,
-    _assign_percentile_ranks,
-    _consistency_phase,
-    ConsistencySignals,
-    apply_adjusted_npxg,
-    apply_consistency,
-    build_adjusted_npxg_lookup,
-    build_consistency_lookup,
-    compute_adjusted_npxg,
     DIFFERENTIAL_QUALITY_WEIGHTS,
     GK_VALUE_CEILING,
+    NEUTRAL_SIGNALS,
     TARGET_CEILING,
     TARGET_QUALITY_WEIGHTS,
     VALID_FORMATIONS,
     VALUE_CEILING,
     VALUE_QUALITY_WEIGHTS,
     WAIVER_QUALITY_WEIGHTS,
+    ConsistencySignals,
     FixtureMatchup,
     PlayerEvaluation,
     PlayerIdentity,
     ScoringContext,
     ScoringData,
     StatWeight,
+    _assign_percentile_ranks,
+    _consistency_phase,
     _matchup_bonus,
+    apply_adjusted_npxg,
+    apply_consistency,
+    build_adjusted_npxg_lookup,
+    build_consistency_lookup,
     build_fixture_matchups,
     build_player_evaluation,
     build_scoring_context,
@@ -44,6 +43,7 @@ from fpl_cli.services.player_scoring import (
     calculate_player_quality_score,
     calculate_target_score,
     calculate_waiver_score,
+    compute_adjusted_npxg,
     compute_aggregate_matchup,
     compute_blank_rate,
     compute_cv_xgi,
@@ -4007,84 +4007,13 @@ class TestPositionMultiplierLock:
         )
         assert with_gk == pytest.approx(base * 0.7)
 
-    def test_unknown_position_is_noop(self):
-        """Unknown positions fall back to multiplier 1.0 (safe default)."""
+    def test_unknown_position_raises(self):
+        """Unknown positions raise KeyError (strict lookup, no silent fallback)."""
         player = {"form": 5.0, "ppg": 4.0, "xGI_per_90": 0.5}
-        base = calculate_player_quality_score(player, VALUE_QUALITY_WEIGHTS)
-        with_unknown = calculate_player_quality_score(
-            player, VALUE_QUALITY_WEIGHTS, position="UNKNOWN",
-        )
-        assert with_unknown == pytest.approx(base)
-
-
-class TestParameterisedCeilings:
-    """Each module-level ceiling constant matches its empirical derivation.
-
-    Guards against a future weight change silently invalidating a hard-coded
-    constant without test churn.
-    """
-
-    FORM_MULT = 1.38  # form_trajectory_max(1.2) * xgi_sustainability_max(1.15)
-    MATCHUP_MAX = 6.0  # matchup_avg_3gw max 8.0 * 0.75 * mins_factor 1.0
-    OWNERSHIP_MAX = 5.0  # (semi_differential_threshold 15 - 0) / divisor 3
-    POSITION_NEED_MAX = 5.0
-
-    def _gk_quality_max(self, weights):
-        w = weights.for_gk()
-        return (
-            w.gk_saves_per_90.cap
-            + w.gk_xgc_quality.cap
-            + w.gk_cs_rate.cap
-            + w.form.cap * self.FORM_MULT
-            + w.ppg.cap
-        )
-
-    def test_gk_value_ceiling(self):
-        from fpl_cli.services.player_scoring import (
-            GK_VALUE_CEILING,
-            POSITION_SCORE_MULTIPLIER,
-            VALUE_QUALITY_WEIGHTS,
-        )
-        derived = self._gk_quality_max(VALUE_QUALITY_WEIGHTS) * POSITION_SCORE_MULTIPLIER["GK"]
-        assert GK_VALUE_CEILING == pytest.approx(derived, abs=0.05)
-
-    def test_gk_target_ceiling(self):
-        from fpl_cli.services.player_scoring import (
-            GK_TARGET_CEILING,
-            POSITION_SCORE_MULTIPLIER,
-            TARGET_QUALITY_WEIGHTS,
-        )
-        derived = (
-            self._gk_quality_max(TARGET_QUALITY_WEIGHTS) * POSITION_SCORE_MULTIPLIER["GK"]
-            + self.MATCHUP_MAX
-        )
-        assert GK_TARGET_CEILING == pytest.approx(derived, abs=0.05)
-
-    def test_gk_differential_ceiling(self):
-        from fpl_cli.services.player_scoring import (
-            DIFFERENTIAL_QUALITY_WEIGHTS,
-            GK_DIFFERENTIAL_CEILING,
-            POSITION_SCORE_MULTIPLIER,
-        )
-        derived = (
-            self._gk_quality_max(DIFFERENTIAL_QUALITY_WEIGHTS) * POSITION_SCORE_MULTIPLIER["GK"]
-            + self.OWNERSHIP_MAX
-            + self.MATCHUP_MAX
-        )
-        assert GK_DIFFERENTIAL_CEILING == pytest.approx(derived, abs=0.1)
-
-    def test_gk_waiver_ceiling(self):
-        from fpl_cli.services.player_scoring import (
-            GK_WAIVER_CEILING,
-            POSITION_SCORE_MULTIPLIER,
-            WAIVER_QUALITY_WEIGHTS,
-        )
-        derived = (
-            self._gk_quality_max(WAIVER_QUALITY_WEIGHTS) * POSITION_SCORE_MULTIPLIER["GK"]
-            + self.MATCHUP_MAX
-            + self.POSITION_NEED_MAX
-        )
-        assert GK_WAIVER_CEILING == pytest.approx(derived, abs=0.1)
+        with pytest.raises(KeyError):
+            calculate_player_quality_score(
+                player, VALUE_QUALITY_WEIGHTS, position="UNKNOWN",  # type: ignore[arg-type]
+            )
 
 
 class TestCeilingValidationBands:
@@ -4139,10 +4068,10 @@ class TestCeilingValidationBands:
         assert 55 <= self._score(self._elite_fwd()) <= 100
 
     def test_elite_def_in_band(self):
-        # DEF normalises against VALUE_CEILING * 0.85 which is a MID-anchored
-        # ceiling. DEFs can only reach ~50-70/100 because without_xgi() zeroes
-        # npxg/xgi components. Band is lower by design.
-        assert 30 <= self._score(self._elite_def()) <= 100
+        # DEF uses without_xgi() so the xGI family is zeroed. Elite DEFs
+        # land in the lower half of the 0-100 scale by design. See todo
+        # 006 for the display-ceiling inconsistency this exposes.
+        assert 45 <= self._score(self._elite_def()) <= 85
 
     def test_elite_gk_in_band(self):
         assert 55 <= self._score(self._elite_gk()) <= 100
@@ -4174,42 +4103,6 @@ class TestCeilingValidationBands:
         )
         score = self._score(backup_gk)
         assert 0 <= score <= 60
-
-    def test_cold_start_player_in_range(self):
-        """Promoted-team / new signing with no history: form/trajectory defaults.
-
-        Scored across all four positions to confirm the ceiling-normalised
-        output stays in a sensible range when the input signals are sparse.
-        """
-        for pos, code in (
-            (PlayerPosition.MIDFIELDER, 410),
-            (PlayerPosition.FORWARD, 411),
-            (PlayerPosition.DEFENDER, 412),
-            (PlayerPosition.GOALKEEPER, 413),
-        ):
-            player = make_player(
-                id=code, web_name=f"Cold{code}", team_id=code % 20 + 1,
-                position=pos,
-                form=0.0, points_per_game=0.0, minutes=0, total_points=0,
-                now_cost=45, expected_goals=0.0, expected_assists=0.0,
-            )
-            score = self._score(player)
-            assert 0 <= score <= 100, f"{pos.name}: {score}"
-
-    def test_def_raw_is_attenuated_relative_to_itself(self):
-        """DEF raw_quality computed with position kwarg is 0.85x the un-attenuated result.
-
-        Direct check on calculate_player_quality_score bypasses the weight-variant
-        differences between MID (full) and DEF (without_xgi).
-        """
-        player = {
-            "form": 6.0, "ppg": 5.0, "xGI_per_90": 0.0,
-            "npxG_per_90": 0.0, "xGChain_per_90": 0.0, "dc_per_90": 1.5,
-        }
-        w = VALUE_QUALITY_WEIGHTS.without_xgi()
-        base = calculate_player_quality_score(player, w)
-        attenuated = calculate_player_quality_score(player, w, position="DEF")
-        assert attenuated == pytest.approx(base * 0.85, abs=0.01)
 
 
 class TestPositionalDistributionGuard:

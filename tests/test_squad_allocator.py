@@ -9,7 +9,6 @@ import pytest
 from fpl_cli.models.player import PlayerPosition, PlayerStatus
 from fpl_cli.services.squad_allocator import (
     DEFAULT_BENCH_DISCOUNT,
-    FIXTURE_SENSITIVITY,
     MODIFIER_FLOOR,
     SQUAD_SLOTS,
     ScoredPlayer,
@@ -981,7 +980,9 @@ class TestSolveSquad:
         result_none = solve_squad(players, coeffs, budget=100.0, bench_boost_gw_idx=None)
 
         assert result_omit.objective_value == result_none.objective_value
-        assert {sp.player.id for sp in result_omit.selected_players} == {sp.player.id for sp in result_none.selected_players}
+        omit_ids = {sp.player.id for sp in result_omit.selected_players}
+        none_ids = {sp.player.id for sp in result_none.selected_players}
+        assert omit_ids == none_ids
 
     def test_bench_boost_gw_last_in_horizon(self):
         """bench_boost_gw_idx at last GW still affects composition."""
