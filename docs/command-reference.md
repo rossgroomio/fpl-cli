@@ -167,9 +167,11 @@ fpl allocate --format json          # JSON output for scripting / skill integrat
 
 Scores ~500 eligible players, adjusts for fixture difficulty over the planning horizon, then solves for the budget-constrained optimum across all 7 valid formations. See [Squad Allocator](custom-analysis.md#squad-allocator) for scoring methodology, fixture coefficients, and solver detail.
 
-**JSON output fields:** `id`, `web_name`, `team`, `position`, `price`, `quality_score` (0-100), `raw_quality` (float), `role` (starter/bench), `captain_gws`. Metadata includes `formation`, `budget_used`, `budget_remaining`, `captain_schedule`, `solver_status`.
+**JSON output fields (horizon >= 2):** `id`, `web_name`, `team`, `position`, `price`, `quality_score` (0-100), `raw_quality` (float), `role` (starter/bench), `captain_gws`. Metadata includes `formation`, `budget_used`, `budget_remaining`, `captain_schedule`, `solver_status`.
 
-**`quality_score` semantics:** At `--horizon >= 2` each player's `quality_score` is normalised against a position-specific VALUE-family ceiling (matching `fpl player` / `fpl stats --value` / `fpl transfer-eval`), so elite GKs, DEFs, MIDs and FWDs all land in comparable 0-100 bands *within their own position*. At `--horizon 1` a single cross-position `STARTING_XI_CEILING` is used — a deliberate asymmetry retained until the single-GW lineup ceilings are split per position; at that horizon, DEFs and GKs display noticeably lower than MIDs/FWDs for the same real-world quality. Use `raw_quality` for a position-agnostic ranking in the single-GW context.
+**JSON output fields (horizon 1):** Same as above but the score field is `single_gw_score` (0-100) instead of `quality_score`.
+
+**Score field semantics:** At `--horizon >= 2` the `quality_score` field is normalised against a position-specific VALUE-family ceiling, matching `fpl player` / `fpl stats --value` / `fpl transfer-eval` for cross-command consistency — elite GKs, DEFs, MIDs and FWDs each land in comparable 0-100 bands *within their own position*. At `--horizon 1` the field is named `single_gw_score` because it comes from a different scoring family (`GW_SELECTION_WEIGHTS` + fixture-matchup term) and is normalised against a single cross-position `STARTING_XI_CEILING`; DEFs and GKs display noticeably lower than MIDs/FWDs for the same real-world quality. The different name signals that the two fields are not comparable. Use `raw_quality` for a position-agnostic ranking at either horizon.
 
 ### Fixture Difficulty (FDR)
 

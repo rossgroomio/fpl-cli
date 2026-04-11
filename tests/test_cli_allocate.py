@@ -419,7 +419,7 @@ class TestAllocateCommand:
             assert len(coeff_list) == 1
 
     def test_horizon1_uses_starting_xi_ceiling(self):
-        """--horizon 1 JSON output normalises quality using STARTING_XI_CEILING."""
+        """--horizon 1 JSON output normalises quality using STARTING_XI_CEILING into single_gw_score."""
         from fpl_cli.services.player_scoring import STARTING_XI_CEILING, normalise_score
 
         sr = _make_squad_result()
@@ -427,7 +427,8 @@ class TestAllocateCommand:
         data = json.loads(result.output)
         first = data["data"][0]
         expected = normalise_score(sr.selected_players[0].raw_quality, STARTING_XI_CEILING)
-        assert first["quality_score"] == expected
+        assert first["single_gw_score"] == expected
+        assert "quality_score" not in first
 
     def test_horizon_default_uses_per_player_value_ceiling(self):
         """--horizon 6 (default) JSON output normalises each player against a
@@ -466,6 +467,31 @@ class TestAllocateCommand:
                 f"{pos} quality_score {row['quality_score']} != expected {expected} "
                 f"(raw={sp.raw_quality}, position={sp.position})"
             )
+            assert "single_gw_score" not in row, f"{pos} unexpectedly contains single_gw_score at horizon >= 2"
+
+    def test_horizon1_renames_field_to_single_gw_score(self):
+        """--horizon 1 JSON uses single_gw_score; quality_score absent; raw_quality present."""
+        sr = _make_squad_result()
+        result = _run_allocate(sr, args=["--format", "json", "--horizon", "1"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["metadata"]["horizon"] == 1
+        for p in data["data"]:
+            assert "single_gw_score" in p
+            assert "quality_score" not in p
+            assert "raw_quality" in p
+            assert isinstance(p["single_gw_score"], int)
+            assert 0 <= p["single_gw_score"] <= 100
+
+    def test_horizon2_retains_quality_score(self):
+        """--horizon 2 JSON uses quality_score; single_gw_score absent."""
+        sr = _make_squad_result()
+        result = _run_allocate(sr, args=["--format", "json", "--horizon", "2"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        for p in data["data"]:
+            assert "quality_score" in p
+            assert "single_gw_score" not in p
 
     def test_horizon1_suspended_gw1_coefficient_zero(self):
         """--horizon 1 with suspended GW1 player produces coefficient 0.0."""

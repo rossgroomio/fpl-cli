@@ -1634,12 +1634,15 @@ def _value_weights_and_ceiling(position: Position) -> tuple[QualityWeights, floa
 def pick_display_ceiling(position: Position, horizon: int) -> float:
     """Position + horizon aware ceiling for `fpl allocate` display normalisation.
 
-    At horizon <= 1 (single-GW lineup context) returns STARTING_XI_CEILING as
-    a cross-position anchor — a deliberate asymmetry retained until the
-    single-GW lineup ceilings are split per position. Use ``raw_quality`` if
-    you need a position-agnostic ranking in that context. horizon >= 2 uses
-    the VALUE family ceilings, matching `fpl player` / `fpl stats --value` /
-    `fpl transfer-eval` for cross-command consistency.
+    Two-column model downstream:
+
+    - horizon=1 → ``single_gw_score``. Uses ``STARTING_XI_CEILING`` as a
+      cross-position anchor (intentional). DEFs/GKs land lower than MIDs/FWDs
+      for the same real-world quality; use ``raw_quality`` for position-agnostic
+      ranking in the single-GW context.
+    - horizon >= 2 → ``quality_score``. Routes to VALUE-family ceilings via
+      ``_value_weights_and_ceiling``, matching ``fpl player`` / ``fpl stats
+      --value`` / ``fpl transfer-eval`` for cross-command consistency.
     """
     if horizon <= 1:
         return STARTING_XI_CEILING
