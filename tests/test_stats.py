@@ -1,7 +1,7 @@
 """Tests for StatsAgent Understat enrichment."""
 
+
 import pytest
-from unittest.mock import AsyncMock, patch, MagicMock
 
 from fpl_cli.agents.analysis.stats import StatsAgent
 

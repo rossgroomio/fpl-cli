@@ -1,9 +1,7 @@
 """Tests for the FPL price scraper module."""
 
-import json
 import os
 from datetime import datetime, timedelta
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest

@@ -5,10 +5,10 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from fpl_cli.agents.analysis.stats import StatsAgent
 from fpl_cli.agents.base import AgentStatus
 from fpl_cli.agents.data.fixture import FixtureAgent
 from fpl_cli.agents.data.scout import ScoutAgent
-from fpl_cli.agents.analysis.stats import StatsAgent
 from fpl_cli.api.providers import LLMResponse, TokenUsage
 from fpl_cli.services.team_form import calculate_team_form
 from tests.conftest import make_fixture, make_player, make_team
@@ -276,6 +276,7 @@ class TestFixtureAgent:
     def test_fixture_to_dict(self, agent, mock_teams):
         """Test fixture to dict conversion."""
         from unittest.mock import MagicMock
+
         from fpl_cli.services.team_ratings import TeamRating
 
         # Mock ratings_service so this test is independent of the local ratings file.

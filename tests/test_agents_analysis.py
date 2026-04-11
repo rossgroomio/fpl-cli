@@ -5,13 +5,12 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from fpl_cli.agents.base import AgentStatus
 from fpl_cli.agents.analysis.captain import CaptainAgent
+from fpl_cli.agents.base import AgentStatus
 from fpl_cli.models.player import PlayerPosition
 from fpl_cli.services.player_scoring import ScoringContext
 from fpl_cli.services.team_ratings import TeamRating, TeamRatingsService
-
-from tests.conftest import make_player, make_team, make_fixture
+from tests.conftest import make_fixture, make_player, make_team
 
 
 def _make_ratings_service():

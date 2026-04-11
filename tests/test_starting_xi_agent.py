@@ -11,11 +11,9 @@ import pytest
 from fpl_cli.agents.analysis.starting_xi import StartingXIAgent
 from fpl_cli.agents.base import AgentStatus
 from fpl_cli.models.player import Player, PlayerPosition
-from fpl_cli.services.player_scoring import VALID_FORMATIONS
 from fpl_cli.models.team import Team
-from fpl_cli.services.player_scoring import ScoringContext, ScoringData
+from fpl_cli.services.player_scoring import VALID_FORMATIONS, ScoringContext, ScoringData
 from tests.conftest import make_fixture, make_player, make_team
-
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -1,17 +1,16 @@
 """Tests for FPL Draft API client."""
 
+from unittest.mock import AsyncMock, patch
+
 import pytest
-from unittest.mock import AsyncMock, patch, MagicMock
 
 from fpl_cli.api.fpl_draft import FPLDraftClient
-
 from tests.conftest import (
-    make_draft_player,
-    make_draft_team,
     make_draft_league_entry,
+    make_draft_player,
     make_draft_standing,
+    make_draft_team,
 )
-
 
 # --- Fixtures ---
 

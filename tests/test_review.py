@@ -2,14 +2,14 @@
 
 import pytest
 
-from fpl_cli.cli._review_classic import _format_review_classic_player
 from fpl_cli.cli._fines import compute_bench_analysis
 from fpl_cli.cli._helpers import _gw_position_with_half
+from fpl_cli.cli._review_classic import _format_review_classic_player
 from fpl_cli.prompts.review import (
     REVIEW_RESEARCH_SYSTEM_PROMPT,
     _build_system_prompt,
-    get_review_synthesis_prompt,
     get_review_research_prompt,
+    get_review_synthesis_prompt,
     validate_research_teams,
 )
 from tests.conftest import make_player, make_team
@@ -1323,6 +1323,7 @@ class TestTripleCaptainDetection:
     def test_template_renders_tc_marker(self):
         """Jinja2 template renders (TC) for triple captain players."""
         from jinja2 import Environment, FileSystemLoader
+
         from fpl_cli.paths import TEMPLATE_DIR
 
         env = Environment(loader=FileSystemLoader(str(TEMPLATE_DIR)))

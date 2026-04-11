@@ -4,10 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from tests.conftest import make_fixture
-
 from fpl_cli.services.matchup import calculate_matchup_score, compute_3gw_matchup
-
+from tests.conftest import make_fixture
 
 # ---------------------------------------------------------------------------
 # calculate_matchup_score smoke test

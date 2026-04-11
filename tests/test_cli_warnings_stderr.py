@@ -115,6 +115,6 @@ class TestWarningsOnStderr:
         monkeypatch.setattr(chips_mod, "load_settings", lambda: {})
 
         runner = CliRunner()
-        result = runner.invoke(main, ["chips", "timing"])
+        runner.invoke(main, ["chips", "timing"])
 
         mock_error.print.assert_called_once_with("[yellow]classic_entry_id not configured[/yellow]")

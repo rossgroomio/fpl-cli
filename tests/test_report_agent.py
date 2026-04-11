@@ -2,11 +2,8 @@
 
 from pathlib import Path
 
-import pytest
-
 from fpl_cli.agents.base import AgentStatus
 from fpl_cli.agents.orchestration.report import ReportAgent
-
 
 # ---------------------------------------------------------------------------
 # Minimal data helpers

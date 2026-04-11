@@ -69,7 +69,7 @@ class TestAllocateSellPricesFlag:
             # We just want to verify budget is computed correctly before asyncio.run
             # So we let it error naturally or mock it
             mock_run.side_effect = SystemExit(0)
-            result = runner.invoke(allocate_command, ["--sell-prices", path])
+            runner.invoke(allocate_command, ["--sell-prices", path])
 
         # The budget computation happens before asyncio.run, so we verify
         # by checking allocate_command doesn't crash and reads the file
@@ -86,7 +86,7 @@ class TestAllocateSellPricesFlag:
         with patch("fpl_cli.cli.allocate.asyncio.run") as mock_run:
             mock_run.side_effect = SystemExit(0)
             # With explicit --budget 80.0, auto-compute (50+10=60) should be ignored
-            result = runner.invoke(allocate_command, ["--sell-prices", path, "--budget", "80.0"])
+            runner.invoke(allocate_command, ["--sell-prices", path, "--budget", "80.0"])
 
         Path(path).unlink()
 

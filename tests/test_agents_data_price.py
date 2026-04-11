@@ -1,14 +1,13 @@
 """Tests for PriceAgent."""
 
-import pytest
 from unittest.mock import AsyncMock, patch
 
-from fpl_cli.agents.data.price import PriceAgent
+import pytest
+
 from fpl_cli.agents.base import AgentStatus
+from fpl_cli.agents.data.price import PriceAgent
 from fpl_cli.models.player import PlayerPosition
-
 from tests.conftest import make_player, make_team
-
 
 # --- Fixtures ---
 

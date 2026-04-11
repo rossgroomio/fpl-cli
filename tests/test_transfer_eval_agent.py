@@ -23,7 +23,6 @@ from fpl_cli.services.player_scoring import (
 )
 from tests.conftest import make_fixture, make_player, make_team
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
