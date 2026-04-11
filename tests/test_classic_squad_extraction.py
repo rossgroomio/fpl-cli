@@ -451,8 +451,8 @@ def test_late_change_note_does_not_break_validation(tmp_path, capsys):
         "#### Team Exposure\n\n| Team | Count |\n|------|-------|\n\n"
         "#### Key Decisions\n\nSome.\n\n"
         "#### Alternatives\n\nSome.\n\n"
-        "> Late change: Palmer → Saka — ruled out Thursday presser\n\n"
-        "### Momentum Alerts\n\nsome\n"
+        "### Momentum Alerts\n\nsome\n\n"
+        "> Late change: Palmer → Saka — ruled out Thursday presser\n"
     )
     _run(str(f), from_recommendations=True)
     data = json.loads(capsys.readouterr().out)
@@ -460,6 +460,7 @@ def test_late_change_note_does_not_break_validation(tmp_path, capsys):
     assert data["validation"]["structural"]["starting_xi_rows"] == 11
     assert data["validation"]["structural"]["bench_rows"] == 4
     assert data["validation"]["arithmetic"]["budget_within_cap"] is True
+    assert "> Late change" not in data["block"], "blockquote outside ### boundary must not be in block"
 
 
 # -- Read-only invariant --
@@ -532,6 +533,8 @@ def test_from_recommendations_team_exposure_fallback_from_xi_bench(tmp_path, cap
     a = data["validation"]["arithmetic"]
     assert a["max_per_team_ok"] is False
     assert a["team_exposure"].get("Man City") == 4
+    assert a["team_exposure"].get("Arsenal") == 7
+    assert a["team_exposure"].get("Chelsea") == 4
 
 
 def test_from_recommendations_team_exposure_column_drift(tmp_path, capsys):
@@ -581,6 +584,10 @@ def test_from_recommendations_team_exposure_column_drift(tmp_path, capsys):
     # Fallback tally from XI/Bench should catch Liverpool count = 4
     assert a["max_per_team_ok"] is False
     assert a["team_exposure"].get("Liverpool") == 4
+    # Prove the fallback path was taken: Arsenal (7) and Chelsea (4) must also appear
+    # (primary parse would only produce Liverpool if it read col 2 correctly)
+    assert a["team_exposure"].get("Arsenal") == 7
+    assert a["team_exposure"].get("Chelsea") == 4
 
 
 def test_from_recommendations_team_exposure_total_row_ignored(tmp_path, capsys):

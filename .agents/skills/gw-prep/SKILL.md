@@ -432,7 +432,7 @@ _Skip unless `squad_builder_result == "embed"`. Transfer and rederive runs do no
    >
    > Phase E did not modify the file — the issues above were detected in the file the sub-agent just wrote. Review manually and either re-run `/gw-prep` or edit the file by hand before entering your squad into FPL.
 
-6. **Frontmatter update (narrow exception):** after validation completes, write the result to the recommendations file's YAML frontmatter. Read the frontmatter block only (lines between the opening `---` and closing `---`), update or append the relevant fields, then rewrite only the frontmatter block. Do not touch the body of the file.
+6. **Frontmatter update (narrow exception):** after validation completes, write the result to the recommendations file's YAML frontmatter. Read the frontmatter block only (lines between the opening `---` and closing `---`), update or append the relevant fields, then write the full file as: new frontmatter block (from opening `---` to closing `---` inclusive) followed immediately by the original file content starting from the character after the closing `---`. **Reconstruction contract:** never write a file containing only the frontmatter — the body must be preserved verbatim.
 
    On successful validation (empty issues list):
    ```yaml

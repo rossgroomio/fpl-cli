@@ -314,7 +314,7 @@ def _count_table_rows_between(block: str, start_heading: str) -> int:
             continue
         if in_section:
             # Stop at the next heading of same or higher level
-            if re.match(r"^#{3,4} \S", line) and not line.strip().startswith(start_heading):
+            if re.match(r"^#{3,4} \S", line):
                 break
             if line.startswith("|"):
                 if re.match(r"^\|[-| ]+\|", line):
@@ -388,7 +388,7 @@ def _parse_team_exposure(block: str) -> dict[str, int]:
 
     in_team_exposure = False
     for line in block.split("\n"):
-        if "#### Team Exposure" in line:
+        if line.strip() == "#### Team Exposure":
             in_team_exposure = True
             continue
         if in_team_exposure:
@@ -399,9 +399,10 @@ def _parse_team_exposure(block: str) -> dict[str, int]:
                 if len(parts) >= 2:
                     team = parts[0].strip()
                     try:
-                        count = int(parts[1].strip())
-                        if team and team not in ("Team", "Total"):
-                            exposure[team] = count
+                        count = int(parts[1].strip().strip("*"))
+                        team_clean = team.strip("*").strip()
+                        if team_clean and team_clean.lower() not in ("team", "total"):
+                            exposure[team_clean] = count
                     except ValueError:
                         pass
 
