@@ -18,15 +18,67 @@ import argparse
 import json
 import re
 import sys
+from typing import Literal, TypedDict
+
+
+class StructuralResult(TypedDict):
+    sub_headings_present: dict[str, bool]
+    starting_xi_rows: int
+    bench_rows: int
+    captain_named: bool
+    vice_named: bool
+
+
+class ArithmeticResult(TypedDict):
+    budget_total_gbp_m: float | None
+    budget_within_cap: bool
+    team_exposure: dict[str, int]
+    max_per_team_ok: bool
+    player_count: int
+
+
+class ValidationResult(TypedDict):
+    structural: StructuralResult
+    arithmetic: ArithmeticResult
+
+
+class ExtractMetadata(TypedDict):
+    heading_demoted: bool
+    had_draft_rankings: bool
+    source_path: str
+    mode: Literal["extract"]
+
+
+class FromRecommendationsMetadata(TypedDict):
+    source_path: str
+    block_extracted: bool
+    mode: Literal["from-recommendations"]
+
+
+class ExtractPayload(TypedDict):
+    block: str
+    validation: None
+    metadata: ExtractMetadata
+
+
+class FromRecommendationsPayload(TypedDict):
+    block: str
+    validation: ValidationResult
+    metadata: FromRecommendationsMetadata
 
 
 def _run(file_path: str, from_recommendations: bool = False) -> None:
     try:
-        with open(file_path) as f:
+        with open(file_path, encoding="utf-8") as f:
             content = f.read()
     except FileNotFoundError:
+        hint = (
+            "If this is a recommendations file, re-run with --from-recommendations."
+            if not from_recommendations
+            else "If this is a squad-builder output file, re-run without --from-recommendations."
+        )
         json.dump(
-            {"error": True, "messages": [f"File not found: {file_path}"]},
+            {"error": True, "messages": [f"File not found: {file_path}. {hint}"]},
             sys.stdout,
             indent=2,
         )
@@ -100,10 +152,10 @@ def _run_extract(file_path: str, content: str) -> None:
     # H6 ceiling check — demotion would produce H7 (####### exceeds markdown spec)
     in_fence = False
     for line in block_lines:
-        if re.match(r"^```", line):
+        if line.startswith("```"):
             in_fence = not in_fence
             continue
-        if not in_fence and re.match(r"^#{6}", line):
+        if not in_fence and re.match(r"^#{6}\s", line):
             json.dump(
                 {
                     "error": True,
@@ -122,7 +174,7 @@ def _run_extract(file_path: str, content: str) -> None:
     demoted: list[str] = []
     in_fence = False
     for line in block_lines:
-        if re.match(r"^```", line):
+        if line.startswith("```"):
             in_fence = not in_fence
             demoted.append(line)
             continue
@@ -132,12 +184,14 @@ def _run_extract(file_path: str, content: str) -> None:
 
     block = "\n".join(demoted)
 
-    payload = {
+    payload: ExtractPayload = {
         "block": block,
+        "validation": None,
         "metadata": {
             "heading_demoted": True,
             "had_draft_rankings": had_draft_rankings,
             "source_path": file_path,
+            "mode": "extract",
         },
     }
     json.dump(payload, sys.stdout, indent=2)
@@ -160,7 +214,8 @@ def _run_from_recommendations(file_path: str, content: str) -> None:
                 "error": True,
                 "messages": [
                     "No '### Classic Squad' heading found in the recommendations file. "
-                    "The Classic sub-agent may not have embedded the block correctly."
+                    "The Classic sub-agent may not have embedded the block correctly. "
+                    "If this is a squad-builder output file, re-run without --from-recommendations."
                 ],
             },
             sys.stdout,
@@ -185,18 +240,19 @@ def _run_from_recommendations(file_path: str, content: str) -> None:
 
     validation = _validate_classic_squad_block(block)
 
-    payload = {
+    payload: FromRecommendationsPayload = {
         "block": block,
         "validation": validation,
         "metadata": {
             "source_path": file_path,
-            "parse_ok": True,
+            "block_extracted": True,
+            "mode": "from-recommendations",
         },
     }
     json.dump(payload, sys.stdout, indent=2)
 
 
-def _validate_classic_squad_block(block: str) -> dict:
+def _validate_classic_squad_block(block: str) -> ValidationResult:
     """Compute structural and arithmetic validation for a ### Classic Squad block."""
     expected_sub_headings = [
         "Starting XI",
@@ -219,13 +275,11 @@ def _validate_classic_squad_block(block: str) -> dict:
     vice_named = bool(re.search(r"\*\*Vice:\*\*\s*\S", block))
 
     # Arithmetic checks
-    budget_total_mlm = _parse_budget_total(block)
-    budget_within_cap = (
-        budget_total_mlm is not None and budget_total_mlm <= 100.0
-    )
+    budget_total_gbp_m = _parse_budget_total(block)
+    budget_within_cap = budget_total_gbp_m is not None and budget_total_gbp_m <= 100.0
 
     team_exposure = _parse_team_exposure(block)
-    max_per_team_ok = all(v <= 3 for v in team_exposure.values())
+    max_per_team_ok = bool(team_exposure) and all(v <= 3 for v in team_exposure.values())
 
     player_count = starting_xi_rows + bench_rows
 
@@ -238,7 +292,7 @@ def _validate_classic_squad_block(block: str) -> dict:
             "vice_named": vice_named,
         },
         "arithmetic": {
-            "budget_total_mlm": budget_total_mlm,
+            "budget_total_gbp_m": budget_total_gbp_m,
             "budget_within_cap": budget_within_cap,
             "team_exposure": team_exposure,
             "max_per_team_ok": max_per_team_ok,
@@ -255,22 +309,20 @@ def _count_table_rows_between(block: str, start_heading: str) -> int:
     row_count = 0
 
     for line in lines:
-        if line.strip() == start_heading or line.strip().startswith(start_heading):
+        if line.strip() == start_heading:
             in_section = True
             continue
         if in_section:
             # Stop at the next heading of same or higher level
             if re.match(r"^#{3,4} \S", line) and not line.strip().startswith(start_heading):
                 break
-            # Count data rows only: skip separator rows and the first row of each
-            # table (header). Header is the first non-separator | row per table block.
             if line.startswith("|"):
                 if re.match(r"^\|[-| ]+\|", line):
-                    pass  # separator row — skip
+                    pass
                 elif not in_table:
-                    in_table = True  # header row — enter table, do not count
+                    in_table = True
                 else:
-                    row_count += 1  # data row — count
+                    row_count += 1
             elif in_table:
                 in_table = False
 
@@ -292,21 +344,55 @@ def _parse_budget_total(block: str) -> float | None:
     return None
 
 
+def _tally_teams_from_squad_tables(block: str) -> dict[str, int]:
+    """Tally team counts from the Team column in Starting XI and Bench tables."""
+    tally: dict[str, int] = {}
+    for section_heading in ("#### Starting XI", "#### Bench"):
+        in_section = False
+        in_table = False
+        team_col: int | None = None
+        for line in block.split("\n"):
+            if line.strip() == section_heading:
+                in_section = True
+                continue
+            if in_section:
+                if re.match(r"^#{3,4} \S", line):
+                    break
+                if line.startswith("|"):
+                    if re.match(r"^\|[-| ]+\|", line):
+                        pass  # separator
+                    elif not in_table:
+                        headers = [h.strip().lower() for h in line.strip("|").split("|")]
+                        team_col = next(
+                            (i for i, h in enumerate(headers) if h == "team"), None
+                        )
+                        in_table = True
+                    else:
+                        if team_col is not None:
+                            parts = [p.strip() for p in line.strip("|").split("|")]
+                            if len(parts) > team_col and parts[team_col]:
+                                team = parts[team_col]
+                                tally[team] = tally.get(team, 0) + 1
+                elif in_table:
+                    in_table = False
+    return tally
+
+
 def _parse_team_exposure(block: str) -> dict[str, int]:
     """
-    Parse team exposure counts from the Team Exposure table,
-    or fall back to tallying the Team column in Starting XI and Bench tables.
+    Parse team exposure counts from the Team Exposure table.
+    Falls back to tallying the Team column in Starting XI and Bench tables
+    when the dedicated table is absent or parses to an empty dict.
     """
     exposure: dict[str, int] = {}
 
-    # Try to parse from Team Exposure table: | Team | Count | ...
     in_team_exposure = False
     for line in block.split("\n"):
         if "#### Team Exposure" in line:
             in_team_exposure = True
             continue
         if in_team_exposure:
-            if re.match(r"^#### \S", line):
+            if re.match(r"^#{3,4} \S", line):
                 break
             if line.startswith("|") and not re.match(r"^\|[-| ]+\|", line):
                 parts = [p.strip() for p in line.strip("|").split("|")]
@@ -314,17 +400,26 @@ def _parse_team_exposure(block: str) -> dict[str, int]:
                     team = parts[0].strip()
                     try:
                         count = int(parts[1].strip())
-                        if team and team != "Team":
+                        if team and team not in ("Team", "Total"):
                             exposure[team] = count
                     except ValueError:
                         pass
+
+    if not exposure:
+        return _tally_teams_from_squad_tables(block)
 
     return exposure
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Extract the Classic Squad block from a squad-builder output file."
+        description="Extract the Classic Squad block from a squad-builder output file.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  python3 extract_classic_squad.py --file gw32-squad-builder.md\n"
+            "  python3 extract_classic_squad.py --from-recommendations --file gw32-recommendations.md"
+        ),
     )
     parser.add_argument(
         "--file",
