@@ -14,6 +14,17 @@ Template structure for the gameweek recommendations file.
 ---
 squad_builder_mode: true  # Only on embed-mode wildcard/freehit runs. Omit on rederive or transfer runs.
 mode: wildcard | freehit | transfer  # Always present. Enum value matches the active chip or "transfer".
+phase_e_ok: true | false  # Embed-mode only. Written by Phase E after post-write validation. Omit on transfer and rederive runs.
+phase_e_issues:  # Embed-mode only. Present when phase_e_ok: false. Short-code list from the vocabulary below.
+  - missing-subheading       # any of the six expected #### sub-headings is absent
+  - xi-row-count-wrong       # starting_xi_rows != 11
+  - bench-row-count-wrong    # bench_rows != 4
+  - captain-unnamed          # captain_named == false
+  - vice-unnamed             # vice_named == false
+  - budget-parse-failed      # budget_total_gbp_m is None (parse failure)
+  - budget-over-cap          # budget_total_gbp_m is not None and > 100.0
+  - team-cap-violation       # max_per_team_ok == false (any team with count > 3)
+  - squad-size-wrong         # player_count != 15
 ---
 
 # Gameweek {N} Recommendations
@@ -32,7 +43,7 @@ Summary of chip timing analysis. Note if any chip is recommended for this GW or 
 
 ### Captain Pick
 
-_On embed-mode wildcard/freehit runs, this section is suppressed — captain and vice are inside the embedded `### Classic Squad` block._
+_Suppressed on embed-mode runs — see SKILL.md Phase C1._
 
 | Rank | Player | Team | Opponent (pFDR) | Key Stat | Rationale |
 |------|--------|------|-----------------|----------|-----------|
@@ -44,7 +55,7 @@ _On embed-mode wildcard/freehit runs, this section is suppressed — captain and
 
 ### Transfer Recommendations
 
-_On embed-mode wildcard/freehit runs, this section is suppressed — any late-breaking swaps are applied inline in the `### Classic Squad` block and explained in trailing `> Late change:` blockquote notes. Non-wildcard weeks retain the Transfer Recommendations table as usual._
+_Suppressed on embed-mode runs — see SKILL.md Phase C1._
 
 | Priority | Out | In | Outlook | This GW | Net Cost | Rationale |
 |----------|-----|----|---------|---------|----------|-----------|
@@ -61,15 +72,13 @@ For each transfer, include:
 - Form summary
 - Price trend
 
-_On embed-mode wildcard/freehit runs, this section is replaced by the `### Classic Squad` block. The sub-agent inserts the block verbatim by default; if late-breaking intel warrants a swap, the sub-agent applies it inline (updating the relevant row, Captain/Vice, Budget, Team Exposure) and appends a trailing `> Late change: {OUT} → {IN} — {reason}` blockquote note after the block's closing `#### Alternatives` section. The block contains the final 15 the user should enter into FPL. Phase E post-write validation runs after this to confirm structural and arithmetic invariants (all six sub-headings present, 11 XI rows, 4 Bench rows, Budget ≤ 100, ≤3 per team); on failure it warns loudly in chat without mutating the file._
-
 ### Classic Squad
 
 _Embed-mode only: the orchestrator replaces this placeholder at runtime with the `{embedded_classic_squad_block}` extracted from `gw{N}-squad-builder.md`. Do not populate this section manually — it is produced by the C1 sub-agent._
 
 ### Bench Order
 
-_On embed-mode wildcard/freehit runs, this section is suppressed — bench order is inside the embedded `### Classic Squad` block._
+_Suppressed on embed-mode runs — see SKILL.md Phase C1._
 
 BenchOrderAgent recommended order:
 

@@ -149,24 +149,35 @@ fpl stats --format json
 
 _Skip unless `mode == "squad-builder"` AND `active_chip ∈ {wildcard, freehit}` AND `metadata.format ∈ {"classic", "both"}`._
 
-Locate a matching squad-builder output file and extract the Classic Squad block for embedding. Sets `squad_builder_source = "embed"` on success, or `"rederive"` with a `squad_builder_reason` code on failure. All steps are synchronous and must complete before Phase C dispatches.
+Locate a matching squad-builder output file and extract the Classic Squad block for embedding. Sets `squad_builder_result = "embed"` on success, or `"rederive"` with a `squad_builder_reason` code on failure. All steps are synchronous and must complete before Phase C dispatches.
 
 1. Look for `[YOUR_OUTPUT_DIR]/gw{N}-squad-builder.md`.
-   - Not found → `squad_builder_source = "rederive"`, `squad_builder_reason = "file-missing"`. Done.
+   - Not found → `squad_builder_result = "rederive"`, `squad_builder_reason = "file-missing"`. Done.
 2. Parse the file's YAML frontmatter. Required fields: `mode`, `gameweek`.
-   - Missing or malformed → `squad_builder_source = "rederive"`, `squad_builder_reason = "frontmatter-malformed"`. Done.
+   - Missing or malformed → `squad_builder_result = "rederive"`, `squad_builder_reason = "frontmatter-malformed"`. Done.
 3. Gameweek check: `file.gameweek == N`?
-   - Mismatch → `squad_builder_source = "rederive"`, `squad_builder_reason = "gameweek-mismatch"`. Done.
-4. Mode check: normalise `file.mode` (lowercase, strip whitespace and hyphens) and compare to `active_chip`. `Wildcard` matches `wildcard`; `Free Hit` matches `freehit`. `Season Start Classic`, `Season Start Draft`, and `Re-draft` files correctly reject as mode-mismatch by design.
-   - Mismatch → `squad_builder_source = "rederive"`, `squad_builder_reason = "mode-mismatch"`. Done.
+   - Mismatch → `squad_builder_result = "rederive"`, `squad_builder_reason = "gameweek-mismatch"`. Done.
+4. Mode check: use the following explicit mode map to normalise `file.mode` and compare to `active_chip`.
+
+   | `file.mode` value | Normalised | Match against `active_chip`? |
+   |---|---|---|
+   | `Wildcard` | `wildcard` | ✓ matches `wildcard` |
+   | `Free Hit` | `freehit` | ✓ matches `freehit` |
+   | `Season Start Classic` | `seasonstartclassic` | ✗ mode-mismatch by design |
+   | `Season Start Draft` | `seasonstartdraft` | ✗ mode-mismatch by design |
+   | `Re-draft` | `redraft` | ✗ mode-mismatch by design |
+
+   Any `file.mode` value not in this table is treated as mode-mismatch.
+   - Mismatch → `squad_builder_result = "rederive"`, `squad_builder_reason = "mode-mismatch"`. Done.
 5. Call the extraction helper:
 
    ```bash
    python3 "${CLAUDE_SKILL_DIR}/scripts/extract_classic_squad.py" --file "[YOUR_OUTPUT_DIR]/gw{N}-squad-builder.md"
    ```
 
-   - Non-zero exit → `squad_builder_source = "rederive"`, `squad_builder_reason = "extraction-failed"` (typical: file was produced with `--draft` only, no `## Classic Squad` block). Done.
-   - Zero exit → store `data.block` in phase context as `embedded_classic_squad_block`. Set `squad_builder_source = "embed"`.
+   Parse stdout as JSON regardless of exit code. If JSON parse fails, treat as extraction-failed with a generic error message.
+   - Non-zero exit → `squad_builder_result = "rederive"`, `squad_builder_reason = "extraction-failed"`. If stdout parsed with `error: true`, include `messages[0]` verbatim in the in-chat warning banner (see Variant C below). Done.
+   - Zero exit → store `data.block` in phase context as `embedded_classic_squad_block`. Set `squad_builder_result = "embed"`.
 
 6. Freshness check (embed path only): if `file.mtime` is older than 72 hours, emit an in-chat info note:
    > ℹ️ `gw{N}-squad-builder.md` was last modified more than 72h ago. The embedded squad may not reflect late-breaking team news. Proceeding — review Phase B data and apply inline swaps if warranted.
@@ -189,11 +200,11 @@ Each sub-agent receives the JSON output from Phase B commands as context.
 - **model**: opus
 - **subagent_type**: general-purpose
 
-Branch on `squad_builder_source` (set in Phase B9; unset on transfer weeks):
+Branch on `squad_builder_result` (set in Phase B9; unset on transfer weeks):
 
 ---
 
-**[Embed] `squad_builder_source == "embed"`** — wildcard/freehit with matched squad-builder file
+**[Embed] `squad_builder_result == "embed"`** — wildcard/freehit with matched squad-builder file
 
 **Prompt structure:**
 
@@ -235,11 +246,12 @@ Branch on `squad_builder_source` (set in Phase B9; unset on transfer weeks):
 > ```yaml
 > squad_builder_mode: true
 > mode: {wildcard|freehit}
+> # phase_e_ok is written by Phase E after post-write validation — do not include it here
 > ```
 
 ---
 
-**[Rederive] `squad_builder_source == "rederive"` AND `mode == "squad-builder"`** — wildcard/freehit but file not usable
+**[Rederive] `squad_builder_result == "rederive"` AND `mode == "squad-builder"`** — wildcard/freehit but file not usable
 
 Before dispatching, print the in-chat warning (variant by `squad_builder_reason`):
 
@@ -338,7 +350,7 @@ The script outputs JSON with Outlook (multi-GW quality) and This GW (lineup impa
 
 If the script fails (exit 1), fall back to LLM-driven transfer reasoning and note the failure.
 
-### C3 -- Starting XI Selection (skip if `squad_builder_source == "embed"` — squad-builder's assembler already chose the XI)
+### C3 -- Starting XI Selection (skip if `squad_builder_result == "embed"` — squad-builder's assembler already chose the XI)
 
 Run the lineup engine for each active format's squad **before** bench ordering:
 
@@ -350,7 +362,7 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/starting_xi.py" --squad "{comma-separated 1
 
 Use the script's recommended XI as the default lineup. Sub-agents may override specific picks with stated qualitative reasons (press conference intel, newsletter signals, rotation predictions). Mark any overrides with `⚡ Override: {reason}` in the output. If the script fails (exit 1), fall back to manual selection and note the failure.
 
-### C4 -- Bench Ordering (skip if `squad_builder_source == "embed"` — bench order is inside the embedded block)
+### C4 -- Bench Ordering (skip if `squad_builder_result == "embed"` — bench order is inside the embedded block)
 
 Using the starting XI from C3 (or the sub-agent's overridden version), run the bench order script:
 
@@ -381,7 +393,7 @@ Present a brief summary to the user:
 
 ## Phase E: Post-write Validation (embed-mode only)
 
-_Skip unless `squad_builder_source == "embed"`. Transfer and rederive runs do not produce a `### Classic Squad` block._
+_Skip unless `squad_builder_result == "embed"`. Transfer and rederive runs do not produce a `### Classic Squad` block._
 
 1. Run:
 
@@ -389,8 +401,12 @@ _Skip unless `squad_builder_source == "embed"`. Transfer and rederive runs do no
    python3 "${CLAUDE_SKILL_DIR}/scripts/extract_classic_squad.py" --from-recommendations --file "[YOUR_OUTPUT_DIR]/gw{N}-recommendations.md"
    ```
 
-   Capture stdout. If exit is non-zero → emit warning and proceed:
-   > ⚠️ Phase E: could not recover `### Classic Squad` block from `gw{N}-recommendations.md` — the sub-agent's output may be malformed. Review manually before entering into FPL.
+   Parse stdout as JSON regardless of exit code. If exit is non-zero → emit warning and proceed:
+
+   - If stdout parses as JSON with `error: true` → include `messages[0]` verbatim in the warning:
+     > ⚠️ Phase E: could not recover `### Classic Squad` block from `gw{N}-recommendations.md` — {messages[0]}. Review manually before entering into FPL.
+   - Otherwise (JSON parse failed or no `error` key) → emit the generic warning:
+     > ⚠️ Phase E: could not recover `### Classic Squad` block from `gw{N}-recommendations.md` — the sub-agent's output may be malformed. Review manually before entering into FPL.
 
    **Do not mutate the file.** Proceed.
 
@@ -404,8 +420,8 @@ _Skip unless `squad_builder_source == "embed"`. Transfer and rederive runs do no
    - `vice_named == false` → `"Vice not named"`
 
 4. **Arithmetic checks:** collect an issue string for each failure:
-   - `budget_within_cap == false` OR `budget_total_mlm == null` → `"Budget parse failed or over 100.0m cap (parsed: {value})"`
-   - `max_per_team_ok == false` → `"Team exposure violation: {list of teams with count > 3}"`
+   - `budget_within_cap == false` OR `budget_total_gbp_m == null` → `"Budget parse failed or over 100.0m cap (parsed: {value})"`
+   - `max_per_team_ok == false` → `"Team exposure violation: {list of teams with count > 3}"`. Build this list from `arithmetic.team_exposure` — iterate its entries and include each team whose integer value is greater than 3.
    - `player_count != 15` → `"Squad size is {N}, expected 15"`
 
 5. **Report:** if the issues list is empty, silent continue (no in-chat output). If non-empty, emit:
@@ -414,6 +430,40 @@ _Skip unless `squad_builder_source == "embed"`. Transfer and rederive runs do no
    > - {issue 2}
    > ...
    >
-   > The file was NOT modified. Review manually and either re-run `/gw-prep` or edit the file by hand before entering your squad into FPL.
+   > Phase E did not modify the file — the issues above were detected in the file the sub-agent just wrote. Review manually and either re-run `/gw-prep` or edit the file by hand before entering your squad into FPL.
 
-6. Proceed to end of pipeline regardless of validation outcome. **The file is never mutated by Phase E.**
+6. **Frontmatter update (narrow exception):** after validation completes, write the result to the recommendations file's YAML frontmatter. Read the frontmatter block only (lines between the opening `---` and closing `---`), update or append the relevant fields, then rewrite only the frontmatter block. Do not touch the body of the file.
+
+   On successful validation (empty issues list):
+   ```yaml
+   phase_e_ok: true
+   ```
+
+   On failed validation (non-empty issues list):
+   ```yaml
+   phase_e_ok: false
+   phase_e_issues:
+     - missing-subheading
+     - xi-row-count-wrong
+     # ... one short-code per issue, from the vocabulary in references/output-template.md
+   ```
+
+   **Short-code vocabulary** (use the code that matches each issue string from steps 3-4):
+
+   | Issue | Short code |
+   |---|---|
+   | any `#### {name}` sub-heading absent | `missing-subheading` |
+   | `starting_xi_rows != 11` | `xi-row-count-wrong` |
+   | `bench_rows != 4` | `bench-row-count-wrong` |
+   | `captain_named == false` | `captain-unnamed` |
+   | `vice_named == false` | `vice-unnamed` |
+   | `budget_total_gbp_m is None` (parse failure) | `budget-parse-failed` |
+   | `budget_total_gbp_m > 100.0` | `budget-over-cap` |
+   | `max_per_team_ok == false` | `team-cap-violation` |
+   | `player_count != 15` | `squad-size-wrong` |
+
+   This frontmatter write is the single narrow exception to "Phase E never mutates the file" — it is idempotent (re-running Phase E produces the same frontmatter) and applies to frontmatter only. Flag in the commit message.
+
+   **Embed-mode runs only.** On transfer and rederive runs, Phase E does not execute, so these fields are omitted.
+
+7. Proceed to end of pipeline regardless of validation outcome. **The file body is never mutated by Phase E.**
