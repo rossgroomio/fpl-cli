@@ -69,7 +69,7 @@ Agent playbooks in `.agents/skills/`. Each has a `SKILL.md` entry point. Claude 
 
 | Skill | Path | Purpose | Compatibility |
 |-------|------|---------|--------------|
-| gw-prep | `skills/gw-prep/` | Gameweek preparation recommendations for classic and draft | Full: Claude Code. Partial: Codex, Cursor, Copilot |
+| gw-prep | `skills/gw-prep/` | Gameweek preparation recommendations for classic and draft (embed / rederive / transfer branches; Phase E post-write validation) | Full: Claude Code. Partial: Codex, Cursor, Copilot |
 | update-gw-prep | `skills/update-gw-prep/` | Append GW update to existing recommendations | Full: Claude Code, Codex, Cursor, Copilot |
 | squad-builder | `skills/squad-builder/` | Build optimal 15-player squad (wildcard, free hit, season start) | Full: Claude Code, Codex, Cursor, Copilot |
 
@@ -94,3 +94,4 @@ Python classes in `fpl_cli/agents/` that implement `async run(context) -> AgentR
 **Notes:**
 - BenchOrderAgent and StartingXIAgent have no CLI command - they are invoked by gw-prep skill wrapper scripts in `.agents/skills/gw-prep/scripts/`
 - TransferEvalAgent is used by both `transfer-eval` CLI command and gw-prep skill
+- `extract_classic_squad.py` (`.agents/skills/gw-prep/scripts/`) — deterministic Classic Squad block extractor used by gw-prep Phase B9 + Phase E. JSON stdout; read-only; emits TypedDict-annotated payloads.
