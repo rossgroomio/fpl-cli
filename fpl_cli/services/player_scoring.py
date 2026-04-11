@@ -1587,28 +1587,23 @@ def build_scoring_enrichment(
     return enrichment
 
 
-def _target_ceiling_for(position: str) -> float:
-    if position == "GK":
-        return GK_TARGET_CEILING
-    if position == "DEF":
-        return DEF_TARGET_CEILING
-    return TARGET_CEILING
+_OWNERSHIP_CEILINGS: dict[tuple[str, str], float] = {
+    ("target", "GK"): GK_TARGET_CEILING,
+    ("target", "DEF"): DEF_TARGET_CEILING,
+    ("differential", "GK"): GK_DIFFERENTIAL_CEILING,
+    ("differential", "DEF"): DEF_DIFFERENTIAL_CEILING,
+    ("waiver", "GK"): GK_WAIVER_CEILING,
+    ("waiver", "DEF"): DEF_WAIVER_CEILING,
+}
+_OWNERSHIP_BASE_CEILINGS: dict[str, float] = {
+    "target": TARGET_CEILING,
+    "differential": DIFFERENTIAL_CEILING,
+    "waiver": WAIVER_CEILING,
+}
 
 
-def _differential_ceiling_for(position: str) -> float:
-    if position == "GK":
-        return GK_DIFFERENTIAL_CEILING
-    if position == "DEF":
-        return DEF_DIFFERENTIAL_CEILING
-    return DIFFERENTIAL_CEILING
-
-
-def _waiver_ceiling_for(position: str) -> float:
-    if position == "GK":
-        return GK_WAIVER_CEILING
-    if position == "DEF":
-        return DEF_WAIVER_CEILING
-    return WAIVER_CEILING
+def _ownership_ceiling_for(family: Literal["target", "differential", "waiver"], position: str) -> float:
+    return _OWNERSHIP_CEILINGS.get((family, position), _OWNERSHIP_BASE_CEILINGS[family])
 
 
 def _value_weights_and_ceiling(position: str) -> tuple[QualityWeights, float]:
@@ -2178,7 +2173,7 @@ def calculate_target_score(
     next_gw_id: int,
 ) -> int:
     """Calculate a target score (pure performance, no ownership bias)."""
-    ceiling = _target_ceiling_for(evaluation.position)
+    ceiling = _ownership_ceiling_for("target", evaluation.position)
     return _calculate_quality_based_score(
         evaluation,
         weights=TARGET_QUALITY_WEIGHTS,
@@ -2194,7 +2189,7 @@ def calculate_differential_score(
     next_gw_id: int,
 ) -> int:
     """Calculate a differential score for a player."""
-    ceiling = _differential_ceiling_for(evaluation.position)
+    ceiling = _ownership_ceiling_for("differential", evaluation.position)
     return _calculate_quality_based_score(
         evaluation,
         weights=DIFFERENTIAL_QUALITY_WEIGHTS,
@@ -2263,7 +2258,7 @@ def calculate_waiver_score(
         elif current_count == 2:
             score -= 2
 
-    waiver_ceiling = _waiver_ceiling_for(evaluation.position)
+    waiver_ceiling = _ownership_ceiling_for("waiver", evaluation.position)
     return normalise_score(score, waiver_ceiling)
 
 

@@ -10,14 +10,22 @@ from fpl_cli.models.player import PlayerPosition, PlayerStatus
 from fpl_cli.services.player_prior import PlayerPrior
 from fpl_cli.services.player_scoring import (
     ATTACKING_POSITIONS,
+    DEF_DIFFERENTIAL_CEILING,
+    DEF_TARGET_CEILING,
+    DEF_WAIVER_CEILING,
+    DIFFERENTIAL_CEILING,
     DIFFERENTIAL_QUALITY_WEIGHTS,
+    GK_DIFFERENTIAL_CEILING,
+    GK_TARGET_CEILING,
     GK_VALUE_CEILING,
+    GK_WAIVER_CEILING,
     NEUTRAL_SIGNALS,
     TARGET_CEILING,
     TARGET_QUALITY_WEIGHTS,
     VALID_FORMATIONS,
     VALUE_CEILING,
     VALUE_QUALITY_WEIGHTS,
+    WAIVER_CEILING,
     WAIVER_QUALITY_WEIGHTS,
     ConsistencySignals,
     FixtureMatchup,
@@ -29,6 +37,7 @@ from fpl_cli.services.player_scoring import (
     _assign_percentile_ranks,
     _consistency_phase,
     _matchup_bonus,
+    _ownership_ceiling_for,
     apply_adjusted_npxg,
     apply_consistency,
     build_adjusted_npxg_lookup,
@@ -226,6 +235,44 @@ class TestNormaliseScore:
 
     def test_target_ceiling(self):
         assert normalise_score(16.75, TARGET_CEILING) == 53
+
+
+class TestOwnershipCeilingFor:
+    """Unit tests for the unified ownership ceiling dispatch helper."""
+
+    @pytest.mark.parametrize("position,expected", [
+        ("GK", GK_TARGET_CEILING),
+        ("DEF", DEF_TARGET_CEILING),
+        ("MID", TARGET_CEILING),
+        ("FWD", TARGET_CEILING),
+        ("UNK", TARGET_CEILING),
+    ])
+    def test_target_family(self, position, expected):
+        assert _ownership_ceiling_for("target", position) == expected
+
+    @pytest.mark.parametrize("position,expected", [
+        ("GK", GK_DIFFERENTIAL_CEILING),
+        ("DEF", DEF_DIFFERENTIAL_CEILING),
+        ("MID", DIFFERENTIAL_CEILING),
+        ("FWD", DIFFERENTIAL_CEILING),
+        ("UNK", DIFFERENTIAL_CEILING),
+    ])
+    def test_differential_family(self, position, expected):
+        assert _ownership_ceiling_for("differential", position) == expected
+
+    @pytest.mark.parametrize("position,expected", [
+        ("GK", GK_WAIVER_CEILING),
+        ("DEF", DEF_WAIVER_CEILING),
+        ("MID", WAIVER_CEILING),
+        ("FWD", WAIVER_CEILING),
+        ("UNK", WAIVER_CEILING),
+    ])
+    def test_waiver_family(self, position, expected):
+        assert _ownership_ceiling_for("waiver", position) == expected
+
+    def test_invalid_family_raises(self):
+        with pytest.raises(KeyError):
+            _ownership_ceiling_for("invalid", "MID")  # type: ignore[arg-type]
 
 
 class TestCalculateMinsFactorCanonical:
@@ -4286,7 +4333,9 @@ class TestDefValueEndToEnd:
         just numerically hidden behind a matching constant.
         """
         from fpl_cli.services.player_scoring import (
-            VALUE_CEILING, compute_quality_value, normalise_score,
+            VALUE_CEILING,
+            compute_quality_value,
+            normalise_score,
         )
         elite = self._def_player(form=6.0, ppg=5.0)
         score, _ = compute_quality_value(
@@ -4316,7 +4365,10 @@ class TestPickDisplayCeilingRouting:
 
     def test_horizon_multi_uses_value_family(self):
         from fpl_cli.services.player_scoring import (
-            DEF_VALUE_CEILING, GK_VALUE_CEILING, VALUE_CEILING, pick_display_ceiling,
+            DEF_VALUE_CEILING,
+            GK_VALUE_CEILING,
+            VALUE_CEILING,
+            pick_display_ceiling,
         )
         assert pick_display_ceiling("GK", horizon=3) == GK_VALUE_CEILING
         assert pick_display_ceiling("DEF", horizon=3) == DEF_VALUE_CEILING
