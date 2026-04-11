@@ -1,4 +1,5 @@
 {
   "pythonVersion": "3.11",
+  "include": ["fpl_cli", ".agents/skills/gw-prep/scripts"],
   "exclude": ["fpl_cli/scraper"]
 }

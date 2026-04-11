@@ -576,9 +576,10 @@ platformdirs (user_config_dir / user_data_dir)  # macOS: ~/Library/Application S
     │   │   ├── rules.md          # Transfer/waiver/selection rules
     │   │   └── output-template.md
     │   └── scripts/
-    │       ├── bench_order.py    # BenchOrderAgent wrapper (name -> ID resolution)
-    │       ├── starting_xi.py   # StartingXIAgent wrapper (name -> ID resolution)
-    │       └── transfer_eval.py # TransferEvalAgent wrapper (name -> ID resolution)
+    │       ├── bench_order.py           # BenchOrderAgent wrapper (name -> ID resolution)
+    │       ├── starting_xi.py           # StartingXIAgent wrapper (name -> ID resolution)
+    │       ├── transfer_eval.py         # TransferEvalAgent wrapper (name -> ID resolution)
+    │       └── extract_classic_squad.py # Classic Squad block extractor (Phase B9 embed + Phase E read-only validator)
     ├── update-gw-prep/           # Second-pass addendum with supplementary data
     │   └── SKILL.md
     ├── squad-builder/            # 5-mode squad optimisation (WC/FH/season-start/draft/redraft)

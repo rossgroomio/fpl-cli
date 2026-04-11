@@ -8,7 +8,25 @@ Template structure for the gameweek recommendations file.
 
 ## File Structure
 
+**Frontmatter fields** added at the top of the output file. `squad_builder_mode` is load-bearing for `/update-gw-prep`'s Phase C detection rule ("if `squad_builder_mode: true`, switch to squad-builder output format") — omit it on non-embed-mode runs to preserve that detection. `mode` is a forward-compat machine-readable enum for future consumers; always written.
+
 ```markdown
+---
+squad_builder_mode: true  # Only on embed-mode wildcard/freehit runs. Omit on rederive or transfer runs.
+mode: wildcard | freehit | transfer  # Always present. Enum value matches the active chip or "transfer".
+phase_e_ok: true | false  # Embed-mode only. Written by Phase E after post-write validation. Omit on transfer and rederive runs.
+phase_e_issues:  # Embed-mode only. Present when phase_e_ok: false. Short-code list from the vocabulary below.
+  - missing-subheading       # any of the six expected #### sub-headings is absent
+  - xi-row-count-wrong       # starting_xi_rows != 11
+  - bench-row-count-wrong    # bench_rows != 4
+  - captain-unnamed          # captain_named == false
+  - vice-unnamed             # vice_named == false
+  - budget-parse-failed      # budget_total_gbp_m is None (parse failure)
+  - budget-over-cap          # budget_total_gbp_m is not None and > 100.0
+  - team-cap-violation       # max_per_team_ok == false (any team with count > 3)
+  - squad-size-wrong         # player_count != 15
+---
+
 # Gameweek {N} Recommendations
 
 **Deadline:** {deadline}
@@ -25,6 +43,8 @@ Summary of chip timing analysis. Note if any chip is recommended for this GW or 
 
 ### Captain Pick
 
+_Suppressed on embed-mode runs — see SKILL.md Phase C1._
+
 | Rank | Player | Team | Opponent (pFDR) | Key Stat | Rationale |
 |------|--------|------|-----------------|----------|-----------|
 | 1 | | | | | |
@@ -35,7 +55,7 @@ Summary of chip timing analysis. Note if any chip is recommended for this GW or 
 
 ### Transfer Recommendations
 
-_If mode is `squad-builder`, replace this section with Squad Builder below._
+_Suppressed on embed-mode runs — see SKILL.md Phase C1._
 
 | Priority | Out | In | Outlook | This GW | Net Cost | Rationale |
 |----------|-----|----|---------|---------|----------|-----------|
@@ -52,35 +72,13 @@ For each transfer, include:
 - Form summary
 - Price trend
 
-### Squad Builder (Wildcard/Free Hit only)
+### Classic Squad
 
-_Replace Transfer Recommendations when mode is `squad-builder`._
-
-**Budget:** {available} | **Formation:** {primary} / {secondary}
-
-#### Recommended XV
-
-| Pos | Player | Team | Price | Next 3 Fixtures | Rationale |
-|-----|--------|------|-------|-----------------|-----------|
-| GK | | | | | |
-| GK | | | | | |
-| DEF | | | | | |
-| DEF | | | | | |
-| DEF | | | | | |
-| DEF | | | | | |
-| DEF | | | | | |
-| MID | | | | | |
-| MID | | | | | |
-| MID | | | | | |
-| MID | | | | | |
-| MID | | | | | |
-| FWD | | | | | |
-| FWD | | | | | |
-| FWD | | | | | |
-
-**Total cost:** {total} | **Remaining budget:** {remaining}
+_Embed-mode only: the orchestrator replaces this placeholder at runtime with the `{embedded_classic_squad_block}` extracted from `gw{N}-squad-builder.md`. Do not populate this section manually — it is produced by the C1 sub-agent._
 
 ### Bench Order
+
+_Suppressed on embed-mode runs — see SKILL.md Phase C1._
 
 BenchOrderAgent recommended order:
 
@@ -159,3 +157,20 @@ BenchOrderAgent recommended order:
 
 Any additional context, caveats, or follow-up actions.
 ```
+
+---
+
+## Fallback Banners (Wildcard/Free Hit re-derivation)
+
+When Phase B9 detects a wildcard/freehit week but cannot use the squad-builder file (`squad_builder_result == "rederive"`), prepend the appropriate banner on the line immediately before the Classic section heading in the output file. Choose the variant matching `squad_builder_reason`.
+
+`Season Start Classic`, `Season Start Draft`, and `Re-draft` mode files correctly land in Variant B's mode-mismatch branch by design — those modes cannot match an active wildcard/freehit chip.
+
+**Variant A** (`squad_builder_reason == "file-missing"`):
+> ⚠️ **Wildcard/Free Hit detected for GW{N}, but no squad-builder file was found.** Expected `gw{N}-squad-builder.md` in `[YOUR_OUTPUT_DIR]`. Re-derivation has run (weaker squad selection). To use squad-builder output next time, run `/squad-builder --{wildcard|freehit}` first, then re-run `/gw-prep`.
+
+**Variant B** (`squad_builder_reason ∈ {"gameweek-mismatch", "mode-mismatch"}`):
+> ⚠️ **Squad-builder file found but does not match this run.** Found `gw{N}-squad-builder.md` with `mode: {file.mode}` / `gameweek: {file.gameweek}`. Expected mode `{active_chip}` / gameweek `{N}`. Re-derivation has run. To use squad-builder output, run `/squad-builder --{wildcard|freehit}` for GW{N}, then re-run `/gw-prep`.
+
+**Variant C** (`squad_builder_reason ∈ {"frontmatter-malformed", "extraction-failed"}`):
+> ⚠️ **{Wildcard|Free Hit} detected for GW{N}. Found `gw{N}-squad-builder.md` but its frontmatter is malformed or its Classic Squad block could not be extracted.** Typical cause: file was produced with `--draft` only. Run `/squad-builder --{wildcard|freehit}` to regenerate, then re-run `/gw-prep`.

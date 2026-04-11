@@ -64,4 +64,4 @@ For a complete inventory of CLI commands, analysis agents, and skills with JSON 
 - CLI changes require corresponding unit tests
 - Changing a function's return format: update existing tests to match and confirm pytest passes
 - Tests: `pytest-asyncio` with `asyncio_mode = "auto"`, factories in `tests/conftest.py` (`make_player()`, `make_team()`, `make_fixture()`)
-- After any task touching Python files, run `pyright fpl_cli/` as a final check alongside ruff and pytest
+- After any task touching Python files, run `pyright` as a final check alongside ruff and pytest
