@@ -102,6 +102,7 @@ def generate_player_prior(
         Dict of player_id -> PlayerPrior.
     """
     from fpl_cli.models.player import POSITION_MAP
+    from fpl_cli.services.player_scoring import _as_position
 
     prev_season = _previous_season_label()
 
@@ -122,20 +123,20 @@ def generate_player_prior(
         pts_90 = _extract_prev_season_pts_per_90(profile, prev_season)
         if pts_90 is None:
             continue
-        position = POSITION_MAP.get(fpl_player.position.value, "MID")
+        position = _as_position(POSITION_MAP[fpl_player.position.value])
         position_pts.setdefault(position, []).append(pts_90)
         player_pts_map[fpl_player.id] = pts_90
 
     # Build price percentiles by position for no-history fallback
     position_prices: dict[str, list[int]] = {"GK": [], "DEF": [], "MID": [], "FWD": []}
     for p in players:
-        position = POSITION_MAP.get(p.position.value, "MID")
+        position = _as_position(POSITION_MAP[p.position.value])
         position_prices.setdefault(position, []).append(p.now_cost)
 
     # Pass 2: compute priors
     result: dict[int, PlayerPrior] = {}
     for p in players:
-        position = POSITION_MAP.get(p.position.value, "MID")
+        position = _as_position(POSITION_MAP[p.position.value])
         profile = profiles.get(p.code)
 
         if p.id in player_pts_map:
