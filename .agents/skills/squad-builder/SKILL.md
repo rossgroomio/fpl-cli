@@ -113,7 +113,7 @@ Issue all reads and CLI commands in a **single parallel tool-call block**:
 ### Mid-season (Wildcard / Free Hit / Re-draft)
 <!-- Classic-only commands (captain, chips) - skip if format is "draft" -->
 - `fpl chips --format json` (Classic only)
-- `fpl captain --format json`
+- `fpl captain --global --format json` (Classic only. **`--global` is required** - squad-builder is rebuilding the 15, so squad-only captain analysis is incoherent. Global ranks all eligible players for the GW.)
 - `fpl allocate --sell-prices /tmp/sell-prices.json --horizon {derived_horizon} --format json` (Classic only. `--sell-prices` provides accurate sell-price budgeting - budget auto-computed from sell values + bank. Horizon from A1b derivation. Free Hit: add `--bench-discount 0.01` to minimise bench spend. Non-Free-Hit: add `--bench-boost-gw {bb_gw}` when BB is planned and falls within horizon. Add `--free-transfers {N}` when FT count is available from sell-prices. Provides the mathematically optimal starting squad for the sub-agent to review and adjust)
 - `fpl stats -p MID -s expected_goal_involvements --min-minutes 450 -n 20 --available-only --format json`
 - `fpl stats -p FWD -s form --min-minutes 450 -n 15 --available-only --format json`
@@ -325,7 +325,7 @@ Agent tool parameters:
    === fpl stats: transfer momentum ===
    {transfers_in output - mid-season only}
 
-   === fpl captain --format json ===
+   === fpl captain --global --format json ===
    {captain output - Classic only, mid-season only}
 
    === fpl price-history: season price trajectory ===

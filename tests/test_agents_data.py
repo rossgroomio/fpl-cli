@@ -275,6 +275,22 @@ class TestFixtureAgent:
 
     def test_fixture_to_dict(self, agent, mock_teams):
         """Test fixture to dict conversion."""
+        from unittest.mock import MagicMock
+        from fpl_cli.services.team_ratings import TeamRating
+
+        # Mock ratings_service so this test is independent of the local ratings file.
+        # ARS rated (2,1,1,1) -> avg_overall=1.25 -> away_fdr=6.75
+        # MCI rated (2,3,2,2) -> avg_overall=2.25 -> home_fdr=5.75
+        mock_svc = MagicMock()
+        def _get_rating(short):
+            if short == "ARS":
+                return TeamRating(atk_home=2, atk_away=1, def_home=1, def_away=1)
+            if short == "MCI":
+                return TeamRating(atk_home=2, atk_away=3, def_home=2, def_away=2)
+            return None
+        mock_svc.get_rating.side_effect = _get_rating
+        agent.ratings_service = mock_svc
+
         team_map = {t.id: t for t in mock_teams}
         fixture = make_fixture(
             id=1, gameweek=22, home_team_id=1, away_team_id=2,
@@ -287,9 +303,6 @@ class TestFixtureAgent:
         assert fixture_dict["gameweek"] == 22
         assert fixture_dict["home_team"] == "ARS"
         assert fixture_dict["away_team"] == "MCI"
-        # FDR comes from team ratings avg_overall_fdr (not FPL API difficulty)
-        # ARS rated (2,1,1,1) -> avg_overall=1.25 -> away_fdr=6.75
-        # MCI rated (2,3,2,2) -> avg_overall=2.25 -> home_fdr=5.75
         assert fixture_dict["home_fdr"] == 5.75
         assert fixture_dict["away_fdr"] == 6.75
 
