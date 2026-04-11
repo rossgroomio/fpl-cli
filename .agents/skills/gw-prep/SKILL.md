@@ -63,7 +63,7 @@ Extract active chip status. If **Wildcard** or **Free Hit** is active for GW N:
 - Set `active_chip = "wildcard"` or `active_chip = "freehit"` accordingly
 - Otherwise `mode = "transfer"` and `active_chip` is unset
 
-This mode switch affects which rules apply in Phase C sub-agents. `active_chip` is used in Phase B9 to locate a matching squad-builder output file.
+This mode switch affects which rules apply in Phase C sub-agents. `active_chip` is used in Phase A3 to locate a matching squad-builder output file.
 
 ### A2 -- Budget Data (classic only - skip if format is "draft")
 
@@ -75,19 +75,62 @@ Scrapes current sell prices from the FPL website. Requires `FPL_EMAIL` and `FPL_
 
 <!-- ADAPT: If you don't use FPL website credentials, remove this step -->
 
+### A3 -- Squad-builder File Discovery (classic/both + squad-builder mode only - skip otherwise)
+
+_Skip unless `mode == "squad-builder"` AND `active_chip ∈ {wildcard, freehit}` AND `metadata.format ∈ {"classic", "both"}`._
+
+Locate a matching squad-builder output file and extract the Classic Squad block for embedding. Sets `squad_builder_result = "embed"` on success, or `"rederive"` with a `squad_builder_reason` code on failure. Resolving mode in Phase A (before Phase B) lets sub-agents know up-front which Phase B outputs will actually feed them, and prints the rederive warning banner before any data-gather commands run. All steps are synchronous and must complete before Phase B begins.
+
+1. Look for `[YOUR_OUTPUT_DIR]/gw{N}-squad-builder.md`.
+   - Not found → `squad_builder_result = "rederive"`, `squad_builder_reason = "file-missing"`. Done.
+2. Parse the file's YAML frontmatter. Required fields: `mode`, `gameweek`.
+   - Missing or malformed → `squad_builder_result = "rederive"`, `squad_builder_reason = "frontmatter-malformed"`. Done.
+3. Gameweek check: `file.gameweek == N`?
+   - Mismatch → `squad_builder_result = "rederive"`, `squad_builder_reason = "gameweek-mismatch"`. Done.
+4. Mode check: use the following explicit mode map to normalise `file.mode` and compare to `active_chip`.
+
+   | `file.mode` value | Normalised | Match against `active_chip`? |
+   |---|---|---|
+   | `Wildcard` | `wildcard` | ✓ matches `wildcard` |
+   | `Free Hit` | `freehit` | ✓ matches `freehit` |
+   | `Season Start Classic` | `seasonstartclassic` | ✗ mode-mismatch by design |
+   | `Season Start Draft` | `seasonstartdraft` | ✗ mode-mismatch by design |
+   | `Re-draft` | `redraft` | ✗ mode-mismatch by design |
+
+   Any `file.mode` value not in this table is treated as mode-mismatch.
+   - Mismatch → `squad_builder_result = "rederive"`, `squad_builder_reason = "mode-mismatch"`. Done.
+5. Call the extraction helper:
+
+   ```bash
+   python3 "${CLAUDE_SKILL_DIR}/scripts/extract_classic_squad.py" --file "[YOUR_OUTPUT_DIR]/gw{N}-squad-builder.md"
+   ```
+
+   Parse stdout as JSON regardless of exit code. If JSON parse fails, treat as extraction-failed with a generic error message.
+   - Non-zero exit → `squad_builder_result = "rederive"`, `squad_builder_reason = "extraction-failed"`. If stdout parsed with `error: true`, include `messages[0]` verbatim in the in-chat warning banner (see C1 Rederive Variant C). Done.
+   - Zero exit → store `data.block` in phase context as `embedded_classic_squad_block`. Set `squad_builder_result = "embed"`.
+
+6. Freshness check (embed path only): if `file.mtime` is older than 72 hours, emit an in-chat info note:
+   > ℹ️ `gw{N}-squad-builder.md` was last modified more than 72h ago. The embedded squad may not reflect late-breaking team news. Proceeding — review Phase B data and apply inline swaps if warranted.
+
+   Non-gating. mtime is a weak proxy (confounded by editor saves, iCloud sync, git checkouts).
+
+7. If `squad_builder_result == "rederive"`, print the appropriate in-chat warning banner (variants A/B/C — see C1 Rederive section below for exact wording) before proceeding to Phase B. Proceed immediately; non-interactive.
+
 ---
 
 ## Phase B: Data Gathering
 
 Run all applicable commands below. Every command uses `--format json`. Skip commands marked with a format condition that doesn't match `metadata.format` from A1.
 
+**Reference preload (every run):** before issuing the CLI commands, read the full contents of `${CLAUDE_SKILL_DIR}/references/rules.md` and `${CLAUDE_SKILL_DIR}/references/output-template.md` into memory. These are inlined verbatim into each Phase C prompt as `{rules_content}` and `{output_template_content}` — sub-agents cannot reach the skill directory on their own, so the orchestrator must pass the text through. If either file is missing, abort with an error naming the expected path.
+
 ### B1 -- Fixture Difficulty
 
 ```bash
-fpl fdr --format json
+fpl fdr --blanks --format json
 ```
 
-Returns fixture difficulty runs (pFDR, positional ATK/DEF ratings, upcoming fixtures) plus BGW/DGW predictions with confidence levels.
+Returns fixture difficulty runs (pFDR, positional ATK/DEF ratings, upcoming fixtures) plus BGW/DGW predictions with confidence levels. `--blanks` surfaces the confirmed + predicted blank/double-GW schedule inline.
 
 ### B2 -- Captain Candidates (classic only - skip if format is "draft")
 
@@ -135,54 +178,32 @@ fpl player "{player_name}" --format json
 
 ### B8 -- Statistical Leaders
 
+Run the five differentiated queries below in parallel. Each targets a distinct transfer-signal surface that downstream Phase C analysis depends on; a single generic `fpl stats` call sorts by total points and misses most of them.
+
 ```bash
-fpl stats --format json
+# In-form players across positions (trending, minutes-filtered, available)
+fpl stats -s form --min-minutes 315 -n 15 --available-only --format json
+
+# Transfer momentum (who the market is chasing this week)
+fpl stats -s transfers_in_event -n 15 --format json
+
+# MID xGI leaders (attacking mids, hauls signal)
+fpl stats -p MID -s expected_goal_involvements --min-minutes 450 -n 15 --available-only --format json
+
+# FWD xGI leaders (strikers, hauls signal)
+fpl stats -p FWD -s expected_goal_involvements --min-minutes 450 -n 10 --available-only --format json
+
+# DEF clean-sheet leaders (defensive picks)
+fpl stats -p DEF -s clean_sheets --min-minutes 450 -n 10 --available-only --format json
 ```
+
+Store each result under a distinct key (e.g. `stats_form`, `stats_transfer_momentum`, `stats_mid_xgi`, `stats_fwd_xgi`, `stats_def_clean_sheets`) and inline them into Phase C prompts as labelled sections.
 
 <!-- ADAPT: Add your own supplementary data sources here. Examples:
   - `fpl preview --save --scout` generates a GW preview with fixture analysis and scout insights.
     Read the saved file and inject its content into Phase C sub-agents as additional context.
   - Newsletter extracts (e.g. community tips, model projections) saved as markdown files
 -->
-
-### B9 -- Squad-builder File Discovery (classic/both + squad-builder mode only - skip otherwise)
-
-_Skip unless `mode == "squad-builder"` AND `active_chip ∈ {wildcard, freehit}` AND `metadata.format ∈ {"classic", "both"}`._
-
-Locate a matching squad-builder output file and extract the Classic Squad block for embedding. Sets `squad_builder_result = "embed"` on success, or `"rederive"` with a `squad_builder_reason` code on failure. All steps are synchronous and must complete before Phase C dispatches.
-
-1. Look for `[YOUR_OUTPUT_DIR]/gw{N}-squad-builder.md`.
-   - Not found → `squad_builder_result = "rederive"`, `squad_builder_reason = "file-missing"`. Done.
-2. Parse the file's YAML frontmatter. Required fields: `mode`, `gameweek`.
-   - Missing or malformed → `squad_builder_result = "rederive"`, `squad_builder_reason = "frontmatter-malformed"`. Done.
-3. Gameweek check: `file.gameweek == N`?
-   - Mismatch → `squad_builder_result = "rederive"`, `squad_builder_reason = "gameweek-mismatch"`. Done.
-4. Mode check: use the following explicit mode map to normalise `file.mode` and compare to `active_chip`.
-
-   | `file.mode` value | Normalised | Match against `active_chip`? |
-   |---|---|---|
-   | `Wildcard` | `wildcard` | ✓ matches `wildcard` |
-   | `Free Hit` | `freehit` | ✓ matches `freehit` |
-   | `Season Start Classic` | `seasonstartclassic` | ✗ mode-mismatch by design |
-   | `Season Start Draft` | `seasonstartdraft` | ✗ mode-mismatch by design |
-   | `Re-draft` | `redraft` | ✗ mode-mismatch by design |
-
-   Any `file.mode` value not in this table is treated as mode-mismatch.
-   - Mismatch → `squad_builder_result = "rederive"`, `squad_builder_reason = "mode-mismatch"`. Done.
-5. Call the extraction helper:
-
-   ```bash
-   python3 "${CLAUDE_SKILL_DIR}/scripts/extract_classic_squad.py" --file "[YOUR_OUTPUT_DIR]/gw{N}-squad-builder.md"
-   ```
-
-   Parse stdout as JSON regardless of exit code. If JSON parse fails, treat as extraction-failed with a generic error message.
-   - Non-zero exit → `squad_builder_result = "rederive"`, `squad_builder_reason = "extraction-failed"`. If stdout parsed with `error: true`, include `messages[0]` verbatim in the in-chat warning banner (see Variant C below). Done.
-   - Zero exit → store `data.block` in phase context as `embedded_classic_squad_block`. Set `squad_builder_result = "embed"`.
-
-6. Freshness check (embed path only): if `file.mtime` is older than 72 hours, emit an in-chat info note:
-   > ℹ️ `gw{N}-squad-builder.md` was last modified more than 72h ago. The embedded squad may not reflect late-breaking team news. Proceeding — review Phase B data and apply inline swaps if warranted.
-
-   Non-gating. mtime is a weak proxy (confounded by editor saves, iCloud sync, git checkouts).
 
 ---
 
@@ -200,7 +221,7 @@ Each sub-agent receives the JSON output from Phase B commands as context.
 - **model**: opus
 - **subagent_type**: general-purpose
 
-Branch on `squad_builder_result` (set in Phase B9; unset on transfer weeks):
+Branch on `squad_builder_result` (set in Phase A3; unset on transfer weeks):
 
 ---
 
@@ -212,7 +233,13 @@ Branch on `squad_builder_result` (set in Phase B9; unset on transfer weeks):
 >
 > **Mode: squad-builder — EMBED** (wildcard/free hit — Classic Squad block embedded below)
 >
-> Refer to `references/rules.md` for analysis rules and `references/output-template.md` for the output format.
+> **Analysis rules (apply in full):**
+>
+> {rules_content}
+>
+> **Output format (follow exactly):**
+>
+> {output_template_content}
 >
 > **Data (JSON):**
 > - Status: {A1 output}
@@ -222,7 +249,7 @@ Branch on `squad_builder_result` (set in Phase B9; unset on transfer weeks):
 > - Squad: {B4 output}
 > - Price movements: {B5 output}
 > - Chip timing: {B6 output}
-> - Stats leaders: {B8 output}
+> - Stats: {stats_form}, {stats_transfer_momentum}, {stats_mid_xgi}, {stats_fwd_xgi}, {stats_def_clean_sheets} (from B8)
 >
 > <!-- ADAPT: Add your own supplementary data sources here (newsletters, external reports) -->
 >
@@ -272,7 +299,13 @@ Proceed immediately (non-interactive).
 >
 > **Mode: squad-builder — REDERIVE** (wildcard/free hit, squad-builder output unavailable)
 >
-> Refer to `references/rules.md` for analysis rules and `references/output-template.md` for the output format.
+> **Analysis rules (apply in full):**
+>
+> {rules_content}
+>
+> **Output format (follow exactly):**
+>
+> {output_template_content}
 >
 > **Data (JSON):**
 > - Status: {A1 output}
@@ -282,7 +315,7 @@ Proceed immediately (non-interactive).
 > - Squad: {B4 output}
 > - Price movements: {B5 output}
 > - Chip timing: {B6 output}
-> - Stats leaders: {B8 output}
+> - Stats: {stats_form}, {stats_transfer_momentum}, {stats_mid_xgi}, {stats_fwd_xgi}, {stats_def_clean_sheets} (from B8)
 >
 > <!-- ADAPT: Add your own supplementary data sources here (newsletters, external reports) -->
 >
@@ -300,7 +333,13 @@ Proceed immediately (non-interactive).
 >
 > **Mode: transfer**
 >
-> Refer to `references/rules.md` for analysis rules and `references/output-template.md` for the output format.
+> **Analysis rules (apply in full):**
+>
+> {rules_content}
+>
+> **Output format (follow exactly):**
+>
+> {output_template_content}
 >
 > **Data (JSON):**
 > - Status: {A1 output}
@@ -310,7 +349,7 @@ Proceed immediately (non-interactive).
 > - Squad: {B4 output}
 > - Price movements: {B5 output}
 > - Chip timing: {B6 output}
-> - Stats leaders: {B8 output}
+> - Stats: {stats_form}, {stats_transfer_momentum}, {stats_mid_xgi}, {stats_fwd_xgi}, {stats_def_clean_sheets} (from B8)
 >
 > <!-- ADAPT: Add your own supplementary data sources here (newsletters, external reports) -->
 >
@@ -325,14 +364,20 @@ Proceed immediately (non-interactive).
 
 > You are an FPL analyst preparing gameweek {N} recommendations for a draft league.
 >
-> Refer to `references/rules.md` for analysis rules and `references/output-template.md` for the output format.
+> **Analysis rules (apply in full):**
+>
+> {rules_content}
+>
+> **Output format (follow exactly):**
+>
+> {output_template_content}
 >
 > **Data (JSON):**
 > - Status: {A1 output}
 > - pFDR: {B1 output}
 > - Waivers: {B3 output}
 > - Squad: {B4 output}
-> - Stats leaders: {B8 output}
+> - Stats: {stats_form}, {stats_transfer_momentum}, {stats_mid_xgi}, {stats_fwd_xgi}, {stats_def_clean_sheets} (from B8)
 >
 > <!-- ADAPT: Add your own supplementary data sources here (newsletters, external reports) -->
 >
