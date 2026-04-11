@@ -5,13 +5,13 @@ from __future__ import annotations
 import dataclasses
 from typing import TYPE_CHECKING
 
-from fpl_cli.models.player import POSITION_MAP, PlayerStatus
+from fpl_cli.models.player import PlayerStatus
 from fpl_cli.services.player_prior import CUTOFF_GW
 from fpl_cli.services.player_scoring import (
     GW_SELECTION_WEIGHTS,
     VALID_FORMATIONS,
     Position,
-    _as_position,
+    _position_from_element_type,
     apply_adjusted_npxg,
     build_fixture_matchups,
     build_player_evaluation,
@@ -80,7 +80,7 @@ def score_all_players(
         if _is_excluded(player):
             continue
 
-        position = _as_position(POSITION_MAP[player.position.value])
+        position = _position_from_element_type(player.position.value)
         us_match = understat_lookup.get(player.id, {})
         team = scoring_data.team_map.get(player.team_id)
         team_short = team.short_name if team else "???"
@@ -144,7 +144,7 @@ def score_all_players_sgw(
         if _is_excluded(player):
             continue
 
-        position = _as_position(POSITION_MAP[player.position.value])
+        position = _position_from_element_type(player.position.value)
 
         us_match = understat_lookup.get(player.id, {})
         team = scoring_data.team_map.get(player.team_id)
@@ -202,7 +202,7 @@ MODIFIER_FLOOR = 0.25
 
 
 def _get_opponent_fdr(
-    position: str,
+    position: Position,
     opponent_rating: TeamRating,
     is_home: bool,
 ) -> float:
@@ -222,7 +222,7 @@ def _get_opponent_fdr(
     return 8 - raw  # Invert: rating 1 (best) -> FDR 7 (hardest)
 
 
-def _compute_modifier(position: str, opp_fdr: float) -> float:
+def _compute_modifier(position: Position, opp_fdr: float) -> float:
     """Compute fixture modifier from opponent FDR and position sensitivity.
 
     Higher FDR = harder fixture = lower modifier (reduced expected output).

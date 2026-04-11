@@ -174,6 +174,22 @@ def _as_position(value: str) -> Position:
         raise ValueError(f"Unknown position: {value!r}")
     return cast(Position, value)
 
+
+def _position_from_element_type(element_type: int) -> Position:
+    """Resolve FPL element_type to Position literal, raising on unknown values.
+
+    Single choke point shared by build_player_evaluation, squad_allocator, and
+    player_prior so every PlayerPosition.value -> Position conversion raises
+    ValueError (not KeyError) uniformly.
+    """
+    from fpl_cli.models.player import POSITION_MAP
+
+    raw = POSITION_MAP.get(element_type)
+    if raw is None:
+        raise ValueError(f"Unknown FPL element_type {element_type!r} has no position mapping")
+    return _as_position(raw)
+
+
 ATTACKING_POSITIONS: frozenset[str] = frozenset({"MID", "FWD"})
 
 
@@ -1981,13 +1997,7 @@ def build_player_evaluation(
     position_raw = _get("position")
     position: Position
     if hasattr(position_raw, "value"):
-        # PlayerPosition enum -> need POSITION_MAP
-        from fpl_cli.models.player import POSITION_MAP
-
-        raw_str = POSITION_MAP.get(position_raw.value)
-        if raw_str is None:
-            raise ValueError(f"Unknown FPL element_type {position_raw.value!r} has no position mapping")
-        position = _as_position(raw_str)
+        position = _position_from_element_type(position_raw.value)
     else:
         position = _as_position(str(position_raw) if position_raw else "")
 
@@ -2114,7 +2124,7 @@ def _calculate_quality_based_raw(
         evaluation.as_quality_dict(),
         effective_weights,
         mins_factor,
-        position=_as_position(evaluation.position),
+        position=evaluation.position,
     )
 
     # Ownership bonus (differential only)

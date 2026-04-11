@@ -10,7 +10,6 @@ from fpl_cli.models.player import PlayerPosition, PlayerStatus
 from fpl_cli.services.player_prior import PlayerPrior
 from fpl_cli.services.player_scoring import (
     ATTACKING_POSITIONS,
-    Position,
     DEF_DIFFERENTIAL_CEILING,
     DEF_TARGET_CEILING,
     DEF_WAIVER_CEILING,
@@ -32,6 +31,7 @@ from fpl_cli.services.player_scoring import (
     FixtureMatchup,
     PlayerEvaluation,
     PlayerIdentity,
+    Position,
     ScoringContext,
     ScoringData,
     StatWeight,
@@ -582,25 +582,21 @@ class TestBuildPlayerEvaluation:
 
     def test_unknown_position_string_raises(self):
         """Unknown position string in dict raises ValueError at construction time."""
-        import pytest
         with pytest.raises(ValueError, match="Unknown position"):
             build_player_evaluation({"position": "XYZ"})
 
     def test_none_position_raises(self):
         """None position raises ValueError (previously silently fell through to MID)."""
-        import pytest
         with pytest.raises(ValueError, match="Unknown position"):
             build_player_evaluation({"position": None})
 
     def test_lowercased_position_raises(self):
         """Mis-cased position string raises ValueError (e.g. 'def' instead of 'DEF')."""
-        import pytest
         with pytest.raises(ValueError, match="Unknown position"):
             build_player_evaluation({"position": "def"})
 
     def test_empty_position_raises(self):
         """Empty position string raises ValueError."""
-        import pytest
         with pytest.raises(ValueError, match="Unknown position"):
             build_player_evaluation({"position": ""})
 
