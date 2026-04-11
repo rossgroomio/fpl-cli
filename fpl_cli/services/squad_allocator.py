@@ -10,6 +10,8 @@ from fpl_cli.services.player_prior import CUTOFF_GW
 from fpl_cli.services.player_scoring import (
     GW_SELECTION_WEIGHTS,
     VALID_FORMATIONS,
+    Position,
+    _as_position,
     apply_adjusted_npxg,
     build_fixture_matchups,
     build_player_evaluation,
@@ -38,7 +40,7 @@ class ScoredPlayer:
 
     player: Player
     raw_quality: float
-    position: str
+    position: Position
     suspended_gw1: bool = False  # SUSPENDED + chance=0: zero GW1 coefficient
 
 
@@ -73,12 +75,12 @@ def score_all_players(
     player_histories = scoring_data.player_histories or {}
     next_gw_id = scoring_data.next_gw_id
 
-    scored: list[tuple[Player, float, str, bool]] = []
+    scored: list[tuple[Player, float, Position, bool]] = []
     for player in scoring_data.players:
         if _is_excluded(player):
             continue
 
-        position = POSITION_MAP.get(player.position.value, "MID")
+        position = _as_position(POSITION_MAP[player.position.value])
         us_match = understat_lookup.get(player.id, {})
         team = scoring_data.team_map.get(player.team_id)
         team_short = team.short_name if team else "???"
@@ -100,7 +102,7 @@ def score_all_players(
         scored.append((player, raw_quality, position, suspended_gw1))
 
     # Apply early-season shrinkage (float-preserving)
-    shrinkage_input = [(p.id, raw_q, pos) for p, raw_q, pos, _ in scored]
+    shrinkage_input: list[tuple[int, float, Position]] = [(p.id, raw_q, pos) for p, raw_q, pos, _ in scored]
     shrunk = shrink_scores(
         shrinkage_input,
         scoring_data.player_priors,
@@ -142,7 +144,7 @@ def score_all_players_sgw(
         if _is_excluded(player):
             continue
 
-        position = POSITION_MAP.get(player.position.value, "MID")
+        position = _as_position(POSITION_MAP[player.position.value])
 
         us_match = understat_lookup.get(player.id, {})
         team = scoring_data.team_map.get(player.team_id)

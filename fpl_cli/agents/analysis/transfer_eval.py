@@ -237,7 +237,7 @@ class TransferEvalAgent(Agent):
         quality_per_m: float | None = None
         if has_understat:
             q_dict = evaluation.as_quality_dict()
-            te_weights, te_ceiling = _value_weights_and_ceiling(player.position_name)
+            te_weights, te_ceiling = _value_weights_and_ceiling(_as_position(player.position_name))
             mins_factor = calculate_mins_factor(player.minutes, player.appearances, next_gw_id)
             raw = calculate_player_quality_score(
                 q_dict, te_weights, mins_factor, position=_as_position(player.position_name),

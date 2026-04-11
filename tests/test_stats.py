@@ -78,6 +78,7 @@ class TestStatsAgentNpxGScoring:
         agent = StatsAgent(config={"gameweeks": 0})
 
         base = {
+            "position": "MID",
             "xGI_per_90": 0.8,
             "form": 5,
             "points_per_game": 5,
