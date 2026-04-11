@@ -1,19 +1,16 @@
 """Tests for team ratings service and calculator."""
 
-import tempfile
 from datetime import datetime, timedelta
-from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
 import yaml
 
 from fpl_cli.services.team_ratings import (
-    TeamRating,
-    RatingsMetadata,
     TeamPerformance,
-    TeamRatingsService,
+    TeamRating,
     TeamRatingsCalculator,
+    TeamRatingsService,
 )
 
 
@@ -524,8 +521,9 @@ class TestTeamRatingsCalculator:
     @pytest.fixture
     def sample_fixtures(self):
         """Sample completed fixtures for testing."""
-        from tests.conftest import make_fixture
         from datetime import datetime, timedelta
+
+        from tests.conftest import make_fixture
 
         base_time = datetime.now() - timedelta(days=30)
         fixtures = []
@@ -840,7 +838,7 @@ class TestCalculateFromXG:
 
             ratings, performances = await calculator.calculate_from_xg()
 
-        from fpl_cli.services.team_ratings import TeamRating, TeamPerformance
+        from fpl_cli.services.team_ratings import TeamPerformance, TeamRating
         for abbr, r in ratings.items():
             assert isinstance(r, TeamRating)
             assert 1 <= r.atk_home <= 7
@@ -873,6 +871,7 @@ class TestRatingsUpdateCLI:
     def test_use_xg_flag_dry_run(self, mock_ratings, mock_performances):
         """--use-xg --dry-run runs calculate_from_xg and prints output without saving."""
         from click.testing import CliRunner
+
         from fpl_cli.cli import main
 
         runner = CliRunner()
@@ -898,6 +897,7 @@ class TestRatingsUpdateCLI:
     def test_use_xg_warns_when_combined_with_since_gw(self, mock_ratings, mock_performances):
         """--use-xg --since-gw prints a warning and ignores --since-gw."""
         from click.testing import CliRunner
+
         from fpl_cli.cli import main
 
         runner = CliRunner()

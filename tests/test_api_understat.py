@@ -1,11 +1,11 @@
 """Tests for Understat API client."""
 
-import pytest
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import httpx
+import pytest
 
-from fpl_cli.api.understat import UnderstatClient, match_fpl_to_understat, TEAM_NAME_MAP, POSITION_MAP
-
+from fpl_cli.api.understat import TEAM_NAME_MAP, UnderstatClient, match_fpl_to_understat
 
 # --- Fixtures ---
 
@@ -200,7 +200,7 @@ class TestUnderstatClientLeaguePlayers:
         with patch.object(client, "_get_api_json", new_callable=AsyncMock) as mock_get:
             mock_get.return_value = mock_league_api_response
 
-            result = await client.get_league_players(season="2023")
+            await client.get_league_players(season="2023")
 
             mock_get.assert_called_once_with("getLeagueData/EPL/2023", referer="league/EPL/2023")
 

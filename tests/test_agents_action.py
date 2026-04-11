@@ -1,18 +1,17 @@
 """Tests for action agents (WaiverAgent)."""
 
+from unittest.mock import AsyncMock, patch
+
 import pytest
-from unittest.mock import AsyncMock, patch, MagicMock
 
 from fpl_cli.agents.action.waiver import WaiverAgent
 from fpl_cli.agents.base import AgentStatus
-
 from tests.conftest import (
-    make_draft_player,
-    make_draft_team,
     make_draft_league_entry,
+    make_draft_player,
     make_draft_standing,
+    make_draft_team,
 )
-
 
 # --- Fixtures ---
 

@@ -11,7 +11,6 @@ from fpl_cli.season import (
     vaastav_season_range,
 )
 
-
 # -- Constants ---------------------------------------------------------------
 
 def test_total_gameweeks_is_38():

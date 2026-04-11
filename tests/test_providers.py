@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock
 import httpx
 import pytest
 
+
 def _make_httpx_response(data: dict, status_code: int = 200):
     """Create a mock httpx.Response with sync json() and raise_for_status()."""
     resp = MagicMock()
@@ -17,7 +18,7 @@ def _make_httpx_response(data: dict, status_code: int = 200):
     return resp
 
 
-from fpl_cli.api.providers import (
+from fpl_cli.api.providers import (  # noqa: E402 — placed after module-level helper definition; no circular dependency
     AnthropicProvider,
     LLMResponse,
     OpenAICompatProvider,
@@ -28,7 +29,6 @@ from fpl_cli.api.providers import (
     UnknownProviderError,
     get_llm_provider,
 )
-
 
 # ---------------------------------------------------------------------------
 # TokenUsage / LLMResponse

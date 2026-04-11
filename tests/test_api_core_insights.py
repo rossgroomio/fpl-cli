@@ -9,7 +9,7 @@ import pytest
 import respx
 from httpx import Response
 
-from fpl_cli.api.core_insights import BASE_URL, CoreInsightsClient, MatchRecord, make_core_insights_fetcher
+from fpl_cli.api.core_insights import BASE_URL, CoreInsightsClient, make_core_insights_fetcher
 from fpl_cli.api.dataset_fetcher import DatasetFetcher
 
 CI_SEASON = "2025-2026"
