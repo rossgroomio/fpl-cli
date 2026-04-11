@@ -376,3 +376,44 @@ Present a brief summary to the user:
 - Mode (transfer or squad-builder)
 - Key highlights (top captain pick, priority transfer/waiver, chip timing note)
 - Output file path
+
+---
+
+## Phase E: Post-write Validation (embed-mode only)
+
+_Skip unless `squad_builder_source == "embed"`. Transfer and rederive runs do not produce a `### Classic Squad` block._
+
+1. Run:
+
+   ```bash
+   python3 "${CLAUDE_SKILL_DIR}/scripts/extract_classic_squad.py" --from-recommendations --file "[YOUR_OUTPUT_DIR]/gw{N}-recommendations.md"
+   ```
+
+   Capture stdout. If exit is non-zero → emit warning and proceed:
+   > ⚠️ Phase E: could not recover `### Classic Squad` block from `gw{N}-recommendations.md` — the sub-agent's output may be malformed. Review manually before entering into FPL.
+
+   **Do not mutate the file.** Proceed.
+
+2. Parse the JSON output. Read `validation.structural` and `validation.arithmetic`.
+
+3. **Structural checks:** collect an issue string for each failure:
+   - `sub_headings_present[name] == false` → `"missing sub-heading: #### {name}"`
+   - `starting_xi_rows != 11` → `"Starting XI has {N} rows, expected 11"`
+   - `bench_rows != 4` → `"Bench has {N} rows, expected 4"`
+   - `captain_named == false` → `"Captain not named"`
+   - `vice_named == false` → `"Vice not named"`
+
+4. **Arithmetic checks:** collect an issue string for each failure:
+   - `budget_within_cap == false` OR `budget_total_mlm == null` → `"Budget parse failed or over 100.0m cap (parsed: {value})"`
+   - `max_per_team_ok == false` → `"Team exposure violation: {list of teams with count > 3}"`
+   - `player_count != 15` → `"Squad size is {N}, expected 15"`
+
+5. **Report:** if the issues list is empty, silent continue (no in-chat output). If non-empty, emit:
+   > ⚠️ Phase E validation: the Classic Squad in `gw{N}-recommendations.md` has {N} issue(s):
+   > - {issue 1}
+   > - {issue 2}
+   > ...
+   >
+   > The file was NOT modified. Review manually and either re-run `/gw-prep` or edit the file by hand before entering your squad into FPL.
+
+6. Proceed to end of pipeline regardless of validation outcome. **The file is never mutated by Phase E.**

@@ -262,11 +262,16 @@ def _count_table_rows_between(block: str, start_heading: str) -> int:
             # Stop at the next heading of same or higher level
             if re.match(r"^#{3,4} \S", line) and not line.strip().startswith(start_heading):
                 break
-            # Count table rows (not separator rows)
-            if line.startswith("|") and not re.match(r"^\|[-| ]+\|", line):
-                in_table = True
-                row_count += 1
-            elif in_table and not line.startswith("|"):
+            # Count data rows only: skip separator rows and the first row of each
+            # table (header). Header is the first non-separator | row per table block.
+            if line.startswith("|"):
+                if re.match(r"^\|[-| ]+\|", line):
+                    pass  # separator row — skip
+                elif not in_table:
+                    in_table = True  # header row — enter table, do not count
+                else:
+                    row_count += 1  # data row — count
+            elif in_table:
                 in_table = False
 
     return row_count

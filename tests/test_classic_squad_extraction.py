@@ -198,3 +198,287 @@ def test_h6_source_heading_exits_1(tmp_path, capsys):
         "H6" in m or "heading depth" in m.lower() or "exceed" in m.lower()
         for m in data["messages"]
     )
+
+
+# ---------------------------------------------------------------------------
+# --from-recommendations mode
+# ---------------------------------------------------------------------------
+
+RECOMMENDATIONS_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "recommendations_fixture.md"
+
+
+def test_from_recommendations_returns_valid_json(capsys):
+    _run(str(RECOMMENDATIONS_FIXTURE_PATH), from_recommendations=True)
+    captured = capsys.readouterr()
+    data = json.loads(captured.out)
+    assert "block" in data
+    assert "validation" in data
+    assert data["metadata"]["parse_ok"] is True
+
+
+def test_from_recommendations_block_starts_with_heading(capsys):
+    _run(str(RECOMMENDATIONS_FIXTURE_PATH), from_recommendations=True)
+    data = json.loads(capsys.readouterr().out)
+    assert data["block"].startswith("### Classic Squad")
+
+
+def test_from_recommendations_all_sub_headings_present(capsys):
+    _run(str(RECOMMENDATIONS_FIXTURE_PATH), from_recommendations=True)
+    data = json.loads(capsys.readouterr().out)
+    present = data["validation"]["structural"]["sub_headings_present"]
+    for name in ["Starting XI", "Bench", "Budget", "Team Exposure", "Key Decisions", "Alternatives"]:
+        assert present[name] is True, f"Expected '{name}' sub-heading present"
+
+
+def test_from_recommendations_row_counts(capsys):
+    _run(str(RECOMMENDATIONS_FIXTURE_PATH), from_recommendations=True)
+    data = json.loads(capsys.readouterr().out)
+    s = data["validation"]["structural"]
+    assert s["starting_xi_rows"] == 11
+    assert s["bench_rows"] == 4
+
+
+def test_from_recommendations_player_count(capsys):
+    _run(str(RECOMMENDATIONS_FIXTURE_PATH), from_recommendations=True)
+    data = json.loads(capsys.readouterr().out)
+    assert data["validation"]["arithmetic"]["player_count"] == 15
+
+
+def test_from_recommendations_captain_vice_named(capsys):
+    _run(str(RECOMMENDATIONS_FIXTURE_PATH), from_recommendations=True)
+    data = json.loads(capsys.readouterr().out)
+    s = data["validation"]["structural"]
+    assert s["captain_named"] is True
+    assert s["vice_named"] is True
+
+
+def test_from_recommendations_budget_within_cap(capsys):
+    _run(str(RECOMMENDATIONS_FIXTURE_PATH), from_recommendations=True)
+    data = json.loads(capsys.readouterr().out)
+    a = data["validation"]["arithmetic"]
+    assert a["budget_within_cap"] is True
+    assert abs(a["budget_total_mlm"] - 99.8) < 0.01
+
+
+def test_from_recommendations_max_per_team_ok(capsys):
+    _run(str(RECOMMENDATIONS_FIXTURE_PATH), from_recommendations=True)
+    data = json.loads(capsys.readouterr().out)
+    assert data["validation"]["arithmetic"]["max_per_team_ok"] is True
+
+
+# -- Structural failure cases --
+
+
+def test_missing_bench_sub_heading(tmp_path, capsys):
+    """Block with no #### Bench → sub_headings_present["Bench"] is False."""
+    f = tmp_path / "no_bench.md"
+    xi_rows = "\n".join(f"| FWD | Player{i} | Team | £5.0m | 5.0 | 5.0 | FIX | rati |" for i in range(11))
+    f.write_text(
+        "## Classic League\n\n"
+        "### Classic Squad\n\n"
+        "#### Constraints\n\nSome constraints.\n\n"
+        "#### Starting XI\n\n"
+        "| Pos | Player | Team | Price | Form | PPG | Fix | Rat |\n"
+        "|-----|--------|------|-------|------|-----|-----|-----|\n"
+        + xi_rows + "\n\n"
+        "**Captain:** X | **Vice:** Y\n\n"
+        "#### Budget\n\n"
+        "| Position | Count | Spend |\n"
+        "|----------|-------|-------|\n"
+        "| **Total** | **15** | **£99.5m** |\n\n"
+        "#### Team Exposure\n\n"
+        "| Team | Count |\n"
+        "|------|-------|\n\n"
+        "#### Key Decisions\n\nSome decisions.\n\n"
+        "#### Alternatives\n\nSome alternatives.\n\n"
+        "### Momentum Alerts\n\nsome content\n"
+    )
+    _run(str(f), from_recommendations=True)
+    data = json.loads(capsys.readouterr().out)
+    assert data["validation"]["structural"]["sub_headings_present"]["Bench"] is False
+
+
+def test_wrong_starting_xi_row_count(tmp_path, capsys):
+    """#### Starting XI with only 10 player rows → starting_xi_rows == 10."""
+    f = tmp_path / "short_xi.md"
+    xi_rows = "\n".join(f"| FWD | Player{i} | Team | £5.0m | 5.0 | 5.0 | FIX | rati |" for i in range(10))
+    bench_rows = "\n".join(f"| GK | Bench{i} | Team | GK | £4.0m | cover |" for i in range(4))
+    f.write_text(
+        "## Classic League\n\n"
+        "### Classic Squad\n\n"
+        "#### Constraints\n\nSome.\n\n"
+        "#### Starting XI\n\n"
+        "| Pos | Player | Team | Price | Form | PPG | Fix | Rat |\n"
+        "|-----|--------|------|-------|------|-----|-----|-----|\n"
+        + xi_rows + "\n\n"
+        "**Captain:** X | **Vice:** Y\n\n"
+        "#### Bench\n\n"
+        "| Order | Player | Team | Pos | Price | Role |\n"
+        "|-------|--------|------|-----|-------|------|\n"
+        + bench_rows + "\n\n"
+        "#### Budget\n\n| P | C | S |\n|---|---|---|\n| **Total** | **14** | **£99.5m** |\n\n"
+        "#### Team Exposure\n\n#### Key Decisions\n\n#### Alternatives\n\n"
+        "### Momentum Alerts\n\nsome content\n"
+    )
+    _run(str(f), from_recommendations=True)
+    data = json.loads(capsys.readouterr().out)
+    assert data["validation"]["structural"]["starting_xi_rows"] == 10
+
+
+# -- Arithmetic failure cases --
+
+
+def test_over_budget(tmp_path, capsys):
+    """Budget Total of £100.5m → budget_within_cap is False."""
+    f = tmp_path / "over_budget.md"
+    xi_rows = "\n".join(f"| FWD | Player{i} | Team | £5.0m | 5.0 | 5.0 | FIX | rati |" for i in range(11))
+    bench_rows = "\n".join(f"| GK | Bench{i} | Team | GK | £4.0m | cover |" for i in range(4))
+    f.write_text(
+        "## Classic League\n\n"
+        "### Classic Squad\n\n"
+        "#### Constraints\n\n#### Starting XI\n\n"
+        "| Pos | Player | Team | Price | Form | PPG | Fix | Rat |\n"
+        "|-----|--------|------|-------|------|-----|-----|-----|\n"
+        + xi_rows + "\n\n**Captain:** X | **Vice:** Y\n\n"
+        "#### Bench\n\n"
+        "| Order | Player | Team | Pos | Price | Role |\n"
+        "|-------|--------|------|-----|-------|------|\n"
+        + bench_rows + "\n\n"
+        "#### Budget\n\n"
+        "| Position | Count | Spend |\n"
+        "|----------|-------|-------|\n"
+        "| **Total** | **15** | **£100.5m** |\n\n"
+        "#### Team Exposure\n\n#### Key Decisions\n\n#### Alternatives\n\n"
+        "### Momentum Alerts\n\nsome\n"
+    )
+    _run(str(f), from_recommendations=True)
+    data = json.loads(capsys.readouterr().out)
+    a = data["validation"]["arithmetic"]
+    assert a["budget_within_cap"] is False
+    assert abs(a["budget_total_mlm"] - 100.5) < 0.01
+
+
+def test_four_per_team_violation(tmp_path, capsys):
+    """4 players from same team → max_per_team_ok is False."""
+    f = tmp_path / "four_per_team.md"
+    f.write_text(
+        "## Classic League\n\n"
+        "### Classic Squad\n\n"
+        "#### Constraints\n\n#### Starting XI\n\n#### Bench\n\n"
+        "#### Budget\n\n| P | C | S |\n|---|---|---|\n| **Total** | **15** | **£99.5m** |\n\n"
+        "#### Team Exposure\n\n"
+        "| Team | Count | Players |\n"
+        "|------|-------|--------|\n"
+        "| Man City | 4 | Haaland, Gvardiol, Walker, Ederson |\n\n"
+        "#### Key Decisions\n\n#### Alternatives\n\n"
+        "### Momentum Alerts\n\nsome\n"
+    )
+    _run(str(f), from_recommendations=True)
+    data = json.loads(capsys.readouterr().out)
+    a = data["validation"]["arithmetic"]
+    assert a["max_per_team_ok"] is False
+    assert a["team_exposure"].get("Man City") == 4
+
+
+def test_wrong_player_count(tmp_path, capsys):
+    """14 players total → player_count != 15."""
+    f = tmp_path / "short_squad.md"
+    xi_rows = "\n".join(f"| FWD | Player{i} | Team | £5.0m | 5.0 | 5.0 | FIX | rati |" for i in range(10))
+    bench_rows = "\n".join(f"| GK | Bench{i} | Team | GK | £4.0m | cover |" for i in range(4))
+    f.write_text(
+        "## Classic League\n\n"
+        "### Classic Squad\n\n"
+        "#### Constraints\n\n#### Starting XI\n\n"
+        "| Pos | Player | Team | Price | Form | PPG | Fix | Rat |\n"
+        "|-----|--------|------|-------|------|-----|-----|-----|\n"
+        + xi_rows + "\n\n**Captain:** X | **Vice:** Y\n\n"
+        "#### Bench\n\n"
+        "| Order | Player | Team | Pos | Price | Role |\n"
+        "|-------|--------|------|-----|-------|------|\n"
+        + bench_rows + "\n\n"
+        "#### Budget\n\n| P | C | S |\n|---|---|---|\n| **Total** | **14** | **£95.0m** |\n\n"
+        "#### Team Exposure\n\n#### Key Decisions\n\n#### Alternatives\n\n"
+        "### Momentum Alerts\n\nsome\n"
+    )
+    _run(str(f), from_recommendations=True)
+    data = json.loads(capsys.readouterr().out)
+    assert data["validation"]["arithmetic"]["player_count"] == 14
+
+
+# -- Error paths --
+
+
+def test_from_recommendations_file_not_found_exits_1(tmp_path, capsys):
+    with pytest.raises(SystemExit, match="1"):
+        _run(str(tmp_path / "missing.md"), from_recommendations=True)
+    data = json.loads(capsys.readouterr().out)
+    assert data["error"] is True
+
+
+def test_from_recommendations_no_heading_exits_1(tmp_path, capsys):
+    f = tmp_path / "no_heading.md"
+    f.write_text("## Classic League\n\nNo classic squad section here.\n")
+    with pytest.raises(SystemExit, match="1"):
+        _run(str(f), from_recommendations=True)
+    data = json.loads(capsys.readouterr().out)
+    assert data["error"] is True
+    assert any("Classic Squad" in m for m in data["messages"])
+
+
+# -- Late-change note doesn't break validation --
+
+
+def test_late_change_note_does_not_break_validation(tmp_path, capsys):
+    """Trailing > Late change: blockquote after the block is not inside the ### Classic Squad
+    slice (it follows the next ### heading boundary) — validation still passes cleanly."""
+    f = tmp_path / "late_change.md"
+    xi_rows = "\n".join(f"| FWD | Player{i} | Team | £5.0m | 5.0 | 5.0 | FIX | rati |" for i in range(11))
+    bench_rows = "\n".join(f"| GK | Bench{i} | Team | GK | £4.0m | cover |" for i in range(4))
+    f.write_text(
+        "## Classic League\n\n"
+        "### Classic Squad\n\n"
+        "#### Constraints\n\nSome.\n\n"
+        "#### Starting XI\n\n"
+        "| Pos | Player | Team | Price | Form | PPG | Fix | Rat |\n"
+        "|-----|--------|------|-------|------|-----|-----|-----|\n"
+        + xi_rows + "\n\n"
+        "**Captain:** X | **Vice:** Y\n\n"
+        "#### Bench\n\n"
+        "| Order | Player | Team | Pos | Price | Role |\n"
+        "|-------|--------|------|-----|-------|------|\n"
+        + bench_rows + "\n\n"
+        "#### Budget\n\n| P | C | S |\n|---|---|---|\n| **Total** | **15** | **£99.5m** |\n\n"
+        "#### Team Exposure\n\n| Team | Count |\n|------|-------|\n\n"
+        "#### Key Decisions\n\nSome.\n\n"
+        "#### Alternatives\n\nSome.\n\n"
+        "> Late change: Palmer → Saka — ruled out Thursday presser\n\n"
+        "### Momentum Alerts\n\nsome\n"
+    )
+    _run(str(f), from_recommendations=True)
+    data = json.loads(capsys.readouterr().out)
+    assert data["metadata"]["parse_ok"] is True
+    assert data["validation"]["structural"]["starting_xi_rows"] == 11
+    assert data["validation"]["structural"]["bench_rows"] == 4
+    assert data["validation"]["arithmetic"]["budget_within_cap"] is True
+
+
+# -- Read-only invariant --
+
+
+def test_from_recommendations_does_not_mutate_file(tmp_path, capsys):
+    """Running --from-recommendations must not change the file's mtime."""
+    import os
+    import time
+
+    f = tmp_path / "readonly_check.md"
+    f.write_text("## Classic League\n\n### Classic Squad\n\nSome content.\n")
+    # Sleep briefly to ensure a write would produce a different mtime
+    mtime_before = os.stat(f).st_mtime
+    time.sleep(0.05)
+    try:
+        _run(str(f), from_recommendations=True)
+    except SystemExit:
+        pass  # exit 1 is fine (no Classic Squad heading body), just must not write
+    capsys.readouterr()  # drain
+    mtime_after = os.stat(f).st_mtime
+    assert mtime_after == mtime_before, "Helper must not mutate the input file"
