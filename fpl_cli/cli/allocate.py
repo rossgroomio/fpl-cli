@@ -186,6 +186,7 @@ def _emit_result(
         is_owned = bool(result.owned_ids) and sp.player.id in result.owned_ids
         saving = result.player_savings.get(sp.player.id, 0.0) if is_owned else 0.0
 
+        score_key = "single_gw_score" if horizon == 1 else "quality_score"
         entry: dict[str, Any] = {
             "id": sp.player.id,
             "web_name": sp.player.web_name,
@@ -193,7 +194,7 @@ def _emit_result(
             "position": sp.position,
             "price": sp.player.price,
             "effective_price": round(sp.player.price - saving, 1),
-            "quality_score": q_score,
+            score_key: q_score,
             "raw_quality": round(sp.raw_quality, 3),
             "role": role,
             "captain_gws": captain_gws,
@@ -248,6 +249,8 @@ def _render_table(
 ) -> None:
     """Render squad as Rich table."""
     has_owned = any(p.get("owned") for p in players_data)
+    score_key = "single_gw_score" if horizon == 1 else "quality_score"
+    score_col_header = "Single GW" if horizon == 1 else "Quality"
 
     table = Table(title=f"Optimal Squad (GW {start_gw}-{start_gw + horizon - 1})")
     table.add_column("", width=1)
@@ -255,7 +258,7 @@ def _render_table(
     table.add_column("Pos", width=3)
     table.add_column("Team", width=3)
     table.add_column("Price", justify="right")
-    table.add_column("Quality", justify="right")
+    table.add_column(score_col_header, justify="right")
     table.add_column("Captain", width=12)
     if has_owned:
         table.add_column("Status", width=20)
@@ -263,7 +266,8 @@ def _render_table(
     for p in players_data:
         role_icon = ">" if p["role"] == "starter" else " "
         captain_str = ",".join(f"GW{gw}" for gw in p["captain_gws"]) if p["captain_gws"] else ""
-        q_style = "bold green" if p["quality_score"] >= 75 else "green" if p["quality_score"] >= 50 else ""
+        q_val = p[score_key]
+        q_style = "bold green" if q_val >= 75 else "green" if q_val >= 50 else ""
 
         row = [
             role_icon,
@@ -271,7 +275,7 @@ def _render_table(
             p["position"],
             p["team"],
             f"£{p['price']:.1f}m",
-            f"[{q_style}]{p['quality_score']}[/{q_style}]" if q_style else str(p["quality_score"]),
+            f"[{q_style}]{q_val}[/{q_style}]" if q_style else str(q_val),
             captain_str,
         ]
         if has_owned:
