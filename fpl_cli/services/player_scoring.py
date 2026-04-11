@@ -174,6 +174,22 @@ def _as_position(value: str) -> Position:
         raise ValueError(f"Unknown position: {value!r}")
     return cast(Position, value)
 
+
+def _position_from_element_type(element_type: int) -> Position:
+    """Resolve FPL element_type to Position literal, raising on unknown values.
+
+    Single choke point shared by build_player_evaluation, squad_allocator, and
+    player_prior so every PlayerPosition.value -> Position conversion raises
+    ValueError (not KeyError) uniformly.
+    """
+    from fpl_cli.models.player import POSITION_MAP
+
+    raw = POSITION_MAP.get(element_type)
+    if raw is None:
+        raise ValueError(f"Unknown FPL element_type {element_type!r} has no position mapping")
+    return _as_position(raw)
+
+
 ATTACKING_POSITIONS: frozenset[str] = frozenset({"MID", "FWD"})
 
 
@@ -1602,11 +1618,11 @@ _OWNERSHIP_BASE_CEILINGS: dict[str, float] = {
 }
 
 
-def _ownership_ceiling_for(family: Literal["target", "differential", "waiver"], position: str) -> float:
+def _ownership_ceiling_for(family: Literal["target", "differential", "waiver"], position: Position) -> float:
     return _OWNERSHIP_CEILINGS.get((family, position), _OWNERSHIP_BASE_CEILINGS[family])
 
 
-def _value_weights_and_ceiling(position: str) -> tuple[QualityWeights, float]:
+def _value_weights_and_ceiling(position: Position) -> tuple[QualityWeights, float]:
     """Select VALUE_QUALITY_WEIGHTS variant and ceiling for a position."""
     if position == "GK":
         return VALUE_QUALITY_WEIGHTS.for_gk(), GK_VALUE_CEILING
@@ -1615,7 +1631,7 @@ def _value_weights_and_ceiling(position: str) -> tuple[QualityWeights, float]:
     return VALUE_QUALITY_WEIGHTS, VALUE_CEILING
 
 
-def pick_display_ceiling(position: str, horizon: int) -> float:
+def pick_display_ceiling(position: Position, horizon: int) -> float:
     """Position + horizon aware ceiling for `fpl allocate` display normalisation.
 
     At horizon <= 1 (single-GW lineup context) returns STARTING_XI_CEILING as
@@ -1735,11 +1751,11 @@ def compute_rolling_pts_per_m(
 
 
 def shrink_scores(
-    scores: list[tuple[int, float, str]],
+    scores: list[tuple[int, float, Position]],
     prior_map: dict[int, PlayerPrior] | None,
     current_gw: int,
     cutoff_gw: int,
-) -> list[tuple[int, float, str]]:
+) -> list[tuple[int, float, Position]]:
     """Apply confidence-weighted shrinkage toward position means.
 
     Args:
@@ -1774,7 +1790,7 @@ def shrink_scores(
         pos_mean[pos] = pos_weighted_sum[pos] / total if total > 0 else 0.0
 
     # Pass 2: shrink each score toward its position mean
-    result: list[tuple[int, float, str]] = []
+    result: list[tuple[int, float, Position]] = []
     for pid, score, position in scores:
         mean = pos_mean.get(position, score)
         conf = confidences[pid]
@@ -1845,7 +1861,7 @@ class PlayerEvaluation:
     appearances: int
 
     # Position (for without_xgi gate and position multiplier)
-    position: str
+    position: Position
 
     # Fixture data
     fixture_matchups: list[FixtureMatchup]
@@ -1979,13 +1995,11 @@ def build_player_evaluation(
 
     # Position: Player model stores as enum, dicts store as string
     position_raw = _get("position")
+    position: Position
     if hasattr(position_raw, "value"):
-        # PlayerPosition enum -> need POSITION_MAP
-        from fpl_cli.models.player import POSITION_MAP
-
-        position = POSITION_MAP.get(position_raw.value, "MID")
+        position = _position_from_element_type(position_raw.value)
     else:
-        position = str(position_raw) if position_raw else "MID"
+        position = _as_position(str(position_raw) if position_raw else "")
 
     # Position name for identity (same as position for dicts, computed for model)
     position_name = _get("position_name") or position
@@ -2110,7 +2124,7 @@ def _calculate_quality_based_raw(
         evaluation.as_quality_dict(),
         effective_weights,
         mins_factor,
-        position=_as_position(evaluation.position),
+        position=evaluation.position,
     )
 
     # Ownership bonus (differential only)

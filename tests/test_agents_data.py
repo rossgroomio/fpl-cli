@@ -906,6 +906,7 @@ class TestStatsAgent:
     def test_calculate_differential_score(self, agent):
         """Test differential score calculation."""
         player = {
+            "position": "MID",
             "xGI_per_90": 0.7,
             "form": 6.5,
             "ppg": 5.5,
@@ -959,6 +960,7 @@ class TestStatsAgent:
     def test_calculate_target_score(self, agent):
         """Test target score calculation (no ownership penalty)."""
         player = {
+            "position": "MID",
             "xGI_per_90": 0.8,
             "form": 7.0,
             "ppg": 6.0,

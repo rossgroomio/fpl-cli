@@ -31,6 +31,7 @@ from fpl_cli.services.player_scoring import (
     FixtureMatchup,
     PlayerEvaluation,
     PlayerIdentity,
+    Position,
     ScoringContext,
     ScoringData,
     StatWeight,
@@ -578,6 +579,26 @@ class TestBuildPlayerEvaluation:
         )
         qd = evaluation.as_quality_dict()
         assert qd["prior_confidence"] == 0.75
+
+    def test_unknown_position_string_raises(self):
+        """Unknown position string in dict raises ValueError at construction time."""
+        with pytest.raises(ValueError, match="Unknown position"):
+            build_player_evaluation({"position": "XYZ"})
+
+    def test_none_position_raises(self):
+        """None position raises ValueError (previously silently fell through to MID)."""
+        with pytest.raises(ValueError, match="Unknown position"):
+            build_player_evaluation({"position": None})
+
+    def test_lowercased_position_raises(self):
+        """Mis-cased position string raises ValueError (e.g. 'def' instead of 'DEF')."""
+        with pytest.raises(ValueError, match="Unknown position"):
+            build_player_evaluation({"position": "def"})
+
+    def test_empty_position_raises(self):
+        """Empty position string raises ValueError."""
+        with pytest.raises(ValueError, match="Unknown position"):
+            build_player_evaluation({"position": ""})
 
 
 class TestCalculateTargetScore:
@@ -2340,7 +2361,7 @@ class TestShrinkScores:
             2: PlayerPrior(0.5, 0.5, "history"),
             3: PlayerPrior(0.5, 0.5, "history"),
         }
-        scores = [(1, 80.0, "MID"), (2, 60.0, "MID"), (3, 40.0, "MID")]
+        scores: list[tuple[int, float, Position]] = [(1, 80.0, "MID"), (2, 60.0, "MID"), (3, 40.0, "MID")]
         result = shrink_scores(scores, prior_map, current_gw=3, cutoff_gw=10)
 
         ids_scores = {pid: s for pid, s, _ in result}
@@ -2355,7 +2376,7 @@ class TestShrinkScores:
             1: PlayerPrior(1.0, 1.0, "history"),
             2: PlayerPrior(1.0, 1.0, "history"),
         }
-        scores = [(1, 80.0, "MID"), (2, 40.0, "DEF")]
+        scores: list[tuple[int, float, Position]] = [(1, 80.0, "MID"), (2, 40.0, "DEF")]
         result = shrink_scores(scores, prior_map, current_gw=3, cutoff_gw=10)
         assert result == scores
 
@@ -2366,7 +2387,7 @@ class TestShrinkScores:
             2: PlayerPrior(0.0, 0.5, "history"),
             3: PlayerPrior(0.0, 0.0, "price"),
         }
-        scores = [(1, 80.0, "MID"), (2, 60.0, "MID"), (3, 40.0, "MID")]
+        scores: list[tuple[int, float, Position]] = [(1, 80.0, "MID"), (2, 60.0, "MID"), (3, 40.0, "MID")]
         result = shrink_scores(scores, prior_map, current_gw=3, cutoff_gw=10)
 
         # Player 3 has conf=0.0, so fully shrunk to mean
@@ -2377,18 +2398,18 @@ class TestShrinkScores:
 
     def test_at_cutoff_returns_unmodified(self):
         prior_map = {1: PlayerPrior(0.5, 0.5, "history")}
-        scores = [(1, 80.0, "MID")]
+        scores: list[tuple[int, float, Position]] = [(1, 80.0, "MID")]
         result = shrink_scores(scores, prior_map, current_gw=10, cutoff_gw=10)
         assert result == scores
 
     def test_beyond_cutoff_returns_unmodified(self):
         prior_map = {1: PlayerPrior(0.5, 0.5, "history")}
-        scores = [(1, 80.0, "MID")]
+        scores: list[tuple[int, float, Position]] = [(1, 80.0, "MID")]
         result = shrink_scores(scores, prior_map, current_gw=15, cutoff_gw=10)
         assert result == scores
 
     def test_none_prior_map_returns_unmodified(self):
-        scores = [(1, 80.0, "MID")]
+        scores: list[tuple[int, float, Position]] = [(1, 80.0, "MID")]
         result = shrink_scores(scores, None, current_gw=3, cutoff_gw=10)
         assert result == scores
 
@@ -2400,7 +2421,7 @@ class TestShrinkScores:
     def test_player_not_in_prior_map_gets_no_shrinkage(self):
         """Players missing from prior_map default to confidence=1.0."""
         prior_map = {1: PlayerPrior(0.5, 0.5, "history")}
-        scores = [(1, 80.0, "MID"), (99, 40.0, "MID")]
+        scores: list[tuple[int, float, Position]] = [(1, 80.0, "MID"), (99, 40.0, "MID")]
         result = shrink_scores(scores, prior_map, current_gw=3, cutoff_gw=10)
 
         ids_scores = {pid: s for pid, s, _ in result}
@@ -2410,7 +2431,7 @@ class TestShrinkScores:
     def test_single_player_in_position(self):
         """Single player in a position: mean equals their score, no change."""
         prior_map = {1: PlayerPrior(0.0, 0.3, "price")}
-        scores = [(1, 75.0, "GK")]
+        scores: list[tuple[int, float, Position]] = [(1, 75.0, "GK")]
         result = shrink_scores(scores, prior_map, current_gw=3, cutoff_gw=10)
         assert result[0][1] == pytest.approx(75.0)
 
@@ -2422,7 +2443,7 @@ class TestShrinkScores:
             3: PlayerPrior(0.5, 0.5, "history"),
             4: PlayerPrior(0.5, 0.5, "history"),
         }
-        scores = [
+        scores: list[tuple[int, float, Position]] = [
             (1, 80.0, "MID"), (2, 40.0, "MID"),
             (3, 90.0, "DEF"), (4, 30.0, "DEF"),
         ]
@@ -2439,7 +2460,7 @@ class TestShrinkScores:
             1: PlayerPrior(0.5, 0.5, "history"),
             2: PlayerPrior(0.5, 0.5, "history"),
         }
-        scores = [(1, 90.0, "FWD"), (2, 30.0, "FWD")]
+        scores: list[tuple[int, float, Position]] = [(1, 90.0, "FWD"), (2, 30.0, "FWD")]
         result = shrink_scores(scores, prior_map, current_gw=3, cutoff_gw=10)
 
         original_range = 90.0 - 30.0
@@ -4374,16 +4395,6 @@ class TestPickDisplayCeilingRouting:
         assert pick_display_ceiling("DEF", horizon=3) == DEF_VALUE_CEILING
         assert pick_display_ceiling("MID", horizon=6) == VALUE_CEILING
         assert pick_display_ceiling("FWD", horizon=6) == VALUE_CEILING
-
-    def test_unknown_position_falls_through_to_default(self):
-        """Unknown positions fall through to VALUE_CEILING (MID/FWD default).
-
-        There is no strict validation here because ``sp.position`` always
-        comes from a validated enum. This test pins the fall-through so
-        adding validation later is a conscious decision.
-        """
-        from fpl_cli.services.player_scoring import VALUE_CEILING, pick_display_ceiling
-        assert pick_display_ceiling("XYZ", horizon=3) == VALUE_CEILING
 
 
 class TestDefScoreSpreadNotClustered:
