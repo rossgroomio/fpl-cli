@@ -60,9 +60,10 @@ fpl chips --format json
 
 Extract active chip status. If **Wildcard** or **Free Hit** is active for GW N:
 - Set `mode = "squad-builder"` (full squad selection, not incremental transfers)
-- Otherwise `mode = "transfer"` (normal incremental recommendations)
+- Set `active_chip = "wildcard"` or `active_chip = "freehit"` accordingly
+- Otherwise `mode = "transfer"` and `active_chip` is unset
 
-This mode switch affects which rules apply in Phase C sub-agents.
+This mode switch affects which rules apply in Phase C sub-agents. `active_chip` is used in Phase B9 to locate a matching squad-builder output file.
 
 ### A2 -- Budget Data (classic only - skip if format is "draft")
 
@@ -144,6 +145,34 @@ fpl stats --format json
   - Newsletter extracts (e.g. community tips, model projections) saved as markdown files
 -->
 
+### B9 -- Squad-builder File Discovery (classic/both + squad-builder mode only - skip otherwise)
+
+_Skip unless `mode == "squad-builder"` AND `active_chip ∈ {wildcard, freehit}` AND `metadata.format ∈ {"classic", "both"}`._
+
+Locate a matching squad-builder output file and extract the Classic Squad block for embedding. Sets `squad_builder_source = "embed"` on success, or `"rederive"` with a `squad_builder_reason` code on failure. All steps are synchronous and must complete before Phase C dispatches.
+
+1. Look for `[YOUR_OUTPUT_DIR]/gw{N}-squad-builder.md`.
+   - Not found → `squad_builder_source = "rederive"`, `squad_builder_reason = "file-missing"`. Done.
+2. Parse the file's YAML frontmatter. Required fields: `mode`, `gameweek`.
+   - Missing or malformed → `squad_builder_source = "rederive"`, `squad_builder_reason = "frontmatter-malformed"`. Done.
+3. Gameweek check: `file.gameweek == N`?
+   - Mismatch → `squad_builder_source = "rederive"`, `squad_builder_reason = "gameweek-mismatch"`. Done.
+4. Mode check: normalise `file.mode` (lowercase, strip whitespace and hyphens) and compare to `active_chip`. `Wildcard` matches `wildcard`; `Free Hit` matches `freehit`. `Season Start Classic`, `Season Start Draft`, and `Re-draft` files correctly reject as mode-mismatch by design.
+   - Mismatch → `squad_builder_source = "rederive"`, `squad_builder_reason = "mode-mismatch"`. Done.
+5. Call the extraction helper:
+
+   ```bash
+   python3 "${CLAUDE_SKILL_DIR}/scripts/extract_classic_squad.py" --file "[YOUR_OUTPUT_DIR]/gw{N}-squad-builder.md"
+   ```
+
+   - Non-zero exit → `squad_builder_source = "rederive"`, `squad_builder_reason = "extraction-failed"` (typical: file was produced with `--draft` only, no `## Classic Squad` block). Done.
+   - Zero exit → store `data.block` in phase context as `embedded_classic_squad_block`. Set `squad_builder_source = "embed"`.
+
+6. Freshness check (embed path only): if `file.mtime` is older than 72 hours, emit an in-chat info note:
+   > ℹ️ `gw{N}-squad-builder.md` was last modified more than 72h ago. The embedded squad may not reflect late-breaking team news. Proceeding — review Phase B data and apply inline swaps if warranted.
+
+   Non-gating. mtime is a weak proxy (confounded by editor saves, iCloud sync, git checkouts).
+
 ---
 
 ## Phase C: Analysis Sub-agents
@@ -160,11 +189,17 @@ Each sub-agent receives the JSON output from Phase B commands as context.
 - **model**: opus
 - **subagent_type**: general-purpose
 
+Branch on `squad_builder_source` (set in Phase B9; unset on transfer weeks):
+
+---
+
+**[Embed] `squad_builder_source == "embed"`** — wildcard/freehit with matched squad-builder file
+
 **Prompt structure:**
 
 > You are an FPL analyst preparing gameweek {N} recommendations for a classic league.
 >
-> **Mode: {mode}** (transfer | squad-builder)
+> **Mode: squad-builder — EMBED** (wildcard/free hit — Classic Squad block embedded below)
 >
 > Refer to `references/rules.md` for analysis rules and `references/output-template.md` for the output format.
 >
@@ -180,7 +215,92 @@ Each sub-agent receives the JSON output from Phase B commands as context.
 >
 > <!-- ADAPT: Add your own supplementary data sources here (newsletters, external reports) -->
 >
-> If mode is `squad-builder`, apply squad-builder rules from `references/rules.md` instead of transfer rules.
+> **Embedded Classic Squad (from squad-builder — insert this as the `### Classic Squad` section):**
+>
+> {embedded_classic_squad_block}
+>
+> **Instructions:**
+>
+> Default: insert the embedded `### Classic Squad` block above **verbatim** as the Classic Squad section of the recommendations file. This is the expected path for nearly every embed-mode run.
+>
+> Late-changes path (use only when clearly warranted): if Phase B data reveals a material change squad-builder could not have seen (a starter ruled out after the file was written, an injury confirmed, a price move materially shifting affordability), you may apply a swap inline. To apply a swap: replace the relevant Starting XI or Bench row, update Captain/Vice if affected, adjust the Budget table (subtract OUT price, add IN price, update Total and Remaining) and Team Exposure table accordingly. Immediately after the block's `#### Alternatives` section, append a blockquote note: `> Late change: {OUT name} → {IN name} — {one-line reason, named source e.g. "ruled out per Thursday presser"}`. One note per swap. **Default is verbatim pass-through. Only deviate for a specific named reason. Never rewrite tables to "improve" formatting or fix perceived typos in squad-builder's output.**
+>
+> For Phase C2.5 (`transfer_eval.py`): on embed mode, the OUT-candidate pool is the 15 players in the Player column of the embedded Starting XI and Bench tables (not the current `fpl squad grid`). Use this to evaluate whether any late-breaking swaps are justified.
+>
+> **Sections to produce:** Chip Timing (from B6), Momentum Alerts (from B5/B8), pFDR Overview (from B1), and the `### Classic Squad` block (embedded verbatim or swap-edited with trailing note). **Suppress:** Captain Pick top-3 table (captain is inside the embedded block), standalone Bench Order section (bench order is inside the embedded block), and Transfer Recommendations section (any swaps are applied inline in the block).
+>
+> **User workflow note:** The `### Classic Squad` block is the final 15-player squad the user should enter into FPL. If a trailing `> Late change:` note is present, it explains the swap — the user can revert it in the FPL site before saving if they disagree.
+>
+> Write the recommendations file with frontmatter:
+> ```yaml
+> squad_builder_mode: true
+> mode: {wildcard|freehit}
+> ```
+
+---
+
+**[Rederive] `squad_builder_source == "rederive"` AND `mode == "squad-builder"`** — wildcard/freehit but file not usable
+
+Before dispatching, print the in-chat warning (variant by `squad_builder_reason`):
+
+**Variant A** (`squad_builder_reason == "file-missing"`):
+> ⚠️ **Wildcard/Free Hit detected for GW{N}, but no squad-builder file was found.** Expected `gw{N}-squad-builder.md` in `[YOUR_OUTPUT_DIR]`. Re-derivation will run (weaker squad selection). To use squad-builder output, run `/squad-builder --{wildcard|freehit}` first, then re-run `/gw-prep`.
+
+**Variant B** (`squad_builder_reason ∈ {"gameweek-mismatch", "mode-mismatch"}`):
+> ⚠️ **Squad-builder file found but does not match this run.** Found `gw{N}-squad-builder.md` with `mode: {file.mode}` / `gameweek: {file.gameweek}`. Expected mode `{active_chip}` / gameweek `{N}`. Re-derivation will run. To use squad-builder output, run `/squad-builder --{wildcard|freehit}` for GW{N}, then re-run `/gw-prep`.
+
+**Variant C** (`squad_builder_reason ∈ {"frontmatter-malformed", "extraction-failed"}`):
+> ⚠️ **{Wildcard|Free Hit} detected for GW{N}. Found `gw{N}-squad-builder.md` but its frontmatter is malformed or its Classic Squad block could not be extracted.** Typical cause: file was produced with `--draft` only. Run `/squad-builder --{wildcard|freehit}` to regenerate, then re-run `/gw-prep`.
+
+Proceed immediately (non-interactive).
+
+**Prompt structure:**
+
+> You are an FPL analyst preparing gameweek {N} recommendations for a classic league.
+>
+> **Mode: squad-builder — REDERIVE** (wildcard/free hit, squad-builder output unavailable)
+>
+> Refer to `references/rules.md` for analysis rules and `references/output-template.md` for the output format.
+>
+> **Data (JSON):**
+> - Status: {A1 output}
+> - Chips: {A1.5 output}
+> - pFDR: {B1 output}
+> - Captain candidates: {B2 output}
+> - Squad: {B4 output}
+> - Price movements: {B5 output}
+> - Chip timing: {B6 output}
+> - Stats leaders: {B8 output}
+>
+> <!-- ADAPT: Add your own supplementary data sources here (newsletters, external reports) -->
+>
+> Apply squad-builder rules from `references/rules.md` for full squad selection. Prepend the fallback banner (Variant A/B/C — see `references/output-template.md` for exact wording) on the line immediately before the Classic section heading in the output file. Do not include `squad_builder_mode` in the frontmatter — the squad was re-derived, not embedded from squad-builder.
+>
+> Produce the **Classic** section of the output template.
+
+---
+
+**[Transfer] `mode == "transfer"`** — normal incremental week (no wildcard/freehit active)
+
+**Prompt structure:**
+
+> You are an FPL analyst preparing gameweek {N} recommendations for a classic league.
+>
+> **Mode: transfer**
+>
+> Refer to `references/rules.md` for analysis rules and `references/output-template.md` for the output format.
+>
+> **Data (JSON):**
+> - Status: {A1 output}
+> - Chips: {A1.5 output}
+> - pFDR: {B1 output}
+> - Captain candidates: {B2 output}
+> - Squad: {B4 output}
+> - Price movements: {B5 output}
+> - Chip timing: {B6 output}
+> - Stats leaders: {B8 output}
+>
+> <!-- ADAPT: Add your own supplementary data sources here (newsletters, external reports) -->
 >
 > Produce the **Classic** section of the output template.
 
@@ -218,7 +338,7 @@ The script outputs JSON with Outlook (multi-GW quality) and This GW (lineup impa
 
 If the script fails (exit 1), fall back to LLM-driven transfer reasoning and note the failure.
 
-### C3 -- Starting XI Selection
+### C3 -- Starting XI Selection (skip if `squad_builder_source == "embed"` — squad-builder's assembler already chose the XI)
 
 Run the lineup engine for each active format's squad **before** bench ordering:
 
@@ -230,7 +350,7 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/starting_xi.py" --squad "{comma-separated 1
 
 Use the script's recommended XI as the default lineup. Sub-agents may override specific picks with stated qualitative reasons (press conference intel, newsletter signals, rotation predictions). Mark any overrides with `⚡ Override: {reason}` in the output. If the script fails (exit 1), fall back to manual selection and note the failure.
 
-### C4 -- Bench Ordering
+### C4 -- Bench Ordering (skip if `squad_builder_source == "embed"` — bench order is inside the embedded block)
 
 Using the starting XI from C3 (or the sub-agent's overridden version), run the bench order script:
 
