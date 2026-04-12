@@ -643,6 +643,27 @@ class TestPromptFormatting:
         assert "Bob" in text
         assert "|" in text  # markdown table
 
+    def test_standings_context_shows_chip_for_classic(self):
+        managers = [
+            _make_manager(name="Alice", entry_id=1, gw_points=80, total_points=500, overall_rank=1, active_chip="WC"),
+            _make_manager(name="Bob", entry_id=2, gw_points=30, total_points=400, overall_rank=2),
+        ]
+        data = _make_recap_data(managers=managers)
+        text = format_recap_standings_context(data)
+        assert "[WC]" in text
+        assert "Alice [WC]" in text
+        # Bob has no chip - no tag
+        assert "Bob [" not in text
+
+    def test_standings_context_hides_chip_for_draft(self):
+        managers = [
+            _make_manager(name="Alice", entry_id=1, gw_points=80, total_points=500, overall_rank=1, active_chip="WC"),
+        ]
+        data = _make_recap_data(managers=managers)
+        data["fpl_format"] = "draft"
+        text = format_recap_standings_context(data)
+        assert "[WC]" not in text
+
     def test_fines_context_includes_triggered(self):
         from fpl_cli.cli._league_recap_types import RecapFineResult
 

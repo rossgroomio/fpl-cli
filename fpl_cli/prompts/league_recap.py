@@ -28,6 +28,7 @@ Your audience is every member of this league. They want entertainment first, inf
 - Stick to what happened this gameweek
 - If fines were triggered, make them a highlight
 - The biggest bench haul is always funny - lean into it
+- If a manager played a chip (shown as [WC], [FH], [BB], [TC] in standings), that's a big narrative hook. A chip that flopped deserves mockery; a chip that paid off deserves grudging respect
 - NEVER claim a manager's bench outscored their team unless bench points are strictly greater than their GW points. Use the exact numbers provided.
 - NEVER alter player or manager names. Use the exact spelling provided in the data.
 </rules>"""
@@ -112,16 +113,20 @@ def format_recap_standings_context(data: LeagueRecapData) -> str:
     if not managers:
         return "No standings data."
 
+    is_classic = data.get("fpl_format") == "classic"
     lines = ["| Pos | Prev | Manager | GW Pts | Total |", "|-----|------|---------|--------|-------|"]
     for m in sorted(managers, key=lambda x: x.get("overall_rank", 0)):
         prev = m.get("previous_rank", "?")
         curr = m.get("overall_rank", "?")
+        name = m["manager_name"]
         movement = ""
         if isinstance(prev, int) and isinstance(curr, int) and prev != curr:
             diff = prev - curr
             movement = f" (↑{diff})" if diff > 0 else f" (↓{abs(diff)})"
+        chip = m.get("active_chip") if is_classic else None
+        chip_tag = f" [{chip}]" if chip else ""
         lines.append(
-            f"| {curr} | {prev} | {m['manager_name']}{movement} | {m['gw_points']} | {m['total_points']} |"
+            f"| {curr} | {prev} | {name}{chip_tag}{movement} | {m['gw_points']} | {m['total_points']} |"
         )
     return "\n".join(lines)
 
