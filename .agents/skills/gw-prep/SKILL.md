@@ -58,12 +58,13 @@ fpl chips --format json
 
 `chips sync` ensures the local chip plan reflects any changes made via the FPL website. Run it silently before reading chip status.
 
-Extract active chip status. If **Wildcard** or **Free Hit** is active for GW N:
-- Set `mode = "squad-builder"` (full squad selection, not incremental transfers)
-- Set `active_chip = "wildcard"` or `active_chip = "freehit"` accordingly
-- Otherwise `mode = "transfer"` and `active_chip` is unset
+Extract active chip status for GW N:
+- **Wildcard** active → `mode = "squad-builder"`, `active_chip = "wildcard"`
+- **Free Hit** active → `mode = "squad-builder"`, `active_chip = "freehit"`
+- **Bench Boost** active → `mode = "benchboost"`, `active_chip = "benchboost"`
+- Otherwise → `mode = "transfer"`, `active_chip` is unset
 
-This mode switch affects which rules apply in Phase C sub-agents. `active_chip` is used in Phase A3 to locate a matching squad-builder output file.
+This mode switch affects which rules apply in Phase C sub-agents. `active_chip` is used in Phase A3 to locate a matching squad-builder output file (squad-builder mode only).
 
 ### A2 -- Budget Data (classic only - skip if format is "draft")
 
@@ -325,7 +326,45 @@ Proceed immediately (non-interactive).
 
 ---
 
-**[Transfer] `mode == "transfer"`** — normal incremental week (no wildcard/freehit active)
+**[Bench Boost] `mode == "benchboost"`** — bench boost active, all 15 players score
+
+**Prompt structure:**
+
+> You are an FPL analyst preparing gameweek {N} recommendations for a classic league.
+>
+> **Mode: benchboost** (Bench Boost active — all 15 squad players score this GW)
+>
+> **Analysis rules (apply in full):**
+>
+> {rules_content}
+>
+> **Output format (follow exactly):**
+>
+> {output_template_content}
+>
+> **Data (JSON):**
+> - Status: {A1 output}
+> - Chips: {A1.5 output}
+> - pFDR: {B1 output}
+> - Captain candidates: {B2 output}
+> - Squad: {B4 output}
+> - Price movements: {B5 output}
+> - Chip timing: {B6 output}
+> - Stats: {stats_form}, {stats_transfer_momentum}, {stats_mid_xgi}, {stats_fwd_xgi}, {stats_def_clean_sheets} (from B8)
+>
+> **Bench Boost instructions:**
+>
+> All 15 players score this GW. The starting XI/bench boundary does not exist. Present all 15 as the scoring squad in a single table (no separate Starting XI and Bench tables). Suppress the Bench Order section entirely.
+>
+> When evaluating transfers, assess all 15 slots equally. A bench player who won't play (injured, £4.0m non-player) is a wasted scoring slot - flag them as transfer-out candidates even if they wouldn't normally be considered. The hit threshold still applies (expected gain > 8pts over horizon), but the gain calculation should include the bench player's expected return for this GW.
+>
+> Captain pick proceeds as normal. Chip Timing section should note that Bench Boost is being used this GW.
+>
+> Produce the **Classic** section of the output template.
+
+---
+
+**[Transfer] `mode == "transfer"`** — normal incremental week (no wildcard/freehit/benchboost active)
 
 **Prompt structure:**
 
@@ -395,7 +434,7 @@ The script outputs JSON with Outlook (multi-GW quality) and This GW (lineup impa
 
 If the script fails (exit 1), fall back to LLM-driven transfer reasoning and note the failure.
 
-### C3 -- Starting XI Selection (skip if `squad_builder_result == "embed"` — squad-builder's assembler already chose the XI)
+### C3 -- Starting XI Selection (skip if `squad_builder_result == "embed"` OR `mode == "benchboost"` — embed has XI chosen, bench boost has no XI/bench split)
 
 Run the lineup engine for each active format's squad **before** bench ordering:
 
@@ -407,7 +446,7 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/starting_xi.py" --squad "{comma-separated 1
 
 Use the script's recommended XI as the default lineup. Sub-agents may override specific picks with stated qualitative reasons (press conference intel, newsletter signals, rotation predictions). Mark any overrides with `⚡ Override: {reason}` in the output. If the script fails (exit 1), fall back to manual selection and note the failure.
 
-### C4 -- Bench Ordering (skip if `squad_builder_result == "embed"` — bench order is inside the embedded block)
+### C4 -- Bench Ordering (skip if `squad_builder_result == "embed"` OR `mode == "benchboost"` — embed has bench order inside block, bench boost has no bench ordering)
 
 Using the starting XI from C3 (or the sub-agent's overridden version), run the bench order script:
 

@@ -15,6 +15,17 @@ When `mode = "transfer"`:
 5. **Maximum 3 transfer suggestions** -- rank by priority. For each transfer, state: player out, player in, rationale, net cost, and expected point swing.
 6. **Hit threshold** -- only recommend a points hit (-4) if the expected gain across the planning horizon exceeds 8 points.
 
+## Bench Boost Rules (Classic -- Bench Boost Mode)
+
+When `mode = "benchboost"`:
+
+1. **All 15 score** -- every player in the squad earns points this GW, including the bench. There is no starting XI/bench split.
+2. **Bench slot value** -- a bench player who won't play (injured, suspended, £4.0m non-player) is a wasted scoring slot. Consider a hit to replace them if the expected return exceeds the -4 cost.
+3. **Evaluate against all 15** -- transfer recommendations should assess the weakest of all 15 slots, not just the weakest starter. A poor bench player is now as costly as a poor starter.
+4. **Skip bench ordering** -- bench order is irrelevant when all players score. Do not run `bench_order.py` or produce a Bench Order section.
+5. **Skip starting XI selection** -- the XI/bench boundary does not matter. Do not run `starting_xi.py`. Present all 15 players as the scoring squad.
+6. **Captain still matters** -- captain choice is unaffected by bench boost.
+
 ## Squad-Builder Rules (Classic -- Wildcard/Free Hit Mode)
 
 When `mode = "squad-builder"`:

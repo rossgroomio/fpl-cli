@@ -13,7 +13,7 @@ Template structure for the gameweek recommendations file.
 ```markdown
 ---
 squad_builder_mode: true  # Only on embed-mode wildcard/freehit runs. Omit on rederive or transfer runs.
-mode: wildcard | freehit | transfer  # Always present. Enum value matches the active chip or "transfer".
+mode: wildcard | freehit | benchboost | transfer  # Always present. Enum value matches the active chip or "transfer".
 phase_e_ok: true | false  # Embed-mode only. Written by Phase E after post-write validation. Omit on transfer and rederive runs.
 phase_e_issues:  # Embed-mode only. Present when phase_e_ok: false. Short-code list from the vocabulary below.
   - missing-subheading       # any of the six expected #### sub-headings is absent
@@ -79,6 +79,7 @@ _Embed-mode only: the orchestrator replaces this placeholder at runtime with the
 ### Bench Order
 
 _Suppressed on embed-mode runs — see SKILL.md Phase C1._
+_Suppressed on bench boost runs — all 15 players score, bench order is irrelevant._
 
 BenchOrderAgent recommended order:
 
