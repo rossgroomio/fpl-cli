@@ -89,6 +89,9 @@ todos/
 .agents/skills/release/
 .agents/skills/fpl-data-scientist/
 
+# Dev-only backtesting harness
+backtesting/
+
 # OS
 .DS_Store
 .context/
