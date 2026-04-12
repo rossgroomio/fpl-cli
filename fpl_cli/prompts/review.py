@@ -217,7 +217,8 @@ _HARD_CONSTRAINTS_ALWAYS = """\
 - Highlight selection mistakes: if a "Bench vs Starters" section is provided in the player data, use it directly - these are pre-computed formation-valid comparisons. Also flag wrong captain choices
 - Note team concentration when notable: if 2+ players from the same team collectively hauled or blanked, call it out
 - Maintain wry, dry humour especially when delivering bad news
-- When suggesting players to move on from, specify which format (Classic or Draft)"""
+- When suggesting players to move on from, specify which format (Classic or Draft)
+- If a chip was played, frame the Classic Verdict around whether the chip paid off - chips raise expectations"""
 
 _HARD_CONSTRAINTS_FINE_ALWAYS = """\
 - Check fine triggers for EACH format against its specific rules"""
@@ -235,8 +236,11 @@ These have DIFFERENT fine rules and should be analysed independently. A good Cla
 """
 
 _CONTEXT_TAIL = """\
-Chips:
+Chips (each changes how you should frame the verdict):
 - **Triple Captain (TC)** = captain's points are tripled (not doubled). Shown as "(TC)" in player data. A TC haul or flop is always worth calling out.
+- **Bench Boost (BB)** = all 15 players score, not just the starting XI. Bench points are the strategy, not luck. The bar for total points is higher because you're fielding a full squad - a below-average BB week is a waste.
+- **Free Hit (FH)** = unlimited transfers for one week, squad reverts next GW. Higher expectations since the manager had a blank slate. Frame as a tactical punt that paid off or didn't. Summarise transfers as squad construction, not individual hit/miss verdicts.
+- **Wildcard (WC)** = unlimited free transfers (squad persists). All transfers were free - do not evaluate individual transfer hits/misses. Frame as squad construction quality: did the new squad deliver?
 
 In the player data:
 - Players with points shown normally contributed to your score
