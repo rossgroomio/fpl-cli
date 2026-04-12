@@ -1314,6 +1314,51 @@ class TestTripleCaptainDetection:
 
         assert "Active Chip:" not in prompt
 
+    @pytest.mark.parametrize("chip_code,display_name", [
+        ("wildcard", "Wildcard"),
+        ("freehit", "Free Hit"),
+        ("bboost", "Bench Boost"),
+    ])
+    def test_synthesis_prompt_includes_non_tc_chips(self, chip_code, display_name):
+        """Synthesis prompt includes human-readable chip name for WC/FH/BB."""
+        _, prompt = get_review_synthesis_prompt(
+            gameweek=26,
+            research_summary="",
+            classic_points=55,
+            classic_average=50,
+            classic_highest=95,
+            classic_gw_rank=500000,
+            classic_overall_rank=100000,
+            classic_captain="Salah",
+            classic_captain_points=14,
+            classic_players="- Salah (LIV, MID): 14 pts (C)",
+            classic_transfers="No transfers this week",
+            classic_league_name="Test League",
+            classic_gw_position=3,
+            classic_position=5,
+            classic_total=11,
+            classic_rivals="",
+            classic_worst_performers="No data",
+            classic_transfer_impact=None,
+            draft_points=42,
+            draft_league_name="Draft League",
+            draft_players="- Haaland (MCI): 8 pts",
+            draft_transactions="No waivers this week",
+            draft_gw_position=2,
+            draft_position=3,
+            draft_total=10,
+            active_chip=chip_code,
+        )
+        assert f"Active Chip: {display_name}" in prompt
+
+    def test_synthesis_system_prompt_includes_all_chip_context(self):
+        """System prompt explains all chip effects."""
+        system = _build_system_prompt(has_fines=True)
+        assert "Triple Captain (TC)" in system
+        assert "Bench Boost (BB)" in system
+        assert "Free Hit (FH)" in system
+        assert "Wildcard (WC)" in system
+
     def test_synthesis_system_prompt_includes_tc_context(self):
         """System prompt explains Triple Captain chip effects."""
         assert "Triple Captain" in _build_system_prompt(has_fines=True)

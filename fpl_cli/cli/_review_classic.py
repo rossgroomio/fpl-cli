@@ -152,6 +152,16 @@ async def _review_classic_team(
         if my_entry_summary["overall_rank"]:
             summary_table.add_row("Overall Rank", f"{my_entry_summary['overall_rank']:,}")
 
+        if active_chip:
+            chip_display = {
+                "3xc": "Triple Captain", "wildcard": "Wildcard",
+                "freehit": "Free Hit", "bboost": "Bench Boost",
+            }
+            chip_label = chip_display.get(active_chip, active_chip)
+            summary_table.add_row(
+                "Active Chip", f"[bold yellow]{chip_label}[/bold yellow]",
+            )
+
         summary_table.add_row("GW Average", str(gw_data.get("average_entry_score", "N/A")))
         summary_table.add_row("GW Highest", str(gw_data.get("highest_score", "N/A")))
 
