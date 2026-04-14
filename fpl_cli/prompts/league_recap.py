@@ -28,7 +28,7 @@ Your audience is every member of this league. They want entertainment first, inf
 - Stick to what happened this gameweek
 - If fines were triggered, make them a highlight
 - The biggest bench haul is always funny - lean into it
-- If a manager played a chip (shown as [WC], [FH], [BB], [TC] in standings), that's a big narrative hook. A chip that flopped deserves mockery; a chip that paid off deserves grudging respect
+- If a manager played a chip, that's a big narrative hook. A chip that flopped deserves mockery; a chip that paid off deserves grudging respect. When referencing chip users, treat the "Chips Played" section as the source of truth — do NOT count tags in the standings table. Do not name a subset as "the X wildcards" — either name all users of that chip or none.
 - NEVER claim a manager's bench outscored their team unless bench points are strictly greater than their GW points. Use the exact numbers provided.
 - NEVER alter player or manager names. Use the exact spelling provided in the data.
 </rules>"""
@@ -43,6 +43,7 @@ def get_recap_synthesis_prompt(
     fines_text: str,
     research_summary: str | None = None,
     *,
+    chips_text: str = "",
     is_bgw: bool = False,
     is_dgw: bool = False,
     season_length: int = 38,
@@ -70,6 +71,9 @@ def get_recap_synthesis_prompt(
         "## Standings",
         standings_text,
     ])
+
+    if chips_text:
+        sections.extend(["", "## Chips Played", chips_text])
 
     if fines_text:
         sections.extend(["", "## Fines", fines_text])
@@ -128,6 +132,44 @@ def format_recap_standings_context(data: LeagueRecapData) -> str:
         lines.append(
             f"| {curr} | {prev} | {name}{chip_tag}{movement} | {m['gw_points']} | {m['total_points']} |"
         )
+    return "\n".join(lines)
+
+
+_CHIP_LABEL = {
+    "WC": "Wildcard",
+    "FH": "Free Hit",
+    "BB": "Bench Boost",
+    "TC": "Triple Captain",
+}
+
+
+def format_recap_chips_context(data: LeagueRecapData) -> str:
+    """Format chip usage as an explicit roster so the narrative doesn't have to count tags.
+
+    Empty for draft format (no chips) or when no one played a chip.
+    """
+    if data.get("fpl_format") != "classic":
+        return ""
+
+    managers = data.get("managers", [])
+    sorted_managers = sorted(managers, key=lambda m: -m.get("gw_points", 0))
+    by_chip: dict[str, list[str]] = {}
+    for m in sorted_managers:
+        chip = m.get("active_chip")
+        if not chip:
+            continue
+        by_chip.setdefault(chip, []).append(f"{m['manager_name']} ({m['gw_points']} pts)")
+
+    if not by_chip:
+        return ""
+
+    lines = []
+    for code in ("WC", "FH", "BB", "TC"):
+        users = by_chip.get(code)
+        if not users:
+            continue
+        label = _CHIP_LABEL[code]
+        lines.append(f"- **{label}** ({len(users)}): {', '.join(users)}")
     return "\n".join(lines)
 
 

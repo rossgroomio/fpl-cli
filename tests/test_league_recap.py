@@ -19,6 +19,7 @@ from fpl_cli.cli._league_recap_types import (
 )
 from fpl_cli.prompts.league_recap import (
     format_recap_awards_context,
+    format_recap_chips_context,
     format_recap_fines_context,
     format_recap_standings_context,
     get_recap_synthesis_prompt,
@@ -663,6 +664,48 @@ class TestPromptFormatting:
         data["fpl_format"] = "draft"
         text = format_recap_standings_context(data)
         assert "[WC]" not in text
+
+    def test_chips_context_groups_by_chip_with_counts(self):
+        # Deliberately unsorted input — formatter must order by gw_points desc within each chip
+        managers = [
+            _make_manager(name="Ross", entry_id=4, gw_points=46, active_chip="WC"),
+            _make_manager(name="Ed", entry_id=2, gw_points=58, active_chip="WC"),
+            _make_manager(name="Cam", entry_id=1, gw_points=70, active_chip="WC"),
+            _make_manager(name="Oliver", entry_id=3, gw_points=55, active_chip="WC"),
+            _make_manager(name="Walter", entry_id=6, gw_points=76, active_chip="BB"),
+            _make_manager(name="Matt", entry_id=5, gw_points=85, active_chip="BB"),
+            _make_manager(name="Alex", entry_id=7, gw_points=60),
+        ]
+        data = _make_recap_data(managers=managers)
+        text = format_recap_chips_context(data)
+        assert "Wildcard" in text and "(4)" in text
+        assert "Bench Boost" in text and "(2)" in text
+        assert "Alex" not in text
+        # Names must appear in descending gw_points order within each chip group
+        wc_line = next(line for line in text.splitlines() if "Wildcard" in line)
+        assert wc_line.index("Cam") < wc_line.index("Ed") < wc_line.index("Oliver") < wc_line.index("Ross")
+        bb_line = next(line for line in text.splitlines() if "Bench Boost" in line)
+        assert bb_line.index("Matt") < bb_line.index("Walter")
+
+    def test_chips_context_empty_when_no_chips(self):
+        managers = [_make_manager(name="Alex", entry_id=1, gw_points=60)]
+        data = _make_recap_data(managers=managers)
+        assert format_recap_chips_context(data) == ""
+
+    def test_chips_context_empty_for_draft(self):
+        managers = [_make_manager(name="Cam", entry_id=1, gw_points=70, active_chip="WC")]
+        data = _make_recap_data(managers=managers)
+        data["fpl_format"] = "draft"
+        assert format_recap_chips_context(data) == ""
+
+    def test_synthesis_prompt_includes_chips_section(self):
+        _, user = get_recap_synthesis_prompt(
+            gw=32, league_name="Test", fpl_format="classic",
+            awards_text="x", standings_text="| t |", fines_text="",
+            chips_text="- **Wildcard** (4): Cam, Ed, Oliver, Ross",
+        )
+        assert "## Chips Played" in user
+        assert "Wildcard** (4)" in user
 
     def test_fines_context_includes_triggered(self):
         from fpl_cli.cli._league_recap_types import RecapFineResult
