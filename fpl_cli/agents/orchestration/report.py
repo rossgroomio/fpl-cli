@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,7 @@ import jinja2
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from fpl_cli.agents.base import Agent, AgentResult, AgentStatus
+from fpl_cli.cli._league_recap_types import RecapManagerEntry
 from fpl_cli.paths import TEMPLATE_DIR
 
 
@@ -590,4 +592,54 @@ class ReportAgent(Agent):
         """Generate a league recap report."""
         template = self.jinja_env.get_template("gw_league_recap.md.j2")
         data.setdefault("generated_at", datetime.now().strftime("%Y-%m-%d %H:%M"))
+        data["standings_block"] = _format_standings_block(data.get("managers", []))
         return template.render(**data)
+
+
+def _ordinal(n: int) -> str:
+    if 10 <= n % 100 <= 20:
+        suffix = "th"
+    else:
+        suffix = {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suffix}"
+
+
+def _format_standings_block(managers: Sequence[RecapManagerEntry]) -> str:
+    """Render league standings as a space-aligned text block.
+
+    Sort order: gw_points desc, tie-break by overall_rank asc.
+    Each row: GW rank, manager (+ chip), GW points, (ordinal league pos[ arrow], total).
+    """
+    if not managers:
+        return ""
+
+    sorted_managers = sorted(
+        managers,
+        key=lambda m: (-m["gw_points"], m["overall_rank"]),
+    )
+
+    def display_name(m: RecapManagerEntry) -> str:
+        chip = m.get("active_chip")
+        return f"{m['manager_name']} ({chip})" if chip else m["manager_name"]
+
+    name_width = max(len(display_name(m)) for m in sorted_managers)
+    pts_width = max(3, max(len(str(m["gw_points"])) for m in sorted_managers))
+    rank_width = max(2, len(str(len(sorted_managers))))
+
+    lines = []
+    for idx, m in enumerate(sorted_managers, start=1):
+        delta = m["previous_rank"] - m["overall_rank"]
+        if delta > 0:
+            arrow = f" ↑{delta}"
+        elif delta < 0:
+            arrow = f" ↓{-delta}"
+        else:
+            arrow = ""
+        context = f"({_ordinal(m['overall_rank'])}{arrow}, {m['total_points']})"
+        lines.append(
+            f"{idx:>{rank_width}}.  "
+            f"{display_name(m):<{name_width}}  "
+            f"{m['gw_points']:>{pts_width}}   "
+            f"{context}"
+        )
+    return "\n".join(lines)

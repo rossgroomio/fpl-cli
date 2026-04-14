@@ -46,11 +46,9 @@
 
 # Standings
 
-| Pos | Prev | Manager | GW Pts | Total |
-|-----|------|---------|--------|-------|
-{% for m in managers %}
-| {{ m.overall_rank }} | {{ m.previous_rank }} | {{ m.manager_name }}{% if m.active_chip %} ({{ m.active_chip }}){% endif %} | {{ m.gw_points }} | {{ m.total_points | default(0) | int }}{{""|safe}} |
-{% endfor %}
+```
+{{ standings_block }}
+```
 
 {% if fines is defined and fines %}
 ---
