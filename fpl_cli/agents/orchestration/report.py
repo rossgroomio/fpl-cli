@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -590,4 +591,56 @@ class ReportAgent(Agent):
         """Generate a league recap report."""
         template = self.jinja_env.get_template("gw_league_recap.md.j2")
         data.setdefault("generated_at", datetime.now().strftime("%Y-%m-%d %H:%M"))
+        data["standings_block"] = _format_standings_block(data.get("managers", []))
         return template.render(**data)
+
+
+def _ordinal(n: int) -> str:
+    if 10 <= n % 100 <= 20:
+        suffix = "th"
+    else:
+        suffix = {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suffix}"
+
+
+def _format_standings_block(managers: Sequence[Any]) -> str:
+    """Render league standings as a space-aligned text block.
+
+    Sort order: gw_points desc, tie-break by overall_rank asc.
+    Each row: GW rank, manager (+ chip), GW points, (ordinal league pos[ arrow], total).
+    """
+    if not managers:
+        return ""
+
+    sorted_managers = sorted(
+        managers,
+        key=lambda m: (-int(m.get("gw_points", 0)), int(m.get("overall_rank", 0))),
+    )
+
+    def display_name(m: dict[str, Any]) -> str:
+        chip = m.get("active_chip")
+        return f"{m['manager_name']} ({chip})" if chip else m["manager_name"]
+
+    name_width = max(len(display_name(m)) for m in sorted_managers)
+    pts_width = max(3, max(len(str(int(m.get("gw_points", 0)))) for m in sorted_managers))
+    rank_width = max(2, len(str(len(sorted_managers))))
+
+    lines = []
+    for idx, m in enumerate(sorted_managers, start=1):
+        prev = int(m.get("previous_rank", 0))
+        curr = int(m.get("overall_rank", 0))
+        delta = prev - curr
+        if delta > 0:
+            arrow = f" ↑{delta}"
+        elif delta < 0:
+            arrow = f" ↓{-delta}"
+        else:
+            arrow = ""
+        context = f"({_ordinal(curr)}{arrow}, {int(m.get('total_points', 0))})"
+        lines.append(
+            f"{idx:>{rank_width}}.  "
+            f"{display_name(m):<{name_width}}  "
+            f"{int(m.get('gw_points', 0)):>{pts_width}}   "
+            f"{context}"
+        )
+    return "\n".join(lines)

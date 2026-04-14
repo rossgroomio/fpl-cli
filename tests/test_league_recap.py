@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from fpl_cli.agents.orchestration.report import ReportAgent, _format_standings_block
 from fpl_cli.cli._league_recap_data import (
     _compute_shared_awards,
     _compute_standings_movement,
@@ -739,3 +740,123 @@ class TestPromptFormatting:
             fines_text="",
         )
         assert "Fines" not in user
+
+
+# ---------------------------------------------------------------------------
+# Standings block rendering (WhatsApp-friendly text format)
+# ---------------------------------------------------------------------------
+
+
+class TestFormatStandingsBlock:
+    def test_sorts_by_gw_points_descending(self):
+        managers = [
+            _make_manager(name="Alice", gw_points=40, overall_rank=1, previous_rank=1, total_points=2000),
+            _make_manager(name="Bob", gw_points=80, overall_rank=2, previous_rank=3, total_points=1900),
+            _make_manager(name="Charlie", gw_points=60, overall_rank=3, previous_rank=2, total_points=1850),
+        ]
+        block = _format_standings_block(managers)
+        lines = block.splitlines()
+        assert lines[0].lstrip().startswith("1.")
+        assert "Bob" in lines[0]
+        assert "Charlie" in lines[1]
+        assert "Alice" in lines[2]
+
+    def test_tie_on_gw_points_resolves_by_overall_rank(self):
+        managers = [
+            _make_manager(name="Lower", gw_points=70, overall_rank=5, previous_rank=5),
+            _make_manager(name="Higher", gw_points=70, overall_rank=2, previous_rank=2),
+        ]
+        block = _format_standings_block(managers)
+        lines = block.splitlines()
+        assert "Higher" in lines[0]
+        assert "Lower" in lines[1]
+
+    def test_no_pipe_characters(self):
+        managers = [_make_manager(name="Solo", gw_points=50)]
+        assert "|" not in _format_standings_block(managers)
+
+    def test_unchanged_rank_has_no_arrow(self):
+        managers = [_make_manager(name="Stable", overall_rank=4, previous_rank=4)]
+        block = _format_standings_block(managers)
+        assert "↑" not in block
+        assert "↓" not in block
+
+    def test_climbed_rank_shows_up_arrow(self):
+        managers = [_make_manager(name="Climber", overall_rank=3, previous_rank=7)]
+        block = _format_standings_block(managers)
+        assert "↑4" in block
+
+    def test_dropped_rank_shows_down_arrow(self):
+        managers = [_make_manager(name="Faller", overall_rank=8, previous_rank=5)]
+        block = _format_standings_block(managers)
+        assert "↓3" in block
+
+    def test_chip_marker_appended_to_name(self):
+        managers = [
+            _make_manager(name="Short", gw_points=60, active_chip="BB"),
+            _make_manager(name="LongerManagerName", gw_points=50),
+        ]
+        block = _format_standings_block(managers)
+        assert "Short (BB)" in block
+        # Padding adapts to longest display string
+        lines = block.splitlines()
+        # Both rows should align GW points column
+        pts_positions = [line.index(str(pts)) for line, pts in zip(lines, [60, 50], strict=True)]
+        assert pts_positions[0] == pts_positions[1]
+
+    def test_ordinal_rendering(self):
+        managers = [
+            _make_manager(name="A", gw_points=90, overall_rank=1, previous_rank=1),
+            _make_manager(name="B", gw_points=80, overall_rank=2, previous_rank=2),
+            _make_manager(name="C", gw_points=70, overall_rank=3, previous_rank=3),
+            _make_manager(name="D", gw_points=60, overall_rank=11, previous_rank=11),
+        ]
+        block = _format_standings_block(managers)
+        assert "1st" in block
+        assert "2nd" in block
+        assert "3rd" in block
+        assert "11th" in block
+
+    def test_empty_managers_returns_empty_string(self):
+        assert _format_standings_block([]) == ""
+
+    def test_includes_total_points(self):
+        managers = [_make_manager(name="Solo", gw_points=50, total_points=1735)]
+        assert "1735" in _format_standings_block(managers)
+
+
+class TestLeagueRecapTemplateRender:
+    def test_rendered_recap_has_no_pipes_in_standings(self, tmp_path):
+        import asyncio
+
+        agent = ReportAgent(config={"output_dir": str(tmp_path)})
+        data = {
+            "gameweek": 10,
+            "league_name": "Test League",
+            "fpl_format": "classic",
+            "managers": [
+                _make_manager(name="Alice", gw_points=80, overall_rank=1, previous_rank=2, total_points=900),
+                _make_manager(name="Bob", gw_points=60, overall_rank=2, previous_rank=1, total_points=890),
+            ],
+            "awards": {},
+        }
+        result = asyncio.run(agent.run(context={
+            "report_type": "league-recap",
+            "gameweek": 10,
+            "data": data,
+        }))
+        assert result.data is not None
+        report_path = result.data.get("report_path")
+        assert report_path
+        content = open(report_path).read()
+
+        # Extract Standings section
+        standings_start = content.index("# Standings")
+        standings_end = content.index("---", standings_start)
+        standings_section = content[standings_start:standings_end]
+
+        assert "|" not in standings_section
+        # Highest GW points appears first
+        alice_pos = standings_section.index("Alice")
+        bob_pos = standings_section.index("Bob")
+        assert alice_pos < bob_pos
