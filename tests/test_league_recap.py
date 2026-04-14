@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fpl_cli.agents.orchestration.report import ReportAgent, _format_standings_block
 from fpl_cli.cli._league_recap_data import (
     _compute_shared_awards,
@@ -793,29 +795,31 @@ class TestFormatStandingsBlock:
 
     def test_chip_marker_appended_to_name(self):
         managers = [
-            _make_manager(name="Short", gw_points=60, active_chip="BB"),
-            _make_manager(name="LongerManagerName", gw_points=50),
+            _make_manager(name="Short", gw_points=777, active_chip="BB"),
+            _make_manager(name="LongerManagerName", gw_points=555),
         ]
         block = _format_standings_block(managers)
         assert "Short (BB)" in block
-        # Padding adapts to longest display string
+        # Padding adapts to longest display string: GW points column aligns.
+        # Use distinctive values that can't collide with rank/ordinal/total substrings.
         lines = block.splitlines()
-        # Both rows should align GW points column
-        pts_positions = [line.index(str(pts)) for line, pts in zip(lines, [60, 50], strict=True)]
+        pts_positions = [line.index(str(pts)) for line, pts in zip(lines, [777, 555], strict=True)]
         assert pts_positions[0] == pts_positions[1]
+
+    def test_empty_string_active_chip_treated_as_no_chip(self):
+        managers = [_make_manager(name="Solo", gw_points=50, active_chip="")]
+        block = _format_standings_block(managers)
+        assert "()" not in block
+        assert "Solo" in block
 
     def test_ordinal_rendering(self):
         managers = [
-            _make_manager(name="A", gw_points=90, overall_rank=1, previous_rank=1),
-            _make_manager(name="B", gw_points=80, overall_rank=2, previous_rank=2),
-            _make_manager(name="C", gw_points=70, overall_rank=3, previous_rank=3),
-            _make_manager(name="D", gw_points=60, overall_rank=11, previous_rank=11),
+            _make_manager(name=f"M{r}", gw_points=100 - r, overall_rank=r, previous_rank=r)
+            for r in (1, 2, 3, 11, 12, 13, 21, 22, 23)
         ]
         block = _format_standings_block(managers)
-        assert "1st" in block
-        assert "2nd" in block
-        assert "3rd" in block
-        assert "11th" in block
+        for expected in ("1st", "2nd", "3rd", "11th", "12th", "13th", "21st", "22nd", "23rd"):
+            assert expected in block, f"missing ordinal {expected}"
 
     def test_empty_managers_returns_empty_string(self):
         assert _format_standings_block([]) == ""
@@ -826,37 +830,38 @@ class TestFormatStandingsBlock:
 
 
 class TestLeagueRecapTemplateRender:
-    def test_rendered_recap_has_no_pipes_in_standings(self, tmp_path):
-        import asyncio
-
+    async def test_rendered_recap_has_no_pipes_in_standings(self, tmp_path):
         agent = ReportAgent(config={"output_dir": str(tmp_path)})
         data = {
             "gameweek": 10,
             "league_name": "Test League",
             "fpl_format": "classic",
             "managers": [
-                _make_manager(name="Alice", gw_points=80, overall_rank=1, previous_rank=2, total_points=900),
+                _make_manager(name="Alice", gw_points=80, overall_rank=1, previous_rank=2, total_points=900, active_chip="WC"),
                 _make_manager(name="Bob", gw_points=60, overall_rank=2, previous_rank=1, total_points=890),
             ],
             "awards": {},
         }
-        result = asyncio.run(agent.run(context={
+        result = await agent.run(context={
             "report_type": "league-recap",
             "gameweek": 10,
             "data": data,
-        }))
+        })
         assert result.data is not None
         report_path = result.data.get("report_path")
         assert report_path
-        content = open(report_path).read()
+        content = Path(report_path).read_text()
 
-        # Extract Standings section
         standings_start = content.index("# Standings")
         standings_end = content.index("---", standings_start)
         standings_section = content[standings_start:standings_end]
 
         assert "|" not in standings_section
+        # Arrow, chip, and ordinal survive the Jinja fenced-block render
+        assert "↑1" in standings_section
+        assert "(WC)" in standings_section
+        assert "1st" in standings_section
         # Highest GW points appears first
-        alice_pos = standings_section.index("Alice")
-        bob_pos = standings_section.index("Bob")
-        assert alice_pos < bob_pos
+        assert standings_section.index("Alice") < standings_section.index("Bob")
+        # Block is wrapped in a fenced code block for Obsidian monospace
+        assert "```" in standings_section

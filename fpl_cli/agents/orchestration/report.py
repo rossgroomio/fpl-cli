@@ -12,6 +12,7 @@ import jinja2
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from fpl_cli.agents.base import Agent, AgentResult, AgentStatus
+from fpl_cli.cli._league_recap_types import RecapManagerEntry
 from fpl_cli.paths import TEMPLATE_DIR
 
 
@@ -603,7 +604,7 @@ def _ordinal(n: int) -> str:
     return f"{n}{suffix}"
 
 
-def _format_standings_block(managers: Sequence[Any]) -> str:
+def _format_standings_block(managers: Sequence[RecapManagerEntry]) -> str:
     """Render league standings as a space-aligned text block.
 
     Sort order: gw_points desc, tie-break by overall_rank asc.
@@ -614,33 +615,31 @@ def _format_standings_block(managers: Sequence[Any]) -> str:
 
     sorted_managers = sorted(
         managers,
-        key=lambda m: (-int(m.get("gw_points", 0)), int(m.get("overall_rank", 0))),
+        key=lambda m: (-m["gw_points"], m["overall_rank"]),
     )
 
-    def display_name(m: dict[str, Any]) -> str:
+    def display_name(m: RecapManagerEntry) -> str:
         chip = m.get("active_chip")
         return f"{m['manager_name']} ({chip})" if chip else m["manager_name"]
 
     name_width = max(len(display_name(m)) for m in sorted_managers)
-    pts_width = max(3, max(len(str(int(m.get("gw_points", 0)))) for m in sorted_managers))
+    pts_width = max(3, max(len(str(m["gw_points"])) for m in sorted_managers))
     rank_width = max(2, len(str(len(sorted_managers))))
 
     lines = []
     for idx, m in enumerate(sorted_managers, start=1):
-        prev = int(m.get("previous_rank", 0))
-        curr = int(m.get("overall_rank", 0))
-        delta = prev - curr
+        delta = m["previous_rank"] - m["overall_rank"]
         if delta > 0:
             arrow = f" ↑{delta}"
         elif delta < 0:
             arrow = f" ↓{-delta}"
         else:
             arrow = ""
-        context = f"({_ordinal(curr)}{arrow}, {int(m.get('total_points', 0))})"
+        context = f"({_ordinal(m['overall_rank'])}{arrow}, {m['total_points']})"
         lines.append(
             f"{idx:>{rank_width}}.  "
             f"{display_name(m):<{name_width}}  "
-            f"{int(m.get('gw_points', 0)):>{pts_width}}   "
+            f"{m['gw_points']:>{pts_width}}   "
             f"{context}"
         )
     return "\n".join(lines)
