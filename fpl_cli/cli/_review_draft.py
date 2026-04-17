@@ -229,6 +229,17 @@ async def _review_draft(
                         and t.get("element_in")  # Has a player coming in
                     ]
 
+                    # Collapse churn: drop any txn whose IN player was later dropped
+                    # in the same GW (cancels out of final squad).
+                    in_ids_all = [t.get("element_in") for t in gw_txns]
+                    out_ids_all = [t.get("element_out") for t in gw_txns if t.get("element_out")]
+                    churned_ids = set(in_ids_all) & set(out_ids_all)
+                    gw_txns = [
+                        t for t in gw_txns
+                        if t.get("element_in") not in churned_ids
+                        and t.get("element_out") not in churned_ids
+                    ]
+
                     if gw_txns:
                         console.print("\n[bold]## Transactions[/bold]")
                         txn_table = Table(show_header=True, header_style="bold")
@@ -260,13 +271,12 @@ async def _review_draft(
                                     out_abbr = out_team.short_name if out_team else "???"
                                     out_name = f"{draft_player_out.get('web_name', 'Unknown')} ({out_abbr})"
 
-                                # Get points for IN player this GW
-                                in_pick = next(
-                                    (p for p in draft_squad_points_data
-                                     if p["name"] == draft_player_in.get("web_name")),
-                                    None,
-                                )
-                                in_points = in_pick["points"] if in_pick else 0
+                                # Get points for IN player this GW via live stats (works
+                                # even if they were subsequently dropped)
+                                in_points = 0
+                                main_in_id = draft_to_main_id.get(player_in_id)
+                                if main_in_id:
+                                    in_points, _, _ = _live_player_stats(live_stats, main_in_id)
                                 in_team = teams.get(draft_player_in.get("team"))
                                 in_abbr = in_team.short_name if in_team else "???"
 
