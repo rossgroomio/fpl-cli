@@ -28,7 +28,7 @@ llm:
     model: claude-sonnet-4-20250514
     timeout: 60
     query_defaults:
-      max_tokens: 1024
+      max_tokens: 4096
 
 # Fines: opt-in via settings.yaml or `fpl init`. Example config:
 #
