@@ -1571,7 +1571,10 @@ def build_scoring_enrichment(
     consistency_lookup: dict[int, ConsistencySignals] | None = None,
 ) -> dict[str, Any]:
     """Build the enrichment dict shared by quality and single-GW scoring paths."""
+    # Strip understat's "position" (e.g. "F M S") — its taxonomy differs from FPL's
+    # and would otherwise shadow Player.position in build_player_evaluation.
     enrichment: dict[str, Any] = {"team_short": team_short, **us_match}
+    enrichment.pop("position", None)
     minutes_safe = max(player.minutes, 1)
     enrichment["xGI_per_90"] = (
         (player.expected_goals + player.expected_assists) / minutes_safe * 90

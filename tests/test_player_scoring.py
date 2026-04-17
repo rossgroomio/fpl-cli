@@ -2896,6 +2896,24 @@ class TestGKScoringPath:
         without_score = calculate_target_score(no_signals_eval, next_gw_id=20)
         assert with_score > without_score
 
+    def test_understat_position_does_not_shadow_fpl_position(self):
+        """us_match['position'] (understat taxonomy, e.g. 'F M S') must not leak into enrichment."""
+        from fpl_cli.services.player_scoring import build_player_evaluation, build_scoring_enrichment
+
+        mid = make_player(
+            id=996, web_name="MultiRole", team_id=1,
+            position=PlayerPosition.MIDFIELDER,
+            form=5.0, points_per_game=4.0, minutes=900, total_points=40,
+        )
+        us_match = {"position": "F M S", "xGI_per_90": 0.5, "npxG_per_90": 0.3}
+        enrichment = build_scoring_enrichment(
+            mid, us_match=us_match, team_short="TST", gw_history=None, next_gw_id=20,
+        )
+        assert "position" not in enrichment
+        # And build_player_evaluation still resolves MID via the Player model.
+        eval_, _ = build_player_evaluation(mid, enrichment=enrichment)
+        assert eval_ is not None
+
     def test_gk_xgc_quality_guards_zero_minutes(self):
         """GK enrichment: 0 minutes → gk_xgc_quality=0.0 (not 2.0 from inversion)."""
         from fpl_cli.services.player_scoring import build_scoring_enrichment
