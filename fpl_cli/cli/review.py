@@ -160,7 +160,7 @@ def review_command(
                     bgw_team_ids=bgw_team_ids, dgw_team_ids=dgw_team_ids,
                 )
                 classic_transfers_data = await _review_classic_transfers(
-                    client, entry_id, gw, player_map, teams, classic_team["team_points_data"], live_stats
+                    client, entry_id, gw, player_map, teams, live_stats
                 )
                 classic_league_data = await _review_classic_league(
                     client, classic_league_id, entry_id, gw, api_current_gw_id,

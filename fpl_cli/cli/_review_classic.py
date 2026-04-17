@@ -14,6 +14,7 @@ from fpl_cli.cli._helpers import (
     _format_pts_display,
     _format_review_player,
     _live_player_stats,
+    _net_transfer_ids,
     _slice_with_ties,
 )
 
@@ -216,7 +217,26 @@ async def _review_classic_team(
     }
 
 
-async def _review_classic_transfers(client, entry_id, gw, player_map, teams, team_points_data, live_stats):
+def _collapse_transfer_churn(gw_transfers, player_map):
+    """Collapse same-GW transfer churn into a net squad delta, paired by position.
+
+    A player transferred in then later out (or vice versa) within the same GW is a
+    no-op for the final squad and should not appear as a row. For the remaining
+    net ins/outs, pair by (position, web_name) so rows are like-for-like where
+    possible. Returns a list of (player_in, player_out) tuples. Players not found
+    in `player_map` are dropped.
+    """
+    def _sort_key(pid):
+        p = player_map.get(pid)
+        return (p.position, p.web_name) if p else (99, "")
+
+    net_in_ids, net_out_ids = _net_transfer_ids(gw_transfers, sort_key=_sort_key)
+    net_ins = [player_map[pid] for pid in net_in_ids if pid in player_map]
+    net_outs = [player_map[pid] for pid in net_out_ids if pid in player_map]
+    return list(zip(net_ins, net_outs, strict=False))
+
+
+async def _review_classic_transfers(client, entry_id, gw, player_map, teams, live_stats):
     """Fetch and display classic transfers for this GW. Returns list of transfer data."""
     classic_transfers_data = []
     if not entry_id:
@@ -226,7 +246,9 @@ async def _review_classic_transfers(client, entry_id, gw, player_map, teams, tea
         all_transfers = await client.get_manager_transfers(entry_id)
         gw_transfers = [t for t in all_transfers if t.get("event") == gw]
 
-        if gw_transfers:
+        paired = _collapse_transfer_churn(gw_transfers, player_map)
+
+        if paired:
             console.print("\n[bold]## Transfers[/bold]")
             transfers_table = Table(show_header=True, header_style="bold")
             transfers_table.add_column("In")
@@ -236,16 +258,10 @@ async def _review_classic_transfers(client, entry_id, gw, player_map, teams, tea
             transfers_table.add_column("Net", justify="right")
             transfers_table.add_column("Verdict")
 
-            for transfer in gw_transfers:
-                player_out = player_map.get(transfer.get("element_out"))
-                player_in = player_map.get(transfer.get("element_in"))
-
+            for player_in, player_out in paired:
                 if player_out and player_in:
                     out_points, _, _ = _live_player_stats(live_stats, player_out.id)
-
-                    # Get points for IN player this GW (should be in team_points_data)
-                    in_pick = next((p for p in team_points_data if p["name"] == player_in.web_name), None)
-                    in_points = in_pick["points"] if in_pick else 0
+                    in_points, _, _ = _live_player_stats(live_stats, player_in.id)
 
                     net = in_points - out_points
 

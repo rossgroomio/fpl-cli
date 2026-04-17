@@ -3,8 +3,9 @@
 import pytest
 
 from fpl_cli.cli._fines import compute_bench_analysis
-from fpl_cli.cli._helpers import _gw_position_with_half
-from fpl_cli.cli._review_classic import _format_review_classic_player
+from fpl_cli.cli._helpers import _gw_position_with_half, _net_transfer_ids
+from fpl_cli.cli._review_classic import _collapse_transfer_churn, _format_review_classic_player
+from fpl_cli.models.player import PlayerPosition
 from fpl_cli.prompts.review import (
     REVIEW_RESEARCH_SYSTEM_PROMPT,
     _build_system_prompt,
@@ -36,6 +37,12 @@ class TestReviewPrompts:
         assert "Classic" in _build_system_prompt(has_fines=True)
         assert "Draft" in _build_system_prompt(has_fines=True)
         assert "fine" in _build_system_prompt(has_fines=True).lower()
+
+    def test_synthesis_system_prompt_position_inference_rule(self):
+        """Rule forbidding the LLM from inferring position when it isn't in the data."""
+        prompt = _build_system_prompt(has_fines=False)
+        assert "Team-grouping and position-grouping are independent" in prompt
+        assert "Never infer position from context" in prompt
 
     def test_synthesis_system_prompt_bench_analysis(self):
         """Test synthesis system prompt includes bench analysis guidance."""
@@ -747,6 +754,28 @@ class TestResearchPromptWithGWData:
         assert "double-gameweek teams" in REVIEW_RESEARCH_SYSTEM_PROMPT
         assert "two matches" in REVIEW_RESEARCH_SYSTEM_PROMPT
 
+    def test_research_system_prompt_team_code_not_surname_rule(self):
+        """Rule preventing LLM from rendering team codes (LEE, NEW, MAN) as surnames."""
+        assert "LEE is Leeds United" in REVIEW_RESEARCH_SYSTEM_PROMPT
+        assert "surnames" in REVIEW_RESEARCH_SYSTEM_PROMPT
+
+    def test_research_prompt_with_team_glossary(self):
+        prompt = get_review_research_prompt(
+            gameweek=32,
+            match_results="MUN 1-2 LEE",
+            team_glossary="ARS = Arsenal, LEE = Leeds United, NEW = Newcastle",
+        )
+        assert "<team_context>" in prompt
+        assert "Team code glossary" in prompt
+        assert "LEE = Leeds United" in prompt
+
+    def test_research_prompt_glossary_omitted_when_empty(self):
+        prompt = get_review_research_prompt(
+            gameweek=32,
+            match_results="MUN 1-2 LEE",
+        )
+        assert "Team code glossary" not in prompt
+
     def test_research_system_prompt_dgw_never_speculation_rule(self):
         assert "Speculate about future double or blank gameweeks" in REVIEW_RESEARCH_SYSTEM_PROMPT
 
@@ -796,6 +825,22 @@ class TestFormatResearchContext:
         global_data: GlobalReviewData = {}
         result = _format_research_context(global_data, {})
         assert result["predicted_dgw_teams"] == ""
+
+    def test_blankers_include_position_column(self):
+        """LLM receives position per blanker so it never has to infer positions from context."""
+        from fpl_cli.cli._review_analysis import GlobalReviewData
+        from fpl_cli.cli._review_summarisation import _format_research_context
+
+        global_data: GlobalReviewData = {
+            "blankers": [
+                {"name": "Haaland", "team": "MCI", "position": "FWD", "ownership": 74.1, "points": 2},
+                {"name": "Van Hecke", "team": "BHA", "position": "DEF", "ownership": 12.4, "points": 1},
+            ],
+        }
+        result = _format_research_context(global_data, {})
+        assert "| Pos |" in result["blankers"]
+        assert "| Haaland | MCI | FWD |" in result["blankers"]
+        assert "| Van Hecke | BHA | DEF |" in result["blankers"]
 
 
 class TestBlankersCalculation:
@@ -907,22 +952,24 @@ class TestBlankersCalculation:
         assert not any(b["name"] == "Haaland" for b in blankers_list)
 
     def test_blankers_format_for_prompt(self):
-        """Test blankers are formatted correctly for the prompt."""
+        """Blankers are formatted with Pos so the LLM never has to infer position."""
         blankers_list = [
-            {"name": "Haaland", "team": "MCI", "ownership": 74.1, "points": 2},
-            {"name": "Semenyo", "team": "MCI", "ownership": 45.4, "points": 2},
+            {"name": "Haaland", "team": "MCI", "position": "FWD", "ownership": 74.1, "points": 2},
+            {"name": "Semenyo", "team": "BOU", "position": "MID", "ownership": 45.4, "points": 2},
         ]
 
-        # Format like cli.py does
-        blankers_lines = ["| Player | Team | Ownership | Pts |", "|--------|------|-----------|-----|"]
+        blankers_lines = [
+            "| Player | Team | Pos | Ownership | Pts |",
+            "|--------|------|-----|-----------|-----|",
+        ]
         for b in blankers_list:
             blankers_lines.append(
-                f"| {b['name']} | {b['team']} | {b['ownership']:.1f}% | {b['points']} |"
+                f"| {b['name']} | {b['team']} | {b.get('position', '???')} | {b['ownership']:.1f}% | {b['points']} |"
             )
         blankers_str = "\n".join(blankers_lines)
 
-        assert "| Haaland | MCI | 74.1% | 2 |" in blankers_str
-        assert "| Semenyo | MCI | 45.4% | 2 |" in blankers_str
+        assert "| Haaland | MCI | FWD | 74.1% | 2 |" in blankers_str
+        assert "| Semenyo | BOU | MID | 45.4% | 2 |" in blankers_str
 
 
 class TestBenchAnalysis:
@@ -1555,3 +1602,130 @@ class TestValidateResearchTeams:
         assert "| LIV |" in result
         assert "MCI" not in result
         assert len(corrections) == 1
+
+
+class TestCollapseTransferChurn:
+    """Tests for `_collapse_transfer_churn` — same-GW net squad delta."""
+
+    def _player_map(self, *players):
+        return {p.id: p for p in players}
+
+    def test_round_trip_transfers_are_dropped(self):
+        """Player transferred in then back out in same GW -> no rows."""
+        saka = make_player(id=10, web_name="Saka", position=PlayerPosition.MIDFIELDER)
+        palmer = make_player(id=20, web_name="Palmer", position=PlayerPosition.MIDFIELDER)
+        gw_transfers = [
+            {"element_in": palmer.id, "element_out": saka.id, "event": 30},
+            {"element_in": saka.id, "element_out": palmer.id, "event": 30},
+        ]
+        paired = _collapse_transfer_churn(gw_transfers, self._player_map(saka, palmer))
+        assert paired == []
+
+    def test_simple_single_transfer_preserved(self):
+        saka = make_player(id=10, web_name="Saka", position=PlayerPosition.MIDFIELDER)
+        palmer = make_player(id=20, web_name="Palmer", position=PlayerPosition.MIDFIELDER)
+        gw_transfers = [{"element_in": palmer.id, "element_out": saka.id, "event": 30}]
+        paired = _collapse_transfer_churn(gw_transfers, self._player_map(saka, palmer))
+        assert len(paired) == 1
+        pin, pout = paired[0]
+        assert pin.web_name == "Palmer"
+        assert pout.web_name == "Saka"
+
+    def test_waiver_chain_keeps_net_delta(self):
+        """(in A, out B) then (in C, out A) should collapse to net (+C, -B)."""
+        a = make_player(id=1, web_name="Alpha", position=PlayerPosition.MIDFIELDER)
+        b = make_player(id=2, web_name="Bravo", position=PlayerPosition.MIDFIELDER)
+        c = make_player(id=3, web_name="Charlie", position=PlayerPosition.MIDFIELDER)
+        gw_transfers = [
+            {"element_in": a.id, "element_out": b.id, "event": 30},
+            {"element_in": c.id, "element_out": a.id, "event": 30},
+        ]
+        paired = _collapse_transfer_churn(gw_transfers, self._player_map(a, b, c))
+        assert len(paired) == 1
+        pin, pout = paired[0]
+        assert {pin.web_name, pout.web_name} == {"Charlie", "Bravo"}
+        assert pin.web_name == "Charlie"
+        assert pout.web_name == "Bravo"
+
+    def test_multi_transfer_pairs_by_position(self):
+        """Two transfers across DEF and MID pair like-for-like."""
+        trent = make_player(id=1, web_name="Trent", position=PlayerPosition.DEFENDER)
+        van_dijk = make_player(id=2, web_name="VanDijk", position=PlayerPosition.DEFENDER)
+        saka = make_player(id=3, web_name="Saka", position=PlayerPosition.MIDFIELDER)
+        palmer = make_player(id=4, web_name="Palmer", position=PlayerPosition.MIDFIELDER)
+        gw_transfers = [
+            {"element_in": van_dijk.id, "element_out": saka.id, "event": 30},
+            {"element_in": palmer.id, "element_out": trent.id, "event": 30},
+        ]
+        paired = _collapse_transfer_churn(
+            gw_transfers, self._player_map(trent, van_dijk, saka, palmer)
+        )
+        assert len(paired) == 2
+        pairs = {(pin.web_name, pout.web_name) for pin, pout in paired}
+        assert pairs == {("VanDijk", "Trent"), ("Palmer", "Saka")}
+
+    def test_unknown_player_ids_are_dropped(self):
+        known = make_player(id=10, web_name="Known", position=PlayerPosition.MIDFIELDER)
+        gw_transfers = [{"element_in": known.id, "element_out": 999, "event": 30}]
+        paired = _collapse_transfer_churn(gw_transfers, self._player_map(known))
+        # Out player unknown -> dropped; no pair emitted
+        assert paired == []
+
+    def test_empty_transfers_returns_empty(self):
+        assert _collapse_transfer_churn([], {}) == []
+
+
+class TestNetTransferIds:
+    """Tests for `_net_transfer_ids` — the id-level churn collapse used by both
+    classic and draft review paths."""
+
+    def test_round_trip_cancels(self):
+        """A->B then B->A same GW -> no net delta."""
+        txns = [
+            {"element_in": 1, "element_out": 2},
+            {"element_in": 2, "element_out": 1},
+        ]
+        net_in, net_out = _net_transfer_ids(txns)
+        assert net_in == []
+        assert net_out == []
+
+    def test_waiver_chain_yields_net_delta(self):
+        """(in A, out B), (in C, out A) -> net +C / -B (A cancels)."""
+        txns = [
+            {"element_in": 1, "element_out": 2},  # in A, out B
+            {"element_in": 3, "element_out": 1},  # in C, out A
+        ]
+        net_in, net_out = _net_transfer_ids(txns)
+        assert net_in == [3]  # C
+        assert net_out == [2]  # B
+
+    def test_draft_balanced_pairs_preserved(self):
+        """Draft always drops a player per pickup, so balanced txns survive intact."""
+        txns = [
+            {"element_in": 10, "element_out": 20},
+            {"element_in": 11, "element_out": 21},
+        ]
+        net_in, net_out = _net_transfer_ids(txns)
+        assert sorted(net_in) == [10, 11]
+        assert sorted(net_out) == [20, 21]
+
+    def test_sort_key_orders_both_lists(self):
+        """Sort key applies to both lists so callers can zip like-for-like."""
+        # Names: in = {b, a}, out = {d, c}; sort alphabetically
+        txns = [
+            {"element_in": "b", "element_out": "d"},
+            {"element_in": "a", "element_out": "c"},
+        ]
+        net_in, net_out = _net_transfer_ids(txns, sort_key=lambda x: x)
+        assert net_in == ["a", "b"]
+        assert net_out == ["c", "d"]
+
+    def test_none_ids_excluded(self):
+        """Missing element_in/out (None) is ignored, not counted."""
+        txns = [
+            {"element_in": 1, "element_out": None},
+            {"element_in": None, "element_out": 2},
+        ]
+        net_in, net_out = _net_transfer_ids(txns)
+        assert net_in == [1]
+        assert net_out == [2]

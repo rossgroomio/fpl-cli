@@ -67,6 +67,7 @@ NEVER:
 - List players from blank-gameweek teams as disappointments or fabricate match narratives for matches that didn't happen
 - Treat a blank-gameweek zero as a performance failure - most FPL managers plan for these
 - Speculate about future double or blank gameweeks for teams NOT listed in the provided actual or predicted DGW data
+- Treat 3-letter team codes (LEE, NEW, MAN, BUR, ARS, etc.) as surnames or people's names. LEE is Leeds United, not someone called "Lee"; NEW is Newcastle, not "New"; MAN is Manchester, not "Man". In prose, always expand codes to the full team name (or a natural short form like "Leeds", "Newcastle", "Man Utd"). Reserve 3-letter codes for table cells only
 
 IF web search returns limited narrative sources:
 - Still produce all sections using the match results and player data provided
@@ -132,6 +133,7 @@ def get_review_research_prompt(
     bgw_teams: str = "",
     dgw_teams: str = "",
     predicted_dgw_teams: str = "",
+    team_glossary: str = "",
 ) -> str:
     """Generate the research user prompt for a specific gameweek review.
 
@@ -144,6 +146,7 @@ def get_review_research_prompt(
         bgw_teams: Comma-separated short names of teams with a blank gameweek (e.g. "MCI, ARS").
         dgw_teams: Comma-separated short names of teams with a double gameweek (e.g. "EVE, BHA").
         predicted_dgw_teams: Formatted string of predicted future DGWs (e.g. "GW32: EVE, BHA (high confidence)").
+        team_glossary: Comma-separated 3-letter-code to full-name mapping (e.g. "ARS = Arsenal, LEE = Leeds United") so the LLM never renders codes as surnames.
 
     Returns:
         Formatted user prompt string.
@@ -152,9 +155,15 @@ def get_review_research_prompt(
     gw_results = ""
     if dream_team or blankers or match_results:
         gw_results_parts = ["<gw_results>"]
-        if manager_context:
+        if manager_context or team_glossary:
             gw_results_parts.append("<team_context>")
-            gw_results_parts.append(manager_context)
+            if team_glossary:
+                gw_results_parts.append(
+                    "Team code glossary (codes map to full team names — never render codes as surnames in prose):"
+                )
+                gw_results_parts.append(team_glossary)
+            if manager_context:
+                gw_results_parts.append(manager_context)
             gw_results_parts.append("</team_context>")
         if bgw_teams:
             gw_results_parts.append(f"\n## Blank Gameweek Teams (did NOT play in GW{gameweek})")
@@ -206,7 +215,8 @@ _SYSTEM_INTRO = """You are an FPL analyst providing personalised gameweek analys
 _HARD_CONSTRAINTS_BASE_NEVER = """\
 - Lump Classic and Draft analysis together - they are separate competitions with different rules
 - Be vague ("decent week") without specific player/decision references
-- Ignore bench points - if players on the bench outscored starters, call it out"""
+- Ignore bench points - if players on the bench outscored starters, call it out
+- Infer a scoring breakdown from a player's total points. You only receive totals - you do NOT know how many minutes they played, whether they kept a clean sheet, scored, assisted, got bonus, or were booked. Never write phrases like "presumably a clean sheet appearance", "must have got an assist", "looks like a 60+ minute cameo", or any similar guess. If the total is low, just state the total ("Mac Allister managed 1 point") without speculating on the components"""
 
 _HARD_CONSTRAINTS_FINE_NEVER = """\
 - Miss a fine trigger - these are socially important to the user's leagues"""
@@ -215,7 +225,7 @@ _HARD_CONSTRAINTS_ALWAYS = """\
 - Analyse Classic and Draft separately with distinct verdicts
 - Reference specific players and points where it adds colour (e.g., "Bruno G hauled 11 points" or "Grealish's -1 was painful")
 - Highlight selection mistakes: if a "Bench vs Starters" section is provided in the player data, use it directly - these are pre-computed formation-valid comparisons. Also flag wrong captain choices
-- Note team concentration when notable: if 2+ players from the same team collectively hauled or blanked, call it out
+- Note team concentration when notable: if 2+ players from the same team collectively hauled or blanked, call it out. Team-grouping and position-grouping are independent: if you don't have a position label for a player in the data, don't state one — refer to them by name only ("Brighton had Welbeck and Van Hecke both blanking"). Only use a position label when it appears explicitly in the data you received (e.g. "Brighton forward Welbeck"). Never infer position from context, club, or guess
 - Maintain wry, dry humour especially when delivering bad news
 - When suggesting players to move on from, specify which format (Classic or Draft)
 - If a chip was played, frame the Classic Verdict around whether the chip paid off - chips raise expectations"""

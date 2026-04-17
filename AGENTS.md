@@ -18,7 +18,7 @@ External consumers: `BenchOrderAgent`, `StartingXIAgent`, and `TransferEvalAgent
 API clients in `fpl_cli/api/`: FPLClient (main API, caches `bootstrap-static/`), fpl_draft, perplexity (needs `PERPLEXITY_API_KEY`), understat (scrapes understat.com for npxG/xGChain/xGBuildup), historical data via dual-source architecture: VaastavClient (3 historical seasons 2022-25, keyed on `element_code`) + CoreInsightsClient (current season 2025-26+), composed by `HistoricalDataProvider` (`make_historical_provider()`). Shared types in `historical_types.py` (SeasonHistory, PlayerProfile, GwTrendProfile). Season helper: `season_label()` (alias `vaastav_season()`). Scraper in `fpl_cli/scraper/` (needs `FPL_EMAIL`, `FPL_PASSWORD`). Jinja2 templates in `templates/`.
 
 ### Models (non-obvious aliases)
-- `Player`: `element_type` = position, `team` = team_id, `code` = stable cross-season ID (element_code). Prices in £0.1m units (100 = £10.0m)
+- `Player`: attribute is `position` (JSON alias `element_type`), `team_id` (alias `team`), `code` = stable cross-season ID (element_code). Prices in £0.1m units (100 = £10.0m)
 - `Fixture`: `gameweek` (alias "event"), `home_team_id`/`away_team_id`
 
 For a complete inventory of CLI commands, analysis agents, and skills with JSON support and format awareness, see `.agents/TOOLS.md`.

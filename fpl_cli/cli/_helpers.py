@@ -4,8 +4,35 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import Counter
+from collections.abc import Callable
+from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+def _net_transfer_ids(
+    gw_transfers: list[dict[str, Any]],
+    sort_key: Callable[[Any], Any] | None = None,
+) -> tuple[list[Any], list[Any]]:
+    """Cancel same-GW transfer churn and return (net_in_ids, net_out_ids).
+
+    A player id appearing as both `element_in` and `element_out` within the GW
+    cancels up to the lower multiplicity — the squad delta only reflects the
+    residual net change. `None` ids (draft free-agent pickups with no drop) are
+    excluded before counting. When `sort_key` is supplied, both lists are sorted
+    by it (callers use this to pair ins/outs like-for-like).
+    """
+    in_ids = [t.get("element_in") for t in gw_transfers if t.get("element_in") is not None]
+    out_ids = [t.get("element_out") for t in gw_transfers if t.get("element_out") is not None]
+    net_in = Counter(in_ids) - Counter(out_ids)
+    net_out = Counter(out_ids) - Counter(in_ids)
+    net_in_list = [pid for pid, c in net_in.items() for _ in range(c)]
+    net_out_list = [pid for pid, c in net_out.items() for _ in range(c)]
+    if sort_key is not None:
+        net_in_list.sort(key=sort_key)
+        net_out_list.sort(key=sort_key)
+    return net_in_list, net_out_list
 
 # Centralised FDR threshold constants (1-7 scale)
 FDR_EASY = 2.5
