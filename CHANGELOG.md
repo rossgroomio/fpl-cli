@@ -1,6 +1,31 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [1.3.0] - 2026-04-17
+
+### Bug Fixes
+
+- correct stats key names and draft trailing heading (#19)
+- inject explicit chip roster into synthesis prompt
+- six LLM/formatting fixes for gw review output (#26)
+- use custom team-ratings FDR in GW fixtures table when custom_analysis enabled
+- drop understat position from enrichment spread
+
+### Features
+
+- embed squad-builder output on wildcard/freehit weeks (#23)
+- surface active chips in recap narrative
+- detect bench boost chip and adjust analysis emphasis
+- chip-aware analysis for WC, FH, BB, and TC (#24)
+- WhatsApp-friendly standings text block (#25)
+
+### Refactoring
+
+- consolidate ownership ceiling dispatch into single helper
+- thread Position literal through scoring pipeline (#21)
+- rename horizon=1 output field to single_gw_score (#22)
+- tighten project SKILL.md prompt contract and phase ordering
+
 ## [1.2.1] - 2026-04-10
 
 ### Bug Fixes
