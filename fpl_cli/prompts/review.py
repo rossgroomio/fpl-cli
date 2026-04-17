@@ -67,6 +67,7 @@ NEVER:
 - List players from blank-gameweek teams as disappointments or fabricate match narratives for matches that didn't happen
 - Treat a blank-gameweek zero as a performance failure - most FPL managers plan for these
 - Speculate about future double or blank gameweeks for teams NOT listed in the provided actual or predicted DGW data
+- Treat 3-letter team codes (LEE, NEW, MAN, BUR, ARS, etc.) as surnames or people's names. LEE is Leeds United, not someone called "Lee"; NEW is Newcastle, not "New"; MAN is Manchester, not "Man". In prose, always expand codes to the full team name (or a natural short form like "Leeds", "Newcastle", "Man Utd"). Reserve 3-letter codes for table cells only
 
 IF web search returns limited narrative sources:
 - Still produce all sections using the match results and player data provided
@@ -132,6 +133,7 @@ def get_review_research_prompt(
     bgw_teams: str = "",
     dgw_teams: str = "",
     predicted_dgw_teams: str = "",
+    team_glossary: str = "",
 ) -> str:
     """Generate the research user prompt for a specific gameweek review.
 
@@ -152,9 +154,15 @@ def get_review_research_prompt(
     gw_results = ""
     if dream_team or blankers or match_results:
         gw_results_parts = ["<gw_results>"]
-        if manager_context:
+        if manager_context or team_glossary:
             gw_results_parts.append("<team_context>")
-            gw_results_parts.append(manager_context)
+            if team_glossary:
+                gw_results_parts.append(
+                    "Team code glossary (codes map to full team names — never render codes as surnames in prose):"
+                )
+                gw_results_parts.append(team_glossary)
+            if manager_context:
+                gw_results_parts.append(manager_context)
             gw_results_parts.append("</team_context>")
         if bgw_teams:
             gw_results_parts.append(f"\n## Blank Gameweek Teams (did NOT play in GW{gameweek})")

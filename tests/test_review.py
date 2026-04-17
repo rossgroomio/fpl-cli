@@ -747,6 +747,28 @@ class TestResearchPromptWithGWData:
         assert "double-gameweek teams" in REVIEW_RESEARCH_SYSTEM_PROMPT
         assert "two matches" in REVIEW_RESEARCH_SYSTEM_PROMPT
 
+    def test_research_system_prompt_team_code_not_surname_rule(self):
+        """Rule preventing LLM from rendering team codes (LEE, NEW, MAN) as surnames."""
+        assert "LEE is Leeds United" in REVIEW_RESEARCH_SYSTEM_PROMPT
+        assert "surnames" in REVIEW_RESEARCH_SYSTEM_PROMPT
+
+    def test_research_prompt_with_team_glossary(self):
+        prompt = get_review_research_prompt(
+            gameweek=32,
+            match_results="MUN 1-2 LEE",
+            team_glossary="ARS = Arsenal, LEE = Leeds United, NEW = Newcastle",
+        )
+        assert "<team_context>" in prompt
+        assert "Team code glossary" in prompt
+        assert "LEE = Leeds United" in prompt
+
+    def test_research_prompt_glossary_omitted_when_empty(self):
+        prompt = get_review_research_prompt(
+            gameweek=32,
+            match_results="MUN 1-2 LEE",
+        )
+        assert "Team code glossary" not in prompt
+
     def test_research_system_prompt_dgw_never_speculation_rule(self):
         assert "Speculate about future double or blank gameweeks" in REVIEW_RESEARCH_SYSTEM_PROMPT
 

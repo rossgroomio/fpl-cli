@@ -16,6 +16,7 @@ from fpl_cli.cli._review_analysis import GlobalReviewData
 from fpl_cli.cli._review_classic import _format_review_classic_player
 from fpl_cli.cli._review_draft import _format_review_draft_player
 from fpl_cli.models.player import Player
+from fpl_cli.models.team import Team
 from fpl_cli.paths import user_config_dir
 from fpl_cli.utils.text import strip_diacritics
 
@@ -23,6 +24,7 @@ from fpl_cli.utils.text import strip_diacritics
 def _format_research_context(
     global_data: GlobalReviewData,
     collected_data: dict[str, Any],
+    teams: dict[int, Team] | None = None,
 ) -> dict[str, str]:
     """Format context strings for the research prompt."""
     dream_team_str = ""
@@ -70,6 +72,13 @@ def _format_research_context(
     bgw_teams_str = ", ".join(sorted(global_data.get("bgw_team_names", set())))
     dgw_teams_str = ", ".join(sorted(global_data.get("dgw_team_names", set())))
 
+    team_glossary_str = ""
+    if teams:
+        glossary_entries = sorted(
+            (t.short_name, t.name) for t in teams.values()
+        )
+        team_glossary_str = ", ".join(f"{code} = {name}" for code, name in glossary_entries)
+
     # Format predicted future DGWs (already filtered to min_gw=gw+1 at fetch time)
     predicted_dgws = global_data.get("predicted_dgw_teams", [])
     predicted_dgw_lines = []
@@ -86,6 +95,7 @@ def _format_research_context(
         "bgw_teams": bgw_teams_str,
         "dgw_teams": dgw_teams_str,
         "predicted_dgw_teams": predicted_dgw_str,
+        "team_glossary": team_glossary_str,
     }
 
 
@@ -347,7 +357,7 @@ async def _review_llm_summarise(
         console.print(f"[dim]  Debug output → {debug_dir}/[/dim]")
 
     # Stage 1: Research - social + journalistic narrative
-    research_ctx = _format_research_context(global_data, collected_data)
+    research_ctx = _format_research_context(global_data, collected_data, teams)
     research_prompt = get_review_research_prompt(
         gw,
         dream_team=research_ctx["dream_team"],
@@ -357,6 +367,7 @@ async def _review_llm_summarise(
         bgw_teams=research_ctx["bgw_teams"],
         dgw_teams=research_ctx["dgw_teams"],
         predicted_dgw_teams=research_ctx["predicted_dgw_teams"],
+        team_glossary=research_ctx["team_glossary"],
     )
 
     if dry_run:
