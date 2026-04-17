@@ -8,6 +8,7 @@ from rich.markup import escape as rich_escape
 from rich.table import Table
 
 from fpl_cli.cli._context import console, error_console
+from fpl_cli.models.player import POSITION_MAP
 
 if TYPE_CHECKING:
     from fpl_cli.models.fixture import Fixture
@@ -132,6 +133,7 @@ async def _review_global_stats(
                         blankers_list.append({
                             "name": player.web_name,
                             "team": team_abbr,
+                            "position": POSITION_MAP.get(player.position.value, "???"),
                             "ownership": ownership,
                             "points": gw_pts,
                         })
@@ -144,6 +146,7 @@ async def _review_global_stats(
                 blankers_table = Table(show_header=True, header_style="bold")
                 blankers_table.add_column("Player")
                 blankers_table.add_column("Team")
+                blankers_table.add_column("Pos")
                 blankers_table.add_column("Own%", justify="right")
                 blankers_table.add_column("Pts", justify="right")
 
@@ -151,6 +154,7 @@ async def _review_global_stats(
                     blankers_table.add_row(
                         b["name"],
                         b["team"],
+                        b["position"],
                         f"{b['ownership']:.1f}%",
                         str(b["points"]),
                     )

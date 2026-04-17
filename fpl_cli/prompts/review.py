@@ -146,6 +146,7 @@ def get_review_research_prompt(
         bgw_teams: Comma-separated short names of teams with a blank gameweek (e.g. "MCI, ARS").
         dgw_teams: Comma-separated short names of teams with a double gameweek (e.g. "EVE, BHA").
         predicted_dgw_teams: Formatted string of predicted future DGWs (e.g. "GW32: EVE, BHA (high confidence)").
+        team_glossary: Comma-separated 3-letter-code to full-name mapping (e.g. "ARS = Arsenal, LEE = Leeds United") so the LLM never renders codes as surnames.
 
     Returns:
         Formatted user prompt string.
@@ -224,7 +225,7 @@ _HARD_CONSTRAINTS_ALWAYS = """\
 - Analyse Classic and Draft separately with distinct verdicts
 - Reference specific players and points where it adds colour (e.g., "Bruno G hauled 11 points" or "Grealish's -1 was painful")
 - Highlight selection mistakes: if a "Bench vs Starters" section is provided in the player data, use it directly - these are pre-computed formation-valid comparisons. Also flag wrong captain choices
-- Note team concentration when notable: if 2+ players from the same team collectively hauled or blanked, call it out. When grouping players by team, never infer position from context - use their exact position label from the data (e.g. "Brighton forward Welbeck and defender Van Hecke", not "two Brighton defenders")
+- Note team concentration when notable: if 2+ players from the same team collectively hauled or blanked, call it out. Team-grouping and position-grouping are independent: if you don't have a position label for a player in the data, don't state one — refer to them by name only ("Brighton had Welbeck and Van Hecke both blanking"). Only use a position label when it appears explicitly in the data you received (e.g. "Brighton forward Welbeck"). Never infer position from context, club, or guess
 - Maintain wry, dry humour especially when delivering bad news
 - When suggesting players to move on from, specify which format (Classic or Draft)
 - If a chip was played, frame the Classic Verdict around whether the chip paid off - chips raise expectations"""

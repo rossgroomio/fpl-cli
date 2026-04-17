@@ -11,6 +11,7 @@ from fpl_cli.cli._helpers import (
     _format_pts_display,
     _format_review_player,
     _live_player_stats,
+    _net_transfer_ids,
     _slice_with_ties,
 )
 from fpl_cli.models.player import POSITION_MAP
@@ -229,18 +230,15 @@ async def _review_draft(
                         and t.get("element_in")  # Has a player coming in
                     ]
 
-                    # Collapse churn: drop any txn whose IN player was later dropped
-                    # in the same GW (cancels out of final squad).
-                    in_ids_all = [t.get("element_in") for t in gw_txns]
-                    out_ids_all = [t.get("element_out") for t in gw_txns if t.get("element_out")]
-                    churned_ids = set(in_ids_all) & set(out_ids_all)
-                    gw_txns = [
-                        t for t in gw_txns
-                        if t.get("element_in") not in churned_ids
-                        and t.get("element_out") not in churned_ids
-                    ]
+                    # Collapse same-GW churn using net squad delta (Counter diff).
+                    # Pair residual adds and drops by (position, web_name) for like-for-like rows.
+                    def _draft_sort_key(pid, _map=draft_player_map):
+                        p = _map.get(pid) or {}
+                        return (p.get("element_type") or 99, p.get("web_name") or "")
 
-                    if gw_txns:
+                    net_in_ids, net_out_ids = _net_transfer_ids(gw_txns, sort_key=_draft_sort_key)
+
+                    if net_in_ids:
                         console.print("\n[bold]## Transactions[/bold]")
                         txn_table = Table(show_header=True, header_style="bold")
                         txn_table.add_column("In")
@@ -250,74 +248,60 @@ async def _review_draft(
                         txn_table.add_column("Net", justify="right")
                         txn_table.add_column("Verdict")
 
-                        for txn in gw_txns:
-                            player_out_id = txn.get("element_out")
-                            player_in_id = txn.get("element_in")
-                            # Use Draft player map for lookups
-                            draft_player_out = draft_player_map.get(player_out_id) if player_out_id else None
+                        # Draft always drops a player per pickup, so net_in_ids and net_out_ids are equal length.
+                        for player_in_id, player_out_id in zip(net_in_ids, net_out_ids, strict=True):
                             draft_player_in = draft_player_map.get(player_in_id)
+                            draft_player_out = draft_player_map.get(player_out_id)
+                            if not draft_player_in or not draft_player_out:
+                                continue
 
-                            if draft_player_in:
-                                # Get points for OUT player this GW (if there was one)
-                                out_points = 0
-                                out_name = "-"
-                                out_abbr = ""
-                                if draft_player_out:
-                                    # Look up Main FPL API element ID for GW history
-                                    main_out_id = draft_to_main_id.get(player_out_id)
-                                    if main_out_id:
-                                        out_points, _, _ = _live_player_stats(live_stats, main_out_id)
-                                    out_team = teams.get(draft_player_out.get("team"))
-                                    out_abbr = out_team.short_name if out_team else "???"
-                                    out_name = f"{draft_player_out.get('web_name', 'Unknown')} ({out_abbr})"
+                            main_in_id = draft_to_main_id.get(player_in_id)
+                            in_points = _live_player_stats(live_stats, main_in_id)[0] if main_in_id else 0
+                            in_team = teams.get(draft_player_in.get("team"))
+                            in_abbr = in_team.short_name if in_team else "???"
 
-                                # Get points for IN player this GW via live stats (works
-                                # even if they were subsequently dropped)
-                                in_points = 0
-                                main_in_id = draft_to_main_id.get(player_in_id)
-                                if main_in_id:
-                                    in_points, _, _ = _live_player_stats(live_stats, main_in_id)
-                                in_team = teams.get(draft_player_in.get("team"))
-                                in_abbr = in_team.short_name if in_team else "???"
+                            main_out_id = draft_to_main_id.get(player_out_id)
+                            out_points = _live_player_stats(live_stats, main_out_id)[0] if main_out_id else 0
+                            out_team = teams.get(draft_player_out.get("team"))
+                            out_abbr = out_team.short_name if out_team else "???"
 
-                                net = in_points - out_points
+                            net = in_points - out_points
 
-                                # Verdict
-                                if net > 1:
-                                    verdict = "[green]✓ Hit[/green]"
-                                    verdict_plain = "✓ Hit"
-                                elif net < -1:
-                                    verdict = "[red]✗ Miss[/red]"
-                                    verdict_plain = "✗ Miss"
-                                else:
-                                    verdict = "[dim]→ Neutral[/dim]"
-                                    verdict_plain = "→ Neutral"
+                            if net > 1:
+                                verdict = "[green]✓ Hit[/green]"
+                                verdict_plain = "✓ Hit"
+                            elif net < -1:
+                                verdict = "[red]✗ Miss[/red]"
+                                verdict_plain = "✗ Miss"
+                            else:
+                                verdict = "[dim]→ Neutral[/dim]"
+                                verdict_plain = "→ Neutral"
 
-                                net_style = "green" if net > 0 else "red" if net < 0 else ""
-                                net_sign = '+' if net > 0 else ''
-                                net_display = (
-                                    f"[{net_style}]{net_sign}{net}[/{net_style}]" if net_style else str(net)
-                                )
+                            net_style = "green" if net > 0 else "red" if net < 0 else ""
+                            net_sign = '+' if net > 0 else ''
+                            net_display = (
+                                f"[{net_style}]{net_sign}{net}[/{net_style}]" if net_style else str(net)
+                            )
 
-                                txn_table.add_row(
-                                    f"{draft_player_in.get('web_name', 'Unknown')} ({in_abbr})",
-                                    str(in_points),
-                                    out_name if draft_player_out else "[dim]-[/dim]",
-                                    str(out_points) if draft_player_out else "-",
-                                    net_display,
-                                    verdict,
-                                )
+                            txn_table.add_row(
+                                f"{draft_player_in.get('web_name', 'Unknown')} ({in_abbr})",
+                                str(in_points),
+                                f"{draft_player_out.get('web_name', 'Unknown')} ({out_abbr})",
+                                str(out_points),
+                                net_display,
+                                verdict,
+                            )
 
-                                draft_transactions_data.append({
-                                    "player_out": draft_player_out.get("web_name") if draft_player_out else None,
-                                    "player_out_team": out_abbr if draft_player_out else None,
-                                    "player_out_points": out_points if draft_player_out else None,
-                                    "player_in": draft_player_in.get("web_name", "Unknown"),
-                                    "player_in_team": in_abbr,
-                                    "player_in_points": in_points,
-                                    "net": net,
-                                    "verdict": verdict_plain,
-                                })
+                            draft_transactions_data.append({
+                                "player_out": draft_player_out.get("web_name"),
+                                "player_out_team": out_abbr,
+                                "player_out_points": out_points,
+                                "player_in": draft_player_in.get("web_name", "Unknown"),
+                                "player_in_team": in_abbr,
+                                "player_in_points": in_points,
+                                "net": net,
+                                "verdict": verdict_plain,
+                            })
 
                         console.print(txn_table)
 

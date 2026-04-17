@@ -40,10 +40,13 @@ def _format_research_context(
     blankers_str = ""
     blankers = global_data.get("blankers")
     if blankers:
-        blankers_lines = ["| Player | Team | Ownership | Pts |", "|--------|------|-----------|-----|"]
+        blankers_lines = [
+            "| Player | Team | Pos | Ownership | Pts |",
+            "|--------|------|-----|-----------|-----|",
+        ]
         for b in blankers:
             blankers_lines.append(
-                f"| {b['name']} | {b['team']} | {b['ownership']:.1f}% | {b['points']} |"
+                f"| {b['name']} | {b['team']} | {b.get('position', '???')} | {b['ownership']:.1f}% | {b['points']} |"
             )
         blankers_str = "\n".join(blankers_lines)
 
