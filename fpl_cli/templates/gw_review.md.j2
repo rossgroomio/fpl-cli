@@ -67,14 +67,16 @@ No waiver recommendations or transactions.
 {% if team_points %}
 {% set has_reds = (team_points | selectattr('red_cards') | list | length > 0) %}
 ## Team Points
-| Player | Team | Pos | Pts |{% if has_reds %} 🟥 |{% endif %}
-|--------|------|-----|-----|{% if has_reds %}---|{% endif %}
-{% for p in team_points %}{% if p.auto_sub_in %}| {{ p.name }}{% if p.is_triple_captain %} (TC){% elif p.is_captain %} (C){% elif p.is_vice_active %} (V){% endif %} | {{ p.team }} | {{ p.position }} | {{ p.display_points }} [SUB IN] |{% if has_reds %} {% if p.red_cards %}🟥{% endif %} |{% endif %}
-{% elif p.auto_sub_out %}| {{ p.name }}{% if p.is_triple_captain %} (TC){% elif p.is_captain %} (C){% elif p.is_vice_active %} (V){% endif %} | {{ p.team }} | {{ p.position }} | ({{ p.display_points }}) [DIDN'T PLAY] |{% if has_reds %} {% if p.red_cards %}🟥{% endif %} |{% endif %}
-{% elif p.contributed %}| {{ p.name }}{% if p.is_triple_captain %} (TC){% elif p.is_captain %} (C){% elif p.is_vice_active %} (V){% endif %} | {{ p.team }} | {{ p.position }} | {{ p.display_points }} |{% if has_reds %} {% if p.red_cards %}🟥{% endif %} |{% endif %}
-{% elif p.display_points >= 6 %}| {{ p.name }} | {{ p.team }} | {{ p.position }} | ({{ p.display_points }}) [UNUSED!] |{% if has_reds %} {% if p.red_cards %}🟥{% endif %} |{% endif %}
-{% else %}| {{ p.name }} | {{ p.team }} | {{ p.position }} | ({{ p.display_points }}) |{% if has_reds %} {% if p.red_cards %}🟥{% endif %} |{% endif %}
-{% endif %}{% endfor %}
+| Player | Team | Pos | Pts |{{ ' 🟥 |' if has_reds else '' }}
+|--------|------|-----|-----|{{ '---|' if has_reds else '' }}
+{% for p in team_points %}
+{% if p.auto_sub_in %}| {{ p.name }}{% if p.is_triple_captain %} (TC){% elif p.is_captain %} (C){% elif p.is_vice_active %} (V){% endif %} | {{ p.team }} | {{ p.position }} | {{ p.display_points }} [SUB IN] |{{ (' 🟥 |' if p.red_cards else '  |') if has_reds else '' }}
+{% elif p.auto_sub_out %}| {{ p.name }}{% if p.is_triple_captain %} (TC){% elif p.is_captain %} (C){% elif p.is_vice_active %} (V){% endif %} | {{ p.team }} | {{ p.position }} | ({{ p.display_points }}) [DIDN'T PLAY] |{{ (' 🟥 |' if p.red_cards else '  |') if has_reds else '' }}
+{% elif p.contributed %}| {{ p.name }}{% if p.is_triple_captain %} (TC){% elif p.is_captain %} (C){% elif p.is_vice_active %} (V){% endif %} | {{ p.team }} | {{ p.position }} | {{ p.display_points }} |{{ (' 🟥 |' if p.red_cards else '  |') if has_reds else '' }}
+{% elif p.display_points >= 6 %}| {{ p.name }} | {{ p.team }} | {{ p.position }} | ({{ p.display_points }}) [UNUSED!] |{{ (' 🟥 |' if p.red_cards else '  |') if has_reds else '' }}
+{% else %}| {{ p.name }} | {{ p.team }} | {{ p.position }} | ({{ p.display_points }}) |{{ (' 🟥 |' if p.red_cards else '  |') if has_reds else '' }}
+{% endif %}
+{% endfor %}
 {% endif %}
 
 {% if classic_transfers %}
@@ -142,14 +144,16 @@ No waiver recommendations or transactions.
 {% if draft_squad_points %}
 {% set has_draft_reds = (draft_squad_points | selectattr('red_cards') | list | length > 0) %}
 ## Team Points
-| Player | Team | Pos | Pts |{% if has_draft_reds %} 🟥 |{% endif %}
-|--------|------|-----|-----|{% if has_draft_reds %}---|{% endif %}
-{% for p in draft_squad_points %}{% if p.auto_sub_in %}| {{ p.name }} | {{ p.team }} | {{ p.position }} | {{ p.points }} [SUB IN] |{% if has_draft_reds %} {% if p.red_cards %}🟥{% endif %} |{% endif %}
-{% elif p.auto_sub_out %}| {{ p.name }} | {{ p.team }} | {{ p.position }} | ({{ p.points }}) [DIDN'T PLAY] |{% if has_draft_reds %} {% if p.red_cards %}🟥{% endif %} |{% endif %}
-{% elif p.contributed %}| {{ p.name }} | {{ p.team }} | {{ p.position }} | {{ p.points }} |{% if has_draft_reds %} {% if p.red_cards %}🟥{% endif %} |{% endif %}
-{% elif p.points >= 6 %}| {{ p.name }} | {{ p.team }} | {{ p.position }} | ({{ p.points }}) [UNUSED!] |{% if has_draft_reds %} {% if p.red_cards %}🟥{% endif %} |{% endif %}
-{% else %}| {{ p.name }} | {{ p.team }} | {{ p.position }} | ({{ p.points }}) |{% if has_draft_reds %} {% if p.red_cards %}🟥{% endif %} |{% endif %}
-{% endif %}{% endfor %}
+| Player | Team | Pos | Pts |{{ ' 🟥 |' if has_draft_reds else '' }}
+|--------|------|-----|-----|{{ '---|' if has_draft_reds else '' }}
+{% for p in draft_squad_points %}
+{% if p.auto_sub_in %}| {{ p.name }} | {{ p.team }} | {{ p.position }} | {{ p.points }} [SUB IN] |{{ (' 🟥 |' if p.red_cards else '  |') if has_draft_reds else '' }}
+{% elif p.auto_sub_out %}| {{ p.name }} | {{ p.team }} | {{ p.position }} | ({{ p.points }}) [DIDN'T PLAY] |{{ (' 🟥 |' if p.red_cards else '  |') if has_draft_reds else '' }}
+{% elif p.contributed %}| {{ p.name }} | {{ p.team }} | {{ p.position }} | {{ p.points }} |{{ (' 🟥 |' if p.red_cards else '  |') if has_draft_reds else '' }}
+{% elif p.points >= 6 %}| {{ p.name }} | {{ p.team }} | {{ p.position }} | ({{ p.points }}) [UNUSED!] |{{ (' 🟥 |' if p.red_cards else '  |') if has_draft_reds else '' }}
+{% else %}| {{ p.name }} | {{ p.team }} | {{ p.position }} | ({{ p.points }}) |{{ (' 🟥 |' if p.red_cards else '  |') if has_draft_reds else '' }}
+{% endif %}
+{% endfor %}
 {% endif %}
 
 {% if draft_transactions %}
