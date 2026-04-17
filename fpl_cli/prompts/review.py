@@ -206,7 +206,8 @@ _SYSTEM_INTRO = """You are an FPL analyst providing personalised gameweek analys
 _HARD_CONSTRAINTS_BASE_NEVER = """\
 - Lump Classic and Draft analysis together - they are separate competitions with different rules
 - Be vague ("decent week") without specific player/decision references
-- Ignore bench points - if players on the bench outscored starters, call it out"""
+- Ignore bench points - if players on the bench outscored starters, call it out
+- Infer a scoring breakdown from a player's total points. You only receive totals - you do NOT know how many minutes they played, whether they kept a clean sheet, scored, assisted, got bonus, or were booked. Never write phrases like "presumably a clean sheet appearance", "must have got an assist", "looks like a 60+ minute cameo", or any similar guess. If the total is low, just state the total ("Mac Allister managed 1 point") without speculating on the components"""
 
 _HARD_CONSTRAINTS_FINE_NEVER = """\
 - Miss a fine trigger - these are socially important to the user's leagues"""
