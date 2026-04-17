@@ -121,3 +121,61 @@ class TestPreviewCustomAnalysisToggle:
         assert result.exit_code == 0, result.output
         assert "Haaland" in result.output
         assert "xGI/90" in result.output
+
+    def test_custom_on_gw_fixtures_uses_agent_fdr(self):
+        """When custom_analysis on and FixtureAgent has fixtures_by_gameweek, FDR comes from agent."""
+        fixture_data = {
+            "easy_fixture_runs": {"overall": []},
+            "team_form": [],
+            "fixtures_by_gameweek": {
+                25: [
+                    {
+                        "home_team": "ARS",
+                        "home_fdr": 5.5,
+                        "away_team": "MCI",
+                        "away_fdr": 3.2,
+                        "kickoff": "2026-04-20T14:00:00",
+                        "finished": False,
+                    }
+                ]
+            },
+        }
+        result = _run_preview(custom_analysis=True, fixture_data=fixture_data)
+        assert result.exit_code == 0, result.output
+        assert "5.5" in result.output
+        assert "3.2" in result.output
+
+    def test_custom_off_gw_fixtures_uses_api_fdr(self):
+        """When custom_analysis off, gw_fixtures FDR falls back to FPL API (get_fixtures called)."""
+        from unittest.mock import MagicMock, AsyncMock, patch
+        from click.testing import CliRunner
+
+        fpl_client = _make_fpl_client()
+        raw_fixture = MagicMock()
+        raw_fixture.home_team_id = 1
+        raw_fixture.away_team_id = 2
+        raw_fixture.home_difficulty = 3
+        raw_fixture.away_difficulty = 4
+        raw_fixture.kickoff_time = None
+        fpl_client.get_fixtures = AsyncMock(return_value=[raw_fixture])
+
+        fixture_agent = _make_agent(data={"easy_fixture_runs": {"overall": []}, "team_form": []})
+        stats_agent = _make_agent(data={
+            "top_xgi_per_90": [], "underperformers": [], "value_picks": [], "window_label": "last 6 GWs"
+        })
+        price_agent = _make_agent(data={})
+        settings = {"custom_analysis": False}
+
+        runner = CliRunner()
+        with (
+            patch("fpl_cli.cli.preview.is_custom_analysis_enabled", return_value=False),
+            patch("fpl_cli.cli.preview.load_settings", return_value=settings),
+            patch("fpl_cli.api.fpl.FPLClient", return_value=fpl_client),
+            patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=fixture_agent),
+            patch("fpl_cli.agents.analysis.stats.StatsAgent", return_value=stats_agent),
+            patch("fpl_cli.agents.data.price.PriceAgent", return_value=price_agent),
+        ):
+            result = runner.invoke(preview_command, [])
+
+        assert result.exit_code == 0, result.output
+        fpl_client.get_fixtures.assert_awaited_once()

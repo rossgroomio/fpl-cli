@@ -110,17 +110,41 @@ def preview_command(ctx: click.Context, save: bool, output: str | None, scout: b
                 error_console.print(f"[yellow]⚠[/yellow] Fixture analysis: {fixture_result.message}")
 
             # Get gameweek fixtures (for display)
-            gw_fixtures = await client.get_fixtures(gameweek=gw)
-            collected_data["gw_fixtures"] = [
-                {
-                    "home_team": team_map[f.home_team_id].short_name if f.home_team_id in team_map else "???",
-                    "home_fdr": f.home_difficulty,
-                    "away_team": team_map[f.away_team_id].short_name if f.away_team_id in team_map else "???",
-                    "away_fdr": f.away_difficulty,
-                    "kickoff": f.kickoff_time.strftime("%a %H:%M") if f.kickoff_time else "TBC",
-                }
-                for f in gw_fixtures
-            ]
+            # When custom_analysis is on, use team-ratings FDR (1-7) from FixtureAgent;
+            # otherwise fall back to canonical API difficulty (1-5).
+            custom_on = is_custom_analysis_enabled(settings)
+            fixture_agent_gw = (
+                fixture_result.data.get("fixtures_by_gameweek", {}).get(gw, [])
+                if fixture_result.success
+                else []
+            )
+            if custom_on and fixture_agent_gw:
+                collected_data["gw_fixtures"] = [
+                    {
+                        "home_team": f["home_team"],
+                        "home_fdr": f["home_fdr"],
+                        "away_team": f["away_team"],
+                        "away_fdr": f["away_fdr"],
+                        "kickoff": (
+                            datetime.fromisoformat(f["kickoff"]).strftime("%a %H:%M")
+                            if f.get("kickoff")
+                            else "TBC"
+                        ),
+                    }
+                    for f in fixture_agent_gw
+                ]
+            else:
+                gw_fixtures = await client.get_fixtures(gameweek=gw)
+                collected_data["gw_fixtures"] = [
+                    {
+                        "home_team": team_map[f.home_team_id].short_name if f.home_team_id in team_map else "???",
+                        "home_fdr": f.home_difficulty,
+                        "away_team": team_map[f.away_team_id].short_name if f.away_team_id in team_map else "???",
+                        "away_fdr": f.away_difficulty,
+                        "kickoff": f.kickoff_time.strftime("%a %H:%M") if f.kickoff_time else "TBC",
+                    }
+                    for f in gw_fixtures
+                ]
 
             # Build team → fixture string map (handles DGW/BGW)
             team_fixture_map = _preview_build_fixture_map(collected_data["gw_fixtures"])
@@ -236,8 +260,7 @@ def preview_command(ctx: click.Context, save: bool, output: str | None, scout: b
         console.print("")
 
         # Display summary
-        custom_on = is_custom_analysis_enabled(settings)
-        _display_preview_summary(collected_data, gw, custom_on=custom_on)
+        _display_preview_summary(collected_data, custom_on=custom_on)
 
         # Generate report if requested
         if save:
@@ -328,7 +351,7 @@ def preview_command(ctx: click.Context, save: bool, output: str | None, scout: b
                 else:
                     error_console.print(f"[yellow]⚠[/yellow] Scout analysis: {scout_result.message}")
 
-    def _display_preview_summary(data: dict, gw: int, *, custom_on: bool = True):
+    def _display_preview_summary(data: dict, *, custom_on: bool = True):
         """Display a summary of the preview analysis."""
 
         # --- Fixture Analysis ---
