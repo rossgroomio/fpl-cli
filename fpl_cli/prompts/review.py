@@ -215,7 +215,7 @@ _HARD_CONSTRAINTS_ALWAYS = """\
 - Analyse Classic and Draft separately with distinct verdicts
 - Reference specific players and points where it adds colour (e.g., "Bruno G hauled 11 points" or "Grealish's -1 was painful")
 - Highlight selection mistakes: if a "Bench vs Starters" section is provided in the player data, use it directly - these are pre-computed formation-valid comparisons. Also flag wrong captain choices
-- Note team concentration when notable: if 2+ players from the same team collectively hauled or blanked, call it out
+- Note team concentration when notable: if 2+ players from the same team collectively hauled or blanked, call it out. When grouping players by team, never infer position from context - use their exact position label from the data (e.g. "Brighton forward Welbeck and defender Van Hecke", not "two Brighton defenders")
 - Maintain wry, dry humour especially when delivering bad news
 - When suggesting players to move on from, specify which format (Classic or Draft)
 - If a chip was played, frame the Classic Verdict around whether the chip paid off - chips raise expectations"""
