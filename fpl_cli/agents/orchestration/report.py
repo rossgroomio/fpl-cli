@@ -419,7 +419,8 @@ class ReportAgent(Agent):
             for p in data["team_points"]:
                 if p.get("contributed", True):
                     marker = " (C)" if p.get("is_captain") else " (V)" if p.get("is_vice_active") else ""
-                    lines.append(f"| {p['name']}{marker} | {p['team']} | {p['position']} | {p['display_points']} |")
+                    bb = " [BB]" if p.get("is_bench_boost_player") else ""
+                    lines.append(f"| {p['name']}{marker} | {p['team']} | {p['position']} | {p['display_points']}{bb} |")
                 else:
                     lines.append(f"| {p['name']} | {p['team']} | {p['position']} | ({p['display_points']}) |")
             lines.append("")

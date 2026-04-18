@@ -72,7 +72,7 @@ No waiver recommendations or transactions.
 {% for p in team_points %}
 {% if p.auto_sub_in %}| {{ p.name }}{% if p.is_triple_captain %} (TC){% elif p.is_captain %} (C){% elif p.is_vice_active %} (V){% endif %} | {{ p.team }} | {{ p.position }} | {{ p.display_points }} [SUB IN] |{{ (' 🟥 |' if p.red_cards else '  |') if has_reds else '' }}
 {% elif p.auto_sub_out %}| {{ p.name }}{% if p.is_triple_captain %} (TC){% elif p.is_captain %} (C){% elif p.is_vice_active %} (V){% endif %} | {{ p.team }} | {{ p.position }} | ({{ p.display_points }}) [DIDN'T PLAY] |{{ (' 🟥 |' if p.red_cards else '  |') if has_reds else '' }}
-{% elif p.contributed %}| {{ p.name }}{% if p.is_triple_captain %} (TC){% elif p.is_captain %} (C){% elif p.is_vice_active %} (V){% endif %} | {{ p.team }} | {{ p.position }} | {{ p.display_points }} |{{ (' 🟥 |' if p.red_cards else '  |') if has_reds else '' }}
+{% elif p.contributed %}| {{ p.name }}{% if p.is_triple_captain %} (TC){% elif p.is_captain %} (C){% elif p.is_vice_active %} (V){% endif %} | {{ p.team }} | {{ p.position }} | {{ p.display_points }}{% if p.is_bench_boost_player %} [BB]{% endif %} |{{ (' 🟥 |' if p.red_cards else '  |') if has_reds else '' }}
 {% elif p.display_points >= 6 %}| {{ p.name }} | {{ p.team }} | {{ p.position }} | ({{ p.display_points }}) [UNUSED!] |{{ (' 🟥 |' if p.red_cards else '  |') if has_reds else '' }}
 {% else %}| {{ p.name }} | {{ p.team }} | {{ p.position }} | ({{ p.display_points }}) |{{ (' 🟥 |' if p.red_cards else '  |') if has_reds else '' }}
 {% endif %}
