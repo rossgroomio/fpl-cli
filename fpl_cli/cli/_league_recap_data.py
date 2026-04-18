@@ -31,6 +31,26 @@ _CHIP_DISPLAY = {"wildcard": "WC", "freehit": "FH", "bboost": "BB", "3xc": "TC"}
 _PICKS_CONCURRENCY = 10
 
 
+def _classic_pick_flags(
+    *,
+    pick: dict[str, Any],
+    active_chip: str | None,
+    player_id: int,
+    auto_sub_in_ids: set[int],
+) -> tuple[bool, bool, bool]:
+    """Return (is_bench, is_bench_boost_player, contributed) for a classic pick.
+
+    Bench Boost flips `contributed` true for bench slots (12-15) because those
+    points actually count toward the manager's GW total.
+    """
+    is_bench = pick.get("position", 1) > 11
+    is_bench_boost_player = active_chip == "bboost" and is_bench
+    contributed = (not is_bench) and pick.get("multiplier", 0) > 0
+    if player_id in auto_sub_in_ids or is_bench_boost_player:
+        contributed = True
+    return is_bench, is_bench_boost_player, contributed
+
+
 # ---------------------------------------------------------------------------
 # Classic data collection
 # ---------------------------------------------------------------------------
@@ -129,13 +149,15 @@ async def _fetch_all_manager_data(
                 continue
 
             pts, minutes, red_cards = _live_player_stats(live_stats, player.id)
-            is_bench = pick.get("position", 1) > 11
-            contributed = (not is_bench) and pick.get("multiplier", 0) > 0
-            if player.id in auto_sub_in_ids:
-                contributed = True
+            is_bench, is_bench_boost_player, contributed = _classic_pick_flags(
+                pick=pick,
+                active_chip=active_chip,
+                player_id=player.id,
+                auto_sub_in_ids=auto_sub_in_ids,
+            )
 
-            # Bench points: actual bench slot, not auto-subbed out
-            if is_bench and player.id not in auto_sub_in_ids:
+            # Bench points: actual bench slot, not auto-subbed out, not BB (BB bench counts)
+            if is_bench and player.id not in auto_sub_in_ids and not is_bench_boost_player:
                 bench_points += pts
 
             squad.append(RecapManagerPlayer(
@@ -146,6 +168,7 @@ async def _fetch_all_manager_data(
                 is_captain=pick.get("is_captain", False),
                 is_vice_captain=pick.get("is_vice_captain", False),
                 contributed=contributed,
+                is_bench_boost_player=is_bench_boost_player,
                 auto_sub_in=player.id in auto_sub_in_ids,
                 auto_sub_out=player.id in auto_sub_out_ids,
                 red_cards=red_cards,
@@ -409,26 +432,28 @@ def _compute_shared_awards(
         detail=", ".join(f"{m['manager_name']} with {m['gw_points']} pts" for m in losers),
     )
 
-    # Biggest bench haul
-    best_bench_pts = max(m["bench_points"] for m in managers)
-    if best_bench_pts > 0:
-        bench_kings = [m for m in managers if m["bench_points"] == best_bench_pts]
-        detail_parts = []
-        for m in bench_kings:
-            bench_players = [
-                p for p in m["squad"]
-                if not p["contributed"] and not p["auto_sub_out"] and p["points"] > 0
-            ]
-            player_detail = ", ".join(f"{p['name']} ({p['points']})" for p in bench_players)
-            detail_parts.append(
-                f"{m['manager_name']} left {m['bench_points']} pts on the bench"
-                f" (team scored {m['gw_points']} pts): {player_detail}"
+    # Biggest bench haul — excludes Bench Boost managers (their bench counted)
+    bench_candidates = [m for m in managers if m.get("active_chip") != "bboost"]
+    if bench_candidates:
+        best_bench_pts = max(m["bench_points"] for m in bench_candidates)
+        if best_bench_pts > 0:
+            bench_kings = [m for m in bench_candidates if m["bench_points"] == best_bench_pts]
+            detail_parts = []
+            for m in bench_kings:
+                bench_players = [
+                    p for p in m["squad"]
+                    if not p["contributed"] and not p["auto_sub_out"] and p["points"] > 0
+                ]
+                player_detail = ", ".join(f"{p['name']} ({p['points']})" for p in bench_players)
+                detail_parts.append(
+                    f"{m['manager_name']} left {m['bench_points']} pts on the bench"
+                    f" (team scored {m['gw_points']} pts): {player_detail}"
+                )
+            awards["biggest_bench_haul"] = RecapAwardEntry(
+                manager_name=" and ".join(m["manager_name"] for m in bench_kings),
+                value=best_bench_pts,
+                detail="; ".join(detail_parts),
             )
-        awards["biggest_bench_haul"] = RecapAwardEntry(
-            manager_name=" and ".join(m["manager_name"] for m in bench_kings),
-            value=best_bench_pts,
-            detail="; ".join(detail_parts),
-        )
 
     # Captain awards (classic only - draft has no captaincy)
     if format_name == "classic":
@@ -656,6 +681,7 @@ async def collect_draft_recap_data(
                     is_captain=False,
                     is_vice_captain=False,
                     contributed=contributed,
+                    is_bench_boost_player=False,
                     auto_sub_in=draft_elem_id in auto_sub_in_ids,
                     auto_sub_out=draft_elem_id in auto_sub_out_ids,
                     red_cards=red_cards,

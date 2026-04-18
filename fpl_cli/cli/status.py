@@ -77,6 +77,7 @@ def _build_fines_context(
     pick_ids: list[int] | None,
     live_data: dict[str, Any] | None,
     player_names: dict[int, str] | None,
+    active_chip: str | None = None,
 ) -> tuple[FinesLeagueData, list[FinesTeamPlayer]]:
     """Build minimal league_data and team_data for evaluate_fines()."""
     bottom = standings_sorted_asc[0] if standings_sorted_asc else {}
@@ -93,6 +94,7 @@ def _build_fines_context(
         }],
     }
 
+    bench_counts = active_chip == "bboost"
     team_data: list[FinesTeamPlayer] = []
     if pick_ids and live_data:
         live_map = {e["id"]: e.get("stats", {}) for e in live_data.get("elements", [])}
@@ -102,7 +104,7 @@ def _build_fines_context(
             team_data.append({
                 "name": names.get(pid, f"Player {pid}"),
                 "red_cards": stats.get("red_cards", 0),
-                "contributed": i < 11,
+                "contributed": i < 11 or bench_counts,
                 "auto_sub_out": False,
             })
 
@@ -358,6 +360,7 @@ async def _fetch_classic_data(
             league_data, team_data = _build_fines_context(
                 sorted_standings, user_is_last, classic_user_gw_pts,
                 pick_id_list, live_data, player_names,
+                active_chip=picks_data.get("active_chip"),
             )
 
             close_margin = False

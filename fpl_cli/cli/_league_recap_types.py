@@ -15,6 +15,7 @@ class RecapManagerPlayer(TypedDict):
     is_captain: bool
     is_vice_captain: bool
     contributed: bool
+    is_bench_boost_player: bool
     auto_sub_in: bool
     auto_sub_out: bool
     red_cards: int
