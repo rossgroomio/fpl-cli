@@ -229,7 +229,9 @@ def _format_pts_display(p: dict, points_key: str = "points") -> str:
         return f"[dim]({pts}) [DIDN'T PLAY][/dim]"
     elif p.get("contributed", True):
         pts_style = "bold green" if pts >= 10 else "green" if pts >= 6 else ""
-        return f"[{pts_style}]{pts}[/{pts_style}]" if pts_style else str(pts)
+        pts_val = f"[{pts_style}]{pts}[/{pts_style}]" if pts_style else str(pts)
+        bb_suffix = " [cyan][BB][/cyan]" if p.get("is_bench_boost_player") else ""
+        return f"{pts_val}{bb_suffix}"
     else:
         if pts >= 6:
             return f"[yellow]({pts}) [UNUSED!][/yellow]"

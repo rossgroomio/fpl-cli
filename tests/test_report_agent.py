@@ -223,6 +223,19 @@ class TestTemplateRendering:
         output = self.agent._generate_review_report(29, data)
         assert "[UNUSED!]" in output
 
+    def test_review_bench_boost_marker(self):
+        # BB bench players are contributors with is_bench_boost_player=True -> [BB] suffix
+        data = _review_data()
+        data["team_points"][1]["is_bench_boost_player"] = True
+        output = self.agent._generate_review_report(29, data)
+        saka_row = next(line for line in output.splitlines() if "Saka" in line)
+        assert "[BB]" in saka_row
+        assert "(6)" not in saka_row  # no brackets - BB bench still contributes
+
+    def test_review_no_bench_boost_marker_by_default(self):
+        output = self.agent._generate_review_report(29, _review_data())
+        assert "[BB]" not in output
+
     def test_review_red_card_emoji(self):
         data = _review_data()
         data["team_points"][1]["red_cards"] = 1

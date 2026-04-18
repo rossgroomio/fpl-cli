@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from fpl_cli.cli._helpers import _gw_position_with_half, _live_player_stats
+from fpl_cli.cli._helpers import _format_pts_display, _gw_position_with_half, _live_player_stats
 from fpl_cli.cli._review_classic import _format_review_classic_player
 from fpl_cli.cli._review_draft import _format_review_draft_player
 from fpl_cli.cli._review_summarisation import _names_match, _normalise_name, _review_compare_recs, _review_llm_summarise
@@ -200,6 +200,37 @@ class TestFormatReviewClassicPlayer:
         line = _format_review_classic_player(p)
         assert "[BGW" not in line
         assert "[DGW]" not in line
+
+
+# ---------------------------------------------------------------------------
+# TestFormatPtsDisplay — Rich-table renderer (separate path from LLM prompt)
+# ---------------------------------------------------------------------------
+
+class TestFormatPtsDisplay:
+
+    def test_bench_boost_player_gets_bb_suffix(self):
+        p = {"display_points": 5, "contributed": True, "is_bench_boost_player": True}
+        out = _format_pts_display(p, points_key="display_points")
+        assert "[BB]" in out
+        assert "(" not in out  # contributor - no brackets around pts
+
+    def test_no_bb_suffix_when_flag_absent(self):
+        p = {"display_points": 5, "contributed": True}
+        out = _format_pts_display(p, points_key="display_points")
+        assert "[BB]" not in out
+
+    def test_no_bb_suffix_when_flag_false(self):
+        p = {"display_points": 5, "contributed": True, "is_bench_boost_player": False}
+        out = _format_pts_display(p, points_key="display_points")
+        assert "[BB]" not in out
+
+    def test_auto_sub_in_takes_precedence_over_bb(self):
+        # Defensive: auto_sub + BB shouldn't co-occur in real data, but render path
+        # prioritises auto-sub markers. Locks in that precedence.
+        p = {"display_points": 6, "auto_sub_in": True, "is_bench_boost_player": True}
+        out = _format_pts_display(p, points_key="display_points")
+        assert "[SUB IN]" in out
+        assert "[BB]" not in out
 
 
 # ---------------------------------------------------------------------------
