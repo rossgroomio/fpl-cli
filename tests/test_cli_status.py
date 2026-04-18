@@ -884,3 +884,114 @@ class TestStatusDiscoveryNote:
         assert result.exit_code == 0
         payload = json.loads(result.output)
         assert "Custom analysis" not in str(payload)
+
+
+class TestBuildFinesContextActiveChip:
+    """Unit 4: _build_fines_context must flag bench slots as contributed during BB."""
+
+    def _live_data_with_red_card(self, pid: int) -> dict:
+        return {"elements": [{"id": pid, "stats": {"red_cards": 1}}]}
+
+    def _pick_ids(self) -> list[int]:
+        # 15 picks: slots 1-11 starters, 12-15 bench. pid == slot_index for simplicity.
+        return list(range(1, 16))
+
+    def test_non_bb_bench_slot_not_contributed(self):
+        from fpl_cli.cli.status import _build_fines_context
+
+        _, team_data = _build_fines_context(
+            standings_sorted_asc=[], user_is_last=False, user_gw_pts=50,
+            pick_ids=self._pick_ids(),
+            live_data=self._live_data_with_red_card(13),
+            player_names={i: f"P{i}" for i in range(1, 16)},
+        )
+        assert team_data[12]["contributed"] is False  # slot 13 (0-indexed 12)
+        assert team_data[10]["contributed"] is True   # slot 11 is a starter
+
+    def test_bb_bench_slot_is_contributed(self):
+        from fpl_cli.cli.status import _build_fines_context
+
+        _, team_data = _build_fines_context(
+            standings_sorted_asc=[], user_is_last=False, user_gw_pts=50,
+            pick_ids=self._pick_ids(),
+            live_data=self._live_data_with_red_card(13),
+            player_names={i: f"P{i}" for i in range(1, 16)},
+            active_chip="bboost",
+        )
+        assert team_data[12]["contributed"] is True  # BB flips bench contributed
+        assert team_data[10]["contributed"] is True  # starter unchanged
+
+    def test_other_chips_do_not_flip_bench(self):
+        from fpl_cli.cli.status import _build_fines_context
+
+        for chip in ("wildcard", "freehit", "3xc"):
+            _, team_data = _build_fines_context(
+                standings_sorted_asc=[], user_is_last=False, user_gw_pts=50,
+                pick_ids=self._pick_ids(),
+                live_data=self._live_data_with_red_card(13),
+                player_names={i: f"P{i}" for i in range(1, 16)},
+                active_chip=chip,
+            )
+            assert team_data[12]["contributed"] is False, f"chip={chip} should not flip bench"
+
+    def test_bb_red_card_fine_triggers_via_evaluate_fines(self):
+        """Integration: BB + benched red-card → red-card fine fires."""
+        from fpl_cli.cli._fines import evaluate_fines
+        from fpl_cli.cli._fines_config import FineRule, FinesConfig
+        from fpl_cli.cli.status import _build_fines_context
+
+        _, team_data = _build_fines_context(
+            standings_sorted_asc=[], user_is_last=False, user_gw_pts=50,
+            pick_ids=self._pick_ids(),
+            live_data=self._live_data_with_red_card(13),  # bench slot 13
+            player_names={i: f"P{i}" for i in range(1, 16)},
+            active_chip="bboost",
+        )
+        cfg = FinesConfig(
+            classic=[FineRule(type="red-card", penalty="Buy the round")],
+            draft=[],
+        )
+        results = evaluate_fines(cfg, "classic", None, team_data)
+        red_card = next(r for r in results if r.rule_type == "red-card")
+        assert red_card.triggered is True
+        assert "P13" in red_card.message
+
+    def test_non_bb_bench_red_card_does_not_trigger(self):
+        from fpl_cli.cli._fines import evaluate_fines
+        from fpl_cli.cli._fines_config import FineRule, FinesConfig
+        from fpl_cli.cli.status import _build_fines_context
+
+        _, team_data = _build_fines_context(
+            standings_sorted_asc=[], user_is_last=False, user_gw_pts=50,
+            pick_ids=self._pick_ids(),
+            live_data=self._live_data_with_red_card(13),
+            player_names={i: f"P{i}" for i in range(1, 16)},
+        )
+        cfg = FinesConfig(
+            classic=[FineRule(type="red-card", penalty="Buy the round")],
+            draft=[],
+        )
+        results = evaluate_fines(cfg, "classic", None, team_data)
+        red_card = next(r for r in results if r.rule_type == "red-card")
+        assert red_card.triggered is False
+
+    def test_bb_starter_red_card_still_triggers(self):
+        from fpl_cli.cli._fines import evaluate_fines
+        from fpl_cli.cli._fines_config import FineRule, FinesConfig
+        from fpl_cli.cli.status import _build_fines_context
+
+        _, team_data = _build_fines_context(
+            standings_sorted_asc=[], user_is_last=False, user_gw_pts=50,
+            pick_ids=self._pick_ids(),
+            live_data=self._live_data_with_red_card(5),  # slot 5 is a starter
+            player_names={i: f"P{i}" for i in range(1, 16)},
+            active_chip="bboost",
+        )
+        cfg = FinesConfig(
+            classic=[FineRule(type="red-card", penalty="Buy the round")],
+            draft=[],
+        )
+        results = evaluate_fines(cfg, "classic", None, team_data)
+        red_card = next(r for r in results if r.rule_type == "red-card")
+        assert red_card.triggered is True
+        assert "P5" in red_card.message

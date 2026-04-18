@@ -7,6 +7,7 @@ from pathlib import Path
 
 from fpl_cli.agents.orchestration.report import ReportAgent, _format_standings_block
 from fpl_cli.cli._league_recap_data import (
+    _classic_pick_flags,
     _compute_shared_awards,
     _compute_standings_movement,
     _compute_transfer_awards,
@@ -89,6 +90,7 @@ def _make_squad_player(
         is_captain=kwargs.get("is_captain", False),
         is_vice_captain=kwargs.get("is_vice_captain", False),
         contributed=contributed,
+        is_bench_boost_player=kwargs.get("is_bench_boost_player", False),
         auto_sub_in=kwargs.get("auto_sub_in", False),
         auto_sub_out=auto_sub_out,
         red_cards=kwargs.get("red_cards", 0),
@@ -325,13 +327,50 @@ class TestAwardsChips:
         assert awards["best_captain"]["manager_name"] == "Alice"
 
     def test_manager_with_bench_boost(self):
-        """Bench boost means bench_points=0 (all contribute). No bench award expected."""
+        """Bench boost means bench_points=0 (all contribute). No bench award expected.
+
+        Uses the display-form chip ("BB") that _fetch_all_manager_data actually stores
+        on RecapManagerEntry — the raw "bboost" never reaches _compute_shared_awards.
+        """
+        bb_player = _make_squad_player(
+            name="AliceBench", points=0, contributed=True, is_bench_boost_player=True,
+        )
         managers = [
-            _make_manager(name="Alice", active_chip="bboost", bench_points=0),
+            _make_manager(name="Alice", active_chip="BB", bench_points=0, squad=[bb_player]),
             _make_manager(name="Bob", bench_points=10),
         ]
         awards = _compute_shared_awards(managers)
         assert awards["biggest_bench_haul"]["manager_name"] == "Bob"
+
+    def test_bb_manager_excluded_even_if_bench_points_stale(self):
+        # Regression: the defensive filter must not rely on the raw "bboost" string —
+        # RecapManagerEntry.active_chip is stored in display form ("BB"). Detection
+        # runs off the per-player is_bench_boost_player flag instead.
+        bench_bb = _make_squad_player(
+            name="BBBench", points=30, contributed=True, is_bench_boost_player=True,
+        )
+        non_bb_bench = _make_squad_player(name="Benchman", points=15, contributed=False)
+        managers = [
+            _make_manager(
+                name="Alice", active_chip="BB", gw_points=99,
+                bench_points=30, squad=[bench_bb],
+            ),
+            _make_manager(name="Bob", gw_points=60, bench_points=15, squad=[non_bb_bench]),
+        ]
+        awards = _compute_shared_awards(managers)
+        assert awards["biggest_bench_haul"]["manager_name"] == "Bob"
+        assert "Alice" not in awards["biggest_bench_haul"]["detail"]
+
+    def test_all_managers_played_bench_boost(self):
+        bb_player = _make_squad_player(
+            name="Bench", points=0, contributed=True, is_bench_boost_player=True,
+        )
+        managers = [
+            _make_manager(name="Alice", active_chip="BB", bench_points=0, squad=[bb_player]),
+            _make_manager(name="Bob", active_chip="BB", bench_points=0, squad=[bb_player]),
+        ]
+        awards = _compute_shared_awards(managers)
+        assert "biggest_bench_haul" not in awards
 
 
 # ---------------------------------------------------------------------------
@@ -572,6 +611,28 @@ class TestEvaluateLeagueFines:
         assert len(result) == 1
         assert result[0]["rule_type"] == "red-card"
         assert "Hothead" in result[0]["message"]
+
+    def test_red_card_fine_triggers_on_bench_boost_bench_slot(self):
+        # BB-flagged bench slot counts as contributed; a red card there must fine.
+        bb_bench_red = _make_squad_player(
+            name="BBRed", red_cards=1, contributed=True, is_bench_boost_player=True,
+        )
+        squad = [bb_bench_red] + [_make_squad_player(name=f"P{i}") for i in range(10)]
+        rules = [{"type": "red-card", "penalty": "Round"}]
+        managers = [_make_manager(name="Alice", active_chip="bboost", squad=squad)]
+        result = evaluate_league_fines(managers, self._settings_with_fines(rules), "classic")
+        assert len(result) == 1
+        assert result[0]["rule_type"] == "red-card"
+        assert "BBRed" in result[0]["message"]
+
+    def test_red_card_on_non_bb_bench_does_not_trigger(self):
+        # Pre-existing behaviour: benched red card without BB is not fined.
+        bench_red = _make_squad_player(name="BenchRed", red_cards=1, contributed=False)
+        squad = [bench_red] + [_make_squad_player(name=f"P{i}") for i in range(10)]
+        rules = [{"type": "red-card", "penalty": "Round"}]
+        managers = [_make_manager(name="Alice", squad=squad)]
+        result = evaluate_league_fines(managers, self._settings_with_fines(rules), "classic")
+        assert result == []
 
     def test_fines_failure_for_one_manager_doesnt_affect_others(self):
         squad = [_make_squad_player(name=f"P{i}") for i in range(11)]
@@ -865,3 +926,65 @@ class TestLeagueRecapTemplateRender:
         assert standings_section.index("Alice") < standings_section.index("Bob")
         # Block is wrapped in a fenced code block for Obsidian monospace
         assert "```" in standings_section
+
+
+# ---------------------------------------------------------------------------
+# Unit 1: chip-aware classic pick flags
+# ---------------------------------------------------------------------------
+
+
+class TestClassicPickFlags:
+    """Cover _classic_pick_flags: (is_bench, is_bench_boost_player, contributed)."""
+
+    def test_non_bb_starter_contributes(self):
+        pick = {"position": 5, "multiplier": 1}
+        is_bench, is_bbp, contributed = _classic_pick_flags(
+            pick=pick, active_chip=None, player_id=1, auto_sub_in_ids=set(),
+        )
+        assert (is_bench, is_bbp, contributed) == (False, False, True)
+
+    def test_non_bb_bench_does_not_contribute(self):
+        pick = {"position": 13, "multiplier": 0}
+        is_bench, is_bbp, contributed = _classic_pick_flags(
+            pick=pick, active_chip=None, player_id=1, auto_sub_in_ids=set(),
+        )
+        assert (is_bench, is_bbp, contributed) == (True, False, False)
+
+    def test_bb_bench_contributes_and_flagged(self):
+        pick = {"position": 13, "multiplier": 0}
+        is_bench, is_bbp, contributed = _classic_pick_flags(
+            pick=pick, active_chip="bboost", player_id=1, auto_sub_in_ids=set(),
+        )
+        assert (is_bench, is_bbp, contributed) == (True, True, True)
+
+    def test_bb_starter_not_flagged_as_bench_boost(self):
+        pick = {"position": 1, "multiplier": 1}
+        is_bench, is_bbp, contributed = _classic_pick_flags(
+            pick=pick, active_chip="bboost", player_id=1, auto_sub_in_ids=set(),
+        )
+        assert (is_bench, is_bbp, contributed) == (False, False, True)
+
+    def test_auto_sub_in_contributes_without_bb(self):
+        pick = {"position": 13, "multiplier": 0}
+        is_bench, is_bbp, contributed = _classic_pick_flags(
+            pick=pick, active_chip=None, player_id=99, auto_sub_in_ids={99},
+        )
+        # Auto-sub target still counts as bench slot by position, but contributes
+        assert (is_bench, is_bbp, contributed) == (True, False, True)
+
+    def test_bb_and_auto_sub_in_both_contribute(self):
+        pick = {"position": 13, "multiplier": 0}
+        is_bench, is_bbp, contributed = _classic_pick_flags(
+            pick=pick, active_chip="bboost", player_id=99, auto_sub_in_ids={99},
+        )
+        assert (is_bench, is_bbp, contributed) == (True, True, True)
+
+    def test_other_chips_do_not_flip_bench_contributed(self):
+        # Only bboost flips bench contributed; wildcard, freehit, 3xc do not.
+        pick = {"position": 13, "multiplier": 0}
+        for chip in ("wildcard", "freehit", "3xc"):
+            _, is_bbp, contributed = _classic_pick_flags(
+                pick=pick, active_chip=chip, player_id=1, auto_sub_in_ids=set(),
+            )
+            assert is_bbp is False
+            assert contributed is False
