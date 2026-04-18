@@ -20,6 +20,7 @@ from fpl_cli.cli._json import emit_json, output_format_option
 from fpl_cli.cli.chips import CHIP_NAMES
 from fpl_cli.models.chip_plan import ChipPlan, ChipType, UsedChip
 from fpl_cli.models.player import Player, PlayerStatus
+from fpl_cli.utils.time import format_deadline
 
 if TYPE_CHECKING:
     from fpl_cli.api.fpl import FPLClient
@@ -207,7 +208,7 @@ def status_command(ctx: click.Context, output_format: str) -> None:
                 countdown = _countdown(deadline) if deadline else "Unknown"
                 console.print(f"[bold]Next Deadline:[/bold] GW{next_gw['id']} in [cyan]{countdown}[/cyan]")
                 if deadline:
-                    console.print(f"  [dim]{deadline}[/dim]")
+                    console.print(f"  [dim]{format_deadline(deadline)}[/dim]")
 
             # No format detected - no entry IDs configured
             if fmt is None:

@@ -87,6 +87,24 @@ class TestStatusDashboard:
         result = _run(client)
         assert "Next Deadline" in result.output
 
+    def test_deadline_displayed_in_uk_timezone(self):
+        """Deadline string is formatted via utils.time.format_deadline (UK local, GMT/BST label)."""
+        client = _mock_client(
+            current_gw={"id": 30, "finished": True},
+            next_gw={"id": 31, "deadline_time": "2099-04-18T17:30:00Z"},  # April → BST
+        )
+        result = _run(client)
+        assert "18:30 BST" in result.output
+        assert "2099-04-18T17:30:00Z" not in result.output  # raw ISO gone
+
+    def test_deadline_winter_displays_as_gmt(self):
+        client = _mock_client(
+            current_gw={"id": 30, "finished": True},
+            next_gw={"id": 31, "deadline_time": "2099-01-03T18:30:00Z"},  # January → GMT
+        )
+        result = _run(client)
+        assert "18:30 GMT" in result.output
+
     def test_no_entry_id_shows_hint(self):
         client = _mock_client(
             current_gw={"id": 30, "finished": True},

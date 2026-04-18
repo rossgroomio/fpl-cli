@@ -4,6 +4,10 @@ Detailed flag documentation and configuration for fpl-cli.
 For an overview of what each command does, see the [README](../README.md).
 For scoring formulas and methodology, see the [Custom Analysis Guide](custom-analysis.md).
 
+## Timestamps
+
+All user-facing timestamps (gameweek deadlines, fixture kickoffs, `generated_at` stamps in reports) render in **UK local time** (`Europe/London`). The display switches between **GMT** and **BST** automatically based on the date of the timestamp, so summer deadlines appear as BST and winter deadlines as GMT. The timezone label is always shown alongside the time (e.g. `Sat 18 Apr, 18:30 BST`). Internal datetime math (countdowns, comparisons) remains in UTC.
+
 ## LLM Transparency
 
 Most fpl-cli output is **deterministic computation** - fixed algorithms applied to data from the FPL API, Understat, and other sources. A handful of commands optionally call an LLM for narrative content:

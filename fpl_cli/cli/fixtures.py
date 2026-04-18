@@ -23,6 +23,7 @@ def fixtures_command(gameweek: int | None, output_format: str):
     async def _run():
         from fpl_cli.api.fpl import FPLClient
         from fpl_cli.services.team_ratings import TeamRatingsService
+        from fpl_cli.utils.time import format_kickoff
 
         async with FPLClient() as client:
             # Default to next gameweek if not specified
@@ -99,7 +100,7 @@ def fixtures_command(gameweek: int | None, output_format: str):
                     home_fdr_style = _fdr_style(home_fdr)
                     away_fdr_style = _fdr_style(away_fdr)
 
-                    kickoff = fixture.kickoff_time.strftime("%a %H:%M") if fixture.kickoff_time else "TBC"
+                    kickoff = format_kickoff(fixture.kickoff_time) if fixture.kickoff_time else "TBC"
 
                     if fixture.finished:
                         score = f"{fixture.home_score} - {fixture.away_score}"

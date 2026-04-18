@@ -46,6 +46,9 @@ For a complete inventory of CLI commands, analysis agents, and skills with JSON 
 ### Exception Handling
 - Never use bare `except Exception`. Use specific types for narrow try blocks; use `# noqa: BLE001 — <justification>` for intentional broad handlers (agent top-level, scraper resilience, graceful degradation)
 
+### Timestamps
+- User-facing timestamps (deadlines, kickoffs, `generated_at` stamps) must route through `fpl_cli/utils/time.py` (`format_deadline`, `format_kickoff`, `format_generated_at`, `now_uk`). Never `strftime` on a naive `datetime.now()` or print raw API ISO strings to users. Tool is UK-locked: display is always `Europe/London` with GMT/BST label. Internal datetime math stays UTC.
+
 ## FPL Domain Knowledge
 - Chips (each available **twice** per season, split at GW19 deadline): Wildcard, Free Hit, Bench Boost, Triple Captain
 - Scoring: GK/DEF clean sheet = 4pts, MID = 1pt; goals: DEF=6, MID=5, FWD=4; assist = 3pts; yellow = -1; red = -3
