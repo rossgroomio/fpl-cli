@@ -73,12 +73,11 @@ class TestFormatGeneratedAt:
         dt = datetime(2026, 1, 3, 14, 32, tzinfo=timezone.utc)
         assert format_generated_at(dt) == "2026-01-03 14:32 GMT"
 
-    def test_naive_input_assumed_uk_local(self):
+    def test_naive_input_assumed_utc(self):
+        # Naive datetimes are assumed UTC (matching FPL API convention).
+        # 14:32 UTC on 18 Apr → 15:32 BST.
         dt = datetime(2026, 4, 18, 14, 32)
-        # Treated as already-UK, so just formatted with tz label appended
-        result = format_generated_at(dt)
-        assert result.startswith("2026-04-18 14:32")
-        assert result.endswith("BST") or result.endswith("GMT")
+        assert format_generated_at(dt) == "2026-04-18 15:32 BST"
 
 
 class TestUkTz:

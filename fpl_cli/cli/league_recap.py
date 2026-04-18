@@ -96,6 +96,7 @@ def league_recap_command(
             from datetime import datetime, timedelta
 
             from fpl_cli.season import TOTAL_GAMEWEEKS
+            from fpl_cli.utils.time import format_deadline
 
             gameweeks = await client.get_gameweeks()
             next_gw_data = next((g for g in gameweeks if g["id"] == gw + 1), None)
@@ -105,11 +106,9 @@ def league_recap_command(
                 raw = next_gw_data["deadline_time"]
                 try:
                     dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-                    # Format as UK time (UTC for now, consistent with FPL)
-                    next_deadline = dt.strftime("%a %d %b, %H:%M UTC")
+                    next_deadline = format_deadline(dt)
                     # Waiver deadline is 24h before GW deadline
-                    waiver_dt = dt - timedelta(hours=24)
-                    waiver_deadline = waiver_dt.strftime("%a %d %b, %H:%M UTC")
+                    waiver_deadline = format_deadline(dt - timedelta(hours=24))
                 except (ValueError, AttributeError):
                     next_deadline = raw
 

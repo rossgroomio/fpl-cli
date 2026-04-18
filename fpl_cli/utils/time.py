@@ -9,6 +9,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 UK_TZ = ZoneInfo("Europe/London")
+_UTC = ZoneInfo("UTC")
 
 _DEADLINE_FMT = "%a %d %b, %H:%M %Z"
 _KICKOFF_FMT = "%a %H:%M %Z"
@@ -16,8 +17,10 @@ _GENERATED_AT_FMT = "%Y-%m-%d %H:%M %Z"
 
 
 def _coerce(value: str | datetime) -> datetime | None:
+    """Coerce input to a tz-aware datetime. Naive datetimes are assumed UTC,
+    matching FPL API convention (ISO strings with 'Z' suffix)."""
     if isinstance(value, datetime):
-        return value if value.tzinfo else value.replace(tzinfo=ZoneInfo("UTC"))
+        return value if value.tzinfo else value.replace(tzinfo=_UTC)
     try:
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except (ValueError, AttributeError):
@@ -57,11 +60,12 @@ def now_uk() -> datetime:
 
 
 def format_generated_at(dt: datetime | None = None) -> str:
-    """Format a UK-local generation stamp, e.g. '2026-04-18 14:32 BST'. Defaults to now."""
+    """Format a UK-local generation stamp, e.g. '2026-04-18 14:32 BST'. Defaults to now.
+
+    Naive datetimes are assumed UTC (consistent with `format_deadline`/`format_kickoff`).
+    """
     if dt is None:
         dt = now_uk()
     elif dt.tzinfo is None:
-        dt = dt.replace(tzinfo=UK_TZ)
-    else:
-        dt = dt.astimezone(UK_TZ)
-    return dt.strftime(_GENERATED_AT_FMT)
+        dt = dt.replace(tzinfo=_UTC)
+    return dt.astimezone(UK_TZ).strftime(_GENERATED_AT_FMT)
