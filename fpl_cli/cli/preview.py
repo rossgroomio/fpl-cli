@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 import click
 from rich.panel import Panel
@@ -41,7 +42,6 @@ def _preview_build_fixture_map(gw_fixtures: list[dict]) -> dict[str, str]:
 @click.pass_context
 def preview_command(ctx: click.Context, save: bool, output: str | None, scout: bool, dry_run: bool):
     """Run full pre-gameweek analysis and generate report."""
-    from datetime import datetime
     from pathlib import Path
 
     from fpl_cli.agents.analysis.stats import StatsAgent
@@ -51,6 +51,7 @@ def preview_command(ctx: click.Context, save: bool, output: str | None, scout: b
     from fpl_cli.agents.orchestration.report import ReportAgent
     from fpl_cli.api.fpl import FPLClient
     from fpl_cli.api.fpl_draft import FPLDraftClient
+    from fpl_cli.utils.time import format_deadline, format_generated_at, format_kickoff
 
     fmt = get_format(ctx)
     show_classic = fmt != Format.DRAFT
@@ -82,8 +83,9 @@ def preview_command(ctx: click.Context, save: bool, output: str | None, scout: b
                 return
 
             gw = next_gw["id"]
-            deadline = next_gw.get("deadline_time", "Unknown")
-            generated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
+            raw_deadline = next_gw.get("deadline_time", "")
+            deadline = format_deadline(raw_deadline) if raw_deadline else "Unknown"
+            generated_at = format_generated_at()
             console.print(f"Generated: [dim]{generated_at}[/dim]")
             console.print(f"Deadline: [cyan]{deadline}[/cyan]\n")
 
@@ -94,7 +96,7 @@ def preview_command(ctx: click.Context, save: bool, output: str | None, scout: b
             team_map = {t.id: t for t in teams}
 
             # Collect data from agents
-            collected_data = {
+            collected_data: dict[str, Any] = {
                 "deadline": deadline,
                 "generated_at": generated_at,
             }
@@ -125,11 +127,7 @@ def preview_command(ctx: click.Context, save: bool, output: str | None, scout: b
                         "home_fdr": f["home_fdr"],
                         "away_team": f["away_team"],
                         "away_fdr": f["away_fdr"],
-                        "kickoff": (
-                            datetime.fromisoformat(f["kickoff"]).strftime("%a %H:%M")
-                            if f.get("kickoff")
-                            else "TBC"
-                        ),
+                        "kickoff": format_kickoff(f["kickoff"]) if f.get("kickoff") else "TBC",
                     }
                     for f in fixture_agent_gw
                 ]
@@ -141,7 +139,7 @@ def preview_command(ctx: click.Context, save: bool, output: str | None, scout: b
                         "home_fdr": f.home_difficulty,
                         "away_team": team_map[f.away_team_id].short_name if f.away_team_id in team_map else "???",
                         "away_fdr": f.away_difficulty,
-                        "kickoff": f.kickoff_time.strftime("%a %H:%M") if f.kickoff_time else "TBC",
+                        "kickoff": format_kickoff(f.kickoff_time) if f.kickoff_time else "TBC",
                     }
                     for f in gw_fixtures
                 ]
@@ -316,7 +314,7 @@ def preview_command(ctx: click.Context, save: bool, output: str | None, scout: b
 
                 if scout_result.success:
                     scout_data = scout_result.data
-                    scout_generated = datetime.now().strftime("%Y-%m-%d %H:%M")
+                    scout_generated = format_generated_at()
 
                     # Metadata header for scout files
                     metadata = (

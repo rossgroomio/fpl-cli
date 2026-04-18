@@ -551,7 +551,10 @@ fpl_cli/
 │   └── fpl_prices.py             # FPLPriceScraper (needs FPL_EMAIL/FPL_PASSWORD)
 ├── paths.py                      # SHIPPED_CONFIG_DIR, TEMPLATE_DIR, user_config_dir(), user_data_dir()
 ├── season.py                     # season_label() (+ vaastav_season() alias), TOTAL_GAMEWEEKS, CHIP_SPLIT_GW
-└── constants.py                  # MIN_MINUTES_FOR_PER90
+├── constants.py                  # MIN_MINUTES_FOR_PER90
+└── utils/
+    ├── text.py                   # strip_diacritics (name matching across sources)
+    └── time.py                   # format_deadline/format_kickoff/format_generated_at — UK local (Europe/London, auto GMT↔BST). Canonical formatter for every user-facing timestamp.
 
 platformdirs (user_config_dir / user_data_dir)  # macOS: ~/Library/Application Support/fpl-cli/
 ├── settings.yaml                 # User overrides, created by `fpl init`

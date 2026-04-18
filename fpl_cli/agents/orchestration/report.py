@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +13,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from fpl_cli.agents.base import Agent, AgentResult, AgentStatus
 from fpl_cli.cli._league_recap_types import RecapManagerEntry
 from fpl_cli.paths import TEMPLATE_DIR
+from fpl_cli.utils.time import format_generated_at
 
 
 class ReportAgent(Agent):
@@ -124,7 +124,7 @@ class ReportAgent(Agent):
         """Generate a gameweek preview report."""
         try:
             template = self.jinja_env.get_template("gw_preview.md.j2")
-            data.setdefault("generated_at", datetime.now().strftime("%Y-%m-%d %H:%M"))
+            data.setdefault("generated_at", format_generated_at())
             return template.render(
                 gameweek=gameweek,
                 **data,
@@ -135,7 +135,7 @@ class ReportAgent(Agent):
 
     def _generate_preview_inline(self, gameweek: int, data: dict[str, Any]) -> str:
         """Generate preview report with inline template."""
-        generated_at = data.get("generated_at", datetime.now().strftime("%Y-%m-%d %H:%M"))
+        generated_at = data.get("generated_at", format_generated_at())
         lines = [
             f"*Generated: {generated_at}*",
         ]
@@ -369,7 +369,7 @@ class ReportAgent(Agent):
         """Generate a gameweek review report."""
         try:
             template = self.jinja_env.get_template("gw_review.md.j2")
-            data.setdefault("generated_at", datetime.now().strftime("%Y-%m-%d %H:%M"))
+            data.setdefault("generated_at", format_generated_at())
             return template.render(
                 gameweek=gameweek,
                 **data,
@@ -381,7 +381,7 @@ class ReportAgent(Agent):
     def _generate_review_inline(self, gameweek: int, data: dict[str, Any]) -> str:
         """Generate review report with inline template (new structure)."""
         lines = [
-            f"*Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}*",
+            f"*Generated: {format_generated_at()}*",
             "",
             "# Classic",
         ]
@@ -592,7 +592,7 @@ class ReportAgent(Agent):
     def _generate_league_recap_report(self, gameweek: int, data: dict[str, Any]) -> str:
         """Generate a league recap report."""
         template = self.jinja_env.get_template("gw_league_recap.md.j2")
-        data.setdefault("generated_at", datetime.now().strftime("%Y-%m-%d %H:%M"))
+        data.setdefault("generated_at", format_generated_at())
         data["standings_block"] = _format_standings_block(data.get("managers", []))
         return template.render(**data)
 
