@@ -327,24 +327,32 @@ class TestAwardsChips:
         assert awards["best_captain"]["manager_name"] == "Alice"
 
     def test_manager_with_bench_boost(self):
-        """Bench boost means bench_points=0 (all contribute). No bench award expected."""
+        """Bench boost means bench_points=0 (all contribute). No bench award expected.
+
+        Uses the display-form chip ("BB") that _fetch_all_manager_data actually stores
+        on RecapManagerEntry — the raw "bboost" never reaches _compute_shared_awards.
+        """
+        bb_player = _make_squad_player(
+            name="AliceBench", points=0, contributed=True, is_bench_boost_player=True,
+        )
         managers = [
-            _make_manager(name="Alice", active_chip="bboost", bench_points=0),
+            _make_manager(name="Alice", active_chip="BB", bench_points=0, squad=[bb_player]),
             _make_manager(name="Bob", bench_points=10),
         ]
         awards = _compute_shared_awards(managers)
         assert awards["biggest_bench_haul"]["manager_name"] == "Bob"
 
     def test_bb_manager_excluded_even_if_bench_points_stale(self):
-        # Defensive: if bench_points were ever non-zero for a BB manager,
-        # they must still be excluded from biggest_bench_haul.
+        # Regression: the defensive filter must not rely on the raw "bboost" string —
+        # RecapManagerEntry.active_chip is stored in display form ("BB"). Detection
+        # runs off the per-player is_bench_boost_player flag instead.
         bench_bb = _make_squad_player(
             name="BBBench", points=30, contributed=True, is_bench_boost_player=True,
         )
         non_bb_bench = _make_squad_player(name="Benchman", points=15, contributed=False)
         managers = [
             _make_manager(
-                name="Alice", active_chip="bboost", gw_points=99,
+                name="Alice", active_chip="BB", gw_points=99,
                 bench_points=30, squad=[bench_bb],
             ),
             _make_manager(name="Bob", gw_points=60, bench_points=15, squad=[non_bb_bench]),
@@ -354,9 +362,12 @@ class TestAwardsChips:
         assert "Alice" not in awards["biggest_bench_haul"]["detail"]
 
     def test_all_managers_played_bench_boost(self):
+        bb_player = _make_squad_player(
+            name="Bench", points=0, contributed=True, is_bench_boost_player=True,
+        )
         managers = [
-            _make_manager(name="Alice", active_chip="bboost", bench_points=0),
-            _make_manager(name="Bob", active_chip="bboost", bench_points=0),
+            _make_manager(name="Alice", active_chip="BB", bench_points=0, squad=[bb_player]),
+            _make_manager(name="Bob", active_chip="BB", bench_points=0, squad=[bb_player]),
         ]
         awards = _compute_shared_awards(managers)
         assert "biggest_bench_haul" not in awards

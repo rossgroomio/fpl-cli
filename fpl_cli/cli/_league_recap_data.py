@@ -432,8 +432,13 @@ def _compute_shared_awards(
         detail=", ".join(f"{m['manager_name']} with {m['gw_points']} pts" for m in losers),
     )
 
-    # Biggest bench haul — excludes Bench Boost managers (their bench counted)
-    bench_candidates = [m for m in managers if m.get("active_chip") != "bboost"]
+    # Biggest bench haul — excludes Bench Boost managers (their bench counted).
+    # Detect via per-player flag to avoid coupling to the display-form chip string
+    # stored on RecapManagerEntry.active_chip (e.g. "BB" vs raw "bboost").
+    bench_candidates = [
+        m for m in managers
+        if not any(p.get("is_bench_boost_player") for p in m.get("squad", []))
+    ]
     if bench_candidates:
         best_bench_pts = max(m["bench_points"] for m in bench_candidates)
         if best_bench_pts > 0:
