@@ -75,6 +75,7 @@ async def _review_classic_team(
                 if player:
                     gw_points, _, red_cards = _live_player_stats(live_stats, player.id)
 
+                    squad_slot = pick.get("position", 0)
                     multiplier = pick.get("multiplier", 1)
                     my_picks_data.append({
                         "id": player.id,
@@ -91,6 +92,7 @@ async def _review_classic_team(
                         "auto_sub_out": player.id in auto_sub_out_ids,
                         "bgw": player.team_id in bgw_team_ids,
                         "dgw": player.team_id in dgw_team_ids,
+                        "is_bench": squad_slot > 11,
                     })
 
             # Determine if captain played - if not, vice gets the multiplier
@@ -100,7 +102,8 @@ async def _review_classic_team(
             # Build unified team_points list with display_points
             team_points_data = []
             for p in my_picks_data:
-                contributed = p["multiplier"] > 0
+                is_bench_boost_player = active_chip == "bboost" and p["is_bench"]
+                contributed = p["multiplier"] > 0 or is_bench_boost_player
                 display_points = p["points"]
 
                 # Apply captain/vice multiplier for display
@@ -125,6 +128,7 @@ async def _review_classic_team(
                     "auto_sub_out": p["auto_sub_out"],
                     "bgw": p["bgw"],
                     "dgw": p["dgw"],
+                    "is_bench_boost_player": is_bench_boost_player,
                 })
 
             # Sort: contributing first (by display_points desc), then non-contributing
