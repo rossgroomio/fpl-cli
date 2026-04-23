@@ -260,26 +260,63 @@ def _format_league_context(
         captain_label = "Unknown (0 pts)"
     captain_points = captain_pick["display_points"] if captain_pick else 0
 
-    # Hindsight-best captain: highest RAW scorer among players who contributed.
-    # Any of them could have been captained pre-deadline; compare raw-to-raw so
-    # the LLM stops assessing captain choice against already-doubled totals.
+    # Hindsight-best captain: highest RAW scorer among players who could have
+    # been captained pre-deadline. Compare raw-to-raw so the LLM stops assessing
+    # captain choice against already-doubled totals.
+    #
+    # If the captain didn't play, the vice was auto-promoted and already got
+    # the multiplier — baseline off the vice's raw score (the effective armband
+    # holder), not the captain's 0, otherwise the swing is inflated.
     captain_hindsight = "N/A"
     if captain_pick and team_points_data:
-        contributed_players = [
-            p for p in team_points_data
-            if (p.get("contributed", True) or p.get("auto_sub_in"))
-            and not p.get("is_captain")
-        ]
-        best_alt = max(contributed_players, key=lambda p: p["points"], default=None)
-        if best_alt and best_alt["points"] > raw:
-            delta = (best_alt["points"] - raw) * multiplier
+        captain_contributed = captain_pick.get("contributed", True)
+        if captain_contributed:
+            baseline_raw = raw
+            baseline_name = captain_name
+            baseline_note = ""
+        else:
+            vice = next(
+                (p for p in team_points_data if p.get("is_vice_active")),
+                None,
+            )
+            if vice and vice.get("contributed", True):
+                baseline_raw = vice["points"]
+                baseline_name = vice["name"]
+                baseline_note = (
+                    f" (captain {captain_name} didn't play; vice {baseline_name} "
+                    f"auto-got the armband)"
+                )
+            else:
+                baseline_raw = None
+                baseline_name = captain_name
+                baseline_note = ""
+
+        if baseline_raw is None:
             captain_hindsight = (
-                f"{best_alt['name']} would have been the optimal captain "
-                f"({best_alt['points']} raw vs {raw} raw for {captain_name}, "
-                f"a swing of +{delta} pts with the ×{multiplier} armband)"
+                f"{captain_name} didn't play and no vice took the armband — "
+                f"no raw baseline to evaluate captain choice"
             )
         else:
-            captain_hindsight = f"{captain_name} was the optimal captain (highest raw score among contributors)"
+            contributed_players = [
+                p for p in team_points_data
+                if (p.get("contributed", True) or p.get("auto_sub_in"))
+                and not p.get("is_captain")
+                and not p.get("is_vice_active")
+            ]
+            best_alt = max(contributed_players, key=lambda p: p["points"], default=None)
+            if best_alt and best_alt["points"] > baseline_raw:
+                delta = (best_alt["points"] - baseline_raw) * multiplier
+                captain_hindsight = (
+                    f"{best_alt['name']} would have been the optimal captain "
+                    f"({best_alt['points']} raw vs {baseline_raw} raw for "
+                    f"{baseline_name}, a swing of +{delta} pts with the "
+                    f"×{multiplier} armband){baseline_note}"
+                )
+            else:
+                captain_hindsight = (
+                    f"{baseline_name} was the optimal captain "
+                    f"(highest raw score among contributors){baseline_note}"
+                )
 
     fines_config = parse_fines_config(settings)
     fine_results_str = ""

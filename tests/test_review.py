@@ -536,6 +536,52 @@ class TestCaptainHindsight:
         assert "+15" in s  # (15-10)*3
         assert "×3" in s
 
+    def test_captain_dnp_baselines_off_vice_not_zero(self):
+        # Captain didn't play; vice auto-promoted and got the multiplier.
+        # Swing must be (best_alt - vice_raw) * multiplier, NOT best_alt * multiplier.
+        team = [
+            {"name": "Salah", "points": 0, "display_points": 0, "contributed": False,
+             "is_captain": True, "is_vice": False, "is_vice_active": False,
+             "is_triple_captain": False},
+            {"name": "Saka", "points": 9, "display_points": 18, "contributed": True,
+             "is_captain": False, "is_vice": True, "is_vice_active": True},
+            {"name": "Palmer", "points": 12, "display_points": 12, "contributed": True,
+             "is_captain": False, "is_vice": False, "is_vice_active": False},
+        ]
+        s = self._ctx(team)["captain_hindsight"]
+        assert "Palmer" in s
+        assert "12 raw" in s and "9 raw" in s  # baselined off vice Saka (9), not captain (0)
+        assert "+6" in s  # (12 - 9) * 2
+        assert "+24" not in s  # would be the wrong (best * 2) inflation
+        assert "vice" in s.lower()
+
+    def test_captain_dnp_and_vice_dnp_skips_hindsight(self):
+        team = [
+            {"name": "Salah", "points": 0, "display_points": 0, "contributed": False,
+             "is_captain": True, "is_vice": False, "is_vice_active": False,
+             "is_triple_captain": False},
+            {"name": "Saka", "points": 0, "display_points": 0, "contributed": False,
+             "is_captain": False, "is_vice": True, "is_vice_active": True},
+            {"name": "Palmer", "points": 8, "display_points": 8, "contributed": True,
+             "is_captain": False, "is_vice": False, "is_vice_active": False},
+        ]
+        s = self._ctx(team)["captain_hindsight"]
+        assert "no raw baseline" in s
+
+    def test_captain_dnp_vice_optimal_no_swing(self):
+        # Captain DNP'd; vice was actually the highest raw scorer — no better alt.
+        team = [
+            {"name": "Salah", "points": 0, "display_points": 0, "contributed": False,
+             "is_captain": True, "is_vice": False, "is_vice_active": False,
+             "is_triple_captain": False},
+            {"name": "Saka", "points": 14, "display_points": 28, "contributed": True,
+             "is_captain": False, "is_vice": True, "is_vice_active": True},
+            {"name": "Palmer", "points": 10, "display_points": 10, "contributed": True,
+             "is_captain": False, "is_vice": False, "is_vice_active": False},
+        ]
+        s = self._ctx(team)["captain_hindsight"]
+        assert "Saka" in s and "optimal captain" in s
+
 
 class TestLeagueContextUserMasking:
     """Verify the user row is rendered as 'You' in LLM-facing league context strings."""
@@ -554,21 +600,21 @@ class TestLeagueContextUserMasking:
         ctx = self._context(draft={
             "worst_performers": [
                 {"rank_str": "1", "name": "Alex", "points": 40, "is_user": False},
-                {"rank_str": "3", "name": "Ross Groom", "points": 53, "is_user": True},
+                {"rank_str": "3", "name": "Manager", "points": 53, "is_user": True},
             ],
         })
         assert "You - 53 pts" in ctx["draft_worst_performers"]
-        assert "Ross Groom" not in ctx["draft_worst_performers"]
+        assert "Manager" not in ctx["draft_worst_performers"]
 
     def test_classic_nearby_rivals_masks_user(self):
         ctx = self._context(classic={
             "nearby_rivals": [
                 {"rank": 4, "manager_name": "John", "total": 1200, "is_user": False},
-                {"rank": 5, "manager_name": "Ross Groom", "total": 1180, "is_user": True},
+                {"rank": 5, "manager_name": "Manager", "total": 1180, "is_user": True},
             ],
         })
         assert "5. You: 1,180 pts" in ctx["classic_rivals"]
-        assert "Ross Groom" not in ctx["classic_rivals"]
+        assert "Manager" not in ctx["classic_rivals"]
 
 
 class TestAutoSubFormatting:
@@ -730,6 +776,36 @@ class TestAutoSubFormatting:
 
         assert "Watkins on for Salah (8 pts)" in summary
         assert "Gordon on for Palmer (6 pts)" in summary
+
+    def test_format_classic_section_bb_auto_sub_suffix(self):
+        """Under Bench Boost, the Auto-subs line must declare zero points impact."""
+        from fpl_cli.cli._review_summarisation import _format_classic_section
+
+        class MockPlayer:
+            def __init__(self, id, web_name):
+                self.id = id
+                self.web_name = web_name
+
+        automatic_subs = [{"element_in": 1, "element_out": 2}]
+        player_map = {1: MockPlayer(1, "Williams"), 2: MockPlayer(2, "Salah")}
+        team_points_data = [{
+            "name": "Williams", "team": "NOT", "position": "DEF",
+            "points": 2, "display_points": 2, "contributed": True,
+            "is_captain": False, "red_cards": 0,
+            "auto_sub_in": True, "auto_sub_out": False,
+        }]
+
+        bb_result = _format_classic_section(
+            team_points_data, automatic_subs, player_map, [], active_chip="bboost",
+        )
+        assert "Auto-subs: Williams on for Salah (2 pts)" in bb_result["players"]
+        assert "no points impact: Bench Boost active" in bb_result["players"]
+
+        no_chip_result = _format_classic_section(
+            team_points_data, automatic_subs, player_map, [], active_chip=None,
+        )
+        assert "Auto-subs: Williams on for Salah (2 pts)" in no_chip_result["players"]
+        assert "no points impact" not in no_chip_result["players"]
 
     def test_system_prompt_auto_sub_context(self):
         """Test that the system prompt includes auto-sub context."""
