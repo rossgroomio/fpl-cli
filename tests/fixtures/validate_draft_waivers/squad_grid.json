@@ -1,0 +1,21 @@
+{
+  "command": "fpl squad grid",
+  "metadata": {"gameweek": 34},
+  "data": [
+    {"player": "Flekken", "position": "GK", "team": "BRE"},
+    {"player": "Raya", "position": "GK", "team": "ARS"},
+    {"player": "Hill", "position": "DEF", "team": "BOU"},
+    {"player": "Konsa", "position": "DEF", "team": "AVL"},
+    {"player": "Bassey", "position": "DEF", "team": "FUL"},
+    {"player": "Gabriel", "position": "DEF", "team": "ARS"},
+    {"player": "Walker-Peters", "position": "DEF", "team": "WHU"},
+    {"player": "Scott", "position": "MID", "team": "BOU"},
+    {"player": "Gross", "position": "MID", "team": "BHA"},
+    {"player": "Saka", "position": "MID", "team": "ARS"},
+    {"player": "Gibbs-White", "position": "MID", "team": "NFO"},
+    {"player": "Mbeumo", "position": "MID", "team": "BRE"},
+    {"player": "João Pedro", "position": "FWD", "team": "CHE"},
+    {"player": "Watkins", "position": "FWD", "team": "AVL"},
+    {"player": "Beto", "position": "FWD", "team": "EVE"}
+  ]
+}

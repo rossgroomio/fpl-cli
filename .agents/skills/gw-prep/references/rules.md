@@ -44,6 +44,8 @@ When `mode = "squad-builder"`:
 3. **Availability likelihood** -- consider whether high-value targets are likely to be claimed by opponents with higher waiver priority.
 4. **Fixture run** -- as with classic, weight the next 3 gameweeks of fixtures rather than just the immediate one.
 5. **Maximum 5 waiver suggestions** -- for each: player to drop, player to claim, positional context, and fixture rationale.
+6. **Position-for-position only** -- FPL Draft squads are locked at 2 GK / 5 DEF / 5 MID / 3 FWD. Every waiver swap must be position-for-position (e.g. MID out → MID in). Cross-position swaps are structurally illegal and will be rejected by Phase D1.
+7. **Waiver pool discipline** -- only recommend players returned by `fpl waivers --format json`. Players appearing in other data sources (e.g. `fpl stats`) are not necessarily available; never recommend a claim not in the waiver pool.
 
 ## Transfer/Waiver Evaluation Script
 

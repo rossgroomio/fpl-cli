@@ -1,0 +1,12 @@
+{
+  "command": "fpl waivers",
+  "metadata": {"gameweek": 34},
+  "data": {
+    "top_targets": [
+      {"player_name": "Lacroix", "position": "DEF", "team_short": "CRY"},
+      {"player_name": "Pedro Porro", "position": "DEF", "team_short": "TOT"},
+      {"player_name": "E.Le Fée", "position": "MID", "team_short": "SUN"},
+      {"player_name": "Canvot", "position": "DEF", "team_short": "CRY"}
+    ]
+  }
+}
