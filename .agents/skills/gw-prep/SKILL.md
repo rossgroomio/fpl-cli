@@ -480,6 +480,56 @@ Present a brief summary to the user:
 
 ---
 
+## Phase D1: Draft Validation (draft format only - skip if format is "classic")
+
+_Runs after Phase D file write, before Phase E. Not embed-gated._
+
+1. Write Phase B's waivers JSON (from orchestrator context, B3 output) to `/tmp/gw-prep-waivers-{N}.json`.
+2. Write Phase B's draft squad-grid JSON (from orchestrator context, B4 draft output) to `/tmp/gw-prep-squad-grid-{N}.json`.
+   - For draft-only runs, this is the `fpl squad grid --format json` output from B4.
+   - For `both` format runs, this is the `fpl squad grid --draft --format json` output from B4.
+3. Run:
+
+   ```bash
+   cd "$FPL_CLI_DIR" && source .venv/bin/activate && python "$FPL_CLI_DIR/.agents/skills/gw-prep/scripts/validate_draft_waivers.py" \
+     --recommendations-file "[YOUR_OUTPUT_DIR]/gw{N}-recommendations.md" \
+     --waivers-json /tmp/gw-prep-waivers-{N}.json \
+     --squad-grid-json /tmp/gw-prep-squad-grid-{N}.json
+   ```
+
+   Parse stdout as JSON: `{"ok": bool, "flags": [...], "warnings": [...]}`.
+   If the script cannot be found or exits non-zero unexpectedly, emit a warning and proceed to Phase E (fail-open for infrastructure errors, fail-closed only for confirmed rule violations).
+
+4. **Managed block update:** locate the sentinel block in the recommendations file:
+   ```
+   <!-- phase-d1:start -->
+   ...
+   <!-- phase-d1:end -->
+   ```
+   - If flags or warnings are non-empty: replace (or insert) the block immediately after the `## Draft` (or `## Draft League`) heading line with:
+     ```
+     <!-- phase-d1:start -->
+     > ⚠️ Draft validation:
+     > - {one line per flag/warning, e.g. "Row 1: cross-position-claim (Drop: João Pedro FWD → Claim: Pedro Porro DEF)"}
+     <!-- phase-d1:end -->
+     ```
+   - If both are empty: remove the block entirely (including sentinels) if present.
+
+5. **Split posture:**
+   - Any flag with `type == "cross-position-claim"` present → emit a **red error** in chat:
+     > ❌ Phase D1 blocked: `gw{N}-recommendations.md` contains illegal cross-position waiver swap(s):
+     > - Row {N}: Drop `{drop}` ({drop_position}) → Claim `{claim}` ({claim_position})
+     > Edit the file to fix the flagged row(s), then re-run `/gw-prep` to continue.
+     
+     **Stop the pipeline.** Do not proceed to Phase E. Do not mark the run as complete.
+   - Else (only warnings and/or `waiver-not-in-pool` flags) → emit an in-chat warning:
+     > ⚠️ Phase D1: {N} waiver pool miss(es) in `gw{N}-recommendations.md` — see managed block in the Draft section. Claims may be normaliser false positives; verify before submitting waivers.
+     
+     Proceed to Phase E.
+   - No flags or warnings → silent continue to Phase E.
+
+---
+
 ## Phase E: Post-write Validation (embed-mode only)
 
 _Skip unless `squad_builder_result == "embed"`. Transfer and rederive runs do not produce a `### Classic Squad` block._
