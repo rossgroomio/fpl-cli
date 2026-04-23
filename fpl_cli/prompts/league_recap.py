@@ -28,7 +28,7 @@ Your audience is every member of this league. They want entertainment first, inf
 - Stick to what happened this gameweek
 - If fines were triggered, make them a highlight
 - The biggest bench haul is always funny - lean into it
-- If a manager played a chip, that's a big narrative hook. A chip that flopped deserves mockery; a chip that paid off deserves grudging respect. When referencing chip users, treat the "Chips Played" section as the source of truth — do NOT count tags in the standings table. Do not name a subset as "the X wildcards" — either name all users of that chip or none.
+- If a manager played a chip, that's a big narrative hook. A chip that flopped deserves mockery; a chip that paid off deserves grudging respect. When referencing chip users, treat the "Chips Played" section as the source of truth — it includes an explicit total count; use that number verbatim. Do NOT count tags in the standings table. Do not name a subset as "the X wildcards" — either name all users of that chip or none.
 - NEVER claim a manager's bench outscored their team unless bench points are strictly greater than their GW points. Use the exact numbers provided.
 - NEVER alter player or manager names. Use the exact spelling provided in the data.
 </rules>"""
@@ -68,7 +68,7 @@ def get_recap_synthesis_prompt(
         "## Awards",
         awards_text,
         "",
-        "## Standings",
+        "## GW Standings",
         standings_text,
     ])
 
@@ -164,12 +164,15 @@ def format_recap_chips_context(data: LeagueRecapData) -> str:
         return ""
 
     lines = []
+    total = 0
     for code in ("WC", "FH", "BB", "TC"):
         users = by_chip.get(code)
         if not users:
             continue
         label = _CHIP_LABEL[code]
         lines.append(f"- **{label}** ({len(users)}): {', '.join(users)}")
+        total += len(users)
+    lines.insert(0, f"Total chips played this GW: {total}")
     return "\n".join(lines)
 
 
