@@ -9,8 +9,6 @@ import sys
 from pathlib import Path
 from types import ModuleType
 
-import pytest
-
 SCRIPT_PATH = (
     Path(__file__).parent.parent
     / ".agents/skills/gw-prep/scripts/validate_draft_waivers.py"
@@ -576,3 +574,115 @@ def test_integration_subprocess_pool_miss(tmp_path):
     data = json.loads(result.stdout)
     assert data["ok"] is False
     assert any(f["type"] == "waiver-not-in-pool" for f in data["flags"])
+
+
+# ---- Waivers shape guard ----------------------------------------------------
+
+
+def test_waivers_missing_top_targets_warns_and_suppresses_pool_flags(tmp_path, capsys):
+    """waivers JSON missing data.top_targets → waivers-json-shape-unknown warning;
+    claim-in-pool check is suppressed so rows don't flood with false waiver-not-in-pool flags."""
+    waivers_bad = {"command": "fpl waivers", "data": {}}  # no top_targets
+    recs_content = """\
+## Draft
+
+### Waiver Recommendations
+
+| Priority | Drop | Claim | Position | Fixture Run | Rationale |
+|----------|------|-------|----------|-------------|-----------|
+| 1 | Hill (BOU) | Lacroix (CRY) | DEF | A LIV | Real claim. |
+| 2 | Scott (BOU) | E.Le Fée (SUN) | MID | H NFO | Real claim. |
+"""
+    recs, w, s = _write_fixtures(tmp_path, recs_content, waivers=waivers_bad)
+    _run(str(recs), str(w), str(s))
+    data = _parse(capsys)
+    assert any(w["type"] == "waivers-json-shape-unknown" for w in data["warnings"])
+    # no flood of pool-miss flags when shape is bad
+    assert not any(f["type"] == "waiver-not-in-pool" for f in data["flags"])
+
+
+def test_waivers_top_targets_wrong_type_warns(tmp_path, capsys):
+    """top_targets not a list → shape warning, pool check suppressed."""
+    waivers_bad = {"command": "fpl waivers", "data": {"top_targets": "nope"}}
+    recs, w, s = _write_fixtures(tmp_path, _CLEAN_RECS, waivers=waivers_bad)
+    _run(str(recs), str(w), str(s))
+    data = _parse(capsys)
+    assert any(w["type"] == "waivers-json-shape-unknown" for w in data["warnings"])
+
+
+# ---- Drop ambiguous last-token match ---------------------------------------
+
+
+def test_drop_ambiguous_last_token_across_positions_warns(tmp_path, capsys):
+    """Two squad players share a last-token at different positions → drop-ambiguous-match
+    warning and cross-position check is skipped (no false flag)."""
+    waivers = {
+        "command": "fpl waivers",
+        "data": {
+            "top_targets": [
+                {"player_name": "Lacroix", "position": "DEF", "team_short": "CRY"},
+            ]
+        },
+    }
+    squad = {
+        "command": "fpl squad grid",
+        "data": [
+            {"player": "Raya", "position": "GK", "team": "ARS"},
+            {"player": "Flekken", "position": "GK", "team": "BRE"},
+            {"player": "Neco Williams", "position": "DEF", "team": "NFO"},
+            {"player": "Konsa", "position": "DEF", "team": "AVL"},
+            {"player": "Bassey", "position": "DEF", "team": "FUL"},
+            {"player": "Gabriel", "position": "DEF", "team": "ARS"},
+            {"player": "Walker-Peters", "position": "DEF", "team": "WHU"},
+            {"player": "Scott", "position": "MID", "team": "BOU"},
+            {"player": "Gross", "position": "MID", "team": "BHA"},
+            {"player": "Saka", "position": "MID", "team": "ARS"},
+            {"player": "Gibbs-White", "position": "MID", "team": "NFO"},
+            {"player": "Mbeumo", "position": "MID", "team": "BRE"},
+            {"player": "Harry Wilson", "position": "MID", "team": "FUL"},
+            {"player": "Callum Wilson", "position": "FWD", "team": "NEW"},
+            {"player": "Beto", "position": "FWD", "team": "EVE"},
+        ],
+    }
+    # Drop "Wilson" is ambiguous: Harry Wilson (MID) and Callum Wilson (FWD)
+    recs_content = """\
+## Draft
+
+### Waiver Recommendations
+
+| Priority | Drop | Claim | Position | Fixture Run | Rationale |
+|----------|------|-------|----------|-------------|-----------|
+| 1 | Wilson (FUL) | Lacroix (CRY) | DEF | A LIV | Ambiguous drop. |
+"""
+    recs, w, s = _write_fixtures(tmp_path, recs_content, waivers=waivers, squad=squad)
+    _run(str(recs), str(w), str(s))
+    data = _parse(capsys)
+    assert any(w["type"] == "drop-ambiguous-match" for w in data["warnings"])
+    # cross-position check was skipped — no cross-position-claim flag raised
+    assert not any(f["type"] == "cross-position-claim" for f in data["flags"])
+
+
+# ---- Argparse contract ------------------------------------------------------
+
+
+def test_missing_required_arg_exits_nonzero():
+    """argparse rejects invocation missing a required arg and exits non-zero with usage on stderr."""
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT_PATH), "--waivers-json", "/tmp/x.json"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "required" in result.stderr.lower()
+
+
+def test_help_flag_exits_zero_and_prints_usage():
+    """--help exits 0 and prints a usage line (no reference to the dropped deferred-flags epilog)."""
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT_PATH), "--help"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+    assert "usage:" in result.stdout.lower()
+    assert "--check-drop-in-squad" not in result.stdout

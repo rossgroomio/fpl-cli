@@ -415,7 +415,7 @@ Proceed immediately (non-interactive).
 > - Status: {A1 output}
 > - pFDR: {B1 output}
 >
-> **WAIVER POOL IS AUTHORITATIVE:** `fpl waivers` output is the only source for available players. All other data (stats, form tables, squad context) is for analysis only. Never recommend a claim not present in the waivers output. Cross-position recommendations (e.g. dropping a MID to claim a DEF) are structurally illegal and will be rejected by Phase D1.
+> **WAIVER POOL IS AUTHORITATIVE:** `fpl waivers` output is the only source for available players. All other data (stats, form tables, squad context) is for analysis only. Never recommend a claim not present in the waivers output — Phase D1 will flag pool misses as a warning. Cross-position recommendations (e.g. dropping a MID to claim a DEF) are structurally illegal and will be blocked by Phase D1.
 >
 > - Waivers: {B3 output}
 > - Squad: {B4 output}

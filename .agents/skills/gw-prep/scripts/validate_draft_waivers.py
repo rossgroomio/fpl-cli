@@ -101,7 +101,7 @@ _PLACEHOLDER_VALUES = frozenset({"-", "—", "–", "", "hold", "(depth)", "tbd"
 
 def _is_placeholder(raw: str) -> bool:
     key = normalise(raw)
-    return key in _PLACEHOLDER_VALUES or key.startswith("(") and key.endswith(")")
+    return key in _PLACEHOLDER_VALUES or (key.startswith("(") and key.endswith(")"))
 
 
 # ---------------------------------------------------------------------------
@@ -118,6 +118,20 @@ def _shape_check_squad(data: dict) -> bool:
         sample = rows[0]
         return "player" in sample and "position" in sample
     except (KeyError, IndexError, TypeError):
+        return False
+
+
+def _shape_check_waivers(data: dict) -> bool:
+    """Return True if waivers JSON has the expected shape."""
+    try:
+        targets = data["data"]["top_targets"]
+        if not isinstance(targets, list):
+            return False
+        if not targets:
+            return True
+        sample = targets[0]
+        return "player_name" in sample and "position" in sample
+    except (KeyError, TypeError):
         return False
 
 
@@ -226,18 +240,21 @@ def _resolve_in_pool(
 
 def _resolve_in_squad(
     name: str, squad: dict[tuple[str, str], SquadEntry]
-) -> SquadEntry | None:
-    """Search all positions; exact match then last-token fallback."""
+) -> list[SquadEntry]:
+    """Return all squad entries matching name (exact, else last-token fallback).
+
+    Exact matches short-circuit the fallback. Callers inspect the list length and
+    the set of positions to decide whether the match is unambiguous.
+    """
     norm = normalise(name)
-    # exact across all positions
-    for (_pos, squad_norm), entry in squad.items():
-        if squad_norm == norm:
-            return entry
-    # last-token fallback across all positions
-    for (_pos, squad_norm), entry in squad.items():
-        if squad_norm.split()[-1] == norm or norm.split()[-1] == squad_norm:
-            return entry
-    return None
+    exact = [entry for (_, squad_norm), entry in squad.items() if squad_norm == norm]
+    if exact:
+        return exact
+    return [
+        entry
+        for (_, squad_norm), entry in squad.items()
+        if squad_norm.split()[-1] == norm or norm.split()[-1] == squad_norm
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -250,6 +267,7 @@ def validate_rows(
     pool: dict[tuple[str, str], PoolEntry],
     squad: dict[tuple[str, str], SquadEntry],
     squad_shape_ok: bool,
+    waivers_shape_ok: bool = True,
 ) -> tuple[list[Flag], list[Warning]]:
     flags: list[Flag] = []
     warnings: list[Warning] = []
@@ -262,24 +280,33 @@ def validate_rows(
         if _is_placeholder(drop_raw) or _is_placeholder(claim_raw):
             continue
 
-        # Resolve claim in pool (position-scoped)
-        claim_entry = _resolve_in_pool(claim_raw, position, pool)
-        if claim_entry is None:
-            flags.append(
-                Flag(
-                    type="waiver-not-in-pool",
-                    row=i,
-                    claim=claim_raw,
+        # Resolve claim in pool (position-scoped). Skip when waivers shape is unknown —
+        # an empty pool would otherwise mark every real claim as a false positive.
+        claim_entry: PoolEntry | None = None
+        if waivers_shape_ok:
+            claim_entry = _resolve_in_pool(claim_raw, position, pool)
+            if claim_entry is None:
+                flags.append(
+                    Flag(
+                        type="waiver-not-in-pool",
+                        row=i,
+                        claim=claim_raw,
+                    )
                 )
-            )
 
         # Resolve drop in squad (all positions, to find actual position)
         if not squad_shape_ok:
             continue
-        drop_entry = _resolve_in_squad(drop_raw, squad)
-        if drop_entry is None:
+        drop_candidates = _resolve_in_squad(drop_raw, squad)
+        if not drop_candidates:
             warnings.append(Warning(type="drop-not-resolvable", name=drop_raw))
             continue
+        drop_positions = {e["position"] for e in drop_candidates}
+        if len(drop_positions) > 1:
+            # Ambiguous last-token match across positions — can't determine drop_pos safely
+            warnings.append(Warning(type="drop-ambiguous-match", name=drop_raw))
+            continue
+        drop_entry = drop_candidates[0]
 
         # Cross-position check
         claim_pos = claim_entry["position"] if claim_entry else position
@@ -321,7 +348,11 @@ def _run(recommendations_file: str, waivers_json: str, squad_grid_json: str) -> 
     if not squad_shape_ok:
         warnings.append(Warning(type="squad-grid-shape-unknown"))
 
-    pool = build_pool(waivers_data)
+    waivers_shape_ok = _shape_check_waivers(waivers_data)
+    if not waivers_shape_ok:
+        warnings.append(Warning(type="waivers-json-shape-unknown"))
+
+    pool = build_pool(waivers_data) if waivers_shape_ok else {}
     squad = build_squad(squad_data) if squad_shape_ok else {}
 
     # Load recommendations
@@ -356,7 +387,9 @@ def _run(recommendations_file: str, waivers_json: str, squad_grid_json: str) -> 
         return
 
     # Validate rows
-    row_flags, row_warnings = validate_rows(rows, pool, squad, squad_shape_ok)
+    row_flags, row_warnings = validate_rows(
+        rows, pool, squad, squad_shape_ok, waivers_shape_ok
+    )
     flags.extend(row_flags)
     warnings.extend(row_warnings)
 
@@ -368,12 +401,6 @@ def _run(recommendations_file: str, waivers_json: str, squad_grid_json: str) -> 
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Validate Draft waiver recommendations against the waiver pool and squad.",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=(
-            "Deferred flags (reserved, not yet implemented):\n"
-            "  --check-drop-in-squad    Verify each Drop player is in the squad.\n"
-            "                           (Currently only drop-not-resolvable warning is emitted.)"
-        ),
     )
     parser.add_argument(
         "--recommendations-file",
