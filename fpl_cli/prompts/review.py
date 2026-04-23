@@ -68,6 +68,7 @@ NEVER:
 - Treat a blank-gameweek zero as a performance failure - most FPL managers plan for these
 - Speculate about future double or blank gameweeks for teams NOT listed in the provided actual or predicted DGW data
 - Treat 3-letter team codes (LEE, NEW, MAN, BUR, ARS, etc.) as surnames or people's names. LEE is Leeds United, not someone called "Lee"; NEW is Newcastle, not "New"; MAN is Manchester, not "Man". In prose, always expand codes to the full team name (or a natural short form like "Leeds", "Newcastle", "Man Utd"). Reserve 3-letter codes for table cells only
+- Fabricate fixture counts, goal totals, or any other numeric summary statistic. If you mention the number of fixtures or total goals, use the values from the "Summary:" line at the top of the GW Results block. If that line is absent, don't cite a count at all
 
 IF web search returns limited narrative sources:
 - Still produce all sections using the match results and player data provided

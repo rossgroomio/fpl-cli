@@ -53,7 +53,13 @@ def _format_research_context(
     fixtures_data = collected_data.get("fixtures", [])
     match_results_str = ""
     if fixtures_data:
-        match_lines = []
+        total_goals = sum(
+            (f.get("home_score") or 0) + (f.get("away_score") or 0) for f in fixtures_data
+        )
+        match_lines = [
+            f"Summary: {len(fixtures_data)} fixtures, {total_goals} total goals "
+            f"(use these exact counts - do not fabricate alternatives)."
+        ]
         for f in fixtures_data:
             match_lines.append(
                 f"{f['home_team']} {f['home_score']}-{f['away_score']} {f['away_team']}"
