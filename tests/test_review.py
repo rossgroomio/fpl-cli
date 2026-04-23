@@ -458,6 +458,38 @@ class TestNetPointsCalculation:
         assert "<fine_results>" not in prompt
 
 
+class TestFixtureGroundTruth:
+    """Verify synthesis prompt exposes authoritative DGW/BGW team lists."""
+
+    def _build(self, **overrides):
+        base = dict(
+            gameweek=33, research_summary="test", classic_points=109,
+            classic_average=66, classic_highest=177, classic_gw_rank=1,
+            classic_overall_rank=1, classic_captain="X (10 pts = 5 raw × 2)",
+            classic_captain_points=10, classic_captain_hindsight="N/A",
+            classic_players="-", classic_transfers="-",
+            classic_league_name="L", classic_gw_position=1, classic_position=1,
+            classic_total=10, classic_rivals="-", classic_worst_performers="-",
+            classic_transfer_impact=None, draft_points=53, draft_league_name="D",
+            draft_players="-", draft_transactions="-", draft_gw_position=1,
+            draft_position=1, draft_total=10,
+        )
+        base.update(overrides)
+        _, prompt = get_review_synthesis_prompt(**base)
+        return prompt
+
+    def test_dgw_bgw_lines_present_when_provided(self):
+        prompt = self._build(dgw_teams="BHA, BOU, CHE", bgw_teams="ARS")
+        assert "<gw_fixtures>" in prompt
+        assert "Double Gameweek teams (played twice): BHA, BOU, CHE" in prompt
+        assert "Blank Gameweek teams (did not play): ARS" in prompt
+
+    def test_dgw_bgw_defaults_when_absent(self):
+        prompt = self._build()
+        assert "Double Gameweek teams (played twice): none this gameweek" in prompt
+        assert "Blank Gameweek teams (did not play): none this gameweek" in prompt
+
+
 class TestCaptainHindsight:
     """Verify the hindsight-best-captain string is computed raw-to-raw."""
 

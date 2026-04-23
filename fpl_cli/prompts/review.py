@@ -217,6 +217,7 @@ _HARD_CONSTRAINTS_BASE_NEVER = """\
 - Be vague ("decent week") without specific player/decision references
 - Ignore bench points - if players on the bench outscored starters, call it out
 - Infer a scoring breakdown from a player's total points. You only receive totals - you do NOT know how many minutes they played, whether they kept a clean sheet, scored, assisted, got bonus, or were booked. Never write phrases like "presumably a clean sheet appearance", "must have got an assist", "looks like a 60+ minute cameo", or any similar guess. If the total is low, just state the total ("Mac Allister managed 1 point") without speculating on the components
+- Attribute DGW or BGW status to any team not listed in the `<gw_fixtures>` block. That block is authoritative - if the community narrative implies a team played twice or blanked, ignore it unless the team is explicitly in the DGW/BGW list. Every team not listed played ONCE. Never write "in a DGW", "from a double gameweek", "blanked in their DGW" etc. for a single-gameweek team
 - Use the word "league" to refer to the global FPL game. In this prompt, "league" ALWAYS means the user's mini-league (Classic or Draft) by name. The "Global FPL top score" and "Global FPL average" are community-wide stats across all FPL managers worldwide - refer to them as "the global top score", "the overall average", or "the best manager in the game". NEVER write "the highest in the league", "the top score in the league", or any phrasing that implies these global stats came from the user's mini-league\""""
 
 _HARD_CONSTRAINTS_FINE_NEVER = """\
@@ -347,6 +348,13 @@ Analyse my Gameweek {gameweek} performance across both Classic and Draft formats
 {research_summary}
 </community_context>
 
+<gw_fixtures>
+Authoritative fixture counts for this gameweek (use this, NOT the community narrative, to determine DGW/BGW status):
+- Double Gameweek teams (played twice): {dgw_teams_line}
+- Blank Gameweek teams (did not play): {bgw_teams_line}
+- Every other team played ONCE (single gameweek).
+</gw_fixtures>
+
 <classic_data>
 ## Team Performance
 Points: {classic_points} (Global FPL average: {classic_average}, Global FPL top score: {classic_highest})
@@ -468,6 +476,8 @@ def get_review_synthesis_prompt(
     escalation_note: str | None = None,
     active_chip: str | None = None,
     use_net_points: bool = False,
+    dgw_teams: str = "",
+    bgw_teams: str = "",
 ) -> tuple[str, str]:
     """Generate the synthesis system and user prompts for personalised gameweek analysis.
 
@@ -508,6 +518,8 @@ def get_review_synthesis_prompt(
             classic_points_qualifier="by net points " if use_net_points else "by points ",
             classic_performers_header_suffix=" (by Net Points)" if use_net_points else "",
             active_chip_line=active_chip_line,
+            dgw_teams_line=dgw_teams or "none this gameweek",
+            bgw_teams_line=bgw_teams or "none this gameweek",
             draft_points=draft_points,
             draft_league_name=draft_league_name,
             draft_players=draft_players,

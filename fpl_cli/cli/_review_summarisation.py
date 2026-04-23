@@ -488,6 +488,8 @@ async def _review_llm_summarise(
         escalation_note=league_ctx["escalation_note"],
         active_chip=active_chip,
         use_net_points=settings.get("use_net_points", False),
+        dgw_teams=research_ctx["dgw_teams"],
+        bgw_teams=research_ctx["bgw_teams"],
     )
     synthesis_system, synthesis_prompt = synthesis_prompts
 
