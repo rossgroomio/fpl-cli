@@ -498,7 +498,12 @@ async def _review_classic_league(
             "user_gw_points": user_gw_pts,
             "user_total": user_total,
             "nearby_rivals": [
-                {"rank": e.get("rank"), "manager_name": e.get("player_name", "Unknown"), "total": e.get("total", 0)}
+                {
+                    "rank": e.get("rank"),
+                    "manager_name": e.get("player_name", "Unknown"),
+                    "total": e.get("total", 0),
+                    "is_user": e.get("entry") == entry_id,
+                }
                 for e in nearby[:7]
             ] if len(nearby) > 1 else [],
             "best_performers": best_performers_for_report,

@@ -455,6 +455,40 @@ class TestNetPointsCalculation:
         assert "<fine_results>" not in prompt
 
 
+class TestLeagueContextUserMasking:
+    """Verify the user row is rendered as 'You' in LLM-facing league context strings."""
+
+    def _context(self, classic=None, draft=None):
+        from fpl_cli.cli._review_summarisation import _format_league_context
+        return _format_league_context(
+            classic_league_data=classic,
+            draft_league_data=draft,
+            team_points_data=[],
+            draft_squad_points_data=[],
+            settings={},
+        )
+
+    def test_draft_worst_performers_masks_user(self):
+        ctx = self._context(draft={
+            "worst_performers": [
+                {"rank_str": "1", "name": "Alex", "points": 40, "is_user": False},
+                {"rank_str": "3", "name": "Ross Groom", "points": 53, "is_user": True},
+            ],
+        })
+        assert "You - 53 pts" in ctx["draft_worst_performers"]
+        assert "Ross Groom" not in ctx["draft_worst_performers"]
+
+    def test_classic_nearby_rivals_masks_user(self):
+        ctx = self._context(classic={
+            "nearby_rivals": [
+                {"rank": 4, "manager_name": "John", "total": 1200, "is_user": False},
+                {"rank": 5, "manager_name": "Ross Groom", "total": 1180, "is_user": True},
+            ],
+        })
+        assert "5. You: 1,180 pts" in ctx["classic_rivals"]
+        assert "Ross Groom" not in ctx["classic_rivals"]
+
+
 class TestAutoSubFormatting:
     """Tests for auto-sub player string formatting."""
 

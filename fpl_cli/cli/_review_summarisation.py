@@ -203,10 +203,11 @@ def _format_league_context(
     """Format league context for the synthesis prompt."""
     classic_rivals_str = ""
     if classic_league_data and classic_league_data.get("nearby_rivals"):
-        classic_rivals_str = "\n".join([
-            f"- {r.get('rank', '?')}. {r.get('manager_name', 'Unknown')}: {r.get('total', 0):,} pts"
-            for r in classic_league_data["nearby_rivals"][:5]
-        ])
+        lines = []
+        for r in classic_league_data["nearby_rivals"][:5]:
+            name = "You" if r.get("is_user") else r.get("manager_name", "Unknown")
+            lines.append(f"- {r.get('rank', '?')}. {name}: {r.get('total', 0):,} pts")
+        classic_rivals_str = "\n".join(lines)
 
     classic_worst_performers_str = ""
     if classic_league_data and classic_league_data.get("worst_performers"):
@@ -230,7 +231,7 @@ def _format_league_context(
         lines = []
         for p in draft_league_data["worst_performers"]:
             rank = p.get("rank_str", "?")
-            name = p.get("name", "Unknown")
+            name = "You" if p.get("is_user") else p.get("name", "Unknown")
             pts = p.get("points", 0)
             lines.append(f"{rank}. {name} - {pts} pts")
         draft_worst_performers_str = "\n".join(lines)
