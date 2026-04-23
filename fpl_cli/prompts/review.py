@@ -68,6 +68,8 @@ NEVER:
 - Treat a blank-gameweek zero as a performance failure - most FPL managers plan for these
 - Speculate about future double or blank gameweeks for teams NOT listed in the provided actual or predicted DGW data
 - Treat 3-letter team codes (LEE, NEW, MAN, BUR, ARS, etc.) as surnames or people's names. LEE is Leeds United, not someone called "Lee"; NEW is Newcastle, not "New"; MAN is Manchester, not "Man". In prose, always expand codes to the full team name (or a natural short form like "Leeds", "Newcastle", "Man Utd"). Reserve 3-letter codes for table cells only
+- Fabricate fixture counts, goal totals, or any other numeric summary statistic. If you mention the number of fixtures or total goals, use the values from the "Summary:" line at the top of the GW Results block. If that line is absent, don't cite a count at all
+- Split a DGW player's gameweek total across their two fixtures ("14 in the first, 5 in the second"). You only receive the GW total - any per-match breakdown is fabrication. Cite the full GW total only, or describe the haul qualitatively ("a clean sheet and a goal in the DGW") without assigning points to individual fixtures
 
 IF web search returns limited narrative sources:
 - Still produce all sections using the match results and player data provided
@@ -216,7 +218,9 @@ _HARD_CONSTRAINTS_BASE_NEVER = """\
 - Lump Classic and Draft analysis together - they are separate competitions with different rules
 - Be vague ("decent week") without specific player/decision references
 - Ignore bench points - if players on the bench outscored starters, call it out
-- Infer a scoring breakdown from a player's total points. You only receive totals - you do NOT know how many minutes they played, whether they kept a clean sheet, scored, assisted, got bonus, or were booked. Never write phrases like "presumably a clean sheet appearance", "must have got an assist", "looks like a 60+ minute cameo", or any similar guess. If the total is low, just state the total ("Mac Allister managed 1 point") without speculating on the components"""
+- Infer a scoring breakdown from a player's total points. You only receive totals - you do NOT know how many minutes they played, whether they kept a clean sheet, scored, assisted, got bonus, or were booked. Never write phrases like "presumably a clean sheet appearance", "must have got an assist", "looks like a 60+ minute cameo", or any similar guess. If the total is low, just state the total ("Mac Allister managed 1 point") without speculating on the components
+- Attribute DGW or BGW status to any team not listed in the `<gw_fixtures>` block. That block is authoritative - if the community narrative implies a team played twice or blanked, ignore it unless the team is explicitly in the DGW/BGW list. Every team not listed played ONCE. Never write "in a DGW", "from a double gameweek", "blanked in their DGW" etc. for a single-gameweek team
+- Use the word "league" to refer to the global FPL game. In this prompt, "league" ALWAYS means the user's mini-league (Classic or Draft) by name. The "Global FPL top score" and "Global FPL average" are community-wide stats across all FPL managers worldwide - refer to them as "the global top score", "the overall average", or "the best manager in the game". NEVER write "the highest in the league", "the top score in the league", or any phrasing that implies these global stats came from the user's mini-league\""""
 
 _HARD_CONSTRAINTS_FINE_NEVER = """\
 - Miss a fine trigger - these are socially important to the user's leagues"""
@@ -225,6 +229,7 @@ _HARD_CONSTRAINTS_ALWAYS = """\
 - Analyse Classic and Draft separately with distinct verdicts
 - Reference specific players and points where it adds colour (e.g., "Bruno G hauled 11 points" or "Grealish's -1 was painful")
 - Highlight selection mistakes: if a "Bench vs Starters" section is provided in the player data, use it directly - these are pre-computed formation-valid comparisons. Also flag wrong captain choices
+- Evaluate captain quality using the "Hindsight Best Captain" line. Captain points in the player data are ALREADY multiplied - compare raw-to-raw, not raw-to-multiplied. If the hindsight line names a different player as optimal, the captain was a mistake: state who would have been better and the +N pts swing shown. Only call the captain pick "clever"/"the right call"/"paid off" when the hindsight line confirms they were the optimal captain
 - Note team concentration when notable: if 2+ players from the same team collectively hauled or blanked, call it out. Team-grouping and position-grouping are independent: if you don't have a position label for a player in the data, don't state one — refer to them by name only ("Brighton had Welbeck and Van Hecke both blanking"). Only use a position label when it appears explicitly in the data you received (e.g. "Brighton forward Welbeck"). Never infer position from context, club, or guess
 - Maintain wry, dry humour especially when delivering bad news
 - When suggesting players to move on from, specify which format (Classic or Draft)
@@ -248,7 +253,7 @@ These have DIFFERENT fine rules and should be analysed independently. A good Cla
 _CONTEXT_TAIL = """\
 Chips (each changes how you should frame the verdict):
 - **Triple Captain (TC)** = captain's points are tripled (not doubled). Shown as "(TC)" in player data. A TC haul or flop is always worth calling out.
-- **Bench Boost (BB)** = all 15 players score, not just the starting XI. Bench points are the strategy, not luck. The bar for total points is higher because you're fielding a full squad - a below-average BB week is a waste.
+- **Bench Boost (BB)** = all 15 players score, not just the starting XI. Bench points are the strategy, not luck. The bar for total points is higher because you're fielding a full squad - a below-average BB week is a waste. Under BB, auto-subs are cosmetic: a DNP starter replaced by a bench player produces zero points delta because both were already scoring. NEVER frame an auto-sub in a BB week as "rescuing" points or "the sub delivered N points" - the N points would have been banked either way. Players tagged with "no points impact: BB active" must be discussed in that light, if at all.
 - **Free Hit (FH)** = unlimited transfers for one week, squad reverts next GW. Higher expectations since the manager had a blank slate. Frame as a tactical punt that paid off or didn't. Summarise transfers as squad construction, not individual hit/miss verdicts.
 - **Wildcard (WC)** = unlimited free transfers (squad persists). All transfers were free - do not evaluate individual transfer hits/misses. Frame as squad construction quality: did the new squad deliver?
 
@@ -345,12 +350,20 @@ Analyse my Gameweek {gameweek} performance across both Classic and Draft formats
 {research_summary}
 </community_context>
 
+<gw_fixtures>
+Authoritative fixture counts for this gameweek (use this, NOT the community narrative, to determine DGW/BGW status):
+- Double Gameweek teams (played twice): {dgw_teams_line}
+- Blank Gameweek teams (did not play): {bgw_teams_line}
+- Every other team played ONCE (single gameweek).
+</gw_fixtures>
+
 <classic_data>
 ## Team Performance
-Points: {classic_points} (Average: {classic_average}, Highest: {classic_highest})
+Points: {classic_points} (Global FPL average: {classic_average}, Global FPL top score: {classic_highest})
 GW Rank: {classic_gw_rank}
 Overall Rank: {classic_overall_rank}
 Captain: {classic_captain}
+Hindsight Best Captain: {classic_captain_hindsight}
 {active_chip_line}
 
 ## Players
@@ -443,6 +456,7 @@ def get_review_synthesis_prompt(
     classic_overall_rank: int,
     classic_captain: str,
     classic_captain_points: int,
+    classic_captain_hindsight: str,
     classic_players: str,
     classic_transfers: str,
     classic_league_name: str,
@@ -464,6 +478,8 @@ def get_review_synthesis_prompt(
     escalation_note: str | None = None,
     active_chip: str | None = None,
     use_net_points: bool = False,
+    dgw_teams: str = "",
+    bgw_teams: str = "",
 ) -> tuple[str, str]:
     """Generate the synthesis system and user prompts for personalised gameweek analysis.
 
@@ -491,6 +507,7 @@ def get_review_synthesis_prompt(
             classic_overall_rank=classic_overall_rank,
             classic_captain=classic_captain,
             classic_captain_points=classic_captain_points,
+            classic_captain_hindsight=classic_captain_hindsight,
             classic_players=classic_players,
             classic_transfers=classic_transfers,
             classic_league_name=classic_league_name,
@@ -503,6 +520,8 @@ def get_review_synthesis_prompt(
             classic_points_qualifier="by net points " if use_net_points else "by points ",
             classic_performers_header_suffix=" (by Net Points)" if use_net_points else "",
             active_chip_line=active_chip_line,
+            dgw_teams_line=dgw_teams or "none this gameweek",
+            bgw_teams_line=bgw_teams or "none this gameweek",
             draft_points=draft_points,
             draft_league_name=draft_league_name,
             draft_players=draft_players,

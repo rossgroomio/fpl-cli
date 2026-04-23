@@ -171,6 +171,7 @@ def _render_table(data: dict, finances, sell_price: float | None, fmt) -> None:
 
     # Show transfer budget context above the table
     if has_budget:
+        assert finances is not None  # narrowed by has_budget
         bank = finances.bank
         out_name = data["out_player"]["web_name"]
         console.print(

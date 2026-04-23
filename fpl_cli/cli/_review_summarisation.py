@@ -53,7 +53,13 @@ def _format_research_context(
     fixtures_data = collected_data.get("fixtures", [])
     match_results_str = ""
     if fixtures_data:
-        match_lines = []
+        total_goals = sum(
+            (f.get("home_score") or 0) + (f.get("away_score") or 0) for f in fixtures_data
+        )
+        match_lines = [
+            f"Summary: {len(fixtures_data)} fixtures, {total_goals} total goals "
+            f"(use these exact counts - do not fabricate alternatives)."
+        ]
         for f in fixtures_data:
             match_lines.append(
                 f"{f['home_team']} {f['home_score']}-{f['away_score']} {f['away_team']}"
@@ -107,6 +113,7 @@ def _format_classic_section(
     automatic_subs: list[dict[str, Any]],
     player_map: dict[int, Player],
     classic_transfers_data: list[dict[str, Any]],
+    active_chip: str | None = None,
 ) -> dict[str, str]:
     """Format classic team data for the synthesis prompt."""
     if team_points_data:
@@ -128,7 +135,11 @@ def _format_classic_section(
                 in_pts = in_data["points"] if in_data else 0
                 sub_details.append(f"{in_player.web_name} on for {out_player.web_name} ({in_pts} pts)")
         if sub_details:
-            classic_players_str += f"\n\nAuto-subs: {', '.join(sub_details)}"
+            suffix = (
+                " (no points impact: Bench Boost active, all 15 players already scored)"
+                if active_chip == "bboost" else ""
+            )
+            classic_players_str += f"\n\nAuto-subs: {', '.join(sub_details)}{suffix}"
 
     classic_bench = compute_bench_analysis(team_points_data) if team_points_data else None
     if classic_bench:
@@ -203,10 +214,11 @@ def _format_league_context(
     """Format league context for the synthesis prompt."""
     classic_rivals_str = ""
     if classic_league_data and classic_league_data.get("nearby_rivals"):
-        classic_rivals_str = "\n".join([
-            f"- {r.get('rank', '?')}. {r.get('manager_name', 'Unknown')}: {r.get('total', 0):,} pts"
-            for r in classic_league_data["nearby_rivals"][:5]
-        ])
+        lines = []
+        for r in classic_league_data["nearby_rivals"][:5]:
+            name = "You" if r.get("is_user") else r.get("manager_name", "Unknown")
+            lines.append(f"- {r.get('rank', '?')}. {name}: {r.get('total', 0):,} pts")
+        classic_rivals_str = "\n".join(lines)
 
     classic_worst_performers_str = ""
     if classic_league_data and classic_league_data.get("worst_performers"):
@@ -230,7 +242,7 @@ def _format_league_context(
         lines = []
         for p in draft_league_data["worst_performers"]:
             rank = p.get("rank_str", "?")
-            name = p.get("name", "Unknown")
+            name = "You" if p.get("is_user") else p.get("name", "Unknown")
             pts = p.get("points", 0)
             lines.append(f"{rank}. {name} - {pts} pts")
         draft_worst_performers_str = "\n".join(lines)
@@ -243,8 +255,68 @@ def _format_league_context(
         displayed = captain_pick["display_points"]
         captain_label = f"{captain_name} ({displayed} pts = {raw} raw × {multiplier})"
     else:
+        multiplier = 2
+        raw = 0
         captain_label = "Unknown (0 pts)"
     captain_points = captain_pick["display_points"] if captain_pick else 0
+
+    # Hindsight-best captain: highest RAW scorer among players who could have
+    # been captained pre-deadline. Compare raw-to-raw so the LLM stops assessing
+    # captain choice against already-doubled totals.
+    #
+    # If the captain didn't play, the vice was auto-promoted and already got
+    # the multiplier — baseline off the vice's raw score (the effective armband
+    # holder), not the captain's 0, otherwise the swing is inflated.
+    captain_hindsight = "N/A"
+    if captain_pick and team_points_data:
+        captain_contributed = captain_pick.get("contributed", True)
+        if captain_contributed:
+            baseline_raw = raw
+            baseline_name = captain_name
+            baseline_note = ""
+        else:
+            vice = next(
+                (p for p in team_points_data if p.get("is_vice_active")),
+                None,
+            )
+            if vice and vice.get("contributed", True):
+                baseline_raw = vice["points"]
+                baseline_name = vice["name"]
+                baseline_note = (
+                    f" (captain {captain_name} didn't play; vice {baseline_name} "
+                    f"auto-got the armband)"
+                )
+            else:
+                baseline_raw = None
+                baseline_name = captain_name
+                baseline_note = ""
+
+        if baseline_raw is None:
+            captain_hindsight = (
+                f"{captain_name} didn't play and no vice took the armband — "
+                f"no raw baseline to evaluate captain choice"
+            )
+        else:
+            contributed_players = [
+                p for p in team_points_data
+                if (p.get("contributed", True) or p.get("auto_sub_in"))
+                and not p.get("is_captain")
+                and not p.get("is_vice_active")
+            ]
+            best_alt = max(contributed_players, key=lambda p: p["points"], default=None)
+            if best_alt and best_alt["points"] > baseline_raw:
+                delta = (best_alt["points"] - baseline_raw) * multiplier
+                captain_hindsight = (
+                    f"{best_alt['name']} would have been the optimal captain "
+                    f"({best_alt['points']} raw vs {baseline_raw} raw for "
+                    f"{baseline_name}, a swing of +{delta} pts with the "
+                    f"×{multiplier} armband){baseline_note}"
+                )
+            else:
+                captain_hindsight = (
+                    f"{baseline_name} was the optimal captain "
+                    f"(highest raw score among contributors){baseline_note}"
+                )
 
     fines_config = parse_fines_config(settings)
     fine_results_str = ""
@@ -290,6 +362,7 @@ def _format_league_context(
         "draft_worst_performers": draft_worst_performers_str,
         "captain_label": captain_label,
         "captain_points": captain_points,
+        "captain_hindsight": captain_hindsight,
         "fine_results": fine_results_str,
         "escalation_note": escalation_note,
     }
@@ -416,7 +489,9 @@ async def _review_llm_summarise(
             research_summary = "Community narrative unavailable: research provider error."
 
     # Stage 2: Synthesis - personal analysis
-    classic_fmt = _format_classic_section(team_points_data, automatic_subs, player_map, classic_transfers_data)
+    classic_fmt = _format_classic_section(
+        team_points_data, automatic_subs, player_map, classic_transfers_data, active_chip=active_chip,
+    )
     draft_fmt = _format_draft_section(
         draft_squad_points_data, draft_automatic_subs, draft_player_map,
         collected_data.get("draft_transactions", []),
@@ -435,6 +510,7 @@ async def _review_llm_summarise(
         classic_overall_rank=my_entry_summary["overall_rank"] if my_entry_summary else 0,
         classic_captain=league_ctx["captain_label"],
         classic_captain_points=league_ctx["captain_points"],
+        classic_captain_hindsight=league_ctx["captain_hindsight"],
         classic_players=classic_fmt["players"],
         classic_transfers=classic_fmt["transfers"],
         classic_league_name=classic_league_data["league_name"] if classic_league_data else "Unknown",
@@ -462,6 +538,8 @@ async def _review_llm_summarise(
         escalation_note=league_ctx["escalation_note"],
         active_chip=active_chip,
         use_net_points=settings.get("use_net_points", False),
+        dgw_teams=research_ctx["dgw_teams"],
+        bgw_teams=research_ctx["bgw_teams"],
     )
     synthesis_system, synthesis_prompt = synthesis_prompts
 

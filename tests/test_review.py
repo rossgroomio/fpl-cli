@@ -75,6 +75,7 @@ class TestReviewPrompts:
             classic_overall_rank=100000,
             classic_captain="Salah",
             classic_captain_points=14,
+            classic_captain_hindsight="N/A",
             classic_players="- Salah (LIV): 14 pts (C)",
             classic_transfers="No transfers this week",
             classic_league_name="Test League",
@@ -124,6 +125,7 @@ class TestReviewPrompts:
             classic_overall_rank=0,
             classic_captain="",
             classic_captain_points=0,
+            classic_captain_hindsight="N/A",
             classic_players="",
             classic_transfers="",
             classic_league_name="",
@@ -428,6 +430,7 @@ class TestNetPointsCalculation:
             classic_overall_rank=100000,
             classic_captain="Salah",
             classic_captain_points=14,
+            classic_captain_hindsight="N/A",
             classic_players="- Salah (LIV): 14 pts (C)",
             classic_transfers="No transfers this week",
             classic_league_name="Test League",
@@ -453,6 +456,165 @@ class TestNetPointsCalculation:
         assert "Bob's -8 hit saved you from last place" in prompt
         # Fine results section absent when no fines passed
         assert "<fine_results>" not in prompt
+
+
+class TestFixtureGroundTruth:
+    """Verify synthesis prompt exposes authoritative DGW/BGW team lists."""
+
+    def _build(self, **overrides):
+        base = dict(
+            gameweek=33, research_summary="test", classic_points=109,
+            classic_average=66, classic_highest=177, classic_gw_rank=1,
+            classic_overall_rank=1, classic_captain="X (10 pts = 5 raw × 2)",
+            classic_captain_points=10, classic_captain_hindsight="N/A",
+            classic_players="-", classic_transfers="-",
+            classic_league_name="L", classic_gw_position=1, classic_position=1,
+            classic_total=10, classic_rivals="-", classic_worst_performers="-",
+            classic_transfer_impact=None, draft_points=53, draft_league_name="D",
+            draft_players="-", draft_transactions="-", draft_gw_position=1,
+            draft_position=1, draft_total=10,
+        )
+        base.update(overrides)
+        _, prompt = get_review_synthesis_prompt(**base)
+        return prompt
+
+    def test_dgw_bgw_lines_present_when_provided(self):
+        prompt = self._build(dgw_teams="BHA, BOU, CHE", bgw_teams="ARS")
+        assert "<gw_fixtures>" in prompt
+        assert "Double Gameweek teams (played twice): BHA, BOU, CHE" in prompt
+        assert "Blank Gameweek teams (did not play): ARS" in prompt
+
+    def test_dgw_bgw_defaults_when_absent(self):
+        prompt = self._build()
+        assert "Double Gameweek teams (played twice): none this gameweek" in prompt
+        assert "Blank Gameweek teams (did not play): none this gameweek" in prompt
+
+
+class TestCaptainHindsight:
+    """Verify the hindsight-best-captain string is computed raw-to-raw."""
+
+    def _ctx(self, team):
+        from fpl_cli.cli._review_summarisation import _format_league_context
+        return _format_league_context(
+            classic_league_data=None, draft_league_data=None,
+            team_points_data=team, draft_squad_points_data=[], settings={},
+        )
+
+    def test_captain_suboptimal_names_better_alternative_with_swing(self):
+        team = [
+            {"name": "Welbeck", "points": 16, "display_points": 32, "contributed": True,
+             "is_captain": True, "is_vice": False, "is_triple_captain": False},
+            {"name": "Gibbs-White", "points": 20, "display_points": 20, "contributed": True,
+             "is_captain": False, "is_vice": False},
+            {"name": "Haaland", "points": 13, "display_points": 13, "contributed": True,
+             "is_captain": False, "is_vice": False},
+        ]
+        s = self._ctx(team)["captain_hindsight"]
+        assert "Gibbs-White" in s
+        assert "20 raw" in s and "16 raw" in s
+        assert "+8" in s  # (20-16)*2
+
+    def test_captain_optimal_confirmed(self):
+        team = [
+            {"name": "Welbeck", "points": 20, "display_points": 40, "contributed": True,
+             "is_captain": True, "is_vice": False, "is_triple_captain": False},
+            {"name": "Haaland", "points": 13, "display_points": 13, "contributed": True,
+             "is_captain": False, "is_vice": False},
+        ]
+        s = self._ctx(team)["captain_hindsight"]
+        assert "optimal captain" in s and "Welbeck" in s
+
+    def test_captain_triple_captain_uses_triple_multiplier(self):
+        team = [
+            {"name": "Salah", "points": 10, "display_points": 30, "contributed": True,
+             "is_captain": True, "is_vice": False, "is_triple_captain": True},
+            {"name": "Haaland", "points": 15, "display_points": 15, "contributed": True,
+             "is_captain": False, "is_vice": False},
+        ]
+        s = self._ctx(team)["captain_hindsight"]
+        assert "Haaland" in s
+        assert "+15" in s  # (15-10)*3
+        assert "×3" in s
+
+    def test_captain_dnp_baselines_off_vice_not_zero(self):
+        # Captain didn't play; vice auto-promoted and got the multiplier.
+        # Swing must be (best_alt - vice_raw) * multiplier, NOT best_alt * multiplier.
+        team = [
+            {"name": "Salah", "points": 0, "display_points": 0, "contributed": False,
+             "is_captain": True, "is_vice": False, "is_vice_active": False,
+             "is_triple_captain": False},
+            {"name": "Saka", "points": 9, "display_points": 18, "contributed": True,
+             "is_captain": False, "is_vice": True, "is_vice_active": True},
+            {"name": "Palmer", "points": 12, "display_points": 12, "contributed": True,
+             "is_captain": False, "is_vice": False, "is_vice_active": False},
+        ]
+        s = self._ctx(team)["captain_hindsight"]
+        assert "Palmer" in s
+        assert "12 raw" in s and "9 raw" in s  # baselined off vice Saka (9), not captain (0)
+        assert "+6" in s  # (12 - 9) * 2
+        assert "+24" not in s  # would be the wrong (best * 2) inflation
+        assert "vice" in s.lower()
+
+    def test_captain_dnp_and_vice_dnp_skips_hindsight(self):
+        team = [
+            {"name": "Salah", "points": 0, "display_points": 0, "contributed": False,
+             "is_captain": True, "is_vice": False, "is_vice_active": False,
+             "is_triple_captain": False},
+            {"name": "Saka", "points": 0, "display_points": 0, "contributed": False,
+             "is_captain": False, "is_vice": True, "is_vice_active": True},
+            {"name": "Palmer", "points": 8, "display_points": 8, "contributed": True,
+             "is_captain": False, "is_vice": False, "is_vice_active": False},
+        ]
+        s = self._ctx(team)["captain_hindsight"]
+        assert "no raw baseline" in s
+
+    def test_captain_dnp_vice_optimal_no_swing(self):
+        # Captain DNP'd; vice was actually the highest raw scorer — no better alt.
+        team = [
+            {"name": "Salah", "points": 0, "display_points": 0, "contributed": False,
+             "is_captain": True, "is_vice": False, "is_vice_active": False,
+             "is_triple_captain": False},
+            {"name": "Saka", "points": 14, "display_points": 28, "contributed": True,
+             "is_captain": False, "is_vice": True, "is_vice_active": True},
+            {"name": "Palmer", "points": 10, "display_points": 10, "contributed": True,
+             "is_captain": False, "is_vice": False, "is_vice_active": False},
+        ]
+        s = self._ctx(team)["captain_hindsight"]
+        assert "Saka" in s and "optimal captain" in s
+
+
+class TestLeagueContextUserMasking:
+    """Verify the user row is rendered as 'You' in LLM-facing league context strings."""
+
+    def _context(self, classic=None, draft=None):
+        from fpl_cli.cli._review_summarisation import _format_league_context
+        return _format_league_context(
+            classic_league_data=classic,
+            draft_league_data=draft,
+            team_points_data=[],
+            draft_squad_points_data=[],
+            settings={},
+        )
+
+    def test_draft_worst_performers_masks_user(self):
+        ctx = self._context(draft={
+            "worst_performers": [
+                {"rank_str": "1", "name": "Alex", "points": 40, "is_user": False},
+                {"rank_str": "3", "name": "Manager", "points": 53, "is_user": True},
+            ],
+        })
+        assert "You - 53 pts" in ctx["draft_worst_performers"]
+        assert "Manager" not in ctx["draft_worst_performers"]
+
+    def test_classic_nearby_rivals_masks_user(self):
+        ctx = self._context(classic={
+            "nearby_rivals": [
+                {"rank": 4, "manager_name": "John", "total": 1200, "is_user": False},
+                {"rank": 5, "manager_name": "Manager", "total": 1180, "is_user": True},
+            ],
+        })
+        assert "5. You: 1,180 pts" in ctx["classic_rivals"]
+        assert "Manager" not in ctx["classic_rivals"]
 
 
 class TestAutoSubFormatting:
@@ -497,6 +659,26 @@ class TestAutoSubFormatting:
         line = self._format_player(player)
         assert line == "- Salah (LIV, MID): (0) [DIDN'T PLAY - auto-subbed out] pts"
         assert "[DIDN'T PLAY - auto-subbed out]" in line
+
+    def test_format_classic_player_auto_sub_in_under_bb(self):
+        player = {
+            "name": "Williams", "team": "NOT", "position": "DEF",
+            "display_points": 2, "contributed": True, "is_captain": False,
+            "red_cards": 0, "auto_sub_in": True, "auto_sub_out": False,
+            "bb_no_sub_impact": True,
+        }
+        line = self._format_player(player)
+        assert "no points impact: BB active" in line
+
+    def test_format_classic_player_auto_sub_out_under_bb(self):
+        player = {
+            "name": "Gordon", "team": "NEW", "position": "MID",
+            "display_points": 0, "contributed": True, "is_captain": False,
+            "red_cards": 0, "auto_sub_in": False, "auto_sub_out": True,
+            "bb_no_sub_impact": True,
+        }
+        line = self._format_player(player)
+        assert "no points impact: BB active" in line
 
     def test_format_classic_player_bench_high_points(self):
         """Test formatting a bench player with high points (unused)."""
@@ -594,6 +776,36 @@ class TestAutoSubFormatting:
 
         assert "Watkins on for Salah (8 pts)" in summary
         assert "Gordon on for Palmer (6 pts)" in summary
+
+    def test_format_classic_section_bb_auto_sub_suffix(self):
+        """Under Bench Boost, the Auto-subs line must declare zero points impact."""
+        from fpl_cli.cli._review_summarisation import _format_classic_section
+
+        class MockPlayer:
+            def __init__(self, id, web_name):
+                self.id = id
+                self.web_name = web_name
+
+        automatic_subs = [{"element_in": 1, "element_out": 2}]
+        player_map = {1: MockPlayer(1, "Williams"), 2: MockPlayer(2, "Salah")}
+        team_points_data = [{
+            "name": "Williams", "team": "NOT", "position": "DEF",
+            "points": 2, "display_points": 2, "contributed": True,
+            "is_captain": False, "red_cards": 0,
+            "auto_sub_in": True, "auto_sub_out": False,
+        }]
+
+        bb_result = _format_classic_section(
+            team_points_data, automatic_subs, player_map, [], active_chip="bboost",
+        )
+        assert "Auto-subs: Williams on for Salah (2 pts)" in bb_result["players"]
+        assert "no points impact: Bench Boost active" in bb_result["players"]
+
+        no_chip_result = _format_classic_section(
+            team_points_data, automatic_subs, player_map, [], active_chip=None,
+        )
+        assert "Auto-subs: Williams on for Salah (2 pts)" in no_chip_result["players"]
+        assert "no points impact" not in no_chip_result["players"]
 
     def test_system_prompt_auto_sub_context(self):
         """Test that the system prompt includes auto-sub context."""
@@ -1306,6 +1518,7 @@ class TestTripleCaptainDetection:
             classic_overall_rank=100000,
             classic_captain="Gabriel (TC)",
             classic_captain_points=21,
+            classic_captain_hindsight="N/A",
             classic_players="- Gabriel (ARS, DEF): 21 pts (TC)",
             classic_transfers="No transfers this week",
             classic_league_name="Test League",
@@ -1341,6 +1554,7 @@ class TestTripleCaptainDetection:
             classic_overall_rank=100000,
             classic_captain="Salah",
             classic_captain_points=14,
+            classic_captain_hindsight="N/A",
             classic_players="- Salah (LIV, MID): 14 pts (C)",
             classic_transfers="No transfers this week",
             classic_league_name="Test League",
@@ -1378,6 +1592,7 @@ class TestTripleCaptainDetection:
             classic_overall_rank=100000,
             classic_captain="Salah",
             classic_captain_points=14,
+            classic_captain_hindsight="N/A",
             classic_players="- Salah (LIV, MID): 14 pts (C)",
             classic_transfers="No transfers this week",
             classic_league_name="Test League",
