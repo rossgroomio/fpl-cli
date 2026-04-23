@@ -72,6 +72,10 @@ Flag the following situations prominently:
 - **Minutes risk**: started fewer than 2 of last 4 matches
 - **Price crash**: lost 0.2+ in value over the last 5 days
 
+### Grounding rule (no fabricated stats)
+
+Momentum Alert bullets must only cite numbers that appear in the CLI/stats output already inlined into the sub-agent prompt. Do not invent derivative framings like "three straight attacking returns", "X goals in Y games", "scored in N consecutive", or "back-to-back doubles" unless the underlying per-GW breakdown is visible in the provided data. When in doubt, stick to the four defined trigger types above plus the raw form number, price delta, minutes count, and injury flag percentage — these are always available. Prose beyond those fields is a fabrication risk and must be cut.
+
 ## pFDR (Positional FDR) Analysis
 
 For each position (GK, DEF, MID, FWD):
@@ -79,6 +83,13 @@ For each position (GK, DEF, MID, FWD):
 1. Identify the 3 best fixture runs over the next 5 GWs (lowest average pFDR).
 2. Identify the 3 worst fixture runs (highest average pFDR).
 3. Cross-reference with the user's current squad to surface mismatches (e.g. holding defenders with terrible upcoming fixtures).
+
+### pFDR Overview row format
+
+- **One row per team, not per player.** Multiple squad players from the same team (e.g. Raya + Gabriel at ARS) may share a row because their fixtures are identical.
+- **Never combine players from different teams into a single row.** Their fixture paths diverge after GW1 of the window and the downstream cells cannot be populated. If two same-position players are on different teams, give them separate rows.
+- **Every cell in GW{N}..GW{N+4} must be populated** with either opponent+pFDR or `BLANK` (for blank gameweeks). A `-` in any fixture cell is a bug: re-run `fpl fixtures -g {gw}` for the missing gameweeks.
+- **Avg column** = mean pFDR across the 5 GWs, treating BLANK as excluded from the denominator.
 
 ## Selection Requirements
 
