@@ -216,7 +216,8 @@ _HARD_CONSTRAINTS_BASE_NEVER = """\
 - Lump Classic and Draft analysis together - they are separate competitions with different rules
 - Be vague ("decent week") without specific player/decision references
 - Ignore bench points - if players on the bench outscored starters, call it out
-- Infer a scoring breakdown from a player's total points. You only receive totals - you do NOT know how many minutes they played, whether they kept a clean sheet, scored, assisted, got bonus, or were booked. Never write phrases like "presumably a clean sheet appearance", "must have got an assist", "looks like a 60+ minute cameo", or any similar guess. If the total is low, just state the total ("Mac Allister managed 1 point") without speculating on the components"""
+- Infer a scoring breakdown from a player's total points. You only receive totals - you do NOT know how many minutes they played, whether they kept a clean sheet, scored, assisted, got bonus, or were booked. Never write phrases like "presumably a clean sheet appearance", "must have got an assist", "looks like a 60+ minute cameo", or any similar guess. If the total is low, just state the total ("Mac Allister managed 1 point") without speculating on the components
+- Use the word "league" to refer to the global FPL game. In this prompt, "league" ALWAYS means the user's mini-league (Classic or Draft) by name. The "Global FPL top score" and "Global FPL average" are community-wide stats across all FPL managers worldwide - refer to them as "the global top score", "the overall average", or "the best manager in the game". NEVER write "the highest in the league", "the top score in the league", or any phrasing that implies these global stats came from the user's mini-league\""""
 
 _HARD_CONSTRAINTS_FINE_NEVER = """\
 - Miss a fine trigger - these are socially important to the user's leagues"""
@@ -347,7 +348,7 @@ Analyse my Gameweek {gameweek} performance across both Classic and Draft formats
 
 <classic_data>
 ## Team Performance
-Points: {classic_points} (Average: {classic_average}, Highest: {classic_highest})
+Points: {classic_points} (Global FPL average: {classic_average}, Global FPL top score: {classic_highest})
 GW Rank: {classic_gw_rank}
 Overall Rank: {classic_overall_rank}
 Captain: {classic_captain}
