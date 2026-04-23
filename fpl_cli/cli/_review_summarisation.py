@@ -107,6 +107,7 @@ def _format_classic_section(
     automatic_subs: list[dict[str, Any]],
     player_map: dict[int, Player],
     classic_transfers_data: list[dict[str, Any]],
+    active_chip: str | None = None,
 ) -> dict[str, str]:
     """Format classic team data for the synthesis prompt."""
     if team_points_data:
@@ -128,7 +129,11 @@ def _format_classic_section(
                 in_pts = in_data["points"] if in_data else 0
                 sub_details.append(f"{in_player.web_name} on for {out_player.web_name} ({in_pts} pts)")
         if sub_details:
-            classic_players_str += f"\n\nAuto-subs: {', '.join(sub_details)}"
+            suffix = (
+                " (no points impact: Bench Boost active, all 15 players already scored)"
+                if active_chip == "bboost" else ""
+            )
+            classic_players_str += f"\n\nAuto-subs: {', '.join(sub_details)}{suffix}"
 
     classic_bench = compute_bench_analysis(team_points_data) if team_points_data else None
     if classic_bench:
@@ -441,7 +446,9 @@ async def _review_llm_summarise(
             research_summary = "Community narrative unavailable: research provider error."
 
     # Stage 2: Synthesis - personal analysis
-    classic_fmt = _format_classic_section(team_points_data, automatic_subs, player_map, classic_transfers_data)
+    classic_fmt = _format_classic_section(
+        team_points_data, automatic_subs, player_map, classic_transfers_data, active_chip=active_chip,
+    )
     draft_fmt = _format_draft_section(
         draft_squad_points_data, draft_automatic_subs, draft_player_map,
         collected_data.get("draft_transactions", []),

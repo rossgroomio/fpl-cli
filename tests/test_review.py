@@ -614,6 +614,26 @@ class TestAutoSubFormatting:
         assert line == "- Salah (LIV, MID): (0) [DIDN'T PLAY - auto-subbed out] pts"
         assert "[DIDN'T PLAY - auto-subbed out]" in line
 
+    def test_format_classic_player_auto_sub_in_under_bb(self):
+        player = {
+            "name": "Williams", "team": "NOT", "position": "DEF",
+            "display_points": 2, "contributed": True, "is_captain": False,
+            "red_cards": 0, "auto_sub_in": True, "auto_sub_out": False,
+            "bb_no_sub_impact": True,
+        }
+        line = self._format_player(player)
+        assert "no points impact: BB active" in line
+
+    def test_format_classic_player_auto_sub_out_under_bb(self):
+        player = {
+            "name": "Gordon", "team": "NEW", "position": "MID",
+            "display_points": 0, "contributed": True, "is_captain": False,
+            "red_cards": 0, "auto_sub_in": False, "auto_sub_out": True,
+            "bb_no_sub_impact": True,
+        }
+        line = self._format_player(player)
+        assert "no points impact: BB active" in line
+
     def test_format_classic_player_bench_high_points(self):
         """Test formatting a bench player with high points (unused)."""
         player = {

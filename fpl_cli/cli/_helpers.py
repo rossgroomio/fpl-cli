@@ -191,9 +191,15 @@ def _format_review_player(p: dict, points_key: str = "points", show_captain: boo
         else:
             pts_str = f"({pts}) [BGW]"
     elif p.get("auto_sub_in"):
-        pts_str = f"{pts} [AUTO-SUB IN]"
+        if p.get("bb_no_sub_impact"):
+            pts_str = f"{pts} [AUTO-SUB IN - no points impact: BB active, all 15 score]"
+        else:
+            pts_str = f"{pts} [AUTO-SUB IN]"
     elif p.get("auto_sub_out"):
-        pts_str = f"({pts}) [DIDN'T PLAY - auto-subbed out]"
+        if p.get("bb_no_sub_impact"):
+            pts_str = f"({pts}) [DIDN'T PLAY - auto-subbed out; no points impact: BB active]"
+        else:
+            pts_str = f"({pts}) [DIDN'T PLAY - auto-subbed out]"
     elif not p.get("contributed", True):
         if pts >= 6:
             pts_str = f"({pts}) [BENCH - {pts} pts unused!]"

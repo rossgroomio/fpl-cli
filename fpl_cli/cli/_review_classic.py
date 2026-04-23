@@ -104,6 +104,8 @@ async def _review_classic_team(
             for p in my_picks_data:
                 is_bench_boost_player = active_chip == "bboost" and p["is_bench"]
                 contributed = p["multiplier"] > 0 or is_bench_boost_player
+                # Under BB all 15 score, so auto-subs create no points delta
+                bb_no_sub_impact = active_chip == "bboost" and (p["auto_sub_in"] or p["auto_sub_out"])
                 display_points = p["points"]
 
                 # Apply captain/vice multiplier for display
@@ -129,6 +131,7 @@ async def _review_classic_team(
                     "bgw": p["bgw"],
                     "dgw": p["dgw"],
                     "is_bench_boost_player": is_bench_boost_player,
+                    "bb_no_sub_impact": bb_no_sub_impact,
                 })
 
             # Sort: contributing first (by display_points desc), then non-contributing

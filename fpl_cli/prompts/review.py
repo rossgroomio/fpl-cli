@@ -251,7 +251,7 @@ These have DIFFERENT fine rules and should be analysed independently. A good Cla
 _CONTEXT_TAIL = """\
 Chips (each changes how you should frame the verdict):
 - **Triple Captain (TC)** = captain's points are tripled (not doubled). Shown as "(TC)" in player data. A TC haul or flop is always worth calling out.
-- **Bench Boost (BB)** = all 15 players score, not just the starting XI. Bench points are the strategy, not luck. The bar for total points is higher because you're fielding a full squad - a below-average BB week is a waste.
+- **Bench Boost (BB)** = all 15 players score, not just the starting XI. Bench points are the strategy, not luck. The bar for total points is higher because you're fielding a full squad - a below-average BB week is a waste. Under BB, auto-subs are cosmetic: a DNP starter replaced by a bench player produces zero points delta because both were already scoring. NEVER frame an auto-sub in a BB week as "rescuing" points or "the sub delivered N points" - the N points would have been banked either way. Players tagged with "no points impact: BB active" must be discussed in that light, if at all.
 - **Free Hit (FH)** = unlimited transfers for one week, squad reverts next GW. Higher expectations since the manager had a blank slate. Frame as a tactical punt that paid off or didn't. Summarise transfers as squad construction, not individual hit/miss verdicts.
 - **Wildcard (WC)** = unlimited free transfers (squad persists). All transfers were free - do not evaluate individual transfer hits/misses. Frame as squad construction quality: did the new squad deliver?
 
