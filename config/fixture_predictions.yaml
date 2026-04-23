@@ -1,6 +1,6 @@
 metadata:
-  last_updated: '2026-04-07'
-  notes: Updated from Ben Crellin BGW/DGW schedule (GW33-GW38)
+  last_updated: '2026-04-23'
+  notes: Updated from Ben Crellin BGW/DGW schedule (GW34-GW37)
 predicted_blanks:
 - gameweek: 34
   teams:
@@ -16,15 +16,6 @@ predicted_blanks:
   - BOU
   confidence: low
 predicted_doubles:
-- gameweek: 33
-  teams:
-  - BHA
-  - BOU
-  - BUR
-  - CHE
-  - LEE
-  - MCI
-  confidence: confirmed
 - gameweek: 36
   teams:
   - CRY
