@@ -226,6 +226,7 @@ _HARD_CONSTRAINTS_ALWAYS = """\
 - Analyse Classic and Draft separately with distinct verdicts
 - Reference specific players and points where it adds colour (e.g., "Bruno G hauled 11 points" or "Grealish's -1 was painful")
 - Highlight selection mistakes: if a "Bench vs Starters" section is provided in the player data, use it directly - these are pre-computed formation-valid comparisons. Also flag wrong captain choices
+- Evaluate captain quality using the "Hindsight Best Captain" line. Captain points in the player data are ALREADY multiplied - compare raw-to-raw, not raw-to-multiplied. If the hindsight line names a different player as optimal, the captain was a mistake: state who would have been better and the +N pts swing shown. Only call the captain pick "clever"/"the right call"/"paid off" when the hindsight line confirms they were the optimal captain
 - Note team concentration when notable: if 2+ players from the same team collectively hauled or blanked, call it out. Team-grouping and position-grouping are independent: if you don't have a position label for a player in the data, don't state one — refer to them by name only ("Brighton had Welbeck and Van Hecke both blanking"). Only use a position label when it appears explicitly in the data you received (e.g. "Brighton forward Welbeck"). Never infer position from context, club, or guess
 - Maintain wry, dry humour especially when delivering bad news
 - When suggesting players to move on from, specify which format (Classic or Draft)
@@ -352,6 +353,7 @@ Points: {classic_points} (Global FPL average: {classic_average}, Global FPL top 
 GW Rank: {classic_gw_rank}
 Overall Rank: {classic_overall_rank}
 Captain: {classic_captain}
+Hindsight Best Captain: {classic_captain_hindsight}
 {active_chip_line}
 
 ## Players
@@ -444,6 +446,7 @@ def get_review_synthesis_prompt(
     classic_overall_rank: int,
     classic_captain: str,
     classic_captain_points: int,
+    classic_captain_hindsight: str,
     classic_players: str,
     classic_transfers: str,
     classic_league_name: str,
@@ -492,6 +495,7 @@ def get_review_synthesis_prompt(
             classic_overall_rank=classic_overall_rank,
             classic_captain=classic_captain,
             classic_captain_points=classic_captain_points,
+            classic_captain_hindsight=classic_captain_hindsight,
             classic_players=classic_players,
             classic_transfers=classic_transfers,
             classic_league_name=classic_league_name,

@@ -244,8 +244,31 @@ def _format_league_context(
         displayed = captain_pick["display_points"]
         captain_label = f"{captain_name} ({displayed} pts = {raw} raw × {multiplier})"
     else:
+        multiplier = 2
+        raw = 0
         captain_label = "Unknown (0 pts)"
     captain_points = captain_pick["display_points"] if captain_pick else 0
+
+    # Hindsight-best captain: highest RAW scorer among players who contributed.
+    # Any of them could have been captained pre-deadline; compare raw-to-raw so
+    # the LLM stops assessing captain choice against already-doubled totals.
+    captain_hindsight = "N/A"
+    if captain_pick and team_points_data:
+        contributed_players = [
+            p for p in team_points_data
+            if (p.get("contributed", True) or p.get("auto_sub_in"))
+            and not p.get("is_captain")
+        ]
+        best_alt = max(contributed_players, key=lambda p: p["points"], default=None)
+        if best_alt and best_alt["points"] > raw:
+            delta = (best_alt["points"] - raw) * multiplier
+            captain_hindsight = (
+                f"{best_alt['name']} would have been the optimal captain "
+                f"({best_alt['points']} raw vs {raw} raw for {captain_name}, "
+                f"a swing of +{delta} pts with the ×{multiplier} armband)"
+            )
+        else:
+            captain_hindsight = f"{captain_name} was the optimal captain (highest raw score among contributors)"
 
     fines_config = parse_fines_config(settings)
     fine_results_str = ""
@@ -291,6 +314,7 @@ def _format_league_context(
         "draft_worst_performers": draft_worst_performers_str,
         "captain_label": captain_label,
         "captain_points": captain_points,
+        "captain_hindsight": captain_hindsight,
         "fine_results": fine_results_str,
         "escalation_note": escalation_note,
     }
@@ -436,6 +460,7 @@ async def _review_llm_summarise(
         classic_overall_rank=my_entry_summary["overall_rank"] if my_entry_summary else 0,
         classic_captain=league_ctx["captain_label"],
         classic_captain_points=league_ctx["captain_points"],
+        classic_captain_hindsight=league_ctx["captain_hindsight"],
         classic_players=classic_fmt["players"],
         classic_transfers=classic_fmt["transfers"],
         classic_league_name=classic_league_data["league_name"] if classic_league_data else "Unknown",

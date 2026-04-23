@@ -75,6 +75,7 @@ class TestReviewPrompts:
             classic_overall_rank=100000,
             classic_captain="Salah",
             classic_captain_points=14,
+            classic_captain_hindsight="N/A",
             classic_players="- Salah (LIV): 14 pts (C)",
             classic_transfers="No transfers this week",
             classic_league_name="Test League",
@@ -124,6 +125,7 @@ class TestReviewPrompts:
             classic_overall_rank=0,
             classic_captain="",
             classic_captain_points=0,
+            classic_captain_hindsight="N/A",
             classic_players="",
             classic_transfers="",
             classic_league_name="",
@@ -428,6 +430,7 @@ class TestNetPointsCalculation:
             classic_overall_rank=100000,
             classic_captain="Salah",
             classic_captain_points=14,
+            classic_captain_hindsight="N/A",
             classic_players="- Salah (LIV): 14 pts (C)",
             classic_transfers="No transfers this week",
             classic_league_name="Test League",
@@ -453,6 +456,53 @@ class TestNetPointsCalculation:
         assert "Bob's -8 hit saved you from last place" in prompt
         # Fine results section absent when no fines passed
         assert "<fine_results>" not in prompt
+
+
+class TestCaptainHindsight:
+    """Verify the hindsight-best-captain string is computed raw-to-raw."""
+
+    def _ctx(self, team):
+        from fpl_cli.cli._review_summarisation import _format_league_context
+        return _format_league_context(
+            classic_league_data=None, draft_league_data=None,
+            team_points_data=team, draft_squad_points_data=[], settings={},
+        )
+
+    def test_captain_suboptimal_names_better_alternative_with_swing(self):
+        team = [
+            {"name": "Welbeck", "points": 16, "display_points": 32, "contributed": True,
+             "is_captain": True, "is_vice": False, "is_triple_captain": False},
+            {"name": "Gibbs-White", "points": 20, "display_points": 20, "contributed": True,
+             "is_captain": False, "is_vice": False},
+            {"name": "Haaland", "points": 13, "display_points": 13, "contributed": True,
+             "is_captain": False, "is_vice": False},
+        ]
+        s = self._ctx(team)["captain_hindsight"]
+        assert "Gibbs-White" in s
+        assert "20 raw" in s and "16 raw" in s
+        assert "+8" in s  # (20-16)*2
+
+    def test_captain_optimal_confirmed(self):
+        team = [
+            {"name": "Welbeck", "points": 20, "display_points": 40, "contributed": True,
+             "is_captain": True, "is_vice": False, "is_triple_captain": False},
+            {"name": "Haaland", "points": 13, "display_points": 13, "contributed": True,
+             "is_captain": False, "is_vice": False},
+        ]
+        s = self._ctx(team)["captain_hindsight"]
+        assert "optimal captain" in s and "Welbeck" in s
+
+    def test_captain_triple_captain_uses_triple_multiplier(self):
+        team = [
+            {"name": "Salah", "points": 10, "display_points": 30, "contributed": True,
+             "is_captain": True, "is_vice": False, "is_triple_captain": True},
+            {"name": "Haaland", "points": 15, "display_points": 15, "contributed": True,
+             "is_captain": False, "is_vice": False},
+        ]
+        s = self._ctx(team)["captain_hindsight"]
+        assert "Haaland" in s
+        assert "+15" in s  # (15-10)*3
+        assert "×3" in s
 
 
 class TestLeagueContextUserMasking:
@@ -1340,6 +1390,7 @@ class TestTripleCaptainDetection:
             classic_overall_rank=100000,
             classic_captain="Gabriel (TC)",
             classic_captain_points=21,
+            classic_captain_hindsight="N/A",
             classic_players="- Gabriel (ARS, DEF): 21 pts (TC)",
             classic_transfers="No transfers this week",
             classic_league_name="Test League",
@@ -1375,6 +1426,7 @@ class TestTripleCaptainDetection:
             classic_overall_rank=100000,
             classic_captain="Salah",
             classic_captain_points=14,
+            classic_captain_hindsight="N/A",
             classic_players="- Salah (LIV, MID): 14 pts (C)",
             classic_transfers="No transfers this week",
             classic_league_name="Test League",
@@ -1412,6 +1464,7 @@ class TestTripleCaptainDetection:
             classic_overall_rank=100000,
             classic_captain="Salah",
             classic_captain_points=14,
+            classic_captain_hindsight="N/A",
             classic_players="- Salah (LIV, MID): 14 pts (C)",
             classic_transfers="No transfers this week",
             classic_league_name="Test League",
