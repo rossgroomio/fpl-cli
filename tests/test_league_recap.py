@@ -913,7 +913,7 @@ class TestLeagueRecapTemplateRender:
         assert report_path
         content = Path(report_path).read_text()
 
-        standings_start = content.index("# Standings")
+        standings_start = content.index("# GW Standings")
         standings_end = content.index("---", standings_start)
         standings_section = content[standings_start:standings_end]
 
