@@ -414,11 +414,16 @@ Proceed immediately (non-interactive).
 > **Data (JSON):**
 > - Status: {A1 output}
 > - pFDR: {B1 output}
+>
+> **WAIVER POOL IS AUTHORITATIVE:** `fpl waivers` output is the only source for available players. All other data (stats, form tables, squad context) is for analysis only. Never recommend a claim not present in the waivers output. Cross-position recommendations (e.g. dropping a MID to claim a DEF) are structurally illegal and will be rejected by Phase D1.
+>
 > - Waivers: {B3 output}
 > - Squad: {B4 output}
 > - Stats: {stats_form}, {stats_transfer_momentum}, {stats_mid_xgi}, {stats_fwd_xgi}, {stats_def_clean_sheets} (from B8)
 >
 > <!-- ADAPT: Add your own supplementary data sources here (newsletters, external reports) -->
+>
+> Additionally enforce: every waiver swap must be position-for-position (MID out → MID in, DEF out → DEF in, etc.). Cross-position swaps are illegal under FPL Draft rules.
 >
 > Produce the **Draft** section of the output template.
 
