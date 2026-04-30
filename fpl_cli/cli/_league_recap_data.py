@@ -141,6 +141,7 @@ async def _fetch_all_manager_data(
         captain_points = 0
         captain_played = False
         vice_captain_name = ""
+        vice_captain_points = 0
 
         bench_points = 0
         for pick in picks:
@@ -180,6 +181,7 @@ async def _fetch_all_manager_data(
                 captain_played = minutes > 0
             if pick.get("is_vice_captain"):
                 vice_captain_name = player.web_name
+                vice_captain_points = pts
 
         # Human-readable auto-sub descriptions
         auto_sub_descriptions: list[str] = []
@@ -232,6 +234,7 @@ async def _fetch_all_manager_data(
             captain_points=captain_points,
             captain_played=captain_played,
             vice_captain=vice_captain_name,
+            vice_captain_points=vice_captain_points,
             active_chip=_CHIP_DISPLAY.get(active_chip, active_chip) if active_chip else None,
             squad=squad,
             bench_points=bench_points,
@@ -383,10 +386,16 @@ def evaluate_league_fines(
 # ---------------------------------------------------------------------------
 
 
-def _captain_detail(caps: list[RecapManagerEntry]) -> str:
+def _captain_detail(caps: list[RecapManagerEntry], total_managers: int = 0) -> str:
     """Build a detail string for tied captain awards, grouping by player."""
     if len(caps) == 1:
         m = caps[0]
+        if not m.get("captain_played"):
+            vc_pts = m.get("vice_captain_points", 0)
+            return (
+                f"{m['manager_name']} captained {m['captain']} (dnp); "
+                f"vice {m['vice_captain']} also scored {vc_pts} pts"
+            )
         return f"{m['manager_name']} captained {m['captain']} ({m['captain_points']} pts)"
 
     from collections import defaultdict
@@ -398,9 +407,11 @@ def _captain_detail(caps: list[RecapManagerEntry]) -> str:
     pts = caps[0]["captain_points"]
     parts = []
     for player, names in by_player.items():
-        joined = ", ".join(names[:-1]) + " and " + names[-1] if len(names) > 1 else names[0]
-        verb = "all captained" if len(names) > 2 else "captained"
-        parts.append(f"{joined} {verb} {player} ({pts} pts)")
+        n = len(names)
+        joined = ", ".join(names[:-1]) + " and " + names[-1] if n > 1 else names[0]
+        verb = "all captained" if n > 2 else "captained"
+        fraction = f" [{n} of {total_managers} managers]" if total_managers > 0 and n < total_managers else ""
+        parts.append(f"{joined} {verb} {player} ({pts} pts){fraction}")
     return ", ".join(parts)
 
 
@@ -462,23 +473,27 @@ def _compute_shared_awards(
 
     # Captain awards (classic only - draft has no captaincy)
     if format_name == "classic":
+        total_managers = len(managers)
         best_cap_pts = max(m["captain_points"] for m in managers)
         if best_cap_pts > 0:
             best_caps = [m for m in managers if m["captain_points"] == best_cap_pts]
             awards["best_captain"] = RecapAwardEntry(
                 manager_name=" and ".join(m["manager_name"] for m in best_caps),
                 value=best_cap_pts,
-                detail=_captain_detail(best_caps),
+                detail=_captain_detail(best_caps, total_managers),
             )
 
-        played_caps = [m for m in managers if m.get("captain_played", True)]
-        worst_pool = played_caps if played_caps else managers
-        worst_cap_pts = min(m["captain_points"] for m in worst_pool)
-        worst_caps = [m for m in worst_pool if m["captain_points"] == worst_cap_pts]
+        # Effective captain pts: use vice's score if captain didn't play (VC takeover).
+        # This correctly ranks a blanking VC below a played captain who scored 0.
+        def _effective_cap_pts(m: RecapManagerEntry) -> int:
+            return m["captain_points"] if m.get("captain_played") else m.get("vice_captain_points", 0)
+
+        worst_cap_pts = min(_effective_cap_pts(m) for m in managers)
+        worst_caps = [m for m in managers if _effective_cap_pts(m) == worst_cap_pts]
         awards["worst_captain"] = RecapAwardEntry(
             manager_name=" and ".join(m["manager_name"] for m in worst_caps),
             value=worst_cap_pts,
-            detail=_captain_detail(worst_caps),
+            detail=_captain_detail(worst_caps, total_managers),
         )
 
     # Format-specific awards
@@ -746,6 +761,7 @@ async def collect_draft_recap_data(
                 captain_points=captain_points,
                 captain_played=False,
                 vice_captain=vice_captain_name,
+                vice_captain_points=0,
                 active_chip=None,
                 squad=squad,
                 bench_points=bench_points,

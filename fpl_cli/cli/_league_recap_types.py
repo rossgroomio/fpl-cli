@@ -61,6 +61,7 @@ class RecapManagerEntry(TypedDict):
     captain_points: int
     captain_played: bool
     vice_captain: str
+    vice_captain_points: int
     active_chip: str | None
     squad: list[RecapManagerPlayer]
     bench_points: int

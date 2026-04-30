@@ -45,6 +45,8 @@ def _make_manager(
     captain: str = "Salah",
     captain_points: int = 10,
     captain_played: bool = True,
+    vice_captain: str = "Saka",
+    vice_captain_points: int = 0,
     bench_points: int = 5,
     transfer_cost: int = 0,
     active_chip: str | None = None,
@@ -63,7 +65,8 @@ def _make_manager(
         captain=captain,
         captain_points=captain_points,
         captain_played=captain_played,
-        vice_captain="Saka",
+        vice_captain=vice_captain,
+        vice_captain_points=vice_captain_points,
         active_chip=active_chip,
         squad=squad or [],
         bench_points=bench_points,
@@ -229,7 +232,7 @@ class TestAwardsTies:
         ]
         awards = _compute_shared_awards(managers)
         assert awards["worst_captain"]["value"] == 2
-        assert awards["worst_captain"]["detail"] == "Bob and Charlie captained Haaland (2 pts)"
+        assert awards["worst_captain"]["detail"] == "Bob and Charlie captained Haaland (2 pts) [2 of 3 managers]"
         assert awards["worst_captain"]["manager_name"] == "Bob and Charlie"
 
     def test_three_way_captain_tie_same_captain(self):
@@ -258,22 +261,34 @@ class TestAwardsTies:
         assert "Alice and Bob captained Salah (10 pts)" in awards["best_captain"]["detail"]
         assert "Charlie captained Palmer (10 pts)" in awards["best_captain"]["detail"]
 
-    def test_worst_captain_excludes_vc_rescue(self):
-        """Captain who didn't play (VC activated) should not win worst captain."""
+    def test_worst_captain_vc_rescue_not_penalised(self):
+        """Captain dnp but VC covered (high VC pts): should not win worst captain."""
         managers = [
-            _make_manager(name="Alice", captain="Salah", captain_points=0, captain_played=False),
+            _make_manager(name="Alice", captain="Salah", captain_points=0, captain_played=False, vice_captain_points=15),
             _make_manager(name="Bob", captain="Haaland", captain_points=2),
             _make_manager(name="Charlie", captain="Palmer", captain_points=8),
         ]
         awards = _compute_shared_awards(managers)
+        # Alice's effective captain pts = 15 (VC rescued); Bob (2) is worst
         assert awards["worst_captain"]["manager_name"] == "Bob"
         assert awards["worst_captain"]["value"] == 2
 
-    def test_worst_captain_all_captains_didnt_play_falls_back(self):
-        """If no captain played, fall back to all managers."""
+    def test_worst_captain_vc_also_blanked(self):
+        """Captain dnp AND VC scored 0: genuinely worst captain outcome."""
         managers = [
-            _make_manager(name="Alice", captain="Salah", captain_points=0, captain_played=False),
-            _make_manager(name="Bob", captain="Haaland", captain_points=0, captain_played=False),
+            _make_manager(name="Alice", captain="Salah", captain_points=0, captain_played=False, vice_captain_points=0),
+            _make_manager(name="Bob", captain="Haaland", captain_points=2),
+            _make_manager(name="Charlie", captain="Palmer", captain_points=8),
+        ]
+        awards = _compute_shared_awards(managers)
+        assert awards["worst_captain"]["manager_name"] == "Alice"
+        assert awards["worst_captain"]["value"] == 0
+
+    def test_worst_captain_all_captains_didnt_play(self):
+        """All captains dnp with 0 VC pts: all tied at 0."""
+        managers = [
+            _make_manager(name="Alice", captain="Salah", captain_points=0, captain_played=False, vice_captain_points=0),
+            _make_manager(name="Bob", captain="Haaland", captain_points=0, captain_played=False, vice_captain_points=0),
         ]
         awards = _compute_shared_awards(managers)
         assert awards["worst_captain"]["value"] == 0
