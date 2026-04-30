@@ -53,7 +53,7 @@ ALWAYS:
 - Attribute insights to sources where possible
 - Capture the emotional tone of the GW
 - Note contrarian takes worth considering
-- Use the manager names provided in <team_context> - do not substitute from training data
+- Use the manager names provided in <team_context> - do not substitute from training data. This applies to ALL sections including prose narrative, not just table cells. Before naming any manager in any sentence, verify the team_context mapping: "Manager X manages Team Y" - only write that connection if team_context says so. A manager known from training data for a certain tactical style (e.g. a "system" manager) must NOT be attributed to a team they do not manage according to team_context, even when writing figurative or lyrical prose
 - Use the player-team associations from the GW data provided. If web sources contradict the provided data on which team a player belongs to, trust the provided data
 - When double-gameweek teams are listed, contextualise their players' hauls accordingly (e.g. points came across two matches, not one exceptional performance)
 
