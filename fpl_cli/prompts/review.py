@@ -591,9 +591,17 @@ def validate_research_teams(
             if team:
                 name_to_team[name] = team.short_name
 
-    # Pre-compute normalised → canonical mapping for known names
-    normalised_known: dict[str, str] = (
-        {strip_diacritics(n).lower(): n for n in known_names} if known_names else {}
+    # Pre-compute normalised → canonical mapping for known names.
+    # Sorted by descending length so longer canonicals (e.g. "Bruno Fernandes")
+    # win over shorter prefixes (e.g. "Bruno") when both are present.
+    normalised_known: list[tuple[str, str]] = (
+        sorted(
+            ((strip_diacritics(n).lower(), n) for n in known_names),
+            key=lambda kv: len(kv[0]),
+            reverse=True,
+        )
+        if known_names
+        else []
     )
 
     # Scan for table sections and correct team codes / player names
@@ -623,8 +631,9 @@ def validate_research_teams(
 
                 # Skip separator rows (e.g. |--------|------|)
                 if _TEAM_CODE_RE.match(team_cell):
-                    # Strip markdown bold (**/*)  before any name comparison
-                    plain_player = player_cell.strip("*").strip()
+                    # Strip markdown bold/italics anywhere in the cell before
+                    # name comparison (handles "**Salah**", "**Salah** (note)").
+                    plain_player = re.sub(r"\*+", "", player_cell).strip()
                     normalised_player = strip_diacritics(plain_player).lower()
 
                     # Name validation: strip unknown rows, correct corrupted names
@@ -632,7 +641,7 @@ def validate_research_teams(
                         matched_canonical = next(
                             (
                                 canonical
-                                for norm, canonical in normalised_known.items()
+                                for norm, canonical in normalised_known
                                 if re.search(rf"\b{re.escape(norm)}\b", normalised_player)
                             ),
                             None,

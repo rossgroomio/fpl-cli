@@ -857,7 +857,7 @@ class TestResearchPromptWithGWData:
         assert "GW22 Dream Team (Official Top Performers)" in prompt
         assert "Dorgu | MUN | DEF | 15" in prompt
         assert "Sánchez | CHE | GK | 11" in prompt
-        assert "MUST feature players from the Dream Team above" in prompt
+        assert "MUST ONLY include players from the Dream Team list above" in prompt
 
     def test_research_prompt_with_blankers(self):
         """Test research prompt includes Blankers when provided."""
@@ -872,7 +872,7 @@ class TestResearchPromptWithGWData:
         assert "<gw_results>" in prompt
         assert "GW22 Disappointments (High-Ownership Blankers)" in prompt
         assert "Haaland | MCI | 74.1% | 2" in prompt
-        assert "MUST feature players from the Blankers list above" in prompt
+        assert "MUST ONLY include players from the Blankers list above" in prompt
 
     def test_research_prompt_with_both_dream_team_and_blankers(self):
         """Test research prompt includes both Dream Team and Blankers."""
@@ -909,8 +909,8 @@ class TestResearchPromptWithGWData:
         )
 
         # Check for explicit grounding instructions
-        assert "MUST feature players from the Dream Team above" in prompt
-        assert "MUST feature players from the Blankers list above" in prompt
+        assert "MUST ONLY include players from the Dream Team list above" in prompt
+        assert "MUST ONLY include players from the Blankers list above" in prompt
         assert "Do not highlight players based on general form or transfer trends" in prompt
         assert "use the actual GW data provided" in prompt
 
@@ -1898,6 +1898,35 @@ class TestValidateResearchTeams:
         assert "| MCI |" not in result
         assert any("name corrected" in c for c in corrections)
         assert any("MCI -> LIV" in c for c in corrections)
+
+    def test_longest_known_name_wins_when_prefix_collision(self, players_and_teams):
+        """When known_names contains both a short prefix and a longer name that share a token,
+        the longer canonical wins so legitimate compound names aren't truncated."""
+        player_map, teams = players_and_teams
+        # Cell "Bruno Fernandes" with both "Bruno" and "Bruno Fernandes" as known.
+        # The shorter "Bruno" must NOT win — that would corrupt the row.
+        table = self._make_table(
+            "disappointments", [("Bruno Fernandes", "MUN", "2", "Quiet game")]
+        )
+        result, corrections = validate_research_teams(
+            table, player_map, teams, known_names={"Bruno", "Bruno Fernandes"}
+        )
+        assert "| Bruno Fernandes |" in result
+        # No "name corrected" entry — exact match should pass through
+        assert not any("name corrected" in c for c in corrections)
+
+    def test_bold_cell_normalised_for_name_match(self, players_and_teams):
+        """Markdown bold around a player name (e.g. **Salah**) must not block name matching."""
+        player_map, teams = players_and_teams
+        table = self._make_table(
+            "disappointments", [("**Salah**", "LIV", "1", "Quiet game")]
+        )
+        result, corrections = validate_research_teams(
+            table, player_map, teams, known_names={"Salah"}
+        )
+        # Salah is in known_names → row not stripped
+        assert "Salah" in result
+        assert not any("stripped" in c for c in corrections)
 
 
 class TestCollapseTransferChurn:
