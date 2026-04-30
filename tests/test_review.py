@@ -512,7 +512,7 @@ class TestCaptainHindsight:
         s = self._ctx(team)["captain_hindsight"]
         assert "Gibbs-White" in s
         assert "20 raw" in s and "16 raw" in s
-        assert "+8" in s  # (20-16)*2
+        assert "+4" in s  # (20-16)*(2-1) — armband swap only adds the extra multiplier
 
     def test_captain_optimal_confirmed(self):
         team = [
@@ -533,7 +533,7 @@ class TestCaptainHindsight:
         ]
         s = self._ctx(team)["captain_hindsight"]
         assert "Haaland" in s
-        assert "+15" in s  # (15-10)*3
+        assert "+10" in s  # (15-10)*(3-1) — TC adds 2× extra on the raw diff
         assert "×3" in s
 
     def test_captain_dnp_baselines_off_vice_not_zero(self):
@@ -551,9 +551,26 @@ class TestCaptainHindsight:
         s = self._ctx(team)["captain_hindsight"]
         assert "Palmer" in s
         assert "12 raw" in s and "9 raw" in s  # baselined off vice Saka (9), not captain (0)
-        assert "+6" in s  # (12 - 9) * 2
+        assert "+3" in s  # (12 - 9) * (2 - 1) — armband-swap delta off the vice baseline
+        assert "+6" not in s  # old buggy (best - baseline) * multiplier
         assert "+24" not in s  # would be the wrong (best * 2) inflation
         assert "vice" in s.lower()
+
+    def test_captain_swing_gw34_regression(self):
+        # Regression: GW34 review reported "+16 pts with the armband" for
+        # Bruno (5 raw, captained) vs Gibbs-White (13 raw). Correct swing is
+        # (13 - 5) * (2 - 1) = 8, because Gibbs-White's 13 already counted
+        # uncaptained — the armband swap only changes the extra multiplier.
+        team = [
+            {"name": "B.Fernandes", "points": 5, "display_points": 10, "contributed": True,
+             "is_captain": True, "is_vice": False, "is_triple_captain": False},
+            {"name": "Gibbs-White", "points": 13, "display_points": 13, "contributed": True,
+             "is_captain": False, "is_vice": False},
+        ]
+        s = self._ctx(team)["captain_hindsight"]
+        assert "Gibbs-White" in s
+        assert "+8" in s
+        assert "+16" not in s
 
     def test_captain_dnp_and_vice_dnp_skips_hindsight(self):
         team = [

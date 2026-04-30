@@ -305,12 +305,16 @@ def _format_league_context(
             ]
             best_alt = max(contributed_players, key=lambda p: p["points"], default=None)
             if best_alt and best_alt["points"] > baseline_raw:
-                delta = (best_alt["points"] - baseline_raw) * multiplier
+                # Swapping the armband only changes the *extra* multiplier on
+                # each player's raw — the baseline still scores their raw
+                # uncaptained, the alt is already counted once. Net swing is
+                # (alt - baseline) × (m - 1), not × m.
+                delta = (best_alt["points"] - baseline_raw) * (multiplier - 1)
                 captain_hindsight = (
                     f"{best_alt['name']} would have been the optimal captain "
                     f"({best_alt['points']} raw vs {baseline_raw} raw for "
-                    f"{baseline_name}, a swing of +{delta} pts with the "
-                    f"×{multiplier} armband){baseline_note}"
+                    f"{baseline_name}; swapping the ×{multiplier} armband "
+                    f"would have netted +{delta} pts){baseline_note}"
                 )
             else:
                 captain_hindsight = (
