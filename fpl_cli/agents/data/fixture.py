@@ -12,6 +12,7 @@ if TYPE_CHECKING:
 from fpl_cli.agents.base import Agent, AgentResult, AgentStatus
 from fpl_cli.api.fpl import FPLClient
 from fpl_cli.models.fixture import Fixture
+from fpl_cli.season import TOTAL_GAMEWEEKS
 from fpl_cli.services.fixture_predictions import (
     FixturePredictionsService,
     find_blank_gameweeks,
@@ -84,7 +85,11 @@ class FixtureAgent(Agent):
 
             # Resolve GW window: explicit from_gw/to_gw override defaults
             start_gw = self.from_gw if self.from_gw is not None else current_gw
-            end_gw = self.to_gw if self.to_gw is not None else start_gw + self.lookahead_gameweeks
+            end_gw = (
+                self.to_gw
+                if self.to_gw is not None
+                else min(start_gw + self.lookahead_gameweeks, TOTAL_GAMEWEEKS)
+            )
             self.log(f"Analyzing GW{start_gw}-{end_gw}")
 
             # Fetch all fixtures

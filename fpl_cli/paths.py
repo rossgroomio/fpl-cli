@@ -29,7 +29,6 @@ _LEGACY_DATA_DIR = _PACKAGE_DIR.parent / "data"
 
 # Files that should migrate to user_config_dir
 _USER_CONFIG_FILES = (
-    "fixture_predictions.yaml",
     "team_managers.yaml",
     "team_ratings_overrides.yaml",
     "settings.yaml",
