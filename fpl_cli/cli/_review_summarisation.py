@@ -468,8 +468,13 @@ async def _review_llm_summarise(
                 system_prompt=REVIEW_RESEARCH_SYSTEM_PROMPT,
             )
             research_summary = research_provider.post_process(research_result.content)
+            blankers_raw = global_data.get("blankers") or []
+            dream_team_raw = global_data.get("dream_team") or []
+            known_names: set[str] | None = None
+            if blankers_raw or dream_team_raw:
+                known_names = {p["name"] for p in blankers_raw} | {p["name"] for p in dream_team_raw}
             research_summary, club_corrections = validate_research_teams(
-                research_summary, player_map, teams
+                research_summary, player_map, teams, known_names=known_names
             )
             if club_corrections and debug and debug_dir:
                 (debug_dir / "research_corrections.txt").write_text("\n".join(club_corrections), encoding="utf-8")

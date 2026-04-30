@@ -70,6 +70,7 @@ NEVER:
 - Treat 3-letter team codes (LEE, NEW, MAN, BUR, ARS, etc.) as surnames or people's names. LEE is Leeds United, not someone called "Lee"; NEW is Newcastle, not "New"; MAN is Manchester, not "Man". In prose, always expand codes to the full team name (or a natural short form like "Leeds", "Newcastle", "Man Utd"). Reserve 3-letter codes for table cells only
 - Fabricate fixture counts, goal totals, or any other numeric summary statistic. If you mention the number of fixtures or total goals, use the values from the "Summary:" line at the top of the GW Results block. If that line is absent, don't cite a count at all
 - Split a DGW player's gameweek total across their two fixtures ("14 in the first, 5 in the second"). You only receive the GW total - any per-match breakdown is fabrication. Cite the full GW total only, or describe the haul qualitatively ("a clean sheet and a goal in the DGW") without assigning points to individual fixtures
+- Fabricate transfer history, loan arrangements, or contractual details about players in the Disappointments or Standout Performers tables. If you lack sourced information explaining why a player blanked or hauled, describe the statistical outcome ("returned just 1 point") without inventing a backstory. Do not reference a player's club history, loan status, or off-field context unless it appeared in your search results
 
 IF web search returns limited narrative sources:
 - Still produce all sections using the match results and player data provided
@@ -100,12 +101,12 @@ This query runs in the 24-48h after the gameweek finished.
 ## Standout Performers
 | Player | Club | Pts | Why They Hauled | Source |
 |--------|------|-----|-----------------|--------|
-[3-5 players from the Dream Team above with narrative insight. Use actual points from GW data.]
+[3-5 players drawn EXCLUSIVELY from the Dream Team list above. Do not include any player not on that list. Use actual points from GW data.]
 
 ## Disappointments
 | Player | Club | Pts | What Went Wrong | Concern Level |
 |--------|------|-----|-----------------|---------------|
-[3-5 players from the Blankers list above. Use actual points and ownership from GW data.]
+[3-5 players drawn EXCLUSIVELY from the Blankers list above. Do not include any player not on that list, even if they had a poor gameweek by other measures. Use actual points and ownership from GW data. The "What Went Wrong" cell must describe only the individual player in that row — do not introduce other players or teams not on the list.]
 
 ## Community Pulse
 - **Mood:** [One-word + elaboration]
@@ -187,8 +188,8 @@ def get_review_research_prompt(
             gw_results_parts.append(blankers)
         gw_results_parts.append("""
 IMPORTANT:
-- Your "Standout Performers" section MUST feature players from the Dream Team above.
-- Your "Disappointments" section MUST feature players from the Blankers list above.
+- Your "Standout Performers" section MUST ONLY include players from the Dream Team list above. Do not add any player not on that list.
+- Your "Disappointments" section MUST ONLY include players from the Blankers list above. Do not add any player not on that list.
 - Do not highlight players based on general form or transfer trends - use the actual GW data provided.
 </gw_results>""")
         gw_results = "\n".join(gw_results_parts)
@@ -556,21 +557,26 @@ def validate_research_teams(
     text: str,
     player_map: dict[int, Player],
     teams: dict[int, Team],
+    known_names: set[str] | None = None,
 ) -> tuple[str, list[str]]:
-    """Cross-reference team codes in research provider markdown tables against the FPL API.
+    """Cross-reference table rows in research provider output against FPL API data.
 
-    Web-sourced narrative can attribute players to wrong teams. This function
-    corrects team codes in the Standout Performers and Disappointments tables
-    by looking up each player's actual team via ``player_map`` and ``teams``.
+    Corrects team codes in the Standout Performers and Disappointments tables.
+    When ``known_names`` is provided, also validates player name cells: strips
+    rows for players absent from the list, and corrects corrupted names (e.g.
+    "Beto (Ekitiké)" → "Ekitiké") where a known name appears within the cell.
 
     Args:
         text: The research provider response text containing markdown tables.
         player_map: Mapping of player ID to Player model (from FPL API).
         teams: Mapping of team ID to Team model (from FPL API).
+        known_names: Canonical player names from the blankers/dream-team lists
+            passed to the research prompt. When provided, rows for players not
+            in this set are stripped, and corrupted names are corrected.
 
     Returns:
         A tuple of (corrected_text, corrections_log) where corrections_log lists
-        each correction as "{player}: {old_code} -> {new_code}".
+        each correction or strip as a human-readable string.
     """
     # Build name -> team short_name lookup, excluding ambiguous web_names
     name_counts: dict[str, list[int]] = {}
@@ -585,7 +591,12 @@ def validate_research_teams(
             if team:
                 name_to_team[name] = team.short_name
 
-    # Scan for table sections and correct team codes
+    # Pre-compute normalised → canonical mapping for known names
+    normalised_known: dict[str, str] = (
+        {strip_diacritics(n).lower(): n for n in known_names} if known_names else {}
+    )
+
+    # Scan for table sections and correct team codes / player names
     lines = text.split("\n")
     corrected_lines: list[str] = []
     corrections: list[str] = []
@@ -612,8 +623,32 @@ def validate_research_teams(
 
                 # Skip separator rows (e.g. |--------|------|)
                 if _TEAM_CODE_RE.match(team_cell):
-                    normalised = strip_diacritics(player_cell).lower()
-                    expected_team = name_to_team.get(normalised)
+                    # Strip markdown bold (**/*)  before any name comparison
+                    plain_player = player_cell.strip("*").strip()
+                    normalised_player = strip_diacritics(plain_player).lower()
+
+                    # Name validation: strip unknown rows, correct corrupted names
+                    if normalised_known:
+                        matched_canonical = next(
+                            (
+                                canonical
+                                for norm, canonical in normalised_known.items()
+                                if re.search(rf"\b{re.escape(norm)}\b", normalised_player)
+                            ),
+                            None,
+                        )
+                        if matched_canonical is None:
+                            corrections.append(f"{plain_player}: stripped (not in provided list)")
+                            continue
+                        canonical_normalised = strip_diacritics(matched_canonical).lower()
+                        if canonical_normalised != normalised_player:
+                            line = re.sub(r"^\|[^|]+\|", f"| {matched_canonical} |", line, count=1)
+                            corrections.append(f"{player_cell}: name corrected -> {matched_canonical}")
+                            plain_player = matched_canonical
+                            normalised_player = canonical_normalised
+
+                    # Team code correction
+                    expected_team = name_to_team.get(normalised_player)
                     if expected_team and expected_team != team_cell:
                         line = re.sub(
                             r"\|\s*" + re.escape(team_cell) + r"\s*\|",
@@ -621,7 +656,7 @@ def validate_research_teams(
                             line,
                             count=1,
                         )
-                        corrections.append(f"{player_cell}: {team_cell} -> {expected_team}")
+                        corrections.append(f"{plain_player}: {team_cell} -> {expected_team}")
 
         corrected_lines.append(line)
 

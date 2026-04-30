@@ -1835,6 +1835,70 @@ class TestValidateResearchTeams:
         assert "MCI" not in result
         assert len(corrections) == 1
 
+    def test_corrupted_name_corrected_when_known_names_provided(self, players_and_teams):
+        """LLM-corrupted name "Beto (Ekitiké)" corrected to canonical "Salah" when canonical
+        name appears as a word inside the cell."""
+        player_map, teams = players_and_teams
+        # Simulate "Beto (Salah)" — the known canonical is "Salah"
+        table = self._make_table("disappointments", [("Beto (Salah)", "LIV", "1", "Poor return")])
+        result, corrections = validate_research_teams(
+            table, player_map, teams, known_names={"Salah"}
+        )
+        assert "| Salah |" in result
+        assert "Beto" not in result
+        assert any("name corrected" in c for c in corrections)
+
+    def test_player_not_in_known_names_stripped(self, players_and_teams):
+        """Row for a player absent from known_names is stripped entirely."""
+        player_map, teams = players_and_teams
+        table = self._make_table(
+            "disappointments",
+            [
+                ("Salah", "LIV", "1", "Quiet game"),
+                ("Branthwaite", "EVE", "1", "Invented player"),
+            ],
+        )
+        result, corrections = validate_research_teams(
+            table, player_map, teams, known_names={"Salah"}
+        )
+        assert "Branthwaite" not in result
+        assert "| Salah |" in result
+        assert any("stripped" in c and "Branthwaite" in c for c in corrections)
+
+    def test_exact_match_in_known_names_unchanged(self, players_and_teams):
+        """Player whose name exactly matches a known name passes through without correction."""
+        player_map, teams = players_and_teams
+        table = self._make_table("disappointments", [("Salah", "LIV", "1", "Quiet game")])
+        result, corrections = validate_research_teams(
+            table, player_map, teams, known_names={"Salah"}
+        )
+        assert "| Salah |" in result
+        assert not any("name corrected" in c for c in corrections)
+        assert not any("stripped" in c for c in corrections)
+
+    def test_none_known_names_skips_name_validation(self, players_and_teams):
+        """With known_names=None, name validation is skipped — existing behaviour unchanged."""
+        player_map, teams = players_and_teams
+        # "Branthwaite" is not a real player in player_map, but no known_names → not stripped
+        table = self._make_table("disappointments", [("Branthwaite", "EVE", "1", "Poor return")])
+        result, corrections = validate_research_teams(table, player_map, teams, known_names=None)
+        assert "Branthwaite" in result
+        assert corrections == []
+
+    def test_corrupted_name_then_team_also_corrected(self, players_and_teams):
+        """After name correction, the corrected name is used for team code lookup."""
+        player_map, teams = players_and_teams
+        # "Beto (Salah)" with wrong team MCI — should correct name to Salah, then team to LIV
+        table = self._make_table("disappointments", [("Beto (Salah)", "MCI", "1", "Poor return")])
+        result, corrections = validate_research_teams(
+            table, player_map, teams, known_names={"Salah"}
+        )
+        assert "| Salah |" in result
+        assert "| LIV |" in result
+        assert "| MCI |" not in result
+        assert any("name corrected" in c for c in corrections)
+        assert any("MCI -> LIV" in c for c in corrections)
+
 
 class TestCollapseTransferChurn:
     """Tests for `_collapse_transfer_churn` — same-GW net squad delta."""
