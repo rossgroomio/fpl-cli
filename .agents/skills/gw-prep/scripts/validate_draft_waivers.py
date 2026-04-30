@@ -160,6 +160,7 @@ def build_squad(squad_data: dict) -> dict[tuple[str, str], SquadEntry]:
 # ---------------------------------------------------------------------------
 
 _DRAFT_HEADING_RE = re.compile(r"^## Draft(?: League)?\s*$")
+_WAIVER_SUBHEADING_RE = re.compile(r"^###\s+Waiver Recommendations\s*$", re.IGNORECASE)
 
 
 def locate_draft_section(lines: list[str]) -> tuple[int, int] | None:
@@ -178,6 +179,25 @@ def locate_draft_section(lines: list[str]) -> tuple[int, int] | None:
     return (start, len(lines))
 
 
+def locate_waiver_subsection(section_lines: list[str]) -> list[str]:
+    """Return the slice of section_lines bounded by ### Waiver Recommendations.
+
+    Bounds end at the next ### or ## heading. Falls back to the full section if
+    the subheading is absent (older report formats).
+    """
+    start: int | None = None
+    for i, line in enumerate(section_lines):
+        if _WAIVER_SUBHEADING_RE.match(line):
+            start = i + 1
+            break
+    if start is None:
+        return section_lines
+    for i in range(start, len(section_lines)):
+        if re.match(r"^##+\s+\S", section_lines[i]):
+            return section_lines[start:i]
+    return section_lines[start:]
+
+
 def parse_waiver_table(
     section_lines: list[str],
 ) -> tuple[list[str], list[dict[str, str]]] | None:
@@ -189,9 +209,14 @@ def parse_waiver_table(
     headers: list[str] | None = None
     rows: list[dict[str, str]] = []
 
-    for line in section_lines:
+    lines_iter = list(section_lines)
+    for idx, line in enumerate(lines_iter):
         stripped = line.strip()
         if not stripped.startswith("|"):
+            # End table at first non-pipe line after rows started (e.g. blank line
+            # before the next ### subsection's table).
+            if rows:
+                break
             continue
         if headers is None:
             # first pipe-delimited line is the header row
@@ -201,12 +226,18 @@ def parse_waiver_table(
         # skip separator row
         if re.match(r"^\|[-| ]+\|", stripped):
             continue
-        if headers is not None:
-            parts = [p.strip() for p in stripped.strip("|").split("|")]
-            row: dict[str, str] = {}
-            for i, h in enumerate(headers):
-                row[h] = parts[i] if i < len(parts) else ""
-            rows.append(row)
+        # Detect a new header row stacked directly after the current table:
+        # current line is pipe-delimited and the next line is a separator. Break
+        # before consuming it as a data row.
+        if rows and idx + 1 < len(lines_iter):
+            next_stripped = lines_iter[idx + 1].strip()
+            if re.match(r"^\|[-| ]+\|", next_stripped):
+                break
+        parts = [p.strip() for p in stripped.strip("|").split("|")]
+        row: dict[str, str] = {}
+        for i, h in enumerate(headers):
+            row[h] = parts[i] if i < len(parts) else ""
+        rows.append(row)
 
     if headers is None:
         return None
@@ -371,8 +402,12 @@ def _run(recommendations_file: str, waivers_json: str, squad_grid_json: str) -> 
     start, end = section_range
     section_lines = lines[start:end]
 
+    # Narrow to the ### Waiver Recommendations subsection so we don't ingest
+    # rows from the Starting XI / Bench tables that follow it.
+    waiver_lines = locate_waiver_subsection(section_lines)
+
     # Parse waiver table
-    table = parse_waiver_table(section_lines)
+    table = parse_waiver_table(waiver_lines)
     if table is None:
         warnings.append(Warning(type="waiver-table-not-found"))
         result = {"ok": True, "flags": [], "warnings": warnings}

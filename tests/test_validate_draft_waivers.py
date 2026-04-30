@@ -676,6 +676,66 @@ def test_missing_required_arg_exits_nonzero():
     assert "required" in result.stderr.lower()
 
 
+def test_three_stacked_tables_only_waiver_table_parsed(tmp_path, capsys):
+    """Regression: gw35 had Waiver Recommendations + Starting XI + Bench tables stacked
+    in the Draft section. The validator previously parsed all three as one table,
+    keyed by the waiver headers, and emitted false-positive flags on the XI/Bench
+    rows. Scope is now bounded to ### Waiver Recommendations.
+    """
+    recs_content = """\
+## Draft League
+
+### Waiver Recommendations
+
+| Priority | Drop | Claim | Position | Outlook | This GW | Fixture Run | Rationale |
+|----------|------|-------|----------|---------|---------|-------------|-----------|
+| 1 | Hill (BOU) | Lacroix (CRY) | DEF | +8 | +14 | A LIV / H MUN | Straight upgrade. |
+| 2 | Scott (BOU) | E.Le Fée (SUN) | MID | +6 | +16 | H NFO / A WOL | Blanker to starter. |
+
+**Top claim:** Hill → Lacroix.
+
+### Starting XI
+
+| Pos | Player | Score | Opponent (pFDR) | Form | Rationale |
+|-----|--------|-------|-----------------|------|-----------|
+| GK | Flekken | 34 | BUR (2.5) | 4.0 | CS fixture |
+| DEF | Lacroix | 49 | CRY (5.0) | 5.7 | New in (waiver) |
+| MID | Scott | 61 | CRY (2.5) | 5.7 | New in (waiver) |
+| FWD | João Pedro | 35 | NFO (3.0) | 0.7 | Hold |
+
+#### Bench
+
+| Bench Slot | Player | Score | Rationale |
+|------------|--------|-------|-----------|
+| GK | Raya | 28 | Backup |
+| 1st sub | Watkins | 30 | FWD cover |
+"""
+    recs, w, s = _write_fixtures(tmp_path, recs_content)
+    _run(str(recs), str(w), str(s))
+    data = _parse(capsys)
+    assert data["ok"] is True
+    assert data["flags"] == []
+    assert data["warnings"] == []
+
+
+def test_no_waiver_subheading_falls_back_to_full_section(tmp_path, capsys):
+    """If ### Waiver Recommendations is absent (older report layout), parsing
+    should fall back to the full ## Draft section and still locate the table.
+    """
+    recs_content = """\
+## Draft
+
+| Priority | Drop | Claim | Position | Fixture Run | Rationale |
+|----------|------|-------|----------|-------------|-----------|
+| 1 | Hill (BOU) | Lacroix (CRY) | DEF | A LIV | Upgrade. |
+"""
+    recs, w, s = _write_fixtures(tmp_path, recs_content)
+    _run(str(recs), str(w), str(s))
+    data = _parse(capsys)
+    assert data["ok"] is True
+    assert data["flags"] == []
+
+
 def test_help_flag_exits_zero_and_prints_usage():
     """--help exits 0 and prints a usage line (no reference to the dropped deferred-flags epilog)."""
     result = subprocess.run(
