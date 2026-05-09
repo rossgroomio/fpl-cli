@@ -571,7 +571,7 @@ def _compute_waiver_awards(
             value=genius_net,
             detail=(
                 f"{genius['manager_name']} gained {genius_net} net pts from waivers"
-                f" (best: {best_txn['player_in']} for {best_txn.get('player_out', '?')},"
+                f" (best: {best_txn['player_in']} for {best_txn['player_out']},"
                 f" +{best_txn['net']})"
             ),
         )
@@ -585,7 +585,7 @@ def _compute_waiver_awards(
             value=disaster_net,
             detail=(
                 f"{disaster['manager_name']} lost {abs(disaster_net)} net pts from waivers"
-                f" (worst: {worst_txn['player_in']} for {worst_txn.get('player_out', '?')},"
+                f" (worst: {worst_txn['player_in']} for {worst_txn['player_out']},"
                 f" {worst_txn['net']})"
             ),
         )
@@ -744,35 +744,41 @@ async def collect_draft_recap_data(
                         f"{pin.get('web_name', '?')} on for {pout.get('web_name', '?')} ({pin_pts} pts)"
                     )
 
-            # Build transaction data for this manager
+            # Build transaction data for this manager. Both waivers and free
+            # agents always carry an element_out — draft squads are fixed at 15,
+            # so any add requires a simultaneous drop.
             manager_txns: list[RecapDraftTransaction] = []
             for txn in txns_by_entry.get(league_entry_id, []):
-                pin_id: int = txn.get("element_in", 0)
+                pin_id: int | None = txn.get("element_in")
                 pout_id: int | None = txn.get("element_out")
-                dp_in = draft_player_map.get(pin_id)
+                dp_in = draft_player_map.get(pin_id) if pin_id else None
                 dp_out = draft_player_map.get(pout_id) if pout_id else None
 
-                if dp_in:
-                    main_in_id = draft_to_main_id.get(pin_id)
-                    in_pts, _, _ = _live_player_stats(live_stats, main_in_id)
-                    out_pts = 0
-                    if dp_out and pout_id is not None:
-                        main_out_id = draft_to_main_id.get(pout_id)
-                        out_pts, _, _ = _live_player_stats(live_stats, main_out_id)
+                if not dp_in or not dp_out:
+                    logger.warning(
+                        "Skipping malformed draft txn (entry=%s in=%s out=%s)",
+                        txn.get("entry"), pin_id, pout_id,
+                    )
+                    continue
 
-                    in_team = t.short_name if (t := teams.get(dp_in.get("team"))) else "???"
-                    out_team = t.short_name if dp_out and (t := teams.get(dp_out.get("team"))) else None
+                main_in_id = draft_to_main_id.get(pin_id) if pin_id else None
+                in_pts, _, _ = _live_player_stats(live_stats, main_in_id)
+                main_out_id = draft_to_main_id.get(pout_id) if pout_id else None
+                out_pts, _, _ = _live_player_stats(live_stats, main_out_id)
 
-                    manager_txns.append(RecapDraftTransaction(
-                        player_in=dp_in.get("web_name", "Unknown"),
-                        player_in_team=in_team,
-                        player_in_points=in_pts,
-                        player_out=dp_out.get("web_name") if dp_out else None,
-                        player_out_team=out_team,
-                        player_out_points=out_pts if dp_out else None,
-                        net=in_pts - out_pts,
-                        kind=txn.get("kind", "w"),
-                    ))
+                in_team = t.short_name if (t := teams.get(dp_in.get("team"))) else "???"
+                out_team = t.short_name if (t := teams.get(dp_out.get("team"))) else "???"
+
+                manager_txns.append(RecapDraftTransaction(
+                    player_in=dp_in.get("web_name", "Unknown"),
+                    player_in_team=in_team,
+                    player_in_points=in_pts,
+                    player_out=dp_out.get("web_name", "Unknown"),
+                    player_out_team=out_team,
+                    player_out_points=out_pts,
+                    net=in_pts - out_pts,
+                    kind=txn.get("kind", "w"),
+                ))
 
             result = RecapManagerEntry(
                 manager_name=manager_name,

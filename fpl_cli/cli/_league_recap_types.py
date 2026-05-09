@@ -35,14 +35,15 @@ class RecapTransfer(TypedDict):
 
 
 class RecapDraftTransaction(TypedDict):
-    """A single draft waiver/free-agent pickup."""
+    """A single draft waiver/free-agent pickup. Drops are always required in
+    draft (fixed 15-player squad) so player_out fields are never null."""
 
     player_in: str
     player_in_team: str
     player_in_points: int
-    player_out: str | None
-    player_out_team: str | None
-    player_out_points: int | None
+    player_out: str
+    player_out_team: str
+    player_out_points: int
     net: int
     kind: str
 

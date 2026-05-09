@@ -160,7 +160,7 @@ No waiver recommendations or transactions.
 ## Transactions
 | In | Pts | Out | Pts | Net | Verdict |
 |----|-----|-----|-----|-----|---------|
-{% for t in draft_transactions %}| {{ t.player_in }} ({{ t.player_in_team }}) | {{ t.player_in_points }} | {{ t.player_out if t.player_out else '-' }} {% if t.player_out_team %}({{ t.player_out_team }}){% endif %} | {{ t.player_out_points if t.player_out_points is not none else '-' }} | {% if t.net > 0 %}+{% endif %}{{ t.net }} | {{ t.verdict }} |
+{% for t in draft_transactions %}| {{ t.player_in }} ({{ t.player_in_team }}) | {{ t.player_in_points }} | {{ t.player_out }} ({{ t.player_out_team }}) | {{ t.player_out_points }} | {% if t.net > 0 %}+{% endif %}{{ t.net }} | {{ t.verdict }} |
 {% endfor %}
 {% set hits = draft_transactions | selectattr('net', 'gt', 1) | list | length %}
 {% set misses = draft_transactions | selectattr('net', 'lt', -1) | list | length %}
