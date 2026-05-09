@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from fpl_cli.cli._fines import FineResult, FinesLeagueData, FinesTeamPlayer, evaluate_fines
 from fpl_cli.cli._fines_config import parse_fines_config
@@ -508,12 +508,16 @@ def _compute_shared_awards(
 _DETAIL_CAP = 3
 
 
+def _fmt_award_move(m: RecapTransfer | RecapDraftTransaction) -> str:
+    return f"{m['player_in']} for {m['player_out']} ({m['net']:+d})"
+
+
 def _format_award_detail(
     *,
     manager_name: str,
-    moves: list[Any],
+    moves: list[RecapTransfer] | list[RecapDraftTransaction],
     transfer_cost: int,
-    side: str,
+    side: Literal["genius", "disaster"],
     label_singular: str,
 ) -> str:
     """Format the detail string for a transfer/waiver genius or disaster award.
@@ -522,6 +526,9 @@ def _format_award_detail(
     aggregate context (raw, hit, overall true_net), and an omitted-count tail
     when more moves exist than the cap. Uniform across transfer and waiver.
     """
+    if not moves:
+        raise ValueError("_format_award_detail requires at least one move")
+
     n = len(moves)
     raw = sum(m["net"] for m in moves)
     true_net = raw - transfer_cost
@@ -550,14 +557,26 @@ def _format_award_detail(
     shown = sorted_moves[:_DETAIL_CAP]
     omitted = max(0, n - _DETAIL_CAP)
 
-    def _fmt_move(m: Any) -> str:
-        return f"{m['player_in']} for {m['player_out']} ({m['net']:+d})"
+    # Disaster fired but no individual move was negative: the loss came from
+    # the hit, not from any swap. Reframe so "Worst: X (+3)" doesn't read as
+    # contradictory to the headline.
+    if side == "disaster" and shown[0]["net"] >= 0:
+        moves_part = "All swaps were profitable; the hit cost produced the loss"
+        if len(shown) == 1:
+            moves_part += f". Move: {_fmt_award_move(shown[0])}"
+        else:
+            move_strs = "; ".join(_fmt_award_move(m) for m in shown)
+            moves_part += f". Moves: {move_strs}"
+        if omitted:
+            moves_part += f"; {omitted} more omitted"
+        moves_part += "."
+        return f"{headline} {moves_part}"
 
-    first = _fmt_move(shown[0])
+    first = _fmt_award_move(shown[0])
     if len(shown) == 1:
         moves_part = f"{lead}: {first}"
     else:
-        rest = ", ".join(_fmt_move(m) for m in shown[1:])
+        rest = ", ".join(_fmt_award_move(m) for m in shown[1:])
         moves_part = f"{lead}: {first}; also {rest}"
     if omitted:
         moves_part += f"; {omitted} more omitted"
@@ -673,21 +692,25 @@ def _compute_waiver_awards(
     if not managers_with_txns:
         return
 
-    def _effective(m: RecapManagerEntry) -> list[RecapDraftTransaction]:
-        return _contract_draft_txn_chains(m.get("transactions", []))
+    # Contract once per manager so ranking and display read the same list.
+    effective_by_manager: dict[int, list[RecapDraftTransaction]] = {
+        id(m): _contract_draft_txn_chains(m.get("transactions", []))
+        for m in managers_with_txns
+    }
 
     def _txn_net(m: RecapManagerEntry) -> int:
-        return sum(t["net"] for t in _effective(m))
+        return sum(t["net"] for t in effective_by_manager[id(m)])
 
     genius = max(managers_with_txns, key=_txn_net)
+    genius_effective = effective_by_manager[id(genius)]
     genius_net = _txn_net(genius)
-    if genius_net > 0 and (effective := _effective(genius)):
+    if genius_net > 0 and genius_effective:
         awards["waiver_genius"] = RecapAwardEntry(
             manager_name=genius["manager_name"],
             value=genius_net,
             detail=_format_award_detail(
                 manager_name=genius["manager_name"],
-                moves=list(effective),
+                moves=list(genius_effective),
                 transfer_cost=0,
                 side="genius",
                 label_singular="waiver",
@@ -695,14 +718,15 @@ def _compute_waiver_awards(
         )
 
     disaster = min(managers_with_txns, key=_txn_net)
+    disaster_effective = effective_by_manager[id(disaster)]
     disaster_net = _txn_net(disaster)
-    if disaster_net < 0 and (effective := _effective(disaster)):
+    if disaster_net < 0 and disaster_effective:
         awards["waiver_disaster"] = RecapAwardEntry(
             manager_name=disaster["manager_name"],
             value=disaster_net,
             detail=_format_award_detail(
                 manager_name=disaster["manager_name"],
-                moves=list(effective),
+                moves=list(disaster_effective),
                 transfer_cost=0,
                 side="disaster",
                 label_singular="waiver",
