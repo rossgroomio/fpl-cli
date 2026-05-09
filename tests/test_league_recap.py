@@ -412,8 +412,10 @@ class TestTransferAwards:
         awards: RecapAwards = {}  # type: ignore[typeddict-item]
         _compute_transfer_awards(managers, awards)
         assert "transfer_genius" in awards
-        assert awards.get("transfer_genius", {}).get("manager_name") == "Alice"  # type: ignore[union-attr]
-        assert "Palmer" in awards.get("transfer_genius", {}).get("detail", "")  # type: ignore[union-attr]
+        award = awards["transfer_genius"]
+        assert award["manager_name"] == "Alice"
+        assert award["value"] == 13
+        assert "Best: Palmer for Wilson (+13)" in award["detail"]
 
     def test_transfer_disaster(self):
         transfers = [
@@ -452,6 +454,154 @@ class TestTransferAwards:
         _compute_transfer_awards(managers, awards)
         assert "transfer_genius" in awards
         assert "transfer_disaster" not in awards
+
+    def test_disaster_fires_from_hit_alone(self):
+        # +3 raw aggregate, -4 hit -> true_net -1, should fire disaster.
+        # Pre-fix this case was suppressed (raw aggregate ignored hit).
+        transfers = [
+            RecapTransfer(
+                player_in="Mid", player_in_team="ARS", player_in_points=4,
+                player_out="Out", player_out_team="TOT", player_out_points=1,
+                net=3, cost=4,
+            ),
+        ]
+        managers = [
+            _make_manager(name="Alice", transfers=transfers, transfer_cost=4),
+            _make_manager(name="Bob"),
+        ]
+        awards: RecapAwards = {}  # type: ignore[typeddict-item]
+        _compute_transfer_awards(managers, awards)
+        assert "transfer_disaster" in awards
+        assert awards["transfer_disaster"]["manager_name"] == "Alice"
+        assert awards["transfer_disaster"]["value"] == -1
+        detail = awards["transfer_disaster"]["detail"]
+        assert "lost 1 net pts overall" in detail
+        assert "+3 raw" in detail
+        assert "-4 hit" in detail
+
+    def test_genius_value_is_post_hit_true_net(self):
+        # Raw aggregate +13, -4 hit -> true_net +9. Genius value should be 9.
+        transfers = [
+            RecapTransfer(
+                player_in="A", player_in_team="ARS", player_in_points=10,
+                player_out="B", player_out_team="TOT", player_out_points=2,
+                net=8, cost=4,
+            ),
+            RecapTransfer(
+                player_in="C", player_in_team="CHE", player_in_points=7,
+                player_out="D", player_out_team="WHU", player_out_points=2,
+                net=5, cost=4,
+            ),
+        ]
+        managers = [
+            _make_manager(name="Alice", transfers=transfers, transfer_cost=4),
+            _make_manager(name="Bob"),
+        ]
+        awards: RecapAwards = {}  # type: ignore[typeddict-item]
+        _compute_transfer_awards(managers, awards)
+        assert "transfer_genius" in awards
+        assert awards["transfer_genius"]["value"] == 9
+        detail = awards["transfer_genius"]["detail"]
+        assert "gained 9 net pts overall" in detail
+        assert "+13 raw across 2 transfers" in detail
+        assert "-4 hit" in detail
+        # Top move first, second move via "also"
+        assert "Best: A for B (+8)" in detail
+        assert "also C for D (+5)" in detail
+
+    def test_detail_caps_at_three_with_omitted_count(self):
+        # 5 transfers, cap=3, expect "2 more omitted" tail.
+        transfers = [
+            RecapTransfer(
+                player_in=f"In{i}", player_in_team="ARS", player_in_points=10 - i,
+                player_out=f"Out{i}", player_out_team="TOT", player_out_points=0,
+                net=10 - i, cost=0,
+            )
+            for i in range(5)
+        ]
+        managers = [
+            _make_manager(name="Alice", transfers=transfers),
+            _make_manager(name="Bob"),
+        ]
+        awards: RecapAwards = {}  # type: ignore[typeddict-item]
+        _compute_transfer_awards(managers, awards)
+        detail = awards["transfer_genius"]["detail"]
+        # Top 3 by net (descending): In0 (+10), In1 (+9), In2 (+8)
+        assert "Best: In0 for Out0 (+10)" in detail
+        assert "In1 for Out1 (+9)" in detail
+        assert "In2 for Out2 (+8)" in detail
+        assert "In3" not in detail
+        assert "In4" not in detail
+        assert "2 more omitted" in detail
+
+    def test_disaster_side_caps_at_three(self):
+        # 5 negative-net transfers, no hit. Disaster sorts ascending; top 3
+        # worst should appear, the two least-bad should be omitted.
+        transfers = [
+            RecapTransfer(
+                player_in=f"Bust{i}", player_in_team="ARS", player_in_points=0,
+                player_out=f"Star{i}", player_out_team="TOT", player_out_points=2 + i,
+                net=-(2 + i), cost=0,
+            )
+            for i in range(5)
+        ]
+        managers = [
+            _make_manager(name="Alice", transfers=transfers),
+            _make_manager(name="Bob"),
+        ]
+        awards: RecapAwards = {}  # type: ignore[typeddict-item]
+        _compute_transfer_awards(managers, awards)
+        detail = awards["transfer_disaster"]["detail"]
+        # Top 3 worst by net (ascending): Bust4 (-6), Bust3 (-5), Bust2 (-4)
+        assert "Worst: Bust4 for Star4 (-6)" in detail
+        assert "Bust3 for Star3 (-5)" in detail
+        assert "Bust2 for Star2 (-4)" in detail
+        assert "Bust0" not in detail
+        assert "Bust1" not in detail
+        assert "2 more omitted" in detail
+
+    def test_disaster_from_hit_alone_uses_neutral_framing(self):
+        # +3 raw, -4 hit -> true_net -1. No individual move is negative.
+        # Detail must not label a positive move as "Worst".
+        transfers = [
+            RecapTransfer(
+                player_in="Mid", player_in_team="ARS", player_in_points=4,
+                player_out="Out", player_out_team="TOT", player_out_points=1,
+                net=3, cost=4,
+            ),
+        ]
+        managers = [
+            _make_manager(name="Alice", transfers=transfers, transfer_cost=4),
+            _make_manager(name="Bob"),
+        ]
+        awards: RecapAwards = {}  # type: ignore[typeddict-item]
+        _compute_transfer_awards(managers, awards)
+        detail = awards["transfer_disaster"]["detail"]
+        assert "Worst: Mid for Out (+3)" not in detail
+        assert "All swaps were profitable" in detail
+        assert "the hit cost produced the loss" in detail
+        assert "Mid for Out (+3)" in detail
+
+    def test_single_transfer_no_hit_compact_format(self):
+        # Single transfer, no hit: skip the redundant raw/count parenthetical.
+        transfers = [
+            RecapTransfer(
+                player_in="Solo", player_in_team="ARS", player_in_points=7,
+                player_out="Gone", player_out_team="TOT", player_out_points=0,
+                net=7, cost=0,
+            ),
+        ]
+        managers = [
+            _make_manager(name="Alice", transfers=transfers),
+            _make_manager(name="Bob"),
+        ]
+        awards: RecapAwards = {}  # type: ignore[typeddict-item]
+        _compute_transfer_awards(managers, awards)
+        detail = awards["transfer_genius"]["detail"]
+        assert "Alice gained 7 net pts overall." in detail
+        assert "Best: Solo for Gone (+7)." in detail
+        assert "raw across" not in detail
+        assert "hit" not in detail
 
 
 # ---------------------------------------------------------------------------
@@ -618,6 +768,78 @@ class TestWaiverAwards:
         assert "transfer_genius" not in awards
         assert "best_captain" not in awards
         assert "worst_captain" not in awards
+
+    def test_waiver_genius_value_is_aggregate_with_no_hit_clause(self):
+        # Draft has no transfer cost, so the detail should never mention "hit".
+        txns = [
+            RecapDraftTransaction(
+                player_in="A", player_in_team="ARS", player_in_points=10,
+                player_out="B", player_out_team="TOT", player_out_points=2,
+                net=8, kind="w",
+            ),
+            RecapDraftTransaction(
+                player_in="C", player_in_team="CHE", player_in_points=7,
+                player_out="D", player_out_team="WHU", player_out_points=0,
+                net=7, kind="w",
+            ),
+        ]
+        managers = [
+            _make_manager_with_txns("Alice", txns),
+            _make_manager(name="Bob"),
+        ]
+        awards: RecapAwards = {}  # type: ignore[typeddict-item]
+        _compute_waiver_awards(managers, awards)
+        assert awards["waiver_genius"]["value"] == 15
+        detail = awards["waiver_genius"]["detail"]
+        assert "gained 15 net pts overall" in detail
+        assert "+15 raw across 2 waivers" in detail
+        assert "hit" not in detail
+        assert "Best: A for B (+8)" in detail
+        assert "also C for D (+7)" in detail
+
+    def test_waiver_disaster_compact_format(self):
+        # Single negative-net waiver. Verify the new helper format applies on
+        # the waiver disaster path: compact (no "raw across" suffix), no
+        # "hit" mention (waivers have no transfer cost).
+        txns = [
+            RecapDraftTransaction(
+                player_in="Flop", player_in_team="WHU", player_in_points=0,
+                player_out="Legend", player_out_team="MCI", player_out_points=8,
+                net=-8, kind="w",
+            ),
+        ]
+        managers = [
+            _make_manager_with_txns("Alice", txns),
+            _make_manager(name="Bob"),
+        ]
+        awards: RecapAwards = {}  # type: ignore[typeddict-item]
+        _compute_waiver_awards(managers, awards)
+        assert awards["waiver_disaster"]["value"] == -8
+        detail = awards["waiver_disaster"]["detail"]
+        assert "Alice lost 8 net pts overall." in detail
+        assert "Worst: Flop for Legend (-8)." in detail
+        assert "raw across" not in detail
+        assert "hit" not in detail
+
+    def test_waiver_detail_caps_at_three(self):
+        txns = [
+            RecapDraftTransaction(
+                player_in=f"In{i}", player_in_team="ARS", player_in_points=10 - i,
+                player_out=f"Out{i}", player_out_team="TOT", player_out_points=0,
+                net=10 - i, kind="w",
+            )
+            for i in range(5)
+        ]
+        managers = [
+            _make_manager_with_txns("Alice", txns),
+            _make_manager(name="Bob"),
+        ]
+        awards: RecapAwards = {}  # type: ignore[typeddict-item]
+        _compute_waiver_awards(managers, awards)
+        detail = awards["waiver_genius"]["detail"]
+        assert "Best: In0 for Out0 (+10)" in detail
+        assert "2 more omitted" in detail
+        assert "In4" not in detail
 
 
 def _txn(pin: str, pin_pts: int, pout: str, pout_pts: int, kind: str = "w") -> RecapDraftTransaction:

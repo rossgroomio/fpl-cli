@@ -73,7 +73,13 @@ class RecapManagerEntry(TypedDict):
 
 
 class RecapAwardEntry(TypedDict):
-    """A single award winner/loser."""
+    """A single award winner/loser.
+
+    For transfer_genius / transfer_disaster, `value` is the post-hit aggregate
+    true_net (raw transfer net minus transfer_cost). For waiver_genius /
+    waiver_disaster it is the aggregate net (waivers have no hit cost). Other
+    awards use `value` per their own conventions (points totals, etc.).
+    """
 
     manager_name: str
     value: int | str
