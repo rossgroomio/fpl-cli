@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any, cast
 
@@ -19,6 +20,60 @@ from fpl_cli.models.player import Player
 from fpl_cli.models.team import Team
 from fpl_cli.paths import user_config_dir
 from fpl_cli.utils.text import strip_diacritics
+
+# Goals/assists strings come pre-rendered as e.g. "Damsgaard (BRE), Thiago x2 (BRE)".
+# Capture each name segment up to an optional " xN" repeat marker and the trailing club.
+_NAME_FROM_FIXTURE_RE = re.compile(r"([^,]+?)(?:\s+x\d+)?\s*\([A-Z]{3}\)")
+
+
+def _names_from_fixture_strings(parts: list[str | None]) -> set[str]:
+    """Extract player names from concatenated fixture goal/assist strings."""
+    names: set[str] = set()
+    for part in parts:
+        if not part:
+            continue
+        for match in _NAME_FROM_FIXTURE_RE.finditer(part):
+            name = match.group(1).strip()
+            if name:
+                names.add(name)
+    return names
+
+
+def _build_research_allowlists(
+    global_data: GlobalReviewData,
+    fixtures_data: list[dict[str, Any]],
+    team_points_data: list[dict[str, Any]],
+    draft_squad_points_data: list[dict[str, Any]],
+) -> tuple[set[str] | None, set[str]]:
+    """Build the table allowlist and the (broader) prose allowlist.
+
+    - Table allowlist: Dream Team ∪ Blankers (what the table prompt allows).
+    - Prose allowlist: table allowlist ∪ goalscorers/assisters in the GW results
+      ∪ players in the user's classic & draft squads.
+
+    The table allowlist matches the existing behaviour (None when both source
+    lists are empty, so name validation is skipped). The prose allowlist is
+    always built — it's only consumed when prose validation runs.
+    """
+    blankers_raw = global_data.get("blankers") or []
+    dream_team_raw = global_data.get("dream_team") or []
+
+    table_allowlist: set[str] | None = None
+    if blankers_raw or dream_team_raw:
+        table_allowlist = (
+            {p["name"] for p in blankers_raw} | {p["name"] for p in dream_team_raw}
+        )
+
+    fixture_names = _names_from_fixture_strings(
+        [f.get("goals") for f in fixtures_data]
+        + [f.get("assists") for f in fixtures_data]
+    )
+    squad_names = (
+        {p["name"] for p in team_points_data if p.get("name")}
+        | {p["name"] for p in draft_squad_points_data if p.get("name")}
+    )
+    prose_allowlist = (table_allowlist or set()) | fixture_names | squad_names
+    return table_allowlist, prose_allowlist
 
 
 def _format_research_context(
@@ -395,6 +450,7 @@ async def _review_llm_summarise(
         REVIEW_RESEARCH_SYSTEM_PROMPT,
         get_review_research_prompt,
         get_review_synthesis_prompt,
+        validate_research_prose,
         validate_research_teams,
     )
 
@@ -468,17 +524,25 @@ async def _review_llm_summarise(
                 system_prompt=REVIEW_RESEARCH_SYSTEM_PROMPT,
             )
             research_summary = research_provider.post_process(research_result.content)
-            blankers_raw = global_data.get("blankers") or []
-            dream_team_raw = global_data.get("dream_team") or []
-            known_names: set[str] | None = None
-            if blankers_raw or dream_team_raw:
-                known_names = {p["name"] for p in blankers_raw} | {p["name"] for p in dream_team_raw}
-            research_summary, club_corrections = validate_research_teams(
-                research_summary, player_map, teams, known_names=known_names
+            table_allowlist, prose_allowlist = _build_research_allowlists(
+                global_data,
+                collected_data.get("fixtures", []),
+                team_points_data,
+                draft_squad_points_data,
             )
-            if club_corrections and debug and debug_dir:
-                (debug_dir / "research_corrections.txt").write_text("\n".join(club_corrections), encoding="utf-8")
-                console.print(f"[dim]    → Corrected {len(club_corrections)} club code(s) in research response[/dim]")
+            research_summary, club_corrections = validate_research_teams(
+                research_summary, player_map, teams, known_names=table_allowlist
+            )
+            research_summary, prose_corrections = validate_research_prose(
+                research_summary, player_map, prose_allowlist
+            )
+            all_corrections = club_corrections + prose_corrections
+            if all_corrections and debug and debug_dir:
+                (debug_dir / "research_corrections.txt").write_text("\n".join(all_corrections), encoding="utf-8")
+                console.print(
+                    f"[dim]    → Corrected {len(club_corrections)} table cell(s), scrubbed "
+                    f"{len(prose_corrections)} narrative sentence(s)[/dim]"
+                )
             if research_summary:
                 console.print("[green]  ✓[/green] Community narrative complete")
             else:

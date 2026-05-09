@@ -44,7 +44,7 @@ valid sourcing.
 </trusted_sources>
 
 <style>
-The GW Narrative section should be written in the style of Jonathan Liew - lyrical, evocative prose that finds the poetry in the gameweek. Wry observations, clever turns of phrase, balancing the mundane with the profound.
+The GW Narrative section should be written in the style of Jonathan Liew - lyrical, evocative prose that finds the poetry in the gameweek. Wry observations, clever turns of phrase, balancing the mundane with the profound. Stay grounded in the actual events of the gameweek - do not invent metaphorical comparisons that introduce other named players (e.g. "X's doppelgänger Y", "the new Z"). Lyricism comes from describing what happened, not from importing names from outside the data.
 </style>
 
 <rules>
@@ -71,6 +71,7 @@ NEVER:
 - Fabricate fixture counts, goal totals, or any other numeric summary statistic. If you mention the number of fixtures or total goals, use the values from the "Summary:" line at the top of the GW Results block. If that line is absent, don't cite a count at all
 - Split a DGW player's gameweek total across their two fixtures ("14 in the first, 5 in the second"). You only receive the GW total - any per-match breakdown is fabrication. Cite the full GW total only, or describe the haul qualitatively ("a clean sheet and a goal in the DGW") without assigning points to individual fixtures
 - Fabricate transfer history, loan arrangements, or contractual details about players in the Disappointments or Standout Performers tables. If you lack sourced information explaining why a player blanked or hauled, describe the statistical outcome ("returned just 1 point") without inventing a backstory. Do not reference a player's club history, loan status, or off-field context unless it appeared in your search results
+- Name any player in the GW Narrative paragraph who does not appear in the Dream Team list, the Blankers list, or as a goalscorer/assister in the GW Results match lines. The narrative must reference only players grounded in the provided data - no metaphorical comparisons, no "X reminded us of Y", no "the next Z". If you cannot make a point without naming an unprovided player, drop the comparison and describe what actually happened instead
 
 IF web search returns limited narrative sources:
 - Still produce all sections using the match results and player data provided
@@ -550,7 +551,7 @@ _TABLE_HEADERS = {
 }
 
 _ROW_RE = re.compile(r"^\|([^|]+)\|([^|]+)\|")
-_TEAM_CODE_RE = re.compile(r"^[A-Z]{2,4}$")
+_TEAM_CODE_SHAPE_RE = re.compile(r"^[A-Z]{2,4}$")
 
 
 def validate_research_teams(
@@ -591,6 +592,15 @@ def validate_research_teams(
             if team:
                 name_to_team[name] = team.short_name
 
+    # Map of accepted team-cell values (short codes and full names, case-insensitive)
+    # to their canonical short_name. Lets the gate accept rows where the LLM rendered
+    # the club as either "ARS" or "Arsenal" instead of failing the regex and skipping
+    # the row entirely.
+    team_alias_to_short: dict[str, str] = {}
+    for team in teams.values():
+        team_alias_to_short[team.short_name.lower()] = team.short_name
+        team_alias_to_short[team.name.lower()] = team.short_name
+
     # Pre-compute normalised → canonical mapping for known names.
     # Sorted by descending length so longer canonicals (e.g. "Bruno Fernandes")
     # win over shorter prefixes (e.g. "Bruno") when both are present.
@@ -629,8 +639,14 @@ def validate_research_teams(
                 player_cell = match.group(1).strip()
                 team_cell = match.group(2).strip()
 
-                # Skip separator rows (e.g. |--------|------|)
-                if _TEAM_CODE_RE.match(team_cell):
+                # Skip separator rows (e.g. |--------|------|). Admit cells that
+                # are either a recognised PL team alias (short code or full name)
+                # or just code-shaped (uppercase 2-4 letters) — the latter is a
+                # fallback for unknown short codes so name validation still runs.
+                team_cell_short = team_alias_to_short.get(team_cell.lower())
+                if team_cell_short is None and _TEAM_CODE_SHAPE_RE.match(team_cell):
+                    team_cell_short = team_cell
+                if team_cell_short is not None:
                     # Strip markdown bold/italics anywhere in the cell before
                     # name comparison (handles "**Salah**", "**Salah** (note)").
                     plain_player = re.sub(r"\*+", "", player_cell).strip()
@@ -656,9 +672,11 @@ def validate_research_teams(
                             plain_player = matched_canonical
                             normalised_player = canonical_normalised
 
-                    # Team code correction
+                    # Team code correction. Compare resolved short_name to resolved
+                    # short_name so a row already correct as "Arsenal" doesn't get
+                    # rewritten to "ARS" purely for code-vs-name format.
                     expected_team = name_to_team.get(normalised_player)
-                    if expected_team and expected_team != team_cell:
+                    if expected_team and expected_team != team_cell_short:
                         line = re.sub(
                             r"\|\s*" + re.escape(team_cell) + r"\s*\|",
                             f"| {expected_team} |",
@@ -670,3 +688,91 @@ def validate_research_teams(
         corrected_lines.append(line)
 
     return "\n".join(corrected_lines), corrections
+
+
+_NARRATIVE_HEADER_RE = re.compile(r"^##\s+GW\d+\s+Narrative\s*$", re.IGNORECASE)
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z\"'\[(])")
+
+
+def validate_research_prose(
+    text: str,
+    player_map: dict[int, Player],
+    allowlist: set[str],
+) -> tuple[str, list[str]]:
+    """Strip sentences in the GW Narrative paragraph that name PL players outside the allowlist.
+
+    The research provider's GW Narrative paragraph is freeform prose and is not
+    constrained by the table validator. Build a set of disallowed surnames as
+    {all PL web_names} − allowlist, then drop any sentence containing a
+    disallowed surname (whole-word match, diacritic-insensitive). If anything
+    is stripped, append a visible "[narrative scrubbed: N reference(s)
+    removed]" stub to the paragraph so the report does not silently shrink.
+
+    Args:
+        text: Full research provider response.
+        player_map: Mapping of player ID to Player model (full PL roster).
+        allowlist: Player web_names that are legitimately referenceable in the
+            narrative. Typically Dream Team ∪ Blankers ∪ match-scorers/assisters
+            ∪ user's squad.
+
+    Returns:
+        (corrected_text, corrections_log).
+    """
+    lines = text.split("\n")
+    header_idx: int | None = None
+    for i, line in enumerate(lines):
+        if _NARRATIVE_HEADER_RE.match(line):
+            header_idx = i
+            break
+
+    if header_idx is None:
+        return text, []
+
+    end_idx = len(lines)
+    for j in range(header_idx + 1, len(lines)):
+        if lines[j].lstrip().startswith("## "):
+            end_idx = j
+            break
+
+    paragraph = "\n".join(lines[header_idx + 1 : end_idx]).strip()
+    if not paragraph:
+        return text, []
+
+    normalised_allow = {strip_diacritics(n).lower() for n in allowlist}
+    disallowed_norm: set[str] = set()
+    for player in player_map.values():
+        norm = strip_diacritics(player.web_name).lower()
+        if norm and norm not in normalised_allow:
+            disallowed_norm.add(norm)
+
+    if not disallowed_norm:
+        return text, []
+
+    sentences = _SENTENCE_SPLIT_RE.split(paragraph)
+    kept: list[str] = []
+    corrections: list[str] = []
+    for sentence in sentences:
+        sentence_norm = strip_diacritics(sentence).lower()
+        hit = next(
+            (
+                name
+                for name in disallowed_norm
+                if re.search(rf"\b{re.escape(name)}\b", sentence_norm)
+            ),
+            None,
+        )
+        if hit is None:
+            kept.append(sentence)
+        else:
+            corrections.append(f"narrative sentence stripped (disallowed: {hit}): {sentence.strip()[:120]}")
+
+    if not corrections:
+        return text, []
+
+    rebuilt = " ".join(s.strip() for s in kept if s.strip())
+    rebuilt = rebuilt.strip()
+    stub = f"[narrative scrubbed: {len(corrections)} fabricated reference(s) removed]"
+    new_paragraph = f"{rebuilt} {stub}" if rebuilt else stub
+
+    new_lines = lines[: header_idx + 1] + ["", new_paragraph, ""] + lines[end_idx:]
+    return "\n".join(new_lines), corrections
