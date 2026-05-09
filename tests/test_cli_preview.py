@@ -147,7 +147,8 @@ class TestPreviewCustomAnalysisToggle:
 
     def test_custom_off_gw_fixtures_uses_api_fdr(self):
         """When custom_analysis off, gw_fixtures FDR falls back to FPL API (get_fixtures called)."""
-        from unittest.mock import MagicMock, AsyncMock, patch
+        from unittest.mock import AsyncMock, MagicMock, patch
+
         from click.testing import CliRunner
 
         fpl_client = _make_fpl_client()

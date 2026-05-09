@@ -549,6 +549,54 @@ def _compute_transfer_awards(
         )
 
 
+def _contract_draft_txn_chains(
+    txns: list[RecapDraftTransaction],
+) -> list[RecapDraftTransaction]:
+    """Collapse chain rebuilds within a single manager-GW into endpoint pairs.
+
+    If a manager swaps A→B then B→C in the same GW, B is an intermediate and
+    the effective move is A→C. Contracting these prevents the best/worst-move
+    detail from naming an intermediate the manager didn't end the GW with.
+
+    Sum of effective nets equals sum of raw nets (intermediates cancel
+    algebraically). Closed loops (A→B then B→A) contract to nothing.
+    """
+    if len(txns) < 2:
+        return list(txns)
+
+    by_out = {t["player_out"]: t for t in txns}
+    in_names = {t["player_in"] for t in txns}
+    out_names = {t["player_out"] for t in txns}
+    intermediates = in_names & out_names
+
+    if not intermediates:
+        return list(txns)
+
+    contracted: list[RecapDraftTransaction] = []
+    for start in txns:
+        # Chain starts at a txn whose dropped player isn't also picked up
+        # elsewhere in the same GW.
+        if start["player_out"] in in_names:
+            continue
+        current = start
+        while current["player_in"] in intermediates:
+            current = by_out[current["player_in"]]
+        if current is start:
+            contracted.append(start)
+        else:
+            contracted.append(RecapDraftTransaction(
+                player_in=current["player_in"],
+                player_in_team=current["player_in_team"],
+                player_in_points=current["player_in_points"],
+                player_out=start["player_out"],
+                player_out_team=start["player_out_team"],
+                player_out_points=start["player_out_points"],
+                net=current["player_in_points"] - start["player_out_points"],
+                kind=current["kind"],
+            ))
+    return contracted
+
+
 def _compute_waiver_awards(
     managers: list[RecapManagerEntry],
     awards: RecapAwards,
@@ -562,10 +610,17 @@ def _compute_waiver_awards(
     def _txn_net(m: RecapManagerEntry) -> int:
         return sum(t["net"] for t in m.get("transactions", []))
 
+    def _best_effective(m: RecapManagerEntry) -> RecapDraftTransaction | None:
+        effective = _contract_draft_txn_chains(m.get("transactions", []))
+        return max(effective, key=lambda t: t["net"]) if effective else None
+
+    def _worst_effective(m: RecapManagerEntry) -> RecapDraftTransaction | None:
+        effective = _contract_draft_txn_chains(m.get("transactions", []))
+        return min(effective, key=lambda t: t["net"]) if effective else None
+
     genius = max(managers_with_txns, key=_txn_net)
     genius_net = _txn_net(genius)
-    if genius_net > 0:
-        best_txn = max(genius.get("transactions", []), key=lambda t: t["net"])
+    if genius_net > 0 and (best_txn := _best_effective(genius)) is not None:
         awards["waiver_genius"] = RecapAwardEntry(
             manager_name=genius["manager_name"],
             value=genius_net,
@@ -578,8 +633,7 @@ def _compute_waiver_awards(
 
     disaster = min(managers_with_txns, key=_txn_net)
     disaster_net = _txn_net(disaster)
-    if disaster_net < 0:
-        worst_txn = min(disaster.get("transactions", []), key=lambda t: t["net"])
+    if disaster_net < 0 and (worst_txn := _worst_effective(disaster)) is not None:
         awards["waiver_disaster"] = RecapAwardEntry(
             manager_name=disaster["manager_name"],
             value=disaster_net,

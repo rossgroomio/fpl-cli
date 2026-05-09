@@ -13,6 +13,7 @@ from fpl_cli.cli._league_recap_data import (
     _compute_standings_movement,
     _compute_transfer_awards,
     _compute_waiver_awards,
+    _contract_draft_txn_chains,
     evaluate_league_fines,
 )
 from fpl_cli.cli._league_recap_types import (
@@ -560,6 +561,38 @@ class TestWaiverAwards:
         assert "waiver_disaster" in awards
         assert awards.get("waiver_disaster", {}).get("manager_name") == "Alice"  # type: ignore[union-attr]
 
+    def test_disaster_detail_names_chain_endpoints_not_intermediate(self):
+        # Manager runs Trossard out → Georginio → Dango. The literal worst raw
+        # txn is Georginio-for-Trossard (-6), but Trossard's real replacement
+        # is Dango (-1). The detail should name the endpoint pair.
+        txns = [
+            RecapDraftTransaction(
+                player_in="Georginio", player_in_team="???", player_in_points=1,
+                player_out="Trossard", player_out_team="???", player_out_points=7,
+                net=-6, kind="w",
+            ),
+            RecapDraftTransaction(
+                player_in="Dango", player_in_team="???", player_in_points=6,
+                player_out="Georginio", player_out_team="???", player_out_points=1,
+                net=5, kind="f",
+            ),
+            # Add a clear loss elsewhere so manager total is negative
+            RecapDraftTransaction(
+                player_in="Bust", player_in_team="???", player_in_points=0,
+                player_out="Star", player_out_team="???", player_out_points=10,
+                net=-10, kind="w",
+            ),
+        ]
+        managers = [
+            _make_manager_with_txns("Alice", txns),
+            _make_manager(name="Bob"),
+        ]
+        awards: RecapAwards = {}  # type: ignore[typeddict-item]
+        _compute_waiver_awards(managers, awards)
+        detail = awards["waiver_disaster"]["detail"]
+        assert "Bust for Star" in detail  # the real worst (-10), unaffected by chain
+        assert "Georginio" not in detail  # the intermediate must not appear
+
     def test_no_transactions_no_awards(self):
         managers = [_make_manager(name="Alice"), _make_manager(name="Bob")]
         awards: RecapAwards = {}  # type: ignore[typeddict-item]
@@ -584,6 +617,60 @@ class TestWaiverAwards:
         assert "transfer_genius" not in awards
         assert "best_captain" not in awards
         assert "worst_captain" not in awards
+
+
+def _txn(pin: str, pin_pts: int, pout: str, pout_pts: int, kind: str = "w") -> RecapDraftTransaction:
+    return RecapDraftTransaction(
+        player_in=pin, player_in_team="???", player_in_points=pin_pts,
+        player_out=pout, player_out_team="???", player_out_points=pout_pts,
+        net=pin_pts - pout_pts, kind=kind,
+    )
+
+
+class TestContractDraftTxnChains:
+    """Chain rebuilds within a manager-GW collapse to endpoint pairs."""
+
+    def test_no_chain_passthrough(self):
+        txns = [_txn("Truffert", 7, "Frimpong", 1), _txn("Doku", 15, "Gordon", 0)]
+        assert _contract_draft_txn_chains(txns) == txns
+
+    def test_single_txn_passthrough(self):
+        txns = [_txn("Doku", 15, "Gordon", 0)]
+        assert _contract_draft_txn_chains(txns) == txns
+
+    def test_collapses_three_step_chain(self):
+        # Trossard out → Georginio → Dango (Oliver's GW35)
+        txns = [
+            _txn("Truffert", 7, "Frimpong", 1),
+            _txn("Georginio", 1, "Trossard", 7),
+            _txn("Dango", 6, "Georginio", 1, kind="f"),
+        ]
+        result = _contract_draft_txn_chains(txns)
+        # Expect Truffert/Frimpong unchanged, plus Dango/Trossard collapsed
+        assert len(result) == 2
+        names = {(t["player_in"], t["player_out"]): t["net"] for t in result}
+        assert names[("Truffert", "Frimpong")] == 6
+        assert names[("Dango", "Trossard")] == 6 - 7  # -1
+        # Sum is preserved
+        assert sum(t["net"] for t in result) == sum(t["net"] for t in txns)
+
+    def test_closed_loop_contracts_to_nothing(self):
+        # Drop X for Y, then drop Y for X — back where we started
+        txns = [_txn("Y", 5, "X", 3), _txn("X", 3, "Y", 5)]
+        assert _contract_draft_txn_chains(txns) == []
+
+    def test_multi_hop_chain(self):
+        # A→B→C→D: only A out, D in survive
+        txns = [
+            _txn("B", 4, "A", 1),
+            _txn("C", 6, "B", 4),
+            _txn("D", 9, "C", 6),
+        ]
+        result = _contract_draft_txn_chains(txns)
+        assert len(result) == 1
+        assert result[0]["player_in"] == "D"
+        assert result[0]["player_out"] == "A"
+        assert result[0]["net"] == 9 - 1
 
 
 class TestBucketDraftTxns:
