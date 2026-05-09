@@ -29,6 +29,7 @@ Your audience is every member of this league. They want entertainment first, inf
 - If fines were triggered, make them a highlight
 - The biggest bench haul is always funny - lean into it
 - If a manager played a chip, that's a big narrative hook. A chip that flopped deserves mockery; a chip that paid off deserves grudging respect. When referencing chip users, treat the "Chips Played" section as the source of truth — it includes an explicit total count; use that number verbatim. Do NOT count tags in the standings table. Do not name a subset as "the X wildcards" — either name all users of that chip or none.
+- When referencing captain choices, treat the "## Captains" section as the source of truth. It lists every manager grouped by their intended captain pick, with an explicit total count. Use those counts verbatim. NEVER name a captain "outlier", "dissenter", or "the manager(s) who picked Y" unless they appear under that captain in the section. If you describe N managers as picking the modal captain, it must match the section's group size for that player. Do NOT infer captain choices from the awards or standings — they are compressed and miss managers whose pick was neither the best nor the worst.
 - NEVER claim a manager's bench outscored their team unless bench points are strictly greater than their GW points. Use the exact numbers provided.
 - NEVER alter player or manager names. Use the exact spelling provided in the data.
 </rules>"""
@@ -43,6 +44,7 @@ def get_recap_synthesis_prompt(
     fines_text: str,
     research_summary: str | None = None,
     *,
+    captains_text: str = "",
     chips_text: str = "",
     is_bgw: bool = False,
     is_dgw: bool = False,
@@ -71,6 +73,9 @@ def get_recap_synthesis_prompt(
         "## GW Standings",
         standings_text,
     ])
+
+    if captains_text:
+        sections.extend(["", "## Captains", captains_text])
 
     if chips_text:
         sections.extend(["", "## Chips Played", chips_text])
@@ -173,6 +178,45 @@ def format_recap_chips_context(data: LeagueRecapData) -> str:
         lines.append(f"- **{label}** ({len(users)}): {', '.join(users)}")
         total += len(users)
     lines.insert(0, f"Total chips played this GW: {total}")
+    return "\n".join(lines)
+
+
+def format_recap_captains_context(data: LeagueRecapData) -> str:
+    """Per-manager captain roster grouped by intended pick.
+
+    Mirrors the chips section: prevents the synthesis LLM from hallucinating
+    captain outliers when the modal pick crowds out the per-award detail.
+    Suppressed for draft (no captaincy).
+    """
+    if data.get("fpl_format") != "classic":
+        return ""
+
+    managers = data.get("managers", [])
+    if not managers:
+        return ""
+
+    by_captain: dict[str, list[tuple[str, str]]] = {}
+    for m in managers:
+        captain = m.get("captain") or ""
+        if not captain:
+            continue
+        if m.get("captain_played"):
+            annotation = f"{m['captain_points']} pts"
+        else:
+            vc_name = m.get("vice_captain") or "?"
+            vc_pts = m.get("vice_captain_points", 0)
+            annotation = f"dnp; vice {vc_name} scored {vc_pts} pts"
+        by_captain.setdefault(captain, []).append((m["manager_name"], annotation))
+
+    if not by_captain:
+        return ""
+
+    groups = sorted(by_captain.items(), key=lambda kv: (-len(kv[1]), kv[0]))
+    lines = [f"Total captains: {sum(len(v) for v in by_captain.values())}"]
+    for player, entries in groups:
+        entries.sort(key=lambda e: e[0])
+        joined = ", ".join(f"{name} ({ann})" for name, ann in entries)
+        lines.append(f"- **{player}** (×{len(entries)}): {joined}")
     return "\n".join(lines)
 
 

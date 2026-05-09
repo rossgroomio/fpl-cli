@@ -237,6 +237,7 @@ async def _recap_llm_summarise(
     """Run LLM summarisation for league recap. Mutates collected_data to add summaries."""
     from fpl_cli.prompts.league_recap import (
         format_recap_awards_context,
+        format_recap_captains_context,
         format_recap_chips_context,
         format_recap_fines_context,
         format_recap_standings_context,
@@ -251,6 +252,7 @@ async def _recap_llm_summarise(
 
     awards_text = format_recap_awards_context(collected_data)
     standings_text = format_recap_standings_context(collected_data)
+    captains_text = format_recap_captains_context(collected_data)
     chips_text = format_recap_chips_context(collected_data)
     fines_text = format_recap_fines_context(collected_data)
 
@@ -261,6 +263,7 @@ async def _recap_llm_summarise(
         awards_text=awards_text,
         standings_text=standings_text,
         fines_text=fines_text,
+        captains_text=captains_text,
         chips_text=chips_text,
         is_bgw=is_bgw,
         is_dgw=is_dgw,

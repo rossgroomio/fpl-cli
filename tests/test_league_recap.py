@@ -25,6 +25,7 @@ from fpl_cli.cli._league_recap_types import (
 )
 from fpl_cli.prompts.league_recap import (
     format_recap_awards_context,
+    format_recap_captains_context,
     format_recap_chips_context,
     format_recap_fines_context,
     format_recap_standings_context,
@@ -901,6 +902,56 @@ class TestPromptFormatting:
         data["fpl_format"] = "draft"
         assert format_recap_chips_context(data) == ""
 
+    def test_captains_context_groups_by_intended_pick(self):
+        managers = [
+            _make_manager(name="Alice", entry_id=1, captain="Haaland", captain_points=7),
+            _make_manager(name="Bob", entry_id=2, captain="Haaland", captain_points=7),
+            _make_manager(name="Cam", entry_id=3, captain="Haaland", captain_points=7),
+            _make_manager(name="Dave", entry_id=4, captain="Salah", captain_points=10),
+            _make_manager(name="Eve", entry_id=5, captain="Gibbs-White", captain_points=4),
+        ]
+        data = _make_recap_data(managers=managers)
+        text = format_recap_captains_context(data)
+        assert text.startswith("Total captains: 5")
+        # Modal pick first (×3), then alphabetical tiebreak between the two ×1 groups
+        haaland_line_idx = next(i for i, ln in enumerate(text.splitlines()) if "Haaland" in ln)
+        gibbs_line_idx = next(i for i, ln in enumerate(text.splitlines()) if "Gibbs-White" in ln)
+        salah_line_idx = next(i for i, ln in enumerate(text.splitlines()) if "Salah" in ln)
+        assert haaland_line_idx < gibbs_line_idx < salah_line_idx
+        # Within Haaland group, managers alphabetical
+        haaland_line = text.splitlines()[haaland_line_idx]
+        assert haaland_line.index("Alice") < haaland_line.index("Bob") < haaland_line.index("Cam")
+        assert "(×3)" in haaland_line
+        assert "(7 pts)" in haaland_line
+
+    def test_captains_context_annotates_dnp_with_vc_takeover(self):
+        managers = [
+            _make_manager(
+                name="Alice",
+                entry_id=1,
+                captain="Haaland",
+                captain_points=0,
+                captain_played=False,
+                vice_captain="Salah",
+                vice_captain_points=12,
+            ),
+            _make_manager(name="Bob", entry_id=2, captain="Haaland", captain_points=7),
+        ]
+        data = _make_recap_data(managers=managers)
+        text = format_recap_captains_context(data)
+        assert "Alice (dnp; vice Salah scored 12 pts)" in text
+        assert "Bob (7 pts)" in text
+
+    def test_captains_context_empty_for_draft(self):
+        managers = [_make_manager(name="Cam", entry_id=1, captain="Haaland")]
+        data = _make_recap_data(managers=managers)
+        data["fpl_format"] = "draft"
+        assert format_recap_captains_context(data) == ""
+
+    def test_captains_context_empty_when_no_managers(self):
+        data = _make_recap_data(managers=[])
+        assert format_recap_captains_context(data) == ""
+
     def test_synthesis_prompt_includes_chips_section(self):
         _, user = get_recap_synthesis_prompt(
             gw=32, league_name="Test", fpl_format="classic",
@@ -909,6 +960,29 @@ class TestPromptFormatting:
         )
         assert "## Chips Played" in user
         assert "Wildcard** (4)" in user
+
+    def test_synthesis_system_prompt_locks_captain_outliers_to_section(self):
+        from fpl_cli.prompts.league_recap import RECAP_SYNTHESIS_SYSTEM_PROMPT
+
+        assert "## Captains" in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        assert "verbatim" in RECAP_SYNTHESIS_SYSTEM_PROMPT.lower()
+
+    def test_synthesis_prompt_includes_captains_section_for_classic(self):
+        _, user = get_recap_synthesis_prompt(
+            gw=35, league_name="Test", fpl_format="classic",
+            awards_text="x", standings_text="| t |", fines_text="",
+            captains_text="Total captains: 3\n- **Haaland** (×2): Alice (7 pts), Bob (7 pts)",
+        )
+        assert "## Captains" in user
+        assert "Total captains: 3" in user
+
+    def test_synthesis_prompt_omits_captains_section_when_empty(self):
+        _, user = get_recap_synthesis_prompt(
+            gw=35, league_name="Test", fpl_format="draft",
+            awards_text="x", standings_text="| t |", fines_text="",
+            captains_text="",
+        )
+        assert "## Captains" not in user
 
     def test_fines_context_includes_triggered(self):
         from fpl_cli.cli._league_recap_types import RecapFineResult
