@@ -7,6 +7,7 @@ from pathlib import Path
 
 from fpl_cli.agents.orchestration.report import ReportAgent, _format_standings_block
 from fpl_cli.cli._league_recap_data import (
+    _bucket_draft_txns_by_league_entry,
     _classic_pick_flags,
     _compute_shared_awards,
     _compute_standings_movement,
@@ -583,6 +584,42 @@ class TestWaiverAwards:
         assert "transfer_genius" not in awards
         assert "best_captain" not in awards
         assert "worst_captain" not in awards
+
+
+class TestBucketDraftTxns:
+    """Regression: draft txn `entry` field is FPL entry_id, not league_entry id."""
+
+    def test_remaps_entry_id_to_league_entry_id(self):
+        league_entries = [
+            {"id": 1528, "entry_id": 1528, "player_first_name": "Oliver"},
+            {"id": 94885, "entry_id": 97719, "player_first_name": "Alex"},
+            {"id": 93633, "entry_id": 96472, "player_first_name": "Jonathan"},
+        ]
+        gw_txns = [
+            {"entry": 1528, "element_in": 1, "element_out": 2, "kind": "w"},
+            {"entry": 97719, "element_in": 3, "element_out": 4, "kind": "w"},
+            {"entry": 97719, "element_in": 5, "element_out": 6, "kind": "w"},
+            {"entry": 96472, "element_in": 7, "element_out": 8, "kind": "w"},
+        ]
+
+        bucketed = _bucket_draft_txns_by_league_entry(gw_txns, league_entries)
+
+        assert set(bucketed.keys()) == {1528, 94885, 93633}
+        assert len(bucketed[94885]) == 2
+        assert len(bucketed[93633]) == 1
+        assert len(bucketed[1528]) == 1
+
+    def test_drops_unknown_entry_ids(self):
+        league_entries = [{"id": 100, "entry_id": 200}]
+        gw_txns = [
+            {"entry": 200, "element_in": 1},
+            {"entry": 999, "element_in": 2},
+            {"entry": None, "element_in": 3},
+        ]
+
+        bucketed = _bucket_draft_txns_by_league_entry(gw_txns, league_entries)
+
+        assert bucketed == {100: [{"entry": 200, "element_in": 1}]}
 
 
 # ---------------------------------------------------------------------------

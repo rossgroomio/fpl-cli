@@ -596,6 +596,34 @@ def _compute_waiver_awards(
 # ---------------------------------------------------------------------------
 
 
+def _bucket_draft_txns_by_league_entry(
+    gw_txns: list[dict[str, Any]],
+    league_entries: list[dict[str, Any]],
+) -> dict[int, list[dict[str, Any]]]:
+    """Bucket draft transactions by league_entry id.
+
+    The draft txn payload's `entry` field is the FPL `entry_id` (the manager's
+    site-wide id), not the league-local `id`. The rest of the recap pipeline
+    keys on league_entry `id`, so remap before bucketing — otherwise managers
+    whose `entry_id != id` have their transactions silently dropped.
+    """
+    entry_id_to_le_id: dict[int, int] = {
+        e["entry_id"]: e["id"]
+        for e in league_entries
+        if e.get("entry_id") is not None and e.get("id") is not None
+    }
+    out: dict[int, list[dict[str, Any]]] = {}
+    for txn in gw_txns:
+        txn_entry_id = txn.get("entry")
+        if txn_entry_id is None:
+            continue
+        le_id = entry_id_to_le_id.get(txn_entry_id)
+        if le_id is None:
+            continue
+        out.setdefault(le_id, []).append(txn)
+    return out
+
+
 async def collect_draft_recap_data(
     settings: dict[str, Any],
     gw: int,
@@ -636,10 +664,7 @@ async def collect_draft_recap_data(
             t for t in all_txns
             if t.get("event") == gw and t.get("result") == "a"
         ]
-        txns_by_entry: dict[int, list[dict[str, Any]]] = {}
-        for txn in gw_txns:
-            txn_entry: int = txn.get("entry", 0)
-            txns_by_entry.setdefault(txn_entry, []).append(txn)
+        txns_by_entry = _bucket_draft_txns_by_league_entry(gw_txns, league_entries)
 
         # Fetch picks for each manager
         sem = asyncio.Semaphore(_PICKS_CONCURRENCY)
