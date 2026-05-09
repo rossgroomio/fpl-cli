@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import TYPE_CHECKING
 
 from fpl_cli.utils.text import strip_diacritics
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from fpl_cli.models.player import Player
@@ -558,12 +561,12 @@ def validate_research_teams(
     text: str,
     player_map: dict[int, Player],
     teams: dict[int, Team],
-    known_names: set[str] | None = None,
+    table_allowlist: set[str] | None = None,
 ) -> tuple[str, list[str]]:
     """Cross-reference table rows in research provider output against FPL API data.
 
     Corrects team codes in the Standout Performers and Disappointments tables.
-    When ``known_names`` is provided, also validates player name cells: strips
+    When ``table_allowlist`` is provided, also validates player name cells: strips
     rows for players absent from the list, and corrects corrupted names (e.g.
     "Beto (Ekitiké)" → "Ekitiké") where a known name appears within the cell.
 
@@ -571,7 +574,7 @@ def validate_research_teams(
         text: The research provider response text containing markdown tables.
         player_map: Mapping of player ID to Player model (from FPL API).
         teams: Mapping of team ID to Team model (from FPL API).
-        known_names: Canonical player names from the blankers/dream-team lists
+        table_allowlist: Canonical player names from the blankers/dream-team lists
             passed to the research prompt. When provided, rows for players not
             in this set are stripped, and corrupted names are corrected.
 
@@ -606,11 +609,11 @@ def validate_research_teams(
     # win over shorter prefixes (e.g. "Bruno") when both are present.
     normalised_known: list[tuple[str, str]] = (
         sorted(
-            ((strip_diacritics(n).lower(), n) for n in known_names),
+            ((strip_diacritics(n).lower(), n) for n in table_allowlist),
             key=lambda kv: len(kv[0]),
             reverse=True,
         )
-        if known_names
+        if table_allowlist
         else []
     )
 
@@ -690,8 +693,14 @@ def validate_research_teams(
     return "\n".join(corrected_lines), corrections
 
 
-_NARRATIVE_HEADER_RE = re.compile(r"^##\s+GW\d+\s+Narrative\s*$", re.IGNORECASE)
-_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z\"'\[(])")
+_NARRATIVE_HEADER_RE = re.compile(
+    r"^#{2,3}\s+(GW|Gameweek)\s*\d+\s+Narrative\b.*$",
+    re.IGNORECASE,
+)
+_SENTENCE_SPLIT_RE = re.compile(
+    r"(?:(?<=[.!?][\"')\]])|(?<=[.!?]))\s+(?=[A-Z\"'\[(])"
+)
+_MIN_PROSE_ALLOWLIST_SIZE = 5
 
 
 def validate_research_prose(
@@ -726,11 +735,22 @@ def validate_research_prose(
             break
 
     if header_idx is None:
+        logger.warning("validate_research_prose: no narrative header found in text")
+        return text, []
+
+    # Guard against an empty/near-empty allowlist collapsing the whole narrative:
+    # any realistic GW supplies far more than this from Dream Team alone.
+    if len(allowlist) < _MIN_PROSE_ALLOWLIST_SIZE:
+        logger.warning(
+            "validate_research_prose: allowlist size %d below threshold %d; skipping prose validation",
+            len(allowlist),
+            _MIN_PROSE_ALLOWLIST_SIZE,
+        )
         return text, []
 
     end_idx = len(lines)
     for j in range(header_idx + 1, len(lines)):
-        if lines[j].lstrip().startswith("## "):
+        if re.match(r"^#{1,6}\s", lines[j].lstrip()):
             end_idx = j
             break
 
@@ -739,32 +759,45 @@ def validate_research_prose(
         return text, []
 
     normalised_allow = {strip_diacritics(n).lower() for n in allowlist}
-    disallowed_norm: set[str] = set()
+    # Compile each pattern against the diacritic-stripped name (so LLM output
+    # that drops accents — "Hojlund" for "Højlund" — still matches) but keep
+    # original-case so the regex requires a capitalised hit in the source
+    # text; this avoids over-scrubbing English homographs like "son", "may".
+    disallowed: list[tuple[str, re.Pattern[str]]] = []
     for player in player_map.values():
-        norm = strip_diacritics(player.web_name).lower()
+        name = player.web_name
+        norm = strip_diacritics(name).lower()
         if norm and norm not in normalised_allow:
-            disallowed_norm.add(norm)
+            stripped_name = strip_diacritics(name)
+            disallowed.append((name, re.compile(rf"\b{re.escape(stripped_name)}\b")))
 
-    if not disallowed_norm:
+    if not disallowed:
         return text, []
 
-    sentences = _SENTENCE_SPLIT_RE.split(paragraph)
+    # Split on newlines first so a missing terminal punctuation between lines
+    # doesn't merge sentences into a single chunk.
+    sentences: list[str] = []
+    for chunk in paragraph.split("\n"):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        sentences.extend(_SENTENCE_SPLIT_RE.split(chunk))
+
     kept: list[str] = []
     corrections: list[str] = []
     for sentence in sentences:
-        sentence_norm = strip_diacritics(sentence).lower()
-        hit = next(
-            (
-                name
-                for name in disallowed_norm
-                if re.search(rf"\b{re.escape(name)}\b", sentence_norm)
-            ),
-            None,
-        )
-        if hit is None:
+        sentence_stripped = strip_diacritics(sentence)
+        hit_name: str | None = None
+        for name, pattern in disallowed:
+            if pattern.search(sentence_stripped):
+                hit_name = name
+                break
+        if hit_name is None:
             kept.append(sentence)
         else:
-            corrections.append(f"narrative sentence stripped (disallowed: {hit}): {sentence.strip()[:120]}")
+            corrections.append(
+                f"narrative sentence stripped (disallowed: {hit_name}): {sentence.strip()[:120]}"
+            )
 
     if not corrections:
         return text, []

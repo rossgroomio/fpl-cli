@@ -1843,7 +1843,7 @@ class TestValidateResearchTeams:
         # Simulate "Beto (Salah)" — the known canonical is "Salah"
         table = self._make_table("disappointments", [("Beto (Salah)", "LIV", "1", "Poor return")])
         result, corrections = validate_research_teams(
-            table, player_map, teams, known_names={"Salah"}
+            table, player_map, teams, table_allowlist={"Salah"}
         )
         assert "| Salah |" in result
         assert "Beto" not in result
@@ -1860,7 +1860,7 @@ class TestValidateResearchTeams:
             ],
         )
         result, corrections = validate_research_teams(
-            table, player_map, teams, known_names={"Salah"}
+            table, player_map, teams, table_allowlist={"Salah"}
         )
         assert "Branthwaite" not in result
         assert "| Salah |" in result
@@ -1871,18 +1871,18 @@ class TestValidateResearchTeams:
         player_map, teams = players_and_teams
         table = self._make_table("disappointments", [("Salah", "LIV", "1", "Quiet game")])
         result, corrections = validate_research_teams(
-            table, player_map, teams, known_names={"Salah"}
+            table, player_map, teams, table_allowlist={"Salah"}
         )
         assert "| Salah |" in result
         assert not any("name corrected" in c for c in corrections)
         assert not any("stripped" in c for c in corrections)
 
     def test_none_known_names_skips_name_validation(self, players_and_teams):
-        """With known_names=None, name validation is skipped — existing behaviour unchanged."""
+        """With table_allowlist=None, name validation is skipped — existing behaviour unchanged."""
         player_map, teams = players_and_teams
         # "Branthwaite" is not a real player in player_map, but no known_names → not stripped
         table = self._make_table("disappointments", [("Branthwaite", "EVE", "1", "Poor return")])
-        result, corrections = validate_research_teams(table, player_map, teams, known_names=None)
+        result, corrections = validate_research_teams(table, player_map, teams, table_allowlist=None)
         assert "Branthwaite" in result
         assert corrections == []
 
@@ -1892,7 +1892,7 @@ class TestValidateResearchTeams:
         # "Beto (Salah)" with wrong team MCI — should correct name to Salah, then team to LIV
         table = self._make_table("disappointments", [("Beto (Salah)", "MCI", "1", "Poor return")])
         result, corrections = validate_research_teams(
-            table, player_map, teams, known_names={"Salah"}
+            table, player_map, teams, table_allowlist={"Salah"}
         )
         assert "| Salah |" in result
         assert "| LIV |" in result
@@ -1910,7 +1910,7 @@ class TestValidateResearchTeams:
             "disappointments", [("Bruno Fernandes", "MUN", "2", "Quiet game")]
         )
         result, corrections = validate_research_teams(
-            table, player_map, teams, known_names={"Bruno", "Bruno Fernandes"}
+            table, player_map, teams, table_allowlist={"Bruno", "Bruno Fernandes"}
         )
         assert "| Bruno Fernandes |" in result
         # No "name corrected" entry — exact match should pass through
@@ -1923,7 +1923,7 @@ class TestValidateResearchTeams:
             "disappointments", [("**Salah**", "LIV", "1", "Quiet game")]
         )
         result, corrections = validate_research_teams(
-            table, player_map, teams, known_names={"Salah"}
+            table, player_map, teams, table_allowlist={"Salah"}
         )
         # Salah is in known_names → row not stripped
         assert "Salah" in result
@@ -1945,7 +1945,7 @@ class TestValidateResearchTeams:
             "performers", [("Alexander Salah", "Manchester City", "12", "Two goals")]
         )
         result, corrections = validate_research_teams(
-            table, player_map, teams, known_names={"Salah"}
+            table, player_map, teams, table_allowlist={"Salah"}
         )
         # Name corrupted to canonical
         assert "| Salah |" in result
@@ -1990,7 +1990,8 @@ class TestValidateResearchProse:
             "## Standout Performers\n"
         )
         result, corrections = validate_research_prose(
-            text, player_map, allowlist={"Damsgaard"}
+            text, player_map,
+            allowlist={"Damsgaard", "FillerA", "FillerB", "FillerC", "FillerD"},
         )
         # Mac Allister sentence stripped
         assert "Mac Allister" not in result
@@ -1999,7 +2000,7 @@ class TestValidateResearchProse:
         # Visible stub appended
         assert "[narrative scrubbed:" in result
         assert "1 fabricated reference" in result
-        assert any("Mac Allister" in c.lower() or "mac allister" in c for c in corrections)
+        assert any("mac allister" in c.lower() for c in corrections)
         # Standout Performers section preserved
         assert "## Standout Performers" in result
 
@@ -2024,8 +2025,26 @@ class TestValidateResearchProse:
         assert result == text
         assert corrections == []
 
-    def test_diacritic_insensitive_match(self, player_map):
-        # Add an accented player and reference them without the accent in prose
+    def test_accented_name_with_diacritic_in_source_matched(self, player_map):
+        # Source contains the original diacritic — must hit.
+        player_map[99] = make_player(id=99, web_name="Guéhi", team_id=1)
+        text = (
+            "## GW10 Narrative\n"
+            "Guéhi was the surprise package.\n"
+            "\n"
+            "## Standout Performers\n"
+        )
+        result, corrections = validate_research_prose(
+            text, player_map,
+            allowlist={"FillerA", "FillerB", "FillerC", "FillerD", "FillerE"},
+        )
+        assert "Guéhi" not in result
+        assert len(corrections) == 1
+
+    def test_accented_name_with_stripped_diacritic_in_source_matched(self, player_map):
+        # LLMs frequently drop accents — "Guehi" (ASCII) must still match the
+        # accented web_name. Hybrid: diacritic-stripped on both sides, but the
+        # regex stays case-sensitive so English homographs survive.
         player_map[99] = make_player(id=99, web_name="Guéhi", team_id=1)
         text = (
             "## GW10 Narrative\n"
@@ -2034,7 +2053,8 @@ class TestValidateResearchProse:
             "## Standout Performers\n"
         )
         result, corrections = validate_research_prose(
-            text, player_map, allowlist=set()
+            text, player_map,
+            allowlist={"FillerA", "FillerB", "FillerC", "FillerD", "FillerE"},
         )
         assert "Guehi" not in result
         assert len(corrections) == 1
@@ -2047,7 +2067,8 @@ class TestValidateResearchProse:
             "## Standout Performers\n"
         )
         result, corrections = validate_research_prose(
-            text, player_map, allowlist=set()
+            text, player_map,
+            allowlist={"FillerA", "FillerB", "FillerC", "FillerD", "FillerE"},
         )
         assert "[narrative scrubbed: 2 fabricated reference" in result
         assert len(corrections) == 2
@@ -2061,10 +2082,178 @@ class TestValidateResearchProse:
             "## Next Section\n"
         )
         result, corrections = validate_research_prose(
-            text, player_map, allowlist={"Salah"}
+            text, player_map,
+            allowlist={"Salah", "FillerA", "FillerB", "FillerC", "FillerD"},
         )
         assert "Mac Allister" not in result
         assert len(corrections) == 1
+
+
+class TestValidateResearchProseHeaderVariants:
+    """Tests for loosened narrative header regex."""
+
+    @pytest.fixture
+    def player_map(self):
+        return {
+            p.id: p
+            for p in [
+                make_player(id=1, web_name="Salah", team_id=14),
+                make_player(id=2, web_name="Mac Allister", team_id=14),
+            ]
+        }
+
+    @pytest.fixture
+    def big_allowlist(self):
+        return {"Damsgaard", "FillerA", "FillerB", "FillerC", "FillerD"}
+
+    def test_gameweek_word_header_recognised(self, player_map, big_allowlist):
+        text = (
+            "## Gameweek 35 Narrative\n"
+            "Mac Allister was the gameweek's hidden gem.\n"
+            "\n"
+            "## Standout Performers\n"
+        )
+        result, corrections = validate_research_prose(text, player_map, big_allowlist)
+        assert "Mac Allister" not in result
+        assert len(corrections) == 1
+
+    def test_h3_header_recognised(self, player_map, big_allowlist):
+        text = (
+            "### GW35 Narrative\n"
+            "Mac Allister was the gameweek's hidden gem.\n"
+            "\n"
+            "## Standout Performers\n"
+        )
+        result, corrections = validate_research_prose(text, player_map, big_allowlist)
+        assert "Mac Allister" not in result
+        assert len(corrections) == 1
+
+    def test_header_with_trailing_suffix_recognised(self, player_map, big_allowlist):
+        text = (
+            "## GW35 Narrative: Recap\n"
+            "Mac Allister was the gameweek's hidden gem.\n"
+            "\n"
+            "## Standout Performers\n"
+        )
+        result, corrections = validate_research_prose(text, player_map, big_allowlist)
+        assert "Mac Allister" not in result
+        assert len(corrections) == 1
+
+    def test_h3_next_section_stops_scrub(self, player_map, big_allowlist):
+        # If the section after Narrative is h3, scrubbing must still stop there.
+        text = (
+            "## GW35 Narrative\n"
+            "Mac Allister was the gameweek's hidden gem.\n"
+            "\n"
+            "### Standout Performers\n"
+            "Mac Allister appears in this h3 section and must not be touched.\n"
+        )
+        result, _ = validate_research_prose(text, player_map, big_allowlist)
+        assert "### Standout Performers" in result
+        # The h3 section content is preserved verbatim
+        assert "Mac Allister appears in this h3 section" in result
+
+    def test_newline_separated_sentences_split(self, player_map, big_allowlist):
+        # Two clauses separated only by a newline (no terminal punctuation on first).
+        text = (
+            "## GW35 Narrative\n"
+            "Damsgaard was electric\n"
+            "Mac Allister was the gameweek's hidden gem.\n"
+            "\n"
+            "## Standout Performers\n"
+        )
+        result, corrections = validate_research_prose(text, player_map, big_allowlist)
+        # Disallowed sentence stripped
+        assert "Mac Allister" not in result
+        # Allowed clause retained
+        assert "Damsgaard was electric" in result
+        assert len(corrections) == 1
+
+    def test_homograph_son_not_scrubbed_lowercase(self, player_map, big_allowlist):
+        # Add "Son" to player_map but not the allowlist.
+        player_map[42] = make_player(id=42, web_name="Son", team_id=6)
+        text = (
+            "## GW35 Narrative\n"
+            "The prodigal son returned to form across the gameweek.\n"
+            "\n"
+            "## Standout Performers\n"
+        )
+        result, corrections = validate_research_prose(text, player_map, big_allowlist)
+        # The lowercase "son" must NOT trigger a scrub since the player's name
+        # only appears capitalised in source.
+        assert "prodigal son returned to form" in result
+        assert corrections == []
+
+
+class TestNamesFromFixtureStrings:
+    """Tests for _names_from_fixture_strings."""
+
+    def test_extracts_simple_goal(self):
+        from fpl_cli.cli._review_summarisation import _names_from_fixture_strings
+
+        names = _names_from_fixture_strings(["Haaland x2 (MCI)"])
+        assert names == {"Haaland"}
+
+    def test_extracts_multiple_with_assist_string(self):
+        from fpl_cli.cli._review_summarisation import _names_from_fixture_strings
+
+        names = _names_from_fixture_strings(["Damsgaard (BRE), Thiago (BRE)"])
+        assert names == {"Damsgaard", "Thiago"}
+
+    def test_skips_none_entries(self):
+        from fpl_cli.cli._review_summarisation import _names_from_fixture_strings
+
+        names = _names_from_fixture_strings([None, "Salah (LIV)", None])
+        assert names == {"Salah"}
+
+    def test_extracts_bonus_with_points_in_parens(self):
+        from fpl_cli.cli._review_summarisation import _names_from_fixture_strings
+
+        names = _names_from_fixture_strings(["Bruno (NEW, 3), Saka (ARS, 2)"])
+        assert names == {"Bruno", "Saka"}
+
+    def test_extracts_red_card_with_warning_suffix(self):
+        from fpl_cli.cli._review_summarisation import _names_from_fixture_strings
+
+        names = _names_from_fixture_strings(["Grealish (MCI) ⚠️ YOUR PLAYER"])
+        assert "Grealish" in names
+
+
+class TestBuildResearchAllowlists:
+    """Tests for _build_research_allowlists."""
+
+    def test_table_allowlist_none_when_empty(self):
+        from fpl_cli.cli._review_summarisation import _build_research_allowlists
+
+        global_data: dict = {"blankers": [], "dream_team": []}
+        table, prose = _build_research_allowlists(global_data, [], [], [])
+        assert table is None
+        assert prose == set()
+
+    def test_table_allowlist_unions_blankers_and_dream_team(self):
+        from fpl_cli.cli._review_summarisation import _build_research_allowlists
+
+        global_data: dict = {
+            "blankers": [{"name": "Salah"}],
+            "dream_team": [{"name": "Haaland"}],
+        }
+        table, prose = _build_research_allowlists(global_data, [], [], [])
+        assert table == {"Salah", "Haaland"}
+        assert prose == {"Salah", "Haaland"}
+
+    def test_prose_allowlist_includes_fixture_scorers_and_squads(self):
+        from fpl_cli.cli._review_summarisation import _build_research_allowlists
+
+        global_data: dict = {
+            "blankers": [{"name": "Salah"}],
+            "dream_team": [],
+        }
+        fixtures = [{"goals": "Damsgaard (BRE)", "assists": "Thiago (BRE)"}]
+        team_pts = [{"name": "Saka"}]
+        draft_pts = [{"name": "Bruno"}]
+        table, prose = _build_research_allowlists(global_data, fixtures, team_pts, draft_pts)
+        assert table == {"Salah"}
+        assert {"Salah", "Damsgaard", "Thiago", "Saka", "Bruno"} <= prose
 
 
 class TestCollapseTransferChurn:
