@@ -505,46 +505,112 @@ def _compute_shared_awards(
     return awards
 
 
+_DETAIL_CAP = 3
+
+
+def _format_award_detail(
+    *,
+    manager_name: str,
+    moves: list[Any],
+    transfer_cost: int,
+    side: str,
+    label_singular: str,
+) -> str:
+    """Format the detail string for a transfer/waiver genius or disaster award.
+
+    Surfaces the top _DETAIL_CAP moves by net (for the side of the award),
+    aggregate context (raw, hit, overall true_net), and an omitted-count tail
+    when more moves exist than the cap. Uniform across transfer and waiver.
+    """
+    n = len(moves)
+    raw = sum(m["net"] for m in moves)
+    true_net = raw - transfer_cost
+
+    if side == "genius":
+        sorted_moves = sorted(moves, key=lambda m: m["net"], reverse=True)
+        verb = "gained"
+        magnitude = true_net
+        lead = "Best"
+    else:
+        sorted_moves = sorted(moves, key=lambda m: m["net"])
+        verb = "lost"
+        magnitude = abs(true_net)
+        lead = "Worst"
+
+    plural = label_singular if n == 1 else f"{label_singular}s"
+    if transfer_cost > 0:
+        context = f" ({raw:+d} raw across {n} {plural}, -{transfer_cost} hit)"
+    elif n > 1:
+        context = f" ({raw:+d} raw across {n} {plural})"
+    else:
+        context = ""
+
+    headline = f"{manager_name} {verb} {magnitude} net pts overall{context}."
+
+    shown = sorted_moves[:_DETAIL_CAP]
+    omitted = max(0, n - _DETAIL_CAP)
+
+    def _fmt_move(m: Any) -> str:
+        return f"{m['player_in']} for {m['player_out']} ({m['net']:+d})"
+
+    first = _fmt_move(shown[0])
+    if len(shown) == 1:
+        moves_part = f"{lead}: {first}"
+    else:
+        rest = ", ".join(_fmt_move(m) for m in shown[1:])
+        moves_part = f"{lead}: {first}; also {rest}"
+    if omitted:
+        moves_part += f"; {omitted} more omitted"
+    moves_part += "."
+
+    return f"{headline} {moves_part}"
+
+
 def _compute_transfer_awards(
     managers: list[RecapManagerEntry],
     awards: RecapAwards,
 ) -> None:
-    """Compute transfer genius/disaster awards for classic format."""
+    """Compute transfer genius/disaster awards for classic format.
+
+    Aggregate true_net = sum(per-transfer net) - transfer_cost, so the award
+    reconciles with the standings figure (which is also post-hit) rather than
+    presenting a pre-hit gross swing.
+    """
     managers_with_transfers = [m for m in managers if m.get("transfers")]
 
     if not managers_with_transfers:
         return
 
-    # Transfer genius: best total net across all transfers
     def _transfer_net(m: RecapManagerEntry) -> int:
-        return sum(t["net"] for t in m.get("transfers", []))
+        return sum(t["net"] for t in m.get("transfers", [])) - m.get("transfer_cost", 0)
 
     genius = max(managers_with_transfers, key=_transfer_net)
     genius_net = _transfer_net(genius)
     if genius_net > 0:
-        best_transfer = max(genius.get("transfers", []), key=lambda t: t["net"])
         awards["transfer_genius"] = RecapAwardEntry(
             manager_name=genius["manager_name"],
             value=genius_net,
-            detail=(
-                f"{genius['manager_name']} gained {genius_net} net pts from transfers"
-                f" (best: {best_transfer['player_in']} for {best_transfer['player_out']},"
-                f" +{best_transfer['net']})"
+            detail=_format_award_detail(
+                manager_name=genius["manager_name"],
+                moves=list(genius.get("transfers", [])),
+                transfer_cost=genius.get("transfer_cost", 0),
+                side="genius",
+                label_singular="transfer",
             ),
         )
 
-    # Transfer disaster: worst total net
     disaster = min(managers_with_transfers, key=_transfer_net)
     disaster_net = _transfer_net(disaster)
     if disaster_net < 0:
-        worst_transfer = min(disaster.get("transfers", []), key=lambda t: t["net"])
         awards["transfer_disaster"] = RecapAwardEntry(
             manager_name=disaster["manager_name"],
             value=disaster_net,
-            detail=(
-                f"{disaster['manager_name']} lost {abs(disaster_net)} net pts from transfers"
-                f" (worst: {worst_transfer['player_in']} for {worst_transfer['player_out']},"
-                f" {worst_transfer['net']})"
+            detail=_format_award_detail(
+                manager_name=disaster["manager_name"],
+                moves=list(disaster.get("transfers", [])),
+                transfer_cost=disaster.get("transfer_cost", 0),
+                side="disaster",
+                label_singular="transfer",
             ),
         )
 
@@ -607,40 +673,39 @@ def _compute_waiver_awards(
     if not managers_with_txns:
         return
 
+    def _effective(m: RecapManagerEntry) -> list[RecapDraftTransaction]:
+        return _contract_draft_txn_chains(m.get("transactions", []))
+
     def _txn_net(m: RecapManagerEntry) -> int:
-        return sum(t["net"] for t in m.get("transactions", []))
-
-    def _best_effective(m: RecapManagerEntry) -> RecapDraftTransaction | None:
-        effective = _contract_draft_txn_chains(m.get("transactions", []))
-        return max(effective, key=lambda t: t["net"]) if effective else None
-
-    def _worst_effective(m: RecapManagerEntry) -> RecapDraftTransaction | None:
-        effective = _contract_draft_txn_chains(m.get("transactions", []))
-        return min(effective, key=lambda t: t["net"]) if effective else None
+        return sum(t["net"] for t in _effective(m))
 
     genius = max(managers_with_txns, key=_txn_net)
     genius_net = _txn_net(genius)
-    if genius_net > 0 and (best_txn := _best_effective(genius)) is not None:
+    if genius_net > 0 and (effective := _effective(genius)):
         awards["waiver_genius"] = RecapAwardEntry(
             manager_name=genius["manager_name"],
             value=genius_net,
-            detail=(
-                f"{genius['manager_name']} gained {genius_net} net pts from waivers"
-                f" (best: {best_txn['player_in']} for {best_txn['player_out']},"
-                f" +{best_txn['net']})"
+            detail=_format_award_detail(
+                manager_name=genius["manager_name"],
+                moves=list(effective),
+                transfer_cost=0,
+                side="genius",
+                label_singular="waiver",
             ),
         )
 
     disaster = min(managers_with_txns, key=_txn_net)
     disaster_net = _txn_net(disaster)
-    if disaster_net < 0 and (worst_txn := _worst_effective(disaster)) is not None:
+    if disaster_net < 0 and (effective := _effective(disaster)):
         awards["waiver_disaster"] = RecapAwardEntry(
             manager_name=disaster["manager_name"],
             value=disaster_net,
-            detail=(
-                f"{disaster['manager_name']} lost {abs(disaster_net)} net pts from waivers"
-                f" (worst: {worst_txn['player_in']} for {worst_txn['player_out']},"
-                f" {worst_txn['net']})"
+            detail=_format_award_detail(
+                manager_name=disaster["manager_name"],
+                moves=list(effective),
+                transfer_cost=0,
+                side="disaster",
+                label_singular="waiver",
             ),
         )
 
