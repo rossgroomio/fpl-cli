@@ -181,7 +181,10 @@ class FPLPriceScraper:
             )
 
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=headless)
+            launch_args = []
+            if os.getenv("FPL_BROWSER_IGNORE_CERTS"):
+                launch_args.append("--ignore-certificate-errors")
+            browser = await p.chromium.launch(headless=headless, args=launch_args)
             context = await browser.new_context(
                 viewport={"width": 1280, "height": 800},
                 user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
