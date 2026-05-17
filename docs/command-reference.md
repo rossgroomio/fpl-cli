@@ -421,6 +421,8 @@ playwright install chromium
 fpl credentials set          # Store FPL email + password in system keyring
 ```
 
+**Troubleshooting (TLS-inspecting proxies):** If `--refresh` fails with `ERR_CERT_AUTHORITY_INVALID` (corporate MITM proxy, Zscaler/Netskope, or sandboxed cloud environments like Claude Code on the web), set `FPL_BROWSER_IGNORE_CERTS=1`. Chromium uses its own cert store and ignores `SSL_CERT_FILE` / `REQUESTS_CA_BUNDLE`, so this flag tells it to skip cert validation on launch. Opt-in only — leave unset on trusted networks.
+
 Output: free transfers, bank balance, squad sell prices, total team value. Data cached to `data/team_finances.json` for 12 hours.
 
 **Wildcard / Free Hit workflow:** Use `--format json` to export sell prices, then pass to `fpl allocate --sell-prices` for accurate budgeting:
