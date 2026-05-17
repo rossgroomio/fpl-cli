@@ -231,7 +231,11 @@ class FPLPriceScraper:
             logger.debug("Failed to fetch /api/me/: %s", e)
             return None
 
-        entry_id = (me or {}).get("player", {}).get("entry")
+        # `or {}` on each step: FPL briefly returns {"player": null} in the post-login
+        # window before the session is fully hydrated. .get(key, {}) only defaults on
+        # missing keys, not on explicit nulls, so chain through `or {}` to be safe.
+        player = (me or {}).get("player") or {}
+        entry_id = player.get("entry")
         if not entry_id:
             logger.debug("No entry id in /api/me/ response: %s", me)
             return None
@@ -402,10 +406,10 @@ class FPLPriceScraper:
             elements = {}
             element_types = {}
 
-        picks = my_entry_response.get("picks", [])
-        transfers = my_entry_response.get("transfers", {})
-        bank = transfers.get("bank", 0) / 10.0
-        free_transfers = transfers.get("limit", 0)
+        picks = my_entry_response.get("picks") or []
+        transfers = my_entry_response.get("transfers") or {}
+        bank = (transfers.get("bank") or 0) / 10.0
+        free_transfers = transfers.get("limit") or 0
 
         squad = []
         for pick in picks:

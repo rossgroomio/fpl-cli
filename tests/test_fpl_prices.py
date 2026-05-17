@@ -89,3 +89,19 @@ class TestExtractFromIntercepted:
         """DOM fallback produces PlayerSellPrice with element_id=None."""
         p = PlayerSellPrice(name="Salah", sell_price=13.0)
         assert p.element_id is None
+
+    def test_extract_handles_null_transfers_field(self):
+        """FPL briefly returns {'transfers': null} post-login; must not crash."""
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+
+        scraper_mod = __import__("fpl_cli.scraper.fpl_prices", fromlist=["FPLPriceScraper"])
+        scraper = scraper_mod.FPLPriceScraper()
+
+        page = MagicMock()
+        page.evaluate = AsyncMock(return_value={"elements": [], "element_types": []})
+
+        my_entry = {"picks": None, "transfers": None}
+        result = asyncio.run(scraper._extract_from_intercepted(page, my_entry))
+        # No picks -> _extract_from_intercepted returns None, caller falls back to DOM
+        assert result is None

@@ -266,6 +266,17 @@ class TestFPLPriceScraper:
         result = await scraper._fetch_my_team(page)
         assert result is None
 
+    async def test_fetch_my_team_handles_null_player(self):
+        """FPL briefly returns {'player': null} in the post-login window; must not crash."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        scraper = FPLPriceScraper()
+        page = MagicMock()
+        page.evaluate = AsyncMock(return_value={"player": None})
+
+        result = await scraper._fetch_my_team(page)
+        assert result is None
+
     def test_cache_file_path(self):
         """Test cache file path is correct."""
         assert CACHE_FILE.name == "team_finances.json"
