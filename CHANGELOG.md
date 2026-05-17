@@ -1,6 +1,37 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [1.4.0] - 2026-05-17
+
+### Bug Fixes
+
+- handle bench boost chip in classic team display (#27)
+- chip-aware contributed in league-recap and status (#28)
+- narrative bugs in gameweek review (identity, terminology, captain, grounding, fabrication) (#30)
+- rename Standings to GW Standings; anchor chip count
+- prevent fabricated momentum stats and truncated pFDR rows
+- correct captain hindsight swing formula
+- tighten manager attribution rule in research prompt
+- prevent hallucinated players and fabricated backstories in research tables
+- repair broken tests + harden research validator
+- correctly attribute worst captain to blank-VC managers
+- scope draft waiver validator to its subsection
+- clamp window to season end + ship fixture predictions in package
+- bucket draft txns by league_entry id, not entry_id
+- surface full captain roster to synthesis prompt (#32)
+- scrub fabricated names from research narrative and tables (#33)
+- hit-aware transfer/waiver award net + clearer detail (#34)
+
+### Features
+
+- localise user-facing times to UK (GMT/BST) (#29)
+- Phase D1 draft waiver validator (#31)
+- contract chain rebuilds in waiver award details
+
+### Scraper
+
+- honour FPL_BROWSER_IGNORE_CERTS for TLS-inspecting proxies (#35)
+
 ## [1.3.0] - 2026-04-17
 
 ### Bug Fixes
