@@ -193,38 +193,57 @@ class FPLPriceScraper:
             )
             page = await context.new_page()
 
-            # Intercept authenticated API responses before any navigation
-            my_entry_response: dict | None = None
-
-            async def capture_my_entry(response) -> None:
-                nonlocal my_entry_response
-                if "/api/my-team/" in response.url and response.status == 200:
-                    try:
-                        my_entry_response = await response.json()
-                    except Exception as e:  # noqa: BLE001 — scraper resilience
-                        logger.debug("Failed to capture API JSON: %s", e)
-
-            page.on("response", capture_my_entry)
-
             try:
-                # Login to FPL
                 await self._login(page, email, password)
 
-                # Navigate to transfers page - triggers /api/my-team/{id}/ call
-                await page.goto(self.FPL_TRANSFERS_URL, wait_until="domcontentloaded")
-                await page.wait_for_timeout(3000)  # Wait for dynamic content to load
+                # Verify we're on the FPL domain. If still on the IdP, login silently
+                # failed (e.g. selector miss, captcha) and a downstream API fetch would
+                # return logged-out HTML rather than JSON.
+                if "fantasy.premierleague.com" not in page.url:
+                    raise ValueError(
+                        f"Login did not complete - browser still on {page.url}. "
+                        "The FPL login form may have changed, or credentials were rejected."
+                    )
 
-                # May need to accept cookies again on this domain
-                await self._accept_cookies(page)
-                await page.wait_for_timeout(1000)
+                # Fetch the authenticated API directly. Avoids the race between
+                # response-interception and page navigation, and works without ever
+                # loading the heavy /transfers React shell.
+                my_entry_response = await self._fetch_my_team(page)
 
-                # Extract data
                 finances = await self._extract_finances(page, my_entry_response)
 
                 return finances
 
             finally:
                 await browser.close()
+
+    async def _fetch_my_team(self, page) -> dict | None:
+        """Fetch /api/me/ and /api/my-team/{id}/ from the authenticated session.
+
+        Returns the my-team payload, or None if either call fails (in which case the
+        caller falls back to DOM extraction).
+        """
+        try:
+            me = await page.evaluate(
+                "async () => (await fetch('/api/me/', {credentials: 'include'})).json()"
+            )
+        except Exception as e:  # noqa: BLE001 — scraper resilience
+            logger.debug("Failed to fetch /api/me/: %s", e)
+            return None
+
+        entry_id = (me or {}).get("player", {}).get("entry")
+        if not entry_id:
+            logger.debug("No entry id in /api/me/ response: %s", me)
+            return None
+
+        try:
+            return await page.evaluate(
+                "async (id) => (await fetch(`/api/my-team/${id}/`, {credentials: 'include'})).json()",
+                entry_id,
+            )
+        except Exception as e:  # noqa: BLE001 — scraper resilience
+            logger.debug("Failed to fetch /api/my-team/%s/: %s", entry_id, e)
+            return None
 
     async def _login(self, page, email: str, password: str) -> None:
         """Log in to FPL website."""
@@ -323,11 +342,14 @@ class FPLPriceScraper:
 
     async def _submit_login(self, page) -> None:
         """Submit login form and wait for redirect."""
-        # Click submit button
+        # Click submit button. #btnSignIn is the actual id on the PingOne DaVinci
+        # widget; the type='submit' fallback covered older form layouts.
         submit_selectors = [
+            "button#btnSignIn",
             "button[type='submit']",
-            "button:has-text('Login')",
+            "button:has-text('Sign in')",
             "button:has-text('Sign In')",
+            "button:has-text('Login')",
             "input[type='submit']",
         ]
 

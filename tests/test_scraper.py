@@ -139,20 +139,23 @@ class TestFPLPriceScraper:
         mock_login = AsyncMock()
         mock_extract = AsyncMock()
         mock_extract.return_value = TeamFinances(bank=0.0, free_transfers=0, squad=[], total_value=0.0)
+        mock_fetch_my_team = AsyncMock(return_value=None)
 
         @contextmanager
         def ctx():
             with patch.object(scraper, "_login", mock_login), \
                  patch.object(scraper, "_extract_finances", mock_extract), \
+                 patch.object(scraper, "_fetch_my_team", mock_fetch_my_team), \
                  patch.object(scraper, "_accept_cookies", AsyncMock()), \
                  patch("playwright.async_api.async_playwright") as mock_pw:
                 mock_p = AsyncMock()
                 mock_page = AsyncMock()
+                # scrape() reads page.url after login to detect IdP-stuck failures.
+                mock_page.url = "https://fantasy.premierleague.com/"
                 mock_pw.return_value.__aenter__.return_value = mock_p
                 mock_p.chromium.launch.return_value = AsyncMock()
                 mock_p.chromium.launch.return_value.new_context.return_value = AsyncMock()
                 mock_p.chromium.launch.return_value.new_context.return_value.new_page.return_value = mock_page
-                mock_page.on = lambda *_a, **_k: None
                 yield
 
         return mock_login, ctx
@@ -208,6 +211,60 @@ class TestFPLPriceScraper:
                 _, call_email, call_password = mock_login.call_args[0]
                 assert call_email == "keyring@example.com"
                 assert call_password == "keyring_pass"
+
+    async def test_scrape_raises_when_login_leaves_browser_on_idp(self):
+        """If login silently fails, browser stays on account.premierleague.com - raise clearly."""
+        pytest.importorskip("playwright")
+        from contextlib import contextmanager
+        from unittest.mock import AsyncMock
+
+        with patch.dict(os.environ, {"FPL_EMAIL": "x@y.z", "FPL_PASSWORD": "p"}):
+            scraper = FPLPriceScraper()
+
+            @contextmanager
+            def ctx():
+                with patch.object(scraper, "_login", AsyncMock()), \
+                     patch("playwright.async_api.async_playwright") as mock_pw:
+                    mock_p = AsyncMock()
+                    mock_page = AsyncMock()
+                    mock_page.url = "https://account.premierleague.com/as/authorize?..."
+                    mock_pw.return_value.__aenter__.return_value = mock_p
+                    mock_p.chromium.launch.return_value = AsyncMock()
+                    mock_p.chromium.launch.return_value.new_context.return_value = AsyncMock()
+                    mock_p.chromium.launch.return_value.new_context.return_value.new_page.return_value = mock_page
+                    yield
+
+            with ctx(), pytest.raises(ValueError, match="Login did not complete"):
+                await scraper.scrape()
+
+    async def test_fetch_my_team_returns_payload(self):
+        """_fetch_my_team chains /api/me/ -> /api/my-team/{id}/ via page.evaluate."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        scraper = FPLPriceScraper()
+        page = MagicMock()
+        page.evaluate = AsyncMock(side_effect=[
+            {"player": {"entry": 5955459}},
+            {"picks": [{"element": 253, "selling_price": 130, "purchase_price": 130}],
+             "transfers": {"bank": 29, "limit": 1}},
+        ])
+
+        result = await scraper._fetch_my_team(page)
+        assert result is not None
+        assert result["transfers"]["bank"] == 29
+        # Second evaluate gets the entry id as a positional arg
+        assert page.evaluate.call_args_list[1].args[1] == 5955459
+
+    async def test_fetch_my_team_returns_none_on_missing_entry(self):
+        """If /api/me/ returns no player.entry, abort and let DOM fallback take over."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        scraper = FPLPriceScraper()
+        page = MagicMock()
+        page.evaluate = AsyncMock(return_value={})
+
+        result = await scraper._fetch_my_team(page)
+        assert result is None
 
     def test_cache_file_path(self):
         """Test cache file path is correct."""
