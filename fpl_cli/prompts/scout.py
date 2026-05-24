@@ -35,12 +35,15 @@ ALWAYS:
 - Interpret signals for the user - don't just report raw quotes
 - Note when trusted voices disagree with mainstream opinion
 - Source every player's current club from the <player_reference> block - never infer it from prior-season knowledge
+- Treat <player_reference> as a strict allowlist: every player you name anywhere in the output (BUY tables, SELL tables, Differential Whispers, Contrarian Take) MUST appear in it
 
 NEVER:
 - Repeat statistical analysis (xG, form scores, PPG) - the user has this
 - Give generic advice without specific sourcing
 - Present rumour as fact without flagging uncertainty
 - Guess a player's club from memory; player transfers between seasons make prior knowledge unreliable
+- Surface players who are not in <player_reference>, even if community chatter mentions them - they are not in this season's FPL pool (likely transferred abroad, retired, or never were in the PL)
+- Emit placeholder rows like "PlayerX? — not listed in your FPL pool, so skipping". Silently exclude out-of-pool names instead; return fewer rows (or omit the section) rather than padding
 </rules>"""
 
 SCOUT_USER_PROMPT_TEMPLATE = """Surface qualitative FPL intelligence for Gameweek {gameweek}.
@@ -53,6 +56,8 @@ This query runs 24-30 hours before deadline, after most press conferences.
 3. Check r/FantasyPL for community momentum - who's being quietly accumulated, what the RMT thread is converging on
 4. Identify narrative breaks - players being over-sold or under-bought based on reactive sentiment
 5. Note any blank/double GW planning implications from @BenCrellin
+
+When scanning external sources, treat any player name you don't find in <player_reference> as out-of-pool: they're not in this season's FPL game (transferred abroad, retired, or wrong league) and must not appear anywhere in your output, even if the community is discussing them.
 </research_focus>
 
 <player_reference>
@@ -79,24 +84,24 @@ CRITICAL: The following players are INJURED, SUSPENDED, or otherwise UNAVAILABLE
 
 | Player | Club | Signal | Source | Confidence |
 |--------|------|--------|--------|------------|
-[2-3 players with qualitative buy signals - what do the watchers see that stats don't show yet?]
+[Up to 3 players from <player_reference> with qualitative buy signals - what do the watchers see that stats don't show yet? Fewer rows are fine; omit the section entirely if no one in the pool qualifies. Do NOT pad with out-of-pool names.]
 
 **MIDFIELDERS**
 
 | Player | Club | Signal | Source | Confidence |
 |--------|------|--------|--------|------------|
-[2-3 players with qualitative buy signals]
+[Up to 3 players from <player_reference> with qualitative buy signals. Fewer or zero is acceptable.]
 
 **FORWARDS**
 
 | Player | Club | Signal | Source | Confidence |
 |--------|------|--------|--------|------------|
-[1-2 players with qualitative buy signals]
+[Up to 2 players from <player_reference> with qualitative buy signals. Fewer or zero is acceptable.]
 
 ## SELL Signals
 | Player | Club | Signal Type | Detail | Confidence |
 |--------|------|-------------|--------|------------|
-[3-5 players to avoid - categorise as: Rotation Risk, Eye-Test Warning, or Narrative Trap]
+[Up to 5 players from <player_reference> to avoid - categorise as: Rotation Risk, Eye-Test Warning, or Narrative Trap. Fewer rows are fine; omit if no one qualifies.]
 
 ## Strategic Intel
 - **Blank/Double GW Watch:** Any planning implications from Ben Crellin or fixture news
@@ -110,6 +115,7 @@ CRITICAL: The following players are INJURED, SUSPENDED, or otherwise UNAVAILABLE
 - Prioritise actionable, time-sensitive intel over comprehensive coverage
 - If a trusted voice contradicts the crowd, highlight it
 - CRITICAL: Always check <player_reference> before filling the Club column or assigning a player to DEFENDERS/MIDFIELDERS/FORWARDS. The reference reflects current-season clubs; your prior knowledge does not.
+- CRITICAL: <player_reference> is the complete allowlist of in-pool players. If a name you're considering is not in it, drop the row — never emit "Player? — not in pool" placeholders, and never pad to hit a row count.
 </quality_requirements>"""
 
 
