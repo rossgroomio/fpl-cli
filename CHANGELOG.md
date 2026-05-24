@@ -12,6 +12,12 @@ All notable changes to this project will be documented in this file.
 
 - enforce player_reference as a strict allowlist (#41)
 
+## [1.4.1] - 2026-05-17
+
+### Refactoring
+
+- refactor FPL scraper to fetch API directly instead of intercepting (#37)
+
 ## [1.4.0] - 2026-05-17
 
 ### Bug Fixes
@@ -119,5 +125,4 @@ All notable changes to this project will be documented in this file.
 ### Features
 
 - CI pipeline and PyPI publish for v1.0.0 (#1)
-
 
