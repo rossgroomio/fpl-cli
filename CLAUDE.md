@@ -3,7 +3,7 @@ fpl-cli - CLI tool for Fantasy Premier League analysis (classic + draft).
 
 ## Setup & Dev
 ```bash
-source .venv/bin/activate && pip install -e ".[dev]"
+source .venv/bin/activate && pip install -e ".[dev]"            # local only — web sessions install globally via setup script
 ruff check fpl_cli/            # Lint
 pyright fpl_cli/               # Type check
 pytest tests/                 # Tests
