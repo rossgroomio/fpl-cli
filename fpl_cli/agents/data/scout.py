@@ -49,10 +49,16 @@ class ScoutAgent(Agent):
         Returns:
             Formatted position reference string.
         """
-        # Filter to relevant players: ownership > 1% OR form > 3 OR minutes > 500
+        # Filter to relevant players: ownership > 1% OR form > 3 OR minutes > 500.
+        # Also include any player with active news (e.g. injury return, late-fitness
+        # flags) so post-injury returnees with low minutes still appear in the
+        # reference and don't force the LLM to guess their club.
         relevant = [
             p for p in players
-            if p.selected_by_percent > 1.0 or p.form > 3.0 or p.minutes > 500
+            if p.selected_by_percent > 1.0
+            or p.form > 3.0
+            or p.minutes > 500
+            or bool(p.news)
         ]
 
         # Group by position

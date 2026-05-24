@@ -1206,6 +1206,46 @@ Sources:
             assert isinstance(result.data["content_clean"], str)
             assert isinstance(result.data["citations"], list)
 
+    def test_build_position_reference_includes_news_flagged_players(self, agent):
+        """Low-minutes players with active news (e.g. injury returnees) must
+        appear in the reference so the LLM doesn't have to guess their club."""
+        from fpl_cli.models.player import PlayerPosition
+        from tests.conftest import make_player
+
+        # A defender just back from injury: low ownership, low form, low
+        # minutes — would be excluded by the old filter, but has news.
+        returnee = make_player(
+            id=99,
+            web_name="Returnee",
+            team_id=7,
+            position=PlayerPosition.DEFENDER,
+            selected_by_percent=0.3,
+            form=1.0,
+            minutes=120,
+            news="Back in training, hopeful for involvement",
+        )
+        ref = agent.build_position_reference([returnee], {7: "MCI"})
+        assert "Returnee (MCI)" in ref
+
+    def test_build_position_reference_excludes_irrelevant_players(self, agent):
+        """Players with no news, no minutes, no form, and tiny ownership
+        should still be excluded to keep the reference compact."""
+        from fpl_cli.models.player import PlayerPosition
+        from tests.conftest import make_player
+
+        irrelevant = make_player(
+            id=100,
+            web_name="Bench",
+            team_id=7,
+            position=PlayerPosition.DEFENDER,
+            selected_by_percent=0.1,
+            form=0.0,
+            minutes=0,
+            news="",
+        )
+        ref = agent.build_position_reference([irrelevant], {7: "MCI"})
+        assert "Bench" not in ref
+
     async def test_run_cleans_citations_correctly(self, agent):
         """Test that citations are properly cleaned from content."""
         response_with_citations = LLMResponse(

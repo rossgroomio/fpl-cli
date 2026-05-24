@@ -34,11 +34,13 @@ ALWAYS:
 - Flag confidence level (High/Medium/Low) based on source agreement and recency
 - Interpret signals for the user - don't just report raw quotes
 - Note when trusted voices disagree with mainstream opinion
+- Source every player's current club from the <player_reference> block - never infer it from prior-season knowledge
 
 NEVER:
 - Repeat statistical analysis (xG, form scores, PPG) - the user has this
 - Give generic advice without specific sourcing
 - Present rumour as fact without flagging uncertainty
+- Guess a player's club from memory; player transfers between seasons make prior knowledge unreliable
 </rules>"""
 
 SCOUT_USER_PROMPT_TEMPLATE = """Surface qualitative FPL intelligence for Gameweek {gameweek}.
@@ -53,10 +55,17 @@ This query runs 24-30 hours before deadline, after most press conferences.
 5. Note any blank/double GW planning implications from @BenCrellin
 </research_focus>
 
-<player_positions>
-IMPORTANT: Use this official FPL position reference when categorising players. Do NOT guess positions.
+<player_reference>
+Authoritative directory of player → (club, position) for THIS season, sourced from live FPL data. Each entry is formatted as `Name (CLUB)`.
+
+Use this as the ONLY source of truth for both:
+- The "Club" column in your output tables (clubs change between seasons; do NOT use prior-season knowledge)
+- The position grouping (DEF / MID / FWD)
+
+If a player you want to recommend is not listed here, either omit them or explicitly flag "club unknown" rather than guessing.
+
 {position_reference}
-</player_positions>
+</player_reference>
 
 <unavailable_players>
 CRITICAL: The following players are INJURED, SUSPENDED, or otherwise UNAVAILABLE according to current FPL data. Do NOT recommend any of these players under any circumstances, even if web sources suggest them (those sources may be outdated).
@@ -100,7 +109,7 @@ CRITICAL: The following players are INJURED, SUSPENDED, or otherwise UNAVAILABLE
 - Confidence = High when multiple trusted sources agree + recent (last 48h); Medium when single source or older; Low when speculative/emerging
 - Prioritise actionable, time-sensitive intel over comprehensive coverage
 - If a trusted voice contradicts the crowd, highlight it
-- CRITICAL: Always check <player_positions> reference before assigning a player to DEFENDERS/MIDFIELDERS/FORWARDS
+- CRITICAL: Always check <player_reference> before filling the Club column or assigning a player to DEFENDERS/MIDFIELDERS/FORWARDS. The reference reflects current-season clubs; your prior knowledge does not.
 </quality_requirements>"""
 
 
