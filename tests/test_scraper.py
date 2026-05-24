@@ -256,26 +256,79 @@ class TestFPLPriceScraper:
         assert page.evaluate.call_args_list[1].args[1] == 5955459
 
     async def test_fetch_my_team_returns_none_on_missing_entry(self):
-        """If /api/me/ returns no player.entry, abort and let DOM fallback take over."""
+        """If /api/me/ never returns a player.entry, abort and let DOM fallback take over."""
         from unittest.mock import AsyncMock, MagicMock
 
         scraper = FPLPriceScraper()
         page = MagicMock()
         page.evaluate = AsyncMock(return_value={})
+        page.wait_for_timeout = AsyncMock()
 
         result = await scraper._fetch_my_team(page)
         assert result is None
+        assert page.evaluate.call_count == scraper._ME_RETRY_ATTEMPTS
 
     async def test_fetch_my_team_handles_null_player(self):
-        """FPL briefly returns {'player': null} in the post-login window; must not crash."""
+        """FPL briefly returns {'player': null} post-login; we retry then give up cleanly."""
         from unittest.mock import AsyncMock, MagicMock
 
         scraper = FPLPriceScraper()
         page = MagicMock()
         page.evaluate = AsyncMock(return_value={"player": None})
+        page.wait_for_timeout = AsyncMock()
 
         result = await scraper._fetch_my_team(page)
         assert result is None
+        assert page.evaluate.call_count == scraper._ME_RETRY_ATTEMPTS
+
+    async def test_fetch_my_team_retries_until_hydrated(self):
+        """Null player on early polls, then a real entry id: retry succeeds and fetches my-team."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        scraper = FPLPriceScraper()
+        page = MagicMock()
+        page.evaluate = AsyncMock(side_effect=[
+            {"player": None},
+            {"player": None},
+            {"player": {"entry": 12345}},
+            {"picks": [{"element": 1, "selling_price": 50, "purchase_price": 50}],
+             "transfers": {"bank": 10, "limit": 1}},
+        ])
+        page.wait_for_timeout = AsyncMock()
+
+        result = await scraper._fetch_my_team(page)
+        assert result is not None
+        assert result["transfers"]["bank"] == 10
+        # 3 /api/me/ calls + 1 /api/my-team/ call
+        assert page.evaluate.call_count == 4
+        # And we waited between the failing /api/me/ attempts (twice)
+        assert page.wait_for_timeout.call_count == 2
+
+    async def test_fetch_my_team_evaluate_error_no_retry(self):
+        """A hard page.evaluate exception is a different failure mode - don't retry."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        scraper = FPLPriceScraper()
+        page = MagicMock()
+        page.evaluate = AsyncMock(side_effect=RuntimeError("eval failed"))
+        page.wait_for_timeout = AsyncMock()
+
+        result = await scraper._fetch_my_team(page)
+        assert result is None
+        assert page.evaluate.call_count == 1
+        assert page.wait_for_timeout.call_count == 0
+
+    async def test_extract_finances_records_api_failure_in_errors(self):
+        """When the API path is skipped, the DOM fallback's result gets a hint appended."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        scraper = FPLPriceScraper()
+        dom_result = TeamFinances(bank=0.0, free_transfers=0, squad=[], total_value=0.0)
+        with patch.object(scraper, "_extract_via_dom", AsyncMock(return_value=dom_result)):
+            result = await scraper._extract_finances(MagicMock(), my_entry_response=None)
+
+        assert result is dom_result
+        assert any("api/me" in err.lower() for err in result.extraction_errors)
 
     def test_cache_file_path(self):
         """Test cache file path is correct."""
