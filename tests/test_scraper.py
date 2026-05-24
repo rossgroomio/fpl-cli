@@ -267,6 +267,8 @@ class TestFPLPriceScraper:
         result = await scraper._fetch_my_team(page)
         assert result is None
         assert page.evaluate.call_count == scraper._ME_RETRY_ATTEMPTS
+        # No trailing wait after the final failed attempt
+        assert page.wait_for_timeout.call_count == scraper._ME_RETRY_ATTEMPTS - 1
 
     async def test_fetch_my_team_handles_null_player(self):
         """FPL briefly returns {'player': null} post-login; we retry then give up cleanly."""
@@ -280,6 +282,8 @@ class TestFPLPriceScraper:
         result = await scraper._fetch_my_team(page)
         assert result is None
         assert page.evaluate.call_count == scraper._ME_RETRY_ATTEMPTS
+        # No trailing wait after the final failed attempt
+        assert page.wait_for_timeout.call_count == scraper._ME_RETRY_ATTEMPTS - 1
 
     async def test_fetch_my_team_retries_until_hydrated(self):
         """Null player on early polls, then a real entry id: retry succeeds and fetches my-team."""
@@ -329,6 +333,23 @@ class TestFPLPriceScraper:
 
         assert result is dom_result
         assert any("api/me" in err.lower() for err in result.extraction_errors)
+
+    async def test_extract_finances_records_intercepted_failure_in_errors(self):
+        """If /api/me/ succeeded but the intercepted payload is unusable, the DOM fallback still gets a hint."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        scraper = FPLPriceScraper()
+        dom_result = TeamFinances(bank=0.0, free_transfers=0, squad=[], total_value=0.0)
+        with (
+            patch.object(scraper, "_extract_from_intercepted", AsyncMock(return_value=None)),
+            patch.object(scraper, "_extract_via_dom", AsyncMock(return_value=dom_result)),
+        ):
+            result = await scraper._extract_finances(
+                MagicMock(), my_entry_response={"picks": [], "transfers": {}}
+            )
+
+        assert result is dom_result
+        assert any("my-team" in err.lower() for err in result.extraction_errors)
 
     def test_cache_file_path(self):
         """Test cache file path is correct."""

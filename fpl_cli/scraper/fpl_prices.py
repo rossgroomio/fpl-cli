@@ -231,7 +231,7 @@ class FPLPriceScraper:
         """
         me: dict | None = None
         entry_id = None
-        for _ in range(self._ME_RETRY_ATTEMPTS):
+        for attempt in range(self._ME_RETRY_ATTEMPTS):
             try:
                 me = await page.evaluate(
                     "async () => (await fetch('/api/me/', {credentials: 'include'})).json()"
@@ -242,7 +242,8 @@ class FPLPriceScraper:
             entry_id = ((me or {}).get("player") or {}).get("entry")
             if entry_id:
                 break
-            await page.wait_for_timeout(self._ME_RETRY_DELAY_MS)
+            if attempt < self._ME_RETRY_ATTEMPTS - 1:
+                await page.wait_for_timeout(self._ME_RETRY_DELAY_MS)
 
         if not entry_id:
             logger.debug(
@@ -392,16 +393,21 @@ class FPLPriceScraper:
 
     async def _extract_finances(self, page, my_entry_response: dict | None = None) -> TeamFinances:
         """Extract financial data - tries intercepted API data first, falls back to DOM."""
-        if my_entry_response:
+        fallback_reason: str | None = None
+        if my_entry_response is None:
+            fallback_reason = (
+                "API /api/me/ returned no entry id after retries (post-login hydration race?)"
+            )
+        else:
             finances = await self._extract_from_intercepted(page, my_entry_response)
             if finances and not finances.is_suspect:
                 return finances
+            fallback_reason = (
+                "API /api/my-team/ returned no usable squad data; fell back to DOM extraction"
+            )
 
         finances = await self._extract_via_dom(page)
-        if my_entry_response is None:
-            finances.extraction_errors.append(
-                "API /api/me/ returned no entry id after retries (post-login hydration race?)"
-            )
+        finances.extraction_errors.append(fallback_reason)
         return finances
 
     async def _extract_from_intercepted(self, page, my_entry_response: dict) -> TeamFinances | None:
