@@ -217,27 +217,40 @@ class FPLPriceScraper:
             finally:
                 await browser.close()
 
+    # `or {}` on each step: FPL briefly returns {"player": null} in the post-login
+    # window before the session is fully hydrated. .get(key, {}) only defaults on
+    # missing keys, not on explicit nulls, so chain through `or {}` to be safe.
+    _ME_RETRY_ATTEMPTS = 5
+    _ME_RETRY_DELAY_MS = 1000
+
     async def _fetch_my_team(self, page) -> dict | None:
         """Fetch /api/me/ and /api/my-team/{id}/ from the authenticated session.
 
         Returns the my-team payload, or None if either call fails (in which case the
         caller falls back to DOM extraction).
         """
-        try:
-            me = await page.evaluate(
-                "async () => (await fetch('/api/me/', {credentials: 'include'})).json()"
-            )
-        except Exception as e:  # noqa: BLE001 — scraper resilience
-            logger.debug("Failed to fetch /api/me/: %s", e)
-            return None
+        me: dict | None = None
+        entry_id = None
+        for attempt in range(self._ME_RETRY_ATTEMPTS):
+            try:
+                me = await page.evaluate(
+                    "async () => (await fetch('/api/me/', {credentials: 'include'})).json()"
+                )
+            except Exception as e:  # noqa: BLE001 — scraper resilience
+                logger.debug("Failed to fetch /api/me/: %s", e)
+                return None
+            entry_id = ((me or {}).get("player") or {}).get("entry")
+            if entry_id:
+                break
+            if attempt < self._ME_RETRY_ATTEMPTS - 1:
+                await page.wait_for_timeout(self._ME_RETRY_DELAY_MS)
 
-        # `or {}` on each step: FPL briefly returns {"player": null} in the post-login
-        # window before the session is fully hydrated. .get(key, {}) only defaults on
-        # missing keys, not on explicit nulls, so chain through `or {}` to be safe.
-        player = (me or {}).get("player") or {}
-        entry_id = player.get("entry")
         if not entry_id:
-            logger.debug("No entry id in /api/me/ response: %s", me)
+            logger.debug(
+                "No entry id in /api/me/ after %d retries: %s",
+                self._ME_RETRY_ATTEMPTS,
+                me,
+            )
             return None
 
         try:
@@ -380,12 +393,22 @@ class FPLPriceScraper:
 
     async def _extract_finances(self, page, my_entry_response: dict | None = None) -> TeamFinances:
         """Extract financial data - tries intercepted API data first, falls back to DOM."""
-        if my_entry_response:
+        fallback_reason: str | None = None
+        if my_entry_response is None:
+            fallback_reason = (
+                "API /api/me/ returned no entry id after retries (post-login hydration race?)"
+            )
+        else:
             finances = await self._extract_from_intercepted(page, my_entry_response)
             if finances and not finances.is_suspect:
                 return finances
+            fallback_reason = (
+                "API /api/my-team/ returned no usable squad data; fell back to DOM extraction"
+            )
 
-        return await self._extract_via_dom(page)
+        finances = await self._extract_via_dom(page)
+        finances.extraction_errors.append(fallback_reason)
+        return finances
 
     async def _extract_from_intercepted(self, page, my_entry_response: dict) -> TeamFinances | None:
         """Build TeamFinances from intercepted /api/my-team/ response data."""
