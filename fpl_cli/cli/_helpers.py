@@ -268,6 +268,10 @@ def _format_sort_value(field: str, value) -> str:
     if fmt == "pct":
         return f"{value:.1f}%"
     if field in _PLAYERS_FLOAT_FIELDS:
+        # Missing-data UX: render em dash. A table column can't be omitted
+        # per-row, so we substitute a visible placeholder. The Rich panel
+        # in `fpl player` drops the whole segment instead — different
+        # surface, different right answer.
         return f"{value:.1f}" if value is not None else "—"
     return str(value)
 

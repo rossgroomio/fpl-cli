@@ -423,6 +423,10 @@ def player_command(
 
                     # Build panel lines conditionally
                     is_gk = p.position_name == "GK"
+                    # Missing-data UX: drop the xPts segment entirely. The panel is
+                    # a single-row free-form layout, so removing the label reads cleaner
+                    # than rendering "xPts: —". The stats table takes the opposite
+                    # approach (em dash) because per-row column omission isn't an option.
                     lines = [
                         f"[bold]{p.web_name}[/bold] ({p.full_name})",
                         f"Team: {team_name} | Position: {p.position_name}",
