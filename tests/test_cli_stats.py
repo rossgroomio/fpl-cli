@@ -335,7 +335,7 @@ class TestPlayersJsonFormat:
         assert "Salah" in result.output
         assert result.output.strip()[0] != "["
 
-    def test_json_ep_next_none_serialises_as_zero(self):
+    def test_json_ep_next_none_serialises_as_null(self):
         players = [
             make_player(
                 id=1, web_name="NullEp", team_id=1,
@@ -347,8 +347,8 @@ class TestPlayersJsonFormat:
         result = _run(["--format", "json"], client=client)
         assert result.exit_code == 0, result.output
         record = json.loads(result.output)["data"][0]
-        assert record["ep_next"] == 0.0
-        assert record["ep_this"] == 0.0
+        assert record["ep_next"] is None
+        assert record["ep_this"] is None
 
 
 class TestStatsDraftOwnership:
