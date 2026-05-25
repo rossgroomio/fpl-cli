@@ -268,5 +268,5 @@ def _format_sort_value(field: str, value) -> str:
     if fmt == "pct":
         return f"{value:.1f}%"
     if field in _PLAYERS_FLOAT_FIELDS:
-        return f"{value:.1f}"
+        return f"{value:.1f}" if value is not None else "—"
     return str(value)
