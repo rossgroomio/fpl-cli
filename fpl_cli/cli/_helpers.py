@@ -274,9 +274,3 @@ def _format_sort_value(field: str, value) -> str:
         # surface, different right answer.
         return f"{value:.1f}" if value is not None else "—"
     return str(value)
-
-
-def _ep_for_json(value: float | None) -> float:
-    # Backcompat: JSON consumers expect 0.0 for unavailable projections;
-    # None is the in-memory sentinel for "FPL returned no projection".
-    return float(value) if value is not None else 0.0

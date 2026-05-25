@@ -759,7 +759,7 @@ class TestPlayerQualityValueScores:
         assert result.exit_code == 0, result.output
         assert "xPts: 0.0" in result.output
 
-    def test_json_ep_next_none_serialises_as_zero(self):
+    def test_json_ep_next_none_serialises_as_null(self):
         client, fixture_agent, ratings_svc = _make_mocks()
         client.get_players = AsyncMock(return_value=[
             make_player(id=308, web_name="Salah", first_name="Mohamed",
@@ -770,8 +770,8 @@ class TestPlayerQualityValueScores:
         result = _run_json([], client, fixture_agent, ratings_svc)
         assert result.exit_code == 0, result.output
         info = json.loads(result.output)["data"][0]["info"]
-        assert info["ep_next"] == 0.0
-        assert info["ep_this"] == 0.0
+        assert info["ep_next"] is None
+        assert info["ep_this"] is None
 
     def test_gk_uses_without_xgi_weights(self):
         """GK quality_score should differ from MID due to without_xgi path."""

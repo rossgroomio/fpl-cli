@@ -379,7 +379,7 @@ The FPL API provides gameweek point predictions for every player:
 | **ep_next** | FPL's predicted points for the next gameweek. Shown as `xPts` on the Points/PPG panel line. Available as a `--sort` field in `fpl stats`. |
 | **ep_this** | FPL's predicted points for the current gameweek (freezes after GW deadline, enabling predicted-vs-actual comparison with `event_points`). JSON only - not shown in the panel. |
 
-Both fields are `None` on the `Player` model when FPL provides no projection (e.g. unavailable/injured players, end of season). The Rich panel for `fpl player` omits the `xPts` segment of the Points line in that case, and the `fpl stats` table renders the cell as `—`. For backward compatibility, JSON output serialises `None` as `0.0` — `info.ep_next`/`info.ep_this` for `fpl player`, and the top-level `ep_next`/`ep_this` record fields in `fpl stats --format json`.
+Both fields are `None` on the `Player` model when FPL provides no projection (e.g. unavailable/injured players, end of season). The Rich panel for `fpl player` omits the `xPts` segment of the Points line in that case, and the `fpl stats` table renders the cell as `—`. JSON output emits `null` when FPL provides no projection, so consumers can distinguish missing data from a genuine `0.0` projection — `info.ep_next`/`info.ep_this` for `fpl player`, and the top-level `ep_next`/`ep_this` record fields in `fpl stats --format json`.
 
 #### Player Detail Flags
 
