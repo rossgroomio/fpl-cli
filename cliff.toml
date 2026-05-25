@@ -23,7 +23,7 @@ trim = true
 
 [git]
 conventional_commits = true
-filter_unconventional = true
+filter_unconventional = false
 split_commits = false
 tag_pattern = "v[0-9].*"
 
@@ -37,4 +37,5 @@ commit_parsers = [
     { message = "^docs", skip = true },
     { message = "^style", skip = true },
     { message = "^test", skip = true },
+    { message = ".*", group = "Other" },
 ]
