@@ -745,6 +745,20 @@ class TestPlayerQualityValueScores:
         assert "Points:" in result.output
         assert "PPG:" in result.output
 
+    def test_rich_panel_shows_ep_next_when_zero(self):
+        # Guards against a future `if p.ep_next:` regression that would
+        # swallow genuine 0.0 projections (distinct from None).
+        client, fixture_agent, ratings_svc = _make_mocks()
+        client.get_players = AsyncMock(return_value=[
+            make_player(id=308, web_name="Salah", first_name="Mohamed",
+                        second_name="Salah", team_id=1,
+                        position=PlayerPosition.MIDFIELDER,
+                        ep_next=0.0),
+        ])
+        result = _run([], client, fixture_agent, ratings_svc)
+        assert result.exit_code == 0, result.output
+        assert "xPts: 0.0" in result.output
+
     def test_json_ep_next_none_serialises_as_zero(self):
         client, fixture_agent, ratings_svc = _make_mocks()
         client.get_players = AsyncMock(return_value=[
