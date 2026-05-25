@@ -366,8 +366,8 @@ def stats_command(
                             "defensive_contribution_per_90": float(p.defensive_contribution_per_90),
                             "form_per_m": float(p.value_form),
                             "pts_per_m": float(p.value_season),
-                            "ep_next": float(p.ep_next),
-                            "ep_this": float(p.ep_this),
+                            "ep_next": float(p.ep_next) if p.ep_next is not None else 0.0,
+                            "ep_this": float(p.ep_this) if p.ep_this is not None else 0.0,
                             **(
                                 {
                                     "quality_score": quality_map.get(p.id),

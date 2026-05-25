@@ -288,8 +288,8 @@ def player_command(
                                 "form": float(p.form),
                                 "total_points": p.total_points,
                                 "points_per_game": float(p.points_per_game),
-                                "ep_next": float(p.ep_next),
-                                "ep_this": float(p.ep_this),
+                                "ep_next": float(p.ep_next) if p.ep_next is not None else 0.0,
+                                "ep_this": float(p.ep_this) if p.ep_this is not None else 0.0,
                                 "goals_scored": p.goals_scored,
                                 "assists": p.assists,
                                 "expected_assists": float(p.expected_assists),
@@ -427,7 +427,11 @@ def player_command(
                         f"[bold]{p.web_name}[/bold] ({p.full_name})",
                         f"Team: {team_name} | Position: {p.position_name}",
                         f"Price: £{p.price:.1f}m | Form: {p.form:.1f}",
-                        f"Points: {p.total_points} | PPG: {p.points_per_game:.1f} | xPts: {p.ep_next:.1f}",
+                        (
+                            f"Points: {p.total_points} | PPG: {p.points_per_game:.1f} | xPts: {p.ep_next:.1f}"
+                            if p.ep_next is not None
+                            else f"Points: {p.total_points} | PPG: {p.points_per_game:.1f}"
+                        ),
                     ]
                     rv, rc = rolling_scores.get(p.id, (None, None))
                     if rv is not None:
