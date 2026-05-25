@@ -254,6 +254,28 @@ class TestPlayersSort:
         result = _run(["--sort", "ep_next"], client=client)
         assert result.exit_code == 0, result.output
 
+    def test_sort_ep_next_none_sorts_to_bottom_in_ascending(self):
+        # --reverse activates the float("inf") sentinel branch of the sort
+        players = [
+            make_player(id=1, web_name="HasValue", team_id=1, ep_next=5.0),
+            make_player(id=2, web_name="NullEp", team_id=1, ep_next=None),
+        ]
+        client = _make_client(players, _sample_teams())
+        result = _run(["--sort", "ep_next", "--reverse"], client=client)
+        assert result.exit_code == 0, result.output
+        assert result.output.index("HasValue") < result.output.index("NullEp")
+
+    def test_sort_ep_next_none_renders_em_dash_in_table(self):
+        # Exercises the _format_sort_value None -> "—" branch
+        players = [
+            make_player(id=1, web_name="HasValue", team_id=1, ep_next=5.0),
+            make_player(id=2, web_name="NullEp", team_id=1, ep_next=None),
+        ]
+        client = _make_client(players, _sample_teams())
+        result = _run(["--sort", "ep_next"], client=client)
+        assert result.exit_code == 0, result.output
+        assert "—" in result.output
+
 
 class TestPlayersErrors:
     def test_invalid_team_shows_valid_options(self):
@@ -312,6 +334,21 @@ class TestPlayersJsonFormat:
         # Table output contains player names as text, not JSON
         assert "Salah" in result.output
         assert result.output.strip()[0] != "["
+
+    def test_json_ep_next_none_serialises_as_zero(self):
+        players = [
+            make_player(
+                id=1, web_name="NullEp", team_id=1,
+                position=PlayerPosition.MIDFIELDER,
+                ep_next=None, ep_this=None,
+            ),
+        ]
+        client = _make_client(players, _sample_teams())
+        result = _run(["--format", "json"], client=client)
+        assert result.exit_code == 0, result.output
+        record = json.loads(result.output)["data"][0]
+        assert record["ep_next"] == 0.0
+        assert record["ep_this"] == 0.0
 
 
 class TestStatsDraftOwnership:
