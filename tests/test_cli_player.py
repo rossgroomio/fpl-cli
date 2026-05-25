@@ -740,6 +740,10 @@ class TestPlayerQualityValueScores:
         result = _run([], client, fixture_agent, ratings_svc)
         assert result.exit_code == 0, result.output
         assert "xPts" not in result.output
+        # Rest of the Points line must still render — confirms only the xPts
+        # segment was dropped, not the entire row.
+        assert "Points:" in result.output
+        assert "PPG:" in result.output
 
     def test_json_ep_next_none_serialises_as_zero(self):
         client, fixture_agent, ratings_svc = _make_mocks()
