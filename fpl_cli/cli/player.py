@@ -12,7 +12,7 @@ import httpx
 from rich.panel import Panel
 
 from fpl_cli.cli._context import Format, console, error_console, get_format, is_custom_analysis_enabled, load_settings
-from fpl_cli.cli._helpers import _fdr_style
+from fpl_cli.cli._helpers import _ep_for_json, _fdr_style
 from fpl_cli.cli._json import emit_json, json_output_mode, output_format_option
 from fpl_cli.models.player import resolve_players
 from fpl_cli.services.player_scoring import (
@@ -288,8 +288,8 @@ def player_command(
                                 "form": float(p.form),
                                 "total_points": p.total_points,
                                 "points_per_game": float(p.points_per_game),
-                                "ep_next": float(p.ep_next) if p.ep_next is not None else 0.0,
-                                "ep_this": float(p.ep_this) if p.ep_this is not None else 0.0,
+                                "ep_next": _ep_for_json(p.ep_next),
+                                "ep_this": _ep_for_json(p.ep_this),
                                 "goals_scored": p.goals_scored,
                                 "assists": p.assists,
                                 "expected_assists": float(p.expected_assists),

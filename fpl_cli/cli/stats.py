@@ -14,7 +14,7 @@ import click
 from rich.table import Table
 
 from fpl_cli.cli._context import CLIContext, Format, console, error_console, is_custom_analysis_enabled
-from fpl_cli.cli._helpers import _format_sort_value, _validate_team_filter
+from fpl_cli.cli._helpers import _ep_for_json, _format_sort_value, _validate_team_filter
 from fpl_cli.cli._json import emit_json, json_output_mode, output_format_option
 
 # Valid sort fields for `fpl stats` command
@@ -280,6 +280,8 @@ def stats_command(
                 effective_sort = "total_points"
 
             # Sort
+            # Null-scored players sort to bottom regardless of direction
+            bottom = float("-inf") if not reverse else float("inf")
             if effective_sort in _VALUE_SORT_FIELDS:
                 if effective_sort == "rolling_pts_per_m":
                     rolling_score_map: dict[int, float | None] = {
@@ -290,8 +292,6 @@ def stats_command(
                     score_map = quality_map
                 else:
                     score_map = value_map
-                # Null-scored players sort to bottom regardless of direction
-                bottom = float("-inf") if not reverse else float("inf")
 
                 def _value_key(p: Player) -> float:
                     v = score_map.get(p.id)
@@ -300,11 +300,12 @@ def stats_command(
                 filtered.sort(key=_value_key, reverse=not reverse)
             else:
                 attr = _SORT_FIELD_ALIASES.get(effective_sort, effective_sort)
-                bottom = float("-inf") if not reverse else float("inf")
-                filtered.sort(
-                    key=lambda p: (v if (v := getattr(p, attr)) is not None else bottom),
-                    reverse=not reverse,
-                )
+
+                def _attr_key(p: Player) -> float:
+                    v = getattr(p, attr)
+                    return v if v is not None else bottom
+
+                filtered.sort(key=_attr_key, reverse=not reverse)
 
             # Limit
             filtered = filtered[:limit]
@@ -370,8 +371,8 @@ def stats_command(
                             "defensive_contribution_per_90": float(p.defensive_contribution_per_90),
                             "form_per_m": float(p.value_form),
                             "pts_per_m": float(p.value_season),
-                            "ep_next": float(p.ep_next) if p.ep_next is not None else 0.0,
-                            "ep_this": float(p.ep_this) if p.ep_this is not None else 0.0,
+                            "ep_next": _ep_for_json(p.ep_next),
+                            "ep_this": _ep_for_json(p.ep_this),
                             **(
                                 {
                                     "quality_score": quality_map.get(p.id),
