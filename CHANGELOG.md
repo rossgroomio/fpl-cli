@@ -1,6 +1,21 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [2.0.0] - 2026-05-25
+
+### Bug Fixes
+
+- allow ep_next/ep_this to be None at end of season
+- handle ep_next/ep_this=None in stats sort and table display
+
+### Features
+
+- emit JSON null for missing ep_next/ep_this projections
+
+### Refactoring
+
+- dedupe ep_next/ep_this JSON shim and sort sentinel
+
 ## [1.4.2] - 2026-05-24
 
 ### Bug Fixes
@@ -11,12 +26,6 @@ All notable changes to this project will be documented in this file.
 ### Scout
 
 - enforce player_reference as a strict allowlist (#41)
-
-## [1.4.1] - 2026-05-17
-
-### Refactoring
-
-- refactor FPL scraper to fetch API directly instead of intercepting (#37)
 
 ## [1.4.0] - 2026-05-17
 
@@ -125,4 +134,5 @@ All notable changes to this project will be documented in this file.
 ### Features
 
 - CI pipeline and PyPI publish for v1.0.0 (#1)
+
 
