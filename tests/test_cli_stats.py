@@ -235,6 +235,25 @@ class TestPlayersSort:
         assert result.exit_code == 0, result.output
         assert result.output.index("Fit") < result.output.index("Injured")
 
+    def test_sort_ep_next_none_sorts_to_bottom(self):
+        players = [
+            make_player(id=1, web_name="HasValue", team_id=1, ep_next=5.0),
+            make_player(id=2, web_name="NullEp", team_id=1, ep_next=None),
+        ]
+        client = _make_client(players, _sample_teams())
+        result = _run(["--sort", "ep_next"], client=client)
+        assert result.exit_code == 0, result.output
+        assert result.output.index("HasValue") < result.output.index("NullEp")
+
+    def test_sort_ep_next_all_none_does_not_crash(self):
+        players = [
+            make_player(id=1, web_name="Alpha", team_id=1, ep_next=None),
+            make_player(id=2, web_name="Beta", team_id=1, ep_next=None),
+        ]
+        client = _make_client(players, _sample_teams())
+        result = _run(["--sort", "ep_next"], client=client)
+        assert result.exit_code == 0, result.output
+
 
 class TestPlayersErrors:
     def test_invalid_team_shows_valid_options(self):

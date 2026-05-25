@@ -248,8 +248,8 @@ class TestPlayerFormatSuppression:
         player.direct_freekicks_order = None
         player.defensive_contribution_per_90 = 0.0
         player.penalties_saved = 0
-        player.ep_next = 0.0
-        player.ep_this = 0.0
+        player.ep_next = None
+        player.ep_this = None
         return player
 
     def _mock_team(self):

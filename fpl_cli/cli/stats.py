@@ -300,7 +300,11 @@ def stats_command(
                 filtered.sort(key=_value_key, reverse=not reverse)
             else:
                 attr = _SORT_FIELD_ALIASES.get(effective_sort, effective_sort)
-                filtered.sort(key=lambda p: getattr(p, attr), reverse=not reverse)
+                bottom = float("-inf") if not reverse else float("inf")
+                filtered.sort(
+                    key=lambda p: (v if (v := getattr(p, attr)) is not None else bottom),
+                    reverse=not reverse,
+                )
 
             # Limit
             filtered = filtered[:limit]
