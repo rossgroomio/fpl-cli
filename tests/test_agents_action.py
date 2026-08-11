@@ -1,16 +1,19 @@
 """Tests for action agents (WaiverAgent)."""
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from fpl_cli.agents.action.waiver import WaiverAgent
 from fpl_cli.agents.base import AgentStatus
+from fpl_cli.services.player_scoring import ScoringContext, ScoringData
 from tests.conftest import (
     make_draft_league_entry,
     make_draft_player,
     make_draft_standing,
     make_draft_team,
+    make_fixture,
+    make_team,
 )
 
 # --- Fixtures ---
@@ -75,6 +78,66 @@ def mock_entry_picks():
     }
 
 
+def _mock_scoring_data() -> ScoringData:
+    """Fixed ScoringData standing in for prepare_scoring_data's upstream fetches.
+
+    Teams mirror the draft bootstrap fixture so matchup enrichment resolves.
+    """
+    teams = [
+        make_team(id=1, short_name="ARS"),
+        make_team(id=5, short_name="TOT"),
+        make_team(id=6, short_name="BHA"),
+        make_team(id=7, short_name="WHU"),
+        make_team(id=13, short_name="MCI"),
+        make_team(id=14, short_name="LIV"),
+    ]
+    team_map = {t.id: t for t in teams}
+    fixtures = [
+        make_fixture(id=1, gameweek=26, home_team_id=1, away_team_id=14, home_difficulty=3, away_difficulty=3),
+        make_fixture(id=2, gameweek=26, home_team_id=13, away_team_id=5, home_difficulty=2, away_difficulty=4),
+        make_fixture(id=3, gameweek=26, home_team_id=6, away_team_id=7, home_difficulty=3, away_difficulty=3),
+    ]
+
+    ratings_service = MagicMock()
+    ratings_service.get_positional_fdr.return_value = 3.0
+    ratings_service.get_matchup_score.return_value = {
+        "matchup_score": 5.5,
+        "attack_matchup": 5.0,
+        "defence_matchup": 5.0,
+        "form_differential": 0.1,
+        "position_differential": 0.05,
+        "reasoning": ["Average"],
+    }
+
+    scoring_ctx = ScoringContext(
+        team_map=team_map,
+        team_fixture_map={
+            1: [{"fixture": fixtures[0], "is_home": True}],
+            14: [{"fixture": fixtures[0], "is_home": False}],
+            13: [{"fixture": fixtures[1], "is_home": True}],
+            5: [{"fixture": fixtures[1], "is_home": False}],
+            6: [{"fixture": fixtures[2], "is_home": True}],
+            7: [{"fixture": fixtures[2], "is_home": False}],
+        },
+        ratings_service=ratings_service,
+        next_gw_id=26,
+    )
+
+    return ScoringData(
+        teams=teams,
+        team_map=team_map,
+        all_fixtures=fixtures,
+        next_gw_fixtures=fixtures,
+        next_gw_id=26,
+        next_gw={"id": 26, "is_next": True},
+        scoring_ctx=scoring_ctx,
+        ratings_service=ratings_service,
+        players=[],
+        player_histories={},
+        player_priors=None,
+    )
+
+
 @pytest.fixture
 def mock_waiver_order():
     """Mock waiver order (reverse standings)."""
@@ -106,6 +169,32 @@ class TestWaiverAgentInit:
 
 class TestWaiverAgentRun:
     """Tests for WaiverAgent run method."""
+
+    @pytest.fixture(autouse=True)
+    def _stub_fpl_client_fetches(self):
+        """Patch the two seams that reach past the draft client.
+
+        WaiverAgent holds a second client (self.fpl_client) that the tests
+        below never patch: prepare_scoring_data pulls bootstrap-static,
+        fixtures and both GitHub datasets through it, and
+        fetch_understat_lookup scrapes understat.com. Patching these two
+        calls removes every downstream fetch at once, so the tests neither
+        depend on the network nor report unrelated upstream breakage as a
+        WaiverAgent failure.
+        """
+        with (
+            patch(
+                "fpl_cli.agents.action.waiver.prepare_scoring_data",
+                new_callable=AsyncMock,
+                return_value=_mock_scoring_data(),
+            ),
+            patch(
+                "fpl_cli.agents.action.waiver.fetch_understat_lookup",
+                new_callable=AsyncMock,
+                return_value={},
+            ),
+        ):
+            yield
 
     @pytest.mark.asyncio
     async def test_run_missing_league_id(self):
