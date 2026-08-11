@@ -427,7 +427,7 @@ def chips_timing(output_format: str) -> None:
 
         if signals is None:
             console.print("[red]Agent failed[/red]")
-            return
+            raise SystemExit(1)
 
         console.print(Panel.fit("[bold blue]Chip Timing Signals[/bold blue]"))
 

@@ -31,6 +31,7 @@ def _make_mocks():
     fixture_agent.get_positional_fdr.return_value = 2.5
 
     ratings_svc = MagicMock()
+    ratings_svc.ensure_fresh = AsyncMock(return_value=None)
     ratings_svc.get_staleness_warning.return_value = None
 
     return client, fixture_agent, ratings_svc
@@ -1089,4 +1090,16 @@ class TestAdjustedNpxgDisplay:
         lookup = {999: 0.22}  # wrong player ID
         result = _run_with_adjusted_npxg([], client, fixture_agent, ratings_svc, lookup)
         assert result.exit_code == 0, result.output
+        assert "adj. npxG/90:" not in result.output
+
+
+class TestPlayerErrorHandling:
+    """A raised exception must be reported AND fail the process (#47)."""
+
+    def test_exception_exits_nonzero(self):
+        client, fixture_agent, ratings_svc = _make_mocks()
+        client.get_teams = AsyncMock(side_effect=ValueError("boom"))
+        result = _run([], client, fixture_agent, ratings_svc)
+        assert result.exit_code != 0
+        assert "Error: boom" in result.output
         assert "adj. npxG/90:" not in result.output

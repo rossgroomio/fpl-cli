@@ -527,6 +527,7 @@ def player_command(
 
             except Exception as e:  # noqa: BLE001 — display resilience
                 console.print(f"[red]Error: {e}[/red]")
+                raise SystemExit(1) from e
 
     asyncio.run(_run())
 

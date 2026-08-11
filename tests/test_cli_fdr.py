@@ -200,6 +200,23 @@ class TestFdrJsonOutput:
         assert result.exit_code == 0, result.output
         assert "Fixture Analysis" in result.output
 
+    def test_table_agent_failure_exits_nonzero(self, mock_fixture_agent):
+        """Table-mode agent failure must exit nonzero, not just print and succeed (#47)."""
+        mock_fixture_agent.run = AsyncMock(return_value=MagicMock(
+            success=False,
+            message="Something went wrong",
+        ))
+
+        with (
+            patch("fpl_cli.cli.fdr.is_custom_analysis_enabled", return_value=True),
+            patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=mock_fixture_agent),
+        ):
+            runner = CliRunner()
+            result = runner.invoke(fdr_command, [])
+
+        assert result.exit_code == 1
+        assert "Agent failed" in result.output
+
 
 # ---------------------------------------------------------------------------
 # Helpers for raw FDR (toggle off) path

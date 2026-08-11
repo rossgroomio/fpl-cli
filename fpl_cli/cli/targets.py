@@ -9,7 +9,7 @@ import click
 from rich.panel import Panel
 from rich.table import Table
 
-from fpl_cli.cli._context import console
+from fpl_cli.cli._context import console, handle_agent_failure
 from fpl_cli.cli._json import emit_json, emit_json_error, json_output_mode, output_format_option
 
 
@@ -44,10 +44,7 @@ def targets_command(min_own: float, min_minutes: int, output_format: str):
             result = await agent.run()
 
         if not result.success:
-            console.print(f"[red]Agent failed: {result.message}[/red]")
-            for error in result.errors:
-                console.print(f"  [red]{error}[/red]")
-            return
+            handle_agent_failure(result)
 
         data = result.data
         targets = data.get("targets", {})

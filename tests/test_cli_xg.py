@@ -105,6 +105,13 @@ class TestXgJsonFormat:
         assert "Haaland" in result.output
         assert "Underlying Stats" in result.output
 
+    def test_table_agent_failure_exits_nonzero(self):
+        """Table-mode agent failure must exit nonzero, not just print and succeed (#47)."""
+        agent_result = _make_agent_result(success=False, message="API timeout")
+        result = _run_xg(agent_result=agent_result)
+        assert result.exit_code == 1
+        assert "Agent failed" in result.output
+
 
 class TestXgCustomAnalysisToggle:
     """Tests for custom_analysis toggle gating experimental views."""

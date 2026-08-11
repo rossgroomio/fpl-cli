@@ -212,6 +212,115 @@ class TestSquadJsonOutput:
             json.loads(result.output)
 
 
+    def test_squad_table_agent_failure_exits_nonzero(self, runner):
+        """Table-mode agent failure must exit nonzero, not just print and succeed (#47)."""
+        settings = {"fpl": {"classic_entry_id": 12345}}
+        fail_result = AgentResult(
+            agent_name="SquadAnalyzerAgent",
+            status=AgentStatus.FAILED,
+            data={},
+            message="something broke",
+        )
+        p1, p2 = _patch_settings(settings)
+
+        with p1, p2, \
+             patch("fpl_cli.agents.analysis.squad_analyzer.SquadAnalyzerAgent", return_value=_mock_agent(fail_result)), \
+             patch("fpl_cli.api.fpl.FPLClient", return_value=_mock_fpl_client()):
+            result = runner.invoke(main, ["squad"])
+
+        assert result.exit_code != 0
+        assert "Agent failed" in result.output
+
+
+class TestSquadPreSeasonNoPicks:
+    """Pre-season, the GW1 picks endpoint legitimately 404s until a squad is submitted (#47)."""
+
+    def _mock_fpl_client_404(self):
+        import httpx
+
+        client = _mock_fpl_client()
+        client.get_next_gameweek = AsyncMock(return_value={"id": 1})  # pre-season: next GW is 1
+        request = httpx.Request("GET", "https://fantasy.premierleague.com/api/entry/12345/event/1/picks/")
+        response = httpx.Response(404, request=request)
+        client.get_manager_picks = AsyncMock(
+            side_effect=httpx.HTTPStatusError("Not Found", request=request, response=response)
+        )
+        return client
+
+    def test_table_mode_shows_friendly_message(self, runner):
+        settings = {"fpl": {"classic_entry_id": 12345}}
+        p1, p2 = _patch_settings(settings)
+
+        with p1, p2, \
+             patch("fpl_cli.api.fpl.FPLClient", return_value=self._mock_fpl_client_404()):
+            result = runner.invoke(main, ["squad"])
+
+        assert result.exit_code != 0
+        assert "No squad submitted for GW1 yet" in result.output
+        assert "Traceback" not in result.output
+
+    def test_json_mode_emits_json_error(self, runner):
+        settings = {"fpl": {"classic_entry_id": 12345}}
+        p1, p2 = _patch_settings(settings)
+
+        with p1, p2, \
+             patch("fpl_cli.api.fpl.FPLClient", return_value=self._mock_fpl_client_404()):
+            result = runner.invoke(main, ["squad", "--format", "json"])
+
+        assert result.exit_code != 0
+        payload = json.loads(result.output)
+        assert payload["command"] == "squad"
+        assert "No squad submitted for GW1 yet" in payload["error"]
+
+    def test_non_404_error_still_propagates(self, runner):
+        """A genuine (non-404) HTTP error should not be swallowed as 'no squad yet'."""
+        import httpx
+
+        settings = {"fpl": {"classic_entry_id": 12345}}
+        client = _mock_fpl_client()
+        request = httpx.Request("GET", "https://fantasy.premierleague.com/api/entry/12345/event/1/picks/")
+        response = httpx.Response(500, request=request)
+        client.get_manager_picks = AsyncMock(
+            side_effect=httpx.HTTPStatusError("Server Error", request=request, response=response)
+        )
+        p1, p2 = _patch_settings(settings)
+
+        with p1, p2, patch("fpl_cli.api.fpl.FPLClient", return_value=client):
+            result = runner.invoke(main, ["squad"])
+
+        assert result.exit_code != 0
+        assert "No squad submitted" not in result.output
+
+    def test_draft_table_mode_shows_friendly_message(self, runner):
+        """`fpl squad --draft` before a draft squad has ever been picked (#47 review follow-up)."""
+        import httpx
+
+        settings = {"fpl": {"draft_entry_id": 99, "draft_league_id": 42}}
+        client = _mock_fpl_client()
+        client.get_next_gameweek = AsyncMock(return_value={"id": 1})  # pre-season: next GW is 1
+
+        draft_client = MagicMock()
+        draft_client.__aenter__ = AsyncMock(return_value=draft_client)
+        draft_client.__aexit__ = AsyncMock(return_value=False)
+        request = httpx.Request("GET", "https://draft.premierleague.com/api/entry/99/event/1")
+        response = httpx.Response(404, request=request)
+        draft_client.get_entry_picks = AsyncMock(
+            side_effect=httpx.HTTPStatusError("Not Found", request=request, response=response)
+        )
+        draft_client.get_bootstrap_static = AsyncMock(return_value={"elements": []})
+
+        p1, p2 = _patch_settings(settings)
+
+        with p1, p2, \
+             patch("fpl_cli.api.fpl.FPLClient", return_value=client), \
+             patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=draft_client):
+            result = runner.invoke(main, ["squad", "--draft"])
+
+        assert result.exit_code != 0
+        assert "No squad submitted for GW1 yet" in result.output
+        assert "Traceback" not in result.output
+
+
 class TestTeamCommandRetired:
     """Verify `fpl team` no longer exists."""
 

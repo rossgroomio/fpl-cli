@@ -549,6 +549,23 @@ class TestChipsTimingJsonFormat:
 
         assert result.exit_code == 1
 
+    def test_table_agent_failure_exits_nonzero(self, runner: CliRunner):
+        """Table-mode agent failure must exit nonzero, not just print and succeed (#47)."""
+        plan = ChipPlan(current_gw=30)
+        mock_client = AsyncMock()
+        mock_client.get_next_gameweek.return_value = {"id": 30}
+
+        with patch.object(ChipPlan, "load", return_value=plan), \
+             patch("fpl_cli.cli.chips.load_settings", return_value={"fpl": {"classic_entry_id": 123}}), \
+             patch("fpl_cli.api.fpl.FPLClient") as mock_fpl_cls, \
+             patch("fpl_cli.cli.chips._fetch_and_compute", _mock_fetch_and_compute(signals=None)):
+            mock_fpl_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_fpl_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+            result = runner.invoke(main, ["chips", "timing"])
+
+        assert result.exit_code == 1
+        assert "Agent failed" in result.output
+
 
 class TestNoSignals:
     def test_empty_exposure_produces_no_signals(self):

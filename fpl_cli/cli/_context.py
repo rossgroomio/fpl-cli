@@ -6,7 +6,7 @@ import dataclasses
 import os
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import click
 import yaml
@@ -14,8 +14,25 @@ from rich.console import Console
 
 from fpl_cli.paths import SHIPPED_CONFIG_DIR, user_config_dir
 
+if TYPE_CHECKING:
+    from fpl_cli.agents.base import AgentResult
+
 console = Console()
 error_console = Console(stderr=True)
+
+
+def handle_agent_failure(result: AgentResult) -> None:
+    """Print an agent failure to the console and exit nonzero.
+
+    Table-mode counterpart to `_json.emit_json_error` -- centralising this
+    keeps the two failure paths behaviourally identical, so a copy-pasted
+    two-line `return` can't silently reintroduce a zero exit code on
+    command failure (#47).
+    """
+    console.print(f"[red]Agent failed: {result.message}[/red]")
+    for error in result.errors:
+        console.print(f"  [red]{error}[/red]")
+    raise SystemExit(1)
 
 
 def _user_config_dir() -> Path:

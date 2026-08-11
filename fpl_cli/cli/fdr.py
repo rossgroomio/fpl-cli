@@ -18,6 +18,7 @@ from fpl_cli.cli._context import (
     console,
     error_console,
     get_format,
+    handle_agent_failure,
     is_custom_analysis_enabled,
     load_settings,
 )
@@ -405,10 +406,7 @@ def fdr_command(
             result = await agent.run(context=context)
 
         if not result.success:
-            console.print(f"[red]Agent failed: {result.message}[/red]")
-            for error in result.errors:
-                console.print(f"  [red]{error}[/red]")
-            return
+            handle_agent_failure(result)
 
         data = result.data
         current_gw = data["current_gameweek"]
