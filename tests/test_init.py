@@ -15,6 +15,7 @@ from fpl_cli.cli.init import (
     _detect_fpl_ids_status,
     _detect_fpl_login_status,
     _detect_league_table_status,
+    _keyring_available,
     _mask_key,
     _render_summary_table,
     _tier_ai_features,
@@ -23,6 +24,17 @@ from fpl_cli.cli.init import (
     _tier_fpl_login,
     _tier_league_table,
 )
+
+
+class _BackendPanic(BaseException):
+    """Stand-in for pyo3's PanicException, which is not an Exception subclass."""
+
+
+def _fake_backend(module: str) -> object:
+    """Build a keyring backend stub whose type reports the given module."""
+    cls = type("FakeBackend", (), {})
+    cls.__module__ = module
+    return cls()
 
 
 class TestStatusDisplay:
@@ -383,6 +395,45 @@ class TestDetectStatuses:
             result = _detect_fpl_login_status()
         assert "unavailable" in result.text.lower()
         assert result.colour == "yellow"
+
+    def test_fpl_login_backend_panic_degrades(self):
+        """A backend panicking below Python must not escape as a traceback.
+
+        pyo3's PanicException derives from BaseException, so a native-extension
+        backend can fail in a way that `except Exception` never sees.
+        """
+        with patch("keyring.get_password", side_effect=_BackendPanic("Python API call failed")):
+            result = _detect_fpl_login_status()
+        assert "unavailable" in result.text.lower()
+        assert result.colour == "yellow"
+
+    def test_fpl_login_keyboard_interrupt_propagates(self):
+        """Widening the net must not swallow interrupts."""
+        with patch("keyring.get_password", side_effect=KeyboardInterrupt):
+            with pytest.raises(KeyboardInterrupt):
+                _detect_fpl_login_status()
+
+
+class TestKeyringAvailable:
+    """Tests for _keyring_available probe."""
+
+    def test_working_backend_is_available(self):
+        with patch("keyring.get_keyring", return_value=_fake_backend("keyring.backends.SecretService")):
+            assert _keyring_available() is True
+
+    def test_fail_backend_is_unavailable(self):
+        with patch("keyring.get_keyring", return_value=_fake_backend("keyring.backends.fail")):
+            assert _keyring_available() is False
+
+    def test_backend_panic_reports_unavailable(self):
+        """Backend discovery panicking below Python degrades, not crashes."""
+        with patch("keyring.get_keyring", side_effect=_BackendPanic("Python API call failed")):
+            assert _keyring_available() is False
+
+    def test_keyboard_interrupt_propagates(self):
+        with patch("keyring.get_keyring", side_effect=KeyboardInterrupt):
+            with pytest.raises(KeyboardInterrupt):
+                _keyring_available()
 
 
 class TestRenderSummaryTable:

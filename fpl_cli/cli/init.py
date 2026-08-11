@@ -190,7 +190,12 @@ def _keyring_available() -> bool:
         return "fail" not in type(backend).__module__
     except ImportError:
         return False
-    except Exception as exc:  # noqa: BLE001 — keyring backend unpredictable
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    # Backend discovery imports third-party modules with native extensions; a
+    # broken one can panic below Python, and pyo3's PanicException derives from
+    # BaseException, so catching Exception alone would let it escape.
+    except BaseException as exc:  # noqa: BLE001 — see comment above
         click.echo(f"  Keyring probe failed: {exc}", err=True)
         return False
 
@@ -463,7 +468,11 @@ def _detect_fpl_login_status() -> StatusDisplay:
         return StatusDisplay("Skipped", "dim")
     except ImportError:
         return StatusDisplay("Keyring unavailable", "yellow")
-    except Exception as exc:  # noqa: BLE001 — keyring backend unpredictable
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    # As in _keyring_available: a native-extension backend can panic below
+    # Python, raising BaseException rather than Exception.
+    except BaseException as exc:  # noqa: BLE001 — see comment above
         click.echo(f"  Keyring check failed: {exc}", err=True)
         return StatusDisplay("Keyring unavailable", "yellow")
 
