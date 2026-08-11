@@ -136,6 +136,13 @@ class TestDifferentialsJsonFormat:
         assert "Isak" in result.output
         assert "Differential Picks" in result.output
 
+    def test_table_stats_failure_exits_nonzero(self):
+        """Table-mode stats failure must exit nonzero, not just print and succeed (#47)."""
+        stats_result = _make_stats_result(success=False, message="API timeout")
+        result = _run_differentials(stats_result=stats_result)
+        assert result.exit_code == 1
+        assert "Agent failed" in result.output
+
 
 class TestDifferentialsReliabilityRendering:
     def test_reliability_shown_as_percentage(self):

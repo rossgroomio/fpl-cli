@@ -63,7 +63,7 @@ def xg_command(ctx: click.Context, last_n: int, all_season: bool, output_format:
             console.print(f"[red]Agent failed: {result.message}[/red]")
             for error in result.errors:
                 console.print(f"  [red]{error}[/red]")
-            return
+            raise SystemExit(1)
 
         data = result.data
         window_label = data.get("window_label", "whole season")

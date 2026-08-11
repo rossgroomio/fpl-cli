@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 
 import click
+import httpx
 from rich.panel import Panel
 
 from fpl_cli.cli._context import CLIContext, Format, console, error_console, get_format, load_settings
@@ -79,7 +80,20 @@ def squad_group(ctx: click.Context, is_draft: bool, output_format: str) -> None:
             else:
                 # Resolve picks here so the agent doesn't refetch bootstrap-static
                 target_gw = max(gw - 1, 1)
-                picks_data, _ = await get_actual_squad_picks(client, entry_id, target_gw)
+                try:
+                    picks_data, _ = await get_actual_squad_picks(client, entry_id, target_gw)
+                except httpx.HTTPStatusError as exc:
+                    if exc.response.status_code != 404:
+                        raise
+                    # Pre-season / before the first deadline, the picks endpoint legitimately
+                    # 404s until a squad has been submitted -- this is expected, not exceptional.
+                    message = f"No squad submitted for GW{target_gw} yet."
+                    if output_format == "json":
+                        with json_output_mode() as stdout:
+                            emit_json_error("squad", message, file=stdout)
+                        return
+                    error_console.print(f"[yellow]{message}[/yellow]")
+                    raise SystemExit(1) from None
                 picks = [p["element"] for p in picks_data.get("picks", [])]
                 context = {"picks": picks, "format": "classic"}
 
@@ -103,7 +117,7 @@ def squad_group(ctx: click.Context, is_draft: bool, output_format: str) -> None:
             console.print(f"[red]Agent failed: {result.message}[/red]")
             for error in result.errors:
                 console.print(f"  [red]{error}[/red]")
-            return
+            raise SystemExit(1)
 
         _render(result.data, is_draft)
 

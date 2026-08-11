@@ -74,7 +74,7 @@ def differentials_command(threshold: float, min_minutes: int, output_format: str
             console.print(f"[red]Agent failed: {result.message}[/red]")
             for error in result.errors:
                 console.print(f"  [red]{error}[/red]")
-            return
+            raise SystemExit(1)
 
         data = result.data
         differentials = data.get("differentials", {})

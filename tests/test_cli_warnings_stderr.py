@@ -103,7 +103,8 @@ class TestWarningsOnStderr:
         with patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=mock_agent):
             result = runner.invoke(main, ["fdr", "--my-squad", "--draft"])
 
-        assert result.exit_code == 0
+        # Agent failure (#47): mocked result.success=False must exit nonzero, not swallow the failure.
+        assert result.exit_code == 1
         mock_error.print.assert_any_call("[yellow]draft_entry_id not configured[/yellow]")
 
     def test_chips_timing_missing_classic_entry_id_warning_on_stderr(self, monkeypatch):

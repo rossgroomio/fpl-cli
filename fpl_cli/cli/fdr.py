@@ -408,7 +408,7 @@ def fdr_command(
             console.print(f"[red]Agent failed: {result.message}[/red]")
             for error in result.errors:
                 console.print(f"  [red]{error}[/red]")
-            return
+            raise SystemExit(1)
 
         data = result.data
         current_gw = data["current_gameweek"]

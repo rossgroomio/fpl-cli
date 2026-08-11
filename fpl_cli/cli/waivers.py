@@ -59,7 +59,7 @@ def waivers_command(output_format: str):
             console.print(f"[red]Agent failed: {result.message}[/red]")
             for error in result.errors:
                 console.print(f"  [red]{error}[/red]")
-            return
+            raise SystemExit(1)
 
         data = result.data
         console.print(Panel.fit("[bold blue]Draft Waiver Recommendations[/bold blue]"))

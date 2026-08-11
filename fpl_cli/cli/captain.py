@@ -52,7 +52,7 @@ def captain_command(global_mode: bool, output_format: str):
             console.print(f"[red]Agent failed: {result.message}[/red]")
             for error in result.errors:
                 console.print(f"  [red]{error}[/red]")
-            return
+            raise SystemExit(1)
 
         data = result.data
         mode_label = "Your Squad" if data.get("my_squad_mode") else "Global Top Players"
