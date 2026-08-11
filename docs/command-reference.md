@@ -237,7 +237,9 @@ fpl ratings update --since-gw 15   # Recent form only (actual goals)
 fpl ratings update --dry-run       # Preview changes without saving
 ```
 
-See [Team Ratings](custom-analysis.md#team-ratings) for calculation methodology, axes, early-season blending, and manual overrides.
+Before GW1 there are no results to rate teams on, so ratings are estimated from the previous season (promoted teams from Championship form) and every fixture-difficulty view says so until real results land.
+
+See [Team Ratings](custom-analysis.md#team-ratings) for calculation methodology, axes, early-season blending, pre-season estimates, and manual overrides.
 
 ### Chips
 

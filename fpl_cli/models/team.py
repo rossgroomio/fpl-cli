@@ -13,14 +13,24 @@ class Team(BaseModel):
     short_name: str  # 3-letter code (e.g., "ARS")
     code: int  # Team code used in some API responses
 
-    # Current season stats
-    strength: int  # Overall strength rating
-    strength_overall_home: int
-    strength_overall_away: int
-    strength_attack_home: int
-    strength_attack_away: int
-    strength_defence_home: int
-    strength_defence_away: int
+    # Current season stats.
+    #
+    # None of these are published until a season is under way. Pre-season the
+    # API returns null for `strength` and zeros for the four attack/defence
+    # axes, so every field is optional to keep those payloads valid.
+    #
+    # Nothing reads these today. Fixture difficulty comes from
+    # TeamRatingsService, off its own 1-7 ratings in team_ratings.yaml. If that
+    # ever changes, note that the pre-season zeros validate cleanly and are
+    # indistinguishable from real ratings, so a new consumer needs its own
+    # check that a season is under way.
+    strength: int | None = None  # Overall strength rating
+    strength_overall_home: int | None = None
+    strength_overall_away: int | None = None
+    strength_attack_home: int | None = None
+    strength_attack_away: int | None = None
+    strength_defence_home: int | None = None
+    strength_defence_away: int | None = None
 
     # Form (last 5 games: W=win, D=draw, L=loss)
     form: str | None = None

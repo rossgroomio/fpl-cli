@@ -267,9 +267,21 @@ class TestTeamRatingsService:
 
         assert warning is None
 
-    def test_staleness_warning_no_date(self, tmp_path):
-        """Test warning when no last_updated date."""
+    def test_staleness_warning_no_ratings_at_all(self, tmp_path):
+        """A missing config has no ratings to date, so say that rather than blame the date."""
         service = TeamRatingsService(config_path=tmp_path / "nonexistent.yaml")
+        warning = service.get_staleness_warning()
+
+        assert warning is not None
+        assert "No team ratings available" in warning
+
+    def test_staleness_warning_no_date(self, temp_config, sample_config_data):
+        """Test warning when ratings exist but carry no last_updated date."""
+        sample_config_data["metadata"]["last_updated"] = None
+        with open(temp_config, "w", encoding="utf-8") as f:
+            yaml.dump(sample_config_data, f)
+
+        service = TeamRatingsService(config_path=temp_config)
         warning = service.get_staleness_warning()
 
         assert warning is not None

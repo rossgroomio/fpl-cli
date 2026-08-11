@@ -294,6 +294,14 @@ Fetch completed fixtures from the rolling 12-GW window, aggregate per-game avera
 
 Current-season data is blended with a prior from the previous season's Understat xG using Bayesian shrinkage (C=6). Current data takes majority weight by GW7; prior drops out entirely at GW12.
 
+### Pre-Season (before GW1)
+
+The FPL API publishes no strength ratings before a season starts - `strength` comes back null and the four attack/defence axes are zeroed for all 20 teams - so there is nothing to rate teams on and last season's cached file still lists relegated sides while missing promoted ones.
+
+Ratings are therefore rebuilt from the previous-season prior alone (Understat xG, with Championship-adjusted ratings for promoted teams) and tagged `preseason_prior`. Commands that show fixture difficulty print a warning that the ratings are estimates until GW1 results land.
+
+Two degenerate cases are called out explicitly rather than ranked silently: no ratings at all (every fixture would score a neutral 4.0) and ratings that fail to separate any two teams.
+
 ### xG-Based Calculation
 
 `fpl ratings update --use-xg` recalculates using Understat xG instead of actual goals. Less noise, uses full season data rather than rolling window.

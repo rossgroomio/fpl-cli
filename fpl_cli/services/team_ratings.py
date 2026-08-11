@@ -23,6 +23,9 @@ logger = logging.getLogger(__name__)
 
 OVERRIDES_PATH = user_config_dir() / "team_ratings_overrides.yaml"
 
+PRESEASON_SOURCE = "preseason_prior"
+"""Marks ratings derived entirely from last season, before any GW has been played."""
+
 
 @dataclass
 class TeamRating:
@@ -203,6 +206,8 @@ class TeamRatingsService:
 
             max_completed_gw = next_gw["id"] - 1
             if max_completed_gw < 1:
+                await self._seed_from_prior(client)
+                TeamRatingsService._refreshed_this_session = True
                 return
 
             # Check staleness against metadata
@@ -242,6 +247,33 @@ class TeamRatingsService:
 
         except Exception:  # noqa: BLE001 — graceful degradation
             logger.warning("Auto-refresh failed, using stale ratings", exc_info=True)
+
+    async def _seed_from_prior(self, client) -> None:
+        """Rebuild ratings from last season when no gameweek has been played yet.
+
+        Pre-season there are no results to rate teams on, and whatever sits in
+        team_ratings.yaml is last season's table: it still carries relegated
+        sides and knows nothing about the promoted ones, which then fall
+        through to the neutral 4.0 in get_positional_fdr. On a fresh install
+        the file is absent entirely and every team gets that 4.0 — uniform
+        difficulty, presented as analysis.
+
+        The previous-season prior (Understat xG, with Championship-adjusted
+        ratings for promoted teams) is the better source, so use it and tag it
+        so callers can label the output as an estimate.
+        """
+        from fpl_cli.services.team_ratings_prior import generate_prior
+
+        prior = await generate_prior(client)
+        if not prior:
+            return
+
+        self.save_ratings(
+            prior,
+            source=PRESEASON_SOURCE,
+            calculation_method="preseason_prior",
+        )
+        self._apply_overrides()
 
     def save_ratings(
         self,
@@ -389,6 +421,37 @@ class TeamRatingsService:
         self._ensure_loaded()
         return list(self._ratings.keys())
 
+    @property
+    def is_preseason_estimate(self) -> bool:
+        """Whether ratings are last-season estimates rather than current-season form."""
+        self._ensure_loaded()
+        return bool(self._metadata and self._metadata.source == PRESEASON_SOURCE)
+
+    @property
+    def has_ratings(self) -> bool:
+        """Whether any ratings are loaded at all.
+
+        False means every get_positional_fdr call returns the neutral 4.0.
+        """
+        self._ensure_loaded()
+        return bool(self._ratings)
+
+    @property
+    def is_uniform(self) -> bool:
+        """Whether every team carries identical ratings.
+
+        A degenerate rating set produces the same fixture difficulty for all
+        20 teams while looking like ordinary output, so it needs surfacing
+        rather than silently ranking teams that were never differentiated.
+        """
+        self._ensure_loaded()
+        if len(self._ratings) < 2:
+            return False
+        axes = {
+            (r.atk_home, r.atk_away, r.def_home, r.def_away) for r in self._ratings.values()
+        }
+        return len(axes) == 1
+
     def is_stale(self) -> bool:
         """Check if ratings are stale (older than threshold)."""
         self._ensure_loaded()
@@ -409,11 +472,33 @@ class TeamRatingsService:
         return (datetime.now() - self._metadata.last_updated).days
 
     def get_staleness_warning(self) -> str | None:
-        """Get warning message if ratings are stale.
+        """Get a warning about the quality of the ratings backing fixture difficulty.
+
+        Covers the cases where difficulty would otherwise be presented as
+        ordinary analysis while resting on nothing: no ratings at all, ratings
+        that fail to separate any two teams, and pre-season estimates.
 
         Returns:
-            Warning message or None if ratings are fresh
+            Warning message, or None if ratings are usable and fresh
         """
+        if not self.has_ratings:
+            return (
+                "⚠️ No team ratings available - every fixture will score a neutral 4.0. "
+                "Run `fpl ratings update` once results exist."
+            )
+
+        if self.is_uniform:
+            return (
+                "⚠️ Team ratings do not separate any two teams - fixture difficulty is "
+                "meaningless until real results land. Run `fpl ratings update`."
+            )
+
+        if self.is_preseason_estimate:
+            return (
+                "⚠️ Pre-season: ratings are estimated from last season (promoted teams "
+                "from Championship form). Fixture difficulty is indicative until GW1."
+            )
+
         days = self.days_since_update()
 
         if days < 0:
