@@ -25,7 +25,7 @@ from fpl_cli.api.historical_types import (
     compute_reliability,
     compute_trend,
 )
-from fpl_cli.season import get_season_year, season_label
+from fpl_cli.season import core_insights_season, get_season_year, season_label
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +110,7 @@ class CoreInsightsClient:
         self.fetcher = fetcher
         self._season_year = get_season_year()
         self._season_label = season_label(self._season_year)
-        self._ci_season = f"{self._season_year}-{self._season_year + 1}"
+        self._ci_season = core_insights_season(self._season_year)
         self._player_lookup: dict[int, _PlayerLookup] | None = None
         self._season_data: dict[str, list[SeasonHistory]] | None = None
         self._gw_rows: dict[int, dict[int, _GwRow]] | None = None

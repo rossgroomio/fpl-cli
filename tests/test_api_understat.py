@@ -6,6 +6,11 @@ import httpx
 import pytest
 
 from fpl_cli.api.understat import TEAM_NAME_MAP, UnderstatClient, match_fpl_to_understat
+from fpl_cli.season import understat_season
+
+# Derived from the same helper the client uses, so assertions follow the
+# season rollover instead of pinning the season these tests were written in.
+CURRENT_SEASON = understat_season()
 
 # --- Fixtures ---
 
@@ -188,7 +193,9 @@ class TestUnderstatClientLeaguePlayers:
 
             result = await client.get_league_players()
 
-            mock_get.assert_called_once_with("getLeagueData/EPL/2025", referer="league/EPL/2025")
+            mock_get.assert_called_once_with(
+                f"getLeagueData/EPL/{CURRENT_SEASON}", referer=f"league/EPL/{CURRENT_SEASON}"
+            )
             assert len(result) == 1
             assert result[0]["name"] == "Mohamed Salah"
 
@@ -329,7 +336,7 @@ class TestUnderstatClientTeam:
 
             result = await client.get_team("Liverpool")
 
-            mock_get.assert_called_once_with("Liverpool", "2025")
+            mock_get.assert_called_once_with("Liverpool", CURRENT_SEASON)
             assert result is not None
             assert result["team"] == "Liverpool"
             assert "players" in result
@@ -347,7 +354,7 @@ class TestUnderstatClientTeam:
             await client.get_team("Man City")
 
             # FPL name mapped; spaces become underscores in the url_name arg
-            mock_get.assert_called_once_with("Manchester_City", "2025")
+            mock_get.assert_called_once_with("Manchester_City", CURRENT_SEASON)
 
     @pytest.mark.asyncio
     async def test_get_team_not_found(self):

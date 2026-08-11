@@ -17,9 +17,13 @@ def settings_file(tmp_path):
     """Provide a temp settings file path and patch SETTINGS_FILE to use it."""
     path = tmp_path / "settings.yaml"
     env_path = tmp_path / ".env"
+    # _keyring_available covers the credentials tier, but the summary table
+    # calls keyring.get_password separately - without both, these tests read
+    # the host's real keyring.
     with patch("fpl_cli.cli.init._settings_file", return_value=path), \
          patch("fpl_cli.cli.init._env_file", return_value=env_path), \
-         patch("fpl_cli.cli.init._keyring_available", return_value=False):
+         patch("fpl_cli.cli.init._keyring_available", return_value=False), \
+         patch("keyring.get_password", return_value=None):
         yield path
 
 
