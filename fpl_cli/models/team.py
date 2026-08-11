@@ -17,9 +17,13 @@ class Team(BaseModel):
     #
     # None of these are published until a season is under way. Pre-season the
     # API returns null for `strength` and zeros for the four attack/defence
-    # axes, so every field is optional to keep those payloads valid. Zeros
-    # validate cleanly and read as real ratings, so callers must gate on
-    # has_strength_data rather than trusting the values.
+    # axes, so every field is optional to keep those payloads valid.
+    #
+    # Nothing reads these today. Fixture difficulty comes from
+    # TeamRatingsService, off its own 1-7 ratings in team_ratings.yaml. If that
+    # ever changes, note that the pre-season zeros validate cleanly and are
+    # indistinguishable from real ratings, so a new consumer needs its own
+    # check that a season is under way.
     strength: int | None = None  # Overall strength rating
     strength_overall_home: int | None = None
     strength_overall_away: int | None = None
@@ -40,22 +44,6 @@ class Team(BaseModel):
     points: int = 0
 
     model_config = ConfigDict(populate_by_name=True)
-
-    @property
-    def has_strength_data(self) -> bool:
-        """Whether the API has published this team's strength ratings.
-
-        False pre-season, when all four attack/defence axes come back as 0
-        for every team. They validate cleanly at that point, so anything
-        deriving fixture difficulty from them would otherwise read twenty
-        identical zeros as genuine ratings.
-        """
-        return any((
-            self.strength_attack_home,
-            self.strength_attack_away,
-            self.strength_defence_home,
-            self.strength_defence_away,
-        ))
 
     @property
     def form_list(self) -> list[str]:

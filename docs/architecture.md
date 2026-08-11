@@ -460,11 +460,10 @@ erDiagram
         string name
         string short_name
         int strength "nullable pre-season"
-        int strength_attack_home "0 pre-season"
-        int strength_attack_away "0 pre-season"
-        int strength_defence_home "0 pre-season"
-        int strength_defence_away "0 pre-season"
-        bool has_strength_data "guard: ratings published?"
+        int strength_attack_home "0 pre-season, unread"
+        int strength_attack_away "0 pre-season, unread"
+        int strength_defence_home "0 pre-season, unread"
+        int strength_defence_away "0 pre-season, unread"
         string form "W/D/L string"
     }
 

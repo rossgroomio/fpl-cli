@@ -1,9 +1,10 @@
-"""Tests for pre-season API payloads, where strength ratings are unpublished.
+"""Tests for pre-season behaviour, before a season's data is published.
 
-Before a season starts the FPL API returns ``"strength": null`` and zeroed
-attack/defence axes for all 20 teams. The null used to fail Team validation
-outright; the zeros validate cleanly and read as genuine ratings, so both the
-crash and the silent-uniformity path are covered here.
+Two separate failures are covered here. The FPL API returns
+``"strength": null`` for all 20 teams before a season starts, which used to
+fail Team validation outright. Independently, fixture difficulty is served by
+TeamRatingsService, which pre-season has no results to rate teams on and would
+otherwise fall back to one neutral value for every team.
 """
 
 from unittest.mock import AsyncMock, patch
@@ -96,48 +97,23 @@ class TestPreseasonTeamValidation:
         assert team.strength is None
         assert team.strength_attack_home is None
 
+    def test_zeroed_axes_round_trip_as_zero(self):
+        """The zeros are preserved verbatim, not normalised to None.
 
-class TestHasStrengthData:
-    """The availability guard for zeroed ratings (issue #44)."""
-
-    def test_false_when_attack_defence_zeroed(self):
-        """Zeros validate cleanly, so the guard is the only signal they are absent."""
+        Pins the pre-season shape: only `strength` arrives null, while the
+        attack/defence axes arrive as 0 and are indistinguishable from real
+        ratings. Nothing reads them today, so nothing can misread them.
+        """
         team = Team.model_validate(preseason_team(1, "Arsenal", "ARS", 3))
 
-        assert team.has_strength_data is False
-
-    def test_false_when_fields_absent(self):
-        team = Team(id=1, name="Arsenal", short_name="ARS", code=3)
-
-        assert team.has_strength_data is False
-
-    def test_true_once_ratings_are_published(self):
-        payload = preseason_team(1, "Arsenal", "ARS", 3) | {
-            "strength": 4,
-            "strength_attack_home": 1200,
-            "strength_attack_away": 1150,
-            "strength_defence_home": 1180,
-            "strength_defence_away": 1130,
-        }
-        team = Team.model_validate(payload)
-
-        assert team.has_strength_data is True
-
-    def test_true_when_only_one_axis_populated(self):
-        """Any populated axis means the API has started publishing."""
-        payload = preseason_team(1, "Arsenal", "ARS", 3) | {"strength_defence_away": 1130}
-        team = Team.model_validate(payload)
-
-        assert team.has_strength_data is True
-
-    async def test_whole_league_reads_as_unpublished(self, preseason_bootstrap):
-        client = FPLClient()
-        with patch.object(client, "_get", new_callable=AsyncMock) as mock_get:
-            mock_get.return_value = preseason_bootstrap
-
-            teams = await client.get_teams()
-
-        assert not any(t.has_strength_data for t in teams)
+        assert team.strength is None
+        assert team.strength_attack_home == 0
+        assert team.strength_attack_away == 0
+        assert team.strength_defence_home == 0
+        assert team.strength_defence_away == 0
+        # Only these two are genuinely populated before a season starts.
+        assert team.strength_overall_home == 4
+        assert team.strength_overall_away == 5
 
 
 class TestPreseasonRatings:
