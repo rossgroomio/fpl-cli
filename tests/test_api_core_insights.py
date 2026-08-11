@@ -11,8 +11,11 @@ from httpx import Response
 
 from fpl_cli.api.core_insights import BASE_URL, CoreInsightsClient, make_core_insights_fetcher
 from fpl_cli.api.dataset_fetcher import DatasetFetcher
+from fpl_cli.season import core_insights_season
 
-CI_SEASON = "2025-2026"
+# Derived from the same helper the client uses, so mocked URLs follow the
+# season rollover instead of pinning the season these tests were written in.
+CI_SEASON = core_insights_season()
 BASE = BASE_URL
 
 

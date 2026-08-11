@@ -550,7 +550,7 @@ fpl_cli/
 ├── scraper/
 │   └── fpl_prices.py             # FPLPriceScraper (needs FPL_EMAIL/FPL_PASSWORD; set FPL_BROWSER_IGNORE_CERTS=1 behind TLS-inspecting proxies)
 ├── paths.py                      # SHIPPED_CONFIG_DIR, TEMPLATE_DIR, user_config_dir(), user_data_dir()
-├── season.py                     # season_label() (+ vaastav_season() alias), TOTAL_GAMEWEEKS, CHIP_SPLIT_GW
+├── season.py                     # season_label() (+ vaastav_season() alias), understat_season(), core_insights_season(), TOTAL_GAMEWEEKS, CHIP_SPLIT_GW
 ├── constants.py                  # MIN_MINUTES_FOR_PER90
 └── utils/
     ├── text.py                   # strip_diacritics (name matching across sources)

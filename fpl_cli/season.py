@@ -8,6 +8,7 @@ season starting in August).
 Format conventions used by external data sources:
   - Season label (generic): hyphenated, e.g. "2025-26" for 2025/26
   - Understat:              start year as string, e.g. "2025" for 2025/26
+  - FPL-Core-Insights:      both years in full, e.g. "2025-2026" for 2025/26
 """
 
 from __future__ import annotations
@@ -54,6 +55,19 @@ def understat_season(year: int | None = None) -> str:
     '2025'
     """
     return str(year if year is not None else get_season_year())
+
+
+def core_insights_season(year: int | None = None) -> str:
+    """Return the FPL-Core-Insights season identifier (both years in full).
+
+    This is the path segment used by the dataset, distinct from the
+    hyphenated short form returned by season_label().
+
+    >>> core_insights_season(2025)
+    '2025-2026'
+    """
+    y = year if year is not None else get_season_year()
+    return f"{y}-{y + 1}"
 
 
 def season_label(year: int | None = None) -> str:

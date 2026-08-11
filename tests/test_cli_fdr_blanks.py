@@ -1,12 +1,19 @@
 """Tests for fpl fdr --blanks flag."""
 
 import json
+from datetime import date
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
 
 from fpl_cli.cli import main
+from fpl_cli.season import get_season_year
+
+# Derived from the same helper the service uses for staleness, so predictions
+# stay on the intended side of the season cutover year-round.
+CURRENT_SEASON_DATE = date.today().isoformat()
+PREVIOUS_SEASON_DATE = date(get_season_year() - 1, 9, 1).isoformat()
 
 
 @pytest.fixture
@@ -40,7 +47,7 @@ class TestBlanksFlag:
     def test_blanks_shows_blank_gameweeks(self, runner, mock_fpl_client, tmp_path):
         config_path = tmp_path / "predictions.yaml"
         config_path.write_text(
-            "metadata:\n  last_updated: '2026-03-19'\n"
+            f"metadata:\n  last_updated: '{CURRENT_SEASON_DATE}'\n"
             "predicted_blanks:\n"
             "- gameweek: 31\n  teams: [ARS, MCI]\n  reason: FA Cup\n  confidence: high\n"
             "predicted_doubles: []\n",
@@ -58,12 +65,12 @@ class TestBlanksFlag:
 
         assert result.exit_code == 0
         assert "Blank" in result.output
-        assert "2026-03-19" in result.output
+        assert CURRENT_SEASON_DATE in result.output
 
     def test_blanks_with_from_to_gw(self, runner, mock_fpl_client, tmp_path):
         config_path = tmp_path / "predictions.yaml"
         config_path.write_text(
-            "metadata:\n  last_updated: '2026-03-19'\n"
+            f"metadata:\n  last_updated: '{CURRENT_SEASON_DATE}'\n"
             "predicted_blanks: []\npredicted_doubles: []\n",
             encoding="utf-8",
         )
@@ -102,7 +109,7 @@ class TestBlanksFlag:
         """Predictions before current GW (30) should be filtered out."""
         config_path = tmp_path / "predictions.yaml"
         config_path.write_text(
-            "metadata:\n  last_updated: '2026-03-19'\n"
+            f"metadata:\n  last_updated: '{CURRENT_SEASON_DATE}'\n"
             "predicted_blanks:\n"
             "- gameweek: 28\n  teams: [ARS]\n  reason: Past\n  confidence: high\n"
             "- gameweek: 31\n  teams: [MCI]\n  reason: Future\n  confidence: medium\n"
@@ -128,7 +135,7 @@ class TestBlanksFlag:
         """--blanks --format json emits valid JSON with blanks/doubles structure."""
         config_path = tmp_path / "predictions.yaml"
         config_path.write_text(
-            "metadata:\n  last_updated: '2026-03-19'\n"
+            f"metadata:\n  last_updated: '{CURRENT_SEASON_DATE}'\n"
             "predicted_blanks:\n"
             "- gameweek: 31\n  teams: [ARS, MCI]\n  reason: FA Cup\n  confidence: high\n"
             "predicted_doubles:\n"
@@ -170,7 +177,7 @@ class TestBlanksFlag:
         """Stale predictions (previous season) show warning with 'unknown' date."""
         config_path = tmp_path / "predictions.yaml"
         config_path.write_text(
-            "metadata:\n  last_updated: '2024-03-19'\n"
+            f"metadata:\n  last_updated: '{PREVIOUS_SEASON_DATE}'\n"
             "predicted_blanks:\n"
             "- gameweek: 31\n  teams: [ARS]\n  confidence: high\n"
             "predicted_doubles: []\n",
@@ -194,7 +201,7 @@ class TestBlanksFlag:
         """--blanks --format json metadata includes from_gw and to_gw."""
         config_path = tmp_path / "predictions.yaml"
         config_path.write_text(
-            "metadata:\n  last_updated: '2026-03-19'\n"
+            f"metadata:\n  last_updated: '{CURRENT_SEASON_DATE}'\n"
             "predicted_blanks: []\npredicted_doubles: []\n",
             encoding="utf-8",
         )

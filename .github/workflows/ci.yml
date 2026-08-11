@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  schedule:
+    # Date-derived logic (the July season cutover) can break main with no
+    # commit behind it, which push/pull_request triggers never surface.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
 
 permissions:
   contents: read

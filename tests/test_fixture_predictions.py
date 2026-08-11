@@ -1,8 +1,11 @@
 """Tests for fixture predictions service."""
 
+from datetime import date
+
 import pytest
 import yaml
 
+from fpl_cli.season import get_season_year
 from fpl_cli.services.fixture_predictions import (
     CONFIDENCE_MULTIPLIERS,
     BlankPrediction,
@@ -11,6 +14,11 @@ from fpl_cli.services.fixture_predictions import (
     FixturePredictionsService,
     build_prediction_lookup,
 )
+
+# Derived from the same helper the service uses for staleness, so fixtures stay
+# on the intended side of the season cutover year-round.
+CURRENT_SEASON_DATE = date.today().isoformat()
+PREVIOUS_SEASON_DATE = date(get_season_year() - 1, 9, 1).isoformat()
 
 
 class TestBlankPrediction:
@@ -95,7 +103,7 @@ class TestFixturePredictionsService:
     def temp_config(self, tmp_path):
         config_path = tmp_path / "fixture_predictions.yaml"
         initial_data = {
-            "metadata": {"last_updated": "2026-01-01", "notes": "test"},
+            "metadata": {"last_updated": CURRENT_SEASON_DATE, "notes": "test"},
             "predicted_blanks": [
                 {"gameweek": 28, "teams": ["ARS"], "confidence": "medium"},
                 {"gameweek": 31, "teams": ["MCI", "WOL"], "confidence": "high"},
@@ -150,7 +158,7 @@ class TestFixturePredictionsService:
 
     def test_get_metadata(self, service):
         metadata = service.get_metadata()
-        assert metadata["last_updated"] == "2026-01-01"
+        assert metadata["last_updated"] == CURRENT_SEASON_DATE
 
     def test_missing_config_returns_empty(self, tmp_path):
         service = FixturePredictionsService(config_path=tmp_path / "nonexistent.yaml")
@@ -161,7 +169,7 @@ class TestFixturePredictionsService:
         """YAML with legacy status/source fields loads without error."""
         config_path = tmp_path / "legacy.yaml"
         data = {
-            "metadata": {"last_updated": "2026-01-01"},
+            "metadata": {"last_updated": CURRENT_SEASON_DATE},
             "predicted_blanks": [
                 {
                     "gameweek": 29,
@@ -195,7 +203,7 @@ class TestFixturePredictionsService:
         """Predictions from a previous season are suppressed."""
         config_path = tmp_path / "stale.yaml"
         data = {
-            "metadata": {"last_updated": "2024-03-15", "notes": "old season"},
+            "metadata": {"last_updated": PREVIOUS_SEASON_DATE, "notes": "old season"},
             "predicted_blanks": [
                 {"gameweek": 29, "teams": ["ARS"], "confidence": "high"},
             ],
@@ -238,10 +246,8 @@ def _make_team_map() -> dict[int, object]:
 
 def _make_service(tmp_path, blanks=None, doubles=None):
     """Create a FixturePredictionsService with given predictions."""
-    from datetime import date
-
     data = {
-        "metadata": {"last_updated": date.today().isoformat(), "notes": "test"},
+        "metadata": {"last_updated": CURRENT_SEASON_DATE, "notes": "test"},
         "predicted_blanks": blanks or [],
         "predicted_doubles": doubles or [],
     }
