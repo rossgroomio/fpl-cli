@@ -9,7 +9,7 @@ import click
 from rich.panel import Panel
 from rich.table import Table
 
-from fpl_cli.cli._context import console, load_settings
+from fpl_cli.cli._context import console, handle_agent_failure, load_settings
 from fpl_cli.cli._helpers import FDR_EASY, FDR_MEDIUM
 from fpl_cli.cli._json import emit_json, emit_json_error, json_output_mode, output_format_option
 
@@ -49,10 +49,7 @@ def captain_command(global_mode: bool, output_format: str):
             result = await agent.run(context)
 
         if not result.success:
-            console.print(f"[red]Agent failed: {result.message}[/red]")
-            for error in result.errors:
-                console.print(f"  [red]{error}[/red]")
-            raise SystemExit(1)
+            handle_agent_failure(result)
 
         data = result.data
         mode_label = "Your Squad" if data.get("my_squad_mode") else "Global Top Players"

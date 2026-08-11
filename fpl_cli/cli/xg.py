@@ -9,7 +9,7 @@ import click
 from rich.panel import Panel
 from rich.table import Table
 
-from fpl_cli.cli._context import CLIContext, console, is_custom_analysis_enabled
+from fpl_cli.cli._context import CLIContext, console, handle_agent_failure, is_custom_analysis_enabled
 from fpl_cli.cli._json import emit_json, emit_json_error, json_output_mode, output_format_option
 
 
@@ -60,10 +60,7 @@ def xg_command(ctx: click.Context, last_n: int, all_season: bool, output_format:
             result = await agent.run()
 
         if not result.success:
-            console.print(f"[red]Agent failed: {result.message}[/red]")
-            for error in result.errors:
-                console.print(f"  [red]{error}[/red]")
-            raise SystemExit(1)
+            handle_agent_failure(result)
 
         data = result.data
         window_label = data.get("window_label", "whole season")

@@ -9,7 +9,15 @@ import click
 import httpx
 from rich.panel import Panel
 
-from fpl_cli.cli._context import CLIContext, Format, console, error_console, get_format, load_settings
+from fpl_cli.cli._context import (
+    CLIContext,
+    Format,
+    console,
+    error_console,
+    get_format,
+    handle_agent_failure,
+    load_settings,
+)
 from fpl_cli.cli._json import emit_json, emit_json_error, json_output_mode, output_format_option
 from fpl_cli.cli._plan_grid import grid_command
 from fpl_cli.cli.sell_prices import sell_prices_command
@@ -58,6 +66,17 @@ def squad_group(ctx: click.Context, is_draft: bool, output_format: str) -> None:
         )
         return
 
+    def _report_no_squad(gameweek: int) -> None:
+        # Pre-season / before the first deadline, the picks endpoint legitimately
+        # 404s until a squad has been submitted -- this is expected, not exceptional.
+        message = f"No squad submitted for GW{gameweek} yet."
+        if output_format == "json":
+            with json_output_mode() as stdout:
+                emit_json_error("squad", message, file=stdout)
+            return
+        error_console.print(f"[yellow]{message}[/yellow]")
+        raise SystemExit(1) from None
+
     async def _run() -> None:
         from fpl_cli.agents.common import get_actual_squad_picks
         from fpl_cli.api.fpl import FPLClient
@@ -71,10 +90,16 @@ def squad_group(ctx: click.Context, is_draft: bool, output_format: str) -> None:
                 from fpl_cli.api.fpl_draft import FPLDraftClient
 
                 async with FPLDraftClient() as draft_client:
-                    squad_players = await get_draft_squad_players(
-                        draft_client, all_players, draft_entry_id, gw,
-                        log=lambda msg: error_console.print(f"[yellow]{msg}[/yellow]"),
-                    )
+                    try:
+                        squad_players = await get_draft_squad_players(
+                            draft_client, all_players, draft_entry_id, gw,
+                            log=lambda msg: error_console.print(f"[yellow]{msg}[/yellow]"),
+                        )
+                    except httpx.HTTPStatusError as exc:
+                        if exc.response.status_code != 404:
+                            raise
+                        _report_no_squad(gw)
+                        return
                 picks = [p.id for p in squad_players]
                 context: dict = {"picks": picks, "format": "draft"}
             else:
@@ -85,15 +110,8 @@ def squad_group(ctx: click.Context, is_draft: bool, output_format: str) -> None:
                 except httpx.HTTPStatusError as exc:
                     if exc.response.status_code != 404:
                         raise
-                    # Pre-season / before the first deadline, the picks endpoint legitimately
-                    # 404s until a squad has been submitted -- this is expected, not exceptional.
-                    message = f"No squad submitted for GW{target_gw} yet."
-                    if output_format == "json":
-                        with json_output_mode() as stdout:
-                            emit_json_error("squad", message, file=stdout)
-                        return
-                    error_console.print(f"[yellow]{message}[/yellow]")
-                    raise SystemExit(1) from None
+                    _report_no_squad(target_gw)
+                    return
                 picks = [p["element"] for p in picks_data.get("picks", [])]
                 context = {"picks": picks, "format": "classic"}
 
@@ -114,10 +132,7 @@ def squad_group(ctx: click.Context, is_draft: bool, output_format: str) -> None:
             result = await agent.run(context=context)
 
         if not result.success:
-            console.print(f"[red]Agent failed: {result.message}[/red]")
-            for error in result.errors:
-                console.print(f"  [red]{error}[/red]")
-            raise SystemExit(1)
+            handle_agent_failure(result)
 
         _render(result.data, is_draft)
 

@@ -291,6 +291,35 @@ class TestSquadPreSeasonNoPicks:
         assert result.exit_code != 0
         assert "No squad submitted" not in result.output
 
+    def test_draft_table_mode_shows_friendly_message(self, runner):
+        """`fpl squad --draft` before a draft squad has ever been picked (#47 review follow-up)."""
+        import httpx
+
+        settings = {"fpl": {"draft_entry_id": 99, "draft_league_id": 42}}
+        client = _mock_fpl_client()
+        client.get_next_gameweek = AsyncMock(return_value={"id": 1})  # pre-season: next GW is 1
+
+        draft_client = MagicMock()
+        draft_client.__aenter__ = AsyncMock(return_value=draft_client)
+        draft_client.__aexit__ = AsyncMock(return_value=False)
+        request = httpx.Request("GET", "https://draft.premierleague.com/api/entry/99/event/1")
+        response = httpx.Response(404, request=request)
+        draft_client.get_entry_picks = AsyncMock(
+            side_effect=httpx.HTTPStatusError("Not Found", request=request, response=response)
+        )
+        draft_client.get_bootstrap_static = AsyncMock(return_value={"elements": []})
+
+        p1, p2 = _patch_settings(settings)
+
+        with p1, p2, \
+             patch("fpl_cli.api.fpl.FPLClient", return_value=client), \
+             patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=draft_client):
+            result = runner.invoke(main, ["squad", "--draft"])
+
+        assert result.exit_code != 0
+        assert "No squad submitted for GW1 yet" in result.output
+        assert "Traceback" not in result.output
+
 
 class TestTeamCommandRetired:
     """Verify `fpl team` no longer exists."""

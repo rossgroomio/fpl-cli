@@ -9,7 +9,7 @@ import click
 from rich.panel import Panel
 from rich.table import Table
 
-from fpl_cli.cli._context import console
+from fpl_cli.cli._context import console, handle_agent_failure
 
 
 @click.command("price-changes")
@@ -22,10 +22,7 @@ def price_changes_command():
             result = await agent.run()
 
         if not result.success:
-            console.print(f"[red]Agent failed: {result.message}[/red]")
-            for error in result.errors:
-                console.print(f"  [red]{error}[/red]")
-            raise SystemExit(1)
+            handle_agent_failure(result)
 
         data = result.data
         console.print(Panel.fit("[bold blue]Price Change Analysis[/bold blue]"))
