@@ -241,6 +241,8 @@ fpl ratings update --dry-run       # Preview changes without saving
 
 Before GW1 there are no results to rate teams on, so ratings are estimated from the previous season (promoted teams from Championship form) and every fixture-difficulty view says so until real results land.
 
+Ratings are tied to the season that produced them. A file carried across a season boundary is ignored rather than served, because it rates the three relegated clubs and knows nothing about the three promoted ones. Ratings that cover the wrong set of clubs are called out by name — `team_ratings.yaml is missing COV, HUL, IPS and still rates BUR, WHU, WOL` — which catches a rollover that a "days old" check cannot: a file rebuilt in early August is new by date and still describes last season's league.
+
 See [Team Ratings](custom-analysis.md#team-ratings) for calculation methodology, axes, early-season blending, pre-season estimates, and manual overrides.
 
 ### Chips

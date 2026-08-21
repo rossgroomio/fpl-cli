@@ -127,6 +127,11 @@ class FixtureAgent(Agent):
                 "double_gameweeks": double_gws,
                 "easy_fixture_runs": easy_runs,
                 "team_form": team_form,
+                # Rating-quality warning from the service this agent refreshed
+                # and team-set checked. Sourced here rather than from a second
+                # TeamRatingsService in the CLI, which would load the file
+                # again without either check and warn about the wrong things.
+                "ratings_warning": self.ratings_service.get_staleness_warning(),
             }
 
             if context and "squad" in context:

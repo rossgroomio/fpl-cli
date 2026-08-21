@@ -1480,6 +1480,31 @@ class TestPrepareScoringData:
         assert data.next_gw is None
         assert data.next_gw_fixtures == []
 
+    async def test_broken_user_predictions_file_is_reported(self, capsys):
+        """A malformed user fixture_predictions.yaml must not be silently ignored.
+
+        The agents built on prepare_scoring_data are the paths where the
+        fall-through to the shipped copy was invisible; fdr/review already
+        warn for the identical file.
+        """
+        from unittest.mock import AsyncMock
+
+        from fpl_cli.paths import user_config_dir
+        from tests.conftest import make_team
+
+        user_file = user_config_dir() / "fixture_predictions.yaml"
+        user_file.write_text("[unclosed", encoding="utf-8")
+
+        client = AsyncMock()
+        client.get_teams.return_value = [make_team(id=1, short_name="ARS")]
+        client.get_fixtures.return_value = []
+        client.get_next_gameweek.return_value = {"id": 25}
+
+        await prepare_scoring_data(client)
+
+        # rich wraps the long tmp path across lines; unwrap before matching
+        assert str(user_file) in capsys.readouterr().err.replace("\n", "")
+
 
 class TestBuildFixtureMatchups:
     """Tests for build_fixture_matchups helper."""

@@ -19,6 +19,7 @@ from fpl_cli.cli._review_draft import _format_review_draft_player
 from fpl_cli.models.player import Player
 from fpl_cli.models.team import Team
 from fpl_cli.paths import SHIPPED_CONFIG_DIR, user_config_file
+from fpl_cli.utils.teams import describe_team_set_mismatch
 from fpl_cli.utils.text import strip_diacritics
 
 # Goals/assists strings: "Damsgaard (BRE), Thiago x2 (BRE)".
@@ -81,6 +82,12 @@ def _build_research_allowlists(
     return table_allowlist, prose_allowlist
 
 
+def _read_manager_layer(path: Path) -> dict[str, str]:
+    if not path.exists():
+        return {}
+    return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+
+
 def _load_team_managers() -> dict[str, str]:
     """Shipped manager map with the user config-dir copy layered on top.
 
@@ -91,14 +98,57 @@ def _load_team_managers() -> dict[str, str]:
     copied into the config dir automatically, most existing users have one
     they never chose to author.
     """
-    managers: dict[str, str] = {}
-    for path in (
-        SHIPPED_CONFIG_DIR / "team_managers.yaml",
-        user_config_file("team_managers.yaml"),
-    ):
-        if path.exists():
-            managers.update(yaml.safe_load(path.read_text(encoding="utf-8")) or {})
-    return managers
+    shipped = _read_manager_layer(SHIPPED_CONFIG_DIR / "team_managers.yaml")
+    user_copy = _read_manager_layer(user_config_file("team_managers.yaml"))
+    _warn_manager_overrides(shipped, user_copy)
+    return {**shipped, **user_copy}
+
+
+def _warn_manager_overrides(shipped: dict[str, str], user_copy: dict[str, str]) -> None:
+    """Name the clubs where the user copy shadows a different shipped manager.
+
+    The user copies that exist today are mostly auto-migrated snapshots of a
+    full past-season map, so after a season refresh they override the shipped
+    name for every continuing club. The team-set check cannot catch that (the
+    twenty clubs may be unchanged) and the file has no date, so the only
+    defence is naming the shadowed entries and letting the user prune the
+    ones they never authored.
+    """
+    shadowed = sorted(
+        club for club, name in user_copy.items()
+        if club in shipped and shipped[club] != name
+    )
+    if shadowed:
+        error_console.print(
+            f"[yellow]⚠️ team_managers.yaml in your config dir overrides the shipped"
+            f" managers for {', '.join(shadowed)} - delete any entries you did not"
+            " author or the recap may name last season's managers[/yellow]"
+        )
+
+
+def _warn_manager_team_drift(managers: dict[str, str], teams: dict[int, Team] | None) -> None:
+    """Report a manager map that no longer matches the league.
+
+    Without this check, across a promotion and relegation boundary a recap
+    prints manager names for clubs that went down and nothing at all for the
+    ones that came up -- and the prompt is handed those names as current
+    fact. Only a set diff catches it: the file has no date, and one refreshed
+    in early August would pass a staleness check anyway.
+    """
+    if not teams:
+        return
+
+    mismatch = describe_team_set_mismatch(
+        "team_managers.yaml",
+        managers,
+        (team.short_name for team in teams.values()),
+        verb="lists",
+    )
+    if mismatch:
+        error_console.print(
+            f"[yellow]⚠️ {rich_escape(mismatch)} - update it before the recap"
+            " names the wrong managers[/yellow]"
+        )
 
 
 def _format_research_context(
@@ -153,6 +203,7 @@ def _format_research_context(
     manager_context_str = ""
     managers = _load_team_managers()
     if managers:
+        _warn_manager_team_drift(managers, teams)
         manager_context_str = "Current PL managers: " + ", ".join(
             f"{code}: {name}" for code, name in sorted(managers.items())
         )

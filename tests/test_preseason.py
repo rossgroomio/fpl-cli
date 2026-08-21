@@ -14,6 +14,7 @@ import yaml
 
 from fpl_cli.api.fpl import FPLClient
 from fpl_cli.models.team import Team
+from fpl_cli.season import season_label
 from fpl_cli.services.team_ratings import (
     PRESEASON_SOURCE,
     TeamRating,
@@ -149,6 +150,30 @@ class TestPreseasonRatings:
         return path
 
     @pytest.fixture
+    def current_season_config(self, tmp_path):
+        """Ratings for the season in progress, so the season check keeps them."""
+        path = tmp_path / "team_ratings.yaml"
+        with open(path, "w", encoding="utf-8") as f:
+            yaml.dump(
+                {
+                    "metadata": {
+                        "season": season_label(),
+                        "last_updated": "2026-03-25",
+                        "source": "auto_calculated",
+                        "staleness_threshold_days": 30,
+                        "based_on_gws": [20, 31],
+                        "calculation_method": "recent_form",
+                    },
+                    "ratings": {
+                        "ARS": {"atk_home": 2, "atk_away": 1, "def_home": 1, "def_away": 1},
+                        "IPS": {"atk_home": 6, "atk_away": 7, "def_home": 6, "def_away": 7},
+                    },
+                },
+                f,
+            )
+        return path
+
+    @pytest.fixture
     def preseason_client(self):
         """A client reporting GW1 as next, i.e. nothing has been played."""
         client = AsyncMock()
@@ -224,11 +249,11 @@ class TestPreseasonRatings:
         assert len(set(fdrs.values())) > 1, f"pFDR identical for every team: {fdrs}"
         assert service.is_uniform is False
 
-    async def test_keeps_last_season_ratings_when_prior_unavailable(
-        self, last_season_config, preseason_client
+    async def test_keeps_current_season_ratings_when_prior_unavailable(
+        self, current_season_config, preseason_client
     ):
         """An empty prior leaves existing ratings in place rather than wiping them."""
-        service = TeamRatingsService(config_path=last_season_config)
+        service = TeamRatingsService(config_path=current_season_config)
 
         with patch(
             "fpl_cli.services.team_ratings_prior.generate_prior",
@@ -239,6 +264,28 @@ class TestPreseasonRatings:
 
         assert service.get_rating("ARS") is not None
         assert service.is_preseason_estimate is False
+
+    async def test_previous_season_ratings_are_dropped_not_kept(
+        self, last_season_config, preseason_client
+    ):
+        """Last season's numbers must not survive an empty prior either.
+
+        Serving them would rate the relegated clubs and silently hand the
+        promoted ones a neutral 4.0 -- the failure this whole module exists
+        to prevent, arriving by a different route.
+        """
+        service = TeamRatingsService(config_path=last_season_config)
+
+        with patch(
+            "fpl_cli.services.team_ratings_prior.generate_prior",
+            new_callable=AsyncMock,
+        ) as mock_prior:
+            mock_prior.return_value = {}
+            await service.ensure_fresh(preseason_client)
+
+        assert service.get_rating("ARS") is None
+        assert service.has_ratings is False
+        assert "different league" in service.get_staleness_warning()
 
 
 class TestRatingsQualityWarnings:

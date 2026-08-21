@@ -1112,6 +1112,42 @@ class TestLoadTeamManagers:
 
         assert _load_team_managers() == self._shipped()
 
+    def test_shadowing_a_shipped_club_is_reported(self, tmp_path, monkeypatch, capsys):
+        """An auto-migrated past-season snapshot overrides every continuing club.
+
+        The team-set check cannot see it when the twenty clubs are unchanged,
+        so the override itself has to be named.
+        """
+        from fpl_cli.cli._review_summarisation import _load_team_managers
+        from fpl_cli.paths import user_config_dir
+
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "team_managers.yaml").write_text("ARS: Someone Else\n", encoding="utf-8")
+        monkeypatch.setenv("FPL_CLI_CONFIG_DIR", str(config_dir))
+        user_config_dir.cache_clear()
+
+        _load_team_managers()
+
+        err = capsys.readouterr().err
+        assert "team_managers.yaml" in err
+        assert "ARS" in err
+
+    def test_adding_an_unshipped_club_is_not_reported(self, tmp_path, monkeypatch, capsys):
+        """A promoted side named before the next release is the intended use."""
+        from fpl_cli.cli._review_summarisation import _load_team_managers
+        from fpl_cli.paths import user_config_dir
+
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "team_managers.yaml").write_text("ZZZ: New Gaffer\n", encoding="utf-8")
+        monkeypatch.setenv("FPL_CLI_CONFIG_DIR", str(config_dir))
+        user_config_dir.cache_clear()
+
+        _load_team_managers()
+
+        assert capsys.readouterr().err == ""
+
 
 class TestFormatResearchContext:
     """Tests for _format_research_context predicted DGW formatting."""

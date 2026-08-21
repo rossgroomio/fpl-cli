@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import sys
 from pathlib import Path
 from types import ModuleType
 from unittest.mock import AsyncMock, patch
@@ -15,12 +16,22 @@ from tests.conftest import make_player
 
 
 def _load_script() -> ModuleType:
-    """Load bench_order.py as a module (it's not a package)."""
-    script_path = Path(__file__).parent.parent / ".agents/skills/gw-prep/scripts/bench_order.py"
-    spec = importlib.util.spec_from_file_location("bench_order_script", script_path)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    """Load bench_order.py as a module (it's not a package).
+
+    The scripts dir goes on sys.path while loading, matching a real
+    `python bench_order.py` run (sys.path[0] is the script's own dir), so
+    the shared `_bootstrap` sibling module resolves.
+    """
+    scripts_dir = Path(__file__).parent.parent / ".agents/skills/gw-prep/scripts"
+    script_path = scripts_dir / "bench_order.py"
+    sys.path.insert(0, str(scripts_dir))
+    try:
+        spec = importlib.util.spec_from_file_location("bench_order_script", script_path)
+        assert spec is not None and spec.loader is not None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+    finally:
+        sys.path.remove(str(scripts_dir))
     return mod
 
 

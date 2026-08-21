@@ -363,7 +363,7 @@ Services live in `fpl_cli/services/` and provide the computation layer between a
 |---|---|
 | `player_scoring` | Central scoring engine: `prepare_scoring_data()`, all score functions, `shrink_scores()`. Form modifiers: `compute_form_trajectory()` (direction over recent GWs) and `compute_xgi_sustainability()` (ATK-only rolling xGI divergence -> [0.85, 1.15] multiplier). Fixture-adjusted npxG: `compute_adjusted_npxg()` / `build_adjusted_npxg_lookup()` normalise historical xG by opponent Elo; `apply_adjusted_npxg()` overwrites `npxG_per_90` in agent enrichment when data is available. Consistency signals: `build_consistency_lookup()` computes 5 per-player signals (CV-xGI percentile, blank rate, floor percentile, involvement rate, GK consistency) with GW6-10 phase-in; additive bonuses per scoring family (target/waiver cv*1.5, differential inverted cv*0.75, lineup cv*0.75, bench floor*1.5+inv*0.75) |
 | `player_prior` | Bayesian early-season confidence (GW1-10 shrinkage); threads `PlayerProfile.reliability` (historical availability rate) through `PlayerPrior` to agents |
-| `team_ratings` | TeamRatingsService + Calculator (1-7 scale, 4 axes). Pre-season (no completed GW) seeds from the previous-season prior instead of serving last season's table; `has_ratings` / `is_uniform` / `is_preseason_estimate` flag rating sets that cannot produce meaningful fixture difficulty, surfaced via `get_staleness_warning()` |
+| `team_ratings` | TeamRatingsService + Calculator (1-7 scale, 4 axes). Pre-season (no completed GW) seeds from the previous-season prior instead of serving last season's table. Season-aware: a file stamped (or dated) to a previous season is ignored rather than served, taking its `based_on_gws` with it so a new season recalculates. `check_team_set()` diffs the rated clubs against `bootstrap-static` and names the promoted clubs missing and the relegated ones still rated — the check that catches a rollover a date cannot. `has_ratings` / `is_uniform` / `is_preseason_estimate` flag rating sets that cannot produce meaningful fixture difficulty; every warning surfaces via `get_staleness_warning()` |
 | `matchup` | Fixture matchup scoring (0-10), 3-GW recency-weighted |
 | `fixture_predictions` | BGW/DGW predictions from YAML + live detection |
 | `squad_allocator` | ILP squad allocator (PuLP CBC), horizon-aware, chip-aware |
@@ -553,6 +553,7 @@ fpl_cli/
 ├── season.py                     # season_label() (+ vaastav_season() alias), understat_season(), core_insights_season(), TOTAL_GAMEWEEKS, CHIP_SPLIT_GW
 ├── constants.py                  # MIN_MINUTES_FOR_PER90
 └── utils/
+    ├── teams.py                  # describe_team_set_mismatch — diff a per-team config against the live team list (promotion/relegation drift)
     ├── text.py                   # strip_diacritics (name matching across sources)
     └── time.py                   # format_deadline/format_kickoff/format_generated_at — UK local (Europe/London, auto GMT↔BST). Canonical formatter for every user-facing timestamp.
 
@@ -561,10 +562,10 @@ platformdirs (user_config_dir / user_data_dir)  # macOS: ~/Library/Application S
 │                                 # ephemeral environments like Claude Code on the web, where the
 │                                 # platformdirs defaults die with the container)
 ├── settings.yaml                 # User overrides, created by `fpl init` (config dir)
-├── team_managers.yaml            # Manager name mappings (shipped in package; config-dir copy layers over it per club, so a season refresh still reaches clubs the user has not overridden)
+├── team_managers.yaml            # Manager name mappings (shipped in package; config-dir copy layers over it per club, so a season refresh still reaches clubs the user has not overridden). Diffed against the live team list on use, naming clubs it misses and clubs it still lists
 ├── team_ratings_overrides.yaml   # Manual per-team axis overrides (config dir, migrated from repo config/)
 ├── fixture_predictions.yaml      # Optional BGW/DGW predictions override (config dir); takes precedence over the shipped copy
-├── team_ratings.yaml             # Cached team strength ratings (data dir, auto-refreshed)
+├── team_ratings.yaml             # Cached team strength ratings (data dir, auto-refreshed; metadata.season invalidates it across a season boundary)
 ├── team_ratings_prior.yaml       # Cached team ratings priors (data dir)
 ├── player_prior.yaml             # Cached player priors (data dir, generated, season/GW invalidation)
 ├── chip_plan.json                # User's chip plan (data dir, created via `fpl chips add`)
