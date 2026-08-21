@@ -549,7 +549,7 @@ fpl_cli/
 │   └── recommendations.py        # Parse gw{N}-recommendations.md into structured decisions
 ├── scraper/
 │   └── fpl_prices.py             # FPLPriceScraper (needs FPL_EMAIL/FPL_PASSWORD; set FPL_BROWSER_IGNORE_CERTS=1 behind TLS-inspecting proxies)
-├── paths.py                      # SHIPPED_CONFIG_DIR, TEMPLATE_DIR, user_config_dir(), user_data_dir(), user_cache_dir() — each user_* dir overridable via FPL_CLI_CONFIG_DIR / FPL_CLI_DATA_DIR / FPL_CLI_CACHE_DIR
+├── paths.py                      # SHIPPED_CONFIG_DIR, TEMPLATE_DIR, user_config_dir(), user_data_dir(), user_cache_dir() — each user_* dir overridable via FPL_CLI_CONFIG_DIR / FPL_CLI_DATA_DIR / FPL_CLI_CACHE_DIR (absolute paths only; a relative one raises UserDirError rather than resolving against the cwd)
 ├── season.py                     # season_label() (+ vaastav_season() alias), understat_season(), core_insights_season(), TOTAL_GAMEWEEKS, CHIP_SPLIT_GW
 ├── constants.py                  # MIN_MINUTES_FOR_PER90
 └── utils/
@@ -561,7 +561,7 @@ platformdirs (user_config_dir / user_data_dir)  # macOS: ~/Library/Application S
 │                                 # ephemeral environments like Claude Code on the web, where the
 │                                 # platformdirs defaults die with the container)
 ├── settings.yaml                 # User overrides, created by `fpl init` (config dir)
-├── team_managers.yaml            # Manager name mappings (config dir, migrated from repo config/)
+├── team_managers.yaml            # Manager name mappings (shipped in package; config-dir copy layers over it per club, so a season refresh still reaches clubs the user has not overridden)
 ├── team_ratings_overrides.yaml   # Manual per-team axis overrides (config dir, migrated from repo config/)
 ├── fixture_predictions.yaml      # Optional BGW/DGW predictions override (config dir); takes precedence over the shipped copy
 ├── team_ratings.yaml             # Cached team strength ratings (data dir, auto-refreshed)

@@ -60,7 +60,7 @@ Errors use `emit_json_error()` with `{"command", "error"}` shape.
 **Column key:**
 - **JSON** - supports `--format json` output
 - **Format** - Classic (classic league only), Draft (draft league only), General (both)
-- **Experimental** - requires `custom_analysis: true` in settings; hidden from `--help` by default
+- **Experimental** - requires `custom_analysis: true` in settings; hidden from `--help` by default, and invoking one while it is off reports the toggle and the settings.yaml being read
 - **Pattern** - `direct-api` (API client only), `via-agent` (uses analysis agent), `mixed` (both patterns in subcommands)
 
 ## Skills

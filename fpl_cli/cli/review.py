@@ -9,7 +9,15 @@ from pathlib import Path
 import click
 from rich.panel import Panel
 
-from fpl_cli.cli._context import Format, console, error_console, get_format, load_settings, resolve_output_dir
+from fpl_cli.cli._context import (
+    Format,
+    console,
+    error_console,
+    get_format,
+    load_settings,
+    resolve_output_dir,
+    warn_prediction_problems,
+)
 from fpl_cli.cli._review_analysis import _review_fixtures, _review_global_stats, _review_league_table
 from fpl_cli.cli._review_classic import _review_classic_league, _review_classic_team, _review_classic_transfers
 from fpl_cli.cli._review_draft import _review_draft
@@ -187,6 +195,7 @@ def review_command(
             # Predicted future DGWs for prompt context
             pred_service = FixturePredictionsService()
             global_data["predicted_dgw_teams"] = pred_service.get_predicted_doubles(min_gw=gw + 1)
+            warn_prediction_problems(pred_service)
 
             # Draft section
             if show_draft:

@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 
-from fpl_cli.paths import user_data_dir
+from fpl_cli.paths import user_data_file
 from fpl_cli.services.team_ratings import TeamPerformance, TeamRating
 
 if TYPE_CHECKING:
@@ -23,8 +23,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 def prior_config_path() -> Path:
-    """Team ratings prior cache location. Resolved per call so FPL_CLI_DATA_DIR is honoured."""
-    return user_data_dir() / "team_ratings_prior.yaml"
+    """Team ratings prior cache location."""
+    return user_data_file("team_ratings_prior.yaml")
 REGRESSION_CONSTANT = 6
 BLENDING_CUTOFF_GW = 12
 

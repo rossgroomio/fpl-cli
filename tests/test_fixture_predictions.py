@@ -271,6 +271,27 @@ class TestLayeredLookup:
         assert [b.gameweek for b in service.get_predicted_blanks()] == [25]
         assert service.is_stale is False
 
+    def test_stale_user_copy_fall_through_is_reported(self, shipped, user_file):
+        """A deliberately-placed override that gets ignored must say so."""
+        self._write(user_file, PREVIOUS_SEASON_DATE, 20)
+        service = FixturePredictionsService()
+        service.get_predicted_blanks()
+        assert any(
+            str(user_file) in w and "previous season" in w for w in service.load_warnings
+        )
+
+    def test_stale_shipped_copy_alone_is_not_double_reported(self, tmp_path, monkeypatch):
+        """A stale final candidate is covered by is_stale, not load_warnings."""
+        stale_shipped = tmp_path / "shipped.yaml"
+        self._write(stale_shipped, PREVIOUS_SEASON_DATE, 25)
+        monkeypatch.setattr(
+            "fpl_cli.services.fixture_predictions.CONFIG_FILE", stale_shipped
+        )
+        service = FixturePredictionsService()
+        assert service.get_predicted_blanks() == []
+        assert service.is_stale is True
+        assert service.load_warnings == []
+
     def test_unreadable_user_copy_falls_through_to_shipped(self, shipped, user_file):
         user_file.write_text("[unclosed", encoding="utf-8")
         service = FixturePredictionsService()

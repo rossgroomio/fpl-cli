@@ -3,6 +3,7 @@
 from unittest.mock import patch
 
 import click
+import pytest
 from click.testing import CliRunner
 
 from fpl_cli.cli._context import (
@@ -11,8 +12,10 @@ from fpl_cli.cli._context import (
     CLIContext,
     Format,
     FormatAwareGroup,
+    experimental_gate_message,
     is_custom_analysis_enabled,
 )
+from fpl_cli.paths import user_config_dir
 
 
 class TestIsCustomAnalysisEnabled:
@@ -152,3 +155,73 @@ class TestFormatAwareGroupExperimental:
         settings = {"custom_analysis": False}
         result = runner.invoke(group, ["captain"], obj=CLIContext(format=Format.BOTH, settings=settings))
         assert result.exit_code != 0
+
+
+class TestExperimentalGateMessage:
+    """A gated command must name its gate, not suggest itself (#46)."""
+
+    def test_message_names_the_command_the_toggle_and_the_file(self):
+        message = experimental_gate_message("ratings")
+
+        assert "ratings" in message
+        assert "custom_analysis: true" in message
+        # Naming the resolved file is the point: a surprise gate is usually a
+        # config dir the user did not expect fpl-cli to be reading.
+        assert str(user_config_dir() / "settings.yaml") in message
+
+    def test_resolve_command_raises_informative_error_when_off(self):
+        group = _make_group()
+        ctx = click.Context(group, obj=CLIContext(format=Format.BOTH, settings={"custom_analysis": False}))
+
+        with pytest.raises(click.UsageError) as exc_info:
+            group.resolve_command(ctx, ["captain"])
+
+        message = str(exc_info.value)
+        assert "custom_analysis: true" in message
+        assert "No such command" not in message
+
+    def test_resolve_command_passes_through_when_on(self):
+        group = _make_group()
+        ctx = click.Context(group, obj=CLIContext(format=Format.BOTH, settings={"custom_analysis": True}))
+
+        name, cmd, args = group.resolve_command(ctx, ["captain"])
+
+        assert name == "captain"
+        assert cmd is not None
+
+    def test_genuinely_unknown_command_keeps_clicks_error(self):
+        """The gate must not swallow click's normal not-found handling."""
+        group = _make_group()
+        ctx = click.Context(group, obj=CLIContext(format=Format.BOTH, settings={"custom_analysis": False}))
+
+        with pytest.raises(click.UsageError) as exc_info:
+            group.resolve_command(ctx, ["nonsense"])
+
+        assert "No such command" in str(exc_info.value)
+
+    def test_shell_completion_gets_none_not_an_exception(self):
+        """Completion resolves with resilient_parsing and expects a None command."""
+        group = _make_group()
+        ctx = click.Context(
+            group,
+            obj=CLIContext(format=Format.BOTH, settings={"custom_analysis": False}),
+            resilient_parsing=True,
+        )
+
+        name, cmd, args = group.resolve_command(ctx, ["captain"])
+
+        assert cmd is None
+        assert name is None
+
+    def test_cli_does_not_suggest_the_command_it_just_refused(self):
+        """The reported symptom: "No such command 'captain'. Did you mean 'captain'?"."""
+        group = _make_group()
+        settings = {"custom_analysis": False}
+
+        result = CliRunner().invoke(
+            group, ["captain"], obj=CLIContext(format=Format.BOTH, settings=settings)
+        )
+
+        assert result.exit_code != 0
+        assert "Did you mean" not in result.output
+        assert "custom_analysis: true" in result.output

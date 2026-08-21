@@ -28,16 +28,25 @@ def _isolated_user_dirs(tmp_path, monkeypatch):
     during collection, before this fixture runs, and would write to the real
     user location -- see fpl_cli/paths.py for why they are all functions.
     """
+    from fpl_cli.cli import _context
+
     user_config_dir.cache_clear()
     user_data_dir.cache_clear()
     user_cache_dir.cache_clear()
+    _context._warned_missing_settings.clear()
     monkeypatch.setenv("FPL_CLI_CONFIG_DIR", str(tmp_path / "user-config"))
     monkeypatch.setenv("FPL_CLI_DATA_DIR", str(tmp_path / "user-data"))
     monkeypatch.setenv("FPL_CLI_CACHE_DIR", str(tmp_path / "user-cache"))
+    # The missing-settings warning (#46) is real behaviour for an explicitly-set
+    # config dir, but every test gets an empty one -- so silence it by default
+    # and let the tests that assert on it delete this file.
+    (tmp_path / "user-config").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "user-config" / "settings.yaml").write_text("", encoding="utf-8")
     yield
     user_config_dir.cache_clear()
     user_data_dir.cache_clear()
     user_cache_dir.cache_clear()
+    _context._warned_missing_settings.clear()
 
 
 # --- Draft-Specific Factories ---
