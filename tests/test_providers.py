@@ -133,7 +133,7 @@ class TestAnthropicProvider:
     def mock_response(self):
         return {
             "content": [{"type": "text", "text": "Hello from Claude"}],
-            "model": "claude-sonnet-4-20250514",
+            "model": "claude-sonnet-5",
             "usage": {"input_tokens": 10, "output_tokens": 20},
         }
 
@@ -211,7 +211,7 @@ class TestAnthropicProvider:
 
         resp = _make_httpx_response({
             "content": [{"type": "text", "text": "ok"}],
-            "model": "claude-sonnet-4-20250514",
+            "model": "claude-sonnet-5",
             "usage": {"input_tokens": 0, "output_tokens": 0},
         })
         provider._http = AsyncMock()
@@ -336,9 +336,9 @@ class TestGetLlmProvider:
                 },
                 "synthesis": {
                     "provider": "anthropic",
-                    "model": "claude-sonnet-4-20250514",
+                    "model": "claude-sonnet-5",
                     "timeout": 60,
-                    "query_defaults": {"max_tokens": 1024},
+                    "query_defaults": {"max_tokens": 4096},
                 },
             }
         }
@@ -354,7 +354,7 @@ class TestGetLlmProvider:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
         provider = get_llm_provider("synthesis", default_settings)
         assert isinstance(provider, AnthropicProvider)
-        assert provider.model == "claude-sonnet-4-20250514"
+        assert provider.model == "claude-sonnet-5"
         assert provider.timeout == 60.0
 
     def test_env_var_overrides_provider(self, default_settings, monkeypatch):

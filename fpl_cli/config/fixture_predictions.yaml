@@ -1,10 +1,5 @@
 metadata:
-  last_updated: '2026-04-30'
-  notes: Updated from Ben Crellin BGW/DGW schedule (GW36)
+  last_updated: '2026-08-21'
+  notes: No confirmed BGW/DGW for 2026/27 yet; update when cup schedules land
 predicted_blanks: []
-predicted_doubles:
-- gameweek: 36
-  teams:
-  - CRY
-  - MCI
-  confidence: confirmed
+predicted_doubles: []

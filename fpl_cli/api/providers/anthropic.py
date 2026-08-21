@@ -32,7 +32,7 @@ def _error_detail(response: httpx.Response) -> str:
 class AnthropicProvider:
     """LLM provider for the Anthropic Messages API."""
 
-    DEFAULT_MODEL: ClassVar[str] = "claude-sonnet-4-6"
+    DEFAULT_MODEL: ClassVar[str] = "claude-sonnet-5"
     DEFAULT_TIMEOUT: ClassVar[float] = 60.0
     API_KEY_ENV_VAR: ClassVar[str] = "ANTHROPIC_API_KEY"
     KEY_SETUP_URL: ClassVar[str] = "https://console.anthropic.com/"
