@@ -81,6 +81,26 @@ def _build_research_allowlists(
     return table_allowlist, prose_allowlist
 
 
+def _load_team_managers() -> dict[str, str]:
+    """Shipped manager map with the user config-dir copy layered on top.
+
+    Two layers, not replace: a season refresh then reaches everyone, while a
+    user copy still wins per club for a change that has not shipped yet. A
+    copy that replaced the map wholesale would pin its owner to whichever
+    season they happened to migrate in -- and since the file used to be
+    copied into the config dir automatically, most existing users have one
+    they never chose to author.
+    """
+    managers: dict[str, str] = {}
+    for path in (
+        SHIPPED_CONFIG_DIR / "team_managers.yaml",
+        user_config_file("team_managers.yaml"),
+    ):
+        if path.exists():
+            managers.update(yaml.safe_load(path.read_text(encoding="utf-8")) or {})
+    return managers
+
+
 def _format_research_context(
     global_data: GlobalReviewData,
     collected_data: dict[str, Any],
@@ -131,14 +151,8 @@ def _format_research_context(
         match_results_str = "\n".join(match_lines)
 
     manager_context_str = ""
-    # User copy overrides the shipped one (mid-season manager changes without a
-    # release); the shipped copy is the default so season refreshes reach
-    # everyone rather than only fresh installs.
-    managers_path = user_config_file("team_managers.yaml")
-    if not managers_path.exists():
-        managers_path = SHIPPED_CONFIG_DIR / "team_managers.yaml"
-    if managers_path.exists():
-        managers = yaml.safe_load(managers_path.read_text(encoding="utf-8")) or {}
+    managers = _load_team_managers()
+    if managers:
         manager_context_str = "Current PL managers: " + ", ".join(
             f"{code}: {name}" for code, name in sorted(managers.items())
         )
