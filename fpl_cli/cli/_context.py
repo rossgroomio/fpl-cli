@@ -16,9 +16,24 @@ from fpl_cli.paths import SHIPPED_CONFIG_DIR, UserDirError, user_config_dir
 
 if TYPE_CHECKING:
     from fpl_cli.agents.base import AgentResult
+    from fpl_cli.services.fixture_predictions import FixturePredictionsService
 
 console = Console()
 error_console = Console(stderr=True)
+
+
+def warn_prediction_problems(pred_service: FixturePredictionsService) -> None:
+    """Report prediction files that were skipped (unreadable, malformed, empty, stale).
+
+    Without this a broken user copy is invisible: predictions quietly fall
+    back to the shipped file, or vanish, and the only clue is a staleness
+    warning that blames the wrong file. Every command that constructs a
+    FixturePredictionsService should call this once after first use.
+    """
+    from rich.markup import escape as rich_escape
+
+    for warning in pred_service.load_warnings:
+        error_console.print(f"[yellow]{rich_escape(warning)}[/yellow]")
 
 
 def handle_agent_failure(result: AgentResult) -> None:
@@ -189,6 +204,9 @@ class FormatAwareGroup(click.Group):
         try:
             return super().main(*args, **kwargs)
         except UserDirError as exc:
+            if not kwargs.get("standalone_mode", True):
+                # Click's contract for programmatic use: raise, don't print-and-exit.
+                raise
             failure = click.ClickException(str(exc))
             failure.show()
             raise SystemExit(failure.exit_code) from exc

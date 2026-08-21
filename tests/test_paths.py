@@ -294,7 +294,13 @@ class TestUnusableOverrideInCLI:
 class TestNoImportTimeResolution:
     """Guards the convention that keeps the FPL_CLI_* overrides working."""
 
-    RESOLVER_NAMES = {"user_config_dir", "user_data_dir", "user_cache_dir"}
+    RESOLVER_NAMES = {
+        "user_config_dir",
+        "user_data_dir",
+        "user_cache_dir",
+        "user_config_file",
+        "user_data_file",
+    }
 
     def _module_level_calls(self, node: ast.AST) -> list[str]:
         """Names of resolvers called outside any function, method, or lambda body."""
@@ -303,12 +309,15 @@ class TestNoImportTimeResolution:
             # Function bodies run at call time, which is exactly what we want.
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
                 continue
-            if (
-                isinstance(child, ast.Call)
-                and isinstance(child.func, ast.Name)
-                and child.func.id in self.RESOLVER_NAMES
-            ):
-                found.append(child.func.id)
+            if isinstance(child, ast.Call):
+                # Match both `user_data_dir()` and `paths.user_data_dir()`.
+                name = None
+                if isinstance(child.func, ast.Name):
+                    name = child.func.id
+                elif isinstance(child.func, ast.Attribute):
+                    name = child.func.attr
+                if name in self.RESOLVER_NAMES:
+                    found.append(name)
             found.extend(self._module_level_calls(child))
         return found
 
@@ -407,3 +416,39 @@ class TestMigrateLegacyFiles:
         _migrate_legacy_files()  # must not raise
 
         mock_logger.warning.assert_called()
+
+
+class TestDefaultDirCreationFailure:
+    def test_uncreatable_default_location_raises_userdirerror(self, tmp_path, monkeypatch):
+        """No env override: an uncreatable platformdirs location must still be
+        reported as UserDirError, not escape as a raw OSError (the mkdir must
+        happen inside the try, not inside platformdirs via ensure_exists)."""
+        blocker = tmp_path / "blocker"
+        blocker.write_text("")  # a file where a parent dir is needed
+        monkeypatch.delenv("FPL_CLI_DATA_DIR", raising=False)
+        monkeypatch.setattr(
+            "platformdirs.user_data_path", lambda *_args, **_kwargs: blocker / "fpl-cli"
+        )
+        with pytest.raises(UserDirError, match="Could not create"):
+            user_data_dir()
+
+
+class TestEnsureLegacyMigrationRetry:
+    def test_failed_migration_is_retried_then_runs_once(self, monkeypatch):
+        """A UserDirError must not permanently mark migration as done: a later
+        call in the same process (env fixed, caches cleared) must migrate."""
+        calls: list[int] = []
+
+        def fail_once() -> None:
+            calls.append(1)
+            if len(calls) == 1:
+                raise UserDirError("bad override")
+
+        monkeypatch.setattr(paths_mod, "_migration_done", False)
+        monkeypatch.setattr(paths_mod, "_migrate_legacy_files", fail_once)
+
+        with pytest.raises(UserDirError):
+            paths_mod.ensure_legacy_migration()
+        paths_mod.ensure_legacy_migration()
+        paths_mod.ensure_legacy_migration()
+        assert len(calls) == 2  # retried once after failure, then marked done

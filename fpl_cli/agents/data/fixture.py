@@ -132,6 +132,10 @@ class FixtureAgent(Agent):
             if context and "squad" in context:
                 pred_service = FixturePredictionsService()
                 result_data["predictions_stale"] = pred_service.is_stale
+                # Skipped prediction files (unreadable, malformed, empty, stale):
+                # surfaced in the result so consumers don't silently lose BGW/DGW
+                # context when a user override is broken.
+                result_data["prediction_warnings"] = pred_service.load_warnings
                 result_data["squad_exposure"] = self._analyze_squad_exposure(
                     squad=context["squad"],
                     blank_gws=blank_gws,

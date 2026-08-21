@@ -18,6 +18,7 @@ import sys
 from fpl_cli.agents.analysis.transfer_eval import TransferEvalAgent
 from fpl_cli.api.fpl import FPLClient
 from fpl_cli.models.player import resolve_player
+from fpl_cli.paths import UserDirError, ensure_legacy_migration
 
 
 async def _run(out_name: str, in_names: list[str]) -> None:
@@ -77,7 +78,24 @@ async def _run(out_name: str, in_names: list[str]) -> None:
     json.dump(result.data, sys.stdout, indent=2)
 
 
+def _bootstrap_user_dirs() -> None:
+    """Run fpl-cli's legacy-file migration before any agent resolves paths.
+
+    The CLI does this in its own entry point; scripts importing agents
+    directly must do it themselves or a user with files in the legacy
+    repo-root dirs silently gets empty settings and regenerated ratings.
+    A bad FPL_CLI_* override surfaces here as a clean JSON error instead
+    of a traceback mid-agent.
+    """
+    try:
+        ensure_legacy_migration()
+    except UserDirError as exc:
+        json.dump({"error": True, "messages": [str(exc)]}, sys.stdout, indent=2)
+        sys.exit(1)
+
+
 def main() -> None:
+    _bootstrap_user_dirs()
     parser = argparse.ArgumentParser(description="Transfer evaluation")
     parser.add_argument(
         "--out", required=True,

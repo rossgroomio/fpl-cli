@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 
-from fpl_cli.paths import user_data_dir
+from fpl_cli.paths import user_data_file
 from fpl_cli.season import get_season_year, season_label
 
 if TYPE_CHECKING:
@@ -30,8 +30,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 def prior_config_path() -> Path:
-    """Player prior cache location. Resolved per call so FPL_CLI_DATA_DIR is honoured."""
-    return user_data_dir() / "player_prior.yaml"
+    """Player prior cache location."""
+    return user_data_file("player_prior.yaml")
 REGRESSION_CONSTANT = 6
 CUTOFF_GW = 10
 PRICE_CONFIDENCE_FACTOR = 0.5

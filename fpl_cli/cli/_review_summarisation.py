@@ -18,7 +18,7 @@ from fpl_cli.cli._review_classic import _format_review_classic_player
 from fpl_cli.cli._review_draft import _format_review_draft_player
 from fpl_cli.models.player import Player
 from fpl_cli.models.team import Team
-from fpl_cli.paths import user_config_dir
+from fpl_cli.paths import SHIPPED_CONFIG_DIR, user_config_file
 from fpl_cli.utils.text import strip_diacritics
 
 # Goals/assists strings: "Damsgaard (BRE), Thiago x2 (BRE)".
@@ -131,7 +131,12 @@ def _format_research_context(
         match_results_str = "\n".join(match_lines)
 
     manager_context_str = ""
-    managers_path = user_config_dir() / "team_managers.yaml"
+    # User copy overrides the shipped one (mid-season manager changes without a
+    # release); the shipped copy is the default so season refreshes reach
+    # everyone rather than only fresh installs.
+    managers_path = user_config_file("team_managers.yaml")
+    if not managers_path.exists():
+        managers_path = SHIPPED_CONFIG_DIR / "team_managers.yaml"
     if managers_path.exists():
         managers = yaml.safe_load(managers_path.read_text(encoding="utf-8")) or {}
         manager_context_str = "Current PL managers: " + ", ".join(

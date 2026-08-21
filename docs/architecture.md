@@ -561,7 +561,7 @@ platformdirs (user_config_dir / user_data_dir)  # macOS: ~/Library/Application S
 │                                 # ephemeral environments like Claude Code on the web, where the
 │                                 # platformdirs defaults die with the container)
 ├── settings.yaml                 # User overrides, created by `fpl init` (config dir)
-├── team_managers.yaml            # Manager name mappings (config dir, migrated from repo config/)
+├── team_managers.yaml            # Manager name mappings (shipped in package; config-dir copy overrides)
 ├── team_ratings_overrides.yaml   # Manual per-team axis overrides (config dir, migrated from repo config/)
 ├── fixture_predictions.yaml      # Optional BGW/DGW predictions override (config dir); takes precedence over the shipped copy
 ├── team_ratings.yaml             # Cached team strength ratings (data dir, auto-refreshed)

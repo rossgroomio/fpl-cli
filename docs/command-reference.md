@@ -427,7 +427,7 @@ fpl credentials set          # Store FPL email + password in system keyring
 
 **Troubleshooting (TLS-inspecting proxies):** If `--refresh` fails with `ERR_CERT_AUTHORITY_INVALID` (corporate MITM proxy, Zscaler/Netskope, or sandboxed cloud environments like Claude Code on the web), set `FPL_BROWSER_IGNORE_CERTS=1`. Chromium uses its own cert store and ignores `SSL_CERT_FILE` / `REQUESTS_CA_BUNDLE`, so this flag tells it to skip cert validation on launch. Opt-in only — leave unset on trusted networks.
 
-Output: free transfers, bank balance, squad sell prices, total team value. Data cached to `data/team_finances.json` for 12 hours.
+Output: free transfers, bank balance, squad sell prices, total team value. Data cached to `team_finances.json` in the data directory (see [Directories](#directories)) for 12 hours.
 
 **Wildcard / Free Hit workflow:** Use `--format json` to export sell prices, then pass to `fpl allocate --sell-prices` for accurate budgeting:
 ```bash
@@ -506,7 +506,7 @@ fpl-cli writes to three directories, each resolved via `platformdirs` and overri
 
 | Directory | Contents | Override |
 |-----------|----------|----------|
-| Config | `settings.yaml`, `.env` (credentials and API keys), `team_managers.yaml`, `team_ratings_overrides.yaml`, optional `fixture_predictions.yaml` (overrides the copy shipped in the package), plus the `output/` and `research/` report directories | `FPL_CLI_CONFIG_DIR` |
+| Config | `settings.yaml`, `.env` (credentials and API keys), `team_ratings_overrides.yaml`, optional `team_managers.yaml` and `fixture_predictions.yaml` (each overrides the copy shipped in the package), plus the `output/` and `research/` report directories | `FPL_CLI_CONFIG_DIR` |
 | Data | Generated files: `team_ratings.yaml`, `team_ratings_prior.yaml`, `player_prior.yaml`, `chip_plan.json`, `team_finances.json` | `FPL_CLI_DATA_DIR` |
 | Cache | Disposable API response caches | `FPL_CLI_CACHE_DIR` |
 

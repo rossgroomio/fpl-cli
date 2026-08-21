@@ -17,19 +17,19 @@ from typing import ClassVar
 
 import yaml
 
-from fpl_cli.paths import user_config_dir, user_data_dir
+from fpl_cli.paths import user_config_file, user_data_file
 
 logger = logging.getLogger(__name__)
 
 
 def overrides_path() -> Path:
-    """Manual per-team override file. Resolved per call so FPL_CLI_CONFIG_DIR is honoured."""
-    return user_config_dir() / "team_ratings_overrides.yaml"
+    """Manual per-team override file."""
+    return user_config_file("team_ratings_overrides.yaml")
 
 
 def default_ratings_path() -> Path:
-    """Default ratings file. Resolved per call so FPL_CLI_DATA_DIR is honoured."""
-    return user_data_dir() / "team_ratings.yaml"
+    """Default ratings file."""
+    return user_data_file("team_ratings.yaml")
 
 
 PRESEASON_SOURCE = "preseason_prior"
