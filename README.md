@@ -62,6 +62,14 @@ $ fpl league                       # Live league standings
 $ fpl league-recap --summarise     # Awards and editorial for the group chat
 ```
 
+### Checking Your Setup
+
+```console
+$ fpl doctor                       # Verify configured IDs and data files - essential after a season rollover
+```
+
+Every ID in settings.yaml is resolved against the live API and the team/league name reported back, so a dead or recycled ID (which otherwise fails silently) is visible. Per-team data files are checked against the current season's clubs. Exits non-zero when something needs fixing.
+
 ### Scouting Players
 
 ```console

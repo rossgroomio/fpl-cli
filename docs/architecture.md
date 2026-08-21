@@ -275,6 +275,7 @@ classDiagram
 flowchart LR
     subgraph Direct["Direct API Commands"]
         status["status"]
+        doctor["doctor"]
         fixtures["fixtures"]
         player["player"]
         stats["stats"]

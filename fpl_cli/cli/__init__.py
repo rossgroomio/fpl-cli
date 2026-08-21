@@ -13,6 +13,7 @@ from fpl_cli.cli.captain import captain_command
 from fpl_cli.cli.chips import chips_group
 from fpl_cli.cli.credentials import credentials_group
 from fpl_cli.cli.differentials import differentials_command
+from fpl_cli.cli.doctor import doctor_command
 from fpl_cli.cli.fdr import fdr_command
 from fpl_cli.cli.fixtures import fixtures_command
 from fpl_cli.cli.history import history_command
@@ -57,6 +58,7 @@ def main(ctx: click.Context) -> None:
 # --- Top-level commands ---
 main.add_command(init_command)
 main.add_command(status_command)
+main.add_command(doctor_command)
 main.add_command(fixtures_command)
 main.add_command(player_command)
 main.add_command(stats_command)
