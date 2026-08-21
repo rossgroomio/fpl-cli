@@ -80,6 +80,43 @@ def test_fdr_my_squad_draft_builds_context(mock_fixture_agent):
     assert {"team_id": 13, "element_type": 4, "web_name": "Haaland"} in squad
 
 
+def test_fdr_surfaces_ratings_warning_from_agent(mock_fixture_agent):
+    """The warning comes from the agent's refreshed, team-set-checked service.
+
+    A second TeamRatingsService built here would reload the file without
+    either check and warn about the wrong thing (or stay silent when the
+    ratings describe last season's league).
+    """
+    mock_fixture_agent.run.return_value.data["ratings_warning"] = (
+        "⚠️ team_ratings.yaml is missing COV, HUL, IPS and still rates BUR, WHU, WOL"
+    )
+
+    with (
+        patch("fpl_cli.cli.fdr.is_custom_analysis_enabled", return_value=True),
+        patch("fpl_cli.cli.fdr.load_settings", return_value={"fpl": {}}),
+        patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=mock_fixture_agent),
+    ):
+        runner = CliRunner()
+        result = runner.invoke(fdr_command, [])
+
+    assert result.exit_code == 0, result.output
+    assert "still rates BUR, WHU, WOL" in result.output
+
+
+def test_fdr_silent_when_agent_reports_no_ratings_warning(mock_fixture_agent):
+    """Usable ratings print nothing, so a clean run stays clean."""
+    with (
+        patch("fpl_cli.cli.fdr.is_custom_analysis_enabled", return_value=True),
+        patch("fpl_cli.cli.fdr.load_settings", return_value={"fpl": {}}),
+        patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=mock_fixture_agent),
+    ):
+        runner = CliRunner()
+        result = runner.invoke(fdr_command, [])
+
+    assert result.exit_code == 0, result.output
+    assert "⚠️" not in result.output
+
+
 def test_fdr_my_squad_draft_missing_entry_id(mock_fixture_agent):
     """Warning printed and context stays None when draft_entry_id not configured."""
     captured_context: list = []

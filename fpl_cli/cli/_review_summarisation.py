@@ -19,6 +19,7 @@ from fpl_cli.cli._review_draft import _format_review_draft_player
 from fpl_cli.models.player import Player
 from fpl_cli.models.team import Team
 from fpl_cli.paths import SHIPPED_CONFIG_DIR, user_config_file
+from fpl_cli.utils.teams import describe_team_set_mismatch
 from fpl_cli.utils.text import strip_diacritics
 
 # Goals/assists strings: "Damsgaard (BRE), Thiago x2 (BRE)".
@@ -101,6 +102,31 @@ def _load_team_managers() -> dict[str, str]:
     return managers
 
 
+def _warn_manager_team_drift(managers: dict[str, str], teams: dict[int, Team] | None) -> None:
+    """Report a manager map that no longer matches the league.
+
+    The map is never checked against the API team list, so across a promotion
+    and relegation boundary a recap prints manager names for clubs that went
+    down and nothing at all for the ones that came up -- and the prompt is
+    handed those names as current fact. A date check would not catch it: the
+    file has no date, and one refreshed in early August would pass anyway.
+    """
+    if not teams:
+        return
+
+    mismatch = describe_team_set_mismatch(
+        "team_managers.yaml",
+        managers,
+        (team.short_name for team in teams.values()),
+        verb="lists",
+    )
+    if mismatch:
+        error_console.print(
+            f"[yellow]⚠️ {rich_escape(mismatch)} - update it before the recap"
+            " names the wrong managers[/yellow]"
+        )
+
+
 def _format_research_context(
     global_data: GlobalReviewData,
     collected_data: dict[str, Any],
@@ -153,6 +179,7 @@ def _format_research_context(
     manager_context_str = ""
     managers = _load_team_managers()
     if managers:
+        _warn_manager_team_drift(managers, teams)
         manager_context_str = "Current PL managers: " + ", ".join(
             f"{code}: {name}" for code, name in sorted(managers.items())
         )

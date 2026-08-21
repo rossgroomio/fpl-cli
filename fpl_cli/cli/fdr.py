@@ -325,7 +325,6 @@ def fdr_command(
 
         # Default path: full FDR analysis via agent
         from fpl_cli.agents.data.fixture import FixtureAgent
-        from fpl_cli.services.team_ratings import TeamRatingsService
 
         config: dict = {"fdr_mode": mode}
         if from_gw is not None:
@@ -419,8 +418,7 @@ def fdr_command(
         console.print(Panel.fit(title))
 
         # Check for stale ratings
-        ratings_service = TeamRatingsService()
-        staleness_warning = ratings_service.get_staleness_warning()
+        staleness_warning = data.get("ratings_warning")
         if staleness_warning:
             error_console.print(f"[yellow]{staleness_warning}[/yellow]\n")
 

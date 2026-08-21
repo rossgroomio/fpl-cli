@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 import yaml
 
+from fpl_cli.season import season_label
 from fpl_cli.services.team_ratings import (
     TeamPerformance,
     TeamRating,
@@ -108,6 +109,10 @@ class TestTeamRatingsService:
         """Sample config data."""
         return {
             "metadata": {
+                # Stamped with the current season so these tests exercise the
+                # day-based staleness check rather than the season check,
+                # which would otherwise discard a fixed-date file outright.
+                "season": season_label(),
                 "last_updated": "2026-01-15",
                 "source": "calculated",
                 "staleness_threshold_days": 30,
@@ -201,7 +206,9 @@ class TestTeamRatingsService:
 
     def test_is_stale_when_old(self, temp_config, sample_config_data):
         """Test staleness detection when ratings are old."""
-        sample_config_data["metadata"]["last_updated"] = "2025-06-01"
+        sample_config_data["metadata"]["last_updated"] = (
+            datetime.now() - timedelta(days=60)
+        ).strftime("%Y-%m-%d")
         with open(temp_config, "w", encoding="utf-8") as f:
             yaml.dump(sample_config_data, f)
 
@@ -245,7 +252,9 @@ class TestTeamRatingsService:
 
     def test_staleness_warning_when_stale(self, temp_config, sample_config_data):
         """Test staleness warning message."""
-        sample_config_data["metadata"]["last_updated"] = "2025-06-01"
+        sample_config_data["metadata"]["last_updated"] = (
+            datetime.now() - timedelta(days=60)
+        ).strftime("%Y-%m-%d")
         with open(temp_config, "w", encoding="utf-8") as f:
             yaml.dump(sample_config_data, f)
 
@@ -1039,6 +1048,7 @@ class TestEnsureFresh:
     def stale_config_data(self):
         return {
             "metadata": {
+                "season": season_label(),
                 "last_updated": "2026-01-01",
                 "source": "auto_calculated",
                 "staleness_threshold_days": 30,
@@ -1127,6 +1137,7 @@ class TestOverrides:
     def sample_config_data(self):
         return {
             "metadata": {
+                "season": season_label(),
                 "last_updated": "2026-03-25",
                 "source": "auto_calculated",
                 "staleness_threshold_days": 30,

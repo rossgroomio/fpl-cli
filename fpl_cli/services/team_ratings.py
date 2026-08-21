@@ -7,6 +7,7 @@ Auto-refreshes from FPL fixture results when a new gameweek completes.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -16,7 +17,9 @@ from typing import ClassVar
 import yaml
 
 from fpl_cli.paths import user_config_file, user_data_file
+from fpl_cli.season import get_season_year, season_label
 from fpl_cli.utils.files import atomic_write_text
+from fpl_cli.utils.teams import describe_team_set_mismatch
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +77,34 @@ class RatingsMetadata:
     staleness_threshold_days: int
     based_on_gws: tuple[int, int] | None
     calculation_method: str | None  # "full_season", "recent_form"
+    season: str | None = None  # e.g. "2026-27"; None on files written before the stamp
+
+
+def _empty_metadata() -> RatingsMetadata:
+    """Metadata for the no-usable-ratings state (file missing, or wrong season)."""
+    return RatingsMetadata(
+        last_updated=None,
+        source=None,
+        staleness_threshold_days=30,
+        based_on_gws=None,
+        calculation_method=None,
+        season=None,
+    )
+
+
+def _season_of(declared: object, last_updated: datetime | None) -> str | None:
+    """The season a ratings file describes.
+
+    Prefers the explicit ``metadata.season`` stamp, falling back to whichever
+    season ``last_updated`` lands in so files written before the stamp existed
+    still invalidate themselves at the July cutover. None means the file says
+    neither, which is treated as "cannot tell" rather than "stale".
+    """
+    if declared:
+        return str(declared)
+    if last_updated:
+        return season_label(get_season_year(last_updated.date()))
+    return None
 
 
 @dataclass
@@ -111,6 +142,8 @@ class TeamRatingsService:
         self._ratings: dict[str, TeamRating] = {}
         self._metadata: RatingsMetadata | None = None
         self._loaded = False
+        self._stale_season: str | None = None
+        self._team_set_warning: str | None = None
 
     @property
     def config_path(self) -> Path:
@@ -128,13 +161,7 @@ class TeamRatingsService:
 
         path = self.config_path
         if not path.exists():
-            self._metadata = RatingsMetadata(
-                last_updated=None,
-                source=None,
-                staleness_threshold_days=30,
-                based_on_gws=None,
-                calculation_method=None,
-            )
+            self._metadata = _empty_metadata()
             return
 
         with open(path, encoding="utf-8") as f:
@@ -156,12 +183,29 @@ class TeamRatingsService:
         else:
             based_on_gws = None
 
+        file_season = _season_of(meta.get("season"), last_updated)
+        if file_season and file_season != season_label():
+            # A file from a previous season describes a different league: it
+            # still rates the relegated clubs and knows nothing about the
+            # promoted ones. Serving those numbers is worse than serving none,
+            # and keeping its based_on_gws would also convince ensure_fresh
+            # that GW3 of the new season is covered by GW35 of the old one.
+            logger.info(
+                "Team ratings stale (season %s != %s) - ignoring",
+                file_season,
+                season_label(),
+            )
+            self._stale_season = file_season
+            self._metadata = _empty_metadata()
+            return
+
         self._metadata = RatingsMetadata(
             last_updated=last_updated,
             source=meta.get("source"),
             staleness_threshold_days=meta.get("staleness_threshold_days", 30),
             based_on_gws=based_on_gws,
             calculation_method=meta.get("calculation_method"),
+            season=file_season,
         )
 
         # Parse ratings
@@ -206,63 +250,104 @@ class TeamRatingsService:
                 setattr(rating, axis, value)
 
     async def ensure_fresh(self, client) -> None:
-        """Refresh ratings from FPL fixture data if stale.
+        """Refresh ratings from FPL fixture data if stale, then check the team set.
 
         Compares the latest completed GW against based_on_gws metadata.
         On failure, keeps stale data and logs a warning.
+
+        The team-set check runs whether or not a refresh happened: a file that
+        is fresh by date can still describe last season's twenty clubs, and
+        that is the mismatch a date can never catch.
         """
-        if TeamRatingsService._refreshed_this_session:
-            return
+        if not TeamRatingsService._refreshed_this_session:
+            try:
+                await self._refresh(client)
+            except Exception:  # noqa: BLE001 — graceful degradation
+                logger.warning("Auto-refresh failed, using stale ratings", exc_info=True)
 
         try:
-            self._ensure_loaded()
-            next_gw = await client.get_next_gameweek()
-            if not next_gw:
-                return
+            teams = await client.get_teams()
+            self.check_team_set(team.short_name for team in teams)
+        except Exception:  # noqa: BLE001 — a drift warning must never break a command
+            logger.debug("Team-set check skipped", exc_info=True)
 
-            max_completed_gw = next_gw["id"] - 1
-            if max_completed_gw < 1:
-                await self._seed_from_prior(client)
+    async def _refresh(self, client) -> None:
+        """Recalculate ratings when completed gameweeks have moved past the file."""
+        self._ensure_loaded()
+        next_gw = await client.get_next_gameweek()
+        if not next_gw:
+            return
+
+        max_completed_gw = next_gw["id"] - 1
+        if max_completed_gw < 1:
+            await self._seed_from_prior(client)
+            TeamRatingsService._refreshed_this_session = True
+            return
+
+        # Check staleness against metadata
+        if self._metadata and self._metadata.based_on_gws:
+            if max_completed_gw <= self._metadata.based_on_gws[1]:
                 TeamRatingsService._refreshed_this_session = True
                 return
 
-            # Check staleness against metadata
-            if self._metadata and self._metadata.based_on_gws:
-                if max_completed_gw <= self._metadata.based_on_gws[1]:
-                    TeamRatingsService._refreshed_this_session = True
-                    return
+        # Recalculate from recent fixtures
+        calculator = TeamRatingsCalculator(client)
+        min_gw = max(1, max_completed_gw - 11)
+        ratings, _ = await calculator.calculate_from_fixtures(
+            min_gw=min_gw, max_gw=max_completed_gw
+        )
 
-            # Recalculate from recent fixtures
-            calculator = TeamRatingsCalculator(client)
-            min_gw = max(1, max_completed_gw - 11)
-            ratings, _ = await calculator.calculate_from_fixtures(
-                min_gw=min_gw, max_gw=max_completed_gw
+        if ratings:
+            # Blend with prior in early season
+            from fpl_cli.services.team_ratings_prior import (
+                BLENDING_CUTOFF_GW,
+                blend_with_prior,
+                generate_prior,
             )
 
-            if ratings:
-                # Blend with prior in early season
-                from fpl_cli.services.team_ratings_prior import (
-                    BLENDING_CUTOFF_GW,
-                    blend_with_prior,
-                    generate_prior,
-                )
+            if max_completed_gw < BLENDING_CUTOFF_GW:
+                prior = await generate_prior(client)
+                ratings = blend_with_prior(prior, ratings, max_completed_gw)
 
-                if max_completed_gw < BLENDING_CUTOFF_GW:
-                    prior = await generate_prior(client)
-                    ratings = blend_with_prior(prior, ratings, max_completed_gw)
+            self.save_ratings(
+                ratings,
+                source="auto_calculated",
+                based_on_gws=(min_gw, max_completed_gw),
+                calculation_method="recent_form",
+            )
+            self._apply_overrides()
 
-                self.save_ratings(
-                    ratings,
-                    source="auto_calculated",
-                    based_on_gws=(min_gw, max_completed_gw),
-                    calculation_method="recent_form",
-                )
-                self._apply_overrides()
+        TeamRatingsService._refreshed_this_session = True
 
-            TeamRatingsService._refreshed_this_session = True
+    def check_team_set(self, current_teams: Iterable[str]) -> str | None:
+        """Compare the rated clubs against the live league and record any drift.
 
-        except Exception:  # noqa: BLE001 — graceful degradation
-            logger.warning("Auto-refresh failed, using stale ratings", exc_info=True)
+        A ratings file rebuilt in early August passes every date check while
+        still rating three relegated clubs and knowing nothing about the three
+        promoted ones -- get_rating returns None for those, and callers fall
+        back to raw FDR without saying that three teams are being handled
+        differently from the other seventeen. Diffing the keys against
+        bootstrap-static is what catches the rollover.
+
+        Args:
+            current_teams: Team short names in the league right now
+
+        Returns:
+            The warning message, also surfaced by get_staleness_warning(),
+            or None when the sets agree.
+        """
+        self._ensure_loaded()
+        self._team_set_warning = None
+
+        if not self._ratings:
+            return None
+
+        mismatch = describe_team_set_mismatch(
+            self.config_path.name, self._ratings, current_teams, verb="rates"
+        )
+        if mismatch:
+            self._team_set_warning = f"⚠️ {mismatch} - run `fpl ratings update`"
+        return self._team_set_warning
 
     async def _seed_from_prior(self, client) -> None:
         """Rebuild ratings from last season when no gameweek has been played yet.
@@ -308,6 +393,7 @@ class TeamRatingsService:
         """
         data = {
             "metadata": {
+                "season": season_label(),
                 "last_updated": datetime.now().strftime("%Y-%m-%d"),
                 "source": source,
                 "staleness_threshold_days": 30,
@@ -351,8 +437,12 @@ class TeamRatingsService:
             staleness_threshold_days=30,
             based_on_gws=based_on_gws,
             calculation_method=calculation_method,
+            season=season_label(),
         )
         self._loaded = True
+        # Whatever was wrong with the old file has just been replaced.
+        self._stale_season = None
+        self._team_set_warning = None
 
     def get_rating(self, team_short: str) -> TeamRating | None:
         """Get rating for a team.
@@ -486,17 +576,31 @@ class TeamRatingsService:
         """Get a warning about the quality of the ratings backing fixture difficulty.
 
         Covers the cases where difficulty would otherwise be presented as
-        ordinary analysis while resting on nothing: no ratings at all, ratings
-        that fail to separate any two teams, and pre-season estimates.
+        ordinary analysis while resting on nothing: ratings from a previous
+        season, no ratings at all, ratings describing a different set of clubs
+        (see check_team_set), ratings that fail to separate any two teams, and
+        pre-season estimates.
 
         Returns:
             Warning message, or None if ratings are usable and fresh
         """
+        self._ensure_loaded()
+
+        if self._stale_season:
+            return (
+                f"⚠️ Team ratings are from {self._stale_season}, not {season_label()} - "
+                "they describe a different league, so they were ignored and every "
+                "fixture will score a neutral 4.0. Run `fpl ratings update`."
+            )
+
         if not self.has_ratings:
             return (
                 "⚠️ No team ratings available - every fixture will score a neutral 4.0. "
                 "Run `fpl ratings update` once results exist."
             )
+
+        if self._team_set_warning:
+            return self._team_set_warning
 
         if self.is_uniform:
             return (
