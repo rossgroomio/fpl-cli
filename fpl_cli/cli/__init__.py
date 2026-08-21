@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import click
-from dotenv import load_dotenv
 
 from fpl_cli import __version__
 
 # Load environment variables: user config dir first, local .env fills gaps only
-from fpl_cli.cli._context import CLIContext, FormatAwareGroup, _user_config_dir, load_settings, resolve_format
+from fpl_cli.cli._context import CLIContext, FormatAwareGroup, load_settings, resolve_format
 from fpl_cli.cli.allocate import allocate_command
 from fpl_cli.cli.captain import captain_command
 from fpl_cli.cli.chips import chips_group
@@ -33,23 +32,9 @@ from fpl_cli.cli.targets import targets_command
 from fpl_cli.cli.transfer_eval import transfer_eval_command
 from fpl_cli.cli.waivers import waivers_command
 from fpl_cli.cli.xg import xg_command
-from fpl_cli.paths import UserDirError, ensure_legacy_migration
+from fpl_cli.paths import ensure_legacy_migration, load_env_files
 
-
-def _load_env_files() -> None:
-    """Load .env from the user config dir, then let a local .env fill gaps."""
-    try:
-        config_dir = _user_config_dir()
-    except UserDirError:
-        # A broken FPL_CLI_CONFIG_DIR must not abort import; the command run
-        # reports it with an actionable message instead.
-        pass
-    else:
-        load_dotenv(config_dir / ".env")
-    load_dotenv(override=False)
-
-
-_load_env_files()
+load_env_files()
 
 
 @click.group(cls=FormatAwareGroup, context_settings={"help_option_names": ["-h", "--help"]})

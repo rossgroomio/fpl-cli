@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-import tempfile
+from io import StringIO
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -14,6 +14,7 @@ from rich.table import Table
 
 from fpl_cli.cli._banner import show_banner
 from fpl_cli.cli._context import _user_config_dir, console, resolve_format
+from fpl_cli.utils.files import atomic_write_text
 
 
 class StatusDisplay(NamedTuple):
@@ -512,7 +513,7 @@ def _render_summary_table(data: dict[str, Any]) -> None:
 @click.command("init")
 def init_command() -> None:
     """Set up fpl-cli with your FPL IDs and optional features."""
-    from ruamel.yaml import YAML, YAMLError
+    from ruamel.yaml import YAML
 
     yaml = YAML(typ="rt")
     yaml.preserve_quotes = True  # type: ignore[assignment]
@@ -560,23 +561,10 @@ def init_command() -> None:
     # --- Tier 6: FPL Login (Optional) ---
     _tier_fpl_login()
 
-    # Save settings.yaml atomically
-    tmp = tempfile.NamedTemporaryFile(
-        mode="w",
-        encoding="utf-8",
-        dir=_settings_file().parent,
-        suffix=".yaml",
-        delete=False,
-    )
-    try:
-        yaml.dump(data, tmp)
-        tmp.close()
-        Path(tmp.name).replace(_settings_file())
-        if os.name != "nt":
-            _settings_file().chmod(0o600)
-    except (OSError, YAMLError):
-        Path(tmp.name).unlink(missing_ok=True)
-        raise
+    # Save settings.yaml atomically, readable only by the owner
+    buf = StringIO()
+    yaml.dump(data, buf)
+    atomic_write_text(_settings_file(), buf.getvalue(), file_mode=0o600)
 
     # Summary table
     _render_summary_table(data)

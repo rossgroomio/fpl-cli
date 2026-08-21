@@ -18,7 +18,7 @@ import sys
 from fpl_cli.agents.analysis.starting_xi import StartingXIAgent
 from fpl_cli.api.fpl import FPLClient
 from fpl_cli.models.player import resolve_player
-from fpl_cli.paths import UserDirError, ensure_legacy_migration
+from fpl_cli.paths import UserDirError, ensure_legacy_migration, load_env_files
 
 
 async def _run(squad_names: list[str]) -> None:
@@ -63,6 +63,7 @@ def _bootstrap_user_dirs() -> None:
     of a traceback mid-agent.
     """
     try:
+        load_env_files()
         ensure_legacy_migration()
     except UserDirError as exc:
         json.dump({"error": True, "messages": [str(exc)]}, sys.stdout, indent=2)

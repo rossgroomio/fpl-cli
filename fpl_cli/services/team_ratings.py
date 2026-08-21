@@ -7,8 +7,6 @@ Auto-refreshes from FPL fixture results when a new gameweek completes.
 from __future__ import annotations
 
 import logging
-import os
-import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -18,6 +16,7 @@ from typing import ClassVar
 import yaml
 
 from fpl_cli.paths import user_config_file, user_data_file
+from fpl_cli.utils.files import atomic_write_text
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +126,8 @@ class TeamRatingsService:
         """Load ratings from YAML config."""
         self._loaded = True
 
-        if not self.config_path.exists():
+        path = self.config_path
+        if not path.exists():
             self._metadata = RatingsMetadata(
                 last_updated=None,
                 source=None,
@@ -137,7 +137,7 @@ class TeamRatingsService:
             )
             return
 
-        with open(self.config_path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             data = yaml.safe_load(f)
 
         # Parse metadata
@@ -338,16 +338,10 @@ class TeamRatingsService:
 # - DEF/GK: Use opponent's offensive rating (clean sheet likelihood)
 
 """
-        # Atomic write: tempfile + os.replace
-        target = self.config_path
-        dir_path = target.parent
-        with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8", dir=dir_path, suffix=".yaml", delete=False
-        ) as f:
-            f.write(header)
-            yaml.dump(data, f, default_flow_style=False, sort_keys=False)
-            tmp_path = f.name
-        os.replace(tmp_path, target)
+        atomic_write_text(
+            self.config_path,
+            header + yaml.dump(data, default_flow_style=False, sort_keys=False),
+        )
 
         # Keep in-memory state current (don't discard and reload)
         self._ratings = dict(ratings)

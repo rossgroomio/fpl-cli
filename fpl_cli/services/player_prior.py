@@ -12,8 +12,6 @@ atomic writes, season-change invalidation.
 from __future__ import annotations
 
 import logging
-import os
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -22,6 +20,7 @@ import yaml
 
 from fpl_cli.paths import user_data_file
 from fpl_cli.season import get_season_year, season_label
+from fpl_cli.utils.files import atomic_write_text
 
 if TYPE_CHECKING:
     from fpl_cli.api.historical_types import PlayerProfile
@@ -202,16 +201,7 @@ def _save_prior_cache(
             "source": p.source,
             "reliability": p.reliability,
         }
-    with tempfile.NamedTemporaryFile(
-        mode="w",
-        encoding="utf-8",
-        dir=path.parent,
-        suffix=".yaml",
-        delete=False,
-    ) as f:
-        yaml.dump(data, f, default_flow_style=False, sort_keys=False)
-        tmp_path = f.name
-    os.replace(tmp_path, path)
+    atomic_write_text(path, yaml.dump(data, default_flow_style=False, sort_keys=False))
 
 
 def load_cached_priors(current_gw: int) -> dict[int, PlayerPrior] | None:
