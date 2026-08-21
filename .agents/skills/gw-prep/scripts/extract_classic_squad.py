@@ -264,8 +264,10 @@ def _validate_classic_squad_block(block: str) -> ValidationResult:
     ]
 
     # Structural checks
+    stripped_lines = [line.strip() for line in block.split("\n")]
     sub_headings_present = {
-        name: (f"#### {name}" in block) for name in expected_sub_headings
+        name: _heading_present(stripped_lines, f"#### {name}")
+        for name in expected_sub_headings
     }
 
     starting_xi_rows = _count_table_rows_between(block, "#### Starting XI")
@@ -301,15 +303,32 @@ def _validate_classic_squad_block(block: str) -> ValidationResult:
     }
 
 
+# A heading may carry a qualifier the output templates invite but never pin down
+# ("#### Starting XI (3-4-3)"), so matching on equality misses it and matching on
+# containment is too loose. Accept a qualifier introduced by punctuation or a digit,
+# never one introduced by a word: "#### Bench Order" is a separate heading in the
+# template, not a qualified "#### Bench".
+def _heading_pattern(heading: str) -> re.Pattern[str]:
+    """Compile a matcher for a heading with an optional trailing qualifier."""
+    return re.compile(rf"^{re.escape(heading)}(?:\s*(?:\d|[^\s\w]).*)?$")
+
+
+def _heading_present(stripped_lines: list[str], heading: str) -> bool:
+    """True if any line is the heading, bare or qualified."""
+    pattern = _heading_pattern(heading)
+    return any(pattern.match(line) for line in stripped_lines)
+
+
 def _count_table_rows_between(block: str, start_heading: str) -> int:
     """Count markdown table data rows between start_heading and the next heading of same depth."""
+    heading_re = _heading_pattern(start_heading)
     lines = block.split("\n")
     in_section = False
     in_table = False
     row_count = 0
 
     for line in lines:
-        if line.strip() == start_heading:
+        if not in_section and heading_re.match(line.strip()):
             in_section = True
             continue
         if in_section:
@@ -348,11 +367,12 @@ def _tally_teams_from_squad_tables(block: str) -> dict[str, int]:
     """Tally team counts from the Team column in Starting XI and Bench tables."""
     tally: dict[str, int] = {}
     for section_heading in ("#### Starting XI", "#### Bench"):
+        heading_re = _heading_pattern(section_heading)
         in_section = False
         in_table = False
         team_col: int | None = None
         for line in block.split("\n"):
-            if line.strip() == section_heading:
+            if not in_section and heading_re.match(line.strip()):
                 in_section = True
                 continue
             if in_section:
@@ -386,9 +406,10 @@ def _parse_team_exposure(block: str) -> dict[str, int]:
     """
     exposure: dict[str, int] = {}
 
+    heading_re = _heading_pattern("#### Team Exposure")
     in_team_exposure = False
     for line in block.split("\n"):
-        if line.strip() == "#### Team Exposure":
+        if not in_team_exposure and heading_re.match(line.strip()):
             in_team_exposure = True
             continue
         if in_team_exposure:

@@ -770,3 +770,163 @@ def test_late_change_blockquote_in_block(tmp_path, capsys):
     _run(str(f), from_recommendations=True)
     data = json.loads(capsys.readouterr().out)
     assert "> Late change: Palmer → Saka" in data["block"]
+
+
+# -- Qualified headings (issue #63) --
+
+_count_table_rows_between = _mod._count_table_rows_between
+
+
+def _recommendations_content(xi_heading: str = "#### Starting XI", bench_heading: str = "#### Bench") -> str:
+    """A well-formed 15-player Classic Squad block with configurable XI/Bench headings."""
+    xi_rows = "\n".join(
+        f"| FWD | Player{i} | TM{i % 5} | £5.0m | 5.0 | 5.0 | FIX | rati |" for i in range(11)
+    )
+    bench_rows_str = "\n".join(
+        f"| GK | Bench{i} | TM{i} | GK | £4.0m | cover |" for i in range(4)
+    )
+    return (
+        "## Classic League\n\n"
+        "### Classic Squad\n\n"
+        "#### Constraints\n\nSome.\n\n"
+        f"{xi_heading}\n\n"
+        "| Pos | Player | Team | Price | Form | PPG | Fix | Rat |\n"
+        "|-----|--------|------|-------|------|-----|-----|-----|\n"
+        + xi_rows + "\n\n"
+        "**Captain:** X | **Vice:** Y\n\n"
+        f"{bench_heading}\n\n"
+        "| Order | Player | Team | Pos | Price | Role |\n"
+        "|-------|--------|------|-----|-------|------|\n"
+        + bench_rows_str + "\n\n"
+        "#### Budget\n\n| P | C | S |\n|---|---|---|\n| **Total** | **15** | **£99.5m** |\n\n"
+        "#### Key Decisions\n\nSome.\n\n"
+        "#### Alternatives\n\nSome.\n\n"
+        "### Momentum Alerts\n\nsome\n"
+    )
+
+
+@pytest.mark.parametrize(
+    "heading",
+    [
+        "#### Starting XI",
+        "#### Starting XI (3-4-3)",
+        "#### Starting XI (Formation: 3-4-3)",
+        "#### Starting XI: 3-4-3",
+        "#### Starting XI — 3-4-3",
+        "#### Starting XI 3-4-3",
+    ],
+)
+def test_count_rows_tolerates_qualified_heading(heading):
+    """A formation suffix on the heading must not zero the row count."""
+    block = (
+        f"### Classic Squad\n{heading}\n\n"
+        "| Pos | Player | Team |\n"
+        "|-----|--------|------|\n"
+        "| GK | Raya | ARS |\n"
+        "| DEF | Gabriel | ARS |\n"
+        "| FWD | Haaland | MCI |\n"
+    )
+    assert _count_table_rows_between(block, "#### Starting XI") == 3
+
+
+def test_count_rows_does_not_match_longer_word_heading():
+    """'#### Bench Order' is a different heading, not a qualified '#### Bench'."""
+    block = (
+        "### Classic Squad\n#### Bench Order\n\n"
+        "| Order | Player |\n"
+        "|-------|--------|\n"
+        "| 1st | Justin |\n"
+        "| 2nd | Rogers |\n"
+    )
+    assert _count_table_rows_between(block, "#### Bench") == 0
+
+
+def test_count_rows_bench_unaffected_by_following_bench_order():
+    """With both headings present, '#### Bench' counts only its own table."""
+    block = (
+        "### Classic Squad\n#### Bench\n\n"
+        "| Order | Player |\n"
+        "|-------|--------|\n"
+        "| GK | Darlow |\n"
+        "| 1st | Justin |\n\n"
+        "#### Bench Order\n\n"
+        "| Order | Player |\n"
+        "|-------|--------|\n"
+        "| 1st | Someone |\n"
+    )
+    assert _count_table_rows_between(block, "#### Bench") == 2
+
+
+def test_qualified_xi_heading_validates_as_well_formed(tmp_path, capsys):
+    """A block whose XI heading carries a formation must not trip Phase E."""
+    f = tmp_path / "qualified_xi.md"
+    f.write_text(
+        _recommendations_content(xi_heading="#### Starting XI (Formation: 3-4-3)"),
+        encoding="utf-8",
+    )
+    _run(str(f), from_recommendations=True)
+    data = json.loads(capsys.readouterr().out)
+    structural = data["validation"]["structural"]
+    assert structural["sub_headings_present"]["Starting XI"] is True
+    assert structural["starting_xi_rows"] == 11
+    assert structural["bench_rows"] == 4
+    assert data["validation"]["arithmetic"]["player_count"] == 15
+
+
+def test_qualified_bench_heading_validates_as_well_formed(tmp_path, capsys):
+    """A qualifier on the Bench heading is tolerated too."""
+    f = tmp_path / "qualified_bench.md"
+    f.write_text(
+        _recommendations_content(bench_heading="#### Bench (GK first)"), encoding="utf-8"
+    )
+    _run(str(f), from_recommendations=True)
+    data = json.loads(capsys.readouterr().out)
+    structural = data["validation"]["structural"]
+    assert structural["sub_headings_present"]["Bench"] is True
+    assert structural["bench_rows"] == 4
+    assert data["validation"]["arithmetic"]["player_count"] == 15
+
+
+def test_bench_order_alone_does_not_satisfy_bench_sub_heading(tmp_path, capsys):
+    """'#### Bench Order' must not be read as the missing '#### Bench'."""
+    f = tmp_path / "bench_order_only.md"
+    f.write_text(
+        _recommendations_content(bench_heading="#### Bench Order"), encoding="utf-8"
+    )
+    _run(str(f), from_recommendations=True)
+    data = json.loads(capsys.readouterr().out)
+    assert data["validation"]["structural"]["sub_headings_present"]["Bench"] is False
+
+
+def test_qualified_headings_keep_team_exposure_fallback_working(tmp_path, capsys):
+    """The Team column tally falls back correctly through qualified XI/Bench headings."""
+    f = tmp_path / "qualified_exposure.md"
+    f.write_text(
+        _recommendations_content(
+            xi_heading="#### Starting XI (3-4-3)", bench_heading="#### Bench (GK first)"
+        ),
+        encoding="utf-8",
+    )
+    _run(str(f), from_recommendations=True)
+    data = json.loads(capsys.readouterr().out)
+    arithmetic = data["validation"]["arithmetic"]
+    assert sum(arithmetic["team_exposure"].values()) == 15
+    assert arithmetic["team_exposure"]["TM0"] == 4  # 3 in the XI + 1 on the bench
+
+
+def test_qualified_team_exposure_heading_is_parsed(tmp_path, capsys):
+    """A qualifier on '#### Team Exposure' must not empty the exposure table."""
+    block = _recommendations_content().replace(
+        "#### Key Decisions",
+        "#### Team Exposure (max 3)\n\n"
+        "| Team | Count |\n|------|-------|\n| ARS | 3 |\n| MCI | 2 |\n\n"
+        "#### Key Decisions",
+    )
+    f = tmp_path / "qualified_exposure_table.md"
+    f.write_text(block, encoding="utf-8")
+    _run(str(f), from_recommendations=True)
+    data = json.loads(capsys.readouterr().out)
+    arithmetic = data["validation"]["arithmetic"]
+    assert arithmetic["team_exposure"] == {"ARS": 3, "MCI": 2}
+    assert arithmetic["max_per_team_ok"] is True
+    assert data["validation"]["structural"]["sub_headings_present"]["Team Exposure"] is True
