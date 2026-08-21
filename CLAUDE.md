@@ -67,6 +67,7 @@ For a complete inventory of CLI commands, analysis agents, and skills with JSON 
 - Architecture doc must stay in sync: adding a new agent, service, API client, or CLI command requires updating `docs/architecture.md`
 - TOOLS.md must stay in sync: adding, removing, or changing a CLI command, analysis agent, or skill requires updating `.agents/TOOLS.md`
 - AGENTS.md must stay in sync: any change to project instructions in CLAUDE.md requires the same change in AGENTS.md
+- CONTRIBUTING.md must stay in sync: changes to commit/PR conventions, CI checks, or the release pipeline require the same change in CONTRIBUTING.md (the human-facing copy)
 - CLI changes require corresponding unit tests
 - Changing a function's return format: update existing tests to match and confirm pytest passes
 - Tests: `pytest-asyncio` with `asyncio_mode = "auto"`, factories in `tests/conftest.py` (`make_player()`, `make_team()`, `make_fixture()`)
