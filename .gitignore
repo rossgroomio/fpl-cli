@@ -85,7 +85,6 @@ todos/
 .agents/skills/create-readme/
 .agents/skills/documentation-writer/
 .agents/skills/release-notes/
-.agents/skills/release/
 .agents/skills/fpl-data-scientist/
 
 # Dev-only backtesting harness

@@ -72,6 +72,7 @@ Agent playbooks in `.agents/skills/`. Each has a `SKILL.md` entry point. Claude 
 | gw-prep | `skills/gw-prep/` | Gameweek preparation recommendations for classic and draft (embed / rederive / transfer branches; Phase E post-write validation) | Full: Claude Code. Partial: Codex, Cursor, Copilot |
 | update-gw-prep | `skills/update-gw-prep/` | Append GW update to existing recommendations | Full: Claude Code, Codex, Cursor, Copilot |
 | squad-builder | `skills/squad-builder/` | Build optimal 15-player squad (wildcard, free hit, season start) | Full: Claude Code, Codex, Cursor, Copilot |
+| release | `skills/release/` | Cut a release: verify main, pick semver from conventional commits, draft notes, publish GitHub release (tag drives PyPI publish + changelog automation) | Full: Claude Code (local), Codex, Cursor, Copilot. Partial: Claude Code web (publish step handed to user) |
 
 ## Analysis Agents
 
