@@ -493,6 +493,88 @@ fpl league-recap --draft        # Use draft league
 
 **LLM editorial** (`--summarise`): Newsletter-style narrative via synthesis provider. Names names, calls out decisions.
 
+## Season Preview Intel
+
+Hand-curated per-team notes covering what the API and historical data cannot see before
+a season starts: who is nailed on, who is injured into the autumn, who took over set
+pieces, how a squad looks after the summer window.
+
+The content is yours. Nothing ships but an annotated example — preview prose belongs to
+whoever wrote it, so there is nothing to distribute. Sources are interchangeable: a
+200-word blurb and a long data piece fill the same schema at different fidelity.
+
+```bash
+fpl intel                       # Coverage across the league and what it permits
+fpl intel --show-decay          # When each kind of intel expires
+fpl intel -g 5                  # Show intel as it will look at GW5
+fpl intel --format json         # For scripts and agent skills
+fpl intel schema                # The file format, every field explained
+fpl intel init                  # Scaffold one empty file per Premier League team
+fpl intel init --force          # Overwrite existing files
+fpl intel show ARS              # One team's intel, aged to the current gameweek
+fpl intel resolve ARS           # Match player names to FPL codes (dry run)
+fpl intel resolve ARS --write   # Write the codes back, preserving your comments
+fpl intel resolve ARS --all     # Re-resolve players that already have a code
+```
+
+**Location:** `<config dir>/previews/{TEAM}.yaml`, one file per team, named by FPL short
+name (`ARS.yaml`). See [Directories](#directories).
+
+### Decay
+
+A preview is not one thing with one expiry. Each kind of claim is aged out at the point
+something better supersedes it, so files stay on disk untouched all season and stop
+influencing decisions on their own.
+
+| Section | Full confidence | Expires | Superseded by |
+|---------|-----------------|---------|---------------|
+| `injuries` | GW1 | GW2 | the FPL API's own `news` and `chance_of_playing` fields |
+| `transfers` | GW3 | GW4 | the summer window shutting; the roster is then authoritative |
+| `projected_xi` | GW3 | GW7 | real `minutes` |
+| `role_notes` | GW4 | GW9 | observed position and minutes |
+| `set_piece_duty` | GW6 | GW13 | observed returns |
+| `team_strength` | GW6 | GW13 | team ratings, which stop blending a prior after GW12 |
+| `narrative` | GW6 | GW13 | as above |
+
+Between full confidence and expiry the value tapers linearly and is reported per section
+as `section_confidence`. A categorical field such as `status: starter` cannot be scaled
+numerically, so the confidence is emitted alongside it for the consumer to weigh.
+
+### Coverage gate
+
+A partially-filled preview set is biased: written-up teams carry "nailed on, takes
+corners" annotations and the rest carry nothing, so absence of a flag reads as absence
+of merit. `metadata.coverage.usable_as` reports what the current set permits:
+
+| Value | Condition | Permitted use |
+|-------|-----------|---------------|
+| `full` | 75%+ of teams covered | Support or oppose a pick |
+| `negative_filter_only` | below that | Downgrade only — injuries, rotation risk. Never promote. |
+| `none` | nothing loaded, or all expired | Ignore entirely |
+
+Stubs from `fpl intel init` never count toward coverage until they are filled in.
+
+### Files that are skipped
+
+A file is ignored, with the reason printed to stderr and carried in
+`metadata.warnings`, when it is unreadable, is not a mapping, declares an unknown
+`schema_version`, is missing `team`, `source` or `published`, or belongs to a previous
+season. The season check reads the explicit `season` label when present and falls back
+to the `published` date — this is the guard against building a squad on last August's
+opinions. A preview set that has drifted across promotion and relegation is reported
+too.
+
+### Name resolution
+
+Preview prose names players the way a reader would — "Bruno Guimaraes" where the game
+shows "Bruno G." — so `fpl intel resolve` matches names against the team's squad and
+writes `element_code` (stable across seasons) back into the file. Accents and
+punctuation are folded, so `Ødegaard` and `Odegaard` resolve alike. An exact match on a
+display or full name wins outright; otherwise every query token must appear in the
+player's combined names. **Ambiguity is reported, never guessed** — a silently wrong
+code attaches intel to the wrong player. Writes are round-trip YAML, so hand-written
+comments and formatting survive.
+
 ## Configuration Reference
 
 Configuration uses two layers, deep-merged at runtime:
@@ -508,7 +590,7 @@ fpl-cli writes to three directories, each resolved via `platformdirs` and overri
 
 | Directory | Contents | Override |
 |-----------|----------|----------|
-| Config | `settings.yaml`, `.env` (credentials and API keys), `team_ratings_overrides.yaml`, optional `team_managers.yaml` (layered over the shipped copy per club) and `fixture_predictions.yaml` (replaces the shipped copy), plus the `output/` and `research/` report directories | `FPL_CLI_CONFIG_DIR` |
+| Config | `settings.yaml`, `.env` (credentials and API keys), `team_ratings_overrides.yaml`, optional `team_managers.yaml` (layered over the shipped copy per club) and `fixture_predictions.yaml` (replaces the shipped copy), the optional `previews/` directory of [season preview intel](#season-preview-intel), plus the `output/` and `research/` report directories | `FPL_CLI_CONFIG_DIR` |
 | Data | Generated files: `team_ratings.yaml`, `team_ratings_prior.yaml`, `player_prior.yaml`, `chip_plan.json`, `team_finances.json` | `FPL_CLI_DATA_DIR` |
 | Cache | Disposable API response caches | `FPL_CLI_CACHE_DIR` |
 

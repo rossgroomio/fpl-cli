@@ -283,6 +283,7 @@ flowchart LR
         price_hist["price-history"]
         chips["chips"]
         ratings["ratings"]
+        intel["intel"]
         credentials["credentials"]
         init["init"]
     end
@@ -366,6 +367,7 @@ Services live in `fpl_cli/services/` and provide the computation layer between a
 | `team_ratings` | TeamRatingsService + Calculator (1-7 scale, 4 axes). Pre-season (no completed GW) seeds from the previous-season prior instead of serving last season's table. Season-aware: a file stamped (or dated) to a previous season is ignored rather than served, taking its `based_on_gws` with it so a new season recalculates. `check_team_set()` diffs the rated clubs against `bootstrap-static` and names the promoted clubs missing and the relegated ones still rated — the check that catches a rollover a date cannot. `has_ratings` / `is_uniform` / `is_preseason_estimate` flag rating sets that cannot produce meaningful fixture difficulty; every warning surfaces via `get_staleness_warning()` |
 | `matchup` | Fixture matchup scoring (0-10), 3-GW recency-weighted |
 | `fixture_predictions` | BGW/DGW predictions from YAML + live detection |
+| `season_previews` | Hand-curated per-team season intel from `<config dir>/previews/*.yaml`. Per-section decay (`SECTION_DECAY`) ages each kind of claim out at the gameweek something better supersedes it — injuries at GW2, projected XIs at GW7, team strength at GW13 to mirror `team_ratings_prior.BLENDING_CUTOFF_GW`. `coverage()` centralises the usage gate (`full` / `negative_filter_only` / `none`) so the three consuming skills cannot drift apart on the threshold. Deterministic name resolution (`resolve_name`) matches preview prose to `element_code`, reporting ambiguity rather than guessing; `write_resolved_codes` saves via round-trip YAML so hand-written comments survive |
 | `squad_allocator` | ILP squad allocator (PuLP CBC), horizon-aware, chip-aware |
 | `team_form` | Rolling team form stats (last 6 matches, venue splits) |
 
@@ -533,6 +535,7 @@ fpl_cli/
 │   ├── team_ratings_prior.py     # Pre-GW5 prior ratings for blending
 │   ├── matchup.py                # Fixture matchup scoring (0-10)
 │   ├── fixture_predictions.py    # BGW/DGW predictions from YAML + live detection
+│   ├── season_previews.py       # Per-team season intel: schema, per-section decay, coverage gate, name resolution
 │   ├── squad_allocator.py        # ILP squad allocator (PuLP CBC) - score, fixture coefficients, solver. Horizon-aware: horizon=1 uses single-GW scoring (GW_SELECTION_WEIGHTS), horizon>=2 uses ownership-family quality (VALUE_QUALITY_WEIGHTS). Chip-aware: --bench-discount (Free Hit), --bench-boost-gw (Bench Boost per-GW override to 1.0), --sell-prices (WC/FH sell-price budget correction via price_overrides dict)
 │   └── team_form.py              # Rolling team form stats
 ├── models/
@@ -565,6 +568,7 @@ platformdirs (user_config_dir / user_data_dir)  # macOS: ~/Library/Application S
 ├── team_managers.yaml            # Manager name mappings (shipped in package; config-dir copy layers over it per club, so a season refresh still reaches clubs the user has not overridden). Diffed against the live team list on use, naming clubs it misses and clubs it still lists
 ├── team_ratings_overrides.yaml   # Manual per-team axis overrides (config dir, migrated from repo config/)
 ├── fixture_predictions.yaml      # Optional BGW/DGW predictions override (config dir); takes precedence over the shipped copy
+├── previews/{TEAM}.yaml          # Optional season preview intel, one file per team (config dir); user-supplied, nothing shipped but EXAMPLE.yaml
 ├── team_ratings.yaml             # Cached team strength ratings (data dir, auto-refreshed; metadata.season invalidates it across a season boundary)
 ├── team_ratings_prior.yaml       # Cached team ratings priors (data dir)
 ├── player_prior.yaml             # Cached player priors (data dir, generated, season/GW invalidation)
@@ -575,6 +579,8 @@ platformdirs (user_config_dir / user_data_dir)  # macOS: ~/Library/Application S
 The config dir also holds `.env` (credentials, API keys) and the generated `output/` and `research/` report directories.
 
 A default `fixture_predictions.yaml` ships inside the package (`SHIPPED_CONFIG_DIR`); a current-season copy in the user config dir takes precedence, so predictions can be updated without a package release. A user copy that is unreadable, malformed, empty, or from a previous season falls through to the shipped copy and the reason is reported.
+
+Season previews follow the same season-staleness discipline but deliberately **not** the layering: there is no shipped fallback to fall through to, because preview content is entirely user-supplied (a paid newsletter's prose cannot be distributed). Only an annotated `previews/EXAMPLE.yaml` ships, as the schema reference behind `fpl intel schema`; the loader skips any file with that name so an unedited copy stays quiet. A missing previews directory is the ordinary case and produces no warning.
 
 `user_config_dir()` / `user_data_dir()` / `user_cache_dir()` resolve lazily and are cached, so an override set after import (from `.env`, or by a script) is still honoured. Consumers must call them where the path is used rather than binding the result to a module-level constant.
 
@@ -593,8 +599,10 @@ A default `fixture_predictions.yaml` ships inside the package (`SHIPPED_CONFIG_D
     │       ├── bench_order.py           # BenchOrderAgent wrapper (name -> ID resolution)
     │       ├── starting_xi.py           # StartingXIAgent wrapper (name -> ID resolution)
     │       ├── transfer_eval.py         # TransferEvalAgent wrapper (name -> ID resolution)
-    │       └── extract_classic_squad.py # Classic Squad block extractor (Phase B9 embed + Phase E read-only validator)
+    │       └── extract_classic_squad.py # Classic Squad block extractor (Phase A3 embed + Phase E read-only validator)
     ├── update-gw-prep/           # Second-pass addendum with supplementary data
+    │   └── SKILL.md
+    ├── preview-ingest/           # Season preview prose -> structured per-team intel files
     │   └── SKILL.md
     ├── squad-builder/            # 5-mode squad optimisation (WC/FH/season-start/draft/redraft)
     │   ├── SKILL.md

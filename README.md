@@ -89,6 +89,24 @@ $ fpl chips timing                 # Rule-based Free Hit / Bench Boost / Triple 
 $ fpl fixtures                     # Next GW fixtures with FDR
 ```
 
+### Season Preview Intel
+
+Optional. Notes you write up per team before the season — projected XIs, long-term
+injuries, new signings with no Premier League record — from whatever source you read.
+Nothing ships with the tool; the previews are yours.
+
+```console
+$ fpl intel schema                 # The file format, every field explained
+$ fpl intel init                   # Scaffold one empty file per team
+$ fpl intel resolve ARS --write    # Match player names to FPL codes, save them
+$ fpl intel                        # Coverage across the league, and what it permits
+$ fpl intel show ARS               # One team's intel, aged to the current gameweek
+```
+
+Intel expires on a schedule (`fpl intel --show-decay`): injuries at GW2, projected XIs
+at GW7, everything by GW13 — each keyed to the point where real data supersedes it. There
+is no in-season upkeep, and squad-builder and gw-prep read it automatically when present.
+
 ### Custom Analysis
 
 Off by default. Enable via `fpl init` or `custom_analysis: true` in settings.yaml.
@@ -125,7 +143,7 @@ $ fpl fdr --blanks --format json
 
 ## Configuration
 
-Run `fpl init` to configure interactively. Settings stored in your platform's config directory (override with `FPL_CLI_CONFIG_DIR`); generated data such as team ratings and chip plans is stored in your platform's data directory (override with `FPL_CLI_DATA_DIR`). In ephemeral environments (e.g. Claude Code on the web), point both at a persistent workspace. Both overrides must be absolute paths — see [Directories](docs/command-reference.md#directories).
+Run `fpl init` to configure interactively. Settings stored in your platform's config directory (override with `FPL_CLI_CONFIG_DIR`, and also home to the optional `previews/` intel files); generated data such as team ratings and chip plans is stored in your platform's data directory (override with `FPL_CLI_DATA_DIR`). In ephemeral environments (e.g. Claude Code on the web), point both at a persistent workspace. Both overrides must be absolute paths — see [Directories](docs/command-reference.md#directories).
 
 **Required:** FPL classic entry ID or draft league + entry IDs.
 
