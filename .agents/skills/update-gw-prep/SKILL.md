@@ -13,7 +13,7 @@ compatibility:
   cursor: full (single sequential pass)
   copilot: full (single sequential pass)
 ---
-<!-- CLI commands used: status, captain, chips timing, player -->
+<!-- CLI commands used: status, captain, chips timing, player, intel -->
 
 # Update GW Prep
 
@@ -61,12 +61,25 @@ GW{N}. Run the gw-prep skill first."
 Read any supplementary reports available (newsletters, model outputs, community
 consensus data, etc.).
 
-<!-- ADAPT: Add supplementary data source paths here -->
+Season preview intel counts as one such source, and is already structured:
+
+```bash
+fpl intel --format json
+```
+
+Treat it as supplementary data only when it still carries something. It expires
+by gameweek (everything is gone by GW13), so past the opening weeks it will be
+empty and should not, on its own, justify an update pass. Note
+`metadata.coverage.usable_as`: under `negative_filter_only` it may only support
+downgrading a pick, never promoting one.
+
+<!-- ADAPT: Add further supplementary data source paths here -->
 
 **A4. Abort check**
 
 If no supplementary data sources are available, report: "No supplementary data
-sources found. Nothing to update." and stop.
+sources found. Nothing to update." and stop. An empty `fpl intel` payload is not
+a data source -- if it is the only thing you found, there is nothing to update.
 
 ### Phase B — Collect live data
 
@@ -75,9 +88,10 @@ Run the following CLI commands to get current analytical output:
 ```bash
 fpl captain --format json        # classic only - skip if format is "draft"
 fpl chips timing --format json   # classic only - skip if format is "draft"
+fpl intel --format json          # season preview intel; empty past the opening weeks
 ```
 
-<!-- ADAPT: Add supplementary data source reads here -->
+<!-- ADAPT: Add further supplementary data source reads here -->
 
 Read the scoring and formatting rules:
 

@@ -13,7 +13,7 @@ compatibility:
   copilot: fallback (sequential execution)
 ---
 
-<!-- CLI commands composed: status, chips, chips sync, chips timing, fdr, captain, waivers, squad grid, squad sell-prices, price-history, player, stats -->
+<!-- CLI commands composed: status, chips, chips sync, chips timing, fdr, captain, waivers, squad grid, squad sell-prices, price-history, player, stats, intel -->
 
 # Gameweek Preparation
 
@@ -200,7 +200,32 @@ fpl stats -p DEF -s clean_sheets --min-minutes 450 -n 10 --available-only --form
 
 Store each result under a distinct key (e.g. `stats_form`, `stats_transfer_momentum`, `stats_mid_xgi`, `stats_fwd_xgi`, `stats_def_clean_sheets`) and inline them into Phase C prompts as labelled sections.
 
-<!-- ADAPT: Add your own supplementary data sources here. Examples:
+### B9 -- Season Preview Intel
+
+```bash
+fpl intel --format json
+```
+
+Hand-curated pre-season notes on minutes, injuries, role and set-piece duty. Optional: most setups
+have none, and every downstream step is unchanged when there is nothing to read.
+
+**This is an early-season source by design.** Projected XIs expire at GW7 and everything expires at
+GW13, because by then real minutes beat anybody's August projection. Past GW13 expect an empty
+payload -- that is the decay working, not a failure. Its value is concentrated in GW1-3, when
+`starting_xi.py` and `bench_order.py` are ranking players who have not played yet.
+
+Read `metadata.coverage.usable_as` and store it as `intel_gate`:
+
+| `intel_gate` | What sub-agents may do with intel |
+|---|---|
+| `full` | Support **or** oppose a pick |
+| `negative_filter_only` | Only downgrade: injuries, rotation risk, "not nailed on". Never promote. |
+| `none` | Ignore entirely; omit the intel block from every Phase C prompt |
+
+With partial coverage the written-up teams carry annotations and the rest carry nothing, so absence
+of a flag would read as absence of merit. Store the payload as `intel` for Phase C.
+
+<!-- ADAPT: Add your own further supplementary data sources here. Examples:
   - `fpl preview --save --scout` generates a GW preview with fixture analysis and scout insights.
     Read the saved file and inject its content into Phase C sub-agents as additional context.
   - Newsletter extracts (e.g. community tips, model projections) saved as markdown files
@@ -252,7 +277,12 @@ Branch on `squad_builder_result` (set in Phase A3; unset on transfer weeks):
 > - Chip timing: {B6 output}
 > - Stats: {stats_form}, {stats_transfer_momentum}, {stats_mid_xgi}, {stats_fwd_xgi}, {stats_def_clean_sheets} (from B8)
 >
-> <!-- ADAPT: Add your own supplementary data sources here (newsletters, external reports) -->
+> - Preview intel: {intel} (from B9 - omit this line entirely when `intel_gate` is `none`)
+>   Gate: {intel_gate}. Governs **minutes and role only**, never how good a player is. Attribute it
+>   ("Transfer Flow projects him starting"), never assert it. Under `negative_filter_only` use it
+>   only to downgrade. A player with no intel is not a worse player.
+>
+> <!-- ADAPT: Add your own further supplementary data sources here (newsletters, external reports) -->
 >
 > **Embedded Classic Squad (from squad-builder — insert this as the `### Classic Squad` section):**
 >
@@ -318,7 +348,12 @@ Proceed immediately (non-interactive).
 > - Chip timing: {B6 output}
 > - Stats: {stats_form}, {stats_transfer_momentum}, {stats_mid_xgi}, {stats_fwd_xgi}, {stats_def_clean_sheets} (from B8)
 >
-> <!-- ADAPT: Add your own supplementary data sources here (newsletters, external reports) -->
+> - Preview intel: {intel} (from B9 - omit this line entirely when `intel_gate` is `none`)
+>   Gate: {intel_gate}. Governs **minutes and role only**, never how good a player is. Attribute it
+>   ("Transfer Flow projects him starting"), never assert it. Under `negative_filter_only` use it
+>   only to downgrade. A player with no intel is not a worse player.
+>
+> <!-- ADAPT: Add your own further supplementary data sources here (newsletters, external reports) -->
 >
 > Apply squad-builder rules from `references/rules.md` for full squad selection. Prepend the fallback banner (Variant A/B/C — see `references/output-template.md` for exact wording) on the line immediately before the Classic section heading in the output file. Do not include `squad_builder_mode` in the frontmatter — the squad was re-derived, not embedded from squad-builder.
 >
@@ -390,7 +425,12 @@ Proceed immediately (non-interactive).
 > - Chip timing: {B6 output}
 > - Stats: {stats_form}, {stats_transfer_momentum}, {stats_mid_xgi}, {stats_fwd_xgi}, {stats_def_clean_sheets} (from B8)
 >
-> <!-- ADAPT: Add your own supplementary data sources here (newsletters, external reports) -->
+> - Preview intel: {intel} (from B9 - omit this line entirely when `intel_gate` is `none`)
+>   Gate: {intel_gate}. Governs **minutes and role only**, never how good a player is. Attribute it
+>   ("Transfer Flow projects him starting"), never assert it. Under `negative_filter_only` use it
+>   only to downgrade. A player with no intel is not a worse player.
+>
+> <!-- ADAPT: Add your own further supplementary data sources here (newsletters, external reports) -->
 >
 > Produce the **Classic** section of the output template.
 
@@ -421,7 +461,12 @@ Proceed immediately (non-interactive).
 > - Squad: {B4 output}
 > - Stats: {stats_form}, {stats_transfer_momentum}, {stats_mid_xgi}, {stats_fwd_xgi}, {stats_def_clean_sheets} (from B8)
 >
-> <!-- ADAPT: Add your own supplementary data sources here (newsletters, external reports) -->
+> - Preview intel: {intel} (from B9 - omit this line entirely when `intel_gate` is `none`)
+>   Gate: {intel_gate}. Governs **minutes and role only**, never how good a player is. Attribute it
+>   ("Transfer Flow projects him starting"), never assert it. Under `negative_filter_only` use it
+>   only to downgrade. A player with no intel is not a worse player.
+>
+> <!-- ADAPT: Add your own further supplementary data sources here (newsletters, external reports) -->
 >
 > Additionally enforce: every waiver swap must be position-for-position (MID out → MID in, DEF out → DEF in, etc.). Cross-position swaps are illegal under FPL Draft rules.
 >
@@ -435,7 +480,7 @@ After each sub-agent identifies OUT candidates and an IN shortlist (from squad a
 python3 "${CLAUDE_SKILL_DIR}/scripts/transfer_eval.py" --out "{out_player_name}" --in "{comma-separated IN candidate names}"
 ```
 
-The script outputs JSON with Outlook (multi-GW quality) and This GW (lineup impact) deltas for each IN candidate vs the OUT player. Use these scores as the quantitative baseline for transfer/waiver recommendations. Sub-agents may override with qualitative reasons (press conference intel, newsletter signals) using the same `⚡ Override: {reason}` pattern as starting XI overrides.
+The script outputs JSON with Outlook (multi-GW quality) and This GW (lineup impact) deltas for each IN candidate vs the OUT player. Use these scores as the quantitative baseline for transfer/waiver recommendations. Sub-agents may override with qualitative reasons (press conference intel, newsletter signals, season preview intel from B9) using the same `⚡ Override: {reason}` pattern as starting XI overrides. Name the source in the reason.
 
 If the script fails (exit 1), fall back to LLM-driven transfer reasoning and note the failure.
 
@@ -449,7 +494,9 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/starting_xi.py" --squad "{comma-separated 1
 
 <!-- ADAPT: Replace with your squad player names from the squad grid output -->
 
-Use the script's recommended XI as the default lineup. Sub-agents may override specific picks with stated qualitative reasons (press conference intel, newsletter signals, rotation predictions). Mark any overrides with `⚡ Override: {reason}` in the output. If the script fails (exit 1), fall back to manual selection and note the failure.
+Use the script's recommended XI as the default lineup. Sub-agents may override specific picks with stated qualitative reasons (press conference intel, newsletter signals, rotation predictions, season preview intel from B9). Mark any overrides with `⚡ Override: {reason}` in the output, naming the source. If the script fails (exit 1), fall back to manual selection and note the failure.
+
+**Preview intel is at its most useful here in GW1-3**, when the lineup engine is ranking players with no minutes on the board and a projected XI is the only nailed-on signal available. It feeds this override channel deliberately rather than the scoring inside `starting_xi.py`: an override is visible and attributed in the output, whereas a scoring input would move picks invisibly. Respect `intel_gate` -- under `negative_filter_only`, intel may bench a player but never promote one into the XI.
 
 ### C4 -- Bench Ordering (skip if `squad_builder_result == "embed"` OR `mode == "benchboost"` — embed has bench order inside block, bench boost has no bench ordering)
 
