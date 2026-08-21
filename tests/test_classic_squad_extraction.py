@@ -930,3 +930,102 @@ def test_qualified_team_exposure_heading_is_parsed(tmp_path, capsys):
     assert arithmetic["team_exposure"] == {"ARS": 3, "MCI": 2}
     assert arithmetic["max_per_team_ok"] is True
     assert data["validation"]["structural"]["sub_headings_present"]["Team Exposure"] is True
+
+
+# -- Review-fix regressions (heading/table-parsing bugs found in PR 64 review) --
+
+
+def test_count_rows_does_not_match_glued_compound_word_heading():
+    """'#### Bench-Warmers' is a different heading, not a punctuation-qualified
+    '#### Bench' — a qualifier glued with no separating space must not continue
+    into a word character, or a hyphenated compound heading would be silently
+    swallowed as 'Bench' with an ignored suffix."""
+    block = (
+        "### Classic Squad\n#### Bench-Warmers\n\n"
+        "| Order | Player |\n"
+        "|-------|--------|\n"
+        "| 1st | Justin |\n"
+        "| 2nd | Rogers |\n"
+    )
+    assert _count_table_rows_between(block, "#### Bench") == 0
+
+
+def test_glued_word_qualifier_on_team_exposure_heading_falls_back(tmp_path, capsys):
+    """A heading corrupted with a glued word continuation (no space) must not be
+    read as '#### Team Exposure' — the validator must fall back to the XI/Bench
+    tally rather than silently parsing an unrelated decoy table."""
+    block = _recommendations_content().replace(
+        "#### Key Decisions",
+        "#### Team Exposure.Deprecated\n\n"
+        "| Team | Count |\n|------|-------|\n| ARS | 1 |\n\n"
+        "#### Key Decisions",
+    )
+    f = tmp_path / "glued_qualifier_exposure.md"
+    f.write_text(block, encoding="utf-8")
+    _run(str(f), from_recommendations=True)
+    data = json.loads(capsys.readouterr().out)
+    arithmetic = data["validation"]["arithmetic"]
+    structural = data["validation"]["structural"]
+    assert structural["sub_headings_present"]["Team Exposure"] is False
+    assert arithmetic["team_exposure"] != {"ARS": 1}
+    assert sum(arithmetic["team_exposure"].values()) == 15
+
+
+def test_repeated_team_exposure_heading_merges_not_truncates(tmp_path, capsys):
+    """Two '#### Team Exposure' headings must merge into one section, not have the
+    second one silently discarded — otherwise a real per-team violation reported
+    only in the second table would go undetected."""
+    content = (
+        "## Classic League\n\n"
+        "### Classic Squad\n\n"
+        "#### Constraints\n\n#### Starting XI\n\n#### Bench\n\n"
+        "#### Budget\n\n| P | C | S |\n|---|---|---|\n| **Total** | **15** | **£99.5m** |\n\n"
+        "#### Team Exposure\n\n"
+        "| Team | Count |\n"
+        "|------|-------|\n"
+        "| Arsenal | 2 |\n\n"
+        "#### Team Exposure\n\n"
+        "| Team | Count |\n"
+        "|------|-------|\n"
+        "| Man City | 4 |\n\n"
+        "#### Key Decisions\n\n#### Alternatives\n\n"
+        "### Momentum Alerts\n\nsome\n"
+    )
+    f = tmp_path / "repeated_team_exposure.md"
+    f.write_text(content, encoding="utf-8")
+    _run(str(f), from_recommendations=True)
+    data = json.loads(capsys.readouterr().out)
+    a = data["validation"]["arithmetic"]
+    assert a["team_exposure"].get("Man City") == 4
+    assert a["max_per_team_ok"] is False
+
+
+def test_count_rows_gfm_colon_aligned_separator_not_counted_as_row():
+    """A GFM alignment-colon separator ('|:----|:-----|') must be recognised as
+    the header/body divider, not miscounted as an extra data row."""
+    block = (
+        "### Classic Squad\n#### Starting XI\n\n"
+        "| Pos | Player | Team |\n"
+        "|:----|:-------|:-----|\n"
+        "| GK | Raya | ARS |\n"
+        "| DEF | Gabriel | ARS |\n"
+        "| FWD | Haaland | MCI |\n"
+    )
+    assert _count_table_rows_between(block, "#### Starting XI") == 3
+
+
+def test_indented_next_heading_still_terminates_section():
+    """A next heading indented with leading whitespace must still close the
+    current section rather than letting its table bleed into the previous count."""
+    block = (
+        "### Classic Squad\n#### Bench\n\n"
+        "| Order | Player |\n"
+        "|-------|--------|\n"
+        "| GK | Darlow |\n"
+        "| 1st | Justin |\n\n"
+        "  #### Budget\n\n"
+        "| P | C |\n"
+        "|---|---|\n"
+        "| **Total** | **15** |\n"
+    )
+    assert _count_table_rows_between(block, "#### Bench") == 2

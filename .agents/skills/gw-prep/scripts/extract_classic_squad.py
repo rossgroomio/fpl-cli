@@ -18,6 +18,7 @@ import argparse
 import json
 import re
 import sys
+from collections.abc import Iterator
 from typing import Literal, TypedDict
 
 
@@ -264,14 +265,13 @@ def _validate_classic_squad_block(block: str) -> ValidationResult:
     ]
 
     # Structural checks
-    stripped_lines = [line.strip() for line in block.split("\n")]
     sub_headings_present = {
-        name: _heading_present(stripped_lines, f"#### {name}")
+        name: _heading_present(block, f"#### {name}")
         for name in expected_sub_headings
     }
 
-    starting_xi_rows = _count_table_rows_between(block, "#### Starting XI")
-    bench_rows = _count_table_rows_between(block, "#### Bench")
+    starting_xi_rows = _count_table_rows_between(block, _HEADING_STARTING_XI)
+    bench_rows = _count_table_rows_between(block, _HEADING_BENCH)
 
     captain_named = bool(re.search(r"\*\*Captain:\*\*\s*\S", block))
     vice_named = bool(re.search(r"\*\*Vice:\*\*\s*\S", block))
@@ -303,47 +303,70 @@ def _validate_classic_squad_block(block: str) -> ValidationResult:
     }
 
 
-# A heading may carry a qualifier the output templates invite but never pin down
-# ("#### Starting XI (3-4-3)"), so matching on equality misses it and matching on
-# containment is too loose. Accept a qualifier introduced by punctuation or a digit,
-# never one introduced by a word: "#### Bench Order" is a separate heading in the
+# A heading may carry a qualifier that sub-agents sometimes add despite the
+# verbatim-heading instruction (e.g. "#### Starting XI (3-4-3)"), so matching on
+# equality misses it and matching on containment is too loose. Accept a qualifier
+# introduced by punctuation or a digit, but only when it reads as a separate
+# annotation rather than a continuation of the heading text itself: a qualifier
+# glued directly onto the heading with no separating space must not be followed
+# by a word character, or it's a different (possibly hyphenated/compound) heading
+# — "#### Bench Order" and "#### Bench-Warmers" are both separate headings in the
 # template, not a qualified "#### Bench".
 def _heading_pattern(heading: str) -> re.Pattern[str]:
     """Compile a matcher for a heading with an optional trailing qualifier."""
-    return re.compile(rf"^{re.escape(heading)}(?:\s*(?:\d|[^\s\w]).*)?$")
+    escaped = re.escape(heading)
+    qualifier = r"(?:[0-9]|[^\s\w])"
+    return re.compile(rf"^{escaped}(?:\s+{qualifier}.*|{qualifier}(?!\w).*)?$")
 
 
-def _heading_present(stripped_lines: list[str], heading: str) -> bool:
+def _heading_present(block: str, heading: str) -> bool:
     """True if any line is the heading, bare or qualified."""
     pattern = _heading_pattern(heading)
-    return any(pattern.match(line) for line in stripped_lines)
+    return any(pattern.match(line.strip()) for line in block.split("\n"))
+
+
+_HEADING_STARTING_XI = "#### Starting XI"
+_HEADING_BENCH = "#### Bench"
+_HEADING_TEAM_EXPOSURE = "#### Team Exposure"
+_TABLE_SEPARATOR_RE = re.compile(r"^\|[-:| ]+\|")
+
+
+def _lines_in_section(block: str, heading: str) -> Iterator[str]:
+    """Yield lines within `heading`'s section.
+
+    A repeated or re-qualified occurrence of the same heading extends the
+    section rather than closing it; the section ends only at the next
+    *different* heading of the same or shallower depth (or at EOF).
+    """
+    heading_re = _heading_pattern(heading)
+    in_section = False
+    for line in block.split("\n"):
+        stripped = line.strip()
+        if heading_re.match(stripped):
+            in_section = True
+            continue
+        if not in_section:
+            continue
+        if re.match(r"^#{3,4} \S", stripped):
+            break
+        yield line
 
 
 def _count_table_rows_between(block: str, start_heading: str) -> int:
     """Count markdown table data rows between start_heading and the next heading of same depth."""
-    heading_re = _heading_pattern(start_heading)
-    lines = block.split("\n")
-    in_section = False
     in_table = False
     row_count = 0
 
-    for line in lines:
-        if not in_section and heading_re.match(line.strip()):
-            in_section = True
-            continue
-        if in_section:
-            # Stop at the next heading of same or higher level
-            if re.match(r"^#{3,4} \S", line):
-                break
-            if line.startswith("|"):
-                if re.match(r"^\|[-| ]+\|", line):
-                    pass
-                elif not in_table:
-                    in_table = True
-                else:
-                    row_count += 1
-            elif in_table:
-                in_table = False
+    for line in _lines_in_section(block, start_heading):
+        if line.startswith("|"):
+            if _TABLE_SEPARATOR_RE.match(line):
+                pass
+            elif not in_table:
+                in_table = True
+            else:
+                row_count += 1
+        elif in_table:
+            in_table = False
 
     return row_count
 
@@ -366,35 +389,27 @@ def _parse_budget_total(block: str) -> float | None:
 def _tally_teams_from_squad_tables(block: str) -> dict[str, int]:
     """Tally team counts from the Team column in Starting XI and Bench tables."""
     tally: dict[str, int] = {}
-    for section_heading in ("#### Starting XI", "#### Bench"):
-        heading_re = _heading_pattern(section_heading)
-        in_section = False
+    for section_heading in (_HEADING_STARTING_XI, _HEADING_BENCH):
         in_table = False
         team_col: int | None = None
-        for line in block.split("\n"):
-            if not in_section and heading_re.match(line.strip()):
-                in_section = True
-                continue
-            if in_section:
-                if re.match(r"^#{3,4} \S", line):
-                    break
-                if line.startswith("|"):
-                    if re.match(r"^\|[-| ]+\|", line):
-                        pass  # separator
-                    elif not in_table:
-                        headers = [h.strip().lower() for h in line.strip("|").split("|")]
-                        team_col = next(
-                            (i for i, h in enumerate(headers) if h == "team"), None
-                        )
-                        in_table = True
-                    else:
-                        if team_col is not None:
-                            parts = [p.strip() for p in line.strip("|").split("|")]
-                            if len(parts) > team_col and parts[team_col]:
-                                team = parts[team_col]
-                                tally[team] = tally.get(team, 0) + 1
-                elif in_table:
-                    in_table = False
+        for line in _lines_in_section(block, section_heading):
+            if line.startswith("|"):
+                if _TABLE_SEPARATOR_RE.match(line):
+                    pass  # separator
+                elif not in_table:
+                    headers = [h.strip().lower() for h in line.strip("|").split("|")]
+                    team_col = next(
+                        (i for i, h in enumerate(headers) if h == "team"), None
+                    )
+                    in_table = True
+                else:
+                    if team_col is not None:
+                        parts = [p.strip() for p in line.strip("|").split("|")]
+                        if len(parts) > team_col and parts[team_col]:
+                            team = parts[team_col]
+                            tally[team] = tally.get(team, 0) + 1
+            elif in_table:
+                in_table = False
     return tally
 
 
@@ -406,26 +421,18 @@ def _parse_team_exposure(block: str) -> dict[str, int]:
     """
     exposure: dict[str, int] = {}
 
-    heading_re = _heading_pattern("#### Team Exposure")
-    in_team_exposure = False
-    for line in block.split("\n"):
-        if not in_team_exposure and heading_re.match(line.strip()):
-            in_team_exposure = True
-            continue
-        if in_team_exposure:
-            if re.match(r"^#{3,4} \S", line):
-                break
-            if line.startswith("|") and not re.match(r"^\|[-| ]+\|", line):
-                parts = [p.strip() for p in line.strip("|").split("|")]
-                if len(parts) >= 2:
-                    team = parts[0].strip()
-                    try:
-                        count = int(parts[1].strip().strip("*"))
-                        team_clean = team.strip("*").strip()
-                        if team_clean and team_clean.lower() not in ("team", "total"):
-                            exposure[team_clean] = count
-                    except ValueError:
-                        pass
+    for line in _lines_in_section(block, _HEADING_TEAM_EXPOSURE):
+        if line.startswith("|") and not _TABLE_SEPARATOR_RE.match(line):
+            parts = [p.strip() for p in line.strip("|").split("|")]
+            if len(parts) >= 2:
+                team = parts[0].strip()
+                try:
+                    count = int(parts[1].strip().strip("*"))
+                    team_clean = team.strip("*").strip()
+                    if team_clean and team_clean.lower() not in ("team", "total"):
+                        exposure[team_clean] = count
+                except ValueError:
+                    pass
 
     if not exposure:
         return _tally_teams_from_squad_tables(block)
