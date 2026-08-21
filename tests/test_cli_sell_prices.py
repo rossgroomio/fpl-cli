@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from click.testing import CliRunner
 
@@ -158,3 +158,44 @@ class TestSummarySection:
             result = runner.invoke(sell_prices_command)
         assert "Available:" in result.output
         assert "Free transfers:" in result.output
+
+
+class TestSaveMessage:
+    def test_save_message_shows_actual_path(self, tmp_path, monkeypatch):
+        """The save confirmation prints the real cache location, not a hardcoded path."""
+        from fpl_cli.paths import user_data_dir
+
+        data_dir = tmp_path / "fake-data-dir"
+        monkeypatch.setenv("FPL_CLI_DATA_DIR", str(data_dir))
+        user_data_dir.cache_clear()
+        runner = CliRunner()
+        finances = _make_finances()
+
+        with patch("fpl_cli.scraper.fpl_prices.FPLPriceScraper") as mock_scraper_cls, \
+             patch("fpl_cli.scraper.fpl_prices.save_cache"), \
+             patch("fpl_cli.scraper.fpl_prices.load_cache"):
+            mock_scraper_cls.return_value.scrape = AsyncMock(return_value=finances)
+            result = runner.invoke(sell_prices_command, ["--refresh"], catch_exceptions=False)
+
+        assert result.exit_code == 0
+        # Rich soft-wraps long paths; compare against the unwrapped output.
+        assert str(data_dir / "team_finances.json") in result.output.replace("\n", "")
+
+    def test_save_message_keeps_bracketed_path_intact(self, tmp_path, monkeypatch):
+        """A data dir containing [brackets] must not be eaten as rich markup."""
+        from fpl_cli.paths import user_data_dir
+
+        data_dir = tmp_path / "[vault]" / "fpl-data"
+        monkeypatch.setenv("FPL_CLI_DATA_DIR", str(data_dir))
+        user_data_dir.cache_clear()
+        runner = CliRunner()
+        finances = _make_finances()
+
+        with patch("fpl_cli.scraper.fpl_prices.FPLPriceScraper") as mock_scraper_cls, \
+             patch("fpl_cli.scraper.fpl_prices.save_cache"), \
+             patch("fpl_cli.scraper.fpl_prices.load_cache"):
+            mock_scraper_cls.return_value.scrape = AsyncMock(return_value=finances)
+            result = runner.invoke(sell_prices_command, ["--refresh"], catch_exceptions=False)
+
+        assert result.exit_code == 0
+        assert "[vault]" in result.output.replace("\n", "")

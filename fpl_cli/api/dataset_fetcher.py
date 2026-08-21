@@ -8,13 +8,13 @@ supports ETag/If-None-Match.
 from __future__ import annotations
 
 import logging
-import os
-import tempfile
 import time
 from datetime import timedelta
 from pathlib import Path
 
 import httpx
+
+from fpl_cli.utils.files import atomic_write_text
 
 logger = logging.getLogger(__name__)
 
@@ -113,25 +113,7 @@ class DatasetFetcher:
 
         # 200: store and return
         text = response.text
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Atomic write for the data file
-        tmp_path = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                mode="w",
-                encoding="utf-8",
-                dir=cache_path.parent,
-                suffix=".tmp",
-                delete=False,
-            ) as f:
-                f.write(text)
-                tmp_path = f.name
-            os.replace(tmp_path, cache_path)
-        except OSError:
-            if tmp_path and os.path.exists(tmp_path):
-                os.unlink(tmp_path)
-            raise
+        atomic_write_text(cache_path, text)
 
         # ETag sidecar (non-atomic; corruption just means an unconditional GET next time)
         etag = response.headers.get("ETag")

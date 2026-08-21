@@ -324,6 +324,26 @@ class TestLayeredLookup:
         assert [b.gameweek for b in service.get_predicted_blanks()] == [25]
         assert service.config_path == shipped
 
+    def test_explicitly_empty_user_copy_suppresses_shipped_predictions(self, shipped, user_file):
+        """Both prediction keys present-but-empty is a deliberate 'no predictions'.
+
+        The override must be able to express emptiness (e.g. a retracted DGW),
+        so it wins over the shipped copy and raises no warning.
+        """
+        data = {
+            "metadata": {"last_updated": CURRENT_SEASON_DATE, "notes": "no BGW/DGW"},
+            "predicted_blanks": [],
+            "predicted_doubles": [],
+        }
+        user_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(user_file, "w", encoding="utf-8") as f:
+            yaml.dump(data, f)
+        service = FixturePredictionsService()
+        assert service.get_predicted_blanks() == []
+        assert service.get_predicted_doubles() == []
+        assert service.config_path == user_file
+        assert service.load_warnings == []
+
     def test_half_written_user_copy_falls_through_to_shipped(self, shipped, user_file):
         """A file with prediction keys but no entries is not a usable override."""
         user_file.parent.mkdir(parents=True, exist_ok=True)

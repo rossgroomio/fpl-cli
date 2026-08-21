@@ -132,9 +132,15 @@ class TestGeneratePrior:
         """Cached prior is returned if team list matches."""
         import yaml
 
+        from fpl_cli.services.team_ratings_prior import PRIOR_CACHE_VERSION
+
         cache_path = tmp_path / "prior.yaml"
         cached = {
-            "metadata": {"source": "prior_understat_xg", "teams": ["ARS", "MCI"]},
+            "metadata": {
+                "version": PRIOR_CACHE_VERSION,
+                "source": "prior_understat_xg",
+                "teams": ["ARS", "MCI"],
+            },
             "ratings": {
                 "ARS": {"atk_home": 2, "atk_away": 2, "def_home": 2, "def_away": 2},
                 "MCI": {"atk_home": 3, "atk_away": 3, "def_home": 3, "def_away": 3},
@@ -147,6 +153,32 @@ class TestGeneratePrior:
             result = await generate_prior(mock_client)
 
         assert result["ARS"].atk_home == 2  # From cache
+
+    async def test_cache_from_older_version_is_discarded(self, mock_client, tmp_path):
+        """A cache written by an older methodology is regenerated, not served."""
+        import yaml
+
+        cache_path = tmp_path / "prior.yaml"
+        cached = {
+            # Pre-versioning cache: same team set, no version stamp.
+            "metadata": {"source": "prior_understat_xg", "teams": ["ARS", "MCI"]},
+            "ratings": {
+                "ARS": {"atk_home": 1, "atk_away": 1, "def_home": 1, "def_away": 1},
+                "MCI": {"atk_home": 1, "atk_away": 1, "def_home": 1, "def_away": 1},
+            },
+        }
+        with open(cache_path, "w", encoding="utf-8") as f:
+            yaml.dump(cached, f)
+
+        with (
+            patch("fpl_cli.services.team_ratings_prior.prior_config_path", return_value=cache_path),
+            patch("fpl_cli.services.team_ratings_prior._prior_from_understat", return_value=None),
+            patch("fpl_cli.services.team_ratings_prior._prior_from_football_data", return_value=None),
+        ):
+            result = await generate_prior(mock_client)
+
+        # Regenerated from the fallback chain, not the stale cached 1s.
+        assert result["ARS"].atk_home == 4
 
 
 class TestFootballDataGetMatches:
@@ -364,3 +396,40 @@ class TestPromotedFallback:
 
         assert (result["COV"].atk_home, result["COV"].atk_away) == (5, 6)
         assert (result["COV"].def_home, result["COV"].def_away) == (5, 6)
+
+    async def test_uncovered_promoted_team_gets_flat_estimate_on_partial_coverage(self, tmp_path):
+        """Partial Championship coverage must not upgrade a missed team to mid-table.
+
+        With data for only some promoted sides, the uncovered one previously
+        fell through to the neutral default 4 — better than the bottom-of-table
+        estimate every unmatched promoted team is supposed to get.
+        """
+        from fpl_cli.services.team_ratings import TeamPerformance
+        from tests.conftest import make_team
+
+        client = AsyncMock()
+        client.get_teams = AsyncMock(return_value=[
+            make_team(id=1, name="Arsenal", short_name="ARS"),
+            make_team(id=2, name="Man City", short_name="MCI"),
+            make_team(id=3, name="Coventry", short_name="COV"),
+            make_team(id=4, name="Hull", short_name="HUL"),
+        ])
+        pl = {
+            "ARS": TeamPerformance("ARS", 2.5, 2.2, 0.6, 0.8, 19, 19),
+            "MCI": TeamPerformance("MCI", 2.4, 2.1, 0.7, 0.9, 19, 19),
+        }
+        championship = {
+            "COV": TeamPerformance("COV", 1.3, 1.1, 1.5, 1.7, 23, 23),
+        }
+
+        with (
+            patch("fpl_cli.services.team_ratings_prior.prior_config_path", return_value=tmp_path / "p.yaml"),
+            patch("fpl_cli.services.team_ratings_prior._prior_from_understat", return_value=pl),
+            patch("fpl_cli.services.team_ratings_prior._championship_performances",
+                  new_callable=AsyncMock, return_value=championship),
+        ):
+            result = await generate_prior(client)
+
+        # COV is ranked from its data; HUL gets the flat promoted estimate.
+        assert (result["HUL"].atk_home, result["HUL"].atk_away) == (5, 6)
+        assert (result["HUL"].def_home, result["HUL"].def_away) == (5, 6)

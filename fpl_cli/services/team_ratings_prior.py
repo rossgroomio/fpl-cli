@@ -25,8 +25,15 @@ logger = logging.getLogger(__name__)
 def prior_config_path() -> Path:
     """Team ratings prior cache location."""
     return user_data_file("team_ratings_prior.yaml")
+
+
 REGRESSION_CONSTANT = 6
 BLENDING_CUTOFF_GW = 12
+
+# Bump whenever the prior methodology changes: a cache written by an older
+# version passes the team-set check below yet holds ratings the new code
+# would never produce, so it must be discarded rather than served.
+PRIOR_CACHE_VERSION = 2
 
 # Championship-to-PL adjustment. A promoted side scores less in the PL against
 # better defences, and concedes more against better attacks, so the two
@@ -85,25 +92,17 @@ def _matches_to_performances(
     return performances
 
 
-def _matches_to_ratings(
-    matches: list[dict[str, Any]], team_tlas: set[str]
-) -> dict[str, TeamRating]:
-    """Convert match results to 1-7 ratings via percentile bucketing."""
-    from fpl_cli.services.team_ratings import TeamRatingsCalculator
-
-    return TeamRatingsCalculator._convert_to_ratings(
-        _matches_to_performances(matches, team_tlas)
-    )
-
-
 def _load_prior_cache() -> dict[str, TeamRating] | None:
-    """Load cached prior from disk, or None if missing."""
+    """Load cached prior from disk, or None if missing or outdated."""
     path = prior_config_path()
     if not path.exists():
         return None
     with open(path, encoding="utf-8") as f:
         data = yaml.safe_load(f)
-    if not data or "ratings" not in data:
+    if not data or "ratings" not in data or not isinstance(data["ratings"], dict):
+        return None
+    metadata = data.get("metadata")
+    if not isinstance(metadata, dict) or metadata.get("version") != PRIOR_CACHE_VERSION:
         return None
     ratings = {}
     for team, r in data["ratings"].items():
@@ -120,12 +119,15 @@ def _save_prior_cache(
     ratings: dict[str, TeamRating], source: str, teams: list[str]
 ) -> None:
     """Save prior to disk for caching (atomic write)."""
-    import os
-    import tempfile
+    from fpl_cli.utils.files import atomic_write_text
 
     path = prior_config_path()
     data: dict[str, Any] = {
-        "metadata": {"source": source, "teams": sorted(teams)},
+        "metadata": {
+            "version": PRIOR_CACHE_VERSION,
+            "source": source,
+            "teams": sorted(teams),
+        },
         "ratings": {},
     }
     for team in sorted(ratings):
@@ -136,12 +138,7 @@ def _save_prior_cache(
             "def_home": r.def_home,
             "def_away": r.def_away,
         }
-    with tempfile.NamedTemporaryFile(
-        mode="w", encoding="utf-8", dir=path.parent, suffix=".yaml", delete=False
-    ) as f:
-        yaml.dump(data, f, default_flow_style=False, sort_keys=False)
-        tmp_path = f.name
-    os.replace(tmp_path, path)
+    atomic_write_text(path, yaml.dump(data, default_flow_style=False, sort_keys=False))
 
 
 async def generate_prior(client: FPLClient) -> dict[str, TeamRating]:
@@ -173,11 +170,11 @@ async def generate_prior(client: FPLClient) -> dict[str, TeamRating]:
     source = "prior_understat_xg"
 
     if not performances:
-        performances = await _prior_from_football_data(current_team_names, prev_season_int)
+        performances = await _prior_from_football_data(prev_season_int)
         source = "prior_football_data"
 
     if not performances:
-        prior = {name: TeamRating(4, 4, 4, 4) for name in current_team_names}
+        prior = {name: _default_rating() for name in current_team_names}
         _save_prior_cache(prior, "prior_default", list(current_team_names))
         return prior
 
@@ -186,25 +183,22 @@ async def generate_prior(client: FPLClient) -> dict[str, TeamRating]:
     performances = {t: p for t, p in performances.items() if t in current_team_names}
 
     # Promoted teams join the same pool on PL-rescaled rates, so the 1-7 spread
-    # is a ranking of the real 20 rather than two incomparable divisions.
-    fallback: dict[str, TeamRating] = {}
+    # is a ranking of the real 20 rather than two incomparable divisions. (On the
+    # Understat path the pool mixes xG rates with rescaled actual goals — close
+    # enough to nudge a promoted side by at most a bucket, not reorder the pool.)
+    # A promoted team the Championship data doesn't cover gets the flat estimate
+    # individually, so partial coverage never promotes it to mid-table by omission.
     promoted = current_team_names - set(performances)
-    if promoted:
-        promoted_performances = await _championship_performances(promoted, prev_season_int)
-        if promoted_performances:
-            performances.update(promoted_performances)
-        else:
-            fallback = {team: _promoted_fallback() for team in promoted}
+    promoted_performances = (
+        await _championship_performances(promoted, prev_season_int) or {} if promoted else {}
+    )
+    performances.update(promoted_performances)
+    fallback = {team: _promoted_fallback() for team in promoted - set(promoted_performances)}
 
     from fpl_cli.services.team_ratings import TeamRatingsCalculator
 
     prior = TeamRatingsCalculator._convert_to_ratings(performances)
     prior.update(fallback)
-
-    # Ensure all current teams are covered
-    for name in current_team_names:
-        if name not in prior:
-            prior[name] = TeamRating(4, 4, 4, 4)
 
     _save_prior_cache(prior, source, list(current_team_names))
     return prior
@@ -230,9 +224,7 @@ async def _prior_from_understat(
         return None
 
 
-async def _prior_from_football_data(
-    team_names: set[str], prev_season: int
-) -> dict[str, TeamPerformance] | None:
+async def _prior_from_football_data(prev_season: int) -> dict[str, TeamPerformance] | None:
     """Per-game scored/conceded rates from football-data.org PL results."""
     try:
         from fpl_cli.api.football_data import FootballDataClient
@@ -253,11 +245,19 @@ async def _prior_from_football_data(
         return None
 
 
-def _promoted_fallback() -> TeamRating:
-    """Undifferentiated bottom-of-table estimate for a promoted team.
+def _default_rating() -> TeamRating:
+    """Neutral mid-table rating for a team no source covers.
 
     A fresh instance per call: TeamRating is mutable and _apply_overrides
     assigns onto it, so a shared one would leak an override across teams.
+    """
+    return TeamRating(4, 4, 4, 4)
+
+
+def _promoted_fallback() -> TeamRating:
+    """Undifferentiated bottom-of-table estimate for a promoted team.
+
+    A fresh instance per call, for the same reason as :func:`_default_rating`.
     """
     return TeamRating(5, 6, 5, 6)
 
@@ -294,10 +294,11 @@ async def _championship_performances(
         tlas = {m["home_team_tla"] for m in matches} | {m["away_team_tla"] for m in matches}
         championship = _matches_to_performances(matches, tlas)
 
-        reverse_map = {v: k for k, v in TLA_TO_FPL.items()} if TLA_TO_FPL else {}
         result: dict[str, TeamPerformance] = {}
         for team in promoted_teams:
-            perf = championship.get(reverse_map.get(team, team)) or championship.get(team)
+            # _matches_to_performances already keys by FPL short name (it maps
+            # TLAs through TLA_TO_FPL), so promoted teams are looked up directly.
+            perf = championship.get(team)
             if perf is None:
                 continue
             result[team] = TeamPerformance(
@@ -337,7 +338,7 @@ def blend_with_prior(
     all_teams = set(prior) | set(current)
 
     for team in all_teams:
-        p = prior.get(team, TeamRating(4, 4, 4, 4))
+        p = prior.get(team, _default_rating())
         c = current.get(team, p)
 
         blended[team] = TeamRating(

@@ -163,8 +163,33 @@ def user_data_file(name: str) -> Path:
     return user_data_dir() / name
 
 
+def load_env_files() -> None:
+    """Load .env from the user config dir, then let a local .env fill gaps.
+
+    Shared by the CLI entry point and standalone scripts that import agents
+    directly, so an FPL_CLI_DATA_DIR / FPL_CLI_CACHE_DIR set only in the
+    config-dir .env points both at the same directories.
+    """
+    from dotenv import load_dotenv
+
+    try:
+        config_dir = user_config_dir()
+    except UserDirError:
+        # A broken FPL_CLI_CONFIG_DIR must not abort startup; the command run
+        # reports it with an actionable message instead.
+        pass
+    else:
+        load_dotenv(config_dir / ".env")
+    load_dotenv(override=False)
+
+
 def _migrate_legacy_files() -> None:
     """One-time migration of files from repo-root config/ and data/ to platformdirs."""
+    # For installed packages the legacy dirs never exist; skip before resolving
+    # (and thereby creating) the user dirs, so commands that touch neither
+    # config nor data don't pay for them on every startup.
+    if not _LEGACY_CONFIG_DIR.is_dir() and not _LEGACY_DATA_DIR.is_dir():
+        return
     try:
         for filename in _USER_CONFIG_FILES:
             src = _LEGACY_CONFIG_DIR / filename

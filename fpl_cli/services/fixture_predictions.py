@@ -76,9 +76,11 @@ class FixturePredictionsService:
     Without an explicit config_path, a fixture_predictions.yaml in the user
     config dir takes precedence over the copy shipped in the package, so
     predictions can be updated mid-season without a package release. A user
-    copy that is unreadable, malformed, empty, or from a previous season falls
-    through to the shipped copy, and the reason is recorded in
-    :attr:`load_warnings` for the CLI to surface.
+    copy that is unreadable, malformed, missing its prediction keys, or from a
+    previous season falls through to the shipped copy, and the reason is
+    recorded in :attr:`load_warnings` for the CLI to surface. A copy whose
+    prediction lists are present but empty is honoured as a deliberate "no
+    blanks or doubles".
 
     An explicitly supplied config_path is not layered: read errors propagate,
     because a caller that named a file wants to know it could not be read.
@@ -164,10 +166,14 @@ class FixturePredictionsService:
                     )
                 continue
 
-            # An empty or half-written file must not mask a later candidate. With
-            # no later candidate an empty file is simply "no predictions yet".
+            # A half-written file must not mask a later candidate. But a file
+            # with both prediction keys present and empty is a deliberate
+            # statement of "no blanks or doubles" -- an override must be able
+            # to express emptiness -- so only a file missing the keys entirely
+            # falls through.
             has_predictions = bool(data.get("predicted_blanks") or data.get("predicted_doubles"))
-            if not has_predictions and index < len(candidates) - 1:
+            declares_empty = "predicted_blanks" in data and "predicted_doubles" in data
+            if not has_predictions and not declares_empty and index < len(candidates) - 1:
                 self._warn(f"Ignoring predictions file {candidate}: it holds no predictions")
                 continue
 
@@ -200,10 +206,15 @@ class FixturePredictionsService:
         }
 
     @staticmethod
+    def _metadata_of(data: dict[str, Any]) -> dict[str, Any]:
+        """The file's metadata mapping, or {} when missing or malformed."""
+        metadata = data.get("metadata")
+        return metadata if isinstance(metadata, dict) else {}
+
+    @staticmethod
     def _is_stale(data: dict[str, Any]) -> bool:
         """Check if predictions are from a previous season."""
-        metadata = data.get("metadata")
-        last_updated = metadata.get("last_updated", "") if isinstance(metadata, dict) else ""
+        last_updated = FixturePredictionsService._metadata_of(data).get("last_updated", "")
         if not last_updated:
             return False
         try:
@@ -258,9 +269,7 @@ class FixturePredictionsService:
 
     def get_metadata(self) -> dict[str, Any]:
         """Get metadata about predictions."""
-        data = self._load()
-        metadata = data.get("metadata")
-        return metadata if isinstance(metadata, dict) else {}
+        return self._metadata_of(self._load())
 
 
 # -- Extracted detection functions (pure, no agent dependency) --
