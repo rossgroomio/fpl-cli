@@ -1,0 +1,94 @@
+# Season preview template. Copy to <config dir>/previews/<TEAM>.yaml and edit,
+# or run `fpl intel init` to scaffold one file per Premier League team.
+#
+# The loader skips any file named EXAMPLE.yaml, so an unedited copy stays quiet.
+#
+# Every field except team, season, source and published is optional. Fill in
+# only what your source actually says: a 200-word blurb and a 4000-word data
+# piece use the same schema, at different fidelity. Nothing here needs to come
+# from any particular publication -- write your own notes if you prefer.
+#
+# Content decays automatically by gameweek, so there is nothing to clean up
+# in-season. `fpl intel --show-decay` prints the current schedule.
+
+schema_version: 1
+
+# FPL team short name, exactly as the game spells it (ARS, MCI, NFO, SPURS...).
+# `fpl intel` warns about a code that matches no team this season, which also
+# catches a file left behind for a relegated side.
+team: EXAMPLE
+
+# Must match the current season or the file is ignored with a warning. This is
+# the guard against building a squad in August 2027 on August 2026 opinions.
+season: "2026-27"
+
+# Attribution. Surfaced in output so a newsletter's opinion reads as an opinion
+# rather than as a fact the tool discovered.
+source: "Example Football Weekly"
+author: "A. Writer"
+url: "https://example.com/example-season-preview"
+published: 2026-08-18
+
+# --- Team-level judgement -------------------------------------------------
+# Expires at GW13, mirroring the point where team ratings stop blending in a
+# prior at all (team_ratings_prior.BLENDING_CUTOFF_GW).
+
+predicted_finish: 7        # 1-20, dropped if out of range
+
+team_strength:             # percentiles, 0-100, all optional
+  attack: 72
+  defence: 64
+  set_pieces: 88
+  notes: "Strong from dead balls, light on chance creation in open play."
+
+# --- Summer window --------------------------------------------------------
+# Expires at GW4: the window has shut and the roster is authoritative.
+
+transfers_in:
+  - "New Signing"
+  - "Another Arrival"
+transfers_out:
+  - "Departed Player"
+
+# --- Players --------------------------------------------------------------
+# `code` is the FPL element_code (stable across seasons, unlike element id).
+# Resolve it at ingest time -- `fpl player "<name>"` shows it, and `fpl intel`
+# reports any player left unresolved. A note whose sections have all expired is
+# dropped automatically.
+
+players:
+  - name: "First Choice Keeper"
+    code: 100001
+    status: starter            # starter | rotation | fringe | unknown
+    notes: "Undisputed number one; shot-stopper rather than sweeper."
+
+  - name: "Injured Defender"
+    code: 100002
+    status: starter
+    injury: "Back surgery in June, expected back around January."
+    notes: "Do not pick before the new year."
+
+  - name: "Set Piece Midfielder"
+    code: 100003
+    status: starter
+    set_pieces: [corners, free_kicks]
+    penalties: true
+    role_change: "Moves inside from the left after the summer rebuild."
+
+  - name: "Rotation Forward"
+    code: 100004
+    status: rotation
+    notes: "Shares minutes with the new signing; cup starter."
+
+  - name: "New Signing"
+    code: 100005
+    status: starter
+    new_signing: true
+    notes: "Elite underlying numbers abroad, no Premier League record yet."
+
+# --- Free text ------------------------------------------------------------
+# Anything that does not fit a field. Expires at GW13 with team strength.
+
+narrative: |
+  Kept the spine together and spent on depth rather than a marquee arrival.
+  The defence should hold up; the questions are all in the final third.
