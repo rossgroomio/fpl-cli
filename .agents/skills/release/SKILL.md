@@ -88,6 +88,17 @@ catches the rest as Other):
 git-cliff --unreleased --tag vX.Y.Z --strip header
 ```
 
+**History caveat:** through v2.0.0 the history was linear — squash-merged
+conventional PR titles, one clean changelog line per PR. Since the move to
+Claude Code cloud PRs, main carries merge commits plus every branch commit,
+so changelog entries come from individual branch commits and depend on the
+commit conventions in CLAUDE.md ("Commits & Changelog"). `cliff.toml` skips
+merge commits and known review-iteration phrasings, but eyeball the preview
+for lines that describe PR-internal churn rather than user-facing change
+(review follow-ups mislabelled `fix:`, "apply findings", "address review").
+Drop them from the release notes and add a skip parser to `cliff.toml` so
+the automated CHANGELOG.md job drops them too.
+
 Write the release body in the house style used by every release since
 v1.1.0:
 

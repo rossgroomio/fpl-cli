@@ -29,6 +29,12 @@ tag_pattern = "v[0-9].*"
 
 commit_parsers = [
     { message = "^Merge ", skip = true },
+    # Review-iteration commits from the cloud-PR era mislabelled as fix: —
+    # internal PR churn, not user-facing changes (see CLAUDE.md "Commits & Changelog")
+    { message = "^fix: apply code-review findings", skip = true },
+    { message = "^fix: address PR review", skip = true },
+    # Test-suite-internal fixes are not user-facing, same as the ^test skip below
+    { message = "^fix\\(tests?\\)", skip = true },
     { message = "^feat", group = "Features" },
     { message = "^fix", group = "Bug Fixes" },
     { message = "^refactor", group = "Refactoring" },
