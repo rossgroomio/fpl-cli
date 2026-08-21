@@ -197,6 +197,35 @@ class TestBlanksFlag:
         assert "may be stale" in result.output
         assert "unknown" in result.output
 
+    def test_blanks_reports_a_broken_user_override(self, runner, mock_fpl_client, tmp_path):
+        """A user override that cannot be parsed is named, not silently dropped."""
+        from fpl_cli.paths import user_config_dir
+        from fpl_cli.services.fixture_predictions import CONFIG_FILENAME
+
+        user_file = user_config_dir() / CONFIG_FILENAME
+        user_file.write_text("predicted_blanks:\n  - gameweek: [31\n", encoding="utf-8")
+
+        shipped = tmp_path / "predictions.yaml"
+        shipped.write_text(
+            f"metadata:\n  last_updated: '{CURRENT_SEASON_DATE}'\n"
+            "predicted_blanks:\n"
+            "- gameweek: 31\n  teams: [ARS]\n  confidence: high\n"
+            "predicted_doubles: []\n",
+            encoding="utf-8",
+        )
+
+        with (
+            patch("fpl_cli.api.fpl.FPLClient", return_value=mock_fpl_client),
+            patch("fpl_cli.services.fixture_predictions.CONFIG_FILE", shipped),
+        ):
+            result = runner.invoke(main, ["fdr", "--blanks"], catch_exceptions=False)
+
+        assert result.exit_code == 0
+        unwrapped = result.output.replace("\n", "")
+        assert str(user_file) in unwrapped
+        # ... and the shipped copy still supplies the predictions.
+        assert "GW31" in result.output
+
     def test_blanks_json_metadata_has_gw_range(self, runner, mock_fpl_client, tmp_path):
         """--blanks --format json metadata includes from_gw and to_gw."""
         config_path = tmp_path / "predictions.yaml"

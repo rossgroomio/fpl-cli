@@ -76,34 +76,78 @@ class FixturePredictionsService:
     Without an explicit config_path, a fixture_predictions.yaml in the user
     config dir takes precedence over the copy shipped in the package, so
     predictions can be updated mid-season without a package release. A user
-    copy that is unreadable or from a previous season falls through to the
-    shipped copy.
+    copy that is unreadable, malformed, empty, or from a previous season falls
+    through to the shipped copy, and the reason is recorded in
+    :attr:`load_warnings` for the CLI to surface.
+
+    An explicitly supplied config_path is not layered: read errors propagate,
+    because a caller that named a file wants to know it could not be read.
     """
 
     def __init__(self, config_path: Path | None = None):
-        if config_path is not None:
-            self._candidates: list[Path] = [Path(config_path)]
-        else:
-            self._candidates = [user_config_dir() / CONFIG_FILENAME, CONFIG_FILE]
-        self.config_path = self._candidates[0]
+        # No filesystem work here: user_config_dir() resolves on first load so
+        # constructing the service stays total, and an FPL_CLI_CONFIG_DIR set
+        # after import is still honoured.
+        self._explicit_path = Path(config_path) if config_path is not None else None
+        self._config_path: Path | None = None
         self._data: dict[str, Any] | None = None
         self._stale: bool = False
+        self._warnings: list[str] = []
+
+    def _candidates(self) -> list[Path]:
+        if self._explicit_path is not None:
+            return [self._explicit_path]
+        return [user_config_dir() / CONFIG_FILENAME, CONFIG_FILE]
+
+    def _read(self, candidate: Path) -> dict[str, Any] | None:
+        """Parse one candidate, or None when it is unusable (reason recorded).
+
+        Read failures propagate for an explicitly supplied path -- there is no
+        second candidate to fall through to, so degrading silently would hide
+        the problem from the caller.
+        """
+        try:
+            with open(candidate, encoding="utf-8") as f:
+                data = yaml.safe_load(f)
+        except (OSError, yaml.YAMLError) as exc:
+            if self._explicit_path is not None:
+                raise
+            self._warn(f"Ignoring unreadable predictions file {candidate}: {exc}")
+            return None
+
+        if data is None:
+            data = {}
+        if not isinstance(data, dict):
+            self._warn(
+                f"Ignoring predictions file {candidate}: expected a mapping,"
+                f" got {type(data).__name__}"
+            )
+            return None
+        return data
+
+    def _warn(self, message: str) -> None:
+        """Record a skip reason for :attr:`load_warnings` to surface.
+
+        Deliberately not logger.warning: fpl-cli configures no logging
+        handlers, so a warning record reaches logging's lastResort handler and
+        prints raw to stderr on top of whatever the CLI already displayed.
+        """
+        self._warnings.append(message)
+        logger.debug("%s", message)
 
     def _load(self) -> dict[str, Any]:
-        """Load predictions from the first readable, current-season candidate."""
+        """Load predictions from the first usable, current-season candidate."""
         if self._data is not None:
             return self._data
 
+        candidates = self._candidates()
         saw_stale = False
-        for candidate in self._candidates:
+        for index, candidate in enumerate(candidates):
             if not candidate.exists():
                 continue
 
-            try:
-                with open(candidate, encoding="utf-8") as f:
-                    data: dict[str, Any] = yaml.safe_load(f) or {}
-            except (OSError, yaml.YAMLError):
-                logger.warning("Skipping unreadable predictions file %s", candidate, exc_info=True)
+            data = self._read(candidate)
+            if data is None:
                 continue
 
             # Suppress stale predictions from a previous season.
@@ -111,13 +155,32 @@ class FixturePredictionsService:
                 saw_stale = True
                 continue
 
-            self.config_path = candidate
+            # An empty or half-written file must not mask a later candidate. With
+            # no later candidate an empty file is simply "no predictions yet".
+            has_predictions = bool(data.get("predicted_blanks") or data.get("predicted_doubles"))
+            if not has_predictions and index < len(candidates) - 1:
+                self._warn(f"Ignoring predictions file {candidate}: it holds no predictions")
+                continue
+
+            self._config_path = candidate
             self._data = data
             return data
 
         self._stale = saw_stale
         self._data = self._empty_data()
         return self._data
+
+    @property
+    def config_path(self) -> Path | None:
+        """File the predictions came from, or None when no candidate was usable."""
+        self._load()
+        return self._config_path
+
+    @property
+    def load_warnings(self) -> list[str]:
+        """Reasons candidate files were skipped (unreadable, malformed, empty)."""
+        self._load()
+        return list(self._warnings)
 
     @staticmethod
     def _empty_data() -> dict[str, Any]:
@@ -130,7 +193,8 @@ class FixturePredictionsService:
     @staticmethod
     def _is_stale(data: dict[str, Any]) -> bool:
         """Check if predictions are from a previous season."""
-        last_updated = data.get("metadata", {}).get("last_updated", "")
+        metadata = data.get("metadata")
+        last_updated = metadata.get("last_updated", "") if isinstance(metadata, dict) else ""
         if not last_updated:
             return False
         try:
@@ -186,7 +250,8 @@ class FixturePredictionsService:
     def get_metadata(self) -> dict[str, Any]:
         """Get metadata about predictions."""
         data = self._load()
-        return data.get("metadata", {})
+        metadata = data.get("metadata")
+        return metadata if isinstance(metadata, dict) else {}
 
 
 # -- Extracted detection functions (pure, no agent dependency) --

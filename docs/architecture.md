@@ -569,9 +569,13 @@ platformdirs (user_config_dir / user_data_dir)  # macOS: ~/Library/Application S
 ├── player_prior.yaml             # Cached player priors (data dir, generated, season/GW invalidation)
 ├── chip_plan.json                # User's chip plan (data dir, created via `fpl chips add`)
 └── team_finances.json            # Cached sell prices from scraper (data dir, 12h TTL)
-
-Note: a default fixture_predictions.yaml ships inside the package (SHIPPED_CONFIG_DIR); a current-season copy in the user config dir takes precedence, so predictions can be updated without a package release.
 ```
+
+The config dir also holds `.env` (credentials, API keys) and the generated `output/` and `research/` report directories.
+
+A default `fixture_predictions.yaml` ships inside the package (`SHIPPED_CONFIG_DIR`); a current-season copy in the user config dir takes precedence, so predictions can be updated without a package release. A user copy that is unreadable, malformed, empty, or from a previous season falls through to the shipped copy and the reason is reported.
+
+`user_config_dir()` / `user_data_dir()` / `user_cache_dir()` resolve lazily and are cached, so an override set after import (from `.env`, or by a script) is still honoured. Consumers must call them where the path is used rather than binding the result to a module-level constant.
 
 ## Agent Skills
 

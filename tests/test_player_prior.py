@@ -268,7 +268,7 @@ class TestGeneratePlayerPrior:
 
 class TestPriorCache:
     def test_save_and_load_roundtrip(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("fpl_cli.services.player_prior.PRIOR_CONFIG_PATH", tmp_path / "prior.yaml")
+        monkeypatch.setattr("fpl_cli.services.player_prior.prior_config_path", lambda: tmp_path / "prior.yaml")
         monkeypatch.setattr("fpl_cli.services.player_prior.season_label", lambda: "2025-26")
 
         priors = {
@@ -285,7 +285,7 @@ class TestPriorCache:
         assert loaded[2].prior_strength == 0.25
 
     def test_stale_season_returns_none(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("fpl_cli.services.player_prior.PRIOR_CONFIG_PATH", tmp_path / "prior.yaml")
+        monkeypatch.setattr("fpl_cli.services.player_prior.prior_config_path", lambda: tmp_path / "prior.yaml")
         monkeypatch.setattr("fpl_cli.services.player_prior.season_label", lambda: "2025-26")
 
         priors = {1: PlayerPrior(prior_strength=0.5, confidence=0.5, source="history")}
@@ -293,7 +293,7 @@ class TestPriorCache:
         assert load_cached_priors(3) is None
 
     def test_stale_gw_returns_none(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("fpl_cli.services.player_prior.PRIOR_CONFIG_PATH", tmp_path / "prior.yaml")
+        monkeypatch.setattr("fpl_cli.services.player_prior.prior_config_path", lambda: tmp_path / "prior.yaml")
         monkeypatch.setattr("fpl_cli.services.player_prior.season_label", lambda: "2025-26")
 
         priors = {1: PlayerPrior(prior_strength=0.5, confidence=0.5, source="history")}
@@ -301,12 +301,12 @@ class TestPriorCache:
         assert load_cached_priors(5) is None  # Different GW
 
     def test_missing_file_returns_none(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("fpl_cli.services.player_prior.PRIOR_CONFIG_PATH", tmp_path / "nope.yaml")
+        monkeypatch.setattr("fpl_cli.services.player_prior.prior_config_path", lambda: tmp_path / "nope.yaml")
         assert load_cached_priors(3) is None
 
     def test_reliability_cache_roundtrip(self, tmp_path, monkeypatch):
         """PlayerPrior.reliability survives save/load cycle."""
-        monkeypatch.setattr("fpl_cli.services.player_prior.PRIOR_CONFIG_PATH", tmp_path / "prior.yaml")
+        monkeypatch.setattr("fpl_cli.services.player_prior.prior_config_path", lambda: tmp_path / "prior.yaml")
         monkeypatch.setattr("fpl_cli.services.player_prior.season_label", lambda: "2025-26")
 
         priors = {1: PlayerPrior(prior_strength=0.75, confidence=0.58, source="history", reliability=0.85)}
@@ -318,7 +318,7 @@ class TestPriorCache:
 
     def test_reliability_none_cache_roundtrip(self, tmp_path, monkeypatch):
         """PlayerPrior.reliability=None (no history) is preserved through cache."""
-        monkeypatch.setattr("fpl_cli.services.player_prior.PRIOR_CONFIG_PATH", tmp_path / "prior.yaml")
+        monkeypatch.setattr("fpl_cli.services.player_prior.prior_config_path", lambda: tmp_path / "prior.yaml")
         monkeypatch.setattr("fpl_cli.services.player_prior.season_label", lambda: "2025-26")
 
         priors = {1: PlayerPrior(prior_strength=0.3, confidence=0.4, source="price", reliability=None)}
@@ -331,7 +331,7 @@ class TestPriorCache:
 
     def test_old_cache_without_reliability_loads_as_none(self, tmp_path, monkeypatch):
         """Cache files written before reliability field was added load without crashing."""
-        monkeypatch.setattr("fpl_cli.services.player_prior.PRIOR_CONFIG_PATH", tmp_path / "prior.yaml")
+        monkeypatch.setattr("fpl_cli.services.player_prior.prior_config_path", lambda: tmp_path / "prior.yaml")
         monkeypatch.setattr("fpl_cli.services.player_prior.season_label", lambda: "2025-26")
 
         import yaml

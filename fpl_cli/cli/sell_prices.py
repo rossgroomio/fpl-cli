@@ -7,6 +7,7 @@ import asyncio
 from datetime import datetime, timezone
 
 import click
+from rich.markup import escape as rich_escape
 from rich.panel import Panel
 from rich.table import Table
 
@@ -34,7 +35,7 @@ def sell_prices_command(ctx: click.Context, refresh: bool, visible: bool, output
         error_console.print("[yellow]sell-prices is not available in draft format[/yellow]")
         return
 
-    from fpl_cli.scraper.fpl_prices import CACHE_FILE, FPLPriceScraper, load_cache, save_cache
+    from fpl_cli.scraper.fpl_prices import FPLPriceScraper, cache_file, load_cache, save_cache
 
     is_json = output_format == "json"
 
@@ -97,7 +98,8 @@ def sell_prices_command(ctx: click.Context, refresh: bool, visible: bool, output
             else:
                 save_cache(finances)
                 error_console.print(
-                    f"[yellow]Saved suspect data to {CACHE_FILE} (no valid cache to preserve).[/yellow]"
+                    f"[yellow]Saved suspect data to {rich_escape(str(cache_file()))}"
+                    f" (no valid cache to preserve).[/yellow]"
                 )
                 console.print("[dim]Try with --visible flag to debug the scrape.[/dim]")
 
@@ -115,7 +117,7 @@ def sell_prices_command(ctx: click.Context, refresh: bool, visible: bool, output
 
     console.print(Panel.fit("[bold blue]Squad Budget[/bold blue]"))
     _display_finances(finances)
-    console.print(f"\n[green]Data saved to {CACHE_FILE}[/green]")
+    console.print(f"\n[green]Data saved to {rich_escape(str(cache_file()))}[/green]")
 
 
 def _cache_age_str(scraped_at: str) -> str:

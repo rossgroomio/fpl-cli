@@ -15,6 +15,7 @@ import logging
 import os
 import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import yaml
@@ -28,7 +29,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-PRIOR_CONFIG_PATH = user_data_dir() / "player_prior.yaml"
+def prior_config_path() -> Path:
+    """Player prior cache location. Resolved per call so FPL_CLI_DATA_DIR is honoured."""
+    return user_data_dir() / "player_prior.yaml"
 REGRESSION_CONSTANT = 6
 CUTOFF_GW = 10
 PRICE_CONFIDENCE_FACTOR = 0.5
@@ -170,9 +173,10 @@ def generate_player_prior(
 
 def _load_prior_cache() -> dict[str, Any] | None:
     """Load cached prior from disk, or None if missing/invalid."""
-    if not PRIOR_CONFIG_PATH.exists():
+    path = prior_config_path()
+    if not path.exists():
         return None
-    with open(PRIOR_CONFIG_PATH, encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         data = yaml.safe_load(f)
     if not data or "priors" not in data:
         return None
@@ -185,6 +189,7 @@ def _save_prior_cache(
     gw: int,
 ) -> None:
     """Save priors to disk (atomic write)."""
+    path = prior_config_path()
     data: dict[str, Any] = {
         "metadata": {"season": season, "gameweek": gw},
         "priors": {},
@@ -200,13 +205,13 @@ def _save_prior_cache(
     with tempfile.NamedTemporaryFile(
         mode="w",
         encoding="utf-8",
-        dir=PRIOR_CONFIG_PATH.parent,
+        dir=path.parent,
         suffix=".yaml",
         delete=False,
     ) as f:
         yaml.dump(data, f, default_flow_style=False, sort_keys=False)
         tmp_path = f.name
-    os.replace(tmp_path, PRIOR_CONFIG_PATH)
+    os.replace(tmp_path, path)
 
 
 def load_cached_priors(current_gw: int) -> dict[int, PlayerPrior] | None:

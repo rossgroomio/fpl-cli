@@ -504,11 +504,18 @@ fpl-cli writes to three directories, each resolved via `platformdirs` and overri
 
 | Directory | Contents | Override |
 |-----------|----------|----------|
-| Config | `settings.yaml`, `team_managers.yaml`, `team_ratings_overrides.yaml`, optional `fixture_predictions.yaml` (overrides the copy shipped in the package) | `FPL_CLI_CONFIG_DIR` |
+| Config | `settings.yaml`, `.env` (credentials and API keys), `team_managers.yaml`, `team_ratings_overrides.yaml`, optional `fixture_predictions.yaml` (overrides the copy shipped in the package), plus the `output/` and `research/` report directories | `FPL_CLI_CONFIG_DIR` |
 | Data | Generated files: `team_ratings.yaml`, `team_ratings_prior.yaml`, `player_prior.yaml`, `chip_plan.json`, `team_finances.json` | `FPL_CLI_DATA_DIR` |
 | Cache | Disposable API response caches | `FPL_CLI_CACHE_DIR` |
 
-**Ephemeral environments** (Claude Code on the web, CI, containers): the default config and data locations live inside the container and vanish with it. Point `FPL_CLI_CONFIG_DIR` and `FPL_CLI_DATA_DIR` at a persistent workspace directory so settings and generated data (team ratings, priors, chip plans, sell prices) survive between sessions. The cache is disposable by design and can stay container-local.
+**Ephemeral environments** (Claude Code on the web, CI, containers): the default config and data locations live inside the container and vanish with it. Point `FPL_CLI_CONFIG_DIR` and `FPL_CLI_DATA_DIR` at a persistent workspace directory so settings, credentials, generated reports, and generated data (team ratings, priors, chip plans, sell prices) survive between sessions. The cache is disposable by design and can stay container-local.
+
+Two things to know when setting the overrides:
+
+- **`FPL_CLI_CONFIG_DIR` must come from the real environment**, not from `.env` — the config dir is where `.env` is found, so it has to be known first. `FPL_CLI_DATA_DIR` and `FPL_CLI_CACHE_DIR` can be set either way.
+- **fpl-cli only sets `0700` permissions on a directory it creates itself.** Point an override at an existing directory (a shared workspace, a synced vault) and its mode is left as its owner set it.
+
+A directory override that cannot be created is reported as an error naming the variable, rather than falling back silently.
 
 ### `settings.yaml` (user overrides)
 

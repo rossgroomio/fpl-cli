@@ -21,6 +21,12 @@ def _isolated_user_dirs(tmp_path, monkeypatch):
     where FPL_CLI_* vars are set), and clears the lru_caches so the
     redirection takes effect. Tests that need different values call
     monkeypatch.setenv/delenv themselves, which overrides this fixture.
+
+    This only holds because every consumer resolves its path through
+    user_config_dir()/user_data_dir()/user_cache_dir() at the point of use.
+    A module-level constant that calls one of them at import time is bound
+    during collection, before this fixture runs, and would write to the real
+    user location -- see fpl_cli/paths.py for why they are all functions.
     """
     user_config_dir.cache_clear()
     user_data_dir.cache_clear()

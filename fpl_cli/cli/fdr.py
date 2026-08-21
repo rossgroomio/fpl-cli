@@ -9,6 +9,7 @@ from typing import Any
 
 import click
 from rich.console import Console
+from rich.markup import escape as rich_escape
 from rich.panel import Panel
 from rich.table import Table
 
@@ -38,6 +39,17 @@ from fpl_cli.services.fixture_predictions import (
 _CONFIDENCE_COLORS = {
     "confirmed": "green", "high": "green", "medium": "yellow", "low": "red",
 }
+
+
+def _warn_prediction_problems(pred_service: FixturePredictionsService) -> None:
+    """Report prediction files that were skipped (unreadable, malformed, empty).
+
+    Without this a broken user copy is invisible: predictions quietly fall
+    back to the shipped file, or vanish, and the only clue is a staleness
+    warning that blames the wrong file.
+    """
+    for warning in pred_service.load_warnings:
+        error_console.print(f"[yellow]{rich_escape(warning)}[/yellow]")
 
 
 def _render_blanks_doubles(
@@ -166,6 +178,7 @@ def fdr_command(
             confirmed_doubles = find_double_gameweeks(fixtures_by_gw_dict, teams)
 
             pred_service = FixturePredictionsService()
+            _warn_prediction_problems(pred_service)
             metadata = pred_service.get_metadata()
             last_updated = metadata.get("last_updated") or "unknown"
             if pred_service.is_stale:
@@ -312,6 +325,7 @@ def fdr_command(
             confirmed_doubles = find_double_gameweeks(dict(fixtures_by_gw), teams, start_gw, end_gw)
 
             pred_service = FixturePredictionsService()
+            _warn_prediction_problems(pred_service)
             predicted_blanks = pred_service.get_predicted_blanks(min_gw=current_gw)
             predicted_doubles = pred_service.get_predicted_doubles(min_gw=current_gw)
 
@@ -476,6 +490,7 @@ def fdr_command(
 
         # Show blank/double gameweeks (confirmed + predicted, filtered to current GW+)
         pred_service = FixturePredictionsService()
+        _warn_prediction_problems(pred_service)
 
         confirmed_blanks = data.get("blank_gameweeks", {})
         predicted_blanks = pred_service.get_predicted_blanks(min_gw=current_gw)

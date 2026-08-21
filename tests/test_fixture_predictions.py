@@ -10,6 +10,7 @@ from fpl_cli.paths import user_config_dir
 from fpl_cli.season import get_season_year
 from fpl_cli.services.fixture_predictions import (
     CONFIDENCE_MULTIPLIERS,
+    CONFIG_FILENAME,
     BlankPrediction,
     Confidence,
     DoublePrediction,
@@ -251,7 +252,7 @@ class TestLayeredLookup:
 
     @pytest.fixture
     def user_file(self):
-        return user_config_dir() / "fixture_predictions.yaml"
+        return user_config_dir() / CONFIG_FILENAME
 
     def test_user_copy_wins_over_shipped(self, shipped, user_file):
         self._write(user_file, CURRENT_SEASON_DATE, 20)
@@ -274,6 +275,66 @@ class TestLayeredLookup:
         user_file.write_text("[unclosed", encoding="utf-8")
         service = FixturePredictionsService()
         assert [b.gameweek for b in service.get_predicted_blanks()] == [25]
+        assert service.config_path == shipped
+        assert any(str(user_file) in w for w in service.load_warnings)
+
+    def test_unopenable_user_copy_falls_through_to_shipped(self, shipped, user_file):
+        """An OSError (here: a directory where a file is expected) is survivable too."""
+        user_file.mkdir(parents=True)
+        service = FixturePredictionsService()
+        assert [b.gameweek for b in service.get_predicted_blanks()] == [25]
+        assert service.config_path == shipped
+        assert any(str(user_file) in w for w in service.load_warnings)
+
+    def test_non_mapping_user_copy_falls_through_to_shipped(self, shipped, user_file):
+        """Valid YAML that is not a mapping must not crash the loader."""
+        user_file.parent.mkdir(parents=True, exist_ok=True)
+        user_file.write_text("- alpha\n- beta\n", encoding="utf-8")
+        service = FixturePredictionsService()
+        assert [b.gameweek for b in service.get_predicted_blanks()] == [25]
+        assert service.is_stale is False
+        assert any("mapping" in w for w in service.load_warnings)
+
+    def test_empty_user_copy_falls_through_to_shipped(self, shipped, user_file):
+        """A zero-byte file (interrupted write) must not mask the shipped copy."""
+        user_file.parent.mkdir(parents=True, exist_ok=True)
+        user_file.write_text("", encoding="utf-8")
+        service = FixturePredictionsService()
+        assert [b.gameweek for b in service.get_predicted_blanks()] == [25]
+        assert service.config_path == shipped
+
+    def test_half_written_user_copy_falls_through_to_shipped(self, shipped, user_file):
+        """A file with prediction keys but no entries is not a usable override."""
+        user_file.parent.mkdir(parents=True, exist_ok=True)
+        user_file.write_text("predicted_blanks:\n", encoding="utf-8")
+        service = FixturePredictionsService()
+        assert [b.gameweek for b in service.get_predicted_blanks()] == [25]
+        assert service.config_path == shipped
+
+    def test_config_path_is_none_when_nothing_usable(self, tmp_path, monkeypatch, user_file):
+        """config_path must not name a file the service never read."""
+        monkeypatch.setattr(
+            fixture_predictions_mod, "CONFIG_FILE", tmp_path / "absent" / "fixture_predictions.yaml"
+        )
+        service = FixturePredictionsService()
+        assert service.get_predicted_blanks() == []
+        assert service.config_path is None
+
+    def test_explicit_path_read_error_propagates(self, tmp_path):
+        """A caller that named a file is told when it cannot be parsed."""
+        explicit = tmp_path / "explicit.yaml"
+        explicit.write_text("[unclosed", encoding="utf-8")
+        service = FixturePredictionsService(config_path=explicit)
+        with pytest.raises(yaml.YAMLError):
+            service.get_predicted_blanks()
+
+    def test_explicit_empty_file_is_not_an_error(self, tmp_path):
+        """With no later candidate, an empty file just means 'no predictions'."""
+        explicit = tmp_path / "explicit.yaml"
+        explicit.write_text("", encoding="utf-8")
+        service = FixturePredictionsService(config_path=explicit)
+        assert service.get_predicted_blanks() == []
+        assert service.load_warnings == []
 
     def test_all_copies_stale_reports_stale_and_empty(self, tmp_path, monkeypatch, user_file):
         shipped = tmp_path / "shipped" / "fixture_predictions.yaml"

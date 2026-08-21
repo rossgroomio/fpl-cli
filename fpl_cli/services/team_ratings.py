@@ -21,7 +21,16 @@ from fpl_cli.paths import user_config_dir, user_data_dir
 
 logger = logging.getLogger(__name__)
 
-OVERRIDES_PATH = user_config_dir() / "team_ratings_overrides.yaml"
+
+def overrides_path() -> Path:
+    """Manual per-team override file. Resolved per call so FPL_CLI_CONFIG_DIR is honoured."""
+    return user_config_dir() / "team_ratings_overrides.yaml"
+
+
+def default_ratings_path() -> Path:
+    """Default ratings file. Resolved per call so FPL_CLI_DATA_DIR is honoured."""
+    return user_data_dir() / "team_ratings.yaml"
+
 
 PRESEASON_SOURCE = "preseason_prior"
 """Marks ratings derived entirely from last season, before any GW has been played."""
@@ -94,11 +103,12 @@ class TeamRatingsService:
         rating = service.get_rating("LIV")
     """
 
-    DEFAULT_CONFIG_PATH = user_data_dir() / "team_ratings.yaml"
     _refreshed_this_session: ClassVar[bool] = False
 
     def __init__(self, config_path: Path | str | None = None):
-        self._config_path = Path(config_path) if config_path else self.DEFAULT_CONFIG_PATH
+        # Left unresolved when not supplied so the default follows FPL_CLI_DATA_DIR
+        # even if it is set after this module is imported.
+        self._config_path = Path(config_path) if config_path else None
         self._ratings: dict[str, TeamRating] = {}
         self._metadata: RatingsMetadata | None = None
         self._loaded = False
@@ -106,7 +116,7 @@ class TeamRatingsService:
     @property
     def config_path(self) -> Path:
         """Path of the ratings YAML file this service reads and writes."""
-        return self._config_path
+        return self._config_path if self._config_path is not None else default_ratings_path()
 
     def _ensure_loaded(self) -> None:
         """Load ratings if not already loaded."""
@@ -117,7 +127,7 @@ class TeamRatingsService:
         """Load ratings from YAML config."""
         self._loaded = True
 
-        if not self._config_path.exists():
+        if not self.config_path.exists():
             self._metadata = RatingsMetadata(
                 last_updated=None,
                 source=None,
@@ -127,7 +137,7 @@ class TeamRatingsService:
             )
             return
 
-        with open(self._config_path, encoding="utf-8") as f:
+        with open(self.config_path, encoding="utf-8") as f:
             data = yaml.safe_load(f)
 
         # Parse metadata
@@ -168,10 +178,11 @@ class TeamRatingsService:
 
     def _apply_overrides(self) -> None:
         """Merge overrides from team_ratings_overrides.yaml into in-memory ratings."""
-        if not OVERRIDES_PATH.exists():
+        overrides_file = overrides_path()
+        if not overrides_file.exists():
             return
 
-        with open(OVERRIDES_PATH, encoding="utf-8") as f:
+        with open(overrides_file, encoding="utf-8") as f:
             overrides = yaml.safe_load(f)
 
         if not overrides or not isinstance(overrides, dict):
@@ -328,14 +339,15 @@ class TeamRatingsService:
 
 """
         # Atomic write: tempfile + os.replace
-        dir_path = self._config_path.parent
+        target = self.config_path
+        dir_path = target.parent
         with tempfile.NamedTemporaryFile(
             mode="w", encoding="utf-8", dir=dir_path, suffix=".yaml", delete=False
         ) as f:
             f.write(header)
             yaml.dump(data, f, default_flow_style=False, sort_keys=False)
             tmp_path = f.name
-        os.replace(tmp_path, self._config_path)
+        os.replace(tmp_path, target)
 
         # Keep in-memory state current (don't discard and reload)
         self._ratings = dict(ratings)
