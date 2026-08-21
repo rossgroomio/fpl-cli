@@ -14,7 +14,7 @@ compatibility:
   cursor: full (single sequential pass)
   copilot: full (single sequential pass)
 ---
-<!-- CLI commands composed: status, fdr, stats, price-history, chips, captain, waivers, history, player, squad sell-prices -->
+<!-- CLI commands composed: status, fdr, stats, price-history, chips, captain, waivers, history, player, squad sell-prices, intel -->
 <!-- Showcase skill - adapt output paths and supplementary data sources for your setup -->
 
 # Squad Builder
@@ -127,12 +127,19 @@ Issue all reads and CLI commands in a **single parallel tool-call block**:
 - `fpl stats -s form --min-minutes 315 -n 20 --available-only --format json` (in-form across positions)
 - `fpl stats -s transfers_in_event -n 15 --format json` (transfer momentum)
 - `fpl price-history --sort price_slope -n 30 --format json` (season price trajectory - non-blocking, skip if command fails)
-<!-- ADAPT: Add supplementary data source reads here (reports, newsletters, scout previews) -->
+- `fpl intel --format json` (season preview intel, if you keep any. Mid-season most sections have
+  aged out by design, so this is usually near-empty past GW7 - that is correct, not a failure.
+  Read `metadata.coverage.usable_as` before using any of it: see Phase B3.)
+<!-- ADAPT: Add further supplementary data source reads here (reports, newsletters) -->
 
 ### Season Start (Classic or Draft)
 - `fpl history --format json` (historical career arc data - pts/90 trends, cost trajectory, xGI trends across 3 seasons. Primary ranking input at season start when current-season data is absent.)
 - `fpl allocate --budget 100.0 --horizon {derived_horizon} [--bench-boost-gw {bb_gw}] [--free-transfers {N}] --format json` (Classic only. Horizon from A1b derivation. Add `--bench-boost-gw {bb_gw}` when BB is planned and falls within horizon. Add `--free-transfers {N}` when FT count is available. Provides mathematically optimal starting squad for sub-agent review)
-<!-- ADAPT: Add pre-season reports or previous season summaries here -->
+- `fpl intel --format json` (season preview intel - **the highest-value source in this mode**.
+  At season start `fpl stats` has no current-season data at all, so projected XIs, injuries that
+  run into the autumn, and new signings with no Premier League record are things nothing else in
+  the pipeline can see. Read `metadata.coverage.usable_as` before using any of it: see Phase B3.)
+<!-- ADAPT: Add further pre-season reports or previous season summaries here -->
 
 ### Draft (any mode)
 - `fpl waivers --format json` (available player pool)
@@ -146,7 +153,9 @@ No sub-agent needed. The orchestrator already has all Phase B JSON. Extract cand
 
 1. Parse the 4 positional `fpl stats` outputs (MID/FWD/DEF/GK) + 4 `quality_per_m` outputs + form + cheapest
 2. Deduplicate players appearing in multiple lists
-3. Add any player names from scout reports / previews not already in stats
+3. Add any player names from `fpl intel` (or other reports) not already in the stats lists.
+   A new signing with no Premier League history is invisible to `fpl stats` and `fpl history`
+   but may be a projected starter - this is how such a player enters the pool at all.
 4. Note which players appear in the `fpl allocate` solver output (JSON field is `web_name`, not `name`)
 5. Produce 4 candidate lists:
 
@@ -162,6 +171,35 @@ Each candidate entry: `{name, team, position, in_allocator_squad: bool}`.
 For season-start modes, use `fpl history` output as the primary source for candidate identification instead of `fpl stats`.
 
 Store the 4 lists for Phase C.
+
+## Phase B3: Preview Intel Gate (orchestrator, inline)
+Decide once, here, how `fpl intel` output may be used. Every downstream agent
+follows this decision rather than re-deriving it.
+
+Read `metadata.coverage.usable_as` from the `fpl intel` response:
+
+| `usable_as` | Meaning | What agents may do with it |
+|---|---|---|
+| `full` | 75%+ of teams have intel | Support **or** oppose a pick |
+| `negative_filter_only` | Some teams covered, most not | Only downgrade: injuries, rotation risk, "not nailed on". **Never** promote a player. |
+| `none` | Nothing loaded, or all aged out | Ignore intel entirely; omit it from Phase C/D prompts |
+
+**Why the gate exists:** with partial coverage the written-up teams carry
+"nailed on, takes corners" annotations and the rest carry nothing, so absence of
+a flag reads as absence of merit. Promoting on partial intel systematically
+favours whichever teams the user happened to write up.
+
+Also note from the same response:
+- `metadata.section_confidence` — how much weight each kind of claim still carries
+  (`projected_xi: 0.5` means a projected XI is half-superseded by real minutes)
+- `metadata.unresolved_players` — names that will not join to FPL data; treat as
+  unverified and do not act on them alone
+
+Record the gate decision, coverage figures, and source attributions. Phase D
+reports them in the output so the manager can see what influenced the squad.
+
+If `usable_as` is `none`, skip every intel section in the Phase C and D prompts
+below. The pipeline behaves exactly as it did before intel existed.
 
 ## Phase C: Position Research (4 parallel agents)
 Launch 4 position-research agents in a **single parallel Agent tool block**:
@@ -225,7 +263,27 @@ Include all of this in the prompt field, populated with position-specific data:
    === fpl history (career arcs) ===
    {output from fpl history - season-start modes only}
    ```
-   <!-- ADAPT: Add position-relevant scout report excerpts here -->
+
+   === Season preview intel ({POSITION}) ===
+   {entries from `fpl intel` filtered to this position's candidates - omit this block entirely
+   when the Phase B3 gate is `none`}
+   Usage gate: {full | negative_filter_only} (from Phase B3)
+   Section confidence: {metadata.section_confidence}
+
+   Hand-curated pre-season notes on minutes, injuries, role and set-piece duty. This is the only
+   input that sees things the stats cannot: a projected starter with no Premier League history, an
+   injury that runs into the autumn, a player who lost his place over the summer.
+
+   Rules for using it:
+   - It overrides **minutes and role expectations only**. It never overrides a stat. If intel and
+     `quality_score` disagree on how good a player is, the stat wins.
+   - Under `negative_filter_only`, use it solely to downgrade (injury, rotation risk). Do not
+     promote a player on intel under this gate.
+   - Attribute, do not assert: "Transfer Flow projects him starting", not "he is starting".
+   - Weight by section confidence. `projected_xi: 0.5` means real minutes have half-superseded it.
+   - A player with no intel is not a worse player. Most teams may have no entry at all.
+   - Flag any pick where intel changed your ranking, with `⚡ Intel: {source} - {reason}`.
+<!-- ADAPT: Add further position-relevant report excerpts here -->
    Note: all `--format json` commands return `{command, metadata, data}` envelopes - actual records are in `data`.
 
 5. **Rules excerpt:** Include from `references/rules.md`:
@@ -234,6 +292,7 @@ Include all of this in the prompt field, populated with position-specific data:
    - Fixture Format
    - Value-for-Money section
    - Solver Integration section
+   - Preview Intel section (only when the Phase B3 gate is not `none`)
    - The mode-specific section (Wildcard, Free Hit, Season Start Classic, etc.)
    Do NOT include: Team Exposure, Selection (captain/bench), Starting From Scratch, or output template. Those are for the assembler.
 
@@ -310,7 +369,8 @@ Agent tool parameters:
    capture (injury timing, ownership differentials, fixture nuances, eye-test).
    Explain any deviations from the solver's picks.
    For Free Hit, treat captain selection as a first-order decision that may override solver
-   composition - ownership differentials and scout intelligence may warrant a different choice.
+   composition - ownership differentials and preview intel (Phase B3 gate permitting) may warrant
+   a different choice.
    Use effective_price (not price) for budget tables and price display.
 
    === fpl fdr --blanks --format json (full) ===
@@ -341,7 +401,20 @@ Agent tool parameters:
    === fpl history (career arcs) ===
    {output from fpl history - season-start modes only}
    ```
-   <!-- ADAPT: Add scout reports for cross-cutting insights here -->
+
+   === Season preview intel (team-level) ===
+   {`fpl intel` team-level entries: predicted_finish, team_strength, transfers - omit entirely
+   when the Phase B3 gate is `none`}
+   Usage gate: {full | negative_filter_only} (from Phase B3)
+   Coverage: {N}/20 teams
+
+   Use for team-exposure decisions and captaincy, under the same rules the position agents were
+   given: minutes and role only, attribute rather than assert, never override a stat, and never
+   promote under `negative_filter_only`.
+
+   Note that `fpl allocate` and pFDR have **not** seen this intel - the solver is deliberately
+   blind to it. Any deviation from the solver justified by intel must say so explicitly.
+<!-- ADAPT: Add further reports for cross-cutting insights here -->
    Note: all `--format json` commands return `{command, metadata, data}` envelopes - actual records are in `data`.
    (Include all available sources, "Not available" for missing ones.)
 

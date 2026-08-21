@@ -51,6 +51,30 @@ When `fpl allocate` output is available (Classic modes):
 
 ---
 
+## Preview Intel
+Hand-curated season previews, read via `fpl intel --format json`. Optional: most
+setups have none, and the pipeline is unchanged when the gate is `none`.
+
+- **Scope.** Intel governs *minutes and role* — who starts, who is injured, who
+  changed position, who takes set pieces. It never governs *quality*. If intel
+  and a stat disagree about how good a player is, the stat wins.
+- **Gate.** The Phase B3 gate (`metadata.coverage.usable_as`) decides what is
+  permitted. Under `negative_filter_only`, intel may only downgrade a player;
+  promoting on partial coverage favours whichever teams were written up.
+- **Confidence.** `metadata.section_confidence` weights each kind of claim.
+  A projected XI at `0.5` has been half-superseded by real minutes; treat it as
+  a tiebreaker, not a reason.
+- **Attribution.** Say whose opinion it is. "Transfer Flow projects him
+  starting", never "he is starting".
+- **Silence is not a verdict.** A player with no intel is not worse than one
+  with intel. Most teams may have no entry at all.
+- **The solver is blind to it.** `fpl allocate` and pFDR never see intel, by
+  design — a newsletter must not silently move the optimiser. Any deviation from
+  the solver justified by intel has to be stated.
+- **Season start is where it matters.** With no current-season data, intel is
+  the only source that sees a projected starter with no Premier League history.
+  By GW7 projected XIs have expired; by GW13 everything has. That is intended.
+
 ## Mode: Wildcard
 - **Budget:** Total squad value + bank (from squad sell-prices data)
 - **Horizon:** Derived from chip plan. If a subsequent wildcard is planned (beyond the current squad reset), horizon = GWs until that wildcard. Otherwise defaults to 6 GWs. See A1b for derivation logic.
