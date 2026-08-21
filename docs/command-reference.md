@@ -606,7 +606,9 @@ export FPL_SYNTHESIS_BASE_URL=http://localhost:11434/v1
 
 ### Other API Keys
 
-- `FOOTBALL_DATA_API_KEY` - Required for league table in `fpl review` (football-data.org)
+- `FOOTBALL_DATA_API_KEY` - League table in `fpl review`, and Championship form for
+  promoted teams in the pre-season prior (football-data.org). Without it, promoted teams
+  share one undifferentiated bottom-of-table estimate.
 
 ## Known Limitations
 

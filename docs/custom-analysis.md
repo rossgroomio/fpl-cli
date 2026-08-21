@@ -298,7 +298,9 @@ Current-season data is blended with a prior from the previous season's Understat
 
 The FPL API publishes no strength ratings before a season starts - `strength` comes back null and the four attack/defence axes are zeroed for all 20 teams - so there is nothing to rate teams on and last season's cached file still lists relegated sides while missing promoted ones.
 
-Ratings are therefore rebuilt from the previous-season prior alone (Understat xG, with Championship-adjusted ratings for promoted teams) and tagged `preseason_prior`. Commands that show fixture difficulty print a warning that the ratings are estimates until GW1 results land.
+Ratings are therefore rebuilt from the previous-season prior alone (Understat xG, with Championship form for promoted teams) and tagged `preseason_prior`. Commands that show fixture difficulty print a warning that the ratings are estimates until GW1 results land.
+
+Promoted teams are placed on the Premier League scale, not the Championship's. Their per-game rates are rescaled first - scored down, conceded up, since a promoted side does both against better opposition - and only then ranked in a single pool alongside the continuing teams, so the 1-7 spread describes the actual 20-team league. Ranking them among the division they just left would give its champion a rating of 1, nominally the best team in the Premier League, because the bucketing is purely ordinal. Without `FOOTBALL_DATA_API_KEY` there is no Championship data, and promoted teams share one undifferentiated bottom-of-table estimate instead.
 
 Two degenerate cases are called out explicitly rather than ranked silently: no ratings at all (every fixture would score a neutral 4.0) and ratings that fail to separate any two teams.
 

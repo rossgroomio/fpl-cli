@@ -121,7 +121,7 @@ class TestGeneratePrior:
             patch("fpl_cli.services.team_ratings_prior.prior_config_path", return_value=tmp_path / "prior.yaml"),
             patch("fpl_cli.services.team_ratings_prior._prior_from_understat", return_value=None),
             patch("fpl_cli.services.team_ratings_prior._prior_from_football_data", return_value=None),
-            patch("fpl_cli.services.team_ratings_prior._championship_prior", new_callable=AsyncMock, return_value={}),
+            patch("fpl_cli.services.team_ratings_prior._championship_performances", new_callable=AsyncMock, return_value=None),
         ):
             result = await generate_prior(mock_client)
 
@@ -192,3 +192,175 @@ class TestFootballDataGetMatches:
             result = await client.get_matches()
 
         assert result == []
+
+
+def _championship_fd(matches):
+    """Mock FootballDataClient serving a fixed Championship match list."""
+    fd = AsyncMock()
+    fd.is_configured = True
+    fd.get_matches = AsyncMock(return_value=matches)
+    fd.__aenter__ = AsyncMock(return_value=fd)
+    fd.__aexit__ = AsyncMock(return_value=False)
+    return fd
+
+
+# COV wins the division outright; XXX and YYY draw with each other.
+DOMINANT_CHAMPIONSHIP = [
+    {"home_team_tla": "COV", "away_team_tla": "XXX", "home_score": 3, "away_score": 1},
+    {"home_team_tla": "COV", "away_team_tla": "YYY", "home_score": 3, "away_score": 1},
+    {"home_team_tla": "XXX", "away_team_tla": "COV", "home_score": 1, "away_score": 2},
+    {"home_team_tla": "YYY", "away_team_tla": "COV", "home_score": 1, "away_score": 2},
+    {"home_team_tla": "XXX", "away_team_tla": "YYY", "home_score": 1, "away_score": 1},
+    {"home_team_tla": "YYY", "away_team_tla": "XXX", "home_score": 1, "away_score": 1},
+]
+
+
+class TestPromotedTeamsRankedAgainstPL:
+    """A promoted side must be placed on the PL scale, not the Championship's."""
+
+    @pytest.fixture
+    def mock_client(self):
+        from tests.conftest import make_team
+
+        client = AsyncMock()
+        client.get_teams = AsyncMock(return_value=[
+            make_team(id=1, name="Arsenal", short_name="ARS"),
+            make_team(id=2, name="Man City", short_name="MCI"),
+            make_team(id=3, name="Coventry", short_name="COV"),
+        ])
+        return client
+
+    @pytest.fixture
+    def pl_performances(self):
+        from fpl_cli.services.team_ratings import TeamPerformance
+
+        return {
+            "ARS": TeamPerformance("ARS", 2.5, 2.2, 0.6, 0.8, 19, 19),
+            "MCI": TeamPerformance("MCI", 2.4, 2.1, 0.7, 0.9, 19, 19),
+        }
+
+    async def _prior(self, mock_client, pl_performances, tmp_path):
+        with (
+            patch("fpl_cli.services.team_ratings_prior.prior_config_path", return_value=tmp_path / "p.yaml"),
+            patch("fpl_cli.services.team_ratings_prior._prior_from_understat", return_value=pl_performances),
+            patch("fpl_cli.api.football_data.FootballDataClient", return_value=_championship_fd(DOMINANT_CHAMPIONSHIP)),
+        ):
+            return await generate_prior(mock_client)
+
+    async def test_championship_winner_is_not_rated_best_in_the_league(
+        self, mock_client, pl_performances, tmp_path
+    ):
+        """Topping the Championship must not yield rating 1 on the PL scale.
+
+        Percentile bucketing is ordinal, so ranking promoted teams among their
+        own division handed its champion the same rating as the best team in
+        the Premier League.
+        """
+        result = await self._prior(mock_client, pl_performances, tmp_path)
+
+        assert result["COV"].atk_home > 1
+        assert result["COV"].def_home > 1
+
+    async def test_promoted_team_ranks_below_established_sides(
+        self, mock_client, pl_performances, tmp_path
+    ):
+        """Adjusted Championship rates fall short of both PL teams here."""
+        result = await self._prior(mock_client, pl_performances, tmp_path)
+
+        for axis in ("atk_home", "atk_away", "def_home", "def_away"):
+            assert getattr(result["COV"], axis) > getattr(result["ARS"], axis), axis
+            assert getattr(result["COV"], axis) > getattr(result["MCI"], axis), axis
+
+    async def test_relegated_teams_are_excluded_from_the_pool(
+        self, mock_client, pl_performances, tmp_path
+    ):
+        """Last season's departed sides must not skew the percentiles."""
+        from fpl_cli.services.team_ratings import TeamPerformance
+
+        pl_performances["BUR"] = TeamPerformance("BUR", 0.9, 0.7, 2.4, 2.6, 19, 19)
+
+        result = await self._prior(mock_client, pl_performances, tmp_path)
+
+        assert "BUR" not in result
+
+
+class TestChampionshipRescaling:
+    """Scored and conceded must be adjusted in opposite directions."""
+
+    def test_factors_move_opposite_ways(self):
+        from fpl_cli.services.team_ratings_prior import (
+            CHAMPIONSHIP_GOALS_CONCEDED_FACTOR,
+            CHAMPIONSHIP_GOALS_SCORED_FACTOR,
+        )
+
+        assert CHAMPIONSHIP_GOALS_SCORED_FACTOR < 1 < CHAMPIONSHIP_GOALS_CONCEDED_FACTOR
+
+    async def test_scored_deflated_and_conceded_inflated(self):
+        """A promoted side scores less and concedes more once promoted."""
+        from fpl_cli.services.team_ratings_prior import _championship_performances
+
+        with patch(
+            "fpl_cli.api.football_data.FootballDataClient",
+            return_value=_championship_fd(DOMINANT_CHAMPIONSHIP),
+        ):
+            result = await _championship_performances({"COV"}, 2025)
+
+        assert result is not None
+        # COV's raw Championship rates: scored 3.0 home / 2.0 away, conceded 1.0 both.
+        assert result["COV"].goals_scored_home < 3.0
+        assert result["COV"].goals_scored_away < 2.0
+        assert result["COV"].goals_conceded_home > 1.0
+        assert result["COV"].goals_conceded_away > 1.0
+
+    async def test_returns_none_without_api_key(self):
+        """No Championship data means the caller uses the flat estimate."""
+        from fpl_cli.services.team_ratings_prior import _championship_performances
+
+        fd = _championship_fd([])
+        fd.is_configured = False
+
+        with patch("fpl_cli.api.football_data.FootballDataClient", return_value=fd):
+            assert await _championship_performances({"COV"}, 2025) is None
+
+
+class TestPromotedFallback:
+    """The undifferentiated estimate used when Championship data is missing."""
+
+    def test_each_call_returns_a_distinct_instance(self):
+        """TeamRating is mutable and overrides assign onto it in place.
+
+        Sharing one instance would leak a single team's override onto every
+        other promoted side.
+        """
+        from fpl_cli.services.team_ratings_prior import _promoted_fallback
+
+        first, second = _promoted_fallback(), _promoted_fallback()
+        first.atk_home = 1
+
+        assert second.atk_home == 5
+
+    async def test_promoted_teams_get_flat_estimate_without_championship_data(self, tmp_path):
+        from fpl_cli.services.team_ratings import TeamPerformance
+        from tests.conftest import make_team
+
+        client = AsyncMock()
+        client.get_teams = AsyncMock(return_value=[
+            make_team(id=1, name="Arsenal", short_name="ARS"),
+            make_team(id=2, name="Man City", short_name="MCI"),
+            make_team(id=3, name="Coventry", short_name="COV"),
+        ])
+        pl = {
+            "ARS": TeamPerformance("ARS", 2.5, 2.2, 0.6, 0.8, 19, 19),
+            "MCI": TeamPerformance("MCI", 2.4, 2.1, 0.7, 0.9, 19, 19),
+        }
+
+        with (
+            patch("fpl_cli.services.team_ratings_prior.prior_config_path", return_value=tmp_path / "p.yaml"),
+            patch("fpl_cli.services.team_ratings_prior._prior_from_understat", return_value=pl),
+            patch("fpl_cli.services.team_ratings_prior._championship_performances",
+                  new_callable=AsyncMock, return_value=None),
+        ):
+            result = await generate_prior(client)
+
+        assert (result["COV"].atk_home, result["COV"].atk_away) == (5, 6)
+        assert (result["COV"].def_home, result["COV"].def_away) == (5, 6)
