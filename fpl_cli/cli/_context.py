@@ -39,6 +39,33 @@ def _user_config_dir() -> Path:
     return user_config_dir()
 
 
+# settings.yaml paths already reported by _warn_once_if_settings_missing.
+# Keyed by path so a process that resolves more than one config dir (tests) is
+# warned per dir; cleared by the autouse fixture in tests/conftest.py.
+_warned_missing_settings: set[Path] = set()
+
+
+def _warn_once_if_settings_missing(settings_file: Path) -> None:
+    """Warn on stderr when an explicitly-set config dir holds no settings.yaml.
+
+    Only fires for FPL_CLI_CONFIG_DIR. An absent settings.yaml under the
+    default platformdirs location is the normal pre-`fpl init` state, but
+    someone who pointed the variable at a specific directory meant it to hold
+    their config -- staying silent there is how a mis-set override reads as a
+    corrupted install instead of a misconfiguration (#46).
+    """
+    if not os.environ.get("FPL_CLI_CONFIG_DIR") or settings_file.exists():
+        return
+    if settings_file in _warned_missing_settings:
+        return
+    _warned_missing_settings.add(settings_file)
+    click.echo(
+        f"Warning: FPL_CLI_CONFIG_DIR points at {settings_file.parent}, which has no "
+        f"settings.yaml -- running on defaults only. Run 'fpl init' to create one there.",
+        err=True,
+    )
+
+
 def _load_yaml_file(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
@@ -113,7 +140,9 @@ def resolve_research_dir(settings: dict[str, Any]) -> Path:
 def load_settings() -> dict[str, Any]:
     """Load settings: project defaults, then user overrides."""
     settings = _load_yaml_file(SHIPPED_CONFIG_DIR / "defaults.yaml")
-    user_settings = _load_yaml_file(_user_config_dir() / "settings.yaml")
+    user_file = _user_config_dir() / "settings.yaml"
+    _warn_once_if_settings_missing(user_file)
+    user_settings = _load_yaml_file(user_file)
     _deep_merge(settings, user_settings)
     return settings
 
@@ -134,6 +163,22 @@ EXPERIMENTAL: frozenset[str] = frozenset({
 def is_custom_analysis_enabled(settings: dict[str, Any]) -> bool:
     """Check whether custom analysis features are enabled in settings."""
     return bool(settings.get("custom_analysis", False))
+
+
+def experimental_gate_message(cmd_name: str) -> str:
+    """Explain why a gated command is unavailable and how to turn it on.
+
+    Names the settings.yaml actually being read, because the usual cause of a
+    surprise gate is the CLI resolving a different config dir than expected.
+    """
+    try:
+        location = str(_user_config_dir() / "settings.yaml")
+    except UserDirError:  # pragma: no cover - the dir is resolved before this point
+        location = "settings.yaml in your fpl-cli config directory"
+    return (
+        f"'{cmd_name}' is a custom-analysis command and is currently switched off.\n"
+        f"Enable it with 'custom_analysis: true' in {location}, or run 'fpl init'."
+    )
 
 
 class FormatAwareGroup(click.Group):
@@ -166,6 +211,29 @@ class FormatAwareGroup(click.Group):
         if cmd_name in EXPERIMENTAL and self._is_experimental_hidden(ctx):
             return None
         return super().get_command(ctx, cmd_name)
+
+    def resolve_command(
+        self, ctx: click.Context, args: list[str]
+    ) -> tuple[str | None, click.Command | None, list[str]]:
+        """Name the gate instead of letting click contradict itself.
+
+        click builds its "Did you mean" suggestions from `self.commands`, which
+        still holds the gated commands -- so a hidden one suggests itself:
+        "No such command 'ratings'. Did you mean 'ratings'?" (#46). Intercept
+        before that and say what the gate actually is.
+
+        Shell completion resolves commands with `resilient_parsing` set and
+        expects a `None` command back, not an exception -- leave that path to
+        click, which already returns None for a gated name.
+        """
+        if (
+            args
+            and not ctx.resilient_parsing
+            and args[0] in EXPERIMENTAL
+            and self._is_experimental_hidden(ctx)
+        ):
+            raise click.UsageError(experimental_gate_message(args[0]), ctx=ctx)
+        return super().resolve_command(ctx, args)
 
     def format_commands(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
         # ctx.obj may be None when --help short-circuits the callback

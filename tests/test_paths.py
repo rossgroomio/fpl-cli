@@ -156,6 +156,79 @@ class TestUnusableOverride:
         assert "writable directory" in message
 
 
+class TestRelativeOverrideRejected:
+    """A relative FPL_CLI_* value would resolve against the cwd (#46)."""
+
+    @pytest.mark.parametrize(("env_var", "resolver"), RESOLVERS)
+    def test_relative_value_is_rejected(self, env_var, resolver, monkeypatch):
+        monkeypatch.setenv(env_var, "./config")
+
+        with pytest.raises(UserDirError) as exc_info:
+            resolver()
+
+        message = str(exc_info.value)
+        assert env_var in message
+        assert "relative path" in message
+        # Names the absolute equivalent so the fix is a copy-paste away.
+        assert str(Path("./config").resolve()) in message
+
+    @pytest.mark.parametrize(("env_var", "resolver"), RESOLVERS)
+    def test_bare_name_is_rejected(self, env_var, resolver, monkeypatch):
+        """'config' with no leading './' is relative too."""
+        monkeypatch.setenv(env_var, "config")
+
+        with pytest.raises(UserDirError):
+            resolver()
+
+    def test_outcome_does_not_depend_on_cwd(self, tmp_path, monkeypatch):
+        """One env value, one outcome -- whichever directory fpl was run from."""
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        monkeypatch.setenv("FPL_CLI_CONFIG_DIR", "./config")
+
+        for cwd in (tmp_path, elsewhere):
+            monkeypatch.chdir(cwd)
+            user_config_dir.cache_clear()
+            with pytest.raises(UserDirError):
+                user_config_dir()
+
+    def test_tilde_value_is_still_accepted(self, tmp_path, monkeypatch):
+        """~ expands to an absolute path, so it is not caught by the check."""
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("FPL_CLI_CONFIG_DIR", "~/vault-config")
+
+        assert user_config_dir() == (home / "vault-config").resolve()
+
+    def test_absolute_value_is_still_accepted(self, tmp_path, monkeypatch):
+        custom = tmp_path / "abs_config"
+        monkeypatch.setenv("FPL_CLI_CONFIG_DIR", str(custom))
+
+        assert user_config_dir() == custom
+
+
+class TestRelativeOverrideInCLI:
+    """The reported symptom: a command that exists reports itself as missing."""
+
+    def test_command_reports_relative_config_dir(self, monkeypatch):
+        from click.testing import CliRunner
+
+        from fpl_cli.cli import main
+
+        monkeypatch.setenv("FPL_CLI_CONFIG_DIR", "./config")
+        user_config_dir.cache_clear()
+
+        result = CliRunner().invoke(main, ["ratings"], catch_exceptions=False)
+
+        assert result.exit_code == 1
+        assert "FPL_CLI_CONFIG_DIR" in result.output
+        assert "relative path" in result.output
+        # The old failure mode: "No such command 'ratings'. Did you mean 'ratings'?"
+        assert "Did you mean" not in result.output
+        assert "Traceback" not in result.output
+
+
 class TestLazyResolution:
     """Resolution happens per call, so a late override still lands."""
 

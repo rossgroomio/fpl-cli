@@ -41,11 +41,13 @@ Commands are independently classified by the `custom_analysis` toggle:
 
 | Category | Commands | When opted out |
 |---|---|---|
-| **Pure-experimental** | `captain`, `targets`, `differentials`, `waivers`, `allocate`, `transfer-eval`, `ratings` | Unregistered from CLI |
+| **Pure-experimental** | `captain`, `targets`, `differentials`, `waivers`, `allocate`, `transfer-eval`, `ratings` | Hidden from `--help`; invoking one names the toggle |
 | **Mixed** | `stats`, `xg`, `fdr`, `preview` | Experimental columns/sections stripped |
 | **Data-only** | Everything else | No change |
 
 Both filters (format and experimental) are independent and must both pass.
+
+Running a gated command reports the gate and the `settings.yaml` fpl-cli is actually reading, rather than click's default "No such command" — which would otherwise suggest the very command it had just refused.
 
 ## Player Analysis
 
@@ -510,12 +512,13 @@ fpl-cli writes to three directories, each resolved via `platformdirs` and overri
 
 **Ephemeral environments** (Claude Code on the web, CI, containers): the default config and data locations live inside the container and vanish with it. Point `FPL_CLI_CONFIG_DIR` and `FPL_CLI_DATA_DIR` at a persistent workspace directory so settings, credentials, generated reports, and generated data (team ratings, priors, chip plans, sell prices) survive between sessions. The cache is disposable by design and can stay container-local.
 
-Two things to know when setting the overrides:
+Three things to know when setting the overrides:
 
+- **Every override must be an absolute path.** A relative value such as `./config` would be resolved against the current working directory, so the CLI would read a different directory depending on where you ran it from — and config would silently load from one directory only. Relative values are rejected with an error that names the variable and the absolute path it would have meant from where you stood.
 - **`FPL_CLI_CONFIG_DIR` must come from the real environment**, not from `.env` — the config dir is where `.env` is found, so it has to be known first. `FPL_CLI_DATA_DIR` and `FPL_CLI_CACHE_DIR` can be set either way.
 - **fpl-cli only sets `0700` permissions on a directory it creates itself.** Point an override at an existing directory (a shared workspace, a synced vault) and its mode is left as its owner set it.
 
-A directory override that cannot be created is reported as an error naming the variable, rather than falling back silently.
+A directory override that cannot be created is reported as an error naming the variable, rather than falling back silently. Set `FPL_CLI_CONFIG_DIR` at a directory with no `settings.yaml` and fpl-cli warns once on stderr and runs on shipped defaults — an empty platform default is the normal pre-`fpl init` state and stays quiet, but an override you set deliberately is almost certainly meant to point at your config.
 
 ### `settings.yaml` (user overrides)
 

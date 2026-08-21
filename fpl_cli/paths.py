@@ -7,7 +7,10 @@ Three categories:
 
 Every writable dir honours an env var override (FPL_CLI_CONFIG_DIR,
 FPL_CLI_DATA_DIR, FPL_CLI_CACHE_DIR) so ephemeral environments (e.g. Claude
-Code on the web) can redirect them to a persistent workspace.
+Code on the web) can redirect them to a persistent workspace. Overrides must
+be absolute: a relative one resolves against the current working directory,
+which makes the CLI read a different directory per invocation, so it is
+rejected with an actionable error rather than honoured.
 
 Resolution is lazy and cached: nothing here touches the filesystem at import
 time, so an override set after import (notably from the `.env` the CLI loads)
@@ -66,11 +69,25 @@ def _resolve_user_dir(env_var: str, platformdirs_func: str) -> Path:
             Looked up on the module at call time so tests can patch it.
 
     Raises:
-        UserDirError: The resolved directory could not be created.
+        UserDirError: The override is relative, or the resolved directory
+            could not be created.
     """
     env = os.environ.get(env_var)
     if env:
-        path = Path(env).expanduser().resolve()
+        path = Path(env).expanduser()
+        if not path.is_absolute():
+            # Resolving a relative override against the cwd would give a
+            # different directory per invocation, so config silently loads
+            # only when fpl is run from one place (#46). No stable anchor
+            # exists for a CLI, so say so rather than guess one.
+            raise UserDirError(
+                f"{env_var} is set to {env!r}, which is a relative path. It would be "
+                f"resolved against the current working directory, so fpl-cli would read "
+                f"a different directory depending on where you ran it from. "
+                f"Use an absolute path (from here that is {Path(env).expanduser().resolve()}), "
+                f"or unset it to use the default location."
+            )
+        path = path.resolve()
         # A directory the user pointed us at may be shared with other tools, so
         # its mode is theirs to set. Only lock down one we create ourselves.
         restrict = not path.exists()
