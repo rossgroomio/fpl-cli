@@ -28,6 +28,7 @@ split_commits = false
 tag_pattern = "v[0-9].*"
 
 commit_parsers = [
+    { message = "^Merge ", skip = true },
     { message = "^feat", group = "Features" },
     { message = "^fix", group = "Bug Fixes" },
     { message = "^refactor", group = "Refactoring" },
