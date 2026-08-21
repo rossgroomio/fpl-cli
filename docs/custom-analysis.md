@@ -308,9 +308,9 @@ Two degenerate cases are called out explicitly rather than ranked silently: no r
 
 ### Manual Overrides
 
-`config/team_ratings_overrides.yaml` lets you override specific axes for specific teams. Overrides are applied in-memory only and survive auto-refresh cycles.
+`team_ratings_overrides.yaml` (user config dir, `FPL_CLI_CONFIG_DIR`) lets you override specific axes for specific teams. Overrides are applied in-memory only and survive auto-refresh cycles.
 
-Stored in `config/team_ratings.yaml`.
+Ratings are stored in `team_ratings.yaml` in the user data dir (`FPL_CLI_DATA_DIR`).
 
 ## Fixture-Adjusted npxG
 
@@ -430,10 +430,10 @@ flowchart TB
 
 **player_prior** - Bayesian early-season confidence. See [Early-Season Confidence](#early-season-confidence-gw1-10).
 
-**TeamRatingsService** - Persists team strength ratings to `config/team_ratings.yaml`. See [Team Ratings](#team-ratings).
+**TeamRatingsService** - Persists team strength ratings to `team_ratings.yaml` in the user data dir. See [Team Ratings](#team-ratings).
 
 **matchup** - Computes matchup scores (0-10). See [Matchup Scoring](#matchup-scoring).
 
-**FixturePredictionsService** - Reads `config/fixture_predictions.yaml` for predicted BGW/DGW data with confidence levels. Pure functions `find_blank_gameweeks()` / `find_double_gameweeks()` detect from live fixture data.
+**FixturePredictionsService** - Reads `fixture_predictions.yaml` for predicted BGW/DGW data with confidence levels — a current-season copy in the user config dir (`FPL_CLI_CONFIG_DIR`) takes precedence over the default shipped in the package. Pure functions `find_blank_gameweeks()` / `find_double_gameweeks()` detect from live fixture data.
 
 **team_form** - Calculates rolling form stats (last 6 matches, venue splits, league position).

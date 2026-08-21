@@ -8,6 +8,7 @@ at GW12.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from statistics import mean
 from typing import TYPE_CHECKING, Any
 
@@ -21,7 +22,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-PRIOR_CONFIG_PATH = user_data_dir() / "team_ratings_prior.yaml"
+def prior_config_path() -> Path:
+    """Team ratings prior cache location. Resolved per call so FPL_CLI_DATA_DIR is honoured."""
+    return user_data_dir() / "team_ratings_prior.yaml"
 REGRESSION_CONSTANT = 6
 BLENDING_CUTOFF_GW = 12
 
@@ -82,9 +85,10 @@ def _matches_to_ratings(
 
 def _load_prior_cache() -> dict[str, TeamRating] | None:
     """Load cached prior from disk, or None if missing."""
-    if not PRIOR_CONFIG_PATH.exists():
+    path = prior_config_path()
+    if not path.exists():
         return None
-    with open(PRIOR_CONFIG_PATH, encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         data = yaml.safe_load(f)
     if not data or "ratings" not in data:
         return None
@@ -106,6 +110,7 @@ def _save_prior_cache(
     import os
     import tempfile
 
+    path = prior_config_path()
     data: dict[str, Any] = {
         "metadata": {"source": source, "teams": sorted(teams)},
         "ratings": {},
@@ -119,11 +124,11 @@ def _save_prior_cache(
             "def_away": r.def_away,
         }
     with tempfile.NamedTemporaryFile(
-        mode="w", encoding="utf-8", dir=PRIOR_CONFIG_PATH.parent, suffix=".yaml", delete=False
+        mode="w", encoding="utf-8", dir=path.parent, suffix=".yaml", delete=False
     ) as f:
         yaml.dump(data, f, default_flow_style=False, sort_keys=False)
         tmp_path = f.name
-    os.replace(tmp_path, PRIOR_CONFIG_PATH)
+    os.replace(tmp_path, path)
 
 
 async def generate_prior(client: FPLClient) -> dict[str, TeamRating]:

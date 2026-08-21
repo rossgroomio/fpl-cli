@@ -7,11 +7,11 @@ from unittest.mock import patch
 import pytest
 
 from fpl_cli.scraper.fpl_prices import (
-    CACHE_FILE,
     FPLPriceScraper,
     PlayerSellPrice,
     TeamFinances,
     cache_age_hours,
+    cache_file,
     load_cache,
     save_cache,
 )
@@ -351,10 +351,17 @@ class TestFPLPriceScraper:
         assert result is dom_result
         assert any("my-team" in err.lower() for err in result.extraction_errors)
 
-    def test_cache_file_path(self):
-        """Test cache file path is correct."""
-        assert CACHE_FILE.name == "team_finances.json"
-        assert "fpl-cli" in str(CACHE_FILE)
+    def test_cache_file_path(self, tmp_path, monkeypatch):
+        """The cache file resolves under the data dir at call time, not at import."""
+        from fpl_cli.paths import user_data_dir
+
+        assert cache_file().name == "team_finances.json"
+
+        # Resolution is lazy: an override set after import is still honoured.
+        moved = tmp_path / "relocated-data"
+        monkeypatch.setenv("FPL_CLI_DATA_DIR", str(moved))
+        user_data_dir.cache_clear()
+        assert cache_file() == moved / "team_finances.json"
 
 
 class TestTeamFinancesValidation:
@@ -476,10 +483,10 @@ class TestFPLPriceScraperCache:
             total_value=115.5,
             scraped_at=datetime.now().isoformat(),
         )
-        cache_file = tmp_path / "team_finances.json"
-        with patch("fpl_cli.scraper.fpl_prices.CACHE_FILE", cache_file):
+        cache_path = tmp_path / "team_finances.json"
+        with patch("fpl_cli.scraper.fpl_prices.cache_file", return_value=cache_path):
             save_cache(finances)
-            assert cache_file.exists()
+            assert cache_path.exists()
 
             loaded = load_cache()
         assert loaded is not None
@@ -489,17 +496,17 @@ class TestFPLPriceScraperCache:
 
     def test_load_cache_not_exists(self, tmp_path):
         """Test loading cache when file doesn't exist."""
-        cache_file = tmp_path / "team_finances.json"
-        with patch("fpl_cli.scraper.fpl_prices.CACHE_FILE", cache_file):
-            assert not cache_file.exists()
+        cache_path = tmp_path / "team_finances.json"
+        with patch("fpl_cli.scraper.fpl_prices.cache_file", return_value=cache_path):
+            assert not cache_path.exists()
             loaded = load_cache()
         assert loaded is None
 
     def test_load_cache_invalid_json(self, tmp_path):
         """Test loading cache with invalid JSON."""
-        cache_file = tmp_path / "team_finances.json"
-        cache_file.write_text("invalid json {{{", encoding="utf-8")
-        with patch("fpl_cli.scraper.fpl_prices.CACHE_FILE", cache_file):
+        cache_path = tmp_path / "team_finances.json"
+        cache_path.write_text("invalid json {{{", encoding="utf-8")
+        with patch("fpl_cli.scraper.fpl_prices.cache_file", return_value=cache_path):
             loaded = load_cache()
         assert loaded is None
 
@@ -512,8 +519,8 @@ class TestFPLPriceScraperCache:
             total_value=100.0,
             scraped_at=(datetime.now() - timedelta(hours=5)).isoformat(),
         )
-        cache_file = tmp_path / "team_finances.json"
-        with patch("fpl_cli.scraper.fpl_prices.CACHE_FILE", cache_file):
+        cache_path = tmp_path / "team_finances.json"
+        with patch("fpl_cli.scraper.fpl_prices.cache_file", return_value=cache_path):
             save_cache(finances)
             age = cache_age_hours()
         assert age is not None
@@ -521,19 +528,19 @@ class TestFPLPriceScraperCache:
 
     def test_cache_age_hours_no_cache(self, tmp_path):
         """Test cache age when no cache exists."""
-        cache_file = tmp_path / "team_finances.json"
-        with patch("fpl_cli.scraper.fpl_prices.CACHE_FILE", cache_file):
+        cache_path = tmp_path / "team_finances.json"
+        with patch("fpl_cli.scraper.fpl_prices.cache_file", return_value=cache_path):
             age = cache_age_hours()
         assert age is None
 
     def test_cache_creates_directory(self, tmp_path):
         """Test that save_cache creates data directory if needed."""
-        cache_file = tmp_path / "subdir" / "team_finances.json"
-        assert not cache_file.parent.exists()
+        cache_path = tmp_path / "subdir" / "team_finances.json"
+        assert not cache_path.parent.exists()
         finances = TeamFinances(
             bank=1.0, free_transfers=1, squad=[], total_value=100.0, scraped_at=datetime.now().isoformat()
         )
-        with patch("fpl_cli.scraper.fpl_prices.CACHE_FILE", cache_file):
+        with patch("fpl_cli.scraper.fpl_prices.cache_file", return_value=cache_path):
             save_cache(finances)
-        assert cache_file.parent.exists()
-        assert cache_file.exists()
+        assert cache_path.parent.exists()
+        assert cache_path.exists()

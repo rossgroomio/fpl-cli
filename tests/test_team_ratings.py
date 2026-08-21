@@ -931,6 +931,95 @@ class TestRatingsUpdateCLI:
         assert result.exit_code == 0
         assert "--since-gw is ignored" in result.output or "ignored" in result.output.lower()
 
+    def test_save_message_shows_actual_path(self, mock_ratings, mock_performances, tmp_path, monkeypatch):
+        """The save confirmation prints the real save location, not a hardcoded repo path."""
+        from click.testing import CliRunner
+
+        from fpl_cli.cli import main
+        from fpl_cli.paths import user_data_dir
+
+        data_dir = tmp_path / "fake-data-dir"
+        monkeypatch.setenv("FPL_CLI_DATA_DIR", str(data_dir))
+        user_data_dir.cache_clear()
+        save_path = data_dir / "team_ratings.yaml"
+        runner = CliRunner()
+
+        with (
+            patch("fpl_cli.services.team_ratings.TeamRatingsCalculator.calculate_from_xg", new_callable=AsyncMock) as mock_xg,
+            patch("fpl_cli.services.team_ratings.TeamRatingsService.get_all_ratings", return_value={}),
+            patch("fpl_cli.services.team_ratings.TeamRatingsService.save_ratings") as mock_save,
+            patch("fpl_cli.cli._context.load_settings", return_value={"custom_analysis": True}),
+        ):
+            mock_xg.return_value = (mock_ratings, mock_performances)
+
+            result = runner.invoke(
+                main,
+                ["ratings", "update", "--use-xg"],
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code == 0
+        mock_save.assert_called_once()
+        # Rich soft-wraps long paths; compare against the unwrapped output.
+        assert str(save_path) in result.output.replace("\n", "")
+
+    def test_save_message_keeps_bracketed_path_intact(
+        self, mock_ratings, mock_performances, tmp_path, monkeypatch
+    ):
+        """A data dir containing [brackets] must not be eaten as rich markup."""
+        from click.testing import CliRunner
+
+        from fpl_cli.cli import main
+        from fpl_cli.paths import user_data_dir
+
+        data_dir = tmp_path / "[vault]" / "fpl-data"
+        monkeypatch.setenv("FPL_CLI_DATA_DIR", str(data_dir))
+        user_data_dir.cache_clear()
+        runner = CliRunner()
+
+        with (
+            patch("fpl_cli.services.team_ratings.TeamRatingsCalculator.calculate_from_xg", new_callable=AsyncMock) as mock_xg,
+            patch("fpl_cli.services.team_ratings.TeamRatingsService.get_all_ratings", return_value={}),
+            patch("fpl_cli.services.team_ratings.TeamRatingsService.save_ratings"),
+            patch("fpl_cli.cli._context.load_settings", return_value={"custom_analysis": True}),
+        ):
+            mock_xg.return_value = (mock_ratings, mock_performances)
+
+            result = runner.invoke(main, ["ratings", "update", "--use-xg"], catch_exceptions=False)
+
+        assert result.exit_code == 0
+        assert "[vault]" in result.output.replace("\n", "")
+
+
+class TestConfigPathProperty:
+    """Tests for TeamRatingsService.config_path."""
+
+    def test_returns_constructor_path(self, tmp_path):
+        path = tmp_path / "team_ratings.yaml"
+        service = TeamRatingsService(config_path=path)
+        assert service.config_path == path
+
+    def test_defaults_under_data_dir(self, tmp_path, monkeypatch):
+        """With no explicit path the default resolves under the current FPL_CLI_DATA_DIR."""
+        from fpl_cli.paths import user_data_dir
+
+        data_dir = tmp_path / "ratings-data"
+        monkeypatch.setenv("FPL_CLI_DATA_DIR", str(data_dir))
+        user_data_dir.cache_clear()
+
+        assert TeamRatingsService().config_path == data_dir / "team_ratings.yaml"
+
+    def test_default_follows_later_data_dir_change(self, tmp_path, monkeypatch):
+        """The default is resolved per access, not frozen at import or construction."""
+        from fpl_cli.paths import user_data_dir
+
+        service = TeamRatingsService()
+        moved = tmp_path / "moved-data"
+        monkeypatch.setenv("FPL_CLI_DATA_DIR", str(moved))
+        user_data_dir.cache_clear()
+
+        assert service.config_path == moved / "team_ratings.yaml"
+
 
 class TestEnsureFresh:
     """Tests for auto-refresh via ensure_fresh()."""
@@ -1031,7 +1120,7 @@ class TestOverrides:
         return tmp_path / "team_ratings.yaml"
 
     @pytest.fixture
-    def overrides_path(self, tmp_path):
+    def overrides_file(self, tmp_path):
         return tmp_path / "team_ratings_overrides.yaml"
 
     @pytest.fixture
@@ -1049,29 +1138,29 @@ class TestOverrides:
             },
         }
 
-    def test_overrides_applied_on_load(self, temp_config, overrides_path, sample_config_data):
+    def test_overrides_applied_on_load(self, temp_config, overrides_file, sample_config_data):
         """Overrides merge into ratings on initial load."""
         with open(temp_config, "w", encoding="utf-8") as f:
             yaml.dump(sample_config_data, f)
-        with open(overrides_path, "w", encoding="utf-8") as f:
+        with open(overrides_file, "w", encoding="utf-8") as f:
             yaml.dump({"ARS": {"def_away": 3}}, f)
 
-        with patch("fpl_cli.services.team_ratings.OVERRIDES_PATH", overrides_path):
+        with patch("fpl_cli.services.team_ratings.overrides_path", return_value=overrides_file):
             service = TeamRatingsService(config_path=temp_config)
             rating = service.get_rating("ARS")
 
         assert rating.def_away == 3  # Overridden
         assert rating.atk_home == 1  # Unchanged
 
-    def test_overrides_unknown_team_warns(self, temp_config, overrides_path, sample_config_data):
+    def test_overrides_unknown_team_warns(self, temp_config, overrides_file, sample_config_data):
         """Unknown team in overrides logs a warning."""
         with open(temp_config, "w", encoding="utf-8") as f:
             yaml.dump(sample_config_data, f)
-        with open(overrides_path, "w", encoding="utf-8") as f:
+        with open(overrides_file, "w", encoding="utf-8") as f:
             yaml.dump({"XXX": {"atk_home": 1}}, f)
 
         with (
-            patch("fpl_cli.services.team_ratings.OVERRIDES_PATH", overrides_path),
+            patch("fpl_cli.services.team_ratings.overrides_path", return_value=overrides_file),
             patch("fpl_cli.services.team_ratings.logger") as mock_logger,
         ):
             service = TeamRatingsService(config_path=temp_config)
@@ -1080,14 +1169,14 @@ class TestOverrides:
         mock_logger.warning.assert_called_once()
         assert "XXX" in str(mock_logger.warning.call_args)
 
-    def test_overrides_not_written_to_file(self, temp_config, overrides_path, sample_config_data):
+    def test_overrides_not_written_to_file(self, temp_config, overrides_file, sample_config_data):
         """Overrides are in-memory only - save_ratings doesn't include them."""
         with open(temp_config, "w", encoding="utf-8") as f:
             yaml.dump(sample_config_data, f)
-        with open(overrides_path, "w", encoding="utf-8") as f:
+        with open(overrides_file, "w", encoding="utf-8") as f:
             yaml.dump({"ARS": {"def_away": 7}}, f)
 
-        with patch("fpl_cli.services.team_ratings.OVERRIDES_PATH", overrides_path):
+        with patch("fpl_cli.services.team_ratings.overrides_path", return_value=overrides_file):
             service = TeamRatingsService(config_path=temp_config)
             # Save the current ratings (which include the override in memory)
             ratings = service.get_all_ratings()
@@ -1101,14 +1190,14 @@ class TestOverrides:
         # not that save_ratings strips them. The override file remains the source of truth.
         assert service2.get_rating("ARS") is not None
 
-    def test_overrides_comment_only_file(self, temp_config, overrides_path, sample_config_data):
+    def test_overrides_comment_only_file(self, temp_config, overrides_file, sample_config_data):
         """Comment-only overrides file is handled gracefully."""
         with open(temp_config, "w", encoding="utf-8") as f:
             yaml.dump(sample_config_data, f)
-        with open(overrides_path, "w", encoding="utf-8") as f:
+        with open(overrides_file, "w", encoding="utf-8") as f:
             f.write("# No overrides yet\n")
 
-        with patch("fpl_cli.services.team_ratings.OVERRIDES_PATH", overrides_path):
+        with patch("fpl_cli.services.team_ratings.overrides_path", return_value=overrides_file):
             service = TeamRatingsService(config_path=temp_config)
             rating = service.get_rating("ARS")
 

@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 
 import click
+from rich.markup import escape as rich_escape
 from rich.panel import Panel
 from rich.table import Table
 
@@ -223,7 +224,7 @@ def ratings_update(since_gw: int | None, dry_run: bool, use_xg: bool):
                 based_on_gws=based_on_gws,
                 calculation_method=method,
             )
-            console.print("\n[green]Ratings saved to config/team_ratings.yaml[/green]")
+            console.print(f"\n[green]Ratings saved to {rich_escape(str(service.config_path))}[/green]")
 
     asyncio.run(_update())
 

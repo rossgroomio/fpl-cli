@@ -12,7 +12,7 @@ import click
 import yaml
 from rich.console import Console
 
-from fpl_cli.paths import SHIPPED_CONFIG_DIR, user_config_dir
+from fpl_cli.paths import SHIPPED_CONFIG_DIR, UserDirError, user_config_dir
 
 if TYPE_CHECKING:
     from fpl_cli.agents.base import AgentResult
@@ -138,6 +138,15 @@ def is_custom_analysis_enabled(settings: dict[str, Any]) -> bool:
 
 class FormatAwareGroup(click.Group):
     """Click group that renders commands in format-aware sections."""
+
+    def main(self, *args: Any, **kwargs: Any) -> Any:
+        """Report an unusable FPL_CLI_* directory as an error, not a traceback."""
+        try:
+            return super().main(*args, **kwargs)
+        except UserDirError as exc:
+            failure = click.ClickException(str(exc))
+            failure.show()
+            raise SystemExit(failure.exit_code) from exc
 
     def _is_experimental_hidden(self, ctx: click.Context) -> bool:
         """Return True when experimental commands should be suppressed."""

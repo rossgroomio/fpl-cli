@@ -33,9 +33,23 @@ from fpl_cli.cli.targets import targets_command
 from fpl_cli.cli.transfer_eval import transfer_eval_command
 from fpl_cli.cli.waivers import waivers_command
 from fpl_cli.cli.xg import xg_command
+from fpl_cli.paths import UserDirError, ensure_legacy_migration
 
-load_dotenv(_user_config_dir() / ".env")
-load_dotenv(override=False)
+
+def _load_env_files() -> None:
+    """Load .env from the user config dir, then let a local .env fill gaps."""
+    try:
+        config_dir = _user_config_dir()
+    except UserDirError:
+        # A broken FPL_CLI_CONFIG_DIR must not abort import; the command run
+        # reports it with an actionable message instead.
+        pass
+    else:
+        load_dotenv(config_dir / ".env")
+    load_dotenv(override=False)
+
+
+_load_env_files()
 
 
 @click.group(cls=FormatAwareGroup, context_settings={"help_option_names": ["-h", "--help"]})
@@ -43,6 +57,8 @@ load_dotenv(override=False)
 @click.pass_context
 def main(ctx: click.Context) -> None:
     """fpl-cli - Fantasy Premier League analysis for classic and draft formats."""
+    # Deferred to invocation: the user dirs must not resolve until .env is loaded.
+    ensure_legacy_migration()
     if ctx.invoked_subcommand == "init":
         ctx.obj = CLIContext(format=None, settings={})
         return

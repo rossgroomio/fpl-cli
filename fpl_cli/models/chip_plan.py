@@ -15,7 +15,10 @@ from fpl_cli.season import CHIP_SPLIT_GW
 
 logger = logging.getLogger(__name__)
 
-CHIP_PLAN_FILE = user_data_dir() / "chip_plan.json"
+
+def chip_plan_file() -> Path:
+    """Default chip plan location. Resolved per call so FPL_CLI_DATA_DIR is honoured."""
+    return user_data_dir() / "chip_plan.json"
 
 
 class ChipType(str, Enum):
@@ -89,7 +92,7 @@ class ChipPlan(BaseModel):
     @classmethod
     def load(cls, path: Path | None = None) -> ChipPlan:
         """Load from file, or return empty plan. Handles corrupt files."""
-        target = path or CHIP_PLAN_FILE
+        target = path or chip_plan_file()
         if not target.exists():
             return cls()
         try:
@@ -100,7 +103,7 @@ class ChipPlan(BaseModel):
 
     def save(self, path: Path | None = None) -> None:
         """Save chip plan to JSON file."""
-        target = path or CHIP_PLAN_FILE
+        target = path or chip_plan_file()
         target.parent.mkdir(parents=True, exist_ok=True)
         self.last_updated = datetime.now(tz=timezone.utc)
         target.write_text(self.model_dump_json(indent=2), encoding="utf-8")

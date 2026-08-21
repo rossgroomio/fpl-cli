@@ -7,6 +7,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 
 import keyring
 
@@ -113,22 +114,26 @@ class TeamFinances:
         )
 
 
-CACHE_FILE = user_data_dir() / "team_finances.json"
+def cache_file() -> Path:
+    """Sell-price cache location. Resolved per call so FPL_CLI_DATA_DIR is honoured."""
+    return user_data_dir() / "team_finances.json"
 
 
 def save_cache(finances: TeamFinances) -> None:
     """Save finances to cache file."""
-    CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(CACHE_FILE, "w", encoding="utf-8") as f:
+    path = cache_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
         json.dump(finances.to_dict(), f, indent=2)
 
 
 def load_cache() -> TeamFinances | None:
     """Load finances from cache file if it exists."""
-    if not CACHE_FILE.exists():
+    path = cache_file()
+    if not path.exists():
         return None
     try:
-        with open(CACHE_FILE, encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
         return TeamFinances.from_dict(data)
     except (json.JSONDecodeError, KeyError, OSError):
@@ -137,10 +142,11 @@ def load_cache() -> TeamFinances | None:
 
 def cache_age_hours() -> float | None:
     """Get age of cache in hours, or None if no cache."""
-    if not CACHE_FILE.exists():
+    path = cache_file()
+    if not path.exists():
         return None
     try:
-        with open(CACHE_FILE, encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
         scraped_at = datetime.fromisoformat(data.get("scraped_at", ""))
         age = datetime.now() - scraped_at

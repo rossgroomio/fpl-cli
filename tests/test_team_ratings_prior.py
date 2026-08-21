@@ -106,7 +106,7 @@ class TestGeneratePrior:
         mock_fd.__aexit__ = AsyncMock(return_value=False)
 
         with (
-            patch("fpl_cli.services.team_ratings_prior.PRIOR_CONFIG_PATH", tmp_path / "prior.yaml"),
+            patch("fpl_cli.services.team_ratings_prior.prior_config_path", return_value=tmp_path / "prior.yaml"),
             patch("fpl_cli.services.team_ratings_prior._prior_from_understat", return_value=None),
             patch("fpl_cli.api.football_data.FootballDataClient", return_value=mock_fd),
         ):
@@ -118,7 +118,7 @@ class TestGeneratePrior:
     async def test_ultimate_fallback_to_default_4(self, mock_client, tmp_path):
         """When all sources fail, all teams get default rating 4."""
         with (
-            patch("fpl_cli.services.team_ratings_prior.PRIOR_CONFIG_PATH", tmp_path / "prior.yaml"),
+            patch("fpl_cli.services.team_ratings_prior.prior_config_path", return_value=tmp_path / "prior.yaml"),
             patch("fpl_cli.services.team_ratings_prior._prior_from_understat", return_value=None),
             patch("fpl_cli.services.team_ratings_prior._prior_from_football_data", return_value=None),
             patch("fpl_cli.services.team_ratings_prior._championship_prior", new_callable=AsyncMock, return_value={}),
@@ -143,7 +143,7 @@ class TestGeneratePrior:
         with open(cache_path, "w", encoding="utf-8") as f:
             yaml.dump(cached, f)
 
-        with patch("fpl_cli.services.team_ratings_prior.PRIOR_CONFIG_PATH", cache_path):
+        with patch("fpl_cli.services.team_ratings_prior.prior_config_path", return_value=cache_path):
             result = await generate_prior(mock_client)
 
         assert result["ARS"].atk_home == 2  # From cache
