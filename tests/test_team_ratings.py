@@ -931,6 +931,49 @@ class TestRatingsUpdateCLI:
         assert result.exit_code == 0
         assert "--since-gw is ignored" in result.output or "ignored" in result.output.lower()
 
+    def test_save_message_shows_actual_path(self, mock_ratings, mock_performances, tmp_path, monkeypatch):
+        """The save confirmation prints the real save location, not a hardcoded repo path."""
+        from pathlib import Path
+
+        from click.testing import CliRunner
+
+        from fpl_cli.cli import main
+
+        save_path = Path("/fake-data-dir/team_ratings.yaml")
+        monkeypatch.setattr(TeamRatingsService, "DEFAULT_CONFIG_PATH", save_path)
+        runner = CliRunner()
+
+        with (
+            patch("fpl_cli.services.team_ratings.TeamRatingsCalculator.calculate_from_xg", new_callable=AsyncMock) as mock_xg,
+            patch("fpl_cli.services.team_ratings.TeamRatingsService.get_all_ratings", return_value={}),
+            patch("fpl_cli.services.team_ratings.TeamRatingsService.save_ratings") as mock_save,
+            patch("fpl_cli.cli._context.load_settings", return_value={"custom_analysis": True}),
+        ):
+            mock_xg.return_value = (mock_ratings, mock_performances)
+
+            result = runner.invoke(
+                main,
+                ["ratings", "update", "--use-xg"],
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code == 0
+        mock_save.assert_called_once()
+        assert str(save_path) in result.output
+
+
+class TestConfigPathProperty:
+    """Tests for TeamRatingsService.config_path."""
+
+    def test_returns_constructor_path(self, tmp_path):
+        path = tmp_path / "team_ratings.yaml"
+        service = TeamRatingsService(config_path=path)
+        assert service.config_path == path
+
+    def test_defaults_to_class_default(self):
+        service = TeamRatingsService()
+        assert service.config_path == TeamRatingsService.DEFAULT_CONFIG_PATH
+
 
 class TestEnsureFresh:
     """Tests for auto-refresh via ensure_fresh()."""

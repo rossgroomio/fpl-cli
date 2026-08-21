@@ -103,6 +103,11 @@ class TeamRatingsService:
         self._metadata: RatingsMetadata | None = None
         self._loaded = False
 
+    @property
+    def config_path(self) -> Path:
+        """Path of the ratings YAML file this service reads and writes."""
+        return self._config_path
+
     def _ensure_loaded(self) -> None:
         """Load ratings if not already loaded."""
         if not self._loaded:

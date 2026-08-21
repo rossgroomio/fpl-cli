@@ -308,9 +308,9 @@ Two degenerate cases are called out explicitly rather than ranked silently: no r
 
 ### Manual Overrides
 
-`config/team_ratings_overrides.yaml` lets you override specific axes for specific teams. Overrides are applied in-memory only and survive auto-refresh cycles.
+`team_ratings_overrides.yaml` (user config dir, `FPL_CLI_CONFIG_DIR`) lets you override specific axes for specific teams. Overrides are applied in-memory only and survive auto-refresh cycles.
 
-Stored in `config/team_ratings.yaml`.
+Ratings are stored in `team_ratings.yaml` in the user data dir (`FPL_CLI_DATA_DIR`).
 
 ## Fixture-Adjusted npxG
 
@@ -430,7 +430,7 @@ flowchart TB
 
 **player_prior** - Bayesian early-season confidence. See [Early-Season Confidence](#early-season-confidence-gw1-10).
 
-**TeamRatingsService** - Persists team strength ratings to `config/team_ratings.yaml`. See [Team Ratings](#team-ratings).
+**TeamRatingsService** - Persists team strength ratings to `team_ratings.yaml` in the user data dir. See [Team Ratings](#team-ratings).
 
 **matchup** - Computes matchup scores (0-10). See [Matchup Scoring](#matchup-scoring).
 

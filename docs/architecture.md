@@ -549,7 +549,7 @@ fpl_cli/
 │   └── recommendations.py        # Parse gw{N}-recommendations.md into structured decisions
 ├── scraper/
 │   └── fpl_prices.py             # FPLPriceScraper (needs FPL_EMAIL/FPL_PASSWORD; set FPL_BROWSER_IGNORE_CERTS=1 behind TLS-inspecting proxies)
-├── paths.py                      # SHIPPED_CONFIG_DIR, TEMPLATE_DIR, user_config_dir(), user_data_dir()
+├── paths.py                      # SHIPPED_CONFIG_DIR, TEMPLATE_DIR, user_config_dir(), user_data_dir(), user_cache_dir() — each user_* dir overridable via FPL_CLI_CONFIG_DIR / FPL_CLI_DATA_DIR / FPL_CLI_CACHE_DIR
 ├── season.py                     # season_label() (+ vaastav_season() alias), understat_season(), core_insights_season(), TOTAL_GAMEWEEKS, CHIP_SPLIT_GW
 ├── constants.py                  # MIN_MINUTES_FOR_PER90
 └── utils/
@@ -557,14 +557,19 @@ fpl_cli/
     └── time.py                   # format_deadline/format_kickoff/format_generated_at — UK local (Europe/London, auto GMT↔BST). Canonical formatter for every user-facing timestamp.
 
 platformdirs (user_config_dir / user_data_dir)  # macOS: ~/Library/Application Support/fpl-cli/
-├── settings.yaml                 # User overrides, created by `fpl init`
-├── fixture_predictions.yaml      # BGW/DGW predictions (migrated from repo config/)
-├── team_managers.yaml            # Manager name mappings (migrated from repo config/)
-├── team_ratings_overrides.yaml   # Manual per-team axis overrides (migrated from repo config/)
-├── team_ratings.yaml             # Cached team strength ratings (auto-refreshed)
-├── player_prior.yaml             # Cached player priors (generated, season/GW invalidation)
-├── chip_plan.json                # User's chip plan (created via `fpl chips add`)
-└── team_finances.json            # Cached sell prices from scraper (12h TTL)
+│                                 # Override with FPL_CLI_CONFIG_DIR / FPL_CLI_DATA_DIR (essential in
+│                                 # ephemeral environments like Claude Code on the web, where the
+│                                 # platformdirs defaults die with the container)
+├── settings.yaml                 # User overrides, created by `fpl init` (config dir)
+├── team_managers.yaml            # Manager name mappings (config dir, migrated from repo config/)
+├── team_ratings_overrides.yaml   # Manual per-team axis overrides (config dir, migrated from repo config/)
+├── team_ratings.yaml             # Cached team strength ratings (data dir, auto-refreshed)
+├── team_ratings_prior.yaml       # Cached team ratings priors (data dir)
+├── player_prior.yaml             # Cached player priors (data dir, generated, season/GW invalidation)
+├── chip_plan.json                # User's chip plan (data dir, created via `fpl chips add`)
+└── team_finances.json            # Cached sell prices from scraper (data dir, 12h TTL)
+
+Note: fixture_predictions.yaml is shipped read-only inside the package (SHIPPED_CONFIG_DIR), not a platformdirs file.
 ```
 
 ## Agent Skills

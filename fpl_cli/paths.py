@@ -5,6 +5,10 @@ Three categories:
 - user_config_dir() / user_data_dir(): writable dirs via platformdirs (lazy, cached)
 - user_cache_dir(): cache dir via platformdirs (lazy, cached, disposable)
 
+Every writable dir honours an env var override (FPL_CLI_CONFIG_DIR,
+FPL_CLI_DATA_DIR, FPL_CLI_CACHE_DIR) so ephemeral environments (e.g. Claude
+Code on the web) can redirect them to a persistent workspace.
+
 Every module that needs config, data, or templates should import from here.
 """
 
@@ -86,10 +90,18 @@ def user_cache_dir() -> Path:
 
 @functools.lru_cache(maxsize=1)
 def user_data_dir() -> Path:
-    """Runtime cache directory (platformdirs)."""
-    from platformdirs import user_data_path
+    """Generated-data directory (platformdirs). Respects FPL_CLI_DATA_DIR env var.
 
-    p = user_data_path("fpl-cli", appauthor=False, ensure_exists=True)
+    Cached after first call. Tests that change FPL_CLI_DATA_DIR must call
+    user_data_dir.cache_clear() first (handled by the autouse fixture in conftest.py).
+    """
+    env = os.environ.get("FPL_CLI_DATA_DIR")
+    if env:
+        p = Path(env).expanduser().resolve()
+    else:
+        from platformdirs import user_data_path
+
+        p = user_data_path("fpl-cli", appauthor=False, ensure_exists=True)
     p.mkdir(parents=True, exist_ok=True)
     if os.name != "nt":
         p.chmod(0o700)

@@ -223,7 +223,7 @@ def ratings_update(since_gw: int | None, dry_run: bool, use_xg: bool):
                 based_on_gws=based_on_gws,
                 calculation_method=method,
             )
-            console.print("\n[green]Ratings saved to config/team_ratings.yaml[/green]")
+            console.print(f"\n[green]Ratings saved to {service.config_path}[/green]")
 
     asyncio.run(_update())
 

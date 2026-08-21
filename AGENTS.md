@@ -8,7 +8,7 @@ ruff check fpl_cli/            # Lint
 pyright fpl_cli/               # Type check
 pytest tests/                 # Tests
 ```
-Entry point: `fpl_cli/cli/__init__.py:main` (Click). Config: `config/defaults.yaml` (committed) + `~/Library/Application Support/fpl-cli/settings.yaml` (user overrides, deep-merged via `platformdirs`). Override config dir with `FPL_CLI_CONFIG_DIR` env var.
+Entry point: `fpl_cli/cli/__init__.py:main` (Click). Config: `config/defaults.yaml` (committed) + `~/Library/Application Support/fpl-cli/settings.yaml` (user overrides, deep-merged via `platformdirs`). All three writable dirs have env overrides: `FPL_CLI_CONFIG_DIR` (settings, managers, overrides), `FPL_CLI_DATA_DIR` (generated data: team ratings, priors, chip plan, sell prices), `FPL_CLI_CACHE_DIR` (disposable). Ephemeral environments (Claude Code on the web) must set config + data to a persistent workspace or generated data dies with the container; cache can stay local.
 
 ## Architecture
 Agents inherit `fpl_cli/agents/base.py:Agent`, implement `async run(context: dict | None) -> AgentResult`. Organised in `agents/{data,analysis,action,orchestration}/`. AgentResult statuses: SUCCESS, PARTIAL, FAILED, PENDING_APPROVAL.

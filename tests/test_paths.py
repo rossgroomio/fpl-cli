@@ -29,6 +29,7 @@ class TestShippedPaths:
 class TestUserConfigDir:
     def test_returns_platformdirs_path(self, tmp_path, monkeypatch):
         expected = tmp_path / "config"
+        monkeypatch.delenv("FPL_CLI_CONFIG_DIR", raising=False)
         monkeypatch.setattr("platformdirs.user_config_path", lambda *_args, **_kwargs: expected)
         result = user_config_dir()
         assert result == expected
@@ -57,28 +58,36 @@ class TestUserConfigDir:
 class TestUserDataDir:
     def test_returns_platformdirs_path(self, tmp_path, monkeypatch):
         expected = tmp_path / "data"
+        monkeypatch.delenv("FPL_CLI_DATA_DIR", raising=False)
         monkeypatch.setattr("platformdirs.user_data_path", lambda *_args, **_kwargs: expected)
         result = user_data_dir()
         assert result == expected
 
+    def test_respects_env_var(self, tmp_path, monkeypatch):
+        custom = tmp_path / "custom_data"
+        monkeypatch.setenv("FPL_CLI_DATA_DIR", str(custom))
+        result = user_data_dir()
+        assert result == custom
+
     def test_creates_directory(self, tmp_path, monkeypatch):
-        new_dir = tmp_path / "new_data"
-        monkeypatch.setattr("platformdirs.user_data_path", lambda *_args, **_kwargs: new_dir)
-        assert not new_dir.exists()
+        custom = tmp_path / "new_data"
+        monkeypatch.setenv("FPL_CLI_DATA_DIR", str(custom))
+        assert not custom.exists()
         user_data_dir()
-        assert new_dir.is_dir()
+        assert custom.is_dir()
 
     @pytest.mark.skipif(os.name == "nt", reason="chmod not applicable on Windows")
     def test_sets_permissions(self, tmp_path, monkeypatch):
-        perm_dir = tmp_path / "perm_data"
-        monkeypatch.setattr("platformdirs.user_data_path", lambda *_args, **_kwargs: perm_dir)
+        custom = tmp_path / "perm_data"
+        monkeypatch.setenv("FPL_CLI_DATA_DIR", str(custom))
         user_data_dir()
-        assert perm_dir.stat().st_mode & 0o777 == 0o700
+        assert custom.stat().st_mode & 0o777 == 0o700
 
 
 class TestUserCacheDir:
     def test_returns_platformdirs_path(self, tmp_path, monkeypatch):
         expected = tmp_path / "cache"
+        monkeypatch.delenv("FPL_CLI_CACHE_DIR", raising=False)
         monkeypatch.setattr("platformdirs.user_cache_path", lambda *_args, **_kwargs: expected)
         result = user_cache_dir()
         assert result == expected
@@ -116,7 +125,7 @@ class TestMigrateLegacyFiles:
         monkeypatch.setattr(paths_mod, "_LEGACY_CONFIG_DIR", legacy_cfg)
         monkeypatch.setattr(paths_mod, "_LEGACY_DATA_DIR", legacy_data)
         monkeypatch.setenv("FPL_CLI_CONFIG_DIR", str(dest_cfg))
-        monkeypatch.setattr("platformdirs.user_data_path", lambda *_args, **_kwargs: dest_data)
+        monkeypatch.setenv("FPL_CLI_DATA_DIR", str(dest_data))
         return legacy_cfg, legacy_data, dest_cfg, dest_data
 
     def test_copies_config_files(self, tmp_path, monkeypatch):
@@ -142,7 +151,7 @@ class TestMigrateLegacyFiles:
         monkeypatch.setattr(paths_mod, "_LEGACY_CONFIG_DIR", tmp_path / "nonexistent_config")
         monkeypatch.setattr(paths_mod, "_LEGACY_DATA_DIR", tmp_path / "nonexistent_data")
         monkeypatch.setenv("FPL_CLI_CONFIG_DIR", str(tmp_path / "dest_config"))
-        monkeypatch.setattr("platformdirs.user_data_path", lambda *_args, **_kwargs: tmp_path / "dest_data")
+        monkeypatch.setenv("FPL_CLI_DATA_DIR", str(tmp_path / "dest_data"))
 
         _migrate_legacy_files()  # must not raise
 

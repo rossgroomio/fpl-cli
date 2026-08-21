@@ -498,6 +498,18 @@ Configuration uses two layers, deep-merged at runtime:
 
 Run `fpl init` to configure interactively. Only set values in `settings.yaml` that differ from defaults.
 
+### Directories
+
+fpl-cli writes to three directories, each resolved via `platformdirs` and overridable with an env var:
+
+| Directory | Contents | Override |
+|-----------|----------|----------|
+| Config | `settings.yaml`, `team_managers.yaml`, `team_ratings_overrides.yaml` | `FPL_CLI_CONFIG_DIR` |
+| Data | Generated files: `team_ratings.yaml`, `team_ratings_prior.yaml`, `player_prior.yaml`, `chip_plan.json`, `team_finances.json` | `FPL_CLI_DATA_DIR` |
+| Cache | Disposable API response caches | `FPL_CLI_CACHE_DIR` |
+
+**Ephemeral environments** (Claude Code on the web, CI, containers): the default config and data locations live inside the container and vanish with it. Point `FPL_CLI_CONFIG_DIR` and `FPL_CLI_DATA_DIR` at a persistent workspace directory so settings and generated data (team ratings, priors, chip plans, sell prices) survive between sessions. The cache is disposable by design and can stay container-local.
+
 ### `settings.yaml` (user overrides)
 
 ```yaml
