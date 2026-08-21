@@ -7,7 +7,10 @@ Three categories:
 
 Every writable dir honours an env var override (FPL_CLI_CONFIG_DIR,
 FPL_CLI_DATA_DIR, FPL_CLI_CACHE_DIR) so ephemeral environments (e.g. Claude
-Code on the web) can redirect them to a persistent workspace.
+Code on the web) can redirect them to a persistent workspace. Overrides must
+be absolute: a relative one resolves against the current working directory,
+which makes the CLI read a different directory per invocation, so it is
+rejected with an actionable error rather than honoured.
 
 Resolution is lazy and cached: nothing here touches the filesystem at import
 time, so an override set after import (notably from the `.env` the CLI loads)
@@ -38,7 +41,6 @@ _LEGACY_DATA_DIR = _PACKAGE_DIR.parent / "data"
 
 # Files that should migrate to user_config_dir
 _USER_CONFIG_FILES = (
-    "team_managers.yaml",
     "team_ratings_overrides.yaml",
     "settings.yaml",
 )
@@ -66,18 +68,34 @@ def _resolve_user_dir(env_var: str, platformdirs_func: str) -> Path:
             Looked up on the module at call time so tests can patch it.
 
     Raises:
-        UserDirError: The resolved directory could not be created.
+        UserDirError: The override is relative, or the resolved directory
+            could not be created.
     """
     env = os.environ.get(env_var)
     if env:
-        path = Path(env).expanduser().resolve()
+        path = Path(env).expanduser()
+        if not path.is_absolute():
+            # Resolving a relative override against the cwd would give a
+            # different directory per invocation, so config silently loads
+            # only when fpl is run from one place (#46). No stable anchor
+            # exists for a CLI, so say so rather than guess one.
+            raise UserDirError(
+                f"{env_var} is set to {env!r}, which is a relative path. It would be "
+                f"resolved against the current working directory, so fpl-cli would read "
+                f"a different directory depending on where you ran it from. "
+                f"Use an absolute path (from here that is {Path(env).expanduser().resolve()}), "
+                f"or unset it to use the default location."
+            )
+        path = path.resolve()
         # A directory the user pointed us at may be shared with other tools, so
         # its mode is theirs to set. Only lock down one we create ourselves.
         restrict = not path.exists()
     else:
         import platformdirs
 
-        path = getattr(platformdirs, platformdirs_func)("fpl-cli", appauthor=False, ensure_exists=True)
+        # No ensure_exists: platformdirs would mkdir outside the try below, so a
+        # creation failure would escape as a raw OSError instead of UserDirError.
+        path = getattr(platformdirs, platformdirs_func)("fpl-cli", appauthor=False)
         restrict = True
 
     try:
@@ -123,6 +141,26 @@ def user_data_dir() -> Path:
     user_data_dir.cache_clear() first (handled by the autouse fixture in conftest.py).
     """
     return _resolve_user_dir("FPL_CLI_DATA_DIR", "user_data_path")
+
+
+def user_config_file(name: str) -> Path:
+    """Path of one file in the user config dir.
+
+    Resolved per call so an FPL_CLI_CONFIG_DIR set after import (e.g. from a
+    late-loaded .env) is honoured -- binding the result to a module constant
+    would freeze the override at import time.
+    """
+    return user_config_dir() / name
+
+
+def user_data_file(name: str) -> Path:
+    """Path of one file in the user data dir.
+
+    Resolved per call so an FPL_CLI_DATA_DIR set after import (e.g. from a
+    late-loaded .env) is honoured -- binding the result to a module constant
+    would freeze the override at import time.
+    """
+    return user_data_dir() / name
 
 
 def _migrate_legacy_files() -> None:
@@ -175,5 +213,7 @@ def ensure_legacy_migration() -> None:
     global _migration_done
     if _migration_done:
         return
-    _migration_done = True
+    # Mark done only after success: a UserDirError from an unusable override
+    # propagates, and a later call (after the env is fixed) must still migrate.
     _migrate_legacy_files()
+    _migration_done = True

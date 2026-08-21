@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any, TypedDict
 
 import yaml
 
-from fpl_cli.paths import SHIPPED_CONFIG_DIR, user_config_dir
+from fpl_cli.paths import SHIPPED_CONFIG_DIR, user_config_file
 from fpl_cli.season import get_season_year
 
 logger = logging.getLogger(__name__)
@@ -97,7 +97,7 @@ class FixturePredictionsService:
     def _candidates(self) -> list[Path]:
         if self._explicit_path is not None:
             return [self._explicit_path]
-        return [user_config_dir() / CONFIG_FILENAME, CONFIG_FILE]
+        return [user_config_file(CONFIG_FILENAME), CONFIG_FILE]
 
     def _read(self, candidate: Path) -> dict[str, Any] | None:
         """Parse one candidate, or None when it is unusable (reason recorded).
@@ -150,9 +150,18 @@ class FixturePredictionsService:
             if data is None:
                 continue
 
-            # Suppress stale predictions from a previous season.
+            # Suppress stale predictions from a previous season. Falling
+            # through to the shipped copy must not be silent for a user
+            # override -- the file's owner needs to know it was ignored. The
+            # final candidate needs no warning here: with nothing to fall
+            # through to, the is_stale banner reports it instead.
             if self._is_stale(data):
                 saw_stale = True
+                if index < len(candidates) - 1:
+                    self._warn(
+                        f"Ignoring predictions file {candidate}:"
+                        " its metadata is from a previous season"
+                    )
                 continue
 
             # An empty or half-written file must not mask a later candidate. With
@@ -178,7 +187,7 @@ class FixturePredictionsService:
 
     @property
     def load_warnings(self) -> list[str]:
-        """Reasons candidate files were skipped (unreadable, malformed, empty)."""
+        """Reasons candidate files were skipped (unreadable, malformed, empty, stale)."""
         self._load()
         return list(self._warnings)
 

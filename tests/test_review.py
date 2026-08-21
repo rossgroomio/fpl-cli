@@ -1028,6 +1028,91 @@ class TestResearchPromptWithGWData:
         assert "Predicted Double Gameweeks" not in prompt
 
 
+class TestLoadTeamManagers:
+    """Shipped map is the base; the config-dir copy layers over it per club.
+
+    The file used to be auto-migrated into the config dir, so most existing
+    users have a copy they never authored. Replace semantics would pin them
+    to whichever season they first migrated in and silently shadow every
+    later refresh -- the merge is what makes a season update actually land.
+    """
+
+    def _shipped(self) -> dict[str, str]:
+        import yaml
+
+        from fpl_cli.paths import SHIPPED_CONFIG_DIR
+
+        return yaml.safe_load(
+            (SHIPPED_CONFIG_DIR / "team_managers.yaml").read_text(encoding="utf-8")
+        )
+
+    def test_shipped_map_used_when_no_user_copy(self):
+        from fpl_cli.cli._review_summarisation import _load_team_managers
+
+        assert _load_team_managers() == self._shipped()
+
+    def test_user_copy_wins_per_club(self, tmp_path, monkeypatch):
+        from fpl_cli.cli._review_summarisation import _load_team_managers
+        from fpl_cli.paths import user_config_dir
+
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "team_managers.yaml").write_text("ARS: Someone Else\n", encoding="utf-8")
+        monkeypatch.setenv("FPL_CLI_CONFIG_DIR", str(config_dir))
+        user_config_dir.cache_clear()
+
+        managers = _load_team_managers()
+
+        assert managers["ARS"] == "Someone Else"
+
+    def test_clubs_absent_from_user_copy_still_come_from_shipped(self, tmp_path, monkeypatch):
+        """The regression this replaces: a one-club override hid all 19 others."""
+        from fpl_cli.cli._review_summarisation import _load_team_managers
+        from fpl_cli.paths import user_config_dir
+
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "team_managers.yaml").write_text("ARS: Someone Else\n", encoding="utf-8")
+        monkeypatch.setenv("FPL_CLI_CONFIG_DIR", str(config_dir))
+        user_config_dir.cache_clear()
+
+        managers = _load_team_managers()
+        shipped = self._shipped()
+
+        assert set(managers) == set(shipped)
+        for code, name in shipped.items():
+            if code != "ARS":
+                assert managers[code] == name
+
+    def test_user_copy_may_add_a_club_the_shipped_map_lacks(self, tmp_path, monkeypatch):
+        """A promoted side named before the next release still reaches the prompt."""
+        from fpl_cli.cli._review_summarisation import _load_team_managers
+        from fpl_cli.paths import user_config_dir
+
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "team_managers.yaml").write_text("ZZZ: New Gaffer\n", encoding="utf-8")
+        monkeypatch.setenv("FPL_CLI_CONFIG_DIR", str(config_dir))
+        user_config_dir.cache_clear()
+
+        managers = _load_team_managers()
+
+        assert managers["ZZZ"] == "New Gaffer"
+        assert len(managers) == len(self._shipped()) + 1
+
+    def test_empty_user_copy_does_not_wipe_the_shipped_map(self, tmp_path, monkeypatch):
+        from fpl_cli.cli._review_summarisation import _load_team_managers
+        from fpl_cli.paths import user_config_dir
+
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "team_managers.yaml").write_text("", encoding="utf-8")
+        monkeypatch.setenv("FPL_CLI_CONFIG_DIR", str(config_dir))
+        user_config_dir.cache_clear()
+
+        assert _load_team_managers() == self._shipped()
+
+
 class TestFormatResearchContext:
     """Tests for _format_research_context predicted DGW formatting."""
 

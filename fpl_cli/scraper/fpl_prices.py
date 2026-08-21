@@ -11,7 +11,7 @@ from pathlib import Path
 
 import keyring
 
-from fpl_cli.paths import user_data_dir
+from fpl_cli.paths import user_data_file
 
 logger = logging.getLogger(__name__)
 
@@ -115,8 +115,8 @@ class TeamFinances:
 
 
 def cache_file() -> Path:
-    """Sell-price cache location. Resolved per call so FPL_CLI_DATA_DIR is honoured."""
-    return user_data_dir() / "team_finances.json"
+    """Sell-price cache location."""
+    return user_data_file("team_finances.json")
 
 
 def save_cache(finances: TeamFinances) -> None:

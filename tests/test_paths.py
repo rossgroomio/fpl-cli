@@ -156,6 +156,79 @@ class TestUnusableOverride:
         assert "writable directory" in message
 
 
+class TestRelativeOverrideRejected:
+    """A relative FPL_CLI_* value would resolve against the cwd (#46)."""
+
+    @pytest.mark.parametrize(("env_var", "resolver"), RESOLVERS)
+    def test_relative_value_is_rejected(self, env_var, resolver, monkeypatch):
+        monkeypatch.setenv(env_var, "./config")
+
+        with pytest.raises(UserDirError) as exc_info:
+            resolver()
+
+        message = str(exc_info.value)
+        assert env_var in message
+        assert "relative path" in message
+        # Names the absolute equivalent so the fix is a copy-paste away.
+        assert str(Path("./config").resolve()) in message
+
+    @pytest.mark.parametrize(("env_var", "resolver"), RESOLVERS)
+    def test_bare_name_is_rejected(self, env_var, resolver, monkeypatch):
+        """'config' with no leading './' is relative too."""
+        monkeypatch.setenv(env_var, "config")
+
+        with pytest.raises(UserDirError):
+            resolver()
+
+    def test_outcome_does_not_depend_on_cwd(self, tmp_path, monkeypatch):
+        """One env value, one outcome -- whichever directory fpl was run from."""
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        monkeypatch.setenv("FPL_CLI_CONFIG_DIR", "./config")
+
+        for cwd in (tmp_path, elsewhere):
+            monkeypatch.chdir(cwd)
+            user_config_dir.cache_clear()
+            with pytest.raises(UserDirError):
+                user_config_dir()
+
+    def test_tilde_value_is_still_accepted(self, tmp_path, monkeypatch):
+        """~ expands to an absolute path, so it is not caught by the check."""
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("FPL_CLI_CONFIG_DIR", "~/vault-config")
+
+        assert user_config_dir() == (home / "vault-config").resolve()
+
+    def test_absolute_value_is_still_accepted(self, tmp_path, monkeypatch):
+        custom = tmp_path / "abs_config"
+        monkeypatch.setenv("FPL_CLI_CONFIG_DIR", str(custom))
+
+        assert user_config_dir() == custom
+
+
+class TestRelativeOverrideInCLI:
+    """The reported symptom: a command that exists reports itself as missing."""
+
+    def test_command_reports_relative_config_dir(self, monkeypatch):
+        from click.testing import CliRunner
+
+        from fpl_cli.cli import main
+
+        monkeypatch.setenv("FPL_CLI_CONFIG_DIR", "./config")
+        user_config_dir.cache_clear()
+
+        result = CliRunner().invoke(main, ["ratings"], catch_exceptions=False)
+
+        assert result.exit_code == 1
+        assert "FPL_CLI_CONFIG_DIR" in result.output
+        assert "relative path" in result.output
+        # The old failure mode: "No such command 'ratings'. Did you mean 'ratings'?"
+        assert "Did you mean" not in result.output
+        assert "Traceback" not in result.output
+
+
 class TestLazyResolution:
     """Resolution happens per call, so a late override still lands."""
 
@@ -221,7 +294,13 @@ class TestUnusableOverrideInCLI:
 class TestNoImportTimeResolution:
     """Guards the convention that keeps the FPL_CLI_* overrides working."""
 
-    RESOLVER_NAMES = {"user_config_dir", "user_data_dir", "user_cache_dir"}
+    RESOLVER_NAMES = {
+        "user_config_dir",
+        "user_data_dir",
+        "user_cache_dir",
+        "user_config_file",
+        "user_data_file",
+    }
 
     def _module_level_calls(self, node: ast.AST) -> list[str]:
         """Names of resolvers called outside any function, method, or lambda body."""
@@ -230,12 +309,15 @@ class TestNoImportTimeResolution:
             # Function bodies run at call time, which is exactly what we want.
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
                 continue
-            if (
-                isinstance(child, ast.Call)
-                and isinstance(child.func, ast.Name)
-                and child.func.id in self.RESOLVER_NAMES
-            ):
-                found.append(child.func.id)
+            if isinstance(child, ast.Call):
+                # Match both `user_data_dir()` and `paths.user_data_dir()`.
+                name = None
+                if isinstance(child.func, ast.Name):
+                    name = child.func.id
+                elif isinstance(child.func, ast.Attribute):
+                    name = child.func.attr
+                if name in self.RESOLVER_NAMES:
+                    found.append(name)
             found.extend(self._module_level_calls(child))
         return found
 
@@ -334,3 +416,39 @@ class TestMigrateLegacyFiles:
         _migrate_legacy_files()  # must not raise
 
         mock_logger.warning.assert_called()
+
+
+class TestDefaultDirCreationFailure:
+    def test_uncreatable_default_location_raises_userdirerror(self, tmp_path, monkeypatch):
+        """No env override: an uncreatable platformdirs location must still be
+        reported as UserDirError, not escape as a raw OSError (the mkdir must
+        happen inside the try, not inside platformdirs via ensure_exists)."""
+        blocker = tmp_path / "blocker"
+        blocker.write_text("")  # a file where a parent dir is needed
+        monkeypatch.delenv("FPL_CLI_DATA_DIR", raising=False)
+        monkeypatch.setattr(
+            "platformdirs.user_data_path", lambda *_args, **_kwargs: blocker / "fpl-cli"
+        )
+        with pytest.raises(UserDirError, match="Could not create"):
+            user_data_dir()
+
+
+class TestEnsureLegacyMigrationRetry:
+    def test_failed_migration_is_retried_then_runs_once(self, monkeypatch):
+        """A UserDirError must not permanently mark migration as done: a later
+        call in the same process (env fixed, caches cleared) must migrate."""
+        calls: list[int] = []
+
+        def fail_once() -> None:
+            calls.append(1)
+            if len(calls) == 1:
+                raise UserDirError("bad override")
+
+        monkeypatch.setattr(paths_mod, "_migration_done", False)
+        monkeypatch.setattr(paths_mod, "_migrate_legacy_files", fail_once)
+
+        with pytest.raises(UserDirError):
+            paths_mod.ensure_legacy_migration()
+        paths_mod.ensure_legacy_migration()
+        paths_mod.ensure_legacy_migration()
+        assert len(calls) == 2  # retried once after failure, then marked done
