@@ -550,7 +550,20 @@ fines:
 Provides default LLM providers, thresholds, and data source settings. Override any value in `settings.yaml`:
 
 ```yaml
+use_net_points: false          # Include transfer hits in GW points rankings (classic only)
 custom_analysis: false         # Off by default; enable via fpl init or settings.yaml
+rolling_window: 5              # Qualifying fixtures for rolling_pts_per_m (3-10)
+
+data_sources:
+  cache_ttl: 3600
+  rate_limit: 30
+
+thresholds:
+  transfer_xg_threshold: 0.15
+  price_alert_threshold: 1
+  differential_threshold: 5.0
+  semi_differential_threshold: 15.0
+  captain_differential_threshold: 10.0
 
 llm:
   research:
@@ -561,15 +574,10 @@ llm:
       search_recency_filter: week
   synthesis:
     provider: anthropic
-    model: claude-sonnet-4-20250514
+    model: claude-sonnet-5
     timeout: 60
     query_defaults:
-      max_tokens: 1024
-
-thresholds:
-  differential_threshold: 5.0
-  semi_differential_threshold: 15.0
-  captain_differential_threshold: 10.0
+      max_tokens: 4096
 ```
 
 ### LLM Providers
