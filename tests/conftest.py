@@ -13,11 +13,21 @@ from fpl_cli.paths import user_cache_dir, user_config_dir, user_data_dir
 
 
 @pytest.fixture(autouse=True)
-def _clear_path_cache():
-    """Prevent stale lru_cache values leaking between tests that alter path env vars."""
+def _isolated_user_dirs(tmp_path, monkeypatch):
+    """Per-test user dirs and fresh resolver caches.
+
+    Redirects the config/data/cache env overrides to temp dirs so tests never
+    read or write the real user locations (or a vault in cloud environments
+    where FPL_CLI_* vars are set), and clears the lru_caches so the
+    redirection takes effect. Tests that need different values call
+    monkeypatch.setenv/delenv themselves, which overrides this fixture.
+    """
     user_config_dir.cache_clear()
     user_data_dir.cache_clear()
     user_cache_dir.cache_clear()
+    monkeypatch.setenv("FPL_CLI_CONFIG_DIR", str(tmp_path / "user-config"))
+    monkeypatch.setenv("FPL_CLI_DATA_DIR", str(tmp_path / "user-data"))
+    monkeypatch.setenv("FPL_CLI_CACHE_DIR", str(tmp_path / "user-cache"))
     yield
     user_config_dir.cache_clear()
     user_data_dir.cache_clear()

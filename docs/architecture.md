@@ -563,13 +563,14 @@ platformdirs (user_config_dir / user_data_dir)  # macOS: ~/Library/Application S
 ├── settings.yaml                 # User overrides, created by `fpl init` (config dir)
 ├── team_managers.yaml            # Manager name mappings (config dir, migrated from repo config/)
 ├── team_ratings_overrides.yaml   # Manual per-team axis overrides (config dir, migrated from repo config/)
+├── fixture_predictions.yaml      # Optional BGW/DGW predictions override (config dir); takes precedence over the shipped copy
 ├── team_ratings.yaml             # Cached team strength ratings (data dir, auto-refreshed)
 ├── team_ratings_prior.yaml       # Cached team ratings priors (data dir)
 ├── player_prior.yaml             # Cached player priors (data dir, generated, season/GW invalidation)
 ├── chip_plan.json                # User's chip plan (data dir, created via `fpl chips add`)
 └── team_finances.json            # Cached sell prices from scraper (data dir, 12h TTL)
 
-Note: fixture_predictions.yaml is shipped read-only inside the package (SHIPPED_CONFIG_DIR), not a platformdirs file.
+Note: a default fixture_predictions.yaml ships inside the package (SHIPPED_CONFIG_DIR); a current-season copy in the user config dir takes precedence, so predictions can be updated without a package release.
 ```
 
 ## Agent Skills

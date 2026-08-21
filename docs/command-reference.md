@@ -504,7 +504,7 @@ fpl-cli writes to three directories, each resolved via `platformdirs` and overri
 
 | Directory | Contents | Override |
 |-----------|----------|----------|
-| Config | `settings.yaml`, `team_managers.yaml`, `team_ratings_overrides.yaml` | `FPL_CLI_CONFIG_DIR` |
+| Config | `settings.yaml`, `team_managers.yaml`, `team_ratings_overrides.yaml`, optional `fixture_predictions.yaml` (overrides the copy shipped in the package) | `FPL_CLI_CONFIG_DIR` |
 | Data | Generated files: `team_ratings.yaml`, `team_ratings_prior.yaml`, `player_prior.yaml`, `chip_plan.json`, `team_finances.json` | `FPL_CLI_DATA_DIR` |
 | Cache | Disposable API response caches | `FPL_CLI_CACHE_DIR` |
 

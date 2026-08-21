@@ -5,6 +5,8 @@ from datetime import date
 import pytest
 import yaml
 
+import fpl_cli.services.fixture_predictions as fixture_predictions_mod
+from fpl_cli.paths import user_config_dir
 from fpl_cli.season import get_season_year
 from fpl_cli.services.fixture_predictions import (
     CONFIDENCE_MULTIPLIERS,
@@ -223,6 +225,72 @@ class TestFixturePredictionsService:
         """Predictions from the current season are served normally."""
         assert service.is_stale is False
         assert len(service.get_predicted_blanks()) == 3
+
+
+class TestLayeredLookup:
+    """A fixture_predictions.yaml in the user config dir overrides the shipped copy."""
+
+    @staticmethod
+    def _write(path, last_updated, blank_gw):
+        data = {
+            "metadata": {"last_updated": last_updated, "notes": "test"},
+            "predicted_blanks": [{"gameweek": blank_gw, "teams": ["ARS"], "confidence": "high"}],
+            "predicted_doubles": [],
+        }
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            yaml.dump(data, f)
+
+    @pytest.fixture
+    def shipped(self, tmp_path, monkeypatch):
+        """Fresh stand-in for the shipped package copy (blank at GW25)."""
+        shipped = tmp_path / "shipped" / "fixture_predictions.yaml"
+        self._write(shipped, CURRENT_SEASON_DATE, 25)
+        monkeypatch.setattr(fixture_predictions_mod, "CONFIG_FILE", shipped)
+        return shipped
+
+    @pytest.fixture
+    def user_file(self):
+        return user_config_dir() / "fixture_predictions.yaml"
+
+    def test_user_copy_wins_over_shipped(self, shipped, user_file):
+        self._write(user_file, CURRENT_SEASON_DATE, 20)
+        service = FixturePredictionsService()
+        assert [b.gameweek for b in service.get_predicted_blanks()] == [20]
+        assert service.config_path == user_file
+
+    def test_falls_back_to_shipped_without_user_copy(self, shipped, user_file):
+        service = FixturePredictionsService()
+        assert [b.gameweek for b in service.get_predicted_blanks()] == [25]
+        assert service.config_path == shipped
+
+    def test_stale_user_copy_falls_through_to_shipped(self, shipped, user_file):
+        self._write(user_file, PREVIOUS_SEASON_DATE, 20)
+        service = FixturePredictionsService()
+        assert [b.gameweek for b in service.get_predicted_blanks()] == [25]
+        assert service.is_stale is False
+
+    def test_unreadable_user_copy_falls_through_to_shipped(self, shipped, user_file):
+        user_file.write_text("[unclosed", encoding="utf-8")
+        service = FixturePredictionsService()
+        assert [b.gameweek for b in service.get_predicted_blanks()] == [25]
+
+    def test_all_copies_stale_reports_stale_and_empty(self, tmp_path, monkeypatch, user_file):
+        shipped = tmp_path / "shipped" / "fixture_predictions.yaml"
+        self._write(shipped, PREVIOUS_SEASON_DATE, 25)
+        monkeypatch.setattr(fixture_predictions_mod, "CONFIG_FILE", shipped)
+        self._write(user_file, PREVIOUS_SEASON_DATE, 20)
+        service = FixturePredictionsService()
+        assert service.get_predicted_blanks() == []
+        assert service.is_stale is True
+
+    def test_explicit_config_path_bypasses_layering(self, shipped, user_file, tmp_path):
+        self._write(user_file, CURRENT_SEASON_DATE, 20)
+        explicit = tmp_path / "explicit.yaml"
+        self._write(explicit, CURRENT_SEASON_DATE, 30)
+        service = FixturePredictionsService(config_path=explicit)
+        assert [b.gameweek for b in service.get_predicted_blanks()] == [30]
+        assert service.config_path == explicit
 
 
 # -- build_prediction_lookup tests --

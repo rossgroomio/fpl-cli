@@ -434,6 +434,6 @@ flowchart TB
 
 **matchup** - Computes matchup scores (0-10). See [Matchup Scoring](#matchup-scoring).
 
-**FixturePredictionsService** - Reads `config/fixture_predictions.yaml` for predicted BGW/DGW data with confidence levels. Pure functions `find_blank_gameweeks()` / `find_double_gameweeks()` detect from live fixture data.
+**FixturePredictionsService** - Reads `fixture_predictions.yaml` for predicted BGW/DGW data with confidence levels — a current-season copy in the user config dir (`FPL_CLI_CONFIG_DIR`) takes precedence over the default shipped in the package. Pure functions `find_blank_gameweeks()` / `find_double_gameweeks()` detect from live fixture data.
 
 **team_form** - Calculates rolling form stats (last 6 matches, venue splits, league position).

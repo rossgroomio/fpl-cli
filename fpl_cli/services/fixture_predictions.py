@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any, TypedDict
 
 import yaml
 
-from fpl_cli.paths import SHIPPED_CONFIG_DIR
+from fpl_cli.paths import SHIPPED_CONFIG_DIR, user_config_dir
 from fpl_cli.season import get_season_year
 
 logger = logging.getLogger(__name__)
@@ -21,7 +21,8 @@ if TYPE_CHECKING:
     from fpl_cli.models.fixture import Fixture
     from fpl_cli.models.team import Team
 
-CONFIG_FILE = SHIPPED_CONFIG_DIR / "fixture_predictions.yaml"
+CONFIG_FILENAME = "fixture_predictions.yaml"
+CONFIG_FILE = SHIPPED_CONFIG_DIR / CONFIG_FILENAME
 
 
 class Confidence(str, Enum):
@@ -70,33 +71,53 @@ class DoublePrediction:
 
 
 class FixturePredictionsService:
-    """Read-only service for blank/double gameweek predictions from YAML."""
+    """Read-only service for blank/double gameweek predictions from YAML.
+
+    Without an explicit config_path, a fixture_predictions.yaml in the user
+    config dir takes precedence over the copy shipped in the package, so
+    predictions can be updated mid-season without a package release. A user
+    copy that is unreadable or from a previous season falls through to the
+    shipped copy.
+    """
 
     def __init__(self, config_path: Path | None = None):
-        self.config_path = config_path or CONFIG_FILE
+        if config_path is not None:
+            self._candidates: list[Path] = [Path(config_path)]
+        else:
+            self._candidates = [user_config_dir() / CONFIG_FILENAME, CONFIG_FILE]
+        self.config_path = self._candidates[0]
         self._data: dict[str, Any] | None = None
         self._stale: bool = False
 
     def _load(self) -> dict[str, Any]:
-        """Load predictions from config file."""
+        """Load predictions from the first readable, current-season candidate."""
         if self._data is not None:
             return self._data
 
-        if not self.config_path.exists():
-            self._data = self._empty_data()
-            return self._data
+        saw_stale = False
+        for candidate in self._candidates:
+            if not candidate.exists():
+                continue
 
-        with open(self.config_path, encoding="utf-8") as f:
-            data: dict[str, Any] = yaml.safe_load(f) or {}
+            try:
+                with open(candidate, encoding="utf-8") as f:
+                    data: dict[str, Any] = yaml.safe_load(f) or {}
+            except (OSError, yaml.YAMLError):
+                logger.warning("Skipping unreadable predictions file %s", candidate, exc_info=True)
+                continue
 
-        # Suppress stale predictions from a previous season.
-        if self._is_stale(data):
-            self._stale = True
-            self._data = self._empty_data()
-            return self._data
+            # Suppress stale predictions from a previous season.
+            if self._is_stale(data):
+                saw_stale = True
+                continue
 
-        self._data = data
-        return data
+            self.config_path = candidate
+            self._data = data
+            return data
+
+        self._stale = saw_stale
+        self._data = self._empty_data()
+        return self._data
 
     @staticmethod
     def _empty_data() -> dict[str, Any]:
