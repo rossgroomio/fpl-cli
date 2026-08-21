@@ -1029,3 +1029,96 @@ def test_indented_next_heading_still_terminates_section():
         "| **Total** | **15** |\n"
     )
     assert _count_table_rows_between(block, "#### Bench") == 2
+
+
+# -- Preview Intel Applied section (squad-builder output template) --
+
+
+def _block_with_intel_section(extra: str) -> str:
+    """A well-formed Classic Squad block with *extra* appended after Alternatives."""
+    xi_rows = "\n".join(
+        f"| FWD | Player{i} | ARS | £5.0m | 5.0 | 5.0 | FIX | rati |" for i in range(11)
+    )
+    bench_rows_str = "\n".join(
+        f"| GK | Bench{i} | MCI | GK | £4.0m | cover |" for i in range(4)
+    )
+    return (
+        "## Classic League\n\n"
+        "### Classic Squad\n\n"
+        "#### Constraints\n\nSome.\n\n"
+        "#### Starting XI\n\n"
+        "| Pos | Player | Team | Price | Form | PPG | Fix | Rat |\n"
+        "|-----|--------|------|-------|------|-----|-----|-----|\n"
+        + xi_rows + "\n\n"
+        "**Captain:** X | **Vice:** Y\n\n"
+        "#### Bench\n\n"
+        "| Order | Player | Team | Pos | Price | Role |\n"
+        "|-------|--------|------|-----|-------|------|\n"
+        + bench_rows_str + "\n\n"
+        "#### Budget\n\n| P | C | S |\n|---|---|---|\n| **Total** | **15** | **£99.5m** |\n\n"
+        "#### Team Exposure\n\n| Team | Count |\n|------|-------|\n| ARS | 3 |\n| MCI | 2 |\n\n"
+        "#### Key Decisions\n\nSome.\n\n"
+        "#### Alternatives\n\nSome.\n\n"
+        + extra
+    )
+
+
+INTEL_SECTION = (
+    "#### Preview Intel Applied\n"
+    "**Coverage:** 1/20 teams (negative_filter_only) | **Sources:** Example Weekly\n\n"
+    "| Player | Intel | Source | Effect on the pick |\n"
+    "|--------|-------|--------|--------------------|\n"
+    "| Saliba | Out until January | Example Weekly | Downgraded, not selected |\n"
+    "| Martinelli | Club wanted an upgrade | Example Weekly | Downgraded |\n"
+    "| Havertz | Projected centre forward | Example Weekly | Confirmed existing pick |\n"
+)
+
+
+def test_intel_section_does_not_inflate_player_counts(tmp_path, capsys):
+    """The optional Preview Intel table must not be tallied as squad players.
+
+    It sits after Alternatives and carries its own table, so a block-wide row
+    count would read 15 players as 18 and fail validation.
+    """
+    f = tmp_path / "with_intel.md"
+    f.write_text(_block_with_intel_section(INTEL_SECTION), encoding="utf-8")
+    _run(str(f), from_recommendations=True)
+    data = json.loads(capsys.readouterr().out)
+
+    arithmetic = data["validation"]["arithmetic"]
+    assert data["validation"]["structural"]["starting_xi_rows"] == 11
+    assert data["validation"]["structural"]["bench_rows"] == 4
+    assert arithmetic["player_count"] == 15
+
+
+def test_intel_section_does_not_pollute_team_exposure(tmp_path, capsys):
+    """Team Exposure parsing is heading-scoped, so the intel table cannot leak in."""
+    f = tmp_path / "with_intel_exposure.md"
+    f.write_text(_block_with_intel_section(INTEL_SECTION), encoding="utf-8")
+    _run(str(f), from_recommendations=True)
+    data = json.loads(capsys.readouterr().out)
+
+    arithmetic = data["validation"]["arithmetic"]
+    assert arithmetic["team_exposure"] == {"ARS": 3, "MCI": 2}
+    assert arithmetic["max_per_team_ok"] is True
+
+
+def test_intel_section_is_kept_in_the_block(tmp_path, capsys):
+    """The section has to survive the round trip into the recommendations file."""
+    f = tmp_path / "with_intel_kept.md"
+    f.write_text(_block_with_intel_section(INTEL_SECTION), encoding="utf-8")
+    _run(str(f), from_recommendations=True)
+    data = json.loads(capsys.readouterr().out)
+
+    assert "#### Preview Intel Applied" in data["block"]
+    assert "Out until January" in data["block"]
+
+
+def test_intel_section_does_not_disturb_expected_sub_headings(tmp_path, capsys):
+    """An extra sub-heading must not make a well-formed block look malformed."""
+    f = tmp_path / "with_intel_headings.md"
+    f.write_text(_block_with_intel_section(INTEL_SECTION), encoding="utf-8")
+    _run(str(f), from_recommendations=True)
+    data = json.loads(capsys.readouterr().out)
+
+    assert all(data["validation"]["structural"]["sub_headings_present"].values())
