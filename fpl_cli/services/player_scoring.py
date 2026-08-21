@@ -574,6 +574,7 @@ async def prepare_scoring_data(
     await ratings_service.ensure_fresh(client)
 
     # Build fixture prediction lookup before ScoringContext (frozen dataclass)
+    from fpl_cli.cli._context import warn_prediction_problems
     from fpl_cli.services.fixture_predictions import (
         FixturePredictionsService,
         build_prediction_lookup,
@@ -582,6 +583,8 @@ async def prepare_scoring_data(
     team_map = {t.id: t for t in teams}
     fps = FixturePredictionsService()
     prediction_lookup = build_prediction_lookup(fps, team_map, min_gw=next_gw_id)
+    # Goes to stderr, so agents whose commands emit JSON on stdout stay parseable.
+    warn_prediction_problems(fps)
 
     scoring_ctx = await build_scoring_context(
         teams=teams,
