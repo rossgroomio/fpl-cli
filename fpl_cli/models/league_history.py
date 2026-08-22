@@ -372,3 +372,44 @@ class LeagueHistoryCountersProjection(BaseModel):
     # this dict simply has no run open -- equivalent to a fresh
     # ConditionRunState() -- rather than every combination being written out.
     runs: dict[int, dict[str, ConditionRunState]] = Field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# U9: per-manager earliest-captured-gameweek cache (R17)
+# ---------------------------------------------------------------------------
+#
+# A rebuildable cache, never a second source of truth (KTD10), kept and
+# persisted by `fpl_cli/services/league_history_notes.py` -- deliberately
+# separate from `LeagueHistoryCountersProjection` above rather than a new
+# field on it, so this cache's own read/rebuild logic stays scoped to the
+# one module that needs it. Each manager's earliest gameweek with any row
+# (OK or unknown) at all, keyed by manager_key: once a manager is found,
+# the notes pack's R17 joiner qualifier need not rescan every gameweek from
+# GW1 to re-derive it on every later weekly `league-recap` call -- only a
+# manager never seen before costs a scan, and it costs one exactly once per
+# manager, not once per week for the rest of the season.
+
+EARLIEST_GAMEWEEK_CACHE_VERSION = 1
+
+
+class ManagerEarliestGameweekCache(BaseModel):
+    """Per-manager earliest-captured-gameweek cache for one partition (R17).
+
+    Scoped to one (season, format, league_id) partition, the same
+    partitioning every other league-history cache uses. Like
+    `LeagueHistoryCountersProjection`, a version or partition mismatch on
+    load means "rebuild", never "raise" -- this is a disposable cache
+    derived entirely from ledger rows, not the ledger itself.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: int = EARLIEST_GAMEWEEK_CACHE_VERSION
+    season: str
+    fpl_format: LeagueFormat
+    league_id: int
+    # manager_key -> earliest gameweek with any row (OK or unknown status)
+    # ever discovered for them while scanning this partition. A manager
+    # absent from this dict simply has not been looked up yet -- never
+    # implies "joined at gameweek 0".
+    earliest_gameweek: dict[int, int] = Field(default_factory=dict)

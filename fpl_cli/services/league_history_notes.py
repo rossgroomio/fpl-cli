@@ -40,21 +40,28 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
+
+from pydantic import ValidationError
 
 from fpl_cli.models.league_history import (
+    EARLIEST_GAMEWEEK_CACHE_VERSION,
     FidelityTier,
     LeagueFormat,
     LeagueHistoryCountersProjection,
     LeagueHistoryRow,
+    ManagerEarliestGameweekCache,
     weakest_tier,
 )
 from fpl_cli.season import CHIP_SPLIT_GW, TOTAL_GAMEWEEKS
 from fpl_cli.services.league_history import LeagueHistoryError, LeagueHistoryStore
 from fpl_cli.services.league_history_counters import (
     compute_counters_through,
+    counters_partition_dir,
     manager_condition_views,
     rebuild_counters_through,
 )
+from fpl_cli.utils.files import atomic_write_text
 from fpl_cli.utils.gameweek import is_opening_gameweek
 
 logger = logging.getLogger(__name__)
@@ -269,9 +276,19 @@ def _entry_tier(
 def _streak_text(manager_name: str, label: str, length: int, held_count: int, window: GameweekWindow) -> str:
     """Render a run as an observed count over its true span. A run with any
     held gameweek is never rendered as consecutive (R14, R20): a length-3
-    run holding 8 is "3 in the last 11", not "3 in a row"."""
+    run holding 8 is "3 in the last 11", not "3 in a row". "In a row" also
+    requires `window.span_length == length`, not `held_count == 0` alone: a
+    manager wholly *absent* (not merely unknown) from one gameweek inside an
+    otherwise-continuous run also leaves `held_count` at 0 (`_fold_gameweek`
+    skips a wholly-absent manager without counting a hold), but widens
+    `window` past `length` (`_streak_entries` anchors `end_gameweek` on the
+    pack's own target gameweek, not on `start + length + held - 1`) -- so
+    without this second check a real gap would still be claimed as
+    consecutive. That case falls through to the same observed-count
+    phrasing as any other held run, since it is the same situation: the
+    window is wider than the count."""
     span = f"GW{window.start_gameweek}-GW{window.end_gameweek}"
-    if held_count == 0:
+    if held_count == 0 and window.span_length == length:
         return f"{manager_name}: {label} of {length}, {length} in a row ({span})."
     return (
         f"{manager_name}: {label} of {length} in the last {window.span_length} ({span}), "
@@ -366,10 +383,25 @@ def _season_phase_entry(phase: SeasonPhase, gameweek: int, total_gameweeks: int,
 # ---------------------------------------------------------------------------
 
 
-def _partition_coverage_entry(gameweek: int, league_start_gameweek: int, earliest: int | None) -> NotesPackEntry:
+def _partition_coverage_entry(
+    gameweek: int,
+    league_start_gameweek: int,
+    earliest: int | None,
+    captured_gameweeks: list[int],
+) -> NotesPackEntry:
     """Whether any history exists before `gameweek` at all, and -- if it does
     but starts later than the league itself did -- the R17 qualifier. Always
-    produced, so an empty pack never reduces to "nothing to say"."""
+    produced, so an empty pack never reduces to "nothing to say".
+
+    A "complete" claim additionally requires every gameweek from
+    `league_start_gameweek` through `gameweek` to actually be in
+    `captured_gameweeks` (R17) -- the earliest captured gameweek being early
+    enough is necessary but not sufficient, since a gameweek somewhere in
+    the middle can have been never captured at all (distinct from a
+    captured-but-unknown row, which *is* in `captured_gameweeks`). Without
+    this check "complete from its start" would still be claimed straight
+    through a genuine mid-season hole.
+    """
     if earliest is None or earliest >= gameweek:
         text = f"No league history has been recorded before GW{gameweek}."
     elif earliest > league_start_gameweek:
@@ -378,10 +410,18 @@ def _partition_coverage_entry(gameweek: int, league_start_gameweek: int, earlies
             f"start (GW{league_start_gameweek}); earlier gameweeks are not available."
         )
     else:
-        text = (
-            f"Recorded history for this league is complete from its start (GW{league_start_gameweek}) "
-            f"through GW{gameweek}."
-        )
+        missing = sorted(set(range(league_start_gameweek, gameweek + 1)) - set(captured_gameweeks))
+        if missing:
+            missing_list = ", ".join(f"GW{gw}" for gw in missing)
+            text = (
+                f"Recorded history for this league begins at GW{league_start_gameweek} but is "
+                f"missing {missing_list}; those gameweeks were never captured."
+            )
+        else:
+            text = (
+                f"Recorded history for this league is complete from its start (GW{league_start_gameweek}) "
+                f"through GW{gameweek}."
+            )
     return NotesPackEntry(kind=NoteKind.COVERAGE, text=text, surfaces=_REPORT_AND_PROMPT)
 
 
@@ -398,18 +438,85 @@ def _joiner_coverage_entry(
     )
 
 
+def _earliest_gameweek_cache_file(store: LeagueHistoryStore) -> Path:
+    """Path of this partition's earliest-captured-gameweek cache (R17).
+
+    Lives alongside the counters projection's own cache file, under the same
+    partition directory -- both are disposable, rebuildable caches for the
+    same (season, format, league_id) partition -- but as its own file, not a
+    field on the counters projection, so this module's cache stays entirely
+    this module's own concern.
+    """
+    return counters_partition_dir(store.season, store.fpl_format, store.league_id) / "earliest_gameweek.json"
+
+
+def _load_earliest_gameweek_cache(store: LeagueHistoryStore) -> dict[int, int]:
+    """The persisted per-manager earliest-gameweek cache, or an empty dict if
+    it must be (re)built. Fails open (KTD10): a missing file, one that fails
+    to parse, one stamped with a version this code no longer produces, or
+    one that claims a different partition than the one asked for -- all
+    return an empty dict rather than raising, exactly like
+    `league_history_counters._load_projection`'s fallback for its own cache.
+    """
+    path = _earliest_gameweek_cache_file(store)
+    try:
+        text = path.read_text(encoding="utf-8")
+        cache = ManagerEarliestGameweekCache.model_validate_json(text)
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValidationError) as exc:
+        logger.warning("Earliest-gameweek cache %s is unreadable, rescanning: %s", path, exc)
+        return {}
+
+    if (
+        cache.version != EARLIEST_GAMEWEEK_CACHE_VERSION
+        or cache.season != store.season
+        or cache.fpl_format != store.fpl_format
+        or cache.league_id != store.league_id
+    ):
+        return {}
+    return dict(cache.earliest_gameweek)
+
+
+def _save_earliest_gameweek_cache(store: LeagueHistoryStore, earliest_gameweek: dict[int, int]) -> None:
+    """Persist the per-manager earliest-gameweek cache, best-effort -- a
+    write failure here must not block the recap that triggered it; the next
+    call simply finds a missing or stale file and rescans (KTD10)."""
+    path = _earliest_gameweek_cache_file(store)
+    cache = ManagerEarliestGameweekCache(
+        season=store.season, fpl_format=store.fpl_format, league_id=store.league_id,
+        earliest_gameweek=earliest_gameweek,
+    )
+    try:
+        atomic_write_text(path, cache.model_dump_json())
+    except OSError as exc:
+        logger.warning("Could not persist earliest-gameweek cache to %s: %s", path, exc)
+
+
 def _earliest_gameweeks_for_managers(
     store: LeagueHistoryStore, manager_keys: set[int], captured_gameweeks: list[int],
 ) -> dict[int, int]:
     """Each manager's earliest gameweek with any row -- OK or unknown status,
-    presence of a row at all (R17) -- scanning ascending with one shared read
-    per gameweek and an early exit once every manager has been found. A
-    cohort that all joined together in GW1 costs one gameweek read total, not
-    one per manager; a genuine late joiner costs reads bounded by their own
-    join gameweek, never by how far the season has since progressed.
+    presence of a row at all (R17).
+
+    Backed by a persisted, per-manager cache (see
+    `_load_earliest_gameweek_cache`): a manager already found on some
+    earlier call is an O(1) lookup, never rescanned again. Only a manager
+    not yet in the cache costs a scan -- ascending, with one shared read per
+    gameweek and an early exit once every still-unknown manager is found --
+    and it costs that scan at most once per manager for the lifetime of the
+    partition, not once per week for the rest of the season: every manager
+    passed in is, by construction, present in the pack's own target
+    gameweek, so the scan always finds them by the time it reaches that
+    gameweek and never has to run again for them afterwards.
     """
-    earliest: dict[int, int] = {}
-    remaining = set(manager_keys)
+    cached = _load_earliest_gameweek_cache(store)
+    to_find = {key for key in manager_keys if key not in cached}
+    if not to_find:
+        return {key: cached[key] for key in manager_keys if key in cached}
+
+    found: dict[int, int] = {}
+    remaining = set(to_find)
     for gameweek in captured_gameweeks:  # already ascending per captured_gameweeks()
         if not remaining:
             break
@@ -422,11 +529,17 @@ def _earliest_gameweeks_for_managers(
                 gameweek, store.season, store.fpl_format, store.league_id, exc,
             )
             continue
-        found = remaining & resolved.keys()
-        for manager_key in found:
-            earliest[manager_key] = gameweek
-        remaining -= found
-    return earliest
+        hit = remaining & resolved.keys()
+        for manager_key in hit:
+            found[manager_key] = gameweek
+        remaining -= hit
+
+    if found:
+        _save_earliest_gameweek_cache(store, {**cached, **found})
+
+    result = {key: cached[key] for key in manager_keys if key in cached}
+    result.update(found)
+    return result
 
 
 def _coverage_entries(
@@ -438,7 +551,7 @@ def _coverage_entries(
     cohort: dict[int, LeagueHistoryRow],
 ) -> list[NotesPackEntry]:
     earliest_overall = captured_gameweeks[0] if captured_gameweeks else None
-    entries = [_partition_coverage_entry(gameweek, league_start_gameweek, earliest_overall)]
+    entries = [_partition_coverage_entry(gameweek, league_start_gameweek, earliest_overall, captured_gameweeks)]
 
     manager_earliest = _earliest_gameweeks_for_managers(store, set(cohort), captured_gameweeks)
     joiners: list[NotesPackEntry] = []

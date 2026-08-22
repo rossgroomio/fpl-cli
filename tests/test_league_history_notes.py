@@ -187,6 +187,13 @@ class TestStreakEntries:
         assert entry.length == 3
         assert entry.held_count == 0
         assert entry.window == GameweekWindow(start_gameweek=1, end_gameweek=4)
+        # The window (4) is wider than the length (3) despite held_count == 0
+        # -- must not be rendered as "3 in a row", which would falsely claim
+        # a continuous run over a span that actually has a gap in it.
+        assert "in a row" not in entry.text
+        assert entry.text == (
+            "Alice: Captain blank run of 3 in the last 4 (GW1-GW4), with 0 not recorded."
+        )
 
     def test_multiple_managers_and_conditions_fold_independently(self):
         """Two managers, several conditions each: the top-of-table, gameweek
@@ -359,6 +366,33 @@ class TestFinaleReadsTheWholeSeason:
         assert NoteSurface.PROMPT in pack.season_phase_entry.surfaces
 
 
+class TestMidpointAndRunInPhases:
+    """MIDPOINT and RUN_IN are two of `_season_phase_text`'s five branches;
+    every other test in this module lands in OPENER, PRE_CHIP_BOUNDARY, or
+    FINALE, so these are the only exercise of the two through
+    `build_notes_pack` rather than `derive_season_phase` alone."""
+
+    def test_midpoint_phase_and_marker_text(self):
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(25, [make_history_row(gameweek=25, manager_key=1, manager_name="Alice")])
+
+        pack = build_notes_pack(store, 25, total_gameweeks=38, chip_split_gw=19)
+
+        assert pack.phase is SeasonPhase.MIDPOINT
+        assert "GW25 is the season midpoint" in pack.season_phase_entry.text
+        assert "GW19" in pack.season_phase_entry.text
+
+    def test_run_in_phase_and_marker_text(self):
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(35, [make_history_row(gameweek=35, manager_key=1, manager_name="Alice")])
+
+        pack = build_notes_pack(store, 35, total_gameweeks=38, chip_split_gw=19)
+
+        assert pack.phase is SeasonPhase.RUN_IN
+        assert "GW35 is in the run-in" in pack.season_phase_entry.text
+        assert "GW38" in pack.season_phase_entry.text
+
+
 class TestOpenerHasNoPriorHistory:
     def test_opener_phase_and_no_prior_history_statement(self):
         store = LeagueHistoryStore("2026-27", "classic", 1)
@@ -402,6 +436,25 @@ class TestCoverageAndR17Qualifier:
 
         assert not any("later than" in e.text for e in pack.all_entries)
         assert "complete from its start" in pack.coverage_entries[0].text
+
+    def test_a_genuine_gap_between_the_leagues_start_and_the_target_is_not_claimed_complete(self):
+        """GW3 was never captured at all -- no file, distinct from a
+        captured-but-unknown row -- so "complete from its start" must not be
+        claimed even though the earliest captured gameweek (GW1) is early
+        enough on its own."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        for gw in (1, 2, 4, 5):
+            store.append_rows(gw, [
+                make_history_row(gameweek=gw, manager_key=1, manager_name="Alice", league_position=1),
+            ])
+        # GW3: no file written at all -- a genuine hole, not just unknown.
+
+        pack = build_notes_pack(store, 5, league_start_gameweek=1)
+
+        text = pack.coverage_entries[0].text
+        assert "complete from its start" not in text
+        assert "begins at GW1" in text
+        assert "missing GW3" in text
 
     def test_a_manager_who_joined_after_the_league_started_gets_the_qualifier(self):
         store = LeagueHistoryStore("2026-27", "classic", 1)
@@ -459,6 +512,102 @@ class TestCoverageAndR17Qualifier:
         assert not any(e.manager_key is not None for e in pack.coverage_entries)
         assert "later than the league's start (GW1)" in pack.coverage_entries[0].text
         assert "GW10" in pack.coverage_entries[0].text
+
+
+# ---------------------------------------------------------------------------
+# Earliest-gameweek cache persists across calls (R17 performance)
+# ---------------------------------------------------------------------------
+
+
+class TestEarliestGameweekCacheReducesRescans:
+    """`_earliest_gameweeks_for_managers` persists what it discovers (see its
+    own docstring): once a manager's earliest gameweek is cached, a later
+    call -- even against a brand-new `LeagueHistoryStore` instance,
+    simulating the next weekly `league-recap` invocation -- must not rescan
+    the partition from GW1 to re-derive it."""
+
+    def test_a_fully_cached_cohort_costs_no_scan_at_all(self, monkeypatch):
+        from fpl_cli.services import league_history_notes as svc
+
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        for gw in range(1, 4):
+            store.append_rows(gw, [make_history_row(gameweek=gw, manager_key=1, manager_name="Alice")])
+        for gw in range(3, 6):
+            store.append_rows(gw, [
+                make_history_row(gameweek=gw, manager_key=1, manager_name="Alice"),
+                make_history_row(gameweek=gw, manager_key=2, manager_name="Bob"),
+            ])
+        captured = store.captured_gameweeks()
+
+        first = svc._earliest_gameweeks_for_managers(store, {1, 2}, captured)
+        assert first == {1: 1, 2: 3}
+
+        # A brand-new store instance -- simulating a later, separate call --
+        # must serve both managers from the persisted cache with no scan at
+        # all: monkeypatching `resolved_gameweek` to explode proves it is
+        # never reached.
+        second_store = LeagueHistoryStore("2026-27", "classic", 1)
+
+        def _boom(_gameweek):
+            raise AssertionError("resolved_gameweek must not be called: both managers are cached")
+
+        monkeypatch.setattr(second_store, "resolved_gameweek", _boom)
+
+        second = svc._earliest_gameweeks_for_managers(second_store, {1, 2}, captured)
+        assert second == {1: 1, 2: 3}
+
+    def test_a_newly_seen_manager_is_scanned_once_then_cached_for_later_calls(self, monkeypatch):
+        """A cohort with one already-cached manager and one brand-new one:
+        the scan still runs (only the new manager's join gameweek is
+        unknown), but a later call finds both cached."""
+        from fpl_cli.services import league_history_notes as svc
+
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, manager_name="Alice")])
+        store.append_rows(2, [
+            make_history_row(gameweek=2, manager_key=1, manager_name="Alice"),
+            make_history_row(gameweek=2, manager_key=2, manager_name="Bob"),
+        ])
+        captured = store.captured_gameweeks()
+
+        svc._earliest_gameweeks_for_managers(store, {1}, captured)  # caches Alice only
+
+        second_store = LeagueHistoryStore("2026-27", "classic", 1)
+        result = svc._earliest_gameweeks_for_managers(second_store, {1, 2}, captured)
+        assert result == {1: 1, 2: 2}
+
+        third_store = LeagueHistoryStore("2026-27", "classic", 1)
+
+        def _boom(_gameweek):
+            raise AssertionError("resolved_gameweek must not be called: both managers are now cached")
+
+        monkeypatch.setattr(third_store, "resolved_gameweek", _boom)
+        assert svc._earliest_gameweeks_for_managers(third_store, {1, 2}, captured) == {1: 1, 2: 2}
+
+    def test_the_joiner_qualifier_stays_correct_on_a_later_cache_backed_call(self):
+        """End-to-end sanity check through the public API: the cache changes
+        performance, never the answer -- Bob's earliest gameweek is still
+        correctly reported on a second `build_notes_pack` call made against
+        a fresh store instance."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        for gw in range(1, 5):
+            rows = [make_history_row(gameweek=gw, manager_key=1, manager_name="Alice", league_position=1)]
+            if gw >= 3:
+                rows.append(make_history_row(gameweek=gw, manager_key=2, manager_name="Bob", league_position=2))
+            store.append_rows(gw, rows)
+
+        build_notes_pack(store, 4, league_start_gameweek=1)  # first call populates the cache
+
+        second_store = LeagueHistoryStore("2026-27", "classic", 1)
+        second_store.append_rows(5, [
+            make_history_row(gameweek=5, manager_key=1, manager_name="Alice", league_position=1),
+            make_history_row(gameweek=5, manager_key=2, manager_name="Bob", league_position=2),
+        ])
+        pack = build_notes_pack(second_store, 5, league_start_gameweek=1)
+
+        bob_entries = [e for e in pack.coverage_entries if e.manager_key == 2]
+        assert len(bob_entries) == 1
+        assert "GW3" in bob_entries[0].text
 
 
 # ---------------------------------------------------------------------------

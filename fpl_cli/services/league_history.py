@@ -117,6 +117,15 @@ class LeagueHistoryStore:
         self.season = season
         self.fpl_format: LeagueFormat = fpl_format
         self.league_id = league_id
+        # Per-instance memoization for `resolved_gameweek`, invalidated by
+        # `append_rows` (the only write path this store has -- see there).
+        # Several callers sharing one store within a single call chain --
+        # e.g. the counters projection's own read of a gameweek and a later
+        # raw-row read of that same gameweek for fidelity-tier lookup --
+        # otherwise re-read and re-parse the same file more than once per
+        # call. Never persisted and never shared across instances, so this
+        # adds no cross-process staleness risk of its own.
+        self._resolved_gameweek_cache: dict[int, dict[int, LeagueHistoryRow]] = {}
 
     # -- paths ---------------------------------------------------------------
 
@@ -162,8 +171,16 @@ class LeagueHistoryStore:
         return self._parse(path, path.read_text(encoding="utf-8"))
 
     def resolved_gameweek(self, gameweek: int) -> dict[int, LeagueHistoryRow]:
-        """One winning row per manager key, resolved per R3."""
-        return resolve_rows(self.load_gameweek(gameweek))
+        """One winning row per manager key, resolved per R3.
+
+        Memoized per instance (invalidated by `append_rows`): a gameweek
+        already read off this store is served from cache rather than
+        re-parsed. A failed read is never cached, so an unreadable gameweek
+        still raises `LeagueHistoryError` on every call, exactly as before.
+        """
+        if gameweek not in self._resolved_gameweek_cache:
+            self._resolved_gameweek_cache[gameweek] = resolve_rows(self.load_gameweek(gameweek))
+        return self._resolved_gameweek_cache[gameweek]
 
     def coverage(self) -> list[GameweekCoverage]:
         """Per-gameweek tier and status counts, ascending by gameweek.
@@ -252,6 +269,10 @@ class LeagueHistoryStore:
         if existing_text and not existing_text.endswith("\n"):
             existing_text += "\n"
         atomic_write_text(path, existing_text + "".join(line + "\n" for line in new_lines))
+        # Invalidate this gameweek's memoized read: a later `resolved_gameweek`
+        # call on this same instance must see what was just written, not a
+        # cached pre-write state.
+        self._resolved_gameweek_cache.pop(gameweek, None)
         return written
 
     # -- parsing -------------------------------------------------------------
