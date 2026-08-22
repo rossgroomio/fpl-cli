@@ -13,12 +13,20 @@ renders from live data and the command still exits 0 (R4).
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from collections.abc import Awaitable, Callable, Collection
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Any
 
 from fpl_cli.cli._context import error_console
-from fpl_cli.cli._league_recap_data import raw_chip_name, recap_manager_key
+from fpl_cli.cli._league_recap_data import (
+    _PICKS_CONCURRENCY,
+    derive_point_in_time_positions,
+    raw_chip_name,
+    recap_manager_key,
+)
 from fpl_cli.cli._league_recap_types import (
     LeagueRecapData,
     RecapManagerEntry,
@@ -42,6 +50,15 @@ from fpl_cli.services.league_history import (
     LeagueHistoryStore,
 )
 
+if TYPE_CHECKING:
+    from fpl_cli.cli._league_recap_data import ManagerHistoryClient
+
+# Replays one finished gameweek through the collectors Phase A corrected, and
+# returns what they collected (or None when that gameweek cannot be rebuilt).
+# Passed in rather than built here, so this module never needs to know about
+# FPLClient, bootstrap data, or fixtures.
+ReplayGameweek = Callable[[int], Awaitable["LeagueRecapData | None"]]
+
 logger = logging.getLogger(__name__)
 
 # Machine-readable warning codes, paired with the human line printed to stderr.
@@ -52,6 +69,7 @@ HISTORY_WARNING_LEAGUE_ID_MISSING = "league_history_league_id_missing"
 HISTORY_WARNING_UNMATCHED_PLAYERS = "league_history_unmatched_players"
 HISTORY_WARNING_TRANSFER_DETAIL_SHORT = "league_history_transfer_detail_short"
 HISTORY_WARNING_STANDINGS_TRUNCATED = "league_history_standings_truncated"
+HISTORY_WARNING_COVERAGE = "league_history_coverage"
 
 
 @dataclass
@@ -272,6 +290,38 @@ def _unknown_row(
     )
 
 
+def _assign_cohort_ranks(rows: list[LeagueHistoryRow]) -> None:
+    """Derive gameweek rank and league position across everyone recorded.
+
+    Ranking only the managers whose fetch succeeded hands someone else the
+    week's best -- or, worse, the week's worst. Every row for the gameweek is
+    in the pool, including the unknown ones that carry standings numbers
+    (KTD12). Gameweek points are always taken net of the hit, which is what the
+    league table counts and is independent of the `use_net_points` display
+    setting.
+
+    A position the collector already supplied is left alone: draft's own
+    standings rank breaks head-to-head ties on points-for, which re-deriving
+    from a cumulative total cannot.
+    """
+    gw_points = [
+        (row.manager_key, row.gross_points - (row.transfer_cost or 0))
+        for row in rows
+        if row.gross_points is not None
+    ]
+    gw_ranks = derive_point_in_time_positions(gw_points)
+
+    totals = [(row.manager_key, row.total_points) for row in rows if row.total_points is not None]
+    positions = derive_point_in_time_positions(totals)
+
+    for row in rows:
+        rank = gw_ranks.get(row.manager_key)
+        if rank is not None:
+            row.gw_rank = rank
+        if row.league_position is None:
+            row.league_position = positions.get(row.manager_key)
+
+
 def build_history_rows(
     data: LeagueRecapData,
     *,
@@ -322,6 +372,7 @@ def build_history_rows(
                 data, manager, entry, season=season, league_id=resolved_league_id,
                 captured_at=captured_at, tier=tier,
             ))
+    _assign_cohort_ranks(rows)
     return rows
 
 
@@ -421,6 +472,385 @@ def _quality_warnings(
 
 
 # ---------------------------------------------------------------------------
+# Backfill (U7)
+# ---------------------------------------------------------------------------
+
+# Named rather than restated: the coarse tier carries headline numbers only, so
+# these are the recap surfaces that stay dark until the detailed tier fills a
+# gameweek. Reporting a gap the user cannot act on is not visibility (R9).
+COARSE_HELD_BACK = (
+    "captain and vice detail (captain-blank streaks)",
+    "per-player squad contributions (bench and blank rendering)",
+    "transfer and waiver detail (transfer/waiver streaks and awards)",
+)
+
+DETAIL_FLAG = "--backfill-detail"
+
+
+def _target_gameweeks(data: LeagueRecapData, finished_gameweeks: Collection[int]) -> list[int]:
+    """Finished gameweeks the league actually existed for, up to this one.
+
+    A league created at GW12 has no GW1 to backfill, so its start gameweek --
+    not GW1 -- is the floor. An unfinished gameweek is never a gap: its numbers
+    are still moving.
+    """
+    start = data.get("league_start_event") or 1
+    current = data["gameweek"]
+    return sorted(gw for gw in set(finished_gameweeks) if start <= gw <= current)
+
+
+@dataclass(frozen=True)
+class _Gaps:
+    """Target gameweeks split by what backfilling them would achieve."""
+
+    missing: list[int] = field(default_factory=list)
+    incomplete: list[int] = field(default_factory=list)
+    coarse: list[int] = field(default_factory=list)
+
+
+def _gaps(coverage: list[GameweekCoverage], targets: list[int]) -> _Gaps:
+    """Classify the target gameweeks: never captured, holding unknown rows, coarse.
+
+    An unreadable gameweek is in none of them: it is reported, not overwritten
+    -- a repair that replaced it would destroy whatever it still holds (R4).
+    """
+    by_gameweek = {c.gameweek: c for c in coverage}
+    missing: list[int] = []
+    incomplete: list[int] = []
+    coarse: list[int] = []
+    for gameweek in targets:
+        entry = by_gameweek.get(gameweek)
+        if entry is None or entry.manager_count == 0:
+            missing.append(gameweek)
+            continue
+        if not entry.readable:
+            continue
+        if entry.unknown_count:
+            incomplete.append(gameweek)
+        if entry.lowest_tier is FidelityTier.COARSE:
+            coarse.append(gameweek)
+    return _Gaps(missing=missing, incomplete=incomplete, coarse=coarse)
+
+
+def _coarse_row(
+    history_row: dict[str, Any],
+    cohort_entry: RecapStandingsEntry,
+    *,
+    season: str,
+    league_id: int,
+    captured_at: datetime,
+    baseline_total: int,
+) -> LeagueHistoryRow:
+    """Map one manager-history row to a coarse ledger row.
+
+    Only the fields the endpoint actually returned are recorded -- a condition
+    whose fields this tier does not carry holds rather than evaluating (R8).
+    Ranks are deliberately absent here: `overall_rank` is the FPL-wide ladder,
+    and every rank the recap means is a position inside the mini-league, so
+    both are derived across the cohort afterwards (KTD12).
+    """
+    def _int(key: str) -> int | None:
+        value = history_row.get(key)
+        return value if isinstance(value, int) else None
+
+    total = _int("total_points")
+    return LeagueHistoryRow(
+        season=season,
+        fpl_format="classic",
+        league_id=league_id,
+        gameweek=history_row["event"],
+        manager_key=cohort_entry["manager_key"],
+        capture_status=CaptureStatus.OK,
+        tier=FidelityTier.COARSE,
+        captured_at=captured_at,
+        manager_name=cohort_entry["manager_name"],
+        entry_id=cohort_entry["entry_id"],
+        gross_points=_int("points"),
+        transfer_cost=_int("event_transfers_cost"),
+        # The endpoint's total is season-wide; a league that started after GW1
+        # scores its members only from its own start, so the baseline comes off.
+        total_points=None if total is None else total - baseline_total,
+        bench_points=_int("points_on_bench"),
+        squad_value=_int("value"),
+        bank=_int("bank"),
+        global_rank=_int("overall_rank"),
+        transfers_made=_int("event_transfers"),
+    )
+
+
+async def _coarse_backfill(
+    data: LeagueRecapData,
+    *,
+    store: LeagueHistoryStore,
+    season: str,
+    league_id: int,
+    history_client: ManagerHistoryClient,
+    gameweeks: list[int],
+) -> None:
+    """Fill classic gameweeks from the manager-history endpoint.
+
+    One call per manager covers the whole season, which is what makes this
+    tier cheap enough to run unconditionally (KTD6). Every call holds the same
+    permit the picks fetch does, so a large league cannot fan out unbounded.
+    """
+    cohort = data.get("standings_cohort") or []
+    if not cohort or not gameweeks:
+        return
+
+    captured_at = datetime.now(tz=timezone.utc)
+    start = data.get("league_start_event") or 1
+    semaphore = asyncio.Semaphore(_PICKS_CONCURRENCY)
+
+    async def _fetch(entry: RecapStandingsEntry) -> tuple[RecapStandingsEntry, dict[str, Any]]:
+        entry_id = entry["entry_id"]
+        if entry_id is None:
+            raise ValueError(f"{entry['manager_name']} has no FPL entry id")
+        async with semaphore:
+            return entry, await history_client.get_manager_history(entry_id)
+
+    results = await asyncio.gather(
+        *(_fetch(entry) for entry in cohort), return_exceptions=True,
+    )
+
+    rows_by_gameweek: dict[int, list[LeagueHistoryRow]] = {gw: [] for gw in gameweeks}
+    for entry, outcome in zip(cohort, results):
+        if isinstance(outcome, BaseException):
+            logger.warning(
+                "Manager history unavailable for %s; their gameweeks stay unknown: %s",
+                entry["manager_name"], outcome,
+            )
+            error_console.print(
+                f"[yellow]Could not backfill {entry['manager_name']}: their manager history "
+                f"could not be fetched, so GW{gameweeks[0]}-{gameweeks[-1]} stay recorded as "
+                f"unknown for them and will be re-attempted next run.[/yellow]",
+            )
+            for gameweek in gameweeks:
+                rows_by_gameweek[gameweek].append(_coarse_unknown_row(
+                    entry, season=season, league_id=league_id,
+                    gameweek=gameweek, captured_at=captured_at,
+                ))
+            continue
+
+        _, history = outcome
+        by_event = {
+            row["event"]: row
+            for row in history.get("current", [])
+            if isinstance(row, dict) and isinstance(row.get("event"), int)
+        }
+        baseline_row = by_event.get(start - 1) if start > 1 else None
+        baseline_total = baseline_row.get("total_points", 0) if baseline_row else 0
+        for gameweek in gameweeks:
+            history_row = by_event.get(gameweek)
+            if history_row is None:
+                rows_by_gameweek[gameweek].append(_coarse_unknown_row(
+                    entry, season=season, league_id=league_id,
+                    gameweek=gameweek, captured_at=captured_at,
+                ))
+                continue
+            rows_by_gameweek[gameweek].append(_coarse_row(
+                history_row, entry, season=season, league_id=league_id,
+                captured_at=captured_at, baseline_total=baseline_total,
+            ))
+
+    # Committed per gameweek, ascending, so an interruption keeps everything
+    # already written rather than losing the whole fetch.
+    for gameweek in gameweeks:
+        gameweek_rows = rows_by_gameweek[gameweek]
+        if not gameweek_rows:
+            continue
+        _assign_cohort_ranks(gameweek_rows)
+        try:
+            store.append_rows(gameweek, gameweek_rows)
+        except LeagueHistoryError as exc:
+            error_console.print(f"[yellow]{exc}[/yellow]")
+
+
+def _coarse_unknown_row(
+    entry: RecapStandingsEntry,
+    *,
+    season: str,
+    league_id: int,
+    gameweek: int,
+    captured_at: datetime,
+) -> LeagueHistoryRow:
+    """A manager the coarse tier could not reach for one gameweek (R19)."""
+    return LeagueHistoryRow(
+        season=season,
+        fpl_format="classic",
+        league_id=league_id,
+        gameweek=gameweek,
+        manager_key=entry["manager_key"],
+        capture_status=CaptureStatus.UNKNOWN,
+        tier=FidelityTier.COARSE,
+        captured_at=captured_at,
+        manager_name=entry["manager_name"],
+        entry_id=entry["entry_id"],
+    )
+
+
+async def _detailed_backfill(
+    *,
+    store: LeagueHistoryStore,
+    season: str,
+    league_id: int,
+    replay_gameweek: ReplayGameweek,
+    gameweeks: list[int],
+) -> None:
+    """Replay whole gameweeks through the collectors Phase A corrected.
+
+    Serial by gameweek, committing each as it completes: the collector already
+    bounds its own per-manager concurrency, and committing per gameweek is what
+    lets an interrupted backfill keep everything it already fetched.
+    """
+    for gameweek in gameweeks:
+        try:
+            replayed = await replay_gameweek(gameweek)
+        except Exception as exc:  # noqa: BLE001 — one bad gameweek must not abort the rest
+            logger.warning("Detailed backfill of GW%s failed: %s", gameweek, exc)
+            error_console.print(
+                f"[yellow]Could not replay GW{gameweek} in detail: {exc}. "
+                f"Other gameweeks are unaffected; re-run to retry it.[/yellow]",
+            )
+            continue
+        if replayed is None:
+            continue
+        rows = build_history_rows(
+            replayed,
+            season=season,
+            league_id=league_id,
+            captured_at=datetime.now(tz=timezone.utc),
+            tier=FidelityTier.DETAILED,
+            is_live_gw=False,
+        )
+        try:
+            store.append_rows(gameweek, rows)
+        except LeagueHistoryError as exc:
+            error_console.print(f"[yellow]{exc}[/yellow]")
+
+
+async def _backfill(
+    data: LeagueRecapData,
+    *,
+    store: LeagueHistoryStore,
+    season: str,
+    league_id: int,
+    fpl_format: LeagueFormat,
+    history_client: ManagerHistoryClient | None,
+    finished_gameweeks: Collection[int],
+    replay_gameweek: ReplayGameweek | None,
+    backfill_detail: bool,
+) -> None:
+    """Fill what this run is allowed to fill, cheapest tier first."""
+    targets = _target_gameweeks(data, finished_gameweeks)
+    if not targets:
+        return
+
+    gaps = _gaps(store.coverage(), targets)
+
+    if fpl_format == "classic" and history_client is not None:
+        coarse_targets = sorted(set(gaps.missing) | set(gaps.incomplete))
+        if coarse_targets:
+            await _coarse_backfill(
+                data, store=store, season=season, league_id=league_id,
+                history_client=history_client, gameweeks=coarse_targets,
+            )
+            gaps = _gaps(store.coverage(), targets)
+
+    if replay_gameweek is None:
+        return
+
+    # A gameweek already holding unknown rows is repaired without the flag:
+    # the cost is bounded by how many gameweeks actually failed, and without it
+    # an unknown row is permanent. Filling a gap or upgrading a coarse gameweek
+    # is the unbounded case the flag guards -- one call per manager per
+    # gameweek, which a mid-season first run would otherwise pay across the
+    # whole season before printing anything (KTD6).
+    detail_targets = set(gaps.incomplete)
+    if backfill_detail:
+        detail_targets |= set(gaps.missing) | set(gaps.coarse)
+    if detail_targets:
+        await _detailed_backfill(
+            store=store, season=season, league_id=league_id,
+            replay_gameweek=replay_gameweek, gameweeks=sorted(detail_targets),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Coverage report (R9, R10)
+# ---------------------------------------------------------------------------
+
+
+def _format_gameweeks(gameweeks: Collection[int]) -> str:
+    """Render a gameweek list compactly, e.g. "GW1-3, GW7"."""
+    ordered = sorted(gameweeks)
+    if not ordered:
+        return ""
+    runs: list[tuple[int, int]] = [(ordered[0], ordered[0])]
+    for gameweek in ordered[1:]:
+        start, end = runs[-1]
+        if gameweek == end + 1:
+            runs[-1] = (start, gameweek)
+        else:
+            runs.append((gameweek, gameweek))
+    return ", ".join(f"GW{s}" if s == e else f"GW{s}-{e}" for s, e in runs)
+
+
+def _report_coverage(
+    coverage: list[GameweekCoverage],
+    *,
+    fpl_format: LeagueFormat,
+    targets: list[int],
+    warnings: list[dict[str, str]],
+) -> None:
+    """Say what is captured, at what fidelity, and what can still be done.
+
+    Silent on a fully detailed season: a report the user cannot act on is
+    noise, not visibility.
+    """
+    by_gameweek = {c.gameweek: c for c in coverage}
+    coarse = [gw for gw in targets if (c := by_gameweek.get(gw)) and c.lowest_tier is FidelityTier.COARSE]
+    unreadable = [gw for gw in targets if (c := by_gameweek.get(gw)) and not c.readable]
+    unknown = [gw for gw in targets if (c := by_gameweek.get(gw)) and c.readable and c.unknown_count]
+    uncaptured = [gw for gw in targets if gw not in by_gameweek or by_gameweek[gw].manager_count == 0]
+
+    lines: list[str] = []
+    if coarse:
+        lines.append(
+            f"League history: {_format_gameweeks(coarse)} captured at the coarse tier "
+            f"(headline numbers only). Held back until filled: "
+            f"{'; '.join(COARSE_HELD_BACK)}. Re-run with {DETAIL_FLAG} to fill them.",
+        )
+    if uncaptured:
+        if fpl_format == "draft":
+            lines.append(
+                f"League history: {_format_gameweeks(uncaptured)} has no recorded rows. Draft "
+                f"exposes no per-manager history endpoint, so each of those gameweeks' "
+                f"league position and cumulative total is unavailable by name, and becomes "
+                f"permanently unrecoverable at the July season rollover. "
+                f"Re-run with {DETAIL_FLAG} to reconstruct them now.",
+            )
+        else:
+            lines.append(
+                f"League history: {_format_gameweeks(uncaptured)} has no recorded rows. "
+                f"Re-run with {DETAIL_FLAG} to fill them.",
+            )
+    if unknown:
+        lines.append(
+            f"League history: {_format_gameweeks(unknown)} holds managers whose data could not "
+            f"be fetched. They are recorded as unknown -- no streak is extended or broken "
+            f"across them -- and every later run re-attempts them.",
+        )
+    if unreadable:
+        lines.append(
+            f"League history: {_format_gameweeks(unreadable)} could not be read and is skipped. "
+            f"Move the file aside to recapture it; the rest of the season is unaffected.",
+        )
+
+    for line in lines:
+        _warn(warnings, HISTORY_WARNING_COVERAGE, line)
+
+
+# ---------------------------------------------------------------------------
 # Capture
 # ---------------------------------------------------------------------------
 
@@ -430,11 +860,22 @@ async def capture_recap_history(
     *,
     season: str | None = None,
     is_live_gw: bool = True,
+    history_client: ManagerHistoryClient | None = None,
+    finished_gameweeks: Collection[int] = (),
+    replay_gameweek: ReplayGameweek | None = None,
+    backfill_detail: bool = False,
 ) -> CaptureResult:
-    """Record this gameweek, and report anything the user should act on.
+    """Record this gameweek, fill what the API still allows, and report the rest.
 
     Never raises for a store problem: the message goes to stderr, the rows come
     back regardless, and the caller carries on rendering (R4).
+
+    `history_client` enables the coarse classic tier, which runs
+    unconditionally because it costs one call per manager for the whole season.
+    `replay_gameweek` enables the detailed tier, which costs one call per
+    manager *per gameweek* and therefore runs only behind `backfill_detail` --
+    except to repair a gameweek already holding unknown rows, which is bounded
+    and is the only way R19's unknown rows ever get fixed.
     """
     season = season or season_label()
     league_id = data.get("league_id")
@@ -482,10 +923,30 @@ async def capture_recap_history(
             f"(set FPL_CLI_DATA_DIR to keep it somewhere persistent).[/dim]",
         )
 
+    await _backfill(
+        data,
+        store=store,
+        season=season,
+        league_id=league_id,
+        fpl_format=fpl_format,
+        history_client=history_client,
+        finished_gameweeks=finished_gameweeks,
+        replay_gameweek=replay_gameweek,
+        backfill_detail=backfill_detail,
+    )
+
+    coverage = store.coverage()
+    _report_coverage(
+        coverage,
+        fpl_format=fpl_format,
+        targets=_target_gameweeks(data, finished_gameweeks),
+        warnings=warnings,
+    )
+
     return CaptureResult(
         rows=rows,
         written=written,
         store_readable=True,
         warnings=warnings,
-        coverage=store.coverage(),
+        coverage=coverage,
     )

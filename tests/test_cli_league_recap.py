@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -554,3 +555,474 @@ def test_the_row_shape_survives_a_store_round_trip(fpl_format: str):
     store.append_rows(5, rows)
 
     assert store.load_gameweek(5) == rows
+
+
+# ---------------------------------------------------------------------------
+# U7: two-tier backfill and coverage
+# ---------------------------------------------------------------------------
+
+
+class _HistoryClient:
+    """Fake exposing only `get_manager_history`, the coarse tier's whole surface."""
+
+    def __init__(self, rows_by_entry: dict[int, list[dict[str, Any]]], fail: set[int] | None = None):
+        self._rows_by_entry = rows_by_entry
+        self._fail = fail or set()
+        self.calls: list[int] = []
+        self.live = 0
+        self.peak = 0
+
+    async def get_manager_history(self, entry_id: int) -> dict[str, Any]:
+        self.calls.append(entry_id)
+        self.live += 1
+        self.peak = max(self.peak, self.live)
+        try:
+            for _ in range(5):
+                await asyncio.sleep(0)
+            if entry_id in self._fail:
+                raise RuntimeError("boom")
+            return {"current": self._rows_by_entry.get(entry_id, [])}
+        finally:
+            self.live -= 1
+
+
+def _history_row(event: int, points: int, total: int, **kwargs: Any) -> dict[str, Any]:
+    row = {
+        "event": event,
+        "points": points,
+        "total_points": total,
+        "event_transfers": 0,
+        "event_transfers_cost": 0,
+        "points_on_bench": 3,
+        "value": 1000,
+        "bank": 5,
+        "overall_rank": 400_000,
+    }
+    row.update(kwargs)
+    return row
+
+
+class TestCoarseBackfill:
+    async def test_ae2_a_gap_since_the_last_run_is_filled(self):
+        data = _recap_data(
+            gameweek=6,
+            managers=[_manager(name="Alice", entry_id=1)],
+            cohort=_cohort((1, "Alice", 1, 60, 300)),
+        )
+        client = _HistoryClient({1: [_history_row(gw, 40 + gw, 40 * gw) for gw in range(1, 7)]})
+
+        await capture_recap_history(
+            data, season=SEASON, history_client=client,
+            finished_gameweeks=range(1, 7),
+        )
+
+        store = _store()
+        assert store.captured_gameweeks() == [1, 2, 3, 4, 5, 6]
+        assert store.resolved_gameweek(4)[1].gross_points == 44
+        assert store.resolved_gameweek(6)[1].tier is FidelityTier.DETAILED
+
+    async def test_one_history_call_per_manager_covers_the_whole_gap(self):
+        data = _recap_data(
+            gameweek=6,
+            managers=[_manager(name="Alice", entry_id=1), _manager(name="Bob", entry_id=2, gw_rank=2)],
+            cohort=_cohort((1, "Alice", 1, 60, 300), (2, "Bob", 2, 40, 280)),
+        )
+        rows = {
+            entry: [_history_row(gw, 40 + gw, 40 * gw) for gw in range(1, 7)]
+            for entry in (1, 2)
+        }
+        client = _HistoryClient(rows)
+
+        await capture_recap_history(
+            data, season=SEASON, history_client=client, finished_gameweeks=range(1, 7),
+        )
+
+        assert sorted(client.calls) == [1, 2]
+
+    async def test_coarse_backfill_holds_the_concurrency_cap(self):
+        from fpl_cli.cli._league_recap_data import _PICKS_CONCURRENCY
+
+        entries = list(range(1, 26))
+        data = _recap_data(
+            gameweek=6,
+            managers=[_manager(name=f"M{e}", entry_id=e, gw_rank=e) for e in entries],
+            cohort=_cohort(*[(e, f"M{e}", e, 40, 200) for e in entries]),
+        )
+        client = _HistoryClient({
+            e: [_history_row(gw, 40, 40 * gw) for gw in range(1, 7)] for e in entries
+        })
+
+        await capture_recap_history(
+            data, season=SEASON, history_client=client, finished_gameweeks=range(1, 7),
+        )
+
+        assert client.peak <= _PICKS_CONCURRENCY
+
+    async def test_league_positions_are_derived_across_the_cohort_not_from_global_rank(self):
+        data = _recap_data(
+            gameweek=3,
+            managers=[_manager(name="Alice", entry_id=1), _manager(name="Bob", entry_id=2, gw_rank=2)],
+            cohort=_cohort((1, "Alice", 1, 60, 300), (2, "Bob", 2, 40, 280)),
+        )
+        client = _HistoryClient({
+            # Alice trails on the global ladder but leads this league.
+            1: [_history_row(gw, 50, 50 * gw, overall_rank=400_000) for gw in range(1, 4)],
+            2: [_history_row(gw, 30, 30 * gw, overall_rank=12) for gw in range(1, 4)],
+        })
+
+        await capture_recap_history(
+            data, season=SEASON, history_client=client, finished_gameweeks=range(1, 4),
+        )
+
+        resolved = _store().resolved_gameweek(2)
+        assert resolved[1].global_rank == 400_000
+        assert resolved[1].league_position == 1
+        assert resolved[2].league_position == 2
+        assert resolved[1].gw_rank == 1
+        assert resolved[2].gw_rank == 2
+
+    async def test_a_league_that_started_late_reports_no_gap_before_its_start(self):
+        data = _recap_data(
+            gameweek=13,
+            managers=[_manager(name="Alice", entry_id=1)],
+            cohort=_cohort((1, "Alice", 1, 60, 300)),
+            league_start_event=12,
+        )
+        client = _HistoryClient({1: [_history_row(gw, 40, 40 * gw) for gw in range(1, 14)]})
+
+        await capture_recap_history(
+            data, season=SEASON, history_client=client, finished_gameweeks=range(1, 14),
+        )
+
+        assert _store().captured_gameweeks() == [12, 13]
+
+    async def test_a_league_that_started_late_rescopes_the_cumulative_total(self):
+        data = _recap_data(
+            gameweek=13,
+            managers=[_manager(name="Alice", entry_id=1)],
+            cohort=_cohort((1, "Alice", 1, 60, 300)),
+            league_start_event=12,
+        )
+        client = _HistoryClient({1: [_history_row(gw, 40, 40 * gw) for gw in range(1, 14)]})
+
+        await capture_recap_history(
+            data, season=SEASON, history_client=client, finished_gameweeks=range(1, 14),
+        )
+
+        # Season total at GW12 is 480; the league's baseline (GW11) is 440.
+        assert _store().resolved_gameweek(12)[1].total_points == 40
+
+    async def test_one_failing_manager_becomes_unknown_rows_while_the_rest_complete(self, capsys):
+        data = _recap_data(
+            gameweek=3,
+            managers=[_manager(name="Alice", entry_id=1), _manager(name="Bob", entry_id=2, gw_rank=2)],
+            cohort=_cohort((1, "Alice", 1, 60, 300), (2, "Bob", 2, 40, 280)),
+        )
+        client = _HistoryClient(
+            {1: [_history_row(gw, 50, 50 * gw) for gw in range(1, 4)]}, fail={2},
+        )
+
+        await capture_recap_history(
+            data, season=SEASON, history_client=client, finished_gameweeks=range(1, 4),
+        )
+
+        resolved = _store().resolved_gameweek(2)
+        assert resolved[1].capture_status is CaptureStatus.OK
+        assert resolved[2].capture_status is CaptureStatus.UNKNOWN
+        assert "Bob" in _stderr(capsys)
+
+    async def test_a_gameweek_holding_an_unknown_row_is_repaired_on_the_next_run(self):
+        data = _recap_data(
+            gameweek=3,
+            managers=[_manager(name="Alice", entry_id=1), _manager(name="Bob", entry_id=2, gw_rank=2)],
+            cohort=_cohort((1, "Alice", 1, 60, 300), (2, "Bob", 2, 40, 280)),
+        )
+        rows = {e: [_history_row(gw, 50, 50 * gw) for gw in range(1, 4)] for e in (1, 2)}
+        failing = _HistoryClient({1: rows[1]}, fail={2})
+        await capture_recap_history(
+            data, season=SEASON, history_client=failing, finished_gameweeks=range(1, 4),
+        )
+        assert _store().resolved_gameweek(2)[2].capture_status is CaptureStatus.UNKNOWN
+
+        healthy = _HistoryClient(rows)
+        await capture_recap_history(
+            data, season=SEASON, history_client=healthy, finished_gameweeks=range(1, 4),
+        )
+
+        assert _store().resolved_gameweek(2)[2].capture_status is CaptureStatus.OK
+
+    async def test_a_fully_captured_season_makes_no_history_calls_at_all(self):
+        data = _recap_data(
+            gameweek=3,
+            managers=[_manager(name="Alice", entry_id=1)],
+            cohort=_cohort((1, "Alice", 1, 60, 300)),
+        )
+        client = _HistoryClient({1: [_history_row(gw, 50, 50 * gw) for gw in range(1, 4)]})
+        await capture_recap_history(
+            data, season=SEASON, history_client=client, finished_gameweeks=range(1, 4),
+        )
+        client.calls.clear()
+
+        await capture_recap_history(
+            data, season=SEASON, history_client=client, finished_gameweeks=range(1, 4),
+        )
+
+        assert client.calls == []
+
+    async def test_an_unfinished_gameweek_is_never_backfilled(self):
+        data = _recap_data(
+            gameweek=3,
+            managers=[_manager(name="Alice", entry_id=1)],
+            cohort=_cohort((1, "Alice", 1, 60, 300)),
+        )
+        client = _HistoryClient({1: [_history_row(gw, 50, 50 * gw) for gw in range(1, 6)]})
+
+        await capture_recap_history(
+            data, season=SEASON, history_client=client, finished_gameweeks=[1, 2, 3],
+        )
+
+        assert _store().captured_gameweeks() == [1, 2, 3]
+
+
+class TestDetailedBackfill:
+    def _replay(self, calls: list[int], live: dict[str, int], fail: set[int] | None = None):
+        fail = fail or set()
+
+        async def _run(gameweek: int) -> LeagueRecapData | None:
+            calls.append(gameweek)
+            live["now"] += 1
+            live["peak"] = max(live["peak"], live["now"])
+            try:
+                for _ in range(3):
+                    await asyncio.sleep(0)
+                if gameweek in fail:
+                    raise RuntimeError("boom")
+                return _recap_data(
+                    gameweek=gameweek,
+                    managers=[_manager(name="Alice", entry_id=1, gross_points=gameweek)],
+                    cohort=_cohort((1, "Alice", 1, gameweek, 0)),
+                )
+            finally:
+                live["now"] -= 1
+
+        return _run
+
+    async def test_the_detailed_tier_makes_no_calls_without_its_flag(self):
+        calls: list[int] = []
+        data = _recap_data(
+            gameweek=3,
+            managers=[_manager(name="Alice", entry_id=1)],
+            cohort=_cohort((1, "Alice", 1, 60, 300)),
+        )
+
+        await capture_recap_history(
+            data, season=SEASON, finished_gameweeks=range(1, 4),
+            replay_gameweek=self._replay(calls, {"now": 0, "peak": 0}),
+        )
+
+        assert calls == []
+
+    async def test_the_detailed_tier_supersedes_coarse_rows_when_asked(self):
+        data = _recap_data(
+            gameweek=3,
+            managers=[_manager(name="Alice", entry_id=1)],
+            cohort=_cohort((1, "Alice", 1, 60, 300)),
+        )
+        coarse = _HistoryClient({1: [_history_row(gw, 40, 40 * gw) for gw in range(1, 4)]})
+        await capture_recap_history(
+            data, season=SEASON, history_client=coarse, finished_gameweeks=range(1, 4),
+        )
+        assert _store().resolved_gameweek(1)[1].tier is FidelityTier.COARSE
+
+        calls: list[int] = []
+        await capture_recap_history(
+            data, season=SEASON, finished_gameweeks=range(1, 4),
+            replay_gameweek=self._replay(calls, {"now": 0, "peak": 0}),
+            backfill_detail=True,
+        )
+
+        assert calls == [1, 2]
+        resolved = _store().resolved_gameweek(1)
+        assert resolved[1].tier is FidelityTier.DETAILED
+        assert resolved[1].gross_points == 1
+        # The coarse line is superseded, never removed.
+        assert len(_store().load_gameweek(1)) == 2
+
+    async def test_gameweeks_are_replayed_one_at_a_time(self):
+        live = {"now": 0, "peak": 0}
+        data = _recap_data(
+            gameweek=3,
+            managers=[_manager(name="Alice", entry_id=1)],
+            cohort=_cohort((1, "Alice", 1, 60, 300)),
+        )
+
+        await capture_recap_history(
+            data, season=SEASON, finished_gameweeks=range(1, 4),
+            replay_gameweek=self._replay([], live), backfill_detail=True,
+        )
+
+        assert live["peak"] == 1
+
+    async def test_an_interrupted_backfill_keeps_the_gameweeks_already_committed(self):
+        calls: list[int] = []
+        data = _recap_data(
+            gameweek=6,
+            managers=[_manager(name="Alice", entry_id=1)],
+            cohort=_cohort((1, "Alice", 1, 60, 300)),
+        )
+
+        await capture_recap_history(
+            data, season=SEASON, finished_gameweeks=range(1, 7),
+            replay_gameweek=self._replay(calls, {"now": 0, "peak": 0}, fail={3}),
+            backfill_detail=True,
+        )
+
+        captured = _store().captured_gameweeks()
+        assert 1 in captured and 2 in captured
+        assert 3 not in captured
+
+    async def test_a_draft_gameweek_holding_unknown_rows_is_repaired_without_the_flag(self):
+        first = _recap_data(
+            gameweek=2, fpl_format="draft",
+            managers=[_manager(name="Alice", entry_id=1, league_entry_id=10)],
+            cohort=_cohort((10, "Alice", 1, 60, 300), (11, "Bob", 2, 40, 280)),
+        )
+        await capture_recap_history(first, season=SEASON, finished_gameweeks=[1, 2])
+        assert _store("draft").resolved_gameweek(2)[11].capture_status is CaptureStatus.UNKNOWN
+
+        async def _replay(gameweek: int) -> LeagueRecapData:
+            return _recap_data(
+                gameweek=gameweek, fpl_format="draft",
+                managers=[
+                    _manager(name="Alice", entry_id=1, league_entry_id=10),
+                    _manager(name="Bob", entry_id=2, league_entry_id=11, gw_rank=2),
+                ],
+                cohort=_cohort((10, "Alice", 1, 60, 300), (11, "Bob", 2, 40, 280)),
+            )
+
+        await capture_recap_history(
+            first, season=SEASON, finished_gameweeks=[1, 2], replay_gameweek=_replay,
+        )
+
+        assert _store("draft").resolved_gameweek(2)[11].capture_status is CaptureStatus.OK
+
+
+class TestCoverageReport:
+    async def test_a_coarse_gap_names_the_remedy_and_what_it_holds_back(self, capsys):
+        data = _recap_data(
+            gameweek=3,
+            managers=[_manager(name="Alice", entry_id=1)],
+            cohort=_cohort((1, "Alice", 1, 60, 300)),
+        )
+        client = _HistoryClient({1: [_history_row(gw, 40, 40 * gw) for gw in range(1, 4)]})
+
+        await capture_recap_history(
+            data, season=SEASON, history_client=client, finished_gameweeks=range(1, 4),
+        )
+
+        err = _stderr(capsys)
+        assert "coarse" in err.lower()
+        assert "--backfill-detail" in err
+        assert "captain" in err.lower()
+
+    async def test_a_fully_detailed_season_prints_nothing(self, capsys):
+        data = _recap_data(
+            gameweek=1,
+            managers=[_manager(name="Alice", entry_id=1)],
+            cohort=_cohort((1, "Alice", 1, 60, 300)),
+        )
+        await capture_recap_history(data, season=SEASON, finished_gameweeks=[1])
+        capsys.readouterr()
+
+        await capture_recap_history(data, season=SEASON, finished_gameweeks=[1])
+
+        assert "coarse" not in _stderr(capsys).lower()
+
+    async def test_an_uncaptured_draft_gameweek_names_its_unavailable_fields(self, capsys):
+        data = _recap_data(
+            gameweek=3, fpl_format="draft",
+            managers=[_manager(name="Alice", entry_id=1, league_entry_id=10)],
+            cohort=_cohort((10, "Alice", 1, 60, 300)),
+        )
+
+        result = await capture_recap_history(
+            data, season=SEASON, finished_gameweeks=[1, 2, 3],
+        )
+
+        err = _stderr(capsys)
+        assert "GW1" in err or "GW1-2" in err or "1, 2" in err
+        assert "cumulative total" in err.lower()
+        assert "position" in err.lower()
+        assert "rollover" in err.lower()
+        # The gameweek that was captured still holds everything it recovered.
+        assert result.rows[0].gross_points == 60
+
+    async def test_an_unreadable_gameweek_is_named_in_the_report(self, capsys):
+        data = _recap_data(
+            gameweek=2,
+            managers=[_manager(name="Alice", entry_id=1)],
+            cohort=_cohort((1, "Alice", 1, 60, 300)),
+        )
+        await capture_recap_history(data, season=SEASON, finished_gameweeks=[1, 2])
+        capsys.readouterr()
+        _store().gameweek_file(1).write_text("not json{{{\n", encoding="utf-8")
+
+        await capture_recap_history(data, season=SEASON, finished_gameweeks=[1, 2])
+
+        assert "GW1" in _stderr(capsys)
+
+
+class TestBackfillCliWiring:
+    def test_the_flag_is_off_by_default_and_available_on_the_command(self):
+        from fpl_cli.cli.league_recap import league_recap_command
+
+        option = next(p for p in league_recap_command.params if p.name == "backfill_detail")
+        assert option.default is False
+        assert "--backfill-detail" in option.opts
+
+
+class TestCohortRanks:
+    """KTD12: every rank on a row is a position inside the league, over everyone."""
+
+    def test_gameweek_rank_is_derived_over_the_whole_cohort(self):
+        """A failed fetch must not hand someone else the week's worst score."""
+        data = _recap_data(
+            managers=[
+                _manager(name="Alice", entry_id=1, gross_points=60, gw_rank=1),
+                _manager(name="Cara", entry_id=3, gross_points=30, gw_rank=2),
+            ],
+            cohort=_cohort(
+                (1, "Alice", 1, 60, 300), (2, "Bob", 2, 10, 280), (3, "Cara", 3, 30, 260),
+            ),
+        )
+        by_key = {r.manager_key: r for r in build_history_rows(data, season=SEASON, captured_at=CAPTURED_AT)}
+        # Bob's standings score is in the pool, so Cara is second, not last.
+        assert by_key[1].gw_rank == 1
+        assert by_key[3].gw_rank == 2
+        assert by_key[2].gw_rank == 3
+
+    def test_gameweek_rank_is_net_of_the_hit_whatever_the_display_setting(self):
+        data = _recap_data(
+            managers=[
+                _manager(name="Alice", entry_id=1, gross_points=60, transfer_cost=8),
+                _manager(name="Bob", entry_id=2, gross_points=55, transfer_cost=0, gw_rank=2),
+            ],
+            cohort=_cohort((1, "Alice", 1, 52, 300), (2, "Bob", 2, 55, 280)),
+        )
+        by_key = {r.manager_key: r for r in build_history_rows(data, season=SEASON, captured_at=CAPTURED_AT)}
+        assert by_key[2].gw_rank == 1
+        assert by_key[1].gw_rank == 2
+
+    def test_a_position_the_collector_supplied_is_never_overwritten(self):
+        """Draft's own standings rank breaks h2h ties a total cannot."""
+        data = _recap_data(
+            fpl_format="draft",
+            managers=[
+                _manager(name="Alice", entry_id=1, league_entry_id=10, total_points=100, overall_rank=2),
+                _manager(name="Bob", entry_id=2, league_entry_id=11, total_points=90, overall_rank=1, gw_rank=2),
+            ],
+            cohort=_cohort((10, "Alice", 1, 60, 100), (11, "Bob", 2, 40, 90)),
+        )
+        by_key = {r.manager_key: r for r in build_history_rows(data, season=SEASON, captured_at=CAPTURED_AT)}
+        assert by_key[10].league_position == 2
+        assert by_key[11].league_position == 1
