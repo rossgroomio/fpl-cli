@@ -6,6 +6,7 @@ import logging
 import re
 from typing import TYPE_CHECKING
 
+from fpl_cli.utils.gameweek import is_opening_gameweek
 from fpl_cli.utils.markdown import fence_flags, parse_heading
 from fpl_cli.utils.text import strip_diacritics
 
@@ -341,18 +342,21 @@ _OUTPUT_FORMAT_TAIL = """\
 [1-2 sentences: What does this GW suggest for upcoming decisions? If suggesting players to move on from, specify whether this applies to Classic, Draft, or both.]
 </output_format>"""
 
-_EDGE_CASES = """\
+_EDGE_CASE_WAIVERS = 'If no waivers processed in Draft, note "No waivers this week" in Draft Verdict'
+_EDGE_CASE_MISSING_DATA = "If data for one format is missing, analyse only the format with data"
+
+_EDGE_CASES = f"""\
 <edge_cases>
 - If no transfers were made in Classic, note "No transfers this week" in Classic Verdict
-- If no waivers processed in Draft, note "No waivers this week" in Draft Verdict
-- If data for one format is missing, analyse only the format with data
+- {_EDGE_CASE_WAIVERS}
+- {_EDGE_CASE_MISSING_DATA}
 </edge_cases>"""
 
-_EDGE_CASES_OPENING_GAMEWEEK = """\
+_EDGE_CASES_OPENING_GAMEWEEK = f"""\
 <edge_cases>
 - Classic has no transfers in the opening gameweek and no transfer was rolled or held. Judge the squad as a pre-season build, not as a week of restraint
-- If no waivers processed in Draft, note "No waivers this week" in Draft Verdict
-- If data for one format is missing, analyse only the format with data
+- {_EDGE_CASE_WAIVERS}
+- {_EDGE_CASE_MISSING_DATA}
 - If the league standings are reported as unavailable, say the table is not out rather than inventing or inferring a position
 </edge_cases>"""
 
@@ -533,9 +537,9 @@ def get_review_synthesis_prompt(
         )
 
     has_fines = bool(fine_results)
-    is_opening_gameweek = gameweek == 1
+    opening_gameweek = is_opening_gameweek(gameweek)
     system_prompt = _build_system_prompt(
-        has_fines=has_fines, use_net_points=use_net_points, is_opening_gameweek=is_opening_gameweek,
+        has_fines=has_fines, use_net_points=use_net_points, is_opening_gameweek=opening_gameweek,
     )
 
     user_parts = [
@@ -561,7 +565,7 @@ def get_review_synthesis_prompt(
             active_chip_line=active_chip_line,
             dgw_teams_line=dgw_teams or "none this gameweek",
             bgw_teams_line=bgw_teams or "none this gameweek",
-            season_context=_SEASON_CONTEXT_OPENING_GAMEWEEK if is_opening_gameweek else "",
+            season_context=_SEASON_CONTEXT_OPENING_GAMEWEEK if opening_gameweek else "",
             draft_points=draft_points,
             draft_league_name=draft_league_name,
             draft_players=draft_players,

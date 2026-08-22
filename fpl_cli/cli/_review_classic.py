@@ -17,6 +17,7 @@ from fpl_cli.cli._helpers import (
     _net_transfer_ids,
     _slice_with_ties,
 )
+from fpl_cli.utils.gameweek import is_opening_gameweek
 
 logger = logging.getLogger(__name__)
 
@@ -321,7 +322,7 @@ async def _review_classic_transfers(client, entry_id, gw, player_map, teams, liv
             net_style = "green" if total_net > 0 else "red" if total_net < 0 else ""
             net_sign = '+' if total_net > 0 else ''
             console.print(f"\nHits: {hits} | Misses: {misses} | Net: [{net_style}]{net_sign}{total_net}[/{net_style}]")
-        elif gw == 1:
+        elif is_opening_gameweek(gw):
             # An empty GW1 transfer list is not a rolled transfer: the squad was
             # bought pre-season and the first free transfer only arrives in GW2.
             console.print("\n[bold]## Transfers[/bold]")
@@ -518,6 +519,10 @@ async def _review_classic_league(
             "total_entries": total_entries,
             "user_gw_points": user_gw_pts,
             "user_total": user_total,
+            # `total_entries` alone can't distinguish "unknown" from "known but
+            # not on this page" -- a >50-entry league still reports a nonzero
+            # page size even when the user's own entry wasn't in it.
+            "user_found_in_standings": user_entry is not None,
             "nearby_rivals": [
                 {
                     "rank": e.get("rank"),

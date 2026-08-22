@@ -101,6 +101,8 @@ Standings not published yet - FPL builds mini-league tables after the opening ga
 {% elif classic_league.total_entries %}
 - **Position:** {{ classic_league.user_position }} of {{ classic_league.total_entries }}
 - **GW Points:** {{ classic_league.user_gw_points }} (Total: {{ "{:,}".format(classic_league.user_total) }})
+{% else %}
+League standings not shown for historical GW{{ gameweek }} review - use `fpl league` for current standings.
 {% endif %}
 {% if classic_league.nearby_rivals %}
 ### Nearby Rivals (+/- 25 pts)

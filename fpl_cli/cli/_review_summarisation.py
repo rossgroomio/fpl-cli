@@ -19,6 +19,7 @@ from fpl_cli.cli._review_draft import _format_review_draft_player
 from fpl_cli.models.player import Player
 from fpl_cli.models.team import Team
 from fpl_cli.paths import SHIPPED_CONFIG_DIR, user_config_file
+from fpl_cli.utils.gameweek import is_opening_gameweek
 from fpl_cli.utils.teams import describe_team_set_mismatch
 from fpl_cli.utils.text import strip_diacritics
 
@@ -282,7 +283,7 @@ def _format_classic_section(
             f" ({t['player_in_points']} pts) = {'+' if t['net'] > 0 else ''}{t['net']} ({t['verdict']})"
             for t in classic_transfers_data
         ])
-    elif gameweek == 1:
+    elif is_opening_gameweek(gameweek):
         # "No transfers this week" reads as a decision the manager made. In GW1
         # there is no decision to make: the squad is bought pre-season and the
         # first free transfer only arrives in GW2.
@@ -352,10 +353,14 @@ def _classic_position_fields(classic_league_data: dict[str, Any] | None) -> dict
 
     Without a standings table there is no position to report. Saying so beats
     the arithmetic that "? of 0" invites -- the model was previously handed
-    "GW Position: None of 0" and left to narrate it.
+    "GW Position: None of 0" and left to narrate it. A league can also have a
+    real, nonzero `total_entries` while the manager's own entry wasn't on the
+    fetched (page-1-only) standings -- `total_entries` alone can't tell that
+    case apart from a fully-known position, so it's unknown too.
     """
-    total = classic_league_data.get("total_entries", 0) if classic_league_data else 0
-    if not classic_league_data or not total:
+    total = (classic_league_data or {}).get("total_entries", 0)
+    user_found = (classic_league_data or {}).get("user_found_in_standings", True)
+    if not classic_league_data or not total or not user_found:
         return {"gw_position": "unknown", "position": "unknown", "total": "unknown"}
     return {
         "gw_position": _gw_position_with_half(classic_league_data.get("user_gw_rank", "?"), total),
@@ -373,10 +378,13 @@ def _classic_fines_league_data(
     `user_gw_points` normally comes from the league standings, but a personal
     fine (below-threshold) is about the manager's own score and that score is
     already known from their entry history. When standings are unavailable --
-    the opening gameweek before FPL builds the table, or a failed fetch -- fall
-    back to it so the fine is still evaluated instead of silently skipped.
+    the opening gameweek before FPL builds the table, a failed fetch, or the
+    manager's own entry missing from a page-1-only standings fetch -- fall
+    back to it so the fine is still evaluated instead of trusting a defaulted
+    0 that nobody actually scored.
     """
-    if classic_league_data and "user_gw_points" in classic_league_data:
+    user_found = (classic_league_data or {}).get("user_found_in_standings", True)
+    if classic_league_data and "user_gw_points" in classic_league_data and user_found:
         return classic_league_data
     if not my_entry_summary:
         return classic_league_data
@@ -859,7 +867,7 @@ def _review_compare_recs(
     # transfer and a "no transfers this gameweek" recommendation is not advice
     # that was followed. Scoring either as alignment credits a decision that
     # could not be taken.
-    no_transfers_possible = gameweek == 1
+    no_transfers_possible = is_opening_gameweek(gameweek)
     rec_roll = bool(recs["classic"].get("roll_transfer", False)) and not no_transfers_possible
     actual_roll = len(classic_transfers) == 0 and not no_transfers_possible
     comparison["classic"]["rec_roll"] = rec_roll

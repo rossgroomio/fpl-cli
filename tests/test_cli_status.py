@@ -1257,6 +1257,13 @@ class TestClassicLeagueSizeFromEntryPayload:
 class TestDraftSquadNotDrafted:
     """Pre-season the draft entry has no GW1 picks and the shared helper re-raises."""
 
+    @staticmethod
+    def _picks_404():
+        request = httpx.Request("GET", "https://draft.premierleague.com/api/entry/456/event/1")
+        return httpx.HTTPStatusError(
+            "404", request=request, response=httpx.Response(404, request=request),
+        )
+
     def test_missing_picks_keep_the_draft_section(self):
         client = _mock_client(
             current_gw=None,
@@ -1266,13 +1273,33 @@ class TestDraftSquadNotDrafted:
             league_details={"standings": [], "league_entries": []},
             game_state={"current_event": 1, "waivers_processed": False},
         )
-        mock_squad = AsyncMock(side_effect=httpx.HTTPError("404 Not Found"))
+        mock_squad = AsyncMock(side_effect=self._picks_404())
 
         settings = {"fpl": {"draft_entry_id": 456, "draft_league_id": 789}}
         result = _run(client, settings=settings, draft_client=draft_cl, mock_draft_squad=mock_squad)
         assert result.exit_code == 0
         assert "Could not load draft data" not in result.output
         assert "Waiver Deadline" in result.output
+
+    def test_non_404_squad_error_still_fails_the_section(self):
+        client = _mock_client(
+            current_gw=None,
+            next_gw={"id": 1, "deadline_time": "2099-08-21T17:30:00Z"},
+        )
+        draft_cl = _mock_draft_client(
+            league_details={"standings": [], "league_entries": []},
+            game_state={"current_event": 1, "waivers_processed": False},
+        )
+        request = httpx.Request("GET", "https://draft.premierleague.com/api/entry/456/event/1")
+        server_error = httpx.HTTPStatusError(
+            "500", request=request, response=httpx.Response(500, request=request),
+        )
+        mock_squad = AsyncMock(side_effect=server_error)
+
+        settings = {"fpl": {"draft_entry_id": 456, "draft_league_id": 789}}
+        result = _run(client, settings=settings, draft_client=draft_cl, mock_draft_squad=mock_squad)
+        assert result.exit_code == 0
+        assert "Could not load draft data" in result.output
 
     def test_squad_still_used_when_available(self):
         client = _mock_client(

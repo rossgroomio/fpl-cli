@@ -16,6 +16,7 @@ from rich.panel import Panel
 from fpl_cli.cli._context import Format, console, get_format, is_custom_analysis_enabled, load_settings
 from fpl_cli.cli._fines import FinesLeagueData, FinesTeamPlayer, evaluate_fines
 from fpl_cli.cli._fines_config import FinesConfig, parse_fines_config
+from fpl_cli.cli._helpers import _entry_league_meta
 from fpl_cli.cli._json import emit_json, output_format_option
 from fpl_cli.cli.chips import CHIP_NAMES
 from fpl_cli.models.chip_plan import ChipPlan, ChipType, UsedChip
@@ -68,27 +69,6 @@ def _gw_rank(standings: list[dict[str, Any]], user_event_total: int) -> int:
     return sum(1 for s in standings if s.get("event_total", 0) > user_event_total) + 1
 
 
-def _entry_league_meta(manager_data: dict[str, Any], league_id: int | None) -> dict[str, int]:
-    """Exact league size and rank, taken from the entry payload.
-
-    `entry/{id}/` lists every classic league the manager is in, each with
-    `rank_count` (entries in the league) and `entry_rank` (their true rank).
-    Both survive a league too big for one 50-entry page of standings, and both
-    are free: status already fetches this call. Standings can only ever report
-    the size of the page it was handed.
-    """
-    if not league_id:
-        return {}
-    for league in manager_data.get("leagues", {}).get("classic", []):
-        if league.get("id") == league_id:
-            return {
-                key: league[key]
-                for key in ("rank_count", "entry_rank")
-                if isinstance(league.get(key), int)
-            }
-    return {}
-
-
 async def _picks_if_locked(client: FPLClient, entry_id: int, gameweek: int) -> dict[str, Any]:
     """Manager picks, tolerating a gameweek whose deadline has not passed.
 
@@ -122,15 +102,21 @@ async def _draft_squad_if_drafted(
     that raise took the whole draft section down, including the waiver deadline,
     which needs no squad. The shared helper is left alone: this is status
     choosing to degrade, not a change of contract for its other callers.
+
+    Only the 404 FPL serves for picks that don't exist yet is treated as
+    "not drafted" -- a genuine outage (500, timeout) or a malformed
+    bootstrap-static payload must still surface as a real failure.
     """
     try:
         return await get_draft_squad_fn(draft_client, all_players, draft_entry_id, gameweek)
-    except (httpx.HTTPError, ValueError):
-        logger.debug(
-            "No draft picks for entry %s in GW%s (not drafted or not locked yet)",
-            draft_entry_id, gameweek, exc_info=True,
-        )
-        return []
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            logger.debug(
+                "No draft picks for entry %s in GW%s (not drafted or not locked yet)",
+                draft_entry_id, gameweek,
+            )
+            return []
+        raise
 
 
 def _build_fines_context(
@@ -403,9 +389,6 @@ async def _fetch_classic_data(
                 # members actually on the table, which excludes entries that
                 # joined since the last standings build. Pairing a rank with a
                 # size from the other source is how "4th of 3" happens.
-                sizes: dict[str, Any] = {}
-                if "rank_count" in league_meta:
-                    sizes["league_size"] = league_meta["rank_count"]
                 if user_entry or "entry_rank" in league_meta:
                     rank = user_entry.get("rank", "?") if user_entry else league_meta["entry_rank"]
                     if user_entry:
@@ -413,8 +396,9 @@ async def _fetch_classic_data(
                     standing: dict[str, Any] = {
                         "rank": rank,
                         "gw_pts": classic_user_gw_pts,
-                        **sizes,
                     }
+                    if "rank_count" in league_meta:
+                        standing["league_size"] = league_meta["rank_count"]
                     # Position this week ranks every entry's event_total, so it
                     # needs the whole table - not whoever is on this page.
                     if user_entry and classic_standings_complete:

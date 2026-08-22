@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from fpl_cli.cli._league_recap_types import LeagueRecapData
+from fpl_cli.utils.gameweek import is_opening_gameweek
 
 # =============================================================================
 # SYNTHESIS PROMPT (Stage 2: League-wide editorial)
@@ -66,7 +67,7 @@ def get_recap_synthesis_prompt(
     if fpl_format == "draft":
         sections.append("Note: Draft format has NO captaincy. Do not mention captains.")
 
-    if fpl_format == "classic" and gw == 1:
+    if fpl_format == "classic" and is_opening_gameweek(gw):
         sections.append(
             "**No transfers were made this gameweek** - GW1 squads are built before the "
             "deadline, so the game records no transfers and no hits for anyone. Do not "

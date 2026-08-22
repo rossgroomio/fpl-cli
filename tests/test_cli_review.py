@@ -827,6 +827,27 @@ class TestReviewClassicLeaguePendingStandings:
         assert "Worst GW Performers" not in out
 
 
+class TestReviewClassicLeagueUserNotOnPage:
+
+    async def test_user_absent_from_page_marks_not_found(self):
+        # A league with more entries than fit on one standings page: the
+        # manager's own entry isn't on the fetched page, but total_entries
+        # (len of that page) is still real and nonzero.
+        client = AsyncMock()
+        client.get_classic_league_standings = AsyncMock(return_value={
+            "league": {"name": "Big League"},
+            "standings": {"results": [
+                {"entry": 1, "rank": 1, "total": 500, "event_total": 60, "player_name": "Someone Else"},
+            ]},
+        })
+        result = await _review_classic_league(client, 999, 123, 5, 5)
+        assert result is not None
+        assert result["total_entries"] == 1
+        assert result["user_found_in_standings"] is False
+        assert result["user_gw_rank"] is None
+        assert result["user_gw_points"] == 0
+
+
 class TestClassicPositionFields:
 
     def test_populated_league_annotates_position(self):
@@ -844,6 +865,16 @@ class TestClassicPositionFields:
     def test_missing_league_reports_unknown(self):
         assert _classic_position_fields(None)["total"] == "unknown"
 
+    def test_user_absent_from_truncated_standings_reports_unknown(self):
+        # A >50-entry league still reports a real, nonzero total_entries even
+        # when the manager's own entry wasn't on the fetched page-1 standings.
+        # total_entries alone can't tell that apart from a known position.
+        fields = _classic_position_fields({
+            "user_gw_rank": None, "user_position": "?", "total_entries": 50,
+            "user_found_in_standings": False,
+        })
+        assert fields == {"gw_position": "unknown", "position": "unknown", "total": "unknown"}
+
 
 class TestClassicFinesLeagueData:
 
@@ -851,6 +882,17 @@ class TestClassicFinesLeagueData:
         league = {"user_gw_points": 44, "worst_performers": []}
         entry = {"points": 56, "transfers_cost": 0}
         assert _classic_fines_league_data(league, entry) is league
+
+    def test_falls_back_when_user_absent_from_truncated_standings(self):
+        # A defaulted 0 that nobody actually scored must not out-rank the
+        # manager's real entry-history score just because the key is present.
+        league = {
+            "user_gw_points": 0, "total_entries": 50, "user_found_in_standings": False,
+        }
+        entry = {"points": 68, "transfers_cost": 0}
+        result = _classic_fines_league_data(league, entry)
+        assert result is not None
+        assert result["user_gw_points"] == 68
 
     def test_falls_back_to_entry_points_when_standings_pending(self):
         entry = {"points": 56, "transfers_cost": 4}

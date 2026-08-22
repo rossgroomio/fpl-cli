@@ -431,9 +431,22 @@ class ReportAgent(Agent):
             lines.extend([
                 "## League",
                 f"**{cl.get('league_name', 'Classic League')}**",
-                f"- **Position:** {cl.get('user_position')} of {cl.get('total_entries')}",
-                f"- **GW Points:** {cl.get('user_gw_points')} (Total: {cl.get('user_total'):,})",
             ])
+            if cl.get("standings_pending"):
+                lines.append(
+                    "Standings not published yet - FPL builds mini-league tables"
+                    " after the opening gameweek is finalised.",
+                )
+            elif cl.get("total_entries"):
+                lines.extend([
+                    f"- **Position:** {cl.get('user_position')} of {cl.get('total_entries')}",
+                    f"- **GW Points:** {cl.get('user_gw_points')} (Total: {cl.get('user_total', 0):,})",
+                ])
+            else:
+                lines.append(
+                    f"League standings not shown for historical GW{gameweek} review"
+                    " - use `fpl league` for current standings.",
+                )
 
             if cl.get("nearby_rivals"):
                 lines.extend([

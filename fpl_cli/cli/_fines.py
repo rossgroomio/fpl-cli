@@ -17,7 +17,7 @@ class WorstPerformer(TypedDict):
 
 
 class FinesLeagueData(TypedDict):
-    user_gw_points: int
+    user_gw_points: NotRequired[int]
     user_gw_net_points: NotRequired[int]
     worst_performers: NotRequired[list[WorstPerformer]]
 
@@ -45,6 +45,10 @@ class FineResult:
     message: str
 
 
+def _no_league_data(rule: FineRule) -> FineResult:
+    return FineResult(rule_type=rule.type, triggered=False, message="No league data available.")
+
+
 def evaluate_fines(
     config: FinesConfig,
     format_name: str,
@@ -68,7 +72,7 @@ def _eval_last_place(
     use_net_points: bool,
 ) -> FineResult:
     if not league_data or not league_data.get("worst_performers"):
-        return FineResult(rule_type=rule.type, triggered=False, message="No league data available.")
+        return _no_league_data(rule)
 
     worst = league_data.get("worst_performers", [])
     pts_field = "points" if use_net_points else "gross_points"
@@ -127,7 +131,7 @@ def _eval_below_threshold(
     # the season (and whenever a league fetch fails) the caller has no points to
     # hand over -- defaulting to 0 fined the user for a score nobody measured.
     if not league_data or "user_gw_points" not in league_data:
-        return FineResult(rule_type=rule.type, triggered=False, message="No league data available.")
+        return _no_league_data(rule)
 
     if use_net_points:
         user_pts = league_data.get("user_gw_net_points", league_data["user_gw_points"])
