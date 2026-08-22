@@ -56,17 +56,42 @@ def _countdown(deadline_str: str) -> str:
 
 
 def _ordinal(n: int | str) -> str:
-    """Convert number to ordinal string (1st, 2nd, 3rd, etc.)."""
+    """Convert number to ordinal string (1st, 2nd, 3rd, 45,170th)."""
     if isinstance(n, str):
         return n
-    if 11 <= n % 100 <= 13:
-        return f"{n}th"
-    return f"{n}{_ORDINAL_SUFFIXES.get(n % 10, 'th')}"
+    suffix = "th" if 11 <= n % 100 <= 13 else _ORDINAL_SUFFIXES.get(n % 10, "th")
+    return f"{n:,}{suffix}"
+
+
+def _format_league_size(size: int | str) -> str:
+    """Thousands-separate a league size, passing through a non-numeric stand-in."""
+    return f"{size:,}" if isinstance(size, int) else str(size)
 
 
 def _gw_rank(standings: list[dict[str, Any]], user_event_total: int) -> int:
     """Derive GW rank by counting entries with higher event_total."""
     return sum(1 for s in standings if s.get("event_total", 0) > user_event_total) + 1
+
+
+def _entry_league_meta(manager_data: dict[str, Any], league_id: int | None) -> dict[str, int]:
+    """Exact league size and rank, taken from the entry payload.
+
+    `entry/{id}/` lists every classic league the manager is in, each with
+    `rank_count` (entries in the league) and `entry_rank` (their true rank).
+    Both survive a league too big for one 50-entry page of standings, and both
+    are free: status already fetches this call. Standings can only ever report
+    the size of the page it was handed.
+    """
+    if not league_id:
+        return {}
+    for league in manager_data.get("leagues", {}).get("classic", []):
+        if league.get("id") == league_id:
+            return {
+                key: league[key]
+                for key in ("rank_count", "entry_rank")
+                if isinstance(league.get(key), int)
+            }
+    return {}
 
 
 async def _picks_if_locked(client: FPLClient, entry_id: int, gameweek: int) -> dict[str, Any]:
@@ -85,6 +110,32 @@ async def _picks_if_locked(client: FPLClient, entry_id: int, gameweek: int) -> d
             logger.debug("No picks for entry %s in GW%s (not locked yet)", entry_id, gameweek)
             return {}
         raise
+
+
+async def _draft_squad_if_drafted(
+    get_draft_squad_fn: Callable[..., Awaitable[list[Player]]],
+    draft_client: FPLDraftClient,
+    all_players: list[Player],
+    draft_entry_id: int,
+    gameweek: int,
+) -> list[Player]:
+    """Draft squad, tolerating a gameweek whose picks do not exist yet.
+
+    `get_draft_squad_players` retries against the previous gameweek when picks
+    are missing and re-raises at GW1, since there is no GW0 to fall back to --
+    correct for the agents that depend on it, fatal for a dashboard. Pre-season
+    that raise took the whole draft section down, including the waiver deadline,
+    which needs no squad. The shared helper is left alone: this is status
+    choosing to degrade, not a change of contract for its other callers.
+    """
+    try:
+        return await get_draft_squad_fn(draft_client, all_players, draft_entry_id, gameweek)
+    except (httpx.HTTPError, ValueError):
+        logger.debug(
+            "No draft picks for entry %s in GW%s (not drafted or not locked yet)",
+            draft_entry_id, gameweek, exc_info=True,
+        )
+        return []
 
 
 def _build_fines_context(
@@ -348,17 +399,31 @@ async def _fetch_classic_data(
                 standings_block = standings_data.get("standings", {})
                 classic_standings = standings_block.get("results", [])
                 classic_standings_complete = not standings_block.get("has_next", False)
+                league_meta = _entry_league_meta(manager_data, classic_league_id)
+                league_size = league_meta.get("rank_count", len(classic_standings))
                 user_entry = next(
                     (e for e in classic_standings if e.get("entry") == entry_id), None
                 )
                 if user_entry:
                     classic_user_gw_pts = user_entry.get("event_total", 0)
-                    gw_pos = _gw_rank(classic_standings, classic_user_gw_pts)
-                    data["league_standing"] = {
+                    standing: dict[str, Any] = {
                         "rank": user_entry.get("rank", "?"),
                         "gw_pts": classic_user_gw_pts,
-                        "gw_position": gw_pos,
-                        "league_size": len(classic_standings),
+                        "league_size": league_size,
+                    }
+                    # Position this week is a rank over every entry's event_total.
+                    # One page cannot support it, so it is omitted rather than
+                    # computed against whoever happens to be on the page.
+                    if classic_standings_complete:
+                        standing["gw_position"] = _gw_rank(classic_standings, classic_user_gw_pts)
+                    data["league_standing"] = standing
+                elif "entry_rank" in league_meta:
+                    # Beyond page one, but the entry payload still knows where
+                    # they actually sit - report that instead of shrugging.
+                    data["league_standing"] = {
+                        "rank": league_meta["entry_rank"],
+                        "gw_pts": classic_user_gw_pts,
+                        "league_size": league_size,
                     }
                 elif classic_standings:
                     data["league_standing"] = {"not_in_top_50": True}
@@ -500,11 +565,12 @@ async def _classic_section(
             if league.get("not_in_top_50"):
                 console.print("  [dim]Not in top 50 - run `fpl league` for full standings[/dim]")
             else:
-                console.print(
-                    f"  League: {league['gw_pts']} pts"
-                    f" ({_ordinal(league['gw_position'])} of {league['league_size']} this week)"
-                    f" | {_ordinal(league['rank'])} overall"
-                )
+                size = _format_league_size(league["league_size"])
+                line = f"  League: {league['gw_pts']} pts"
+                if "gw_position" in league:
+                    line += f" ({_ordinal(league['gw_position'])} of {size} this week)"
+                line += f" | {_ordinal(league['rank'])} of {size} overall"
+                console.print(line)
 
         # --- Fines rendering ---
         fines = data.get("fines", [])
@@ -563,8 +629,8 @@ async def _fetch_draft_data(
     if draft_league_id:
         coros.append(draft_client.get_league_details(draft_league_id))
         coros.append(draft_client.get_game_state())
-    coros.append(get_draft_squad_fn(
-        draft_client, all_players, draft_entry_id, gw_for_picks,
+    coros.append(_draft_squad_if_drafted(
+        get_draft_squad_fn, draft_client, all_players, draft_entry_id, gw_for_picks,
     ))
 
     results = await asyncio.gather(*coros)
