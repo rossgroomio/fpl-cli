@@ -222,6 +222,12 @@ class TestAwardsTies:
         assert "3 more managers omitted" in detail
         # The award still records every tied manager, only the prose is trimmed
         assert awards["biggest_bench_haul"]["manager_name"].count(" and ") == 5
+        # All tied on bench points, so the ones named are those it cost most:
+        # M05 scored least (55), M00 most (60).
+        assert [n for n in ("M00", "M01", "M02", "M03", "M04", "M05") if n in detail] == [
+            "M03", "M04", "M05",
+        ]
+        assert detail.index("M05") < detail.index("M04") < detail.index("M03")
 
     def test_tied_captain_same_captain(self):
         """Two managers captaining the same player - grouped output."""

@@ -521,8 +521,11 @@ def _compute_shared_awards(
         if best_bench_pts > 0:
             bench_kings = [m for m in bench_candidates if m["bench_points"] == best_bench_pts]
             # Each entry is verbose, so a wide tie is capped the same way the
-            # transfer and captain awards are. managers is already sorted by GW
-            # points, so the highest scorers are the ones kept.
+            # transfer and captain awards are. Everyone tied here benched the
+            # same points, so name the managers it actually cost: leaving 12 on
+            # the bench stings more on a 40-point week than an 80-point one.
+            # Name is the secondary key so the choice stays deterministic.
+            bench_kings.sort(key=lambda m: (m["gw_points"], m["manager_name"]))
             omitted = max(0, len(bench_kings) - _DETAIL_CAP)
             detail_parts = []
             for m in bench_kings[:_DETAIL_CAP]:
