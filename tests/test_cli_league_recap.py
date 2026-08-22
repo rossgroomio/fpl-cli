@@ -14,6 +14,8 @@ import pytest
 from click.testing import CliRunner
 
 from fpl_cli.cli._league_recap_history import (
+    HISTORY_WARNING_BACKFILL_MANAGER_UNREACHABLE,
+    HISTORY_WARNING_BACKFILL_REPLAY_FAILED,
     HISTORY_WARNING_STANDINGS_TRUNCATED,
     HISTORY_WARNING_STORE_UNREADABLE,
     HISTORY_WARNING_TRANSFER_DETAIL_SHORT,
@@ -482,6 +484,45 @@ class TestCaptureRecapHistory:
         assert result.store_readable is False
         assert result.written == []
 
+    async def test_a_missing_league_id_leaves_previous_rank_at_its_derived_value(self):
+        """Finding #11's second fail-open degrade path: with no league id,
+        `capture_recap_history` returns before the store is ever constructed,
+        so the R13 correction never runs -- `previous_rank` must survive
+        untouched rather than raise or silently vanish."""
+        data = _recap_data(managers=[_manager(name="Alice", entry_id=1, previous_rank=99)])
+        del data["league_id"]
+
+        result = await capture_recap_history(data, season=SEASON)
+
+        assert result.store_readable is False
+        assert data["managers"][0]["previous_rank"] == 99
+
+    async def test_the_recorded_previous_position_correction_reaches_the_built_row(self):
+        """Finding #1: before this fix, `_apply_recorded_previous_positions`
+        ran after `capture_result.rows` was already built and persisted, so
+        the correction reached `collected_data` (console/report) but not the
+        ledger row or the `--format json` payload built from `rows`. It must
+        now reach both."""
+        store = _store()
+        store.append_rows(4, [make_history_row(
+            season=SEASON, fpl_format="classic", league_id=42, gameweek=4,
+            manager_key=1, manager_name="Alice", league_position=3,
+        )])
+        data = _recap_data(
+            gameweek=5,
+            managers=[_manager(name="Alice", entry_id=1, previous_rank=99)],
+        )
+
+        result = await capture_recap_history(data, season=SEASON)
+
+        # Reached the row this run built and returned...
+        assert result.rows[0].previous_league_position == 3
+        # ...and the row actually persisted to the ledger.
+        persisted = store.resolved_gameweek(5)[1]
+        assert persisted.previous_league_position == 3
+        # `collected_data` still gets it too, for console/report.
+        assert data["managers"][0]["previous_rank"] == 3
+
 
 # ---------------------------------------------------------------------------
 # U6: CLI wiring
@@ -500,8 +541,10 @@ def _fpl_client() -> MagicMock:
     return client
 
 
-def _invoke_recap(collected: LeagueRecapData, args: list[str] | None = None):
-    client = _fpl_client()
+def _invoke_recap(
+    collected: LeagueRecapData, args: list[str] | None = None, *, client: MagicMock | None = None,
+):
+    client = client or _fpl_client()
     with (
         patch("fpl_cli.cli.league_recap.load_settings", return_value={"fpl": {"classic_league_id": 42}}),
         patch("fpl_cli.api.fpl.FPLClient", return_value=client),
@@ -918,6 +961,81 @@ class TestDetailedBackfill:
 
         assert _store("draft").resolved_gameweek(2)[11].capture_status is CaptureStatus.OK
 
+    async def test_a_failed_replay_reaches_capture_result_warnings(self):
+        """Finding #10: `_detailed_backfill`'s replay-failure diagnostic used
+        to go straight to `error_console.print()`, bypassing `_warn()` -- so
+        it never reached `capture_result.warnings`, and `--format json`
+        mode's warning-prose suppression (`error_console.capture()` with no
+        `as` binding) dropped it with no replacement. It must now go through
+        `_warn()` like every other diagnostic in this module."""
+        data = _recap_data(
+            gameweek=3,
+            managers=[_manager(name="Alice", entry_id=1)],
+            cohort=_cohort((1, "Alice", 1, 60, 300)),
+        )
+
+        result = await capture_recap_history(
+            data, season=SEASON, finished_gameweeks=range(1, 4),
+            replay_gameweek=self._replay([], {"now": 0, "peak": 0}, fail={2}),
+            backfill_detail=True,
+        )
+
+        matching = [w for w in result.warnings if w["code"] == HISTORY_WARNING_BACKFILL_REPLAY_FAILED]
+        assert len(matching) == 1
+        assert "GW2" in matching[0]["message"]
+        assert "boom" in matching[0]["message"]
+
+
+class TestBackfillCountersInvalidation:
+    async def test_a_coarse_repair_of_an_earlier_unknown_gameweek_is_reflected_in_the_next_counters(
+        self,
+    ):
+        """The counters cache advances through GW1 while that manager's row is
+        still unknown (`weeks_on_top` holds, per R19). GW1 is then repaired --
+        the coarse tier's automatic, `--backfill-detail`-free part of
+        `_backfill` -- in the very same run that also captures GW2, which is
+        exactly `stamp + 1`. Without `invalidate_if_repaired` wired through
+        `_backfill`'s returned gameweeks, `compute_counters_through`'s fast
+        path would fold GW2 onto the run state cached back when GW1 was still
+        unknown -- `weeks_on_top` length=1, start_gameweek=2 -- instead of
+        recognising the run actually started at GW1."""
+        from fpl_cli.models.league_history import LeagueHistoryCountersProjection
+        from fpl_cli.services.league_history_counters import (
+            counters_file,
+            manager_condition_views,
+            rebuild_counters_through,
+        )
+
+        gw1 = _recap_data(gameweek=1, managers=[], cohort=_cohort((1, "Alice", 1, 60, 300)))
+        await capture_recap_history(gw1, season=SEASON)
+        assert _store().resolved_gameweek(1)[1].capture_status is CaptureStatus.UNKNOWN
+
+        gw2 = _recap_data(
+            gameweek=2,
+            managers=[_manager(name="Alice", entry_id=1, overall_rank=1, gw_rank=1)],
+            cohort=_cohort((1, "Alice", 1, 60, 600)),
+        )
+        client = _HistoryClient({1: [_history_row(1, 60, 300, overall_rank=1)]})
+        await capture_recap_history(
+            gw2, season=SEASON, history_client=client, finished_gameweeks=[1, 2],
+        )
+
+        # The repair really happened: GW1's line count grew (append-only; the
+        # unknown line is kept, not replaced) and its winner is now coarse OK.
+        assert len(_store().load_gameweek(1)) == 2
+        resolved_gw1 = _store().resolved_gameweek(1)
+        assert resolved_gw1[1].capture_status is CaptureStatus.OK
+        assert resolved_gw1[1].tier is FidelityTier.COARSE
+
+        cached = LeagueHistoryCountersProjection.model_validate_json(
+            counters_file(SEASON, "classic", 42).read_text(encoding="utf-8"),
+        )
+        expected = rebuild_counters_through(_store(), 2)
+        assert cached.runs == expected.runs
+
+        view = manager_condition_views(cached, 1)["weeks_on_top"]
+        assert (view.length, view.start_gameweek) == (2, 1)
+
 
 class TestCoverageReport:
     async def test_a_coarse_gap_names_the_remedy_and_what_it_holds_back(self, capsys):
@@ -1301,16 +1419,24 @@ class TestConsoleUnavailable:
 
 
 class TestApplyRecordedPreviousPositions:
+    """`_apply_recorded_previous_positions` now lives in `_league_recap_history`
+    and takes a `LeagueHistoryStore` instance directly -- it runs inside
+    `capture_recap_history`, on the same store that function already
+    constructs, rather than as a CLI-layer post-hoc step with its own store
+    (finding #1/#2/#14/#18's coordinated fix). See `TestCaptureRecapHistory`
+    for coverage that the correction reaches `capture_result.rows`, not just
+    `data` -- the exact gap finding #1 identified."""
+
     def test_gw1_is_a_no_op(self):
-        from fpl_cli.cli.league_recap import _apply_recorded_previous_positions
+        from fpl_cli.cli._league_recap_history import _apply_recorded_previous_positions
 
         data = _recap_data(managers=[_manager(name="Alice", previous_rank=99)])
-        _apply_recorded_previous_positions(data, 1, fpl_format="classic", league_id=42)
+        _apply_recorded_previous_positions(data, _store(), 1)
 
         assert data["managers"][0]["previous_rank"] == 99
 
     def test_a_recorded_prior_row_overrides_the_derived_previous_rank(self):
-        from fpl_cli.cli.league_recap import _apply_recorded_previous_positions
+        from fpl_cli.cli._league_recap_history import _apply_recorded_previous_positions
 
         store = _store()
         store.append_rows(4, [make_history_row(
@@ -1319,20 +1445,20 @@ class TestApplyRecordedPreviousPositions:
         )])
         data = _recap_data(managers=[_manager(name="Alice", entry_id=1, previous_rank=99)])
 
-        _apply_recorded_previous_positions(data, 5, fpl_format="classic", league_id=42)
+        _apply_recorded_previous_positions(data, store, 5)
 
         assert data["managers"][0]["previous_rank"] == 3
 
     def test_no_prior_row_falls_back_unchanged(self):
-        from fpl_cli.cli.league_recap import _apply_recorded_previous_positions
+        from fpl_cli.cli._league_recap_history import _apply_recorded_previous_positions
 
         data = _recap_data(managers=[_manager(name="Alice", entry_id=1, previous_rank=99)])
-        _apply_recorded_previous_positions(data, 5, fpl_format="classic", league_id=42)
+        _apply_recorded_previous_positions(data, _store(), 5)
 
         assert data["managers"][0]["previous_rank"] == 99
 
     def test_a_manager_absent_from_the_prior_row_falls_back_unchanged(self):
-        from fpl_cli.cli.league_recap import _apply_recorded_previous_positions
+        from fpl_cli.cli._league_recap_history import _apply_recorded_previous_positions
 
         store = _store()
         store.append_rows(4, [make_history_row(
@@ -1344,13 +1470,13 @@ class TestApplyRecordedPreviousPositions:
             _manager(name="Bob", entry_id=2, previous_rank=88),
         ])
 
-        _apply_recorded_previous_positions(data, 5, fpl_format="classic", league_id=42)
+        _apply_recorded_previous_positions(data, store, 5)
 
         assert data["managers"][0]["previous_rank"] == 3
         assert data["managers"][1]["previous_rank"] == 88
 
     def test_draft_keys_on_league_entry_id_not_entry_id(self):
-        from fpl_cli.cli.league_recap import _apply_recorded_previous_positions
+        from fpl_cli.cli._league_recap_history import _apply_recorded_previous_positions
 
         store = LeagueHistoryStore(SEASON, "draft", 42)  # type: ignore[arg-type]
         store.append_rows(4, [make_history_row(
@@ -1362,9 +1488,26 @@ class TestApplyRecordedPreviousPositions:
             fpl_format="draft",
         )
 
-        _apply_recorded_previous_positions(data, 5, fpl_format="draft", league_id=42)
+        _apply_recorded_previous_positions(data, store, 5)
 
         assert data["managers"][0]["previous_rank"] == 2
+
+    def test_an_unreadable_prior_gameweek_falls_back_unchanged(self):
+        """Finding #11: the fail-open degrade path for a corrupt/unreadable
+        GW-1 ledger file -- must not raise, and `previous_rank` stays at its
+        derived value rather than being overridden from a file that can't
+        be trusted."""
+        from fpl_cli.cli._league_recap_history import _apply_recorded_previous_positions
+
+        store = _store()
+        path = store.gameweek_file(4)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("not json{{{\n", encoding="utf-8")
+        data = _recap_data(managers=[_manager(name="Alice", entry_id=1, previous_rank=99)])
+
+        _apply_recorded_previous_positions(data, store, 5)
+
+        assert data["managers"][0]["previous_rank"] == 99
 
 
 class TestLeagueHistoryReportSection:
@@ -1550,6 +1693,30 @@ class TestLeagueRecapJsonEnvelope:
         assert row["gameweek"] == 5
         assert row["capture_status"] == "ok"
 
+    def test_the_recorded_previous_position_correction_reaches_the_payload(self):
+        """Finding #1, through the full command: the ledger's recorded GW4
+        position -- not the raw, uncorrected `previous_rank` the collected
+        data started with -- is what the `--format json` payload shows,
+        because the correction now runs inside `capture_recap_history`
+        before `capture_result.rows` (the payload's source) is built."""
+        store = _store(fpl_format="classic", league_id=42)
+        store.append_rows(4, [make_history_row(
+            season=SEASON, fpl_format="classic", league_id=42, gameweek=4,
+            manager_key=1, manager_name="Alice", league_position=3,
+        )])
+
+        result = _invoke_recap(
+            _recap_data(
+                gameweek=5,
+                managers=[_manager(name="Alice", entry_id=1, previous_rank=99)],
+            ),
+            ["--format", "json"],
+        )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        assert payload["data"][0]["previous_league_position"] == 3
+
     def test_the_warnings_key_is_present_and_empty_on_a_clean_run(self):
         result = _invoke_recap(_recap_data(), ["--format", "json"])
 
@@ -1593,6 +1760,34 @@ class TestLeagueRecapJsonEnvelope:
         assert len(payload["data"]) == 1
         codes = [w["code"] for w in payload["metadata"]["warnings"]]
         assert HISTORY_WARNING_STORE_UNREADABLE in codes
+
+    def test_a_backfill_manager_fetch_failure_reaches_metadata_warnings(self):
+        """Finding #10: `_coarse_backfill`'s manager-history-fetch-failure
+        diagnostic used to go straight to `error_console.print()`, bypassing
+        `_warn()` -- so under `--format json`, where the whole capture call
+        is wrapped in `error_console.capture()` with no `as` binding, that
+        detail was silently discarded with no replacement in the payload.
+        It must now reach `metadata.warnings` like every other diagnostic."""
+        client = _fpl_client()
+        client.get_gameweeks = AsyncMock(return_value=[
+            {"id": 4, "finished": True}, {"id": 5, "finished": True},
+        ])
+        client.get_manager_history = AsyncMock(side_effect=RuntimeError("boom"))
+
+        result = _invoke_recap(
+            _recap_data(managers=[_manager(name="Alice", entry_id=1)]),
+            ["--format", "json"],
+            client=client,
+        )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        matching = [
+            w for w in payload["metadata"]["warnings"]
+            if w["code"] == HISTORY_WARNING_BACKFILL_MANAGER_UNREACHABLE
+        ]
+        assert len(matching) == 1
+        assert "Alice" in matching[0]["message"]
 
     def test_metadata_coverage_reflects_the_tiers_actually_present(self):
         result = _invoke_recap(

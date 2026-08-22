@@ -22,6 +22,7 @@ from fpl_cli.services.league_history_counters import (
     conditions_for_format,
     counters_file,
     counters_partition_dir,
+    invalidate_if_repaired,
     manager_condition_views,
     rebuild_counters_through,
 )
@@ -547,6 +548,89 @@ class TestAdvanceAndRebuild:
 
         assert view.length == 1
         assert view.start_gameweek == 3
+
+    def test_an_unknown_gameweek_repaired_behind_a_matching_stamp_is_not_folded_onto_stale_state(self):
+        """Reproduces the fast-path bug `invalidate_if_repaired` exists to close:
+        the counters cache advances through GW1 while its row is still unknown,
+        GW1 is then repaired -- the automatic, unconditional part of
+        `_backfill` in `fpl_cli/cli/_league_recap_history.py` -- and only then
+        is GW2 captured. `through_gameweek(2) == stamp(1) + 1`, so without
+        invalidating first the fast path would fold GW2 onto the run state
+        `existing.runs` still carries from before the repair: length=1,
+        start_gameweek=2, undercounting the run by the gameweek it was
+        wrongly denied."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+
+        # (1) GW1 captured unknown -- e.g. this manager's picks fetch failed.
+        store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, capture_status="unknown")])
+
+        # (2) The counters cache advances through GW1 while it is still
+        # unknown: weeks_on_top holds (R19), so no run has opened.
+        stamped = compute_counters_through(store, 1)
+        assert stamped.computed_through_gameweek == 1
+        assert manager_condition_views(stamped, 1)["weeks_on_top"].length == 0
+
+        # (3) GW1 is superseded with a real row -- the automatic backfill
+        # repair, unconditional and independent of any explicit rebuild.
+        store.append_rows(1, [
+            make_history_row(gameweek=1, manager_key=1, league_position=1, captured_at=LATER),
+        ])
+
+        # (4) GW2 is captured, and the fix path runs: invalidate first, then
+        # advance.
+        store.append_rows(2, [make_history_row(gameweek=2, manager_key=1, league_position=1)])
+        invalidate_if_repaired(store, {1})
+        fixed = compute_counters_through(store, 2)
+
+        # (5) Matches a full rebuild's ground truth: both gameweeks extend the
+        # run, which started at GW1 now that GW1 is known to qualify -- not
+        # the stale fast path's length=1/start=2.
+        ground_truth = rebuild_counters_through(store, 2)
+        assert fixed.runs == ground_truth.runs
+        view = manager_condition_views(fixed, 1)["weeks_on_top"]
+        assert (view.length, view.start_gameweek) == (2, 1)
+
+    def test_invalidate_if_repaired_is_a_no_op_when_every_repair_is_ahead_of_the_stamp(self):
+        """A repaired gameweek strictly after the cache's own stamp needs no
+        forced invalidation: `compute_counters_through` already rebuilds on
+        its own for any target beyond stamp+1 (KTD10), so the cache file is
+        left alone rather than discarded for nothing."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, league_position=1)])
+        compute_counters_through(store, 1)  # stamp == 1
+
+        invalidate_if_repaired(store, {2})  # 2 > stamp(1) -- nothing to force
+
+        assert counters_file("2026-27", "classic", 1).is_file()
+
+    def test_invalidate_if_repaired_is_a_no_op_with_no_cache_yet(self):
+        """Nothing to invalidate before `compute_counters_through` has ever
+        run for this partition -- must not raise trying to read or delete a
+        file that was never written."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, league_position=1)])
+
+        invalidate_if_repaired(store, {1})  # must not raise
+
+        assert not counters_file("2026-27", "classic", 1).exists()
+
+    def test_a_corrupt_gameweek_behind_a_matching_stamp_falls_through_to_a_full_rebuild(self):
+        """The fast path's own `store.resolved_gameweek` reads can fail even
+        when the cached stamp matches `through_gameweek - 1` -- a ledger file
+        corrupted after the cache was written. Every other test in this class
+        forces the rebuild fallback through a different door (a stale stamp,
+        a version mismatch, a missing cache file); this is the one that
+        corrupts a gameweek file while a matching, otherwise-valid cache is
+        already on disk."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, league_position=1)])
+        compute_counters_through(store, 1)  # stamp == 1, matches through_gameweek(2) - 1
+
+        store.gameweek_file(2).write_text("not json{{{\n", encoding="utf-8")
+
+        projection = compute_counters_through(store, 2)  # must not raise
+
+        assert projection.runs == rebuild_counters_through(store, 2).runs
 
     def test_version_mismatched_projection_is_rebuilt_rather_than_served(self):
         import json

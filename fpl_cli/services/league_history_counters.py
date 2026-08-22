@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import logging
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -501,9 +501,18 @@ def compute_counters_through(
     computes, so the next call can advance from it. The cached projection
     advances by exactly one gameweek when its stamp is
     `through_gameweek - 1`; anything else -- missing, unreadable, or
-    wrong-version cache, a backfill behind the stamp, or a multi-gameweek
-    catch-up ahead of it -- rebuilds fully (KTD10). A lost race on the
-    cache file costs a rebuild, never wrong data.
+    wrong-version cache, a request for a `through_gameweek` at or behind
+    the stamp, or a multi-gameweek catch-up ahead of it -- rebuilds fully
+    (KTD10). A lost race on the cache file costs a rebuild, never wrong
+    data.
+
+    The fast path trusts every gameweek before `through_gameweek` exactly
+    as `existing.runs` already has it -- it does not itself notice a
+    repair to an earlier gameweek (an unknown row superseded, a coarse row
+    upgraded) made between the stamp being set and this call. A caller
+    that can make such a repair must invalidate first; see
+    `invalidate_if_repaired`, which `capture_recap_history` calls ahead of
+    every `build_notes_pack`.
     """
     existing = _load_projection(store)
 
@@ -536,6 +545,47 @@ def compute_counters_through(
     projection = rebuild_counters_through(store, through_gameweek)
     _save_projection(projection)
     return projection
+
+
+def invalidate_if_repaired(store: LeagueHistoryStore, repaired_gameweeks: Collection[int]) -> None:
+    """Discard the cached projection when a repair reaches back into it.
+
+    `compute_counters_through`'s fast path only re-derives the one
+    gameweek it is asked to advance to; every earlier gameweek's
+    contribution is trusted unconditionally from `existing.runs`. A caller
+    that repairs an earlier gameweek -- an unknown row superseded with a
+    real one, a coarse row upgraded to detailed, a gap filled in -- breaks
+    that trust whenever the repaired gameweek sits at or before the
+    cache's own stamp: the fast path would then fold the next gameweek
+    onto state that still reflects the row *before* the repair.
+
+    `fpl_cli/cli/_league_recap_history.py`'s automatic, unconditional
+    unknown-row repair is exactly this caller: it runs on every recap
+    invocation, ahead of `build_notes_pack`, so a gameweek it supersedes
+    must be accounted for before the next `compute_counters_through` call,
+    not after. Deleting the file here routes that next call through
+    `_load_projection`'s existing "missing file -> full rebuild" path
+    (KTD10) rather than adding a second invalidation mechanism.
+
+    A no-op when there is no cache yet, or when every repaired gameweek
+    sits strictly after the cache's stamp -- in both cases the next call
+    already rebuilds fully on its own (a missing file, or a
+    multi-gameweek catch-up ahead of the stamp), so there is nothing to
+    force.
+    """
+    if not repaired_gameweeks:
+        return
+    existing = _load_projection(store)
+    if existing is None:
+        return
+    if any(gameweek <= existing.computed_through_gameweek for gameweek in repaired_gameweeks):
+        path = counters_file(store.season, store.fpl_format, store.league_id)
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning(
+                "Could not invalidate stale league history counters at %s: %s", path, exc,
+            )
 
 
 # ---------------------------------------------------------------------------

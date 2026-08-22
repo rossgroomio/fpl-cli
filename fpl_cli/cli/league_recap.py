@@ -16,7 +16,6 @@ from fpl_cli.api.providers import ProviderError
 from fpl_cli.cli._context import Format, console, error_console, get_format, load_settings, resolve_output_dir
 from fpl_cli.cli._json import emit_json, emit_json_error, json_output_mode, output_format_option
 from fpl_cli.cli._league_recap_types import LeagueRecapData
-from fpl_cli.models.league_history import LeagueFormat
 from fpl_cli.services.league_history import GameweekCoverage
 from fpl_cli.services.league_history_notes import NotesPack, NotesPackEntry, NoteSurface
 
@@ -58,8 +57,6 @@ def league_recap_command(
     )
     from fpl_cli.cli._league_recap_history import capture_recap_history
     from fpl_cli.cli.review import _review_resolve_gw
-    from fpl_cli.season import season_label
-    from fpl_cli.services.league_history import LeagueHistoryStore
 
     settings = load_settings()
     fmt = get_format(ctx)
@@ -222,19 +219,6 @@ def league_recap_command(
                 replayed["is_dgw"] = len(target_fixtures) > 10
                 return replayed
 
-            # Probed before capture, JSON mode only: the one thing capture
-            # prints on stderr that isn't a `_warn()`-driven code the
-            # suppression below would otherwise make redundant to repeat.
-            # Checked here, not after, since the partition always exists
-            # once capture has written to it.
-            first_capture_store_path: Path | None = None
-            if output_format == "json" and collected_data.get("league_id") is not None:
-                probe_store = LeagueHistoryStore(
-                    season_label(), "draft" if is_draft else "classic", collected_data["league_id"],
-                )
-                if not probe_store.partition_exists():
-                    first_capture_store_path = probe_store.partition_dir()
-
             # Record the gameweek, then fill what the API still allows.
             # Deliberately before synthesis: rendering happens after the LLM
             # call, so capturing at render time would be too late for anything
@@ -242,9 +226,15 @@ def league_recap_command(
             # and the recap carries on (R4). In JSON mode the same warnings
             # reach the payload as codes (below), so the human-readable prose
             # is suppressed here rather than printed twice -- but the
-            # first-capture notice above has no such JSON-side counterpart
-            # yet, so it's carried forward via `first_capture_store_path`
-            # rather than silently lost along with the suppressed prose.
+            # first-capture notice has no such JSON-side counterpart of its
+            # own, so it's carried forward via `capture_result.first_capture_
+            # store_path` (computed inside `capture_recap_history`, from the
+            # same check that gates the notice) rather than silently lost
+            # along with the suppressed prose. R13's previous-position
+            # correction also happens inside the call below now, before the
+            # rows it returns are built -- not as a separate step here -- so
+            # both the persisted ledger row and the `--format json` payload
+            # see the corrected value too, not just `collected_data`.
             with error_console.capture() if output_format == "json" else nullcontext():
                 capture_result = await capture_recap_history(
                     collected_data,
@@ -257,18 +247,6 @@ def league_recap_command(
                     backfill_detail=backfill_detail,
                 )
             notes_pack = capture_result.notes_pack
-
-            # R13: prefer the ledger's actually-recorded GW-1 position over
-            # the arithmetic/derived one already in `previous_rank` -- a real
-            # prior-gameweek row is more trustworthy than any re-derivation.
-            # No-ops (falls back to today's behaviour unchanged) when there is
-            # no prior gameweek, no league id, or the store can't be read.
-            if collected_data.get("league_id") is not None:
-                _apply_recorded_previous_positions(
-                    collected_data, gw,
-                    fpl_format="draft" if is_draft else "classic",
-                    league_id=collected_data["league_id"],
-                )
 
             # Report-surfaced history text, stashed as plain strings so the
             # Jinja template needs no knowledge of NotesPack/NoteSurface.
@@ -339,7 +317,8 @@ def league_recap_command(
                         # stderr instead; JSON mode's warning suppression
                         # would otherwise drop it with no replacement).
                         "first_capture_store_path": (
-                            str(first_capture_store_path) if first_capture_store_path else None
+                            str(capture_result.first_capture_store_path)
+                            if capture_result.first_capture_store_path else None
                         ),
                     },
                     file=stdout,
@@ -402,32 +381,6 @@ def _serialize_notes_pack(pack: NotesPack) -> dict[str, Any]:
         "coverage_entries": [_serialize_notes_pack_entry(entry) for entry in pack.coverage_entries],
         "entry_count": pack.entry_count,
     }
-
-
-def _apply_recorded_previous_positions(
-    data: LeagueRecapData, gw: int, *, fpl_format: LeagueFormat, league_id: int,
-) -> None:
-    """R13: override `previous_rank` with the ledger's recorded GW-1 position
-    wherever a prior-gameweek row exists, leaving it untouched (U3's derived
-    path, or unset) for any manager with none. A store problem degrades to
-    that same untouched fallback rather than raising (R4)."""
-    if gw <= 1:
-        return
-
-    from fpl_cli.cli._league_recap_data import recap_manager_key
-    from fpl_cli.season import season_label
-    from fpl_cli.services.league_history import LeagueHistoryError, LeagueHistoryStore
-
-    store = LeagueHistoryStore(season_label(), fpl_format, league_id)
-    try:
-        previous_rows = store.resolved_gameweek(gw - 1)
-    except LeagueHistoryError:
-        return
-
-    for m in data["managers"]:
-        row = previous_rows.get(recap_manager_key(m))
-        if row is not None and row.league_position is not None:
-            m["previous_rank"] = row.league_position
 
 
 def _render_console_highlights(data: LeagueRecapData, notes_pack: NotesPack | None = None) -> None:
