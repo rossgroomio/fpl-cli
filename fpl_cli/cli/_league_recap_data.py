@@ -30,6 +30,10 @@ logger = logging.getLogger(__name__)
 
 _CHIP_DISPLAY = {"wildcard": "WC", "freehit": "FH", "bboost": "BB", "3xc": "TC"}
 _PICKS_CONCURRENCY = 10
+# Most managers named in one award's detail before it is truncated. Shared by
+# the transfer/waiver, captain, and bench-haul awards so a wide tie in a large
+# league cannot sprawl.
+_DETAIL_CAP = 3
 
 
 def _classic_pick_flags(
@@ -516,8 +520,12 @@ def _compute_shared_awards(
         best_bench_pts = max(m["bench_points"] for m in bench_candidates)
         if best_bench_pts > 0:
             bench_kings = [m for m in bench_candidates if m["bench_points"] == best_bench_pts]
+            # Each entry is verbose, so a wide tie is capped the same way the
+            # transfer and captain awards are. managers is already sorted by GW
+            # points, so the highest scorers are the ones kept.
+            omitted = max(0, len(bench_kings) - _DETAIL_CAP)
             detail_parts = []
-            for m in bench_kings:
+            for m in bench_kings[:_DETAIL_CAP]:
                 bench_players = [
                     p for p in m["squad"]
                     if not p["contributed"] and not p["auto_sub_out"] and p["points"] > 0
@@ -527,10 +535,14 @@ def _compute_shared_awards(
                     f"{m['manager_name']} left {m['bench_points']} pts on the bench"
                     f" (team scored {m['gw_points']} pts): {player_detail}"
                 )
+            detail = "; ".join(detail_parts)
+            if omitted:
+                plural = "manager" if omitted == 1 else "managers"
+                detail += f"; {omitted} more {plural} omitted"
             awards["biggest_bench_haul"] = RecapAwardEntry(
                 manager_name=" and ".join(m["manager_name"] for m in bench_kings),
                 value=best_bench_pts,
-                detail="; ".join(detail_parts),
+                detail=detail,
             )
 
     # Captain awards (classic only - draft has no captaincy)
@@ -565,9 +577,6 @@ def _compute_shared_awards(
         _compute_waiver_awards(managers, awards)
 
     return awards
-
-
-_DETAIL_CAP = 3
 
 
 def _fmt_award_move(m: RecapTransfer | RecapDraftTransaction) -> str:

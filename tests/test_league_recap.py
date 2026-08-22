@@ -207,6 +207,22 @@ class TestAwardsTies:
         assert "team scored 40 pts" in awards["biggest_bench_haul"]["detail"]
         assert "team scored 55 pts" in awards["biggest_bench_haul"]["detail"]
 
+    def test_wide_bench_haul_tie_caps_managers(self):
+        """Each bench entry is verbose, so a wide tie is capped like the other awards."""
+        managers = [
+            _make_manager(
+                name=f"M{i:02d}", entry_id=i, gw_points=60 - i, bench_points=12,
+                squad=[_make_squad_player(name=f"Bench{i:02d}", points=12, contributed=False)],
+            )
+            for i in range(6)
+        ]
+        awards = _compute_shared_awards(managers)
+        detail = awards["biggest_bench_haul"]["detail"]
+        assert detail.count("left 12 pts on the bench") == 3
+        assert "3 more managers omitted" in detail
+        # The award still records every tied manager, only the prose is trimmed
+        assert awards["biggest_bench_haul"]["manager_name"].count(" and ") == 5
+
     def test_tied_captain_same_captain(self):
         """Two managers captaining the same player - grouped output."""
         managers = [
