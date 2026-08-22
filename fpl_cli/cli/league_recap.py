@@ -26,13 +26,16 @@ logger = logging.getLogger(__name__)
 @click.option("--save", "-s", is_flag=True, help="Save report to output directory")
 @click.option("--output", "-o", type=click.Path(), help="Custom output directory for report")
 @click.option("--summarise", is_flag=True, help="Add LLM-generated editorial narrative (requires API keys)")
+@click.option("--backfill-detail", "backfill_detail", is_flag=True, default=False,
+              help="Rebuild earlier gameweeks in full detail (captains, squads, transfers) "
+                   "- one extra request per manager per gameweek")
 @click.option("--debug", is_flag=True, help="Save LLM prompts and responses to data/debug/")
 @click.option("--dry-run", is_flag=True, help="Build and save prompts to data/debug/ without calling LLMs")
 @click.pass_context
 def league_recap_command(
     ctx: click.Context,
     gameweek: int | None, is_draft: bool, save: bool, output: str | None,
-    summarise: bool, debug: bool, dry_run: bool,
+    summarise: bool, backfill_detail: bool, debug: bool, dry_run: bool,
 ) -> None:
     """Recap a completed gameweek for the whole league - awards, standings, and banter."""
     from fpl_cli.agents.orchestration.report import ReportAgent
@@ -43,6 +46,7 @@ def league_recap_command(
         collect_draft_recap_data,
         evaluate_league_fines,
     )
+    from fpl_cli.cli._league_recap_history import capture_recap_history
     from fpl_cli.cli.review import _review_resolve_gw
 
     settings = load_settings()
@@ -93,6 +97,15 @@ def league_recap_command(
             is_bgw = len(raw_fixtures) < 10
             is_dgw = len(raw_fixtures) > 10
 
+            # Which clubs had no fixture, so a recorded squad can tell a
+            # player who blanked apart from one who never kicked a ball. Same
+            # threading shape `review` uses for its per-format helpers.
+            from fpl_cli.services.fixture_predictions import find_blank_gameweeks
+
+            teams_list = list(teams.values())
+            blank_gws = find_blank_gameweeks({gw: raw_fixtures}, teams_list, gw, gw)
+            bgw_team_ids = frozenset(t["team_id"] for t in blank_gws.get(gw, []))
+
             # Get next GW deadline
             from datetime import datetime, timedelta
 
@@ -125,12 +138,13 @@ def league_recap_command(
                     collected_data = await collect_draft_recap_data(
                         settings=settings, gw=gw, live_stats=live_stats,
                         players=players, teams=teams, is_live_gw=is_live_gw,
+                        bgw_team_ids=bgw_team_ids,
                     )
                 else:
                     collected_data = await collect_classic_recap_data(
                         client=client, settings=settings, gw=gw,
                         live_stats=live_stats, player_map=player_map, teams=teams,
-                        is_live_gw=is_live_gw,
+                        is_live_gw=is_live_gw, bgw_team_ids=bgw_team_ids,
                     )
             except RecapReconciliationError as e:
                 # A stop condition, not a soft skip: exit non-zero so a
@@ -139,8 +153,8 @@ def league_recap_command(
                 raise click.ClickException(str(e)) from e
 
             # Add context metadata
-            collected_data["is_bgw"] = is_bgw  # type: ignore[typeddict-unknown-key]
-            collected_data["is_dgw"] = is_dgw  # type: ignore[typeddict-unknown-key]
+            collected_data["is_bgw"] = is_bgw
+            collected_data["is_dgw"] = is_dgw
             collected_data["season_length"] = TOTAL_GAMEWEEKS  # type: ignore[typeddict-unknown-key]
             if next_deadline:
                 collected_data["next_deadline"] = next_deadline  # type: ignore[typeddict-unknown-key]
@@ -154,6 +168,53 @@ def league_recap_command(
             )
             if fines:
                 collected_data["fines"] = fines
+
+            async def _replay_gameweek(target_gw: int) -> LeagueRecapData | None:
+                """Re-collect one finished gameweek for the detailed backfill.
+
+                Goes through the same collectors the live path uses, so a
+                replayed gameweek and a live one produce identical rows.
+                """
+                target_live = await client.get_gameweek_live(target_gw)
+                target_stats = {e["id"]: e["stats"] for e in target_live.get("elements", [])}
+                target_fixtures = await client.get_fixtures(target_gw)
+                target_blanks = find_blank_gameweeks(
+                    {target_gw: target_fixtures}, teams_list, target_gw, target_gw,
+                )
+                target_bgw_ids = frozenset(
+                    t["team_id"] for t in target_blanks.get(target_gw, [])
+                )
+                if is_draft:
+                    replayed = await collect_draft_recap_data(
+                        settings=settings, gw=target_gw, live_stats=target_stats,
+                        players=players, teams=teams, is_live_gw=False,
+                        bgw_team_ids=target_bgw_ids,
+                    )
+                else:
+                    replayed = await collect_classic_recap_data(
+                        client=client, settings=settings, gw=target_gw,
+                        live_stats=target_stats, player_map=player_map, teams=teams,
+                        is_live_gw=False, bgw_team_ids=target_bgw_ids,
+                    )
+                replayed["is_bgw"] = len(target_fixtures) < 10
+                replayed["is_dgw"] = len(target_fixtures) > 10
+                return replayed
+
+            # Record the gameweek, then fill what the API still allows.
+            # Deliberately before synthesis: rendering happens after the LLM
+            # call, so capturing at render time would be too late for anything
+            # the prompt reads. Never raises -- a store problem warns on stderr
+            # and the recap carries on (R4).
+            await capture_recap_history(
+                collected_data,
+                is_live_gw=is_live_gw,
+                # Classic's coarse tier: one call per manager for the whole
+                # season. Draft has no per-manager history endpoint at all.
+                history_client=None if is_draft else client,
+                finished_gameweeks=finished_gws,
+                replay_gameweek=_replay_gameweek,
+                backfill_detail=backfill_detail,
+            )
 
             # LLM summarisation (opt-in via --summarise or --dry-run)
             if summarise or dry_run:

@@ -49,10 +49,22 @@ from fpl_cli.cli._league_recap_types import (
     RecapFineResult,
     RecapManagerEntry,
     RecapManagerPlayer,
+    RecapStandingsEntry,
     RecapTransfer,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def recap_manager_key(m: RecapManagerEntry) -> int:
+    """The ledger key for a collected manager.
+
+    Draft keys on the league-local `league_entry` id, which is always present;
+    the site-wide `entry_id` is null for an unclaimed team and two of them
+    would collide on 0 (KTD11). Classic has no league-local id and keys on
+    `entry_id`, which the collector always populates.
+    """
+    return m.get("league_entry_id", m["entry_id"])
 
 
 class RecapReconciliationError(RuntimeError):
@@ -66,6 +78,20 @@ class RecapReconciliationError(RuntimeError):
 
 
 _CHIP_DISPLAY = {"wildcard": "WC", "freehit": "FH", "bboost": "BB", "3xc": "TC"}
+_CHIP_RAW = {display: raw for raw, display in _CHIP_DISPLAY.items()}
+
+
+def raw_chip_name(display: str | None) -> str | None:
+    """Map a displayed chip abbreviation back to the raw API name.
+
+    `RecapManagerEntry.active_chip` holds the display form, but the ledger
+    stores what the API said so a recorded row never depends on a rendering
+    choice. An unrecognised value passes through unchanged -- the collector
+    already passes through a chip it has no abbreviation for.
+    """
+    if not display:
+        return None
+    return _CHIP_RAW.get(display, display)
 _PICKS_CONCURRENCY = 10
 # Most managers named in one award's detail before it is truncated. Shared by
 # the transfer/waiver, captain, and bench-haul awards so a wide tie in a large
@@ -119,6 +145,7 @@ async def collect_classic_recap_data(
     teams: dict[int, Team],
     *,
     is_live_gw: bool = True,
+    bgw_team_ids: frozenset[int] = frozenset(),
 ) -> LeagueRecapData:
     """Fetch all managers' picks and compute league-wide recap data.
 
@@ -126,6 +153,10 @@ async def collect_classic_recap_data(
     (a live capture) rather than an earlier one being replayed. It gates the
     headline-numbers reconciliation, which only holds for a live capture --
     see RecapReconciliationError.
+
+    `bgw_team_ids` is the set of clubs with no fixture this gameweek, so a
+    recorded squad can tell a player who blanked apart from one who never
+    kicked a ball (R20).
 
     Returns a LeagueRecapData dict ready for template rendering.
     """
@@ -135,11 +166,13 @@ async def collect_classic_recap_data(
     standings_response = await client.get_classic_league_standings(classic_league_id)
     league = standings_response.get("league", {})
     league_name = league.get("name", "Unknown League")
-    standings = standings_response.get("standings", {}).get("results", [])
+    standings_block = standings_response.get("standings", {})
+    standings = standings_block.get("results", [])
 
     managers = await _fetch_all_manager_data(
         client, standings, gw, live_stats, player_map, teams,
         use_net_points=use_net_points, is_live_gw=is_live_gw,
+        bgw_team_ids=bgw_team_ids,
     )
 
     league_rows = [
@@ -177,13 +210,33 @@ async def collect_classic_recap_data(
 
     awards = _compute_shared_awards(managers, format_name="classic", total_managers=len(standings))
 
-    return LeagueRecapData(
+    cohort: list[RecapStandingsEntry] = [
+        RecapStandingsEntry(
+            manager_key=e.get("entry", 0),
+            manager_name=e.get("player_name", "Unknown"),
+            entry_id=e.get("entry"),
+            gw_points=e.get("event_total", 0),
+            total_points=e.get("total", 0),
+        )
+        for e in standings
+    ]
+
+    data = LeagueRecapData(
         gameweek=gw,
         league_name=league_name,
         fpl_format="classic",
         managers=managers,
         awards=awards,
+        league_id=classic_league_id,
+        standings_cohort=cohort,
+        # One page of standings is 50 entries; `has_next` says a larger league
+        # is only partly in hand, which the ledger would otherwise inherit
+        # silently (the same trap `status` guards against).
+        standings_truncated=bool(standings_block.get("has_next", False)),
     )
+    if start_event:
+        data["league_start_event"] = start_event
+    return data
 
 
 # ---------------------------------------------------------------------------
@@ -201,6 +254,7 @@ async def _fetch_all_manager_data(
     *,
     use_net_points: bool = False,
     is_live_gw: bool = True,
+    bgw_team_ids: frozenset[int] = frozenset(),
 ) -> list[RecapManagerEntry]:
     """Fetch picks for every manager in the league, extract recap data.
 
@@ -275,6 +329,7 @@ async def _fetch_all_manager_data(
                 name=player.web_name,
                 team=t.short_name if (t := teams.get(player.team_id)) else "???",
                 position=player.position_name,
+                code=player.code or None,
                 points=pts,
                 is_captain=pick.get("is_captain", False),
                 is_vice_captain=pick.get("is_vice_captain", False),
@@ -284,6 +339,7 @@ async def _fetch_all_manager_data(
                 auto_sub_out=player.id in auto_sub_out_ids,
                 red_cards=red_cards,
                 unmatched=False,
+                had_fixture=player.team_id not in bgw_team_ids,
             ))
 
             if pick.get("is_captain"):
@@ -323,7 +379,7 @@ async def _fetch_all_manager_data(
                         pout_pts, _, _ = _live_player_stats(live_stats, pout.id)
                         pin_team = teams.get(pin.team_id)
                         pout_team = teams.get(pout.team_id)
-                        transfers.append(RecapTransfer(
+                        transfer = RecapTransfer(
                             player_in=pin.web_name,
                             player_in_team=pin_team.short_name if pin_team else "???",
                             player_in_points=pin_pts,
@@ -332,7 +388,12 @@ async def _fetch_all_manager_data(
                             player_out_points=pout_pts,
                             net=pin_pts - pout_pts,
                             cost=transfer_cost,
-                        ))
+                        )
+                        if pin.code:
+                            transfer["player_in_code"] = pin.code
+                        if pout.code:
+                            transfer["player_out_code"] = pout.code
+                        transfers.append(transfer)
             except Exception as e:  # noqa: BLE001 — best-effort enrichment
                 logger.debug("Could not fetch transfers for %s: %s", manager_name, e)
 
@@ -354,7 +415,22 @@ async def _fetch_all_manager_data(
             transfer_cost=transfer_cost,
             auto_subs=auto_sub_descriptions,
             transfers=transfers,
+            transfers_made=num_transfers,
         )
+        # Three more figures the rollover destroys, already in hand on the
+        # object the headline numbers came from (R2). Recorded only where the
+        # response actually carried them, so a partial one leaves them absent
+        # rather than zero. `global_rank` is the FPL-wide rank, never a league
+        # position (KTD12).
+        squad_value = entry_history.get("value")
+        if isinstance(squad_value, int):
+            result["squad_value"] = squad_value
+        bank = entry_history.get("bank")
+        if isinstance(bank, int):
+            result["bank"] = bank
+        global_rank = entry_history.get("overall_rank")
+        if isinstance(global_rank, int):
+            result["global_rank"] = global_rank
         return result
 
     tasks = [_fetch_one(entry, i + 1) for i, entry in enumerate(standings)]
@@ -718,7 +794,10 @@ def evaluate_league_fines(
             worst_list: list[WorstPerformer] = []
             if worst:
                 worst_list = [WorstPerformer(
-                    is_user=m["entry_id"] == worst["entry_id"],
+                    # Keyed rather than compared on `entry_id`: every unclaimed
+                    # draft team carries entry_id 0, so comparing on it fines
+                    # all of them for one team's last place (KTD11).
+                    is_user=recap_manager_key(m) == recap_manager_key(worst),
                     points=worst["gw_points"],
                     gross_points=worst["gw_points"] + worst["transfer_cost"],
                     name=worst["manager_name"],
@@ -752,6 +831,7 @@ def evaluate_league_fines(
                     msg = _recap_fine_message(r, m["manager_name"])
                     triggered.append(RecapFineResult(
                         manager_name=m["manager_name"],
+                        manager_key=recap_manager_key(m),
                         rule_type=r.rule_type,
                         message=msg,
                     ))
@@ -1155,6 +1235,16 @@ def _compute_waiver_awards(
 # ---------------------------------------------------------------------------
 
 
+def _draft_manager_name(entry_info: dict[str, Any]) -> str:
+    """Display name for one draft league entry, falling back to the team name.
+
+    An unclaimed team has no player name at all, so the entry name is the only
+    thing left to call it.
+    """
+    name = f"{entry_info.get('player_first_name', '')} {entry_info.get('player_last_name', '')}".strip()
+    return name or entry_info.get("entry_name", "Unknown")
+
+
 def _bucket_draft_txns_by_league_entry(
     gw_txns: list[dict[str, Any]],
     league_entries: list[dict[str, Any]],
@@ -1191,6 +1281,7 @@ async def collect_draft_recap_data(
     teams: dict[int, Team],
     *,
     is_live_gw: bool = True,
+    bgw_team_ids: frozenset[int] = frozenset(),
 ) -> LeagueRecapData:
     """Fetch all managers' draft picks and compute league-wide recap data.
 
@@ -1222,11 +1313,18 @@ async def collect_draft_recap_data(
 
         main_player_by_name_team = {(p.web_name, p.team_id): p for p in players}
         draft_to_main_id: dict[int, int] = {}
+        # The stable cross-season code, resolved through the same match. A
+        # draft id with no entry here is exactly the unmatched case, so the
+        # recorded squad carries a null code alongside its unmatched marker
+        # rather than a seasonal id that means nothing next year (R6).
+        draft_to_main_code: dict[int, int] = {}
         for dp in draft_elements:
             key = (dp.get("web_name"), dp.get("team"))
             main_player = main_player_by_name_team.get(key)
             if main_player:
                 draft_to_main_id[dp["id"]] = main_player.id
+                if main_player.code:
+                    draft_to_main_code[dp["id"]] = main_player.code
 
         # Fetch all transactions for the league, filter to this GW
         txn_response = await draft_client.get_league_transactions(draft_league_id)
@@ -1245,9 +1343,7 @@ async def collect_draft_recap_data(
             league_entry_id: int = standing.get("league_entry", 0)
             entry_info = entry_map.get(league_entry_id, {})
             entry_id = entry_info.get("entry_id")
-            manager_name = f"{entry_info.get('player_first_name', '')} {entry_info.get('player_last_name', '')}".strip()
-            if not manager_name:
-                manager_name = entry_info.get("entry_name", "Unknown")
+            manager_name = _draft_manager_name(entry_info)
 
             standings_gw_pts: int = standing.get("event_total", 0)
             standings_total: int = standing.get("total", 0)
@@ -1297,6 +1393,7 @@ async def collect_draft_recap_data(
                     name=draft_player.get("web_name", "Unknown"),
                     team=team_short,
                     position=pos_name,
+                    code=draft_to_main_code.get(draft_elem_id),
                     points=pts,
                     is_captain=False,
                     is_vice_captain=False,
@@ -1306,6 +1403,7 @@ async def collect_draft_recap_data(
                     auto_sub_out=draft_elem_id in auto_sub_out_ids,
                     red_cards=red_cards,
                     unmatched=unmatched,
+                    had_fixture=draft_player.get("team") not in bgw_team_ids,
                 ))
 
             # Build auto-sub descriptions
@@ -1345,7 +1443,7 @@ async def collect_draft_recap_data(
                 in_team = t.short_name if (t := teams.get(dp_in.get("team"))) else "???"
                 out_team = t.short_name if (t := teams.get(dp_out.get("team"))) else "???"
 
-                manager_txns.append(RecapDraftTransaction(
+                transaction = RecapDraftTransaction(
                     player_in=dp_in.get("web_name", "Unknown"),
                     player_in_team=in_team,
                     player_in_points=in_pts,
@@ -1354,7 +1452,12 @@ async def collect_draft_recap_data(
                     player_out_points=out_pts,
                     net=in_pts - out_pts,
                     kind=txn.get("kind", "w"),
-                ))
+                )
+                if pin_id is not None and (in_code := draft_to_main_code.get(pin_id)):
+                    transaction["player_in_code"] = in_code
+                if pout_id is not None and (out_code := draft_to_main_code.get(pout_id)):
+                    transaction["player_out_code"] = out_code
+                manager_txns.append(transaction)
 
             gw_points = computed_gw_points
             if is_live_gw and computed_gw_points != standings_gw_pts:
@@ -1385,6 +1488,7 @@ async def collect_draft_recap_data(
             result = RecapManagerEntry(
                 manager_name=manager_name,
                 entry_id=entry_id or 0,
+                league_entry_id=league_entry_id,
                 gw_points=gw_points,
                 gross_points=gw_points,
                 gw_rank=rank,
@@ -1436,6 +1540,16 @@ async def collect_draft_recap_data(
             )
             for s in standings
         ]
+        cohort: list[RecapStandingsEntry] = [
+            RecapStandingsEntry(
+                manager_key=s.get("league_entry", 0),
+                manager_name=_draft_manager_name(entry_map.get(s.get("league_entry"), {})),
+                entry_id=entry_map.get(s.get("league_entry"), {}).get("entry_id"),
+                gw_points=s.get("event_total", 0),
+                total_points=s.get("total", 0),
+            )
+            for s in standings
+        ]
         # The league's own last_rank already states where everyone stood, and
         # states it correctly for h2h scoring, which subtracting gameweek
         # points from a league-points total cannot. Only re-derive movement
@@ -1455,4 +1569,11 @@ async def collect_draft_recap_data(
         fpl_format="draft",
         managers=managers,
         awards=awards,
+        league_id=draft_league_id,
+        standings_cohort=cohort,
+        # `league_entries` is the league's own member list, so a standings
+        # response shorter than it is a real truncation rather than an
+        # unknown-size page.
+        standings_truncated=len(cohort) < len(league_entries),
+        league_size=len(league_entries),
     )

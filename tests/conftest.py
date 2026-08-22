@@ -1,6 +1,6 @@
 """Shared fixtures and mock data for FPL Agents tests."""
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -531,3 +531,39 @@ def mock_fpl_client(mock_bootstrap_data, sample_fixtures):
 
     client._get = AsyncMock(side_effect=mock_get)
     return client
+
+
+# --- League history ledger factory ---
+
+def make_history_row(
+    season: str = "2026-27",
+    fpl_format: str = "classic",
+    league_id: int = 1,
+    gameweek: int = 1,
+    manager_key: int = 1,
+    capture_status: str = "ok",
+    tier: str = "detailed",
+    captured_at: datetime | None = None,
+    manager_name: str = "Alice",
+    **kwargs,
+):
+    """Factory for LeagueHistoryRow instances for testing.
+
+    Defaults produce a minimal valid detailed row; pass any model field
+    through kwargs to vary it. `captured_at` defaults to a fixed instant so
+    two rows built without one compare equal on content.
+    """
+    from fpl_cli.models.league_history import LeagueHistoryRow
+
+    return LeagueHistoryRow(
+        season=season,
+        fpl_format=fpl_format,
+        league_id=league_id,
+        gameweek=gameweek,
+        manager_key=manager_key,
+        capture_status=capture_status,
+        tier=tier,
+        captured_at=captured_at or datetime(2026, 8, 22, 12, 0, tzinfo=timezone.utc),
+        manager_name=manager_name,
+        **kwargs,
+    )

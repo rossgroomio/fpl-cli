@@ -479,10 +479,11 @@ fpl review --dry-run              # Build prompts without calling LLMs
 Entertainment-first post-gameweek report for the whole league.
 
 ```bash
-fpl league-recap                # Recap last completed gameweek
-fpl league-recap --save         # Save report
-fpl league-recap --summarise    # Add LLM editorial narrative
-fpl league-recap --draft        # Use draft league
+fpl league-recap                  # Recap last completed gameweek
+fpl league-recap --save           # Save report
+fpl league-recap --summarise      # Add LLM editorial narrative
+fpl league-recap --draft          # Use draft league
+fpl league-recap --backfill-detail  # Rebuild earlier gameweeks in full detail
 ```
 
 **Awards:** GW winner/loser, biggest bench haul, best/worst captain, transfer/waiver genius and disaster.
@@ -492,6 +493,41 @@ fpl league-recap --draft        # Use draft league
 **Fines:** evaluates fines for every manager (not just you) when configured.
 
 **LLM editorial** (`--summarise`): Newsletter-style narrative via synthesis provider. Names names, calls out decisions.
+
+#### League history
+
+Every run records what it computed, one row per manager per gameweek, under
+`<data dir>/league_history/<season>/<format>-<league id>/gwNN.ndjson`. There is no flag
+to switch this on and no separate command: the recap already fetched everything a row
+needs. The store exists because the FPL API keeps per-gameweek detail only for the
+current season — at the July rollover everything collapses to one aggregate row per
+season, and for draft the per-gameweek numbers are then gone for good.
+
+Rows are append-only. Re-running a gameweek that has not changed writes nothing; a
+re-run whose numbers differ (bonus points settled, a failed fetch repaired, a coarse
+gameweek filled in) appends a superseding row and leaves the old one in place. A file
+that cannot be parsed is never reset or overwritten: the run says which file and what to
+do about it, still prints the recap from live data, and exits 0.
+
+Two fidelity tiers, both recorded on the row:
+
+| Tier | Source | Carries |
+|---|---|---|
+| Coarse | Classic manager-history endpoint, one request per manager for the whole season | Points, cumulative total, transfer count and cost, bench points, squad value, bank |
+| Detailed | A live recap run, or `--backfill-detail` replaying a past gameweek | Everything above plus captain, vice, full squad, and transfer or waiver detail |
+
+Classic gaps fill at the coarse tier automatically. `--backfill-detail` upgrades them,
+at the cost of one request per manager per gameweek, which is why it is opt-in. Draft
+has no manager-history endpoint at all, so a draft gameweek that was never captured can
+only be rebuilt with `--backfill-detail`, and only while the season is live.
+
+When a gameweek is missing, coarse, unreadable, or holds a manager whose data could not
+be fetched, the run says so on stderr and names the remedy. A fully captured season
+stays quiet.
+
+Ephemeral environments (Claude Code on the web, CI, containers) must point
+`FPL_CLI_DATA_DIR` at a persistent workspace or the ledger dies with the container. The
+first time a season's partition is created, the run prints where it went.
 
 ## Season Preview Intel
 
@@ -608,10 +644,10 @@ fpl-cli writes to three directories, each resolved via `platformdirs` and overri
 | Directory | Contents | Override |
 |-----------|----------|----------|
 | Config | `settings.yaml`, `.env` (credentials and API keys), `team_ratings_overrides.yaml`, optional `team_managers.yaml` (layered over the shipped copy per club) and `fixture_predictions.yaml` (replaces the shipped copy), the optional `previews/` directory of [season preview intel](#season-preview-intel), plus the `output/` and `research/` report directories | `FPL_CLI_CONFIG_DIR` |
-| Data | Generated files: `team_ratings.yaml`, `team_ratings_prior.yaml`, `player_prior.yaml`, `chip_plan.json`, `team_finances.json` | `FPL_CLI_DATA_DIR` |
+| Data | Generated files: `team_ratings.yaml`, `team_ratings_prior.yaml`, `player_prior.yaml`, `chip_plan.json`, `team_finances.json`, `league_history/` | `FPL_CLI_DATA_DIR` |
 | Cache | Disposable API response caches | `FPL_CLI_CACHE_DIR` |
 
-**Ephemeral environments** (Claude Code on the web, CI, containers): the default config and data locations live inside the container and vanish with it. Point `FPL_CLI_CONFIG_DIR` and `FPL_CLI_DATA_DIR` at a persistent workspace directory so settings, credentials, generated reports, and generated data (team ratings, priors, chip plans, sell prices) survive between sessions. The cache is disposable by design and can stay container-local.
+**Ephemeral environments** (Claude Code on the web, CI, containers): the default config and data locations live inside the container and vanish with it. Point `FPL_CLI_CONFIG_DIR` and `FPL_CLI_DATA_DIR` at a persistent workspace directory so settings, credentials, generated reports, and generated data (team ratings, priors, chip plans, sell prices, league history) survive between sessions. The cache is disposable by design and can stay container-local.
 
 Three things to know when setting the overrides:
 
