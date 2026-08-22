@@ -223,6 +223,30 @@ class TestTemplateRendering:
         output = self.agent._generate_review_report(29, data)
         assert "[UNUSED!]" in output
 
+    # classic_league section: three states the League heading can render.
+
+    def test_review_league_standings_pending(self):
+        data = _review_data()
+        data["classic_league"] = {"league_name": "Office League", "standings_pending": True}
+        output = self.agent._generate_review_report(29, data)
+        assert "Standings not published yet" in output
+
+    def test_review_league_historical_review_explains_absence(self):
+        data = _review_data()
+        data["classic_league"] = {"league_name": "Office League"}
+        output = self.agent._generate_review_report(29, data)
+        assert "standings not shown for historical GW29 review" in output
+        assert "Position:" not in output.split("## League")[1].split("##")[0]
+
+    def test_review_league_populated_shows_position(self):
+        data = _review_data()
+        data["classic_league"] = {
+            "league_name": "Office League", "user_position": 3, "total_entries": 10,
+            "user_gw_points": 60, "user_total": 720,
+        }
+        output = self.agent._generate_review_report(29, data)
+        assert "Position:** 3 of 10" in output
+
     def test_review_bench_boost_marker(self):
         # BB bench players are contributors with is_bench_boost_player=True -> [BB] suffix
         data = _review_data()
@@ -306,6 +330,32 @@ class TestInlineFallback:
     def test_review_inline_captain_marker(self):
         output = self.agent._generate_review_inline(29, _review_data())
         assert "Salah (C)" in output
+
+    # classic_league: standings not yet published (GW1) or historical review,
+    # neither of which carries total_entries/user_total -- both used to crash
+    # `_generate_review_inline` with a TypeError on `{cl['user_total']:,}`.
+
+    def test_review_inline_standings_pending_no_crash(self):
+        data = _review_data()
+        data["classic_league"] = {"league_name": "Office League", "standings_pending": True}
+        output = self.agent._generate_review_inline(29, data)
+        assert "Standings not published yet" in output
+
+    def test_review_inline_historical_review_no_crash(self):
+        data = _review_data()
+        data["classic_league"] = {"league_name": "Office League"}
+        output = self.agent._generate_review_inline(29, data)
+        assert "standings not shown for historical GW29 review" in output
+
+    def test_review_inline_populated_league_shows_position(self):
+        data = _review_data()
+        data["classic_league"] = {
+            "league_name": "Office League", "user_position": 3, "total_entries": 10,
+            "user_gw_points": 60, "user_total": 720,
+        }
+        output = self.agent._generate_review_inline(29, data)
+        assert "Position:** 3 of 10" in output
+        assert "Total: 720" in output
 
 
 # ---------------------------------------------------------------------------

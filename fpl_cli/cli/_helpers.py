@@ -34,6 +34,27 @@ def _net_transfer_ids(
         net_out_list.sort(key=sort_key)
     return net_in_list, net_out_list
 
+def _entry_league_meta(manager_data: dict[str, Any], league_id: int | None) -> dict[str, int]:
+    """Exact league size and rank, taken from the entry payload.
+
+    `entry/{id}/` lists every classic league the manager is in, each with
+    `rank_count` (entries in the league) and `entry_rank` (their true rank).
+    Both survive a league too big for one 50-entry page of standings, and both
+    are free whenever the caller already fetches this endpoint. Standings can
+    only ever report the size of the page it was handed.
+    """
+    if not league_id:
+        return {}
+    for league in manager_data.get("leagues", {}).get("classic", []):
+        if league.get("id") == league_id:
+            return {
+                key: league[key]
+                for key in ("rank_count", "entry_rank")
+                if isinstance(league.get(key), int)
+            }
+    return {}
+
+
 # Centralised FDR threshold constants (1-7 scale)
 FDR_EASY = 2.5
 FDR_MEDIUM = 3.5

@@ -199,6 +199,12 @@ class TestOrdinal:
         assert _ordinal(21) == "21st"
         assert _ordinal("?") == "?"
 
+    def test_large_ordinals_are_thousands_separated(self):
+        from fpl_cli.cli.status import _ordinal
+        assert _ordinal(45170) == "45,170th"
+        assert _ordinal(1001) == "1,001st"
+        assert _ordinal(1011) == "1,011th"
+
 
 class TestGwRank:
     def test_gw_rank_first(self):
@@ -1013,3 +1019,302 @@ class TestBuildFinesContextActiveChip:
         red_card = next(r for r in results if r.rule_type == "red-card")
         assert red_card.triggered is True
         assert "P5" in red_card.message
+
+
+class TestPicksNotYetLocked:
+    """Pre-season, FPL 404s picks for every gameweek including the GW1 fallback."""
+
+    @staticmethod
+    def _picks_404():
+        request = httpx.Request("GET", "https://fantasy.premierleague.com/api/entry/123/event/1/picks/")
+        return httpx.HTTPStatusError(
+            "404", request=request, response=httpx.Response(404, request=request),
+        )
+
+    def _preseason_client(self, picks_error):
+        client = _mock_client(
+            current_gw=None,
+            next_gw={"id": 1, "deadline_time": "2099-08-21T17:30:00Z"},
+            manager_entry={"last_deadline_bank": 5},
+            history={"current": [], "chips": []},
+        )
+        client.get_manager_picks = AsyncMock(side_effect=picks_error)
+        return client
+
+    def test_preseason_404_keeps_the_classic_section(self):
+        result = _run(self._preseason_client(self._picks_404()))
+        assert result.exit_code == 0
+        assert "Could not load classic data" not in result.output
+        # Bank and chips need no picks and must survive the missing squad
+        assert "Bank: £0.5m" in result.output
+        assert "Wildcard" in result.output
+
+    def test_non_404_picks_error_still_fails_the_section(self):
+        request = httpx.Request("GET", "https://fantasy.premierleague.com/api/entry/123/event/1/picks/")
+        server_error = httpx.HTTPStatusError(
+            "500", request=request, response=httpx.Response(500, request=request),
+        )
+        result = _run(self._preseason_client(server_error))
+        assert result.exit_code == 0
+        assert "Could not load classic data" in result.output
+
+
+class TestBuildFinesContextStandingsCompleteness:
+    """The bottom of one page is not the bottom of the league."""
+
+    @staticmethod
+    def _context(standings, **kwargs):
+        from fpl_cli.cli.status import _build_fines_context
+
+        return _build_fines_context(
+            standings, kwargs.pop("user_is_last", True), 20, None, None, None, **kwargs,
+        )
+
+    def test_complete_standings_supply_a_worst_performer(self):
+        league_data, _ = self._context([{"entry": 123, "event_total": 20, "player_name": "You"}])
+        assert league_data["worst_performers"][0]["is_user"] is True
+        assert league_data["worst_performers"][0]["points"] == 20
+
+    def test_partial_standings_supply_none(self):
+        league_data, _ = self._context(
+            [{"entry": 123, "event_total": 20, "player_name": "You"}], standings_complete=False,
+        )
+        assert "worst_performers" not in league_data
+        assert league_data["user_gw_points"] == 20
+
+    def test_empty_standings_supply_none_rather_than_a_placeholder(self):
+        league_data, _ = self._context([], user_is_last=False)
+        assert "worst_performers" not in league_data
+
+
+class TestStatusLastPlaceFineAcrossPages:
+    """A >50-entry league must not fine the manager who is merely bottom of page one."""
+
+    def _client(self, has_next):
+        # User is bottom of the page, but the page may not be the whole league.
+        standings = [
+            {"entry": 456, "rank": 1, "event_total": 80, "total": 1800, "player_name": "Alice"},
+            {"entry": 123, "rank": 2, "event_total": 20, "total": 1500, "player_name": "You"},
+        ]
+        return _mock_client(
+            current_gw={"id": 30, "finished": True},
+            next_gw={"id": 31, "deadline_time": "2099-01-01T11:00:00Z"},
+            history={"current": [{"event": 30, "points": 20, "overall_rank": 100000}], "chips": []},
+            classic_league_standings={"standings": {"results": standings, "has_next": has_next}},
+            picks={"picks": [{"element": i} for i in range(1, 16)]},
+            players=[make_player(id=i, web_name=f"Player{i}", team_id=1) for i in range(1, 16)],
+            teams=[make_team(id=1, short_name="ARS")],
+        )
+
+    def _settings(self):
+        return {
+            "fpl": {"classic_entry_id": 123, "classic_league_id": 999},
+            "fines": {"classic": [{"type": "last-place", "penalty": "Wear the shirt"}]},
+        }
+
+    def test_single_page_league_still_fines_last_place(self):
+        result = _run(self._client(has_next=False), settings=self._settings())
+        assert result.exit_code == 0
+        assert "Fine:" in result.output
+        assert "last" in result.output.lower()
+
+    def test_paginated_league_does_not_fine_bottom_of_page_one(self):
+        result = _run(self._client(has_next=True), settings=self._settings())
+        assert result.exit_code == 0
+        assert "Fine:" not in result.output
+
+
+class TestEntryLeagueMeta:
+    """entry/{id}/ already knows the exact league size and the manager's true rank."""
+
+    @staticmethod
+    def _meta(league_id, leagues):
+        from fpl_cli.cli.status import _entry_league_meta
+
+        return _entry_league_meta({"leagues": {"classic": leagues}}, league_id)
+
+    def test_reads_rank_count_and_entry_rank(self):
+        meta = self._meta(999, [{"id": 999, "rank_count": 47571, "entry_rank": 45170}])
+        assert meta == {"rank_count": 47571, "entry_rank": 45170}
+
+    def test_ignores_other_leagues(self):
+        meta = self._meta(999, [{"id": 314, "rank_count": 8906129, "entry_rank": 1}])
+        assert meta == {}
+
+    def test_null_fields_are_skipped(self):
+        assert self._meta(999, [{"id": 999, "rank_count": None, "entry_rank": None}]) == {}
+
+    def test_no_league_id_configured(self):
+        assert self._meta(None, [{"id": 999, "rank_count": 12}]) == {}
+
+    def test_missing_leagues_block(self):
+        from fpl_cli.cli.status import _entry_league_meta
+
+        assert _entry_league_meta({}, 999) == {}
+
+
+class TestClassicLeagueSizeFromEntryPayload:
+    """League size comes from rank_count, not from the length of one page."""
+
+    def _client(self, *, has_next, leagues, standings):
+        return _mock_client(
+            current_gw={"id": 30, "finished": True},
+            next_gw={"id": 31, "deadline_time": "2099-01-01T11:00:00Z"},
+            manager_entry={"last_deadline_bank": 0, "leagues": {"classic": leagues}},
+            history={"current": [{"event": 30, "points": 65, "overall_rank": 50000}], "chips": []},
+            classic_league_standings={"standings": {"results": standings, "has_next": has_next}},
+        )
+
+    _SETTINGS = {"fpl": {"classic_entry_id": 123, "classic_league_id": 999}}
+
+    def test_exact_size_replaces_page_length(self):
+        client = self._client(
+            has_next=False,
+            leagues=[{"id": 999, "rank_count": 12, "entry_rank": 4}],
+            standings=[
+                {"entry": 123, "rank": 4, "event_total": 65},
+                {"entry": 456, "rank": 1, "event_total": 80},
+            ],
+        )
+        result = _run(client, settings=self._SETTINGS)
+        assert "of 12 overall" in result.output
+        assert "of 2 overall" not in result.output
+
+    def test_partial_table_drops_the_weekly_position(self):
+        client = self._client(
+            has_next=True,
+            leagues=[{"id": 999, "rank_count": 47571, "entry_rank": 30}],
+            standings=[
+                {"entry": 123, "rank": 30, "event_total": 65},
+                {"entry": 456, "rank": 1, "event_total": 80},
+            ],
+        )
+        result = _run(client, settings=self._SETTINGS)
+        assert "this week" not in result.output
+        assert "30th of 47,571 overall" in result.output
+
+    def test_complete_table_keeps_the_weekly_position(self):
+        client = self._client(
+            has_next=False,
+            leagues=[{"id": 999, "rank_count": 2, "entry_rank": 2}],
+            standings=[
+                {"entry": 123, "rank": 2, "event_total": 65},
+                {"entry": 456, "rank": 1, "event_total": 80},
+            ],
+        )
+        result = _run(client, settings=self._SETTINGS)
+        assert "2nd of 2 this week" in result.output
+
+    def test_beyond_page_one_reports_real_numbers(self):
+        client = self._client(
+            has_next=True,
+            leagues=[{"id": 999, "rank_count": 47571, "entry_rank": 45170}],
+            standings=[{"entry": 456, "rank": 1, "event_total": 80}],
+        )
+        result = _run(client, settings=self._SETTINGS)
+        assert "45,170th of 47,571 overall" in result.output
+        assert "top 50" not in result.output
+
+    def test_no_rank_count_means_no_overall_denominator(self):
+        """A rank from standings must never be paired with a page-length size."""
+        client = self._client(
+            has_next=False,
+            leagues=[],
+            standings=[
+                {"entry": 123, "rank": 4, "event_total": 65},
+                {"entry": 456, "rank": 1, "event_total": 80},
+                {"entry": 789, "rank": 2, "event_total": 70},
+            ],
+        )
+        result = _run(client, settings=self._SETTINGS)
+        assert "4th overall" in result.output
+        assert "of 3 overall" not in result.output
+
+    def test_weekly_count_tracks_the_ranked_table_not_the_member_count(self):
+        """rank_count includes members absent from the table (new entries at GW1)."""
+        client = self._client(
+            has_next=False,
+            leagues=[{"id": 999, "rank_count": 12, "entry_rank": 2}],
+            standings=[
+                {"entry": 123, "rank": 2, "event_total": 65},
+                {"entry": 456, "rank": 1, "event_total": 80},
+            ],
+        )
+        result = _run(client, settings=self._SETTINGS)
+        assert "2nd of 2 this week" in result.output
+        assert "2nd of 12 overall" in result.output
+
+    def test_beyond_page_one_without_meta_keeps_the_hint(self):
+        client = self._client(
+            has_next=True,
+            leagues=[],
+            standings=[{"entry": 456, "rank": 1, "event_total": 80}],
+        )
+        result = _run(client, settings=self._SETTINGS)
+        assert "top 50" in result.output
+
+
+class TestDraftSquadNotDrafted:
+    """Pre-season the draft entry has no GW1 picks and the shared helper re-raises."""
+
+    @staticmethod
+    def _picks_404():
+        request = httpx.Request("GET", "https://draft.premierleague.com/api/entry/456/event/1")
+        return httpx.HTTPStatusError(
+            "404", request=request, response=httpx.Response(404, request=request),
+        )
+
+    def test_missing_picks_keep_the_draft_section(self):
+        client = _mock_client(
+            current_gw=None,
+            next_gw={"id": 1, "deadline_time": "2099-08-21T17:30:00Z"},
+        )
+        draft_cl = _mock_draft_client(
+            league_details={"standings": [], "league_entries": []},
+            game_state={"current_event": 1, "waivers_processed": False},
+        )
+        mock_squad = AsyncMock(side_effect=self._picks_404())
+
+        settings = {"fpl": {"draft_entry_id": 456, "draft_league_id": 789}}
+        result = _run(client, settings=settings, draft_client=draft_cl, mock_draft_squad=mock_squad)
+        assert result.exit_code == 0
+        assert "Could not load draft data" not in result.output
+        assert "Waiver Deadline" in result.output
+
+    def test_non_404_squad_error_still_fails_the_section(self):
+        client = _mock_client(
+            current_gw=None,
+            next_gw={"id": 1, "deadline_time": "2099-08-21T17:30:00Z"},
+        )
+        draft_cl = _mock_draft_client(
+            league_details={"standings": [], "league_entries": []},
+            game_state={"current_event": 1, "waivers_processed": False},
+        )
+        request = httpx.Request("GET", "https://draft.premierleague.com/api/entry/456/event/1")
+        server_error = httpx.HTTPStatusError(
+            "500", request=request, response=httpx.Response(500, request=request),
+        )
+        mock_squad = AsyncMock(side_effect=server_error)
+
+        settings = {"fpl": {"draft_entry_id": 456, "draft_league_id": 789}}
+        result = _run(client, settings=settings, draft_client=draft_cl, mock_draft_squad=mock_squad)
+        assert result.exit_code == 0
+        assert "Could not load draft data" in result.output
+
+    def test_squad_still_used_when_available(self):
+        client = _mock_client(
+            current_gw=None,
+            next_gw={"id": 1, "deadline_time": "2099-08-21T17:30:00Z"},
+            teams=[make_team(id=1, short_name="ARS")],
+        )
+        draft_cl = _mock_draft_client(
+            league_details={"standings": [], "league_entries": []},
+            game_state={"current_event": 1, "waivers_processed": False},
+        )
+        flagged = make_player(id=7, web_name="Injured", status=PlayerStatus.DOUBTFUL, team_id=1)
+        mock_squad = AsyncMock(return_value=[flagged])
+
+        settings = {"fpl": {"draft_entry_id": 456, "draft_league_id": 789}}
+        result = _run(client, settings=settings, draft_client=draft_cl, mock_draft_squad=mock_squad)
+        assert "Flagged Players" in result.output
+        assert "Injured" in result.output

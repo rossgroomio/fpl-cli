@@ -619,6 +619,9 @@ export FPL_SYNTHESIS_BASE_URL=http://localhost:11434/v1
 
 - **Classic league scoring only.** No Head-to-Head or H2H knock-out league scoring. Both classic and draft formats are supported.
 - **One entry per format.** Configure one classic team and one draft league.
-- **League standings show top 50.** Covers most invitational leagues. Larger leagues see partial results.
+- **League standings tables show top 50.** Covers most invitational leagues. Larger leagues see partial
+  results, and `fpl status` omits the this-week league position for them (it cannot be ranked from one page).
+  Your true rank and the exact league size are still reported, since both come from your entry rather than
+  the standings page.
 - **Pending transfers not visible.** The FPL API only exposes picks for completed gameweeks.
 - **Read-only.** The CLI authenticates with FPL only for price scraping (via Playwright). It will not set your lineup, make transfers, or submit waiver claims on your behalf.

@@ -19,6 +19,7 @@ from fpl_cli.cli._review_draft import _format_review_draft_player
 from fpl_cli.models.player import Player
 from fpl_cli.models.team import Team
 from fpl_cli.paths import SHIPPED_CONFIG_DIR, user_config_file
+from fpl_cli.utils.gameweek import is_opening_gameweek
 from fpl_cli.utils.teams import describe_team_set_mismatch
 from fpl_cli.utils.text import strip_diacritics
 
@@ -244,6 +245,7 @@ def _format_classic_section(
     player_map: dict[int, Player],
     classic_transfers_data: list[dict[str, Any]],
     active_chip: str | None = None,
+    gameweek: int | None = None,
 ) -> dict[str, str]:
     """Format classic team data for the synthesis prompt."""
     if team_points_data:
@@ -275,11 +277,23 @@ def _format_classic_section(
     if classic_bench:
         classic_players_str += f"\n\nBench vs Starters (formation-valid swaps):\n{classic_bench}"
 
-    classic_transfers_str = "\n".join([
-        f"- {t['player_out']} ({t['player_out_points']} pts) → {t['player_in']}"
-        f" ({t['player_in_points']} pts) = {'+' if t['net'] > 0 else ''}{t['net']} ({t['verdict']})"
-        for t in classic_transfers_data
-    ]) if classic_transfers_data else "No transfers this week"
+    if classic_transfers_data:
+        classic_transfers_str = "\n".join([
+            f"- {t['player_out']} ({t['player_out_points']} pts) → {t['player_in']}"
+            f" ({t['player_in_points']} pts) = {'+' if t['net'] > 0 else ''}{t['net']} ({t['verdict']})"
+            for t in classic_transfers_data
+        ])
+    elif is_opening_gameweek(gameweek):
+        # "No transfers this week" reads as a decision the manager made. In GW1
+        # there is no decision to make: the squad is bought pre-season and the
+        # first free transfer only arrives in GW2.
+        classic_transfers_str = (
+            "None - transfers do not exist in GW1. The squad was bought pre-season"
+            " and the first free transfer arrives in GW2. Do not describe this as a"
+            " rolled or held transfer."
+        )
+    else:
+        classic_transfers_str = "No transfers this week"
 
     return {
         "players": classic_players_str,
@@ -334,12 +348,60 @@ def _format_draft_section(
     }
 
 
+def _classic_position_fields(classic_league_data: dict[str, Any] | None) -> dict[str, Any]:
+    """League position strings for the synthesis prompt.
+
+    Without a standings table there is no position to report. Saying so beats
+    the arithmetic that "? of 0" invites -- the model was previously handed
+    "GW Position: None of 0" and left to narrate it. A league can also have a
+    real, nonzero `total_entries` while the manager's own entry wasn't on the
+    fetched (page-1-only) standings -- `total_entries` alone can't tell that
+    case apart from a fully-known position, so it's unknown too.
+    """
+    total = (classic_league_data or {}).get("total_entries", 0)
+    user_found = (classic_league_data or {}).get("user_found_in_standings", True)
+    if not classic_league_data or not total or not user_found:
+        return {"gw_position": "unknown", "position": "unknown", "total": "unknown"}
+    return {
+        "gw_position": _gw_position_with_half(classic_league_data.get("user_gw_rank", "?"), total),
+        "position": classic_league_data.get("user_position", "?"),
+        "total": total,
+    }
+
+
+def _classic_fines_league_data(
+    classic_league_data: dict[str, Any] | None,
+    my_entry_summary: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """League data for the classic fine rules, with the user's own score filled in.
+
+    `user_gw_points` normally comes from the league standings, but a personal
+    fine (below-threshold) is about the manager's own score and that score is
+    already known from their entry history. When standings are unavailable --
+    the opening gameweek before FPL builds the table, a failed fetch, or the
+    manager's own entry missing from a page-1-only standings fetch -- fall
+    back to it so the fine is still evaluated instead of trusting a defaulted
+    0 that nobody actually scored.
+    """
+    user_found = (classic_league_data or {}).get("user_found_in_standings", True)
+    if classic_league_data and "user_gw_points" in classic_league_data and user_found:
+        return classic_league_data
+    if not my_entry_summary:
+        return classic_league_data
+    fallback = dict(classic_league_data or {})
+    points = my_entry_summary.get("points", 0)
+    fallback["user_gw_points"] = points
+    fallback["user_gw_net_points"] = points - my_entry_summary.get("transfers_cost", 0)
+    return fallback
+
+
 def _format_league_context(
     classic_league_data: dict[str, Any] | None,
     draft_league_data: dict[str, Any] | None,
     team_points_data: list[dict[str, Any]],
     draft_squad_points_data: list[dict[str, Any]],
     settings: dict[str, Any],
+    my_entry_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Format league context for the synthesis prompt."""
     classic_rivals_str = ""
@@ -465,7 +527,10 @@ def _format_league_context(
             fine_parts.append(f"## Classic ({classic_league_name})")
             results = evaluate_fines(
                 fines_config, "classic",
-                cast(FinesLeagueData | None, classic_league_data),
+                cast(
+                    FinesLeagueData | None,
+                    _classic_fines_league_data(classic_league_data, my_entry_summary),
+                ),
                 cast(list[FinesTeamPlayer], team_points_data),
                 use_net_points=settings.get("use_net_points", False),
             )
@@ -645,14 +710,17 @@ async def _review_llm_summarise(
 
     # Stage 2: Synthesis - personal analysis
     classic_fmt = _format_classic_section(
-        team_points_data, automatic_subs, player_map, classic_transfers_data, active_chip=active_chip,
+        team_points_data, automatic_subs, player_map, classic_transfers_data,
+        active_chip=active_chip, gameweek=gw,
     )
     draft_fmt = _format_draft_section(
         draft_squad_points_data, draft_automatic_subs, draft_player_map,
         collected_data.get("draft_transactions", []),
     )
+    classic_positions = _classic_position_fields(classic_league_data)
     league_ctx = _format_league_context(
         classic_league_data, draft_league_data, team_points_data, draft_squad_points_data, settings,
+        my_entry_summary=my_entry_summary,
     )
 
     synthesis_prompts = get_review_synthesis_prompt(
@@ -669,12 +737,9 @@ async def _review_llm_summarise(
         classic_players=classic_fmt["players"],
         classic_transfers=classic_fmt["transfers"],
         classic_league_name=classic_league_data["league_name"] if classic_league_data else "Unknown",
-        classic_gw_position=_gw_position_with_half(
-            classic_league_data.get("user_gw_rank", "?"),
-            classic_league_data.get("total_entries", 0),
-        ) if classic_league_data else "?",
-        classic_position=classic_league_data.get("user_position", 0) if classic_league_data else 0,
-        classic_total=classic_league_data.get("total_entries", 0) if classic_league_data else 0,
+        classic_gw_position=classic_positions["gw_position"],
+        classic_position=classic_positions["position"],
+        classic_total=classic_positions["total"],
         classic_rivals=league_ctx["classic_rivals"],
         classic_worst_performers=league_ctx["classic_worst_performers"] or "No data",
         classic_transfer_impact=league_ctx["classic_transfer_impact"],
@@ -755,7 +820,9 @@ def _find_player_gw_points(name: str, team_points_data: list[dict], pts_key: str
     return None
 
 
-def _review_compare_recs(recs: dict, collected_data: dict, player_map: dict, teams: dict) -> dict:
+def _review_compare_recs(
+    recs: dict, collected_data: dict, player_map: dict, teams: dict, gameweek: int | None = None,
+) -> dict:
     """Compare recommendations against actuals. Returns comparison dict."""
     comparison: dict = {"classic": {}, "draft": {}}
 
@@ -796,10 +863,16 @@ def _review_compare_recs(recs: dict, collected_data: dict, player_map: dict, tea
             )
 
     # --- Classic Transfers ---
-    rec_roll = recs["classic"].get("roll_transfer", False)
-    actual_roll = len(classic_transfers) == 0
+    # GW1 has no transfers to make, so an empty transfer list is not a rolled
+    # transfer and a "no transfers this gameweek" recommendation is not advice
+    # that was followed. Scoring either as alignment credits a decision that
+    # could not be taken.
+    no_transfers_possible = is_opening_gameweek(gameweek)
+    rec_roll = bool(recs["classic"].get("roll_transfer", False)) and not no_transfers_possible
+    actual_roll = len(classic_transfers) == 0 and not no_transfers_possible
     comparison["classic"]["rec_roll"] = rec_roll
     comparison["classic"]["actual_roll"] = actual_roll
+    comparison["classic"]["no_transfers_possible"] = no_transfers_possible
 
     rec_transfers = recs["classic"].get("transfers", [])
     transfer_comparisons = []
