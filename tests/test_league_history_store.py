@@ -258,6 +258,27 @@ class TestStoreAppendAndSupersession:
         assert [r.tier.value for r in rows] == ["coarse", "detailed"]
         assert store.resolved_gameweek(5)[1].tier.value == "detailed"
 
+    def test_a_coarse_repair_row_never_downgrades_an_already_detailed_manager(self):
+        """A repair pass that revisits the whole cohort -- because some *other*
+        manager in the gameweek is still unknown -- must not re-append a
+        lower-tier duplicate for a manager who is already captured at a higher
+        tier, even though the repair row's content differs (R3). Otherwise the
+        file grows on every single run for the lifetime of the other manager's
+        failure."""
+        from fpl_cli.services.league_history import LeagueHistoryStore
+
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(5, [make_history_row(gameweek=5, tier="detailed", gross_points=50)])
+        before = store.gameweek_file(5).read_bytes()
+
+        written = store.append_rows(5, [
+            make_history_row(gameweek=5, tier="coarse", gross_points=99),
+        ])
+
+        assert written == []
+        assert store.gameweek_file(5).read_bytes() == before
+        assert store.resolved_gameweek(5)[1].gross_points == 50
+
     def test_any_capture_supersedes_an_unknown_row(self):
         from fpl_cli.services.league_history import LeagueHistoryStore
 

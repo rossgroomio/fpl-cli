@@ -207,8 +207,13 @@ class LeagueHistoryStore:
         A row identical in content to the resolved current row for its key
         writes nothing -- `captured_at` is excluded from the comparison, so a
         re-run that reproduces a gameweek exactly leaves the file byte-identical.
-        A row differing in any value appends a superseding line; no line is ever
-        edited or removed (R3).
+        A row that could never outrank the current winner (R3's resolution
+        order) is skipped too, even when its content differs: a repair pass
+        that revisits the whole cohort because one *other* manager is still
+        unknown would otherwise re-append a lower-tier duplicate for every
+        already-fully-captured manager on every single run. A row differing in
+        any value that *could* become the winner appends a superseding line;
+        no line is ever edited or removed (R3).
 
         Raises:
             LeagueHistoryError: the existing file is unreadable. Nothing is
@@ -226,8 +231,11 @@ class LeagueHistoryStore:
         written: list[LeagueHistoryRow] = []
         for row in rows:
             current = winners.get(row.manager_key)
-            if current is not None and current.content() == row.content():
-                continue
+            if current is not None:
+                if current.content() == row.content():
+                    continue
+                if row.resolution_sort_key()[0] < current.resolution_sort_key()[0]:
+                    continue
             new_lines.append(row.model_dump_json())
             written.append(row)
             # Keep the batch internally consistent: a second row for the same

@@ -196,9 +196,16 @@ class LeagueHistoryRow(BaseModel):
     entry_id: int | None = None
 
     # -- headline numbers ----------------------------------------------------
-    # Always gross: `RecapManagerEntry.gw_points` flips with `use_net_points`,
-    # and that setting can change mid-season, which would make rows written
-    # months apart incomparable with no way to detect it (KTD3).
+    # Always gross for `capture_status == OK`: `RecapManagerEntry.gw_points`
+    # flips with `use_net_points`, and that setting can change mid-season,
+    # which would make rows written months apart incomparable with no way to
+    # detect it (KTD3). A `capture_status == UNKNOWN` row is the one exception:
+    # it records the classic league-standings figure, which is net of any
+    # transfer-cost hit rather than gross whenever the unreached manager took
+    # one (see `_unknown_row` in `fpl_cli/cli/_league_recap_history.py`) --
+    # accepted so a failed fetch still counts towards gameweek rank (KTD12)
+    # rather than handing someone else the week's best or worst. Any reader
+    # that needs a verified-gross figure must check `capture_status` first.
     gross_points: int | None = None
     transfer_cost: int | None = None
     total_points: int | None = None

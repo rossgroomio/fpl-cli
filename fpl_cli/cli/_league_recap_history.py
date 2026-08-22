@@ -270,6 +270,15 @@ def _unknown_row(
     left unset rather than written as this gameweek's. The unknown status is
     what stops any streak condition reading them either way: a condition holds
     on an unknown row rather than extending or resetting.
+
+    For classic, the standings figure is `event_total`, which is net of any
+    transfer-cost hit rather than gross whenever this manager took one --
+    unobservable here since the fetch that would show it is exactly what
+    failed. `gross_points` is documented as always gross for a `capture_status
+    == OK` row; on this UNKNOWN row it may not be. That is accepted rather
+    than left unset, because `_assign_cohort_ranks` needs it net-of-the-hit to
+    rank this manager against the rest of the cohort (KTD12) -- excluding them
+    would risk handing someone else the week's best or worst instead.
     """
     fpl_format: LeagueFormat = "draft" if data["fpl_format"] == "draft" else "classic"
     return LeagueHistoryRow(
@@ -520,10 +529,13 @@ def _gaps(coverage: list[GameweekCoverage], targets: list[int]) -> _Gaps:
     coarse: list[int] = []
     for gameweek in targets:
         entry = by_gameweek.get(gameweek)
-        if entry is None or entry.manager_count == 0:
+        if entry is None:
             missing.append(gameweek)
             continue
         if not entry.readable:
+            continue
+        if entry.manager_count == 0:
+            missing.append(gameweek)
             continue
         if entry.unknown_count:
             incomplete.append(gameweek)

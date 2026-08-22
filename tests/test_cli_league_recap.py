@@ -972,6 +972,30 @@ class TestCoverageReport:
         assert "GW1" in _stderr(capsys)
 
 
+class TestGaps:
+    """_gaps() classification that targets U7's backfill (missing/incomplete/coarse)."""
+
+    def test_an_unreadable_gameweek_is_reported_not_targeted_for_backfill(self):
+        """An unreadable gameweek must land in none of the three buckets: it is
+        reported, not overwritten, so a repair attempt never replays or
+        refetches a file that will just fail to parse again."""
+        from fpl_cli.cli._league_recap_history import _gaps
+        from fpl_cli.services.league_history import GameweekCoverage
+
+        gaps = _gaps([GameweekCoverage(gameweek=1, readable=False)], [1])
+
+        assert gaps.missing == []
+        assert gaps.incomplete == []
+        assert gaps.coarse == []
+
+    def test_a_gameweek_never_captured_at_all_is_missing(self):
+        from fpl_cli.cli._league_recap_history import _gaps
+
+        gaps = _gaps([], [1])
+
+        assert gaps.missing == [1]
+
+
 class TestBackfillCliWiring:
     def test_the_flag_is_off_by_default_and_available_on_the_command(self):
         from fpl_cli.cli.league_recap import league_recap_command
