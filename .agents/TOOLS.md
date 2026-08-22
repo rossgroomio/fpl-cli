@@ -78,7 +78,8 @@ Agent playbooks in `.agents/skills/`. Each has a `SKILL.md` entry point. Claude 
 | update-gw-prep | `skills/update-gw-prep/` | Append GW update to existing recommendations | Full: Claude Code, Codex, Cursor, Copilot |
 | squad-builder | `skills/squad-builder/` | Build optimal 15-player squad (wildcard, free hit, season start; Phase B3 preview intel gate) | Full: Claude Code, Codex, Cursor, Copilot |
 | preview-ingest | `skills/preview-ingest/` | Convert season preview prose into structured per-team intel files, resolve player codes, verify coverage | Full: Claude Code (parallel per team), Codex, Cursor, Copilot |
-| release | `skills/release/` | Cut a release: verify main, pick semver from conventional commits, draft notes, publish GitHub release (tag drives PyPI publish + changelog automation) | Full: Claude Code (local), Codex, Cursor, Copilot. Partial: Claude Code web (publish step handed to user) |
+| release-notes | `skills/release-notes/` | Draft release notes and suggest the next semver (read-only preview; never tags or publishes) | Full: Claude Code, Codex, Cursor, Copilot |
+| release | `skills/release/` | Cut a release end-to-end: preflight, notes via release-notes, approval gate, publish GitHub release (tag drives PyPI publish + changelog automation) | Full: Claude Code (local), Codex, Cursor, Copilot. Partial: Claude Code web (publish step handed to user) |
 
 ## Analysis Agents
 
@@ -102,3 +103,5 @@ Python classes in `fpl_cli/agents/` that implement `async run(context) -> AgentR
 - BenchOrderAgent and StartingXIAgent have no CLI command - they are invoked by gw-prep skill wrapper scripts in `.agents/skills/gw-prep/scripts/`
 - TransferEvalAgent is used by both `transfer-eval` CLI command and gw-prep skill
 - `extract_classic_squad.py` (`.agents/skills/gw-prep/scripts/`) — deterministic Classic Squad block extractor used by gw-prep Phase A3 + Phase E. JSON stdout; read-only; emits TypedDict-annotated payloads.
+- `validate_draft_waivers.py` (`.agents/skills/gw-prep/scripts/`) — cross-checks the Draft waiver table against the live waiver pool and squad grid (gw-prep Phase D1). JSON stdout; read-only; always exits 0.
+- Both scripts locate markdown sections via `fpl_cli.utils.markdown` (`HeadingMatcher`, `find_section`, `section_body`, `leaf_body`, `fence_flags`), tolerating LLM heading drift (qualifiers, case, leading annotations, opt-in aliases) without matching a different heading that shares a prefix. Also used by `fpl_cli/prompts/review.py` for the GW Narrative section boundary.

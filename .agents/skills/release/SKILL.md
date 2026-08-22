@@ -1,12 +1,12 @@
 ---
 name: release
 description: >
-  Cut a new release: verify main is releasable, pick the next semver from
-  conventional commits since the last tag, draft release notes in house
-  style, and publish a GitHub release whose tag drives the automated PyPI
-  publish and changelog update. Use when the user says "cut a release",
-  "new release", "prepare a release", "release to PyPI", "tag a version",
-  or "publish a release".
+  Cut a new release end-to-end: verify main is releasable, draft notes via
+  the release-notes skill, get explicit approval, and publish the GitHub
+  release whose tag drives the automated PyPI publish and changelog update.
+  Use when the user says "cut a release", "ship it", "new release",
+  "release to PyPI", "publish a new version", or "time to release". Only
+  for actually publishing — to preview notes, use release-notes instead.
 compatibility:
   claude-code: full locally (gh publishes); web sessions prepare everything, user runs the publish step
   codex: full (same shell commands)
@@ -37,23 +37,17 @@ action — everything downstream is automated.
 - Tags are lightweight and created by GitHub at publish time (`gh release
   create` with a new tag name). Do not pre-push an annotated tag.
 
-## Phase 1 — Preflight
+## Step 1 — Preflight
 
-```bash
-git fetch origin main --tags
-git log -1 origin/main --oneline
-git describe --tags --abbrev=0 origin/main      # last release tag
-git log $(git describe --tags --abbrev=0 origin/main)..origin/main --oneline
-```
+If any check fails, report the failures and stop — don't release a broken
+or stale build.
 
-- No commits since the last tag → nothing to release; stop.
-- Confirm CI is green on the exact tip of main (GitHub Actions `CI` workflow
-  for that head SHA). Do not release on a red or pending head.
-- Work from the tip of main with a clean tree.
-
-## Phase 2 — Verify locally
-
-Mirror the CI check job (install `-e ".[dev]"` first if needed):
+- On the tip of main with a clean tree (`git status --porcelain` empty;
+  `git fetch origin main --tags` first).
+- Commits exist since the last tag — otherwise there's nothing to release.
+- CI is green on the exact head SHA of main (GitHub Actions `CI` workflow).
+- Local checks pass, mirroring CI (run in parallel; check each exit status
+  individually — a `| tail` pipe hides failures):
 
 ```bash
 ruff check fpl_cli/
@@ -62,95 +56,51 @@ pytest
 python -m build          # or: hatch build — confirms sdist+wheel build
 ```
 
-Check each command's exit status individually — a `| tail` pipe hides
-failures. All four must pass before proceeding.
+## Step 2 — Draft notes and version
 
-## Phase 3 — Pick the version
+Run the `release-notes` skill workflow
+(`.agents/skills/release-notes/SKILL.md`): it suggests the semver bump,
+generates the git-cliff preview, curates out changelog noise, and drafts
+the notes in house style.
 
-Read the commit subjects since the last tag and apply semver over
-conventional commits:
+## Step 3 — Approval gate
 
-- any `feat!:` / `fix!:` / `BREAKING CHANGE` footer → **major**
-  (precedent: v2.0.0 came from a single `feat!:`)
-- else any `feat:` → **minor**
-- else → **patch**
+Present the draft and suggested version. Ask the user to confirm or adjust
+both. **Do not proceed until the user explicitly approves.** Publishing is
+irreversible: the PyPI version number is consumed permanently even if the
+release is later deleted.
 
-If the bump is debatable (e.g. a `fix:` that changes accepted behaviour),
-propose one and let the user decide.
+## Step 4 — Publish
 
-## Phase 4 — Draft the release notes
-
-Preview the grouped commits exactly as the changelog job will render them
-(`cliff.toml` groups feat/fix/refactor/perf, skips chore/ci/docs/test,
-catches the rest as Other):
+**Local session (gh available)** — use a heredoc to preserve formatting:
 
 ```bash
-git-cliff --unreleased --tag vX.Y.Z --strip header
-```
-
-**History caveat:** through v2.0.0 the history was linear — squash-merged
-conventional PR titles, one clean changelog line per PR. Since the move to
-Claude Code cloud PRs, main carries merge commits plus every branch commit,
-so changelog entries come from individual branch commits and depend on the
-commit conventions in CLAUDE.md ("Commits & Changelog"). `cliff.toml` skips
-merge commits and known review-iteration phrasings, but eyeball the preview
-for lines that describe PR-internal churn rather than user-facing change
-(review follow-ups mislabelled `fix:`, "apply findings", "address review").
-Drop them from the release notes and add a skip parser to `cliff.toml` so
-the automated CHANGELOG.md job drops them too.
-
-Write the release body in the house style used by every release since
-v1.1.0:
-
-```markdown
-## What's new
-
-<1–3 sentences of user-facing prose summarising the headline changes —
-what a user gains, not a commit list.>
-
-### Features
-
-- <commit subjects, lightly cleaned: drop scope prefixes like `fix(init):` → `init:`>
-
-### Bug Fixes
-
-- ...
-
-**Full changelog**: https://github.com/rossgroomio/fpl-cli/compare/vPREV...vX.Y.Z
-```
-
-Only include groups that have content. Keep the git-cliff wording; don't
-rewrite commit subjects beyond trimming prefixes. Show the draft to the
-user before publishing.
-
-## Phase 5 — Publish (requires explicit user go-ahead)
-
-Publishing is irreversible: the PyPI version number is consumed permanently
-even if the release is later deleted. Never publish without the user
-confirming the version and notes.
-
-**Local session (gh available):**
-
-```bash
-gh release create vX.Y.Z --target main --title vX.Y.Z --notes-file notes.md
+gh release create vX.Y.Z --title "vX.Y.Z" --target main --notes "$(cat <<'EOF'
+[approved release notes here]
+EOF
+)"
 ```
 
 This creates the tag at the tip of main and publishes in one step, which
 fires the release workflow.
 
 **Web/remote session (no gh; the GitHub MCP server has no create-release
-tool):** prepare `notes.md` content and hand the user either the `gh
-release create` command above or the UI steps — GitHub → Releases → Draft a
-new release → "Choose a tag" → type `vX.Y.Z` (create on publish) → target
-`main` → paste notes → Publish.
+tool):** hand the user the command above with the notes filled in, or the
+UI steps — GitHub → Releases → Draft a new release → "Choose a tag" → type
+`vX.Y.Z` (create on publish) → target `main` → paste notes → Publish.
 
-## Phase 6 — Post-release verification
+## Step 5 — Post-release verification
 
-1. The `Release` workflow run for the tag succeeds — all three jobs
-   (build, publish, changelog).
-2. https://pypi.org/project/fplkit/ shows the new version
-   (`pip index versions fplkit` also works).
+1. The release exists (`gh release view vX.Y.Z`) and the `Release`
+   workflow run for it succeeds — all three jobs (build, publish,
+   changelog): `gh run list --workflow=release.yml --limit=1`.
+2. https://pypi.org/project/fplkit/ shows the new version —
+   `pip index versions fplkit`, or `pip install fplkit==X.Y.Z` on a fresh
+   venv for a full check.
 3. The `docs: update CHANGELOG.md [skip ci]` commit landed on main.
+
+Tell the user the release is live, with links to the release page and the
+Actions run.
 
 ## Known failure modes
 
@@ -161,3 +111,8 @@ new release → "Choose a tag" → type `vX.Y.Z` (create on publish) → target
   re-run the changelog job manually.
 - **PyPI publish fails with OIDC errors**: check the `pypi` environment on
   the repo and the trusted-publisher config on the fplkit PyPI project.
+- **Version source drift**: never reintroduce a hardcoded `version =
+  "X.Y.Z"` in pyproject.toml — `dynamic = ["version"]` + hatch-vcs is the
+  single source of truth. And `fallback-version` belongs under
+  `[tool.hatch.version]`, not `[tool.hatch.build.hooks.vcs]` — misplaced,
+  it is silently ignored.

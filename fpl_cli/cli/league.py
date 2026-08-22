@@ -12,7 +12,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from fpl_cli.cli._context import Format, console, error_console, get_format, load_settings
-from fpl_cli.cli._helpers import _fetch_standings_with_costs
+from fpl_cli.cli._helpers import _entry_league_meta, _fetch_standings_with_costs
 
 logger = logging.getLogger(__name__)
 
@@ -63,10 +63,17 @@ def league_command(ctx: click.Context):
                         user_rank = user_entry.get("rank", "?")
                         user_total = user_entry.get("total", 0)
                         user_gw_pts = user_entry.get("event_total", 0)
+                        # `standings` is one 50-entry page; a league bigger than
+                        # that reports its true size via the entry payload's
+                        # `rank_count` instead, which "of {len(standings)}"
+                        # can't -- it just describes the page it was handed.
+                        manager_data = await client.get_manager_entry(entry_id)
+                        league_meta = _entry_league_meta(manager_data, classic_league_id)
+                        league_size = league_meta.get("rank_count", len(standings))
 
                         console.print("\n[bold]## Summary[/bold]")
                         console.print(f"**{league_name}**")
-                        console.print(f"- Position: {user_rank} of {len(standings)}")
+                        console.print(f"- Position: {user_rank} of {league_size}")
                         console.print(f"- GW Points: {user_gw_pts}")
                         console.print(f"- Total Points: {user_total:,}")
 

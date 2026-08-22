@@ -17,6 +17,7 @@ from fpl_cli.cli._helpers import (
     _net_transfer_ids,
     _slice_with_ties,
 )
+from fpl_cli.utils.gameweek import is_opening_gameweek
 
 logger = logging.getLogger(__name__)
 
@@ -321,6 +322,11 @@ async def _review_classic_transfers(client, entry_id, gw, player_map, teams, liv
             net_style = "green" if total_net > 0 else "red" if total_net < 0 else ""
             net_sign = '+' if total_net > 0 else ''
             console.print(f"\nHits: {hits} | Misses: {misses} | Net: [{net_style}]{net_sign}{total_net}[/{net_style}]")
+        elif is_opening_gameweek(gw):
+            # An empty GW1 transfer list is not a rolled transfer: the squad was
+            # bought pre-season and the first free transfer only arrives in GW2.
+            console.print("\n[bold]## Transfers[/bold]")
+            console.print("[dim]None - GW1 squads are bought pre-season, so there is nothing to review here[/dim]")
 
     except Exception as e:  # noqa: BLE001 — display resilience
         console.print(f"[dim]Could not fetch transfers: {rich_escape(str(e))}[/dim]")
@@ -349,6 +355,19 @@ async def _review_classic_league(
             console.print(f"[dim]League standings not shown for historical GW{gw} review[/dim]")
             console.print("[dim]Use 'fpl league' for current standings[/dim]")
             return {"league_name": league_name}
+
+        # FPL builds a mini-league's table for the first time only once the
+        # opening gameweek is finalised -- until then every entry sits in
+        # `new_entries` and `results` is empty. Rendering the sections anyway
+        # printed bare headings and handed the report a 0-point, 0-entry league.
+        if not standings:
+            console.print("\n[bold]## League[/bold]")
+            console.print(
+                f"[dim]{league_name}: standings not published yet"
+                " -- FPL builds mini-league tables after the opening gameweek is finalised[/dim]"
+            )
+            console.print("[dim]Re-run once the table appears, or use 'fpl league'[/dim]")
+            return {"league_name": league_name, "standings_pending": True}
 
         console.print("\n[bold]## League[/bold]")
 
@@ -500,6 +519,10 @@ async def _review_classic_league(
             "total_entries": total_entries,
             "user_gw_points": user_gw_pts,
             "user_total": user_total,
+            # `total_entries` alone can't distinguish "unknown" from "known but
+            # not on this page" -- a >50-entry league still reports a nonzero
+            # page size even when the user's own entry wasn't in it.
+            "user_found_in_standings": user_entry is not None,
             "nearby_rivals": [
                 {
                     "rank": e.get("rank"),

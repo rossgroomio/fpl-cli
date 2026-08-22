@@ -2306,6 +2306,65 @@ class TestValidateResearchProseHeaderVariants:
         assert corrections == []
 
 
+class TestValidateResearchProseFenceAwareness:
+    """A '#'-prefixed line inside a fenced code block is not a heading, so it
+    must not open or close the narrative section."""
+
+    @pytest.fixture
+    def player_map(self):
+        return {
+            p.id: p
+            for p in [
+                make_player(id=1, web_name="Salah", team_id=14),
+                make_player(id=2, web_name="Mac Allister", team_id=14),
+            ]
+        }
+
+    @pytest.fixture
+    def big_allowlist(self):
+        return {"Damsgaard", "FillerA", "FillerB", "FillerC", "FillerD"}
+
+    def test_fenced_lookalike_before_the_real_header_is_not_the_header(
+        self, player_map, big_allowlist
+    ):
+        text = (
+            "```\n"
+            "## GW34 Narrative\n"
+            "Decoy example, not the real header.\n"
+            "```\n"
+            "\n"
+            "## GW35 Narrative\n"
+            "Mac Allister was the gameweek's hidden gem.\n"
+            "\n"
+            "## Standout Performers\n"
+        )
+        result, corrections = validate_research_prose(text, player_map, big_allowlist)
+        assert "Mac Allister" not in result
+        assert len(corrections) == 1
+        assert "Decoy example, not the real header." in result
+
+    def test_fenced_hash_line_inside_narrative_does_not_end_the_section(
+        self, player_map, big_allowlist
+    ):
+        text = (
+            "## GW35 Narrative\n"
+            "Mac Allister was the gameweek's hidden gem.\n"
+            "```python\n"
+            "# a python comment, not a heading\n"
+            "```\n"
+            "The rest of the gameweek passed quietly.\n"
+            "\n"
+            "## Standout Performers\n"
+        )
+        result, corrections = validate_research_prose(text, player_map, big_allowlist)
+        assert "Mac Allister" not in result
+        assert len(corrections) == 1
+        # The fenced comment and the sentence after it must survive -- the
+        # section must not have been truncated at the fenced '#' line.
+        assert "# a python comment, not a heading" in result
+        assert "The rest of the gameweek passed quietly." in result
+
+
 class TestNamesFromFixtureStrings:
     """Tests for _names_from_fixture_strings."""
 
@@ -2502,3 +2561,80 @@ class TestNetTransferIds:
         net_in, net_out = _net_transfer_ids(txns)
         assert net_in == [1]
         assert net_out == [2]
+
+
+class TestOpeningGameweekSynthesisPrompt:
+    """GW1 has no transfers, no previous gameweek and one match per team."""
+
+    @staticmethod
+    def _prompts(gameweek, **overrides):
+        kwargs = {
+            "research_summary": "Community summary",
+            "classic_points": 56,
+            "classic_average": 57,
+            "classic_highest": 121,
+            "classic_gw_rank": 1_250_000,
+            "classic_overall_rank": 1_250_000,
+            "classic_captain": "Salah (26 pts = 13 raw × 2)",
+            "classic_captain_points": 26,
+            "classic_captain_hindsight": "Salah was the optimal captain",
+            "classic_players": "- Salah (LIV, MID): 26 pts (C)",
+            "classic_transfers": "No transfers this week",
+            "classic_league_name": "Office League",
+            "classic_gw_position": 6,
+            "classic_position": 6,
+            "classic_total": 10,
+            "classic_rivals": "- 1. John: 76 pts",
+            "classic_worst_performers": "1. Mike - 40 pts",
+            "classic_transfer_impact": None,
+            "draft_points": 51,
+            "draft_league_name": "Draft League",
+            "draft_players": "- Haaland (MCI): 8 pts",
+            "draft_transactions": "No waivers this week",
+            "draft_gw_position": 3,
+            "draft_position": 3,
+            "draft_total": 6,
+        }
+        kwargs.update(overrides)
+        return get_review_synthesis_prompt(gameweek=gameweek, **kwargs)
+
+    def test_gw1_user_prompt_carries_season_context(self):
+        _, prompt = self._prompts(1)
+        assert "<season_context>" in prompt
+        assert "first free transfer arrives in GW2" in prompt
+        assert "no previous gameweek" in prompt.lower()
+
+    def test_later_gw_has_no_season_context(self):
+        _, prompt = self._prompts(14)
+        assert "<season_context>" not in prompt
+
+    def test_gw1_system_prompt_forbids_roll_framing(self):
+        system, _ = self._prompts(1)
+        assert 'note "No transfers this week" in Classic Verdict' not in system
+        assert "not as a week of restraint" in system
+
+    def test_later_gw_system_prompt_unchanged(self):
+        system, _ = self._prompts(14)
+        assert 'note "No transfers this week" in Classic Verdict' in system
+
+    def test_unknown_league_total_replaces_position_lines(self):
+        _, prompt = self._prompts(
+            1, classic_gw_position="unknown", classic_position="unknown", classic_total="unknown",
+        )
+        assert "League standings unavailable for this review" in prompt
+        assert "GW Position: unknown" not in prompt
+        assert "Overall League Position" not in prompt.split("<draft_data>")[0]
+
+    def test_zero_league_total_replaces_position_lines(self):
+        _, prompt = self._prompts(1, classic_gw_position=0, classic_position=0, classic_total=0)
+        assert "League standings unavailable for this review" in prompt
+
+    def test_populated_league_keeps_position_lines(self):
+        _, prompt = self._prompts(14)
+        assert "GW Position: 6 of 10 (by points this gameweek)" in prompt
+        assert "Overall League Position: 6 of 10" in prompt
+        assert "League standings unavailable" not in prompt
+
+    def test_net_points_qualifier_survives_the_block_rewrite(self):
+        _, prompt = self._prompts(14, use_net_points=True)
+        assert "GW Position: 6 of 10 (by net points this gameweek)" in prompt

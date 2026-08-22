@@ -3,10 +3,12 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from fpl_cli.agents.orchestration.report import ReportAgent, _format_standings_block
 from fpl_cli.cli._league_recap_data import (
+    _PICKS_CONCURRENCY,
     _bucket_draft_txns_by_league_entry,
     _classic_pick_flags,
     _compute_shared_awards,
@@ -14,6 +16,7 @@ from fpl_cli.cli._league_recap_data import (
     _compute_transfer_awards,
     _compute_waiver_awards,
     _contract_draft_txn_chains,
+    _fetch_all_manager_data,
     evaluate_league_fines,
 )
 from fpl_cli.cli._league_recap_types import (
@@ -204,6 +207,28 @@ class TestAwardsTies:
         assert "team scored 40 pts" in awards["biggest_bench_haul"]["detail"]
         assert "team scored 55 pts" in awards["biggest_bench_haul"]["detail"]
 
+    def test_wide_bench_haul_tie_caps_managers(self):
+        """Each bench entry is verbose, so a wide tie is capped like the other awards."""
+        managers = [
+            _make_manager(
+                name=f"M{i:02d}", entry_id=i, gw_points=60 - i, bench_points=12,
+                squad=[_make_squad_player(name=f"Bench{i:02d}", points=12, contributed=False)],
+            )
+            for i in range(6)
+        ]
+        awards = _compute_shared_awards(managers)
+        detail = awards["biggest_bench_haul"]["detail"]
+        assert detail.count("left 12 pts on the bench") == 3
+        assert "3 more managers omitted" in detail
+        # The award still records every tied manager, only the prose is trimmed
+        assert awards["biggest_bench_haul"]["manager_name"].count(" and ") == 5
+        # All tied on bench points, so the ones named are those it cost most:
+        # M05 scored least (55), M00 most (60).
+        assert [n for n in ("M00", "M01", "M02", "M03", "M04", "M05") if n in detail] == [
+            "M03", "M04", "M05",
+        ]
+        assert detail.index("M05") < detail.index("M04") < detail.index("M03")
+
     def test_tied_captain_same_captain(self):
         """Two managers captaining the same player - grouped output."""
         managers = [
@@ -237,6 +262,21 @@ class TestAwardsTies:
         assert awards["worst_captain"]["value"] == 2
         assert awards["worst_captain"]["detail"] == "Bob and Charlie captained Haaland (2 pts) [2 of 3 managers]"
         assert awards["worst_captain"]["manager_name"] == "Bob and Charlie"
+
+    def test_total_managers_uses_full_league_not_just_fetched(self):
+        """A failed picks fetch must not shrink the '[n of total]' denominator.
+
+        Passing the full league size (as collect_classic/draft_recap_data do)
+        keeps the fraction honest even when some managers dropped out of
+        `managers` because their picks fetch failed.
+        """
+        managers = [
+            _make_manager(name="Alice", captain="Salah", captain_points=15),
+            _make_manager(name="Bob", captain="Haaland", captain_points=2),
+            _make_manager(name="Charlie", captain="Haaland", captain_points=2),
+        ]
+        awards = _compute_shared_awards(managers, total_managers=20)
+        assert awards["worst_captain"]["detail"] == "Bob and Charlie captained Haaland (2 pts) [2 of 20 managers]"
 
     def test_three_way_captain_tie_same_captain(self):
         """Three managers all captaining the same player - uses 'all captained'."""
@@ -295,6 +335,33 @@ class TestAwardsTies:
         ]
         awards = _compute_shared_awards(managers)
         assert awards["worst_captain"]["value"] == 0
+
+    def test_worst_captain_mixed_tie_reports_effective_points(self):
+        """Tie struck on effective pts must not print a tied manager's raw captain_points."""
+        managers = [
+            _make_manager(name="Alice", captain="Salah", captain_points=0, captain_played=False,
+                          vice_captain="Gordon", vice_captain_points=3),
+            _make_manager(name="Bob", captain="Haaland", captain_points=3),
+            _make_manager(name="Charlie", captain="Palmer", captain_points=10),
+        ]
+        awards = _compute_shared_awards(managers)
+        detail = awards["worst_captain"]["detail"]
+        assert awards["worst_captain"]["value"] == 3
+        assert "Bob captained Haaland (3 pts)" in detail
+        # Salah blanked - the 3 came from Alice's vice, so don't credit it to Salah
+        assert "Alice captained Salah (dnp; vice scored 3)" in detail
+        assert "(0 pts)" not in detail
+
+    def test_wide_captain_tie_caps_groups(self):
+        """A tie spread across many captains is capped, with the omitted count reported."""
+        managers = [
+            _make_manager(name=f"M{i:02d}", entry_id=i, captain=f"Cap{i}", captain_points=0)
+            for i in range(6)
+        ] + [_make_manager(name="Top", entry_id=99, captain="Salah", captain_points=12)]
+        awards = _compute_shared_awards(managers)
+        detail = awards["worst_captain"]["detail"]
+        assert detail.count("captained") == 3
+        assert "3 more managers omitted" in detail
 
 
 # ---------------------------------------------------------------------------
@@ -638,6 +705,135 @@ class TestStandingsMovement:
         # Previous: Alice=450, Bob=350 -> Alice 1st, Bob 2nd (same as current)
         assert managers[0]["previous_rank"] == 1
         assert managers[1]["previous_rank"] == 2
+
+    def test_dropped_manager_does_not_fabricate_movement(self):
+        """A failed picks fetch must not renumber the managers below the gap.
+
+        overall_rank comes from the unfiltered standings, so previous_rank has to
+        be ranked over the same full league or every manager below the missing
+        entry is reported as having dropped a place.
+        """
+        league_rows = [(i, 500 - i * 10, 50) for i in range(1, 6)]
+        managers = [
+            _make_manager(name=f"M{i}", entry_id=i, gw_points=50,
+                          total_points=500 - i * 10, overall_rank=i)
+            for i in (1, 2, 4, 5)  # entry 3 failed to fetch
+        ]
+        _compute_standings_movement(managers, league_rows)
+        assert [m["previous_rank"] for m in managers] == [1, 2, 4, 5]
+        assert all(m["previous_rank"] == m["overall_rank"] for m in managers)
+
+    def test_gw1_zero_previous_totals_report_no_movement(self):
+        """In GW1 every previous total is zero; ties break on standings order."""
+        league_rows = [(i, 80 - i, 80 - i) for i in range(1, 20)]
+        managers = [
+            _make_manager(name=f"M{i:02d}", entry_id=i, gw_points=80 - i,
+                          total_points=80 - i, overall_rank=i)
+            for i in range(1, 20)
+        ]
+        _compute_standings_movement(managers, league_rows)
+        assert all(m["previous_rank"] == m["overall_rank"] for m in managers)
+
+    def test_gw1_dropped_manager_reports_no_movement(self):
+        """The GW1 all-zeros tie must survive a manager dropping out mid-table."""
+        league_rows = [(i, 80 - i, 80 - i) for i in range(1, 20)]
+        managers = [
+            _make_manager(name=f"M{i:02d}", entry_id=i, gw_points=80 - i,
+                          total_points=80 - i, overall_rank=i)
+            for i in range(1, 20) if i != 5
+        ]
+        _compute_standings_movement(managers, league_rows)
+        assert [m["manager_name"] for m in managers
+                if m["previous_rank"] != m["overall_rank"]] == []
+
+    def test_fetched_points_take_precedence_over_standings_row(self):
+        """use_net_points adjusts gw_points on the entry; the standings row must not win."""
+        league_rows = [(1, 500, 60), (2, 450, 0)]
+        managers = [
+            _make_manager(name="Alice", entry_id=1, gw_points=40, total_points=500, overall_rank=1),
+            _make_manager(name="Bob", entry_id=2, gw_points=0, total_points=450, overall_rank=2),
+        ]
+        _compute_standings_movement(managers, league_rows)
+        # Alice's own figures give prev 460 (1st); the row's gross 60 would give 440 (2nd)
+        assert managers[0]["previous_rank"] == 1
+        assert managers[1]["previous_rank"] == 2
+
+    def test_hit_this_gw_is_netted_out_of_previous_total(self):
+        """total_points is always net of every hit; gw_points is gross unless
+        use_net_points is on. Off, the hit must still be subtracted here or a
+        manager who took it has their previous total over-credited."""
+        managers = [
+            _make_manager(name="Alice", entry_id=1, gw_points=50, total_points=500, transfer_cost=8),
+            _make_manager(name="Bob", entry_id=2, gw_points=10, total_points=460, transfer_cost=0),
+        ]
+        _compute_standings_movement(managers)
+        # True previous totals: Alice 500-42=458, Bob 460-10=450 -> Alice was 1st.
+        # The unfixed formula (500-50=450 vs 460-10=450) would report a tie.
+        assert managers[0]["previous_rank"] == 1
+        assert managers[1]["previous_rank"] == 2
+
+    def test_use_net_points_mode_does_not_double_subtract_the_hit(self):
+        """With use_net_points on, gw_points is already net; subtracting
+        transfer_cost again would double-count the hit."""
+        managers = [
+            _make_manager(name="Alice", entry_id=1, gw_points=42, total_points=500, transfer_cost=8),
+            _make_manager(name="Bob", entry_id=2, gw_points=10, total_points=470, transfer_cost=0),
+        ]
+        _compute_standings_movement(managers, use_net_points=True)
+        # True previous: Alice 500-42=458, Bob 470-10=460 -> Bob was 1st.
+        # Double-subtracting the hit (500-(42-8)=466) would wrongly rank Alice 1st.
+        assert managers[1]["previous_rank"] == 1
+        assert managers[0]["previous_rank"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Per-manager fetch concurrency
+# ---------------------------------------------------------------------------
+
+
+class TestManagerFetchConcurrency:
+    async def test_both_network_calls_respect_the_concurrency_cap(self):
+        """Picks and transfers are two calls per manager; both must hold the permit."""
+        live = {"picks": 0, "transfers": 0}
+        peak = {"picks": 0, "transfers": 0}
+
+        # Transfers are held open far longer than picks so that, if they are not
+        # throttled, managers released by the picks semaphore pile into the
+        # transfers stage faster than it drains and the peak exceeds the cap.
+        ticks = {"picks": 1, "transfers": 30}
+
+        class _FakeClient:
+            async def _tracked(self, kind: str) -> None:
+                live[kind] += 1
+                peak[kind] = max(peak[kind], live[kind])
+                for _ in range(ticks[kind]):
+                    await asyncio.sleep(0)
+                live[kind] -= 1
+
+            async def get_manager_picks(self, entry_id: int, gw: int) -> dict:
+                await self._tracked("picks")
+                return {
+                    "picks": [],
+                    "entry_history": {"event_transfers": 2, "event_transfers_cost": 0},
+                    "active_chip": None,
+                    "automatic_subs": [],
+                }
+
+            async def get_manager_transfers(self, entry_id: int) -> list:
+                await self._tracked("transfers")
+                return []
+
+        standings = [
+            {"entry": i, "player_name": f"M{i:02d}", "event_total": 50, "total": 50}
+            for i in range(1, 20)
+        ]
+        managers = await _fetch_all_manager_data(
+            _FakeClient(), standings, 2, {}, {}, {},
+        )
+
+        assert len(managers) == 19
+        assert peak["picks"] <= _PICKS_CONCURRENCY
+        assert peak["transfers"] <= _PICKS_CONCURRENCY
 
 
 # ---------------------------------------------------------------------------
@@ -1230,6 +1426,36 @@ class TestPromptFormatting:
         assert "Gameweek 10" in user
         assert "Alice won" in user
         assert "Bob fined" in user
+
+    def test_gw1_prompt_states_that_no_transfers_exist(self):
+        """GW1 squads are built pre-deadline, so the game records no transfers."""
+        _, user = get_recap_synthesis_prompt(
+            gw=1, league_name="Test", fpl_format="classic",
+            awards_text="x", standings_text="| t |", fines_text="",
+        )
+        assert "No transfers were made this gameweek" in user
+        assert "GW1 squads are built before the" in user
+
+    def test_later_gameweek_prompt_has_no_transfer_note(self):
+        _, user = get_recap_synthesis_prompt(
+            gw=2, league_name="Test", fpl_format="classic",
+            awards_text="x", standings_text="| t |", fines_text="",
+        )
+        assert "No transfers were made this gameweek" not in user
+
+    def test_draft_gw1_prompt_has_no_classic_transfer_note(self):
+        """Draft uses waivers, not transfers - the classic GW1 note must not appear."""
+        _, user = get_recap_synthesis_prompt(
+            gw=1, league_name="Test", fpl_format="draft",
+            awards_text="x", standings_text="| t |", fines_text="",
+        )
+        assert "No transfers were made this gameweek" not in user
+
+    def test_synthesis_system_prompt_fences_transfer_invention(self):
+        from fpl_cli.prompts.league_recap import RECAP_SYNTHESIS_SYSTEM_PROMPT
+
+        assert "Only reference transfers that appear explicitly" in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        assert "not licence to invent" in RECAP_SYNTHESIS_SYSTEM_PROMPT
 
     def test_synthesis_prompt_omits_fines_when_empty(self):
         _, user = get_recap_synthesis_prompt(

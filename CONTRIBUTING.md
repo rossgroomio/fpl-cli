@@ -45,12 +45,21 @@ The rules that matter:
 ## Releases
 
 Versioning is tag-driven (`hatch-vcs`) — no file carries a version number.
+Versions follow [semver](https://semver.org/); tags use the `vX.Y.Z` format:
+
+| Bump | When | Example |
+|---|---|---|
+| **Patch** (`v1.0.1`) | Bug fix, minor tweak | Fix captain scoring edge case |
+| **Minor** (`v1.1.0`) | New command, new agent, new capability | Add `FPL_CLI_DATA_DIR` override |
+| **Major** (`v2.0.0`) | Breaking CLI change: removed/renamed command or flag, changed output format | `ep_next` emits JSON null (v2.0.0) |
+
 Publishing a GitHub release triggers `.github/workflows/release.yml`, which
 builds the package, uploads it to PyPI ([fplkit](https://pypi.org/project/fplkit/))
 via trusted publishing, and prepends the git-cliff section to
 `CHANGELOG.md`. The full runbook lives in
 [`.agents/skills/release/SKILL.md`](.agents/skills/release/SKILL.md);
-agent sessions run it as the `release` skill.
+agent sessions run it as the `release` skill, and can preview the next
+version's notes any time with the read-only `release-notes` skill.
 
 ## Agent sessions
 
