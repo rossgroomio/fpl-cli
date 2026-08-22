@@ -127,9 +127,9 @@ Issue all reads and CLI commands in a **single parallel tool-call block**:
 - `fpl stats -s form --min-minutes 315 -n 20 --available-only --format json` (in-form across positions)
 - `fpl stats -s transfers_in_event -n 15 --format json` (transfer momentum)
 - `fpl price-history --sort price_slope -n 30 --format json` (season price trajectory - non-blocking, skip if command fails)
-- `fpl intel --format json` (season preview intel, if you keep any. Mid-season most sections have
-  aged out by design, so this is usually near-empty past GW7 - that is correct, not a failure.
-  Read `metadata.coverage.usable_as` before using any of it: see Phase B3.)
+- `fpl intel --format json` (season preview intel, if you keep any. Sections age out by design --
+  `metadata.sections_live` lists what still counts - so a near-empty mid-season payload is
+  correct, not a failure. Read `metadata.coverage.usable_as` before using any of it: see Phase B3.)
 <!-- ADAPT: Add further supplementary data source reads here (reports, newsletters) -->
 
 ### Season Start (Classic or Draft)
@@ -184,7 +184,7 @@ Read `metadata.coverage.usable_as` from the `fpl intel` response:
 
 | `usable_as` | Meaning | What agents may do with it |
 |---|---|---|
-| `full` | 75%+ of teams have intel | Support **or** oppose a pick |
+| `full` | Enough of the league is covered (threshold lives in the service; `metadata.coverage` has the numbers) | Support **or** oppose a pick |
 | `negative_filter_only` | Some teams covered, most not | Only downgrade: injuries, rotation risk, "not nailed on". **Never** promote a player. |
 | `none` | Nothing loaded, or all aged out | Ignore intel entirely; omit it from Phase C/D prompts |
 

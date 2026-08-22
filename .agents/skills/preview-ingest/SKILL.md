@@ -145,7 +145,8 @@ Tell the user, per team:
 
 **Coverage is the thing to flag.** `fpl intel` reports `usable_as`:
 
-- `full` (≥75% of teams) — intel can support or oppose a pick.
+- `full` (enough of the league covered — `metadata.coverage` has the live numbers) — intel can
+  support or oppose a pick.
 - `negative_filter_only` (below that) — usable for injuries and rotation risk,
   never to promote a player, because written-up teams would otherwise look
   better purely for having been written up.

@@ -537,6 +537,11 @@ influencing decisions on their own.
 | `team_strength` | GW6 | GW13 | team ratings, which stop blending a prior after GW12 |
 | `narrative` | GW6 | GW13 | as above |
 
+This table is the one prose copy of the schedule; `tests/test_doc_consistency.py` checks
+it against `SECTION_DECAY` in code, and `fpl intel --show-decay` prints the live version.
+Everything else (the agent skills included) reads the schedule from the JSON payload
+(`metadata.decay_schedule`, `metadata.sections_live`) rather than restating the numbers.
+
 Between full confidence and expiry the value tapers linearly and is reported per section
 as `section_confidence`. A categorical field such as `status: starter` cannot be scaled
 numerically, so the confidence is emitted alongside it for the consumer to weigh. Each

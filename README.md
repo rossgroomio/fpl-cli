@@ -103,9 +103,10 @@ $ fpl intel                        # Coverage across the league, and what it per
 $ fpl intel show ARS               # One team's intel, aged to the current gameweek
 ```
 
-Intel expires on a schedule (`fpl intel --show-decay`): injuries at GW2, projected XIs
-at GW7, everything by GW13 — each keyed to the point where real data supersedes it. There
-is no in-season upkeep, and squad-builder and gw-prep read it automatically when present.
+Intel expires on a schedule (`fpl intel --show-decay` prints it): each section is aged
+out at the point where real data supersedes it — API news for injuries, actual minutes
+for projected XIs. There is no in-season upkeep, and squad-builder and gw-prep read it
+automatically when present.
 
 ### Custom Analysis
 

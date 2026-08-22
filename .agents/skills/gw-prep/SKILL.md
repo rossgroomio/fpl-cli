@@ -209,10 +209,13 @@ fpl intel --format json
 Hand-curated pre-season notes on minutes, injuries, role and set-piece duty. Optional: most setups
 have none, and every downstream step is unchanged when there is nothing to read.
 
-**This is an early-season source by design.** Projected XIs expire at GW7 and everything expires at
-GW13, because by then real minutes beat anybody's August projection. Past GW13 expect an empty
-payload -- that is the decay working, not a failure. Its value is concentrated in GW1-3, when
-`starting_xi.py` and `bench_order.py` are ranking players who have not played yet.
+**This is an early-season source by design.** Each section expires at the point real data
+supersedes it -- projected XIs once actual minutes exist, everything eventually. Do not assume the
+schedule: the response's `metadata.decay_schedule` carries the live expiry table and
+`metadata.sections_live` what still counts at this gameweek. Once `sections_live` is empty, expect
+an empty payload -- that is the decay working, not a failure. Its value is concentrated in the
+opening gameweeks, when `starting_xi.py` and `bench_order.py` are ranking players who have not
+played yet.
 
 Read `metadata.coverage.usable_as` and store it as `intel_gate`:
 

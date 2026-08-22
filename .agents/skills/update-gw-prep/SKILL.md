@@ -68,8 +68,9 @@ fpl intel --format json
 ```
 
 Treat it as supplementary data only when it still carries something. It expires
-by gameweek (everything is gone by GW13), so past the opening weeks it will be
-empty and should not, on its own, justify an update pass. Note
+by gameweek (`metadata.sections_live` lists what still counts), so past the
+opening weeks it will be empty and should not, on its own, justify an update
+pass. Note
 `metadata.coverage.usable_as`: under `negative_filter_only` it may only support
 downgrading a pick, never promoting one.
 
