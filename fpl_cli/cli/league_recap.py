@@ -43,6 +43,7 @@ def league_recap_command(
         collect_draft_recap_data,
         evaluate_league_fines,
     )
+    from fpl_cli.cli._league_recap_history import capture_recap_history
     from fpl_cli.cli.review import _review_resolve_gw
 
     settings = load_settings()
@@ -164,6 +165,12 @@ def league_recap_command(
             )
             if fines:
                 collected_data["fines"] = fines
+
+            # Record the gameweek. Deliberately before synthesis: rendering
+            # happens after the LLM call, so capturing at render time would be
+            # too late for anything the prompt reads. Never raises -- a store
+            # problem warns on stderr and the recap carries on (R4).
+            await capture_recap_history(collected_data, is_live_gw=is_live_gw)
 
             # LLM summarisation (opt-in via --summarise or --dry-run)
             if summarise or dry_run:

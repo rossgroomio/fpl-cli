@@ -78,6 +78,20 @@ class RecapReconciliationError(RuntimeError):
 
 
 _CHIP_DISPLAY = {"wildcard": "WC", "freehit": "FH", "bboost": "BB", "3xc": "TC"}
+_CHIP_RAW = {display: raw for raw, display in _CHIP_DISPLAY.items()}
+
+
+def raw_chip_name(display: str | None) -> str | None:
+    """Map a displayed chip abbreviation back to the raw API name.
+
+    `RecapManagerEntry.active_chip` holds the display form, but the ledger
+    stores what the API said so a recorded row never depends on a rendering
+    choice. An unrecognised value passes through unchanged -- the collector
+    already passes through a chip it has no abbreviation for.
+    """
+    if not display:
+        return None
+    return _CHIP_RAW.get(display, display)
 _PICKS_CONCURRENCY = 10
 # Most managers named in one award's detail before it is truncated. Shared by
 # the transfer/waiver, captain, and bench-haul awards so a wide tie in a large
