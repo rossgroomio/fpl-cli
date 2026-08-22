@@ -142,3 +142,312 @@ class TestRowResolution:
     def test_an_unknown_row_still_records_the_tier_it_attempted(self):
         row = make_history_row(capture_status="unknown", tier="coarse")
         assert row.tier is FidelityTier.COARSE
+
+
+# ---------------------------------------------------------------------------
+# U5: the store
+# ---------------------------------------------------------------------------
+
+
+class TestStoreFailsClosed:
+    """The inverse of `tests/test_cli_chips.py::test_load_corrupt_file_returns_empty`.
+
+    A chip plan resets on a corrupt file because it can be rebuilt from the
+    API. A ledger gameweek cannot -- the API destroys per-gameweek granularity
+    at the rollover -- so it refuses to guess (R4).
+    """
+
+    def test_ae4_malformed_line_raises_and_leaves_the_file_untouched(self):
+        from fpl_cli.services.league_history import LeagueHistoryError, LeagueHistoryStore
+
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(5, [make_history_row(gameweek=5, gross_points=50)])
+        path = store.gameweek_file(5)
+        path.write_text(path.read_text(encoding="utf-8") + "not json{{{\n", encoding="utf-8")
+        before = path.read_bytes()
+
+        with pytest.raises(LeagueHistoryError) as exc:
+            store.load_gameweek(5)
+
+        assert str(path) in str(exc.value)
+        assert "move" in str(exc.value).lower()
+        assert path.read_bytes() == before
+
+    def test_a_corrupt_gameweek_does_not_take_the_partition_with_it(self):
+        from fpl_cli.services.league_history import LeagueHistoryError, LeagueHistoryStore
+
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(5, [make_history_row(gameweek=5, gross_points=50)])
+        store.append_rows(6, [make_history_row(gameweek=6, gross_points=60)])
+        store.gameweek_file(5).write_text("not json{{{\n", encoding="utf-8")
+
+        assert store.load_gameweek(6)[0].gross_points == 60
+        with pytest.raises(LeagueHistoryError):
+            store.load_gameweek(5)
+
+        coverage = {c.gameweek: c for c in store.coverage()}
+        assert coverage[5].readable is False
+        assert coverage[6].readable is True
+
+    def test_a_write_onto_a_corrupt_gameweek_refuses_rather_than_overwriting(self):
+        from fpl_cli.services.league_history import LeagueHistoryError, LeagueHistoryStore
+
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        path = store.gameweek_file(5)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("not json{{{\n", encoding="utf-8")
+        before = path.read_bytes()
+
+        with pytest.raises(LeagueHistoryError):
+            store.append_rows(5, [make_history_row(gameweek=5, gross_points=50)])
+        assert path.read_bytes() == before
+
+
+class TestStoreAppendAndSupersession:
+    def test_rows_read_back_as_written(self):
+        from fpl_cli.services.league_history import LeagueHistoryStore
+
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        rows = [
+            make_history_row(gameweek=5, manager_key=1, gross_points=50),
+            make_history_row(gameweek=5, manager_key=2, gross_points=44),
+        ]
+        store.append_rows(5, rows)
+        assert store.load_gameweek(5) == rows
+
+    def test_an_identical_row_writes_nothing(self):
+        from fpl_cli.services.league_history import LeagueHistoryStore
+
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(5, [make_history_row(gameweek=5, gross_points=50)])
+        before = store.gameweek_file(5).read_bytes()
+
+        written = store.append_rows(
+            5,
+            [make_history_row(
+                gameweek=5, gross_points=50,
+                captured_at=datetime(2027, 1, 1, tzinfo=timezone.utc),
+            )],
+        )
+
+        assert written == []
+        assert store.gameweek_file(5).read_bytes() == before
+
+    def test_a_differing_row_appends_a_superseding_line(self):
+        from fpl_cli.services.league_history import LeagueHistoryStore
+
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(5, [make_history_row(gameweek=5, gross_points=50)])
+        later = make_history_row(
+            gameweek=5, gross_points=53,
+            captured_at=datetime(2026, 8, 23, tzinfo=timezone.utc),
+        )
+        store.append_rows(5, [later])
+
+        assert len(store.load_gameweek(5)) == 2
+        assert store.resolved_gameweek(5)[1].gross_points == 53
+
+    def test_a_detailed_row_supersedes_a_coarse_one_without_removing_it(self):
+        from fpl_cli.services.league_history import LeagueHistoryStore
+
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(5, [make_history_row(gameweek=5, tier="coarse", gross_points=50)])
+        store.append_rows(5, [make_history_row(gameweek=5, tier="detailed", gross_points=50)])
+
+        rows = store.load_gameweek(5)
+        assert [r.tier.value for r in rows] == ["coarse", "detailed"]
+        assert store.resolved_gameweek(5)[1].tier.value == "detailed"
+
+    def test_any_capture_supersedes_an_unknown_row(self):
+        from fpl_cli.services.league_history import LeagueHistoryStore
+
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(5, [make_history_row(gameweek=5, capture_status="unknown")])
+        store.append_rows(5, [make_history_row(gameweek=5, tier="coarse", gross_points=50)])
+
+        assert store.resolved_gameweek(5)[1].gross_points == 50
+
+    def test_a_multi_manager_multi_gameweek_write_keeps_every_row(self):
+        """Two iterations in both loops: the shape that has bitten this area before."""
+        from fpl_cli.services.league_history import LeagueHistoryStore
+
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        for gw in (5, 6):
+            store.append_rows(gw, [
+                make_history_row(gameweek=gw, manager_key=key, gross_points=gw * 10 + key)
+                for key in (1, 2)
+            ])
+
+        assert sorted(store.captured_gameweeks()) == [5, 6]
+        for gw in (5, 6):
+            resolved = store.resolved_gameweek(gw)
+            assert sorted(resolved) == [1, 2]
+            assert [resolved[k].gross_points for k in (1, 2)] == [gw * 10 + 1, gw * 10 + 2]
+
+    def test_a_batch_carrying_two_rows_for_one_manager_keeps_both(self):
+        from fpl_cli.services.league_history import LeagueHistoryStore
+
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(5, [
+            make_history_row(gameweek=5, tier="coarse", gross_points=50),
+            make_history_row(
+                gameweek=5, tier="detailed", gross_points=50,
+                captured_at=datetime(2026, 8, 23, tzinfo=timezone.utc),
+            ),
+        ])
+        assert len(store.load_gameweek(5)) == 2
+        assert store.resolved_gameweek(5)[1].tier.value == "detailed"
+
+    def test_a_missing_gameweek_reads_as_empty_rather_than_raising(self):
+        from fpl_cli.services.league_history import LeagueHistoryStore
+
+        assert LeagueHistoryStore("2026-27", "classic", 1).load_gameweek(9) == []
+
+
+class TestStoreVersioning:
+    def test_a_line_below_the_readable_floor_raises(self, monkeypatch):
+        from fpl_cli.services import league_history as svc
+
+        store = svc.LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(5, [make_history_row(gameweek=5, gross_points=50)])
+        monkeypatch.setattr(svc, "MIN_READABLE_LEAGUE_HISTORY_VERSION", 2)
+
+        with pytest.raises(svc.LeagueHistoryError):
+            store.load_gameweek(5)
+
+    def test_an_older_but_readable_line_loads_through_the_upgrade_hook(self, monkeypatch):
+        from fpl_cli.services import league_history as svc
+
+        store = svc.LeagueHistoryStore("2026-27", "classic", 1)
+        payload = make_history_row(gameweek=5, gross_points=50).model_dump(mode="json")
+        payload["version"] = 0
+        path = store.gameweek_file(5)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        import json
+
+        path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+        monkeypatch.setattr(svc, "MIN_READABLE_LEAGUE_HISTORY_VERSION", 0)
+
+        rows = store.load_gameweek(5)
+        assert [r.gross_points for r in rows] == [50]
+
+    def test_a_future_version_line_is_skipped_with_a_warning_and_survives(self, caplog):
+        import json
+        import logging
+
+        from fpl_cli.services.league_history import LeagueHistoryStore
+
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        future = make_history_row(gameweek=5, manager_key=2, gross_points=99).model_dump(mode="json")
+        future["version"] = LEAGUE_HISTORY_VERSION + 1
+        path = store.gameweek_file(5)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        future_line = json.dumps(future)
+        path.write_text(future_line + "\n", encoding="utf-8")
+
+        with caplog.at_level(logging.WARNING):
+            assert store.load_gameweek(5) == []
+        assert str(path) in caplog.text
+
+        store.append_rows(5, [make_history_row(gameweek=5, manager_key=1, gross_points=50)])
+        lines = path.read_text(encoding="utf-8").splitlines()
+        assert lines[0] == future_line
+        assert len(lines) == 2
+
+    def test_existing_lines_are_preserved_byte_for_byte_on_rewrite(self):
+        from fpl_cli.services.league_history import LeagueHistoryStore
+
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(5, [make_history_row(gameweek=5, manager_key=1, gross_points=50)])
+        first_line = store.gameweek_file(5).read_text(encoding="utf-8").splitlines()[0]
+
+        store.append_rows(5, [make_history_row(gameweek=5, manager_key=2, gross_points=40)])
+        assert store.gameweek_file(5).read_text(encoding="utf-8").splitlines()[0] == first_line
+
+
+class TestStoreSeasonPartitioning:
+    def test_ae5_a_previous_season_stays_readable_after_the_label_advances(self):
+        from fpl_cli.services.league_history import LeagueHistoryStore
+
+        old = LeagueHistoryStore("2026-27", "classic", 1)
+        old.append_rows(5, [make_history_row(season="2026-27", gameweek=5, gross_points=50)])
+
+        new = LeagueHistoryStore("2027-28", "classic", 1)
+        new.append_rows(5, [make_history_row(season="2027-28", gameweek=5, gross_points=60)])
+
+        assert old.load_gameweek(5)[0].gross_points == 50
+        assert new.load_gameweek(5)[0].gross_points == 60
+        assert old.gameweek_file(5) != new.gameweek_file(5)
+
+    def test_each_format_and_league_gets_its_own_partition(self):
+        from fpl_cli.services.league_history import LeagueHistoryStore
+
+        paths = {
+            LeagueHistoryStore("2026-27", "classic", 1).gameweek_file(5),
+            LeagueHistoryStore("2026-27", "draft", 1).gameweek_file(5),
+            LeagueHistoryStore("2026-27", "classic", 2).gameweek_file(5),
+        }
+        assert len(paths) == 3
+
+    def test_the_partition_reports_whether_it_exists_yet(self):
+        from fpl_cli.services.league_history import LeagueHistoryStore
+
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        assert store.partition_exists() is False
+        store.append_rows(5, [make_history_row(gameweek=5, gross_points=50)])
+        assert store.partition_exists() is True
+
+    def test_the_store_honours_the_data_dir_override_at_point_of_use(self, tmp_path, monkeypatch):
+        from fpl_cli.paths import user_data_dir
+        from fpl_cli.services.league_history import LeagueHistoryStore
+
+        redirected = tmp_path / "elsewhere"
+        user_data_dir.cache_clear()
+        monkeypatch.setenv("FPL_CLI_DATA_DIR", str(redirected))
+        try:
+            path = LeagueHistoryStore("2026-27", "classic", 1).gameweek_file(5)
+        finally:
+            user_data_dir.cache_clear()
+        assert redirected in path.parents
+
+
+class TestStoreCoverage:
+    def test_coverage_reports_tier_and_status_counts_per_gameweek(self):
+        from fpl_cli.models.league_history import FidelityTier
+        from fpl_cli.services.league_history import LeagueHistoryStore
+
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(4, [
+            make_history_row(gameweek=4, manager_key=1, tier="coarse", gross_points=40),
+            make_history_row(gameweek=4, manager_key=2, tier="coarse", gross_points=41),
+        ])
+        store.append_rows(5, [
+            make_history_row(gameweek=5, manager_key=1, tier="detailed", gross_points=50),
+            make_history_row(gameweek=5, manager_key=2, capture_status="unknown"),
+        ])
+
+        coverage = {c.gameweek: c for c in store.coverage()}
+        assert coverage[4].tier_counts == {FidelityTier.COARSE: 2}
+        assert coverage[4].unknown_count == 0
+        assert coverage[4].lowest_tier is FidelityTier.COARSE
+        assert coverage[5].tier_counts == {FidelityTier.DETAILED: 1}
+        assert coverage[5].unknown_count == 1
+        assert coverage[5].manager_count == 2
+        assert coverage[5].is_complete is False
+        assert coverage[4].is_complete is True
+
+    def test_coverage_is_empty_for_a_partition_with_no_rows(self):
+        from fpl_cli.services.league_history import LeagueHistoryStore
+
+        assert LeagueHistoryStore("2026-27", "classic", 1).coverage() == []
+
+    def test_unknown_manager_keys_are_reported_so_a_gap_can_be_repaired(self):
+        from fpl_cli.services.league_history import LeagueHistoryStore
+
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(5, [
+            make_history_row(gameweek=5, manager_key=1, gross_points=50),
+            make_history_row(gameweek=5, manager_key=2, capture_status="unknown"),
+            make_history_row(gameweek=5, manager_key=3, capture_status="unknown"),
+        ])
+        assert store.coverage()[0].unknown_manager_keys == [2, 3]

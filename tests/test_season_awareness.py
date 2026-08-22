@@ -340,3 +340,43 @@ class TestManagerMapTeamSet:
 
         assert len(managers) == 20
         assert all(len(code) == 3 and code.isupper() for code in managers)
+
+
+class TestLeagueHistorySeasonPartitioning:
+    """The ledger inverts the invalidation above: season partitions, never discards.
+
+    `TeamRatingsService` discards a file stamped with a previous season because
+    it rates a league that no longer exists and can be recalculated. Ledger rows
+    cannot be recalculated -- the FPL API collapses every per-gameweek row into
+    one aggregate at the July rollover -- so a previous season stays readable
+    forever and a new one simply starts a new partition (R5).
+    """
+
+    def test_previous_season_rows_are_still_served_after_the_label_advances(self):
+        from fpl_cli.services.league_history import LeagueHistoryStore
+        from tests.conftest import make_history_row
+
+        previous = LeagueHistoryStore(PREVIOUS_SEASON, "classic", 1)
+        previous.append_rows(
+            38, [make_history_row(season=PREVIOUS_SEASON, gameweek=38, gross_points=71)],
+        )
+        current = LeagueHistoryStore(season_label(), "classic", 1)
+        current.append_rows(
+            1, [make_history_row(season=season_label(), gameweek=1, gross_points=52)],
+        )
+
+        assert previous.load_gameweek(38)[0].gross_points == 71
+        assert current.load_gameweek(1)[0].gross_points == 52
+
+    def test_a_new_season_starts_an_empty_partition_rather_than_inheriting(self):
+        from fpl_cli.services.league_history import LeagueHistoryStore
+        from tests.conftest import make_history_row
+
+        previous = LeagueHistoryStore(PREVIOUS_SEASON, "classic", 1)
+        previous.append_rows(
+            38, [make_history_row(season=PREVIOUS_SEASON, gameweek=38, gross_points=71)],
+        )
+
+        current = LeagueHistoryStore(season_label(), "classic", 1)
+        assert current.captured_gameweeks() == []
+        assert current.coverage() == []
