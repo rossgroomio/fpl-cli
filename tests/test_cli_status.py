@@ -254,7 +254,7 @@ class TestClassicLeagueStanding:
         assert result.exit_code == 0
         assert "League:" in result.output
         assert "3rd of 3 this week" in result.output
-        assert "4th of 3 overall" in result.output
+        assert "4th overall" in result.output
 
     def test_user_not_in_top_50(self):
         """When user is not found in page 1 standings, show hint."""
@@ -1214,6 +1214,35 @@ class TestClassicLeagueSizeFromEntryPayload:
         result = _run(client, settings=self._SETTINGS)
         assert "45,170th of 47,571 overall" in result.output
         assert "top 50" not in result.output
+
+    def test_no_rank_count_means_no_overall_denominator(self):
+        """A rank from standings must never be paired with a page-length size."""
+        client = self._client(
+            has_next=False,
+            leagues=[],
+            standings=[
+                {"entry": 123, "rank": 4, "event_total": 65},
+                {"entry": 456, "rank": 1, "event_total": 80},
+                {"entry": 789, "rank": 2, "event_total": 70},
+            ],
+        )
+        result = _run(client, settings=self._SETTINGS)
+        assert "4th overall" in result.output
+        assert "of 3 overall" not in result.output
+
+    def test_weekly_count_tracks_the_ranked_table_not_the_member_count(self):
+        """rank_count includes members absent from the table (new entries at GW1)."""
+        client = self._client(
+            has_next=False,
+            leagues=[{"id": 999, "rank_count": 12, "entry_rank": 2}],
+            standings=[
+                {"entry": 123, "rank": 2, "event_total": 65},
+                {"entry": 456, "rank": 1, "event_total": 80},
+            ],
+        )
+        result = _run(client, settings=self._SETTINGS)
+        assert "2nd of 2 this week" in result.output
+        assert "2nd of 12 overall" in result.output
 
     def test_beyond_page_one_without_meta_keeps_the_hint(self):
         client = self._client(

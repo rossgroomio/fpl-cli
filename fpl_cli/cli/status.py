@@ -63,11 +63,6 @@ def _ordinal(n: int | str) -> str:
     return f"{n:,}{suffix}"
 
 
-def _format_league_size(size: int | str) -> str:
-    """Thousands-separate a league size, passing through a non-numeric stand-in."""
-    return f"{size:,}" if isinstance(size, int) else str(size)
-
-
 def _gw_rank(standings: list[dict[str, Any]], user_event_total: int) -> int:
     """Derive GW rank by counting entries with higher event_total."""
     return sum(1 for s in standings if s.get("event_total", 0) > user_event_total) + 1
@@ -400,31 +395,32 @@ async def _fetch_classic_data(
                 classic_standings = standings_block.get("results", [])
                 classic_standings_complete = not standings_block.get("has_next", False)
                 league_meta = _entry_league_meta(manager_data, classic_league_id)
-                league_size = league_meta.get("rank_count", len(classic_standings))
                 user_entry = next(
                     (e for e in classic_standings if e.get("entry") == entry_id), None
                 )
-                if user_entry:
-                    classic_user_gw_pts = user_entry.get("event_total", 0)
+                # Each figure keeps the denominator its own source can support.
+                # `rank_count` counts league members; `results` counts the
+                # members actually on the table, which excludes entries that
+                # joined since the last standings build. Pairing a rank with a
+                # size from the other source is how "4th of 3" happens.
+                sizes: dict[str, Any] = {}
+                if "rank_count" in league_meta:
+                    sizes["league_size"] = league_meta["rank_count"]
+                if user_entry or "entry_rank" in league_meta:
+                    rank = user_entry.get("rank", "?") if user_entry else league_meta["entry_rank"]
+                    if user_entry:
+                        classic_user_gw_pts = user_entry.get("event_total", 0)
                     standing: dict[str, Any] = {
-                        "rank": user_entry.get("rank", "?"),
+                        "rank": rank,
                         "gw_pts": classic_user_gw_pts,
-                        "league_size": league_size,
+                        **sizes,
                     }
-                    # Position this week is a rank over every entry's event_total.
-                    # One page cannot support it, so it is omitted rather than
-                    # computed against whoever happens to be on the page.
-                    if classic_standings_complete:
+                    # Position this week ranks every entry's event_total, so it
+                    # needs the whole table - not whoever is on this page.
+                    if user_entry and classic_standings_complete:
                         standing["gw_position"] = _gw_rank(classic_standings, classic_user_gw_pts)
+                        standing["ranked_count"] = len(classic_standings)
                     data["league_standing"] = standing
-                elif "entry_rank" in league_meta:
-                    # Beyond page one, but the entry payload still knows where
-                    # they actually sit - report that instead of shrugging.
-                    data["league_standing"] = {
-                        "rank": league_meta["entry_rank"],
-                        "gw_pts": classic_user_gw_pts,
-                        "league_size": league_size,
-                    }
                 elif classic_standings:
                     data["league_standing"] = {"not_in_top_50": True}
             except (httpx.HTTPError, KeyError, TypeError) as exc:
@@ -565,11 +561,16 @@ async def _classic_section(
             if league.get("not_in_top_50"):
                 console.print("  [dim]Not in top 50 - run `fpl league` for full standings[/dim]")
             else:
-                size = _format_league_size(league["league_size"])
                 line = f"  League: {league['gw_pts']} pts"
                 if "gw_position" in league:
-                    line += f" ({_ordinal(league['gw_position'])} of {size} this week)"
-                line += f" | {_ordinal(league['rank'])} of {size} overall"
+                    line += (
+                        f" ({_ordinal(league['gw_position'])}"
+                        f" of {league['ranked_count']:,} this week)"
+                    )
+                line += f" | {_ordinal(league['rank'])}"
+                if "league_size" in league:
+                    line += f" of {league['league_size']:,}"
+                line += " overall"
                 console.print(line)
 
         # --- Fines rendering ---
