@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import sys
 from pathlib import Path
 from types import ModuleType
 
@@ -14,22 +13,18 @@ import pytest
 def _load_script() -> ModuleType:
     """Load extract_classic_squad.py as a module (it's not a package).
 
-    The scripts dir goes on sys.path while loading, matching a real
-    `python3 extract_classic_squad.py` run (sys.path[0] is the script's own
-    dir), so the shared `_md_sections` sibling module resolves.
+    Its only import beyond the stdlib is `fpl_cli.utils.markdown`, resolved
+    through the installed fpl-cli package, so no sys.path manipulation is
+    needed to load it standalone.
     """
-    scripts_dir = Path(__file__).parent.parent / ".agents/skills/gw-prep/scripts"
-    script_path = scripts_dir / "extract_classic_squad.py"
-    sys.path.insert(0, str(scripts_dir))
-    try:
-        spec = importlib.util.spec_from_file_location(
-            "extract_classic_squad", script_path
-        )
-        assert spec is not None and spec.loader is not None
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-    finally:
-        sys.path.remove(str(scripts_dir))
+    script_path = (
+        Path(__file__).parent.parent
+        / ".agents/skills/gw-prep/scripts/extract_classic_squad.py"
+    )
+    spec = importlib.util.spec_from_file_location("extract_classic_squad", script_path)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
     return mod
 
 
@@ -157,7 +152,7 @@ def test_stray_h1_ends_the_classic_squad_block(tmp_path, capsys):
     shallower than the H2 section heading, so per find_section's same-or-
     shallower contract it starts a new top-level section, not more Classic
     Squad content. This pins the intended, shared boundary rule at the call
-    site that consumes it, matching _md_sections' own
+    site that consumes it, matching fpl_cli.utils.markdown's own
     test_section_ends_at_shallower_heading."""
     f = tmp_path / "stray_h1.md"
     f.write_text(
@@ -1251,3 +1246,67 @@ def test_from_recommendations_no_heading_rejects_prefix_sharing_heading(
     assert exc.value.code == 1
     data = json.loads(capsys.readouterr().out)
     assert data["error"] is True
+
+
+# ---------------------------------------------------------------------------
+# Heading constants stay in sync with the output templates
+# ---------------------------------------------------------------------------
+#
+# _HEADING_* / _SUB_HEADINGS are a second source of truth for heading text
+# that also lives in the squad-builder and gw-prep output templates. Nothing
+# else enforces the two stay in sync, so a template rename would otherwise
+# merge cleanly and silently desync the validator from the template it's
+# meant to validate against -- these tests catch that by matching the
+# constants against the templates' real, current content.
+
+SQUAD_BUILDER_TEMPLATE_PATH = (
+    Path(__file__).parent.parent
+    / ".agents/skills/squad-builder/references/output-template.md"
+)
+GW_PREP_TEMPLATE_PATH = (
+    Path(__file__).parent.parent / ".agents/skills/gw-prep/references/output-template.md"
+)
+
+
+def test_top_level_headings_match_the_squad_builder_template():
+    """_run_extract reads a raw squad-builder file, so its top-level heading
+    constants must match the template at the same depth (no demotion yet)."""
+    lines = SQUAD_BUILDER_TEMPLATE_PATH.read_text(encoding="utf-8").split("\n")
+    assert _mod.has_heading(lines, _mod._HEADING_CLASSIC_SQUAD)
+    assert _mod.has_heading(lines, _mod._HEADING_DRAFT_RANKINGS)
+
+
+def test_sub_headings_match_the_squad_builder_template_once_demoted():
+    """_SUB_HEADINGS matches the embedded (demoted-by-one-level) form of the
+    Classic Squad block, per _run_extract's own demotion. Demoting the
+    template's real sub-headings the same way and checking every _SUB_HEADINGS
+    matcher against the result means a template rename (e.g. 'Bench' ->
+    'Reserves') fails this test instead of silently desyncing the validator."""
+    lines = SQUAD_BUILDER_TEMPLATE_PATH.read_text(encoding="utf-8").split("\n")
+    section = _mod.find_section(lines, _mod._HEADING_CLASSIC_SQUAD)
+    assert section is not None, "template must have a '## Classic Squad' section"
+    start, end = section
+    demoted = [
+        f"#{line}" if _mod.parse_heading(line) is not None else line
+        for line in lines[start:end]
+    ]
+    for name, matcher in _mod._SUB_HEADINGS.items():
+        assert _mod.has_heading(demoted, matcher), (
+            f"'{name}' sub-heading not found (once demoted) in the "
+            "squad-builder output template -- _SUB_HEADINGS has drifted "
+            "from the template"
+        )
+
+
+def test_embedded_classic_squad_heading_matches_the_gw_prep_template():
+    """_run_from_recommendations reads gw-prep's recommendations file, where
+    the Classic Squad block is already embedded at '### Classic Squad'.
+
+    The template illustrates its whole document shape inside one wrapping
+    ```markdown fence (a real recommendations file has no such fence), so the
+    check matches heading text directly rather than through the fence-aware
+    find_section/has_heading, which correctly treat that fenced content as
+    non-headings for real parsing.
+    """
+    lines = GW_PREP_TEMPLATE_PATH.read_text(encoding="utf-8").split("\n")
+    assert any(_mod._HEADING_EMBEDDED_CLASSIC_SQUAD.matches(line) for line in lines)

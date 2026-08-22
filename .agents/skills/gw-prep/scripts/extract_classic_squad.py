@@ -20,7 +20,7 @@ import re
 import sys
 from typing import Literal, TypedDict
 
-from _md_sections import (
+from fpl_cli.utils.markdown import (
     HeadingMatcher,
     fence_flags,
     find_section,
@@ -67,8 +67,9 @@ class FromRecommendationsMetadata(TypedDict):
 # Headings this script locates. Sub-agents author these files from a
 # verbatim-heading instruction but sometimes decorate the heading anyway, so
 # every comparison goes through HeadingMatcher rather than a bespoke regex --
-# see _md_sections for what counts as a tolerable decoration and what stays a
-# different heading ("#### Bench Order" is not a qualified "#### Bench").
+# see fpl_cli.utils.markdown for what counts as a tolerable decoration and
+# what stays a different heading ("#### Bench Order" is not a qualified
+# "#### Bench").
 _HEADING_CLASSIC_SQUAD = HeadingMatcher("## Classic Squad")
 _HEADING_DRAFT_RANKINGS = HeadingMatcher("## Draft Rankings")
 _HEADING_EMBEDDED_CLASSIC_SQUAD = HeadingMatcher("### Classic Squad")

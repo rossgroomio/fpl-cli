@@ -19,20 +19,16 @@ FIXTURE_DIR = Path(__file__).parent / "fixtures" / "validate_draft_waivers"
 
 
 def _load_script() -> ModuleType:
-    """Load validate_draft_waivers.py with its own dir on sys.path, matching a
-    real `python3 validate_draft_waivers.py` run, so the shared `_md_sections`
-    sibling module resolves."""
-    scripts_dir = SCRIPT_PATH.parent
-    sys.path.insert(0, str(scripts_dir))
-    try:
-        spec = importlib.util.spec_from_file_location(
-            "validate_draft_waivers", SCRIPT_PATH
-        )
-        assert spec is not None and spec.loader is not None
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-    finally:
-        sys.path.remove(str(scripts_dir))
+    """Load validate_draft_waivers.py as a module (it's not a package).
+
+    Its only import beyond the stdlib is `fpl_cli.utils.markdown`, resolved
+    through the installed fpl-cli package, so no sys.path manipulation is
+    needed to load it standalone.
+    """
+    spec = importlib.util.spec_from_file_location("validate_draft_waivers", SCRIPT_PATH)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
     return mod
 
 
@@ -860,6 +856,47 @@ def test_draft_rankings_heading_is_not_the_draft_section(tmp_path, capsys):
     data = _parse(capsys)
     assert any(x["type"] == "draft-section-not-found" for x in data["warnings"])
     assert data["flags"] == []
+
+
+# ---------------------------------------------------------------------------
+# Heading constants stay in sync with the output template
+# ---------------------------------------------------------------------------
+#
+# _HEADING_DRAFT / _HEADING_WAIVERS are a second source of truth for heading
+# text that also lives in gw-prep's output template. Nothing else enforces
+# the two stay in sync, so a template rename would otherwise merge cleanly
+# and silently desync the validator from the template it's meant to validate
+# against -- this test catches that by matching the constants against the
+# template's real, current content.
+
+GW_PREP_TEMPLATE_PATH = (
+    Path(__file__).parent.parent / ".agents/skills/gw-prep/references/output-template.md"
+)
+
+
+def test_draft_and_waiver_headings_match_the_gw_prep_template():
+    """The template illustrates its whole document shape inside one wrapping
+    ```markdown fence (a real recommendations file has no such fence), so the
+    check matches heading text and ordering directly rather than through the
+    fence-aware find_section, which correctly treats that fenced content as
+    non-headings for real parsing."""
+    lines = GW_PREP_TEMPLATE_PATH.read_text(encoding="utf-8").split("\n")
+    draft_idx = next(
+        (i for i, line in enumerate(lines) if _mod._HEADING_DRAFT.matches(line)), None
+    )
+    assert draft_idx is not None, "template must have a '## Draft League' heading"
+    waiver_idx = next(
+        (
+            i
+            for i, line in enumerate(lines)
+            if i > draft_idx and _mod._HEADING_WAIVERS.matches(line)
+        ),
+        None,
+    )
+    assert waiver_idx is not None, (
+        "'### Waiver Recommendations' not found after '## Draft League' in the "
+        "gw-prep output template -- _HEADING_WAIVERS has drifted from the template"
+    )
 
 
 def test_fenced_draft_heading_is_ignored(tmp_path, capsys):

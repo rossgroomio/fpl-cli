@@ -9,6 +9,8 @@ section, parses the waiver table, and cross-checks each row against:
 Emits JSON to stdout: {"ok": bool, "flags": [...], "warnings": [...]}
 Exit code is always 0; the orchestrator (Phase D1) interprets flag types for posture.
 
+Requires fpl-cli venv to be activated before running.
+
 Usage:
     python3 validate_draft_waivers.py \\
         --recommendations-file path/to/gw34-recommendations.md \\
@@ -25,7 +27,7 @@ import sys
 import unicodedata
 from typing import TypedDict
 
-from _md_sections import HeadingMatcher, find_section, leaf_body
+from fpl_cli.utils.markdown import HeadingMatcher, find_section, leaf_body
 
 # ---------------------------------------------------------------------------
 # Types

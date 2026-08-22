@@ -1,43 +1,23 @@
-"""Tests for .agents/skills/gw-prep/scripts/_md_sections.py.
+"""Tests for fpl_cli/utils/markdown.py.
 
-The shared heading matcher is the single point where sub-agent heading drift is
-either tolerated or rejected, so the must-match and must-not-match sets are
-pinned here rather than only through the two scripts that consume it.
+The shared heading matcher is the single point where LLM-authored heading
+drift is either tolerated or rejected, so the must-match and must-not-match
+sets are pinned here rather than only through its consumers.
 """
 
 from __future__ import annotations
 
-import importlib.util
-import sys
-from pathlib import Path
-from types import ModuleType
-
 import pytest
 
-
-def _load_module() -> ModuleType:
-    scripts_dir = Path(__file__).parent.parent / ".agents/skills/gw-prep/scripts"
-    sys.path.insert(0, str(scripts_dir))
-    try:
-        spec = importlib.util.spec_from_file_location(
-            "_md_sections", scripts_dir / "_md_sections.py"
-        )
-        assert spec is not None and spec.loader is not None
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-    finally:
-        sys.path.remove(str(scripts_dir))
-    return mod
-
-
-_mod = _load_module()
-HeadingMatcher = _mod.HeadingMatcher
-find_section = _mod.find_section
-section_body = _mod.section_body
-has_heading = _mod.has_heading
-fence_flags = _mod.fence_flags
-parse_heading = _mod.parse_heading
-
+from fpl_cli.utils.markdown import (
+    HeadingMatcher,
+    fence_flags,
+    find_section,
+    has_heading,
+    leaf_body,
+    parse_heading,
+    section_body,
+)
 
 # -- Drift shapes the matcher must tolerate -----------------------------------
 
@@ -244,17 +224,15 @@ def test_leaf_body_stops_at_a_nested_heading():
     """Unlike section_body, a nested heading ends the body even though it
     doesn't end the section -- a leaf section is a table or note, not a
     container, so a nested heading marks drift, not more of its data."""
-    leaf_body = _mod.leaf_body
     lines = ["### A", "one", "#### nested", "two", "### B"]
     assert leaf_body(lines, "### A") == ["one"]
     assert section_body(lines, "### A") == ["one", "#### nested", "two"]
 
 
 def test_leaf_body_returns_full_body_when_no_nested_heading():
-    leaf_body = _mod.leaf_body
     lines = ["### A", "one", "two", "### B"]
     assert leaf_body(lines, "### A") == ["one", "two"]
 
 
 def test_leaf_body_returns_none_when_absent():
-    assert _mod.leaf_body(["## B", "x"], "## A") is None
+    assert leaf_body(["## B", "x"], "## A") is None

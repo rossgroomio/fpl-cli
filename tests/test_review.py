@@ -2306,6 +2306,65 @@ class TestValidateResearchProseHeaderVariants:
         assert corrections == []
 
 
+class TestValidateResearchProseFenceAwareness:
+    """A '#'-prefixed line inside a fenced code block is not a heading, so it
+    must not open or close the narrative section."""
+
+    @pytest.fixture
+    def player_map(self):
+        return {
+            p.id: p
+            for p in [
+                make_player(id=1, web_name="Salah", team_id=14),
+                make_player(id=2, web_name="Mac Allister", team_id=14),
+            ]
+        }
+
+    @pytest.fixture
+    def big_allowlist(self):
+        return {"Damsgaard", "FillerA", "FillerB", "FillerC", "FillerD"}
+
+    def test_fenced_lookalike_before_the_real_header_is_not_the_header(
+        self, player_map, big_allowlist
+    ):
+        text = (
+            "```\n"
+            "## GW34 Narrative\n"
+            "Decoy example, not the real header.\n"
+            "```\n"
+            "\n"
+            "## GW35 Narrative\n"
+            "Mac Allister was the gameweek's hidden gem.\n"
+            "\n"
+            "## Standout Performers\n"
+        )
+        result, corrections = validate_research_prose(text, player_map, big_allowlist)
+        assert "Mac Allister" not in result
+        assert len(corrections) == 1
+        assert "Decoy example, not the real header." in result
+
+    def test_fenced_hash_line_inside_narrative_does_not_end_the_section(
+        self, player_map, big_allowlist
+    ):
+        text = (
+            "## GW35 Narrative\n"
+            "Mac Allister was the gameweek's hidden gem.\n"
+            "```python\n"
+            "# a python comment, not a heading\n"
+            "```\n"
+            "The rest of the gameweek passed quietly.\n"
+            "\n"
+            "## Standout Performers\n"
+        )
+        result, corrections = validate_research_prose(text, player_map, big_allowlist)
+        assert "Mac Allister" not in result
+        assert len(corrections) == 1
+        # The fenced comment and the sentence after it must survive -- the
+        # section must not have been truncated at the fenced '#' line.
+        assert "# a python comment, not a heading" in result
+        assert "The rest of the gameweek passed quietly." in result
+
+
 class TestNamesFromFixtureStrings:
     """Tests for _names_from_fixture_strings."""
 

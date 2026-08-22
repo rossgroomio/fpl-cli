@@ -1,12 +1,14 @@
-"""Shared markdown heading/section matching for gw-prep validator scripts.
+"""Markdown heading/section matching, tolerant of LLM-authored drift.
 
-`extract_classic_squad.py` and `validate_draft_waivers.py` both solve the same
-problem: locate a markdown section by its heading, bounded by the next heading
-of the same or shallower depth. The markdown they read is authored by
-sub-agents from a verbatim-heading instruction, so a matcher that insists on an
-exact heading silently mislocates the section whenever the sub-agent decorates
-the heading -- the failure mode behind issue #63, where a formation suffix on
-`#### Starting XI` zeroed the row count on a perfectly valid squad.
+Locating a markdown section by its heading, bounded by the next heading of the
+same or shallower depth, comes up wherever LLM-authored markdown is parsed: the
+gw-prep validator scripts recover structured data from sub-agent output, and
+`fpl_cli.prompts.review` locates the GW Narrative section in a research
+provider's response. Markdown authored this way is produced from a
+verbatim-heading instruction, so a matcher that insists on an exact heading
+silently mislocates the section whenever the heading is decorated -- the
+failure mode behind issue #63, where a formation suffix on `#### Starting XI`
+zeroed the row count on a perfectly valid squad.
 
 `HeadingMatcher` therefore compares a *normalised core* of the heading text
 rather than the raw string, tolerating the four drift shapes seen or plausible
@@ -29,6 +31,13 @@ guessed globally.
 
 Scanning is fence-aware throughout: a `#` line inside a fenced code block is
 code, not a heading, so it neither opens nor closes a section.
+
+`HeadingMatcher` assumes a fixed target heading text. A caller that needs to
+locate a heading matching a pattern instead (e.g. one embedding a variable
+gameweek number) should match that heading itself with its own regex, then use
+`fence_flags`/`parse_heading` directly to compute a fence-aware, same-or-
+shallower-depth section boundary from it -- the same primitives `_locate`
+composes here.
 """
 
 from __future__ import annotations
