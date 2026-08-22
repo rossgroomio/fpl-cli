@@ -76,12 +76,13 @@ Top 3 BPS scorers in each match receive 3, 2, and 1 bonus points respectively. T
 | FWD goal | 24 |
 | Assist | 9 |
 | GK/DEF clean sheet | 12 |
-| Penalty save | 8 |
-| Save (inside box) | 3 |
-| Save (outside box) | 2 |
+| Penalty save | 7 |
+| Save | 2 |
+| Save from a shot inside the box (additional) | 1 |
+| Save from a big chance (additional) | 1 |
 | Successful open play cross | 1 |
 | Big chance created | 3 |
-| Every 2 CBI | 1 |
+| Every 3 CBI | 1 |
 | Every 3 recoveries | 1 |
 | Key pass | 1 |
 | Successful tackle | 2 |
@@ -102,7 +103,6 @@ Top 3 BPS scorers in each match receive 3, 2, and 1 bonus points respectively. T
 | Big chance missed | -3 |
 | Error leading to goal | -3 |
 | Error leading to attempt | -1 |
-| Being tackled | -1 |
 | Conceding a foul | -1 |
 | Caught offside | -1 |
 | Shot off target | -1 |
