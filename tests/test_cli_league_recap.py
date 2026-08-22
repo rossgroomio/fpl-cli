@@ -1026,3 +1026,114 @@ class TestCohortRanks:
         by_key = {r.manager_key: r for r in build_history_rows(data, season=SEASON, captured_at=CAPTURED_AT)}
         assert by_key[10].league_position == 2
         assert by_key[11].league_position == 1
+
+
+class TestMultiIterationLoops:
+    """Each list-building loop exercised with at least two iterations.
+
+    `_league_recap_data.py` has a documented history of a second iteration
+    corrupting the first (docs/solutions/logic-errors/walrus-operator-shadowing-
+    loop-variable.md), and every loop here appends.
+    """
+
+    def test_two_transfers_both_reach_the_row_intact(self):
+        def _tr(name_in: str, name_out: str, net: int) -> RecapTransfer:
+            return RecapTransfer(
+                player_in=name_in, player_in_team="ARS", player_in_points=net + 2,
+                player_out=name_out, player_out_team="LIV", player_out_points=2,
+                net=net, cost=4,
+            )
+
+        data = _recap_data(managers=[_manager(
+            transfers_made=2, transfers=[_tr("InA", "OutA", 6), _tr("InB", "OutB", -3)],
+        )])
+        row = build_history_rows(data, season=SEASON, captured_at=CAPTURED_AT)[0]
+        assert [(t.player_in, t.player_out, t.net) for t in row.transfers] == [
+            ("InA", "OutA", 6), ("InB", "OutB", -3),
+        ]
+        assert row.transfer_detail_shortfall == 0
+
+    def test_two_transactions_both_reach_the_row_intact(self):
+        def _txn(name_in: str, net: int) -> RecapDraftTransaction:
+            return RecapDraftTransaction(
+                player_in=name_in, player_in_team="ARS", player_in_points=net + 1,
+                player_out="Out", player_out_team="LIV", player_out_points=1,
+                net=net, kind="w",
+            )
+
+        data = _recap_data(
+            fpl_format="draft",
+            managers=[_manager(
+                name="Alice", entry_id=1, league_entry_id=10,
+                transactions=[_txn("InA", 5), _txn("InB", -2)],
+            )],
+            cohort=_cohort((10, "Alice", 1, 60, 300)),
+        )
+        row = build_history_rows(data, season=SEASON, captured_at=CAPTURED_AT)[0]
+        assert [(t.player_in, t.net) for t in row.transactions] == [("InA", 5), ("InB", -2)]
+
+    def test_two_fines_against_one_manager_both_land(self):
+        data = _recap_data(fines=[
+            {"manager_name": "Alice", "manager_key": 1, "rule_type": "last-place", "message": "Pint"},
+            {"manager_name": "Alice", "manager_key": 1, "rule_type": "red-card", "message": "Round"},
+        ])
+        row = build_history_rows(data, season=SEASON, captured_at=CAPTURED_AT)[0]
+        assert [f.rule_type for f in row.fines] == ["last-place", "red-card"]
+
+    async def test_two_managers_with_short_transfer_lists_are_both_named(self, capsys):
+        data = _recap_data(
+            managers=[
+                _manager(name="Alice", entry_id=1, transfers_made=2, transfers=[]),
+                _manager(name="Bob", entry_id=2, gw_rank=2, transfers_made=3, transfers=[]),
+            ],
+            cohort=_cohort((1, "Alice", 1, 60, 300), (2, "Bob", 2, 40, 280)),
+        )
+        await capture_recap_history(data, season=SEASON)
+
+        err = _stderr(capsys)
+        assert "Alice: 2 made, 0 captured" in err
+        assert "Bob: 3 made, 0 captured" in err
+        assert "2 manager(s)" in err
+
+    async def test_two_managers_with_unmatched_players_are_both_named(self, capsys):
+        data = _recap_data(
+            fpl_format="draft",
+            managers=[
+                _manager(
+                    name="Alice", entry_id=1, league_entry_id=10,
+                    squad=[_player(name="GhostA", code=None, unmatched=True)],
+                ),
+                _manager(
+                    name="Bob", entry_id=2, league_entry_id=11, gw_rank=2,
+                    squad=[_player(name="GhostB", code=None, unmatched=True)],
+                ),
+            ],
+            cohort=_cohort((10, "Alice", 1, 60, 300), (11, "Bob", 2, 40, 280)),
+        )
+        await capture_recap_history(data, season=SEASON)
+
+        err = _stderr(capsys)
+        assert "GhostA" in err and "GhostB" in err
+        assert "Captured 2 draft player(s)" in err
+
+
+class TestFormatGameweeks:
+    def test_contiguous_runs_collapse_and_gaps_split(self):
+        from fpl_cli.cli._league_recap_history import _format_gameweeks
+
+        assert _format_gameweeks([1, 2, 3, 7, 9, 10]) == "GW1-3, GW7, GW9-10"
+
+    def test_a_single_gameweek_renders_alone(self):
+        from fpl_cli.cli._league_recap_history import _format_gameweeks
+
+        assert _format_gameweeks([4]) == "GW4"
+
+    def test_an_empty_list_renders_as_nothing(self):
+        from fpl_cli.cli._league_recap_history import _format_gameweeks
+
+        assert _format_gameweeks([]) == ""
+
+    def test_unsorted_input_is_ordered_first(self):
+        from fpl_cli.cli._league_recap_history import _format_gameweeks
+
+        assert _format_gameweeks([3, 1, 2]) == "GW1-3"

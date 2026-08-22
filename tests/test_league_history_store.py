@@ -451,3 +451,28 @@ class TestStoreCoverage:
             make_history_row(gameweek=5, manager_key=3, capture_status="unknown"),
         ])
         assert store.coverage()[0].unknown_manager_keys == [2, 3]
+
+
+class TestStoreMultiIterationLoops:
+    """Both store loops that build a list, exercised with two-plus iterations."""
+
+    def test_three_lines_parse_back_in_order(self):
+        from fpl_cli.services.league_history import LeagueHistoryStore
+
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        rows = [make_history_row(gameweek=5, manager_key=k, gross_points=40 + k) for k in (1, 2, 3)]
+        store.append_rows(5, rows)
+        assert [r.manager_key for r in store.load_gameweek(5)] == [1, 2, 3]
+        assert [r.gross_points for r in store.load_gameweek(5)] == [41, 42, 43]
+
+    def test_coverage_walks_three_gameweeks_independently(self):
+        from fpl_cli.services.league_history import LeagueHistoryStore
+
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        for gameweek, tier in ((4, "coarse"), (5, "detailed"), (6, "coarse")):
+            store.append_rows(gameweek, [
+                make_history_row(gameweek=gameweek, tier=tier, gross_points=gameweek),
+            ])
+        assert [(c.gameweek, c.lowest_tier.value) for c in store.coverage() if c.lowest_tier] == [
+            (4, "coarse"), (5, "detailed"), (6, "coarse"),
+        ]
