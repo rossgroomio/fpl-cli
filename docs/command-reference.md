@@ -484,6 +484,7 @@ fpl league-recap --save           # Save report
 fpl league-recap --summarise      # Add LLM editorial narrative
 fpl league-recap --draft          # Use draft league
 fpl league-recap --backfill-detail  # Rebuild earlier gameweeks in full detail
+fpl league-recap --format json     # JSON envelope for scripting/agents
 ```
 
 **Awards:** GW winner/loser, biggest bench haul, best/worst captain, transfer/waiver genius and disaster.
@@ -493,6 +494,12 @@ fpl league-recap --backfill-detail  # Rebuild earlier gameweeks in full detail
 **Fines:** evaluates fines for every manager (not just you) when configured.
 
 **LLM editorial** (`--summarise`): Newsletter-style narrative via synthesis provider. Names names, calls out decisions.
+
+**Streaks:** notable open streaks (weeks on top, win/loss runs, captain blanks, green-arrow droughts, waiver activity, and more) print under `Streaks:` on console — leaders only, so console stays a highlights view — and in full as a `# League History` section in the saved report. Each is reported as an observed count over its true span (e.g. "3 in the last 11, with 8 not recorded") rather than a bare "in a row" once any gameweek went uncaptured.
+
+**Unavailable:** a manager whose position or points total can't be derived this run (e.g. a replayed draft gameweek with no earlier rows) is named under `Unavailable:` on console and in the report rather than silently dropped from Standings Movement.
+
+**JSON:** `--format json` emits one row per manager (the same shape written to the ledger) plus `metadata.coverage`, `season_phase`, `notes_pack`, `warnings`, and `first_capture_store_path`.
 
 #### League history
 
