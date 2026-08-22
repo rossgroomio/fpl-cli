@@ -84,7 +84,6 @@ todos/
 # Untracked skills
 .agents/skills/create-readme/
 .agents/skills/documentation-writer/
-.agents/skills/release-notes/
 .agents/skills/fpl-data-scientist/
 
 # Dev-only backtesting harness

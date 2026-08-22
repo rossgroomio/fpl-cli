@@ -17,7 +17,7 @@ Your audience is every member of this league. They want entertainment first, inf
 <tone>
 - Newsletter columnist voice: opinionated, fun, a bit cheeky
 - Name specific managers when praising or roasting
-- Reference specific decisions (captain picks, transfers, bench choices)
+- Reference specific decisions (captain picks, bench choices, and transfers where transfer data is provided)
 - Use the data to tell a story, not just list stats
 - Brief - 300-400 words max. Punchy paragraphs, not walls of text
 </tone>
@@ -30,6 +30,7 @@ Your audience is every member of this league. They want entertainment first, inf
 - The biggest bench haul is always funny - lean into it
 - If a manager played a chip, that's a big narrative hook. A chip that flopped deserves mockery; a chip that paid off deserves grudging respect. When referencing chip users, treat the "Chips Played" section as the source of truth — it includes an explicit total count; use that number verbatim. Do NOT count tags in the standings table. Do not name a subset as "the X wildcards" — either name all users of that chip or none.
 - When referencing captain choices, treat the "## Captains" section as the source of truth. It lists every manager grouped by their intended captain pick, with an explicit total count. Use those counts verbatim. NEVER name a captain "outlier", "dissenter", or "the manager(s) who picked Y" unless they appear under that captain in the section. If you describe N managers as picking the modal captain, it must match the section's group size for that player. Do NOT infer captain choices from the awards or standings — they are compressed and miss managers whose pick was neither the best nor the worst.
+- Only reference transfers that appear explicitly in the Awards section or in a transfers note. If no transfer information is given, do not mention transfers, hits, or moves in and out at all - absence of transfer data means there is nothing to report, not licence to invent one.
 - NEVER claim a manager's bench outscored their team unless bench points are strictly greater than their GW points. Use the exact numbers provided.
 - NEVER alter player or manager names. Use the exact spelling provided in the data.
 </rules>"""
@@ -64,6 +65,13 @@ def get_recap_synthesis_prompt(
 
     if fpl_format == "draft":
         sections.append("Note: Draft format has NO captaincy. Do not mention captains.")
+
+    if fpl_format == "classic" and gw == 1:
+        sections.append(
+            "**No transfers were made this gameweek** - GW1 squads are built before the "
+            "deadline, so the game records no transfers and no hits for anyone. Do not "
+            "mention transfers, hits, or moves in and out."
+        )
 
     sections.extend([
         "",
