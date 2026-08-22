@@ -621,15 +621,19 @@ def _ordinal(n: int) -> str:
 def _format_standings_block(managers: Sequence[RecapManagerEntry]) -> str:
     """Render league standings as a space-aligned text block.
 
-    Sort order: gw_points desc, tie-break by overall_rank asc.
-    Each row: GW rank, manager (+ chip), GW points, (ordinal league pos[ arrow], total).
+    Sort order: gw_points desc, tie-break by overall_rank asc (managers with
+    no derivable position, e.g. an unreconstructable draft replay per R10,
+    sort last). Each row: GW rank, manager (+ chip), GW points, (ordinal
+    league pos[ arrow], total) -- either half of that pair is named
+    "unavailable" by R10 rather than rendered blank or zero when it could not
+    be derived.
     """
     if not managers:
         return ""
 
     sorted_managers = sorted(
         managers,
-        key=lambda m: (-m["gw_points"], m["overall_rank"]),
+        key=lambda m: (-m["gw_points"], m.get("overall_rank", _UNRANKED)),
     )
 
     def display_name(m: RecapManagerEntry) -> str:
@@ -642,14 +646,27 @@ def _format_standings_block(managers: Sequence[RecapManagerEntry]) -> str:
 
     lines = []
     for idx, m in enumerate(sorted_managers, start=1):
-        delta = m["previous_rank"] - m["overall_rank"]
-        if delta > 0:
-            arrow = f" ↑{delta}"
-        elif delta < 0:
-            arrow = f" ↓{-delta}"
-        else:
+        overall_rank = m.get("overall_rank")
+        previous_rank = m.get("previous_rank")
+        total_points = m.get("total_points")
+
+        if overall_rank is None:
+            position_str = "position unavailable"
             arrow = ""
-        context = f"({_ordinal(m['overall_rank'])}{arrow}, {m['total_points']})"
+        else:
+            position_str = _ordinal(overall_rank)
+            if previous_rank is None:
+                arrow = ""
+            else:
+                delta = previous_rank - overall_rank
+                if delta > 0:
+                    arrow = f" ↑{delta}"
+                elif delta < 0:
+                    arrow = f" ↓{-delta}"
+                else:
+                    arrow = ""
+        total_str = str(total_points) if total_points is not None else "total unavailable"
+        context = f"({position_str}{arrow}, {total_str})"
         lines.append(
             f"{idx:>{rank_width}}.  "
             f"{display_name(m):<{name_width}}  "
@@ -657,3 +674,8 @@ def _format_standings_block(managers: Sequence[RecapManagerEntry]) -> str:
             f"{context}"
         )
     return "\n".join(lines)
+
+
+# Sort-only sentinel for a manager with no derivable league position --
+# larger than any real rank, so they sort after every ranked manager.
+_UNRANKED = float("inf")

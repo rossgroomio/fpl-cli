@@ -19,6 +19,9 @@ class RecapManagerPlayer(TypedDict):
     auto_sub_in: bool
     auto_sub_out: bool
     red_cards: int
+    # Draft only: the draft-to-main-player name/team match failed, so `points`
+    # is a false zero rather than a real score. Always False for classic.
+    unmatched: bool
 
 
 class RecapTransfer(TypedDict):
@@ -54,10 +57,15 @@ class RecapManagerEntry(TypedDict):
     manager_name: str
     entry_id: int
     gw_points: int
-    total_points: int
+    # Always gross, unlike gw_points (which flips net/gross on use_net_points).
+    gross_points: int
+    # Unset for a replayed gameweek where no point-in-time cumulative total
+    # could be reconstructed (draft has no such source before a ledger exists).
+    total_points: NotRequired[int]
     gw_rank: int
-    overall_rank: int
-    previous_rank: int
+    # League position. Unset alongside total_points when it can't be derived.
+    overall_rank: NotRequired[int]
+    previous_rank: NotRequired[int]
     captain: str
     captain_points: int
     captain_played: bool
