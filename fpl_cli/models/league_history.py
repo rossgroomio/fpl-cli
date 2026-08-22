@@ -18,8 +18,10 @@ Two deliberate inversions of house convention (KTD1, R4, R5):
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import datetime
 from enum import Enum
+from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -67,6 +69,32 @@ class FidelityTier(str, Enum):
 # supersedes it.
 _TIER_RANK: dict[FidelityTier, int] = {FidelityTier.COARSE: 1, FidelityTier.DETAILED: 2}
 _UNKNOWN_RANK = 0
+
+
+def partition_segment(season: str, fpl_format: LeagueFormat, league_id: int) -> Path:
+    """The `<season>/<format>-<league_id>` naming both ledger and cache trees
+    use to identify one partition, kept in one place so the two can never
+    silently drift onto different naming schemes. Each tree roots it under
+    its own directory (`fpl_cli/services/league_history.py`'s durable store,
+    `fpl_cli/services/league_history_counters.py`'s disposable cache) --
+    only the segment itself is shared.
+    """
+    return Path(season) / f"{fpl_format}-{league_id}"
+
+
+def weakest_tier(tiers: Iterable[FidelityTier]) -> FidelityTier | None:
+    """The weakest tier among a set of rows, by `_TIER_RANK`.
+
+    Shared by every "what's the tier of this group as a whole" question: a
+    gameweek's coverage (`GameweekCoverage.lowest_tier`) and a notes-pack
+    entry's provenance (`league_history_notes._entry_tier`) both mean the
+    same thing by it -- a condition needing detail is unavailable for the
+    whole group as soon as one row in it is only coarse.
+    """
+    present = set(tiers)
+    if not present:
+        return None
+    return min(present, key=lambda tier: _TIER_RANK[tier])
 
 
 class LedgerPlayer(BaseModel):

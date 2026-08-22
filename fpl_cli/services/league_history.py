@@ -35,7 +35,9 @@ from fpl_cli.models.league_history import (
     FidelityTier,
     LeagueFormat,
     LeagueHistoryRow,
+    partition_segment,
     resolve_rows,
+    weakest_tier,
 )
 from fpl_cli.paths import user_data_dir
 from fpl_cli.utils.files import atomic_write_text
@@ -74,7 +76,7 @@ def partition_dir(season: str, fpl_format: LeagueFormat, league_id: int) -> Path
     so from that moment these files are the only record that the detail ever
     existed (R5).
     """
-    return league_history_dir() / season / f"{fpl_format}-{league_id}"
+    return league_history_dir() / partition_segment(season, fpl_format, league_id)
 
 
 @dataclass(frozen=True)
@@ -100,11 +102,7 @@ class GameweekCoverage:
         gameweek as soon as one manager is only coarse, so the weakest tier is
         what the coverage report has to name.
         """
-        if FidelityTier.COARSE in self.tier_counts:
-            return FidelityTier.COARSE
-        if FidelityTier.DETAILED in self.tier_counts:
-            return FidelityTier.DETAILED
-        return None
+        return weakest_tier(self.tier_counts)
 
     @property
     def is_complete(self) -> bool:

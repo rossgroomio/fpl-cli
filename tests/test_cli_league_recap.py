@@ -1556,6 +1556,29 @@ class TestLeagueRecapJsonEnvelope:
         payload = json.loads(result.stdout)
         assert payload["metadata"]["warnings"] == []
 
+    def test_the_first_capture_notice_survives_warning_suppression_in_json_mode(self):
+        """The first-capture-of-a-partition stderr notice is not a `_warn()`
+        code, so JSON mode's warning-prose suppression must not swallow it
+        with no replacement -- it has to reach the payload some other way."""
+        assert not _store().partition_exists()
+
+        result = _invoke_recap(_recap_data(), ["--format", "json"])
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        path = payload["metadata"]["first_capture_store_path"]
+        assert path is not None
+        assert path == str(_store().partition_dir())
+
+    def test_a_second_run_against_an_existing_partition_has_no_first_capture_notice(self):
+        result = _invoke_recap(_recap_data(), ["--format", "json"])
+        assert result.exit_code == 0, result.output
+
+        second = _invoke_recap(_recap_data(gameweek=6), ["--format", "json"])
+
+        payload = json.loads(second.stdout)
+        assert payload["metadata"]["first_capture_store_path"] is None
+
     def test_a_corrupted_store_produces_a_warning_code_full_data_and_exit_zero(self):
         path = _store().gameweek_file(5)
         path.parent.mkdir(parents=True, exist_ok=True)

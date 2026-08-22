@@ -46,6 +46,7 @@ from fpl_cli.models.league_history import (
     LeagueFormat,
     LeagueHistoryCountersProjection,
     LeagueHistoryRow,
+    weakest_tier,
 )
 from fpl_cli.season import CHIP_SPLIT_GW, TOTAL_GAMEWEEKS
 from fpl_cli.services.league_history import LeagueHistoryError, LeagueHistoryStore
@@ -192,10 +193,12 @@ class NotesPackEntry:
     manager_name: str | None = None
     condition_key: str | None = None
     # The run's own length -- gameweeks that genuinely extended it, as
-    # opposed to `window.span_length`, which also counts `held_count`.
-    # Redundant with `window.span_length - held_count` but stored directly
-    # so a consumer (including this module's own tests) never has to derive
-    # it back out of the window.
+    # opposed to `window.span_length`, which also counts `held_count`. Equal
+    # to `window.span_length - held_count` only when every gameweek in the
+    # window folded in as an extend or a hold; a manager genuinely *absent*
+    # from a gameweek (as opposed to unknown) breaks that equality without
+    # affecting either counter, which is exactly why this is stored directly
+    # rather than derived from the window (see `_streak_entries`).
     length: int = 0
     held_count: int = 0
     excess: int | None = None
@@ -246,17 +249,6 @@ class NotesPack:
 # ---------------------------------------------------------------------------
 
 
-def _weakest_tier(tiers: list[FidelityTier]) -> FidelityTier | None:
-    """The weakest tier among a set of rows, mirroring
-    `GameweekCoverage.lowest_tier`'s "weakest tier in the group" precedent in
-    `fpl_cli/services/league_history.py`."""
-    if FidelityTier.COARSE in tiers:
-        return FidelityTier.COARSE
-    if FidelityTier.DETAILED in tiers:
-        return FidelityTier.DETAILED
-    return None
-
-
 def _entry_tier(
     window: GameweekWindow,
     manager_key: int,
@@ -271,7 +263,7 @@ def _entry_tier(
         row = rows_by_gameweek.get(gameweek, {}).get(manager_key)
         if row is not None:
             tiers.append(row.tier)
-    return _weakest_tier(tiers)
+    return weakest_tier(tiers)
 
 
 def _streak_text(manager_name: str, label: str, length: int, held_count: int, window: GameweekWindow) -> str:
@@ -298,11 +290,14 @@ def _streak_entries(
 
     Restricted to `cohort` -- the managers present in the gameweek this pack
     is built for -- rather than every manager key `projection` has ever
-    touched: a manager who has left the league keeps a frozen, no-longer-live
-    run in `projection.runs` forever (folding skips a manager entirely absent
-    from a gameweek's rows, per `_fold_gameweek`'s docstring), and surfacing
-    that as a live fact in a much later gameweek's pack would misrepresent
-    it as current.
+    touched: a manager entirely absent from a later gameweek's rows (they
+    left this particular mini-league, or that gameweek's coverage simply has
+    a gap for them -- ordinary FPL inactivity does not do this, since an
+    inactive squad still gets scored and still appears in the standings
+    every week) keeps a frozen, no-longer-live run in `projection.runs`
+    forever (folding skips a manager entirely absent from a gameweek's rows,
+    per `_fold_gameweek`'s docstring), and surfacing that as a live fact in a
+    much later gameweek's pack would misrepresent it as current.
     """
     entries: list[NotesPackEntry] = []
     for manager_key, manager_row in cohort.items():

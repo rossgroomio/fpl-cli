@@ -58,6 +58,8 @@ def league_recap_command(
     )
     from fpl_cli.cli._league_recap_history import capture_recap_history
     from fpl_cli.cli.review import _review_resolve_gw
+    from fpl_cli.season import season_label
+    from fpl_cli.services.league_history import LeagueHistoryStore
 
     settings = load_settings()
     fmt = get_format(ctx)
@@ -220,13 +222,29 @@ def league_recap_command(
                 replayed["is_dgw"] = len(target_fixtures) > 10
                 return replayed
 
+            # Probed before capture, JSON mode only: the one thing capture
+            # prints on stderr that isn't a `_warn()`-driven code the
+            # suppression below would otherwise make redundant to repeat.
+            # Checked here, not after, since the partition always exists
+            # once capture has written to it.
+            first_capture_store_path: Path | None = None
+            if output_format == "json" and collected_data.get("league_id") is not None:
+                probe_store = LeagueHistoryStore(
+                    season_label(), "draft" if is_draft else "classic", collected_data["league_id"],
+                )
+                if not probe_store.partition_exists():
+                    first_capture_store_path = probe_store.partition_dir()
+
             # Record the gameweek, then fill what the API still allows.
             # Deliberately before synthesis: rendering happens after the LLM
             # call, so capturing at render time would be too late for anything
             # the prompt reads. Never raises -- a store problem warns on stderr
             # and the recap carries on (R4). In JSON mode the same warnings
             # reach the payload as codes (below), so the human-readable prose
-            # is suppressed here rather than printed twice.
+            # is suppressed here rather than printed twice -- but the
+            # first-capture notice above has no such JSON-side counterpart
+            # yet, so it's carried forward via `first_capture_store_path`
+            # rather than silently lost along with the suppressed prose.
             with error_console.capture() if output_format == "json" else nullcontext():
                 capture_result = await capture_recap_history(
                     collected_data,
@@ -257,13 +275,11 @@ def league_recap_command(
             # Absent entirely (rather than empty) when capture couldn't build
             # a pack, so the template's `is defined` guards skip the section.
             if notes_pack is not None:
-                collected_data["league_history_phase_text"] = (  # type: ignore[typeddict-unknown-key]
-                    notes_pack.season_phase_entry.text
-                )
-                collected_data["league_history_streak_lines"] = [  # type: ignore[typeddict-unknown-key]
+                collected_data["league_history_phase_text"] = notes_pack.season_phase_entry.text
+                collected_data["league_history_streak_lines"] = [
                     entry.text for entry in notes_pack.entries if NoteSurface.REPORT in entry.surfaces
                 ]
-                collected_data["league_history_coverage_lines"] = [  # type: ignore[typeddict-unknown-key]
+                collected_data["league_history_coverage_lines"] = [
                     entry.text for entry in notes_pack.coverage_entries
                 ]
 
@@ -313,10 +329,18 @@ def league_recap_command(
                         "fpl_format": collected_data["fpl_format"],
                         "gameweek": gw,
                         "coverage": _serialize_coverage(capture_result.coverage),
-                        "season_phase": notes_pack.phase.value if notes_pack is not None else None,
+                        "season_phase": notes_pack.phase if notes_pack is not None else None,
                         "notes_pack": _serialize_notes_pack(notes_pack) if notes_pack is not None else None,
                         "synthesis_summary": collected_data.get("synthesis_summary"),
                         "warnings": capture_result.warnings,
+                        # Only set on this partition's very first capture --
+                        # the one moment a container-local data directory is
+                        # still cheap to notice (table mode prints this to
+                        # stderr instead; JSON mode's warning suppression
+                        # would otherwise drop it with no replacement).
+                        "first_capture_store_path": (
+                            str(first_capture_store_path) if first_capture_store_path else None
+                        ),
                     },
                     file=stdout,
                 )
@@ -325,12 +349,18 @@ def league_recap_command(
 
 
 def _serialize_coverage(coverage: list[GameweekCoverage]) -> list[dict[str, Any]]:
-    """Per-gameweek tier and status counts, JSON-shaped (R9, R16)."""
+    """Per-gameweek tier and status counts, JSON-shaped (R9, R16).
+
+    Enum members pass straight through rather than being `.value`-mapped
+    here: they're already `str` subclasses, and `emit_json`'s `_json_default`
+    (`fpl_cli/cli/_json.py`) already coerces any `Enum` -- as a value or a
+    dict key -- to its `.value` during `json.dumps`.
+    """
     return [
         {
             "gameweek": c.gameweek,
             "readable": c.readable,
-            "tier_counts": {tier.value: count for tier, count in c.tier_counts.items()},
+            "tier_counts": dict(c.tier_counts),
             "unknown_count": c.unknown_count,
             "unknown_manager_keys": c.unknown_manager_keys,
         }
@@ -340,10 +370,10 @@ def _serialize_coverage(coverage: list[GameweekCoverage]) -> list[dict[str, Any]
 
 def _serialize_notes_pack_entry(entry: NotesPackEntry) -> dict[str, Any]:
     return {
-        "kind": entry.kind.value,
+        "kind": entry.kind,
         "text": entry.text,
-        "surfaces": sorted(surface.value for surface in entry.surfaces),
-        "tier": entry.tier.value if entry.tier is not None else None,
+        "surfaces": sorted(entry.surfaces),
+        "tier": entry.tier,
         "window": (
             {"start_gameweek": entry.window.start_gameweek, "end_gameweek": entry.window.end_gameweek}
             if entry.window is not None else None
@@ -365,7 +395,7 @@ def _serialize_notes_pack(pack: NotesPack) -> dict[str, Any]:
         "fpl_format": pack.fpl_format,
         "league_id": pack.league_id,
         "gameweek": pack.gameweek,
-        "phase": pack.phase.value,
+        "phase": pack.phase,
         "league_start_gameweek": pack.league_start_gameweek,
         "season_phase_entry": _serialize_notes_pack_entry(pack.season_phase_entry),
         "entries": [_serialize_notes_pack_entry(entry) for entry in pack.entries],
@@ -456,15 +486,18 @@ def _render_console_highlights(data: LeagueRecapData, notes_pack: NotesPack | No
 
     # R10: a manager whose position or total could not be derived (e.g. a
     # replayed draft gameweek with no earlier rows) is named as unavailable
-    # rather than silently dropped from the standings -- the same phrasing
-    # `_format_standings_block` already uses for the report surface.
+    # rather than silently dropped from the standings -- the same constants
+    # `_format_standings_block` uses for the report surface, so the two
+    # can't drift onto different wording.
+    from fpl_cli.agents.orchestration.report import POSITION_UNAVAILABLE, TOTAL_UNAVAILABLE
+
     unavailable: list[str] = []
     for m in managers:
         missing = []
         if m.get("overall_rank") is None:
-            missing.append("position unavailable")
+            missing.append(POSITION_UNAVAILABLE)
         if m.get("total_points") is None:
-            missing.append("total unavailable")
+            missing.append(TOTAL_UNAVAILABLE)
         if missing:
             unavailable.append(f"  {m['manager_name']}: {', '.join(missing)}")
     if unavailable:

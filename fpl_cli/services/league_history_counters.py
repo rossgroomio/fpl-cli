@@ -44,6 +44,7 @@ from fpl_cli.models.league_history import (
     LeagueFormat,
     LeagueHistoryCountersProjection,
     LeagueHistoryRow,
+    partition_segment,
 )
 from fpl_cli.models.player import BLANK_POINTS_THRESHOLD
 from fpl_cli.paths import user_data_dir
@@ -181,13 +182,22 @@ def _hit_run(
     return RunAction.EXTEND if row.transfer_cost > 0 else RunAction.RESET
 
 
+def _net_transaction_total(row: LeagueHistoryRow) -> int | None:
+    """Sum of this gameweek's transaction nets, or `None` for a manager who
+    made no moves at all -- shared by both waiver conditions, which differ
+    only in which side of zero counts as extending."""
+    if not row.transactions:
+        return None
+    return sum(transaction.net for transaction in row.transactions)
+
+
 def _waiver_win_run(
     row: LeagueHistoryRow, previous_row: LeagueHistoryRow | None, cohort: list[LeagueHistoryRow],
 ) -> RunAction:
     del previous_row, cohort
-    if not row.transactions:
+    net_total = _net_transaction_total(row)
+    if net_total is None:
         return RunAction.HOLD
-    net_total = sum(transaction.net for transaction in row.transactions)
     return RunAction.EXTEND if net_total > 0 else RunAction.RESET
 
 
@@ -195,9 +205,9 @@ def _waiver_burn_run(
     row: LeagueHistoryRow, previous_row: LeagueHistoryRow | None, cohort: list[LeagueHistoryRow],
 ) -> RunAction:
     del previous_row, cohort
-    if not row.transactions:
+    net_total = _net_transaction_total(row)
+    if net_total is None:
         return RunAction.HOLD
-    net_total = sum(transaction.net for transaction in row.transactions)
     return RunAction.EXTEND if net_total < 0 else RunAction.RESET
 
 
@@ -361,12 +371,12 @@ def counters_dir() -> Path:
 def counters_partition_dir(season: str, fpl_format: LeagueFormat, league_id: int) -> Path:
     """Directory holding one partition's projection file.
 
-    Mirrors the ledger's own season/format/league_id partitioning
-    (`fpl_cli.services.league_history.partition_dir`), but lives in a
-    separate directory tree: unlike the ledger, this file is a disposable
-    cache the projection engine may freely discard and rebuild (KTD10).
+    Shares the ledger's own season/format/league_id naming
+    (`partition_segment`), but lives in a separate directory tree: unlike the
+    ledger, this file is a disposable cache the projection engine may freely
+    discard and rebuild (KTD10).
     """
-    return counters_dir() / season / f"{fpl_format}-{league_id}"
+    return counters_dir() / partition_segment(season, fpl_format, league_id)
 
 
 def counters_file(season: str, fpl_format: LeagueFormat, league_id: int) -> Path:
@@ -384,12 +394,13 @@ def _load_projection(store: LeagueHistoryStore) -> LeagueHistoryCountersProjecti
     full rebuild, never a raise.
     """
     path = counters_file(store.season, store.fpl_format, store.league_id)
-    if not path.is_file():
-        return None
-
     try:
         text = path.read_text(encoding="utf-8")
         projection = LeagueHistoryCountersProjection.model_validate_json(text)
+    except FileNotFoundError:
+        # No cache yet -- the ordinary first-capture case, not a problem
+        # worth a warning.
+        return None
     except (OSError, ValidationError) as exc:
         logger.warning("League history counters file %s is unreadable, rebuilding: %s", path, exc)
         return None
@@ -590,7 +601,20 @@ def manager_condition_views(
 def all_condition_views(
     projection: LeagueHistoryCountersProjection,
 ) -> dict[int, dict[str, ConditionRunView]]:
-    """`manager_condition_views` for every manager the projection has touched."""
+    """`manager_condition_views` for every manager key `projection.runs` has
+    ever touched -- including one entirely absent from a later gameweek's
+    rows (they left this particular mini-league, or that gameweek's coverage
+    simply has a gap for them; ordinary FPL inactivity does not do this,
+    since an inactive squad still gets scored and still appears in the
+    standings every week), whose run then sits frozen rather than held
+    (`_fold_gameweek` skips a manager entirely absent from a gameweek's rows
+    without even counting a hold). A caller presenting this as *current*
+    state must filter to whichever cohort is actually live for the gameweek
+    in question first; the notes pack
+    (`fpl_cli/services/league_history_notes.py`) does exactly that by
+    calling `manager_condition_views` per cohort member instead of this
+    function, rather than risk surfacing a stale, no-longer-live run.
+    """
     return {
         manager_key: manager_condition_views(projection, manager_key)
         for manager_key in projection.runs
