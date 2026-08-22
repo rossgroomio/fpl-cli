@@ -1,0 +1,30 @@
+name: PR Title
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check conventional-commit format
+        env:
+          # env indirection, not inline ${{ }} in the script: a title is
+          # attacker-controlled text and would otherwise be shell-injectable
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          # PRs are squash-merged with the title as the commit subject on
+          # main, which git-cliff publishes verbatim as the changelog line
+          # (see CONTRIBUTING.md).
+          if echo "$TITLE" | grep -qE '^(feat|fix|refactor|perf|chore|docs|ci|test|style)(\([a-zA-Z0-9._/ -]+\))?!?: .+'; then
+            echo "PR title OK: $TITLE"
+          elif echo "$TITLE" | grep -qE '^Revert "'; then
+            echo "Revert PR allowed (lands in the changelog Other group): $TITLE"
+          else
+            echo "::error::PR title must follow conventional commits — e.g. 'feat: add X', 'fix(scope): correct Y', 'feat!: breaking Z'. It becomes the squash commit on main and the changelog entry. See CONTRIBUTING.md."
+            exit 1
+          fi

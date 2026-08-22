@@ -60,14 +60,14 @@ This uses the project's `cliff.toml`: feat/fix/refactor/perf are grouped,
 chore/docs/ci/test/style and merge commits are skipped, anything
 unconventional lands in Other.
 
-**History caveat:** through v2.0.0 the history was linear — squash-merged
-conventional PR titles, one clean line per PR. Since the move to Claude
-Code cloud PRs, entries come from individual branch commits and depend on
-the conventions in CLAUDE.md ("Commits & Changelog"). Eyeball the output
-for PR-internal churn that slipped past the skips (review follow-ups
-mislabelled `fix:`, test-only fixes). Drop those lines from the notes and
-add a skip parser to `cliff.toml` so the automated CHANGELOG.md job drops
-them too.
+**History caveat:** under squash-merging (through v2.0.0, and again from
+August 2026 onward) each PR contributes exactly one line — its title,
+format-enforced by the `PR Title` CI check. The window in between merged
+cloud PRs as merge commits plus every branch commit, so entries from that
+range come from individual branch commits: eyeball them for PR-internal
+churn that slipped past the `cliff.toml` skips (review follow-ups
+mislabelled `fix:`, test-only fixes), drop those lines from the notes, and
+add a skip parser so the automated CHANGELOG.md job drops them too.
 
 ## Step 4: Draft the notes
 

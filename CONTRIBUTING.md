@@ -17,6 +17,9 @@ $ pytest                 # Tests
 $ hatch build            # Package build
 ```
 
+A separate `PR Title` check (`.github/workflows/pr-title.yml`) fails the
+PR when the title doesn't follow the conventional-commit format below.
+
 ## Commit subjects & PR titles
 
 Both follow [Conventional Commits](https://www.conventionalcommits.org).
@@ -41,6 +44,14 @@ The rules that matter:
   changelog entries — use `chore(review): <what changed>`.
 - A breaking change uses the `!` marker (`feat!:`) or a `BREAKING CHANGE:`
   footer; it drives a major version bump at the next release.
+
+### Merging
+
+PRs are **squash-merged** (merge commits are disabled). The PR title —
+with `(#N)` auto-appended by GitHub — becomes the single commit on main,
+and therefore the changelog line. Write it as the user-facing change, and
+keep each PR single-purpose so one title can describe it. Branch commits
+never reach main, so they can iterate freely; the title is what ships.
 
 ## Releases
 
