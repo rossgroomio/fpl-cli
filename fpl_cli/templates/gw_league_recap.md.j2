@@ -5,6 +5,9 @@
 {% if waiver_deadline is defined and waiver_deadline %}
 **Waiver deadline:** {{ waiver_deadline }}
 {% endif %}
+{% if league_history_phase_text is defined and league_history_phase_text %}
+*{{ league_history_phase_text }}*
+{% endif %}
 
 {% if synthesis_summary is defined and synthesis_summary %}
 {{ synthesis_summary }}
@@ -49,6 +52,26 @@
 ```
 {{ standings_block }}
 ```
+
+{% if (league_history_streak_lines is defined and league_history_streak_lines) or (league_history_coverage_lines is defined and league_history_coverage_lines) %}
+---
+
+# League History
+
+{% if league_history_streak_lines is defined and league_history_streak_lines %}
+## Streaks
+
+{% for line in league_history_streak_lines %}
+- {{ line }}
+{% endfor %}
+
+{% endif %}
+{% if league_history_coverage_lines is defined and league_history_coverage_lines %}
+{% for line in league_history_coverage_lines %}
+*{{ line }}*
+{% endfor %}
+{% endif %}
+{% endif %}
 
 {% if fines is defined and fines %}
 ---

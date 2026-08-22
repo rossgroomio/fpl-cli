@@ -15,6 +15,12 @@ from rich.panel import Panel
 from fpl_cli.api.providers import ProviderError
 from fpl_cli.cli._context import Format, console, error_console, get_format, load_settings, resolve_output_dir
 from fpl_cli.cli._league_recap_types import LeagueRecapData
+from fpl_cli.models.league_history import LeagueFormat
+from fpl_cli.services.league_history_notes import NotesPack, NoteSurface
+
+# KTD8: the console stays a highlights view -- only the top few streaks by
+# excess-over-minimum, so a rare streak is not buried under common ones (R12).
+_CONSOLE_STREAK_LIMIT = 5
 
 logger = logging.getLogger(__name__)
 
@@ -205,7 +211,7 @@ def league_recap_command(
             # call, so capturing at render time would be too late for anything
             # the prompt reads. Never raises -- a store problem warns on stderr
             # and the recap carries on (R4).
-            await capture_recap_history(
+            capture_result = await capture_recap_history(
                 collected_data,
                 is_live_gw=is_live_gw,
                 # Classic's coarse tier: one call per manager for the whole
@@ -215,6 +221,34 @@ def league_recap_command(
                 replay_gameweek=_replay_gameweek,
                 backfill_detail=backfill_detail,
             )
+            notes_pack = capture_result.notes_pack
+
+            # R13: prefer the ledger's actually-recorded GW-1 position over
+            # the arithmetic/derived one already in `previous_rank` -- a real
+            # prior-gameweek row is more trustworthy than any re-derivation.
+            # No-ops (falls back to today's behaviour unchanged) when there is
+            # no prior gameweek, no league id, or the store can't be read.
+            if collected_data.get("league_id") is not None:
+                _apply_recorded_previous_positions(
+                    collected_data, gw,
+                    fpl_format="draft" if is_draft else "classic",
+                    league_id=collected_data["league_id"],
+                )
+
+            # Report-surfaced history text, stashed as plain strings so the
+            # Jinja template needs no knowledge of NotesPack/NoteSurface.
+            # Absent entirely (rather than empty) when capture couldn't build
+            # a pack, so the template's `is defined` guards skip the section.
+            if notes_pack is not None:
+                collected_data["league_history_phase_text"] = (  # type: ignore[typeddict-unknown-key]
+                    notes_pack.season_phase_entry.text
+                )
+                collected_data["league_history_streak_lines"] = [  # type: ignore[typeddict-unknown-key]
+                    entry.text for entry in notes_pack.entries if NoteSurface.REPORT in entry.surfaces
+                ]
+                collected_data["league_history_coverage_lines"] = [  # type: ignore[typeddict-unknown-key]
+                    entry.text for entry in notes_pack.coverage_entries
+                ]
 
             # LLM summarisation (opt-in via --summarise or --dry-run)
             if summarise or dry_run:
@@ -233,7 +267,7 @@ def league_recap_command(
                     error_console.print("[yellow]LLM summarisation failed (unexpected error)[/yellow]")
 
             # Display key highlights to console
-            _render_console_highlights(collected_data)
+            _render_console_highlights(collected_data, notes_pack)
 
             # Generate report if saving
             if save or output:
@@ -250,7 +284,33 @@ def league_recap_command(
     asyncio.run(_run())
 
 
-def _render_console_highlights(data: LeagueRecapData) -> None:
+def _apply_recorded_previous_positions(
+    data: LeagueRecapData, gw: int, *, fpl_format: LeagueFormat, league_id: int,
+) -> None:
+    """R13: override `previous_rank` with the ledger's recorded GW-1 position
+    wherever a prior-gameweek row exists, leaving it untouched (U3's derived
+    path, or unset) for any manager with none. A store problem degrades to
+    that same untouched fallback rather than raising (R4)."""
+    if gw <= 1:
+        return
+
+    from fpl_cli.cli._league_recap_data import recap_manager_key
+    from fpl_cli.season import season_label
+    from fpl_cli.services.league_history import LeagueHistoryError, LeagueHistoryStore
+
+    store = LeagueHistoryStore(season_label(), fpl_format, league_id)
+    try:
+        previous_rows = store.resolved_gameweek(gw - 1)
+    except LeagueHistoryError:
+        return
+
+    for m in data["managers"]:
+        row = previous_rows.get(recap_manager_key(m))
+        if row is not None and row.league_position is not None:
+            m["previous_rank"] = row.league_position
+
+
+def _render_console_highlights(data: LeagueRecapData, notes_pack: NotesPack | None = None) -> None:
     """Print key recap highlights to console."""
     awards = data.get("awards", {})
     managers = data.get("managers", [])
@@ -303,6 +363,33 @@ def _render_console_highlights(data: LeagueRecapData) -> None:
             diff = prev - curr
             arrow = "[green]↑[/green]" if diff > 0 else "[red]↓[/red]"
             console.print(f"  {arrow} {m['manager_name']}: {prev} → {curr}")
+
+    # R10: a manager whose position or total could not be derived (e.g. a
+    # replayed draft gameweek with no earlier rows) is named as unavailable
+    # rather than silently dropped from the standings -- the same phrasing
+    # `_format_standings_block` already uses for the report surface.
+    unavailable: list[str] = []
+    for m in managers:
+        missing = []
+        if m.get("overall_rank") is None:
+            missing.append("position unavailable")
+        if m.get("total_points") is None:
+            missing.append("total unavailable")
+        if missing:
+            unavailable.append(f"  {m['manager_name']}: {', '.join(missing)}")
+    if unavailable:
+        console.print("\n[bold]Unavailable:[/bold]")
+        for line in unavailable:
+            console.print(f"[dim]{line}[/dim]")
+
+    # Streaks (R12, KTD8): only the leaders, so the console stays a
+    # highlights view -- the report carries the full report-surfaced set.
+    if notes_pack is not None:
+        console_entries = [e for e in notes_pack.entries if NoteSurface.CONSOLE in e.surfaces]
+        if console_entries:
+            console.print("\n[bold]Streaks:[/bold]")
+            for entry in console_entries[:_CONSOLE_STREAK_LIMIT]:
+                console.print(f"  {entry.text}")
 
 
 async def _recap_llm_summarise(

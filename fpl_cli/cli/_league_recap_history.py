@@ -49,6 +49,7 @@ from fpl_cli.services.league_history import (
     LeagueHistoryError,
     LeagueHistoryStore,
 )
+from fpl_cli.services.league_history_notes import NotesPack, build_notes_pack
 
 if TYPE_CHECKING:
     from fpl_cli.cli._league_recap_data import ManagerHistoryClient
@@ -81,6 +82,10 @@ class CaptureResult:
     store_readable: bool = True
     warnings: list[dict[str, str]] = field(default_factory=list)
     coverage: list[GameweekCoverage] = field(default_factory=list)
+    # None exactly when store_readable is False: a pack needs a readable
+    # store to build from, and R4's degrade-gracefully contract means a
+    # store failure costs the pack, not the rest of the recap.
+    notes_pack: NotesPack | None = None
 
 
 def _warn(warnings: list[dict[str, str]], code: str, message: str) -> None:
@@ -955,10 +960,20 @@ async def capture_recap_history(
         warnings=warnings,
     )
 
+    # Built from the store, not from `rows`: U9's pack reads the counters
+    # projection and a trailing window of already-persisted rows, so it sees
+    # this gameweek's just-written rows the same way it will on every later
+    # run (U9 fails open internally -- a store problem here costs the pack,
+    # never the recap).
+    notes_pack = build_notes_pack(
+        store, data["gameweek"], league_start_gameweek=data.get("league_start_event") or 1,
+    )
+
     return CaptureResult(
         rows=rows,
         written=written,
         store_readable=True,
         warnings=warnings,
         coverage=coverage,
+        notes_pack=notes_pack,
     )
