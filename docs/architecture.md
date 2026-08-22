@@ -590,10 +590,13 @@ A default `fixture_predictions.yaml` ships inside the package (`SHIPPED_CONFIG_D
     │   │   ├── rules.md          # Transfer/waiver/selection rules
     │   │   └── output-template.md
     │   └── scripts/
+    │       ├── _bootstrap.py            # Shared startup (user-dir migration) for agent-importing scripts
+    │       ├── _md_sections.py          # Shared markdown heading matcher + section locator
     │       ├── bench_order.py           # BenchOrderAgent wrapper (name -> ID resolution)
     │       ├── starting_xi.py           # StartingXIAgent wrapper (name -> ID resolution)
     │       ├── transfer_eval.py         # TransferEvalAgent wrapper (name -> ID resolution)
-    │       └── extract_classic_squad.py # Classic Squad block extractor (Phase B9 embed + Phase E read-only validator)
+    │       ├── extract_classic_squad.py # Classic Squad block extractor (Phase B9 embed + Phase E read-only validator)
+    │       └── validate_draft_waivers.py # Draft waiver cross-check against waiver pool + squad grid
     ├── update-gw-prep/           # Second-pass addendum with supplementary data
     │   └── SKILL.md
     ├── squad-builder/            # 5-mode squad optimisation (WC/FH/season-start/draft/redraft)

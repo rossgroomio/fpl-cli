@@ -25,6 +25,8 @@ import sys
 import unicodedata
 from typing import TypedDict
 
+from _md_sections import HeadingMatcher, find_section, section_body
+
 # ---------------------------------------------------------------------------
 # Types
 # ---------------------------------------------------------------------------
@@ -159,43 +161,27 @@ def build_squad(squad_data: dict) -> dict[tuple[str, str], SquadEntry]:
 # Section / table parsing
 # ---------------------------------------------------------------------------
 
-_DRAFT_HEADING_RE = re.compile(r"^## Draft(?: League)?\s*$")
-_WAIVER_SUBHEADING_RE = re.compile(r"^###\s+Waiver Recommendations\s*$", re.IGNORECASE)
+# Shared with extract_classic_squad.py: both scripts locate a markdown section
+# by heading in sub-agent-authored files, so both tolerate the same heading
+# drift ("## Draft League (Provisional)") through the same matcher rather than
+# each hard-coding an exact-match regex that a qualifier silently defeats.
+_HEADING_DRAFT = HeadingMatcher("## Draft League", aliases=("Draft",))
+_HEADING_WAIVERS = HeadingMatcher("### Waiver Recommendations")
 
 
 def locate_draft_section(lines: list[str]) -> tuple[int, int] | None:
     """Return (start, end) line indices for the ## Draft / ## Draft League section."""
-    start: int | None = None
-    for i, line in enumerate(lines):
-        if _DRAFT_HEADING_RE.match(line):
-            start = i
-            break
-    if start is None:
-        return None
-    # end is next ## heading or EOF
-    for i in range(start + 1, len(lines)):
-        if re.match(r"^## \S", lines[i]):
-            return (start, i)
-    return (start, len(lines))
+    return find_section(lines, _HEADING_DRAFT)
 
 
 def locate_waiver_subsection(section_lines: list[str]) -> list[str]:
     """Return the slice of section_lines bounded by ### Waiver Recommendations.
 
-    Bounds end at the next ### or ## heading. Falls back to the full section if
-    the subheading is absent (older report formats).
+    Bounds end at the next heading of the same or shallower depth. Falls back to
+    the full section if the subheading is absent (older report formats).
     """
-    start: int | None = None
-    for i, line in enumerate(section_lines):
-        if _WAIVER_SUBHEADING_RE.match(line):
-            start = i + 1
-            break
-    if start is None:
-        return section_lines
-    for i in range(start, len(section_lines)):
-        if re.match(r"^##+\s+\S", section_lines[i]):
-            return section_lines[start:i]
-    return section_lines[start:]
+    body = section_body(section_lines, _HEADING_WAIVERS)
+    return section_lines if body is None else body
 
 
 def parse_waiver_table(

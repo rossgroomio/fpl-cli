@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import sys
 from pathlib import Path
 from types import ModuleType
 
@@ -11,15 +12,24 @@ import pytest
 
 
 def _load_script() -> ModuleType:
-    """Load extract_classic_squad.py as a module (it's not a package)."""
-    script_path = (
-        Path(__file__).parent.parent
-        / ".agents/skills/gw-prep/scripts/extract_classic_squad.py"
-    )
-    spec = importlib.util.spec_from_file_location("extract_classic_squad", script_path)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    """Load extract_classic_squad.py as a module (it's not a package).
+
+    The scripts dir goes on sys.path while loading, matching a real
+    `python3 extract_classic_squad.py` run (sys.path[0] is the script's own
+    dir), so the shared `_md_sections` sibling module resolves.
+    """
+    scripts_dir = Path(__file__).parent.parent / ".agents/skills/gw-prep/scripts"
+    script_path = scripts_dir / "extract_classic_squad.py"
+    sys.path.insert(0, str(scripts_dir))
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "extract_classic_squad", script_path
+        )
+        assert spec is not None and spec.loader is not None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+    finally:
+        sys.path.remove(str(scripts_dir))
     return mod
 
 
@@ -1029,3 +1039,142 @@ def test_indented_next_heading_still_terminates_section():
         "| **Total** | **15** |\n"
     )
     assert _count_table_rows_between(block, "#### Bench") == 2
+
+
+# -- Heading-matching robustness (issue #65) --
+
+# 1. Drift shapes beyond the trailing qualifier #64 covered.
+
+
+@pytest.mark.parametrize(
+    "xi_heading",
+    [
+        "#### starting xi",
+        "#### STARTING XI (3-4-3)",
+        "#### (3-4-3) Starting XI",
+        "#### 3-4-3 Starting XI",
+        "#### **Starting XI**",
+        "#### XI",
+        "#### Starting Eleven",
+        "#### Starting 11",
+    ],
+)
+def test_case_leading_and_aliased_xi_headings_validate(tmp_path, capsys, xi_heading):
+    """Case variants, leading qualifiers and known abbreviations of the XI
+    heading must not zero the row count on a well-formed squad."""
+    f = tmp_path / "drifted_xi.md"
+    f.write_text(_recommendations_content(xi_heading=xi_heading), encoding="utf-8")
+    _run(str(f), from_recommendations=True)
+    data = json.loads(capsys.readouterr().out)
+    structural = data["validation"]["structural"]
+    assert structural["sub_headings_present"]["Starting XI"] is True
+    assert structural["starting_xi_rows"] == 11
+    assert data["validation"]["arithmetic"]["player_count"] == 15
+
+
+def test_case_variant_bench_heading_validates(tmp_path, capsys):
+    f = tmp_path / "lowercase_bench.md"
+    f.write_text(_recommendations_content(bench_heading="#### bench"), encoding="utf-8")
+    _run(str(f), from_recommendations=True)
+    data = json.loads(capsys.readouterr().out)
+    structural = data["validation"]["structural"]
+    assert structural["sub_headings_present"]["Bench"] is True
+    assert structural["bench_rows"] == 4
+
+
+def test_case_variant_does_not_collapse_bench_and_bench_order(tmp_path, capsys):
+    """Case-insensitivity must not weaken the Bench / Bench Order distinction."""
+    f = tmp_path / "lowercase_bench_order.md"
+    f.write_text(
+        _recommendations_content(bench_heading="#### bench order"), encoding="utf-8"
+    )
+    _run(str(f), from_recommendations=True)
+    data = json.loads(capsys.readouterr().out)
+    assert data["validation"]["structural"]["sub_headings_present"]["Bench"] is False
+
+
+# 2. The three outermost section-boundary sites now use the shared matcher.
+
+
+def test_extract_ignores_prefix_sharing_heading_before_the_real_one(tmp_path, capsys):
+    """'## Classic Squad Recap' is a different heading and must not be picked as
+    the section start — the old \\b-anchored regex matched it."""
+    f = tmp_path / "prefix_decoy.md"
+    f.write_text(
+        "## Classic Squad Comparison\n\nLast week's squad, for reference.\n\n"
+        "## Classic Squad\n\n### Starting XI\n\nreal content\n",
+        encoding="utf-8",
+    )
+    _run(str(f))
+    data = json.loads(capsys.readouterr().out)
+    assert data["block"].startswith("### Classic Squad\n")
+    assert "Last week's squad" not in data["block"]
+    assert "real content" in data["block"]
+
+
+def test_extract_tolerates_qualified_classic_squad_heading(tmp_path, capsys):
+    f = tmp_path / "qualified_top_heading.md"
+    f.write_text(
+        "## Classic Squad (Wildcard)\n\n### Starting XI\n\nreal content\n",
+        encoding="utf-8",
+    )
+    _run(str(f))
+    data = json.loads(capsys.readouterr().out)
+    assert data["block"].startswith("### Classic Squad (Wildcard)")
+    assert "real content" in data["block"]
+
+
+def test_extract_ignores_classic_squad_heading_inside_a_fence(tmp_path, capsys):
+    f = tmp_path / "fenced_decoy.md"
+    f.write_text(
+        "## Notes\n\n```markdown\n## Classic Squad\n\nexample only\n```\n\n"
+        "## Classic Squad\n\n### Starting XI\n\nreal content\n",
+        encoding="utf-8",
+    )
+    _run(str(f))
+    data = json.loads(capsys.readouterr().out)
+    assert "example only" not in data["block"]
+    assert "real content" in data["block"]
+
+
+def test_extract_detects_qualified_draft_rankings_heading(tmp_path, capsys):
+    f = tmp_path / "qualified_draft_rankings.md"
+    f.write_text(
+        "## Classic Squad\n\n### Starting XI\n\ncontent\n\n"
+        "## Draft Rankings (2026 redraft)\n\nrankings\n",
+        encoding="utf-8",
+    )
+    _run(str(f))
+    data = json.loads(capsys.readouterr().out)
+    assert data["metadata"]["had_draft_rankings"] is True
+    assert "rankings" not in data["block"]
+
+
+def test_from_recommendations_ignores_prefix_sharing_heading(tmp_path, capsys):
+    """'### Classic Squad Notes' must not be recovered as the embedded block."""
+    content = _recommendations_content().replace(
+        "### Classic Squad\n",
+        "### Classic Squad Notes\n\nNot the block.\n\n### Classic Squad\n",
+        1,
+    )
+    f = tmp_path / "prefix_decoy_recs.md"
+    f.write_text(content, encoding="utf-8")
+    _run(str(f), from_recommendations=True)
+    data = json.loads(capsys.readouterr().out)
+    assert data["block"].startswith("### Classic Squad\n")
+    assert "Not the block." not in data["block"]
+    assert data["validation"]["arithmetic"]["player_count"] == 15
+
+
+def test_from_recommendations_no_heading_rejects_prefix_sharing_heading(
+    tmp_path, capsys
+):
+    """A file whose only candidate is '### Classic Squad Notes' is an error, not
+    a silently mis-scoped block."""
+    f = tmp_path / "only_prefix_heading.md"
+    f.write_text("## Classic League\n\n### Classic Squad Notes\n\nprose\n", encoding="utf-8")
+    with pytest.raises(SystemExit) as exc:
+        _run(str(f), from_recommendations=True)
+    assert exc.value.code == 1
+    data = json.loads(capsys.readouterr().out)
+    assert data["error"] is True

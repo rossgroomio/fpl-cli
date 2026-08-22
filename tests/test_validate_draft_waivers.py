@@ -9,6 +9,8 @@ import sys
 from pathlib import Path
 from types import ModuleType
 
+import pytest
+
 SCRIPT_PATH = (
     Path(__file__).parent.parent
     / ".agents/skills/gw-prep/scripts/validate_draft_waivers.py"
@@ -17,10 +19,20 @@ FIXTURE_DIR = Path(__file__).parent / "fixtures" / "validate_draft_waivers"
 
 
 def _load_script() -> ModuleType:
-    spec = importlib.util.spec_from_file_location("validate_draft_waivers", SCRIPT_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    """Load validate_draft_waivers.py with its own dir on sys.path, matching a
+    real `python3 validate_draft_waivers.py` run, so the shared `_md_sections`
+    sibling module resolves."""
+    scripts_dir = SCRIPT_PATH.parent
+    sys.path.insert(0, str(scripts_dir))
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "validate_draft_waivers", SCRIPT_PATH
+        )
+        assert spec is not None and spec.loader is not None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+    finally:
+        sys.path.remove(str(scripts_dir))
     return mod
 
 
@@ -746,3 +758,102 @@ def test_help_flag_exits_zero_and_prints_usage():
     assert result.returncode == 0
     assert "usage:" in result.stdout.lower()
     assert "--check-drop-in-squad" not in result.stdout
+
+
+# ---- Heading drift tolerance (issue #65) ------------------------------------
+
+
+@pytest.mark.parametrize(
+    "draft_heading",
+    [
+        "## Draft League (Provisional)",
+        "## Draft League — provisional",
+        "## draft league",
+        "## Draft (Provisional)",
+        "## **Draft League**",
+    ],
+)
+def test_qualified_draft_heading_still_locates_the_section(
+    tmp_path, capsys, draft_heading
+):
+    """A qualifier or case variant on the Draft heading must not silently skip
+    the whole section — the same failure mode as issue #63, one script over."""
+    recs, w, s = _write_fixtures(
+        tmp_path, _CLEAN_RECS.replace("## Draft", draft_heading, 1)
+    )
+    _run(str(recs), str(w), str(s))
+    data = _parse(capsys)
+    assert not any(x["type"] == "draft-section-not-found" for x in data["warnings"])
+    assert data["ok"] is True
+    assert data["flags"] == []
+
+
+def test_qualified_waiver_subheading_still_bounds_the_table(tmp_path, capsys):
+    """A qualifier on ### Waiver Recommendations must keep the scope narrowed to
+    the waiver table rather than falling back to the whole Draft section."""
+    recs_content = """\
+## Draft League
+
+### Waiver Recommendations (GW34)
+
+| Priority | Drop | Claim | Position | Fixture Run | Rationale |
+|----------|------|-------|----------|-------------|-----------|
+| 1 | Hill (BOU) | Lacroix (CRY) | DEF | A LIV | Straight upgrade. |
+
+### Starting XI
+
+| Pos | Player | Score | Rationale |
+|-----|--------|-------|-----------|
+| GK | Flekken | 34 | CS fixture |
+| DEF | Lacroix | 49 | New in |
+"""
+    recs, w, s = _write_fixtures(tmp_path, recs_content)
+    _run(str(recs), str(w), str(s))
+    data = _parse(capsys)
+    assert data["ok"] is True
+    assert data["flags"] == []
+    assert data["warnings"] == []
+
+
+def test_draft_rankings_heading_is_not_the_draft_section(tmp_path, capsys):
+    """'## Draft Rankings' shares a prefix but is a different heading."""
+    recs_content = """\
+## Draft Rankings
+
+| Priority | Drop | Claim | Position | Fixture Run | Rationale |
+|----------|------|-------|----------|-------------|-----------|
+| 1 | Hill (BOU) | Nobody (XXX) | DEF | A LIV | Decoy. |
+"""
+    recs, w, s = _write_fixtures(tmp_path, recs_content)
+    _run(str(recs), str(w), str(s))
+    data = _parse(capsys)
+    assert any(x["type"] == "draft-section-not-found" for x in data["warnings"])
+    assert data["flags"] == []
+
+
+def test_fenced_draft_heading_is_ignored(tmp_path, capsys):
+    """A '## Draft' inside a fenced example block must not open the section."""
+    recs_content = """\
+## Notes
+
+```markdown
+## Draft
+
+| Priority | Drop | Claim | Position | Fixture Run | Rationale |
+|----------|------|-------|----------|-------------|-----------|
+| 1 | Hill (BOU) | Nobody (XXX) | DEF | A LIV | Template example. |
+```
+
+## Draft
+
+### Waiver Recommendations
+
+| Priority | Drop | Claim | Position | Fixture Run | Rationale |
+|----------|------|-------|----------|-------------|-----------|
+| 1 | Hill (BOU) | Lacroix (CRY) | DEF | A LIV | Straight upgrade. |
+"""
+    recs, w, s = _write_fixtures(tmp_path, recs_content)
+    _run(str(recs), str(w), str(s))
+    data = _parse(capsys)
+    assert data["ok"] is True
+    assert data["flags"] == []
