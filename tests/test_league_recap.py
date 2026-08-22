@@ -263,6 +263,21 @@ class TestAwardsTies:
         assert awards["worst_captain"]["detail"] == "Bob and Charlie captained Haaland (2 pts) [2 of 3 managers]"
         assert awards["worst_captain"]["manager_name"] == "Bob and Charlie"
 
+    def test_total_managers_uses_full_league_not_just_fetched(self):
+        """A failed picks fetch must not shrink the '[n of total]' denominator.
+
+        Passing the full league size (as collect_classic/draft_recap_data do)
+        keeps the fraction honest even when some managers dropped out of
+        `managers` because their picks fetch failed.
+        """
+        managers = [
+            _make_manager(name="Alice", captain="Salah", captain_points=15),
+            _make_manager(name="Bob", captain="Haaland", captain_points=2),
+            _make_manager(name="Charlie", captain="Haaland", captain_points=2),
+        ]
+        awards = _compute_shared_awards(managers, total_managers=20)
+        assert awards["worst_captain"]["detail"] == "Bob and Charlie captained Haaland (2 pts) [2 of 20 managers]"
+
     def test_three_way_captain_tie_same_captain(self):
         """Three managers all captaining the same player - uses 'all captained'."""
         managers = [
@@ -742,6 +757,33 @@ class TestStandingsMovement:
         # Alice's own figures give prev 460 (1st); the row's gross 60 would give 440 (2nd)
         assert managers[0]["previous_rank"] == 1
         assert managers[1]["previous_rank"] == 2
+
+    def test_hit_this_gw_is_netted_out_of_previous_total(self):
+        """total_points is always net of every hit; gw_points is gross unless
+        use_net_points is on. Off, the hit must still be subtracted here or a
+        manager who took it has their previous total over-credited."""
+        managers = [
+            _make_manager(name="Alice", entry_id=1, gw_points=50, total_points=500, transfer_cost=8),
+            _make_manager(name="Bob", entry_id=2, gw_points=10, total_points=460, transfer_cost=0),
+        ]
+        _compute_standings_movement(managers)
+        # True previous totals: Alice 500-42=458, Bob 460-10=450 -> Alice was 1st.
+        # The unfixed formula (500-50=450 vs 460-10=450) would report a tie.
+        assert managers[0]["previous_rank"] == 1
+        assert managers[1]["previous_rank"] == 2
+
+    def test_use_net_points_mode_does_not_double_subtract_the_hit(self):
+        """With use_net_points on, gw_points is already net; subtracting
+        transfer_cost again would double-count the hit."""
+        managers = [
+            _make_manager(name="Alice", entry_id=1, gw_points=42, total_points=500, transfer_cost=8),
+            _make_manager(name="Bob", entry_id=2, gw_points=10, total_points=470, transfer_cost=0),
+        ]
+        _compute_standings_movement(managers, use_net_points=True)
+        # True previous: Alice 500-42=458, Bob 470-10=460 -> Bob was 1st.
+        # Double-subtracting the hit (500-(42-8)=466) would wrongly rank Alice 1st.
+        assert managers[1]["previous_rank"] == 1
+        assert managers[0]["previous_rank"] == 2
 
 
 # ---------------------------------------------------------------------------
