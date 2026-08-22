@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -1478,3 +1479,123 @@ class TestEndToEndStreakThroughTheFullCommand:
 
         assert result.exit_code == 0, result.output
         assert "Streaks:" not in result.output
+
+
+# ---------------------------------------------------------------------------
+# U11: league-recap --format json
+# ---------------------------------------------------------------------------
+
+
+def _invoke_recap_unresolved_gameweek(args: list[str] | None = None):
+    """Like `_invoke_recap`, but the gameweek cannot be resolved at all --
+    no collector is ever reached."""
+    client = _fpl_client()
+    with (
+        patch("fpl_cli.cli.league_recap.load_settings", return_value={"fpl": {"classic_league_id": 42}}),
+        patch("fpl_cli.api.fpl.FPLClient", return_value=client),
+        patch("fpl_cli.cli.review._review_resolve_gw", AsyncMock(return_value=None)),
+    ):
+        from fpl_cli.cli.league_recap import league_recap_command
+
+        return CliRunner().invoke(league_recap_command, args or [])
+
+
+class TestLeagueRecapJsonEnvelope:
+    def test_the_envelope_carries_command_metadata_and_data(self):
+        result = _invoke_recap(_recap_data(), ["--format", "json"])
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        assert payload["command"] == "league-recap"
+        assert isinstance(payload["metadata"], dict)
+        assert isinstance(payload["data"], list)
+
+    def test_no_rich_output_is_mixed_into_stdout(self):
+        result = _invoke_recap(_recap_data(), ["--format", "json"])
+
+        assert result.exit_code == 0, result.output
+        # A clean parse is itself the proof: any stray Rich markup or panel
+        # text ahead of/after the envelope would break json.loads outright.
+        json.loads(result.stdout)
+        assert "Gameweek 5 League Recap" not in result.stdout
+        # The header was genuinely printed (redirected to stderr, not
+        # skipped outright) -- proof this is real suppression, not an
+        # accidentally-silent run with nothing to leak in the first place.
+        assert "Gameweek 5 League Recap" in result.stderr
+
+    def test_a_per_manager_payload_matches_the_stored_row_field_names(self):
+        result = _invoke_recap(
+            _recap_data(managers=[_manager(name="Alice", entry_id=1)]), ["--format", "json"],
+        )
+
+        payload = json.loads(result.stdout)
+        assert len(payload["data"]) == 1
+        row = payload["data"][0]
+        assert row["manager_name"] == "Alice"
+        assert row["season"] == SEASON
+        assert row["fpl_format"] == "classic"
+        assert row["gameweek"] == 5
+        assert row["capture_status"] == "ok"
+
+    def test_the_warnings_key_is_present_and_empty_on_a_clean_run(self):
+        result = _invoke_recap(_recap_data(), ["--format", "json"])
+
+        payload = json.loads(result.stdout)
+        assert payload["metadata"]["warnings"] == []
+
+    def test_a_corrupted_store_produces_a_warning_code_full_data_and_exit_zero(self):
+        path = _store().gameweek_file(5)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("not json{{{\n", encoding="utf-8")
+
+        result = _invoke_recap(
+            _recap_data(managers=[_manager(name="Alice", entry_id=1)]), ["--format", "json"],
+        )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        assert len(payload["data"]) == 1
+        codes = [w["code"] for w in payload["metadata"]["warnings"]]
+        assert HISTORY_WARNING_STORE_UNREADABLE in codes
+
+    def test_metadata_coverage_reflects_the_tiers_actually_present(self):
+        result = _invoke_recap(
+            _recap_data(managers=[_manager(name="Alice", entry_id=1)]), ["--format", "json"],
+        )
+
+        payload = json.loads(result.stdout)
+        coverage = payload["metadata"]["coverage"]
+        assert any(c["gameweek"] == 5 and c["tier_counts"].get("detailed") == 1 for c in coverage)
+
+    def test_dry_run_json_includes_the_editorial(self):
+        result = _invoke_recap(_recap_data(), ["--format", "json", "--dry-run"])
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        assert payload["metadata"]["synthesis_summary"]
+
+    def test_save_writes_the_report_and_still_emits_the_payload(self, tmp_path: Path):
+        result = _invoke_recap(
+            _recap_data(), ["--format", "json", "--save", "--output", str(tmp_path)],
+        )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        assert isinstance(payload["data"], list)
+        assert list(tmp_path.glob("*.md"))
+
+    def test_an_unresolved_gameweek_emits_the_json_error_path_and_exits_one(self):
+        result = _invoke_recap_unresolved_gameweek(["--format", "json"])
+
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout)
+        assert payload["command"] == "league-recap"
+        assert "error" in payload
+
+    def test_an_unresolved_gameweek_in_table_mode_exits_zero(self):
+        """The deliberate divergence R9/R10 name: `emit_json_error` is the
+        shared JSON contract (always exit 1), but the table path keeps its
+        own softer exit-0 message-and-return behaviour."""
+        result = _invoke_recap_unresolved_gameweek()
+
+        assert result.exit_code == 0
