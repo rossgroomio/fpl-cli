@@ -370,6 +370,7 @@ Services live in `fpl_cli/services/` and provide the computation layer between a
 | `season_previews` | Hand-curated per-team season intel from `<config dir>/previews/*.yaml`. Per-section decay (`SECTION_DECAY`) ages each kind of claim out at the gameweek something better supersedes it — injuries at GW2, projected XIs at GW7, team strength at GW13 to mirror `team_ratings_prior.BLENDING_CUTOFF_GW`. `coverage()` centralises the usage gate (`full` / `negative_filter_only` / `none`) so the three consuming skills cannot drift apart on the threshold. Deterministic name resolution (`resolve_name`) matches preview prose to `element_code`, reporting ambiguity rather than guessing; `write_resolved_codes` saves via round-trip YAML so hand-written comments survive |
 | `squad_allocator` | ILP squad allocator (PuLP CBC), horizon-aware, chip-aware |
 | `team_form` | Rolling team form stats (last 6 matches, venue splits) |
+| `league_history` | Durable league-history ledger: one NDJSON file per gameweek under `<data dir>/league_history/<season>/<format>-<league id>/`, written as a side effect of `league-recap`. Append-only — an identical row writes nothing, a differing one appends a superseding line, and readers resolve by highest fidelity tier then latest capture, with an unknown row ranking below every tier. Two deliberate inversions of house convention: loading **fails closed** (unlike `chip_plan`, which resets on a corrupt file) because the API cannot rebuild a past gameweek, and season is a **partition key** (unlike `team_ratings`, which discards a previous season) because per-gameweek granularity is destroyed at the July rollover |
 
 ## LLM Provider Abstraction
 
@@ -503,7 +504,7 @@ fpl_cli/
 │   ├── _banner.py                # Startup banner
 │   ├── _plan_grid.py             # Fixture grid rendering
 │   ├── _review_*.py              # Review command helpers (analysis, classic, draft, summarisation)
-│   ├── _league_recap_*.py        # League recap helpers & types
+│   ├── _league_recap_*.py        # League recap helpers & types (`_league_recap_history.py` builds ledger rows and runs the two-tier backfill)
 │   ├── _fines.py / _fines_config.py  # League fines system
 │   └── [command files]           # One file per command/group
 ├── agents/
@@ -537,12 +538,14 @@ fpl_cli/
 │   ├── fixture_predictions.py    # BGW/DGW predictions from YAML + live detection
 │   ├── season_previews.py       # Per-team season intel: schema, per-section decay, coverage gate, name resolution
 │   ├── squad_allocator.py        # ILP squad allocator (PuLP CBC) - score, fixture coefficients, solver. Horizon-aware: horizon=1 uses single-GW scoring (GW_SELECTION_WEIGHTS), horizon>=2 uses ownership-family quality (VALUE_QUALITY_WEIGHTS). Chip-aware: --bench-discount (Free Hit), --bench-boost-gw (Bench Boost per-GW override to 1.0), --sell-prices (WC/FH sell-price budget correction via price_overrides dict)
-│   └── team_form.py              # Rolling team form stats
+│   ├── team_form.py              # Rolling team form stats
+│   └── league_history.py         # League history ledger store: per-gameweek NDJSON, fail-closed load, supersession, coverage query
 ├── models/
 │   ├── player.py                 # Player, PlayerStatus, PlayerPosition, POSITION_MAP
 │   ├── team.py                   # Team
 │   ├── fixture.py                # Fixture
 │   ├── chip_plan.py              # ChipPlan, ChipType, PlannedChip, UsedChip
+│   ├── league_history.py         # LeagueHistoryRow + Ledger* sub-models, CaptureStatus, FidelityTier, schema version constants
 │   └── types.py                  # TypedDicts: CaptainCandidate, WaiverTarget, EnrichedPlayer, etc.
 ├── prompts/
 │   ├── scout.py                  # ScoutAgent system/user prompts
@@ -575,7 +578,9 @@ platformdirs (user_config_dir / user_data_dir)  # macOS: ~/Library/Application S
 ├── team_ratings_prior.yaml       # Cached team ratings priors (data dir)
 ├── player_prior.yaml             # Cached player priors (data dir, generated, season/GW invalidation)
 ├── chip_plan.json                # User's chip plan (data dir, created via `fpl chips add`)
-└── team_finances.json            # Cached sell prices from scraper (data dir, 12h TTL)
+├── team_finances.json            # Cached sell prices from scraper (data dir, 12h TTL)
+└── league_history/<season>/<format>-<league id>/gwNN.ndjson
+                                  # Append-only league history ledger (data dir). Season partitions rather than invalidates: prior seasons stay readable forever, because the API destroys per-gameweek granularity at the July rollover
 ```
 
 The config dir also holds `.env` (credentials, API keys) and the generated `output/` and `research/` report directories.
