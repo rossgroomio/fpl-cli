@@ -69,7 +69,7 @@ Every field except `team`, `season`, `source` and `published` is optional.
 
 | Field | Fill from |
 |---|---|
-| `predicted_finish` | the author's own prediction, not an aggregate of others |
+| `predicted_finish` | the source's aggregate/consensus prediction when it gives one, else the author's own |
 | `team_strength.attack` / `.defence` / `.set_pieces` | percentile ranks if the source gives them, else omit |
 | `team_strength.notes` | one line on style or shape |
 | `transfers_in` / `transfers_out` | named signings and departures |
@@ -88,8 +88,9 @@ Every field except `team`, `season`, `source` and `published` is optional.
    every `players[].set_pieces` empty. Inventing a penalty taker is the single
    most damaging thing this skill can do — it will be believed.
 2. **Do not smooth over disagreement.** If an aggregate prediction and the
-   author's prediction differ, put the author's in `predicted_finish` and both
-   in `narrative`.
+   author's own differ, put the aggregate in `predicted_finish` (it forms a
+   coherent table across teams; a lone author's picks may not) and record the
+   author's own view in `narrative`.
 3. **Attribute honestly.** `source` and `author` are surfaced wherever this
    intel is used, so an opinion reads as an opinion.
 4. **Leave players out.** A player the source does not discuss gets no entry.
@@ -130,6 +131,10 @@ fpl intel                 # coverage across the league, and any load warnings
 Check:
 - No load warnings naming your file.
 - The team code is not reported as unknown.
+- No warning about teams sharing a `predicted_finish` — when extracting a
+  single source's predicted table the finishes should form a permutation, so a
+  duplicate almost always means a row was misread. Re-check both files against
+  the source before shrugging it off.
 - Player count matches what you intended.
 - `fpl intel show {TEAM} -g 5` still shows something sensible — if the whole
   file empties out at GW5, it was all injuries and transfers, which is fine but

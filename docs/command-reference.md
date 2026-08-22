@@ -574,7 +574,9 @@ current since that is when season previews are written. This is the guard agains
 building a squad on last August's opinions. A file whose `team` is still the `EXAMPLE`
 template sentinel is skipped with a warning, and a preview set that has drifted across
 promotion and relegation is reported too; clubs not in the current league never count
-toward coverage.
+toward coverage. Two teams sharing a `predicted_finish` draws a warning (not a skip):
+finishes extracted from a single source's predicted table should form a permutation, so
+a duplicate usually means a row was misread at ingest.
 
 ### Name resolution
 

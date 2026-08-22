@@ -477,6 +477,22 @@ class SeasonPreviewsService:
             seen[preview.team] = preview
 
         self._previews = sorted(seen.values(), key=lambda p: p.team)
+
+        # Previews are typically extracted from a single source's predicted
+        # table, where the finishes form a permutation -- two teams sharing one
+        # usually means the table was misread during ingest. Warn, don't skip:
+        # genuinely disagreeing sources are legitimate, just uncommon.
+        by_finish: dict[int, list[str]] = {}
+        for preview in self._previews:
+            if preview.predicted_finish is not None:
+                by_finish.setdefault(preview.predicted_finish, []).append(preview.team)
+        for finish, teams in sorted(by_finish.items()):
+            if len(teams) > 1:
+                self._warn(
+                    f"Previews for {', '.join(teams)} all predict finish {finish};"
+                    f" from a single source's table this usually means one was misread"
+                )
+
         return self._previews
 
     def _read(self, path: Path) -> TeamPreview | None:

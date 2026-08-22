@@ -203,6 +203,24 @@ class TestLoading:
         write_preview("ARS", minimal(published=f"{get_season_year()}-08-15"))
         assert SeasonPreviewsService().get_preview("ARS") is not None
 
+    def test_duplicate_predicted_finish_warns_but_keeps_both(self):
+        # From a single source's predicted table the finishes are a permutation,
+        # so a shared value usually means a misread row at ingest.
+        write_preview("ARS", minimal(team="ARS", predicted_finish=4))
+        write_preview("LIV", minimal(team="LIV", predicted_finish=4))
+        service = SeasonPreviewsService()
+        assert len(service.get_previews()) == 2
+        warning = next(w for w in service.load_warnings if "predict finish 4" in w)
+        assert "ARS" in warning and "LIV" in warning
+
+    def test_distinct_predicted_finishes_do_not_warn(self):
+        write_preview("ARS", minimal(team="ARS", predicted_finish=4))
+        write_preview("LIV", minimal(team="LIV", predicted_finish=5))
+        write_preview("MCI", minimal(team="MCI"))  # no prediction at all
+        service = SeasonPreviewsService()
+        assert len(service.get_previews()) == 3
+        assert not any("predict finish" in w for w in service.load_warnings)
+
     def test_duplicate_team_keeps_one_and_warns(self):
         write_preview("ARS", minimal())
         write_preview("arsenal", minimal())
