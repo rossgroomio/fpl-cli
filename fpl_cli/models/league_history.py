@@ -281,3 +281,66 @@ def resolve_rows(rows: list[LeagueHistoryRow]) -> dict[int, LeagueHistoryRow]:
         if current is None or row.resolution_sort_key() > current.resolution_sort_key():
             winners[row.manager_key] = row
     return winners
+
+
+# ---------------------------------------------------------------------------
+# U8: streak-counter projection
+# ---------------------------------------------------------------------------
+#
+# A rebuildable cache derived entirely from ledger rows (KTD10), never a
+# second source of truth. Persistence and the condition registry that
+# produces this state live in `fpl_cli/services/league_history_counters.py`;
+# these are just the shapes that get serialised.
+
+# Bump whenever the projection's shape changes in a way older code cannot
+# read. Unlike LEAGUE_HISTORY_VERSION, a mismatch here is never fatal: the
+# projection is a rebuildable cache, so a stale version rebuilds silently
+# from the ledger's rows rather than blocking anything (KTD10).
+LEAGUE_HISTORY_COUNTERS_VERSION = 1
+
+
+class ConditionRunState(BaseModel):
+    """One manager's running state for one streak condition.
+
+    Persisted so the weekly path can fold in one new gameweek without
+    rescanning the whole ledger. `length` and `start_gameweek` describe the
+    run currently open (both reset together); `held_in_run` counts
+    gameweeks that held -- R19's unknown rows, R20's fixture-less blanks,
+    a condition that did not apply that gameweek -- while this run stayed
+    open. A run does not have to hold on *consecutive* gameweeks to
+    accumulate this count: three non-held extends that held eight
+    gameweeks somewhere in between is still reported as length 3, held 8,
+    not silently rounded down to "3, consecutive" (KTD7, consumed by U9).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    length: int = 0
+    start_gameweek: int | None = None
+    held_in_run: int = 0
+
+
+class LeagueHistoryCountersProjection(BaseModel):
+    """Rebuildable per-manager, per-condition streak state for one partition.
+
+    Scoped to one (season, format, league_id) partition, the same
+    partitioning the ledger store uses -- so a new season starts every
+    counter fresh rather than carrying a run across the boundary.
+    `computed_through_gameweek` is the stamp KTD10 advances only when the
+    gameweek folded in is exactly one past it; anything else (a backfill
+    behind it, a multi-gameweek catch-up ahead of it) means the caller must
+    rebuild rather than trust this file, which is exactly why loading it is
+    fail-open -- unlike the ledger, this is a disposable cache.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: int = LEAGUE_HISTORY_COUNTERS_VERSION
+    season: str
+    fpl_format: LeagueFormat
+    league_id: int
+    computed_through_gameweek: int
+    # Keyed [manager_key][condition_key]. A manager or condition absent from
+    # this dict simply has no run open -- equivalent to a fresh
+    # ConditionRunState() -- rather than every combination being written out.
+    runs: dict[int, dict[str, ConditionRunState]] = Field(default_factory=dict)

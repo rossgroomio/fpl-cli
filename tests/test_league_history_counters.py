@@ -1,0 +1,803 @@
+"""Tests for the streak-condition registry and counters projection (U8)."""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+import pytest
+from pydantic import ValidationError
+
+from fpl_cli.models.league_history import (
+    LEAGUE_HISTORY_COUNTERS_VERSION,
+    ConditionRunState,
+    LeagueHistoryCountersProjection,
+    LedgerCaptaincy,
+    LedgerTransaction,
+)
+from fpl_cli.services.league_history import LeagueHistoryStore
+from fpl_cli.services.league_history_counters import (
+    CONDITIONS,
+    all_condition_views,
+    compute_counters_through,
+    conditions_for_format,
+    counters_file,
+    counters_partition_dir,
+    manager_condition_views,
+    rebuild_counters_through,
+)
+from tests.conftest import make_history_row
+
+# ---------------------------------------------------------------------------
+# Local helpers
+# ---------------------------------------------------------------------------
+
+
+def _captain(points: int, had_fixture: bool | None = True) -> LedgerCaptaincy:
+    return LedgerCaptaincy(name="Cap", points=points, played=True, had_fixture=had_fixture)
+
+
+def _transaction(net: int) -> LedgerTransaction:
+    return LedgerTransaction(
+        player_in="In Guy", player_in_team="AAA", player_out="Out Guy", player_out_team="BBB", net=net,
+    )
+
+
+LATER = datetime(2027, 1, 1, tzinfo=timezone.utc)
+
+
+# ---------------------------------------------------------------------------
+# Registry
+# ---------------------------------------------------------------------------
+
+
+class TestConditionRegistry:
+    def test_exactly_nine_conditions_are_registered(self):
+        assert len(CONDITIONS) == 9
+        assert len({c.key for c in CONDITIONS}) == 9
+
+    def test_min_run_lengths_match_the_spec(self):
+        min_runs = {c.key: c.min_run for c in CONDITIONS}
+        assert min_runs == {
+            "weeks_on_top": 2,
+            "bottom_half_run": 3,
+            "gw_win_streak": 2,
+            "gw_loss_streak": 2,
+            "green_arrow_drought": 4,
+            "captain_blank_run": 2,
+            "hit_run": 3,
+            "waiver_win_run": 2,
+            "waiver_burn_run": 2,
+        }
+
+    def test_conditions_for_classic_excludes_waiver_conditions(self):
+        keys = {c.key for c in conditions_for_format("classic")}
+        assert keys == {
+            "weeks_on_top", "bottom_half_run", "gw_win_streak", "gw_loss_streak",
+            "green_arrow_drought", "captain_blank_run", "hit_run",
+        }
+
+    def test_conditions_for_draft_excludes_classic_only_conditions(self):
+        keys = {c.key for c in conditions_for_format("draft")}
+        assert keys == {
+            "weeks_on_top", "bottom_half_run", "gw_win_streak", "gw_loss_streak",
+            "green_arrow_drought", "waiver_win_run", "waiver_burn_run",
+        }
+
+
+# ---------------------------------------------------------------------------
+# captain_blank_run (classic only)
+# ---------------------------------------------------------------------------
+
+
+class TestCaptainBlankRun:
+    def test_three_consecutive_blanks_yield_a_run_of_three_holding_none(self):
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        for gw in (1, 2, 3):
+            store.append_rows(gw, [make_history_row(gameweek=gw, manager_key=1, captain=_captain(1))])
+
+        projection = rebuild_counters_through(store, 3)
+        view = manager_condition_views(projection, 1)["captain_blank_run"]
+
+        assert view.length == 3
+        assert view.start_gameweek == 1
+        assert view.held_in_run == 0
+        assert view.is_reportable is True
+
+    def test_ae7_unknown_row_between_two_blanks_holds(self):
+        """Given one manager's picks fetch fails at GW7 while the rest succeed,
+        a GW7 row exists for that manager marked unknown, and their
+        captain-blank streak spanning GW6 and GW8 is neither extended nor
+        reset by GW7."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(6, [make_history_row(gameweek=6, manager_key=1, captain=_captain(1))])
+        store.append_rows(7, [make_history_row(gameweek=7, manager_key=1, capture_status="unknown")])
+        store.append_rows(8, [make_history_row(gameweek=8, manager_key=1, captain=_captain(1))])
+
+        projection = rebuild_counters_through(store, 8)
+        view = manager_condition_views(projection, 1)["captain_blank_run"]
+
+        assert view.length == 2
+        assert view.start_gameweek == 6
+        assert view.held_in_run == 1
+
+    def test_ae7_a_later_run_supersedes_the_unknown_row_and_the_streak_extends(self):
+        """A later run re-attempts the manager and supersedes the unknown row:
+        once GW7 is filled in as a real blank, the streak becomes an
+        unbroken three rather than staying at two-with-one-held."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(6, [make_history_row(gameweek=6, manager_key=1, captain=_captain(1))])
+        store.append_rows(7, [make_history_row(gameweek=7, manager_key=1, capture_status="unknown")])
+        store.append_rows(8, [make_history_row(gameweek=8, manager_key=1, captain=_captain(1))])
+        before = manager_condition_views(rebuild_counters_through(store, 8), 1)["captain_blank_run"]
+        assert (before.length, before.held_in_run) == (2, 1)
+
+        store.append_rows(7, [
+            make_history_row(gameweek=7, manager_key=1, captain=_captain(1), captured_at=LATER),
+        ])
+
+        after = manager_condition_views(rebuild_counters_through(store, 8), 1)["captain_blank_run"]
+        assert (after.length, after.held_in_run) == (3, 0)
+
+    def test_captain_with_no_fixture_holds_neither_extends_nor_resets(self):
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, captain=_captain(1))])
+        store.append_rows(2, [
+            make_history_row(gameweek=2, manager_key=1, captain=_captain(0, had_fixture=False)),
+        ])
+        store.append_rows(3, [make_history_row(gameweek=3, manager_key=1, captain=_captain(1))])
+
+        projection = rebuild_counters_through(store, 3)
+        view = manager_condition_views(projection, 1)["captain_blank_run"]
+
+        assert view.length == 2
+        assert view.start_gameweek == 1
+        assert view.held_in_run == 1
+
+    def test_captain_had_fixture_unset_also_holds(self):
+        """`had_fixture=None` (not recorded) must hold too, not be treated as True."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, captain=_captain(1))])
+        store.append_rows(2, [
+            make_history_row(gameweek=2, manager_key=1, captain=_captain(1, had_fixture=None)),
+        ])
+
+        projection = rebuild_counters_through(store, 2)
+        view = manager_condition_views(projection, 1)["captain_blank_run"]
+
+        assert view.length == 1
+        assert view.held_in_run == 1
+
+    def test_coarse_row_lacking_captain_detail_holds_but_weeks_on_top_still_evaluates(self):
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(1, [
+            make_history_row(gameweek=1, manager_key=1, tier="coarse", league_position=1, captain=None),
+        ])
+
+        projection = rebuild_counters_through(store, 1)
+        views = manager_condition_views(projection, 1)
+
+        assert views["captain_blank_run"].length == 0
+        assert views["captain_blank_run"].held_in_run == 0  # hold before any run opens records nothing
+        assert views["weeks_on_top"].length == 1
+        assert views["weeks_on_top"].start_gameweek == 1
+
+    def test_a_run_spanning_eight_held_gameweeks_reports_its_held_count(self):
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, captain=_captain(1))])
+        for gw in range(2, 10):  # GW2..GW9 inclusive: 8 held gameweeks
+            store.append_rows(gw, [
+                make_history_row(gameweek=gw, manager_key=1, captain=_captain(0, had_fixture=False)),
+            ])
+        store.append_rows(10, [make_history_row(gameweek=10, manager_key=1, captain=_captain(1))])
+
+        projection = rebuild_counters_through(store, 10)
+        view = manager_condition_views(projection, 1)["captain_blank_run"]
+
+        assert view.length == 2
+        assert view.held_in_run == 8
+        assert view.start_gameweek == 1
+
+    def test_captain_blank_run_reads_the_shared_blank_threshold(self):
+        from fpl_cli.models.player import BLANK_POINTS_THRESHOLD
+
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(1, [
+            make_history_row(gameweek=1, manager_key=1, captain=_captain(BLANK_POINTS_THRESHOLD)),
+        ])
+        store.append_rows(2, [
+            make_history_row(gameweek=2, manager_key=1, captain=_captain(BLANK_POINTS_THRESHOLD + 1)),
+        ])
+
+        projection = rebuild_counters_through(store, 2)
+        view = manager_condition_views(projection, 1)["captain_blank_run"]
+
+        # Exactly-at-threshold extends (GW1); one point above resets (GW2).
+        assert view.length == 0
+
+
+# ---------------------------------------------------------------------------
+# gw_win_streak / gw_loss_streak
+# ---------------------------------------------------------------------------
+
+
+class TestGwRankStreaks:
+    def test_top_and_bottom_scorer_each_get_a_run_of_two(self):
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        for gw in (1, 2):
+            store.append_rows(gw, [
+                make_history_row(gameweek=gw, manager_key=1, gw_rank=1),
+                make_history_row(gameweek=gw, manager_key=2, gw_rank=2),
+                make_history_row(gameweek=gw, manager_key=3, gw_rank=3),
+            ])
+
+        projection = rebuild_counters_through(store, 2)
+
+        assert manager_condition_views(projection, 1)["gw_win_streak"].length == 2
+        assert manager_condition_views(projection, 3)["gw_loss_streak"].length == 2
+        # Neither condition falsely extends for the middle-ranked manager.
+        assert manager_condition_views(projection, 2)["gw_win_streak"].length == 0
+        assert manager_condition_views(projection, 2)["gw_loss_streak"].length == 0
+
+    def test_unknown_manager_holds_but_last_place_is_still_correctly_identified(self):
+        """Gameweek rank is computed over every cohort member, so a manager
+        whose picks fetch failed does not hand the week's worst score to
+        whoever actually finished second-last. Both gameweek-rank
+        conditions hold for the failed-fetch manager; the cohort still
+        includes their row when deciding who is genuinely last."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        for gw in (1, 2):
+            store.append_rows(gw, [
+                make_history_row(gameweek=gw, manager_key=1, gw_rank=1),
+                make_history_row(gameweek=gw, manager_key=2, gw_rank=2),
+                make_history_row(gameweek=gw, manager_key=3, gw_rank=3, capture_status="unknown"),
+                make_history_row(gameweek=gw, manager_key=4, gw_rank=4),
+            ])
+
+        projection = rebuild_counters_through(store, 2)
+
+        unknown_view = manager_condition_views(projection, 3)["gw_loss_streak"]
+        assert unknown_view.length == 0
+        assert unknown_view.held_in_run == 0  # hold before any run opens records nothing
+
+        # Manager 2 finished second-last but must not be handed the week's
+        # worst just because manager 3's fetch failed.
+        second_last = manager_condition_views(projection, 2)["gw_loss_streak"]
+        assert second_last.length == 0
+
+        # Manager 4 is genuinely last, accounting for manager 3's rank slot.
+        genuinely_last = manager_condition_views(projection, 4)["gw_loss_streak"]
+        assert genuinely_last.length == 2
+
+        top = manager_condition_views(projection, 1)["gw_win_streak"]
+        assert top.length == 2
+
+    def test_missing_gw_rank_holds(self):
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, gw_rank=None)])
+        projection = rebuild_counters_through(store, 1)
+        view = manager_condition_views(projection, 1)["gw_win_streak"]
+        assert view.length == 0
+        assert view.held_in_run == 0
+
+
+# ---------------------------------------------------------------------------
+# weeks_on_top / bottom_half_run / green_arrow_drought
+# ---------------------------------------------------------------------------
+
+
+class TestPositionConditions:
+    def test_weeks_on_top_extends_and_resets(self):
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, league_position=1)])
+        store.append_rows(2, [make_history_row(gameweek=2, manager_key=1, league_position=1)])
+        store.append_rows(3, [make_history_row(gameweek=3, manager_key=1, league_position=2)])
+
+        projection = rebuild_counters_through(store, 3)
+        view = manager_condition_views(projection, 1)["weeks_on_top"]
+
+        assert view.length == 0  # reset by GW3
+
+    def test_run_shorter_than_minimum_is_tracked_but_not_reportable(self):
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, league_position=1)])
+
+        projection = rebuild_counters_through(store, 1)
+        view = manager_condition_views(projection, 1)["weeks_on_top"]  # min_run == 2
+
+        assert view.length == 1
+        assert view.is_reportable is False
+
+    def test_even_cohort_the_exact_half_boundary_is_not_bottom_half(self):
+        """4 members: ceil(4/2) == 2. Position 2 is top half; position 3 is bottom half."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(1, [
+            make_history_row(gameweek=1, manager_key=key, league_position=key) for key in (1, 2, 3, 4)
+        ])
+
+        projection = rebuild_counters_through(store, 1)
+
+        assert manager_condition_views(projection, 2)["bottom_half_run"].length == 0
+        assert manager_condition_views(projection, 3)["bottom_half_run"].length == 1
+
+    def test_odd_cohort_rounds_the_half_boundary_up(self):
+        """5 members: ceil(5/2) == 3. The exact middle (position 3) is top half."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(1, [
+            make_history_row(gameweek=1, manager_key=key, league_position=key)
+            for key in (1, 2, 3, 4, 5)
+        ])
+
+        projection = rebuild_counters_through(store, 1)
+
+        assert manager_condition_views(projection, 3)["bottom_half_run"].length == 0
+        assert manager_condition_views(projection, 4)["bottom_half_run"].length == 1
+
+    def test_green_arrow_drought_extends_when_position_does_not_improve(self):
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, league_position=5)])
+        store.append_rows(2, [make_history_row(gameweek=2, manager_key=1, league_position=5)])
+        store.append_rows(3, [make_history_row(gameweek=3, manager_key=1, league_position=7)])
+
+        projection = rebuild_counters_through(store, 3)
+        view = manager_condition_views(projection, 1)["green_arrow_drought"]
+
+        assert view.length == 2  # GW1 has no previous row -> hold; GW2, GW3 extend
+        assert view.start_gameweek == 2
+
+    def test_green_arrow_drought_resets_when_position_improves(self):
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, league_position=5)])
+        store.append_rows(2, [make_history_row(gameweek=2, manager_key=1, league_position=5)])
+        store.append_rows(3, [make_history_row(gameweek=3, manager_key=1, league_position=2)])
+
+        projection = rebuild_counters_through(store, 3)
+        view = manager_condition_views(projection, 1)["green_arrow_drought"]
+
+        assert view.length == 0
+
+    def test_green_arrow_drought_holds_on_the_first_ever_gameweek(self):
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, league_position=5)])
+
+        projection = rebuild_counters_through(store, 1)
+        view = manager_condition_views(projection, 1)["green_arrow_drought"]
+
+        assert view.length == 0
+        assert view.held_in_run == 0
+
+    def test_green_arrow_drought_holds_when_the_previous_row_is_unknown(self):
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, league_position=5)])
+        store.append_rows(2, [make_history_row(gameweek=2, manager_key=1, capture_status="unknown")])
+        store.append_rows(3, [make_history_row(gameweek=3, manager_key=1, league_position=5)])
+
+        projection = rebuild_counters_through(store, 3)
+        view = manager_condition_views(projection, 1)["green_arrow_drought"]
+
+        # GW1: no previous row -> hold. GW2: unknown row -> R19 holds its own
+        # streak. GW3: previous row (GW2) is unknown -> its position cannot be
+        # trusted for the comparison either, so this also holds.
+        assert view.length == 0
+        assert view.held_in_run == 0
+
+
+# ---------------------------------------------------------------------------
+# Independence between conditions
+# ---------------------------------------------------------------------------
+
+
+class TestConditionsAreIndependent:
+    def test_top_of_table_with_a_gw_loss_streak_and_winning_gws_from_bottom_half(self):
+        """A manager can hold a gameweek-loss run while sitting top of the
+        league table, and a bottom-half run while winning a gameweek -- the
+        two pairs must not interfere with each other."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        for gw in (1, 2):
+            store.append_rows(gw, [
+                make_history_row(gameweek=gw, manager_key=1, league_position=1, gw_rank=3),
+                make_history_row(gameweek=gw, manager_key=2, league_position=5, gw_rank=1),
+                make_history_row(gameweek=gw, manager_key=3, league_position=3, gw_rank=2),
+            ])
+
+        projection = rebuild_counters_through(store, 2)
+        top_manager = manager_condition_views(projection, 1)
+        bottom_manager = manager_condition_views(projection, 2)
+
+        assert top_manager["weeks_on_top"].length == 2
+        assert top_manager["gw_loss_streak"].length == 2
+
+        assert bottom_manager["gw_win_streak"].length == 2
+        assert bottom_manager["bottom_half_run"].length == 2
+
+
+# ---------------------------------------------------------------------------
+# hit_run (classic only)
+# ---------------------------------------------------------------------------
+
+
+class TestHitRun:
+    def test_extends_while_positive_resets_at_zero(self):
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, transfer_cost=4)])
+        store.append_rows(2, [make_history_row(gameweek=2, manager_key=1, transfer_cost=4)])
+        store.append_rows(3, [make_history_row(gameweek=3, manager_key=1, transfer_cost=0)])
+
+        projection = rebuild_counters_through(store, 3)
+        view = manager_condition_views(projection, 1)["hit_run"]
+
+        assert view.length == 0
+
+    def test_missing_transfer_cost_holds(self):
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, transfer_cost=4)])
+        store.append_rows(2, [make_history_row(gameweek=2, manager_key=1, transfer_cost=None)])
+        store.append_rows(3, [make_history_row(gameweek=3, manager_key=1, transfer_cost=4)])
+
+        projection = rebuild_counters_through(store, 3)
+        view = manager_condition_views(projection, 1)["hit_run"]
+
+        assert view.length == 2
+        assert view.held_in_run == 1
+
+
+# ---------------------------------------------------------------------------
+# waiver_win_run / waiver_burn_run (draft only)
+# ---------------------------------------------------------------------------
+
+
+class TestWaiverConditions:
+    def test_no_transactions_holds_both_conditions(self):
+        store = LeagueHistoryStore("2026-27", "draft", 1)
+        store.append_rows(1, [
+            make_history_row(gameweek=1, manager_key=1, fpl_format="draft", transactions=[]),
+        ])
+
+        projection = rebuild_counters_through(store, 1)
+        views = manager_condition_views(projection, 1)
+
+        assert views["waiver_win_run"].length == 0
+        assert views["waiver_win_run"].held_in_run == 0
+        assert views["waiver_burn_run"].length == 0
+        assert views["waiver_burn_run"].held_in_run == 0
+
+    def test_net_is_summed_across_multiple_transactions_in_one_gameweek(self):
+        store = LeagueHistoryStore("2026-27", "draft", 1)
+        store.append_rows(1, [make_history_row(
+            gameweek=1, manager_key=1, fpl_format="draft",
+            transactions=[_transaction(5), _transaction(-2)],  # net +3
+        )])
+        store.append_rows(2, [make_history_row(
+            gameweek=2, manager_key=1, fpl_format="draft",
+            transactions=[_transaction(-5), _transaction(1)],  # net -4
+        )])
+
+        projection = rebuild_counters_through(store, 2)
+        views = manager_condition_views(projection, 1)
+
+        assert views["waiver_win_run"].length == 0  # GW1 extended then GW2 reset
+        assert views["waiver_burn_run"].length == 1  # GW2 extended fresh
+
+
+# ---------------------------------------------------------------------------
+# Weekly-path advance vs. rebuild (KTD10)
+# ---------------------------------------------------------------------------
+
+
+class TestAdvanceAndRebuild:
+    def test_advances_incrementally_when_the_gameweek_is_stamp_plus_one(self):
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, league_position=1)])
+        first = compute_counters_through(store, 1)
+        assert first.computed_through_gameweek == 1
+
+        store.append_rows(2, [make_history_row(gameweek=2, manager_key=1, league_position=1)])
+        second = compute_counters_through(store, 2)
+
+        assert second.computed_through_gameweek == 2
+        assert manager_condition_views(second, 1)["weeks_on_top"].length == 2
+
+    def test_fast_path_never_calls_the_rebuild_when_stamp_matches(self, monkeypatch):
+        from fpl_cli.services import league_history_counters as svc
+
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, league_position=1)])
+        svc.compute_counters_through(store, 1)
+        store.append_rows(2, [make_history_row(gameweek=2, manager_key=1, league_position=1)])
+
+        def _boom(*_args, **_kwargs):
+            raise AssertionError("rebuild_counters_through must not run on the fast path")
+
+        monkeypatch.setattr(svc, "rebuild_counters_through", _boom)
+
+        projection = svc.compute_counters_through(store, 2)
+        assert projection.computed_through_gameweek == 2
+
+    def test_multi_gameweek_catchup_over_a_stale_stamp_rebuilds_and_matches_a_full_rebuild(self):
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        for gw in range(1, 7):
+            store.append_rows(gw, [make_history_row(gameweek=gw, manager_key=1, league_position=1)])
+
+        stamped_at_three = compute_counters_through(store, 3)
+        assert stamped_at_three.computed_through_gameweek == 3
+
+        jumped = compute_counters_through(store, 6)  # stamp(3) != 6 - 1 -> must rebuild
+        expected = rebuild_counters_through(store, 6)
+
+        assert jumped.computed_through_gameweek == 6
+        assert jumped.runs == expected.runs
+        # A buggy "just bump the stamp" implementation would leave this at 3.
+        assert manager_condition_views(jumped, 1)["weeks_on_top"].length == 6
+
+    def test_backfill_at_or_before_the_stamp_triggers_rebuild_not_stale_reuse(self):
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        for gw in (1, 2, 3):
+            store.append_rows(gw, [make_history_row(gameweek=gw, manager_key=1, league_position=1)])
+        first = compute_counters_through(store, 3)
+        assert manager_condition_views(first, 1)["weeks_on_top"].length == 3
+
+        # Repair GW2: this manager was actually mid-table that gameweek.
+        store.append_rows(2, [
+            make_history_row(gameweek=2, manager_key=1, league_position=5, captured_at=LATER),
+        ])
+
+        # Same target as the existing stamp -- not stamp+1 -- so it must
+        # rebuild rather than trust the cached run.
+        repaired = compute_counters_through(store, 3)
+        view = manager_condition_views(repaired, 1)["weeks_on_top"]
+
+        assert view.length == 1
+        assert view.start_gameweek == 3
+
+    def test_version_mismatched_projection_is_rebuilt_rather_than_served(self):
+        import json
+
+        from fpl_cli.services import league_history_counters as svc
+
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, league_position=1)])
+        compute_counters_through(store, 1)
+
+        path = counters_file("2026-27", "classic", 1)
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["version"] = 999
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+        assert svc._load_projection(store) is None  # exercising the fail-open path directly
+
+        store.append_rows(2, [make_history_row(gameweek=2, manager_key=1, league_position=1)])
+        projection = compute_counters_through(store, 2)
+
+        assert manager_condition_views(projection, 1)["weeks_on_top"].length == 2
+
+    def test_missing_projection_file_rebuilds_silently(self):
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, league_position=1)])
+
+        projection = compute_counters_through(store, 1)  # no prior cache exists at all
+
+        assert projection.computed_through_gameweek == 1
+        assert manager_condition_views(projection, 1)["weeks_on_top"].length == 1
+
+    def test_unreadable_projection_file_rebuilds_silently(self):
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, league_position=1)])
+        compute_counters_through(store, 1)
+
+        path = counters_file("2026-27", "classic", 1)
+        path.write_text("not json{{{", encoding="utf-8")
+
+        store.append_rows(2, [make_history_row(gameweek=2, manager_key=1, league_position=1)])
+        projection = compute_counters_through(store, 2)  # must not raise
+
+        assert manager_condition_views(projection, 1)["weeks_on_top"].length == 2
+
+    def test_unreadable_gameweek_is_skipped_during_rebuild_not_fatal(self):
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, league_position=1)])
+        store.gameweek_file(2).write_text("not json{{{\n", encoding="utf-8")
+        store.append_rows(3, [make_history_row(gameweek=3, manager_key=1, league_position=1)])
+
+        projection = rebuild_counters_through(store, 3)  # must not raise
+        view = manager_condition_views(projection, 1)["weeks_on_top"]
+
+        assert view.length == 2
+        assert view.start_gameweek == 1
+        assert view.held_in_run == 0  # a corrupt gameweek is a gap, not a hold
+
+
+# ---------------------------------------------------------------------------
+# Partitioning: season and format
+# ---------------------------------------------------------------------------
+
+
+class TestPartitioning:
+    def test_counters_do_not_carry_across_a_season_boundary(self):
+        old_store = LeagueHistoryStore("2026-27", "classic", 1)
+        for gw in (1, 2, 3):
+            old_store.append_rows(gw, [
+                make_history_row(season="2026-27", gameweek=gw, manager_key=1, league_position=1),
+            ])
+        old_projection = compute_counters_through(old_store, 3)
+        assert manager_condition_views(old_projection, 1)["weeks_on_top"].length == 3
+
+        new_store = LeagueHistoryStore("2027-28", "classic", 1)
+        new_store.append_rows(1, [
+            make_history_row(season="2027-28", gameweek=1, manager_key=1, league_position=1),
+        ])
+        new_projection = compute_counters_through(new_store, 1)
+
+        # If counters leaked across the boundary this would read 4, not 1.
+        assert manager_condition_views(new_projection, 1)["weeks_on_top"].length == 1
+
+    def test_classic_only_conditions_are_absent_from_a_draft_partition(self):
+        store = LeagueHistoryStore("2026-27", "draft", 1)
+        store.append_rows(1, [
+            make_history_row(gameweek=1, manager_key=1, fpl_format="draft", league_position=1),
+        ])
+        views = manager_condition_views(compute_counters_through(store, 1), 1)
+
+        assert "captain_blank_run" not in views
+        assert "hit_run" not in views
+        assert "waiver_win_run" in views
+        assert "waiver_burn_run" in views
+
+    def test_draft_only_conditions_are_absent_from_a_classic_partition(self):
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, league_position=1)])
+        views = manager_condition_views(compute_counters_through(store, 1), 1)
+
+        assert "waiver_win_run" not in views
+        assert "waiver_burn_run" not in views
+        assert "captain_blank_run" in views
+        assert "hit_run" in views
+
+
+# ---------------------------------------------------------------------------
+# Persisted models
+# ---------------------------------------------------------------------------
+
+
+class TestCountersModels:
+    def test_default_projection_is_stamped_with_the_current_version(self):
+        projection = LeagueHistoryCountersProjection(
+            season="2026-27", fpl_format="classic", league_id=1, computed_through_gameweek=0,
+        )
+        assert projection.version == LEAGUE_HISTORY_COUNTERS_VERSION
+        assert projection.runs == {}
+
+    def test_round_trips_through_json_with_nested_runs(self):
+        projection = LeagueHistoryCountersProjection(
+            season="2026-27", fpl_format="classic", league_id=1, computed_through_gameweek=5,
+            runs={
+                1: {"weeks_on_top": ConditionRunState(length=3, start_gameweek=3, held_in_run=1)},
+                2: {"hit_run": ConditionRunState()},
+            },
+        )
+        restored = LeagueHistoryCountersProjection.model_validate_json(projection.model_dump_json())
+        assert restored == projection
+        assert isinstance(next(iter(restored.runs)), int)
+
+    def test_unknown_extra_field_on_the_projection_is_rejected(self):
+        payload = LeagueHistoryCountersProjection(
+            season="2026-27", fpl_format="classic", league_id=1, computed_through_gameweek=0,
+        ).model_dump(mode="json")
+        payload["storyline_theme"] = "a field from a future version"
+        with pytest.raises(ValidationError):
+            LeagueHistoryCountersProjection.model_validate(payload)
+
+    def test_unknown_extra_field_on_the_run_state_is_rejected(self):
+        payload = ConditionRunState().model_dump(mode="json")
+        payload["narrative_flavour"] = "a field from a future version"
+        with pytest.raises(ValidationError):
+            ConditionRunState.model_validate(payload)
+
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+
+
+class TestCountersPaths:
+    def test_honours_the_data_dir_override_at_point_of_use(self, tmp_path, monkeypatch):
+        from fpl_cli.paths import user_data_dir
+
+        redirected = tmp_path / "elsewhere"
+        user_data_dir.cache_clear()
+        monkeypatch.setenv("FPL_CLI_DATA_DIR", str(redirected))
+        try:
+            path = counters_file("2026-27", "classic", 1)
+        finally:
+            user_data_dir.cache_clear()
+        assert redirected in path.parents
+
+    def test_partition_dir_is_separate_from_the_ledgers_own_directory(self):
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        assert store.partition_dir() != counters_partition_dir("2026-27", "classic", 1)
+
+
+# ---------------------------------------------------------------------------
+# Public read views
+# ---------------------------------------------------------------------------
+
+
+class TestPublicViews:
+    def test_all_condition_views_covers_every_manager_touched(self):
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(1, [
+            make_history_row(gameweek=1, manager_key=1, league_position=1),
+            make_history_row(gameweek=1, manager_key=2, league_position=2),
+        ])
+
+        projection = rebuild_counters_through(store, 1)
+        views = all_condition_views(projection)
+
+        assert sorted(views) == [1, 2]
+        assert "weeks_on_top" in views[1]
+        assert "weeks_on_top" in views[2]
+
+    def test_manager_condition_views_returns_a_fresh_entry_for_an_untouched_condition(self):
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, league_position=1)])
+
+        projection = rebuild_counters_through(store, 1)
+        views = manager_condition_views(projection, 1)
+
+        # hit_run never extended for this manager -- still present, at zero.
+        assert views["hit_run"].length == 0
+        assert views["hit_run"].start_gameweek is None
+        assert views["hit_run"].is_reportable is False
+
+    def test_manager_condition_views_for_an_unseen_manager_returns_all_fresh_entries(self):
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, league_position=1)])
+
+        projection = rebuild_counters_through(store, 1)
+        views = manager_condition_views(projection, 999)
+
+        assert len(views) == len(conditions_for_format("classic"))
+        assert all(view.length == 0 for view in views.values())
+
+    def test_excess_measures_how_far_a_run_has_gone_past_its_minimum(self):
+        """R12: surfaced entries are ranked by how far each run exceeds its
+        condition's minimum. `excess` is the raw signal a caller ranks by;
+        it is negative (not yet reportable) or zero/positive (reportable)."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        for gw in (1, 2, 3, 4, 5):
+            store.append_rows(gw, [make_history_row(gameweek=gw, manager_key=1, league_position=1)])
+
+        projection = rebuild_counters_through(store, 5)
+        view = manager_condition_views(projection, 1)["weeks_on_top"]  # min_run == 2
+
+        assert view.length == 5
+        assert view.excess == 3
+        assert view.is_reportable is True
+
+        below_minimum = manager_condition_views(rebuild_counters_through(store, 1), 1)["weeks_on_top"]
+        assert below_minimum.excess == -1
+        assert below_minimum.is_reportable is False
+
+
+# ---------------------------------------------------------------------------
+# Multi-iteration loop coverage (repo-wide Definition of Done)
+# ---------------------------------------------------------------------------
+
+
+class TestMultiIterationLoops:
+    """Every loop `_fold_gameweek` and `rebuild_counters_through` write is
+    exercised here with at least two iterations at once: multiple managers,
+    multiple conditions per manager, and multiple gameweeks."""
+
+    def test_three_gameweeks_three_managers_fold_independently(self):
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        for gw in (1, 2, 3):
+            store.append_rows(gw, [
+                make_history_row(gameweek=gw, manager_key=key, league_position=key)
+                for key in (1, 2, 3)
+            ])
+
+        projection = rebuild_counters_through(store, 3)
+
+        assert manager_condition_views(projection, 1)["weeks_on_top"].length == 3
+        for key in (2, 3):
+            assert manager_condition_views(projection, key)["weeks_on_top"].length == 0
+        assert sorted(all_condition_views(projection)) == [1, 2, 3]
