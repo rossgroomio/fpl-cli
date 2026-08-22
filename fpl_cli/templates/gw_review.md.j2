@@ -20,7 +20,9 @@
 {% if not recs_comparison.classic.captain_followed %}| _If followed_ | {{ recs_comparison.classic.rec_captain }} | - | {{ recs_comparison.classic.rec_captain_pts }} |
 {% endif %}
 ### Transfers
-{% if recs_comparison.classic.rec_roll and recs_comparison.classic.actual_roll %}
+{% if recs_comparison.classic.no_transfers_possible %}
+No transfers exist in GW1 - squads are bought pre-season, so there was no transfer decision to compare.
+{% elif recs_comparison.classic.rec_roll and recs_comparison.classic.actual_roll %}
 Recommended roll. Rolled. **Aligned.**
 {% elif recs_comparison.classic.rec_roll and not recs_comparison.classic.actual_roll %}
 Recommended roll but made transfers.
@@ -94,8 +96,12 @@ No waiver recommendations or transactions.
 {% if classic_league %}
 ## League
 **{{ classic_league.league_name }}**
+{% if classic_league.standings_pending %}
+Standings not published yet - FPL builds mini-league tables after the opening gameweek is finalised.
+{% elif classic_league.total_entries %}
 - **Position:** {{ classic_league.user_position }} of {{ classic_league.total_entries }}
 - **GW Points:** {{ classic_league.user_gw_points }} (Total: {{ "{:,}".format(classic_league.user_total) }})
+{% endif %}
 {% if classic_league.nearby_rivals %}
 ### Nearby Rivals (+/- 25 pts)
 | Pos | Manager | Total | Diff |

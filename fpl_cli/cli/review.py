@@ -27,6 +27,7 @@ from fpl_cli.services.fixture_predictions import (
     find_blank_gameweeks,
     find_double_gameweeks,
 )
+from fpl_cli.utils.time import format_deadline
 
 
 async def _review_resolve_gw(client, gameweek):
@@ -53,6 +54,16 @@ async def _review_resolve_gw(client, gameweek):
             if gw < 1:
                 error_console.print("[yellow]No completed gameweeks yet[/yellow]")
                 return None
+        elif gameweeks and not any(g.get("finished") for g in gameweeks):
+            # No current gameweek and nothing finished: the season has not
+            # kicked off yet, which is not the same as a lookup failure.
+            first_gw = min(gameweeks, key=lambda g: g["id"])
+            deadline = first_gw.get("deadline_time")
+            deadline_note = f" (GW1 deadline: {format_deadline(deadline)})" if deadline else ""
+            error_console.print(
+                f"[yellow]Season hasn't started - no completed gameweeks to review{deadline_note}[/yellow]"
+            )
+            return None
         else:
             error_console.print("[yellow]Could not determine current gameweek[/yellow]")
             return None
@@ -279,7 +290,9 @@ def review_command(
                 if recs is None:
                     error_console.print(f"\n[yellow]No recommendations file found at {recs_path}[/yellow]")
                 else:
-                    recs_comparison = _review_compare_recs(recs, collected_data, player_map, teams)
+                    recs_comparison = _review_compare_recs(
+                        recs, collected_data, player_map, teams, gameweek=gw,
+                    )
                     collected_data["recs_comparison"] = recs_comparison
 
                     # Print comparison summary to console
@@ -305,7 +318,9 @@ def review_command(
                                 f" ({rc['actual_captain_pts']} pts) [{d} delta]"
                             )
 
-                    if rc.get("rec_roll") and rc.get("actual_roll"):
+                    if rc.get("no_transfers_possible"):
+                        console.print("  Transfers: [dim]n/a - no transfers exist in GW1[/dim]")
+                    elif rc.get("rec_roll") and rc.get("actual_roll"):
                         console.print("  Transfers: [green]✓[/green] Rolled (aligned)")
                     elif rc.get("rec_roll") and not rc.get("actual_roll"):
                         console.print(

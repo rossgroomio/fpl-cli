@@ -5,9 +5,21 @@ from unittest.mock import AsyncMock
 import pytest
 
 from fpl_cli.cli._helpers import _format_pts_display, _gw_position_with_half, _live_player_stats
-from fpl_cli.cli._review_classic import _format_review_classic_player
+from fpl_cli.cli._review_classic import (
+    _format_review_classic_player,
+    _review_classic_league,
+    _review_classic_transfers,
+)
 from fpl_cli.cli._review_draft import _format_review_draft_player
-from fpl_cli.cli._review_summarisation import _names_match, _normalise_name, _review_compare_recs, _review_llm_summarise
+from fpl_cli.cli._review_summarisation import (
+    _classic_fines_league_data,
+    _classic_position_fields,
+    _format_classic_section,
+    _names_match,
+    _normalise_name,
+    _review_compare_recs,
+    _review_llm_summarise,
+)
 from fpl_cli.cli.preview import _preview_build_fixture_map
 from fpl_cli.cli.review import _review_resolve_gw
 
@@ -747,3 +759,155 @@ class TestNormaliseNameDiacritics:
 
     def test_strips_initial_after_diacritics(self):
         assert _normalise_name("L. Díaz") == "diaz"
+
+
+# ---------------------------------------------------------------------------
+# GW1 (opening gameweek) behaviour
+# ---------------------------------------------------------------------------
+
+class TestReviewResolveGwPreSeason:
+
+    async def test_no_current_gw_and_nothing_finished_reports_season_not_started(self, capsys):
+        client = _make_client(
+            gameweeks=[
+                {"id": 1, "finished": False, "deadline_time": "2026-08-21T17:30:00Z"},
+                {"id": 2, "finished": False, "deadline_time": "2026-08-28T17:30:00Z"},
+            ],
+            current_gw=None,
+        )
+        result = await _review_resolve_gw(client, gameweek=None)
+        assert result is None
+        out = capsys.readouterr().err
+        assert "Season hasn't started" in out
+        assert "Could not determine" not in out
+
+    async def test_no_current_gw_with_finished_gws_keeps_generic_message(self, capsys):
+        # Season over / API oddity: something finished, so this is not pre-season.
+        client = _make_client(
+            gameweeks=[{"id": 38, "finished": True}],
+            current_gw=None,
+        )
+        result = await _review_resolve_gw(client, gameweek=None)
+        assert result is None
+        assert "Could not determine current gameweek" in capsys.readouterr().err
+
+
+class TestReviewClassicTransfersGw1:
+
+    async def test_gw1_no_transfers_prints_season_opener_note(self, capsys):
+        client = AsyncMock()
+        client.get_manager_transfers = AsyncMock(return_value=[])
+        result = await _review_classic_transfers(client, 123, 1, {}, {}, {})
+        assert result == []
+        assert "bought pre-season" in capsys.readouterr().out
+
+    async def test_later_gw_no_transfers_stays_silent(self, capsys):
+        client = AsyncMock()
+        client.get_manager_transfers = AsyncMock(return_value=[])
+        result = await _review_classic_transfers(client, 123, 7, {}, {}, {})
+        assert result == []
+        assert capsys.readouterr().out == ""
+
+
+class TestReviewClassicLeaguePendingStandings:
+
+    async def test_empty_standings_flags_pending_and_omits_zero_league(self, capsys):
+        client = AsyncMock()
+        client.get_classic_league_standings = AsyncMock(return_value={
+            "league": {"name": "Office League"},
+            "new_entries": {"results": [{"entry": 123}]},
+            "standings": {"results": []},
+        })
+        result = await _review_classic_league(client, 999, 123, 1, 1)
+        assert result == {"league_name": "Office League", "standings_pending": True}
+        out = capsys.readouterr().out
+        assert "standings not published yet" in out
+        # No hollow performer tables when there are no entries to rank
+        assert "Best GW Performers" not in out
+        assert "Worst GW Performers" not in out
+
+
+class TestClassicPositionFields:
+
+    def test_populated_league_annotates_position(self):
+        fields = _classic_position_fields({
+            "user_gw_rank": "3", "user_position": 5, "total_entries": 11,
+        })
+        assert fields["total"] == 11
+        assert fields["position"] == 5
+        assert "TOP HALF" in fields["gw_position"]
+
+    def test_pending_standings_reports_unknown(self):
+        fields = _classic_position_fields({"league_name": "L", "standings_pending": True})
+        assert fields == {"gw_position": "unknown", "position": "unknown", "total": "unknown"}
+
+    def test_missing_league_reports_unknown(self):
+        assert _classic_position_fields(None)["total"] == "unknown"
+
+
+class TestClassicFinesLeagueData:
+
+    def test_league_points_preferred_when_present(self):
+        league = {"user_gw_points": 44, "worst_performers": []}
+        entry = {"points": 56, "transfers_cost": 0}
+        assert _classic_fines_league_data(league, entry) is league
+
+    def test_falls_back_to_entry_points_when_standings_pending(self):
+        entry = {"points": 56, "transfers_cost": 4}
+        result = _classic_fines_league_data({"league_name": "L", "standings_pending": True}, entry)
+        assert result is not None
+        assert result["user_gw_points"] == 56
+        assert result["user_gw_net_points"] == 52
+        assert result["league_name"] == "L"
+
+    def test_falls_back_when_league_missing_entirely(self):
+        result = _classic_fines_league_data(None, {"points": 31, "transfers_cost": 0})
+        assert result == {"user_gw_points": 31, "user_gw_net_points": 31}
+
+    def test_no_entry_summary_leaves_league_data_alone(self):
+        assert _classic_fines_league_data(None, None) is None
+
+
+class TestFormatClassicSectionTransfers:
+
+    def test_gw1_explains_transfers_do_not_exist(self):
+        result = _format_classic_section([], [], {}, [], gameweek=1)
+        assert "transfers do not exist in GW1" in result["transfers"]
+        assert "rolled" in result["transfers"]
+
+    def test_later_gw_keeps_no_transfers_wording(self):
+        result = _format_classic_section([], [], {}, [], gameweek=9)
+        assert result["transfers"] == "No transfers this week"
+
+    def test_transfers_present_unaffected_by_gameweek(self):
+        transfers = [{
+            "player_out": "Miley", "player_out_points": 2,
+            "player_in": "Iwobi", "player_in_points": 9,
+            "net": 7, "verdict": "✓ Hit",
+        }]
+        result = _format_classic_section([], [], {}, transfers, gameweek=1)
+        assert "Iwobi" in result["transfers"]
+
+
+class TestReviewCompareRecsGw1:
+
+    def test_gw1_does_not_score_absent_transfers_as_a_roll(self):
+        recs = _make_recs(roll=True)
+        collected = _make_collected(classic_transfers=[])
+        result = _review_compare_recs(recs, collected, {}, {}, gameweek=1)
+        assert result["classic"]["no_transfers_possible"] is True
+        assert result["classic"]["rec_roll"] is False
+        assert result["classic"]["actual_roll"] is False
+
+    def test_later_gw_still_scores_a_roll_as_aligned(self):
+        recs = _make_recs(roll=True)
+        collected = _make_collected(classic_transfers=[])
+        result = _review_compare_recs(recs, collected, {}, {}, gameweek=12)
+        assert result["classic"]["no_transfers_possible"] is False
+        assert result["classic"]["rec_roll"] is True
+        assert result["classic"]["actual_roll"] is True
+
+    def test_gameweek_omitted_keeps_previous_behaviour(self):
+        recs = _make_recs(roll=True)
+        result = _review_compare_recs(recs, _make_collected(), {}, {})
+        assert result["classic"]["actual_roll"] is True

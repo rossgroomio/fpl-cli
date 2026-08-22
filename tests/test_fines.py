@@ -105,8 +105,23 @@ class TestBelowThreshold:
         results = evaluate_fines(_config(draft=[THRESHOLD_RULE]), "draft", league, [])
         assert results[0].triggered is False
 
-    def test_no_league_data_scores_zero(self):
+    def test_no_league_data_does_not_fine(self):
+        """An unknown score must not be read as a 0-point score."""
         results = evaluate_fines(_config(draft=[THRESHOLD_RULE]), "draft", None, [])
+        assert results[0].triggered is False
+        assert results[0].message == "No league data available."
+
+    def test_league_data_without_points_does_not_fine(self):
+        """GW1 before the first standings build: a league name but no scores."""
+        league: FinesLeagueData = {"league_name": "Office League"}  # type: ignore[typeddict-unknown-key]
+        results = evaluate_fines(_config(draft=[THRESHOLD_RULE]), "draft", league, [])
+        assert results[0].triggered is False
+        assert results[0].message == "No league data available."
+
+    def test_zero_points_still_fines(self):
+        """A genuine 0 is still a fine - only an absent score is exempt."""
+        league: FinesLeagueData = {"user_gw_points": 0}
+        results = evaluate_fines(_config(draft=[THRESHOLD_RULE]), "draft", league, [])
         assert results[0].triggered is True
         assert "0 pts" in results[0].message
 

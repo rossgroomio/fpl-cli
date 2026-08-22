@@ -122,14 +122,18 @@ def _eval_below_threshold(
     if rule.threshold is None:
         msg = "below-threshold rule requires a threshold value"
         raise ValueError(msg)
+
+    # An unknown score is not a zero score. Before the first standings build of
+    # the season (and whenever a league fetch fails) the caller has no points to
+    # hand over -- defaulting to 0 fined the user for a score nobody measured.
+    if not league_data or "user_gw_points" not in league_data:
+        return FineResult(rule_type=rule.type, triggered=False, message="No league data available.")
+
     if use_net_points:
-        user_pts = (
-            league_data.get("user_gw_net_points", league_data.get("user_gw_points", 0))
-            if league_data else 0
-        )
+        user_pts = league_data.get("user_gw_net_points", league_data["user_gw_points"])
         pts_label = "net pts"
     else:
-        user_pts = league_data.get("user_gw_points", 0) if league_data else 0
+        user_pts = league_data["user_gw_points"]
         pts_label = "pts"
 
     if user_pts < rule.threshold:

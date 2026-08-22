@@ -348,6 +348,25 @@ _EDGE_CASES = """\
 - If data for one format is missing, analyse only the format with data
 </edge_cases>"""
 
+_EDGE_CASES_OPENING_GAMEWEEK = """\
+<edge_cases>
+- Classic has no transfers in the opening gameweek and no transfer was rolled or held. Judge the squad as a pre-season build, not as a week of restraint
+- If no waivers processed in Draft, note "No waivers this week" in Draft Verdict
+- If data for one format is missing, analyse only the format with data
+- If the league standings are reported as unavailable, say the table is not out rather than inventing or inferring a position
+</edge_cases>"""
+
+_SEASON_CONTEXT_OPENING_GAMEWEEK = """\
+<season_context>
+This is Gameweek 1 - the opening gameweek of the season. It differs from every other review:
+- No transfers exist. Squads are bought pre-season and the first free transfer arrives in GW2. There was no transfer to make, roll, hold or take a hit on, so never praise or criticise transfer activity, restraint or "keeping the free transfer"
+- There is no previous gameweek. Overall Rank equals this week's rank, no rank has moved, and no player has form, momentum or a run of games behind them. Never reference a rank change, a previous score, or last week
+- Everything you see is the result of one match per team. Treat single-match evidence as thin: a haul or a blank is a data point, not a verdict on a player
+- The squad itself is the decision under review. Assess selection, captaincy and squad construction
+- For "Next Week", the live decision is the manager's first transfer of the season (and their first waiver in Draft)
+</season_context>
+"""
+
 # User prompt template (data sections - no fine_results, that's added conditionally)
 _USER_PROMPT_TEMPLATE = """\
 Analyse my Gameweek {gameweek} performance across both Classic and Draft formats.
@@ -362,6 +381,7 @@ Authoritative fixture counts for this gameweek (use this, NOT the community narr
 - Blank Gameweek teams (did not play): {bgw_teams_line}
 - Every other team played ONCE (single gameweek).
 </gw_fixtures>
+{season_context}
 
 <classic_data>
 ## Team Performance
@@ -380,8 +400,7 @@ Hindsight Best Captain: {classic_captain_hindsight}
 
 ## League Standing
 League: {classic_league_name}
-GW Position: {classic_gw_position} of {classic_total} ({classic_points_qualifier}this gameweek)
-Overall League Position: {classic_position} of {classic_total}
+{classic_league_position_block}
 {classic_rivals}
 
 ## Worst GW Performers{classic_performers_header_suffix}
@@ -409,7 +428,9 @@ Overall League Position: {draft_position} of {draft_total}
 </draft_data>"""
 
 
-def _build_system_prompt(*, has_fines: bool, use_net_points: bool = False) -> str:
+def _build_system_prompt(
+    *, has_fines: bool, use_net_points: bool = False, is_opening_gameweek: bool = False,
+) -> str:
     """Assemble the synthesis system prompt with conditional fine sections."""
     never_lines = [_HARD_CONSTRAINTS_BASE_NEVER]
     if has_fines:
@@ -447,7 +468,7 @@ def _build_system_prompt(*, has_fines: bool, use_net_points: bool = False) -> st
         context,
         tone,
         output_format,
-        _EDGE_CASES,
+        _EDGE_CASES_OPENING_GAMEWEEK if is_opening_gameweek else _EDGE_CASES,
     ]
     return "\n\n".join(parts)
 
@@ -467,8 +488,8 @@ def get_review_synthesis_prompt(
     classic_transfers: str,
     classic_league_name: str,
     classic_gw_position: int | str,
-    classic_position: int,
-    classic_total: int,
+    classic_position: int | str,
+    classic_total: int | str,
     classic_rivals: str,
     classic_worst_performers: str,
     classic_transfer_impact: str | None,
@@ -499,8 +520,23 @@ def get_review_synthesis_prompt(
     else:
         active_chip_line = ""
 
+    if classic_total in (0, "unknown", None):
+        classic_league_position_block = (
+            "League standings unavailable for this review - no classic league table was"
+            " provided. Do not state, infer or narrate a league position for Classic."
+        )
+    else:
+        classic_league_position_block = (
+            f"GW Position: {classic_gw_position} of {classic_total}"
+            f" ({'by net points ' if use_net_points else 'by points '}this gameweek)\n"
+            f"Overall League Position: {classic_position} of {classic_total}"
+        )
+
     has_fines = bool(fine_results)
-    system_prompt = _build_system_prompt(has_fines=has_fines, use_net_points=use_net_points)
+    is_opening_gameweek = gameweek == 1
+    system_prompt = _build_system_prompt(
+        has_fines=has_fines, use_net_points=use_net_points, is_opening_gameweek=is_opening_gameweek,
+    )
 
     user_parts = [
         _USER_PROMPT_TEMPLATE.format(
@@ -517,17 +553,15 @@ def get_review_synthesis_prompt(
             classic_players=classic_players,
             classic_transfers=classic_transfers,
             classic_league_name=classic_league_name,
-            classic_gw_position=classic_gw_position,
-            classic_position=classic_position,
-            classic_total=classic_total,
+            classic_league_position_block=classic_league_position_block,
             classic_rivals=classic_rivals,
             classic_worst_performers=classic_worst_performers,
             classic_transfer_impact=classic_transfer_impact or "",
-            classic_points_qualifier="by net points " if use_net_points else "by points ",
             classic_performers_header_suffix=" (by Net Points)" if use_net_points else "",
             active_chip_line=active_chip_line,
             dgw_teams_line=dgw_teams or "none this gameweek",
             bgw_teams_line=bgw_teams or "none this gameweek",
+            season_context=_SEASON_CONTEXT_OPENING_GAMEWEEK if is_opening_gameweek else "",
             draft_points=draft_points,
             draft_league_name=draft_league_name,
             draft_players=draft_players,
