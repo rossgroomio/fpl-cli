@@ -1279,6 +1279,19 @@ class TestConsoleUnavailable:
         assert "position unavailable" in out
         assert "total unavailable" in out
 
+    def test_two_managers_each_missing_a_different_field_are_both_named(self, capsys: pytest.CaptureFixture[str]):
+        data = _recap_data(managers=[
+            _manager(name="Alice", entry_id=1, total_points=None, overall_rank=1, previous_rank=1),
+            _manager(name="Bob", entry_id=2, total_points=200, overall_rank=None),
+        ])
+        from fpl_cli.cli.league_recap import _render_console_highlights
+
+        _render_console_highlights(data, None)
+
+        out = _stdout(capsys)
+        assert "Alice: total unavailable" in out
+        assert "Bob: position unavailable" in out
+
     def test_a_fully_resolved_manager_is_not_listed_as_unavailable(self, capsys: pytest.CaptureFixture[str]):
         from fpl_cli.cli.league_recap import _render_console_highlights
 
@@ -1566,6 +1579,73 @@ class TestLeagueRecapJsonEnvelope:
         payload = json.loads(result.stdout)
         coverage = payload["metadata"]["coverage"]
         assert any(c["gameweek"] == 5 and c["tier_counts"].get("detailed") == 1 for c in coverage)
+
+    def test_multiple_managers_and_gameweeks_all_serialize_into_the_payload(self):
+        """Exercises the serialization loops (`_serialize_coverage`,
+        `_serialize_notes_pack`, the per-manager payload list) over more
+        than one item each, not just the single-manager/single-gameweek
+        happy path the other tests use."""
+        store = _store(fpl_format="classic", league_id=42)
+        for gw in (1, 2, 3, 4):
+            store.append_rows(gw, [
+                make_history_row(
+                    season=SEASON, fpl_format="classic", league_id=42, gameweek=gw,
+                    manager_key=1, manager_name="Alice", league_position=1, gw_rank=1,
+                ),
+                make_history_row(
+                    season=SEASON, fpl_format="classic", league_id=42, gameweek=gw,
+                    manager_key=2, manager_name="Bob", league_position=2, gw_rank=2,
+                ),
+            ])
+
+        result = _invoke_recap(_recap_data(
+            gameweek=5,
+            managers=[
+                _manager(name="Alice", entry_id=1, overall_rank=1, previous_rank=1, total_points=300),
+                _manager(name="Bob", entry_id=2, overall_rank=2, previous_rank=2, total_points=280),
+            ],
+            cohort=_cohort((1, "Alice", 1, 60, 300), (2, "Bob", 2, 50, 280)),
+        ), ["--format", "json"])
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+
+        manager_names = {row["manager_name"] for row in payload["data"]}
+        assert manager_names == {"Alice", "Bob"}
+
+        coverage_gameweeks = {c["gameweek"] for c in payload["metadata"]["coverage"]}
+        assert coverage_gameweeks == {1, 2, 3, 4, 5}
+
+        pack = payload["metadata"]["notes_pack"]
+        streak_managers = {entry["manager_name"] for entry in pack["entries"]}
+        assert "Alice" in streak_managers
+
+    def test_a_partial_coverage_run_reports_tiers_and_unknowns_per_gameweek(self):
+        """U11's own Definition of Done row: the payload parses cleanly on a
+        partial-coverage run too, with manager data still present -- a mix
+        of coarse and unknown-status gameweeks alongside detailed ones."""
+        store = _store(fpl_format="classic", league_id=42)
+        store.append_rows(1, [make_history_row(
+            season=SEASON, fpl_format="classic", league_id=42, gameweek=1,
+            manager_key=1, manager_name="Alice", tier="coarse",
+        )])
+        store.append_rows(2, [make_history_row(
+            season=SEASON, fpl_format="classic", league_id=42, gameweek=2,
+            manager_key=1, manager_name="Alice", capture_status="unknown",
+        )])
+
+        result = _invoke_recap(
+            _recap_data(managers=[_manager(name="Alice", entry_id=1)]), ["--format", "json"],
+        )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        assert {row["manager_name"] for row in payload["data"]} == {"Alice"}
+
+        by_gw = {c["gameweek"]: c for c in payload["metadata"]["coverage"]}
+        assert by_gw[1]["tier_counts"] == {"coarse": 1}
+        assert by_gw[2]["unknown_count"] == 1
+        assert by_gw[5]["tier_counts"] == {"detailed": 1}
 
     def test_dry_run_json_includes_the_editorial(self):
         result = _invoke_recap(_recap_data(), ["--format", "json", "--dry-run"])
