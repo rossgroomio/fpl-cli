@@ -1039,6 +1039,22 @@ class TestReconcileClassicHeadlineNumbers:
         standings = [{"entry": 1, "event_total": 50, "total": 500}]
         _reconcile_classic_headline_numbers(managers, standings)  # must not raise
 
+    def test_hit_taker_netted_in_standings_is_not_a_mapping_failure(self, caplog):
+        """The FPL league table displays a gameweek net of the hit. A
+        standings row exactly the hit lower than entry_history is that same
+        gross/net difference, not the wrong field, and must not abort."""
+        managers = [_make_manager(entry_id=1, gw_points=50, gross_points=50, transfer_cost=4, total_points=500)]
+        standings = [{"entry": 1, "event_total": 46, "total": 500}]
+        with caplog.at_level(logging.INFO, logger="fpl_cli.cli._league_recap_data"):
+            _reconcile_classic_headline_numbers(managers, standings)  # must not raise
+        assert "net of the hit" in caplog.text
+
+    def test_gap_that_is_not_the_hit_still_raises(self):
+        managers = [_make_manager(entry_id=1, gw_points=50, gross_points=50, transfer_cost=4, total_points=500)]
+        standings = [{"entry": 1, "event_total": 30, "total": 500}]
+        with pytest.raises(RecapReconciliationError):
+            _reconcile_classic_headline_numbers(managers, standings)
+
     def test_cumulative_total_divergence_warns_not_raises(self, caplog):
         managers = [_make_manager(entry_id=1, gw_points=50, gross_points=50, transfer_cost=0, total_points=120)]
         standings = [{"entry": 1, "event_total": 50, "total": 500}]
@@ -1150,24 +1166,148 @@ class TestClassicLeaguePosition:
         assert by_name["Alice"]["total_points"] == 200
 
 
+class TestClassicPositionCohort:
+    async def test_live_gw_failed_fetch_does_not_renumber_the_managers_below(self):
+        """A manager whose picks fetch fails still holds their place in the
+        real table; on a live capture the standings row stands in for them so
+        everyone below keeps their true position."""
+        class _RaisingClient(_FakeClassicClient):
+            async def get_manager_picks(self, entry_id, gameweek):
+                if entry_id == 2:
+                    raise RuntimeError("boom")
+                return await super().get_manager_picks(entry_id, gameweek)
+
+        standings = [
+            {"entry": 1, "player_name": "Alice", "event_total": 50, "total": 500},
+            {"entry": 2, "player_name": "Bob", "event_total": 40, "total": 450},
+            {"entry": 3, "player_name": "Cara", "event_total": 30, "total": 400},
+        ]
+        picks = {
+            1: _picks_response(points=50, total_points=500),
+            3: _picks_response(points=30, total_points=400),
+        }
+        data = await collect_classic_recap_data(
+            _RaisingClient(_standings_response(standings), picks),
+            {"fpl": {"classic_league_id": 1}}, gw=10,
+            live_stats={}, player_map={}, teams={}, is_live_gw=True,
+        )
+        by_name = {m["manager_name"]: m for m in data["managers"]}
+        assert by_name["Alice"]["overall_rank"] == 1
+        # Cara is 3rd, not promoted to 2nd by Bob's absence.
+        assert by_name["Cara"]["overall_rank"] == 3
+
+    async def test_replay_failed_fetch_leaves_positions_unavailable(self):
+        """On a replay the standings belong to a later gameweek, so they
+        cannot stand in for the missing manager. Rather than rank one
+        current-state total against point-in-time ones, no position is
+        derived at all."""
+        class _RaisingClient(_FakeClassicClient):
+            async def get_manager_picks(self, entry_id, gameweek):
+                if entry_id == 2:
+                    raise RuntimeError("boom")
+                return await super().get_manager_picks(entry_id, gameweek)
+
+        standings = [
+            {"entry": 1, "player_name": "Alice", "event_total": 50, "total": 500},
+            {"entry": 2, "player_name": "Bob", "event_total": 40, "total": 450},
+        ]
+        picks = {1: _picks_response(points=50, total_points=300)}
+        data = await collect_classic_recap_data(
+            _RaisingClient(_standings_response(standings), picks),
+            {"fpl": {"classic_league_id": 1}}, gw=10,
+            live_stats={}, player_map={}, teams={}, is_live_gw=False,
+        )
+        alice = data["managers"][0]
+        assert "overall_rank" not in alice
+        assert "previous_rank" not in alice
+
+    async def test_replay_with_a_complete_cohort_still_derives_positions(self):
+        standings = [
+            {"entry": 1, "player_name": "Alice", "event_total": 50, "total": 500},
+            {"entry": 2, "player_name": "Bob", "event_total": 40, "total": 450},
+        ]
+        picks = {
+            1: _picks_response(points=50, total_points=300),
+            2: _picks_response(points=40, total_points=320),
+        }
+        data = await collect_classic_recap_data(
+            _FakeClassicClient(_standings_response(standings), picks),
+            {"fpl": {"classic_league_id": 1}}, gw=10,
+            live_stats={}, player_map={}, teams={}, is_live_gw=False,
+        )
+        by_name = {m["manager_name"]: m for m in data["managers"]}
+        assert by_name["Bob"]["overall_rank"] == 1
+        assert by_name["Alice"]["overall_rank"] == 2
+
+    async def test_gameweek_before_league_start_leaves_totals_unavailable(self):
+        """Replaying GW3 of a league that started at GW5: there is no league
+        table to place anyone on, and the GW4 baseline would drive every
+        total negative and invert the order."""
+        standings = [
+            {"entry": 1, "player_name": "Alice", "event_total": 50, "total": 200},
+            {"entry": 2, "player_name": "Bob", "event_total": 40, "total": 210},
+        ]
+        picks = {
+            1: _picks_response(points=50, total_points=150),
+            2: _picks_response(points=40, total_points=140),
+        }
+        history_calls: list[int] = []
+
+        class _TrackedClient(_FakeClassicClient):
+            async def get_manager_history(self, entry_id):
+                history_calls.append(entry_id)
+                return await super().get_manager_history(entry_id)
+
+        client = _TrackedClient(
+            _standings_response(standings, start_event=5), picks,
+            history_by_entry={1: {"current": [{"event": 4, "total_points": 300}]}},
+        )
+        data = await collect_classic_recap_data(
+            client, {"fpl": {"classic_league_id": 1}}, gw=3,
+            live_stats={}, player_map={}, teams={}, is_live_gw=False,
+        )
+        assert history_calls == []
+        for m in data["managers"]:
+            assert "total_points" not in m
+            assert "overall_rank" not in m
+
+
 class TestApplyLeagueStartOffset:
-    async def test_history_fetch_failure_keeps_season_wide_total(self):
+    async def test_history_fetch_failure_drops_the_unscoped_total(self):
+        """An un-offset season-wide total is on a different scale to the
+        league-scoped ones: keeping it would rank that manager top and shift
+        everyone below. It is dropped instead."""
         class _FailingHistoryClient:
             async def get_manager_history(self, entry_id):
                 raise RuntimeError("network blip")
 
         managers = [_make_manager(entry_id=1, total_points=500)]
         await _apply_league_start_offset(_FailingHistoryClient(), managers, start_event=5)
-        assert managers[0]["total_points"] == 500
+        assert "total_points" not in managers[0]
 
-    async def test_missing_baseline_row_keeps_season_wide_total(self):
+    async def test_missing_baseline_row_drops_the_unscoped_total(self):
         class _NoBaselineClient:
             async def get_manager_history(self, entry_id):
                 return {"current": [{"event": 6, "total_points": 999}]}
 
         managers = [_make_manager(entry_id=1, total_points=500)]
         await _apply_league_start_offset(_NoBaselineClient(), managers, start_event=5)
-        assert managers[0]["total_points"] == 500
+        assert "total_points" not in managers[0]
+
+    async def test_one_failure_does_not_disturb_the_offset_managers(self):
+        class _PartialClient:
+            async def get_manager_history(self, entry_id):
+                if entry_id == 2:
+                    raise RuntimeError("network blip")
+                return {"current": [{"event": 4, "total_points": 300}]}
+
+        managers = [
+            _make_manager(name="Alice", entry_id=1, total_points=500),
+            _make_manager(name="Bob", entry_id=2, total_points=900),
+        ]
+        await _apply_league_start_offset(_PartialClient(), managers, start_event=5)
+        assert managers[0]["total_points"] == 200
+        assert "total_points" not in managers[1]
 
 
 class TestStandingsMovementOptionalTotal:
@@ -1336,6 +1476,83 @@ class TestDraftPointInTimeReconstruction:
         squad_player = data["managers"][0]["squad"][0]
         assert squad_player["unmatched"] is True
         assert squad_player["points"] == 0
+
+    async def test_unmatched_player_shortfall_does_not_abort_the_recap(self):
+        """One name/team mapping miss makes the computed sum short by
+        construction. That is a known gap in the mapping, not the wrong
+        field, so the live gameweek falls back to the standings number
+        instead of killing the whole recap."""
+        matched = make_draft_player(id=900, web_name="Star", team=1, element_type=3)
+        mystery = make_draft_player(id=901, web_name="Mystery", team=1, element_type=3)
+        main_player = make_player(id=5, web_name="Star", team_id=1)
+        league_details = self._league_details(
+            standings=[{"league_entry": 10, "event_total": 70, "total": 500}],
+            entries=[{"id": 10, "entry_id": 1, "player_first_name": "A", "player_last_name": "B"}],
+        )
+        picks = {1: {"picks": [
+            {"element": 900, "position": 1},
+            {"element": 901, "position": 2},
+        ], "subs": []}}
+        client = self._make_draft_client(league_details, [matched, mystery], [], picks)
+
+        with patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=client):
+            data = await collect_draft_recap_data(
+                {"fpl": {"draft_league_id": 1}}, gw=15, live_stats={5: {"total_points": 52}},
+                players=[main_player], teams={}, is_live_gw=True,
+            )
+        m = data["managers"][0]
+        assert m["gw_points"] == 70
+        assert [p["unmatched"] for p in m["squad"]] == [False, True]
+
+    async def test_live_gw_keeps_the_leagues_own_rank_over_a_derived_one(self):
+        """Draft h2h scores league points, so ties on `total` are common and
+        the API breaks them on its own tiebreaks. A live capture uses the
+        league's rank/last_rank rather than re-sorting `total`."""
+        draft_player = make_draft_player(id=900, web_name="Star", team=1, element_type=3)
+        main_player = make_player(id=5, web_name="Star", team_id=1)
+        league_details = self._league_details(
+            standings=[
+                {"league_entry": 10, "event_total": 52, "total": 6, "rank": 2, "last_rank": 1},
+                {"league_entry": 11, "event_total": 52, "total": 6, "rank": 1, "last_rank": 3},
+            ],
+            entries=[
+                {"id": 10, "entry_id": 1, "player_first_name": "A", "player_last_name": "B"},
+                {"id": 11, "entry_id": 2, "player_first_name": "C", "player_last_name": "D"},
+            ],
+        )
+        picks = {
+            1: {"picks": [{"element": 900, "position": 1}], "subs": []},
+            2: {"picks": [{"element": 900, "position": 1}], "subs": []},
+        }
+        client = self._make_draft_client(league_details, [draft_player], [], picks)
+
+        with patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=client):
+            data = await collect_draft_recap_data(
+                {"fpl": {"draft_league_id": 1}}, gw=15, live_stats={5: {"total_points": 52}},
+                players=[main_player], teams={}, is_live_gw=True,
+            )
+        by_name = {m["manager_name"]: m for m in data["managers"]}
+        assert by_name["A B"]["overall_rank"] == 2
+        assert by_name["C D"]["overall_rank"] == 1
+        assert by_name["A B"]["previous_rank"] == 1
+        assert by_name["C D"]["previous_rank"] == 3
+
+    async def test_standings_without_ranks_still_derive_movement(self):
+        draft_player = make_draft_player(id=900, web_name="Star", team=1, element_type=3)
+        main_player = make_player(id=5, web_name="Star", team_id=1)
+        league_details = self._league_details(
+            standings=[{"league_entry": 10, "event_total": 52, "total": 500}],
+            entries=[{"id": 10, "entry_id": 1, "player_first_name": "A", "player_last_name": "B"}],
+        )
+        picks = {1: {"picks": [{"element": 900, "position": 1}], "subs": []}}
+        client = self._make_draft_client(league_details, [draft_player], [], picks)
+
+        with patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=client):
+            data = await collect_draft_recap_data(
+                {"fpl": {"draft_league_id": 1}}, gw=15, live_stats={5: {"total_points": 52}},
+                players=[main_player], teams={}, is_live_gw=True,
+            )
+        assert data["managers"][0]["previous_rank"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -1726,6 +1943,44 @@ class TestEvaluateLeagueFines:
 
 
 # ---------------------------------------------------------------------------
+# CLI stop condition
+# ---------------------------------------------------------------------------
+
+
+class TestLeagueRecapCommandStopCondition:
+    def test_reconciliation_failure_exits_non_zero(self):
+        """A reconciliation failure is a stop condition, so the command must
+        exit non-zero -- a scripted caller (gw-prep) has no other way to tell
+        it apart from a successful run."""
+        from click.testing import CliRunner
+
+        from fpl_cli.cli.league_recap import league_recap_command
+
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        client.get_players = AsyncMock(return_value=[])
+        client.get_teams = AsyncMock(return_value=[])
+        client.get_gameweek_live = AsyncMock(return_value={"elements": []})
+        client.get_fixtures = AsyncMock(return_value=[])
+        client.get_gameweeks = AsyncMock(return_value=[{"id": 5, "finished": True}])
+
+        with (
+            patch("fpl_cli.cli.league_recap.load_settings", return_value={"fpl": {"classic_league_id": 1}}),
+            patch("fpl_cli.api.fpl.FPLClient", return_value=client),
+            patch("fpl_cli.cli.review._review_resolve_gw", AsyncMock(return_value={"gw": 5})),
+            patch(
+                "fpl_cli.cli._league_recap_data.collect_classic_recap_data",
+                AsyncMock(side_effect=RecapReconciliationError("numbers disagree")),
+            ),
+        ):
+            result = CliRunner().invoke(league_recap_command, [])
+
+        assert result.exit_code != 0
+        assert "numbers disagree" in result.output
+
+
+# ---------------------------------------------------------------------------
 # LLM prompt formatting
 # ---------------------------------------------------------------------------
 
@@ -1767,6 +2022,18 @@ class TestPromptFormatting:
         assert "Alice" in text
         assert "Bob" in text
         assert "|" in text  # markdown table
+
+    def test_standings_context_sorts_unranked_last_like_the_report(self):
+        """A manager with no derivable position sorts after every ranked one
+        in both the prompt table and the rendered standings block -- the two
+        must not disagree on order."""
+        managers = [
+            _make_manager(name="Ghost", entry_id=1, gw_points=60, total_points=None,
+                          overall_rank=None, previous_rank=None),
+            _make_manager(name="Alice", entry_id=2, gw_points=50, overall_rank=1, previous_rank=1),
+        ]
+        text = format_recap_standings_context(_make_recap_data(managers=managers))
+        assert text.index("Alice") < text.index("Ghost")
 
     def test_standings_context_shows_chip_for_classic(self):
         managers = [

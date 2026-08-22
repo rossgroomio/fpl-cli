@@ -133,8 +133,10 @@ def league_recap_command(
                         is_live_gw=is_live_gw,
                     )
             except RecapReconciliationError as e:
-                console.print(f"[red]Error: {e}[/red]")
-                return
+                # A stop condition, not a soft skip: exit non-zero so a
+                # scripted caller (the gw-prep skill) sees the failure
+                # rather than an empty but successful run.
+                raise click.ClickException(str(e)) from e
 
             # Add context metadata
             collected_data["is_bgw"] = is_bgw  # type: ignore[typeddict-unknown-key]
@@ -223,11 +225,18 @@ def _render_console_highlights(data: LeagueRecapData) -> None:
         for f in fines:
             console.print(f"  [red]{f['manager_name']}:[/red] {f['message']}")
 
-    # Standings movement
-    movers = [m for m in managers if m.get("previous_rank", 0) != m.get("overall_rank", 0)]
+    # Standings movement. A manager missing either position has no movement
+    # to report -- see _assign_point_in_time_positions, which leaves both
+    # unset rather than deriving a position it cannot stand behind.
+    movers = [
+        m for m in managers
+        if m.get("previous_rank") is not None
+        and m.get("overall_rank") is not None
+        and m["previous_rank"] != m["overall_rank"]
+    ]
     if movers:
         console.print("\n[bold]Standings Movement:[/bold]")
-        for m in sorted(movers, key=lambda x: x.get("previous_rank", 0) - x.get("overall_rank", 0)):
+        for m in sorted(movers, key=lambda x: x["previous_rank"] - x["overall_rank"]):
             prev = m["previous_rank"]
             curr = m["overall_rank"]
             diff = prev - curr

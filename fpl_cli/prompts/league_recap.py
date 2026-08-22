@@ -125,6 +125,11 @@ def format_recap_awards_context(data: LeagueRecapData) -> str:
     return "\n".join(lines) if lines else "No notable awards."
 
 
+# Sort-only sentinel for a manager with no derivable league position --
+# larger than any real rank, so they sort after every ranked manager.
+_UNRANKED = float("inf")
+
+
 def format_recap_standings_context(data: LeagueRecapData) -> str:
     """Format standings with movement for the LLM prompt."""
     managers = data.get("managers", [])
@@ -133,7 +138,10 @@ def format_recap_standings_context(data: LeagueRecapData) -> str:
 
     is_classic = data.get("fpl_format") == "classic"
     lines = ["| Pos | Prev | Manager | GW Pts | Total |", "|-----|------|---------|--------|-------|"]
-    for m in sorted(managers, key=lambda x: x.get("overall_rank", 0)):
+    # Sentinel matches report.py's standings block: a manager with no
+    # derivable position sorts after every ranked one, so the prompt table
+    # and the rendered report agree on order in a mixed cohort.
+    for m in sorted(managers, key=lambda x: x.get("overall_rank") or _UNRANKED):
         prev = m.get("previous_rank", "?")
         curr = m.get("overall_rank", "?")
         name = m["manager_name"]
