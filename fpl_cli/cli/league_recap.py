@@ -93,6 +93,15 @@ def league_recap_command(
             is_bgw = len(raw_fixtures) < 10
             is_dgw = len(raw_fixtures) > 10
 
+            # Which clubs had no fixture, so a recorded squad can tell a
+            # player who blanked apart from one who never kicked a ball. Same
+            # threading shape `review` uses for its per-format helpers.
+            from fpl_cli.services.fixture_predictions import find_blank_gameweeks
+
+            teams_list = list(teams.values())
+            blank_gws = find_blank_gameweeks({gw: raw_fixtures}, teams_list, gw, gw)
+            bgw_team_ids = frozenset(t["team_id"] for t in blank_gws.get(gw, []))
+
             # Get next GW deadline
             from datetime import datetime, timedelta
 
@@ -125,12 +134,13 @@ def league_recap_command(
                     collected_data = await collect_draft_recap_data(
                         settings=settings, gw=gw, live_stats=live_stats,
                         players=players, teams=teams, is_live_gw=is_live_gw,
+                        bgw_team_ids=bgw_team_ids,
                     )
                 else:
                     collected_data = await collect_classic_recap_data(
                         client=client, settings=settings, gw=gw,
                         live_stats=live_stats, player_map=player_map, teams=teams,
-                        is_live_gw=is_live_gw,
+                        is_live_gw=is_live_gw, bgw_team_ids=bgw_team_ids,
                     )
             except RecapReconciliationError as e:
                 # A stop condition, not a soft skip: exit non-zero so a
@@ -139,8 +149,8 @@ def league_recap_command(
                 raise click.ClickException(str(e)) from e
 
             # Add context metadata
-            collected_data["is_bgw"] = is_bgw  # type: ignore[typeddict-unknown-key]
-            collected_data["is_dgw"] = is_dgw  # type: ignore[typeddict-unknown-key]
+            collected_data["is_bgw"] = is_bgw
+            collected_data["is_dgw"] = is_dgw
             collected_data["season_length"] = TOTAL_GAMEWEEKS  # type: ignore[typeddict-unknown-key]
             if next_deadline:
                 collected_data["next_deadline"] = next_deadline  # type: ignore[typeddict-unknown-key]

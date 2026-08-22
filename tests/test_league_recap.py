@@ -2418,3 +2418,230 @@ class TestClassicPickFlags:
             )
             assert is_bbp is False
             assert contributed is False
+
+
+# ---------------------------------------------------------------------------
+# U4: ledger row model and collector contract
+# ---------------------------------------------------------------------------
+
+
+class TestCollectorLedgerContract:
+    """The collector must carry everything capture needs to build a row."""
+
+    async def test_cohort_holds_every_standings_row_including_failed_fetches(self):
+        class _RaisingClient(_FakeClassicClient):
+            async def get_manager_picks(self, entry_id, gameweek):
+                if entry_id == 2:
+                    raise RuntimeError("boom")
+                return await super().get_manager_picks(entry_id, gameweek)
+
+        standings = [
+            {"entry": 1, "player_name": "Alice", "event_total": 50, "total": 500},
+            {"entry": 2, "player_name": "Bob", "event_total": 40, "total": 480},
+            {"entry": 3, "player_name": "Cara", "event_total": 30, "total": 460},
+        ]
+        client = _RaisingClient(
+            _standings_response(standings),
+            {
+                1: _picks_response(points=50, total_points=500),
+                3: _picks_response(points=30, total_points=460),
+            },
+        )
+        data = await collect_classic_recap_data(
+            client, {"fpl": {"classic_league_id": 77}}, gw=10,
+            live_stats={}, player_map={}, teams={}, is_live_gw=True,
+        )
+        cohort = data["standings_cohort"]
+        assert [c["manager_key"] for c in cohort] == [1, 2, 3]
+        assert [c["manager_name"] for c in cohort] == ["Alice", "Bob", "Cara"]
+        assert [c["gw_points"] for c in cohort] == [50, 40, 30]
+        assert [c["total_points"] for c in cohort] == [500, 480, 460]
+        assert data["league_id"] == 77
+        assert data["standings_truncated"] is False
+
+    async def test_classic_truncated_standings_are_flagged(self):
+        standings = [{"entry": 1, "player_name": "Alice", "event_total": 50, "total": 500}]
+        response = _standings_response(standings)
+        response["standings"]["has_next"] = True
+        client = _FakeClassicClient(response, {1: _picks_response(points=50, total_points=500)})
+        data = await collect_classic_recap_data(
+            client, {"fpl": {"classic_league_id": 1}}, gw=10,
+            live_stats={}, player_map={}, teams={}, is_live_gw=True,
+        )
+        assert data["standings_truncated"] is True
+
+    async def test_classic_entry_carries_the_four_rollover_only_fields(self):
+        standings = [{"entry": 1, "player_name": "Alice", "event_total": 50, "total": 500}]
+        picks = _picks_response(points=50, total_points=500)
+        picks["entry_history"].update(
+            {"value": 1013, "bank": 7, "overall_rank": 412_345, "event_transfers": 2},
+        )
+        client = _FakeClassicClient(_standings_response(standings), {1: picks})
+        data = await collect_classic_recap_data(
+            client, {"fpl": {"classic_league_id": 1}}, gw=10,
+            live_stats={}, player_map={}, teams={}, is_live_gw=True,
+        )
+        m = data["managers"][0]
+        assert m["squad_value"] == 1013
+        assert m["bank"] == 7
+        assert m["global_rank"] == 412_345
+        assert m["transfers_made"] == 2
+        # Global rank and league position are separate fields on the entry.
+        assert m["overall_rank"] == 1
+
+    async def test_classic_squad_player_carries_the_stable_code(self):
+        player = make_player(id=5, code=99_001, web_name="Star", team_id=1)
+        standings = [{"entry": 1, "player_name": "Alice", "event_total": 6, "total": 6}]
+        picks = _picks_response(points=6, total_points=6)
+        picks["picks"] = [{"element": 5, "position": 1, "multiplier": 1, "is_captain": True}]
+        client = _FakeClassicClient(_standings_response(standings), {1: picks})
+        data = await collect_classic_recap_data(
+            client, {"fpl": {"classic_league_id": 1}}, gw=10,
+            live_stats={5: {"total_points": 6, "minutes": 90}},
+            player_map={5: player}, teams={}, is_live_gw=False,
+        )
+        squad = data["managers"][0]["squad"]
+        assert [p["code"] for p in squad] == [99_001]
+        assert squad[0]["had_fixture"] is True
+
+    async def test_blank_gameweek_marks_only_the_clubs_without_a_fixture(self):
+        playing = make_player(id=5, code=1, web_name="Plays", team_id=1)
+        blanking = make_player(id=6, code=2, web_name="Blanks", team_id=2)
+        standings = [{"entry": 1, "player_name": "Alice", "event_total": 6, "total": 6}]
+        picks = _picks_response(points=6, total_points=6)
+        picks["picks"] = [
+            {"element": 5, "position": 1, "multiplier": 1},
+            {"element": 6, "position": 2, "multiplier": 1},
+        ]
+        client = _FakeClassicClient(_standings_response(standings), {1: picks})
+        data = await collect_classic_recap_data(
+            client, {"fpl": {"classic_league_id": 1}}, gw=10,
+            live_stats={}, player_map={5: playing, 6: blanking}, teams={},
+            is_live_gw=False, bgw_team_ids=frozenset({2}),
+        )
+        by_name = {p["name"]: p for p in data["managers"][0]["squad"]}
+        assert by_name["Plays"]["had_fixture"] is True
+        assert by_name["Blanks"]["had_fixture"] is False
+
+    async def test_normal_gameweek_marks_no_player_as_fixtureless(self):
+        player = make_player(id=5, code=1, web_name="Plays", team_id=1)
+        standings = [{"entry": 1, "player_name": "Alice", "event_total": 6, "total": 6}]
+        picks = _picks_response(points=6, total_points=6)
+        picks["picks"] = [{"element": 5, "position": 1, "multiplier": 1}]
+        client = _FakeClassicClient(_standings_response(standings), {1: picks})
+        data = await collect_classic_recap_data(
+            client, {"fpl": {"classic_league_id": 1}}, gw=10,
+            live_stats={}, player_map={5: player}, teams={}, is_live_gw=False,
+        )
+        assert all(p["had_fixture"] for p in data["managers"][0]["squad"])
+
+    async def test_classic_transfers_carry_both_player_codes(self):
+        pin = make_player(id=5, code=111, web_name="In", team_id=1)
+        pout = make_player(id=6, code=222, web_name="Out", team_id=1)
+        standings = [{"entry": 1, "player_name": "Alice", "event_total": 6, "total": 6}]
+        picks = _picks_response(points=6, total_points=6)
+        picks["entry_history"]["event_transfers"] = 1
+        client = _FakeClassicClient(
+            _standings_response(standings),
+            {1: picks},
+            transfers_by_entry={1: [{"event": 10, "element_in": 5, "element_out": 6}]},
+        )
+        data = await collect_classic_recap_data(
+            client, {"fpl": {"classic_league_id": 1}}, gw=10,
+            live_stats={}, player_map={5: pin, 6: pout}, teams={}, is_live_gw=False,
+        )
+        tr = data["managers"][0]["transfers"][0]
+        assert tr["player_in_code"] == 111
+        assert tr["player_out_code"] == 222
+
+    def test_fines_are_keyed_by_manager_not_by_display_name(self):
+        """Two managers can share a display name, so a stored ruling has to
+        carry the key the row is written under."""
+        rules = [{"type": "last-place", "penalty": "Pint on video"}]
+        squad = [_make_squad_player(name=f"P{i}") for i in range(11)]
+        managers = [
+            _make_manager(name="Same Name", entry_id=1, gw_points=80, squad=squad),
+            _make_manager(name="Same Name", entry_id=2, gw_points=10, squad=squad),
+        ]
+        fines = evaluate_league_fines(managers, {"fines": {"classic": rules}}, "classic")
+        assert [f["manager_key"] for f in fines] == [2]
+
+    def test_draft_fines_key_on_the_league_local_id(self):
+        rules = [{"type": "last-place", "penalty": "Pint on video"}]
+        squad = [_make_squad_player(name=f"P{i}") for i in range(11)]
+        top = _make_manager(name="Alice", entry_id=0, gw_points=80, squad=squad)
+        bottom = _make_manager(name="Bob", entry_id=0, gw_points=10, squad=squad)
+        top["league_entry_id"] = 10
+        bottom["league_entry_id"] = 11
+        fines = evaluate_league_fines([top, bottom], {"fines": {"draft": rules}}, "draft")
+        assert [f["manager_key"] for f in fines] == [11]
+
+    async def test_draft_keys_two_unclaimed_teams_distinctly(self):
+        draft_player = make_draft_player(id=900, web_name="Star", team=1, element_type=3)
+        main_player = make_player(id=5, code=555, web_name="Star", team_id=1)
+        league_details = {
+            "league": {"name": "Draft League"},
+            "standings": [
+                {"league_entry": 10, "event_total": 5, "total": 5},
+                {"league_entry": 11, "event_total": 5, "total": 5},
+            ],
+            "league_entries": [
+                {"id": 10, "entry_id": None, "entry_name": "Ghost A"},
+                {"id": 11, "entry_id": None, "entry_name": "Ghost B"},
+            ],
+        }
+        picks = {None: {"picks": [{"element": 900, "position": 1}], "subs": []}}
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        client.get_league_details = AsyncMock(return_value=league_details)
+        client.get_bootstrap_static = AsyncMock(return_value={"elements": [draft_player]})
+        client.get_league_transactions = AsyncMock(return_value={"transactions": []})
+        client.get_entry_picks = AsyncMock(side_effect=lambda entry_id, gw: picks[entry_id])
+
+        with patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=client):
+            data = await collect_draft_recap_data(
+                {"fpl": {"draft_league_id": 3}}, gw=15, live_stats={5: {"total_points": 5}},
+                players=[main_player], teams={}, is_live_gw=False,
+            )
+        assert sorted(m["league_entry_id"] for m in data["managers"]) == [10, 11]
+        assert sorted(c["manager_key"] for c in data["standings_cohort"]) == [10, 11]
+        assert all(c["entry_id"] is None for c in data["standings_cohort"])
+        assert data["league_id"] == 3
+
+    async def test_draft_unmatched_player_carries_no_code(self):
+        matched = make_draft_player(id=900, web_name="Star", team=1, element_type=3)
+        stranger = make_draft_player(id=901, web_name="Nobody", team=1, element_type=3)
+        main_player = make_player(id=5, code=555, web_name="Star", team_id=1)
+        league_details = {
+            "league": {"name": "Draft League"},
+            "standings": [{"league_entry": 10, "event_total": 5, "total": 5}],
+            "league_entries": [{"id": 10, "entry_id": 1, "player_first_name": "A", "player_last_name": "B"}],
+        }
+        picks = {
+            1: {
+                "picks": [
+                    {"element": 900, "position": 1},
+                    {"element": 901, "position": 2},
+                ],
+                "subs": [],
+            },
+        }
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        client.get_league_details = AsyncMock(return_value=league_details)
+        client.get_bootstrap_static = AsyncMock(return_value={"elements": [matched, stranger]})
+        client.get_league_transactions = AsyncMock(return_value={"transactions": []})
+        client.get_entry_picks = AsyncMock(side_effect=lambda entry_id, gw: picks[entry_id])
+
+        with patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=client):
+            data = await collect_draft_recap_data(
+                {"fpl": {"draft_league_id": 1}}, gw=15, live_stats={5: {"total_points": 5}},
+                players=[main_player], teams={}, is_live_gw=False,
+            )
+        by_name = {p["name"]: p for p in data["managers"][0]["squad"]}
+        assert by_name["Star"]["code"] == 555
+        assert by_name["Star"]["unmatched"] is False
+        assert by_name["Nobody"]["code"] is None
+        assert by_name["Nobody"]["unmatched"] is True
