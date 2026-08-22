@@ -152,6 +152,27 @@ def test_fenced_code_block_hash_not_demoted(capsys):
     assert "## python comment" not in block
 
 
+def test_stray_h1_ends_the_classic_squad_block(tmp_path, capsys):
+    """A stray H1 inside the '## Classic Squad' block ends it there -- an H1 is
+    shallower than the H2 section heading, so per find_section's same-or-
+    shallower contract it starts a new top-level section, not more Classic
+    Squad content. This pins the intended, shared boundary rule at the call
+    site that consumes it, matching _md_sections' own
+    test_section_ends_at_shallower_heading."""
+    f = tmp_path / "stray_h1.md"
+    f.write_text(
+        "## Classic Squad\n\n"
+        "#### Starting XI\n\nSome content.\n\n"
+        "# A Note From The Analyst\n\n"
+        "#### Bench\n\nMore content.\n"
+    )
+    _run(str(f))
+    data = json.loads(capsys.readouterr().out)
+    assert "Starting XI" in data["block"]
+    assert "A Note From The Analyst" not in data["block"]
+    assert "Bench" not in data["block"]
+
+
 # -- Error paths --
 
 
@@ -198,6 +219,27 @@ def test_h6_source_heading_exits_1(tmp_path, capsys):
         "## Classic Squad\n\n"
         "### Sub-section\n\nSome content.\n\n"
         "###### Deep Heading\n\nContent under H6.\n"
+    )
+    with pytest.raises(SystemExit, match="1"):
+        _run(str(f))
+    captured = capsys.readouterr()
+    data = json.loads(captured.out)
+    assert data["error"] is True
+    assert any(
+        "H6" in m or "heading depth" in m.lower() or "exceed" in m.lower()
+        for m in data["messages"]
+    )
+
+
+def test_h6_source_heading_indented_still_exits_1(tmp_path, capsys):
+    """An H6 heading indented by leading whitespace must be caught too --
+    parse_heading (used for every other heading comparison in this file)
+    tolerates leading whitespace, so the ceiling check must match it."""
+    f = tmp_path / "h6_heading_indented.md"
+    f.write_text(
+        "## Classic Squad\n\n"
+        "### Sub-section\n\nSome content.\n\n"
+        "  ###### Deep Heading\n\nContent under H6.\n"
     )
     with pytest.raises(SystemExit, match="1"):
         _run(str(f))
@@ -333,6 +375,37 @@ def test_wrong_starting_xi_row_count(tmp_path, capsys):
     _run(str(f), from_recommendations=True)
     data = json.loads(capsys.readouterr().out)
     assert data["validation"]["structural"]["starting_xi_rows"] == 10
+
+
+def test_nested_heading_inside_starting_xi_does_not_leak_into_row_count(tmp_path, capsys):
+    """A stray deeper heading with its own table inside '#### Starting XI' is
+    drift, not more Starting XI rows -- it must not inflate the row count."""
+    f = tmp_path / "nested_heading.md"
+    xi_rows = "\n".join(f"| FWD | Player{i} | Team | £5.0m | 5.0 | 5.0 | FIX | rati |" for i in range(11))
+    bench_rows = "\n".join(f"| GK | Bench{i} | Team | GK | £4.0m | cover |" for i in range(4))
+    f.write_text(
+        "## Classic League\n\n"
+        "### Classic Squad\n\n"
+        "#### Constraints\n\nSome.\n\n"
+        "#### Starting XI\n\n"
+        "| Pos | Player | Team | Price | Form | PPG | Fix | Rat |\n"
+        "|-----|--------|------|-------|------|-----|-----|-----|\n"
+        + xi_rows + "\n\n"
+        "##### Historical Alternatives\n\n"
+        "| Pos | Player |\n|-----|--------|\n| FWD | NotInSquad |\n\n"
+        "**Captain:** X | **Vice:** Y\n\n"
+        "#### Bench\n\n"
+        "| Order | Player | Team | Pos | Price | Role |\n"
+        "|-------|--------|------|-----|-------|------|\n"
+        + bench_rows + "\n\n"
+        "#### Budget\n\n| P | C | S |\n|---|---|---|\n| **Total** | **15** | **£99.5m** |\n\n"
+        "#### Team Exposure\n\n#### Key Decisions\n\n#### Alternatives\n\n"
+        "### Momentum Alerts\n\nsome content\n"
+    )
+    _run(str(f), from_recommendations=True)
+    data = json.loads(capsys.readouterr().out)
+    assert data["validation"]["structural"]["starting_xi_rows"] == 11
+    assert data["validation"]["arithmetic"]["player_count"] == 15
 
 
 # -- Arithmetic failure cases --

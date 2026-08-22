@@ -42,6 +42,7 @@ __all__ = [
     "fence_flags",
     "find_section",
     "has_heading",
+    "leaf_body",
     "parse_heading",
     "section_body",
 ]
@@ -56,10 +57,12 @@ _BRACKETED_RE = re.compile(r"\([^()]*\)|\[[^\[\]]*\]|\{[^{}]*\}")
 # A leading annotation token, digit-initial so it can't eat a real first word.
 _LEADING_ANNOTATION_RE = re.compile(r"^[0-9]\S*(?:\s+|$)")
 # A trailing qualifier introduced by punctuation or a digit: either separated by
-# whitespace, or glued on -- but a glued qualifier must not continue into a word
-# character, or "Bench-Warmers" would read as a qualified "Bench".
+# whitespace, or glued on -- but a glued qualifier must not continue into a
+# letter, or "Bench-Warmers" would read as a qualified "Bench" (it may still
+# continue into a digit, e.g. the punctuation in "XI:3-4-3" must strip along
+# with the digits that follow it, not get left stranded on its own).
 _TRAILING_ANNOTATION_RE = re.compile(
-    r"(?:\s+(?:[0-9]|[^\s\w])|(?<=\S)(?:[0-9]|[^\s\w])(?!\w)).*$"
+    r"(?:\s+(?:[0-9]|[^\s\w])|(?<=\S)(?:[0-9]|[^\s\w])(?![A-Za-z])).*$"
 )
 _WHITESPACE_RE = re.compile(r"\s+")
 
@@ -70,17 +73,21 @@ def fence_flags(lines: Iterable[str]) -> Iterator[bool]:
     The fence delimiters themselves report True, so a caller can skip every
     flagged line and never treat fenced content as markdown structure.
     """
-    fence: str | None = None
+    fence: tuple[str, int] | None = None
     for line in lines:
         match = _FENCE_RE.match(line.strip())
         if fence is None:
             if match:
-                fence = match.group(0)[0]
+                token = match.group(0)
+                fence = (token[0], len(token))
                 yield True
             else:
                 yield False
             continue
-        if match and match.group(0)[0] == fence:
+        # Per CommonMark, a fence only closes on a run of the same character at
+        # least as long as the one that opened it -- a shorter run of the same
+        # character (or any run of a different one) is still fenced content.
+        if match and match.group(0)[0] == fence[0] and len(match.group(0)) >= fence[1]:
             fence = None
         yield True
 
@@ -99,8 +106,9 @@ def _normalise(text: str) -> str:
     return _WHITESPACE_RE.sub(" ", stripped).strip().casefold()
 
 
-def _core_text(text: str) -> str:
-    """Strip annotations from a heading text, leaving its core wording."""
+def _strip_wrapping(text: str) -> str:
+    """Strip emphasis, bracketed annotations and a leading annotation token,
+    leaving any trailing qualifier untouched."""
     core = _EMPHASIS_RE.sub("", text.strip())
 
     previous = None
@@ -115,8 +123,37 @@ def _core_text(text: str) -> str:
             break
         core = core[leading.end() :].strip()
 
-    core = _TRAILING_ANNOTATION_RE.sub("", core).strip()
+    return core
+
+
+def _strip_trailing_annotation(core: str) -> str:
+    """Strip a trailing qualifier introduced by punctuation or a digit: either
+    separated by whitespace (which strips to end of line unconditionally, e.g.
+    "Draft League — provisional"), or glued on -- but a glued qualifier must not
+    continue into a *letter*, or "Bench-Warmers" would read as a qualified
+    "Bench". It may still continue into a digit, or the punctuation of a glued
+    qualifier like "XI:3-4-3" would itself be left stranded when the strip
+    starts at the digit instead.
+    """
+    return _TRAILING_ANNOTATION_RE.sub("", core).strip()
+
+
+def _core_text(text: str) -> str:
+    """Strip annotations from a heading text, leaving its core wording."""
+    core = _strip_trailing_annotation(_strip_wrapping(text))
     return _WHITESPACE_RE.sub(" ", core).strip().casefold()
+
+
+def _wrapping_stripped_text(text: str) -> str:
+    """Like `_core_text`, but keeps a trailing qualifier intact.
+
+    A trailing digit can be an alias's own text (the "Starting 11" alias) rather
+    than an annotation, so stripping it unconditionally would turn a legitimately
+    decorated alias into a false negative once any other drift is layered on top
+    (e.g. "Starting 11 (3-4-3)"). Trying this alongside `_core_text` covers that
+    case without weakening the anti-collision guarantee `_core_text` provides.
+    """
+    return _WHITESPACE_RE.sub(" ", _strip_wrapping(text)).strip().casefold()
 
 
 class HeadingMatcher:
@@ -144,7 +181,11 @@ class HeadingMatcher:
         depth, text = parsed
         if depth != self.depth:
             return False
-        return _normalise(text) in self._targets or _core_text(text) in self._targets
+        return (
+            _normalise(text) in self._targets
+            or _core_text(text) in self._targets
+            or _wrapping_stripped_text(text) in self._targets
+        )
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"HeadingMatcher({self.heading!r})"
@@ -153,6 +194,37 @@ class HeadingMatcher:
 def as_matcher(heading: str | HeadingMatcher) -> HeadingMatcher:
     """Coerce a heading string to a matcher, passing matchers through."""
     return heading if isinstance(heading, HeadingMatcher) else HeadingMatcher(heading)
+
+
+def _locate(
+    lines: Sequence[str], matcher: HeadingMatcher
+) -> tuple[tuple[int, int] | None, list[bool]]:
+    """Shared implementation for `find_section` and `section_body`.
+
+    Returns the section bounds (or None) alongside the fence flags computed to
+    find them, so a body lookup doesn't have to recompute fence state over the
+    same lines a second time.
+    """
+    flags = list(fence_flags(lines))
+
+    start: int | None = None
+    for i, line in enumerate(lines):
+        if not flags[i] and matcher.matches(line):
+            start = i
+            break
+    if start is None:
+        return None, flags
+
+    for i in range(start + 1, len(lines)):
+        if flags[i]:
+            continue
+        parsed = parse_heading(lines[i])
+        if parsed is None or parsed[0] > matcher.depth:
+            continue
+        if matcher.matches(lines[i]):
+            continue
+        return (start, i), flags
+    return (start, len(lines)), flags
 
 
 def find_section(
@@ -165,27 +237,7 @@ def find_section(
     re-qualified occurrence of the *same* heading, which extends the section
     rather than truncating it at the first of the pair.
     """
-    matcher = as_matcher(heading)
-    flags = list(fence_flags(lines))
-
-    start: int | None = None
-    for i, line in enumerate(lines):
-        if not flags[i] and matcher.matches(line):
-            start = i
-            break
-    if start is None:
-        return None
-
-    for i in range(start + 1, len(lines)):
-        if flags[i]:
-            continue
-        parsed = parse_heading(lines[i])
-        if parsed is None or parsed[0] > matcher.depth:
-            continue
-        if matcher.matches(lines[i]):
-            continue
-        return (start, i)
-    return (start, len(lines))
+    return _locate(lines, as_matcher(heading))[0]
 
 
 def section_body(
@@ -197,11 +249,10 @@ def section_body(
     else in the section, fenced content included, is preserved verbatim.
     """
     matcher = as_matcher(heading)
-    found = find_section(lines, matcher)
-    if found is None:
+    bounds, flags = _locate(lines, matcher)
+    if bounds is None:
         return None
-    start, end = found
-    flags = list(fence_flags(lines))
+    start, end = bounds
     return [
         line
         for i, line in enumerate(lines[start:end], start=start)
@@ -212,3 +263,21 @@ def section_body(
 def has_heading(lines: Sequence[str], heading: str | HeadingMatcher) -> bool:
     """True if `heading` appears outside any fenced code block."""
     return find_section(lines, heading) is not None
+
+
+def leaf_body(lines: Sequence[str], heading: str | HeadingMatcher) -> list[str] | None:
+    """Like `section_body`, but also stops at the first nested heading.
+
+    For a heading whose section is a data leaf (a table, a short note) rather
+    than a container for sub-headings, a nested heading inside its body is
+    drift -- a hallucinated sub-topic, not more of the section's data -- so
+    scanning must not continue past it.
+    """
+    body = section_body(lines, heading)
+    if body is None:
+        return None
+    flags = list(fence_flags(body))
+    for i, line in enumerate(body):
+        if not flags[i] and parse_heading(line) is not None:
+            return body[:i]
+    return body

@@ -108,6 +108,38 @@ def test_aliases_match_at_the_same_depth():
     assert matcher.matches("### XI") is False
 
 
+@pytest.mark.parametrize(
+    "line",
+    [
+        "#### Starting 11",
+        "#### Starting 11 (3-4-3)",
+        "#### Starting 11 (revised)",
+        "#### 3-4-3 Starting 11",
+    ],
+)
+def test_digit_suffixed_alias_still_matches_with_annotations(line):
+    """A trailing digit that's part of the alias itself (not an annotation)
+    must survive further drift layered on top of it."""
+    matcher = HeadingMatcher(
+        "#### Starting XI", aliases=("XI", "Starting Eleven", "Starting 11")
+    )
+    assert matcher.matches(line) is True
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "#### Starting XI-3-4-3",
+        "#### Starting XI:3-4-3",
+    ],
+)
+def test_glued_punctuation_then_digit_qualifier_strips_fully(line):
+    """A glued qualifier starting with punctuation immediately followed by a
+    digit must strip the punctuation along with the digits, not just the
+    digits -- otherwise the punctuation is left stranded on the core text."""
+    assert HeadingMatcher("#### Starting XI").matches(line) is True
+
+
 def test_alias_does_not_widen_to_prefix_matches():
     matcher = HeadingMatcher("## Draft League", aliases=("Draft",))
     assert matcher.matches("## Draft") is True
@@ -152,6 +184,15 @@ def test_tilde_fence_is_not_closed_by_a_backtick_fence():
     assert find_section(lines, "## Classic Squad") == (4, 5)
 
 
+def test_shorter_fence_of_the_same_character_does_not_close_a_longer_one():
+    """Per CommonMark, a fence only closes on a run at least as long as the one
+    that opened it -- a nested example fenced with fewer backticks than the
+    outer fence is still fenced content, not a closer."""
+    lines = ["````", "```", "## Classic Squad", "````", "## Classic Squad", "body"]
+    assert list(fence_flags(lines)) == [True, True, True, True, False, False]
+    assert find_section(lines, "## Classic Squad") == (4, 6)
+
+
 # -- Section boundaries -------------------------------------------------------
 
 
@@ -194,3 +235,26 @@ def test_section_body_drops_repeated_headings_only():
 def test_section_body_preserves_fenced_lookalike_lines():
     lines = ["## A", "```", "## A", "```", "## B"]
     assert section_body(lines, "## A") == ["```", "## A", "```"]
+
+
+# -- leaf_body ------------------------------------------------------------
+
+
+def test_leaf_body_stops_at_a_nested_heading():
+    """Unlike section_body, a nested heading ends the body even though it
+    doesn't end the section -- a leaf section is a table or note, not a
+    container, so a nested heading marks drift, not more of its data."""
+    leaf_body = _mod.leaf_body
+    lines = ["### A", "one", "#### nested", "two", "### B"]
+    assert leaf_body(lines, "### A") == ["one"]
+    assert section_body(lines, "### A") == ["one", "#### nested", "two"]
+
+
+def test_leaf_body_returns_full_body_when_no_nested_heading():
+    leaf_body = _mod.leaf_body
+    lines = ["### A", "one", "two", "### B"]
+    assert leaf_body(lines, "### A") == ["one", "two"]
+
+
+def test_leaf_body_returns_none_when_absent():
+    assert _mod.leaf_body(["## B", "x"], "## A") is None

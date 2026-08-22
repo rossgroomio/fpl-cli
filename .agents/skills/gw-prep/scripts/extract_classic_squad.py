@@ -25,7 +25,8 @@ from _md_sections import (
     fence_flags,
     find_section,
     has_heading,
-    section_body,
+    leaf_body,
+    parse_heading,
 )
 
 
@@ -86,6 +87,11 @@ _SUB_HEADINGS: dict[str, HeadingMatcher] = {
     "Key Decisions": HeadingMatcher("#### Key Decisions"),
     "Alternatives": HeadingMatcher("#### Alternatives"),
 }
+
+# Matches a heading's leading whitespace and `#` marker, so demotion can insert
+# an extra `#` at the right position even when parse_heading recognised the
+# heading through leading whitespace it tolerates.
+_LEADING_HASHES_RE = re.compile(r"^(\s*)(#+)")
 
 
 class ExtractPayload(TypedDict):
@@ -153,10 +159,16 @@ def _run_extract(file_path: str, content: str) -> None:
     )
 
     block_lines = list(lines[start_idx:end_idx])
+    # A heading's start is always outside a fence (HeadingMatcher.matches() only
+    # recognises unfenced lines), so the section boundary can't land mid-fence --
+    # the whole-file fence state can be sliced rather than recomputed from
+    # scratch over the extracted block.
+    fenced_block = fenced[start_idx:end_idx]
 
     # Strip trailing blank lines
     while block_lines and not block_lines[-1].strip():
         block_lines.pop()
+        fenced_block.pop()
 
     # Empty block guard (heading only, no body)
     if len(block_lines) <= 1:
@@ -173,12 +185,14 @@ def _run_extract(file_path: str, content: str) -> None:
         )
         sys.exit(1)
 
-    # H6 ceiling check — demotion would produce H7 (####### exceeds markdown spec)
-    fenced_block = list(fence_flags(block_lines))
+    # H6 ceiling check — demotion would produce H7 (####### exceeds markdown spec).
+    # Goes through parse_heading (tolerant of leading whitespace, like every
+    # other heading comparison in this file) rather than a bespoke regex.
     for i, line in enumerate(block_lines):
         if fenced_block[i]:
             continue
-        if re.match(r"^#{6}\s", line):
+        parsed = parse_heading(line)
+        if parsed is not None and parsed[0] == 6:
             json.dump(
                 {
                     "error": True,
@@ -196,8 +210,10 @@ def _run_extract(file_path: str, content: str) -> None:
     # Demote headings one level (skip lines inside fenced code blocks)
     demoted: list[str] = []
     for i, line in enumerate(block_lines):
-        if not fenced_block[i] and re.match(r"^#+\s", line):
-            line = "#" + line
+        if not fenced_block[i] and parse_heading(line) is not None:
+            hashes = _LEADING_HASHES_RE.match(line)
+            assert hashes is not None
+            line = f"{hashes.group(1)}#{line[hashes.start(2):]}"
         demoted.append(line)
 
     block = "\n".join(demoted)
@@ -306,8 +322,13 @@ _TABLE_SEPARATOR_RE = re.compile(r"^\|[-:| ]+\|")
 
 
 def _lines_in_section(block: str, heading: str | HeadingMatcher) -> list[str]:
-    """Return the body lines of `heading`'s section within `block`."""
-    return section_body(block.split("\n"), heading) or []
+    """Return the body lines of `heading`'s section within `block`.
+
+    `heading` is always one of the leaf sub-headings (a table, a short note),
+    never a container for further sub-headings, so a nested heading found
+    inside it is drift and must not be scanned as more of its data.
+    """
+    return leaf_body(block.split("\n"), heading) or []
 
 
 def _count_table_rows_between(block: str, start_heading: str | HeadingMatcher) -> int:

@@ -25,7 +25,7 @@ import sys
 import unicodedata
 from typing import TypedDict
 
-from _md_sections import HeadingMatcher, find_section, section_body
+from _md_sections import HeadingMatcher, find_section, leaf_body
 
 # ---------------------------------------------------------------------------
 # Types
@@ -177,10 +177,13 @@ def locate_draft_section(lines: list[str]) -> tuple[int, int] | None:
 def locate_waiver_subsection(section_lines: list[str]) -> list[str]:
     """Return the slice of section_lines bounded by ### Waiver Recommendations.
 
-    Bounds end at the next heading of the same or shallower depth. Falls back to
-    the full section if the subheading is absent (older report formats).
+    Bounds end at the next heading of the same or shallower depth, or at a
+    nested heading -- the subsection is a table, not a container for further
+    sub-headings, so a nested heading marks drift rather than more of its data.
+    Falls back to the full section if the subheading is absent (older report
+    formats).
     """
-    body = section_body(section_lines, _HEADING_WAIVERS)
+    body = leaf_body(section_lines, _HEADING_WAIVERS)
     return section_lines if body is None else body
 
 

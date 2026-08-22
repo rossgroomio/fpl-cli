@@ -730,6 +730,37 @@ def test_three_stacked_tables_only_waiver_table_parsed(tmp_path, capsys):
     assert data["warnings"] == []
 
 
+def test_nested_subheading_table_inside_waivers_does_not_leak_in(tmp_path, capsys):
+    """A #### sub-heading nested inside ### Waiver Recommendations is drift, not
+    more waiver rows -- its table must not be picked up as the live waiver
+    table, even though it's a heading one level deeper than the boundary."""
+    recs_content = """\
+## Draft League
+
+### Waiver Recommendations
+
+No live waivers this week.
+
+#### Historical Priority
+
+| Priority | Drop | Claim | Position |
+|----------|------|-------|----------|
+| 1 | Hill (BOU) | Rogue Claim (YYY) | MID |
+
+### Starting XI
+
+| Pos | Player |
+|-----|--------|
+| GK | Flekken |
+"""
+    recs, w, s = _write_fixtures(tmp_path, recs_content)
+    _run(str(recs), str(w), str(s))
+    data = _parse(capsys)
+    assert data["ok"] is True
+    assert data["flags"] == []
+    assert any(w["type"] == "waiver-table-not-found" for w in data["warnings"])
+
+
 def test_no_waiver_subheading_falls_back_to_full_section(tmp_path, capsys):
     """If ### Waiver Recommendations is absent (older report layout), parsing
     should fall back to the full ## Draft section and still locate the table.
