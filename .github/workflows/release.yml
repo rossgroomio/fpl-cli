@@ -61,6 +61,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          # The main ruleset blocks direct pushes, and the github-actions app
+          # can't be added to its bypass list - so push as the repo admin
+          # (fine-grained PAT, Contents: read/write), who is a bypass actor.
+          # Falls back to GITHUB_TOKEN if the secret is unset.
+          token: ${{ secrets.RELEASE_PUSH_TOKEN || github.token }}
 
       - name: Install git-cliff
         run: pip install git-cliff

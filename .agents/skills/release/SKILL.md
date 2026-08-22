@@ -109,6 +109,12 @@ Actions run.
 - **Changelog push rejected** (non-fast-forward): main advanced between
   publish and the changelog commit — documented race in `release.yml`;
   re-run the changelog job manually.
+- **Changelog push rejected by the main ruleset**: the job pushes with the
+  `RELEASE_PUSH_TOKEN` secret (the repo admin's fine-grained PAT, a ruleset
+  bypass actor) because the github-actions app can't be on the bypass list.
+  A missing or expired secret makes the push fall back to `GITHUB_TOKEN`,
+  which the ruleset blocks — recreate the PAT (Contents: read/write on this
+  repo), update the secret, re-run the job.
 - **PyPI publish fails with OIDC errors**: check the `pypi` environment on
   the repo and the trusted-publisher config on the fplkit PyPI project.
 - **Version source drift**: never reintroduce a hardcoded `version =
