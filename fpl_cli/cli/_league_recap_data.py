@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Literal
 
 from fpl_cli.cli._fines import FineResult, FinesLeagueData, FinesTeamPlayer, evaluate_fines
@@ -29,6 +30,10 @@ logger = logging.getLogger(__name__)
 
 _CHIP_DISPLAY = {"wildcard": "WC", "freehit": "FH", "bboost": "BB", "3xc": "TC"}
 _PICKS_CONCURRENCY = 10
+# Most managers named in one award's detail before it is truncated. Shared by
+# the transfer/waiver, captain, and bench-haul awards so a wide tie in a large
+# league cannot sprawl.
+_DETAIL_CAP = 3
 
 
 def _classic_pick_flags(
@@ -80,7 +85,11 @@ async def collect_classic_recap_data(
         use_net_points=use_net_points,
     )
 
-    _compute_standings_movement(managers)
+    league_rows = [
+        (e.get("entry", 0), e.get("total", 0), e.get("event_total", 0))
+        for e in standings
+    ]
+    _compute_standings_movement(managers, league_rows)
 
     awards = _compute_shared_awards(managers, format_name="classic")
 
@@ -197,7 +206,10 @@ async def _fetch_all_manager_data(
         num_transfers = entry_history.get("event_transfers", 0)
         if num_transfers > 0:
             try:
-                all_transfers = await client.get_manager_transfers(league_entry_id)
+                # Same permit as the picks fetch: this is a second network call
+                # per manager, and without it a large league fans out unbounded.
+                async with sem:
+                    all_transfers = await client.get_manager_transfers(league_entry_id)
                 gw_transfers = [tr for tr in all_transfers if tr.get("event") == gw]
                 for tr in gw_transfers:
                     elem_in: int | None = tr.get("element_in")
@@ -268,12 +280,39 @@ async def _fetch_all_manager_data(
 # ---------------------------------------------------------------------------
 
 
-def _compute_standings_movement(managers: list[RecapManagerEntry]) -> None:
+def _compute_standings_movement(
+    managers: list[RecapManagerEntry],
+    league_rows: Sequence[tuple[int, int, int]] | None = None,
+) -> None:
     """Derive previous league positions from total_points - gw_points.
+
+    `league_rows` is (entry_id, total_points, gw_points) for every entry in
+    league-standings order, including managers whose picks failed to fetch.
+    `overall_rank` is assigned from that same unfiltered order, so ranking the
+    previous table over survivors alone renumbers everyone below a missing
+    manager and reports the whole tail as having moved. Ordering the rows by
+    standings position also fixes the tie-break in GW1, where every previous
+    total is zero.
+
+    Fetched managers keep their own points (which honour use_net_points);
+    standings values only fill in entries that could not be fetched.
 
     Mutates managers in-place to set previous_rank.
     """
-    prev_totals = [(m["entry_id"], m["total_points"] - m["gw_points"]) for m in managers]
+    by_entry = {m["entry_id"]: m for m in managers}
+
+    if league_rows is None:
+        rows = [(m["entry_id"], m["total_points"], m["gw_points"]) for m in managers]
+    else:
+        rows = []
+        for entry_id, total, gw_pts in league_rows:
+            fetched = by_entry.get(entry_id)
+            if fetched is not None:
+                rows.append((entry_id, fetched["total_points"], fetched["gw_points"]))
+            else:
+                rows.append((entry_id, total, gw_pts))
+
+    prev_totals = [(entry_id, total - gw_pts) for entry_id, total, gw_pts in rows]
     prev_totals.sort(key=lambda x: -x[1])
     prev_rank_map = {entry_id: rank + 1 for rank, (entry_id, _) in enumerate(prev_totals)}
 
@@ -386,8 +425,21 @@ def evaluate_league_fines(
 # ---------------------------------------------------------------------------
 
 
-def _captain_detail(caps: list[RecapManagerEntry], total_managers: int = 0) -> str:
-    """Build a detail string for tied captain awards, grouping by player."""
+def _captain_detail(
+    caps: list[RecapManagerEntry],
+    total_managers: int = 0,
+    *,
+    points: int | None = None,
+) -> str:
+    """Build a detail string for tied captain awards, grouping by player.
+
+    `points` is the value the tie was struck on. Pass it for worst-captain,
+    where the tie is on *effective* captain points (the vice's score when the
+    captain did not play) and so need not equal any tied manager's raw
+    `captain_points`. Groups are capped at _DETAIL_CAP so a wide tie in a large
+    league does not sprawl; the "## Captains" prompt section remains the full
+    per-manager roster.
+    """
     if len(caps) == 1:
         m = caps[0]
         if not m.get("captain_played"):
@@ -401,18 +453,32 @@ def _captain_detail(caps: list[RecapManagerEntry], total_managers: int = 0) -> s
     from collections import defaultdict
 
     by_player: dict[str, list[str]] = defaultdict(list)
+    # Whether the captain played is a property of the player, so it is uniform
+    # within a group: managers tied here on a captain who blanked all reached
+    # the tie value through their vice, not through the captain.
+    played_by_player: dict[str, bool] = {}
     for m in caps:
         by_player[m["captain"]].append(m["manager_name"])
+        played_by_player[m["captain"]] = bool(m.get("captain_played"))
 
-    pts = caps[0]["captain_points"]
+    pts = caps[0]["captain_points"] if points is None else points
+    groups = sorted(by_player.items(), key=lambda kv: (-len(kv[1]), kv[0]))
+    omitted = sum(len(names) for _, names in groups[_DETAIL_CAP:])
+
     parts = []
-    for player, names in by_player.items():
+    for player, names in groups[:_DETAIL_CAP]:
         n = len(names)
         joined = ", ".join(names[:-1]) + " and " + names[-1] if n > 1 else names[0]
         verb = "all captained" if n > 2 else "captained"
         fraction = f" [{n} of {total_managers} managers]" if total_managers > 0 and n < total_managers else ""
-        parts.append(f"{joined} {verb} {player} ({pts} pts){fraction}")
-    return ", ".join(parts)
+        scored = f"({pts} pts)" if played_by_player[player] else f"(dnp; vice scored {pts})"
+        parts.append(f"{joined} {verb} {player} {scored}{fraction}")
+
+    detail = ", ".join(parts)
+    if omitted:
+        plural = "manager" if omitted == 1 else "managers"
+        detail += f"; {omitted} more {plural} omitted"
+    return detail
 
 
 def _compute_shared_awards(
@@ -454,8 +520,15 @@ def _compute_shared_awards(
         best_bench_pts = max(m["bench_points"] for m in bench_candidates)
         if best_bench_pts > 0:
             bench_kings = [m for m in bench_candidates if m["bench_points"] == best_bench_pts]
+            # Each entry is verbose, so a wide tie is capped the same way the
+            # transfer and captain awards are. Everyone tied here benched the
+            # same points, so name the managers it actually cost: leaving 12 on
+            # the bench stings more on a 40-point week than an 80-point one.
+            # Name is the secondary key so the choice stays deterministic.
+            bench_kings.sort(key=lambda m: (m["gw_points"], m["manager_name"]))
+            omitted = max(0, len(bench_kings) - _DETAIL_CAP)
             detail_parts = []
-            for m in bench_kings:
+            for m in bench_kings[:_DETAIL_CAP]:
                 bench_players = [
                     p for p in m["squad"]
                     if not p["contributed"] and not p["auto_sub_out"] and p["points"] > 0
@@ -465,10 +538,14 @@ def _compute_shared_awards(
                     f"{m['manager_name']} left {m['bench_points']} pts on the bench"
                     f" (team scored {m['gw_points']} pts): {player_detail}"
                 )
+            detail = "; ".join(detail_parts)
+            if omitted:
+                plural = "manager" if omitted == 1 else "managers"
+                detail += f"; {omitted} more {plural} omitted"
             awards["biggest_bench_haul"] = RecapAwardEntry(
                 manager_name=" and ".join(m["manager_name"] for m in bench_kings),
                 value=best_bench_pts,
-                detail="; ".join(detail_parts),
+                detail=detail,
             )
 
     # Captain awards (classic only - draft has no captaincy)
@@ -480,7 +557,7 @@ def _compute_shared_awards(
             awards["best_captain"] = RecapAwardEntry(
                 manager_name=" and ".join(m["manager_name"] for m in best_caps),
                 value=best_cap_pts,
-                detail=_captain_detail(best_caps, total_managers),
+                detail=_captain_detail(best_caps, total_managers, points=best_cap_pts),
             )
 
         # Effective captain pts: use vice's score if captain didn't play (VC takeover).
@@ -493,7 +570,7 @@ def _compute_shared_awards(
         awards["worst_captain"] = RecapAwardEntry(
             manager_name=" and ".join(m["manager_name"] for m in worst_caps),
             value=worst_cap_pts,
-            detail=_captain_detail(worst_caps, total_managers),
+            detail=_captain_detail(worst_caps, total_managers, points=worst_cap_pts),
         )
 
     # Format-specific awards
@@ -503,9 +580,6 @@ def _compute_shared_awards(
         _compute_waiver_awards(managers, awards)
 
     return awards
-
-
-_DETAIL_CAP = 3
 
 
 def _fmt_award_move(m: RecapTransfer | RecapDraftTransaction) -> str:
@@ -960,7 +1034,16 @@ async def collect_draft_recap_data(
         for m in managers:
             m["overall_rank"] = standings_order.get(m["entry_id"], 0)
 
-    _compute_standings_movement(managers)
+        league_rows = [
+            (
+                entry_map.get(s.get("league_entry"), {}).get("entry_id") or 0,
+                s.get("total", 0),
+                s.get("event_total", 0),
+            )
+            for s in standings
+        ]
+
+    _compute_standings_movement(managers, league_rows)
     awards = _compute_shared_awards(managers, format_name="draft")
 
     return LeagueRecapData(
