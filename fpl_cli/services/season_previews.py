@@ -25,6 +25,7 @@ positive recommendations at all (see :data:`COVERAGE_THRESHOLD`).
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import date
 from enum import StrEnum
@@ -35,6 +36,7 @@ import yaml
 
 from fpl_cli.paths import SHIPPED_CONFIG_DIR, user_config_dir
 from fpl_cli.season import get_season_year, season_label
+from fpl_cli.utils.text import strip_diacritics
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +136,23 @@ def expired_sections(gameweek: int) -> list[str]:
     return [s for s in SECTION_DECAY if section_confidence(s, gameweek) <= 0]
 
 
+PLAYER_FIELD_SECTIONS: dict[str, str] = {
+    "status": "projected_xi",
+    "injury": "injuries",
+    "role_change": "role_notes",
+    "set_pieces": "set_piece_duty",
+    "penalties": "set_piece_duty",
+    "new_signing": "transfers",
+    "notes": "narrative",
+}
+"""Which decay section governs each emitted player field.
+
+The single source for both emission gating in :meth:`PlayerNote.as_dict` and
+the ``sections_present`` summary in :meth:`TeamPreview.as_dict`; a second copy
+of this table in a display layer drifts the first time a field is added.
+"""
+
+
 class PlayerStatus(StrEnum):
     """How securely a player is expected to start."""
 
@@ -193,21 +212,22 @@ class PlayerNote:
         A record reduced to a bare name carries no information, so it is dropped
         rather than emitted as noise for a consumer to filter again.
         """
+        conf = {section: section_confidence(section, gameweek) for section in SECTION_DECAY}
         out: dict[str, Any] = {"name": self.name, "code": self.code}
-        if section_confidence("projected_xi", gameweek) > 0 and self.status is not PlayerStatus.UNKNOWN:
+        if conf["projected_xi"] > 0 and self.status is not PlayerStatus.UNKNOWN:
             out["status"] = self.status.value
-        if section_confidence("injuries", gameweek) > 0 and self.injury:
+        if conf["injuries"] > 0 and self.injury:
             out["injury"] = self.injury
-        if section_confidence("role_notes", gameweek) > 0 and self.role_change:
+        if conf["role_notes"] > 0 and self.role_change:
             out["role_change"] = self.role_change
-        if section_confidence("set_piece_duty", gameweek) > 0:
+        if conf["set_piece_duty"] > 0:
             if self.set_pieces:
                 out["set_pieces"] = list(self.set_pieces)
             if self.penalties is not None:
                 out["penalties"] = self.penalties
-        if section_confidence("transfers", gameweek) > 0 and self.new_signing:
+        if conf["transfers"] > 0 and self.new_signing:
             out["new_signing"] = True
-        if section_confidence("narrative", gameweek) > 0 and self.notes:
+        if conf["narrative"] > 0 and self.notes:
             out["notes"] = self.notes
 
         if len(out) <= 2:
@@ -238,7 +258,6 @@ class TeamPreview:
     """One team's preview, as loaded. Decay is applied on emission."""
 
     team: str
-    season: str
     source: str
     published: date
     author: str | None = None
@@ -274,8 +293,13 @@ class TeamPreview:
 
         ``section_confidence`` is emitted alongside so a consumer can weight a
         categorical field (``status: starter``) that cannot be scaled
-        numerically the way a rating could.
+        numerically the way a rating could. ``sections_present`` names the
+        unexpired sections this file actually carries data for -- computed here,
+        where the field-to-section mapping lives, so a display layer does not
+        re-derive it from the emitted keys.
         """
+        conf = {section: section_confidence(section, gameweek) for section in SECTION_DECAY}
+        present: set[str] = set()
         out: dict[str, Any] = {
             "team": self.team,
             "source": self.source,
@@ -284,32 +308,38 @@ class TeamPreview:
             "published": self.published.isoformat(),
         }
 
-        if section_confidence("team_strength", gameweek) > 0:
+        if conf["team_strength"] > 0:
             if self.predicted_finish is not None:
                 out["predicted_finish"] = self.predicted_finish
             if self.team_strength is not None:
                 strength = self.team_strength.as_dict()
                 if strength:
                     out["team_strength"] = strength
+            if "predicted_finish" in out or "team_strength" in out:
+                present.add("team_strength")
 
-        if section_confidence("transfers", gameweek) > 0:
+        if conf["transfers"] > 0:
             if self.transfers_in:
                 out["transfers_in"] = list(self.transfers_in)
             if self.transfers_out:
                 out["transfers_out"] = list(self.transfers_out)
+            if self.transfers_in or self.transfers_out:
+                present.add("transfers")
 
-        if section_confidence("narrative", gameweek) > 0 and self.narrative:
+        if conf["narrative"] > 0 and self.narrative:
             out["narrative"] = self.narrative
+            present.add("narrative")
 
         players = [p for p in (note.as_dict(gameweek) for note in self.players) if p is not None]
         if players:
             out["players"] = players
+            for player in players:
+                present.update(
+                    PLAYER_FIELD_SECTIONS[key] for key in player if key in PLAYER_FIELD_SECTIONS
+                )
 
-        out["section_confidence"] = {
-            section: section_confidence(section, gameweek)
-            for section in SECTION_DECAY
-            if section_confidence(section, gameweek) > 0
-        }
+        out["section_confidence"] = {s: c for s, c in conf.items() if c > 0}
+        out["sections_present"] = sorted(present)
         return out
 
 
@@ -347,10 +377,29 @@ def _as_date(value: Any) -> date | None:
     return None
 
 
+_SEASON_RE = re.compile(r"^(\d{2}|\d{4})\s*[-/]\s*(\d{2}|\d{4})$")
+
+
 def _normalise_season(value: Any) -> str | None:
-    """Season label with a ``2026/27``-style separator accepted for ``2026-27``."""
+    """Season label canonicalised to the ``2026-27`` form.
+
+    Every reasonable spelling of a start/end year pair -- ``2026/27``,
+    ``2026-2027``, ``26-27`` -- must map to the same label, or a current-season
+    file gets rejected over punctuation with a warning claiming it is old. An
+    unrecognised shape is kept verbatim so the staleness check still rejects it
+    loudly rather than this function guessing at meaning.
+    """
     text = _as_str(value)
-    return text.replace("/", "-") if text else None
+    if not text:
+        return None
+    match = _SEASON_RE.match(text)
+    if not match:
+        return text.replace("/", "-")
+    start, end = match.groups()
+    if len(start) == 2:
+        # Two-digit start years are unambiguous here: the FPL era is all 20xx.
+        start = f"20{start}"
+    return f"{start}-{end[-2:]}"
 
 
 class SeasonPreviewsService:
@@ -462,13 +511,24 @@ class SeasonPreviewsService:
         # Narrow for the type checker: `missing` being empty proves these are set.
         assert team is not None and source is not None and published is not None
 
-        if self._is_stale(data, published):
-            self._warn(f"Ignoring preview {path}: it is from a previous season")
+        if team.upper() == EXAMPLE_STEM:
+            # The filename check in _load only covers the canonical EXAMPLE.yaml;
+            # a renamed or duplicated copy ("EXAMPLE (1).yaml") would otherwise
+            # load the fictional template content as real intel and count toward
+            # the coverage gate.
+            self._warn(
+                f"Ignoring preview {path}: team is the {EXAMPLE_STEM} template sentinel --"
+                f" copy the template to <TEAM>.yaml and set a real team code"
+            )
+            return None
+
+        stale = self._stale_reason(data, published)
+        if stale:
+            self._warn(f"Ignoring preview {path}: {stale}")
             return None
 
         return TeamPreview(
             team=team.upper(),
-            season=_normalise_season(data.get("season")) or season_label(),
             source=source,
             published=published,
             author=_as_str(data.get("author")),
@@ -483,17 +543,29 @@ class SeasonPreviewsService:
         )
 
     @staticmethod
-    def _is_stale(data: dict[str, Any], published: date) -> bool:
-        """Whether the file describes a season that is no longer current.
+    def _stale_reason(data: dict[str, Any], published: date) -> str | None:
+        """Why the file describes a season that is no longer current, or None.
 
         The explicit ``season`` label wins when present -- it catches the copied
         file whose date was refreshed but whose contents were not. Otherwise the
-        publication date decides, matching ``FixturePredictionsService``.
+        publication date decides, matching ``FixturePredictionsService``, with
+        one carve-out: season previews are routinely written in May and June for
+        the season that starts in August, so a date from May onward of the
+        current season's start year counts as current even though it falls
+        before the July season cutover.
         """
         declared = _normalise_season(data.get("season"))
+        current = season_label()
         if declared:
-            return declared != season_label()
-        return get_season_year(published) < get_season_year()
+            if declared != current:
+                return f"it declares season {declared}, and the current season is {current}"
+            return None
+        season_year = get_season_year()
+        if get_season_year(published) >= season_year:
+            return None
+        if published >= date(season_year, 5, 1):
+            return None
+        return f"published {published.isoformat()}, which is a previous season"
 
     def _read_finish(self, value: Any, path: Path) -> int | None:
         """Predicted league position, or None. Out-of-range values are dropped.
@@ -555,6 +627,13 @@ class SeasonPreviewsService:
 
             code = data.get("code")
             if isinstance(code, bool) or not isinstance(code, int):
+                if code is not None:
+                    # A quoted "123456" parses as a string; discarding it silently
+                    # would leave the file permanently unfixable by --write, which
+                    # skips entries that already carry any code value.
+                    self._warn(
+                        f"Dropping code {code!r} for {name} in {path}: expected a bare integer"
+                    )
                 code = None
 
             penalties = data.get("penalties")
@@ -582,7 +661,12 @@ class SeasonPreviewsService:
         wanted = team.strip().upper()
         return next((p for p in self._load() if p.team == wanted), None)
 
-    def coverage(self, gameweek: int, total_teams: int = PL_TEAM_COUNT) -> Coverage:
+    def coverage(
+        self,
+        gameweek: int,
+        total_teams: int = PL_TEAM_COUNT,
+        valid_teams: set[str] | None = None,
+    ) -> Coverage:
         """Coverage at *gameweek*, and the resulting usage policy.
 
         Centralised deliberately: three skills consume this intel, and a
@@ -592,8 +676,18 @@ class SeasonPreviewsService:
         Gameweek matters because a full set of previews that has entirely aged
         out is worth exactly as much as no previews: reporting it as usable
         would invite a consumer to print usage guidance over an empty payload.
+
+        *valid_teams*, when known, restricts the numerator to clubs actually in
+        the league: a set carried forward across a relegation must not report
+        full coverage on the strength of files for clubs that left. Offline the
+        caller has no team list and every file counts, matching the rest of the
+        command's graceful degradation.
         """
-        teams = sum(1 for preview in self._load() if preview.has_content)
+        teams = sum(
+            1
+            for preview in self._load()
+            if preview.has_content and (not valid_teams or preview.team in valid_teams)
+        )
         if teams == 0 or not live_sections(gameweek):
             usable = Usability.NONE
         elif total_teams and teams / total_teams >= COVERAGE_THRESHOLD:
@@ -671,21 +765,20 @@ def unresolved_players(previews: list[TeamPreview]) -> list[tuple[str, str]]:
 # that is good at reading prose and bad at remembering six-digit integers.
 
 
+_PUNCT_RE = re.compile(r"[^\w\s]")
+_WS_RE = re.compile(r"\s+")
+
+
 def normalise_name(value: str) -> str:
     """Casefold, strip accents and punctuation, and collapse whitespace.
 
     ``Ødegaard`` and ``Odegaard`` must resolve to the same player, and
     ``Bruno G.`` must not be separated from ``Bruno G`` by a full stop.
+    Diacritic folding is :func:`fpl_cli.utils.text.strip_diacritics`, the same
+    table every other cross-source name comparison uses -- it also covers the
+    non-decomposable letters (Ø, Ł, Đ) that a bare NFKD pass leaves intact.
     """
-    import re
-    import unicodedata
-
-    # NFKD splits an accented character into base + combining mark, so dropping
-    # the marks leaves the ASCII skeleton. The slashed O in "Ødegaard" has no
-    # decomposition, hence the explicit fold below.
-    decomposed = unicodedata.normalize("NFKD", value.replace("ø", "o").replace("Ø", "O"))
-    stripped = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
-    return re.sub(r"\s+", " ", re.sub(r"[^\w\s]", " ", stripped)).strip().lower()
+    return _WS_RE.sub(" ", _PUNCT_RE.sub(" ", strip_diacritics(value))).strip().lower()
 
 
 @dataclass(frozen=True)
@@ -708,36 +801,35 @@ class NameMatch:
         return out
 
 
-def resolve_name(name: str, squad: list[Any]) -> NameMatch:
-    """Match one preview name against a team's squad.
+def _squad_index(squad: list[Any]) -> list[tuple[Any, set[str], list[str]]]:
+    """``(player, normalised aliases, haystack tokens)`` computed once per squad.
 
-    *squad* holds ``Player`` models; only ``code``, ``web_name``,
-    ``first_name`` and ``second_name`` are read, so any object carrying those
-    attributes works.
-
-    Exact match on a display or full name wins outright. Otherwise every query
-    token must appear in the player's combined names, which is what carries
-    ``Bruno Guimaraes`` to the player the game displays as ``Bruno G.``. An
-    ambiguous result is reported as ambiguous rather than guessed: a silently
-    wrong code is far worse than one the user is asked to fill in.
+    Normalisation does real unicode and regex work, so it must not be repeated
+    per query name -- a preview resolves every note against the same squad.
     """
-    wanted = normalise_name(name)
-    if not wanted:
-        return NameMatch(name=name)
-
-    exact: list[Any] = []
-    partial: list[Any] = []
+    index: list[tuple[Any, set[str], list[str]]] = []
     for player in squad:
         aliases = {
             normalise_name(player.web_name),
             normalise_name(player.second_name),
             normalise_name(f"{player.first_name} {player.second_name}"),
         }
+        haystack = normalise_name(f"{player.first_name} {player.second_name} {player.web_name}")
+        index.append((player, aliases, haystack.split()))
+    return index
+
+
+def _resolve_against_index(name: str, index: list[tuple[Any, set[str], list[str]]]) -> NameMatch:
+    wanted = normalise_name(name)
+    if not wanted:
+        return NameMatch(name=name)
+
+    exact: list[Any] = []
+    partial: list[Any] = []
+    for player, aliases, tokens in index:
         if wanted in aliases:
             exact.append(player)
             continue
-        haystack = normalise_name(f"{player.first_name} {player.second_name} {player.web_name}")
-        tokens = haystack.split()
         if all(any(token == part or part.startswith(token) for part in tokens) for token in wanted.split()):
             partial.append(player)
 
@@ -753,25 +845,50 @@ def resolve_name(name: str, squad: list[Any]) -> NameMatch:
     return NameMatch(name=name)
 
 
+def resolve_name(name: str, squad: list[Any]) -> NameMatch:
+    """Match one preview name against a team's squad.
+
+    *squad* holds ``Player`` models; only ``code``, ``web_name``,
+    ``first_name`` and ``second_name`` are read, so any object carrying those
+    attributes works.
+
+    Exact match on a display or full name wins outright. Otherwise every query
+    token must appear in the player's combined names, which is what carries
+    ``Bruno Guimaraes`` to the player the game displays as ``Bruno G.``. An
+    ambiguous result is reported as ambiguous rather than guessed: a silently
+    wrong code is far worse than one the user is asked to fill in.
+    """
+    return _resolve_against_index(name, _squad_index(squad))
+
+
 def resolve_preview_names(preview: TeamPreview, squad: list[Any], *, only_missing: bool = True) -> list[NameMatch]:
     """Resolve a preview's player names against *squad*.
 
     With *only_missing*, players that already carry a code are left alone --
     a hand-corrected code must survive a re-run.
     """
+    index = _squad_index(squad)
     return [
-        resolve_name(note.name, squad)
+        _resolve_against_index(note.name, index)
         for note in preview.players
         if not (only_missing and note.code is not None)
     ]
 
 
-def write_resolved_codes(path: Path, matches: list[NameMatch]) -> int:
+def write_resolved_codes(path: Path, matches: list[NameMatch], *, overwrite: bool = False) -> int:
     """Write resolved codes back into a preview file, preserving comments.
 
     Round-trip YAML: these files are hand-written and heavily commented, so
     reserialising them from plain dicts would destroy the user's own notes.
     Returns the number of codes written.
+
+    By default an entry that already carries a valid integer code is left alone
+    -- a hand-corrected code must survive a re-run. With *overwrite* (the
+    ``--all`` path, which re-resolved those very entries) a differing resolved
+    code replaces the existing one; without it, ``--all --write`` would display
+    corrections it never saves. A code that is not a bare integer (a quoted
+    string, say) never counts as present: the loader discards it, so keeping it
+    would leave the file permanently unfixable.
     """
     from ruamel.yaml import YAML
 
@@ -792,11 +909,17 @@ def write_resolved_codes(path: Path, matches: list[NameMatch]) -> int:
 
     written = 0
     for entry in data.get("players") or []:
-        if not isinstance(entry, dict) or entry.get("code") is not None:
+        if not isinstance(entry, dict):
+            continue
+        existing = entry.get("code")
+        has_valid_code = isinstance(existing, int) and not isinstance(existing, bool)
+        if has_valid_code and not overwrite:
             continue
         entry_name = entry.get("name")
-        code = by_name.get(entry_name) if isinstance(entry_name, str) else None
-        if code is not None:
+        # The loader strips names (`_as_str`), so match keys are stripped; the
+        # raw scalar may not be when the user quoted surrounding whitespace.
+        code = by_name.get(entry_name.strip()) if isinstance(entry_name, str) else None
+        if code is not None and code != existing:
             entry["code"] = code
             written += 1
 

@@ -1,7 +1,8 @@
 # Season preview template. Copy to <config dir>/previews/<TEAM>.yaml and edit,
 # or run `fpl intel init` to scaffold one file per Premier League team.
 #
-# The loader skips any file named EXAMPLE.yaml, so an unedited copy stays quiet.
+# The loader skips any file named EXAMPLE.yaml, and warns about any copy whose
+# team is still EXAMPLE, so unedited scaffolding never counts as real intel.
 #
 # Every field except team, season, source and published is optional. Fill in
 # only what your source actually says: a 200-word blurb and a 4000-word data
@@ -13,7 +14,7 @@
 
 schema_version: 1
 
-# FPL team short name, exactly as the game spells it (ARS, MCI, NFO, SPURS...).
+# FPL team short name, exactly as the game spells it (ARS, MCI, NFO, TOT...).
 # `fpl intel` warns about a code that matches no team this season, which also
 # catches a file left behind for a relegated side.
 team: EXAMPLE

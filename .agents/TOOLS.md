@@ -58,7 +58,7 @@ Errors use `emit_json_error()` with `{"command", "error"}` shape.
 | `intel schema` | Print the preview file format with every field explained | No | General | No | direct-api |
 | `intel init` | Scaffold an empty preview file per Premier League team (`--force` overwrites). Stubs never count toward coverage | No | General | No | direct-api |
 | `intel show` | Show one team's preview, aged to the current gameweek | Yes | General | No | direct-api |
-| `intel resolve` | Match preview player names to FPL `element_code`s; `--write` saves them back with comments preserved, `--all` re-resolves coded players. Ambiguity is reported, never guessed | Yes | General | No | direct-api |
+| `intel resolve` | Match preview player names to FPL `element_code`s; `--write` saves them back with comments preserved (never touching an existing code), `--all` re-resolves coded players and with `--write` saves corrections over them. Ambiguity is reported, never guessed | Yes | General | No | direct-api |
 | `credentials set` | Store FPL email and password in system keyring | No | Classic | No | direct-api |
 | `credentials clear` | Remove FPL credentials from system keyring | No | Classic | No | direct-api |
 

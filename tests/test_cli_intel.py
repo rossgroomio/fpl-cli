@@ -29,11 +29,11 @@ def _offline(monkeypatch):
     async def _gameweek(explicit: int | None) -> int:
         return explicit if explicit is not None else 1
 
-    async def _shorts() -> set[str]:
-        return {"ARS", "LIV", "MCI"}
+    async def _gameweek_and_teams(explicit: int | None) -> tuple[int, set[str]]:
+        return await _gameweek(explicit), {"ARS", "LIV", "MCI"}
 
     monkeypatch.setattr(intel_mod, "_resolve_gameweek", _gameweek)
-    monkeypatch.setattr(intel_mod, "_team_short_names", _shorts)
+    monkeypatch.setattr(intel_mod, "_gameweek_and_teams", _gameweek_and_teams)
 
 
 def write_preview(name: str, **overrides) -> None:
@@ -168,6 +168,15 @@ class TestShow:
         late = parse(run("show", "ARS", "-g", "5", "--format", "json"))["data"]
         assert "injury" not in late["players"][0]
 
+    def test_group_level_gameweek_flag_reaches_show(self):
+        # `fpl intel -g 5 show ARS` parses -g on the group; it must drive the
+        # decay rather than being silently discarded.
+        write_preview("ARS", players=[{"name": "Saliba", "code": 1, "status": "starter",
+                                       "injury": "Out."}])
+        payload = parse(run("-g", "5", "show", "ARS", "--format", "json"))
+        assert payload["metadata"]["gameweek"] == 5
+        assert "injury" not in payload["data"]["players"][0]
+
     def test_expired_sections_are_noted_in_table_mode(self):
         write_preview("ARS")
         assert "Expired at GW9" in run("show", "ARS", "-g", "9").stdout
@@ -286,6 +295,19 @@ class TestResolve:
         write_preview("ARS", players=[{"name": "Saliba", "code": 462424}])
         payload = parse(run("resolve", "ARS", "--all", "--format", "json"))
         assert [m["name"] for m in payload["data"]] == ["Saliba"]
+
+    def test_all_write_replaces_a_wrong_code(self):
+        # The documented fix path for a hand-typed wrong code: --all re-resolves
+        # it and --write must actually save the correction.
+        write_preview("ARS", players=[{"name": "Saliba", "code": 999}])
+        payload = parse(run("resolve", "ARS", "--all", "--write", "--format", "json"))
+        assert payload["metadata"]["written"] == 1
+        assert "code: 462424" in (previews_dir() / "ARS.yaml").read_text()
+
+    def test_write_without_all_leaves_existing_codes_alone(self):
+        write_preview("ARS", players=[{"name": "Saliba", "code": 999}])
+        run("resolve", "ARS", "--write")
+        assert "999" in (previews_dir() / "ARS.yaml").read_text()
 
     def test_missing_team_exits_nonzero(self):
         result = run("resolve", "ARS")

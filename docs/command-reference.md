@@ -515,6 +515,7 @@ fpl intel show ARS              # One team's intel, aged to the current gameweek
 fpl intel resolve ARS           # Match player names to FPL codes (dry run)
 fpl intel resolve ARS --write   # Write the codes back, preserving your comments
 fpl intel resolve ARS --all     # Re-resolve players that already have a code
+fpl intel resolve ARS --all --write  # ...and save corrections over existing codes
 ```
 
 **Location:** `<config dir>/previews/{TEAM}.yaml`, one file per team, named by FPL short
@@ -538,7 +539,9 @@ influencing decisions on their own.
 
 Between full confidence and expiry the value tapers linearly and is reported per section
 as `section_confidence`. A categorical field such as `status: starter` cannot be scaled
-numerically, so the confidence is emitted alongside it for the consumer to weigh.
+numerically, so the confidence is emitted alongside it for the consumer to weigh. Each
+emitted preview also carries `sections_present` — the unexpired sections that file
+actually holds data for, so a consumer need not re-derive that from the payload keys.
 
 ### Coverage gate
 
@@ -559,21 +562,28 @@ Stubs from `fpl intel init` never count toward coverage until they are filled in
 A file is ignored, with the reason printed to stderr and carried in
 `metadata.warnings`, when it is unreadable, is not a mapping, declares an unknown
 `schema_version`, is missing `team`, `source` or `published`, or belongs to a previous
-season. The season check reads the explicit `season` label when present and falls back
-to the `published` date — this is the guard against building a squad on last August's
-opinions. A preview set that has drifted across promotion and relegation is reported
-too.
+season. The season check reads the explicit `season` label when present (any
+start/end-year spelling — `2026-27`, `2026/2027`, `26-27` — is accepted) and falls back
+to the `published` date, with May and June of the season's start year counting as
+current since that is when season previews are written. This is the guard against
+building a squad on last August's opinions. A file whose `team` is still the `EXAMPLE`
+template sentinel is skipped with a warning, and a preview set that has drifted across
+promotion and relegation is reported too; clubs not in the current league never count
+toward coverage.
 
 ### Name resolution
 
 Preview prose names players the way a reader would — "Bruno Guimaraes" where the game
 shows "Bruno G." — so `fpl intel resolve` matches names against the team's squad and
 writes `element_code` (stable across seasons) back into the file. Accents and
-punctuation are folded, so `Ødegaard` and `Odegaard` resolve alike. An exact match on a
+punctuation are folded, so `Ødegaard` and `Odegaard` resolve alike (including
+non-decomposable letters: `Łukasz` matches `Lukasz`). An exact match on a
 display or full name wins outright; otherwise every query token must appear in the
 player's combined names. **Ambiguity is reported, never guessed** — a silently wrong
 code attaches intel to the wrong player. Writes are round-trip YAML, so hand-written
-comments and formatting survive.
+comments and formatting survive. A plain `--write` never touches an existing code — a
+hand-corrected code survives a re-run — while `--all --write` saves a re-resolved code
+over a differing existing one.
 
 ## Configuration Reference
 

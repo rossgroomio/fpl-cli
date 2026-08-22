@@ -153,9 +153,13 @@ No sub-agent needed. The orchestrator already has all Phase B JSON. Extract cand
 
 1. Parse the 4 positional `fpl stats` outputs (MID/FWD/DEF/GK) + 4 `quality_per_m` outputs + form + cheapest
 2. Deduplicate players appearing in multiple lists
-3. Add any player names from `fpl intel` (or other reports) not already in the stats lists.
-   A new signing with no Premier League history is invisible to `fpl stats` and `fpl history`
-   but may be a projected starter - this is how such a player enters the pool at all.
+3. Only if the `fpl intel` response's `metadata.coverage.usable_as` is `full` (the same value
+   the Phase B3 gate reads): add any player names from `fpl intel` (or other reports) not
+   already in the stats lists. A new signing with no Premier League history is invisible to
+   `fpl stats` and `fpl history` but may be a projected starter - this is how such a player
+   enters the pool at all. Under `negative_filter_only` or `none`, do **not** add
+   intel-sourced names: pool admission is the strongest form of promotion, and the gate
+   forbids partial-coverage intel from promoting anyone (see Phase B3).
 4. Note which players appear in the `fpl allocate` solver output (JSON field is `web_name`, not `name`)
 5. Produce 4 candidate lists:
 

@@ -4,8 +4,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import date
-from typing import Any
+from typing import Any, NoReturn
 
 import click
 from rich.markup import escape as rich_escape
@@ -55,42 +54,39 @@ def _warn_load_problems(service: SeasonPreviewsService) -> None:
         error_console.print(f"[yellow]{rich_escape(warning)}[/yellow]")
 
 
-async def _resolve_gameweek(explicit: int | None) -> int:
-    """Gameweek to decay against.
+def _fail(message: str, output_format: str, cause: BaseException | None = None) -> NoReturn:
+    """Report *message* on the right channel for the format, then exit 1."""
+    if output_format == "json":
+        emit_json_error(COMMAND, message)
+    else:
+        console.print(f"[red]{rich_escape(message)}[/red]")
+    raise SystemExit(1) from cause
+
+
+async def _upcoming_gameweek(client: Any) -> int:
+    """Gameweek to decay against, read from an open client.
 
     The *upcoming* gameweek is the planning horizon, so next takes precedence
     over current. Pre-season both may be absent and GW1 is the right answer.
     """
+    next_gw = await client.get_next_gameweek()
+    if next_gw:
+        return int(next_gw["id"])
+    current_gw = await client.get_current_gameweek()
+    if current_gw:
+        return int(current_gw["id"])
+    return 1
+
+
+async def _resolve_gameweek(explicit: int | None) -> int:
+    """Gameweek to decay against, opening a client only when one is needed."""
     if explicit is not None:
         return explicit
 
     from fpl_cli.api.fpl import FPLClient
 
     async with FPLClient() as client:
-        next_gw = await client.get_next_gameweek()
-        if next_gw:
-            return int(next_gw["id"])
-        current_gw = await client.get_current_gameweek()
-        if current_gw:
-            return int(current_gw["id"])
-    return 1
-
-
-async def _team_short_names() -> set[str]:
-    """Premier League short names for this season, or an empty set if offline.
-
-    Validation is a nicety; being unable to reach the API must not stop the
-    command from reporting the intel it already holds on disk.
-    """
-    from fpl_cli.api.fpl import FPLClient
-
-    try:
-        async with FPLClient() as client:
-            teams = await client.get_teams()
-    except Exception as exc:  # noqa: BLE001 -- graceful degradation, validation is optional
-        error_console.print(f"[yellow]Skipping team-name validation: {exc}[/yellow]")
-        return set()
-    return {team.short_name.upper() for team in teams}
+        return await _upcoming_gameweek(client)
 
 
 def _decay_rows(gameweek: int) -> list[dict[str, Any]]:
@@ -118,26 +114,43 @@ def intel_group(ctx: click.Context, gameweek: int | None, show_decay: bool, outp
     _summary(gameweek, show_decay, output_format)
 
 
+async def _gameweek_and_teams(explicit: int | None) -> tuple[int, set[str]]:
+    """Gameweek to decay against, plus the live team short names.
+
+    One client, one bootstrap-static fetch: the gameweek and the team list
+    come from the same cached payload.
+    """
+    from fpl_cli.api.fpl import FPLClient
+
+    async with FPLClient() as client:
+        gw = explicit if explicit is not None else await _upcoming_gameweek(client)
+        teams = await client.get_teams()
+    return gw, {team.short_name.upper() for team in teams}
+
+
 def _summary(gameweek: int | None, show_decay: bool, output_format: str) -> None:
     service = SeasonPreviewsService()
     previews = service.get_previews()
 
-    async def _gather() -> tuple[int, set[str]]:
-        return await _resolve_gameweek(gameweek), await _team_short_names()
+    async def _run() -> tuple[int, set[str]]:
+        return await _gameweek_and_teams(gameweek)
 
     try:
-        gw, valid_shorts = asyncio.run(_gather())
+        gw, valid_shorts = asyncio.run(_run())
     except Exception as exc:  # noqa: BLE001 -- offline must still report on-disk intel
         if gameweek is None:
             error_console.print(f"[yellow]Could not reach FPL API ({exc}); assuming GW1[/yellow]")
+        else:
+            error_console.print(f"[yellow]Skipping team-name validation: {exc}[/yellow]")
         gw, valid_shorts = gameweek or 1, set()
 
-    coverage = service.coverage(gw)
+    coverage = service.coverage(gw, valid_teams=valid_shorts or None)
     unknown = unknown_teams(previews, valid_shorts) if valid_shorts else []
     drift = team_set_warning(previews, valid_shorts, coverage)
     unresolved = unresolved_players(previews)
 
     if output_format == "json":
+        decay = _decay_rows(gw)
         emit_json(
             COMMAND,
             service.as_dicts(gw),
@@ -147,10 +160,12 @@ def _summary(gameweek: int | None, show_decay: bool, output_format: str) -> None
                 "previews_dir": str(service.previews_path),
                 "coverage": coverage.as_dict(),
                 "usage_policy": _USABILITY_HELP[coverage.usable_as],
-                "sections_live": live_sections(gw),
-                "sections_expired": expired_sections(gw),
-                "section_confidence": {s: section_confidence(s, gw) for s in live_sections(gw)},
-                "decay_schedule": _decay_rows(gw),
+                "sections_live": [r["section"] for r in decay if r["confidence"] > 0],
+                "sections_expired": [r["section"] for r in decay if r["confidence"] <= 0],
+                "section_confidence": {
+                    r["section"]: r["confidence"] for r in decay if r["confidence"] > 0
+                },
+                "decay_schedule": decay,
                 "unknown_teams": unknown,
                 "team_set_warning": drift,
                 "unresolved_players": [{"team": t, "name": n} for t, n in unresolved],
@@ -195,7 +210,8 @@ def _render_previews(previews: list[TeamPreview], gameweek: int) -> None:
             table.add_row(preview.team, "[dim]stub, not filled in[/dim]", "", "", "", "")
             continue
         emitted = preview.as_dict(gameweek)
-        sections = [s for s in emitted["section_confidence"] if s in _present_sections(emitted)]
+        present = set(emitted.get("sections_present", []))
+        sections = [s for s in emitted["section_confidence"] if s in present]
         table.add_row(
             preview.team,
             rich_escape(preview.source),
@@ -205,35 +221,6 @@ def _render_previews(previews: list[TeamPreview], gameweek: int) -> None:
             ", ".join(sections) if sections else "[dim]all expired[/dim]",
         )
     console.print(table)
-
-
-def _present_sections(emitted: dict[str, Any]) -> set[str]:
-    """Sections that actually carry data in *emitted*, not merely unexpired.
-
-    A team whose file has no set-piece notes should not be listed as carrying
-    live set-piece intel just because the section has not aged out yet.
-    """
-    present: set[str] = set()
-    if "team_strength" in emitted or "predicted_finish" in emitted:
-        present.add("team_strength")
-    if "transfers_in" in emitted or "transfers_out" in emitted:
-        present.add("transfers")
-    if emitted.get("narrative"):
-        present.add("narrative")
-    for player in emitted.get("players", []):
-        if "status" in player:
-            present.add("projected_xi")
-        if "injury" in player:
-            present.add("injuries")
-        if "role_change" in player:
-            present.add("role_notes")
-        if "set_pieces" in player or "penalties" in player:
-            present.add("set_piece_duty")
-        if player.get("new_signing"):
-            present.add("transfers")
-        if player.get("notes"):
-            present.add("narrative")
-    return present
 
 
 def _render_coverage(coverage: Coverage) -> None:
@@ -273,18 +260,21 @@ def _render_decay(gameweek: int) -> None:
 @click.option("--gameweek", "-g", type=int, default=None,
               help="Decay intel as at this gameweek (default: the upcoming one)")
 @output_format_option
-def show_command(team: str, gameweek: int | None, output_format: str) -> None:
+@click.pass_context
+def show_command(ctx: click.Context, team: str, gameweek: int | None, output_format: str) -> None:
     """Show the full preview you have collected for one team."""
+    if gameweek is None and ctx.parent is not None:
+        # `fpl intel -g 5 show ARS` parses -g on the group; honour it rather
+        # than silently decaying to the live gameweek.
+        gameweek = ctx.parent.params.get("gameweek")
+
     service = SeasonPreviewsService()
     preview = service.get_preview(team)
 
     if preview is None:
-        message = f"No preview for '{team}' in {service.previews_path}"
-        if output_format == "json":
-            emit_json_error(COMMAND, message)
-        _warn_load_problems(service)
-        console.print(f"[red]{rich_escape(message)}[/red]")
-        raise SystemExit(1)
+        if output_format != "json":
+            _warn_load_problems(service)
+        _fail(f"No preview for '{team}' in {service.previews_path}", output_format)
 
     try:
         gw = asyncio.run(_resolve_gameweek(gameweek))
@@ -376,13 +366,13 @@ def init_command(force: bool) -> None:
     """Create an empty preview file for each Premier League team."""
     from fpl_cli.api.fpl import FPLClient
 
-    async def _fetch() -> list[tuple[str, str]]:
+    async def _run() -> list[tuple[str, str]]:
         async with FPLClient() as client:
             teams = await client.get_teams()
         return sorted((team.short_name.upper(), team.name) for team in teams)
 
     try:
-        teams = asyncio.run(_fetch())
+        teams = asyncio.run(_run())
     except Exception as exc:  # noqa: BLE001 -- report the failure rather than a stack trace
         console.print(f"[red]Could not fetch teams from the FPL API: {exc}[/red]")
         raise SystemExit(1) from exc
@@ -417,6 +407,8 @@ def _stub(short_name: str, full_name: str) -> str:
     Deliberately contentless so scaffolding the league cannot inflate coverage
     into unlocking positive use with nothing behind it.
     """
+    from fpl_cli.utils.time import now_uk
+
     return f"""# {full_name} season preview - {season_label()}
 # Fill in from whatever source you read, then check with: fpl intel show {short_name}
 # Schema reference: {example_file()}
@@ -425,7 +417,7 @@ schema_version: 1
 team: {short_name}
 season: "{season_label()}"
 source: "TODO - where this came from"
-published: {date.today().isoformat()}
+published: {now_uk().date().isoformat()}
 
 # predicted_finish: 10
 # team_strength:
@@ -456,13 +448,9 @@ def resolve_command(team: str, write: bool, resolve_all: bool, output_format: st
     service = SeasonPreviewsService()
     preview = service.get_preview(team)
     if preview is None or preview.path is None:
-        message = f"No preview for '{team}' in {service.previews_path}"
-        if output_format == "json":
-            emit_json_error(COMMAND, message)
-        console.print(f"[red]{rich_escape(message)}[/red]")
-        raise SystemExit(1)
+        _fail(f"No preview for '{team}' in {service.previews_path}", output_format)
 
-    async def _squad() -> list[Any]:
+    async def _run() -> list[Any]:
         async with FPLClient() as client:
             players = await client.get_players()
             teams = await client.get_teams()
@@ -470,23 +458,17 @@ def resolve_command(team: str, write: bool, resolve_all: bool, output_format: st
         return [p for p in players if p.team_id in team_ids]
 
     try:
-        squad = asyncio.run(_squad())
+        squad = asyncio.run(_run())
     except Exception as exc:  # noqa: BLE001 -- report the failure rather than a stack trace
-        message = f"Could not fetch the squad from the FPL API: {exc}"
-        if output_format == "json":
-            emit_json_error(COMMAND, message)
-        console.print(f"[red]{rich_escape(message)}[/red]")
-        raise SystemExit(1) from exc
+        _fail(f"Could not fetch the squad from the FPL API: {exc}", output_format, cause=exc)
 
     if not squad:
-        message = f"No Premier League squad found for team code '{preview.team}'"
-        if output_format == "json":
-            emit_json_error(COMMAND, message)
-        console.print(f"[red]{rich_escape(message)}[/red]")
-        raise SystemExit(1)
+        _fail(f"No Premier League squad found for team code '{preview.team}'", output_format)
 
     matches = resolve_preview_names(preview, squad, only_missing=not resolve_all)
-    written = write_resolved_codes(preview.path, matches) if write else 0
+    # --all re-resolves entries that already carry a code, so its writes must be
+    # allowed to replace one; the default path never touches an existing code.
+    written = write_resolved_codes(preview.path, matches, overwrite=resolve_all) if write else 0
     unresolved = [m for m in matches if m.code is None]
 
     if output_format == "json":

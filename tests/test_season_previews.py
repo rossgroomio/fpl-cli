@@ -154,14 +154,41 @@ class TestLoading:
         assert service.get_previews() == []
         assert any(missing in w for w in service.load_warnings)
 
+    def test_template_copy_with_sentinel_team_is_skipped_with_a_warning(self):
+        # The filename check only covers the canonical EXAMPLE.yaml; a stray
+        # copy must not load its fictional content as real intel.
+        write_preview("EXAMPLE (1)", minimal(team="EXAMPLE"))
+        service = SeasonPreviewsService()
+        assert service.get_previews() == []
+        assert any("template sentinel" in w for w in service.load_warnings)
+
     def test_previous_season_label_is_rejected(self):
         write_preview("ARS", minimal(season=PREVIOUS_SEASON))
         service = SeasonPreviewsService()
         assert service.get_previews() == []
-        assert any("previous season" in w for w in service.load_warnings)
+        assert any(f"declares season {PREVIOUS_SEASON}" in w for w in service.load_warnings)
 
     def test_slash_separated_season_is_accepted(self):
         write_preview("ARS", minimal(season=CURRENT_SEASON.replace("-", "/")))
+        assert SeasonPreviewsService().get_preview("ARS") is not None
+
+    @pytest.mark.parametrize("variant", ["full_years", "full_years_slash", "short_years"])
+    def test_alternate_current_season_formats_are_accepted(self, variant):
+        start = get_season_year()
+        label = {
+            "full_years": f"{start}-{start + 1}",
+            "full_years_slash": f"{start}/{start + 1}",
+            "short_years": f"{str(start)[2:]}-{str(start + 1)[2:]}",
+        }[variant]
+        write_preview("ARS", minimal(season=label))
+        assert SeasonPreviewsService().get_preview("ARS") is not None
+
+    def test_pre_season_publication_date_is_current_without_a_label(self):
+        # Season previews are routinely published in May/June for the season
+        # starting in August; the July cutover must not call them stale.
+        data = minimal(published=date(get_season_year(), 6, 15))
+        del data["season"]
+        write_preview("ARS", data)
         assert SeasonPreviewsService().get_preview("ARS") is not None
 
     def test_previous_season_detected_from_published_date_when_label_absent(self):
@@ -215,11 +242,15 @@ class TestFieldParsing:
         assert [p.name for p in preview.players] == ["Saka"]
         assert any("missing name" in w for w in service.load_warnings)
 
-    def test_non_integer_code_becomes_none(self):
+    def test_non_integer_code_becomes_none_with_a_warning(self):
+        # A quoted "123456" parses as a string; without the warning the file is
+        # silently uncorrectable, because the writer sees a code as present.
         write_preview("ARS", minimal(players=[{"name": "Saka", "code": "abc"}]))
-        preview = SeasonPreviewsService().get_preview("ARS")
+        service = SeasonPreviewsService()
+        preview = service.get_preview("ARS")
         assert preview is not None
         assert preview.players[0].code is None
+        assert any("Dropping code" in w for w in service.load_warnings)
 
     def test_boolean_code_is_not_mistaken_for_an_integer(self):
         write_preview("ARS", minimal(players=[{"name": "Saka", "code": True}]))
@@ -337,6 +368,24 @@ class TestCoverage:
     def test_pct_survives_a_zero_denominator(self):
         assert SeasonPreviewsService().coverage(1, total_teams=0).pct == 0.0
 
+    def test_valid_teams_excludes_clubs_not_in_the_league(self):
+        # A set carried forward across a relegation must not unlock full use on
+        # the strength of files for clubs that left the league.
+        self._fill(int(PL_TEAM_COUNT * COVERAGE_THRESHOLD))
+        write_preview("GONE1", minimal(team="GONE1"))
+        write_preview("GONE2", minimal(team="GONE2"))
+        live = {f"T{i:02d}" for i in range(PL_TEAM_COUNT)}
+
+        unfiltered = SeasonPreviewsService().coverage(1)
+        filtered = SeasonPreviewsService().coverage(1, valid_teams=live)
+        assert unfiltered.teams == filtered.teams + 2
+        assert filtered.teams == int(PL_TEAM_COUNT * COVERAGE_THRESHOLD)
+
+    def test_empty_valid_teams_counts_everything(self):
+        # Offline there is no team list; validation must not zero coverage out.
+        self._fill(2)
+        assert SeasonPreviewsService().coverage(1, valid_teams=set()).teams == 2
+
 
 class TestDecayedEmission:
     """as_dict / as_dicts strip what the gameweek has aged out."""
@@ -409,6 +458,21 @@ class TestDecayedEmission:
         assert "injuries" not in emitted["section_confidence"]
         assert set(emitted["section_confidence"]) == set(live_sections(5))
 
+    def test_sections_present_names_only_sections_with_data(self):
+        # A file with no set-piece notes must not claim live set-piece intel
+        # just because the section has not aged out yet.
+        write_preview("ARS", minimal(players=[{"name": "Saliba", "code": 1, "injury": "Out."}]))
+        emitted = SeasonPreviewsService().as_dicts(1)[0]
+        present = set(emitted["sections_present"])
+        assert {"injuries", "narrative"} <= present  # minimal() carries a narrative
+        assert "set_piece_duty" not in present
+        assert "team_strength" not in present
+
+    def test_sections_present_drops_expired_sections(self):
+        write_preview("ARS", minimal(players=[{"name": "Saliba", "code": 1, "injury": "Out."}]))
+        emitted = SeasonPreviewsService().as_dicts(5)[0]
+        assert "injuries" not in emitted["sections_present"]
+
 
 class TestValidators:
     """Cross-checks against the real roster, driven by the CLI."""
@@ -467,6 +531,10 @@ class TestNormaliseName:
             ("Bruno G.", "bruno g"),
             ("Guimarães", "guimaraes"),
             ("  Kai   Havertz ", "kai havertz"),
+            # Non-decomposable letters, folded by the shared strip_diacritics
+            # table rather than a local NFKD pass that would leave them intact.
+            ("Łukasz Fabiański", "lukasz fabianski"),
+            ("Đorđe Petrović", "dorde petrovic"),
         ],
     )
     def test_normalisation(self, raw, expected):
@@ -567,11 +635,49 @@ class TestWriteResolvedCodes:
         assert "# trailing comment" in text
         assert '  - name: "Saliba"' in text  # indentation preserved
 
-    def test_existing_codes_are_never_overwritten(self):
+    def test_existing_codes_are_never_overwritten_by_default(self):
         path = write_preview("ARS", minimal(players=[{"name": "Saliba", "code": 999}]))
         matches = [NameMatch(name="Saliba", code=462424, matched_name="Saliba", how="exact")]
         assert write_resolved_codes(path, matches) == 0
         assert "999" in path.read_text()
+
+    def test_overwrite_replaces_a_differing_code(self):
+        # The --all path re-resolves coded players, so its writes must be able
+        # to replace one -- otherwise the table shows a fix that never saves.
+        path = write_preview("ARS", minimal(players=[{"name": "Saliba", "code": 999}]))
+        matches = [NameMatch(name="Saliba", code=462424, matched_name="Saliba", how="exact")]
+        assert write_resolved_codes(path, matches, overwrite=True) == 1
+        assert "code: 462424" in path.read_text()
+        assert "999" not in path.read_text()
+
+    def test_overwrite_leaves_a_matching_code_alone(self):
+        path = write_preview("ARS", minimal(players=[{"name": "Saliba", "code": 462424}]))
+        matches = [NameMatch(name="Saliba", code=462424, matched_name="Saliba", how="exact")]
+        assert write_resolved_codes(path, matches, overwrite=True) == 0
+
+    def test_string_code_is_replaced_without_overwrite(self):
+        # The loader discards a quoted code, so the player counts as unresolved;
+        # the writer must agree, or the file is permanently stuck.
+        path = write_preview("ARS", minimal(players=[{"name": "Saliba", "code": "999"}]))
+        matches = [NameMatch(name="Saliba", code=462424, matched_name="Saliba", how="exact")]
+        assert write_resolved_codes(path, matches) == 1
+        assert "code: 462424" in path.read_text()
+
+    def test_quoted_whitespace_around_a_name_still_writes(self):
+        # The loader strips names, so the match is keyed on "Saliba"; the raw
+        # scalar keeps its quoted padding and must still be found.
+        path = write_preview("ARS", (
+            "schema_version: 1\n"
+            "team: ARS\n"
+            f'season: "{CURRENT_SEASON}"\n'
+            "source: Example Weekly\n"
+            f"published: {get_season_year()}-08-15\n"
+            "players:\n"
+            '  - name: " Saliba "\n'
+        ))
+        matches = [NameMatch(name="Saliba", code=462424, matched_name="Saliba", how="exact")]
+        assert write_resolved_codes(path, matches) == 1
+        assert "462424" in path.read_text()
 
     def test_no_matches_leaves_the_file_untouched(self):
         path = write_preview("ARS", minimal(players=[{"name": "Saliba"}]))
