@@ -69,6 +69,22 @@ def _gw_rank(standings: list[dict[str, Any]], user_event_total: int) -> int:
     return sum(1 for s in standings if s.get("event_total", 0) > user_event_total) + 1
 
 
+async def _picks_if_locked(client: FPLClient, entry_id: int, gameweek: int) -> dict[str, Any]:
+    """Manager picks, tolerating a gameweek whose deadline has not passed.
+
+    FPL serves 404 for picks until the gameweek locks -- pre-season that is
+    every gameweek, including the GW1 fallback used when no gameweek is
+    current. Letting that propagate out of the gather took the whole classic
+    section down with it, losing the bank and chip lines that need no picks at
+    all.
+    """
+    try:
+        return await client.get_manager_picks(entry_id, gameweek)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            logger.debug("No picks for entry %s in GW%s (not locked yet)", entry_id, gameweek)
+            return {}
+        raise
 
 
 def _build_fines_context(
@@ -79,21 +95,25 @@ def _build_fines_context(
     live_data: dict[str, Any] | None,
     player_names: dict[int, str] | None,
     active_chip: str | None = None,
+    standings_complete: bool = True,
 ) -> tuple[FinesLeagueData, list[FinesTeamPlayer]]:
-    """Build minimal league_data and team_data for evaluate_fines()."""
-    bottom = standings_sorted_asc[0] if standings_sorted_asc else {}
-    bottom_pts = bottom.get("event_total", 0)
-    bottom_name = bottom.get("player_name", bottom.get("entry_name", "Unknown"))
+    """Build minimal league_data and team_data for evaluate_fines().
 
-    league_data: FinesLeagueData = {
-        "user_gw_points": user_gw_pts,
-        "worst_performers": [{
+    `standings_complete` is False when the standings on hand are one page of a
+    larger league. The bottom of page one is not the bottom of the league, so
+    the last-place rule is given no worst_performers to judge rather than a
+    stand-in that could fine the wrong manager.
+    """
+    league_data: FinesLeagueData = {"user_gw_points": user_gw_pts}
+    if standings_sorted_asc and standings_complete:
+        bottom = standings_sorted_asc[0]
+        bottom_pts = bottom.get("event_total", 0)
+        league_data["worst_performers"] = [{
             "is_user": user_is_last,
             "points": bottom_pts,
             "gross_points": bottom_pts,
-            "name": bottom_name,
-        }],
-    }
+            "name": bottom.get("player_name", bottom.get("entry_name", "Unknown")),
+        }]
 
     bench_counts = active_chip == "bboost"
     team_data: list[FinesTeamPlayer] = []
@@ -289,7 +309,7 @@ async def _fetch_classic_data(
     history_data, manager_data, picks_data, all_players, all_teams = await asyncio.gather(
         client.get_manager_history(entry_id),
         client.get_manager_entry(entry_id),
-        client.get_manager_picks(entry_id, gw_for_picks),
+        _picks_if_locked(client, entry_id, gw_for_picks),
         client.get_players(),
         client.get_teams(),
     )
@@ -318,11 +338,16 @@ async def _fetch_classic_data(
 
         # Classic league standing (separate error boundary)
         classic_standings: list[dict[str, Any]] = []
+        # One page of standings is 50 entries; `has_next` says a larger league
+        # is only partly in hand, which the last-place fine must not ignore.
+        classic_standings_complete = True
         classic_user_gw_pts = completed_gw.get("points", 0) if completed_gw else 0
         if classic_league_id:
             try:
                 standings_data = await client.get_classic_league_standings(classic_league_id)
-                classic_standings = standings_data.get("standings", {}).get("results", [])
+                standings_block = standings_data.get("standings", {})
+                classic_standings = standings_block.get("results", [])
+                classic_standings_complete = not standings_block.get("has_next", False)
                 user_entry = next(
                     (e for e in classic_standings if e.get("entry") == entry_id), None
                 )
@@ -362,10 +387,16 @@ async def _fetch_classic_data(
                 sorted_standings, user_is_last, classic_user_gw_pts,
                 pick_id_list, live_data, player_names,
                 active_chip=picks_data.get("active_chip"),
+                standings_complete=classic_standings_complete,
             )
 
             close_margin = False
-            if use_net_points and any(r.type == "last-place" for r in rules) and len(sorted_standings) >= 2:
+            if (
+                use_net_points
+                and classic_standings_complete
+                and any(r.type == "last-place" for r in rules)
+                and len(sorted_standings) >= 2
+            ):
                 gap = sorted_standings[1].get("event_total", 0) - sorted_standings[0].get("event_total", 0)
                 close_margin = gap <= 4
 
