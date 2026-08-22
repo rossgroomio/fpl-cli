@@ -2319,6 +2319,59 @@ class TestFormatRecapLeagueHistoryContext:
         assert text != ""
         assert "No league history" in text
 
+    def test_streak_count_is_followed_only_by_streak_bullets_before_coverage_appears(self):
+        """Both categories populated together -- the gap the earlier
+        single-category tests never exercised. The streak count's N must
+        bound exactly N bullets before any coverage-labeled text; a
+        coverage caveat must not read as an uncounted (N+1)th streak."""
+        streak_entries = [
+            _history_entry(text="Alice: Captain blank run of 3, 3 in a row (GW4-GW6)."),
+            _history_entry(text="Bob: Hit run of 2 (GW5-GW6)."),
+        ]
+        coverage_entries = [
+            NotesPackEntry(
+                kind=NoteKind.COVERAGE,
+                text="Recorded history is complete from its start (GW1) through GW20.",
+                surfaces=frozenset({NoteSurface.REPORT, NoteSurface.PROMPT}),
+            ),
+            NotesPackEntry(
+                kind=NoteKind.COVERAGE,
+                text=(
+                    "Carol: recorded history begins at GW10, later than the league's "
+                    "start (GW1); earlier gameweeks are not available for this manager."
+                ),
+                surfaces=frozenset({NoteSurface.REPORT, NoteSurface.PROMPT}),
+                manager_key=3,
+                manager_name="Carol",
+            ),
+        ]
+        pack = _history_pack(entries=streak_entries, coverage_entries=coverage_entries)
+        text = format_recap_league_history_context(pack)
+        lines = text.splitlines()
+
+        count_index = lines.index("Total League History streak entries: 2")
+        streak_bullet_lines = lines[count_index + 1 : count_index + 3]
+        assert streak_bullet_lines == [
+            "- Alice: Captain blank run of 3, 3 in a row (GW4-GW6).",
+            "- Bob: Hit run of 2 (GW5-GW6).",
+        ]
+
+        # Nothing coverage-labeled leaks into the counted streak lines.
+        for line in streak_bullet_lines:
+            assert "Coverage" not in line
+            assert "Carol" not in line
+            assert "Recorded history is complete" not in line
+
+        # The very next non-blank content is a coverage label, not a
+        # third, uncounted streak-shaped bullet.
+        remainder = [line for line in lines[count_index + 3 :] if line]
+        assert remainder[0] == "Coverage:"
+        assert remainder[1] == "- Recorded history is complete from its start (GW1) through GW20."
+        assert remainder[2] == (
+            "- Carol: recorded history begins at GW10, later than the league's "
+            "start (GW1); earlier gameweeks are not available for this manager."
+        )
+
 
 class TestLeagueHistoryPromptSection:
     def test_ae3_a_streak_renders_under_its_own_heading(self):
