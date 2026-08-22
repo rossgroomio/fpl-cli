@@ -42,8 +42,17 @@ from fpl_cli.prompts.league_recap import (
     format_recap_captains_context,
     format_recap_chips_context,
     format_recap_fines_context,
+    format_recap_league_history_context,
     format_recap_standings_context,
     get_recap_synthesis_prompt,
+)
+from fpl_cli.services.league_history_notes import (
+    GameweekWindow,
+    NoteKind,
+    NotesPack,
+    NotesPackEntry,
+    NoteSurface,
+    SeasonPhase,
 )
 from tests.conftest import make_draft_player, make_player
 
@@ -2233,6 +2242,173 @@ class TestPromptFormatting:
             fines_text="",
         )
         assert "Fines" not in user
+
+
+# ---------------------------------------------------------------------------
+# U12: League History prompt section and season framing
+# ---------------------------------------------------------------------------
+
+
+def _history_entry(
+    text: str = "Alice: Captain blank run of 3, 3 in a row (GW4-GW6).",
+    *,
+    kind: NoteKind = NoteKind.STREAK,
+    surfaces: frozenset[NoteSurface] = frozenset({NoteSurface.CONSOLE, NoteSurface.REPORT, NoteSurface.PROMPT}),
+    window: GameweekWindow | None = GameweekWindow(start_gameweek=4, end_gameweek=6),
+) -> NotesPackEntry:
+    return NotesPackEntry(kind=kind, text=text, surfaces=surfaces, window=window, length=3)
+
+
+def _history_pack(
+    entries: list[NotesPackEntry] | None = None,
+    coverage_entries: list[NotesPackEntry] | None = None,
+    *,
+    phase: SeasonPhase = SeasonPhase.MIDPOINT,
+    phase_text: str = "GW20 is the season midpoint.",
+    fpl_format: str = "classic",
+) -> NotesPack:
+    return NotesPack(
+        season="2026-27", fpl_format=fpl_format, league_id=42, gameweek=20, phase=phase,
+        league_start_gameweek=1,
+        season_phase_entry=NotesPackEntry(
+            kind=NoteKind.SEASON_PHASE, text=phase_text,
+            surfaces=frozenset({NoteSurface.REPORT, NoteSurface.PROMPT}),
+        ),
+        entries=entries or [],
+        coverage_entries=coverage_entries if coverage_entries is not None else [
+            NotesPackEntry(
+                kind=NoteKind.COVERAGE, text="Recorded history is complete from its start (GW1) through GW20.",
+                surfaces=frozenset({NoteSurface.REPORT, NoteSurface.PROMPT}),
+            ),
+        ],
+    )
+
+
+class TestFormatRecapLeagueHistoryContext:
+    def test_ae3_a_streak_renders_with_its_window(self):
+        pack = _history_pack(entries=[_history_entry()])
+        text = format_recap_league_history_context(pack)
+
+        assert "Alice" in text
+        assert "GW4-GW6" in text
+        assert "Total League History streak entries: 1" in text
+
+    def test_a_below_minimum_entry_is_withheld_from_the_prompt(self):
+        entry = _history_entry(text="Alice: single blank", surfaces=frozenset())
+        pack = _history_pack(entries=[entry])
+        text = format_recap_league_history_context(pack)
+
+        assert "single blank" not in text
+        assert "Total League History streak entries: 0" in text
+
+    def test_coverage_entries_always_render(self):
+        pack = _history_pack(entries=[])
+        text = format_recap_league_history_context(pack)
+
+        assert "Recorded history is complete from its start (GW1) through GW20." in text
+
+    def test_the_season_phase_line_is_included(self):
+        pack = _history_pack(phase_text="GW38 is the season finale.")
+        text = format_recap_league_history_context(pack)
+
+        assert "GW38 is the season finale." in text
+
+    def test_no_pack_at_all_states_absence_explicitly_rather_than_returning_empty(self):
+        text = format_recap_league_history_context(None)
+
+        assert text != ""
+        assert "No league history" in text
+
+
+class TestLeagueHistoryPromptSection:
+    def test_ae3_a_streak_renders_under_its_own_heading(self):
+        pack = _history_pack(entries=[_history_entry()])
+        _, user = get_recap_synthesis_prompt(
+            gw=20, league_name="Test", fpl_format="classic",
+            awards_text="x", standings_text="| t |", fines_text="",
+            league_history_text=format_recap_league_history_context(pack),
+        )
+
+        assert "## League History" in user
+        assert "GW4-GW6" in user
+
+    def test_the_history_rules_appear_even_when_no_pack_was_supplied(self):
+        """KTD9: the rule is unconditional -- present in the system prompt
+        whether or not this call site even has a pack to inject."""
+        system, _ = get_recap_synthesis_prompt(
+            gw=20, league_name="Test", fpl_format="classic",
+            awards_text="x", standings_text="| t |", fines_text="",
+        )
+
+        assert "League History" in system
+        assert "forbidden" in system.lower()
+
+    def test_the_blanket_stick_to_gameweek_rule_now_names_the_bounded_exception(self):
+        from fpl_cli.prompts.league_recap import RECAP_SYNTHESIS_SYSTEM_PROMPT
+
+        assert "Stick to what happened this gameweek, with one exception" in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        assert '"## League History" section' in RECAP_SYNTHESIS_SYSTEM_PROMPT
+
+    def test_a_held_run_must_not_be_simplified_to_consecutive(self):
+        from fpl_cli.prompts.league_recap import RECAP_SYNTHESIS_SYSTEM_PROMPT
+
+        assert "not recorded" in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        assert "never simplified to" in RECAP_SYNTHESIS_SYSTEM_PROMPT
+
+    def test_research_summary_keeps_its_own_heading_alongside_league_history(self):
+        pack = _history_pack(entries=[_history_entry()])
+        _, user = get_recap_synthesis_prompt(
+            gw=20, league_name="Test", fpl_format="classic",
+            awards_text="x", standings_text="| t |", fines_text="",
+            research_summary="Some research-role output.",
+            league_history_text=format_recap_league_history_context(pack),
+        )
+
+        assert "## GW Context (from research)" in user
+        assert "Some research-role output." in user
+        assert "## League History" in user
+        assert user.index("## League History") < user.index("## GW Context (from research)")
+
+    def test_ae6_the_finale_framing_instruction_is_present(self):
+        from fpl_cli.prompts.league_recap import RECAP_SYNTHESIS_SYSTEM_PROMPT
+
+        assert "finale" in RECAP_SYNTHESIS_SYSTEM_PROMPT.lower()
+        assert "season phase" in RECAP_SYNTHESIS_SYSTEM_PROMPT.lower()
+
+    def test_a_draft_pack_has_no_captain_derived_entries(self):
+        """Delegated to U8/U9's format filtering -- confirmed at the prompt
+        consumption boundary too."""
+        pack = _history_pack(
+            entries=[_history_entry(text="Bob: Waiver win run of 2 (GW19-GW20).")],
+            fpl_format="draft",
+        )
+        text = format_recap_league_history_context(pack)
+
+        assert "Captain" not in text
+        assert "Waiver win run" in text
+
+    def test_the_rendered_prompt_states_the_packs_declared_entry_count(self):
+        pack = _history_pack(entries=[_history_entry(), _history_entry(text="Bob: Hit run of 3 (GW1-GW3).")])
+        _, user = get_recap_synthesis_prompt(
+            gw=20, league_name="Test", fpl_format="classic",
+            awards_text="x", standings_text="| t |", fines_text="",
+            league_history_text=format_recap_league_history_context(pack),
+        )
+
+        assert "Total League History streak entries: 2" in user
+
+    def test_no_league_history_section_when_the_caller_supplies_no_text(self):
+        """Every other optional section already follows this convention;
+        League History does too when a caller genuinely has nothing (an
+        empty string is distinct from `format_recap_league_history_context`'s
+        own always-non-empty output -- callers that actually run the
+        formatter never hit this branch)."""
+        _, user = get_recap_synthesis_prompt(
+            gw=20, league_name="Test", fpl_format="classic",
+            awards_text="x", standings_text="| t |", fines_text="",
+        )
+
+        assert "## League History" not in user
 
 
 # ---------------------------------------------------------------------------

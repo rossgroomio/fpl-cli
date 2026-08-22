@@ -1599,3 +1599,41 @@ class TestLeagueRecapJsonEnvelope:
         result = _invoke_recap_unresolved_gameweek()
 
         assert result.exit_code == 0
+
+
+# ---------------------------------------------------------------------------
+# U12: League History prompt section, through the full command
+# ---------------------------------------------------------------------------
+
+
+class TestEndToEndPromptThroughTheFullCommand:
+    """U12's own verification criterion: a dry run against a seeded
+    multi-gameweek partition writes a prompt containing the League History
+    section, its rules, and the season-phase instruction."""
+
+    def test_a_dry_run_writes_a_prompt_with_league_history(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.chdir(tmp_path)  # debug prompts land in ./data/debug (cwd-relative, pre-existing)
+
+        store = _store(fpl_format="classic", league_id=42)
+        for gw in (1, 2, 3, 4):
+            store.append_rows(gw, [make_history_row(
+                season=SEASON, fpl_format="classic", league_id=42, gameweek=gw,
+                manager_key=1, manager_name="Alice", league_position=1, gw_rank=1,
+            )])
+
+        result = _invoke_recap(_recap_data(
+            gameweek=5,
+            managers=[_manager(name="Alice", entry_id=1, overall_rank=1, previous_rank=1, total_points=300)],
+            cohort=_cohort((1, "Alice", 1, 60, 300)),
+        ), ["--dry-run"])
+
+        assert result.exit_code == 0, result.output
+        system_prompt = (tmp_path / "data" / "debug" / "recap_system.txt").read_text(encoding="utf-8")
+        user_prompt = (tmp_path / "data" / "debug" / "recap_prompt.txt").read_text(encoding="utf-8")
+
+        assert "## League History" in user_prompt
+        assert "Alice" in user_prompt
+        assert "Weeks on top" in user_prompt
+        assert "Season phase:" in user_prompt
+        assert "Stick to what happened this gameweek, with one exception" in system_prompt
+        assert "season phase" in system_prompt.lower()
