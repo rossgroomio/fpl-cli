@@ -255,7 +255,11 @@ def format_recap_league_history_context(pack: NotesPack | None) -> str:
     a run below its condition's minimum is real but not yet notable, and is
     withheld from the model the same way it is from console and report.
     Coverage/negative-context entries are always listed, honouring the same
-    "state absence explicitly" rule U9 applies to the report and console.
+    "state absence explicitly" rule U9 applies to the report and console --
+    but under their own "Coverage:" label, mirroring the report template's
+    separate "## Streaks" heading, so the streak count's scope stays
+    unambiguous and the model can't mistake a coverage caveat for one of
+    the counted streak facts.
 
     Never returns an empty string: even a total capture failure (`pack is
     None`) says so explicitly, rather than leaving the section absent --
@@ -272,8 +276,11 @@ def format_recap_league_history_context(pack: NotesPack | None) -> str:
     ]
     for entry in prompt_entries:
         lines.append(f"- {entry.text}")
-    for entry in pack.coverage_entries:
-        lines.append(f"- {entry.text}")
+    if pack.coverage_entries:
+        lines.append("")
+        lines.append("Coverage:")
+        for entry in pack.coverage_entries:
+            lines.append(f"- {entry.text}")
     return "\n".join(lines)
 
 
