@@ -142,7 +142,7 @@ PLAYER_FIELD_SECTIONS: dict[str, str] = {
     "role_change": "role_notes",
     "set_pieces": "set_piece_duty",
     "penalties": "set_piece_duty",
-    "new_signing": "transfers",
+    "new_signing": "projected_xi",  # superseded by real minutes, not the window closing
     "notes": "narrative",
 }
 """Which decay section governs each emitted player field.
@@ -225,7 +225,12 @@ class PlayerNote:
                 out["set_pieces"] = list(self.set_pieces)
             if self.penalties is not None:
                 out["penalties"] = self.penalties
-        if conf["transfers"] > 0 and self.new_signing:
+        # new_signing rides the projected_xi clock, not the transfers clock: the
+        # team-level in/out lists are superseded by the roster the moment the
+        # window shuts, but the flag's information -- "no PL stats because he
+        # just arrived, not because he is fringe" -- is only superseded by real
+        # minutes, and a deadline-day signing has none at the window close.
+        if conf["projected_xi"] > 0 and self.new_signing:
             out["new_signing"] = True
         if conf["narrative"] > 0 and self.notes:
             out["notes"] = self.notes

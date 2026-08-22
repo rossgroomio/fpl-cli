@@ -84,6 +84,8 @@ players:
   - name: "New Signing"
     code: 100005
     status: starter
+    # Decays with projected XIs (real minutes), not with the transfer lists:
+    # a deadline-day arrival has no record yet when the window shuts.
     new_signing: true
     notes: "Elite underlying numbers abroad, no Premier League record yet."
 

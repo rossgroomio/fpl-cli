@@ -426,10 +426,20 @@ class TestDecayedEmission:
         emitted = SeasonPreviewsService().as_dicts(5)[0]
         player = emitted["players"][0]
         assert "injury" not in player
-        assert "new_signing" not in player
         assert "transfers_in" not in emitted
         assert player["status"] == "starter"
         assert emitted["section_confidence"]["projected_xi"] == 0.5
+
+    def test_new_signing_flag_outlives_the_window_until_real_minutes(self):
+        # A deadline-day signing has no PL minutes when the window shuts, so the
+        # flag decays with projected_xi (real minutes exist by then), not with
+        # the team-level transfer lists (superseded by the roster at the close).
+        self._rich()
+        at_gw5 = SeasonPreviewsService().as_dicts(5)[0]
+        assert "transfers_in" not in at_gw5
+        assert at_gw5["players"][0]["new_signing"] is True
+        at_gw7 = SeasonPreviewsService().as_dicts(7)[0]
+        assert "new_signing" not in at_gw7["players"][0]
 
     def test_everything_gone_by_gw13(self):
         self._rich()
