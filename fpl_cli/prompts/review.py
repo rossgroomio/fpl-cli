@@ -6,6 +6,7 @@ import logging
 import re
 from typing import TYPE_CHECKING
 
+from fpl_cli.utils.markdown import fence_flags, parse_heading
 from fpl_cli.utils.text import strip_diacritics
 
 logger = logging.getLogger(__name__)
@@ -728,9 +729,13 @@ def validate_research_prose(
         (corrected_text, corrections_log).
     """
     lines = text.split("\n")
+    # Fence-aware so a code example in the response containing a line that
+    # merely looks like a heading (a leading '#') doesn't falsely open or
+    # close the narrative section.
+    fenced = list(fence_flags(lines))
     header_idx: int | None = None
     for i, line in enumerate(lines):
-        if _NARRATIVE_HEADER_RE.match(line):
+        if not fenced[i] and _NARRATIVE_HEADER_RE.match(line):
             header_idx = i
             break
 
@@ -750,7 +755,7 @@ def validate_research_prose(
 
     end_idx = len(lines)
     for j in range(header_idx + 1, len(lines)):
-        if re.match(r"^#{1,6}\s", lines[j].lstrip()):
+        if not fenced[j] and parse_heading(lines[j]) is not None:
             end_idx = j
             break
 

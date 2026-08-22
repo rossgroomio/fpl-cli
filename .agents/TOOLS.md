@@ -96,3 +96,5 @@ Python classes in `fpl_cli/agents/` that implement `async run(context) -> AgentR
 - BenchOrderAgent and StartingXIAgent have no CLI command - they are invoked by gw-prep skill wrapper scripts in `.agents/skills/gw-prep/scripts/`
 - TransferEvalAgent is used by both `transfer-eval` CLI command and gw-prep skill
 - `extract_classic_squad.py` (`.agents/skills/gw-prep/scripts/`) — deterministic Classic Squad block extractor used by gw-prep Phase B9 + Phase E. JSON stdout; read-only; emits TypedDict-annotated payloads.
+- `validate_draft_waivers.py` (`.agents/skills/gw-prep/scripts/`) — cross-checks the Draft waiver table against the live waiver pool and squad grid (gw-prep Phase D1). JSON stdout; read-only; always exits 0.
+- Both scripts locate markdown sections via `fpl_cli.utils.markdown` (`HeadingMatcher`, `find_section`, `section_body`, `leaf_body`, `fence_flags`), tolerating LLM heading drift (qualifiers, case, leading annotations, opt-in aliases) without matching a different heading that shares a prefix. Also used by `fpl_cli/prompts/review.py` for the GW Narrative section boundary.

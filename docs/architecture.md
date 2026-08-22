@@ -553,6 +553,7 @@ fpl_cli/
 ├── season.py                     # season_label() (+ vaastav_season() alias), understat_season(), core_insights_season(), TOTAL_GAMEWEEKS, CHIP_SPLIT_GW
 ├── constants.py                  # MIN_MINUTES_FOR_PER90
 └── utils/
+    ├── markdown.py                # HeadingMatcher, find_section, section_body, leaf_body, fence_flags — fence-aware markdown section location tolerant of LLM heading drift; shared by the gw-prep validator scripts and fpl_cli.prompts.review
     ├── teams.py                  # describe_team_set_mismatch — diff a per-team config against the live team list (promotion/relegation drift)
     ├── text.py                   # strip_diacritics (name matching across sources)
     └── time.py                   # format_deadline/format_kickoff/format_generated_at — UK local (Europe/London, auto GMT↔BST). Canonical formatter for every user-facing timestamp.
@@ -590,10 +591,12 @@ A default `fixture_predictions.yaml` ships inside the package (`SHIPPED_CONFIG_D
     │   │   ├── rules.md          # Transfer/waiver/selection rules
     │   │   └── output-template.md
     │   └── scripts/
+    │       ├── _bootstrap.py            # Shared startup (user-dir migration) for agent-importing scripts
     │       ├── bench_order.py           # BenchOrderAgent wrapper (name -> ID resolution)
     │       ├── starting_xi.py           # StartingXIAgent wrapper (name -> ID resolution)
     │       ├── transfer_eval.py         # TransferEvalAgent wrapper (name -> ID resolution)
-    │       └── extract_classic_squad.py # Classic Squad block extractor (Phase B9 embed + Phase E read-only validator)
+    │       ├── extract_classic_squad.py # Classic Squad block extractor (Phase B9 embed + Phase E read-only validator)
+    │       └── validate_draft_waivers.py # Draft waiver cross-check against waiver pool + squad grid
     ├── update-gw-prep/           # Second-pass addendum with supplementary data
     │   └── SKILL.md
     ├── squad-builder/            # 5-mode squad optimisation (WC/FH/season-start/draft/redraft)

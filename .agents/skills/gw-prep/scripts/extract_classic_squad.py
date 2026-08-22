@@ -18,8 +18,16 @@ import argparse
 import json
 import re
 import sys
-from collections.abc import Iterator
 from typing import Literal, TypedDict
+
+from fpl_cli.utils.markdown import (
+    HeadingMatcher,
+    fence_flags,
+    find_section,
+    has_heading,
+    leaf_body,
+    parse_heading,
+)
 
 
 class StructuralResult(TypedDict):
@@ -54,6 +62,37 @@ class FromRecommendationsMetadata(TypedDict):
     source_path: str
     block_extracted: bool
     mode: Literal["from-recommendations"]
+
+
+# Headings this script locates. Sub-agents author these files from a
+# verbatim-heading instruction but sometimes decorate the heading anyway, so
+# every comparison goes through HeadingMatcher rather than a bespoke regex --
+# see fpl_cli.utils.markdown for what counts as a tolerable decoration and
+# what stays a different heading ("#### Bench Order" is not a qualified
+# "#### Bench").
+_HEADING_CLASSIC_SQUAD = HeadingMatcher("## Classic Squad")
+_HEADING_DRAFT_RANKINGS = HeadingMatcher("## Draft Rankings")
+_HEADING_EMBEDDED_CLASSIC_SQUAD = HeadingMatcher("### Classic Squad")
+_HEADING_STARTING_XI = HeadingMatcher(
+    "#### Starting XI", aliases=("XI", "Starting Eleven", "Starting 11")
+)
+_HEADING_BENCH = HeadingMatcher("#### Bench")
+_HEADING_TEAM_EXPOSURE = HeadingMatcher("#### Team Exposure")
+
+# Ordered as the sub-agent is told to emit them; drives sub_headings_present.
+_SUB_HEADINGS: dict[str, HeadingMatcher] = {
+    "Starting XI": _HEADING_STARTING_XI,
+    "Bench": _HEADING_BENCH,
+    "Budget": HeadingMatcher("#### Budget"),
+    "Team Exposure": _HEADING_TEAM_EXPOSURE,
+    "Key Decisions": HeadingMatcher("#### Key Decisions"),
+    "Alternatives": HeadingMatcher("#### Alternatives"),
+}
+
+# Matches a heading's leading whitespace and `#` marker, so demotion can insert
+# an extra `#` at the right position even when parse_heading recognised the
+# heading through leading whitespace it tolerates.
+_LEADING_HASHES_RE = re.compile(r"^(\s*)(#+)")
 
 
 class ExtractPayload(TypedDict):
@@ -95,14 +134,9 @@ def _run_extract(file_path: str, content: str) -> None:
     """Extract and demote the Classic Squad block from a squad-builder file."""
     lines = content.split("\n")
 
-    # Locate '## Classic Squad'
-    start_idx: int | None = None
-    for i, line in enumerate(lines):
-        if re.match(r"^## Classic Squad\b", line):
-            start_idx = i
-            break
+    section = find_section(lines, _HEADING_CLASSIC_SQUAD)
 
-    if start_idx is None:
+    if section is None:
         json.dump(
             {
                 "error": True,
@@ -116,24 +150,26 @@ def _run_extract(file_path: str, content: str) -> None:
         )
         sys.exit(1)
 
-    # Find the end boundary (next top-level ## heading or EOF)
-    end_idx = len(lines)
-    for i in range(start_idx + 1, len(lines)):
-        if re.match(r"^## \S", lines[i]):
-            end_idx = i
-            break
+    start_idx, end_idx = section
 
     # Check whether Draft Rankings follows anywhere after Classic Squad
+    fenced = list(fence_flags(lines))
     had_draft_rankings = any(
-        re.match(r"^## Draft Rankings\b", lines[i])
+        not fenced[i] and _HEADING_DRAFT_RANKINGS.matches(lines[i])
         for i in range(start_idx + 1, len(lines))
     )
 
     block_lines = list(lines[start_idx:end_idx])
+    # A heading's start is always outside a fence (HeadingMatcher.matches() only
+    # recognises unfenced lines), so the section boundary can't land mid-fence --
+    # the whole-file fence state can be sliced rather than recomputed from
+    # scratch over the extracted block.
+    fenced_block = fenced[start_idx:end_idx]
 
     # Strip trailing blank lines
     while block_lines and not block_lines[-1].strip():
         block_lines.pop()
+        fenced_block.pop()
 
     # Empty block guard (heading only, no body)
     if len(block_lines) <= 1:
@@ -150,13 +186,14 @@ def _run_extract(file_path: str, content: str) -> None:
         )
         sys.exit(1)
 
-    # H6 ceiling check — demotion would produce H7 (####### exceeds markdown spec)
-    in_fence = False
-    for line in block_lines:
-        if line.startswith("```"):
-            in_fence = not in_fence
+    # H6 ceiling check — demotion would produce H7 (####### exceeds markdown spec).
+    # Goes through parse_heading (tolerant of leading whitespace, like every
+    # other heading comparison in this file) rather than a bespoke regex.
+    for i, line in enumerate(block_lines):
+        if fenced_block[i]:
             continue
-        if not in_fence and re.match(r"^#{6}\s", line):
+        parsed = parse_heading(line)
+        if parsed is not None and parsed[0] == 6:
             json.dump(
                 {
                     "error": True,
@@ -173,14 +210,11 @@ def _run_extract(file_path: str, content: str) -> None:
 
     # Demote headings one level (skip lines inside fenced code blocks)
     demoted: list[str] = []
-    in_fence = False
-    for line in block_lines:
-        if line.startswith("```"):
-            in_fence = not in_fence
-            demoted.append(line)
-            continue
-        if not in_fence and re.match(r"^#+\s", line):
-            line = "#" + line
+    for i, line in enumerate(block_lines):
+        if not fenced_block[i] and parse_heading(line) is not None:
+            hashes = _LEADING_HASHES_RE.match(line)
+            assert hashes is not None
+            line = f"{hashes.group(1)}#{line[hashes.start(2):]}"
         demoted.append(line)
 
     block = "\n".join(demoted)
@@ -203,13 +237,9 @@ def _run_from_recommendations(file_path: str, content: str) -> None:
     lines = content.split("\n")
 
     # Locate '### Classic Squad' (already demoted in recommendations file)
-    start_idx: int | None = None
-    for i, line in enumerate(lines):
-        if re.match(r"^### Classic Squad\b", line):
-            start_idx = i
-            break
+    section = find_section(lines, _HEADING_EMBEDDED_CLASSIC_SQUAD)
 
-    if start_idx is None:
+    if section is None:
         json.dump(
             {
                 "error": True,
@@ -224,13 +254,7 @@ def _run_from_recommendations(file_path: str, content: str) -> None:
         )
         sys.exit(1)
 
-    # Find the end boundary (next ### or ## heading or EOF)
-    end_idx = len(lines)
-    for i in range(start_idx + 1, len(lines)):
-        if re.match(r"^#{2,3} \S", lines[i]):
-            end_idx = i
-            break
-
+    start_idx, end_idx = section
     block_lines = list(lines[start_idx:end_idx])
 
     # Strip trailing blank lines
@@ -255,19 +279,11 @@ def _run_from_recommendations(file_path: str, content: str) -> None:
 
 def _validate_classic_squad_block(block: str) -> ValidationResult:
     """Compute structural and arithmetic validation for a ### Classic Squad block."""
-    expected_sub_headings = [
-        "Starting XI",
-        "Bench",
-        "Budget",
-        "Team Exposure",
-        "Key Decisions",
-        "Alternatives",
-    ]
-
     # Structural checks
+    block_lines = block.split("\n")
     sub_headings_present = {
-        name: _heading_present(block, f"#### {name}")
-        for name in expected_sub_headings
+        name: has_heading(block_lines, matcher)
+        for name, matcher in _SUB_HEADINGS.items()
     }
 
     starting_xi_rows = _count_table_rows_between(block, _HEADING_STARTING_XI)
@@ -303,56 +319,20 @@ def _validate_classic_squad_block(block: str) -> ValidationResult:
     }
 
 
-# A heading may carry a qualifier that sub-agents sometimes add despite the
-# verbatim-heading instruction (e.g. "#### Starting XI (3-4-3)"), so matching on
-# equality misses it and matching on containment is too loose. Accept a qualifier
-# introduced by punctuation or a digit, but only when it reads as a separate
-# annotation rather than a continuation of the heading text itself: a qualifier
-# glued directly onto the heading with no separating space must not be followed
-# by a word character, or it's a different (possibly hyphenated/compound) heading
-# — "#### Bench Order" and "#### Bench-Warmers" are both separate headings in the
-# template, not a qualified "#### Bench".
-def _heading_pattern(heading: str) -> re.Pattern[str]:
-    """Compile a matcher for a heading with an optional trailing qualifier."""
-    escaped = re.escape(heading)
-    qualifier = r"(?:[0-9]|[^\s\w])"
-    return re.compile(rf"^{escaped}(?:\s+{qualifier}.*|{qualifier}(?!\w).*)?$")
-
-
-def _heading_present(block: str, heading: str) -> bool:
-    """True if any line is the heading, bare or qualified."""
-    pattern = _heading_pattern(heading)
-    return any(pattern.match(line.strip()) for line in block.split("\n"))
-
-
-_HEADING_STARTING_XI = "#### Starting XI"
-_HEADING_BENCH = "#### Bench"
-_HEADING_TEAM_EXPOSURE = "#### Team Exposure"
 _TABLE_SEPARATOR_RE = re.compile(r"^\|[-:| ]+\|")
 
 
-def _lines_in_section(block: str, heading: str) -> Iterator[str]:
-    """Yield lines within `heading`'s section.
+def _lines_in_section(block: str, heading: str | HeadingMatcher) -> list[str]:
+    """Return the body lines of `heading`'s section within `block`.
 
-    A repeated or re-qualified occurrence of the same heading extends the
-    section rather than closing it; the section ends only at the next
-    *different* heading of the same or shallower depth (or at EOF).
+    `heading` is always one of the leaf sub-headings (a table, a short note),
+    never a container for further sub-headings, so a nested heading found
+    inside it is drift and must not be scanned as more of its data.
     """
-    heading_re = _heading_pattern(heading)
-    in_section = False
-    for line in block.split("\n"):
-        stripped = line.strip()
-        if heading_re.match(stripped):
-            in_section = True
-            continue
-        if not in_section:
-            continue
-        if re.match(r"^#{3,4} \S", stripped):
-            break
-        yield line
+    return leaf_body(block.split("\n"), heading) or []
 
 
-def _count_table_rows_between(block: str, start_heading: str) -> int:
+def _count_table_rows_between(block: str, start_heading: str | HeadingMatcher) -> int:
     """Count markdown table data rows between start_heading and the next heading of same depth."""
     in_table = False
     row_count = 0
