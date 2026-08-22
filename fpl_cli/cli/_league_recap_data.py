@@ -12,7 +12,6 @@ from fpl_cli.cli._fines_config import parse_fines_config
 from fpl_cli.cli._helpers import _live_player_stats
 
 if TYPE_CHECKING:
-    from fpl_cli.api.fpl import FPLClient
     from fpl_cli.models.player import Player
     from fpl_cli.models.team import Team
 
@@ -25,6 +24,23 @@ if TYPE_CHECKING:
 
         async def get_manager_picks(self, entry_id: int, gameweek: int, /) -> dict[str, Any]: ...
         async def get_manager_transfers(self, entry_id: int, /) -> list[dict[str, Any]]: ...
+
+    class ManagerHistoryClient(Protocol):
+        """The subset of FPLClient that _apply_league_start_offset calls."""
+
+        async def get_manager_history(self, entry_id: int, /) -> dict[str, Any]: ...
+
+    class ClassicRecapClient(ManagerPicksClient, ManagerHistoryClient, Protocol):
+        """The subset of FPLClient that collect_classic_recap_data calls.
+
+        Widens ManagerPicksClient with the league standings fetch and the
+        manager-history baseline fetch _apply_league_start_offset makes for a
+        league with start_event > 1.
+        """
+
+        async def get_classic_league_standings(
+            self, league_id: int, page: int = 1, /,
+        ) -> dict[str, Any]: ...
 from fpl_cli.cli._league_recap_types import (
     LeagueRecapData,
     RecapAwardEntry,
@@ -37,6 +53,17 @@ from fpl_cli.cli._league_recap_types import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class RecapReconciliationError(RuntimeError):
+    """A point-in-time headline number disagrees with a second, independent source.
+
+    Raised only for the live/current gameweek, where both sources should
+    always agree. A mismatch means the point-in-time field mapping is wrong,
+    so every row a future capture would derive from it is wrong too -- this
+    must stop the run rather than degrade silently.
+    """
+
 
 _CHIP_DISPLAY = {"wildcard": "WC", "freehit": "FH", "bboost": "BB", "3xc": "TC"}
 _PICKS_CONCURRENCY = 10
@@ -84,14 +111,21 @@ def _classic_pick_flags(
 
 
 async def collect_classic_recap_data(
-    client: FPLClient,
+    client: ClassicRecapClient,
     settings: dict[str, Any],
     gw: int,
     live_stats: dict[int, dict[str, Any]],
     player_map: dict[int, Player],
     teams: dict[int, Team],
+    *,
+    is_live_gw: bool = True,
 ) -> LeagueRecapData:
     """Fetch all managers' picks and compute league-wide recap data.
+
+    `is_live_gw` marks whether `gw` is the most recently finished gameweek
+    (a live capture) rather than an earlier one being replayed. It gates the
+    headline-numbers reconciliation, which only holds for a live capture --
+    see RecapReconciliationError.
 
     Returns a LeagueRecapData dict ready for template rendering.
     """
@@ -99,13 +133,29 @@ async def collect_classic_recap_data(
     use_net_points = settings.get("use_net_points", False)
 
     standings_response = await client.get_classic_league_standings(classic_league_id)
-    league_name = standings_response.get("league", {}).get("name", "Unknown League")
+    league = standings_response.get("league", {})
+    league_name = league.get("name", "Unknown League")
     standings = standings_response.get("standings", {}).get("results", [])
 
     managers = await _fetch_all_manager_data(
         client, standings, gw, live_stats, player_map, teams,
-        use_net_points=use_net_points,
+        use_net_points=use_net_points, is_live_gw=is_live_gw,
     )
+
+    start_event = league.get("start_event")
+    if start_event and start_event > 1:
+        await _apply_league_start_offset(client, managers, start_event)
+
+    # League position is derived from the point-in-time cumulative total
+    # (KTD12), not the standings' own order, which only ever reflects the
+    # current state -- the exact bug R13 fixes.
+    position_map = derive_point_in_time_positions(
+        [(m["entry_id"], m["total_points"]) for m in managers if "total_points" in m],
+    )
+    for m in managers:
+        rank = position_map.get(m["entry_id"])
+        if rank is not None:
+            m["overall_rank"] = rank
 
     league_rows = [
         (e.get("entry", 0), e.get("total", 0), e.get("event_total", 0))
@@ -138,15 +188,30 @@ async def _fetch_all_manager_data(
     teams: dict[int, Team],
     *,
     use_net_points: bool = False,
+    is_live_gw: bool = True,
 ) -> list[RecapManagerEntry]:
-    """Fetch picks for every manager in the league, extract recap data."""
+    """Fetch picks for every manager in the league, extract recap data.
+
+    Point-in-time headline numbers (gross points, cumulative total) are read
+    from each manager's own `entry_history` -- present in the picks response
+    for any gameweek, past or present -- rather than the standings row, which
+    only ever reflects the *current* state. A picks response with no
+    `entry_history` at all falls back to the standings row, the only source
+    left for it. League position is left to the caller: it needs
+    cross-manager context (and, for a league that started after GW1, a
+    baseline offset) a per-manager fetch does not have.
+
+    `is_live_gw` marks `gw` as the most recently finished gameweek, which
+    gates the reconciliation against the standings row -- see
+    RecapReconciliationError.
+    """
     sem = asyncio.Semaphore(_PICKS_CONCURRENCY)
 
     async def _fetch_one(entry: dict, rank: int) -> RecapManagerEntry | None:
         league_entry_id: int = entry.get("entry", 0)
         manager_name: str = entry.get("player_name", "Unknown")
-        gross_pts: int = entry.get("event_total", 0)
-        total_pts: int = entry.get("total", 0)
+        standings_gross: int = entry.get("event_total", 0)
+        standings_total: int = entry.get("total", 0)
 
         async with sem:
             try:
@@ -156,12 +221,14 @@ async def _fetch_all_manager_data(
                 return None
 
         picks = picks_response.get("picks", [])
-        entry_history = picks_response.get("entry_history", {})
+        entry_history = picks_response.get("entry_history") or {}
         active_chip = picks_response.get("active_chip")
         automatic_subs = picks_response.get("automatic_subs", [])
 
         transfer_cost = entry_history.get("event_transfers_cost", 0)
-        gw_points = (gross_pts - transfer_cost) if use_net_points else gross_pts
+        gross_points = entry_history.get("points", standings_gross)
+        total_pts = entry_history.get("total_points", standings_total)
+        gw_points = (gross_points - transfer_cost) if use_net_points else gross_points
 
         auto_sub_in_ids = {sub["element_in"] for sub in automatic_subs}
         auto_sub_out_ids = {sub["element_out"] for sub in automatic_subs}
@@ -204,6 +271,7 @@ async def _fetch_all_manager_data(
                 auto_sub_in=player.id in auto_sub_in_ids,
                 auto_sub_out=player.id in auto_sub_out_ids,
                 red_cards=red_cards,
+                unmatched=False,
             ))
 
             if pick.get("is_captain"):
@@ -260,10 +328,9 @@ async def _fetch_all_manager_data(
             manager_name=manager_name,
             entry_id=league_entry_id,
             gw_points=gw_points,
+            gross_points=gross_points,
             total_points=total_pts,
             gw_rank=rank,
-            overall_rank=rank,
-            previous_rank=rank,  # placeholder, computed after all managers fetched
             captain=captain_name,
             captain_points=captain_points,
             captain_played=captain_played,
@@ -289,12 +356,136 @@ async def _fetch_all_manager_data(
     for i, m in enumerate(managers):
         m["gw_rank"] = i + 1
 
-    # Assign overall ranks from original standings order
-    standings_order = {e.get("entry"): i + 1 for i, e in enumerate(standings)}
-    for m in managers:
-        m["overall_rank"] = standings_order.get(m["entry_id"], 0)
+    if is_live_gw:
+        _reconcile_classic_headline_numbers(managers, standings)
 
     return managers
+
+
+# ---------------------------------------------------------------------------
+# Headline-number reconciliation (U1)
+# ---------------------------------------------------------------------------
+
+
+def _reconcile_classic_headline_numbers(
+    managers: list[RecapManagerEntry],
+    standings: Sequence[dict[str, Any]],
+) -> None:
+    """Cross-check entry_history against the standings row it replaced.
+
+    Meaningful only for the live gameweek, where both sources describe the
+    same point in time -- a replay is expected to diverge and must not call
+    this. Gameweek points must agree exactly wherever a manager took a hit,
+    since gross points cannot depend on gross/net semantics; a mismatch there
+    means the point-in-time field mapping is wrong and is a stop condition.
+    With no manager who took a hit this gameweek, the check is inconclusive
+    rather than passing. Cumulative total is allowed to diverge -- a league
+    that started after GW1 diverges there by design, see
+    _apply_league_start_offset -- so a mismatch there is only a warning.
+    """
+    standings_by_entry = {e.get("entry"): e for e in standings}
+
+    hit_mismatches: list[tuple[str, int, int]] = []
+    total_mismatches: list[tuple[str, int, int]] = []
+    saw_a_hit = False
+
+    for m in managers:
+        std = standings_by_entry.get(m["entry_id"])
+        if std is None:
+            continue
+        std_gross = std.get("event_total", 0)
+        std_total = std.get("total", 0)
+
+        if m["transfer_cost"] > 0:
+            saw_a_hit = True
+            if m["gross_points"] != std_gross:
+                hit_mismatches.append((m["manager_name"], m["gross_points"], std_gross))
+
+        if "total_points" in m and m["total_points"] != std_total:
+            total_mismatches.append((m["manager_name"], m["total_points"], std_total))
+
+    if hit_mismatches:
+        detail = "; ".join(f"{name}: entry_history={eh} standings={st}" for name, eh, st in hit_mismatches)
+        raise RecapReconciliationError(
+            "Gameweek-points reconciliation failed for the live gameweek "
+            f"({detail}). The point-in-time field mapping (gross vs net) is "
+            "likely wrong -- every row derived from it would be wrong too."
+        )
+    if not saw_a_hit:
+        logger.debug("Gameweek-points reconciliation inconclusive: no manager took a hit this gameweek")
+
+    if total_mismatches:
+        detail = "; ".join(f"{name}: entry_history={eh} standings={st}" for name, eh, st in total_mismatches)
+        logger.warning(
+            "Cumulative-total divergence between entry_history and standings for %d manager(s)"
+            " -- expected for a league that started after GW1: %s",
+            len(total_mismatches), detail,
+        )
+
+
+def derive_point_in_time_positions(
+    totals: Sequence[tuple[int, int]],
+) -> dict[int, int]:
+    """Rank entries by cumulative total, descending, into 1-based positions.
+
+    `totals` is (entry_id, point-in-time cumulative total) for every member
+    with a known total -- omit a member with none rather than passing a
+    placeholder; they simply get no entry in the returned mapping. Ties break
+    on the order `totals` is given in (Python's sort is stable), so callers
+    should pass entries in a fixed, reproducible order (e.g. standings order)
+    for a derived position to be reproducible across runs.
+
+    Reusable across both collectors and, per KTD12, by the coarse-backfill
+    path that has no collector to call.
+    """
+    ordered = sorted(totals, key=lambda kv: -kv[1])
+    return {entry_id: rank + 1 for rank, (entry_id, _) in enumerate(ordered)}
+
+
+async def _apply_league_start_offset(
+    client: ManagerHistoryClient,
+    managers: list[RecapManagerEntry],
+    start_event: int,
+) -> None:
+    """Rescope each manager's stored cumulative total to the league's own start.
+
+    `entry_history.total_points` is the FPL-wide season total; a league
+    created after GW1 scores its members only from `start_event` onward, so
+    ranking or displaying the season total would diverge from the league's
+    own standings (the divergence _reconcile_classic_headline_numbers warns
+    about). The baseline is each manager's season total as of the gameweek
+    before the league started, read from the manager-history endpoint -- the
+    same call U7's coarse backfill makes (KTD12).
+
+    Best-effort: a manager whose history fetch fails, or whose history does
+    not reach back to the baseline gameweek, keeps their season-wide total
+    rather than blocking the run -- ranking quality degrades, but this is not
+    the correctness class RecapReconciliationError guards.
+    """
+    baseline_gw = start_event - 1
+    sem = asyncio.Semaphore(_PICKS_CONCURRENCY)
+
+    async def _offset_one(m: RecapManagerEntry) -> None:
+        if "total_points" not in m:
+            return
+        async with sem:
+            try:
+                history = await client.get_manager_history(m["entry_id"])
+            except Exception as e:  # noqa: BLE001 — best-effort offset; total stays season-wide on failure
+                logger.warning(
+                    "Failed to fetch manager history for %s (entry %s), league-start offset skipped: %s",
+                    m["manager_name"], m["entry_id"], e,
+                )
+                return
+        baseline_row = next(
+            (row for row in history.get("current", []) if row.get("event") == baseline_gw),
+            None,
+        )
+        if baseline_row is None:
+            return
+        m["total_points"] -= baseline_row.get("total_points", 0)
+
+    await asyncio.gather(*(_offset_one(m) for m in managers))
 
 
 # ---------------------------------------------------------------------------
@@ -328,6 +519,12 @@ def _compute_standings_movement(
     Standings-only rows have no hit data to correct with and are used as-is
     (an existing, unavoidable approximation for failed fetches).
 
+    A manager with no point-in-time `total_points` (an unreconstructable
+    draft replay, see U2) cannot be placed on the previous table at all --
+    they are left out of the ranking entirely, and get no `previous_rank`
+    rather than a fabricated one. This does not shift anyone else's position:
+    the ranking is still over whoever *does* have a total.
+
     Mutates managers in-place to set previous_rank.
     """
     by_entry = {m["entry_id"]: m for m in managers}
@@ -336,12 +533,18 @@ def _compute_standings_movement(
         return m["gw_points"] if use_net_points else m["gw_points"] - m["transfer_cost"]
 
     if league_rows is None:
-        rows = [(m["entry_id"], m["total_points"], _net_gw_points(m)) for m in managers]
+        rows = [
+            (m["entry_id"], m["total_points"], _net_gw_points(m))
+            for m in managers
+            if "total_points" in m
+        ]
     else:
         rows = []
         for entry_id, total, gw_pts in league_rows:
             fetched = by_entry.get(entry_id)
             if fetched is not None:
+                if "total_points" not in fetched:
+                    continue
                 rows.append((entry_id, fetched["total_points"], _net_gw_points(fetched)))
             else:
                 rows.append((entry_id, total, gw_pts))
@@ -351,7 +554,11 @@ def _compute_standings_movement(
     prev_rank_map = {entry_id: rank + 1 for rank, (entry_id, _) in enumerate(prev_totals)}
 
     for m in managers:
-        m["previous_rank"] = prev_rank_map.get(m["entry_id"], m["overall_rank"])
+        rank = prev_rank_map.get(m["entry_id"])
+        if rank is None:
+            rank = m.get("overall_rank")
+        if rank is not None:
+            m["previous_rank"] = rank
 
 
 # ---------------------------------------------------------------------------
@@ -881,8 +1088,20 @@ async def collect_draft_recap_data(
     live_stats: dict[int, dict[str, Any]],
     players: list[Player],
     teams: dict[int, Team],
+    *,
+    is_live_gw: bool = True,
 ) -> LeagueRecapData:
-    """Fetch all managers' draft picks and compute league-wide recap data."""
+    """Fetch all managers' draft picks and compute league-wide recap data.
+
+    Draft has no per-manager history endpoint (KTD2), so GW points are always
+    recomputed from the recorded squad against live stats rather than read
+    off the league's always-current standings -- and, when `is_live_gw`,
+    reconciled against those standings as the only independent check the
+    reconstruction is right (RecapReconciliationError on divergence). The
+    cumulative total can only be trusted from the standings for a live
+    capture; a replayed gameweek leaves it unset (R10) until a ledger exists
+    to sum it from (U6, not built yet).
+    """
     from fpl_cli.api.fpl_draft import FPLDraftClient
     from fpl_cli.models.player import POSITION_MAP
 
@@ -929,8 +1148,8 @@ async def collect_draft_recap_data(
             if not manager_name:
                 manager_name = entry_info.get("entry_name", "Unknown")
 
-            gw_pts: int = standing.get("event_total", 0)
-            total_pts: int = standing.get("total", 0)
+            standings_gw_pts: int = standing.get("event_total", 0)
+            standings_total: int = standing.get("total", 0)
 
             async with sem:
                 try:
@@ -949,6 +1168,7 @@ async def collect_draft_recap_data(
             captain_points = 0
             vice_captain_name = ""
             bench_points = 0
+            computed_gw_points = 0
 
             for pick in picks:
                 draft_elem_id = pick.get("element")
@@ -957,6 +1177,7 @@ async def collect_draft_recap_data(
                     continue
 
                 main_id = draft_to_main_id.get(draft_elem_id)
+                unmatched = main_id is None
                 pts, _, red_cards = _live_player_stats(live_stats, main_id)
                 pos_name = POSITION_MAP.get(draft_player.get("element_type"), "???")
                 team_short = t.short_name if (t := teams.get(draft_player.get("team"))) else "???"
@@ -968,6 +1189,8 @@ async def collect_draft_recap_data(
 
                 if is_bench and draft_elem_id not in auto_sub_in_ids:
                     bench_points += pts
+                if contributed:
+                    computed_gw_points += pts
 
                 squad.append(RecapManagerPlayer(
                     name=draft_player.get("web_name", "Unknown"),
@@ -981,6 +1204,7 @@ async def collect_draft_recap_data(
                     auto_sub_in=draft_elem_id in auto_sub_in_ids,
                     auto_sub_out=draft_elem_id in auto_sub_out_ids,
                     red_cards=red_cards,
+                    unmatched=unmatched,
                 ))
 
             # Build auto-sub descriptions
@@ -1031,14 +1255,20 @@ async def collect_draft_recap_data(
                     kind=txn.get("kind", "w"),
                 ))
 
+            if is_live_gw and computed_gw_points != standings_gw_pts:
+                raise RecapReconciliationError(
+                    f"Gameweek-points reconciliation failed for the live gameweek for "
+                    f"{manager_name}: computed={computed_gw_points} standings={standings_gw_pts}. "
+                    "The draft point-in-time reconstruction is likely wrong -- every row "
+                    "derived from it would be wrong too."
+                )
+
             result = RecapManagerEntry(
                 manager_name=manager_name,
                 entry_id=entry_id or 0,
-                gw_points=gw_pts,
-                total_points=total_pts,
+                gw_points=computed_gw_points,
+                gross_points=computed_gw_points,
                 gw_rank=rank,
-                overall_rank=rank,
-                previous_rank=rank,
                 captain=captain_name,
                 captain_points=captain_points,
                 captain_played=False,
@@ -1051,6 +1281,8 @@ async def collect_draft_recap_data(
                 auto_subs=auto_sub_descs,
                 transactions=manager_txns,
             )
+            if is_live_gw:
+                result["total_points"] = standings_total
             return result
 
         tasks = [_fetch_draft_manager(s, i + 1) for i, s in enumerate(standings)]
@@ -1061,12 +1293,17 @@ async def collect_draft_recap_data(
         for i, m in enumerate(managers):
             m["gw_rank"] = i + 1
 
-        standings_order = {
-            entry_map.get(s.get("league_entry"), {}).get("entry_id"): i + 1
-            for i, s in enumerate(standings)
-        }
+        # League position is derived from the point-in-time cumulative total
+        # (KTD12), not the standings' own order, which only ever reflects the
+        # current state. It is only available when is_live_gw left
+        # total_points set on every manager.
+        position_map = derive_point_in_time_positions(
+            [(m["entry_id"], m["total_points"]) for m in managers if "total_points" in m],
+        )
         for m in managers:
-            m["overall_rank"] = standings_order.get(m["entry_id"], 0)
+            rank = position_map.get(m["entry_id"])
+            if rank is not None:
+                m["overall_rank"] = rank
 
         league_rows = [
             (

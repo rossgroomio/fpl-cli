@@ -38,6 +38,7 @@ def league_recap_command(
     from fpl_cli.agents.orchestration.report import ReportAgent
     from fpl_cli.api.fpl import FPLClient
     from fpl_cli.cli._league_recap_data import (
+        RecapReconciliationError,
         collect_classic_recap_data,
         collect_draft_recap_data,
         evaluate_league_fines,
@@ -112,17 +113,28 @@ def league_recap_command(
                 except (ValueError, AttributeError):
                     next_deadline = raw
 
+            # gw is "live" when it's the most recently finished gameweek --
+            # only then do current standings describe the same point in time
+            # as the collected data, so only then can the two be reconciled.
+            finished_gws = [g["id"] for g in gameweeks if g.get("finished")]
+            is_live_gw = bool(finished_gws) and gw == max(finished_gws)
+
             # Collect format-specific data
-            if is_draft:
-                collected_data = await collect_draft_recap_data(
-                    settings=settings, gw=gw, live_stats=live_stats,
-                    players=players, teams=teams,
-                )
-            else:
-                collected_data = await collect_classic_recap_data(
-                    client=client, settings=settings, gw=gw,
-                    live_stats=live_stats, player_map=player_map, teams=teams,
-                )
+            try:
+                if is_draft:
+                    collected_data = await collect_draft_recap_data(
+                        settings=settings, gw=gw, live_stats=live_stats,
+                        players=players, teams=teams, is_live_gw=is_live_gw,
+                    )
+                else:
+                    collected_data = await collect_classic_recap_data(
+                        client=client, settings=settings, gw=gw,
+                        live_stats=live_stats, player_map=player_map, teams=teams,
+                        is_live_gw=is_live_gw,
+                    )
+            except RecapReconciliationError as e:
+                console.print(f"[red]Error: {e}[/red]")
+                return
 
             # Add context metadata
             collected_data["is_bgw"] = is_bgw  # type: ignore[typeddict-unknown-key]

@@ -143,8 +143,9 @@ def format_recap_standings_context(data: LeagueRecapData) -> str:
             movement = f" (↑{diff})" if diff > 0 else f" (↓{abs(diff)})"
         chip = m.get("active_chip") if is_classic else None
         chip_tag = f" [{chip}]" if chip else ""
+        total = m.get("total_points", "?")
         lines.append(
-            f"| {curr} | {prev} | {name}{chip_tag}{movement} | {m['gw_points']} | {m['total_points']} |"
+            f"| {curr} | {prev} | {name}{chip_tag}{movement} | {m['gw_points']} | {total} |"
         )
     return "\n".join(lines)
 
