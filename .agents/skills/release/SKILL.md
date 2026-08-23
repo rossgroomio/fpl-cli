@@ -46,6 +46,16 @@ or stale build.
   `git fetch origin main --tags` first).
 - Commits exist since the last tag — otherwise there's nothing to release.
 - CI is green on the exact head SHA of main (GitHub Actions `CI` workflow).
+  Check it — a green tick in the browser is not proof the *tip* is green:
+  - **Local (gh available):** `gh run list --workflow=ci.yml --branch main --limit 1` —
+    confirm the top row's SHA matches `git rev-parse origin/main` and its
+    `conclusion` is `success`.
+  - **Web/remote (GitHub MCP):** `mcp__github__actions_list` with
+    `method="list_workflow_runs"`, `resource_id="ci.yml"`, `per_page=1`,
+    and `workflow_runs_filter={"branch": "main"}`. Check the top run's
+    `head_sha` matches `origin/main` and `conclusion="success"`. For
+    per-job detail on a failing run, re-call with
+    `method="list_workflow_jobs"` and the run ID as `resource_id`.
 - Local checks pass, mirroring CI (run in parallel; check each exit status
   individually — a `| tail` pipe hides failures):
 
@@ -85,15 +95,32 @@ This creates the tag at the tip of main and publishes in one step, which
 fires the release workflow.
 
 **Web/remote session (no gh; the GitHub MCP server has no create-release
-tool):** hand the user the command above with the notes filled in, or the
-UI steps — GitHub → Releases → Draft a new release → "Choose a tag" → type
-`vX.Y.Z` (create on publish) → target `main` → paste notes → Publish.
+tool):** the session cannot publish — the user runs the publish step.
+Hand off both paths so they can pick:
+
+1. **Preferred — the exact `gh` heredoc:** emit the block above with the
+   approved notes already substituted in (not a `[…]` placeholder), inside
+   a fenced code block so it copies cleanly. Note that `--target main`
+   pins the tag to remote `main`'s HEAD regardless of the user's local
+   state — they do not need to be on main, pulled, or clean locally.
+2. **Fallback — the GitHub UI:** Releases → Draft a new release →
+   "Choose a tag" → type `vX.Y.Z` (create on publish) → target `main` →
+   paste notes → Publish.
+
+Then wait for the user to confirm the release URL. Verify from the
+session with `mcp__github__get_release_by_tag` (Step 5) rather than
+assuming publish succeeded.
 
 ## Step 5 — Post-release verification
 
-1. The release exists (`gh release view vX.Y.Z`) and the `Release`
-   workflow run for it succeeds — all three jobs (build, publish,
-   changelog): `gh run list --workflow=release.yml --limit=1`.
+1. The release exists and the `Release` workflow run for it succeeds — all
+   three jobs (build, publish, changelog).
+   - **Local:** `gh release view vX.Y.Z` and `gh run list --workflow=release.yml --limit=1`.
+   - **Web/remote (GitHub MCP):** `mcp__github__get_release_by_tag` for
+     the release, then `mcp__github__actions_list` with
+     `method="list_workflow_runs"`, `resource_id="release.yml"`,
+     `per_page=1`. If a job failed, `method="list_workflow_jobs"` with the
+     run ID gives per-job status.
 2. https://pypi.org/project/fplkit/ shows the new version —
    `pip index versions fplkit`, or `pip install fplkit==X.Y.Z` on a fresh
    venv for a full check.
