@@ -53,6 +53,12 @@ and therefore the changelog line. Write it as the user-facing change, and
 keep each PR single-purpose so one title can describe it. Branch commits
 never reach main, so they can iterate freely; the title is what ships.
 
+PR descriptions are flowing first-person prose — open with why, skip the
+boilerplate sections, put `Closes #N` in the body rather than the title,
+and set caveats or verification gaps in italics. The full style (and the
+workflow agent sessions use to open PRs) lives in
+[`.agents/skills/create-pr/SKILL.md`](.agents/skills/create-pr/SKILL.md).
+
 ## Releases
 
 Versioning is tag-driven (`hatch-vcs`) — no file carries a version number.
