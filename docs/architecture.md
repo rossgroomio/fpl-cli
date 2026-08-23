@@ -41,7 +41,7 @@ flowchart TB
         end
     end
 
-    subgraph Services["Services"]
+    subgraph Services["Services (agent-reachable)"]
         player_scoring[player_scoring<br/>Scoring engines]
         player_prior[player_prior<br/>Bayesian early-season confidence]
         team_ratings[TeamRatingsService<br/>1-7 strength scale]
@@ -284,6 +284,7 @@ flowchart LR
         price_hist["price-history"]
         chips["chips"]
         ratings["ratings"]
+        intel["intel"]
         credentials["credentials"]
         init["init"]
     end
@@ -315,9 +316,17 @@ flowchart LR
         TEA[TransferEvalAgent]
     end
 
+    subgraph Stores["Durable Stores"]
+        LH[("league_history<br/>append-only ledger")]
+        LHC[("league_history_counters<br/>rebuildable projection")]
+    end
+
     preview --> FA & SA & CA & SCA & RA
     review --> RA
     recap --> RA
+    recap -->|"records every run"| LH
+    LH -->|"streaks, notes pack,<br/>season phase"| recap
+    LH -.->|"rebuilds when stale"| LHC
     cap --> CA
     fdr --> FA
     xg --> SA
@@ -330,6 +339,7 @@ flowchart LR
 
     style Direct fill:#e8f5e9,stroke:#1b5e20
     style ViaAgent fill:#fff3e0,stroke:#e65100
+    style Stores fill:#ede7f6,stroke:#311b92
 ```
 
 ### Format Awareness
@@ -367,8 +377,12 @@ Services live in `fpl_cli/services/` and provide the computation layer between a
 | `team_ratings` | TeamRatingsService + Calculator (1-7 scale, 4 axes). Pre-season (no completed GW) seeds from the previous-season prior instead of serving last season's table. Season-aware: a file stamped (or dated) to a previous season is ignored rather than served, taking its `based_on_gws` with it so a new season recalculates. `check_team_set()` diffs the rated clubs against `bootstrap-static` and names the promoted clubs missing and the relegated ones still rated — the check that catches a rollover a date cannot. `has_ratings` / `is_uniform` / `is_preseason_estimate` flag rating sets that cannot produce meaningful fixture difficulty; every warning surfaces via `get_staleness_warning()` |
 | `matchup` | Fixture matchup scoring (0-10), 3-GW recency-weighted |
 | `fixture_predictions` | BGW/DGW predictions from YAML + live detection |
+| `season_previews` | Hand-curated per-team season intel from `<config dir>/previews/*.yaml`. Per-section decay (`SECTION_DECAY`) ages each kind of claim out at the gameweek something better supersedes it — injuries at GW2, projected XIs at GW7, team strength at GW13 to mirror `team_ratings_prior.BLENDING_CUTOFF_GW`. `coverage()` centralises the usage gate (`full` / `negative_filter_only` / `none`) so the three consuming skills cannot drift apart on the threshold. Deterministic name resolution (`resolve_name`) matches preview prose to `element_code`, reporting ambiguity rather than guessing; `write_resolved_codes` saves via round-trip YAML so hand-written comments survive |
 | `squad_allocator` | ILP squad allocator (PuLP CBC), horizon-aware, chip-aware |
 | `team_form` | Rolling team form stats (last 6 matches, venue splits) |
+| `league_history` | Durable league-history ledger: one NDJSON file per gameweek under `<data dir>/league_history/<season>/<format>-<league id>/`, written as a side effect of `league-recap`. Append-only — an identical row writes nothing, a differing one appends a superseding line, and readers resolve by highest fidelity tier then latest capture, with an unknown row ranking below every tier. Two deliberate inversions of house convention: loading **fails closed** (unlike `chip_plan`, which resets on a corrupt file) because the API cannot rebuild a past gameweek, and season is a **partition key** (unlike `team_ratings`, which discards a previous season) because per-gameweek granularity is destroyed at the July rollover. The consequence of partitioning is that the store only ever grows — nothing prunes a prior season, by design — at roughly a few megabytes per league per season |
+| `league_history_counters` | Declarative streak-condition registry (9 conditions: `weeks_on_top`, `bottom_half_run`, `gw_win_streak`, `gw_loss_streak`, `green_arrow_drought` shared; `captain_blank_run`, `hit_run` classic-only; `waiver_win_run`, `waiver_burn_run` draft-only) and the rebuildable counters projection it drives. Each predicate returns extend/reset/hold for one manager's row — hold on an unknown row, a fixture-less blank, or a gameweek the condition does not apply to, so a capture gap never lies about a streak in either direction. The projection is a disposable cache (never a second source of truth) under `<data dir>/league_history_counters/<season>/<format>-<league id>/counters.json`: it advances one gameweek at a time when its stamp is exactly one behind, and **fails open** to a full rebuild from `league_history`'s rows otherwise — missing, unreadable, wrong-version, or a stamp that isn't stamp+1 |
+| `league_history_notes` | Notes pack (`build_notes_pack()`) and season-phase marker (`derive_season_phase()`, standalone) built from `league_history_counters`'s projection plus a bounded trailing window of raw ledger rows (`TRAILING_WINDOW_GAMEWEEKS = 6`, reused as the run-in phase's own length). Every open streak renders as an observed count over its true span rather than "in a row" once any gameweek held (e.g. "3 in the last 11, with 8 not recorded"); each entry declares which of console/report/prompt it reaches — a reportable streak reaches all three, the season-phase marker and coverage statements reach report+prompt only, and a below-minimum streak is retained (exposed via `--format json`) with no surfaces. A "since GW X" qualifier is stated only when a partition's or a specific manager's own recorded coverage genuinely begins later than the league's start gameweek, never merely because a trailing window was read. Only the finale phase rescans every captured gameweek (via `rebuild_counters_through`, never the cached `compute_counters_through`) so weekly cost stays flat as the season progresses |
 
 ## LLM Provider Abstraction
 
@@ -502,7 +516,7 @@ fpl_cli/
 │   ├── _banner.py                # Startup banner
 │   ├── _plan_grid.py             # Fixture grid rendering
 │   ├── _review_*.py              # Review command helpers (analysis, classic, draft, summarisation)
-│   ├── _league_recap_*.py        # League recap helpers & types
+│   ├── _league_recap_*.py        # League recap helpers & types (`_league_recap_history.py` orchestrates capture: builds ledger rows, corrects previous league position from recorded rows, runs the two-tier backfill, and returns the notes pack the console, report, prompt and JSON payload all read)
 │   ├── _fines.py / _fines_config.py  # League fines system
 │   └── [command files]           # One file per command/group
 ├── agents/
@@ -534,18 +548,23 @@ fpl_cli/
 │   ├── team_ratings_prior.py     # Pre-GW5 prior ratings for blending
 │   ├── matchup.py                # Fixture matchup scoring (0-10)
 │   ├── fixture_predictions.py    # BGW/DGW predictions from YAML + live detection
+│   ├── season_previews.py       # Per-team season intel: schema, per-section decay, coverage gate, name resolution
 │   ├── squad_allocator.py        # ILP squad allocator (PuLP CBC) - score, fixture coefficients, solver. Horizon-aware: horizon=1 uses single-GW scoring (GW_SELECTION_WEIGHTS), horizon>=2 uses ownership-family quality (VALUE_QUALITY_WEIGHTS). Chip-aware: --bench-discount (Free Hit), --bench-boost-gw (Bench Boost per-GW override to 1.0), --sell-prices (WC/FH sell-price budget correction via price_overrides dict)
-│   └── team_form.py              # Rolling team form stats
+│   ├── team_form.py              # Rolling team form stats
+│   ├── league_history.py         # League history ledger store: per-gameweek NDJSON, fail-closed load, supersession, coverage query
+│   ├── league_history_counters.py # Streak-condition registry (9 conditions, extend/reset/hold predicates) + rebuildable counters projection: own version + computed-through-gameweek stamp, fails open to a full rebuild from league_history
+│   └── league_history_notes.py   # Notes pack (build_notes_pack) + derive_season_phase(): per-manager streak factoids in observed-count phrasing, season-phase marker, coverage/"since GW X" statements. Counters projection + a bounded trailing window of rows; full season only at the finale
 ├── models/
-│   ├── player.py                 # Player, PlayerStatus, PlayerPosition, POSITION_MAP
+│   ├── player.py                 # Player, PlayerStatus, PlayerPosition, POSITION_MAP, BLANK_POINTS_THRESHOLD
 │   ├── team.py                   # Team
 │   ├── fixture.py                # Fixture
 │   ├── chip_plan.py              # ChipPlan, ChipType, PlannedChip, UsedChip
+│   ├── league_history.py         # LeagueHistoryRow + Ledger* sub-models, CaptureStatus, FidelityTier, schema version constants; ConditionRunState + LeagueHistoryCountersProjection for the counters cache; ManagerEarliestGameweekCache for the first-captured-gameweek memo
 │   └── types.py                  # TypedDicts: CaptainCandidate, WaiverTarget, EnrichedPlayer, etc.
 ├── prompts/
 │   ├── scout.py                  # ScoutAgent system/user prompts
 │   ├── review.py                 # Review research prompts
-│   └── league_recap.py           # League recap synthesis prompts
+│   └── league_recap.py           # League recap synthesis prompts, including the anchored League History section, its never-infer-history rule (emitted even when the pack is empty), and the season-phase framing instruction
 ├── parsers/
 │   └── recommendations.py        # Parse gw{N}-recommendations.md into structured decisions
 ├── scraper/
@@ -554,6 +573,8 @@ fpl_cli/
 ├── season.py                     # season_label() (+ vaastav_season() alias), understat_season(), core_insights_season(), TOTAL_GAMEWEEKS, CHIP_SPLIT_GW
 ├── constants.py                  # MIN_MINUTES_FOR_PER90
 └── utils/
+    ├── gameweek.py                # is_opening_gameweek(gw) — shared GW1 check (transfers, waivers and league tables don't exist yet)
+    ├── markdown.py                # HeadingMatcher, find_section, section_body, leaf_body, fence_flags — fence-aware markdown section location tolerant of LLM heading drift; shared by the gw-prep validator scripts and fpl_cli.prompts.review
     ├── teams.py                  # describe_team_set_mismatch — diff a per-team config against the live team list (promotion/relegation drift)
     ├── text.py                   # strip_diacritics (name matching across sources)
     └── time.py                   # format_deadline/format_kickoff/format_generated_at — UK local (Europe/London, auto GMT↔BST). Canonical formatter for every user-facing timestamp.
@@ -566,16 +587,23 @@ platformdirs (user_config_dir / user_data_dir)  # macOS: ~/Library/Application S
 ├── team_managers.yaml            # Manager name mappings (shipped in package; config-dir copy layers over it per club, so a season refresh still reaches clubs the user has not overridden). Diffed against the live team list on use, naming clubs it misses and clubs it still lists
 ├── team_ratings_overrides.yaml   # Manual per-team axis overrides (config dir, migrated from repo config/)
 ├── fixture_predictions.yaml      # Optional BGW/DGW predictions override (config dir); takes precedence over the shipped copy
+├── previews/{TEAM}.yaml          # Optional season preview intel, one file per team (config dir); user-supplied, nothing shipped but EXAMPLE.yaml
 ├── team_ratings.yaml             # Cached team strength ratings (data dir, auto-refreshed; metadata.season invalidates it across a season boundary)
 ├── team_ratings_prior.yaml       # Cached team ratings priors (data dir)
 ├── player_prior.yaml             # Cached player priors (data dir, generated, season/GW invalidation)
 ├── chip_plan.json                # User's chip plan (data dir, created via `fpl chips add`)
-└── team_finances.json            # Cached sell prices from scraper (data dir, 12h TTL)
+├── team_finances.json            # Cached sell prices from scraper (data dir, 12h TTL)
+├── league_history/<season>/<format>-<league id>/gwNN.ndjson
+│                                 # Append-only league history ledger (data dir). Season partitions rather than invalidates: prior seasons stay readable forever, because the API destroys per-gameweek granularity at the July rollover. Grows-only by design — nothing prunes a prior season
+└── league_history_counters/<season>/<format>-<league id>/{counters.json, earliest_gameweek.json}
+                                  # Rebuildable caches beside the ledger (data dir), never a second source of truth: missing, unreadable, wrong-version, or out-of-order rebuilds silently from the ledger rather than being served. counters.json holds the streak projection; earliest_gameweek.json memoises each manager's first captured gameweek, the input to the notes pack's "since GW X" qualifier
 ```
 
 The config dir also holds `.env` (credentials, API keys) and the generated `output/` and `research/` report directories.
 
 A default `fixture_predictions.yaml` ships inside the package (`SHIPPED_CONFIG_DIR`); a current-season copy in the user config dir takes precedence, so predictions can be updated without a package release. A user copy that is unreadable, malformed, empty, or from a previous season falls through to the shipped copy and the reason is reported.
+
+Season previews follow the same season-staleness discipline but deliberately **not** the layering: there is no shipped fallback to fall through to, because preview content is entirely user-supplied (a paid newsletter's prose cannot be distributed). Only an annotated `previews/EXAMPLE.yaml` ships, as the schema reference behind `fpl intel schema`; the loader skips any file with that name so an unedited copy stays quiet. A missing previews directory is the ordinary case and produces no warning.
 
 `user_config_dir()` / `user_data_dir()` / `user_cache_dir()` resolve lazily and are cached, so an override set after import (from `.env`, or by a script) is still honoured. Consumers must call them where the path is used rather than binding the result to a module-level constant.
 
@@ -591,11 +619,15 @@ A default `fixture_predictions.yaml` ships inside the package (`SHIPPED_CONFIG_D
     │   │   ├── rules.md          # Transfer/waiver/selection rules
     │   │   └── output-template.md
     │   └── scripts/
+    │       ├── _bootstrap.py            # Shared startup (user-dir migration) for agent-importing scripts
     │       ├── bench_order.py           # BenchOrderAgent wrapper (name -> ID resolution)
     │       ├── starting_xi.py           # StartingXIAgent wrapper (name -> ID resolution)
     │       ├── transfer_eval.py         # TransferEvalAgent wrapper (name -> ID resolution)
-    │       └── extract_classic_squad.py # Classic Squad block extractor (Phase B9 embed + Phase E read-only validator)
+    │       ├── extract_classic_squad.py # Classic Squad block extractor (Phase A3 embed + Phase E read-only validator)
+    │       └── validate_draft_waivers.py # Draft waiver cross-check against waiver pool + squad grid
     ├── update-gw-prep/           # Second-pass addendum with supplementary data
+    │   └── SKILL.md
+    ├── preview-ingest/           # Season preview prose -> structured per-team intel files
     │   └── SKILL.md
     ├── squad-builder/            # 5-mode squad optimisation (WC/FH/season-start/draft/redraft)
     │   ├── SKILL.md
@@ -628,4 +660,5 @@ User settings deep-merged over committed defaults via `platformdirs`. `.env` loa
 - **Draft parity.** Most commands work for both classic and draft formats. Draft support focuses on free-agent pickups via the waiver system - trade recommendations between managers are out of scope.
 - **Agent-friendly.** `--format json` on key commands with a consistent envelope. See [Agent Tools & Skills](../.agents/TOOLS.md).
 - **LLM features are opt-in.** Core analysis works without any API keys. LLM providers add narrative and research capabilities.
+- **Deterministic memory before LLM memory.** `league-recap` records every run to an append-only ledger and computes streaks, trends and season phase from it in Python. The model is handed those as vetted facts through a single anchored prompt section and is never asked to remember, infer, or re-derive history — the one conduit is what makes an editorial's historical claims checkable against the store.
 

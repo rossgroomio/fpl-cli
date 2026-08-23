@@ -431,9 +431,22 @@ class ReportAgent(Agent):
             lines.extend([
                 "## League",
                 f"**{cl.get('league_name', 'Classic League')}**",
-                f"- **Position:** {cl.get('user_position')} of {cl.get('total_entries')}",
-                f"- **GW Points:** {cl.get('user_gw_points')} (Total: {cl.get('user_total'):,})",
             ])
+            if cl.get("standings_pending"):
+                lines.append(
+                    "Standings not published yet - FPL builds mini-league tables"
+                    " after the opening gameweek is finalised.",
+                )
+            elif cl.get("total_entries"):
+                lines.extend([
+                    f"- **Position:** {cl.get('user_position')} of {cl.get('total_entries')}",
+                    f"- **GW Points:** {cl.get('user_gw_points')} (Total: {cl.get('user_total', 0):,})",
+                ])
+            else:
+                lines.append(
+                    f"League standings not shown for historical GW{gameweek} review"
+                    " - use `fpl league` for current standings.",
+                )
 
             if cl.get("nearby_rivals"):
                 lines.extend([
@@ -605,18 +618,30 @@ def _ordinal(n: int) -> str:
     return f"{n}{suffix}"
 
 
+# R10: a position or total that could not be derived is named by these two
+# constants, never rendered blank or zero. Shared with the console surface
+# (`fpl_cli.cli.league_recap._render_console_highlights`) so the two
+# surfaces can't drift onto different wording for the same fact.
+POSITION_UNAVAILABLE = "position unavailable"
+TOTAL_UNAVAILABLE = "total unavailable"
+
+
 def _format_standings_block(managers: Sequence[RecapManagerEntry]) -> str:
     """Render league standings as a space-aligned text block.
 
-    Sort order: gw_points desc, tie-break by overall_rank asc.
-    Each row: GW rank, manager (+ chip), GW points, (ordinal league pos[ arrow], total).
+    Sort order: gw_points desc, tie-break by overall_rank asc (managers with
+    no derivable position, e.g. an unreconstructable draft replay per R10,
+    sort last). Each row: GW rank, manager (+ chip), GW points, (ordinal
+    league pos[ arrow], total) -- either half of that pair is named
+    "unavailable" by R10 rather than rendered blank or zero when it could not
+    be derived.
     """
     if not managers:
         return ""
 
     sorted_managers = sorted(
         managers,
-        key=lambda m: (-m["gw_points"], m["overall_rank"]),
+        key=lambda m: (-m["gw_points"], m.get("overall_rank", _UNRANKED)),
     )
 
     def display_name(m: RecapManagerEntry) -> str:
@@ -629,14 +654,27 @@ def _format_standings_block(managers: Sequence[RecapManagerEntry]) -> str:
 
     lines = []
     for idx, m in enumerate(sorted_managers, start=1):
-        delta = m["previous_rank"] - m["overall_rank"]
-        if delta > 0:
-            arrow = f" ↑{delta}"
-        elif delta < 0:
-            arrow = f" ↓{-delta}"
-        else:
+        overall_rank = m.get("overall_rank")
+        previous_rank = m.get("previous_rank")
+        total_points = m.get("total_points")
+
+        if overall_rank is None:
+            position_str = POSITION_UNAVAILABLE
             arrow = ""
-        context = f"({_ordinal(m['overall_rank'])}{arrow}, {m['total_points']})"
+        else:
+            position_str = _ordinal(overall_rank)
+            if previous_rank is None:
+                arrow = ""
+            else:
+                delta = previous_rank - overall_rank
+                if delta > 0:
+                    arrow = f" ↑{delta}"
+                elif delta < 0:
+                    arrow = f" ↓{-delta}"
+                else:
+                    arrow = ""
+        total_str = str(total_points) if total_points is not None else TOTAL_UNAVAILABLE
+        context = f"({position_str}{arrow}, {total_str})"
         lines.append(
             f"{idx:>{rank_width}}.  "
             f"{display_name(m):<{name_width}}  "
@@ -644,3 +682,8 @@ def _format_standings_block(managers: Sequence[RecapManagerEntry]) -> str:
             f"{context}"
         )
     return "\n".join(lines)
+
+
+# Sort-only sentinel for a manager with no derivable league position --
+# larger than any real rank, so they sort after every ranked manager.
+_UNRANKED = float("inf")

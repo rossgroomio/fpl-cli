@@ -17,6 +17,9 @@ $ pytest                 # Tests
 $ hatch build            # Package build
 ```
 
+A separate `PR Title` check (`.github/workflows/pr-title.yml`) fails the
+PR when the title doesn't follow the conventional-commit format below.
+
 ## Commit subjects & PR titles
 
 Both follow [Conventional Commits](https://www.conventionalcommits.org).
@@ -42,15 +45,32 @@ The rules that matter:
 - A breaking change uses the `!` marker (`feat!:`) or a `BREAKING CHANGE:`
   footer; it drives a major version bump at the next release.
 
+### Merging
+
+PRs are **squash-merged** (merge commits are disabled). The PR title —
+with `(#N)` auto-appended by GitHub — becomes the single commit on main,
+and therefore the changelog line. Write it as the user-facing change, and
+keep each PR single-purpose so one title can describe it. Branch commits
+never reach main, so they can iterate freely; the title is what ships.
+
 ## Releases
 
 Versioning is tag-driven (`hatch-vcs`) — no file carries a version number.
+Versions follow [semver](https://semver.org/); tags use the `vX.Y.Z` format:
+
+| Bump | When | Example |
+|---|---|---|
+| **Patch** (`v1.0.1`) | Bug fix, minor tweak | Fix captain scoring edge case |
+| **Minor** (`v1.1.0`) | New command, new agent, new capability | Add `FPL_CLI_DATA_DIR` override |
+| **Major** (`v2.0.0`) | Breaking CLI change: removed/renamed command or flag, changed output format | `ep_next` emits JSON null (v2.0.0) |
+
 Publishing a GitHub release triggers `.github/workflows/release.yml`, which
 builds the package, uploads it to PyPI ([fplkit](https://pypi.org/project/fplkit/))
 via trusted publishing, and prepends the git-cliff section to
 `CHANGELOG.md`. The full runbook lives in
 [`.agents/skills/release/SKILL.md`](.agents/skills/release/SKILL.md);
-agent sessions run it as the `release` skill.
+agent sessions run it as the `release` skill, and can preview the next
+version's notes any time with the read-only `release-notes` skill.
 
 ## Agent sessions
 

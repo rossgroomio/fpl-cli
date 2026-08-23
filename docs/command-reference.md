@@ -479,10 +479,12 @@ fpl review --dry-run              # Build prompts without calling LLMs
 Entertainment-first post-gameweek report for the whole league.
 
 ```bash
-fpl league-recap                # Recap last completed gameweek
-fpl league-recap --save         # Save report
-fpl league-recap --summarise    # Add LLM editorial narrative
-fpl league-recap --draft        # Use draft league
+fpl league-recap                  # Recap last completed gameweek
+fpl league-recap --save           # Save report
+fpl league-recap --summarise      # Add LLM editorial narrative
+fpl league-recap --draft          # Use draft league
+fpl league-recap --backfill-detail  # Rebuild earlier gameweeks in full detail
+fpl league-recap --format json     # JSON envelope for scripting/agents
 ```
 
 **Awards:** GW winner/loser, biggest bench haul, best/worst captain, transfer/waiver genius and disaster.
@@ -492,6 +494,202 @@ fpl league-recap --draft        # Use draft league
 **Fines:** evaluates fines for every manager (not just you) when configured.
 
 **LLM editorial** (`--summarise`): Newsletter-style narrative via synthesis provider. Names names, calls out decisions.
+
+**Streaks:** notable open streaks (weeks on top, win/loss runs, captain blanks, green-arrow droughts, waiver activity, and more) print under `Streaks:` on console — leaders only, so console stays a highlights view — and in full as a `# League History` section in the saved report. Each is reported as an observed count over its true span (e.g. "3 in the last 11, with 8 not recorded") rather than a bare "in a row" once any gameweek went uncaptured.
+
+**Unavailable:** a manager whose position or points total can't be derived this run (e.g. a replayed draft gameweek with no earlier rows) is named under `Unavailable:` on console and in the report rather than silently dropped from Standings Movement.
+
+**JSON:** `--format json` emits one row per manager — the same shape written to the
+ledger, built from the rows this run assembled, so manager data is present even when the
+store could not be written. `metadata` carries `coverage` (per gameweek: fidelity-tier
+counts, unknown managers, whether the file was readable), `season_phase`, `notes_pack`
+(every entry, including those below their reporting minimum), `synthesis_summary` (with
+`--summarise`), `warnings`, and `first_capture_store_path` (set only on a partition's
+first capture). Warning codes are listed under [Capture warnings](#capture-warnings).
+
+#### League history
+
+Every run records what it computed, one row per manager per gameweek, under
+`<data dir>/league_history/<season>/<format>-<league id>/gwNN.ndjson`. There is no flag
+to switch this on and no separate command: the recap already fetched everything a row
+needs. The store exists because the FPL API keeps per-gameweek detail only for the
+current season — at the July rollover everything collapses to one aggregate row per
+season, and for draft the per-gameweek numbers are then gone for good.
+
+A new season adds a partition rather than replacing the last one, so the store grows for
+as long as you keep running recaps and nothing prunes it — a few megabytes per league per
+season. Worth knowing if `FPL_CLI_DATA_DIR` points into a synced folder. Streak counters
+are cached separately, under `<data dir>/league_history_counters/`, and rebuilt from the
+ledger whenever that cache is missing, stale, or unreadable — it is safe to delete, and
+is never read as a source of truth.
+
+Rows are append-only. Re-running a gameweek that has not changed writes nothing; a
+re-run whose numbers differ (bonus points settled, a failed fetch repaired, a coarse
+gameweek filled in) appends a superseding row and leaves the old one in place. A file
+that cannot be parsed is never reset or overwritten: the run says which file and what to
+do about it, still prints the recap from live data, and exits 0.
+
+Two fidelity tiers, both recorded on the row:
+
+| Tier | Source | Carries |
+|---|---|---|
+| Coarse | Classic manager-history endpoint, one request per manager for the whole season | Points, cumulative total, transfer count and cost, bench points, squad value, bank |
+| Detailed | A live recap run, or `--backfill-detail` replaying a past gameweek | Everything above plus captain, vice, full squad, and transfer or waiver detail |
+
+Classic gaps fill at the coarse tier automatically. `--backfill-detail` upgrades them,
+at the cost of one request per manager per gameweek, which is why it is opt-in. Draft
+has no manager-history endpoint at all, so a draft gameweek that was never captured can
+only be rebuilt with `--backfill-detail`, and only while the season is live.
+
+When a gameweek is missing, coarse, unreadable, or holds a manager whose data could not
+be fetched, the run says so on stderr and names the remedy. A fully captured season
+stays quiet.
+
+Ephemeral environments (Claude Code on the web, CI, containers) must point
+`FPL_CLI_DATA_DIR` at a persistent workspace or the ledger dies with the container. The
+first time a season's partition is created, the run prints where it went.
+
+#### Season phase
+
+Every recap is stamped with where its gameweek sits in the season's arc. The phase sets
+the framing line in the report and the editorial's tone, and the finale is the one phase
+whose notes pack rescans every captured gameweek instead of a trailing six-gameweek
+window.
+
+| Phase | Gameweeks | Framing it states |
+|---|---|---|
+| `opener` | The first gameweek (GW1) | "the season opener" |
+| `pre_chip_boundary` | Up to the gameweek before the chip split (GW2-18) | "before the GW19 chip-availability boundary" |
+| `midpoint` | Chip split to the start of the run-in (GW19-31) | "the season midpoint, past the GW19 chip boundary and before the run-in" |
+| `run_in` | The last six gameweeks before the final one (GW32-37) | "in the run-in to the season finale (GW38)" |
+| `finale` | The final gameweek and anything past it (GW38+) | "the season finale" |
+
+Boundaries derive from the season-length and chip-split constants rather than fixed
+dates, so a season of a different length moves them and the stated gameweek numbers move
+with it. `metadata.season_phase` carries the live value, and is `null` on any run that built no
+notes pack — an unreadable store, or no league id configured for the format.
+
+#### Capture warnings
+
+Every capture problem is reported on stderr as prose and, under `--format json`, in
+`metadata.warnings` as a `{"code", "message"}` pair. The prose is rewritable; the codes
+are stable, so scripts should key on those.
+
+| Code | Raised when |
+|---|---|
+| `league_history_league_id_missing` | No league id is configured for this format, so the gameweek was not recorded at all |
+| `league_history_store_unreadable` | The gameweek's file could not be read or written; it is left untouched and the recap still renders from live data |
+| `league_history_coverage` | One line per coverage gap: gameweeks missing, held at the coarse tier, holding unknown managers, or unreadable |
+| `league_history_unmatched_players` | A draft squad player could not be matched to a main-game player, so their recorded points are zero rather than a real score |
+| `league_history_transfer_detail_short` | Fewer transfers were captured than the manager's recorded count, so the stored list is incomplete rather than empty |
+| `league_history_standings_truncated` | The standings response covered only part of the league, so the gameweek is recorded for that subset only |
+| `league_history_backfill_manager_unreachable` | One manager's history could not be fetched; their gameweeks stay unknown and are re-attempted next run |
+| `league_history_backfill_replay_failed` | One gameweek could not be replayed in detail; the others are unaffected |
+| `league_history_backfill_write_failed` | A backfilled gameweek could not be written; the rest of the backfill continues |
+
+None of these change the exit code — `league-recap` exits 0 whenever the recap itself
+rendered. The single exit-1 case is a gameweek that could not be resolved at all under
+`--format json`, which emits the shared `{"command", "error"}` envelope; the table path
+prints the same message and exits 0.
+
+## Season Preview Intel
+
+Hand-curated per-team notes covering what the API and historical data cannot see before
+a season starts: who is nailed on, who is injured into the autumn, who took over set
+pieces, how a squad looks after the summer window.
+
+The content is yours. Nothing ships but an annotated example — preview prose belongs to
+whoever wrote it, so there is nothing to distribute. Sources are interchangeable: a
+200-word blurb and a long data piece fill the same schema at different fidelity.
+
+```bash
+fpl intel                       # Coverage across the league and what it permits
+fpl intel --show-decay          # When each kind of intel expires
+fpl intel -g 5                  # Show intel as it will look at GW5
+fpl intel --format json         # For scripts and agent skills
+fpl intel schema                # The file format, every field explained
+fpl intel init                  # Scaffold one empty file per Premier League team
+fpl intel init --force          # Overwrite existing files
+fpl intel show ARS              # One team's intel, aged to the current gameweek
+fpl intel resolve ARS           # Match player names to FPL codes (dry run)
+fpl intel resolve ARS --write   # Write the codes back, preserving your comments
+fpl intel resolve ARS --all     # Re-resolve players that already have a code
+fpl intel resolve ARS --all --write  # ...and save corrections over existing codes
+```
+
+**Location:** `<config dir>/previews/{TEAM}.yaml`, one file per team, named by FPL short
+name (`ARS.yaml`). See [Directories](#directories).
+
+### Decay
+
+A preview is not one thing with one expiry. Each kind of claim is aged out at the point
+something better supersedes it, so files stay on disk untouched all season and stop
+influencing decisions on their own.
+
+| Section | Full confidence | Expires | Superseded by |
+|---------|-----------------|---------|---------------|
+| `injuries` | GW1 | GW2 | the FPL API's own `news` and `chance_of_playing` fields |
+| `transfers` | GW3 | GW4 | the summer window shutting; the roster is then authoritative |
+| `projected_xi` | GW3 | GW7 | real `minutes` |
+| `role_notes` | GW4 | GW9 | observed position and minutes |
+| `set_piece_duty` | GW6 | GW13 | observed returns |
+| `team_strength` | GW6 | GW13 | team ratings, which stop blending a prior after GW12 |
+| `narrative` | GW6 | GW13 | as above |
+
+This table is the one prose copy of the schedule; `tests/test_doc_consistency.py` checks
+it against `SECTION_DECAY` in code, and `fpl intel --show-decay` prints the live version.
+Everything else (the agent skills included) reads the schedule from the JSON payload
+(`metadata.decay_schedule`, `metadata.sections_live`) rather than restating the numbers.
+
+Between full confidence and expiry the value tapers linearly and is reported per section
+as `section_confidence`. A categorical field such as `status: starter` cannot be scaled
+numerically, so the confidence is emitted alongside it for the consumer to weigh. Each
+emitted preview also carries `sections_present` — the unexpired sections that file
+actually holds data for, so a consumer need not re-derive that from the payload keys.
+
+### Coverage gate
+
+A partially-filled preview set is biased: written-up teams carry "nailed on, takes
+corners" annotations and the rest carry nothing, so absence of a flag reads as absence
+of merit. `metadata.coverage.usable_as` reports what the current set permits:
+
+| Value | Condition | Permitted use |
+|-------|-----------|---------------|
+| `full` | 75%+ of teams covered | Support or oppose a pick |
+| `negative_filter_only` | below that | Downgrade only — injuries, rotation risk. Never promote. |
+| `none` | nothing loaded, or all expired | Ignore entirely |
+
+Stubs from `fpl intel init` never count toward coverage until they are filled in.
+
+### Files that are skipped
+
+A file is ignored, with the reason printed to stderr and carried in
+`metadata.warnings`, when it is unreadable, is not a mapping, declares an unknown
+`schema_version`, is missing `team`, `source` or `published`, or belongs to a previous
+season. The season check reads the explicit `season` label when present (any
+start/end-year spelling — `2026-27`, `2026/2027`, `26-27` — is accepted) and falls back
+to the `published` date, with May and June of the season's start year counting as
+current since that is when season previews are written. This is the guard against
+building a squad on last August's opinions. A file whose `team` is still the `EXAMPLE`
+template sentinel is skipped with a warning, and a preview set that has drifted across
+promotion and relegation is reported too; clubs not in the current league never count
+toward coverage. Two teams sharing a `predicted_finish` draws a warning (not a skip):
+finishes extracted from a single source's predicted table should form a permutation, so
+a duplicate usually means a row was misread at ingest.
+
+### Name resolution
+
+Preview prose names players the way a reader would — "Bruno Guimaraes" where the game
+shows "Bruno G." — so `fpl intel resolve` matches names against the team's squad and
+writes `element_code` (stable across seasons) back into the file. Accents and
+punctuation are folded, so `Ødegaard` and `Odegaard` resolve alike (including
+non-decomposable letters: `Łukasz` matches `Lukasz`). An exact match on a
+display or full name wins outright; otherwise every query token must appear in the
+player's combined names. **Ambiguity is reported, never guessed** — a silently wrong
+code attaches intel to the wrong player. Writes are round-trip YAML, so hand-written
+comments and formatting survive. A plain `--write` never touches an existing code — a
+hand-corrected code survives a re-run — while `--all --write` saves a re-resolved code
+over a differing existing one.
 
 ## Configuration Reference
 
@@ -535,11 +733,11 @@ fpl-cli writes to three directories, each resolved via `platformdirs` and overri
 
 | Directory | Contents | Override |
 |-----------|----------|----------|
-| Config | `settings.yaml`, `.env` (credentials and API keys), `team_ratings_overrides.yaml`, optional `team_managers.yaml` (layered over the shipped copy per club) and `fixture_predictions.yaml` (replaces the shipped copy), plus the `output/` and `research/` report directories | `FPL_CLI_CONFIG_DIR` |
-| Data | Generated files: `team_ratings.yaml`, `team_ratings_prior.yaml`, `player_prior.yaml`, `chip_plan.json`, `team_finances.json` | `FPL_CLI_DATA_DIR` |
+| Config | `settings.yaml`, `.env` (credentials and API keys), `team_ratings_overrides.yaml`, optional `team_managers.yaml` (layered over the shipped copy per club) and `fixture_predictions.yaml` (replaces the shipped copy), the optional `previews/` directory of [season preview intel](#season-preview-intel), plus the `output/` and `research/` report directories | `FPL_CLI_CONFIG_DIR` |
+| Data | Generated files: `team_ratings.yaml`, `team_ratings_prior.yaml`, `player_prior.yaml`, `chip_plan.json`, `team_finances.json`, the [`league_history/`](#league-history) ledger and its rebuildable `league_history_counters/` cache | `FPL_CLI_DATA_DIR` |
 | Cache | Disposable API response caches | `FPL_CLI_CACHE_DIR` |
 
-**Ephemeral environments** (Claude Code on the web, CI, containers): the default config and data locations live inside the container and vanish with it. Point `FPL_CLI_CONFIG_DIR` and `FPL_CLI_DATA_DIR` at a persistent workspace directory so settings, credentials, generated reports, and generated data (team ratings, priors, chip plans, sell prices) survive between sessions. The cache is disposable by design and can stay container-local.
+**Ephemeral environments** (Claude Code on the web, CI, containers): the default config and data locations live inside the container and vanish with it. Point `FPL_CLI_CONFIG_DIR` and `FPL_CLI_DATA_DIR` at a persistent workspace directory so settings, credentials, generated reports, and generated data (team ratings, priors, chip plans, sell prices, league history) survive between sessions. The [league history ledger](#league-history) is the one thing there that a later run cannot rebuild: the API keeps per-gameweek detail only for the current season, so a container that vanishes mid-season takes those gameweeks with it. The cache is disposable by design and can stay container-local.
 
 Three things to know when setting the overrides:
 
@@ -646,6 +844,11 @@ export FPL_SYNTHESIS_BASE_URL=http://localhost:11434/v1
 
 - **Classic league scoring only.** No Head-to-Head or H2H knock-out league scoring. Both classic and draft formats are supported.
 - **One entry per format.** Configure one classic team and one draft league.
-- **League standings show top 50.** Covers most invitational leagues. Larger leagues see partial results.
+- **League standings tables show top 50.** Covers most invitational leagues. Larger leagues see partial
+  results, and `fpl status` omits the this-week league position for them (it cannot be ranked from one page).
+  Your true rank and the exact league size are still reported, since both come from your entry rather than
+  the standings page. The [league history ledger](#league-history) inherits the limit: a gameweek captured
+  from a truncated page is recorded for that subset only, and says so with the
+  `league_history_standings_truncated` warning.
 - **Pending transfers not visible.** The FPL API only exposes picks for completed gameweeks.
 - **Read-only.** The CLI authenticates with FPL only for price scraping (via Playwright). It will not set your lineup, make transfers, or submit waiver claims on your behalf.

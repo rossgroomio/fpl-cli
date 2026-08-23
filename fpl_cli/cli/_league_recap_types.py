@@ -11,6 +11,10 @@ class RecapManagerPlayer(TypedDict):
     name: str
     team: str
     position: str
+    # Stable cross-season element_code, so a recorded squad still identifies
+    # its players after the API reshuffles seasonal ids. None when the
+    # reference could not be resolved (always paired with `unmatched`).
+    code: int | None
     points: int
     is_captain: bool
     is_vice_captain: bool
@@ -19,6 +23,13 @@ class RecapManagerPlayer(TypedDict):
     auto_sub_in: bool
     auto_sub_out: bool
     red_cards: int
+    # Draft only: the draft-to-main-player name/team match failed, so `points`
+    # is a false zero rather than a real score. Always False for classic.
+    unmatched: bool
+    # Whether the player's club had a fixture this gameweek. A bench zero in a
+    # blank gameweek is not a choice that failed, and a captain with no fixture
+    # never contributes to a captain-blank run.
+    had_fixture: bool
 
 
 class RecapTransfer(TypedDict):
@@ -27,9 +38,11 @@ class RecapTransfer(TypedDict):
     player_in: str
     player_in_team: str
     player_in_points: int
+    player_in_code: NotRequired[int]
     player_out: str
     player_out_team: str
     player_out_points: int
+    player_out_code: NotRequired[int]
     net: int
     cost: int
 
@@ -41,9 +54,11 @@ class RecapDraftTransaction(TypedDict):
     player_in: str
     player_in_team: str
     player_in_points: int
+    player_in_code: NotRequired[int]
     player_out: str
     player_out_team: str
     player_out_points: int
+    player_out_code: NotRequired[int]
     net: int
     kind: str
 
@@ -53,11 +68,20 @@ class RecapManagerEntry(TypedDict):
 
     manager_name: str
     entry_id: int
+    # Draft only: the league-local `league_entry` id. It is always present,
+    # while `entry_id` is null for an unclaimed team -- two of which would
+    # otherwise collide on the ledger key.
+    league_entry_id: NotRequired[int]
     gw_points: int
-    total_points: int
+    # Always gross, unlike gw_points (which flips net/gross on use_net_points).
+    gross_points: int
+    # Unset for a replayed gameweek where no point-in-time cumulative total
+    # could be reconstructed (draft has no such source before a ledger exists).
+    total_points: NotRequired[int]
     gw_rank: int
-    overall_rank: int
-    previous_rank: int
+    # League position. Unset alongside total_points when it can't be derived.
+    overall_rank: NotRequired[int]
+    previous_rank: NotRequired[int]
     captain: str
     captain_points: int
     captain_played: bool
@@ -70,6 +94,19 @@ class RecapManagerEntry(TypedDict):
     auto_subs: list[str]
     transfers: NotRequired[list[RecapTransfer]]
     transactions: NotRequired[list[RecapDraftTransaction]]
+    # Classic only: four figures the picks response's `entry_history` carries
+    # and the season rollover destroys. Draft has no budget, no FPL-wide rank,
+    # and acquires by waiver, so it omits all four.
+    # Prices are in the repo's £0.1m units (1000 = £100.0m).
+    squad_value: NotRequired[int]
+    bank: NotRequired[int]
+    # The manager's FPL-wide rank. Deliberately not `overall_rank`, which on
+    # this TypedDict means league position.
+    global_rank: NotRequired[int]
+    # How many transfers the API says were made. `transfers` is best-effort, so
+    # this is the only way to tell an empty list apart from a manager who made
+    # none -- and to detect a captured list that came back short.
+    transfers_made: NotRequired[int]
 
 
 class RecapAwardEntry(TypedDict):
@@ -104,8 +141,29 @@ class RecapFineResult(TypedDict):
     """A fine triggered for a specific manager."""
 
     manager_name: str
+    # The manager's ledger key (classic `entry`, draft `league_entry`). Two
+    # managers can share a display name, so a stored ruling is keyed rather
+    # than matched back by name.
+    manager_key: NotRequired[int]
     rule_type: str
     message: str
+
+
+class RecapStandingsEntry(TypedDict):
+    """One row of the league table, whether or not that manager was fetched.
+
+    Both collectors fetch standings and then discard everything but the rows
+    they could enrich. Capture cannot enumerate league members without the
+    whole table: a manager missing from `managers` needs an unknown-status row
+    rather than no row at all.
+    """
+
+    manager_key: int
+    manager_name: str
+    # Null for an unclaimed draft team; always set for classic.
+    entry_id: int | None
+    gw_points: int
+    total_points: int
 
 
 class LeagueRecapData(TypedDict):
@@ -118,3 +176,23 @@ class LeagueRecapData(TypedDict):
     awards: RecapAwards
     fines: NotRequired[list[RecapFineResult]]
     synthesis_summary: NotRequired[str]
+    # Ledger partition key and the league's own start gameweek (absent or 1
+    # means it started at GW1, so there is nothing to offset or skip).
+    league_id: NotRequired[int]
+    league_start_event: NotRequired[int]
+    # Every member of the league table, in standings order.
+    standings_cohort: NotRequired[list[RecapStandingsEntry]]
+    # The standings response reported members beyond the ones fetched (classic
+    # pages at 50). The ledger inherits the truncation, so it must be visible.
+    standings_truncated: NotRequired[bool]
+    # The league's member count where the API states one; absent when the
+    # standings response only reports that another page exists.
+    league_size: NotRequired[int]
+    # Whether the gameweek itself was blank or double, recorded on every row.
+    is_bgw: NotRequired[bool]
+    is_dgw: NotRequired[bool]
+    # Report-surfaced League History text (U10), absent when capture could
+    # not build a notes pack at all.
+    league_history_phase_text: NotRequired[str]
+    league_history_streak_lines: NotRequired[list[str]]
+    league_history_coverage_lines: NotRequired[list[str]]

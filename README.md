@@ -59,7 +59,8 @@ Alternatives: `uv pip install fplkit` or `pip install fplkit`.
 $ fpl status                       # GW result, deadline, rank movement, flagged players
 $ fpl review --save --summarise    # Full review with LLM narrative
 $ fpl league                       # Live league standings
-$ fpl league-recap --summarise     # Awards and editorial for the group chat
+$ fpl league-recap                 # Awards, standings movement, and running streaks
+$ fpl league-recap --summarise     # Add the LLM editorial for the group chat
 ```
 
 ### Checking Your Setup
@@ -97,6 +98,25 @@ $ fpl chips timing                 # Rule-based Free Hit / Bench Boost / Triple 
 $ fpl fixtures                     # Next GW fixtures with FDR
 ```
 
+### Season Preview Intel
+
+Optional. Notes you write up per team before the season — projected XIs, long-term
+injuries, new signings with no Premier League record — from whatever source you read.
+Nothing ships with the tool; the previews are yours.
+
+```console
+$ fpl intel schema                 # The file format, every field explained
+$ fpl intel init                   # Scaffold one empty file per team
+$ fpl intel resolve ARS --write    # Match player names to FPL codes, save them
+$ fpl intel                        # Coverage across the league, and what it permits
+$ fpl intel show ARS               # One team's intel, aged to the current gameweek
+```
+
+Intel expires on a schedule (`fpl intel --show-decay` prints it): each section is aged
+out at the point where real data supersedes it — API news for injuries, actual minutes
+for projected XIs. There is no in-season upkeep, and squad-builder and gw-prep read it
+automatically when present.
+
 ### Custom Analysis
 
 Off by default. Enable via `fpl init` or `custom_analysis: true` in settings.yaml.
@@ -129,11 +149,12 @@ Commands with `--format json` emit a consistent envelope:
 $ fpl stats --format json -p MID -s expected_goal_involvements
 $ fpl status --format json
 $ fpl fdr --blanks --format json
+$ fpl league-recap --format json
 ```
 
 ## Configuration
 
-Run `fpl init` to configure interactively. Settings stored in your platform's config directory (override with `FPL_CLI_CONFIG_DIR`); generated data such as team ratings and chip plans is stored in your platform's data directory (override with `FPL_CLI_DATA_DIR`). In ephemeral environments (e.g. Claude Code on the web), point both at a persistent workspace. Both overrides must be absolute paths — see [Directories](docs/command-reference.md#directories).
+Run `fpl init` to configure interactively. Settings stored in your platform's config directory (override with `FPL_CLI_CONFIG_DIR`, and also home to the optional `previews/` intel files); generated data such as team ratings, chip plans and the league history ledger `league-recap` builds up is stored in your platform's data directory (override with `FPL_CLI_DATA_DIR`). In ephemeral environments (e.g. Claude Code on the web), point both at a persistent workspace. Both overrides must be absolute paths — see [Directories](docs/command-reference.md#directories).
 
 **Required:** FPL classic entry ID or draft league + entry IDs.
 

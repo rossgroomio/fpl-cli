@@ -18,6 +18,7 @@ from fpl_cli.cli.fdr import fdr_command
 from fpl_cli.cli.fixtures import fixtures_command
 from fpl_cli.cli.history import history_command
 from fpl_cli.cli.init import init_command
+from fpl_cli.cli.intel import intel_group
 from fpl_cli.cli.league import league_command
 from fpl_cli.cli.league_recap import league_recap_command
 from fpl_cli.cli.player import player_command
@@ -82,6 +83,7 @@ main.add_command(allocate_command)
 main.add_command(squad_group)
 main.add_command(chips_group)
 main.add_command(ratings_group)
+main.add_command(intel_group)
 
 if __name__ == "__main__":
     main()

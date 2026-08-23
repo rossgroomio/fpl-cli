@@ -9,6 +9,8 @@ import sys
 from pathlib import Path
 from types import ModuleType
 
+import pytest
+
 SCRIPT_PATH = (
     Path(__file__).parent.parent
     / ".agents/skills/gw-prep/scripts/validate_draft_waivers.py"
@@ -17,6 +19,12 @@ FIXTURE_DIR = Path(__file__).parent / "fixtures" / "validate_draft_waivers"
 
 
 def _load_script() -> ModuleType:
+    """Load validate_draft_waivers.py as a module (it's not a package).
+
+    Its only import beyond the stdlib is `fpl_cli.utils.markdown`, resolved
+    through the installed fpl-cli package, so no sys.path manipulation is
+    needed to load it standalone.
+    """
     spec = importlib.util.spec_from_file_location("validate_draft_waivers", SCRIPT_PATH)
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
@@ -718,6 +726,37 @@ def test_three_stacked_tables_only_waiver_table_parsed(tmp_path, capsys):
     assert data["warnings"] == []
 
 
+def test_nested_subheading_table_inside_waivers_does_not_leak_in(tmp_path, capsys):
+    """A #### sub-heading nested inside ### Waiver Recommendations is drift, not
+    more waiver rows -- its table must not be picked up as the live waiver
+    table, even though it's a heading one level deeper than the boundary."""
+    recs_content = """\
+## Draft League
+
+### Waiver Recommendations
+
+No live waivers this week.
+
+#### Historical Priority
+
+| Priority | Drop | Claim | Position |
+|----------|------|-------|----------|
+| 1 | Hill (BOU) | Rogue Claim (YYY) | MID |
+
+### Starting XI
+
+| Pos | Player |
+|-----|--------|
+| GK | Flekken |
+"""
+    recs, w, s = _write_fixtures(tmp_path, recs_content)
+    _run(str(recs), str(w), str(s))
+    data = _parse(capsys)
+    assert data["ok"] is True
+    assert data["flags"] == []
+    assert any(w["type"] == "waiver-table-not-found" for w in data["warnings"])
+
+
 def test_no_waiver_subheading_falls_back_to_full_section(tmp_path, capsys):
     """If ### Waiver Recommendations is absent (older report layout), parsing
     should fall back to the full ## Draft section and still locate the table.
@@ -746,3 +785,143 @@ def test_help_flag_exits_zero_and_prints_usage():
     assert result.returncode == 0
     assert "usage:" in result.stdout.lower()
     assert "--check-drop-in-squad" not in result.stdout
+
+
+# ---- Heading drift tolerance (issue #65) ------------------------------------
+
+
+@pytest.mark.parametrize(
+    "draft_heading",
+    [
+        "## Draft League (Provisional)",
+        "## Draft League — provisional",
+        "## draft league",
+        "## Draft (Provisional)",
+        "## **Draft League**",
+    ],
+)
+def test_qualified_draft_heading_still_locates_the_section(
+    tmp_path, capsys, draft_heading
+):
+    """A qualifier or case variant on the Draft heading must not silently skip
+    the whole section — the same failure mode as issue #63, one script over."""
+    recs, w, s = _write_fixtures(
+        tmp_path, _CLEAN_RECS.replace("## Draft", draft_heading, 1)
+    )
+    _run(str(recs), str(w), str(s))
+    data = _parse(capsys)
+    assert not any(x["type"] == "draft-section-not-found" for x in data["warnings"])
+    assert data["ok"] is True
+    assert data["flags"] == []
+
+
+def test_qualified_waiver_subheading_still_bounds_the_table(tmp_path, capsys):
+    """A qualifier on ### Waiver Recommendations must keep the scope narrowed to
+    the waiver table rather than falling back to the whole Draft section."""
+    recs_content = """\
+## Draft League
+
+### Waiver Recommendations (GW34)
+
+| Priority | Drop | Claim | Position | Fixture Run | Rationale |
+|----------|------|-------|----------|-------------|-----------|
+| 1 | Hill (BOU) | Lacroix (CRY) | DEF | A LIV | Straight upgrade. |
+
+### Starting XI
+
+| Pos | Player | Score | Rationale |
+|-----|--------|-------|-----------|
+| GK | Flekken | 34 | CS fixture |
+| DEF | Lacroix | 49 | New in |
+"""
+    recs, w, s = _write_fixtures(tmp_path, recs_content)
+    _run(str(recs), str(w), str(s))
+    data = _parse(capsys)
+    assert data["ok"] is True
+    assert data["flags"] == []
+    assert data["warnings"] == []
+
+
+def test_draft_rankings_heading_is_not_the_draft_section(tmp_path, capsys):
+    """'## Draft Rankings' shares a prefix but is a different heading."""
+    recs_content = """\
+## Draft Rankings
+
+| Priority | Drop | Claim | Position | Fixture Run | Rationale |
+|----------|------|-------|----------|-------------|-----------|
+| 1 | Hill (BOU) | Nobody (XXX) | DEF | A LIV | Decoy. |
+"""
+    recs, w, s = _write_fixtures(tmp_path, recs_content)
+    _run(str(recs), str(w), str(s))
+    data = _parse(capsys)
+    assert any(x["type"] == "draft-section-not-found" for x in data["warnings"])
+    assert data["flags"] == []
+
+
+# ---------------------------------------------------------------------------
+# Heading constants stay in sync with the output template
+# ---------------------------------------------------------------------------
+#
+# _HEADING_DRAFT / _HEADING_WAIVERS are a second source of truth for heading
+# text that also lives in gw-prep's output template. Nothing else enforces
+# the two stay in sync, so a template rename would otherwise merge cleanly
+# and silently desync the validator from the template it's meant to validate
+# against -- this test catches that by matching the constants against the
+# template's real, current content.
+
+GW_PREP_TEMPLATE_PATH = (
+    Path(__file__).parent.parent / ".agents/skills/gw-prep/references/output-template.md"
+)
+
+
+def test_draft_and_waiver_headings_match_the_gw_prep_template():
+    """The template illustrates its whole document shape inside one wrapping
+    ```markdown fence (a real recommendations file has no such fence), so the
+    check matches heading text and ordering directly rather than through the
+    fence-aware find_section, which correctly treats that fenced content as
+    non-headings for real parsing."""
+    lines = GW_PREP_TEMPLATE_PATH.read_text(encoding="utf-8").split("\n")
+    draft_idx = next(
+        (i for i, line in enumerate(lines) if _mod._HEADING_DRAFT.matches(line)), None
+    )
+    assert draft_idx is not None, "template must have a '## Draft League' heading"
+    waiver_idx = next(
+        (
+            i
+            for i, line in enumerate(lines)
+            if i > draft_idx and _mod._HEADING_WAIVERS.matches(line)
+        ),
+        None,
+    )
+    assert waiver_idx is not None, (
+        "'### Waiver Recommendations' not found after '## Draft League' in the "
+        "gw-prep output template -- _HEADING_WAIVERS has drifted from the template"
+    )
+
+
+def test_fenced_draft_heading_is_ignored(tmp_path, capsys):
+    """A '## Draft' inside a fenced example block must not open the section."""
+    recs_content = """\
+## Notes
+
+```markdown
+## Draft
+
+| Priority | Drop | Claim | Position | Fixture Run | Rationale |
+|----------|------|-------|----------|-------------|-----------|
+| 1 | Hill (BOU) | Nobody (XXX) | DEF | A LIV | Template example. |
+```
+
+## Draft
+
+### Waiver Recommendations
+
+| Priority | Drop | Claim | Position | Fixture Run | Rationale |
+|----------|------|-------|----------|-------------|-----------|
+| 1 | Hill (BOU) | Lacroix (CRY) | DEF | A LIV | Straight upgrade. |
+"""
+    recs, w, s = _write_fixtures(tmp_path, recs_content)
+    _run(str(recs), str(w), str(s))
+    data = _parse(capsys)
+    assert data["ok"] is True
+    assert data["flags"] == []

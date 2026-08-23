@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from fpl_cli.cli._league_recap_types import LeagueRecapData
+from fpl_cli.services.league_history_notes import NotesPack, NoteSurface
+from fpl_cli.utils.gameweek import is_opening_gameweek
 
 # =============================================================================
 # SYNTHESIS PROMPT (Stage 2: League-wide editorial)
@@ -17,19 +19,22 @@ Your audience is every member of this league. They want entertainment first, inf
 <tone>
 - Newsletter columnist voice: opinionated, fun, a bit cheeky
 - Name specific managers when praising or roasting
-- Reference specific decisions (captain picks, transfers, bench choices)
+- Reference specific decisions (captain picks, bench choices, and transfers where transfer data is provided)
 - Use the data to tell a story, not just list stats
+- Frame the recap around the season phase named in the "## League History" section: an opener (GW1) sets an early-season tone, a finale may reflect on the whole campaign using that section's season-spanning facts, and a midpoint or run-in gameweek should stay proportionate to where the season actually is - don't manufacture stakes the data doesn't support
 - Brief - 300-400 words max. Punchy paragraphs, not walls of text
 </tone>
 
 <rules>
 - NEVER give advice or recommendations. This is a recap, not a preview
 - NEVER speculate about future gameweeks
-- Stick to what happened this gameweek
+- Stick to what happened this gameweek, with one exception: a historical claim (a streak, trend, or season-arc fact spanning more than this gameweek) is permitted only when it appears in the "## League History" section, stated using that section's own wording for counts, spans, and holds. A streak, trend, or season-arc fact not listed there is forbidden to mention, however obvious it might seem. Do NOT infer history from the Awards or GW Standings sections - they are compressed and can misrepresent what actually happened over time
+- A League History entry phrased as an observed count over a span (e.g. "3 in the last 11, with 8 not recorded") must be repeated that way, never simplified to "in a row" or "consecutive" unless the section itself already uses that phrasing
 - If fines were triggered, make them a highlight
 - The biggest bench haul is always funny - lean into it
 - If a manager played a chip, that's a big narrative hook. A chip that flopped deserves mockery; a chip that paid off deserves grudging respect. When referencing chip users, treat the "Chips Played" section as the source of truth — it includes an explicit total count; use that number verbatim. Do NOT count tags in the standings table. Do not name a subset as "the X wildcards" — either name all users of that chip or none.
 - When referencing captain choices, treat the "## Captains" section as the source of truth. It lists every manager grouped by their intended captain pick, with an explicit total count. Use those counts verbatim. NEVER name a captain "outlier", "dissenter", or "the manager(s) who picked Y" unless they appear under that captain in the section. If you describe N managers as picking the modal captain, it must match the section's group size for that player. Do NOT infer captain choices from the awards or standings — they are compressed and miss managers whose pick was neither the best nor the worst.
+- Only reference transfers that appear explicitly in the Awards section or in a transfers note. If no transfer information is given, do not mention transfers, hits, or moves in and out at all - absence of transfer data means there is nothing to report, not licence to invent one.
 - NEVER claim a manager's bench outscored their team unless bench points are strictly greater than their GW points. Use the exact numbers provided.
 - NEVER alter player or manager names. Use the exact spelling provided in the data.
 </rules>"""
@@ -46,6 +51,7 @@ def get_recap_synthesis_prompt(
     *,
     captains_text: str = "",
     chips_text: str = "",
+    league_history_text: str = "",
     is_bgw: bool = False,
     is_dgw: bool = False,
     season_length: int = 38,
@@ -65,6 +71,13 @@ def get_recap_synthesis_prompt(
     if fpl_format == "draft":
         sections.append("Note: Draft format has NO captaincy. Do not mention captains.")
 
+    if fpl_format == "classic" and is_opening_gameweek(gw):
+        sections.append(
+            "**No transfers were made this gameweek** - GW1 squads are built before the "
+            "deadline, so the game records no transfers and no hits for anyone. Do not "
+            "mention transfers, hits, or moves in and out."
+        )
+
     sections.extend([
         "",
         "## Awards",
@@ -82,6 +95,9 @@ def get_recap_synthesis_prompt(
 
     if fines_text:
         sections.extend(["", "## Fines", fines_text])
+
+    if league_history_text:
+        sections.extend(["", "## League History", league_history_text])
 
     if research_summary:
         sections.extend(["", "## GW Context (from research)", research_summary])
@@ -116,6 +132,11 @@ def format_recap_awards_context(data: LeagueRecapData) -> str:
     return "\n".join(lines) if lines else "No notable awards."
 
 
+# Sort-only sentinel for a manager with no derivable league position --
+# larger than any real rank, so they sort after every ranked manager.
+_UNRANKED = float("inf")
+
+
 def format_recap_standings_context(data: LeagueRecapData) -> str:
     """Format standings with movement for the LLM prompt."""
     managers = data.get("managers", [])
@@ -124,7 +145,10 @@ def format_recap_standings_context(data: LeagueRecapData) -> str:
 
     is_classic = data.get("fpl_format") == "classic"
     lines = ["| Pos | Prev | Manager | GW Pts | Total |", "|-----|------|---------|--------|-------|"]
-    for m in sorted(managers, key=lambda x: x.get("overall_rank", 0)):
+    # Sentinel matches report.py's standings block: a manager with no
+    # derivable position sorts after every ranked one, so the prompt table
+    # and the rendered report agree on order in a mixed cohort.
+    for m in sorted(managers, key=lambda x: x.get("overall_rank") or _UNRANKED):
         prev = m.get("previous_rank", "?")
         curr = m.get("overall_rank", "?")
         name = m["manager_name"]
@@ -134,8 +158,9 @@ def format_recap_standings_context(data: LeagueRecapData) -> str:
             movement = f" (↑{diff})" if diff > 0 else f" (↓{abs(diff)})"
         chip = m.get("active_chip") if is_classic else None
         chip_tag = f" [{chip}]" if chip else ""
+        total = m.get("total_points", "?")
         lines.append(
-            f"| {curr} | {prev} | {name}{chip_tag}{movement} | {m['gw_points']} | {m['total_points']} |"
+            f"| {curr} | {prev} | {name}{chip_tag}{movement} | {m['gw_points']} | {total} |"
         )
     return "\n".join(lines)
 
@@ -217,6 +242,45 @@ def format_recap_captains_context(data: LeagueRecapData) -> str:
         entries.sort(key=lambda e: e[0])
         joined = ", ".join(f"{name} ({ann})" for name, ann in entries)
         lines.append(f"- **{player}** (×{len(entries)}): {joined}")
+    return "\n".join(lines)
+
+
+def format_recap_league_history_context(pack: NotesPack | None) -> str:
+    """Season phase, streaks, and coverage -- the only permitted source of
+    cross-gameweek claims (R14).
+
+    Mirrors the captains/chips enumerate-and-lock shape: an explicit count
+    ahead of the list it counts, so the synthesis LLM never has to infer
+    completeness. Only prompt-surfaced streak entries are listed (KTD8) --
+    a run below its condition's minimum is real but not yet notable, and is
+    withheld from the model the same way it is from console and report.
+    Coverage/negative-context entries are always listed, honouring the same
+    "state absence explicitly" rule U9 applies to the report and console --
+    but under their own "Coverage:" label, mirroring the report template's
+    separate "## Streaks" heading, so the streak count's scope stays
+    unambiguous and the model can't mistake a coverage caveat for one of
+    the counted streak facts.
+
+    Never returns an empty string: even a total capture failure (`pack is
+    None`) says so explicitly, rather than leaving the section absent --
+    an absent section invites the same invention an absent rule would
+    (KTD9), so the "nothing to report" case is stated, not omitted.
+    """
+    if pack is None:
+        return "No league history is available for this recap."
+
+    prompt_entries = [entry for entry in pack.entries if NoteSurface.PROMPT in entry.surfaces]
+    lines = [
+        f"Season phase: {pack.season_phase_entry.text}",
+        f"Total League History streak entries: {len(prompt_entries)}",
+    ]
+    for entry in prompt_entries:
+        lines.append(f"- {entry.text}")
+    if pack.coverage_entries:
+        lines.append("")
+        lines.append("Coverage:")
+        for entry in pack.coverage_entries:
+            lines.append(f"- {entry.text}")
     return "\n".join(lines)
 
 

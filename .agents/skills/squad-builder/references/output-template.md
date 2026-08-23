@@ -54,6 +54,17 @@
 {If wildcard/freehit and current squad known:}
 > **Overlap with current squad:** {X}/15 players retained. {Brief note on what changed and why.}
 
+{If preview intel was used (Phase B3 gate not `none`):}
+### Preview Intel Applied
+**Coverage:** {N}/20 teams ({usable_as}) | **Sources:** {source names}
+
+| Player | Intel | Source | Effect on the pick |
+|--------|-------|--------|--------------------|
+| {name} | {what it said} | {publication} | {promoted / downgraded / confirmed} |
+
+{Omit this section entirely when no intel was used - an absent section is
+clearer than one saying "none".}
+
 ---
 
 ## Draft Rankings

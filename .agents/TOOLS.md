@@ -38,7 +38,7 @@ Errors use `emit_json_error()` with `{"command", "error"}` shape.
 | `price-history` | Show price trajectory and transfer momentum | Yes | General | No | direct-api |
 | `preview` | Run full pre-gameweek analysis and generate report | No | General | No | via-agent |
 | `review` | Review a completed gameweek - squad performance and standings | No | General | No | via-agent |
-| `league-recap` | Recap a completed gameweek - awards, standings, and banter | No | General | No | via-agent |
+| `league-recap` | Recap a completed gameweek - awards, standings, and banter. Records every run into the league history ledger (`<data dir>/league_history/`) as a side effect, backfilling classic gaps at a coarse tier automatically; `--backfill-detail` rebuilds earlier gameweeks in full (one request per manager per gameweek). Coverage gaps and capture warnings go to stderr; the command exits 0 even when the store is unreadable. `--format json` emits one row per manager (the captured ledger row shape) plus `metadata.coverage`, `season_phase`, `notes_pack`, `synthesis_summary`, `warnings` (always present, each entry a stable `code` plus rewritable `message` - codes listed in [Command Reference](../docs/command-reference.md#league-history)) and `first_capture_store_path` | Yes | General | No | via-agent |
 | `captain` | Analyse and rank captain options for next gameweek. JSON candidates include `adjusted_npxg_per_90` and `raw_npxg_per_90` when fixture adjustment is active. Consistency tiebreaker (CV-xGI percentile) phased in GW6-10 | Yes | Classic | Yes | via-agent |
 | `differentials` | Find differential picks - high potential, low ownership. Inverted consistency bonus (volatile players score higher, phased in GW6-10) | Yes | Classic | Yes | via-agent |
 | `targets` | Find transfer targets - high performers across all ownership. Consistency bonus (CV-xGI percentile, phased in GW6-10) | Yes | Classic | Yes | via-agent |
@@ -55,6 +55,11 @@ Errors use `emit_json_error()` with `{"command", "error"}` shape.
 | `chips sync` | Sync chip usage from FPL API | No | Classic | No | direct-api |
 | `ratings` | Display team ratings | No | General | Yes | direct-api |
 | `ratings update` | Recalculate ratings from fixture results | No | General | Yes | direct-api |
+| `intel` | Show season preview intel collected per team, with coverage and per-gameweek decay. JSON `metadata` carries `coverage.usable_as` (`full` / `negative_filter_only` / `none`), `section_confidence`, `sections_live`/`sections_expired`, `decay_schedule`, `team_set_warning` and `warnings`. `-g/--gameweek` ages the payload to any gameweek; `--show-decay` prints the expiry schedule | Yes | General | No | direct-api |
+| `intel schema` | Print the preview file format with every field explained | No | General | No | direct-api |
+| `intel init` | Scaffold an empty preview file per Premier League team (`--force` overwrites). Stubs never count toward coverage | No | General | No | direct-api |
+| `intel show` | Show one team's preview, aged to the current gameweek | Yes | General | No | direct-api |
+| `intel resolve` | Match preview player names to FPL `element_code`s; `--write` saves them back with comments preserved (never touching an existing code), `--all` re-resolves coded players and with `--write` saves corrections over them. Ambiguity is reported, never guessed | Yes | General | No | direct-api |
 | `credentials set` | Store FPL email and password in system keyring | No | Classic | No | direct-api |
 | `credentials clear` | Remove FPL credentials from system keyring | No | Classic | No | direct-api |
 
@@ -70,10 +75,12 @@ Agent playbooks in `.agents/skills/`. Each has a `SKILL.md` entry point. Claude 
 
 | Skill | Path | Purpose | Compatibility |
 |-------|------|---------|--------------|
-| gw-prep | `skills/gw-prep/` | Gameweek preparation recommendations for classic and draft (embed / rederive / transfer branches; Phase E post-write validation) | Full: Claude Code. Partial: Codex, Cursor, Copilot |
+| gw-prep | `skills/gw-prep/` | Gameweek preparation recommendations for classic and draft (embed / rederive / transfer branches; Phase B9 preview intel; Phase E post-write validation) | Full: Claude Code. Partial: Codex, Cursor, Copilot |
 | update-gw-prep | `skills/update-gw-prep/` | Append GW update to existing recommendations | Full: Claude Code, Codex, Cursor, Copilot |
-| squad-builder | `skills/squad-builder/` | Build optimal 15-player squad (wildcard, free hit, season start) | Full: Claude Code, Codex, Cursor, Copilot |
-| release | `skills/release/` | Cut a release: verify main, pick semver from conventional commits, draft notes, publish GitHub release (tag drives PyPI publish + changelog automation) | Full: Claude Code (local), Codex, Cursor, Copilot. Partial: Claude Code web (publish step handed to user) |
+| squad-builder | `skills/squad-builder/` | Build optimal 15-player squad (wildcard, free hit, season start; Phase B3 preview intel gate) | Full: Claude Code, Codex, Cursor, Copilot |
+| preview-ingest | `skills/preview-ingest/` | Convert season preview prose into structured per-team intel files, resolve player codes, verify coverage | Full: Claude Code (parallel per team), Codex, Cursor, Copilot |
+| release-notes | `skills/release-notes/` | Draft release notes and suggest the next semver (read-only preview; never tags or publishes) | Full: Claude Code, Codex, Cursor, Copilot |
+| release | `skills/release/` | Cut a release end-to-end: preflight, notes via release-notes, approval gate, publish GitHub release (tag drives PyPI publish + changelog automation) | Full: Claude Code (local), Codex, Cursor, Copilot. Partial: Claude Code web (publish step handed to user) |
 
 ## Analysis Agents
 
@@ -96,4 +103,6 @@ Python classes in `fpl_cli/agents/` that implement `async run(context) -> AgentR
 **Notes:**
 - BenchOrderAgent and StartingXIAgent have no CLI command - they are invoked by gw-prep skill wrapper scripts in `.agents/skills/gw-prep/scripts/`
 - TransferEvalAgent is used by both `transfer-eval` CLI command and gw-prep skill
-- `extract_classic_squad.py` (`.agents/skills/gw-prep/scripts/`) — deterministic Classic Squad block extractor used by gw-prep Phase B9 + Phase E. JSON stdout; read-only; emits TypedDict-annotated payloads.
+- `extract_classic_squad.py` (`.agents/skills/gw-prep/scripts/`) — deterministic Classic Squad block extractor used by gw-prep Phase A3 + Phase E. JSON stdout; read-only; emits TypedDict-annotated payloads.
+- `validate_draft_waivers.py` (`.agents/skills/gw-prep/scripts/`) — cross-checks the Draft waiver table against the live waiver pool and squad grid (gw-prep Phase D1). JSON stdout; read-only; always exits 0.
+- Both scripts locate markdown sections via `fpl_cli.utils.markdown` (`HeadingMatcher`, `find_section`, `section_body`, `leaf_body`, `fence_flags`), tolerating LLM heading drift (qualifiers, case, leading annotations, opt-in aliases) without matching a different heading that shares a prefix. Also used by `fpl_cli/prompts/review.py` for the GW Narrative section boundary.

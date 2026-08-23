@@ -163,7 +163,7 @@ Any additional context, caveats, or follow-up actions.
 
 ## Fallback Banners (Wildcard/Free Hit re-derivation)
 
-When Phase B9 detects a wildcard/freehit week but cannot use the squad-builder file (`squad_builder_result == "rederive"`), prepend the appropriate banner on the line immediately before the Classic section heading in the output file. Choose the variant matching `squad_builder_reason`.
+When Phase A3 detects a wildcard/freehit week but cannot use the squad-builder file (`squad_builder_result == "rederive"`), prepend the appropriate banner on the line immediately before the Classic section heading in the output file. Choose the variant matching `squad_builder_reason`.
 
 `Season Start Classic`, `Season Start Draft`, and `Re-draft` mode files correctly land in Variant B's mode-mismatch branch by design — those modes cannot match an active wildcard/freehit chip.
 
