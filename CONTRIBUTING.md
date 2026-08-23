@@ -44,6 +44,11 @@ The rules that matter:
   changelog entries — use `chore(review): <what changed>`.
 - A breaking change uses the `!` marker (`feat!:`) or a `BREAKING CHANGE:`
   footer; it drives a major version bump at the next release.
+- Skill changes take the type of their audience: a product skill (gw-prep,
+  squad-builder, update-gw-prep, preview-ingest) is user-facing surface —
+  `feat:`/`fix:`, changelog-visible; a process skill (release,
+  release-notes, create-pr) is maintainer tooling — `docs:`/`chore:`,
+  skipped.
 
 ### Merging
 
