@@ -80,6 +80,7 @@ Agent playbooks in `.agents/skills/`. Each has a `SKILL.md` entry point. Claude 
 | preview-ingest | `skills/preview-ingest/` | Convert season preview prose into structured per-team intel files, resolve player codes, verify coverage | Full: Claude Code (parallel per team), Codex, Cursor, Copilot |
 | release-notes | `skills/release-notes/` | Draft release notes and suggest the next semver (read-only preview; never tags or publishes) | Full: Claude Code, Codex, Cursor, Copilot |
 | release | `skills/release/` | Cut a release end-to-end: preflight, notes via release-notes, approval gate, publish GitHub release (tag drives PyPI publish + changelog automation) | Full: Claude Code (local), Codex, Cursor, Copilot. Partial: Claude Code web (publish step handed to user) |
+| create-pr | `skills/create-pr/` | Open a PR for the current branch: conventional-commit title (the changelog line) + why-first prose body in the fpl-cli PR description style | Full: Claude Code, Codex, Cursor, Copilot |
 
 ## Analysis Agents
 

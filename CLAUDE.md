@@ -54,6 +54,8 @@ For a complete inventory of CLI commands, analysis agents, and skills with JSON 
 - A changelog-visible subject must read as a standalone user-facing change — the release pipeline publishes it verbatim in CHANGELOG.md and the GitHub release
 - `fix:`/`feat:` describe changes relative to main. Follow-up commits addressing review feedback on your own unmerged PR are internal iteration, not changelog entries — use `chore(review): <what changed>`
 - PRs are squash-merged with the PR title as the commit subject on main, so the title IS the changelog entry — write it as the user-facing change and keep each PR single-purpose so one title can describe it. CI enforces the format (`pr-title.yml`)
+- PR bodies follow the create-pr skill's description style (`.agents/skills/create-pr/SKILL.md`): why-first first-person prose, no boilerplate sections, `Closes #N` in the body (never the title), caveats and verification gaps in italics
+- Skill changes take the type of their audience: product skills (gw-prep, squad-builder, update-gw-prep, preview-ingest) are user-facing surface — `feat:`/`fix:`, changelog-visible; process skills (release, release-notes, create-pr) are maintainer tooling — `docs:`/`chore:`, skipped
 - Chips (each available **twice** per season, split at GW19 deadline): Wildcard, Free Hit, Bench Boost, Triple Captain
 - Scoring: GK/DEF clean sheet = 4pts, MID = 1pt; goals: DEF=6, MID=5, FWD=4; assist = 3pts; yellow = -1; red = -3
 - Transfers: 1 free/GW, max 5 banked; extra transfers cost 4pts each; Wildcard/Free Hit preserve banked transfers
