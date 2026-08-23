@@ -184,8 +184,11 @@ async def get_draft_ownership_mapping(
         )
         draft_entries[entry["entry_id"]] = name or "Unknown"
 
+    # league_details is passed through: unlike bootstrap-static and game state,
+    # get_league_details is not memoised on the client, so omitting it here costs
+    # a second league/{id}/details fetch.
     draft_owned = await draft_client.get_league_ownership(
-        draft_league_id, draft_bootstrap,
+        draft_league_id, draft_bootstrap, league_details,
     )
 
     draft_by_name_team = {

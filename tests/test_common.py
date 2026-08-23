@@ -6,6 +6,7 @@ from fpl_cli.agents.common import (
     enrich_player,
     fetch_understat_lookup,
     get_actual_squad_picks,
+    get_draft_ownership_mapping,
     get_draft_squad_players,
 )
 from fpl_cli.services.matchup import build_team_fixture_map
@@ -294,3 +295,39 @@ class TestGetDraftSquadPlayersDiacritics:
         squad = await get_draft_squad_players(client, main_players, 1, 1)
         assert len(squad) == 1
         assert squad[0].id == 30
+
+
+class TestGetDraftOwnershipMapping:
+    def _make_client(self):
+        client = AsyncMock()
+        client.get_league_details = AsyncMock(return_value={
+            "league_entries": [
+                {"entry_id": 7, "player_first_name": "Ross", "player_last_name": "Groom"},
+            ],
+        })
+        client.get_bootstrap_static = AsyncMock(return_value={
+            "elements": [{"id": 99, "web_name": "Salah", "team": 1}],
+        })
+        client.get_league_ownership = AsyncMock(return_value={99: 7})
+        return client
+
+    async def test_reuses_league_details_it_already_fetched(self):
+        """get_league_details is not memoised, so it must not be fetched twice."""
+        client = self._make_client()
+
+        await get_draft_ownership_mapping(client, [make_player(id=1, web_name="Salah", team_id=1)], 12345)
+
+        client.get_league_details.assert_awaited_once()
+        args = client.get_league_ownership.await_args.args
+        assert args[2] == client.get_league_details.return_value
+
+    async def test_returns_ownership_entries_and_id_mapping(self):
+        client = self._make_client()
+
+        owned, entries, main_to_draft = await get_draft_ownership_mapping(
+            client, [make_player(id=1, web_name="Salah", team_id=1)], 12345,
+        )
+
+        assert owned == {99: 7}
+        assert entries == {7: "Ross Groom"}
+        assert main_to_draft == {1: 99}
