@@ -23,6 +23,7 @@ from fpl_cli.cli._context import (
 )
 from fpl_cli.cli._helpers import _fdr_style
 from fpl_cli.models.player import POSITION_MAP
+from fpl_cli.season import season_label, season_partition
 
 
 def _preview_build_fixture_map(gw_fixtures: list[dict]) -> dict[str, str]:
@@ -262,7 +263,7 @@ def preview_command(ctx: click.Context, save: bool, output: str | None, scout: b
 
         # Generate report if requested
         if save:
-            output_dir = Path(output) if output else resolve_output_dir(settings)
+            output_dir = resolve_output_dir(settings, output)
 
             console.print("\n[dim]Generating report...[/dim]")
             async with ReportAgent(config={"output_dir": output_dir}) as report_agent:
@@ -320,6 +321,7 @@ def preview_command(ctx: click.Context, save: bool, output: str | None, scout: b
                     metadata = (
                         f"---\n"
                         f"gameweek: {gw}\n"
+                        f"season: {season_label()}\n"
                         f"generated: {scout_generated}\n"
                         f"deadline: {deadline}\n"
                         f"source: scout\n"
@@ -327,7 +329,9 @@ def preview_command(ctx: click.Context, save: bool, output: str | None, scout: b
                     )
 
                     # Save scout reports to dedicated directory
-                    scout_dir = resolve_research_dir(settings) / "ai-scout-reports"
+                    scout_dir = season_partition(
+                        resolve_research_dir(settings) / "ai-scout-reports"
+                    )
                     scout_dir.mkdir(parents=True, exist_ok=True)
 
                     # Save referenced version (with citations appended)

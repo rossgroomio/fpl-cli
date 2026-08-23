@@ -48,6 +48,9 @@ Extract:
 - `deadline` -- the transfer deadline timestamp
 - `phase` -- current status (e.g. "Fixture day 1 of 2", "Between gameweeks")
 - `metadata.format` -- `"classic"`, `"draft"`, or `"both"`. This determines which sub-agents to dispatch and which Phase B commands to run. If format is not present (no entry IDs configured), ask the user.
+- `metadata.season` -- the hyphenated season label (e.g. `"2026-27"`). Referred to below as `{season}`.
+
+**Every file this skill reads or writes lives under `[YOUR_OUTPUT_DIR]/{season}/`.** Report filenames carry the gameweek but no season, so a flat output directory lets 2026-27's GW21 file overwrite 2025-26's. Take `{season}` from this command rather than hardcoding it -- a hardcoded label silently rots at the July rollover, which is the failure this partition exists to prevent. `fpl` writes its own reports to the same season directory.
 
 ### A1.5 -- Chip Status
 
@@ -82,7 +85,7 @@ _Skip unless `mode == "squad-builder"` AND `active_chip ∈ {wildcard, freehit}`
 
 Locate a matching squad-builder output file and extract the Classic Squad block for embedding. Sets `squad_builder_result = "embed"` on success, or `"rederive"` with a `squad_builder_reason` code on failure. Resolving mode in Phase A (before Phase B) lets sub-agents know up-front which Phase B outputs will actually feed them, and prints the rederive warning banner before any data-gather commands run. All steps are synchronous and must complete before Phase B begins.
 
-1. Look for `[YOUR_OUTPUT_DIR]/gw{N}-squad-builder.md`.
+1. Look for `[YOUR_OUTPUT_DIR]/{season}/gw{N}-squad-builder.md`.
    - Not found → `squad_builder_result = "rederive"`, `squad_builder_reason = "file-missing"`. Done.
 2. Parse the file's YAML frontmatter. Required fields: `mode`, `gameweek`.
    - Missing or malformed → `squad_builder_result = "rederive"`, `squad_builder_reason = "frontmatter-malformed"`. Done.
@@ -103,7 +106,7 @@ Locate a matching squad-builder output file and extract the Classic Squad block 
 5. Call the extraction helper:
 
    ```bash
-   python3 "${CLAUDE_SKILL_DIR}/scripts/extract_classic_squad.py" --file "[YOUR_OUTPUT_DIR]/gw{N}-squad-builder.md"
+   python3 "${CLAUDE_SKILL_DIR}/scripts/extract_classic_squad.py" --file "[YOUR_OUTPUT_DIR]/{season}/gw{N}-squad-builder.md"
    ```
 
    Parse stdout as JSON regardless of exit code. If JSON parse fails, treat as extraction-failed with a generic error message.
@@ -317,7 +320,7 @@ Branch on `squad_builder_result` (set in Phase A3; unset on transfer weeks):
 Before dispatching, print the in-chat warning (variant by `squad_builder_reason`):
 
 **Variant A** (`squad_builder_reason == "file-missing"`):
-> ⚠️ **Wildcard/Free Hit detected for GW{N}, but no squad-builder file was found.** Expected `gw{N}-squad-builder.md` in `[YOUR_OUTPUT_DIR]`. Re-derivation will run (weaker squad selection). To use squad-builder output, run `/squad-builder --{wildcard|freehit}` first, then re-run `/gw-prep`.
+> ⚠️ **Wildcard/Free Hit detected for GW{N}, but no squad-builder file was found.** Expected `gw{N}-squad-builder.md` in `[YOUR_OUTPUT_DIR]/{season}`. Re-derivation will run (weaker squad selection). To use squad-builder output, run `/squad-builder --{wildcard|freehit}` first, then re-run `/gw-prep`.
 
 **Variant B** (`squad_builder_reason ∈ {"gameweek-mismatch", "mode-mismatch"}`):
 > ⚠️ **Squad-builder file found but does not match this run.** Found `gw{N}-squad-builder.md` with `mode: {file.mode}` / `gameweek: {file.gameweek}`. Expected mode `{active_chip}` / gameweek `{N}`. Re-derivation will run. To use squad-builder output, run `/squad-builder --{wildcard|freehit}` for GW{N}, then re-run `/gw-prep`.
@@ -517,8 +520,8 @@ Incorporate the bench ordering output into the relevant sections of each sub-age
 
 Combine the outputs from whichever sub-agents were dispatched into a single recommendations file. If only one format is active, the file contains only that format's section.
 
-<!-- ADAPT: Set your output directory -->
-**Output path:** `[YOUR_OUTPUT_DIR]/gw{N}-recommendations.md`
+<!-- ADAPT: Set your output directory. Keep the `/{season}/` segment -- it is what stops a new season overwriting the last one's reports. -->
+**Output path:** `[YOUR_OUTPUT_DIR]/{season}/gw{N}-recommendations.md`
 
 The file should follow the structure defined in `references/output-template.md`, with both Classic and Draft sections populated.
 
@@ -542,7 +545,7 @@ _Runs after Phase D file write, before Phase E. Not embed-gated._
 
    ```bash
    cd "$FPL_CLI_DIR" && source .venv/bin/activate && python "$FPL_CLI_DIR/.agents/skills/gw-prep/scripts/validate_draft_waivers.py" \
-     --recommendations-file "[YOUR_OUTPUT_DIR]/gw{N}-recommendations.md" \
+     --recommendations-file "[YOUR_OUTPUT_DIR]/{season}/gw{N}-recommendations.md" \
      --waivers-json /tmp/gw-prep-waivers-{N}.json \
      --squad-grid-json /tmp/gw-prep-squad-grid-{N}.json
    ```
@@ -587,7 +590,7 @@ _Skip unless `squad_builder_result == "embed"`. Transfer and rederive runs do no
 1. Run:
 
    ```bash
-   python3 "${CLAUDE_SKILL_DIR}/scripts/extract_classic_squad.py" --from-recommendations --file "[YOUR_OUTPUT_DIR]/gw{N}-recommendations.md"
+   python3 "${CLAUDE_SKILL_DIR}/scripts/extract_classic_squad.py" --from-recommendations --file "[YOUR_OUTPUT_DIR]/{season}/gw{N}-recommendations.md"
    ```
 
    Parse stdout as JSON regardless of exit code. If exit is non-zero → emit warning and proceed:

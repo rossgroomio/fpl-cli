@@ -283,7 +283,7 @@ def league_recap_command(
 
             # Generate report if saving
             if save or output:
-                output_dir = output or str(resolve_output_dir(settings))
+                output_dir = str(resolve_output_dir(settings, output))
                 agent = ReportAgent(config={"output_dir": output_dir})
                 result = await agent.run(context={
                     "report_type": "league-recap",

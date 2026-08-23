@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 
 import click
 from rich.panel import Panel
@@ -283,7 +282,7 @@ def review_command(
             if compare_recs:
                 from fpl_cli.parsers.recommendations import parse_recommendations
 
-                recs_dir = Path(output) if output else resolve_output_dir(settings)
+                recs_dir = resolve_output_dir(settings, output)
                 recs_path = recs_dir / f"gw{gw}-recommendations.md"
                 recs = parse_recommendations(recs_path)
 
@@ -387,7 +386,7 @@ def review_command(
 
             # Generate report if requested
             if save:
-                output_dir = Path(output) if output else resolve_output_dir(settings)
+                output_dir = resolve_output_dir(settings, output)
 
                 console.print("\n[dim]Generating report...[/dim]")
                 async with ReportAgent(config={"output_dir": output_dir}) as report_agent:

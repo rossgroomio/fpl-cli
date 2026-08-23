@@ -13,6 +13,7 @@ import yaml
 from rich.console import Console
 
 from fpl_cli.paths import SHIPPED_CONFIG_DIR, UserDirError, user_config_dir
+from fpl_cli.season import season_partition
 
 if TYPE_CHECKING:
     from fpl_cli.agents.base import AgentResult
@@ -138,14 +139,32 @@ def get_format(ctx: click.Context) -> Format | None:
     return ctx.obj.format if isinstance(ctx.obj, CLIContext) else None
 
 
-def resolve_output_dir(settings: dict[str, Any]) -> Path:
-    raw = settings.get("reports", {}).get("output_dir")
-    if raw:
-        return Path(raw).expanduser()
-    return _user_config_dir() / "output"
+def resolve_output_dir(settings: dict[str, Any], override: str | None = None) -> Path:
+    """Season-partitioned directory that generated reports are written to.
+
+    `override` is the command's `--output`, which wins over the configured
+    `reports.output_dir` but is partitioned just the same: reports are named
+    by gameweek alone, so an unpartitioned destination lets a new season's
+    GW21 report overwrite the previous season's (#85), and a scripted
+    `--output` is no less entitled to that protection than a configured one.
+    """
+    if override:
+        base = Path(override).expanduser()
+    else:
+        raw = settings.get("reports", {}).get("output_dir")
+        base = Path(raw).expanduser() if raw else _user_config_dir() / "output"
+    return season_partition(base)
 
 
 def resolve_research_dir(settings: dict[str, Any]) -> Path:
+    """Root of the research tree -- deliberately *not* season-partitioned.
+
+    This root holds one subdirectory per research source (`ai-scout-reports/`
+    and, in the vault, sibling directories owned by other tools). The season
+    segment belongs inside each of those, so callers partition their own
+    subdirectory with `season_partition()` rather than receiving a partitioned
+    root here.
+    """
     raw = settings.get("reports", {}).get("research_dir")
     if raw:
         return Path(raw).expanduser()

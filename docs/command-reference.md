@@ -439,6 +439,26 @@ fpl allocate --sell-prices /tmp/sell-prices.json  # Budget auto-computed from se
 
 ## Reports
 
+### Report layout
+
+Every generated report is written to a directory named for the season it covers:
+
+```
+<output_dir>/2026-27/gw21-review.md
+<output_dir>/2026-27/gw21-league-recap.md          # -league-recap-draft.md for draft
+<output_dir>/2026-27/gw21-preview.md
+<research_dir>/ai-scout-reports/2026-27/gw22-scout-preview.md
+```
+
+The season segment is the hyphenated label (`2026-27`), derived from the date using the same July cutover as the rest of the tool, and appended automatically — you do not put it in `reports.output_dir` yourself. It is what keeps the reports apart: the filenames carry a gameweek but no season, so in a flat directory the 2026-27 GW21 report would overwrite the 2025-26 one, silently and unrecoverably.
+
+Two details worth knowing:
+
+- **`--output` is partitioned too.** `fpl review --save --output ~/somewhere` writes to `~/somewhere/2026-27/`, not `~/somewhere/`. A scripted destination gets the same protection as a configured one.
+- **Pointing a directory at a season is harmless.** If `reports.output_dir` already ends in the current season label, it is used as-is rather than nested a second time.
+
+Reports written before this layout existed are left where they are. Nothing moves them, and nothing overwrites them — new reports simply land in the season subdirectory alongside. Move them into a matching season directory if you want them tidied.
+
 ### Gameweek Preview
 
 Pre-gameweek analysis covering fixtures, team form, squads, and transfer activity.
@@ -706,7 +726,7 @@ fpl-cli writes to three directories, each resolved via `platformdirs` and overri
 
 | Directory | Contents | Override |
 |-----------|----------|----------|
-| Config | `settings.yaml`, `.env` (credentials and API keys), `team_ratings_overrides.yaml`, optional `team_managers.yaml` (layered over the shipped copy per club) and `fixture_predictions.yaml` (replaces the shipped copy), the optional `previews/` directory of [season preview intel](#season-preview-intel), plus the `output/` and `research/` report directories | `FPL_CLI_CONFIG_DIR` |
+| Config | `settings.yaml`, `.env` (credentials and API keys), `team_ratings_overrides.yaml`, optional `team_managers.yaml` (layered over the shipped copy per club) and `fixture_predictions.yaml` (replaces the shipped copy), the optional `previews/` directory of [season preview intel](#season-preview-intel), plus the `output/` and `research/` report directories (each partitioned by season -- see [Report layout](#report-layout)) | `FPL_CLI_CONFIG_DIR` |
 | Data | Generated files: `team_ratings.yaml`, `team_ratings_prior.yaml`, `player_prior.yaml`, `chip_plan.json`, `team_finances.json`, the [`league_history/`](#league-history) ledger and its rebuildable `league_history_counters/` cache | `FPL_CLI_DATA_DIR` |
 | Cache | Disposable API response caches | `FPL_CLI_CACHE_DIR` |
 
@@ -733,7 +753,7 @@ use_net_points: false          # Include transfer hits in GW points rankings (cl
 custom_analysis: true          # Enable custom scoring algorithms (captain, targets, value scores, Bayesian FDR)
 
 reports:
-  output_dir: "./reports"
+  output_dir: "./reports"      # Reports are written to <output_dir>/<season>/ - see "Report layout"
 
 # Fines - opt-in, configured via `fpl init` or manually
 fines:

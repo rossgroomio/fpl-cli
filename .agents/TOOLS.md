@@ -25,7 +25,7 @@ Errors use `emit_json_error()` with `{"command", "error"}` shape.
 | Command | Description | JSON | Format | Experimental | Pattern |
 |---------|-------------|------|--------|-------------|---------|
 | `init` | Set up fpl-cli with your FPL IDs and optional features | No | General | No | direct-api |
-| `status` | Show FPL gameweek status and upcoming deadlines | Yes | General | No | direct-api |
+| `status` | Show FPL gameweek status and upcoming deadlines. JSON `metadata` carries `gameweek`, `format` and `season` (hyphenated label, e.g. `2026-27`) - `season` is the directory segment skills must use when writing alongside fpl-cli's own reports | Yes | General | No | direct-api |
 | `fixtures` | Show fixtures for a gameweek | Yes | General | No | direct-api |
 | `player` | Look up a player's stats, xG, ownership and fixture run. JSON includes `ep_next` (predicted pts next GW) and `ep_this` (current GW), emitting `null` when FPL has no projection; panel shows `xPts` (ep_next) when available, omits the segment when FPL has no projection. `--detail` (`-d`) shows GW-by-GW performance and, for FWD/MID with sufficient history, xGI sustainability (per-match GI-xGI divergence -> form modifier). With `custom_analysis`: JSON adds `info.adjusted_npxg_per_90` (fixture-adjusted) and `info.raw_npxg_per_90` (Understat season avg); panel shows `adj. npxG/90: X.XXX (raw: Y.YYY)` | Yes | General | No | direct-api |
 | `stats` | List players with filtering and sorting. `--value` adds quality/value per £m columns; `--window N` sets rolling lookback (3-10) for `rolling_pts_per_m`. Sortable by `ep_next`/`ep_this` (FPL predicted points); both in JSON output (emit `null` when FPL has no projection; table renders `—`). Players with no projection sort to the bottom in either direction | Yes | General | No | direct-api |
@@ -35,9 +35,9 @@ Errors use `emit_json_error()` with `{"command", "error"}` shape.
 | `xg` | Analyse underlying stats: xG, xA, overperformers | Yes | General | No | via-agent |
 | `price-changes` | Show price changes and transfer activity | No | General | No | via-agent |
 | `price-history` | Show price trajectory and transfer momentum | Yes | General | No | direct-api |
-| `preview` | Run full pre-gameweek analysis and generate report | No | General | No | via-agent |
-| `review` | Review a completed gameweek - squad performance and standings | No | General | No | via-agent |
-| `league-recap` | Recap a completed gameweek - awards, standings, and banter. Records every run into the league history ledger (`<data dir>/league_history/`) as a side effect, backfilling classic gaps at a coarse tier automatically; `--backfill-detail` rebuilds earlier gameweeks in full (one request per manager per gameweek). Coverage gaps and capture warnings go to stderr; the command exits 0 even when the store is unreadable. `--format json` emits one row per manager (the captured ledger row shape) plus `metadata.coverage`, `season_phase`, `notes_pack`, `synthesis_summary`, `warnings` (always present, each entry a stable `code` plus rewritable `message` - codes listed in [Command Reference](../docs/command-reference.md#league-history)) and `first_capture_store_path` | Yes | General | No | via-agent |
+| `preview` | Run full pre-gameweek analysis and generate report. `--save` writes to `<output dir>/<season>/gw{N}-preview.md`; `--scout` writes to `<research dir>/ai-scout-reports/<season>/gw{N}-scout-preview[-referenced].md` | No | General | No | via-agent |
+| `review` | Review a completed gameweek - squad performance and standings. `--save` writes to `<output dir>/<season>/gw{N}-review.md`; `--compare-recs` reads `gw{N}-recommendations.md` from the same season directory | No | General | No | via-agent |
+| `league-recap` | Recap a completed gameweek - awards, standings, and banter. Saves to `<output dir>/<season>/gw{N}-league-recap[-draft].md`. Records every run into the league history ledger (`<data dir>/league_history/`) as a side effect, backfilling classic gaps at a coarse tier automatically; `--backfill-detail` rebuilds earlier gameweeks in full (one request per manager per gameweek). Coverage gaps and capture warnings go to stderr; the command exits 0 even when the store is unreadable. `--format json` emits one row per manager (the captured ledger row shape) plus `metadata.coverage`, `season_phase`, `notes_pack`, `synthesis_summary`, `warnings` (always present, each entry a stable `code` plus rewritable `message` - codes listed in [Command Reference](../docs/command-reference.md#league-history)) and `first_capture_store_path` | Yes | General | No | via-agent |
 | `captain` | Analyse and rank captain options for next gameweek. JSON candidates include `adjusted_npxg_per_90` and `raw_npxg_per_90` when fixture adjustment is active. Consistency tiebreaker (CV-xGI percentile) phased in GW6-10 | Yes | Classic | Yes | via-agent |
 | `differentials` | Find differential picks - high potential, low ownership. Inverted consistency bonus (volatile players score higher, phased in GW6-10) | Yes | Classic | Yes | via-agent |
 | `targets` | Find transfer targets - high performers across all ownership. Consistency bonus (CV-xGI percentile, phased in GW6-10) | Yes | Classic | Yes | via-agent |
@@ -68,9 +68,13 @@ Errors use `emit_json_error()` with `{"command", "error"}` shape.
 - **Experimental** - requires `custom_analysis: true` in settings; hidden from `--help` by default, and invoking one while it is off reports the toggle and the settings.yaml being read
 - **Pattern** - `direct-api` (API client only), `via-agent` (uses analysis agent), `mixed` (both patterns in subcommands)
 
+**Report paths are season-partitioned.** Every command that saves a report writes to `<dir>/<season>/gw{N}-*.md`, where `<season>` is the hyphenated label (`2026-27`). Report filenames carry a gameweek but no season, so a flat directory lets one season's GW21 file overwrite the previous season's. This applies to an explicit `--output` too. Any skill or script writing alongside these reports must use the same season directory, and must take the label from `fpl status --format json` (`metadata.season`) rather than hardcoding it — a hardcoded label silently rots at the July rollover.
+
 ## Skills
 
 Agent playbooks in `.agents/skills/`. Each has a `SKILL.md` entry point. Claude Code discovers them via the `.claude/skills/` symlink.
+
+Skills write their own outputs (`gw{N}-recommendations.md`, `gw{N}-squad-builder.md`, `season-start-squad.md`) into the same `<output dir>/<season>/` directory, for the same reason.
 
 | Skill | Path | Purpose | Compatibility |
 |-------|------|---------|--------------|

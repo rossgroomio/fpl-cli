@@ -14,6 +14,7 @@ Format conventions used by external data sources:
 from __future__ import annotations
 
 from datetime import date
+from pathlib import Path
 
 # -- Constants ---------------------------------------------------------------
 
@@ -88,6 +89,33 @@ def season_label_range(year: int | None = None, count: int = 4) -> tuple[str, ..
     """
     y = year if year is not None else get_season_year()
     return tuple(season_label(y - count + 1 + i) for i in range(count))
+
+
+# -- Directory partitioning --------------------------------------------------
+
+def season_partition(base: Path, season: str | None = None) -> Path:
+    """Return `base` partitioned by season, e.g. `01_Reports/2026-27`.
+
+    Generated reports are named by gameweek alone, so without a season segment
+    the 2026-27 GW21 report would land on the path 2025-26's GW21 report
+    already occupies and destroy it -- an unconditional `write_text` with no
+    existence check (#85). Partitioning by season makes that collision
+    structurally impossible rather than merely warned about, and mirrors how
+    the league-history ledger keys its own directories
+    (`fpl_cli/services/league_history.py`).
+
+    Appending is idempotent: a base whose final segment is already the season
+    label is returned unchanged, so a user who has pointed
+    `reports.output_dir` at a season directory by hand -- or a caller that
+    passes an already-partitioned path back in -- does not get `2026-27/2026-27`.
+
+    >>> season_partition(Path("01_Reports"), season="2026-27").as_posix()
+    '01_Reports/2026-27'
+    >>> season_partition(Path("01_Reports/2026-27"), season="2026-27").as_posix()
+    '01_Reports/2026-27'
+    """
+    label = season or season_label()
+    return base if base.name == label else base / label
 
 
 # -- Backward-compatible aliases ---------------------------------------------

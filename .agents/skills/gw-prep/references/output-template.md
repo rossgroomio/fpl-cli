@@ -2,16 +2,20 @@
 
 Template structure for the gameweek recommendations file.
 
-**Output path:** `[YOUR_OUTPUT_DIR]/gw{N}-recommendations.md`
+**Output path:** `[YOUR_OUTPUT_DIR]/{season}/gw{N}-recommendations.md`
+
+`{season}` is the hyphenated season label from `fpl status --format json` (`metadata.season`). The filename carries the gameweek but no season, so the directory segment is what stops a new season's GW21 file overwriting the previous season's.
 
 ---
 
 ## File Structure
 
-**Frontmatter fields** added at the top of the output file. `squad_builder_mode` is load-bearing for `/update-gw-prep`'s Phase C detection rule ("if `squad_builder_mode: true`, switch to squad-builder output format") — omit it on non-embed-mode runs to preserve that detection. `mode` is a forward-compat machine-readable enum for future consumers; always written.
+**Frontmatter fields** added at the top of the output file. `squad_builder_mode` is load-bearing for `/update-gw-prep`'s Phase C detection rule ("if `squad_builder_mode: true`, switch to squad-builder output format") — omit it on non-embed-mode runs to preserve that detection. `mode` is a forward-compat machine-readable enum for future consumers; always written. `season` and `gameweek` let a reader confirm which season's file it opened without inferring it from the path.
 
 ```markdown
 ---
+season: {season}  # Always present. Hyphenated label from `fpl status --format json` (metadata.season).
+gameweek: {N}     # Always present. Together with season this identifies the file independently of its path.
 squad_builder_mode: true  # Only on embed-mode wildcard/freehit runs. Omit on rederive or transfer runs.
 mode: wildcard | freehit | benchboost | transfer  # Always present. Enum value matches the active chip or "transfer".
 phase_e_ok: true | false  # Embed-mode only. Written by Phase E after post-write validation. Omit on transfer and rederive runs.
@@ -168,7 +172,7 @@ When Phase A3 detects a wildcard/freehit week but cannot use the squad-builder f
 `Season Start Classic`, `Season Start Draft`, and `Re-draft` mode files correctly land in Variant B's mode-mismatch branch by design — those modes cannot match an active wildcard/freehit chip.
 
 **Variant A** (`squad_builder_reason == "file-missing"`):
-> ⚠️ **Wildcard/Free Hit detected for GW{N}, but no squad-builder file was found.** Expected `gw{N}-squad-builder.md` in `[YOUR_OUTPUT_DIR]`. Re-derivation has run (weaker squad selection). To use squad-builder output next time, run `/squad-builder --{wildcard|freehit}` first, then re-run `/gw-prep`.
+> ⚠️ **Wildcard/Free Hit detected for GW{N}, but no squad-builder file was found.** Expected `gw{N}-squad-builder.md` in `[YOUR_OUTPUT_DIR]/{season}`. Re-derivation has run (weaker squad selection). To use squad-builder output next time, run `/squad-builder --{wildcard|freehit}` first, then re-run `/gw-prep`.
 
 **Variant B** (`squad_builder_reason ∈ {"gameweek-mismatch", "mode-mismatch"}`):
 > ⚠️ **Squad-builder file found but does not match this run.** Found `gw{N}-squad-builder.md` with `mode: {file.mode}` / `gameweek: {file.gameweek}`. Expected mode `{active_chip}` / gameweek `{N}`. Re-derivation has run. To use squad-builder output, run `/squad-builder --{wildcard|freehit}` for GW{N}, then re-run `/gw-prep`.

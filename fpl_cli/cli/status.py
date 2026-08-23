@@ -21,6 +21,7 @@ from fpl_cli.cli._json import emit_json, output_format_option
 from fpl_cli.cli.chips import CHIP_NAMES
 from fpl_cli.models.chip_plan import ChipPlan, ChipType, UsedChip
 from fpl_cli.models.player import Player, PlayerStatus
+from fpl_cli.season import season_label
 from fpl_cli.utils.time import format_deadline
 
 if TYPE_CHECKING:
@@ -203,6 +204,7 @@ def status_command(ctx: click.Context, output_format: str) -> None:
                 if fmt is None:
                     emit_json("status", json_data, metadata={
                         "gameweek": current_gw["id"] if current_gw else None,
+                        "season": season_label(),
                         "format": None,
                     })
                     return
@@ -241,6 +243,7 @@ def status_command(ctx: click.Context, output_format: str) -> None:
                 )
                 emit_json("status", json_data, metadata={
                     "gameweek": current_gw["id"] if current_gw else None,
+                    "season": season_label(),
                     "format": format_str,
                 })
                 return

@@ -30,8 +30,8 @@ Set `FPL_CLI_DIR` to the root of your fpl-cli checkout.
 
 ## Prerequisites
 
-- An existing `[YOUR_OUTPUT_DIR]/gw{N}-recommendations.md` file produced by the
-  gw-prep skill (or equivalent)
+- An existing `[YOUR_OUTPUT_DIR]/{season}/gw{N}-recommendations.md` file produced by
+  the gw-prep skill (or equivalent)
 - fpl-cli installed and configured (`fpl status` returns current GW)
 <!-- ADAPT: Add any supplementary data source prerequisites here -->
 
@@ -49,9 +49,11 @@ Parse the gameweek number. If "Finished", use N + 1. If "In Progress", use N.
 
 Also extract `metadata.format` (`"classic"`, `"draft"`, or `"both"`). This determines which sections of the update to produce and which Phase B commands to run.
 
+Extract `metadata.season` too -- the hyphenated season label (e.g. `"2026-27"`), referred to below as `{season}`. Every file this skill reads or writes lives under `[YOUR_OUTPUT_DIR]/{season}/`, because recommendation filenames carry the gameweek but no season. Take it from this command rather than hardcoding it.
+
 **A2. Verify existing recommendations**
 
-Confirm `[YOUR_OUTPUT_DIR]/gw{N}-recommendations.md` exists and contains the
+Confirm `[YOUR_OUTPUT_DIR]/{season}/gw{N}-recommendations.md` exists and contains the
 baseline sections (captain picks, transfer targets, chip strategy, bench order).
 If the file is missing, abort with: "No existing recommendations found for
 GW{N}. Run the gw-prep skill first."
@@ -222,7 +224,7 @@ affected. If no change: "Multi-week transfer plan holds."}
 Append the sub-agent's output to the existing file:
 
 ```
-[YOUR_OUTPUT_DIR]/gw{N}-recommendations.md
+[YOUR_OUTPUT_DIR]/{season}/gw{N}-recommendations.md
 ```
 
 Ensure there is a blank line before the `## GW Update` heading. Do not modify

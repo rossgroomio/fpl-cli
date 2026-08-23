@@ -33,6 +33,7 @@ from fpl_cli.cli._league_recap_types import (
     RecapTransfer,
 )
 from fpl_cli.models.league_history import CaptureStatus, FidelityTier, LedgerCaptaincy, LedgerTransaction
+from fpl_cli.season import season_label
 from fpl_cli.services.league_history import LeagueHistoryStore
 from fpl_cli.services.league_history_notes import (
     GameweekWindow,
@@ -1880,7 +1881,10 @@ class TestLeagueRecapJsonEnvelope:
         assert result.exit_code == 0, result.output
         payload = json.loads(result.stdout)
         assert isinstance(payload["data"], list)
-        assert list(tmp_path.glob("*.md"))
+        # An explicit --output is season-partitioned too (#85), so a new
+        # season's GW21 recap cannot land on the previous season's file.
+        assert list((tmp_path / season_label()).glob("*.md"))
+        assert not list(tmp_path.glob("*.md"))
 
     def test_an_unresolved_gameweek_emits_the_json_error_path_and_exits_one(self):
         result = _invoke_recap_unresolved_gameweek(["--format", "json"])
