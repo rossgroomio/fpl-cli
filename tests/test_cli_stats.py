@@ -4,12 +4,31 @@ from __future__ import annotations
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from click.testing import CliRunner
 
 from fpl_cli.cli import main
 from fpl_cli.cli._context import CLIContext, Format
 from fpl_cli.models.player import PlayerPosition, PlayerStatus
 from tests.conftest import make_player, make_team
+
+
+@pytest.fixture(autouse=True)
+def _no_match_records_fetch():
+    """Module-wide stub for the Core-Insights fetch on the --value path.
+
+    `fpl stats --value` calls fetch_match_records directly — a real network
+    fetch even when FPLClient and UnderstatClient are patched. It degrades
+    to None when unreachable, so a test that forgets to patch it stays green
+    while depending on the network. stats.py imports it inside the command
+    body, so patching the source module covers every invocation.
+    """
+    with patch(
+        "fpl_cli.services.player_scoring.fetch_match_records",
+        new_callable=AsyncMock,
+        return_value=None,
+    ):
+        yield
 
 
 def _make_client(players=None, teams=None):
@@ -431,7 +450,6 @@ def _run_with_value(args=None, client=None, us_match=None):
         patch("fpl_cli.api.understat.UnderstatClient", return_value=mock_understat),
         patch("fpl_cli.api.understat.match_fpl_to_understat", return_value=us_match),
         patch("fpl_cli.cli.stats.is_custom_analysis_enabled", return_value=True),
-        patch("fpl_cli.services.player_scoring.fetch_match_records", new_callable=AsyncMock, return_value=None),
     ):
         return runner.invoke(main, ["stats", "--value"] + (args or []))
 

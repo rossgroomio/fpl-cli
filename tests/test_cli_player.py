@@ -46,6 +46,31 @@ def _make_empty_understat():
     return mock
 
 
+@pytest.fixture(autouse=True)
+def _no_third_party_fetches():
+    """Module-wide stubs for the fetches `fpl player` makes past FPLClient.
+
+    Every invocation scrapes understat.com for league players, and the
+    custom-analysis path fetches the Core-Insights match CSVs — both real
+    network calls even when a test patches FPLClient. Both degrade silently
+    when unreachable, so a test that forgets to patch them stays green while
+    depending on the network. Stub them for the whole module; tests that
+    assert on Understat enrichment override with their own patch.
+    """
+    with (
+        patch(
+            "fpl_cli.api.understat.UnderstatClient",
+            side_effect=lambda *a, **kw: _make_empty_understat(),
+        ),
+        patch(
+            "fpl_cli.cli.player.fetch_match_records",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+    ):
+        yield
+
+
 def _run(args, client, fixture_agent, ratings_svc, settings=None):
     runner = CliRunner()
     with (

@@ -17,6 +17,14 @@ $ pytest                 # Tests
 $ hatch build            # Package build
 ```
 
+The test suite is hermetic: `pytest-socket` blocks all network access
+(`--disable-socket --allow-unix-socket` in `addopts`), so a test that
+reaches a live endpoint fails immediately rather than passing against
+whatever the endpoint returned that day. Stub the network seam instead —
+the autouse fixtures in `tests/test_agents_analysis.py` and
+`tests/test_cli_player.py` show the pattern. A test that genuinely needs
+a socket opts out with `@pytest.mark.enable_socket`.
+
 A separate `PR Title` check (`.github/workflows/pr-title.yml`) fails the
 PR when the title doesn't follow the conventional-commit format below.
 

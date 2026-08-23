@@ -7,10 +7,48 @@ import pytest
 from fpl_cli.agents.analysis.bench_order import BenchOrderAgent
 from fpl_cli.agents.analysis.squad_analyzer import SquadAnalyzerAgent
 from fpl_cli.agents.base import AgentStatus
+from fpl_cli.api.fpl import FPLClient
 from fpl_cli.models.player import PlayerPosition, PlayerStatus
 from fpl_cli.services.player_scoring import ScoringContext
 from fpl_cli.services.team_ratings import TeamRatingsService
 from tests.conftest import make_fixture, make_player, make_team
+
+
+@pytest.fixture(autouse=True)
+def _stub_third_party_fetches():
+    """Patch the seams inside prepare_scoring_data that reach past the client.
+
+    The run tests below patch agent.client's get_players/get_teams/
+    get_next_gameweek/get_fixtures, but BenchOrderAgent's prepare_scoring_data
+    call reaches further: include_understat scrapes understat.com,
+    include_prior pulls the historical datasets on a prior-cache miss, and
+    include_match_data fetches the Core-Insights CSVs — none of them through
+    the patched client. include_history (and SquadAnalyzerAgent's rolling-value
+    pass) stays on the client but calls get_player_detail, which the tests
+    don't patch. Stubbing these four keeps every fetch on test-owned data, so
+    the tests neither depend on the network nor report unrelated upstream
+    breakage as an agent failure.
+    """
+    with (
+        patch(
+            "fpl_cli.services.player_scoring.build_understat_by_player_id",
+            new_callable=AsyncMock,
+            return_value={},
+        ),
+        patch(
+            "fpl_cli.services.player_scoring.fetch_match_records",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        patch("fpl_cli.services.player_prior.load_cached_priors", return_value={}),
+        patch.object(
+            FPLClient,
+            "get_player_detail",
+            new_callable=AsyncMock,
+            return_value={"history": []},
+        ),
+    ):
+        yield
 
 
 def _bench_context(team_map, team_fixtures=None):
