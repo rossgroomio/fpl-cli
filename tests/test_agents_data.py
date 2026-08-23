@@ -171,8 +171,12 @@ class TestFixtureAgent:
     @pytest.mark.asyncio
     async def test_run_no_next_gameweek(self, agent):
         """Test handling when no next gameweek (season ended)."""
-        with patch.object(agent.client, "get_next_gameweek", new_callable=AsyncMock) as mock_next_gw:
+        # ensure_fresh's team-set check calls get_teams before run() bails
+        # out, so it needs a stub too or it fetches live (and degrades).
+        with patch.object(agent.client, "get_next_gameweek", new_callable=AsyncMock) as mock_next_gw, \
+             patch.object(agent.client, "get_teams", new_callable=AsyncMock) as mock_get_teams:
             mock_next_gw.return_value = None
+            mock_get_teams.return_value = []
 
             result = await agent.run()
 
@@ -182,8 +186,12 @@ class TestFixtureAgent:
     @pytest.mark.asyncio
     async def test_run_handles_api_error(self, agent):
         """Test handling API errors."""
-        with patch.object(agent.client, "get_next_gameweek", new_callable=AsyncMock) as mock_next_gw:
+        # ensure_fresh's team-set check calls get_teams before run() fails,
+        # so it needs a stub too or it fetches live (and degrades).
+        with patch.object(agent.client, "get_next_gameweek", new_callable=AsyncMock) as mock_next_gw, \
+             patch.object(agent.client, "get_teams", new_callable=AsyncMock) as mock_get_teams:
             mock_next_gw.side_effect = Exception("API Error")
+            mock_get_teams.return_value = []
 
             result = await agent.run()
 
@@ -1051,9 +1059,18 @@ class TestScoutAgent:
 
     @pytest.fixture
     def agent(self, monkeypatch):
-        """Create a scout agent with research provider API key set."""
+        """Create a scout agent with research provider API key set.
+
+        run() enriches the prompt via self.client.get_players()/get_teams()
+        behind a best-effort handler, so an unstubbed client is an invisible
+        live fetch — the tests pass either way. Stub both so the prompt is
+        built from test-owned (empty) data.
+        """
         monkeypatch.setenv("PERPLEXITY_API_KEY", "test-key")
-        return ScoutAgent()
+        agent = ScoutAgent()
+        monkeypatch.setattr(agent.client, "get_players", AsyncMock(return_value=[]))
+        monkeypatch.setattr(agent.client, "get_teams", AsyncMock(return_value=[]))
+        return agent
 
     @pytest.fixture
     def mock_research_response(self):

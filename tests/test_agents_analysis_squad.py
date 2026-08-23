@@ -13,6 +13,14 @@ from fpl_cli.services.team_ratings import TeamRatingsService
 from tests.conftest import make_fixture, make_player, make_team
 
 
+@pytest.fixture(autouse=True)
+def _stub_third_party_fetches(stub_scoring_network_seams):
+    """Keep BenchOrderAgent's prepare_scoring_data fetches (and
+    SquadAnalyzerAgent's rolling-value get_player_detail pass) off the
+    network. The patch list lives in conftest.stub_scoring_network_seams.
+    """
+
+
 def _bench_context(team_map, team_fixtures=None):
     """Build a minimal ScoringContext for bench scoring tests."""
     svc = TeamRatingsService.__new__(TeamRatingsService)
