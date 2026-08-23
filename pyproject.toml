@@ -17,7 +17,7 @@ dependencies = [
     "ruamel.yaml>=0.18.0",
     "keyring>=24.0.0",
     "platformdirs>=4.3,<5",
-    "pulp>=2.7",
+    "pulp>=2.7,<4",
     "tzdata>=2024.1; platform_system == 'Windows'",
 ]
 

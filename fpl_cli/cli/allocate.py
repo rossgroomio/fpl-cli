@@ -18,6 +18,44 @@ if TYPE_CHECKING:
     from fpl_cli.services.squad_allocator import ScoredPlayer, SquadResult
 
 
+def load_sell_prices(
+    sell_prices_path: str | None,
+    budget: float,
+    *,
+    budget_from_command_line: bool,
+) -> tuple[dict[int, float] | None, float]:
+    """Read sell-price overrides and resolve the budget to solve against.
+
+    Without a sell-prices file the budget is returned untouched. With one, the budget is
+    auto-computed as sum(sell_prices) + bank unless --budget was given explicitly, in which
+    case the explicit value wins. Exits with status 1 on an unreadable or malformed file.
+    """
+    import json as json_mod
+
+    if sell_prices_path is None:
+        return None, budget
+
+    try:
+        with open(sell_prices_path, encoding="utf-8") as f:
+            sp_data = json_mod.load(f)
+    except (json_mod.JSONDecodeError, OSError) as exc:
+        console.print(f"[red]Error reading sell-prices file: {exc}[/red]")
+        raise SystemExit(1) from exc
+
+    players_list = sp_data.get("data", [])
+    try:
+        price_overrides = {p["id"]: p["sell_price"] for p in players_list}
+    except KeyError as exc:
+        console.print(f"[red]Sell-prices JSON missing required field: {exc}[/red]")
+        raise SystemExit(1) from exc
+
+    if not budget_from_command_line:
+        sp_bank = sp_data.get("metadata", {}).get("bank", 0.0)
+        budget = sum(p["sell_price"] for p in players_list) + sp_bank
+
+    return price_overrides, budget
+
+
 @click.command("allocate")
 @click.option("--budget", type=click.FloatRange(min=0.1), default=100.0,
               help="Total budget in GBP millions (default 100.0)")
@@ -39,31 +77,13 @@ def allocate_command(
 ) -> None:
     """Select the mathematically optimal 15-player squad within budget."""
 
-    import json as json_mod
-
     from click.core import ParameterSource
 
-    # Load sell-price overrides
-    price_overrides: dict[int, float] | None = None
-    if sell_prices_path is not None:
-        try:
-            with open(sell_prices_path, encoding="utf-8") as f:
-                sp_data = json_mod.load(f)
-        except (json_mod.JSONDecodeError, OSError) as exc:
-            console.print(f"[red]Error reading sell-prices file: {exc}[/red]")
-            raise SystemExit(1) from exc
-
-        players_list = sp_data.get("data", [])
-        try:
-            price_overrides = {p["id"]: p["sell_price"] for p in players_list}
-        except KeyError as exc:
-            console.print(f"[red]Sell-prices JSON missing required field: {exc}[/red]")
-            raise SystemExit(1) from exc
-
-        # Auto-compute budget from JSON when --budget not explicitly set
-        if ctx.get_parameter_source("budget") != ParameterSource.COMMANDLINE:
-            sp_bank = sp_data.get("metadata", {}).get("bank", 0.0)
-            budget = sum(p["sell_price"] for p in players_list) + sp_bank
+    price_overrides, budget = load_sell_prices(
+        sell_prices_path,
+        budget,
+        budget_from_command_line=ctx.get_parameter_source("budget") == ParameterSource.COMMANDLINE,
+    )
 
     async def _run() -> None:
         from fpl_cli.api.fpl import FPLClient
