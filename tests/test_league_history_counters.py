@@ -513,6 +513,24 @@ class TestAdvanceAndRebuild:
         projection = svc.compute_counters_through(store, 2)
         assert projection.computed_through_gameweek == 2
 
+    def test_exact_match_returns_the_cached_projection_without_recomputing(self, monkeypatch):
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, league_position=1)])
+        store.append_rows(2, [make_history_row(gameweek=2, manager_key=1, league_position=1)])
+        first = compute_counters_through(store, 2)
+        assert manager_condition_views(first, 1)["weeks_on_top"].length == 2
+
+        def _boom(*_args, **_kwargs):
+            raise AssertionError("a re-run for an already-cached gameweek must not re-read any rows")
+
+        monkeypatch.setattr(store, "resolved_gameweek", _boom)
+
+        # Re-running for the same, already-stamped gameweek -- e.g. checking
+        # console output, then re-running with --summarise -- must be free.
+        second = compute_counters_through(store, 2)
+        assert second.computed_through_gameweek == 2
+        assert second.runs == first.runs
+
     def test_multi_gameweek_catchup_over_a_stale_stamp_rebuilds_and_matches_a_full_rebuild(self):
         store = LeagueHistoryStore("2026-27", "classic", 1)
         for gw in range(1, 7):
@@ -529,7 +547,14 @@ class TestAdvanceAndRebuild:
         # A buggy "just bump the stamp" implementation would leave this at 3.
         assert manager_condition_views(jumped, 1)["weeks_on_top"].length == 6
 
-    def test_backfill_at_or_before_the_stamp_triggers_rebuild_not_stale_reuse(self):
+    def test_a_repair_at_the_stamp_is_not_served_stale_when_invalidated_first(self):
+        """The exact-match shortcut (stamp == target) trusts `existing.runs`
+        exactly as much as the stamp+1 fast path does -- neither notices a
+        repair on its own (see `compute_counters_through`'s docstring). A
+        caller that repairs a gameweek at or before the stamp must call
+        `invalidate_if_repaired` before asking again, the same pattern
+        `test_an_unknown_gameweek_repaired_behind_a_matching_stamp_is_not_folded_onto_stale_state`
+        exercises for the stamp+1 case."""
         store = LeagueHistoryStore("2026-27", "classic", 1)
         for gw in (1, 2, 3):
             store.append_rows(gw, [make_history_row(gameweek=gw, manager_key=1, league_position=1)])
@@ -541,13 +566,36 @@ class TestAdvanceAndRebuild:
             make_history_row(gameweek=2, manager_key=1, league_position=5, captured_at=LATER),
         ])
 
-        # Same target as the existing stamp -- not stamp+1 -- so it must
-        # rebuild rather than trust the cached run.
+        # Same target as the existing stamp -- not stamp+1 -- so a caller
+        # that repairs and re-asks must invalidate first, exactly as it
+        # would for a stamp+1 repair.
+        invalidate_if_repaired(store, {2})
         repaired = compute_counters_through(store, 3)
         view = manager_condition_views(repaired, 1)["weeks_on_top"]
 
         assert view.length == 1
         assert view.start_gameweek == 3
+
+    def test_an_exact_match_without_invalidation_returns_the_stale_cached_projection(self):
+        """Documents the other half of the contract above: skip
+        `invalidate_if_repaired` and the exact-match shortcut returns
+        `existing` as-is, repair or not -- the shortcut itself has no way to
+        notice. This is the tradeoff the shortcut makes for a free re-run of
+        an already-processed gameweek; every actual caller in this codebase
+        (`capture_recap_history`) invalidates first, so this never happens
+        in production."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        for gw in (1, 2, 3):
+            store.append_rows(gw, [make_history_row(gameweek=gw, manager_key=1, league_position=1)])
+        compute_counters_through(store, 3)
+
+        store.append_rows(2, [
+            make_history_row(gameweek=2, manager_key=1, league_position=5, captured_at=LATER),
+        ])
+
+        stale = compute_counters_through(store, 3)  # no invalidate_if_repaired call
+        view = manager_condition_views(stale, 1)["weeks_on_top"]
+        assert view.length == 3  # the pre-repair count, not the corrected 1
 
     def test_an_unknown_gameweek_repaired_behind_a_matching_stamp_is_not_folded_onto_stale_state(self):
         """Reproduces the fast-path bug `invalidate_if_repaired` exists to close:

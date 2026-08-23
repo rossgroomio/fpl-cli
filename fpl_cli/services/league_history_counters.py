@@ -498,23 +498,31 @@ def compute_counters_through(
     """Counters for this partition after folding in `through_gameweek`.
 
     This is the weekly-path entry point: it always persists what it
-    computes, so the next call can advance from it. The cached projection
+    computes, so the next call can advance from it. A cache already
+    stamped `through_gameweek` is returned as-is -- a re-run for a
+    gameweek already processed (e.g. checking the console output, then
+    re-running with `--summarise`) costs nothing. The cached projection
     advances by exactly one gameweek when its stamp is
     `through_gameweek - 1`; anything else -- missing, unreadable, or
-    wrong-version cache, a request for a `through_gameweek` at or behind
-    the stamp, or a multi-gameweek catch-up ahead of it -- rebuilds fully
+    wrong-version cache, a request for a `through_gameweek` behind the
+    stamp, or a multi-gameweek catch-up ahead of it -- rebuilds fully
     (KTD10). A lost race on the cache file costs a rebuild, never wrong
     data.
 
-    The fast path trusts every gameweek before `through_gameweek` exactly
-    as `existing.runs` already has it -- it does not itself notice a
-    repair to an earlier gameweek (an unknown row superseded, a coarse row
-    upgraded) made between the stamp being set and this call. A caller
+    Neither shortcut notices a repair to an earlier gameweek (an unknown
+    row superseded, a coarse row upgraded) made between the stamp being
+    set and this call on its own -- both trust every gameweek before
+    `through_gameweek` exactly as `existing.runs` already has it. A caller
     that can make such a repair must invalidate first; see
     `invalidate_if_repaired`, which `capture_recap_history` calls ahead of
-    every `build_notes_pack`.
+    every `build_notes_pack`, before this function is ever reached -- so
+    by the time either shortcut runs, a relevant repair has already
+    forced `existing` to `None` here rather than being missed silently.
     """
     existing = _load_projection(store)
+
+    if existing is not None and existing.computed_through_gameweek == through_gameweek:
+        return existing
 
     if existing is not None and existing.computed_through_gameweek == through_gameweek - 1:
         try:
