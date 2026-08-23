@@ -20,9 +20,7 @@ from tests.conftest import make_team
 CURRENT_YEAR = get_season_year()
 CURRENT_SEASON = season_label()
 PREVIOUS_SEASON = season_label(CURRENT_YEAR - 1)
-# A timestamp inside the current season vs one inside the previous season
 CURRENT_TS = f"{CURRENT_YEAR}-08-01T00:00:00Z"
-PREVIOUS_TS = f"{CURRENT_YEAR - 1}-08-01T00:00:00Z"
 
 
 def _http_404() -> httpx.HTTPStatusError:
@@ -184,13 +182,15 @@ class TestIdChecks:
         assert result.exit_code == 1
         assert "does not resolve" in result.output
 
-    def test_classic_league_from_previous_season_is_broken(self):
+    def test_classic_league_with_old_created_stays_ok(self):
+        # Classic mini-leagues keep their ID across seasons and `created` is
+        # the original creation date -- an old stamp must not flag the league.
         client = _mock_client(
-            classic_league={"league": {"name": "Old League", "created": PREVIOUS_TS}}
+            classic_league={"league": {"name": "Old League", "created": "2019-08-01T00:00:00Z"}}
         )
         result = _run(client, settings={"fpl": {"classic_league_id": 99}})
-        assert result.exit_code == 1
-        assert PREVIOUS_SEASON in result.output
+        assert result.exit_code == 0
+        assert "Old League" in result.output
 
     def test_classic_league_current_season_is_ok(self):
         result = _run(_mock_client(), settings={"fpl": {"classic_league_id": 99}})
@@ -234,6 +234,41 @@ class TestIdChecks:
         )
         assert result.exit_code == 0
         assert "Draft Team" in result.output
+
+    def test_draft_entry_not_condemned_when_league_is_dead(self):
+        # When the league ID itself is stale, the membership miss proves
+        # nothing about the entry -- the recycled-ID verdict must not fire.
+        profile = {
+            "entry": {
+                "name": "My Team",
+                "player_first_name": "Ross",
+                "player_last_name": "G",
+                "league_set": [111],
+            }
+        }
+        result = _run(
+            _mock_client(),
+            settings={"fpl": {"draft_league_id": 598, "draft_entry_id": 90368}},
+            draft_client=_mock_draft_client(entry_profile=profile, league_error=_http_404()),
+        )
+        assert result.exit_code == 1  # the league row alone is broken
+        assert "recycled" not in result.output
+        assert "membership not checked" in _flat(result)
+        payload_rows = _flat(result)
+        assert "598 does not resolve" in payload_rows
+
+    def test_draft_entry_membership_holds_when_league_check_failed_but_set_matches(self):
+        # league_set comes from the entry itself, so membership is provable
+        # even when the league lookup errored (e.g. transient HTTP failure).
+        request = httpx.Request("GET", "https://example.test")
+        error = httpx.ConnectError("boom", request=request)
+        result = _run(
+            _mock_client(),
+            settings={"fpl": {"draft_league_id": 4321, "draft_entry_id": 90368}},
+            draft_client=_mock_draft_client(league_error=error),
+        )
+        assert result.exit_code == 0
+        assert "in draft league 4321" in _flat(result)
 
     def test_draft_entry_without_league_id_notes_unchecked_membership(self):
         result = _run(
@@ -321,6 +356,58 @@ class TestDataFileChecks:
         assert result.exit_code == 0
         assert "1 file(s) skipped" in _flat(result)
         assert "fpl intel" in _flat(result)
+
+    def test_empty_team_list_does_not_flag_previews(self):
+        # An empty live team list means "cannot check", never "every preview
+        # covers an unknown club".
+        _write_preview("ARS")
+        result = _run(_mock_client(teams=[]))
+        assert result.exit_code == 0
+        assert "covers ARS" not in _flat(result)
+        assert "could not fetch the live team list" in _flat(result)
+
+    def test_broken_data_dir_still_reports_instead_of_aborting(self, tmp_path, monkeypatch):
+        # The command diagnosing directory misconfiguration must survive it:
+        # a UserDirError from a file check becomes a broken row, keeping the
+        # JSON envelope and the already-produced results intact.
+        blocker = tmp_path / "blocker"
+        blocker.write_text("", encoding="utf-8")
+        monkeypatch.setenv("FPL_CLI_DATA_DIR", str(blocker / "data"))
+        from fpl_cli.paths import user_data_dir
+
+        user_data_dir.cache_clear()
+        result = _run(_mock_client(), args=["--format", "json"])
+        assert result.exit_code == 1
+        payload = json.loads(result.output)
+        assert payload["metadata"]["broken"] >= 2  # the dir itself + file checks
+        data_dir_row = next(c for c in payload["data"]["environment"] if c["name"] == "data dir")
+        assert data_dir_row["status"] == "broken"
+        ratings_row = next(
+            c for c in payload["data"]["data_files"] if c["name"] == "team_ratings.yaml"
+        )
+        assert ratings_row["status"] == "broken"
+        assert "FPL_CLI_DATA_DIR" in ratings_row["detail"]
+
+    def test_broken_config_dir_still_reports_instead_of_aborting(self, tmp_path, monkeypatch):
+        # Same guarantee for the config dir: settings become unreadable, so the
+        # ID rows say so, and the directories section carries the diagnosis.
+        blocker = tmp_path / "blocker"
+        blocker.write_text("", encoding="utf-8")
+        monkeypatch.setenv("FPL_CLI_CONFIG_DIR", str(blocker / "config"))
+        from fpl_cli.paths import user_config_dir
+
+        user_config_dir.cache_clear()
+        runner = CliRunner()
+        with patch("fpl_cli.api.fpl.FPLClient", return_value=_mock_client()):
+            result = runner.invoke(main, ["doctor", "--format", "json"])
+        assert result.exit_code == 1
+        payload = json.loads(result.output)
+        config_row = next(c for c in payload["data"]["environment"] if c["name"] == "config dir")
+        assert config_row["status"] == "broken"
+        entry_row = next(
+            c for c in payload["data"]["settings_ids"] if c["name"] == "classic_entry_id"
+        )
+        assert "settings could not be read" in entry_row["detail"]
 
 
 class TestJsonOutput:

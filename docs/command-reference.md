@@ -735,9 +735,9 @@ Rolling a setup into a new season silently invalidates IDs and per-team files: a
 **IDs in `settings.yaml`** — each configured ID is resolved against the live API and the team/league name reported back, so a wrong-but-valid ID is visible:
 
 - `classic_entry_id` resolves, reporting the team and manager name
-- `classic_league_id` resolves; flagged when the league was created in a previous season (classic league IDs change each season)
-- `draft_league_id` resolves; flagged when its draft was held in a previous season
-- `draft_entry_id` resolves **and belongs to `draft_league_id`** (via the entry's `league_set`), catching a recycled ID that points at someone else's team
+- `classic_league_id` resolves, reporting the league name back — classic mini-leagues keep their ID across seasons, so resolution plus the name echo is the whole check
+- `draft_league_id` resolves; flagged when its draft was held in a previous season (draft leagues are recreated each season)
+- `draft_entry_id` resolves **and belongs to `draft_league_id`** (via the entry's `league_set`), catching a recycled ID that points at someone else's team — the recycled-ID verdict only fires when the league itself checked out, so a stale league ID cannot condemn a correct entry
 
 **Data files:**
 

@@ -16,7 +16,7 @@ import asyncio
 import dataclasses
 import json
 import os
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from enum import StrEnum
 from typing import Any
@@ -180,22 +180,19 @@ async def _classic_league_check(client: Any, league_id: int) -> CheckResult:
         name,
         client.get_classic_league_standings(league_id),
         f"{league_id} does not resolve — no classic league has this ID",
-        "update classic_league_id in settings.yaml — classic league IDs change each season",
+        "update classic_league_id in settings.yaml (or run `fpl init`)",
     )
     if failure or data is None:
         return failure or CheckResult(name, CheckStatus.UNCHECKED, "no data returned")
     league = data.get("league") or {}
     league_name = league.get("name") or "?"
-    created_season = _season_of_timestamp(league.get("created"))
-    if created_season and created_season != season_label():
-        return CheckResult(
-            name,
-            CheckStatus.BROKEN,
-            f'{league_id} → "{league_name}", created in {created_season} — '
-            "not this season's league",
-            "update classic_league_id in settings.yaml — classic league IDs change each season",
-        )
-    return CheckResult(name, CheckStatus.OK, f'{league_id} → "{league_name}"')
+    # No season assertion: classic mini-leagues keep their ID across seasons
+    # and `created` is the original creation date, never re-stamped -- so
+    # resolution plus the name echo is the whole check (a wrong ID shows a
+    # wrong name). Draft leagues are recreated each season; theirs checks more.
+    return CheckResult(
+        name, CheckStatus.OK, f'{league_id} → "{league_name}" — check the name is yours'
+    )
 
 
 async def _draft_league_check(draft_client: Any, league_id: int) -> CheckResult:
@@ -223,7 +220,7 @@ async def _draft_league_check(draft_client: Any, league_id: int) -> CheckResult:
 
 
 async def _draft_entry_check(
-    draft_client: Any, entry_id: int, league_id: int | None
+    draft_client: Any, entry_id: int, league_id: int | None, league_verified: bool
 ) -> CheckResult:
     name = "draft_entry_id"
     data, failure = await _resolve(
@@ -238,9 +235,20 @@ async def _draft_entry_check(
     team = entry.get("name") or "?"
     owner = _manager_name(entry) or "?"
     league_set = entry.get("league_set") or []
-    if league_id and league_id not in league_set:
+    if league_id and league_id in league_set:
+        # Membership comes from the entry's own league_set, so it holds even
+        # when the league lookup itself could not run.
+        return CheckResult(
+            name,
+            CheckStatus.OK,
+            f'{entry_id} → "{team}" ({owner}), in draft league {league_id} — '
+            "check the name is yours",
+        )
+    if league_id and league_verified:
         # A recycled entry ID resolves fine, in a different league (#57) --
         # membership, not resolution, is what proves the ID is still yours.
+        # Sound only when the league itself checked out: otherwise the stale
+        # ID may be the league's, and this would condemn a correct entry.
         return CheckResult(
             name,
             CheckStatus.BROKEN,
@@ -248,17 +256,18 @@ async def _draft_entry_check(
             "likely a recycled ID pointing at someone else's team",
             "update draft_entry_id in settings.yaml — draft entry IDs are reissued each season",
         )
-    if not league_id:
+    if league_id:
         return CheckResult(
             name,
             CheckStatus.OK,
             f'{entry_id} → "{team}" ({owner}) — league membership not checked '
-            "(draft_league_id is not set)",
+            "(draft_league_id failed its own check)",
         )
     return CheckResult(
         name,
         CheckStatus.OK,
-        f'{entry_id} → "{team}" ({owner}), in draft league {league_id} — check the name is yours',
+        f'{entry_id} → "{team}" ({owner}) — league membership not checked '
+        "(draft_league_id is not set)",
     )
 
 
@@ -306,7 +315,7 @@ def _team_managers_check(teams: list[str] | None) -> CheckResult:
     except (yaml.YAMLError, OSError) as exc:
         return CheckResult(name, CheckStatus.BROKEN, f"unreadable: {exc}")
     merged = {**shipped, **user_copy}
-    if teams is None:
+    if not teams:
         return CheckResult(
             name, CheckStatus.UNCHECKED, "could not fetch the live team list to compare against"
         )
@@ -343,7 +352,10 @@ def _previews_check(teams: list[str] | None) -> CheckResult:
         return CheckResult(
             name, CheckStatus.SKIPPED, "no preview files yet — optional; see `fpl intel schema`"
         )
-    unknown = unknown_teams(previews, set(teams)) if teams is not None else []
+    # `not teams` and not `is None`: an empty live list would report every
+    # valid preview as covering an unknown club, so it means "cannot check",
+    # exactly like the managers check's helper treats an empty league.
+    unknown = unknown_teams(previews, set(teams)) if teams else []
     if unknown:
         # Unlike a file the loader skipped, these load and count toward the
         # coverage gate, so a leftover relegated-club file can flip full-use
@@ -364,7 +376,7 @@ def _previews_check(teams: list[str] | None) -> CheckResult:
             f"{len(warnings)} file(s) skipped and not influencing decisions",
             "run `fpl intel` for the reasons; re-ingest for the current season",
         )
-    if teams is None:
+    if not teams:
         return CheckResult(
             name, CheckStatus.UNCHECKED, "could not fetch the live team list to compare against"
         )
@@ -431,6 +443,30 @@ def _player_prior_check() -> CheckResult:
     return CheckResult(name, CheckStatus.OK, f"season {file_season}")
 
 
+def _file_checks(teams: list[str] | None) -> list[CheckResult]:
+    """Run the data-file checks, containing an unusable FPL_CLI_* override.
+
+    Each check resolves the config or data dir itself, so a broken override
+    raising UserDirError here would otherwise abort the whole command --
+    discarding the results already produced (including the directory check
+    that diagnosed the override) and, under --format json, the envelope.
+    """
+    checks: list[tuple[str, Callable[[], CheckResult]]] = [
+        ("team_ratings.yaml", lambda: _team_ratings_check(teams)),
+        ("team_managers.yaml", lambda: _team_managers_check(teams)),
+        ("previews/", lambda: _previews_check(teams)),
+        ("team_finances.json", _team_finances_check),
+        ("player_prior.yaml", _player_prior_check),
+    ]
+    results: list[CheckResult] = []
+    for name, check in checks:
+        try:
+            results.append(check())
+        except UserDirError as exc:
+            results.append(CheckResult(name, CheckStatus.BROKEN, str(exc)))
+    return results
+
+
 # ---------------------------------------------------------------------------
 # Command
 # ---------------------------------------------------------------------------
@@ -466,12 +502,22 @@ def doctor_command(output_format: str) -> None:
     async def _run() -> None:
         from fpl_cli.api.fpl import FPLClient as _FPLClient
 
-        settings = load_settings()
-        fpl_cfg = settings.get("fpl", {})
+        try:
+            settings: dict[str, Any] | None = load_settings()
+        except UserDirError:
+            # The unusable config dir is itself the finding, reported by the
+            # directories section -- keep going and check what needs no settings.
+            settings = None
+        fpl_cfg = (settings or {}).get("fpl", {})
         classic_entry_id = fpl_cfg.get("classic_entry_id")
         classic_league_id = fpl_cfg.get("classic_league_id")
         draft_league_id = fpl_cfg.get("draft_league_id")
         draft_entry_id = fpl_cfg.get("draft_entry_id")
+        unset_detail = (
+            "not set"
+            if settings is not None
+            else "settings could not be read — fix the config dir first"
+        )
 
         env_results = _environment_checks()
 
@@ -486,39 +532,40 @@ def doctor_command(output_format: str) -> None:
             if classic_entry_id:
                 id_results.append(await _classic_entry_check(client, classic_entry_id))
             else:
-                id_results.append(CheckResult("classic_entry_id", CheckStatus.SKIPPED, "not set"))
+                id_results.append(CheckResult("classic_entry_id", CheckStatus.SKIPPED, unset_detail))
             if classic_league_id:
                 id_results.append(await _classic_league_check(client, classic_league_id))
             else:
-                id_results.append(CheckResult("classic_league_id", CheckStatus.SKIPPED, "not set"))
+                id_results.append(CheckResult("classic_league_id", CheckStatus.SKIPPED, unset_detail))
 
         if draft_league_id or draft_entry_id:
             from fpl_cli.api.fpl_draft import FPLDraftClient as _FPLDraftClient
 
             async with _FPLDraftClient() as draft_client:
+                league_result: CheckResult | None = None
                 if draft_league_id:
-                    id_results.append(await _draft_league_check(draft_client, draft_league_id))
+                    league_result = await _draft_league_check(draft_client, draft_league_id)
+                    id_results.append(league_result)
                 else:
                     id_results.append(
-                        CheckResult("draft_league_id", CheckStatus.SKIPPED, "not set")
+                        CheckResult("draft_league_id", CheckStatus.SKIPPED, unset_detail)
                     )
                 if draft_entry_id:
+                    league_verified = (
+                        league_result is not None and league_result.status is CheckStatus.OK
+                    )
                     id_results.append(
-                        await _draft_entry_check(draft_client, draft_entry_id, draft_league_id)
+                        await _draft_entry_check(
+                            draft_client, draft_entry_id, draft_league_id, league_verified
+                        )
                     )
                 else:
-                    id_results.append(CheckResult("draft_entry_id", CheckStatus.SKIPPED, "not set"))
+                    id_results.append(CheckResult("draft_entry_id", CheckStatus.SKIPPED, unset_detail))
         else:
-            id_results.append(CheckResult("draft_league_id", CheckStatus.SKIPPED, "not set"))
-            id_results.append(CheckResult("draft_entry_id", CheckStatus.SKIPPED, "not set"))
+            id_results.append(CheckResult("draft_league_id", CheckStatus.SKIPPED, unset_detail))
+            id_results.append(CheckResult("draft_entry_id", CheckStatus.SKIPPED, unset_detail))
 
-        file_results = [
-            _team_ratings_check(teams),
-            _team_managers_check(teams),
-            _previews_check(teams),
-            _team_finances_check(),
-            _player_prior_check(),
-        ]
+        file_results = _file_checks(teams)
 
         all_results = env_results + id_results + file_results
         broken = sum(1 for r in all_results if r.status == CheckStatus.BROKEN)

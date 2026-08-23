@@ -44,6 +44,12 @@ load_env_files()
 @click.pass_context
 def main(ctx: click.Context) -> None:
     """fpl-cli - Fantasy Premier League analysis for classic and draft formats."""
+    if ctx.invoked_subcommand == "doctor":
+        # Doctor diagnoses unusable FPL_CLI_* overrides, so it must start even
+        # when resolving a directory would fail -- migration and settings both
+        # resolve user dirs, and doctor re-reads settings itself, per check.
+        ctx.obj = CLIContext(format=None, settings={})
+        return
     # Deferred to invocation: the user dirs must not resolve until .env is loaded.
     ensure_legacy_migration()
     if ctx.invoked_subcommand == "init":
