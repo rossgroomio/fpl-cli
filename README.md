@@ -59,7 +59,8 @@ Alternatives: `uv pip install fplkit` or `pip install fplkit`.
 $ fpl status                       # GW result, deadline, rank movement, flagged players
 $ fpl review --save --summarise    # Full review with LLM narrative
 $ fpl league                       # Live league standings
-$ fpl league-recap --summarise     # Awards and editorial for the group chat
+$ fpl league-recap                 # Awards, standings movement, and running streaks
+$ fpl league-recap --summarise     # Add the LLM editorial for the group chat
 ```
 
 ### Scouting Players
@@ -140,6 +141,7 @@ Commands with `--format json` emit a consistent envelope:
 $ fpl stats --format json -p MID -s expected_goal_involvements
 $ fpl status --format json
 $ fpl fdr --blanks --format json
+$ fpl league-recap --format json
 ```
 
 ## Configuration
