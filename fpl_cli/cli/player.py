@@ -75,14 +75,6 @@ def player_command(
                 players = await client.get_players()
                 teams = {t.id: t for t in await client.get_teams()}
 
-                # Fetch Understat league data for enrichment
-                from fpl_cli.api.understat import UnderstatClient, match_fpl_to_understat
-                try:
-                    async with UnderstatClient() as us_client:
-                        understat_players = await us_client.get_league_players()
-                except httpx.HTTPError:
-                    understat_players = []
-
                 # Fetch next gameweek for quality scoring (cached, no extra API cost)
                 next_gw = await client.get_next_gameweek()
                 next_gw_id = next_gw["id"] if next_gw else 38
@@ -130,6 +122,16 @@ def player_command(
                     return
 
                 display = matches[:5]
+
+                # Fetch Understat league data for enrichment. Deferred until after
+                # the name resolves: the scrape pulls the whole league table, and a
+                # name that matches nothing has no use for it.
+                from fpl_cli.api.understat import UnderstatClient, match_fpl_to_understat
+                try:
+                    async with UnderstatClient() as us_client:
+                        understat_players = await us_client.get_league_players()
+                except httpx.HTTPError:
+                    understat_players = []
 
                 # Pre-compute Understat matches for panel enrichment
                 us_matches: dict[int, dict] = {}

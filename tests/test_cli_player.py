@@ -1128,3 +1128,33 @@ class TestPlayerErrorHandling:
         assert result.exit_code != 0
         assert "Error: boom" in result.output
         assert "adj. npxG/90:" not in result.output
+
+
+class TestUnderstatFetchDeferral:
+    """The league-wide Understat scrape waits until a name resolves (#83)."""
+
+    def _invoke(self, name, client, fixture_agent, ratings_svc):
+        mock_understat = _make_empty_understat()
+        runner = CliRunner()
+        with (
+            patch("fpl_cli.cli.player.load_settings", return_value={"fpl": {}}),
+            patch("fpl_cli.api.fpl.FPLClient", return_value=client),
+            patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=fixture_agent),
+            patch("fpl_cli.services.team_ratings.TeamRatingsService", return_value=ratings_svc),
+            patch("fpl_cli.api.understat.UnderstatClient", return_value=mock_understat),
+        ):
+            result = runner.invoke(main, ["player", name])
+        return result, mock_understat
+
+    def test_unmatched_name_skips_league_scrape(self):
+        client, fixture_agent, ratings_svc = _make_mocks()
+        result, mock_understat = self._invoke("Zzzzzz", client, fixture_agent, ratings_svc)
+        assert result.exit_code == 0, result.output
+        assert "No players found matching 'Zzzzzz'" in result.stderr
+        mock_understat.get_league_players.assert_not_awaited()
+
+    def test_matched_name_still_scrapes_league(self):
+        client, fixture_agent, ratings_svc = _make_mocks()
+        result, mock_understat = self._invoke("Salah", client, fixture_agent, ratings_svc)
+        assert result.exit_code == 0, result.output
+        mock_understat.get_league_players.assert_awaited_once()
