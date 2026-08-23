@@ -2,7 +2,7 @@
 
 from datetime import datetime, timedelta, timezone
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -10,6 +10,44 @@ from fpl_cli.models.fixture import Fixture
 from fpl_cli.models.player import Player, PlayerPosition, PlayerStatus
 from fpl_cli.models.team import Team
 from fpl_cli.paths import user_cache_dir, user_config_dir, user_data_dir
+
+
+@pytest.fixture
+def stub_scoring_network_seams():
+    """Stub every fetch prepare_scoring_data can make past a patched client.
+
+    Tests patch an agent's client methods, but prepare_scoring_data reaches
+    further: include_understat scrapes understat.com, include_prior pulls the
+    historical datasets on a prior-cache miss, and include_match_data fetches
+    the Core-Insights CSVs — none of them through the patched client.
+    include_history stays on the client but calls get_player_detail, which
+    run tests don't patch. `fpl stats --value` also calls fetch_match_records
+    directly. This fixture is the single home for those patches (#53): test
+    modules opt in with a one-line autouse wrapper, so closing a new seam in
+    prepare_scoring_data happens here once instead of drifting per-file.
+    """
+    from fpl_cli.api.fpl import FPLClient
+
+    with (
+        patch(
+            "fpl_cli.services.player_scoring.build_understat_by_player_id",
+            new_callable=AsyncMock,
+            return_value={},
+        ),
+        patch(
+            "fpl_cli.services.player_scoring.fetch_match_records",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        patch("fpl_cli.services.player_prior.load_cached_priors", return_value={}),
+        patch.object(
+            FPLClient,
+            "get_player_detail",
+            new_callable=AsyncMock,
+            return_value={"history": []},
+        ),
+    ):
+        yield
 
 
 @pytest.fixture(autouse=True)

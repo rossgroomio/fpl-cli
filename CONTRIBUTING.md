@@ -21,8 +21,8 @@ The test suite is hermetic: `pytest-socket` blocks all network access
 (`--disable-socket --allow-unix-socket` in `addopts`), so a test that
 reaches a live endpoint fails immediately rather than passing against
 whatever the endpoint returned that day. Stub the network seam instead —
-the autouse fixtures in `tests/test_agents_analysis.py` and
-`tests/test_cli_player.py` show the pattern. A test that genuinely needs
+the shared `stub_scoring_network_seams` fixture in `tests/conftest.py`
+and the autouse fixtures in `tests/test_cli_player.py` show the pattern. A test that genuinely needs
 a socket opts out with `@pytest.mark.enable_socket`.
 
 A separate `PR Title` check (`.github/workflows/pr-title.yml`) fails the

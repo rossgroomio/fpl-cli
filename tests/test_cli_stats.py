@@ -14,21 +14,10 @@ from tests.conftest import make_player, make_team
 
 
 @pytest.fixture(autouse=True)
-def _no_match_records_fetch():
-    """Module-wide stub for the Core-Insights fetch on the --value path.
-
-    `fpl stats --value` calls fetch_match_records directly — a real network
-    fetch even when FPLClient and UnderstatClient are patched. It degrades
-    to None when unreachable, so a test that forgets to patch it stays green
-    while depending on the network. stats.py imports it inside the command
-    body, so patching the source module covers every invocation.
+def _no_match_records_fetch(stub_scoring_network_seams):
+    """Keep the direct fetch_match_records call on the --value path off the
+    network. The patch list lives in conftest.stub_scoring_network_seams.
     """
-    with patch(
-        "fpl_cli.services.player_scoring.fetch_match_records",
-        new_callable=AsyncMock,
-        return_value=None,
-    ):
-        yield
 
 
 def _make_client(players=None, teams=None):
