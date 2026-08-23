@@ -14,7 +14,14 @@ from rich.panel import Panel
 
 from fpl_cli.api.providers import ProviderError
 from fpl_cli.cli._context import Format, console, error_console, get_format, load_settings, resolve_output_dir
+from fpl_cli.cli._json import emit_json, emit_json_error, json_output_mode, output_format_option
 from fpl_cli.cli._league_recap_types import LeagueRecapData
+from fpl_cli.services.league_history import GameweekCoverage
+from fpl_cli.services.league_history_notes import NotesPack, NotesPackEntry, NoteSurface
+
+# KTD8: the console stays a highlights view -- only the top few streaks by
+# excess-over-minimum, so a rare streak is not buried under common ones (R12).
+_CONSOLE_STREAK_LIMIT = 5
 
 logger = logging.getLogger(__name__)
 
@@ -31,11 +38,13 @@ logger = logging.getLogger(__name__)
                    "- one extra request per manager per gameweek")
 @click.option("--debug", is_flag=True, help="Save LLM prompts and responses to data/debug/")
 @click.option("--dry-run", is_flag=True, help="Build and save prompts to data/debug/ without calling LLMs")
+@output_format_option
 @click.pass_context
 def league_recap_command(
     ctx: click.Context,
     gameweek: int | None, is_draft: bool, save: bool, output: str | None,
     summarise: bool, backfill_detail: bool, debug: bool, dry_run: bool,
+    output_format: str,
 ) -> None:
     """Recap a completed gameweek for the whole league - awards, standings, and banter."""
     from fpl_cli.agents.orchestration.report import ReportAgent
@@ -71,15 +80,25 @@ def league_recap_command(
                 return
 
     async def _run() -> None:
-        from contextlib import AsyncExitStack
+        from contextlib import AsyncExitStack, nullcontext
 
         async with AsyncExitStack() as stack:
+            # The output format is a separate concept from the FPL classic/
+            # draft format resolved via `get_format(ctx)` above -- both
+            # coexist, as they already do in `status`. Entered first so
+            # every console/error_console print for the rest of the run
+            # (Rich resolves `sys.stdout` dynamically, not at Console
+            # construction time) lands on stderr, keeping stdout JSON-only.
+            stdout = stack.enter_context(json_output_mode()) if output_format == "json" else None
+
             client = await stack.enter_async_context(FPLClient())
             if synthesis_provider is not None:
                 await stack.enter_async_context(synthesis_provider)
             # Resolve gameweek
             gw_result = await _review_resolve_gw(client, gameweek)
             if gw_result is None:
+                if output_format == "json":
+                    emit_json_error("league-recap", "Could not resolve a gameweek to recap.", file=stdout)
                 return
             gw: int = gw_result["gw"]
 
@@ -204,17 +223,43 @@ def league_recap_command(
             # Deliberately before synthesis: rendering happens after the LLM
             # call, so capturing at render time would be too late for anything
             # the prompt reads. Never raises -- a store problem warns on stderr
-            # and the recap carries on (R4).
-            await capture_recap_history(
-                collected_data,
-                is_live_gw=is_live_gw,
-                # Classic's coarse tier: one call per manager for the whole
-                # season. Draft has no per-manager history endpoint at all.
-                history_client=None if is_draft else client,
-                finished_gameweeks=finished_gws,
-                replay_gameweek=_replay_gameweek,
-                backfill_detail=backfill_detail,
-            )
+            # and the recap carries on (R4). In JSON mode the same warnings
+            # reach the payload as codes (below), so the human-readable prose
+            # is suppressed here rather than printed twice -- but the
+            # first-capture notice has no such JSON-side counterpart of its
+            # own, so it's carried forward via `capture_result.first_capture_
+            # store_path` (computed inside `capture_recap_history`, from the
+            # same check that gates the notice) rather than silently lost
+            # along with the suppressed prose. R13's previous-position
+            # correction also happens inside the call below now, before the
+            # rows it returns are built -- not as a separate step here -- so
+            # both the persisted ledger row and the `--format json` payload
+            # see the corrected value too, not just `collected_data`.
+            with error_console.capture() if output_format == "json" else nullcontext():
+                capture_result = await capture_recap_history(
+                    collected_data,
+                    is_live_gw=is_live_gw,
+                    # Classic's coarse tier: one call per manager for the
+                    # whole season. Draft has no per-manager history endpoint.
+                    history_client=None if is_draft else client,
+                    finished_gameweeks=finished_gws,
+                    replay_gameweek=_replay_gameweek,
+                    backfill_detail=backfill_detail,
+                )
+            notes_pack = capture_result.notes_pack
+
+            # Report-surfaced history text, stashed as plain strings so the
+            # Jinja template needs no knowledge of NotesPack/NoteSurface.
+            # Absent entirely (rather than empty) when capture couldn't build
+            # a pack, so the template's `is defined` guards skip the section.
+            if notes_pack is not None:
+                collected_data["league_history_phase_text"] = notes_pack.season_phase_entry.text
+                collected_data["league_history_streak_lines"] = [
+                    entry.text for entry in notes_pack.entries if NoteSurface.REPORT in entry.surfaces
+                ]
+                collected_data["league_history_coverage_lines"] = [
+                    entry.text for entry in notes_pack.coverage_entries
+                ]
 
             # LLM summarisation (opt-in via --summarise or --dry-run)
             if summarise or dry_run:
@@ -225,6 +270,7 @@ def league_recap_command(
                         dry_run=dry_run, debug=debug,
                         is_bgw=is_bgw, is_dgw=is_dgw,
                         season_length=TOTAL_GAMEWEEKS,
+                        notes_pack=notes_pack,
                     )
                 except ProviderError as e:
                     error_console.print(f"[yellow]LLM summarisation failed: {e}[/yellow]")
@@ -233,7 +279,7 @@ def league_recap_command(
                     error_console.print("[yellow]LLM summarisation failed (unexpected error)[/yellow]")
 
             # Display key highlights to console
-            _render_console_highlights(collected_data)
+            _render_console_highlights(collected_data, notes_pack)
 
             # Generate report if saving
             if save or output:
@@ -247,10 +293,97 @@ def league_recap_command(
                 if result.data and result.data.get("report_path"):
                     console.print(f"\n[green]Report saved to {result.data['report_path']}[/green]")
 
+            if output_format == "json":
+                # From the in-memory rows this run built, not a re-read of
+                # the store: available whether or not the write succeeded,
+                # so a capture failure still produces manager data (KTD1's
+                # "one schema, three surfaces" -- the stored row shape is
+                # the payload shape, unchanged).
+                manager_payloads = [row.model_dump(mode="json") for row in capture_result.rows]
+                emit_json(
+                    "league-recap",
+                    manager_payloads,
+                    metadata={
+                        "fpl_format": collected_data["fpl_format"],
+                        "gameweek": gw,
+                        "coverage": _serialize_coverage(capture_result.coverage),
+                        "season_phase": notes_pack.phase if notes_pack is not None else None,
+                        "notes_pack": _serialize_notes_pack(notes_pack) if notes_pack is not None else None,
+                        "synthesis_summary": collected_data.get("synthesis_summary"),
+                        "warnings": capture_result.warnings,
+                        # Only set on this partition's very first capture --
+                        # the one moment a container-local data directory is
+                        # still cheap to notice (table mode prints this to
+                        # stderr instead; JSON mode's warning suppression
+                        # would otherwise drop it with no replacement).
+                        "first_capture_store_path": (
+                            str(capture_result.first_capture_store_path)
+                            if capture_result.first_capture_store_path else None
+                        ),
+                    },
+                    file=stdout,
+                )
+
     asyncio.run(_run())
 
 
-def _render_console_highlights(data: LeagueRecapData) -> None:
+def _serialize_coverage(coverage: list[GameweekCoverage]) -> list[dict[str, Any]]:
+    """Per-gameweek tier and status counts, JSON-shaped (R9, R16).
+
+    Enum members pass straight through rather than being `.value`-mapped
+    here: they're already `str` subclasses, and `emit_json`'s `_json_default`
+    (`fpl_cli/cli/_json.py`) already coerces any `Enum` -- as a value or a
+    dict key -- to its `.value` during `json.dumps`.
+    """
+    return [
+        {
+            "gameweek": c.gameweek,
+            "readable": c.readable,
+            "tier_counts": dict(c.tier_counts),
+            "unknown_count": c.unknown_count,
+            "unknown_manager_keys": c.unknown_manager_keys,
+        }
+        for c in coverage
+    ]
+
+
+def _serialize_notes_pack_entry(entry: NotesPackEntry) -> dict[str, Any]:
+    return {
+        "kind": entry.kind,
+        "text": entry.text,
+        "surfaces": sorted(entry.surfaces),
+        "tier": entry.tier,
+        "window": (
+            {"start_gameweek": entry.window.start_gameweek, "end_gameweek": entry.window.end_gameweek}
+            if entry.window is not None else None
+        ),
+        "manager_key": entry.manager_key,
+        "manager_name": entry.manager_name,
+        "condition_key": entry.condition_key,
+        "length": entry.length,
+        "held_count": entry.held_count,
+        "excess": entry.excess,
+    }
+
+
+def _serialize_notes_pack(pack: NotesPack) -> dict[str, Any]:
+    """The whole pack, JSON-shaped (KTD8: `--format json` emits every entry
+    regardless of which rendering surfaces it declares)."""
+    return {
+        "season": pack.season,
+        "fpl_format": pack.fpl_format,
+        "league_id": pack.league_id,
+        "gameweek": pack.gameweek,
+        "phase": pack.phase,
+        "league_start_gameweek": pack.league_start_gameweek,
+        "season_phase_entry": _serialize_notes_pack_entry(pack.season_phase_entry),
+        "entries": [_serialize_notes_pack_entry(entry) for entry in pack.entries],
+        "coverage_entries": [_serialize_notes_pack_entry(entry) for entry in pack.coverage_entries],
+        "entry_count": pack.entry_count,
+    }
+
+
+def _render_console_highlights(data: LeagueRecapData, notes_pack: NotesPack | None = None) -> None:
     """Print key recap highlights to console."""
     awards = data.get("awards", {})
     managers = data.get("managers", [])
@@ -304,6 +437,36 @@ def _render_console_highlights(data: LeagueRecapData) -> None:
             arrow = "[green]↑[/green]" if diff > 0 else "[red]↓[/red]"
             console.print(f"  {arrow} {m['manager_name']}: {prev} → {curr}")
 
+    # R10: a manager whose position or total could not be derived (e.g. a
+    # replayed draft gameweek with no earlier rows) is named as unavailable
+    # rather than silently dropped from the standings -- the same constants
+    # `_format_standings_block` uses for the report surface, so the two
+    # can't drift onto different wording.
+    from fpl_cli.agents.orchestration.report import POSITION_UNAVAILABLE, TOTAL_UNAVAILABLE
+
+    unavailable: list[str] = []
+    for m in managers:
+        missing = []
+        if m.get("overall_rank") is None:
+            missing.append(POSITION_UNAVAILABLE)
+        if m.get("total_points") is None:
+            missing.append(TOTAL_UNAVAILABLE)
+        if missing:
+            unavailable.append(f"  {m['manager_name']}: {', '.join(missing)}")
+    if unavailable:
+        console.print("\n[bold]Unavailable:[/bold]")
+        for line in unavailable:
+            console.print(f"[dim]{line}[/dim]")
+
+    # Streaks (R12, KTD8): only the leaders, so the console stays a
+    # highlights view -- the report carries the full report-surfaced set.
+    if notes_pack is not None:
+        console_entries = [e for e in notes_pack.entries if NoteSurface.CONSOLE in e.surfaces]
+        if console_entries:
+            console.print("\n[bold]Streaks:[/bold]")
+            for entry in console_entries[:_CONSOLE_STREAK_LIMIT]:
+                console.print(f"  {entry.text}")
+
 
 async def _recap_llm_summarise(
     collected_data: LeagueRecapData,
@@ -315,6 +478,7 @@ async def _recap_llm_summarise(
     is_bgw: bool = False,
     is_dgw: bool = False,
     season_length: int = 38,
+    notes_pack: NotesPack | None = None,
 ) -> None:
     """Run LLM summarisation for league recap. Mutates collected_data to add summaries."""
     from fpl_cli.prompts.league_recap import (
@@ -322,6 +486,7 @@ async def _recap_llm_summarise(
         format_recap_captains_context,
         format_recap_chips_context,
         format_recap_fines_context,
+        format_recap_league_history_context,
         format_recap_standings_context,
         get_recap_synthesis_prompt,
     )
@@ -337,6 +502,7 @@ async def _recap_llm_summarise(
     captains_text = format_recap_captains_context(collected_data)
     chips_text = format_recap_chips_context(collected_data)
     fines_text = format_recap_fines_context(collected_data)
+    league_history_text = format_recap_league_history_context(notes_pack)
 
     system_prompt, user_prompt = get_recap_synthesis_prompt(
         gw=gw,
@@ -347,6 +513,7 @@ async def _recap_llm_summarise(
         fines_text=fines_text,
         captains_text=captains_text,
         chips_text=chips_text,
+        league_history_text=league_history_text,
         is_bgw=is_bgw,
         is_dgw=is_dgw,
         season_length=season_length,

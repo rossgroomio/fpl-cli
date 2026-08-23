@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -12,6 +14,8 @@ import pytest
 from click.testing import CliRunner
 
 from fpl_cli.cli._league_recap_history import (
+    HISTORY_WARNING_BACKFILL_MANAGER_UNREACHABLE,
+    HISTORY_WARNING_BACKFILL_REPLAY_FAILED,
     HISTORY_WARNING_STANDINGS_TRUNCATED,
     HISTORY_WARNING_STORE_UNREADABLE,
     HISTORY_WARNING_TRANSFER_DETAIL_SHORT,
@@ -28,8 +32,18 @@ from fpl_cli.cli._league_recap_types import (
     RecapStandingsEntry,
     RecapTransfer,
 )
-from fpl_cli.models.league_history import CaptureStatus, FidelityTier
+from fpl_cli.models.league_history import CaptureStatus, FidelityTier, LedgerCaptaincy, LedgerTransaction
 from fpl_cli.services.league_history import LeagueHistoryStore
+from fpl_cli.services.league_history_notes import (
+    GameweekWindow,
+    NoteKind,
+    NotesPack,
+    NotesPackEntry,
+    NoteSurface,
+    SeasonPhase,
+    build_notes_pack,
+)
+from tests.conftest import make_history_row
 
 SEASON = "2026-27"
 CAPTURED_AT = datetime(2026, 8, 22, 12, 0, tzinfo=timezone.utc)
@@ -470,6 +484,45 @@ class TestCaptureRecapHistory:
         assert result.store_readable is False
         assert result.written == []
 
+    async def test_a_missing_league_id_leaves_previous_rank_at_its_derived_value(self):
+        """Finding #11's second fail-open degrade path: with no league id,
+        `capture_recap_history` returns before the store is ever constructed,
+        so the R13 correction never runs -- `previous_rank` must survive
+        untouched rather than raise or silently vanish."""
+        data = _recap_data(managers=[_manager(name="Alice", entry_id=1, previous_rank=99)])
+        del data["league_id"]
+
+        result = await capture_recap_history(data, season=SEASON)
+
+        assert result.store_readable is False
+        assert data["managers"][0]["previous_rank"] == 99
+
+    async def test_the_recorded_previous_position_correction_reaches_the_built_row(self):
+        """Finding #1: before this fix, `_apply_recorded_previous_positions`
+        ran after `capture_result.rows` was already built and persisted, so
+        the correction reached `collected_data` (console/report) but not the
+        ledger row or the `--format json` payload built from `rows`. It must
+        now reach both."""
+        store = _store()
+        store.append_rows(4, [make_history_row(
+            season=SEASON, fpl_format="classic", league_id=42, gameweek=4,
+            manager_key=1, manager_name="Alice", league_position=3,
+        )])
+        data = _recap_data(
+            gameweek=5,
+            managers=[_manager(name="Alice", entry_id=1, previous_rank=99)],
+        )
+
+        result = await capture_recap_history(data, season=SEASON)
+
+        # Reached the row this run built and returned...
+        assert result.rows[0].previous_league_position == 3
+        # ...and the row actually persisted to the ledger.
+        persisted = store.resolved_gameweek(5)[1]
+        assert persisted.previous_league_position == 3
+        # `collected_data` still gets it too, for console/report.
+        assert data["managers"][0]["previous_rank"] == 3
+
 
 # ---------------------------------------------------------------------------
 # U6: CLI wiring
@@ -488,8 +541,10 @@ def _fpl_client() -> MagicMock:
     return client
 
 
-def _invoke_recap(collected: LeagueRecapData, args: list[str] | None = None):
-    client = _fpl_client()
+def _invoke_recap(
+    collected: LeagueRecapData, args: list[str] | None = None, *, client: MagicMock | None = None,
+):
+    client = client or _fpl_client()
     with (
         patch("fpl_cli.cli.league_recap.load_settings", return_value={"fpl": {"classic_league_id": 42}}),
         patch("fpl_cli.api.fpl.FPLClient", return_value=client),
@@ -906,6 +961,81 @@ class TestDetailedBackfill:
 
         assert _store("draft").resolved_gameweek(2)[11].capture_status is CaptureStatus.OK
 
+    async def test_a_failed_replay_reaches_capture_result_warnings(self):
+        """Finding #10: `_detailed_backfill`'s replay-failure diagnostic used
+        to go straight to `error_console.print()`, bypassing `_warn()` -- so
+        it never reached `capture_result.warnings`, and `--format json`
+        mode's warning-prose suppression (`error_console.capture()` with no
+        `as` binding) dropped it with no replacement. It must now go through
+        `_warn()` like every other diagnostic in this module."""
+        data = _recap_data(
+            gameweek=3,
+            managers=[_manager(name="Alice", entry_id=1)],
+            cohort=_cohort((1, "Alice", 1, 60, 300)),
+        )
+
+        result = await capture_recap_history(
+            data, season=SEASON, finished_gameweeks=range(1, 4),
+            replay_gameweek=self._replay([], {"now": 0, "peak": 0}, fail={2}),
+            backfill_detail=True,
+        )
+
+        matching = [w for w in result.warnings if w["code"] == HISTORY_WARNING_BACKFILL_REPLAY_FAILED]
+        assert len(matching) == 1
+        assert "GW2" in matching[0]["message"]
+        assert "boom" in matching[0]["message"]
+
+
+class TestBackfillCountersInvalidation:
+    async def test_a_coarse_repair_of_an_earlier_unknown_gameweek_is_reflected_in_the_next_counters(
+        self,
+    ):
+        """The counters cache advances through GW1 while that manager's row is
+        still unknown (`weeks_on_top` holds, per R19). GW1 is then repaired --
+        the coarse tier's automatic, `--backfill-detail`-free part of
+        `_backfill` -- in the very same run that also captures GW2, which is
+        exactly `stamp + 1`. Without `invalidate_if_repaired` wired through
+        `_backfill`'s returned gameweeks, `compute_counters_through`'s fast
+        path would fold GW2 onto the run state cached back when GW1 was still
+        unknown -- `weeks_on_top` length=1, start_gameweek=2 -- instead of
+        recognising the run actually started at GW1."""
+        from fpl_cli.models.league_history import LeagueHistoryCountersProjection
+        from fpl_cli.services.league_history_counters import (
+            counters_file,
+            manager_condition_views,
+            rebuild_counters_through,
+        )
+
+        gw1 = _recap_data(gameweek=1, managers=[], cohort=_cohort((1, "Alice", 1, 60, 300)))
+        await capture_recap_history(gw1, season=SEASON)
+        assert _store().resolved_gameweek(1)[1].capture_status is CaptureStatus.UNKNOWN
+
+        gw2 = _recap_data(
+            gameweek=2,
+            managers=[_manager(name="Alice", entry_id=1, overall_rank=1, gw_rank=1)],
+            cohort=_cohort((1, "Alice", 1, 60, 600)),
+        )
+        client = _HistoryClient({1: [_history_row(1, 60, 300, overall_rank=1)]})
+        await capture_recap_history(
+            gw2, season=SEASON, history_client=client, finished_gameweeks=[1, 2],
+        )
+
+        # The repair really happened: GW1's line count grew (append-only; the
+        # unknown line is kept, not replaced) and its winner is now coarse OK.
+        assert len(_store().load_gameweek(1)) == 2
+        resolved_gw1 = _store().resolved_gameweek(1)
+        assert resolved_gw1[1].capture_status is CaptureStatus.OK
+        assert resolved_gw1[1].tier is FidelityTier.COARSE
+
+        cached = LeagueHistoryCountersProjection.model_validate_json(
+            counters_file(SEASON, "classic", 42).read_text(encoding="utf-8"),
+        )
+        expected = rebuild_counters_through(_store(), 2)
+        assert cached.runs == expected.runs
+
+        view = manager_condition_views(cached, 1)["weeks_on_top"]
+        assert (view.length, view.start_gameweek) == (2, 1)
+
 
 class TestCoverageReport:
     async def test_a_coarse_gap_names_the_remedy_and_what_it_holds_back(self, capsys):
@@ -1161,3 +1291,647 @@ class TestFormatGameweeks:
         from fpl_cli.cli._league_recap_history import _format_gameweeks
 
         assert _format_gameweeks([3, 1, 2]) == "GW1-3"
+
+
+# ---------------------------------------------------------------------------
+# U10: console and report rendering
+# ---------------------------------------------------------------------------
+
+
+def _stdout(capsys: pytest.CaptureFixture[str]) -> str:
+    """Captured stdout with rich's soft wrapping undone (see `_stderr`)."""
+    return capsys.readouterr().out.replace("\n", "")
+
+
+def _streak_entry(
+    text: str = "Alice: Weeks on top of 3, 3 in a row (GW1-GW3).",
+    *,
+    surfaces: frozenset[NoteSurface] = frozenset({NoteSurface.CONSOLE, NoteSurface.REPORT, NoteSurface.PROMPT}),
+    excess: int = 1,
+    manager_name: str = "Alice",
+    condition_key: str = "weeks_on_top",
+) -> NotesPackEntry:
+    return NotesPackEntry(
+        kind=NoteKind.STREAK, text=text, surfaces=surfaces, excess=excess,
+        manager_name=manager_name, condition_key=condition_key,
+        window=GameweekWindow(start_gameweek=1, end_gameweek=3), length=3,
+    )
+
+
+def _notes_pack(
+    entries: list[NotesPackEntry] | None = None,
+    coverage_entries: list[NotesPackEntry] | None = None,
+    *,
+    phase: SeasonPhase = SeasonPhase.MIDPOINT,
+    phase_text: str = "GW20 is the season midpoint.",
+    gameweek: int = 20,
+) -> NotesPack:
+    return NotesPack(
+        season=SEASON, fpl_format="classic", league_id=42, gameweek=gameweek, phase=phase,
+        league_start_gameweek=1,
+        season_phase_entry=NotesPackEntry(
+            kind=NoteKind.SEASON_PHASE, text=phase_text, surfaces=frozenset({NoteSurface.REPORT, NoteSurface.PROMPT}),
+        ),
+        entries=entries or [],
+        coverage_entries=coverage_entries if coverage_entries is not None else [
+            NotesPackEntry(
+                kind=NoteKind.COVERAGE, text="Recorded history is complete from its start (GW1) through GW20.",
+                surfaces=frozenset({NoteSurface.REPORT, NoteSurface.PROMPT}),
+            ),
+        ],
+    )
+
+
+class TestConsoleStreaks:
+    def test_only_the_capped_leaders_render_on_console(self, capsys: pytest.CaptureFixture[str]):
+        from fpl_cli.cli.league_recap import _render_console_highlights
+
+        # Pre-sorted descending by excess, matching the real invariant
+        # `_streak_entries` (U9) already produces -- the 5 leaders are
+        # Manager5..Manager1, and Manager0 (the lowest excess) is capped.
+        entries = [
+            _streak_entry(text=f"Manager{i}: streak {i}", excess=i, manager_name=f"Manager{i}")
+            for i in (5, 4, 3, 2, 1, 0)
+        ]
+        _render_console_highlights(
+            _recap_data(managers=[_manager(total_points=300)]), _notes_pack(entries=entries),
+        )
+
+        out = _stdout(capsys)
+        assert "Manager5: streak 5" in out
+        assert "Manager1: streak 1" in out
+        assert "Manager0: streak 0" not in out
+
+    def test_an_empty_pack_renders_no_streaks_heading(self, capsys: pytest.CaptureFixture[str]):
+        from fpl_cli.cli.league_recap import _render_console_highlights
+
+        _render_console_highlights(_recap_data(managers=[_manager()]), _notes_pack(entries=[]))
+
+        assert "Streaks:" not in _stdout(capsys)
+
+    def test_no_pack_at_all_renders_no_streaks_heading(self, capsys: pytest.CaptureFixture[str]):
+        from fpl_cli.cli.league_recap import _render_console_highlights
+
+        _render_console_highlights(_recap_data(managers=[_manager()]), None)
+
+        assert "Streaks:" not in _stdout(capsys)
+
+    def test_a_below_minimum_entry_with_no_surfaces_does_not_render(self, capsys: pytest.CaptureFixture[str]):
+        from fpl_cli.cli.league_recap import _render_console_highlights
+
+        entry = _streak_entry(text="Alice: single blank", surfaces=frozenset())
+        _render_console_highlights(_recap_data(managers=[_manager()]), _notes_pack(entries=[entry]))
+
+        assert "single blank" not in _stdout(capsys)
+
+
+class TestConsoleUnavailable:
+    def test_ae8_a_manager_with_no_derivable_total_is_named_unavailable(self, capsys: pytest.CaptureFixture[str]):
+        from fpl_cli.cli.league_recap import _render_console_highlights
+
+        data = _recap_data(managers=[_manager(name="Alice", total_points=None, overall_rank=None)])
+        _render_console_highlights(data, None)
+
+        out = _stdout(capsys)
+        assert "Alice" in out
+        assert "position unavailable" in out
+        assert "total unavailable" in out
+
+    def test_two_managers_each_missing_a_different_field_are_both_named(self, capsys: pytest.CaptureFixture[str]):
+        data = _recap_data(managers=[
+            _manager(name="Alice", entry_id=1, total_points=None, overall_rank=1, previous_rank=1),
+            _manager(name="Bob", entry_id=2, total_points=200, overall_rank=None),
+        ])
+        from fpl_cli.cli.league_recap import _render_console_highlights
+
+        _render_console_highlights(data, None)
+
+        out = _stdout(capsys)
+        assert "Alice: total unavailable" in out
+        assert "Bob: position unavailable" in out
+
+    def test_a_fully_resolved_manager_is_not_listed_as_unavailable(self, capsys: pytest.CaptureFixture[str]):
+        from fpl_cli.cli.league_recap import _render_console_highlights
+
+        _render_console_highlights(_recap_data(managers=[_manager(total_points=300)]), None)
+
+        assert "Unavailable:" not in _stdout(capsys)
+
+
+class TestApplyRecordedPreviousPositions:
+    """`_apply_recorded_previous_positions` now lives in `_league_recap_history`
+    and takes a `LeagueHistoryStore` instance directly -- it runs inside
+    `capture_recap_history`, on the same store that function already
+    constructs, rather than as a CLI-layer post-hoc step with its own store
+    (finding #1/#2/#14/#18's coordinated fix). See `TestCaptureRecapHistory`
+    for coverage that the correction reaches `capture_result.rows`, not just
+    `data` -- the exact gap finding #1 identified."""
+
+    def test_gw1_is_a_no_op(self):
+        from fpl_cli.cli._league_recap_history import _apply_recorded_previous_positions
+
+        data = _recap_data(managers=[_manager(name="Alice", previous_rank=99)])
+        _apply_recorded_previous_positions(data, _store(), 1)
+
+        assert data["managers"][0]["previous_rank"] == 99
+
+    def test_a_recorded_prior_row_overrides_the_derived_previous_rank(self):
+        from fpl_cli.cli._league_recap_history import _apply_recorded_previous_positions
+
+        store = _store()
+        store.append_rows(4, [make_history_row(
+            season=SEASON, fpl_format="classic", league_id=42, gameweek=4,
+            manager_key=1, manager_name="Alice", league_position=3,
+        )])
+        data = _recap_data(managers=[_manager(name="Alice", entry_id=1, previous_rank=99)])
+
+        _apply_recorded_previous_positions(data, store, 5)
+
+        assert data["managers"][0]["previous_rank"] == 3
+
+    def test_no_prior_row_falls_back_unchanged(self):
+        from fpl_cli.cli._league_recap_history import _apply_recorded_previous_positions
+
+        data = _recap_data(managers=[_manager(name="Alice", entry_id=1, previous_rank=99)])
+        _apply_recorded_previous_positions(data, _store(), 5)
+
+        assert data["managers"][0]["previous_rank"] == 99
+
+    def test_a_manager_absent_from_the_prior_row_falls_back_unchanged(self):
+        from fpl_cli.cli._league_recap_history import _apply_recorded_previous_positions
+
+        store = _store()
+        store.append_rows(4, [make_history_row(
+            season=SEASON, fpl_format="classic", league_id=42, gameweek=4,
+            manager_key=1, manager_name="Alice", league_position=3,
+        )])
+        data = _recap_data(managers=[
+            _manager(name="Alice", entry_id=1, previous_rank=99),
+            _manager(name="Bob", entry_id=2, previous_rank=88),
+        ])
+
+        _apply_recorded_previous_positions(data, store, 5)
+
+        assert data["managers"][0]["previous_rank"] == 3
+        assert data["managers"][1]["previous_rank"] == 88
+
+    def test_draft_keys_on_league_entry_id_not_entry_id(self):
+        from fpl_cli.cli._league_recap_history import _apply_recorded_previous_positions
+
+        store = LeagueHistoryStore(SEASON, "draft", 42)  # type: ignore[arg-type]
+        store.append_rows(4, [make_history_row(
+            season=SEASON, fpl_format="draft", league_id=42, gameweek=4,
+            manager_key=10, manager_name="Alice", league_position=2,
+        )])
+        data = _recap_data(
+            managers=[_manager(name="Alice", entry_id=1, league_entry_id=10, previous_rank=99)],
+            fpl_format="draft",
+        )
+
+        _apply_recorded_previous_positions(data, store, 5)
+
+        assert data["managers"][0]["previous_rank"] == 2
+
+    def test_an_unreadable_prior_gameweek_falls_back_unchanged(self):
+        """Finding #11: the fail-open degrade path for a corrupt/unreadable
+        GW-1 ledger file -- must not raise, and `previous_rank` stays at its
+        derived value rather than being overridden from a file that can't
+        be trusted."""
+        from fpl_cli.cli._league_recap_history import _apply_recorded_previous_positions
+
+        store = _store()
+        path = store.gameweek_file(4)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("not json{{{\n", encoding="utf-8")
+        data = _recap_data(managers=[_manager(name="Alice", entry_id=1, previous_rank=99)])
+
+        _apply_recorded_previous_positions(data, store, 5)
+
+        assert data["managers"][0]["previous_rank"] == 99
+
+
+class TestLeagueHistoryReportSection:
+    async def test_streaks_and_coverage_render_under_one_heading(self, tmp_path: Path):
+        from fpl_cli.agents.orchestration.report import ReportAgent
+
+        agent = ReportAgent(config={"output_dir": str(tmp_path)})
+        data = dict(_recap_data(managers=[_manager(name="Alice", overall_rank=1, previous_rank=1)]))
+        data["league_history_phase_text"] = "GW20 is the season midpoint."
+        data["league_history_streak_lines"] = ["Alice: Weeks on top of 3, 3 in a row (GW1-GW3)."]
+        data["league_history_coverage_lines"] = ["Recorded history is complete from its start (GW1) through GW20."]
+
+        result = await agent.run(context={"report_type": "league-recap", "gameweek": 20, "data": data})
+
+        content = Path(result.data["report_path"]).read_text(encoding="utf-8")
+        assert "# League History" in content
+        assert "## Streaks" in content
+        assert "Alice: Weeks on top of 3, 3 in a row (GW1-GW3)." in content
+        assert "Recorded history is complete from its start (GW1) through GW20." in content
+        assert "GW20 is the season midpoint." in content
+
+    async def test_no_streaks_heading_when_the_pack_has_no_open_runs(self, tmp_path: Path):
+        from fpl_cli.agents.orchestration.report import ReportAgent
+
+        agent = ReportAgent(config={"output_dir": str(tmp_path)})
+        data = dict(_recap_data(managers=[_manager(name="Alice", overall_rank=1, previous_rank=1)]))
+        data["league_history_phase_text"] = "GW1 is the season opener."
+        data["league_history_streak_lines"] = []
+        data["league_history_coverage_lines"] = ["No league history has been recorded before GW1."]
+
+        result = await agent.run(context={"report_type": "league-recap", "gameweek": 1, "data": data})
+
+        content = Path(result.data["report_path"]).read_text(encoding="utf-8")
+        assert "## Streaks" not in content
+        assert "# League History" in content  # coverage still has something to say
+        assert "No league history has been recorded before GW1." in content
+
+    async def test_no_league_history_section_at_all_without_a_pack(self, tmp_path: Path):
+        from fpl_cli.agents.orchestration.report import ReportAgent
+
+        agent = ReportAgent(config={"output_dir": str(tmp_path)})
+        data = dict(_recap_data(managers=[_manager(name="Alice", overall_rank=1, previous_rank=1)]))
+
+        result = await agent.run(context={"report_type": "league-recap", "gameweek": 1, "data": data})
+
+        content = Path(result.data["report_path"]).read_text(encoding="utf-8")
+        assert "# League History" not in content
+
+    async def test_ae6_the_finale_wording_renders(self, tmp_path: Path):
+        from fpl_cli.agents.orchestration.report import ReportAgent
+
+        agent = ReportAgent(config={"output_dir": str(tmp_path)})
+        data = dict(_recap_data(managers=[_manager(name="Alice", overall_rank=1, previous_rank=1)]))
+        data["league_history_phase_text"] = "GW38 is the season finale."
+
+        result = await agent.run(context={"report_type": "league-recap", "gameweek": 38, "data": data})
+
+        content = Path(result.data["report_path"]).read_text(encoding="utf-8")
+        assert "GW38 is the season finale." in content
+
+
+class TestFormatGatingInPack:
+    def test_draft_pack_has_no_captain_blank_entry_classic_pack_has_no_waiver_entry(self):
+        """Delegated entirely to U8/U9's format filtering -- confirmed here at
+        the pack-consumption boundary so a regression there is caught by this
+        unit's own tests too."""
+        store_classic = _store(fpl_format="classic", league_id=1)
+        store_draft = LeagueHistoryStore(SEASON, "draft", 2)  # type: ignore[arg-type]
+        for gw in (1, 2):
+            store_classic.append_rows(gw, [make_history_row(
+                season=SEASON, fpl_format="classic", league_id=1, gameweek=gw,
+                manager_key=1, manager_name="Alice",
+                captain=LedgerCaptaincy(name="Cap", points=1, played=True, had_fixture=True),
+            )])
+            store_draft.append_rows(gw, [make_history_row(
+                season=SEASON, fpl_format="draft", league_id=2, gameweek=gw,
+                manager_key=1, manager_name="Bob",
+                transactions=[LedgerTransaction(
+                    player_in="X", player_in_team="AAA", player_in_points=0,
+                    player_out="Y", player_out_team="BBB", player_out_points=0, net=5,
+                )],
+            )])
+
+        classic_pack = build_notes_pack(store_classic, 2)
+        draft_pack = build_notes_pack(store_draft, 2)
+
+        assert not any(e.condition_key == "waiver_win_run" for e in classic_pack.entries)
+        assert not any(e.condition_key == "captain_blank_run" for e in draft_pack.entries)
+
+
+class TestEndToEndStreakThroughTheFullCommand:
+    """U10's own verification criterion: a recap against a seeded
+    multi-gameweek partition shows a streak line a single-gameweek run
+    could not have produced, through the real CLI path -- store seeding,
+    live capture, counters, notes pack, and console rendering all wired
+    together, not just each piece in isolation."""
+
+    def test_a_seeded_run_of_top_table_finishes_surfaces_a_streak_on_console(self):
+        store = _store(fpl_format="classic", league_id=42)
+        for gw in (1, 2, 3, 4):
+            store.append_rows(gw, [make_history_row(
+                season=SEASON, fpl_format="classic", league_id=42, gameweek=gw,
+                manager_key=1, manager_name="Alice", league_position=1, gw_rank=1,
+            )])
+
+        result = _invoke_recap(_recap_data(
+            gameweek=5,
+            managers=[_manager(name="Alice", entry_id=1, overall_rank=1, previous_rank=1, total_points=300)],
+            cohort=_cohort((1, "Alice", 1, 60, 300)),
+        ))
+
+        assert result.exit_code == 0, result.output
+        assert "Streaks:" in result.output
+        assert "Alice" in result.output
+        assert "Weeks on top" in result.output or "weeks_on_top" in result.output.lower()
+
+    def test_a_single_gameweek_run_shows_no_streak_yet(self):
+        """The same manager's first-ever captured gameweek: nothing to
+        stream yet, since `weeks_on_top` needs a minimum run of 2."""
+        result = _invoke_recap(_recap_data(
+            gameweek=1,
+            managers=[_manager(name="Alice", entry_id=1, overall_rank=1, previous_rank=None, total_points=60)],
+            cohort=_cohort((1, "Alice", 1, 60, 60)),
+        ))
+
+        assert result.exit_code == 0, result.output
+        assert "Streaks:" not in result.output
+
+
+# ---------------------------------------------------------------------------
+# U11: league-recap --format json
+# ---------------------------------------------------------------------------
+
+
+def _invoke_recap_unresolved_gameweek(args: list[str] | None = None):
+    """Like `_invoke_recap`, but the gameweek cannot be resolved at all --
+    no collector is ever reached."""
+    client = _fpl_client()
+    with (
+        patch("fpl_cli.cli.league_recap.load_settings", return_value={"fpl": {"classic_league_id": 42}}),
+        patch("fpl_cli.api.fpl.FPLClient", return_value=client),
+        patch("fpl_cli.cli.review._review_resolve_gw", AsyncMock(return_value=None)),
+    ):
+        from fpl_cli.cli.league_recap import league_recap_command
+
+        return CliRunner().invoke(league_recap_command, args or [])
+
+
+class TestLeagueRecapJsonEnvelope:
+    def test_the_envelope_carries_command_metadata_and_data(self):
+        result = _invoke_recap(_recap_data(), ["--format", "json"])
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        assert payload["command"] == "league-recap"
+        assert isinstance(payload["metadata"], dict)
+        assert isinstance(payload["data"], list)
+
+    def test_no_rich_output_is_mixed_into_stdout(self):
+        result = _invoke_recap(_recap_data(), ["--format", "json"])
+
+        assert result.exit_code == 0, result.output
+        # A clean parse is itself the proof: any stray Rich markup or panel
+        # text ahead of/after the envelope would break json.loads outright.
+        json.loads(result.stdout)
+        assert "Gameweek 5 League Recap" not in result.stdout
+        # The header was genuinely printed (redirected to stderr, not
+        # skipped outright) -- proof this is real suppression, not an
+        # accidentally-silent run with nothing to leak in the first place.
+        assert "Gameweek 5 League Recap" in result.stderr
+
+    def test_a_per_manager_payload_matches_the_stored_row_field_names(self):
+        result = _invoke_recap(
+            _recap_data(managers=[_manager(name="Alice", entry_id=1)]), ["--format", "json"],
+        )
+
+        payload = json.loads(result.stdout)
+        assert len(payload["data"]) == 1
+        row = payload["data"][0]
+        assert row["manager_name"] == "Alice"
+        assert row["season"] == SEASON
+        assert row["fpl_format"] == "classic"
+        assert row["gameweek"] == 5
+        assert row["capture_status"] == "ok"
+
+    def test_the_recorded_previous_position_correction_reaches_the_payload(self):
+        """Finding #1, through the full command: the ledger's recorded GW4
+        position -- not the raw, uncorrected `previous_rank` the collected
+        data started with -- is what the `--format json` payload shows,
+        because the correction now runs inside `capture_recap_history`
+        before `capture_result.rows` (the payload's source) is built."""
+        store = _store(fpl_format="classic", league_id=42)
+        store.append_rows(4, [make_history_row(
+            season=SEASON, fpl_format="classic", league_id=42, gameweek=4,
+            manager_key=1, manager_name="Alice", league_position=3,
+        )])
+
+        result = _invoke_recap(
+            _recap_data(
+                gameweek=5,
+                managers=[_manager(name="Alice", entry_id=1, previous_rank=99)],
+            ),
+            ["--format", "json"],
+        )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        assert payload["data"][0]["previous_league_position"] == 3
+
+    def test_the_warnings_key_is_present_and_empty_on_a_clean_run(self):
+        result = _invoke_recap(_recap_data(), ["--format", "json"])
+
+        payload = json.loads(result.stdout)
+        assert payload["metadata"]["warnings"] == []
+
+    def test_the_first_capture_notice_survives_warning_suppression_in_json_mode(self):
+        """The first-capture-of-a-partition stderr notice is not a `_warn()`
+        code, so JSON mode's warning-prose suppression must not swallow it
+        with no replacement -- it has to reach the payload some other way."""
+        assert not _store().partition_exists()
+
+        result = _invoke_recap(_recap_data(), ["--format", "json"])
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        path = payload["metadata"]["first_capture_store_path"]
+        assert path is not None
+        assert path == str(_store().partition_dir())
+
+    def test_a_second_run_against_an_existing_partition_has_no_first_capture_notice(self):
+        result = _invoke_recap(_recap_data(), ["--format", "json"])
+        assert result.exit_code == 0, result.output
+
+        second = _invoke_recap(_recap_data(gameweek=6), ["--format", "json"])
+
+        payload = json.loads(second.stdout)
+        assert payload["metadata"]["first_capture_store_path"] is None
+
+    def test_a_corrupted_store_produces_a_warning_code_full_data_and_exit_zero(self):
+        path = _store().gameweek_file(5)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("not json{{{\n", encoding="utf-8")
+
+        result = _invoke_recap(
+            _recap_data(managers=[_manager(name="Alice", entry_id=1)]), ["--format", "json"],
+        )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        assert len(payload["data"]) == 1
+        codes = [w["code"] for w in payload["metadata"]["warnings"]]
+        assert HISTORY_WARNING_STORE_UNREADABLE in codes
+
+    def test_a_backfill_manager_fetch_failure_reaches_metadata_warnings(self):
+        """Finding #10: `_coarse_backfill`'s manager-history-fetch-failure
+        diagnostic used to go straight to `error_console.print()`, bypassing
+        `_warn()` -- so under `--format json`, where the whole capture call
+        is wrapped in `error_console.capture()` with no `as` binding, that
+        detail was silently discarded with no replacement in the payload.
+        It must now reach `metadata.warnings` like every other diagnostic."""
+        client = _fpl_client()
+        client.get_gameweeks = AsyncMock(return_value=[
+            {"id": 4, "finished": True}, {"id": 5, "finished": True},
+        ])
+        client.get_manager_history = AsyncMock(side_effect=RuntimeError("boom"))
+
+        result = _invoke_recap(
+            _recap_data(managers=[_manager(name="Alice", entry_id=1)]),
+            ["--format", "json"],
+            client=client,
+        )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        matching = [
+            w for w in payload["metadata"]["warnings"]
+            if w["code"] == HISTORY_WARNING_BACKFILL_MANAGER_UNREACHABLE
+        ]
+        assert len(matching) == 1
+        assert "Alice" in matching[0]["message"]
+
+    def test_metadata_coverage_reflects_the_tiers_actually_present(self):
+        result = _invoke_recap(
+            _recap_data(managers=[_manager(name="Alice", entry_id=1)]), ["--format", "json"],
+        )
+
+        payload = json.loads(result.stdout)
+        coverage = payload["metadata"]["coverage"]
+        assert any(c["gameweek"] == 5 and c["tier_counts"].get("detailed") == 1 for c in coverage)
+
+    def test_multiple_managers_and_gameweeks_all_serialize_into_the_payload(self):
+        """Exercises the serialization loops (`_serialize_coverage`,
+        `_serialize_notes_pack`, the per-manager payload list) over more
+        than one item each, not just the single-manager/single-gameweek
+        happy path the other tests use."""
+        store = _store(fpl_format="classic", league_id=42)
+        for gw in (1, 2, 3, 4):
+            store.append_rows(gw, [
+                make_history_row(
+                    season=SEASON, fpl_format="classic", league_id=42, gameweek=gw,
+                    manager_key=1, manager_name="Alice", league_position=1, gw_rank=1,
+                ),
+                make_history_row(
+                    season=SEASON, fpl_format="classic", league_id=42, gameweek=gw,
+                    manager_key=2, manager_name="Bob", league_position=2, gw_rank=2,
+                ),
+            ])
+
+        result = _invoke_recap(_recap_data(
+            gameweek=5,
+            managers=[
+                _manager(name="Alice", entry_id=1, overall_rank=1, previous_rank=1, total_points=300),
+                _manager(name="Bob", entry_id=2, overall_rank=2, previous_rank=2, total_points=280),
+            ],
+            cohort=_cohort((1, "Alice", 1, 60, 300), (2, "Bob", 2, 50, 280)),
+        ), ["--format", "json"])
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+
+        manager_names = {row["manager_name"] for row in payload["data"]}
+        assert manager_names == {"Alice", "Bob"}
+
+        coverage_gameweeks = {c["gameweek"] for c in payload["metadata"]["coverage"]}
+        assert coverage_gameweeks == {1, 2, 3, 4, 5}
+
+        pack = payload["metadata"]["notes_pack"]
+        streak_managers = {entry["manager_name"] for entry in pack["entries"]}
+        assert "Alice" in streak_managers
+
+    def test_a_partial_coverage_run_reports_tiers_and_unknowns_per_gameweek(self):
+        """U11's own Definition of Done row: the payload parses cleanly on a
+        partial-coverage run too, with manager data still present -- a mix
+        of coarse and unknown-status gameweeks alongside detailed ones."""
+        store = _store(fpl_format="classic", league_id=42)
+        store.append_rows(1, [make_history_row(
+            season=SEASON, fpl_format="classic", league_id=42, gameweek=1,
+            manager_key=1, manager_name="Alice", tier="coarse",
+        )])
+        store.append_rows(2, [make_history_row(
+            season=SEASON, fpl_format="classic", league_id=42, gameweek=2,
+            manager_key=1, manager_name="Alice", capture_status="unknown",
+        )])
+
+        result = _invoke_recap(
+            _recap_data(managers=[_manager(name="Alice", entry_id=1)]), ["--format", "json"],
+        )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        assert {row["manager_name"] for row in payload["data"]} == {"Alice"}
+
+        by_gw = {c["gameweek"]: c for c in payload["metadata"]["coverage"]}
+        assert by_gw[1]["tier_counts"] == {"coarse": 1}
+        assert by_gw[2]["unknown_count"] == 1
+        assert by_gw[5]["tier_counts"] == {"detailed": 1}
+
+    def test_dry_run_json_includes_the_editorial(self):
+        result = _invoke_recap(_recap_data(), ["--format", "json", "--dry-run"])
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        assert payload["metadata"]["synthesis_summary"]
+
+    def test_save_writes_the_report_and_still_emits_the_payload(self, tmp_path: Path):
+        result = _invoke_recap(
+            _recap_data(), ["--format", "json", "--save", "--output", str(tmp_path)],
+        )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        assert isinstance(payload["data"], list)
+        assert list(tmp_path.glob("*.md"))
+
+    def test_an_unresolved_gameweek_emits_the_json_error_path_and_exits_one(self):
+        result = _invoke_recap_unresolved_gameweek(["--format", "json"])
+
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout)
+        assert payload["command"] == "league-recap"
+        assert "error" in payload
+
+    def test_an_unresolved_gameweek_in_table_mode_exits_zero(self):
+        """The deliberate divergence R9/R10 name: `emit_json_error` is the
+        shared JSON contract (always exit 1), but the table path keeps its
+        own softer exit-0 message-and-return behaviour."""
+        result = _invoke_recap_unresolved_gameweek()
+
+        assert result.exit_code == 0
+
+
+# ---------------------------------------------------------------------------
+# U12: League History prompt section, through the full command
+# ---------------------------------------------------------------------------
+
+
+class TestEndToEndPromptThroughTheFullCommand:
+    """U12's own verification criterion: a dry run against a seeded
+    multi-gameweek partition writes a prompt containing the League History
+    section, its rules, and the season-phase instruction."""
+
+    def test_a_dry_run_writes_a_prompt_with_league_history(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.chdir(tmp_path)  # debug prompts land in ./data/debug (cwd-relative, pre-existing)
+
+        store = _store(fpl_format="classic", league_id=42)
+        for gw in (1, 2, 3, 4):
+            store.append_rows(gw, [make_history_row(
+                season=SEASON, fpl_format="classic", league_id=42, gameweek=gw,
+                manager_key=1, manager_name="Alice", league_position=1, gw_rank=1,
+            )])
+
+        result = _invoke_recap(_recap_data(
+            gameweek=5,
+            managers=[_manager(name="Alice", entry_id=1, overall_rank=1, previous_rank=1, total_points=300)],
+            cohort=_cohort((1, "Alice", 1, 60, 300)),
+        ), ["--dry-run"])
+
+        assert result.exit_code == 0, result.output
+        system_prompt = (tmp_path / "data" / "debug" / "recap_system.txt").read_text(encoding="utf-8")
+        user_prompt = (tmp_path / "data" / "debug" / "recap_prompt.txt").read_text(encoding="utf-8")
+
+        assert "## League History" in user_prompt
+        assert "Alice" in user_prompt
+        assert "Weeks on top" in user_prompt
+        assert "Season phase:" in user_prompt
+        assert "Stick to what happened this gameweek, with one exception" in system_prompt
+        assert "season phase" in system_prompt.lower()

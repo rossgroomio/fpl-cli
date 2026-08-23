@@ -371,6 +371,8 @@ Services live in `fpl_cli/services/` and provide the computation layer between a
 | `squad_allocator` | ILP squad allocator (PuLP CBC), horizon-aware, chip-aware |
 | `team_form` | Rolling team form stats (last 6 matches, venue splits) |
 | `league_history` | Durable league-history ledger: one NDJSON file per gameweek under `<data dir>/league_history/<season>/<format>-<league id>/`, written as a side effect of `league-recap`. Append-only — an identical row writes nothing, a differing one appends a superseding line, and readers resolve by highest fidelity tier then latest capture, with an unknown row ranking below every tier. Two deliberate inversions of house convention: loading **fails closed** (unlike `chip_plan`, which resets on a corrupt file) because the API cannot rebuild a past gameweek, and season is a **partition key** (unlike `team_ratings`, which discards a previous season) because per-gameweek granularity is destroyed at the July rollover |
+| `league_history_counters` | Declarative streak-condition registry (9 conditions: `weeks_on_top`, `bottom_half_run`, `gw_win_streak`, `gw_loss_streak`, `green_arrow_drought` shared; `captain_blank_run`, `hit_run` classic-only; `waiver_win_run`, `waiver_burn_run` draft-only) and the rebuildable counters projection it drives. Each predicate returns extend/reset/hold for one manager's row — hold on an unknown row, a fixture-less blank, or a gameweek the condition does not apply to, so a capture gap never lies about a streak in either direction. The projection is a disposable cache (never a second source of truth) under `<data dir>/league_history_counters/<season>/<format>-<league id>/counters.json`: it advances one gameweek at a time when its stamp is exactly one behind, and **fails open** to a full rebuild from `league_history`'s rows otherwise — missing, unreadable, wrong-version, or a stamp that isn't stamp+1 |
+| `league_history_notes` | Notes pack (`build_notes_pack()`) and season-phase marker (`derive_season_phase()`, standalone) built from `league_history_counters`'s projection plus a bounded trailing window of raw ledger rows (`TRAILING_WINDOW_GAMEWEEKS = 6`, reused as the run-in phase's own length). Every open streak renders as an observed count over its true span rather than "in a row" once any gameweek held (e.g. "3 in the last 11, with 8 not recorded"); each entry declares which of console/report/prompt it reaches — a reportable streak reaches all three, the season-phase marker and coverage statements reach report+prompt only, and a below-minimum streak is retained (exposed via `--format json`) with no surfaces. A "since GW X" qualifier is stated only when a partition's or a specific manager's own recorded coverage genuinely begins later than the league's start gameweek, never merely because a trailing window was read. Only the finale phase rescans every captured gameweek (via `rebuild_counters_through`, never the cached `compute_counters_through`) so weekly cost stays flat as the season progresses |
 
 ## LLM Provider Abstraction
 
@@ -539,13 +541,15 @@ fpl_cli/
 │   ├── season_previews.py       # Per-team season intel: schema, per-section decay, coverage gate, name resolution
 │   ├── squad_allocator.py        # ILP squad allocator (PuLP CBC) - score, fixture coefficients, solver. Horizon-aware: horizon=1 uses single-GW scoring (GW_SELECTION_WEIGHTS), horizon>=2 uses ownership-family quality (VALUE_QUALITY_WEIGHTS). Chip-aware: --bench-discount (Free Hit), --bench-boost-gw (Bench Boost per-GW override to 1.0), --sell-prices (WC/FH sell-price budget correction via price_overrides dict)
 │   ├── team_form.py              # Rolling team form stats
-│   └── league_history.py         # League history ledger store: per-gameweek NDJSON, fail-closed load, supersession, coverage query
+│   ├── league_history.py         # League history ledger store: per-gameweek NDJSON, fail-closed load, supersession, coverage query
+│   ├── league_history_counters.py # Streak-condition registry (9 conditions, extend/reset/hold predicates) + rebuildable counters projection: own version + computed-through-gameweek stamp, fails open to a full rebuild from league_history
+│   └── league_history_notes.py   # Notes pack (build_notes_pack) + derive_season_phase(): per-manager streak factoids in observed-count phrasing, season-phase marker, coverage/"since GW X" statements. Counters projection + a bounded trailing window of rows; full season only at the finale
 ├── models/
-│   ├── player.py                 # Player, PlayerStatus, PlayerPosition, POSITION_MAP
+│   ├── player.py                 # Player, PlayerStatus, PlayerPosition, POSITION_MAP, BLANK_POINTS_THRESHOLD
 │   ├── team.py                   # Team
 │   ├── fixture.py                # Fixture
 │   ├── chip_plan.py              # ChipPlan, ChipType, PlannedChip, UsedChip
-│   ├── league_history.py         # LeagueHistoryRow + Ledger* sub-models, CaptureStatus, FidelityTier, schema version constants
+│   ├── league_history.py         # LeagueHistoryRow + Ledger* sub-models, CaptureStatus, FidelityTier, schema version constants; ConditionRunState + LeagueHistoryCountersProjection for the counters cache
 │   └── types.py                  # TypedDicts: CaptainCandidate, WaiverTarget, EnrichedPlayer, etc.
 ├── prompts/
 │   ├── scout.py                  # ScoutAgent system/user prompts
@@ -579,8 +583,10 @@ platformdirs (user_config_dir / user_data_dir)  # macOS: ~/Library/Application S
 ├── player_prior.yaml             # Cached player priors (data dir, generated, season/GW invalidation)
 ├── chip_plan.json                # User's chip plan (data dir, created via `fpl chips add`)
 ├── team_finances.json            # Cached sell prices from scraper (data dir, 12h TTL)
-└── league_history/<season>/<format>-<league id>/gwNN.ndjson
-                                  # Append-only league history ledger (data dir). Season partitions rather than invalidates: prior seasons stay readable forever, because the API destroys per-gameweek granularity at the July rollover
+├── league_history/<season>/<format>-<league id>/gwNN.ndjson
+│                                 # Append-only league history ledger (data dir). Season partitions rather than invalidates: prior seasons stay readable forever, because the API destroys per-gameweek granularity at the July rollover
+└── league_history_counters/<season>/<format>-<league id>/counters.json
+                                  # Rebuildable streak-counter cache (data dir). Never a second source of truth: missing, unreadable, wrong-version, or out-of-order rebuilds silently from the ledger rather than being served
 ```
 
 The config dir also holds `.env` (credentials, API keys) and the generated `output/` and `research/` report directories.

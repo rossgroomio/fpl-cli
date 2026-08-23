@@ -18,6 +18,7 @@ import logging
 from collections.abc import Awaitable, Callable, Collection
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from fpl_cli.cli._context import error_console
@@ -49,6 +50,8 @@ from fpl_cli.services.league_history import (
     LeagueHistoryError,
     LeagueHistoryStore,
 )
+from fpl_cli.services.league_history_counters import invalidate_if_repaired
+from fpl_cli.services.league_history_notes import NotesPack, build_notes_pack
 
 if TYPE_CHECKING:
     from fpl_cli.cli._league_recap_data import ManagerHistoryClient
@@ -70,6 +73,9 @@ HISTORY_WARNING_UNMATCHED_PLAYERS = "league_history_unmatched_players"
 HISTORY_WARNING_TRANSFER_DETAIL_SHORT = "league_history_transfer_detail_short"
 HISTORY_WARNING_STANDINGS_TRUNCATED = "league_history_standings_truncated"
 HISTORY_WARNING_COVERAGE = "league_history_coverage"
+HISTORY_WARNING_BACKFILL_MANAGER_UNREACHABLE = "league_history_backfill_manager_unreachable"
+HISTORY_WARNING_BACKFILL_REPLAY_FAILED = "league_history_backfill_replay_failed"
+HISTORY_WARNING_BACKFILL_WRITE_FAILED = "league_history_backfill_write_failed"
 
 
 @dataclass
@@ -81,6 +87,16 @@ class CaptureResult:
     store_readable: bool = True
     warnings: list[dict[str, str]] = field(default_factory=list)
     coverage: list[GameweekCoverage] = field(default_factory=list)
+    # None exactly when store_readable is False: a pack needs a readable
+    # store to build from, and R4's degrade-gracefully contract means a
+    # store failure costs the pack, not the rest of the recap.
+    notes_pack: NotesPack | None = None
+    # Set only on this partition's very first capture -- computed once here,
+    # from the same `is_first_season_capture` check the stderr notice below
+    # already makes, rather than a second, independent probe against a fresh
+    # `LeagueHistoryStore` at the CLI layer (which would both duplicate the
+    # check and widen the window between it and the write it precedes).
+    first_capture_store_path: Path | None = None
 
 
 def _warn(warnings: list[dict[str, str]], code: str, message: str) -> None:
@@ -598,16 +614,22 @@ async def _coarse_backfill(
     league_id: int,
     history_client: ManagerHistoryClient,
     gameweeks: list[int],
-) -> None:
+    warnings: list[dict[str, str]],
+) -> set[int]:
     """Fill classic gameweeks from the manager-history endpoint.
 
     One call per manager covers the whole season, which is what makes this
     tier cheap enough to run unconditionally (KTD6). Every call holds the same
     permit the picks fetch does, so a large league cannot fan out unbounded.
+
+    Returns the gameweeks that actually gained a superseding row -- this
+    tier runs unconditionally, so `capture_recap_history` uses it to know
+    which cached counters projection needs invalidating rather than trusted
+    stale (see `invalidate_if_repaired`).
     """
     cohort = data.get("standings_cohort") or []
     if not cohort or not gameweeks:
-        return
+        return set()
 
     captured_at = datetime.now(tz=timezone.utc)
     start = data.get("league_start_event") or 1
@@ -631,10 +653,11 @@ async def _coarse_backfill(
                 "Manager history unavailable for %s; their gameweeks stay unknown: %s",
                 entry["manager_name"], outcome,
             )
-            error_console.print(
-                f"[yellow]Could not backfill {entry['manager_name']}: their manager history "
+            _warn(
+                warnings, HISTORY_WARNING_BACKFILL_MANAGER_UNREACHABLE,
+                f"Could not backfill {entry['manager_name']}: their manager history "
                 f"could not be fetched, so GW{gameweeks[0]}-{gameweeks[-1]} stay recorded as "
-                f"unknown for them and will be re-attempted next run.[/yellow]",
+                f"unknown for them and will be re-attempted next run.",
             )
             for gameweek in gameweeks:
                 rows_by_gameweek[gameweek].append(_coarse_unknown_row(
@@ -666,15 +689,20 @@ async def _coarse_backfill(
 
     # Committed per gameweek, ascending, so an interruption keeps everything
     # already written rather than losing the whole fetch.
+    repaired: set[int] = set()
     for gameweek in gameweeks:
         gameweek_rows = rows_by_gameweek[gameweek]
         if not gameweek_rows:
             continue
         _assign_cohort_ranks(gameweek_rows)
         try:
-            store.append_rows(gameweek, gameweek_rows)
+            written = store.append_rows(gameweek, gameweek_rows)
         except LeagueHistoryError as exc:
-            error_console.print(f"[yellow]{exc}[/yellow]")
+            _warn(warnings, HISTORY_WARNING_BACKFILL_WRITE_FAILED, str(exc))
+            continue
+        if written:
+            repaired.add(gameweek)
+    return repaired
 
 
 def _coarse_unknown_row(
@@ -707,21 +735,27 @@ async def _detailed_backfill(
     league_id: int,
     replay_gameweek: ReplayGameweek,
     gameweeks: list[int],
-) -> None:
+    warnings: list[dict[str, str]],
+) -> set[int]:
     """Replay whole gameweeks through the collectors Phase A corrected.
 
     Serial by gameweek, committing each as it completes: the collector already
     bounds its own per-manager concurrency, and committing per gameweek is what
     lets an interrupted backfill keep everything it already fetched.
+
+    Returns the gameweeks that actually gained a superseding row -- see
+    `_coarse_backfill`, which returns the same thing for the same reason.
     """
+    repaired: set[int] = set()
     for gameweek in gameweeks:
         try:
             replayed = await replay_gameweek(gameweek)
         except Exception as exc:  # noqa: BLE001 — one bad gameweek must not abort the rest
             logger.warning("Detailed backfill of GW%s failed: %s", gameweek, exc)
-            error_console.print(
-                f"[yellow]Could not replay GW{gameweek} in detail: {exc}. "
-                f"Other gameweeks are unaffected; re-run to retry it.[/yellow]",
+            _warn(
+                warnings, HISTORY_WARNING_BACKFILL_REPLAY_FAILED,
+                f"Could not replay GW{gameweek} in detail: {exc}. "
+                f"Other gameweeks are unaffected; re-run to retry it.",
             )
             continue
         if replayed is None:
@@ -735,9 +769,13 @@ async def _detailed_backfill(
             is_live_gw=False,
         )
         try:
-            store.append_rows(gameweek, rows)
+            written = store.append_rows(gameweek, rows)
         except LeagueHistoryError as exc:
-            error_console.print(f"[yellow]{exc}[/yellow]")
+            _warn(warnings, HISTORY_WARNING_BACKFILL_WRITE_FAILED, str(exc))
+            continue
+        if written:
+            repaired.add(gameweek)
+    return repaired
 
 
 async def _backfill(
@@ -751,25 +789,34 @@ async def _backfill(
     finished_gameweeks: Collection[int],
     replay_gameweek: ReplayGameweek | None,
     backfill_detail: bool,
-) -> None:
-    """Fill what this run is allowed to fill, cheapest tier first."""
+    warnings: list[dict[str, str]],
+) -> set[int]:
+    """Fill what this run is allowed to fill, cheapest tier first.
+
+    Returns every gameweek that gained a superseding row this call, across
+    both tiers -- `capture_recap_history` passes this straight to
+    `invalidate_if_repaired`, since a repair either tier makes can land on a
+    gameweek the counters cache has already folded in.
+    """
     targets = _target_gameweeks(data, finished_gameweeks)
     if not targets:
-        return
+        return set()
 
     gaps = _gaps(store.coverage(), targets)
+    repaired: set[int] = set()
 
     if fpl_format == "classic" and history_client is not None:
         coarse_targets = sorted(set(gaps.missing) | set(gaps.incomplete))
         if coarse_targets:
-            await _coarse_backfill(
+            repaired |= await _coarse_backfill(
                 data, store=store, season=season, league_id=league_id,
                 history_client=history_client, gameweeks=coarse_targets,
+                warnings=warnings,
             )
             gaps = _gaps(store.coverage(), targets)
 
     if replay_gameweek is None:
-        return
+        return repaired
 
     # A gameweek already holding unknown rows is repaired without the flag:
     # the cost is bounded by how many gameweeks actually failed, and without it
@@ -781,10 +828,13 @@ async def _backfill(
     if backfill_detail:
         detail_targets |= set(gaps.missing) | set(gaps.coarse)
     if detail_targets:
-        await _detailed_backfill(
+        repaired |= await _detailed_backfill(
             store=store, season=season, league_id=league_id,
             replay_gameweek=replay_gameweek, gameweeks=sorted(detail_targets),
+            warnings=warnings,
         )
+
+    return repaired
 
 
 # ---------------------------------------------------------------------------
@@ -863,6 +913,40 @@ def _report_coverage(
 
 
 # ---------------------------------------------------------------------------
+# Previous-position correction (R13)
+# ---------------------------------------------------------------------------
+
+
+def _apply_recorded_previous_positions(
+    data: LeagueRecapData, store: LeagueHistoryStore, gw: int,
+) -> None:
+    """R13: override `previous_rank` with the ledger's recorded GW-1 position
+    wherever a prior-gameweek row exists, leaving it untouched (U3's derived
+    path, or unset) for any manager with none. A store problem degrades to
+    that same untouched fallback rather than raising (R4).
+
+    Must run before `build_history_rows`, on the same `store` instance the
+    caller already holds: the correction has to land in `data` before rows
+    are built from it, so it reaches every downstream surface built from
+    `rows` -- the persisted ledger row and the `--format json` payload --
+    not just `data` itself, which console/report read directly and which
+    this also mutates in place for them.
+    """
+    if gw <= 1:
+        return
+
+    try:
+        previous_rows = store.resolved_gameweek(gw - 1)
+    except LeagueHistoryError:
+        return
+
+    for m in data["managers"]:
+        row = previous_rows.get(recap_manager_key(m))
+        if row is not None and row.league_position is not None:
+            m["previous_rank"] = row.league_position
+
+
+# ---------------------------------------------------------------------------
 # Capture
 # ---------------------------------------------------------------------------
 
@@ -904,6 +988,14 @@ async def capture_recap_history(
     fpl_format: LeagueFormat = "draft" if data["fpl_format"] == "draft" else "classic"
     store = LeagueHistoryStore(season, fpl_format, league_id)
     is_first_season_capture = not store.partition_exists()
+    first_capture_store_path = store.partition_dir() if is_first_season_capture else None
+
+    # R13: correct `previous_rank` from the ledger's actually-recorded GW-1
+    # position before rows are built from `data` -- on the same `store`
+    # instance just constructed above, not a fresh one. Mutates `data` in
+    # place, so console/report (which read it directly, after this returns)
+    # see the same corrected value the row below is built from.
+    _apply_recorded_previous_positions(data, store, data["gameweek"])
 
     rows = build_history_rows(
         data,
@@ -924,7 +1016,10 @@ async def capture_recap_history(
         written = store.append_rows(data["gameweek"], rows)
     except LeagueHistoryError as exc:
         _warn(warnings, HISTORY_WARNING_STORE_UNREADABLE, str(exc))
-        return CaptureResult(rows=rows, store_readable=False, warnings=warnings)
+        return CaptureResult(
+            rows=rows, store_readable=False, warnings=warnings,
+            first_capture_store_path=first_capture_store_path,
+        )
 
     if is_first_season_capture:
         # The one moment a container-local data directory is still cheap to
@@ -935,7 +1030,7 @@ async def capture_recap_history(
             f"(set FPL_CLI_DATA_DIR to keep it somewhere persistent).[/dim]",
         )
 
-    await _backfill(
+    repaired_gameweeks = await _backfill(
         data,
         store=store,
         season=season,
@@ -945,7 +1040,13 @@ async def capture_recap_history(
         finished_gameweeks=finished_gameweeks,
         replay_gameweek=replay_gameweek,
         backfill_detail=backfill_detail,
+        warnings=warnings,
     )
+    # A repair `_backfill` just made can land on a gameweek the counters
+    # cache already folded in; compute_counters_through's fast path would
+    # otherwise trust that gameweek's old, unrepaired contribution. Must run
+    # before build_notes_pack, which is what actually calls it.
+    invalidate_if_repaired(store, repaired_gameweeks)
 
     coverage = store.coverage()
     _report_coverage(
@@ -955,10 +1056,21 @@ async def capture_recap_history(
         warnings=warnings,
     )
 
+    # Built from the store, not from `rows`: U9's pack reads the counters
+    # projection and a trailing window of already-persisted rows, so it sees
+    # this gameweek's just-written rows the same way it will on every later
+    # run (U9 fails open internally -- a store problem here costs the pack,
+    # never the recap).
+    notes_pack = build_notes_pack(
+        store, data["gameweek"], league_start_gameweek=data.get("league_start_event") or 1,
+    )
+
     return CaptureResult(
         rows=rows,
         written=written,
         store_readable=True,
         warnings=warnings,
         coverage=coverage,
+        notes_pack=notes_pack,
+        first_capture_store_path=first_capture_store_path,
     )

@@ -618,6 +618,14 @@ def _ordinal(n: int) -> str:
     return f"{n}{suffix}"
 
 
+# R10: a position or total that could not be derived is named by these two
+# constants, never rendered blank or zero. Shared with the console surface
+# (`fpl_cli.cli.league_recap._render_console_highlights`) so the two
+# surfaces can't drift onto different wording for the same fact.
+POSITION_UNAVAILABLE = "position unavailable"
+TOTAL_UNAVAILABLE = "total unavailable"
+
+
 def _format_standings_block(managers: Sequence[RecapManagerEntry]) -> str:
     """Render league standings as a space-aligned text block.
 
@@ -651,7 +659,7 @@ def _format_standings_block(managers: Sequence[RecapManagerEntry]) -> str:
         total_points = m.get("total_points")
 
         if overall_rank is None:
-            position_str = "position unavailable"
+            position_str = POSITION_UNAVAILABLE
             arrow = ""
         else:
             position_str = _ordinal(overall_rank)
@@ -665,7 +673,7 @@ def _format_standings_block(managers: Sequence[RecapManagerEntry]) -> str:
                     arrow = f" ↓{-delta}"
                 else:
                     arrow = ""
-        total_str = str(total_points) if total_points is not None else "total unavailable"
+        total_str = str(total_points) if total_points is not None else TOTAL_UNAVAILABLE
         context = f"({position_str}{arrow}, {total_str})"
         lines.append(
             f"{idx:>{rank_width}}.  "

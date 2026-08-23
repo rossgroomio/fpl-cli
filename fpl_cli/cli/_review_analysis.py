@@ -8,7 +8,7 @@ from rich.markup import escape as rich_escape
 from rich.table import Table
 
 from fpl_cli.cli._context import console, error_console
-from fpl_cli.models.player import POSITION_MAP
+from fpl_cli.models.player import BLANK_POINTS_THRESHOLD, POSITION_MAP
 
 if TYPE_CHECKING:
     from fpl_cli.models.fixture import Fixture
@@ -125,7 +125,7 @@ async def _review_global_stats(
             for elem_id, stats in live_stats.items():
                 gw_pts = stats.get("total_points", 0)
                 player = player_map.get(elem_id)
-                if player and gw_pts <= 2 and player.team_id not in bgw_team_ids:
+                if player and gw_pts <= BLANK_POINTS_THRESHOLD and player.team_id not in bgw_team_ids:
                     ownership = player.selected_by_percent
                     if ownership > 5.0:
                         team = teams.get(player.team_id)

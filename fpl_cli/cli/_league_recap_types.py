@@ -191,3 +191,8 @@ class LeagueRecapData(TypedDict):
     # Whether the gameweek itself was blank or double, recorded on every row.
     is_bgw: NotRequired[bool]
     is_dgw: NotRequired[bool]
+    # Report-surfaced League History text (U10), absent when capture could
+    # not build a notes pack at all.
+    league_history_phase_text: NotRequired[str]
+    league_history_streak_lines: NotRequired[list[str]]
+    league_history_coverage_lines: NotRequired[list[str]]

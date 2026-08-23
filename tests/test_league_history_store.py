@@ -325,6 +325,95 @@ class TestStoreAppendAndSupersession:
         assert LeagueHistoryStore("2026-27", "classic", 1).load_gameweek(9) == []
 
 
+class TestResolvedGameweekMemoization:
+    """`resolved_gameweek` memoizes per instance, invalidated by
+    `append_rows`: several callers sharing one store (the counters
+    projection's own read of a gameweek, and a later raw-row read of that
+    same gameweek) must not re-parse the same file more than once per call
+    chain, and a write must always be visible on the very next read."""
+
+    def test_two_reads_of_the_same_gameweek_parse_the_file_once(self, monkeypatch):
+        from fpl_cli.services.league_history import LeagueHistoryStore
+
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(5, [make_history_row(gameweek=5, manager_key=1, gross_points=50)])
+
+        calls: list[int] = []
+        original_load_gameweek = store.load_gameweek
+
+        def _counting_load_gameweek(gameweek):
+            calls.append(gameweek)
+            return original_load_gameweek(gameweek)
+
+        monkeypatch.setattr(store, "load_gameweek", _counting_load_gameweek)
+
+        first = store.resolved_gameweek(5)
+        second = store.resolved_gameweek(5)
+
+        assert calls == [5]  # parsed once, not twice
+        assert first[1].gross_points == 50
+        assert second[1].gross_points == 50
+
+    def test_reads_of_different_gameweeks_each_parse_independently(self, monkeypatch):
+        """Two-plus iterations: memoization is keyed per gameweek, not a
+        single blanket cache that would collapse distinct gameweeks."""
+        from fpl_cli.services.league_history import LeagueHistoryStore
+
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        for gw in (5, 6, 7):
+            store.append_rows(gw, [make_history_row(gameweek=gw, manager_key=1, gross_points=gw)])
+
+        calls: list[int] = []
+        original_load_gameweek = store.load_gameweek
+
+        def _counting_load_gameweek(gameweek):
+            calls.append(gameweek)
+            return original_load_gameweek(gameweek)
+
+        monkeypatch.setattr(store, "load_gameweek", _counting_load_gameweek)
+
+        for gw in (5, 6, 7):
+            store.resolved_gameweek(gw)
+            store.resolved_gameweek(gw)  # second read of the same gameweek
+
+        assert sorted(calls) == [5, 6, 7]
+
+    def test_append_rows_invalidates_the_cache_for_its_own_gameweek(self):
+        """A write to a gameweek already read must be reflected on the next
+        read off the same store instance, not served stale from the memo
+        cache populated before the write."""
+        from fpl_cli.services.league_history import LeagueHistoryStore
+
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(5, [make_history_row(gameweek=5, gross_points=50)])
+        assert store.resolved_gameweek(5)[1].gross_points == 50  # populates the cache
+
+        store.append_rows(5, [make_history_row(
+            gameweek=5, gross_points=53,
+            captured_at=datetime(2026, 8, 23, tzinfo=timezone.utc),
+        )])
+
+        assert store.resolved_gameweek(5)[1].gross_points == 53  # not served stale
+
+    def test_a_write_that_changes_nothing_leaves_the_cache_untouched(self):
+        """An identical re-run writes nothing (R3) -- the already-cached read
+        for that gameweek must still be valid afterwards, not merely happen
+        to still be correct."""
+        from fpl_cli.services.league_history import LeagueHistoryStore
+
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(5, [make_history_row(gameweek=5, gross_points=50)])
+        first = store.resolved_gameweek(5)
+
+        written = store.append_rows(5, [make_history_row(
+            gameweek=5, gross_points=50,
+            captured_at=datetime(2027, 1, 1, tzinfo=timezone.utc),
+        )])
+
+        assert written == []
+        assert store.resolved_gameweek(5)[1].gross_points == first[1].gross_points == 50
+
+
 class TestStoreVersioning:
     def test_a_line_below_the_readable_floor_raises(self, monkeypatch):
         from fpl_cli.services import league_history as svc

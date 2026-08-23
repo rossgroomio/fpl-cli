@@ -18,8 +18,10 @@ Two deliberate inversions of house convention (KTD1, R4, R5):
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import datetime
 from enum import Enum
+from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -67,6 +69,32 @@ class FidelityTier(str, Enum):
 # supersedes it.
 _TIER_RANK: dict[FidelityTier, int] = {FidelityTier.COARSE: 1, FidelityTier.DETAILED: 2}
 _UNKNOWN_RANK = 0
+
+
+def partition_segment(season: str, fpl_format: LeagueFormat, league_id: int) -> Path:
+    """The `<season>/<format>-<league_id>` naming both ledger and cache trees
+    use to identify one partition, kept in one place so the two can never
+    silently drift onto different naming schemes. Each tree roots it under
+    its own directory (`fpl_cli/services/league_history.py`'s durable store,
+    `fpl_cli/services/league_history_counters.py`'s disposable cache) --
+    only the segment itself is shared.
+    """
+    return Path(season) / f"{fpl_format}-{league_id}"
+
+
+def weakest_tier(tiers: Iterable[FidelityTier]) -> FidelityTier | None:
+    """The weakest tier among a set of rows, by `_TIER_RANK`.
+
+    Shared by every "what's the tier of this group as a whole" question: a
+    gameweek's coverage (`GameweekCoverage.lowest_tier`) and a notes-pack
+    entry's provenance (`league_history_notes._entry_tier`) both mean the
+    same thing by it -- a condition needing detail is unavailable for the
+    whole group as soon as one row in it is only coarse.
+    """
+    present = set(tiers)
+    if not present:
+        return None
+    return min(present, key=lambda tier: _TIER_RANK[tier])
 
 
 class LedgerPlayer(BaseModel):
@@ -281,3 +309,107 @@ def resolve_rows(rows: list[LeagueHistoryRow]) -> dict[int, LeagueHistoryRow]:
         if current is None or row.resolution_sort_key() > current.resolution_sort_key():
             winners[row.manager_key] = row
     return winners
+
+
+# ---------------------------------------------------------------------------
+# U8: streak-counter projection
+# ---------------------------------------------------------------------------
+#
+# A rebuildable cache derived entirely from ledger rows (KTD10), never a
+# second source of truth. Persistence and the condition registry that
+# produces this state live in `fpl_cli/services/league_history_counters.py`;
+# these are just the shapes that get serialised.
+
+# Bump whenever the projection's shape changes in a way older code cannot
+# read. Unlike LEAGUE_HISTORY_VERSION, a mismatch here is never fatal: the
+# projection is a rebuildable cache, so a stale version rebuilds silently
+# from the ledger's rows rather than blocking anything (KTD10).
+LEAGUE_HISTORY_COUNTERS_VERSION = 1
+
+
+class ConditionRunState(BaseModel):
+    """One manager's running state for one streak condition.
+
+    Persisted so the weekly path can fold in one new gameweek without
+    rescanning the whole ledger. `length` and `start_gameweek` describe the
+    run currently open (both reset together); `held_in_run` counts
+    gameweeks that held -- R19's unknown rows, R20's fixture-less blanks,
+    a condition that did not apply that gameweek -- while this run stayed
+    open. A run does not have to hold on *consecutive* gameweeks to
+    accumulate this count: three non-held extends that held eight
+    gameweeks somewhere in between is still reported as length 3, held 8,
+    not silently rounded down to "3, consecutive" (KTD7, consumed by U9).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    length: int = 0
+    start_gameweek: int | None = None
+    held_in_run: int = 0
+
+
+class LeagueHistoryCountersProjection(BaseModel):
+    """Rebuildable per-manager, per-condition streak state for one partition.
+
+    Scoped to one (season, format, league_id) partition, the same
+    partitioning the ledger store uses -- so a new season starts every
+    counter fresh rather than carrying a run across the boundary.
+    `computed_through_gameweek` is the stamp KTD10 advances only when the
+    gameweek folded in is exactly one past it; anything else (a backfill
+    behind it, a multi-gameweek catch-up ahead of it) means the caller must
+    rebuild rather than trust this file, which is exactly why loading it is
+    fail-open -- unlike the ledger, this is a disposable cache.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: int = LEAGUE_HISTORY_COUNTERS_VERSION
+    season: str
+    fpl_format: LeagueFormat
+    league_id: int
+    computed_through_gameweek: int
+    # Keyed [manager_key][condition_key]. A manager or condition absent from
+    # this dict simply has no run open -- equivalent to a fresh
+    # ConditionRunState() -- rather than every combination being written out.
+    runs: dict[int, dict[str, ConditionRunState]] = Field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# U9: per-manager earliest-captured-gameweek cache (R17)
+# ---------------------------------------------------------------------------
+#
+# A rebuildable cache, never a second source of truth (KTD10), kept and
+# persisted by `fpl_cli/services/league_history_notes.py` -- deliberately
+# separate from `LeagueHistoryCountersProjection` above rather than a new
+# field on it, so this cache's own read/rebuild logic stays scoped to the
+# one module that needs it. Each manager's earliest gameweek with any row
+# (OK or unknown) at all, keyed by manager_key: once a manager is found,
+# the notes pack's R17 joiner qualifier need not rescan every gameweek from
+# GW1 to re-derive it on every later weekly `league-recap` call -- only a
+# manager never seen before costs a scan, and it costs one exactly once per
+# manager, not once per week for the rest of the season.
+
+EARLIEST_GAMEWEEK_CACHE_VERSION = 1
+
+
+class ManagerEarliestGameweekCache(BaseModel):
+    """Per-manager earliest-captured-gameweek cache for one partition (R17).
+
+    Scoped to one (season, format, league_id) partition, the same
+    partitioning every other league-history cache uses. Like
+    `LeagueHistoryCountersProjection`, a version or partition mismatch on
+    load means "rebuild", never "raise" -- this is a disposable cache
+    derived entirely from ledger rows, not the ledger itself.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: int = EARLIEST_GAMEWEEK_CACHE_VERSION
+    season: str
+    fpl_format: LeagueFormat
+    league_id: int
+    # manager_key -> earliest gameweek with any row (OK or unknown status)
+    # ever discovered for them while scanning this partition. A manager
+    # absent from this dict simply has not been looked up yet -- never
+    # implies "joined at gameweek 0".
+    earliest_gameweek: dict[int, int] = Field(default_factory=dict)

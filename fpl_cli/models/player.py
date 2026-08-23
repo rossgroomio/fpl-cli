@@ -36,6 +36,14 @@ class PlayerPosition(int, Enum):
 
 POSITION_MAP: dict[int, str] = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
 
+# A player "blanks" when their own points for the gameweek are at or below
+# this. The shared cutoff for `review`'s Blankers section and the
+# `captain_blank_run` streak condition (`fpl_cli/services/league_history_counters.py`)
+# -- one number, tuned once. Excludes clubs with no fixture that gameweek,
+# but that exclusion is the caller's job: this constant is the score cutoff
+# only.
+BLANK_POINTS_THRESHOLD = 2
+
 # FPL formation limits: (minimum, maximum) players per outfield position
 FORMATION_LIMITS: dict[str, tuple[int, int]] = {"DEF": (3, 5), "MID": (2, 5), "FWD": (1, 3)}
 
