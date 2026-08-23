@@ -1,6 +1,46 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [2.1.0] - 2026-08-23
+
+### Bug Fixes
+
+- survive a keyring backend that panics below Python
+- validate pre-season teams and guard pFDR against unrated seasons
+- consistent non-zero exit codes on command failure, friendly pre-season squad 404 (#47)
+- drop stale committed team_ratings.yaml seed
+- rank promoted teams against the PL, not the Championship
+- config dirs must be absolute, and gated commands name their gate (#46)
+- layer team_managers.yaml over the shipped copy per club
+- make team ratings and manager config season-aware (#56)
+- stop gw-prep squad validation failing when a heading names the formation
+- keep the new-signing flag alive until real minutes exist, not until the window shuts
+- stop gw-prep validators mislocating sections on drifted headings
+- stop review inventing fines, positions and rolled transfers at gameweek 1
+- keep the status classic section alive pre-season and stop last-place fines misreading a partial league table
+- report exact classic league size and rank in status instead of page-one figures
+- keep league recap accurate for large leagues and gameweek 1
+- cap the managers named in a tied league recap bench-haul award
+- pin PuLP below 4.0 so squad allocation keeps working (#80)
+- stop a new season's reports overwriting the previous season's (#90)
+
+### Features
+
+- add FPL_CLI_DATA_DIR override so the data dir survives ephemeral environments
+- user config dir copy of fixture_predictions.yaml overrides shipped copy
+- add `fpl intel` for season preview intel with per-gameweek decay
+- add preview-ingest skill for turning preview prose into intel files
+- wire season preview intel into squad-builder
+- wire season preview intel into gw-prep and update-gw-prep
+- point-in-time headline numbers and league positions for replays (#75)
+- record every gameweek to a durable league history store (#76)
+- surface streaks and season phase in every output (#77)
+- add `fpl doctor` to surface stale config and dead IDs (#98)
+
+### Performance
+
+- stop fpl player and fpl stats fetching data they discard (#96)
+
 ## [2.0.0] - 2026-05-25
 
 ### Bug Fixes
