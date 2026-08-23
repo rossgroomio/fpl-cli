@@ -1128,3 +1128,101 @@ class TestPlayerErrorHandling:
         assert result.exit_code != 0
         assert "Error: boom" in result.output
         assert "adj. npxG/90:" not in result.output
+
+
+class TestUnderstatFetchDeferral:
+    """The league-wide Understat scrape waits until a name resolves (#83)."""
+
+    def _invoke(self, name, client, fixture_agent, ratings_svc):
+        mock_understat = _make_empty_understat()
+        runner = CliRunner()
+        with (
+            patch("fpl_cli.cli.player.load_settings", return_value={"fpl": {}}),
+            patch("fpl_cli.api.fpl.FPLClient", return_value=client),
+            patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=fixture_agent),
+            patch("fpl_cli.services.team_ratings.TeamRatingsService", return_value=ratings_svc),
+            patch("fpl_cli.api.understat.UnderstatClient", return_value=mock_understat),
+        ):
+            result = runner.invoke(main, ["player", name])
+        return result, mock_understat
+
+    def test_unmatched_name_skips_league_scrape(self):
+        client, fixture_agent, ratings_svc = _make_mocks()
+        result, mock_understat = self._invoke("Zzzzzz", client, fixture_agent, ratings_svc)
+        assert result.exit_code == 0, result.output
+        assert "No players found matching 'Zzzzzz'" in result.stderr
+        mock_understat.get_league_players.assert_not_awaited()
+
+    def test_matched_name_still_scrapes_league(self):
+        client, fixture_agent, ratings_svc = _make_mocks()
+        result, mock_understat = self._invoke("Salah", client, fixture_agent, ratings_svc)
+        assert result.exit_code == 0, result.output
+        mock_understat.get_league_players.assert_awaited_once()
+
+
+def _make_draft_client():
+    """FPLDraftClient mock owning Salah (draft id 99) via entry 7."""
+    mock = MagicMock()
+    mock.get_league_details = AsyncMock(return_value={
+        "league_entries": [
+            {"entry_id": 7, "player_first_name": "Ross", "player_last_name": "Groom"},
+        ],
+    })
+    mock.get_bootstrap_static = AsyncMock(return_value={
+        "elements": [{"id": 99, "web_name": "Salah", "team": 1}],
+    })
+    mock.get_league_ownership = AsyncMock(return_value={99: 7})
+    mock.__aenter__ = AsyncMock(return_value=mock)
+    mock.__aexit__ = AsyncMock(return_value=False)
+    return mock
+
+
+class TestDraftFetchDeferral:
+    """Draft ownership fetches wait until a name resolves (#83).
+
+    The block costs a league-details fetch, a draft bootstrap, game state and
+    one squad fetch per league entry -- 4 + N requests, all of it discarded
+    when the name matches nothing.
+    """
+
+    def _invoke(self, name, client, fixture_agent, ratings_svc):
+        from fpl_cli.cli._context import Format
+
+        draft_client = _make_draft_client()
+        runner = CliRunner()
+        with (
+            patch("fpl_cli.cli.resolve_format", return_value=Format.DRAFT),
+            patch("fpl_cli.cli.player.load_settings",
+                  return_value={"fpl": {"draft_league_id": 12345}}),
+            patch("fpl_cli.api.fpl.FPLClient", return_value=client),
+            patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=draft_client),
+            patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=fixture_agent),
+            patch("fpl_cli.services.team_ratings.TeamRatingsService", return_value=ratings_svc),
+        ):
+            result = runner.invoke(main, ["player", name])
+        return result, draft_client
+
+    def test_unmatched_name_skips_draft_fetches(self):
+        client, fixture_agent, ratings_svc = _make_mocks()
+        result, draft = self._invoke("Zzzzzz", client, fixture_agent, ratings_svc)
+        assert result.exit_code == 0, result.output
+        assert "No players found matching 'Zzzzzz'" in result.stderr
+        draft.get_league_details.assert_not_awaited()
+        draft.get_bootstrap_static.assert_not_awaited()
+        draft.get_league_ownership.assert_not_awaited()
+
+    def test_matched_name_still_shows_draft_ownership(self):
+        client, fixture_agent, ratings_svc = _make_mocks()
+        result, draft = self._invoke("Salah", client, fixture_agent, ratings_svc)
+        assert result.exit_code == 0, result.output
+        assert "Ross Groom" in result.output
+        draft.get_league_ownership.assert_awaited_once()
+
+    def test_league_details_fetched_once_and_reused(self):
+        """get_league_details is not memoised on the client, so it is passed through."""
+        client, fixture_agent, ratings_svc = _make_mocks()
+        result, draft = self._invoke("Salah", client, fixture_agent, ratings_svc)
+        assert result.exit_code == 0, result.output
+        draft.get_league_details.assert_awaited_once()
+        args = draft.get_league_ownership.await_args.args
+        assert args[2] == draft.get_league_details.return_value

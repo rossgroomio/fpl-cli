@@ -182,6 +182,7 @@ class FPLDraftClient:
         self,
         league_id: int,
         bootstrap_data: dict[str, Any] | None = None,
+        league_details: dict[str, Any] | None = None,
     ) -> dict[int, int]:
         """Get accurate ownership by querying actual team squads.
 
@@ -193,6 +194,10 @@ class FPLDraftClient:
         Args:
             league_id: The draft league ID.
             bootstrap_data: Optional pre-fetched bootstrap data.
+            league_details: Optional pre-fetched league details. Unlike
+                bootstrap-static and game state, get_league_details is not
+                memoised, so a caller that already holds it should pass it
+                rather than pay for a second fetch.
 
         Returns:
             Dict mapping player ID to owner entry_id.
@@ -200,7 +205,8 @@ class FPLDraftClient:
         if bootstrap_data is None:
             bootstrap_data = await self.get_bootstrap_static()
 
-        league_details = await self.get_league_details(league_id)
+        if league_details is None:
+            league_details = await self.get_league_details(league_id)
         game_data = await self.get_game_state()
         current_gw = game_data.get("current_event", 1)
         player_map = {p["id"]: p for p in bootstrap_data.get("elements", [])}
