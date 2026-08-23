@@ -6,6 +6,9 @@ fpl:
   draft_entry_id: 0
   classic_league_id: 0
 
+# Reports land in a season subdirectory of these — ~/fpl-reports/2026-27/gw21-review.md.
+# The season segment is appended for you; don't put it here. It is what stops a new
+# season's GW21 report overwriting the previous season's (filenames carry no season).
 reports:
   output_dir: "~/fpl-reports"
   research_dir: "~/fpl-research"

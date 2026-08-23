@@ -146,7 +146,7 @@ $ fpl league-recap --format json
 
 ## Configuration
 
-Run `fpl init` to configure interactively. Settings stored in your platform's config directory (override with `FPL_CLI_CONFIG_DIR`, and also home to the optional `previews/` intel files); generated data such as team ratings, chip plans and the league history ledger `league-recap` builds up is stored in your platform's data directory (override with `FPL_CLI_DATA_DIR`). In ephemeral environments (e.g. Claude Code on the web), point both at a persistent workspace. Both overrides must be absolute paths — see [Directories](docs/command-reference.md#directories).
+Run `fpl init` to configure interactively. Settings stored in your platform's config directory (override with `FPL_CLI_CONFIG_DIR`, and also home to the optional `previews/` intel files); generated data such as team ratings, chip plans and the league history ledger `league-recap` builds up is stored in your platform's data directory (override with `FPL_CLI_DATA_DIR`). In ephemeral environments (e.g. Claude Code on the web), point both at a persistent workspace. Both overrides must be absolute paths — see [Directories](docs/command-reference.md#directories). Saved reports (`--save`, `--output`) are written to a season subdirectory — `<output_dir>/2026-27/gw21-review.md` — so a new season never overwrites the last one's files; see [Report layout](docs/command-reference.md#report-layout).
 
 **Required:** FPL classic entry ID or draft league + entry IDs.
 

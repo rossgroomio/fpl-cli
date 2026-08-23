@@ -31,7 +31,8 @@ logger = logging.getLogger(__name__)
 @click.option("--draft", "is_draft", is_flag=True, default=False,
               help="Use draft league (only needed when both formats are configured)")
 @click.option("--save", "-s", is_flag=True, help="Save report to output directory")
-@click.option("--output", "-o", type=click.Path(), help="Custom output directory for report")
+@click.option("--output", "-o", type=click.Path(),
+              help="Custom output directory for report (the season subdirectory is still added)")
 @click.option("--summarise", is_flag=True, help="Add LLM-generated editorial narrative (requires API keys)")
 @click.option("--backfill-detail", "backfill_detail", is_flag=True, default=False,
               help="Rebuild earlier gameweeks in full detail (captains, squads, transfers) "
@@ -283,7 +284,7 @@ def league_recap_command(
 
             # Generate report if saving
             if save or output:
-                output_dir = output or str(resolve_output_dir(settings))
+                output_dir = resolve_output_dir(settings, output)
                 agent = ReportAgent(config={"output_dir": output_dir})
                 result = await agent.run(context={
                     "report_type": "league-recap",

@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from click.testing import CliRunner
 
 from fpl_cli.cli.preview import preview_command
+from fpl_cli.season import season_label
 
 
 def _make_fpl_client(gw=25):
@@ -180,3 +181,69 @@ class TestPreviewCustomAnalysisToggle:
 
         assert result.exit_code == 0, result.output
         fpl_client.get_fixtures.assert_awaited_once()
+
+
+def _run_scout_preview(tmp_path):
+    """Invoke `preview --scout` with a mocked scout agent and a temp research dir."""
+    fpl_client = _make_fpl_client()
+    fixture_agent = _make_agent(data={"easy_fixture_runs": {"overall": []}, "team_form": []})
+    stats_agent = _make_agent(data={"top_xgi_per_90": [], "underperformers": [], "value_picks": []})
+    price_agent = _make_agent(data={})
+    scout_agent = _make_agent(data={
+        "content_referenced": "Scout body [1]",
+        "content_clean": "Scout body",
+        "citations": ["https://example.test/a"],
+    })
+
+    settings = {
+        "custom_analysis": True,
+        "reports": {"research_dir": str(tmp_path / "02_Research")},
+        # `--scout` pre-flights the research provider before any agent runs.
+        "llm": {"research": {"provider": "perplexity"}},
+    }
+
+    runner = CliRunner()
+    with (
+        patch("fpl_cli.cli.preview.is_custom_analysis_enabled", return_value=True),
+        patch("fpl_cli.cli.preview.load_settings", return_value=settings),
+        patch("fpl_cli.api.fpl.FPLClient", return_value=fpl_client),
+        patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=fixture_agent),
+        patch("fpl_cli.agents.analysis.stats.StatsAgent", return_value=stats_agent),
+        patch("fpl_cli.agents.data.price.PriceAgent", return_value=price_agent),
+        patch("fpl_cli.agents.data.scout.ScoutAgent", return_value=scout_agent),
+    ):
+        # The pre-flight provider check runs before any agent is constructed,
+        # so it needs a key even though the agent itself is mocked out.
+        return runner.invoke(preview_command, ["--scout"], env={"PERPLEXITY_API_KEY": "test-key"})
+
+
+class TestScoutReportsAreSeasonPartitioned:
+    """`gw{N}-scout-preview.md` carries no season either (#85), so the season
+    sits between the source directory and the file."""
+
+    def test_scout_reports_land_under_the_season_directory(self, tmp_path):
+        result = _run_scout_preview(tmp_path)
+
+        assert result.exit_code == 0, result.output
+        scout_dir = tmp_path / "02_Research" / "ai-scout-reports" / season_label()
+        assert (scout_dir / "gw25-scout-preview.md").exists()
+        assert (scout_dir / "gw25-scout-preview-referenced.md").exists()
+
+    def test_the_source_directory_itself_stays_empty_of_reports(self, tmp_path):
+        """The partition goes below `ai-scout-reports/`, leaving sibling
+        research sources free to carry their own."""
+        result = _run_scout_preview(tmp_path)
+
+        assert result.exit_code == 0, result.output
+        assert not list((tmp_path / "02_Research" / "ai-scout-reports").glob("*.md"))
+
+    def test_frontmatter_names_the_season(self, tmp_path):
+        """A file that names its own season can be identified after a move,
+        without inferring it from the path."""
+        result = _run_scout_preview(tmp_path)
+
+        assert result.exit_code == 0, result.output
+        report = (
+            tmp_path / "02_Research" / "ai-scout-reports" / season_label() / "gw25-scout-preview.md"
+        )
+        assert f"season: {season_label()}" in report.read_text(encoding="utf-8")

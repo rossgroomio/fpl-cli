@@ -14,6 +14,7 @@ Format conventions used by external data sources:
 from __future__ import annotations
 
 from datetime import date
+from pathlib import Path
 
 # -- Constants ---------------------------------------------------------------
 
@@ -88,6 +89,65 @@ def season_label_range(year: int | None = None, count: int = 4) -> tuple[str, ..
     """
     y = year if year is not None else get_season_year()
     return tuple(season_label(y - count + 1 + i) for i in range(count))
+
+
+# -- Directory partitioning --------------------------------------------------
+
+def is_season_label(name: str) -> bool:
+    """Whether `name` is a season label for *some* season, not necessarily now.
+
+    Exact rather than shape-matching: the leading year is parsed and the label
+    rebuilt, so `2026-27` passes and `2026-28` does not. Used to tell a
+    directory a user pointed at last season apart from an ordinary directory
+    that merely contains digits.
+
+    >>> is_season_label("2026-27"), is_season_label("2026-28"), is_season_label("reports")
+    (True, False, False)
+    """
+    year, _, _ = name.partition("-")
+    if not (len(year) == 4 and year.isdigit()):
+        return False
+    return season_label(int(year)) == name
+
+
+def season_partition(base: Path, season: str | None = None) -> Path:
+    """Return `base` partitioned by season, e.g. `01_Reports/2026-27`.
+
+    Generated reports are named by gameweek alone, so without a season segment
+    the 2026-27 GW21 report would land on the path 2025-26's GW21 report
+    already occupies and destroy it -- an unconditional `write_text` with no
+    existence check (#85). Partitioning by season makes that collision
+    structurally impossible rather than merely warned about, and mirrors how
+    the league-history ledger keys its own directories
+    (`fpl_cli/services/league_history.py`).
+
+    Appending is idempotent: a base whose final segment is already the season
+    label is returned unchanged, so a user who has pointed
+    `reports.output_dir` at a season directory by hand -- or a caller that
+    passes an already-partitioned path back in -- does not get `2026-27/2026-27`.
+    Only the *current* label short-circuits. A base ending in some other
+    season's label is partitioned normally, giving `2025-26/2026-27`: nesting
+    is ugly but visible and lossless, where treating a stale directory as
+    already-partitioned would file this season's reports under last season's
+    name -- the mislabelling #85 is about. `resolve_output_dir` warns when it
+    sees that shape rather than letting it pass silently.
+
+    Limitation: the label comes from `season_label()`, which derives the
+    season from today's date on a fixed July cutover rather than from the
+    gameweek being written. A season that overruns the cutover -- 2019-20,
+    delayed into July 2020 by COVID -- is stamped with the following season's
+    label, and its late gameweeks collide with that season's own. Deriving the
+    label from GW1's deadline would fix it, but `season_label()` is the shared
+    season source for the ledger, Understat and Core-Insights alike, so that
+    change belongs with those rather than here (#91).
+
+    >>> season_partition(Path("01_Reports"), season="2026-27").as_posix()
+    '01_Reports/2026-27'
+    >>> season_partition(Path("01_Reports/2026-27"), season="2026-27").as_posix()
+    '01_Reports/2026-27'
+    """
+    label = season or season_label()
+    return base if base.name == label else base / label
 
 
 # -- Backward-compatible aliases ---------------------------------------------
