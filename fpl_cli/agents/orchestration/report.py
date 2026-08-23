@@ -24,6 +24,13 @@ class ReportAgent(Agent):
     - Generate gameweek preview reports
     - Generate gameweek review reports
     - Write reports to configured output directory
+
+    `output_dir` is written to verbatim. Report filenames carry the gameweek
+    but no season, so the season segment that stops one season's GW21 report
+    overwriting the last one's (#85) is applied by the caller --
+    `fpl_cli.cli._context.resolve_output_dir`, which partitions both the
+    configured directory and an explicit `--output`. Callers that bypass that
+    resolver must partition with `fpl_cli.season.season_partition` themselves.
     """
 
     name = "ReportAgent"

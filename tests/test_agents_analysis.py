@@ -13,6 +13,14 @@ from fpl_cli.services.team_ratings import TeamRating, TeamRatingsService
 from tests.conftest import make_fixture, make_player, make_team
 
 
+@pytest.fixture(autouse=True)
+def _stub_third_party_fetches(stub_scoring_network_seams):
+    """Keep CaptainAgent's prepare_scoring_data fetches off the network.
+
+    The patch list lives in conftest.stub_scoring_network_seams.
+    """
+
+
 def _make_ratings_service():
     """Build a TeamRatingsService with test ratings."""
     svc = TeamRatingsService.__new__(TeamRatingsService)
@@ -149,13 +157,23 @@ class TestCaptainAgent:
     @pytest.mark.asyncio
     async def test_run_handles_api_error(self, agent):
         """Test handling API errors."""
-        with patch.object(agent.client, "get_players", new_callable=AsyncMock) as mock_get_players:
+        # prepare_scoring_data fetches teams/fixtures/gameweek before players,
+        # so those need benign stubs for the get_players failure to be the one
+        # exercised (and to keep the earlier calls off the live API).
+        with patch.object(agent.client, "get_players", new_callable=AsyncMock) as mock_get_players, \
+             patch.object(agent.client, "get_teams", new_callable=AsyncMock) as mock_get_teams, \
+             patch.object(agent.client, "get_next_gameweek", new_callable=AsyncMock) as mock_next_gw, \
+             patch.object(agent.client, "get_fixtures", new_callable=AsyncMock) as mock_get_fixtures:
+
             mock_get_players.side_effect = Exception("API Error")
+            mock_get_teams.return_value = []
+            mock_next_gw.return_value = {"id": 25, "deadline_time": "2024-02-10T11:00:00Z"}
+            mock_get_fixtures.return_value = []
 
             result = await agent.run()
 
             assert result.status == AgentStatus.FAILED
-            assert len(result.errors) > 0
+            assert "API Error" in result.errors[0]
 
     @pytest.mark.asyncio
     async def test_run_no_next_gameweek(self, agent, mock_players, mock_teams):

@@ -104,7 +104,7 @@ flowchart TB
 
     subgraph Output["Output"]
         console[Rich Console]
-        obsidian[("Obsidian Vault<br/>01_Reports/")]
+        obsidian[("Obsidian Vault<br/>01_Reports/{season}/")]
     end
 
     %% CLI connections
@@ -206,7 +206,7 @@ flowchart LR
     end
 
     subgraph Output["Output"]
-        file["gw{N}-preview.md"]
+        file["{season}/gw{N}-preview.md"]
         vault[("Obsidian")]
     end
 

@@ -1,13 +1,16 @@
 """Tests for fpl_cli/season — season detection and format helpers."""
 
 from datetime import date
+from pathlib import Path
 
 from fpl_cli.season import (
     CHIP_SPLIT_GW,
     TOTAL_GAMEWEEKS,
     core_insights_season,
     get_season_year,
+    is_season_label,
     season_label,
+    season_partition,
     understat_season,
     vaastav_season,
     vaastav_season_range,
@@ -142,3 +145,75 @@ class TestSeasonRollover:
         assert understat_season() == understat_season(year)
         assert season_label() == season_label(year)
         assert core_insights_season() == core_insights_season(year)
+
+
+# -- season_partition --------------------------------------------------------
+
+class TestSeasonPartition:
+    """Report filenames carry a gameweek but no season (#85), so the season
+    lives in the directory. These tests pin the partition that makes a
+    cross-season collision structurally impossible."""
+
+    def test_appends_the_season_label(self):
+        assert season_partition(Path("01_Reports"), season="2026-27") == Path("01_Reports/2026-27")
+
+    def test_defaults_to_the_current_season(self):
+        assert season_partition(Path("01_Reports")) == Path("01_Reports") / season_label()
+
+    def test_is_idempotent_on_an_already_partitioned_base(self):
+        """A user who points reports.output_dir at a season directory by hand,
+        or a caller that feeds a resolved path back in, must not get
+        `2026-27/2026-27`."""
+        once = season_partition(Path("01_Reports"), season="2026-27")
+        assert season_partition(once, season="2026-27") == once
+
+    def test_a_season_named_segment_mid_path_is_not_treated_as_the_tail(self):
+        """Only the final segment counts -- an archive tree that happens to
+        contain the label deeper up still gets its own partition."""
+        assert season_partition(
+            Path("archive/2026-27/reports"), season="2026-27",
+        ) == Path("archive/2026-27/reports/2026-27")
+
+    def test_two_seasons_never_share_a_directory(self):
+        """The regression the issue is about: same gameweek, different season,
+        different file."""
+        a = season_partition(Path("01_Reports"), season="2025-26") / "gw21-review.md"
+        b = season_partition(Path("01_Reports"), season="2026-27") / "gw21-review.md"
+        assert a != b
+
+    def test_preserves_an_absolute_base(self):
+        assert season_partition(
+            Path("/vault/01_Reports"), season="2026-27",
+        ) == Path("/vault/01_Reports/2026-27")
+
+
+# -- is_season_label ---------------------------------------------------------
+
+class TestIsSeasonLabel:
+    """Exact, not shape-matching: used to tell a directory left over from last
+    season apart from an ordinary one, so a false positive would suppress the
+    stale-directory warning."""
+
+    def test_accepts_a_real_label(self):
+        assert is_season_label("2026-27")
+
+    def test_accepts_a_century_rollover_label(self):
+        assert is_season_label(season_label(2099))
+
+    def test_rejects_a_mismatched_second_year(self):
+        assert not is_season_label("2026-28")
+
+    def test_rejects_an_unpadded_second_year(self):
+        assert not is_season_label("2026-7")
+
+    def test_rejects_a_plain_directory_name(self):
+        assert not is_season_label("reports")
+
+    def test_rejects_a_name_that_merely_contains_a_year(self):
+        assert not is_season_label("reports-2026")
+
+    def test_rejects_a_bare_year(self):
+        assert not is_season_label("2026")
+
+    def test_every_generated_label_round_trips(self):
+        assert all(is_season_label(season_label(y)) for y in range(1995, 2100))

@@ -17,6 +17,14 @@ $ pytest                 # Tests
 $ hatch build            # Package build
 ```
 
+The test suite is hermetic: `pytest-socket` blocks all network access
+(`--disable-socket --allow-unix-socket` in `addopts`), so a test that
+reaches a live endpoint fails immediately rather than passing against
+whatever the endpoint returned that day. Stub the network seam instead —
+the shared `stub_scoring_network_seams` fixture in `tests/conftest.py`
+and the autouse fixtures in `tests/test_cli_player.py` show the pattern. A test that genuinely needs
+a socket opts out with `@pytest.mark.enable_socket`.
+
 A separate `PR Title` check (`.github/workflows/pr-title.yml`) fails the
 PR when the title doesn't follow the conventional-commit format below.
 
@@ -44,6 +52,11 @@ The rules that matter:
   changelog entries — use `chore(review): <what changed>`.
 - A breaking change uses the `!` marker (`feat!:`) or a `BREAKING CHANGE:`
   footer; it drives a major version bump at the next release.
+- Skill changes take the type of their audience: a product skill (gw-prep,
+  squad-builder, update-gw-prep, preview-ingest) is user-facing surface —
+  `feat:`/`fix:`, changelog-visible; a process skill (release,
+  release-notes, create-pr) is maintainer tooling — `docs:`/`chore:`,
+  skipped.
 
 ### Merging
 
@@ -52,6 +65,12 @@ with `(#N)` auto-appended by GitHub — becomes the single commit on main,
 and therefore the changelog line. Write it as the user-facing change, and
 keep each PR single-purpose so one title can describe it. Branch commits
 never reach main, so they can iterate freely; the title is what ships.
+
+PR descriptions are flowing first-person prose — open with why, skip the
+boilerplate sections, put `Closes #N` in the body rather than the title,
+and set caveats or verification gaps in italics. The full style (and the
+workflow agent sessions use to open PRs) lives in
+[`.agents/skills/create-pr/SKILL.md`](.agents/skills/create-pr/SKILL.md).
 
 ## Releases
 

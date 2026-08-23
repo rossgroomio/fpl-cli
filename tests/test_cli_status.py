@@ -9,6 +9,7 @@ from click.testing import CliRunner
 
 from fpl_cli.cli import main
 from fpl_cli.models.player import PlayerStatus
+from fpl_cli.season import season_label
 from tests.conftest import make_player, make_team
 
 
@@ -783,6 +784,32 @@ class TestStatusJsonOutput:
         payload = json.loads(result.output)
         assert payload["metadata"]["format"] == "classic"
         assert payload["metadata"]["gameweek"] == 30
+
+    def test_metadata_carries_the_season_label(self):
+        """The gw-prep, squad-builder and update-gw-prep skills take the
+        season segment of their output path from here (#85). Hardcoding it in
+        a skill would silently rot at the July rollover, so this field is a
+        contract, not a convenience."""
+        client = _mock_client(
+            current_gw={"id": 30, "finished": True},
+            next_gw={"id": 31, "deadline_time": "2099-01-01T11:00:00Z"},
+            history={"current": [{"event": 30, "points": 65, "overall_rank": 50000}], "chips": []},
+        )
+        result = _run_json(client)
+        payload = json.loads(result.output)
+        assert payload["metadata"]["season"] == season_label()
+
+    def test_metadata_carries_the_season_without_configured_entry_ids(self):
+        """The early-return branch taken when no format resolves still has to
+        tell a skill where to write."""
+        client = _mock_client(
+            current_gw={"id": 30, "finished": True},
+            next_gw={"id": 31, "deadline_time": "2099-01-01T11:00:00Z"},
+        )
+        result = _run_json(client, settings={"fpl": {}})
+        payload = json.loads(result.output)
+        assert payload["metadata"]["format"] is None
+        assert payload["metadata"]["season"] == season_label()
 
     def test_classic_gw_result_contains_points_and_rank(self):
         """Classic section has gw_result with points and rank."""

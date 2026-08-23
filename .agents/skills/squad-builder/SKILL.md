@@ -41,7 +41,7 @@ Check args / user input:
 - `--redraft` -> **Re-draft** (mid-season, no budget, all players available, pick-order ranking, horizon from A1b)
 
 If no explicit mode:
-1. Run `fpl status --format json` for current GW (N). Extract `metadata.format` (`"classic"`, `"draft"`, or `"both"`)
+1. Run `fpl status --format json` for current GW (N). Extract `metadata.format` (`"classic"`, `"draft"`, or `"both"`) and `metadata.season` (see below)
 2. Run `fpl chips --format json` (classic only - skip if format is `"draft"`). Store the full response:
    - `planned`: all planned chips with their GWs (e.g., `[{chip: "wildcard", gameweek: 35}, {chip: "bboost", gameweek: 34}]`)
    - `available`: chips still available to play
@@ -51,6 +51,8 @@ If no explicit mode:
 5. If no mode resolved -> ask user
 
 **Format validation:** Wildcard, Free Hit, and Season Start Classic modes require `metadata.format` to be `"classic"` or `"both"`. Season Start Draft and Re-draft require `"draft"` or `"both"`. If the mode doesn't match the configured format, warn the user: "Mode {mode} requires {classic|draft} format, but your config is {format}-only."
+
+**Season label (all modes):** `{season}` is `metadata.season` from `fpl status --format json` -- the hyphenated label, e.g. `"2026-27"`. Every file this skill writes lives under `[YOUR_OUTPUT_DIR]/{season}/` (Phase E), because those filenames carry no season of their own. An explicit mode skips A1's status call, so read `{season}` from the Phase B run instead. Never hardcode it: a hardcoded label silently rots at the July rollover, which is the failure this partition exists to prevent.
 
 ### A1b. Derive Horizon
 After mode is determined, derive the planning horizon. The unified principle: **horizon = GWs until your next squad reset opportunity**.
@@ -107,7 +109,7 @@ Run `fpl squad sell-prices --format json > /tmp/sell-prices.json` (add `--refres
 Issue all reads and CLI commands in a **single parallel tool-call block**:
 
 ### All Modes
-- `fpl status --format json` (if not already run in A1)
+- `fpl status --format json` (if not already run in A1 -- this is where an explicit-mode run picks up `metadata.season`)
 - `fpl fdr --blanks --format json`
 
 ### Mid-season (Wildcard / Free Hit / Re-draft)
@@ -445,20 +447,23 @@ Agent tool parameters:
 8. **Return:** The complete squad recommendation as text, formatted per the output template. Do NOT write to any file.
 
 ## Phase E: Output
-<!-- ADAPT: Set your output directory -->
+<!-- ADAPT: Set your output directory. Keep the `/{season}/` segment -- it is what stops a new season overwriting the last one's files. -->
 Write sub-agent output to:
-- Mid-season (Wildcard / Free Hit / Re-draft): `[YOUR_OUTPUT_DIR]/gw{N}-squad-builder.md`
-- Season start: `[YOUR_OUTPUT_DIR]/season-start-squad.md`
+- Mid-season (Wildcard / Free Hit / Re-draft): `[YOUR_OUTPUT_DIR]/{season}/gw{N}-squad-builder.md`
+- Season start: `[YOUR_OUTPUT_DIR]/{season}/season-start-squad.md`
+
+Both names repeat every season -- `season-start-squad.md` carries no gameweek at all -- so the `{season}` directory from A1 is what keeps last season's copy intact. Create it if it does not exist.
 
 Add frontmatter:
 ```yaml
 ---
 mode: {Wildcard|Free Hit|Season Start Classic|Season Start Draft|Re-draft}
 gameweek: {N}
+season: {season}
 generated: {YYYY-MM-DD}
 budget: GBP{X}m
 ---
 ```
 
 Confirm:
-> Squad recommendation saved to `[YOUR_OUTPUT_DIR]/{filename}`
+> Squad recommendation saved to `[YOUR_OUTPUT_DIR]/{season}/{filename}`

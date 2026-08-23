@@ -17,7 +17,7 @@ dependencies = [
     "ruamel.yaml>=0.18.0",
     "keyring>=24.0.0",
     "platformdirs>=4.3,<5",
-    "pulp>=2.7",
+    "pulp>=2.7,<4",
     "tzdata>=2024.1; platform_system == 'Windows'",
 ]
 
@@ -29,6 +29,7 @@ dev = [
     "pytest>=7.4.0",
     "pytest-asyncio>=0.23.0",
     "pytest-cov>=4.0.0",
+    "pytest-socket>=0.7.0",
     "respx>=0.21.0",
     "ruff>=0.1.0",
     "pyright>=1.1.0",
@@ -72,3 +73,15 @@ select = ["BLE001", "E", "F", "I", "N", "W"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
+# Hermeticity guard (#53): any test that opens a socket fails at the time it
+# is written, instead of silently depending on live endpoints. The unix-socket
+# allowance is required — asyncio's event loop self-pipe uses socketpair().
+# A test that genuinely needs a socket opts out with @pytest.mark.enable_socket.
+addopts = "--disable-socket --allow-unix-socket"
+filterwarnings = [
+    # Diagnostic, not a gate: leaked transports/sockets surface in the warning
+    # summary instead of being hidden by the default ResourceWarning filter.
+    # GC timing makes the signal nondeterministic, so the guard above is what
+    # actually fails a leaking test.
+    "always::ResourceWarning",
+]

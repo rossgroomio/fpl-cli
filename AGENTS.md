@@ -49,11 +49,17 @@ For a complete inventory of CLI commands, analysis agents, and skills with JSON 
 ### Timestamps
 - User-facing timestamps (deadlines, kickoffs, `generated_at` stamps) must route through `fpl_cli/utils/time.py` (`format_deadline`, `format_kickoff`, `format_generated_at`, `now_uk`). Never `strftime` on a naive `datetime.now()` or print raw API ISO strings to users. Tool is UK-locked: display is always `Europe/London` with GMT/BST label. Internal datetime math stays UTC.
 
+### Report Paths
+- Generated reports are season-partitioned: `<output dir>/<season>/gw{N}-review.md`, `<research dir>/ai-scout-reports/<season>/gw{N}-scout-preview.md`. Filenames carry a gameweek but no season, so a flat directory lets a new season's GW21 report overwrite the previous season's. Resolve destinations with `resolve_output_dir(settings, output)` (`cli/_context.py`), which partitions the configured dir and an explicit `--output` alike; partition anything else with `season_partition()` (`fpl_cli/season.py`). `ReportAgent` writes to `output_dir` verbatim — never add a second season segment there
+- Skills writing alongside these reports take the label from `fpl status --format json` (`metadata.season`), never hardcoded
+
 ### Commits & Changelog
 - Commit subjects and PR titles follow conventional commits. `feat:`/`fix:`/`refactor:`/`perf:` become release-notes lines via git-cliff (`cliff.toml`); `chore:`/`docs:`/`ci:`/`test:`/`style:` and merge commits are skipped
 - A changelog-visible subject must read as a standalone user-facing change — the release pipeline publishes it verbatim in CHANGELOG.md and the GitHub release
 - `fix:`/`feat:` describe changes relative to main. Follow-up commits addressing review feedback on your own unmerged PR are internal iteration, not changelog entries — use `chore(review): <what changed>`
 - PRs are squash-merged with the PR title as the commit subject on main, so the title IS the changelog entry — write it as the user-facing change and keep each PR single-purpose so one title can describe it. CI enforces the format (`pr-title.yml`)
+- PR bodies follow the create-pr skill's description style (`.agents/skills/create-pr/SKILL.md`): why-first first-person prose, no boilerplate sections, `Closes #N` in the body (never the title), caveats and verification gaps in italics
+- Skill changes take the type of their audience: product skills (gw-prep, squad-builder, update-gw-prep, preview-ingest) are user-facing surface — `feat:`/`fix:`, changelog-visible; process skills (release, release-notes, create-pr) are maintainer tooling — `docs:`/`chore:`, skipped
 
 ## FPL Domain Knowledge
 - Chips (each available **twice** per season, split at GW19 deadline): Wildcard, Free Hit, Bench Boost, Triple Captain
@@ -74,4 +80,5 @@ For a complete inventory of CLI commands, analysis agents, and skills with JSON 
 - CLI changes require corresponding unit tests
 - Changing a function's return format: update existing tests to match and confirm pytest passes
 - Tests: `pytest-asyncio` with `asyncio_mode = "auto"`, factories in `tests/conftest.py` (`make_player()`, `make_team()`, `make_fixture()`)
+- Tests are hermetic: `pytest-socket` blocks all network via `addopts` (`--disable-socket --allow-unix-socket`), so a test that reaches a live endpoint fails when written. Stub the seam instead (see `stub_scoring_network_seams` in `tests/conftest.py` and the autouse fixtures in `tests/test_cli_player.py`); a test that genuinely needs a socket opts out with `@pytest.mark.enable_socket`. Watch for call sites that degrade gracefully on network failure — they hide the dependency until an upstream change makes a successful response wrong
 - After any task touching Python files, run `pyright` as a final check alongside ruff and pytest
