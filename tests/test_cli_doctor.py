@@ -127,6 +127,15 @@ def _flat(result) -> str:
     return " ".join(result.output.split())
 
 
+def _write_preview(team: str, published: str | None = None) -> None:
+    previews = Path(os.environ["FPL_CLI_CONFIG_DIR"]) / "previews"
+    previews.mkdir(parents=True, exist_ok=True)
+    (previews / f"{team}.yaml").write_text(
+        f"team: {team}\nsource: Test Preview\npublished: {published or f'{CURRENT_YEAR}-08-01'}\n",
+        encoding="utf-8",
+    )
+
+
 class TestSeasonOfTimestamp:
     def test_parses_iso_z_string(self):
         assert _season_of_timestamp(f"{CURRENT_YEAR}-08-01T10:00:00Z") == CURRENT_SEASON
@@ -286,6 +295,32 @@ class TestDataFileChecks:
         result = _run(_mock_client())
         assert "team_ratings.yaml" in result.output
         assert "fpl ratings update" in result.output
+
+    def test_previews_absent_is_skipped(self):
+        result = _run(_mock_client())
+        assert result.exit_code == 0
+        assert "fpl intel init" in _flat(result)
+
+    def test_previews_for_live_club_is_ok(self):
+        _write_preview("ARS")
+        result = _run(_mock_client())
+        assert result.exit_code == 0
+        assert "1 of 20 clubs covered" in _flat(result)
+
+    def test_previews_for_unknown_club_is_broken(self):
+        # A file for a relegated or misnamed club loads and counts toward the
+        # coverage gate, unlike a file the loader skips -- so it is broken.
+        _write_preview("XXX")
+        result = _run(_mock_client())
+        assert result.exit_code == 1
+        assert "covers XXX" in _flat(result)
+
+    def test_previews_from_previous_season_are_stale(self):
+        _write_preview("ARS", published=f"{CURRENT_YEAR - 1}-08-01")
+        result = _run(_mock_client())
+        assert result.exit_code == 0
+        assert "1 file(s) skipped" in _flat(result)
+        assert "fpl intel" in _flat(result)
 
 
 class TestJsonOutput:

@@ -328,6 +328,49 @@ def _read_yaml_mapping(path: Any) -> dict[str, Any]:
     return loaded if isinstance(loaded, dict) else {}
 
 
+def _previews_check(teams: list[str] | None) -> CheckResult:
+    from fpl_cli.services.season_previews import SeasonPreviewsService, unknown_teams
+
+    name = "previews/"
+    service = SeasonPreviewsService()
+    if not service.previews_path.is_dir():
+        return CheckResult(
+            name, CheckStatus.SKIPPED, "not present — optional; created by `fpl intel init`"
+        )
+    previews = service.get_previews()
+    warnings = service.load_warnings
+    if not previews and not warnings:
+        return CheckResult(
+            name, CheckStatus.SKIPPED, "no preview files yet — optional; see `fpl intel schema`"
+        )
+    unknown = unknown_teams(previews, set(teams)) if teams is not None else []
+    if unknown:
+        # Unlike a file the loader skipped, these load and count toward the
+        # coverage gate, so a leftover relegated-club file can flip full-use
+        # on for a set that does not really cover the league.
+        detail = f"covers {', '.join(unknown)}, not in the league this season"
+        if warnings:
+            detail += f"; {len(warnings)} other file(s) skipped"
+        return CheckResult(
+            name,
+            CheckStatus.BROKEN,
+            detail,
+            "fix or remove the file — `fpl intel` names every problem",
+        )
+    if warnings:
+        return CheckResult(
+            name,
+            CheckStatus.STALE,
+            f"{len(warnings)} file(s) skipped and not influencing decisions",
+            "run `fpl intel` for the reasons; re-ingest for the current season",
+        )
+    if teams is None:
+        return CheckResult(
+            name, CheckStatus.UNCHECKED, "could not fetch the live team list to compare against"
+        )
+    return CheckResult(name, CheckStatus.OK, f"{len(previews)} of {len(teams)} clubs covered")
+
+
 def _team_finances_check() -> CheckResult:
     name = "team_finances.json"
     path = user_data_file(name)
@@ -472,6 +515,7 @@ def doctor_command(output_format: str) -> None:
         file_results = [
             _team_ratings_check(teams),
             _team_managers_check(teams),
+            _previews_check(teams),
             _team_finances_check(),
             _player_prior_check(),
         ]

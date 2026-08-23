@@ -720,6 +720,7 @@ Rolling a setup into a new season silently invalidates IDs and per-team files: a
 
 - `team_ratings.yaml` — season stamp and team set vs the live league (problems here are stale, not broken: the ratings service already ignores or rebuilds bad files)
 - `team_managers.yaml` — merged shipped + user copy covers exactly the current twenty clubs
+- `previews/` — optional season preview intel: a file for a club not in the current league is flagged (it loads and inflates the coverage gate), and files the loader skipped (previous season, malformed) are surfaced with `fpl intel` as the follow-up
 - `team_finances.json` — `scraped_at` falls within the current season
 - `player_prior.yaml` — season label matches (auto-invalidated otherwise)
 
