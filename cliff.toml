@@ -35,6 +35,11 @@ commit_parsers = [
     { message = "^fix: address PR review", skip = true },
     # Test-suite-internal fixes are not user-facing, same as the ^test skip below
     { message = "^fix\\(tests?\\)", skip = true },
+    # One-off cloud-PR-era commits no prefix rule catches: a refactor that only
+    # removed code added earlier in the same PR, and a shipped-data refresh that
+    # landed without a conventional prefix
+    { message = "^refactor: drop unreached has_strength_data guard", skip = true },
+    { message = "^Update team_managers\\.yaml", skip = true },
     { message = "^feat", group = "Features" },
     { message = "^fix", group = "Bug Fixes" },
     { message = "^refactor", group = "Refactoring" },
