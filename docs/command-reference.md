@@ -455,7 +455,10 @@ The season segment is the hyphenated label (`2026-27`), derived from the date us
 Two details worth knowing:
 
 - **`--output` is partitioned too.** `fpl review --save --output ~/somewhere` writes to `~/somewhere/2026-27/`, not `~/somewhere/`. A scripted destination gets the same protection as a configured one.
-- **Pointing a directory at a season is harmless.** If `reports.output_dir` already ends in the current season label, it is used as-is rather than nested a second time.
+- **Pointing a directory at the current season is harmless.** If `reports.output_dir` already ends in the current season label, it is used as-is rather than nested a second time.
+- **A directory left pointing at a *past* season warns.** `output_dir: ~/fpl-reports/2025-26` in 2026-27 writes to `~/fpl-reports/2025-26/2026-27/` and says so on stderr. The nesting is deliberate: reusing the stale directory would file this season's reports under last season's name, which is the mislabelling the layout exists to prevent. Drop the season from the setting and it is appended correctly.
+
+**Known limitation.** The season label comes from the date, on the same July cutover as the rest of the tool, not from the gameweek being written. A season that overruns that cutover -- as 2019-20 did, delayed into July 2020 -- is stamped with the following season's label, and its late gameweeks collide with that season's own. See [#91](https://github.com/rossgroomio/fpl-cli/issues/91).
 
 Reports written before this layout existed are left where they are. Nothing moves them, and nothing overwrites them — new reports simply land in the season subdirectory alongside. Move them into a matching season directory if you want them tidied.
 

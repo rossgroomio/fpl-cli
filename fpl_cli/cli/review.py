@@ -85,7 +85,8 @@ async def _review_resolve_gw(client, gameweek):
 @click.command("review")
 @click.option("--gameweek", "-g", type=int, help="Specific gameweek to review (default: last completed)")
 @click.option("--save", "-s", is_flag=True, help="Save report to output directory")
-@click.option("--output", "-o", type=click.Path(), help="Custom output directory for report")
+@click.option("--output", "-o", type=click.Path(),
+              help="Custom output directory for report (the season subdirectory is still added)")
 @click.option("--summarise", is_flag=True, help="Add LLM-generated summary (requires API keys)")
 @click.option("--debug", is_flag=True, help="Save LLM prompts and responses to data/debug/")
 @click.option("--dry-run", is_flag=True, help="Build and save prompts to data/debug/ without calling LLMs")
@@ -278,12 +279,17 @@ def review_command(
                 collected_data["research_summary"] = llm["research_summary"]
                 collected_data["synthesis_summary"] = llm["synthesis_summary"]
 
+            # --compare-recs reads from the same season directory --save writes
+            # to, so resolve it once for both rather than per branch: resolving
+            # twice would also warn twice about a stale directory. Pure and
+            # cheap, so it is not worth guarding on the flags.
+            output_dir = resolve_output_dir(settings, output)
+
             # Compare recommendations vs actuals if requested
             if compare_recs:
                 from fpl_cli.parsers.recommendations import parse_recommendations
 
-                recs_dir = resolve_output_dir(settings, output)
-                recs_path = recs_dir / f"gw{gw}-recommendations.md"
+                recs_path = output_dir / f"gw{gw}-recommendations.md"
                 recs = parse_recommendations(recs_path)
 
                 if recs is None:
@@ -386,8 +392,6 @@ def review_command(
 
             # Generate report if requested
             if save:
-                output_dir = resolve_output_dir(settings, output)
-
                 console.print("\n[dim]Generating report...[/dim]")
                 async with ReportAgent(config={"output_dir": output_dir}) as report_agent:
                     report_result = await report_agent.run(context={

@@ -8,6 +8,7 @@ from fpl_cli.season import (
     TOTAL_GAMEWEEKS,
     core_insights_season,
     get_season_year,
+    is_season_label,
     season_label,
     season_partition,
     understat_season,
@@ -184,3 +185,35 @@ class TestSeasonPartition:
         assert season_partition(
             Path("/vault/01_Reports"), season="2026-27",
         ) == Path("/vault/01_Reports/2026-27")
+
+
+# -- is_season_label ---------------------------------------------------------
+
+class TestIsSeasonLabel:
+    """Exact, not shape-matching: used to tell a directory left over from last
+    season apart from an ordinary one, so a false positive would suppress the
+    stale-directory warning."""
+
+    def test_accepts_a_real_label(self):
+        assert is_season_label("2026-27")
+
+    def test_accepts_a_century_rollover_label(self):
+        assert is_season_label(season_label(2099))
+
+    def test_rejects_a_mismatched_second_year(self):
+        assert not is_season_label("2026-28")
+
+    def test_rejects_an_unpadded_second_year(self):
+        assert not is_season_label("2026-7")
+
+    def test_rejects_a_plain_directory_name(self):
+        assert not is_season_label("reports")
+
+    def test_rejects_a_name_that_merely_contains_a_year(self):
+        assert not is_season_label("reports-2026")
+
+    def test_rejects_a_bare_year(self):
+        assert not is_season_label("2026")
+
+    def test_every_generated_label_round_trips(self):
+        assert all(is_season_label(season_label(y)) for y in range(1995, 2100))

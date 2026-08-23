@@ -18,7 +18,7 @@ from fpl_cli.agents.base import AgentStatus
 from fpl_cli.agents.orchestration.report import ReportAgent
 from fpl_cli.cli._context import resolve_output_dir, resolve_research_dir
 from fpl_cli.paths import user_config_dir
-from fpl_cli.season import season_label, season_partition
+from fpl_cli.season import season_label
 
 
 @pytest.fixture
@@ -95,31 +95,85 @@ class TestResolveOutputDir:
         assert this_season.name == "2026-27"
 
 
+class TestStaleSeasonDirectory:
+    """A directory named for a season that has passed is a misconfiguration.
+    Partitioning still happens -- nesting loses nothing, where reusing the
+    stale directory would file this season's reports under last season's name
+    -- but it must not be silent."""
+
+    def test_a_stale_season_dir_is_still_partitioned(self, tmp_path, frozen_season):
+        label = frozen_season(2026)
+        settings = {"reports": {"output_dir": str(tmp_path / "01_Reports" / "2025-26")}}
+
+        resolved = resolve_output_dir(settings)
+
+        assert resolved == tmp_path / "01_Reports" / "2025-26" / label
+
+    def test_a_stale_season_dir_warns(self, tmp_path, frozen_season, capsys):
+        frozen_season(2026)
+        settings = {"reports": {"output_dir": str(tmp_path / "01_Reports" / "2025-26")}}
+
+        resolve_output_dir(settings)
+
+        warning = capsys.readouterr().err
+        assert "2025-26" in warning
+        assert "2026-27" in warning
+
+    def test_the_current_season_dir_does_not_warn(self, tmp_path, frozen_season, capsys):
+        """The supported shortcut stays quiet -- only a stale label is worth
+        interrupting for."""
+        label = frozen_season(2026)
+        settings = {"reports": {"output_dir": str(tmp_path / "01_Reports" / label)}}
+
+        resolve_output_dir(settings)
+
+        assert capsys.readouterr().err == ""
+
+    def test_an_ordinary_dir_does_not_warn(self, tmp_path, frozen_season, capsys):
+        """`is_season_label` is exact, so a directory that merely contains
+        digits is not mistaken for a season."""
+        frozen_season(2026)
+        settings = {"reports": {"output_dir": str(tmp_path / "reports-2026")}}
+
+        resolve_output_dir(settings)
+
+        assert capsys.readouterr().err == ""
+
+
 class TestResolveResearchDir:
     """The research root holds one subdirectory per source, so the season
-    segment belongs inside each of those, not on the root."""
+    segment belongs inside each of those, not on the root. Taking the source
+    as an argument is what makes the partition non-optional for a future
+    caller."""
 
-    def test_root_is_not_partitioned(self, tmp_path, frozen_season):
-        label = frozen_season(2026)
-        settings = {"reports": {"research_dir": str(tmp_path / "02_Research")}}
-
-        resolved = resolve_research_dir(settings)
-
-        assert resolved == tmp_path / "02_Research"
-        assert resolved.name != label
-
-    def test_default_location_is_not_partitioned(self):
-        assert resolve_research_dir({}) == user_config_dir() / "research"
-
-    def test_a_source_subdir_partitions_below_itself(self, tmp_path, frozen_season):
+    def test_partitions_below_the_source_subdir(self, tmp_path, frozen_season):
         """The shape `fpl preview --scout` writes: the season sits under
         `ai-scout-reports/`, leaving sibling sources their own partitions."""
         label = frozen_season(2026)
         settings = {"reports": {"research_dir": str(tmp_path / "02_Research")}}
 
-        scout_dir = season_partition(resolve_research_dir(settings) / "ai-scout-reports")
+        resolved = resolve_research_dir(settings, "ai-scout-reports")
 
-        assert scout_dir == tmp_path / "02_Research" / "ai-scout-reports" / label
+        assert resolved == tmp_path / "02_Research" / "ai-scout-reports" / label
+
+    def test_default_location_is_partitioned_too(self, frozen_season):
+        label = frozen_season(2026)
+
+        resolved = resolve_research_dir({}, "ai-scout-reports")
+
+        assert resolved == user_config_dir() / "research" / "ai-scout-reports" / label
+
+    def test_sibling_sources_get_independent_partitions(self, tmp_path, frozen_season):
+        """A second research source cannot skip the partition -- it comes with
+        the resolver rather than being the caller's job to remember."""
+        label = frozen_season(2026)
+        settings = {"reports": {"research_dir": str(tmp_path / "02_Research")}}
+
+        scout = resolve_research_dir(settings, "ai-scout-reports")
+        injuries = resolve_research_dir(settings, "injury-news")
+
+        assert scout.name == injuries.name == label
+        assert scout.parent != injuries.parent
 
 
 class TestReportAgentWritesWhereTold:

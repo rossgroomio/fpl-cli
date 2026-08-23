@@ -13,7 +13,7 @@ import yaml
 from rich.console import Console
 
 from fpl_cli.paths import SHIPPED_CONFIG_DIR, UserDirError, user_config_dir
-from fpl_cli.season import season_partition
+from fpl_cli.season import is_season_label, season_label, season_partition
 
 if TYPE_CHECKING:
     from fpl_cli.agents.base import AgentResult
@@ -139,36 +139,55 @@ def get_format(ctx: click.Context) -> Format | None:
     return ctx.obj.format if isinstance(ctx.obj, CLIContext) else None
 
 
-def resolve_output_dir(settings: dict[str, Any], override: str | None = None) -> Path:
+def _warn_if_stale_season_dir(base: Path) -> None:
+    """Warn when a report directory is named for a season that has passed.
+
+    Left alone this is the quiet half of #85: the directory keeps last
+    season's name, this season's reports nest inside it, and nothing says so.
+    Partitioning still happens -- nesting loses no data, where reusing the
+    stale directory would file the reports under the wrong season -- but the
+    user hears about it once so they can repoint the setting.
+    """
+    if is_season_label(base.name) and base.name != season_label():
+        error_console.print(
+            f"[yellow]Warning:[/yellow] report directory {base} is named for season "
+            f"{base.name}, but the current season is {season_label()}. "
+            f"Reports will be written to {base / season_label()}. "
+            f"Drop the season from the setting -- it is appended automatically."
+        )
+
+
+def resolve_output_dir(settings: dict[str, Any], output: str | None = None) -> Path:
     """Season-partitioned directory that generated reports are written to.
 
-    `override` is the command's `--output`, which wins over the configured
+    `output` is the command's `--output` flag, which wins over the configured
     `reports.output_dir` but is partitioned just the same: reports are named
     by gameweek alone, so an unpartitioned destination lets a new season's
     GW21 report overwrite the previous season's (#85), and a scripted
     `--output` is no less entitled to that protection than a configured one.
     """
-    if override:
-        base = Path(override).expanduser()
+    if output:
+        base = Path(output).expanduser()
     else:
         raw = settings.get("reports", {}).get("output_dir")
         base = Path(raw).expanduser() if raw else _user_config_dir() / "output"
+    _warn_if_stale_season_dir(base)
     return season_partition(base)
 
 
-def resolve_research_dir(settings: dict[str, Any]) -> Path:
-    """Root of the research tree -- deliberately *not* season-partitioned.
+def resolve_research_dir(settings: dict[str, Any], source: str) -> Path:
+    """Season-partitioned directory for one research `source`, e.g. `ai-scout-reports`.
 
-    This root holds one subdirectory per research source (`ai-scout-reports/`
-    and, in the vault, sibling directories owned by other tools). The season
-    segment belongs inside each of those, so callers partition their own
-    subdirectory with `season_partition()` rather than receiving a partitioned
-    root here.
+    The research root holds one subdirectory per source -- and, in the vault,
+    sibling directories owned by other tools -- so the season segment belongs
+    inside each source rather than above them all. Taking `source` here rather
+    than returning the bare root is what makes that non-optional: a future
+    writer adding `injury-news/` gets the partition by construction instead of
+    having to remember to wrap the result in `season_partition()`.
     """
     raw = settings.get("reports", {}).get("research_dir")
-    if raw:
-        return Path(raw).expanduser()
-    return _user_config_dir() / "research"
+    root = Path(raw).expanduser() if raw else _user_config_dir() / "research"
+    return season_partition(root / source)
 
 
 def load_settings() -> dict[str, Any]:
