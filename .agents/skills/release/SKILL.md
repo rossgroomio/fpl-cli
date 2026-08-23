@@ -144,6 +144,27 @@ Actions run.
   repo), update the secret, re-run the job.
 - **PyPI publish fails with OIDC errors**: check the `pypi` environment on
   the repo and the trusted-publisher config on the fplkit PyPI project.
+- **PyPI publish fails on distribution metadata**
+  (`InvalidDistribution: Invalid distribution metadata: '2.5' is not a
+  valid metadata version`): toolchain drift, not a bad tag. `pyproject.toml`
+  requires `hatchling>=1.21` with no upper bound, so the build emits
+  whatever `Metadata-Version` a current hatchling produces, while
+  `pypa/gh-action-pypi-publish` is pinned to a SHA whose bundled twine and
+  packaging predate it. Bump the action pin rather than capping hatchling —
+  PyPI accepts the newer metadata, so the stale half is the action (v1.13.0
+  ships twine 6.1.0 / packaging 25.0 and rejects 2.5; v1.14.2 ships twine
+  7.0.0 / packaging 26.2 and accepts it). Prove it either way by running
+  `twine check` on the built wheel under the pins in each action tag's
+  `requirements/runtime.txt`. This fails at twine's client-side check
+  *before* any upload, so PyPI never receives the version.
+- **Fixing `release.yml` itself needs a retag, not a re-run**: a
+  `release`-triggered run uses the workflow file from the *tagged commit*,
+  so re-running a failed job replays the same broken workflow. Land the fix
+  on main, then `gh release delete vX.Y.Z --cleanup-tag` and re-create the
+  release against main so the tag moves onto the fix. Only safe while the
+  version is still free on PyPI — check `pip index versions fplkit` first.
+  Once PyPI has accepted an upload that number is gone permanently, and the
+  fix has to ship as the next version instead.
 - **Version source drift**: never reintroduce a hardcoded `version =
   "X.Y.Z"` in pyproject.toml — `dynamic = ["version"]` + hatch-vcs is the
   single source of truth. And `fallback-version` belongs under
