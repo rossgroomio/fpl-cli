@@ -1,27 +1,33 @@
 ## Project Overview
-fpl-cli - CLI tool for Fantasy Premier League analysis (classic + draft).
+fpl-cli - CLI tool for Fantasy Premier League analysis (classic + draft). Distributed on PyPI as `fplkit`; the import package is `fpl_cli` and the command is `fpl`.
 
 ## Setup & Dev
 ```bash
-source .venv/bin/activate && pip install -e ".[dev]"
+source .venv/bin/activate && pip install -e ".[dev]"            # local only — web sessions install globally via setup script
 ruff check fpl_cli/            # Lint
 pyright fpl_cli/               # Type check
-pytest tests/                 # Tests
+python3 -m pytest tests/       # Tests
 ```
-Entry point: `fpl_cli/cli/__init__.py:main` (Click). Config: `config/defaults.yaml` (committed) + `~/Library/Application Support/fpl-cli/settings.yaml` (user overrides, deep-merged via `platformdirs`). All three writable dirs have env overrides: `FPL_CLI_CONFIG_DIR` (settings, managers, overrides; an optional `fixture_predictions.yaml` here overrides the shipped copy; an optional `previews/` dir holds season preview intel read by `fpl intel`), `FPL_CLI_DATA_DIR` (generated data: team ratings, priors, chip plan, sell prices, the append-only `league_history/` ledger and its rebuildable `league_history_counters/` projection — the ledger partitions by season instead of being discarded at rollover, the one store that outlives a season), `FPL_CLI_CACHE_DIR` (disposable). Overrides must be absolute — a relative one resolves against the cwd, so it is rejected with `UserDirError` rather than silently giving a different dir per invocation. Resolve them by calling `user_config_dir()` / `user_data_dir()` / `user_cache_dir()` at point of use — binding one to a module-level constant freezes the override at import time (before `.env` loads); `tests/test_paths.py` enforces this. Ephemeral environments (Claude Code on the web) must set config + data to a persistent workspace or generated data dies with the container; cache can stay local.
+Run tests as `python3 -m pytest`, never bare `pytest`: in web sessions the `pytest` on PATH is a uv tool shim with its own interpreter and none of the project's dependencies, so it fails at `import pydantic`. If pytest then rejects `--disable-socket` / `--allow-unix-socket`, the dev extra is incomplete — `pip install pytest-socket`.
+
+Entry point: `fpl_cli/cli/__init__.py:main` (Click). Config: `fpl_cli/config/defaults.yaml`, shipped inside the package and resolved as `SHIPPED_CONFIG_DIR` (`paths.py`), + `settings.yaml` in the user config dir (overrides, deep-merged via `platformdirs`; `~/Library/Application Support/fpl-cli/` on macOS). Repo-root `config/` holds only examples and `team_ratings_overrides.yaml` — nothing there is loaded as defaults. All three writable dirs have env overrides: `FPL_CLI_CONFIG_DIR` (settings, managers, overrides; an optional `fixture_predictions.yaml` here overrides the shipped copy; an optional `previews/` dir holds season preview intel read by `fpl intel`), `FPL_CLI_DATA_DIR` (generated data: team ratings, priors, chip plan, sell prices, the append-only `league_history/` ledger and its rebuildable `league_history_counters/` projection — the ledger partitions by season instead of being discarded at rollover, the one store that outlives a season), `FPL_CLI_CACHE_DIR` (disposable). Overrides must be absolute — a relative one resolves against the cwd, so it is rejected with `UserDirError` rather than silently giving a different dir per invocation. Resolve them by calling `user_config_dir()` / `user_data_dir()` / `user_cache_dir()` at point of use — binding one to a module-level constant freezes the override at import time (before `.env` loads); `tests/test_paths.py` enforces this. Ephemeral environments (Claude Code on the web) must set config + data to a persistent workspace or generated data dies with the container; cache can stay local.
 
 ## Architecture
 Agents inherit `fpl_cli/agents/base.py:Agent`, implement `async run(context: dict | None) -> AgentResult`. Organised in `agents/{data,analysis,action,orchestration}/`. AgentResult statuses: SUCCESS, PARTIAL, FAILED, PENDING_APPROVAL.
 
 External consumers: `BenchOrderAgent`, `StartingXIAgent`, and `TransferEvalAgent` are imported directly by the gw-prep skill (Obsidian vault) via standalone scripts (`bench_order.py`, `starting_xi.py`, `transfer_eval.py`) that run in fpl-cli's venv. Changes to any agent's interface or import path will break those scripts.
 
-API clients in `fpl_cli/api/`: FPLClient (main API, caches `bootstrap-static/`), fpl_draft, perplexity (needs `PERPLEXITY_API_KEY`), understat (scrapes understat.com for npxG/xGChain/xGBuildup), historical data via dual-source architecture: VaastavClient (3 historical seasons 2022-25, keyed on `element_code`) + CoreInsightsClient (current season 2025-26+), composed by `HistoricalDataProvider` (`make_historical_provider()`). Shared types in `historical_types.py` (SeasonHistory, PlayerProfile, GwTrendProfile). Season helper: `season_label()` (alias `vaastav_season()`). Scraper in `fpl_cli/scraper/` (needs `FPL_EMAIL`, `FPL_PASSWORD`; set `FPL_BROWSER_IGNORE_CERTS=1` behind TLS-inspecting proxies — Chromium ignores `SSL_CERT_FILE` / `REQUESTS_CA_BUNDLE`). Jinja2 templates in `templates/`.
+API clients in `fpl_cli/api/`: FPLClient (main API, caches `bootstrap-static/`), fpl_draft, understat (scrapes understat.com for npxG/xGChain/xGBuildup), historical data via dual-source architecture: VaastavClient (the three completed seasons, keyed on `element_code`) + CoreInsightsClient (current season), composed by `HistoricalDataProvider` (`make_historical_provider()`). The season window is computed, never hardcoded — `season_label_range(get_season_year() - 1, count=3)` — so it rolls itself at the July cutover; don't write a season label into it. Shared types in `historical_types.py` (SeasonHistory, PlayerProfile, GwTrendProfile). Season helper: `season_label()` (alias `vaastav_season()`). Scraper in `fpl_cli/scraper/` (credentials resolve `FPL_EMAIL` / `FPL_PASSWORD` first, then the system keyring written by `fpl credentials set`; set `FPL_BROWSER_IGNORE_CERTS=1` behind TLS-inspecting proxies — Chromium ignores `SSL_CERT_FILE` / `REQUESTS_CA_BUNDLE`). Jinja2 templates in `templates/`.
+
+LLM access is not an API client: `fpl_cli/api/providers/` is a registry of `perplexity` / `anthropic` / `openai` (an OpenAI-compatible base covering Groq, Together, Ollama via `base_url`), resolved per role by `get_llm_provider(role, settings)` and all returning `LLMResponse`. Roles are `research` and `synthesis`; resolution is env > `settings.yaml` > `defaults.yaml`, with `FPL_{ROLE}_PROVIDER` / `_MODEL` / `_BASE_URL` overriding and keys in `PERPLEXITY_API_KEY` / `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`.
+
+Services in `fpl_cli/services/` are the computation layer between agents and API clients: scoring engine, player priors, team ratings and form, matchup scoring, fixture predictions, season previews, the ILP squad allocator, and the league-history ledger with its counters projection and notes pack. Also load-bearing and easy to miss: `fpl_cli/paths.py` (every path resolution), `fpl_cli/season.py` (season labels and partitioning), `fpl_cli/prompts/` (LLM prompt builders), `fpl_cli/parsers/` (recommendation parsing), `fpl_cli/constants.py`.
 
 ### Models (non-obvious aliases)
 - `Player`: attribute is `position` (JSON alias `element_type`), `team_id` (alias `team`), `code` = stable cross-season ID (element_code). Prices in £0.1m units (100 = £10.0m)
-- `Fixture`: `gameweek` (alias "event"), `home_team_id`/`away_team_id`
+- `Fixture`: `gameweek` (alias `event`), `home_team_id`/`away_team_id`
 
-For a complete inventory of CLI commands, analysis agents, and skills with JSON support and format awareness, see `.agents/TOOLS.md`.
+For a complete inventory of CLI commands, analysis agents, and skills with JSON support and format awareness, see `.agents/TOOLS.md`. Skills live in `.agents/skills/`. `docs/architecture.md` is the deep reference — module map, services layer, provider abstraction, config resolution, design decisions — read it before changing structure.
 
 ## Conventions
 ### CLI Patterns
@@ -29,11 +35,13 @@ For a complete inventory of CLI commands, analysis agents, and skills with JSON 
 - Analytical commands -> via agent (comment `# Pattern: via-agent`)
 - Help text: describe what the user sees, never reference internal components ("agent", "client")
 - Inner async function: always name `_run`
+- `--format json` commands emit the shared envelope via `emit_json()` / `emit_json_error()` (`cli/_json.py`), never a bare `json.dumps`
 - **Format awareness:** New commands classified in `CLASSIC_ONLY`/`DRAFT_ONLY` frozensets in `_context.py` (omit for General). Shared commands use `@click.pass_context` and `fmt = get_format(ctx)` to gate irrelevant sections (see `league.py` for pattern).
 
 ### Agent Patterns
 - Primary API client: `self.client` in `__init__` (FPLClient for classic agents, FPLDraftClient for draft agents)
-- Secondary clients: qualified name (e.g. `self.perplexity_client`)
+- Secondary clients: qualified name (e.g. `self.fpl_client` on a draft agent)
+- LLM access is not a client attribute: resolve it per role with `get_llm_provider(role, settings)` from `fpl_cli.api.providers` (see `ScoutAgent.research_provider`)
 - Position map: import `POSITION_MAP` from `fpl_cli/models/player.py`, never redefine locally
 - Understat enrichment: import `match_fpl_to_understat` from `fpl_cli/api/understat`
 
@@ -62,23 +70,24 @@ For a complete inventory of CLI commands, analysis agents, and skills with JSON 
 - Skill changes take the type of their audience: product skills (gw-prep, squad-builder, update-gw-prep, preview-ingest) are user-facing surface — `feat:`/`fix:`, changelog-visible; process skills (release, release-notes, create-pr) are maintainer tooling — `docs:`/`chore:`, skipped
 
 ## FPL Domain Knowledge
-- Chips (each available **twice** per season, split at GW19 deadline): Wildcard, Free Hit, Bench Boost, Triple Captain
-- Scoring: GK/DEF clean sheet = 4pts, MID = 1pt; goals: DEF=6, MID=5, FWD=4; assist = 3pts; yellow = -1; red = -3
-- Transfers: 1 free/GW, max 5 banked; extra transfers cost 4pts each; Wildcard/Free Hit preserve banked transfers
-- Draft format has no captains, no budget, no transfers, no chips - uses waivers for player acquisition
+`docs/fpl-rules.md` is the authority on scoring, BPS, chips, transfers, waivers and the classic/draft split — read it rather than reasoning from memory, and correct it there when a rule changes. It already carries what a summary here kept dropping: defensive contribution (DEF 10+ CBI and tackles = 2pts; MID/FWD 12+ including recoveries = 2pts), GK goals = 10pts, and the current BPS table. The shape that drives most code:
+- Chips: each available **twice** per season, split at the GW19 deadline (Wildcard, Free Hit, Bench Boost, Triple Captain); one chip per gameweek
+- Transfers: 1 free/GW, banked up to 5; extras cost 4pts each; Wildcard/Free Hit preserve banked transfers
+- Draft has no captains, no budget, no transfers and no chips — acquisition is via waivers and free agents
 
 ## Rules
 - Verify before asserting: don't state that a command, file, function, or data point exists without checking first (read the file, run the command, grep for the name)
 - Find-and-replace: review each replacement in context - don't blindly replace substrings in unrelated identifiers
 - Removing/replacing X: new implementation must have zero dependencies on X
 - Repeated convention violations: suggest a ruff lint rule to enforce automatically
-- README must stay in sync: any CLI command added/changed/removed requires updating the relevant job section in "What You Can Do" and, if the command has detailed flags or formulas, `docs/command-reference.md`
+- README must stay in sync: any CLI command added/changed/removed requires updating the relevant job section under `## Usage` (After the Gameweek, Checking Your Setup, Scouting Players, Before the Deadline, Strategic Planning, Season Preview Intel, Custom Analysis, JSON Output) and, if the command has detailed flags or formulas, `docs/command-reference.md`
 - Architecture doc must stay in sync: adding a new agent, service, API client, or CLI command requires updating `docs/architecture.md`
 - TOOLS.md must stay in sync: adding, removing, or changing a CLI command, analysis agent, or skill requires updating `.agents/TOOLS.md`
 - AGENTS.md must stay in sync: any change to project instructions in CLAUDE.md requires the same change in AGENTS.md
 - CONTRIBUTING.md must stay in sync: changes to commit/PR conventions, CI checks, or the release pipeline require the same change in CONTRIBUTING.md (the human-facing copy)
 - CLI changes require corresponding unit tests
 - Changing a function's return format: update existing tests to match and confirm pytest passes
-- Tests: `pytest-asyncio` with `asyncio_mode = "auto"`, factories in `tests/conftest.py` (`make_player()`, `make_team()`, `make_fixture()`)
+- Tests: `pytest-asyncio` with `asyncio_mode = "auto"`, factories in `tests/conftest.py` — `make_player()`, `make_team()`, `make_fixture()`, `make_history_row()`, and the draft equivalents (`make_draft_player()`, `make_draft_team()`, `make_draft_league_entry()`, `make_draft_standing()`)
+- The autouse `_isolated_user_dirs` fixture repoints all three `FPL_CLI_*` dirs at `tmp_path` and clears the resolver caches, so no test reads or writes real user data. It only works because paths resolve at point of use — a module-level constant binds during collection, before the fixture runs, and would hit the real location
 - Tests are hermetic: `pytest-socket` blocks all network via `addopts` (`--disable-socket --allow-unix-socket`), so a test that reaches a live endpoint fails when written. Stub the seam instead (see `stub_scoring_network_seams` in `tests/conftest.py` and the autouse fixtures in `tests/test_cli_player.py`); a test that genuinely needs a socket opts out with `@pytest.mark.enable_socket`. Watch for call sites that degrade gracefully on network failure — they hide the dependency until an upstream change makes a successful response wrong
 - After any task touching Python files, run `pyright` as a final check alongside ruff and pytest
