@@ -316,6 +316,39 @@ class TestFPLDraftClientOwnership:
             assert 1 in result or 3 in result
 
     @pytest.mark.asyncio
+    async def test_get_league_ownership_reuses_supplied_league_details(
+        self, mock_draft_bootstrap, mock_league_details, mock_game_data, mock_entry_picks
+    ):
+        """A caller holding league details should not pay for a second fetch.
+
+        get_league_details is not memoised, unlike get_bootstrap_static and
+        get_game_state, so callers that already fetched it pass it through.
+        """
+        client = FPLDraftClient()
+
+        with patch.object(client, "_get", new_callable=AsyncMock) as mock_get:
+            async def side_effect(endpoint):
+                if endpoint == "bootstrap-static":
+                    return mock_draft_bootstrap
+                elif endpoint == "league/12345/details":
+                    return mock_league_details
+                elif endpoint == "game":
+                    return mock_game_data
+                elif endpoint.startswith("entry/") and "/event/" in endpoint:
+                    return mock_entry_picks
+                return {}
+
+            mock_get.side_effect = side_effect
+
+            result = await client.get_league_ownership(
+                12345, mock_draft_bootstrap, mock_league_details,
+            )
+
+            requested = [c.args[0] for c in mock_get.call_args_list]
+            assert "league/12345/details" not in requested
+            assert 1 in result or 3 in result
+
+    @pytest.mark.asyncio
     async def test_get_available_players(
         self, mock_draft_bootstrap, mock_league_details, mock_game_data, mock_entry_picks
     ):

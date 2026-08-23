@@ -79,7 +79,20 @@ def player_command(
                 next_gw = await client.get_next_gameweek()
                 next_gw_id = next_gw["id"] if next_gw else 38
 
-                # Get draft ownership info if configured
+                # Search by name, ID, or Name (TEAM)
+                team_list = list(teams.values())
+                matches = resolve_players(name, players, teams=team_list)
+
+                if not matches:
+                    error_console.print(f"[yellow]No players found matching '{name}'[/yellow]")
+                    return
+
+                display = matches[:5]
+
+                # Get draft ownership info if configured. Deferred until after the
+                # name resolves: this costs a league-details fetch, a draft
+                # bootstrap, game state, and one squad fetch per league entry, and
+                # only the resolved players are ever shown as owned or available.
                 draft_owned = {}
                 draft_entries = {}
                 main_to_draft_id = {}  # Map main FPL player IDs to draft player IDs
@@ -96,8 +109,11 @@ def player_command(
                                 )
                                 draft_entries[entry["entry_id"]] = manager_name or "Unknown"
 
-                            # Get accurate ownership from actual squads (element-status can be stale)
-                            draft_owned = await draft_client.get_league_ownership(draft_league_id, draft_bootstrap)
+                            # Get accurate ownership from actual squads (element-status can be stale).
+                            # league_details is passed through — it is not memoised on the client.
+                            draft_owned = await draft_client.get_league_ownership(
+                                draft_league_id, draft_bootstrap, league_details,
+                            )
 
                             # Create mapping from main FPL IDs to draft IDs
                             # Draft API may use different player IDs than main FPL API
@@ -106,22 +122,12 @@ def player_command(
                                 (dp.get("web_name"), dp.get("team")): dp["id"]
                                 for dp in draft_players
                             }
-                            for p in players:
+                            for p in display:
                                 draft_id = draft_by_name_team.get((p.web_name, p.team_id))
                                 if draft_id:
                                     main_to_draft_id[p.id] = draft_id
                     except Exception as e:  # noqa: BLE001 — best-effort enrichment
                         logger.warning("Draft ID mapping failed: %s", e)
-
-                # Search by name, ID, or Name (TEAM)
-                team_list = list(teams.values())
-                matches = resolve_players(name, players, teams=team_list)
-
-                if not matches:
-                    error_console.print(f"[yellow]No players found matching '{name}'[/yellow]")
-                    return
-
-                display = matches[:5]
 
                 # Fetch Understat league data for enrichment. Deferred until after
                 # the name resolves: the scrape pulls the whole league table, and a
