@@ -723,6 +723,34 @@ Configuration uses two layers, deep-merged at runtime:
 
 Run `fpl init` to configure interactively. Only set values in `settings.yaml` that differ from defaults.
 
+### Setup Health Check
+
+```bash
+fpl doctor                      # Check IDs, data files, and directories
+fpl doctor --format json        # Machine-readable report (for agents/scripts)
+```
+
+Rolling a setup into a new season silently invalidates IDs and per-team files: a dead draft league returns nothing, a recycled draft entry ID resolves to a stranger's team, and a per-team file rebuilt in August can still describe last season's twenty clubs. None of these error — they produce plausible output. `fpl doctor` checks all of it in one pass:
+
+**IDs in `settings.yaml`** — each configured ID is resolved against the live API and the team/league name reported back, so a wrong-but-valid ID is visible:
+
+- `classic_entry_id` resolves, reporting the team and manager name
+- `classic_league_id` resolves, reporting the league name back — classic mini-leagues keep their ID across seasons, so resolution plus the name echo is the whole check
+- `draft_league_id` resolves; flagged when its draft was held in a previous season (draft leagues are recreated each season)
+- `draft_entry_id` resolves **and belongs to `draft_league_id`** (via the entry's `league_set`), catching a recycled ID that points at someone else's team — the recycled-ID verdict only fires when the league itself checked out, so a stale league ID cannot condemn a correct entry
+
+**Data files:**
+
+- `team_ratings.yaml` — season stamp and team set vs the live league (problems here are stale, not broken: the ratings service already ignores or rebuilds bad files)
+- `team_managers.yaml` — merged shipped + user copy covers exactly the current twenty clubs
+- `previews/` — optional season preview intel: a file for a club not in the current league is flagged (it loads and inflates the coverage gate), and files the loader skipped (previous season, malformed) are surfaced with `fpl intel` as the follow-up
+- `team_finances.json` — `scraped_at` falls within the current season
+- `player_prior.yaml` — season label matches (auto-invalidated otherwise)
+
+**Environment** — which directory each of config/data/cache resolved to and whether an `FPL_CLI_*` override is in effect, plus whether `settings.yaml` exists.
+
+Each finding is classified as **broken** (wrong answers now — fix it today), **stale** (self-corrects or needs one routine refresh), **skipped** (not configured/present), or **unchecked** (API unreachable). Exits non-zero when anything is broken, so it can gate scripts.
+
 ### Directories
 
 fpl-cli writes to three directories, each resolved via `platformdirs` and overridable with an env var:

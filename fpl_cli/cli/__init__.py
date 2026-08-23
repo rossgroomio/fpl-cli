@@ -13,6 +13,7 @@ from fpl_cli.cli.captain import captain_command
 from fpl_cli.cli.chips import chips_group
 from fpl_cli.cli.credentials import credentials_group
 from fpl_cli.cli.differentials import differentials_command
+from fpl_cli.cli.doctor import doctor_command
 from fpl_cli.cli.fdr import fdr_command
 from fpl_cli.cli.fixtures import fixtures_command
 from fpl_cli.cli.history import history_command
@@ -43,6 +44,12 @@ load_env_files()
 @click.pass_context
 def main(ctx: click.Context) -> None:
     """fpl-cli - Fantasy Premier League analysis for classic and draft formats."""
+    if ctx.invoked_subcommand == "doctor":
+        # Doctor diagnoses unusable FPL_CLI_* overrides, so it must start even
+        # when resolving a directory would fail -- migration and settings both
+        # resolve user dirs, and doctor re-reads settings itself, per check.
+        ctx.obj = CLIContext(format=None, settings={})
+        return
     # Deferred to invocation: the user dirs must not resolve until .env is loaded.
     ensure_legacy_migration()
     if ctx.invoked_subcommand == "init":
@@ -58,6 +65,7 @@ def main(ctx: click.Context) -> None:
 # --- Top-level commands ---
 main.add_command(init_command)
 main.add_command(status_command)
+main.add_command(doctor_command)
 main.add_command(fixtures_command)
 main.add_command(player_command)
 main.add_command(stats_command)
