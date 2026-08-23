@@ -453,6 +453,7 @@ class TestGwTrends:
 
         # players.csv fetched once, GW files fetched once each
         # (38 GW requests + 1 players request = 39 total, not 77)
+        assert respx.calls.call_count == 39
 
 
 class TestGwTrendWindowing:
