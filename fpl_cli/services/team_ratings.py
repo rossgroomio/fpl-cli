@@ -284,8 +284,12 @@ class TeamRatingsService:
 
         max_completed_gw = next_gw["id"] - 1
         if max_completed_gw < 1:
-            await self.seed_from_prior(client)
-            TeamRatingsService._refreshed_this_session = True
+            # Only mark the session refreshed on success: a failed attempt
+            # (no prior available, e.g. a transient outage) must be retried
+            # by the next ensure_fresh() call rather than locked out for the
+            # rest of the process.
+            if await self.seed_from_prior(client):
+                TeamRatingsService._refreshed_this_session = True
             return
 
         # Check staleness against metadata
@@ -311,7 +315,8 @@ class TeamRatingsService:
 
             if max_completed_gw < BLENDING_CUTOFF_GW:
                 prior = await generate_prior(client)
-                ratings = blend_with_prior(prior, ratings, max_completed_gw)
+                if prior:
+                    ratings = blend_with_prior(prior, ratings, max_completed_gw)
 
             self.save_ratings(
                 ratings,
@@ -320,6 +325,7 @@ class TeamRatingsService:
                 calculation_method="recent_form",
             )
             self._apply_overrides()
+            TeamRatingsService._refreshed_this_session = True
         elif not self._ratings:
             # A gameweek is under way but has produced nothing to rate teams on
             # yet — every fixture is still in flight, or each team has played
@@ -328,10 +334,12 @@ class TeamRatingsService:
             # the function returns having done nothing and, with no usable file
             # on disk, get_positional_fdr serves a neutral 4.0 to every caller.
             # The previous-season prior is available the whole time and is a
-            # strictly better answer than uniform difficulty.
-            await self.seed_from_prior(client)
-
-        TeamRatingsService._refreshed_this_session = True
+            # strictly better answer than uniform difficulty. As above, only
+            # mark refreshed on success so a transient failure can be retried.
+            if await self.seed_from_prior(client):
+                TeamRatingsService._refreshed_this_session = True
+        else:
+            TeamRatingsService._refreshed_this_session = True
 
     def check_team_set(self, current_teams: Iterable[str]) -> str | None:
         """Compare the rated clubs against the live league and record any drift.
@@ -623,7 +631,7 @@ class TeamRatingsService:
         if not self.has_ratings:
             return (
                 "⚠️ No team ratings available - every fixture will score a neutral 4.0. "
-                "Run `fpl ratings update` once results exist."
+                "Run `fpl ratings update` to seed estimates from last season's prior."
             )
 
         if self._team_set_warning:

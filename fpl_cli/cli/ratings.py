@@ -125,10 +125,12 @@ def ratings_update(since_gw: int | None, dry_run: bool, use_xg: bool):
                 method = "full_season_xg"
                 summary = "Understat xG (full season)"
                 # Understat covers the season to date, so the sample is however
-                # many gameweeks have completed.
-                fixtures = await client.get_fixtures()
+                # many gameweeks have completed. Reads from the bootstrap-static
+                # cache (already warmed by calculate_from_xg's get_teams() call)
+                # rather than a fresh fixtures/ request.
+                gameweeks = await client.get_gameweeks()
                 sample_gws = max(
-                    (f.gameweek for f in fixtures if f.finished and f.gameweek), default=0
+                    (gw["id"] for gw in gameweeks if gw.get("finished")), default=0
                 )
             else:
                 min_gw = since_gw or 1
@@ -147,16 +149,37 @@ def ratings_update(since_gw: int | None, dry_run: bool, use_xg: bool):
                 sample_gws = max_gw - min_gw + 1 if completed else 0
 
             if not ratings:
-                # Nothing to rate teams on. Saving nothing leaves whatever is on
-                # disk in place, which at a season rollover is last season's
-                # table (ignored, so every fixture scores a neutral 4.0) — and
+                # Nothing to rate teams on for this window. A file already on
+                # disk (current_ratings, loaded before anything ran) is left
+                # alone rather than replaced by a coarser prior estimate --
+                # e.g. --since-gw 15 requested before GW15 has produced a full
+                # home/away cycle for any club must not clobber GW1-14 data.
+                if current_ratings:
+                    console.print(
+                        "[yellow]No completed fixtures to calculate from for this window - "
+                        "keeping existing ratings unchanged.[/yellow]"
+                    )
+                    return
+                # Nothing usable is on disk either. Saving nothing here leaves
+                # a season-rollover file in place (ignored on its season
+                # stamp, so every fixture scores a neutral 4.0) — and
                 # `fpl doctor` sends users here precisely then. The
                 # previous-season prior is available the whole time.
                 if dry_run:
-                    console.print(
-                        "[yellow]No completed fixtures to calculate from - ratings would be "
-                        "estimated from last season's prior.[/yellow]"
-                    )
+                    # Check for real rather than assuming a prior exists, so
+                    # this can't promise an outcome the real run refuses.
+                    prior = await generate_prior(client)
+                    if prior:
+                        console.print(
+                            "[yellow]No completed fixtures to calculate from - ratings would "
+                            "be estimated from last season's prior.[/yellow]"
+                        )
+                    else:
+                        console.print(
+                            "[yellow]No completed fixtures to calculate from, and no "
+                            "previous-season data available either - ratings would be "
+                            "unchanged.[/yellow]"
+                        )
                     return
                 console.print(
                     "[yellow]No completed fixtures to calculate from - estimating from "
