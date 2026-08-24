@@ -11,7 +11,11 @@ from __future__ import annotations
 import dataclasses
 from typing import TYPE_CHECKING, Any, TypeVar
 
-from fpl_cli.services.scoring.constants import ATTACKING_POSITIONS
+from fpl_cli.services.scoring.constants import (
+    ATTACKING_POSITIONS,
+    FORM_TRAJECTORY_BOUNDS,
+    XGI_SUSTAINABILITY_BOUNDS,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -127,17 +131,18 @@ def compute_form_trajectory(history: list[dict[str, Any]], current_gw: int) -> f
 
     slope = numerator / denominator
 
-    # Clamped linear interpolation to [0.8, 1.2]
+    # Clamped linear interpolation to FORM_TRAJECTORY_BOUNDS
     # Neutral at slope=0; rising > 0, falling < 0
+    low, high = FORM_TRAJECTORY_BOUNDS
     if slope <= -1.5:
-        return 0.8
+        return low
     if slope <= 0.0:
-        # -1.5 -> 0.8, 0.0 -> 1.0
-        return 0.8 + (slope + 1.5) / 1.5 * 0.2
+        # -1.5 -> low, 0.0 -> 1.0
+        return low + (slope + 1.5) / 1.5 * (1.0 - low)
     if slope <= 2.0:
-        # 0.0 -> 1.0, 2.0 -> 1.2
-        return 1.0 + slope / 2.0 * 0.2
-    return 1.2
+        # 0.0 -> 1.0, 2.0 -> high
+        return 1.0 + slope / 2.0 * (high - 1.0)
+    return high
 
 
 def compute_xgi_sustainability(
@@ -171,9 +176,10 @@ def compute_xgi_sustainability(
     ]
     avg_divergence = sum(divergences) / len(divergences)
 
-    # Linear interpolation: divergence=0 -> 1.0, divergence=±0.3 -> 0.85/1.15
-    raw_mult = 1.0 - (avg_divergence / 0.3) * 0.15
-    multiplier = max(0.85, min(1.15, raw_mult))
+    # Linear interpolation: divergence=0 -> 1.0, divergence=±0.3 -> the clamp bounds
+    low, high = XGI_SUSTAINABILITY_BOUNDS
+    raw_mult = 1.0 - (avg_divergence / 0.3) * (high - 1.0)
+    multiplier = max(low, min(high, raw_mult))
 
     return multiplier, avg_divergence
 

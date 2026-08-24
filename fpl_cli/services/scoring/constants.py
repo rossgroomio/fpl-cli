@@ -2,16 +2,18 @@
 
 Every tunable in the scoring engine lives here: the StatWeight /
 QualityWeights types, the per-family weight configurations, position
-multipliers, normalisation ceilings (hand-derived MID/FWD anchors plus
-programmatically derived GK/DEF variants), consistency bonus magnitudes
-and phase-in, and the selectors that map a scoring family + position to
-its weights and ceiling.
+multipliers, the empirically calibrated quality ceilings (written by
+scripts/calibrate_quality_ceilings.py, guarded by the calibration
+fingerprint), consistency bonus magnitudes and phase-in, and the
+selectors that map a scoring family + position to its weights and
+ceiling.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import functools
+import hashlib
 from math import inf
 from typing import Literal, cast
 
@@ -186,25 +188,69 @@ ATTACKING_POSITIONS: frozenset[str] = frozenset({"MID", "FWD"})
 
 
 # ---------------------------------------------------------------------------
+# Calibration inputs shared with the signal implementations
+# ---------------------------------------------------------------------------
+# Named here rather than as literals at their point of use because the
+# calibrated quality ceilings below are functions of them:
+# scoring_weights_fingerprint() folds every one into the fingerprint recorded
+# at calibration time, and the drift-guard test fails when any of them moves
+# without re-running scripts/calibrate_quality_ceilings.py --write.
+
+# compute_form_trajectory clamp (signals.py)
+FORM_TRAJECTORY_BOUNDS: tuple[float, float] = (0.8, 1.2)
+# compute_xgi_sustainability clamp (signals.py); ATK positions only
+XGI_SUSTAINABILITY_BOUNDS: tuple[float, float] = (0.85, 1.15)
+# gk_xgc_quality = max(0, ANCHOR - xGC_per_90) * ramp (evaluation.py)
+GK_XGC_QUALITY_ANCHOR = 2.0
+# GK signal sample-size ramp: min(minutes / RAMP, 1.0) (evaluation.py)
+GK_SAMPLE_RAMP_MINUTES = 450
+# calculate_mins_factor full-appearance denominator (value_quality.py)
+MINS_FACTOR_FULL_APPEARANCE = 80
+
+
+def scoring_weights_fingerprint() -> str:
+    """Digest of every scoring input the calibrated ceilings depend on.
+
+    Recorded as CALIBRATION_FINGERPRINT when scripts/calibrate_quality_ceilings.py
+    writes the ceilings; recomputed by the drift-guard test. A mismatch means a
+    weight, position multiplier, or signal bound changed after calibration, so
+    the ceilings describe a raw-score distribution that no longer exists —
+    re-run the script rather than hand-adjusting (see the fpl-cli-docs solution
+    note "ceiling arithmetic compounds across weight changes").
+    """
+    parts: list[str] = []
+    for name, weights in (
+        ("target", TARGET_QUALITY_WEIGHTS),
+        ("differential", DIFFERENTIAL_QUALITY_WEIGHTS),
+        ("waiver", WAIVER_QUALITY_WEIGHTS),
+        ("value", VALUE_QUALITY_WEIGHTS),
+    ):
+        for variant_name, variant in (
+            ("base", weights),
+            ("def", weights.without_xgi()),
+            ("gk", weights.for_gk()),
+        ):
+            parts.append(f"{name}.{variant_name}={variant!r}")
+    parts.append(f"position_multiplier={sorted(POSITION_SCORE_MULTIPLIER.items())!r}")
+    parts.append(f"form_trajectory={FORM_TRAJECTORY_BOUNDS!r}")
+    parts.append(f"xgi_sustainability={XGI_SUSTAINABILITY_BOUNDS!r}")
+    parts.append(f"gk_xgc_anchor={GK_XGC_QUALITY_ANCHOR!r}")
+    parts.append(f"gk_ramp={GK_SAMPLE_RAMP_MINUTES!r}")
+    parts.append(f"mins_full_appearance={MINS_FACTOR_FULL_APPEARANCE!r}")
+    return hashlib.sha256("|".join(parts).encode()).hexdigest()[:16]
+
+
+# ---------------------------------------------------------------------------
 # Normalisation ceilings (SGW theoretical max, MID/FWD path)
 # ---------------------------------------------------------------------------
 
 # Captain: (matchup 8*2.0 + form min(7.5*1.5,10)*1.38 + xGI ~3.5 + pen ~1.2)
 #   * pos 1.0 * mins 1.0 + home 1.0 + cv_lineup 0.375
 CAPTAIN_CEILING_SGW = 34.2
-# Target: npxg 8 + xg_chain 3 + form 5*1.38 + ppg 4 + penalty 3 + matchup 6 + cv_target 0.75
-TARGET_CEILING = 31.7
-# Differential: npxg 8 + xg_chain 3 + form 7*1.38 + ppg 4 + penalty 3 + ownership 5 + matchup 6 + cv_diff 0.375
-DIFFERENTIAL_CEILING = 39.1
-# Waiver: quality ~25.7 (form 7*1.38) + matchup 6 + position 5 + cv_target 0.75 = 37.5
-WAIVER_CEILING = 37.5
 # Bench: core ~32.8 + cv_lineup 0.375 + coverage 2 + set-piece 0.5 + floor 0.75 + inv 0.375 = 36.8
 BENCH_CEILING = 36.8
 # Starting XI: core ~32.8 + cv_lineup 0.375, no bench bonuses
 STARTING_XI_CEILING = 33.2
-# Value: npxg 8 + xg_chain 2 + form 7*1.38 + ppg 5 + penalty 3 = 27.7 theoretical
-# Practical ceiling ~24.3 (elite MID scores ~20 raw). Validated: Salah-tier -> 87-92/100
-VALUE_CEILING = 24.3
 
 # Non-quality bonus caps used when deriving ceiling constants. Keep in sync
 # with ownership.py: _matchup_bonus, the ownership bonus in
@@ -214,12 +260,11 @@ _MATCHUP_MAX = 6.0           # matchup_avg_3gw max 8.0 * 0.75 * mins_factor 1.0
 _OWNERSHIP_MAX = 5.0         # (semi_differential_threshold 15 - 0) / divisor 3
 _POSITION_NEED_MAX = 5.0     # calculate_waiver_score empty-slot bonus
 # Form multipliers applied inside value_quality.calculate_player_quality_score.
-# The ATK path gets form_trajectory_max(1.2) * xgi_sustainability_max(1.15) = 1.38;
-# GK/DEF paths get form_trajectory_max only because signals.compute_xgi_sustainability
-# returns 1.0 for non-ATK positions. The ATK form ceiling is hand-rolled into
-# the TARGET/DIFFERENTIAL/VALUE constants above (see the `form N*1.38` terms);
-# _NON_ATK_FORM_MAX is used by _gk_quality_cap and _def_quality_cap below.
-_NON_ATK_FORM_MAX = 1.2
+# The ATK path gets form_trajectory_max * xgi_sustainability_max (1.2 * 1.15
+# = 1.38); GK/DEF paths get form_trajectory_max only because
+# signals.compute_xgi_sustainability returns 1.0 for non-ATK positions.
+# Used by _theoretical_quality_cap below.
+_NON_ATK_FORM_MAX = FORM_TRAJECTORY_BOUNDS[1]
 
 # Consistency bonus headroom — added inside ownership.py's
 # _calculate_quality_based_raw. cv_xgi_percentile in [0,1] × magnitude × 0.5
@@ -230,85 +275,118 @@ _CONSISTENCY_MAX_DIFF = 0.375    # (1.0 - 0.5) * CONSISTENCY_CV_DIFF (0.75)
 _CONSISTENCY_MAX_WAIVER = 0.75   # waiver uses CONSISTENCY_CV_TARGET too
 
 
-def _gk_quality_cap(weights: QualityWeights) -> float:
-    """Theoretical max of calculate_player_quality_score on the GK path.
+def _theoretical_quality_cap(weights: QualityWeights, position: Position) -> float:
+    """Weight-cap sum for a position's quality path, post-attenuation.
 
-    Derived from weight caps, pre-attenuation. Matches the signal set
-    evaluated inside calculate_player_quality_score when weights.for_gk()
-    is used: saves, xgc, cs, form (trajectory only — xgi_sustainability
-    is always 1.0 for GK, see compute_xgi_sustainability), ppg.
+    NOT a ceiling: this is the value the pre-#88 derivation used as one, and
+    the calibration measured it as overestimating achievable raw quality by
+    ~10-40% for every position whose signals do not saturate (elite npxG/90
+    is ~0.6 against the 0.8 the cap assumes; no keeper posts the 100%
+    clean-sheet rate gk_cs_rate.cap assumes). Kept as the sanity bracket the
+    calibrated ceilings are tested against: an anchor far above this is a
+    calibration-script bug, an anchor far below it is a weight change that
+    outran the recorded calibration. May be ``inf`` where a weight is
+    uncapped (waiver npxg) — the bracket test skips those terms' families.
     """
-    gk = weights.for_gk()
-    return (
-        gk.gk_saves_per_90.cap
-        + gk.gk_xgc_quality.cap
-        + gk.gk_cs_rate.cap
-        + gk.form.cap * _NON_ATK_FORM_MAX
-        + gk.ppg.cap
-    )
+    if position == "GK":
+        gk = weights.for_gk()
+        per90 = gk.gk_saves_per_90.cap + gk.gk_xgc_quality.cap + gk.gk_cs_rate.cap
+        form_max = _NON_ATK_FORM_MAX
+        form_cap, ppg_cap = gk.form.cap, gk.ppg.cap
+    elif position == "DEF":
+        defw = weights.without_xgi()
+        per90 = defw.dc_per_90.cap
+        form_max = _NON_ATK_FORM_MAX
+        form_cap, ppg_cap = defw.form.cap, defw.ppg.cap
+    else:
+        per90 = (
+            max(weights.npxg.cap + weights.xg_chain.cap, weights.xgi_fallback.cap)
+            + weights.penalty_xg.cap
+        )
+        form_max = FORM_TRAJECTORY_BOUNDS[1] * XGI_SUSTAINABILITY_BOUNDS[1]
+        form_cap, ppg_cap = weights.form.cap, weights.ppg.cap
+    return (per90 + form_cap * form_max + ppg_cap) * POSITION_SCORE_MULTIPLIER[position]
 
 
-def _def_quality_cap(weights: QualityWeights) -> float:
-    """Theoretical max of calculate_player_quality_score on the DEF path.
+# Quality ceilings: the empirically calibrated elite raw quality per
+# (family, position), replacing both the hand-tuned MID/FWD anchors and the
+# theoretical cap-sum GK/DEF derivations (issue #88 — the cap sums assume
+# signal saturation that only DEF exhibits, so elite MID/FWD/GK landed ~60
+# where elite DEFs landed ~89). Values are post-position-multiplier raw
+# quality; ownership families add bonus headroom programmatically below.
+# --- BEGIN calibrated quality ceilings (generated) ---
+# Calibrated by scripts/calibrate_quality_ceilings.py against 2025-26
+# (snapshots GW10, GW15, GW19, GW24, GW29, GW34, GW38; pool 300+ minutes;
+# elite anchor top_raw/0.92; run 2026-08-24).
+# Do not hand-edit: re-run the script with --write after any weight change.
+QUALITY_CEILINGS: dict[tuple[str, Position], float] = {
+    ("target", "GK"): 11.99,
+    ("target", "DEF"): 9.63,
+    ("target", "MID"): 13.90,
+    ("target", "FWD"): 20.17,
+    ("differential", "GK"): 13.41,
+    ("differential", "DEF"): 11.78,
+    ("differential", "MID"): 16.03,
+    ("differential", "FWD"): 21.49,
+    ("waiver", "GK"): 13.75,
+    ("waiver", "DEF"): 12.26,
+    ("waiver", "MID"): 15.07,
+    ("waiver", "FWD"): 18.12,
+    ("value", "GK"): 14.42,
+    ("value", "DEF"): 13.23,
+    ("value", "MID"): 17.00,
+    ("value", "FWD"): 21.60,
+}
+CALIBRATION_FINGERPRINT = "5bb59e6ad625d23f"
+# --- END calibrated quality ceilings (generated) ---
 
-    Matches the signal set under weights.without_xgi(): form (trajectory
-    only — xgi_sustainability is always 1.0 for DEF), ppg, and
-    dc_per_90. xGI family, GK components and penalty_xg are zeroed by
-    without_xgi().
-    """
-    defw = weights.without_xgi()
-    return (
-        defw.form.cap * _NON_ATK_FORM_MAX
-        + defw.ppg.cap
-        + defw.dc_per_90.cap
-    )
+# Ownership-family ceilings = calibrated quality anchor + bonus headroom.
+# The headroom terms stay derived (not calibrated) because their maxima are
+# genuinely achievable — a player can face matchup 8.0 and sit at 0%
+# ownership — and including them keeps the consistency bonus from silently
+# clamping a top-pool player to 100 (same reasoning as the PR #17 DEF
+# rebuild, now uniform across all four positions).
+_OWNERSHIP_HEADROOM: dict[str, float] = {
+    "target": _MATCHUP_MAX + _CONSISTENCY_MAX_TARGET,
+    "differential": _OWNERSHIP_MAX + _MATCHUP_MAX + _CONSISTENCY_MAX_DIFF,
+    "waiver": _MATCHUP_MAX + _POSITION_NEED_MAX + _CONSISTENCY_MAX_WAIVER,
+}
 
-
-# Position-specific ceilings — derived at import so a weight change
-# auto-propagates. Quality components attenuated by
-# POSITION_SCORE_MULTIPLIER[position]; matchup, ownership and
-# position-need bonuses are added un-attenuated. Drift is guarded
-# empirically by TestCeilingValidationBands (elite-player bounds).
-_GK_MULT = POSITION_SCORE_MULTIPLIER["GK"]
-_DEF_MULT = POSITION_SCORE_MULTIPLIER["DEF"]
-# Ownership-family ceilings include _CONSISTENCY_MAX_* headroom so a top-pool
-# player with high cv_xgi_percentile does not overflow the ceiling and get
-# silently clamped to 100 (losing the consistency signal's discrimination).
-# MID/FWD TARGET_CEILING / DIFFERENTIAL_CEILING / WAIVER_CEILING already bake
-# this in (see the cv_* terms in their derivation comments above); GK and DEF
-# must add it explicitly because their caps are computed programmatically.
-GK_TARGET_CEILING = (
-    _gk_quality_cap(TARGET_QUALITY_WEIGHTS) * _GK_MULT + _MATCHUP_MAX + _CONSISTENCY_MAX_TARGET
-)
+GK_TARGET_CEILING = QUALITY_CEILINGS[("target", "GK")] + _OWNERSHIP_HEADROOM["target"]
+DEF_TARGET_CEILING = QUALITY_CEILINGS[("target", "DEF")] + _OWNERSHIP_HEADROOM["target"]
+MID_TARGET_CEILING = QUALITY_CEILINGS[("target", "MID")] + _OWNERSHIP_HEADROOM["target"]
+FWD_TARGET_CEILING = QUALITY_CEILINGS[("target", "FWD")] + _OWNERSHIP_HEADROOM["target"]
 GK_DIFFERENTIAL_CEILING = (
-    _gk_quality_cap(DIFFERENTIAL_QUALITY_WEIGHTS) * _GK_MULT
-    + _OWNERSHIP_MAX + _MATCHUP_MAX + _CONSISTENCY_MAX_DIFF
-)
-GK_WAIVER_CEILING = (
-    _gk_quality_cap(WAIVER_QUALITY_WEIGHTS) * _GK_MULT
-    + _MATCHUP_MAX + _POSITION_NEED_MAX + _CONSISTENCY_MAX_WAIVER
-)
-# Value family has no matchup or consistency — compute_quality_value skips
-# _calculate_quality_based_raw entirely.
-GK_VALUE_CEILING = _gk_quality_cap(VALUE_QUALITY_WEIGHTS) * _GK_MULT
-
-# DEF ceilings: derived from without_xgi() caps, not MID-anchored ceilings.
-# Replaces the former _position_ceiling("DEF", ...) scaling which produced a
-# mathematical no-op on the VALUE family (both numerator and denominator
-# scaled by 0.85) and a MID-anchored ceiling on target/diff/waiver that
-# compressed real DEF pools into a narrow upper band.
-DEF_TARGET_CEILING = (
-    _def_quality_cap(TARGET_QUALITY_WEIGHTS) * _DEF_MULT + _MATCHUP_MAX + _CONSISTENCY_MAX_TARGET
+    QUALITY_CEILINGS[("differential", "GK")] + _OWNERSHIP_HEADROOM["differential"]
 )
 DEF_DIFFERENTIAL_CEILING = (
-    _def_quality_cap(DIFFERENTIAL_QUALITY_WEIGHTS) * _DEF_MULT
-    + _OWNERSHIP_MAX + _MATCHUP_MAX + _CONSISTENCY_MAX_DIFF
+    QUALITY_CEILINGS[("differential", "DEF")] + _OWNERSHIP_HEADROOM["differential"]
 )
-DEF_WAIVER_CEILING = (
-    _def_quality_cap(WAIVER_QUALITY_WEIGHTS) * _DEF_MULT
-    + _MATCHUP_MAX + _POSITION_NEED_MAX + _CONSISTENCY_MAX_WAIVER
+MID_DIFFERENTIAL_CEILING = (
+    QUALITY_CEILINGS[("differential", "MID")] + _OWNERSHIP_HEADROOM["differential"]
 )
-DEF_VALUE_CEILING = _def_quality_cap(VALUE_QUALITY_WEIGHTS) * _DEF_MULT
+FWD_DIFFERENTIAL_CEILING = (
+    QUALITY_CEILINGS[("differential", "FWD")] + _OWNERSHIP_HEADROOM["differential"]
+)
+GK_WAIVER_CEILING = QUALITY_CEILINGS[("waiver", "GK")] + _OWNERSHIP_HEADROOM["waiver"]
+DEF_WAIVER_CEILING = QUALITY_CEILINGS[("waiver", "DEF")] + _OWNERSHIP_HEADROOM["waiver"]
+MID_WAIVER_CEILING = QUALITY_CEILINGS[("waiver", "MID")] + _OWNERSHIP_HEADROOM["waiver"]
+FWD_WAIVER_CEILING = QUALITY_CEILINGS[("waiver", "FWD")] + _OWNERSHIP_HEADROOM["waiver"]
+# Value family has no matchup or consistency — compute_quality_value skips
+# _calculate_quality_based_raw entirely.
+GK_VALUE_CEILING = QUALITY_CEILINGS[("value", "GK")]
+DEF_VALUE_CEILING = QUALITY_CEILINGS[("value", "DEF")]
+MID_VALUE_CEILING = QUALITY_CEILINGS[("value", "MID")]
+FWD_VALUE_CEILING = QUALITY_CEILINGS[("value", "FWD")]
+
+# Legacy shared-ceiling names, kept for the package's public API. MID and FWD
+# no longer share a ceiling (elite FWD raw runs ~12% above elite MID, so a
+# shared anchor permanently under-scores elite MIDs); these alias the MID
+# variant.
+TARGET_CEILING = MID_TARGET_CEILING
+DIFFERENTIAL_CEILING = MID_DIFFERENTIAL_CEILING
+WAIVER_CEILING = MID_WAIVER_CEILING
+VALUE_CEILING = MID_VALUE_CEILING
 
 # ---------------------------------------------------------------------------
 # Minutes factor activation
@@ -369,29 +447,27 @@ FDR_MODE = "difference"
 # Ceiling / weight selectors
 # ---------------------------------------------------------------------------
 
-_OWNERSHIP_CEILINGS: dict[tuple[str, str], float] = {
-    ("target", "GK"): GK_TARGET_CEILING,
-    ("target", "DEF"): DEF_TARGET_CEILING,
-    ("differential", "GK"): GK_DIFFERENTIAL_CEILING,
-    ("differential", "DEF"): DEF_DIFFERENTIAL_CEILING,
-    ("waiver", "GK"): GK_WAIVER_CEILING,
-    ("waiver", "DEF"): DEF_WAIVER_CEILING,
-}
-_OWNERSHIP_BASE_CEILINGS: dict[str, float] = {
-    "target": TARGET_CEILING,
-    "differential": DIFFERENTIAL_CEILING,
-    "waiver": WAIVER_CEILING,
-}
+def _ownership_ceiling_for(
+    family: Literal["target", "differential", "waiver"], position: Position
+) -> float:
+    """Calibrated ceiling for an ownership family — total over all four positions.
 
-
-def _ownership_ceiling_for(family: Literal["target", "differential", "waiver"], position: Position) -> float:
-    return _OWNERSHIP_CEILINGS.get((family, position), _OWNERSHIP_BASE_CEILINGS[family])
+    MID and FWD no longer fall back to a shared base ceiling: every
+    (family, position) pair carries its own calibrated anchor. Raises
+    KeyError on an unknown family (as before) and on an unknown position
+    (previously the silent base-ceiling fallback).
+    """
+    if family not in _OWNERSHIP_HEADROOM:
+        raise KeyError(family)
+    return QUALITY_CEILINGS[(family, position)] + _OWNERSHIP_HEADROOM[family]
 
 
 def _value_weights_and_ceiling(position: Position) -> tuple[QualityWeights, float]:
-    """Select VALUE_QUALITY_WEIGHTS variant and ceiling for a position."""
+    """Select VALUE_QUALITY_WEIGHTS variant and calibrated ceiling for a position."""
     if position == "GK":
-        return VALUE_QUALITY_WEIGHTS.for_gk(), GK_VALUE_CEILING
-    if position == "DEF":
-        return VALUE_QUALITY_WEIGHTS.without_xgi(), DEF_VALUE_CEILING
-    return VALUE_QUALITY_WEIGHTS, VALUE_CEILING
+        weights = VALUE_QUALITY_WEIGHTS.for_gk()
+    elif position == "DEF":
+        weights = VALUE_QUALITY_WEIGHTS.without_xgi()
+    else:
+        weights = VALUE_QUALITY_WEIGHTS
+    return weights, QUALITY_CEILINGS[("value", position)]

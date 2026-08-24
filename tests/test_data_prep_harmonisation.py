@@ -237,7 +237,9 @@ class TestTargetCharacterisation:
             positional_fdr=2.5,
         )
         score = calculate_target_score(evaluation, next_gw_id=20)
-        assert score == 58
+        # MID normalised against MID_TARGET_CEILING (calibrated quality anchor
+        # 13.90 + target headroom 6.75 = 20.65; was 58 under the old shared 31.7).
+        assert score == 89
 
     def test_def_with_dc_per_90(self):
         """DEF uses without_xgi weights, dc_per_90 active."""
@@ -253,8 +255,9 @@ class TestTargetCharacterisation:
             positional_fdr=3.0,
         )
         score = calculate_target_score(evaluation, next_gw_id=20)
-        # DEF normalised against DEF_TARGET_CEILING (empirical without_xgi cap × 0.85 + matchup).
-        assert score == 70
+        # DEF normalised against DEF_TARGET_CEILING (calibrated quality anchor
+        # 9.63 + target headroom 6.75 = 16.38, slightly below the old cap-sum).
+        assert score == 73
 
 
 # ---------------------------------------------------------------------------
@@ -288,8 +291,10 @@ class TestWaiverCharacterisation:
             evaluation, squad_by_position=self._squad_by_pos(),
             team_counts=self._team_counts(), next_gw_id=20,
         )
-        # FWD position is empty -> +5 bonus, but ARS stacking -> -5
-        assert score == 45
+        # FWD position is empty -> +5 bonus, but ARS stacking -> -5.
+        # FWD now has its own FWD_WAIVER_CEILING (calibrated quality anchor
+        # 18.12 + waiver headroom 11.75 = 29.87; was 45 under the old shared 37.5).
+        assert score == 56
 
     def test_mid_no_penalties(self):
         """MID without stacking penalty, nailed starter."""
@@ -303,7 +308,9 @@ class TestWaiverCharacterisation:
             evaluation, squad_by_position=self._squad_by_pos(),
             team_counts=self._team_counts(), next_gw_id=20,
         )
-        assert score == 48
+        # MID normalised against MID_WAIVER_CEILING (calibrated quality anchor
+        # 15.07 + waiver headroom 11.75 = 26.82; was 48 under the old shared 37.5).
+        assert score == 68
 
     def test_def_with_dc_per_90(self):
         """DEF uses without_xgi weights, dc_per_90 active."""
@@ -317,8 +324,9 @@ class TestWaiverCharacterisation:
             evaluation, squad_by_position=self._squad_by_pos(),
             team_counts=self._team_counts(), next_gw_id=20,
         )
-        # DEF normalised against DEF_WAIVER_CEILING (empirical without_xgi cap × 0.85 + bonuses).
-        assert score == 67
+        # DEF normalised against DEF_WAIVER_CEILING (calibrated quality anchor
+        # 12.26 + waiver headroom 11.75 = 24.01, slightly below the old cap-sum).
+        assert score == 69
 
 
 # ---------------------------------------------------------------------------

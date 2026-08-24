@@ -522,10 +522,10 @@ class TestWaiverAgentScoring:
 
         score = agent._calculate_waiver_score(player, squad_by_position, next_gw_id=25)
 
-        # per90=0 (mins_factor=0), form=9, ppg=2.4 + fdr(0.75) + position need(5) = 17.15
-        # Normalised: 17.15 / 40.5 * 100 ≈ 42
-        assert score >= 0
-        assert score < 50  # Form/ppg + FDR + position need, but no per-90
+        # per90=0 (mins_factor=0); form=7.0 (6.0*1.3 capped at 7),
+        # ppg=2.4 (4.0*0.6) + position need(5) = 14.4 raw
+        # Normalised: 14.4 / MID_WAIVER_CEILING (26.82) * 100 ≈ 54
+        assert score == 54  # Form/ppg + position need, but no per-90
 
         # With appearances, per-90 stats contribute → higher score
         player_with_apps = {**player, "minutes": 900, "appearances": 10}
