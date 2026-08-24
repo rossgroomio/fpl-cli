@@ -11,6 +11,7 @@ from fpl_cli.services.scoring import (
     GW_SELECTION_WEIGHTS,
     VALID_FORMATIONS,
     Position,
+    _position_from_element_type,
     apply_adjusted_npxg,
     build_fixture_matchups,
     build_player_evaluation,
@@ -20,7 +21,6 @@ from fpl_cli.services.scoring import (
     per_90_rates,
     shrink_scores,
 )
-from fpl_cli.services.scoring.constants import _position_from_element_type
 
 if TYPE_CHECKING:
     from fpl_cli.models.fixture import Fixture

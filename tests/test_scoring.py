@@ -3001,7 +3001,7 @@ class TestGKScoringPath:
         """Regression guard: DEF path (without_xgi) is attenuated by POSITION_SCORE_MULTIPLIER[DEF]
         and normalised against DEF_TARGET_CEILING (empirical DEF cap, not MID-anchored × 0.85).
         """
-        from tests.test_player_scoring import TestCharacterisationSnapshot
+        from tests.test_scoring import TestCharacterisationSnapshot
         snap = TestCharacterisationSnapshot()
         def_eval, _ = snap._build_def()
         assert calculate_target_score(def_eval, next_gw_id=20) == 66

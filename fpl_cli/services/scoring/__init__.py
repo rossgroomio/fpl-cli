@@ -56,6 +56,9 @@ from fpl_cli.services.scoring.constants import (
     Position,
     QualityWeights,
     StatWeight,
+    _as_position,
+    _position_from_element_type,
+    _value_weights_and_ceiling,
 )
 from fpl_cli.services.scoring.data_prep import (
     ScoringContext,
@@ -155,6 +158,12 @@ __all__ = [
     "Position",
     "QualityWeights",
     "StatWeight",
+    # constants — private helpers, but consumed outside the package
+    # (transfer_eval, squad_allocator, player_prior), so exported here
+    # rather than reached for two levels deep in scoring.constants.
+    "_as_position",
+    "_position_from_element_type",
+    "_value_weights_and_ceiling",
     # signals
     "NEUTRAL_SIGNALS",
     "ConsistencySignals",
