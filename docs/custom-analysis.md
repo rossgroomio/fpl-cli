@@ -38,7 +38,7 @@ Disabled before GW5 (insufficient data). A player averaging 70 minutes per appea
 
 **Form trajectory** (0.8-1.2) is computed from a median-filtered slope of per-GW points over the last 7 GWs played (12-GW lookback cap). Rising form boosts the form contribution; falling form discounts it. Applied to the form component in all scoring contexts.
 
-**Availability penalty** (-3pt) applied when a player's status != "a" and chance_of_playing < 75%.
+**Availability penalty** (-3pt) applied when a player's status != "a" and chance_of_playing < 75%. Reaches waiver scoring only -- see [Shared Flow](#shared-flow) for why target and differential are exempt.
 
 ## Matchup Scoring
 
@@ -154,8 +154,10 @@ All three ownership scores route through `_calculate_quality_based_score()` / `_
 1. **Quality baseline** via `calculate_player_quality_score()` with the relevant weight set
 2. **Underperformance regression bonus** for players outperforming xG
 3. **3-GW matchup** (scalar average, weight 0.75 via `_matchup_bonus`)
-4. **Availability penalty** (-3pt when status flagged < 75%)
+4. **Availability penalty** (-3pt when status flagged < 75%) -- **waiver only in practice**, see below
 5. All three include `penalty_xG` via `StatWeight`
+
+The availability penalty is in the shared flow but only reaches waiver scoring. It is gated on `status != "a"`, and the `PlayerStats` record behind `fpl stats --targets` / `--differentials` carries no `status` field, so the gate never opens there. That is deliberate rather than an oversight: those two lists are discovery surfaces answering a 3-6 GW question, while `chance_of_playing` is a next-round flag, and `fpl stats --available-only` already gives users an explicit lever for "only players I can field this week". Plumbing `status` into `PlayerStats` would silently switch the penalty on for both commands; `tests/test_stats.py::TestStatsAgentAvailabilityIsNotScored` fails if that happens.
 
 A minutes factor adjusts per-90 quality components and the fixture component.
 

@@ -4,6 +4,8 @@
 import pytest
 
 from fpl_cli.agents.analysis.stats import StatsAgent
+from fpl_cli.models.player import PlayerPosition, PlayerStatus
+from tests.conftest import make_player, make_team
 
 
 @pytest.fixture
@@ -110,6 +112,64 @@ class TestStatsAgentNpxGScoring:
         # Both must be positive
         assert score_with > 0
         assert score_without > 0
+
+
+class TestStatsAgentAvailabilityIsNotScored:
+    """Target and differential scores must not filter on availability.
+
+    These two lists are discovery surfaces: they answer "who is worth buying
+    over the next few gameweeks", a 3-6 GW question, while
+    ``chance_of_playing`` is a next-round flag. Users who want the list
+    narrowed to players they can field this week have an explicit lever in
+    ``fpl stats --available-only`` (see ``tests/test_cli_stats.py``); a silent
+    penalty inside the score would duplicate that lever, remove the choice,
+    and move a player down the table with nothing in the row explaining why.
+
+    The ownership family's shared flow does carry a -3 availability penalty,
+    but it is gated on ``status != "a"`` and ``PlayerStats`` carries no
+    ``status`` field, so it cannot fire here. That is load-bearing rather than
+    incidental: plumbing ``status`` through to ``PlayerStats`` — for display,
+    say — would silently switch the penalty on for both commands. These tests
+    fail if that happens, so the change has to be a deliberate one.
+    """
+
+    @staticmethod
+    def _stats_for(agent: StatsAgent, **player_kwargs) -> dict:
+        """Build a PlayerStats record through the real builder, not by hand."""
+        player = make_player(
+            position=PlayerPosition.MIDFIELDER,
+            form=7.0, points_per_game=6.5, minutes=600,
+            goals_scored=4, assists=3,
+            expected_goals=3.5, expected_assists=2.0,
+            **player_kwargs,
+        )
+        return agent._calculate_player_stats(player, {1: make_team()})
+
+    def test_target_score_ignores_a_zero_chance_of_playing(self):
+        agent = StatsAgent(config={"gameweeks": 0})
+        fit = self._stats_for(agent)
+        ruled_out = self._stats_for(
+            agent, status=PlayerStatus.INJURED, chance_of_playing_next_round=0,
+        )
+        assert agent._calculate_target_score(ruled_out) == agent._calculate_target_score(fit)
+
+    def test_differential_score_ignores_a_zero_chance_of_playing(self):
+        agent = StatsAgent(config={"gameweeks": 0})
+        fit = self._stats_for(agent)
+        ruled_out = self._stats_for(
+            agent, status=PlayerStatus.INJURED, chance_of_playing_next_round=0,
+        )
+        assert agent._calculate_differential_score(ruled_out) == agent._calculate_differential_score(fit)
+
+    def test_scores_ignore_a_doubt_percentage_too(self):
+        """Not just the 0% case — no availability bucket moves these scores."""
+        agent = StatsAgent(config={"gameweeks": 0})
+        fit = self._stats_for(agent)
+        for cop in (25, 50, 75):
+            doubtful = self._stats_for(
+                agent, status=PlayerStatus.DOUBTFUL, chance_of_playing_next_round=cop,
+            )
+            assert agent._calculate_target_score(doubtful) == agent._calculate_target_score(fit)
 
 
 class TestStatsAgentReliability:
