@@ -198,8 +198,16 @@ ATTACKING_POSITIONS: frozenset[str] = frozenset({"MID", "FWD"})
 
 # compute_form_trajectory clamp (signals.py)
 FORM_TRAJECTORY_BOUNDS: tuple[float, float] = (0.8, 1.2)
+# compute_form_trajectory slope interpolation breakpoints (signals.py):
+# slope <= min saturates at the lower bound, slope >= max at the upper.
+# In the fingerprint because the interpolation shape moves the whole pool's
+# trajectory distribution even when the clamp bounds stay put.
+FORM_TRAJECTORY_SLOPE_RANGE: tuple[float, float] = (-1.5, 2.0)
 # compute_xgi_sustainability clamp (signals.py); ATK positions only
 XGI_SUSTAINABILITY_BOUNDS: tuple[float, float] = (0.85, 1.15)
+# compute_xgi_sustainability divergence scale (signals.py): a per-match
+# GI-xGI divergence of ±SCALE maps to the clamp bounds
+XGI_DIVERGENCE_SCALE = 0.3
 # gk_xgc_quality = max(0, ANCHOR - xGC_per_90) * ramp (evaluation.py)
 GK_XGC_QUALITY_ANCHOR = 2.0
 # GK signal sample-size ramp: min(minutes / RAMP, 1.0) (evaluation.py)
@@ -233,7 +241,9 @@ def scoring_weights_fingerprint() -> str:
             parts.append(f"{name}.{variant_name}={variant!r}")
     parts.append(f"position_multiplier={sorted(POSITION_SCORE_MULTIPLIER.items())!r}")
     parts.append(f"form_trajectory={FORM_TRAJECTORY_BOUNDS!r}")
+    parts.append(f"form_trajectory_slope={FORM_TRAJECTORY_SLOPE_RANGE!r}")
     parts.append(f"xgi_sustainability={XGI_SUSTAINABILITY_BOUNDS!r}")
+    parts.append(f"xgi_divergence_scale={XGI_DIVERGENCE_SCALE!r}")
     parts.append(f"gk_xgc_anchor={GK_XGC_QUALITY_ANCHOR!r}")
     parts.append(f"gk_ramp={GK_SAMPLE_RAMP_MINUTES!r}")
     parts.append(f"mins_full_appearance={MINS_FACTOR_FULL_APPEARANCE!r}")
@@ -337,7 +347,7 @@ QUALITY_CEILINGS: dict[tuple[str, Position], float] = {
     ("value", "MID"): 17.00,
     ("value", "FWD"): 21.60,
 }
-CALIBRATION_FINGERPRINT = "5bb59e6ad625d23f"
+CALIBRATION_FINGERPRINT = "dee364bf03a67756"
 # --- END calibrated quality ceilings (generated) ---
 
 # Ownership-family ceilings = calibrated quality anchor + bonus headroom.
