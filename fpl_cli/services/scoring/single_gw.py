@@ -453,7 +453,9 @@ def select_starting_xi(
             for team exposure penalty. If None, no exposure penalty applied.
 
     Returns dict with starting_xi, bench, formation, total_score,
-    team_exposure_penalties.
+    team_exposure_penalties. If no valid formation has enough available
+    (non-excluded) players per position, starting_xi is empty, formation
+    is None, and total_score is 0.0 -- every player lands on the bench.
     """
     # Separate by position
     by_pos: dict[str, list[dict[str, Any]]] = {"GK": [], "DEF": [], "MID": [], "FWD": []}
@@ -478,9 +480,9 @@ def select_starting_xi(
     # GK: always exactly 1 starter (best available)
     gk_starter = available["GK"][0] if available["GK"] else None
 
-    best_formation = None
+    best_formation: str | None = None
     best_xi: list[dict[str, Any]] = []
-    best_total = -1.0
+    best_total: float | None = None
     best_penalties: list[dict[str, Any]] = []
 
     for def_n, mid_n, fwd_n in VALID_FORMATIONS:
@@ -525,7 +527,7 @@ def select_starting_xi(
                             "penalty": -2,
                         })
 
-        if formation_total > best_total:
+        if best_total is None or formation_total > best_total:
             best_total = formation_total
             best_formation = f"{def_n}-{mid_n}-{fwd_n}"
             best_xi = ([gk_starter] if gk_starter else []) + outfield
@@ -539,7 +541,7 @@ def select_starting_xi(
     return {
         "starting_xi": best_xi,
         "bench": bench,
-        "formation": best_formation or "4-4-2",
-        "total_score": round(best_total, 2),
+        "formation": best_formation,
+        "total_score": round(best_total, 2) if best_total is not None else 0.0,
         "team_exposure_penalties": best_penalties,
     }
