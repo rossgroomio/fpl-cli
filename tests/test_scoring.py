@@ -236,6 +236,16 @@ class TestNormaliseScore:
     def test_target_ceiling(self):
         assert normalise_score(16.75, TARGET_CEILING) == 53
 
+    def test_negative_clamped_to_zero(self):
+        """Raw scores go negative via the availability and stacking penalties (#116)."""
+        assert normalise_score(-5.0, 37.5) == 0
+
+    def test_large_negative_clamped_to_zero(self):
+        assert normalise_score(-100.0, 31.5) == 0
+
+    def test_just_below_zero_clamped(self):
+        assert normalise_score(-0.01, 31.5) == 0
+
 
 class TestOwnershipCeilingFor:
     """Unit tests for the unified ownership ceiling dispatch helper."""
@@ -770,6 +780,23 @@ class TestCalculateWaiverScore:
             team_counts=self._team_counts(), next_gw_id=20,
         )
         assert score == 27
+
+    def test_injured_player_at_stacked_club_floors_at_zero(self):
+        """Availability + stacking penalties drove the raw score below zero (#116).
+
+        Pre-fix this printed -13 in `fpl waivers`, a column documented as
+        0-100: raw -5.0 against the 37.5 MID waiver ceiling.
+        """
+        eval, _ = build_player_evaluation(
+            {"position": "MID", "form": 0.0, "ppg": 0.0, "minutes": 0, "appearances": 0,
+             "xGI_per_90": 0.0, "status": "i", "chance_of_playing": 0, "team_short": "ARS"},
+            matchup_avg_3gw=5.0, positional_fdr=3.0,
+        )
+        score = calculate_waiver_score(
+            eval, squad_by_position=self._squad_by_pos(),
+            team_counts=self._team_counts(), next_gw_id=20,
+        )
+        assert score == 0
 
     def test_team_stacking_penalty(self):
         eval, _ = build_player_evaluation(
