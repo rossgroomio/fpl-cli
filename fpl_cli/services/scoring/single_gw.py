@@ -453,9 +453,10 @@ def select_starting_xi(
             for team exposure penalty. If None, no exposure penalty applied.
 
     Returns dict with starting_xi, bench, formation, total_score,
-    team_exposure_penalties. If no valid formation has enough available
-    (non-excluded) players per position, starting_xi is empty, formation
-    is None, and total_score is 0.0 -- every player lands on the bench.
+    team_exposure_penalties. If no available (non-excluded) GK exists, or
+    no valid formation has enough available outfield players per position,
+    starting_xi is empty, formation is None, and total_score is 0.0 --
+    every player lands on the bench.
     """
     # Separate by position
     by_pos: dict[str, list[dict[str, Any]]] = {"GK": [], "DEF": [], "MID": [], "FWD": []}
@@ -485,53 +486,55 @@ def select_starting_xi(
     best_total: float | None = None
     best_penalties: list[dict[str, Any]] = []
 
-    for def_n, mid_n, fwd_n in VALID_FORMATIONS:
-        # Check we have enough available players per position
-        if len(available["DEF"]) < def_n or len(available["MID"]) < mid_n or len(available["FWD"]) < fwd_n:
-            continue
+    # No available GK -> no formation can field a legal XI, regardless of
+    # outfield strength.
+    if gk_starter is not None:
+        for def_n, mid_n, fwd_n in VALID_FORMATIONS:
+            # Check we have enough available players per position
+            if len(available["DEF"]) < def_n or len(available["MID"]) < mid_n or len(available["FWD"]) < fwd_n:
+                continue
 
-        picks = {
-            "DEF": available["DEF"][:def_n],
-            "MID": available["MID"][:mid_n],
-            "FWD": available["FWD"][:fwd_n],
-        }
-        outfield = picks["DEF"] + picks["MID"] + picks["FWD"]
-        formation_total = sum(p["lineup_score_raw"] for p in outfield)
-        if gk_starter:
+            picks = {
+                "DEF": available["DEF"][:def_n],
+                "MID": available["MID"][:mid_n],
+                "FWD": available["FWD"][:fwd_n],
+            }
+            outfield = picks["DEF"] + picks["MID"] + picks["FWD"]
+            formation_total = sum(p["lineup_score_raw"] for p in outfield)
             formation_total += gk_starter["lineup_score_raw"]
 
-        # Team exposure penalty
-        penalties: list[dict[str, Any]] = []
-        if team_fixtures:
-            team_counts: dict[str, list[dict[str, Any]]] = {}
-            xi_players = ([gk_starter] if gk_starter else []) + outfield
-            for p in xi_players:
-                team_counts.setdefault(p["team"], []).append(p)
+            # Team exposure penalty
+            penalties: list[dict[str, Any]] = []
+            if team_fixtures:
+                team_counts: dict[str, list[dict[str, Any]]] = {}
+                xi_players = [gk_starter, *outfield]
+                for p in xi_players:
+                    team_counts.setdefault(p["team"], []).append(p)
 
-            for team_short, team_players in team_counts.items():
-                if len(team_players) < 2:
-                    continue
-                tf = team_fixtures.get(team_short, {})
-                for p in team_players[1:]:
-                    # ATK FDR for MID/FWD, DEF FDR for GK/DEF
-                    if p["position"] in ("MID", "FWD"):
-                        fdr = tf.get("atk_fdr", 0.0)
-                    else:
-                        fdr = tf.get("def_fdr", 0.0)
-                    if fdr >= 5.0:
-                        formation_total -= 2
-                        penalties.append({
-                            "team": team_short,
-                            "player": p["name"],
-                            "fdr": fdr,
-                            "penalty": -2,
-                        })
+                for team_short, team_players in team_counts.items():
+                    if len(team_players) < 2:
+                        continue
+                    tf = team_fixtures.get(team_short, {})
+                    for p in team_players[1:]:
+                        # ATK FDR for MID/FWD, DEF FDR for GK/DEF
+                        if p["position"] in ("MID", "FWD"):
+                            fdr = tf.get("atk_fdr", 0.0)
+                        else:
+                            fdr = tf.get("def_fdr", 0.0)
+                        if fdr >= 5.0:
+                            formation_total -= 2
+                            penalties.append({
+                                "team": team_short,
+                                "player": p["name"],
+                                "fdr": fdr,
+                                "penalty": -2,
+                            })
 
-        if best_total is None or formation_total > best_total:
-            best_total = formation_total
-            best_formation = f"{def_n}-{mid_n}-{fwd_n}"
-            best_xi = ([gk_starter] if gk_starter else []) + outfield
-            best_penalties = penalties
+            if best_total is None or formation_total > best_total:
+                best_total = formation_total
+                best_formation = f"{def_n}-{mid_n}-{fwd_n}"
+                best_xi = [gk_starter, *outfield]
+                best_penalties = penalties
 
     # Bench: everyone not in the XI
     xi_ids = {p["id"] for p in best_xi}

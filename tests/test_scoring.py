@@ -2899,6 +2899,20 @@ class TestSelectStartingXI:
         assert result["total_score"] == 0.0
         assert len(result["bench"]) == 15
 
+    def test_no_feasible_formation_when_no_gk_available(self):
+        """A missing GK is infeasible too, even though every outfield
+        position has plenty of available players and a formation with
+        a high total score would otherwise be chosen."""
+        squad = self._squad_15()
+        for p in squad:
+            if p["position"] == "GK":
+                p["excluded"] = True
+        result = select_starting_xi(squad)
+        assert result["formation"] is None
+        assert result["starting_xi"] == []
+        assert result["total_score"] == 0.0
+        assert len(result["bench"]) == 15
+
     def test_bgw_multiple_zero_score_players(self):
         squad = self._squad_15()
         # Give several players 0 score (BGW)

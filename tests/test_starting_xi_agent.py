@@ -225,6 +225,31 @@ class TestStartingXIAgent:
         assert result.data == {}
         assert "no legal starting xi" in result.message.lower()
 
+    async def test_both_gks_grounded_returns_failed(self, squad_data):
+        """A squad with no available GK should fail the same way as one
+        with too few available outfield players, not silently start 10."""
+        players, teams, _ = squad_data
+        grounded_players = [
+            p.model_copy(update={"chance_of_playing_next_round": 0})
+            if p.position_name == "GK"
+            else p
+            for p in players
+        ]
+        scoring_data = _mock_scoring_data(grounded_players, teams)
+        squad_ids = [p.id for p in grounded_players]
+
+        with patch(
+            "fpl_cli.agents.analysis.starting_xi.prepare_scoring_data",
+            new_callable=AsyncMock,
+            return_value=scoring_data,
+        ):
+            async with StartingXIAgent() as agent:
+                result = await agent.run({"squad": squad_ids})
+
+        assert result.status == AgentStatus.FAILED
+        assert result.data == {}
+        assert "no legal starting xi" in result.message.lower()
+
     async def test_no_squad_returns_failed(self):
         """Agent should return FAILED when no squad is provided."""
         async with StartingXIAgent() as agent:
