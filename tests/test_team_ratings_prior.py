@@ -193,8 +193,8 @@ class TestFootballDataGetMatches:
         mock_response_data = {
             "matches": [
                 {
-                    "homeTeam": {"tla": "ARS"},
-                    "awayTeam": {"tla": "MCI"},
+                    "homeTeam": {"id": 57, "tla": "ARS"},
+                    "awayTeam": {"id": 65, "tla": "MCI"},
                     "score": {"fullTime": {"home": 2, "away": 1}},
                     "matchday": 10,
                 },
@@ -211,7 +211,9 @@ class TestFootballDataGetMatches:
                 result = await client.get_matches(competition="PL", season=2024)
 
         assert len(result) == 1
+        assert result[0]["home_team_id"] == 57
         assert result[0]["home_team_tla"] == "ARS"
+        assert result[0]["away_team_id"] == 65
         assert result[0]["home_score"] == 2
         assert result[0]["matchday"] == 10
 
@@ -433,3 +435,139 @@ class TestPromotedFallback:
         # COV is ranked from its data; HUL gets the flat promoted estimate.
         assert (result["HUL"].atk_home, result["HUL"].atk_away) == (5, 6)
         assert (result["HUL"].def_home, result["HUL"].def_away) == (5, 6)
+
+
+class TestTlaToFplMapping:
+    """Regression coverage for the NOT/NFO naming mismatch (#110).
+
+    football-data uses "NOT" for Nottingham Forest; FPL uses "NFO". Without
+    the mapping, Forest's matches never join, and generate_prior reclassifies
+    an established side as promoted -- see TestTlaToFplMapping below and
+    _promoted_fallback().
+    """
+
+    def test_not_maps_to_nfo(self):
+        from fpl_cli.services.team_ratings_prior import TLA_TO_FPL
+
+        assert TLA_TO_FPL["NOT"] == "NFO"
+
+    def test_forest_matches_join_under_nfo_not_left_unresolved(self):
+        """A "NOT"-labelled match must resolve to NFO, not fall through as if unseen."""
+        from fpl_cli.services.team_ratings_prior import _matches_to_performances
+
+        matches = [
+            {"home_team_tla": "NOT", "away_team_tla": "ARS", "home_score": 2, "away_score": 1},
+            {"home_team_tla": "ARS", "away_team_tla": "NOT", "home_score": 1, "away_score": 1},
+        ]
+
+        performances = _matches_to_performances(matches)
+
+        assert "NFO" in performances
+        assert "NOT" not in performances
+
+
+class TestAmbiguousTla:
+    """A tla backed by two distinct football-data ids must not pool their results (#110).
+
+    football-data's 2025-26 Championship serves both Sheffield United and
+    Sheffield Wednesday as "SHE". Pooling them would average two different
+    clubs' seasons into one record.
+    """
+
+    # Two distinct team ids (1 and 2) both appear under tla "SHE"; id 3 (COV)
+    # is unambiguous throughout.
+    AMBIGUOUS_MATCHES = [
+        {
+            "home_team_id": 1, "home_team_tla": "SHE",
+            "away_team_id": 3, "away_team_tla": "COV",
+            "home_score": 2, "away_score": 0,
+        },
+        {
+            "home_team_id": 3, "home_team_tla": "COV",
+            "away_team_id": 2, "away_team_tla": "SHE",
+            "home_score": 1, "away_score": 1,
+        },
+        {
+            "home_team_id": 2, "home_team_tla": "SHE",
+            "away_team_id": 3, "away_team_tla": "COV",
+            "home_score": 0, "away_score": 3,
+        },
+    ]
+
+    def test_ambiguous_team_gets_no_performance_record(self):
+        from fpl_cli.services.team_ratings_prior import _matches_to_performances
+
+        performances = _matches_to_performances(self.AMBIGUOUS_MATCHES)
+
+        assert "SHE" not in performances
+
+    def test_unambiguous_opponent_is_still_counted(self):
+        """COV's own record must survive even though its opponent's tla collides."""
+        from fpl_cli.services.team_ratings_prior import _matches_to_performances
+
+        performances = _matches_to_performances(self.AMBIGUOUS_MATCHES)
+
+        assert "COV" in performances
+        assert performances["COV"].home_games == 1
+        assert performances["COV"].away_games == 2
+
+    def test_collision_logs_a_warning(self, caplog):
+        import logging
+
+        from fpl_cli.services.team_ratings_prior import _matches_to_performances
+
+        with caplog.at_level(logging.WARNING, logger="fpl_cli.services.team_ratings_prior"):
+            _matches_to_performances(self.AMBIGUOUS_MATCHES)
+
+        assert "SHE" in caplog.text
+
+
+class TestMissingPerformanceRecordWarnings:
+    """A team with no performance record must be surfaced, not silently reclassified (#110)."""
+
+    async def test_championship_lookup_warns_for_an_uncovered_promoted_team(self, caplog):
+        import logging
+
+        from fpl_cli.services.team_ratings_prior import _championship_performances
+
+        with (
+            caplog.at_level(logging.WARNING, logger="fpl_cli.services.team_ratings_prior"),
+            patch(
+                "fpl_cli.api.football_data.FootballDataClient",
+                return_value=_championship_fd(DOMINANT_CHAMPIONSHIP),
+            ),
+        ):
+            result = await _championship_performances({"COV", "ZZZ"}, 2025)
+
+        assert result is not None
+        assert "COV" in result
+        assert "ZZZ" not in result
+        assert "ZZZ" in caplog.text
+
+    async def test_generate_prior_logs_when_a_team_gets_no_performance_record(self, caplog, tmp_path):
+        import logging
+
+        from fpl_cli.services.team_ratings import TeamPerformance
+        from tests.conftest import make_team
+
+        client = AsyncMock()
+        client.get_teams = AsyncMock(return_value=[
+            make_team(id=1, name="Arsenal", short_name="ARS"),
+            make_team(id=2, name="Man City", short_name="MCI"),
+            make_team(id=3, name="Coventry", short_name="COV"),
+        ])
+        pl = {
+            "ARS": TeamPerformance("ARS", 2.5, 2.2, 0.6, 0.8, 19, 19),
+            "MCI": TeamPerformance("MCI", 2.4, 2.1, 0.7, 0.9, 19, 19),
+        }
+
+        with (
+            caplog.at_level(logging.INFO, logger="fpl_cli.services.team_ratings_prior"),
+            patch("fpl_cli.services.team_ratings_prior.prior_config_path", return_value=tmp_path / "p.yaml"),
+            patch("fpl_cli.services.team_ratings_prior._prior_from_understat", return_value=pl),
+            patch("fpl_cli.services.team_ratings_prior._championship_performances",
+                  new_callable=AsyncMock, return_value=None),
+        ):
+            await generate_prior(client)
+
+        assert "COV" in caplog.text
