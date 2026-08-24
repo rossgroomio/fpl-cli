@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 from fpl_cli.agents.base import Agent, AgentResult, AgentStatus
 from fpl_cli.api.fpl import FPLClient
 from fpl_cli.models.player import FORMATION_LIMITS, PlayerStatus
-from fpl_cli.services.player_scoring import (
+from fpl_cli.services.scoring import (
     ConsistencySignals,
     ScoringContext,
     apply_adjusted_npxg,

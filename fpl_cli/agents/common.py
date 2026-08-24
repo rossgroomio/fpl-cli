@@ -16,8 +16,8 @@ from fpl_cli.api.understat import UnderstatClient, match_fpl_to_understat
 from fpl_cli.constants import MIN_MINUTES_FOR_PER90
 from fpl_cli.models.types import EnrichedPlayer
 
-# Re-export: canonical location is now fpl_cli.services.player_scoring
-from fpl_cli.services.player_scoring import build_understat_by_player_id as build_understat_by_player_id
+# Re-export: canonical location is now fpl_cli.services.scoring
+from fpl_cli.services.scoring import build_understat_by_player_id as build_understat_by_player_id
 from fpl_cli.utils.text import strip_diacritics
 
 

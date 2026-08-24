@@ -25,17 +25,32 @@ def stub_scoring_network_seams():
     directly. This fixture is the single home for those patches (#53): test
     modules opt in with a one-line autouse wrapper, so closing a new seam in
     prepare_scoring_data happens here once instead of drifting per-file.
+
+    Each seam is patched twice: on scoring.data_prep (where
+    prepare_scoring_data resolves the names at call time) and on the
+    scoring package root (where CLI commands lazily import them mid-run).
+    Patching only one leaves the other lookup path live.
     """
     from fpl_cli.api.fpl import FPLClient
 
     with (
         patch(
-            "fpl_cli.services.player_scoring.build_understat_by_player_id",
+            "fpl_cli.services.scoring.data_prep.build_understat_by_player_id",
             new_callable=AsyncMock,
             return_value={},
         ),
         patch(
-            "fpl_cli.services.player_scoring.fetch_match_records",
+            "fpl_cli.services.scoring.build_understat_by_player_id",
+            new_callable=AsyncMock,
+            return_value={},
+        ),
+        patch(
+            "fpl_cli.services.scoring.data_prep.fetch_match_records",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        patch(
+            "fpl_cli.services.scoring.fetch_match_records",
             new_callable=AsyncMock,
             return_value=None,
         ),

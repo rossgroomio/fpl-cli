@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from fpl_cli.services.player_scoring import ConsistencySignals
+    from fpl_cli.services.scoring import ConsistencySignals
 
 import click
 from rich.table import Table
@@ -190,7 +190,7 @@ def stats_command(
                 import httpx
 
                 from fpl_cli.api.understat import UnderstatClient, match_fpl_to_understat
-                from fpl_cli.services.player_scoring import compute_quality_value, compute_rolling_pts_per_m
+                from fpl_cli.services.scoring import compute_quality_value, compute_rolling_pts_per_m
 
                 try:
                     async with UnderstatClient() as us_client:
@@ -254,7 +254,7 @@ def stats_command(
                         )
 
                     # Build consistency lookup for display
-                    from fpl_cli.services.player_scoring import (
+                    from fpl_cli.services.scoring import (
                         build_consistency_lookup,
                         compute_median_elo,
                         fetch_match_records,

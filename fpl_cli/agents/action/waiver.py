@@ -13,7 +13,7 @@ from fpl_cli.agents.common import (
 from fpl_cli.api.fpl import FPLClient
 from fpl_cli.api.fpl_draft import FPLDraftClient
 from fpl_cli.models.types import EnrichedPlayer, WaiverTarget
-from fpl_cli.services.player_scoring import (
+from fpl_cli.services.scoring import (
     ConsistencySignals,
     apply_adjusted_npxg,
     apply_consistency,

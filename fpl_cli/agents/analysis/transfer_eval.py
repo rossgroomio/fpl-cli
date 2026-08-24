@@ -6,11 +6,9 @@ from typing import TYPE_CHECKING, Any, TypedDict
 
 from fpl_cli.agents.base import Agent, AgentResult, AgentStatus
 from fpl_cli.api.fpl import FPLClient
-from fpl_cli.services.player_scoring import (
+from fpl_cli.services.scoring import (
     ConsistencySignals,
     ScoringContext,
-    _as_position,
-    _value_weights_and_ceiling,
     apply_adjusted_npxg,
     apply_consistency,
     apply_shrinkage,
@@ -26,6 +24,7 @@ from fpl_cli.services.player_scoring import (
     normalise_score,
     prepare_scoring_data,
 )
+from fpl_cli.services.scoring.constants import _as_position, _value_weights_and_ceiling
 
 if TYPE_CHECKING:
     from fpl_cli.models.player import Player

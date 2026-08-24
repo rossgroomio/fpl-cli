@@ -15,7 +15,7 @@ from fpl_cli.cli._context import Format, console, error_console, get_format, is_
 from fpl_cli.cli._helpers import _fdr_style
 from fpl_cli.cli._json import emit_json, json_output_mode, output_format_option
 from fpl_cli.models.player import resolve_players
-from fpl_cli.services.player_scoring import (
+from fpl_cli.services.scoring import (
     ConsistencySignals,
     build_npxg_lookup_from_records,
     compute_median_elo,
@@ -260,7 +260,7 @@ def player_command(
 
                     # Build consistency lookup from match records + histories
                     if match_data:
-                        from fpl_cli.services.player_scoring import build_consistency_lookup
+                        from fpl_cli.services.scoring import build_consistency_lookup
 
                         median_elo = compute_median_elo(match_data)
                         pos_map = {p.id: p.position_name for p in players}

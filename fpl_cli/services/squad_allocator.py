@@ -7,11 +7,10 @@ from typing import TYPE_CHECKING
 
 from fpl_cli.models.player import PlayerStatus
 from fpl_cli.services.player_prior import CUTOFF_GW
-from fpl_cli.services.player_scoring import (
+from fpl_cli.services.scoring import (
     GW_SELECTION_WEIGHTS,
     VALID_FORMATIONS,
     Position,
-    _position_from_element_type,
     apply_adjusted_npxg,
     build_fixture_matchups,
     build_player_evaluation,
@@ -21,11 +20,12 @@ from fpl_cli.services.player_scoring import (
     per_90_rates,
     shrink_scores,
 )
+from fpl_cli.services.scoring.constants import _position_from_element_type
 
 if TYPE_CHECKING:
     from fpl_cli.models.fixture import Fixture
     from fpl_cli.models.player import Player
-    from fpl_cli.services.player_scoring import ScoringData
+    from fpl_cli.services.scoring import ScoringData
     from fpl_cli.services.team_ratings import TeamRating
 
 

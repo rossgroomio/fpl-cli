@@ -103,7 +103,7 @@ def generate_player_prior(
     Returns:
         Dict of player_id -> PlayerPrior.
     """
-    from fpl_cli.services.player_scoring import _position_from_element_type
+    from fpl_cli.services.scoring.constants import _position_from_element_type
 
     prev_season = _previous_season_label()
 

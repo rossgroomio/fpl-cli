@@ -42,7 +42,7 @@ flowchart TB
     end
 
     subgraph Services["Services (agent-reachable)"]
-        player_scoring[player_scoring<br/>Scoring engines]
+        scoring[scoring/<br/>Scoring engine package]
         player_prior[player_prior<br/>Bayesian early-season confidence]
         team_ratings[TeamRatingsService<br/>1-7 strength scale]
         matchup[matchup<br/>3-GW matchup scores]
@@ -115,12 +115,12 @@ flowchart TB
 
     %% Agent -> Service connections
     fixture --> team_ratings & fixture_preds & matchup
-    captain --> player_scoring
-    bench --> player_scoring
-    starting_xi --> player_scoring
-    transfer_eval --> player_scoring
-    stats --> player_scoring
-    waiver --> player_scoring
+    captain --> scoring
+    bench --> scoring
+    starting_xi --> scoring
+    transfer_eval --> scoring
+    stats --> scoring
+    waiver --> scoring
     scout --> Prompts
 
     %% Agent -> API connections
@@ -139,7 +139,7 @@ flowchart TB
     player_prior --> historical_provider
     historical_provider --> vaastav_client
     historical_provider --> core_insights_client
-    player_scoring --> player_prior
+    scoring --> player_prior
     team_ratings --> understat_client
     team_ratings --> football_data
 
@@ -179,7 +179,7 @@ flowchart TB
     class stats,captain,squad_analyzer,bench,starting_xi,transfer_eval analysis
     class waiver action
     class report orch
-    class player_scoring,team_ratings,matchup,fixture_preds,team_form service
+    class scoring,team_ratings,matchup,fixture_preds,team_form service
     class fpl_client,draft_client,understat_client,vaastav_client,core_insights_client,historical_provider,football_data,scraper,anthropic_prov,openai_prov,perplexity_prov api
     class fpl_api,draft_api,understat_web,vaastav_gh,core_insights_gh,football_api,llm_apis,fpl_web external
     class console,obsidian output
@@ -372,7 +372,7 @@ Services live in `fpl_cli/services/` and provide the computation layer between a
 
 | Service | Purpose |
 |---|---|
-| `player_scoring` | Central scoring engine: `prepare_scoring_data()`, all score functions, `shrink_scores()`. Form modifiers: `compute_form_trajectory()` (direction over recent GWs) and `compute_xgi_sustainability()` (ATK-only rolling xGI divergence -> [0.85, 1.15] multiplier). Fixture-adjusted npxG: `compute_adjusted_npxg()` / `build_adjusted_npxg_lookup()` normalise historical xG by opponent Elo; `apply_adjusted_npxg()` overwrites `npxG_per_90` in agent enrichment when data is available. Consistency signals: `build_consistency_lookup()` computes 5 per-player signals (CV-xGI percentile, blank rate, floor percentile, involvement rate, GK consistency) with GW6-10 phase-in; additive bonuses per scoring family (target/waiver cv*1.5, differential inverted cv*0.75, lineup cv*0.75, bench floor*1.5+inv*0.75) |
+| `scoring/` | Central scoring engine, a package with the public API re-exported from its root (agents import `fpl_cli.services.scoring`). `constants` holds every weight set, ceiling, and consistency magnitude; `data_prep` holds `prepare_scoring_data()`; `evaluation` builds enrichment and `PlayerEvaluation`/`PlayerIdentity`; the scoring families split into `value_quality` (quality baseline + `compute_quality_value()`), `ownership` (target/differential/waiver), and `single_gw` (captain/bench/lineup/XI); `display` owns 0-100 normalisation and `pick_display_ceiling()`; `shrinkage` owns `shrink_scores()`. `signals` holds the form modifiers — `compute_form_trajectory()` (direction over recent GWs) and `compute_xgi_sustainability()` (ATK-only rolling xGI divergence -> [0.85, 1.15] multiplier) — plus fixture-adjusted npxG (`compute_adjusted_npxg()` / `build_adjusted_npxg_lookup()` normalise historical xG by opponent Elo; `apply_adjusted_npxg()` overwrites `npxG_per_90` in agent enrichment when data is available) and consistency signals (`build_consistency_lookup()` computes 5 per-player signals — CV-xGI percentile, blank rate, floor percentile, involvement rate, GK consistency — with GW6-10 phase-in; additive bonuses per scoring family: target/waiver cv*1.5, differential inverted cv*0.75, lineup cv*0.75, bench floor*1.5+inv*0.75) |
 | `player_prior` | Bayesian early-season confidence (GW1-10 shrinkage); threads `PlayerProfile.reliability` (historical availability rate) through `PlayerPrior` to agents |
 | `team_ratings` | TeamRatingsService + Calculator (1-7 scale, 4 axes). `seed_from_prior()` rebuilds from the previous-season prior instead of serving last season's table whenever the current season cannot rate teams: pre-season, and again in the gap after GW1 kicks off, where the pre-season branch has closed but `calculate_from_fixtures()` still returns nothing (it needs a home *and* an away result per club) — without the second case every fixture fell through to a neutral 4.0. Season-aware: a file stamped (or dated) to a previous season is ignored rather than served, taking its `based_on_gws` with it so a new season recalculates. `check_team_set()` diffs the rated clubs against `bootstrap-static` and names the promoted clubs missing and the relegated ones still rated — the check that catches a rollover a date cannot. `has_ratings` / `is_uniform` / `is_preseason_estimate` flag rating sets that cannot produce meaningful fixture difficulty; every warning surfaces via `get_staleness_warning()` |
 | `matchup` | Fixture matchup scoring (0-10), 3-GW recency-weighted |
@@ -542,7 +542,16 @@ fpl_cli/
 │       ├── openai_compat.py      # OpenAICompatProvider (OpenAI, Groq, Together, Ollama)
 │       └── perplexity.py         # PerplexityProvider (extends OpenAICompat)
 ├── services/
-│   ├── player_scoring.py         # Scoring engines + prepare_scoring_data() + shrink_scores() + consistency signals
+│   ├── scoring/                  # Central scoring engine package (public API re-exported from __init__)
+│   │   ├── constants.py          # Weights, ceilings, position multipliers, consistency magnitudes
+│   │   ├── signals.py            # Form trajectory, xGI sustainability, consistency, adjusted npxG
+│   │   ├── evaluation.py         # Enrichment assembly + PlayerEvaluation / PlayerIdentity
+│   │   ├── value_quality.py      # Quality baseline + VALUE family (compute_quality_value)
+│   │   ├── ownership.py          # Target / differential / waiver formulas
+│   │   ├── single_gw.py          # Captain / bench / lineup / starting XI formulas
+│   │   ├── display.py            # 0-100 normalisation + display ceiling routing
+│   │   ├── shrinkage.py          # Early-season shrinkage toward position means
+│   │   └── data_prep.py          # ScoringContext / ScoringData + prepare_scoring_data()
 │   ├── player_prior.py           # Player prior (Bayesian early-season confidence)
 │   ├── team_ratings.py           # TeamRatingsService + Calculator (1-7 scale)
 │   ├── team_ratings_prior.py     # Previous-season prior + Bayesian blending (cutoff GW12)

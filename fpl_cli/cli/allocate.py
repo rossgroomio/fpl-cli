@@ -12,7 +12,7 @@ from rich.table import Table
 
 from fpl_cli.cli._context import console
 from fpl_cli.cli._json import emit_json, emit_json_error, json_output_mode, output_format_option
-from fpl_cli.services.player_scoring import normalise_score, pick_display_ceiling
+from fpl_cli.services.scoring import normalise_score, pick_display_ceiling
 
 if TYPE_CHECKING:
     from fpl_cli.services.squad_allocator import ScoredPlayer, SquadResult
@@ -87,7 +87,7 @@ def allocate_command(
 
     async def _run() -> None:
         from fpl_cli.api.fpl import FPLClient
-        from fpl_cli.services.player_scoring import prepare_scoring_data
+        from fpl_cli.services.scoring import prepare_scoring_data
         from fpl_cli.services.squad_allocator import (
             compute_fixture_coefficients,
             score_all_players,

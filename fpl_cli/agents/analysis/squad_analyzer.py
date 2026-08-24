@@ -9,7 +9,7 @@ from typing import Any
 from fpl_cli.agents.base import Agent, AgentResult, AgentStatus
 from fpl_cli.agents.common import get_actual_squad_picks
 from fpl_cli.api.fpl import FPLClient
-from fpl_cli.services.player_scoring import compute_rolling_pts_per_m
+from fpl_cli.services.scoring import compute_rolling_pts_per_m
 
 
 class SquadAnalyzerAgent(Agent):

@@ -9,7 +9,7 @@ from fpl_cli.agents.common import fetch_understat_lookup
 from fpl_cli.api.fpl import FPLClient
 from fpl_cli.models.types import PlayerStats
 from fpl_cli.services.matchup import calculate_matchup_score
-from fpl_cli.services.player_scoring import (
+from fpl_cli.services.scoring import (
     ConsistencySignals,
     apply_adjusted_npxg,
     apply_consistency,

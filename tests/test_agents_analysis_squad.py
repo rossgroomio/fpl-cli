@@ -8,7 +8,7 @@ from fpl_cli.agents.analysis.bench_order import BenchOrderAgent
 from fpl_cli.agents.analysis.squad_analyzer import SquadAnalyzerAgent
 from fpl_cli.agents.base import AgentStatus
 from fpl_cli.models.player import PlayerPosition, PlayerStatus
-from fpl_cli.services.player_scoring import ScoringContext
+from fpl_cli.services.scoring import ScoringContext
 from fpl_cli.services.team_ratings import TeamRatingsService
 from tests.conftest import make_fixture, make_player, make_team
 
