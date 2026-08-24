@@ -187,6 +187,15 @@ class FPLPriceScraper:
                 " or set FPL_EMAIL and FPL_PASSWORD environment variables."
             )
 
+        if os.getenv("FPL_BROWSER_EXECUTABLE") and os.getenv("FPL_BROWSER_CHANNEL"):
+            # Playwright's browserType.launch() checks executablePath first and never
+            # consults channel once it's set, so honouring both silently drops one.
+            raise ValueError(
+                "FPL_BROWSER_EXECUTABLE and FPL_BROWSER_CHANNEL are mutually exclusive"
+                " (Playwright ignores the channel once an executable path is set) -"
+                " unset one."
+            )
+
         async with async_playwright() as p:
             launch_args = []
             if os.getenv("FPL_BROWSER_IGNORE_CERTS"):
@@ -194,9 +203,15 @@ class FPLPriceScraper:
             # Extra flags for constrained environments, e.g. a TLS-inspecting proxy
             # that rejects a modern ClientHello (see FPL_BROWSER_EXECUTABLE below).
             if extra_args := os.getenv("FPL_BROWSER_ARGS"):
-                launch_args.extend(shlex.split(extra_args))
+                try:
+                    launch_args.extend(shlex.split(extra_args))
+                except ValueError as e:
+                    raise ValueError(f"FPL_BROWSER_ARGS is not valid shell syntax: {e}") from e
 
-            launch_kwargs = {"headless": headless, "args": launch_args}
+            launch_kwargs: dict[str, bool | str | list[str]] = {
+                "headless": headless,
+                "args": launch_args,
+            }
             # Let the environment pin a specific browser binary or channel. Some
             # egress proxies RST any ClientHello over 512 bytes or carrying ECH,
             # which the newest bundled Chrome always sends; pointing at an older
@@ -237,7 +252,10 @@ class FPLPriceScraper:
                 return finances
 
             finally:
-                await browser.close()
+                try:
+                    await browser.close()
+                except Exception as e:  # noqa: BLE001 — cleanup best-effort, must not mask the original error
+                    logger.debug("Failed to close browser cleanly: %s", e)
 
     # `or {}` on each step: FPL briefly returns {"player": null} in the post-login
     # window before the session is fully hydrated. .get(key, {}) only defaults on

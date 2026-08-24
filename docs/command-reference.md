@@ -431,9 +431,9 @@ fpl credentials set          # Store FPL email + password in system keyring
 
 If instead it fails with `ERR_CONNECTION_RESET` or `ERR_TUNNEL_CONNECTION_FAILED` during the TLS handshake, the proxy is rejecting the browser's ClientHello itself (some legacy middleboxes RST any hello over 512 bytes or one carrying the Encrypted-ClientHello extension, which the newest bundled Chrome always sends). Point the scraper at a browser that emits a smaller, ECH-free hello:
 
-- `FPL_BROWSER_EXECUTABLE` — absolute path to a browser binary (e.g. an older bundled Chromium such as `chromium-1194` under Playwright's browsers path).
-- `FPL_BROWSER_CHANNEL` — a Playwright channel (`chrome`, `chromium`, `msedge`) instead of an explicit path.
-- `FPL_BROWSER_ARGS` — extra launch flags, space-separated (e.g. `--disable-features=EncryptedClientHello`).
+- `FPL_BROWSER_EXECUTABLE` — absolute path to a browser binary (e.g. an older bundled Chromium such as `chromium-1194` under Playwright's browsers path). Mutually exclusive with `FPL_BROWSER_CHANNEL`.
+- `FPL_BROWSER_CHANNEL` — a Playwright channel (`chrome`, `chromium`, `msedge`) instead of an explicit path. Mutually exclusive with `FPL_BROWSER_EXECUTABLE` — setting both raises an error rather than silently picking one.
+- `FPL_BROWSER_ARGS` — extra launch flags, space-separated (e.g. `--disable-features=EncryptedClientHello`). Parsed with POSIX shell-quoting rules, even on Windows — escape backslashes in a path (`C:\\Users\\foo`) or use forward slashes.
 
 ```bash
 export FPL_BROWSER_EXECUTABLE=/path/to/chromium-1194/chrome-linux/chrome

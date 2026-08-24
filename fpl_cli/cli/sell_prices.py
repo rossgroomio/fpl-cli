@@ -15,6 +15,16 @@ from fpl_cli.cli._context import Format, console, error_console, get_format
 from fpl_cli.cli._json import emit_json, emit_json_error, json_output_mode, output_format_option
 from fpl_cli.scraper.fpl_prices import TeamFinances
 
+# Chromium error codes a TLS-inspecting proxy rejecting the ClientHello can surface as,
+# depending on whether it RSTs the connection or just drops/hangs it.
+_PROXY_TLS_ERROR_MARKERS = (
+    "ERR_CONNECTION_RESET",
+    "ERR_TUNNEL_CONNECTION_FAILED",
+    "ERR_SSL_PROTOCOL_ERROR",
+    "ERR_CONNECTION_CLOSED",
+    "ERR_EMPTY_RESPONSE",
+)
+
 
 @click.command("sell-prices")
 @click.option("--refresh", "-r", is_flag=True, help="Force refresh (scrapes FPL website)")
@@ -82,7 +92,7 @@ def sell_prices_command(ctx: click.Context, refresh: bool, visible: bool, output
             console.print("  1. Run: playwright install chromium")
             console.print("  2. Check credentials: `fpl credentials set`")
             console.print("  3. Try with --visible flag to see browser")
-            if "ERR_CONNECTION_RESET" in str(result) or "ERR_TUNNEL_CONNECTION_FAILED" in str(result):
+            if any(marker in str(result) for marker in _PROXY_TLS_ERROR_MARKERS):
                 console.print(
                     "  4. Behind a TLS-inspecting proxy the browser's ClientHello may be"
                     " rejected. Point at an older bundled browser, e.g."

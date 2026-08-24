@@ -160,6 +160,55 @@ class TestSummarySection:
         assert "Free transfers:" in result.output
 
 
+class TestProxyTroubleshootingHint:
+    def test_shows_hint_on_connection_reset(self):
+        runner = CliRunner()
+        with patch("fpl_cli.scraper.fpl_prices.FPLPriceScraper") as mock_scraper_cls, \
+             patch("fpl_cli.scraper.fpl_prices.load_cache"):
+            mock_scraper_cls.return_value.scrape = AsyncMock(
+                side_effect=Exception("net::ERR_CONNECTION_RESET at https://fantasy.premierleague.com/")
+            )
+            result = runner.invoke(sell_prices_command, ["--refresh"])
+        assert result.exit_code == 0
+        assert "TLS-inspecting proxy" in result.output
+        assert "FPL_BROWSER_EXECUTABLE" in result.output
+
+    def test_shows_hint_on_tunnel_connection_failed(self):
+        runner = CliRunner()
+        with patch("fpl_cli.scraper.fpl_prices.FPLPriceScraper") as mock_scraper_cls, \
+             patch("fpl_cli.scraper.fpl_prices.load_cache"):
+            mock_scraper_cls.return_value.scrape = AsyncMock(
+                side_effect=Exception("net::ERR_TUNNEL_CONNECTION_FAILED")
+            )
+            result = runner.invoke(sell_prices_command, ["--refresh"])
+        assert result.exit_code == 0
+        assert "TLS-inspecting proxy" in result.output
+
+    def test_shows_hint_on_ssl_protocol_error(self):
+        """Broadened beyond the original two markers - a proxy can also surface this."""
+        runner = CliRunner()
+        with patch("fpl_cli.scraper.fpl_prices.FPLPriceScraper") as mock_scraper_cls, \
+             patch("fpl_cli.scraper.fpl_prices.load_cache"):
+            mock_scraper_cls.return_value.scrape = AsyncMock(
+                side_effect=Exception("net::ERR_SSL_PROTOCOL_ERROR")
+            )
+            result = runner.invoke(sell_prices_command, ["--refresh"])
+        assert result.exit_code == 0
+        assert "TLS-inspecting proxy" in result.output
+
+    def test_omits_hint_for_unrelated_error(self):
+        runner = CliRunner()
+        with patch("fpl_cli.scraper.fpl_prices.FPLPriceScraper") as mock_scraper_cls, \
+             patch("fpl_cli.scraper.fpl_prices.load_cache"):
+            mock_scraper_cls.return_value.scrape = AsyncMock(
+                side_effect=Exception("FPL credentials required.")
+            )
+            result = runner.invoke(sell_prices_command, ["--refresh"])
+        assert result.exit_code == 0
+        assert "Troubleshooting" in result.output
+        assert "TLS-inspecting proxy" not in result.output
+
+
 class TestSaveMessage:
     def test_save_message_shows_actual_path(self, tmp_path, monkeypatch):
         """The save confirmation prints the real cache location, not a hardcoded path."""
