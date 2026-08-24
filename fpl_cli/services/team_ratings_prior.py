@@ -144,8 +144,13 @@ def _save_prior_cache(
 async def generate_prior(client: FPLClient) -> dict[str, TeamRating]:
     """Generate prior ratings from previous season data.
 
-    Fallback chain: Understat xG/xGA -> football-data.org -> default 4.
+    Fallback chain: Understat xG/xGA -> football-data.org.
     Promoted teams use Championship data rescaled to PL-equivalent rates.
+
+    Returns:
+        Ratings by team short name, or an empty dict when no source has
+        previous-season data. Callers must treat the empty case as "no prior"
+        rather than substituting a uniform table -- see the comment below.
     """
     teams = await client.get_teams()
     current_team_names = {t.short_name for t in teams}
@@ -174,9 +179,15 @@ async def generate_prior(client: FPLClient) -> dict[str, TeamRating]:
         source = "prior_football_data"
 
     if not performances:
-        prior = {name: _default_rating() for name in current_team_names}
-        _save_prior_cache(prior, "prior_default", list(current_team_names))
-        return prior
+        # No previous-season evidence from any source. Returning a uniform 4.0
+        # table here would be indistinguishable from a real prior to every
+        # caller: seed_from_prior() would save it and report "estimated
+        # ratings", blend_with_prior() would shrink genuine current form
+        # towards flat mid-table, and the cache would serve it all season.
+        # An empty mapping is falsy, so each caller takes its no-prior branch
+        # and says so. Deliberately not cached -- the sources may recover.
+        logger.warning("No previous-season data available for a ratings prior")
+        return {}
 
     # Last season's relegated sides would otherwise skew the percentiles and
     # then be dropped, so rank only the teams actually in the league.
