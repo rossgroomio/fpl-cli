@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any
 
@@ -10,6 +11,8 @@ import httpx
 
 from fpl_cli.season import get_season_year, understat_season
 from fpl_cli.utils.text import strip_diacritics
+
+logger = logging.getLogger(__name__)
 
 BASE_URL = "https://understat.com"
 
@@ -156,6 +159,14 @@ class UnderstatClient:
         players_data = data.get("players") if data else None
 
         if not players_data:
+            # The endpoint is undocumented, so a renamed key and "no matches
+            # played yet" look identical here — announce it either way rather
+            # than degrading silently (#97).
+            logger.warning(
+                "Understat league data for season %s contains no players — "
+                "xG enrichment is unavailable (the endpoint shape may have changed)",
+                season,
+            )
             return []
 
         parsed = [self._parse_player(p) for p in players_data]
@@ -303,6 +314,11 @@ def _normalise(text: str) -> str:
     return re.sub(r" +", " ", text).strip()  # Collapse whitespace
 
 
+# FPL teams already reported as matching no Understat players, so the join-drop
+# warning below fires once per team per process rather than once per player.
+_unmatched_team_warned: set[str] = set()
+
+
 def match_fpl_to_understat(
     fpl_name: str,
     fpl_team: str,
@@ -321,10 +337,12 @@ def match_fpl_to_understat(
 
     best_match = None
     best_score = 0
+    team_seen = False
 
     for player in understat_players:
         if player["team"] != fpl_team_mapped:
             continue
+        team_seen = True
 
         score = 0
         understat_name = _normalise(player["name"])
@@ -363,6 +381,19 @@ def match_fpl_to_understat(
         if score > best_score:
             best_score = score
             best_match = player
+
+    if not team_seen and understat_players and fpl_team not in _unmatched_team_warned:
+        # The join-drop tripwire (#97): a team name the map doesn't resolve
+        # fails every one of its players identically — 20 teams in, 19 join —
+        # and per-player it would just look like a string-similarity miss.
+        # #94 was exactly this shape.
+        _unmatched_team_warned.add(fpl_team)
+        logger.warning(
+            "No Understat players carry team %r (mapped from FPL team %r) — "
+            "TEAM_NAME_MAP may need updating; this club's players lose xG enrichment",
+            fpl_team_mapped,
+            fpl_team,
+        )
 
     if best_score < 5:
         return None

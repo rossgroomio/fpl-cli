@@ -1,5 +1,6 @@
 """Tests for Understat API client."""
 
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -654,3 +655,65 @@ class TestTeamNameMap:
 
         assert "Arsenal" in TEAM_NAME_MAP
         assert TEAM_NAME_MAP["Arsenal"] == "Arsenal"
+
+
+class TestContractTripwires:
+    """Upstream drift degrades with a warning, never silently (#97)."""
+
+    @pytest.mark.asyncio
+    async def test_empty_league_data_warns(self, caplog):
+        # A missing/renamed "players" key and "no matches played yet" look
+        # identical from here, so both announce the degradation.
+        client = UnderstatClient()
+        with patch.object(client, "_get_api_json", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = {"teams": {}, "dates": []}
+            with caplog.at_level(logging.WARNING):
+                result = await client.get_league_players()
+
+        assert result == []
+        assert "contains no players" in caplog.text
+
+    def test_unmatched_team_warns_once(self, caplog):
+        # The join-drop tripwire: a team name the map fails to resolve fails
+        # every one of its players identically (#94), so it warns at team
+        # level — and only once per team, not once per player lookup.
+        from fpl_cli.api import understat
+
+        understat._unmatched_team_warned.clear()
+        players = [
+            {"name": "Someone", "team": "Really Fake FC", "position": "F M S", "minutes": 900},
+        ]
+        with caplog.at_level(logging.WARNING):
+            first = match_fpl_to_understat("Player One", "Faketown", players)
+            second = match_fpl_to_understat("Player Two", "Faketown", players)
+
+        assert first is None and second is None
+        assert caplog.text.count("No Understat players carry team") == 1
+        assert "Faketown" in caplog.text
+        assert "TEAM_NAME_MAP" in caplog.text
+        understat._unmatched_team_warned.clear()
+
+    def test_matched_team_does_not_warn(self, caplog):
+        from fpl_cli.api import understat
+
+        understat._unmatched_team_warned.clear()
+        players = [
+            {"name": "Saka", "team": "Arsenal", "position": "M S", "minutes": 900},
+        ]
+        with caplog.at_level(logging.WARNING):
+            match = match_fpl_to_understat("Saka", "Arsenal", players)
+
+        assert match is not None
+        assert "TEAM_NAME_MAP may need updating" not in caplog.text
+
+    def test_empty_understat_list_does_not_warn_per_team(self, caplog):
+        # No Understat data at all is the league-level tripwire's job; the
+        # team-level warning would misattribute it to TEAM_NAME_MAP.
+        from fpl_cli.api import understat
+
+        understat._unmatched_team_warned.clear()
+        with caplog.at_level(logging.WARNING):
+            match = match_fpl_to_understat("Saka", "Arsenal", [])
+
+        assert match is None
+        assert "TEAM_NAME_MAP" not in caplog.text

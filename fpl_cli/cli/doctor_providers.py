@@ -1,0 +1,695 @@
+"""Live provider probes for `fpl doctor --providers`.
+
+The counterpart to doctor's local checks, one layer down (#97): the six
+external data sources honour no versioned contract, so the only way to
+know one has drifted is to ask it. Each probe asserts shape and volume —
+not just reachability — against the same column constants the parsers
+index with, so a probe cannot pass while the parser fails.
+
+Status mapping keeps #57's taxonomy honest for providers:
+  - BROKEN: reachable but the wrong shape — needs a code or upstream fix,
+    and is what the scheduled CI probe fails on.
+  - STALE: a publishing lag that self-corrects (e.g. the newest gameweek
+    folder not uploaded yet).
+  - UNCHECKED: the provider was unreachable, so drift could not be ruled
+    out — transient, not actionable.
+
+Fetches for the GitHub-hosted datasets go through the same disk cache the
+real commands use, with a zero TTL so every probe revalidates against
+upstream (an ETag match costs a conditional request, not a download).
+"""
+# Pattern: direct-api
+
+from __future__ import annotations
+
+import asyncio
+import csv
+import io
+import json
+from datetime import timedelta
+from typing import TYPE_CHECKING, Any
+
+import httpx
+
+from fpl_cli.api.contract import missing_columns
+from fpl_cli.cli.doctor import CheckResult, CheckStatus
+from fpl_cli.paths import UserDirError
+from fpl_cli.season import TOTAL_GAMEWEEKS, get_season_year, season_label_range
+from fpl_cli.utils.teams import describe_team_set_mismatch
+
+if TYPE_CHECKING:
+    from fpl_cli.api.dataset_fetcher import DatasetFetcher
+
+# Force revalidation on every probe: serving a cached copy inside its TTL
+# would validate our own cache, not the provider.
+PROBE_TTL = timedelta(0)
+
+# Volume sanity floors. Bootstrap carries ~600-800 players depending on the
+# point in the season; a value under the floor means a truncated or wrong
+# payload, not a quiet transfer window.
+ELEMENTS_FLOOR = 400
+CSV_ROW_FLOOR = 400
+
+# Understat only lists a club once it has ingested a match for it, so early
+# season an unresolved name may be lag rather than a stale TEAM_NAME_MAP.
+# After this many finished gameweeks, every club must resolve.
+UNDERSTAT_SETTLED_GWS = 3
+
+
+def _unreachable(exc: httpx.HTTPError) -> str:
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"the provider returned HTTP {exc.response.status_code} — could not check"
+    return f"could not reach the provider ({exc.__class__.__name__}) — could not check"
+
+
+def _csv_check(
+    name: str,
+    filename: str,
+    text: str,
+    required: frozenset[str],
+    *,
+    row_floor: int,
+) -> CheckResult:
+    """Shape-and-volume check for one fetched CSV."""
+    reader = csv.DictReader(io.StringIO(text))
+    missing = missing_columns(reader.fieldnames, required)
+    if missing:
+        return CheckResult(
+            name,
+            CheckStatus.BROKEN,
+            f"{filename} is missing column(s) {', '.join(sorted(missing))}",
+        )
+    rows = sum(1 for _ in reader)
+    if rows < row_floor:
+        return CheckResult(
+            name,
+            CheckStatus.BROKEN,
+            f"{filename} has {rows} row(s) — expected at least {row_floor}",
+        )
+    return CheckResult(
+        name, CheckStatus.OK, f"{filename}: {rows} rows, all expected columns present"
+    )
+
+
+# ---------------------------------------------------------------------------
+# FPL API
+# ---------------------------------------------------------------------------
+
+
+def _expected_player_keys() -> list[str]:
+    """The JSON keys the Player model reads from a bootstrap element.
+
+    Derived from the model itself so probe and model cannot drift: every
+    field has the silent-default trap — only 7 of ~50 are required, so a
+    renamed upstream key validates cleanly and zeroes the stat for every
+    player.
+    """
+    from fpl_cli.models.player import Player
+
+    return [field.alias or name for name, field in Player.model_fields.items()]
+
+
+async def _fpl_checks() -> tuple[list[CheckResult], dict[str, Any] | None]:
+    from fpl_cli.api.fpl import FPLClient
+
+    name = "FPL bootstrap"
+    async with FPLClient() as client:
+        try:
+            bootstrap = await client.get_bootstrap_static()
+        except httpx.HTTPError as exc:
+            return [CheckResult(name, CheckStatus.UNCHECKED, _unreachable(exc))], None
+        except json.JSONDecodeError:
+            return [
+                CheckResult(
+                    name,
+                    CheckStatus.BROKEN,
+                    "bootstrap-static did not return JSON — the API shape may have changed",
+                )
+            ], None
+
+    results: list[CheckResult] = []
+    teams = bootstrap.get("teams") or []
+    elements = bootstrap.get("elements") or []
+    events = bootstrap.get("events") or []
+
+    problems: list[str] = []
+    if len(teams) != 20:
+        problems.append(f"{len(teams)} teams (expected 20)")
+    if len(elements) < ELEMENTS_FLOOR:
+        problems.append(f"{len(elements)} players (expected at least {ELEMENTS_FLOOR})")
+    if len(events) != TOTAL_GAMEWEEKS:
+        problems.append(f"{len(events)} gameweeks (expected {TOTAL_GAMEWEEKS})")
+    if problems:
+        results.append(CheckResult(name, CheckStatus.BROKEN, "; ".join(problems)))
+    else:
+        results.append(
+            CheckResult(
+                name,
+                CheckStatus.OK,
+                f"{len(teams)} teams, {len(elements)} players, {len(events)} gameweeks",
+            )
+        )
+
+    fields_name = "FPL player fields"
+    if elements:
+        expected = _expected_player_keys()
+        missing = [key for key in expected if key not in elements[0]]
+        if missing:
+            results.append(
+                CheckResult(
+                    fields_name,
+                    CheckStatus.BROKEN,
+                    f"bootstrap players are missing {', '.join(sorted(missing))} — "
+                    "these stats would silently read as 0 for every player",
+                )
+            )
+        else:
+            results.append(
+                CheckResult(
+                    fields_name,
+                    CheckStatus.OK,
+                    f"all {len(expected)} player fields present in the raw data",
+                )
+            )
+    return results, bootstrap
+
+
+# ---------------------------------------------------------------------------
+# FPL Draft API
+# ---------------------------------------------------------------------------
+
+
+async def _draft_checks() -> list[CheckResult]:
+    from fpl_cli.api.fpl_draft import FPLDraftClient
+
+    name = "Draft bootstrap"
+    async with FPLDraftClient() as client:
+        try:
+            bootstrap = await client.get_bootstrap_static()
+        except httpx.HTTPError as exc:
+            return [CheckResult(name, CheckStatus.UNCHECKED, _unreachable(exc))]
+        except json.JSONDecodeError:
+            return [
+                CheckResult(
+                    name,
+                    CheckStatus.BROKEN,
+                    "bootstrap-static did not return JSON — the API shape may have changed",
+                )
+            ]
+
+    teams = bootstrap.get("teams") or []
+    elements = bootstrap.get("elements") or []
+    problems: list[str] = []
+    if len(teams) != 20:
+        problems.append(f"{len(teams)} teams (expected 20)")
+    if len(elements) < ELEMENTS_FLOOR:
+        problems.append(f"{len(elements)} players (expected at least {ELEMENTS_FLOOR})")
+    if problems:
+        return [CheckResult(name, CheckStatus.BROKEN, "; ".join(problems))]
+    return [
+        CheckResult(name, CheckStatus.OK, f"{len(teams)} teams, {len(elements)} players")
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Vaastav GitHub dataset (historical seasons)
+# ---------------------------------------------------------------------------
+
+
+async def _vaastav_season_check(fetcher: DatasetFetcher, season: str) -> CheckResult:
+    from fpl_cli.api.vaastav import PLAYERS_RAW_REQUIRED_COLUMNS
+
+    name = f"vaastav {season}"
+    try:
+        text = await fetcher.get(f"{season}/players_raw.csv", ttl=PROBE_TTL)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            return CheckResult(
+                name,
+                CheckStatus.BROKEN,
+                "players_raw.csv is missing upstream — the season directory may have moved",
+            )
+        return CheckResult(name, CheckStatus.UNCHECKED, _unreachable(exc))
+    except httpx.HTTPError as exc:
+        return CheckResult(name, CheckStatus.UNCHECKED, _unreachable(exc))
+    return _csv_check(
+        name, "players_raw.csv", text, PLAYERS_RAW_REQUIRED_COLUMNS, row_floor=CSV_ROW_FLOOR
+    )
+
+
+async def _vaastav_checks() -> list[CheckResult]:
+    from fpl_cli.api.vaastav import make_vaastav_fetcher
+
+    # The same trailing-window allocation make_historical_provider uses:
+    # vaastav serves the three completed seasons, Core-Insights the current.
+    seasons = season_label_range(get_season_year() - 1, count=3)
+    fetcher = make_vaastav_fetcher()
+    try:
+        results = await asyncio.gather(*(_vaastav_season_check(fetcher, s) for s in seasons))
+    finally:
+        await fetcher.close()
+    return list(results)
+
+
+# ---------------------------------------------------------------------------
+# Core-Insights GitHub dataset (current season)
+# ---------------------------------------------------------------------------
+
+
+async def _ci_file_check(
+    fetcher: DatasetFetcher,
+    name: str,
+    path: str,
+    filename: str,
+    required: frozenset[str],
+    *,
+    row_floor: int,
+) -> CheckResult:
+    try:
+        text = await fetcher.get(path, ttl=PROBE_TTL)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            return CheckResult(
+                name,
+                CheckStatus.BROKEN,
+                f"{filename} is missing upstream — the sole current-season source; "
+                "the season directory may not exist yet or may have moved",
+            )
+        return CheckResult(name, CheckStatus.UNCHECKED, _unreachable(exc))
+    except httpx.HTTPError as exc:
+        return CheckResult(name, CheckStatus.UNCHECKED, _unreachable(exc))
+    return _csv_check(name, filename, text, required, row_floor=row_floor)
+
+
+async def _ci_gw_file_headers(
+    fetcher: DatasetFetcher, path: str
+) -> list[str] | None:
+    """Header row of one per-GW CSV, or None when it 404s upstream."""
+    try:
+        text = await fetcher.get(path, ttl=PROBE_TTL)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            return None
+        raise
+    reader = csv.DictReader(io.StringIO(text))
+    return list(reader.fieldnames or ())
+
+
+def _ci_gw_paths(season: str, gw: int) -> list[tuple[str, str, frozenset[str]]]:
+    from fpl_cli.api.core_insights import (
+        GW_STATS_REQUIRED_COLUMNS,
+        MATCHES_REQUIRED_COLUMNS,
+        PLAYERMATCHSTATS_REQUIRED_COLUMNS,
+    )
+
+    tournament = f"{season}/By Tournament/Premier League/GW{gw}"
+    return [
+        ("matches.csv", f"{tournament}/matches.csv", MATCHES_REQUIRED_COLUMNS),
+        (
+            "playermatchstats.csv",
+            f"{tournament}/playermatchstats.csv",
+            PLAYERMATCHSTATS_REQUIRED_COLUMNS,
+        ),
+        (
+            "player_gameweek_stats.csv",
+            f"{season}/By Gameweek/GW{gw}/player_gameweek_stats.csv",
+            GW_STATS_REQUIRED_COLUMNS,
+        ),
+    ]
+
+
+async def _ci_gw_check(
+    fetcher: DatasetFetcher, season: str, latest_finished_gw: int
+) -> CheckResult:
+    """Probe the per-GW folder layout at the latest finished gameweek.
+
+    A folder missing for the newest gameweek but present for the previous one
+    is a publishing lag (the dataset updates a few times a day) and self-
+    corrects; missing for both is a layout change every future fetch will hit.
+    """
+    name = "Core-Insights per-GW files"
+    try:
+        headers = await asyncio.gather(
+            *(
+                _ci_gw_file_headers(fetcher, path)
+                for _, path, _ in _ci_gw_paths(season, latest_finished_gw)
+            )
+        )
+    except httpx.HTTPError as exc:
+        return CheckResult(name, CheckStatus.UNCHECKED, _unreachable(exc))
+
+    files = _ci_gw_paths(season, latest_finished_gw)
+    absent = [filename for (filename, _, _), header in zip(files, headers) if header is None]
+    column_problems = [
+        f"{filename} is missing column(s) {', '.join(sorted(missing))}"
+        for (filename, _, required), header in zip(files, headers)
+        if header is not None and (missing := missing_columns(header, required))
+    ]
+    if column_problems:
+        return CheckResult(name, CheckStatus.BROKEN, "; ".join(column_problems))
+    if not absent:
+        return CheckResult(
+            name,
+            CheckStatus.OK,
+            f"GW{latest_finished_gw}: all per-GW files present with expected columns",
+        )
+
+    # Something is missing at the newest finished GW — decide lag vs layout
+    # change by whether the same files exist one gameweek earlier.
+    previous_gw = latest_finished_gw - 1
+    if previous_gw >= 1:
+        try:
+            previous = await asyncio.gather(
+                *(
+                    _ci_gw_file_headers(fetcher, path)
+                    for filename, path, _ in _ci_gw_paths(season, previous_gw)
+                    if filename in absent
+                )
+            )
+        except httpx.HTTPError as exc:
+            return CheckResult(name, CheckStatus.UNCHECKED, _unreachable(exc))
+        if any(header is None for header in previous):
+            return CheckResult(
+                name,
+                CheckStatus.BROKEN,
+                f"{', '.join(absent)} missing upstream for GW{latest_finished_gw} and "
+                f"GW{previous_gw} — the per-GW folder layout may have changed",
+            )
+    return CheckResult(
+        name,
+        CheckStatus.STALE,
+        f"GW{latest_finished_gw}: {', '.join(absent)} not published upstream yet — "
+        "the dataset updates a few times a day, so this self-corrects; "
+        "broken if it persists",
+    )
+
+
+async def _core_insights_checks(
+    latest_finished_gw: int | None, *, bootstrap_available: bool
+) -> list[CheckResult]:
+    from fpl_cli.api.core_insights import (
+        PLAYERS_CSV_REQUIRED_COLUMNS,
+        PLAYERSTATS_REQUIRED_COLUMNS,
+        make_core_insights_fetcher,
+    )
+    from fpl_cli.season import core_insights_season
+
+    season = core_insights_season()
+    fetcher = make_core_insights_fetcher()
+    results: list[CheckResult] = []
+    try:
+        results.append(
+            await _ci_file_check(
+                fetcher,
+                "Core-Insights players.csv",
+                f"{season}/players.csv",
+                "players.csv",
+                PLAYERS_CSV_REQUIRED_COLUMNS,
+                row_floor=CSV_ROW_FLOOR,
+            )
+        )
+        results.append(
+            await _ci_file_check(
+                fetcher,
+                "Core-Insights playerstats.csv",
+                f"{season}/playerstats.csv",
+                "playerstats.csv",
+                PLAYERSTATS_REQUIRED_COLUMNS,
+                row_floor=CSV_ROW_FLOOR,
+            )
+        )
+        if latest_finished_gw is None:
+            results.append(
+                CheckResult(
+                    "Core-Insights per-GW files",
+                    CheckStatus.SKIPPED
+                    if bootstrap_available
+                    else CheckStatus.UNCHECKED,
+                    "no finished gameweek yet — nothing to probe"
+                    if bootstrap_available
+                    else "could not determine the current gameweek (FPL API unreachable)",
+                )
+            )
+        else:
+            results.append(await _ci_gw_check(fetcher, season, latest_finished_gw))
+    finally:
+        await fetcher.close()
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Understat
+# ---------------------------------------------------------------------------
+
+
+def _understat_team_titles(players: list[dict[str, Any]]) -> set[str]:
+    """Distinct team names in Understat's own data.
+
+    A player who moved clubs mid-season carries a comma-joined title
+    ("Chelsea,Fulham"), so titles are split before collecting.
+    """
+    titles: set[str] = set()
+    for player in players:
+        for part in str(player.get("team", "")).split(","):
+            if part:
+                titles.add(part)
+    return titles
+
+
+async def _understat_checks(
+    team_names: list[str] | None, finished_gws: int
+) -> list[CheckResult]:
+    from fpl_cli.api.understat import TEAM_NAME_MAP, UnderstatClient
+
+    league_name = "Understat league data"
+    map_name = "Understat team map"
+
+    async with UnderstatClient() as client:
+        try:
+            players = await client.get_league_players()
+        except httpx.HTTPError as exc:
+            return [CheckResult(league_name, CheckStatus.UNCHECKED, _unreachable(exc))]
+        except json.JSONDecodeError:
+            return [
+                CheckResult(
+                    league_name,
+                    CheckStatus.BROKEN,
+                    "league endpoint did not return JSON — the endpoint shape may have changed",
+                )
+            ]
+
+    results: list[CheckResult] = []
+    if not players:
+        if finished_gws == 0:
+            results.append(
+                CheckResult(
+                    league_name,
+                    CheckStatus.SKIPPED,
+                    "no player data yet — Understat publishes once matches are played",
+                )
+            )
+        else:
+            results.append(
+                CheckResult(
+                    league_name,
+                    CheckStatus.BROKEN,
+                    "league endpoint returned no players mid-season — "
+                    "the endpoint shape may have changed",
+                )
+            )
+        results.append(
+            CheckResult(map_name, CheckStatus.UNCHECKED, "no Understat data to resolve against")
+        )
+        return results
+
+    titles = _understat_team_titles(players)
+    results.append(
+        CheckResult(
+            league_name, CheckStatus.OK, f"{len(players)} players across {len(titles)} teams"
+        )
+    )
+
+    if team_names is None:
+        results.append(
+            CheckResult(
+                map_name,
+                CheckStatus.UNCHECKED,
+                "could not fetch the live team list to compare against",
+            )
+        )
+        return results
+
+    # End-to-end join check: each FPL club's name, mapped through
+    # TEAM_NAME_MAP (or passed through unchanged), must name a team Understat
+    # itself serves. Key coverage alone proves nothing — an unmapped club
+    # whose names agree still joins, and a mapped club can still miss.
+    unresolved = sorted(t for t in team_names if TEAM_NAME_MAP.get(t, t) not in titles)
+    if not unresolved:
+        results.append(
+            CheckResult(
+                map_name,
+                CheckStatus.OK,
+                f"all {len(team_names)} clubs resolve to an Understat team",
+            )
+        )
+    elif finished_gws < UNDERSTAT_SETTLED_GWS:
+        results.append(
+            CheckResult(
+                map_name,
+                CheckStatus.STALE,
+                f"{', '.join(unresolved)} not in Understat's data yet — early season, "
+                "may be ingestion lag; broken if it persists",
+                "if it persists, update TEAM_NAME_MAP (fpl_cli/api/understat.py)",
+            )
+        )
+    else:
+        results.append(
+            CheckResult(
+                map_name,
+                CheckStatus.BROKEN,
+                f"{', '.join(unresolved)} do not resolve to any Understat team — "
+                "these clubs' players silently lose xG enrichment",
+                "update TEAM_NAME_MAP (fpl_cli/api/understat.py)",
+            )
+        )
+    return results
+
+
+# ---------------------------------------------------------------------------
+# football-data.org
+# ---------------------------------------------------------------------------
+
+
+async def _football_data_checks(short_names: list[str] | None) -> list[CheckResult]:
+    from fpl_cli.api.football_data import FootballDataClient
+    from fpl_cli.services.team_ratings_prior import TLA_TO_FPL
+
+    standings_name = "football-data standings"
+    map_name = "football-data TLA map"
+
+    async with FootballDataClient() as client:
+        if not client.is_configured:
+            return [
+                CheckResult(
+                    standings_name,
+                    CheckStatus.SKIPPED,
+                    "FOOTBALL_DATA_API_KEY not set — league table and the ratings-prior "
+                    "fallback are unavailable",
+                )
+            ]
+        try:
+            rows = await client.get_standings(raise_on_error=True)
+        except httpx.HTTPError as exc:
+            return [CheckResult(standings_name, CheckStatus.UNCHECKED, _unreachable(exc))]
+        except json.JSONDecodeError:
+            return [
+                CheckResult(
+                    standings_name,
+                    CheckStatus.BROKEN,
+                    "standings endpoint did not return JSON — the API shape may have changed",
+                )
+            ]
+
+    if not rows:
+        return [
+            CheckResult(
+                standings_name,
+                CheckStatus.BROKEN,
+                "standings response held no TOTAL table — the response shape may have changed",
+            )
+        ]
+
+    results: list[CheckResult] = []
+    if len(rows) != 20:
+        results.append(
+            CheckResult(
+                standings_name, CheckStatus.BROKEN, f"standings has {len(rows)} rows (expected 20)"
+            )
+        )
+    else:
+        results.append(CheckResult(standings_name, CheckStatus.OK, "standings has 20 rows"))
+
+    if short_names is None:
+        results.append(
+            CheckResult(
+                map_name,
+                CheckStatus.UNCHECKED,
+                "could not fetch the live team list to compare against",
+            )
+        )
+        return results
+
+    # End-to-end join-key check: every TLA football-data serves, mapped
+    # through TLA_TO_FPL, must land on an FPL short name — and cover all 20.
+    # Column checks cannot see this (#110's NOT/NFO passed every shape test);
+    # this is the probe that would have caught it on its first run.
+    mapped = {TLA_TO_FPL.get(str(r.get("short_name", "")), str(r.get("short_name", ""))) for r in rows}
+    mismatch = describe_team_set_mismatch("TLA_TO_FPL", mapped, short_names, verb="maps")
+    if mismatch:
+        results.append(
+            CheckResult(
+                map_name,
+                CheckStatus.BROKEN,
+                f"{mismatch} — an unmapped club is silently re-rated as promoted",
+                "add the TLA to TLA_TO_FPL (fpl_cli/services/team_ratings_prior.py)",
+            )
+        )
+    else:
+        results.append(
+            CheckResult(
+                map_name,
+                CheckStatus.OK,
+                "all 20 TLAs resolve to FPL short names through TLA_TO_FPL",
+            )
+        )
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Orchestration
+# ---------------------------------------------------------------------------
+
+
+async def provider_checks() -> list[CheckResult]:
+    """Run every provider probe, containing per-provider failures.
+
+    The FPL bootstrap runs first because three later probes compare against
+    the live team list and gameweek state; when it is unreachable those
+    comparisons report unchecked rather than guessing.
+    """
+    fpl_results, bootstrap = await _fpl_checks()
+    results = list(fpl_results)
+
+    team_names: list[str] | None = None
+    short_names: list[str] | None = None
+    latest_finished_gw: int | None = None
+    finished_gws = 0
+    if bootstrap is not None:
+        teams = bootstrap.get("teams") or []
+        team_names = [str(t.get("name", "")) for t in teams]
+        short_names = [str(t.get("short_name", "")) for t in teams]
+        finished = [
+            int(e.get("id", 0)) for e in (bootstrap.get("events") or []) if e.get("finished")
+        ]
+        finished_gws = len(finished)
+        latest_finished_gw = max(finished) if finished else None
+
+    results += await _draft_checks()
+
+    # The dataset fetchers resolve the cache dir themselves; an unusable
+    # FPL_CLI_CACHE_DIR override becomes that provider's row instead of
+    # aborting the whole probe (mirrors _file_checks in doctor.py).
+    try:
+        results += await _vaastav_checks()
+    except UserDirError as exc:
+        results.append(CheckResult("vaastav", CheckStatus.BROKEN, str(exc)))
+    try:
+        results += await _core_insights_checks(
+            latest_finished_gw, bootstrap_available=bootstrap is not None
+        )
+    except UserDirError as exc:
+        results.append(CheckResult("Core-Insights", CheckStatus.BROKEN, str(exc)))
+
+    results += await _understat_checks(team_names, finished_gws)
+    results += await _football_data_checks(short_names)
+    return results

@@ -14,6 +14,7 @@ from typing import ClassVar, TypedDict
 
 import httpx
 
+from fpl_cli.api.contract import header_covers, warn_all_rows_skipped
 from fpl_cli.api.dataset_fetcher import DatasetFetcher
 from fpl_cli.api.historical_types import (
     MOMENTUM_WINDOW,
@@ -61,6 +62,24 @@ class MatchRecord(TypedDict):
 
 
 DEFAULT_TTL = timedelta(hours=4)
+
+# Columns the parsers below index directly (`row[...]`). The header checks
+# and the `fpl doctor --providers` probe both assert against these constants,
+# so the declared contract cannot drift from what the parsers consume.
+# Optional columns read via `row.get(...)` are deliberately not listed.
+PLAYERS_CSV_REQUIRED_COLUMNS: frozenset[str] = frozenset({
+    "player_id", "player_code", "web_name", "position", "team_code",
+})
+PLAYERSTATS_REQUIRED_COLUMNS: frozenset[str] = frozenset({
+    "id", "gw", "now_cost", "cost_change_start", "total_points",
+})
+GW_STATS_REQUIRED_COLUMNS: frozenset[str] = frozenset({"id", "now_cost"})
+MATCHES_REQUIRED_COLUMNS: frozenset[str] = frozenset({
+    "match_id", "gameweek", "home_team", "home_team_elo", "away_team_elo",
+})
+PLAYERMATCHSTATS_REQUIRED_COLUMNS: frozenset[str] = frozenset({
+    "player_id", "match_id", "xg", "minutes_played",
+})
 
 # Core-Insights uses full position names; map to FPL abbreviations.
 _POSITION_MAP = {
@@ -134,20 +153,31 @@ class CoreInsightsClient:
             return self._player_lookup
 
         text = await self.fetcher.get(f"{self._ci_season}/players.csv")
+        degraded = "current-season player histories are unavailable"
         reader = csv.DictReader(io.StringIO(text))
         lookup: dict[int, _PlayerLookup] = {}
-        for row in reader:
-            try:
-                pid = int(row["player_id"])
-                lookup[pid] = _PlayerLookup(
-                    player_code=int(row["player_code"]),
-                    web_name=row["web_name"],
-                    position=_POSITION_MAP.get(row["position"], "???"),
-                    team_code=int(row["team_code"]),
-                )
-            except (ValueError, KeyError) as exc:
-                logger.debug("Skipping malformed row in players.csv: %s", exc)
-                continue
+        if header_covers(
+            "Core-Insights players.csv",
+            reader.fieldnames,
+            PLAYERS_CSV_REQUIRED_COLUMNS,
+            degraded=degraded,
+        ):
+            row_count = 0
+            for row in reader:
+                row_count += 1
+                try:
+                    pid = int(row["player_id"])
+                    lookup[pid] = _PlayerLookup(
+                        player_code=int(row["player_code"]),
+                        web_name=row["web_name"],
+                        position=_POSITION_MAP.get(row["position"], "???"),
+                        team_code=int(row["team_code"]),
+                    )
+                except (ValueError, KeyError) as exc:
+                    logger.debug("Skipping malformed row in players.csv: %s", exc)
+                    continue
+            if row_count and not lookup:
+                warn_all_rows_skipped("Core-Insights players.csv", row_count, degraded=degraded)
 
         self._player_lookup = lookup
         return lookup
@@ -263,6 +293,13 @@ class CoreInsightsClient:
                 }
                 result.setdefault(pid, []).append(record)
 
+        if all_stats_text and not result:
+            logger.warning(
+                "Core-Insights match stats parsed to 0 records from %d gameweek file(s) — "
+                "the upstream format may have changed; opponent-adjusted xG signals "
+                "are unavailable",
+                len(all_stats_text),
+            )
         self._match_records = result
         return result
 
@@ -282,20 +319,30 @@ class CoreInsightsClient:
             self.fetcher.get(f"{self._ci_season}/playerstats.csv"),
         )
 
+        degraded = "current-season aggregates are unavailable"
         reader = csv.DictReader(io.StringIO(text))
+        stats_header_ok = header_covers(
+            "Core-Insights playerstats.csv",
+            reader.fieldnames,
+            PLAYERSTATS_REQUIRED_COLUMNS,
+            degraded=degraded,
+        )
 
         # Collect all rows, keep only the max-GW row per player.
         best_gw: dict[int, int] = {}
         best_row: dict[int, dict[str, str]] = {}
-        for row in reader:
-            try:
-                pid = int(row["id"])
-                gw = int(row["gw"])
-            except (ValueError, KeyError):
-                continue
-            if pid not in best_gw or gw > best_gw[pid]:
-                best_gw[pid] = gw
-                best_row[pid] = row
+        rows_read = 0
+        if stats_header_ok:
+            for row in reader:
+                rows_read += 1
+                try:
+                    pid = int(row["id"])
+                    gw = int(row["gw"])
+                except (ValueError, KeyError):
+                    continue
+                if pid not in best_gw or gw > best_gw[pid]:
+                    best_gw[pid] = gw
+                    best_row[pid] = row
 
         histories: list[SeasonHistory] = []
         for pid, row in best_row.items():
@@ -331,6 +378,11 @@ class CoreInsightsClient:
                 web_name=player.web_name,
                 team_id=player.team_code,
             ))
+
+        if rows_read and not histories:
+            # Covers both value drift (rows read, none survived) and an empty
+            # player lookup leaving every row unmatched.
+            warn_all_rows_skipped("Core-Insights playerstats.csv", rows_read, degraded=degraded)
 
         if best_gw:
             self._current_gw = max(best_gw.values())
@@ -460,12 +512,14 @@ class CoreInsightsClient:
         )
 
         by_player: dict[int, dict[int, _GwRow]] = {}
+        rows_read = 0
         for gw, result in enumerate(results, start=1):
             if isinstance(result, BaseException):
                 logger.warning("Failed to fetch GW%d: %s", gw, result)
                 continue
             rows = result
             for row in rows:
+                rows_read += 1
                 try:
                     pid = int(row["id"])
                     now_cost = int(round(float(row["now_cost"]) * 10))
@@ -488,6 +542,12 @@ class CoreInsightsClient:
                     "team_name": row.get("team_name", "???"),
                 }
 
+        if rows_read and not by_player:
+            warn_all_rows_skipped(
+                "Core-Insights player_gameweek_stats.csv",
+                rows_read,
+                degraded="price-trend and transfer-momentum signals are unavailable",
+            )
         return by_player
 
     def _compute_gw_profiles(

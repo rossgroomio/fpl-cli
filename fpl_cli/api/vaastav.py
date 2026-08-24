@@ -10,6 +10,7 @@ from typing import ClassVar
 
 import httpx
 
+from fpl_cli.api.contract import header_covers, warn_all_rows_skipped
 from fpl_cli.api.dataset_fetcher import DatasetFetcher
 from fpl_cli.api.historical_types import (
     MOMENTUM_WINDOW,
@@ -28,6 +29,18 @@ logger = logging.getLogger(__name__)
 
 BASE_URL = "https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master/data"
 DEFAULT_TTL = timedelta(hours=4)
+
+# Columns the parsers below index directly (`row[...]`). The header checks
+# and the `fpl doctor --providers` probe both assert against these constants,
+# so the declared contract cannot drift from what the parsers consume.
+# Optional columns read via `row.get(...)` are deliberately not listed.
+PLAYERS_RAW_REQUIRED_COLUMNS: frozenset[str] = frozenset({
+    "code", "web_name", "element_type", "now_cost", "cost_change_start",
+    "total_points", "minutes", "starts", "goals_scored", "assists",
+})
+MERGED_GW_REQUIRED_COLUMNS: frozenset[str] = frozenset({
+    "element", "round", "value", "transfers_balance",
+})
 
 # Re-export shared types for backward compatibility
 __all__ = [
@@ -118,8 +131,20 @@ class VaastavClient:
         return result
 
     def _parse_csv(self, text: str, season: str) -> list[SeasonHistory]:
-        """Parse a players_raw.csv into SeasonHistory objects."""
+        """Parse a players_raw.csv into SeasonHistory objects.
+
+        A header that no longer covers the required columns degrades to an
+        empty season with a warning naming the columns, rather than the
+        KeyError a renamed column used to raise mid-row.
+        """
         reader = csv.DictReader(io.StringIO(text))
+        if not header_covers(
+            f"vaastav {season} players_raw.csv",
+            reader.fieldnames,
+            PLAYERS_RAW_REQUIRED_COLUMNS,
+            degraded=f"historical profiles will not include {season}",
+        ):
+            return []
         histories: list[SeasonHistory] = []
 
         for row in reader:
@@ -253,10 +278,20 @@ class VaastavClient:
 
     def _parse_gw_rows(self, text: str) -> dict[int, dict[int, _GwRow]]:
         """Parse merged_gw.csv into grouped rows, deduplicating DGW fixtures."""
+        degraded = "price-trend and transfer-momentum signals are unavailable"
         reader = csv.DictReader(io.StringIO(text))
+        if not header_covers(
+            "vaastav merged_gw.csv",
+            reader.fieldnames,
+            MERGED_GW_REQUIRED_COLUMNS,
+            degraded=degraded,
+        ):
+            return {}
 
         by_player: dict[int, dict[int, _GwRow]] = {}
+        row_count = 0
         for row in reader:
+            row_count += 1
             try:
                 element = int(row["element"])
                 rnd = int(row["round"])
@@ -278,6 +313,8 @@ class VaastavClient:
             except (ValueError, KeyError):
                 continue
 
+        if row_count and not by_player:
+            warn_all_rows_skipped("vaastav merged_gw.csv", row_count, degraded=degraded)
         return by_player
 
     def _compute_gw_profiles(

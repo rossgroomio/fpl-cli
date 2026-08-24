@@ -1,6 +1,7 @@
 """Tests for VaastavClient CSV fetching and parsing."""
 from __future__ import annotations
 
+import logging
 from datetime import timedelta
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -566,3 +567,67 @@ class TestGwTrendWindowing:
         salah = trends[100]
         # MOMENTUM_WINDOW=5, last 5 GWs: 40000+30000+20000+35000+45000 = 170000
         assert salah.transfer_momentum == 170000
+
+
+class TestContractTripwires:
+    """Upstream schema drift degrades with a warning, never silently (#97)."""
+
+    @respx.mock
+    async def test_players_raw_missing_column_warns_and_degrades(self, tmp_path, caplog):
+        # A renamed required column used to raise KeyError mid-row; it now
+        # degrades to an empty season and says which column drifted.
+        drifted = SAMPLE_CSV.replace("now_cost", "cost_now")
+        respx.get(f"{BASE}/2024-25/players_raw.csv").mock(
+            return_value=Response(200, text=drifted)
+        )
+        with caplog.at_level(logging.WARNING):
+            async with VaastavClient(_make_fetcher(tmp_path), seasons=("2024-25",)) as client:
+                data = await client._fetch_season_data()
+
+        assert data["2024-25"] == []
+        assert "players_raw.csv" in caplog.text
+        assert "now_cost" in caplog.text
+
+    @respx.mock
+    async def test_merged_gw_missing_column_warns_and_degrades(self, tmp_path, caplog):
+        drifted = SAMPLE_GW_CSV.replace("transfers_balance", "net_transfers")
+        respx.get(f"{BASE}/2025-26/gws/merged_gw.csv").mock(
+            return_value=Response(200, text=drifted)
+        )
+        with caplog.at_level(logging.WARNING):
+            async with VaastavClient(_make_fetcher(tmp_path), seasons=("2025-26",)) as client:
+                trends = await client.get_gw_trends()
+
+        assert trends == {}
+        assert "merged_gw.csv" in caplog.text
+        assert "transfers_balance" in caplog.text
+
+    @respx.mock
+    async def test_merged_gw_unparseable_rows_warn(self, tmp_path, caplog):
+        # The header survives but every value fails conversion: the file is
+        # non-empty yet parses to nothing, which must not pass silently.
+        garbled = _GW_HEADER + (
+            "Salah,MID,Liverpool,not-a-number,1,130,50000,80000,30000,12,90,1,8.5\n"
+            "Haaland,FWD,Manchester City,not-a-number,1,150,60000,90000,30000,15,90,1,9.0\n"
+        )
+        respx.get(f"{BASE}/2025-26/gws/merged_gw.csv").mock(
+            return_value=Response(200, text=garbled)
+        )
+        with caplog.at_level(logging.WARNING):
+            async with VaastavClient(_make_fetcher(tmp_path), seasons=("2025-26",)) as client:
+                trends = await client.get_gw_trends()
+
+        assert trends == {}
+        assert "none could be parsed" in caplog.text
+
+    @respx.mock
+    async def test_healthy_csv_emits_no_contract_warning(self, tmp_path, caplog):
+        respx.get(f"{BASE}/2024-25/players_raw.csv").mock(
+            return_value=Response(200, text=SAMPLE_CSV)
+        )
+        with caplog.at_level(logging.WARNING):
+            async with VaastavClient(_make_fetcher(tmp_path), seasons=("2024-25",)) as client:
+                data = await client._fetch_season_data()
+
+        assert len(data["2024-25"]) == 2
+        assert "missing expected column" not in caplog.text

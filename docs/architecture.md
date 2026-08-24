@@ -518,6 +518,7 @@ fpl_cli/
 │   ├── _review_*.py              # Review command helpers (analysis, classic, draft, summarisation)
 │   ├── _league_recap_*.py        # League recap helpers & types (`_league_recap_history.py` orchestrates capture: builds ledger rows, corrects previous league position from recorded rows, runs the two-tier backfill, and returns the notes pack the console, report, prompt and JSON payload all read)
 │   ├── _fines.py / _fines_config.py  # League fines system
+│   ├── doctor_providers.py       # Live provider probes for `doctor --providers` (shape/volume/join checks)
 │   └── [command files]           # One file per command/group
 ├── agents/
 │   ├── base.py                   # Agent ABC, AgentResult, AgentStatus
@@ -527,6 +528,7 @@ fpl_cli/
 │   ├── action/                   # WaiverAgent
 │   └── orchestration/            # ReportAgent
 ├── api/
+│   ├── contract.py               # Runtime tripwires: CSV header checks + empty-output warnings for dataset drift
 │   ├── dataset_fetcher.py         # DatasetFetcher (disk cache with ETag/TTL for GitHub CSVs)
 │   ├── fpl.py                    # FPLClient (main API, caches bootstrap-static)
 │   ├── fpl_draft.py              # FPLDraftClient

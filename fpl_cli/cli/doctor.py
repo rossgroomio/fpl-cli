@@ -484,9 +484,39 @@ def _render_section(title: str, results: list[CheckResult]) -> None:
             console.print(f"      [dim]fix: {rich_escape(result.fix)}[/dim]")
 
 
+def _print_summary(broken: int, stale: int, unchecked: int) -> None:
+    console.print()
+    if broken:
+        console.print(f"[red]{broken} problem(s) need attention.[/red]")
+    if stale:
+        console.print(
+            f"[yellow]{stale} stale item(s) — will self-correct or need a routine "
+            "refresh.[/yellow]"
+        )
+    if unchecked:
+        console.print(f"[yellow]{unchecked} check(s) could not run.[/yellow]")
+    if not broken and not stale and not unchecked:
+        console.print("[green]Everything checks out.[/green]")
+
+
+def _status_counts(results: list[CheckResult]) -> tuple[int, int, int]:
+    broken = sum(1 for r in results if r.status == CheckStatus.BROKEN)
+    stale = sum(1 for r in results if r.status == CheckStatus.STALE)
+    unchecked = sum(1 for r in results if r.status == CheckStatus.UNCHECKED)
+    return broken, stale, unchecked
+
+
 @click.command("doctor")
+@click.option(
+    "--providers",
+    "providers_only",
+    is_flag=True,
+    help="Probe the external data sources instead of the local setup: live shape "
+    "and volume checks against the FPL and Draft APIs, the historical datasets, "
+    "Understat, and football-data.org.",
+)
 @output_format_option
-def doctor_command(output_format: str) -> None:
+def doctor_command(providers_only: bool, output_format: str) -> None:
     """Check your FPL setup for dead IDs, stale data, and config problems.
 
     Verifies each ID in settings.yaml still resolves to your team and league
@@ -494,6 +524,11 @@ def doctor_command(output_format: str) -> None:
     shows which directories are in use. Problems that need a fix today are
     reported separately from stale data that corrects itself. Exits non-zero
     when something needs fixing.
+
+    With --providers, checks the external data sources instead: that each
+    still serves data of the expected shape and size, and that every club
+    resolves across sources — the drift that otherwise surfaces as plausible
+    but wrong output.
     """
     # Deliberately not format-gated: the point of the command is auditing
     # configuration, so every ID is reported -- an unset one shows as skipped
@@ -501,6 +536,32 @@ def doctor_command(output_format: str) -> None:
 
     async def _run() -> None:
         from fpl_cli.api.fpl import FPLClient as _FPLClient
+
+        if providers_only:
+            from fpl_cli.cli.doctor_providers import provider_checks
+
+            provider_results = await provider_checks()
+            broken, stale, unchecked = _status_counts(provider_results)
+            if output_format == "json":
+                emit_json(
+                    "doctor",
+                    {"providers": [dataclasses.asdict(r) for r in provider_results]},
+                    metadata={
+                        "season": season_label(),
+                        "broken": broken,
+                        "stale": stale,
+                        "unchecked": unchecked,
+                    },
+                )
+            else:
+                console.print(
+                    Panel.fit(f"[bold blue]FPL Doctor — season {season_label()}[/bold blue]")
+                )
+                _render_section("Providers", provider_results)
+                _print_summary(broken, stale, unchecked)
+            if broken:
+                raise SystemExit(1)
+            return
 
         try:
             settings: dict[str, Any] | None = load_settings()
@@ -568,9 +629,7 @@ def doctor_command(output_format: str) -> None:
         file_results = _file_checks(teams)
 
         all_results = env_results + id_results + file_results
-        broken = sum(1 for r in all_results if r.status == CheckStatus.BROKEN)
-        stale = sum(1 for r in all_results if r.status == CheckStatus.STALE)
-        unchecked = sum(1 for r in all_results if r.status == CheckStatus.UNCHECKED)
+        broken, stale, unchecked = _status_counts(all_results)
 
         if output_format == "json":
             emit_json(
@@ -592,19 +651,7 @@ def doctor_command(output_format: str) -> None:
             _render_section("Directories", env_results)
             _render_section("Settings IDs", id_results)
             _render_section("Data files", file_results)
-
-            console.print()
-            if broken:
-                console.print(f"[red]{broken} problem(s) need attention.[/red]")
-            if stale:
-                console.print(
-                    f"[yellow]{stale} stale item(s) — will self-correct or need a routine "
-                    "refresh.[/yellow]"
-                )
-            if unchecked:
-                console.print(f"[yellow]{unchecked} check(s) could not run.[/yellow]")
-            if not broken and not stale and not unchecked:
-                console.print("[green]Everything checks out.[/green]")
+            _print_summary(broken, stale, unchecked)
 
         if broken:
             raise SystemExit(1)

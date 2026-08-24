@@ -67,9 +67,12 @@ $ fpl league-recap --summarise     # Add the LLM editorial for the group chat
 
 ```console
 $ fpl doctor                       # Verify configured IDs and data files - essential after a season rollover
+$ fpl doctor --providers           # Probe the external data sources for shape and volume drift
 ```
 
 Every ID in settings.yaml is resolved against the live API and the team/league name reported back, so a dead or recycled ID (which otherwise fails silently) is visible. Per-team data files are checked against the current season's clubs. Exits non-zero when something needs fixing.
+
+`--providers` checks the other side of the bargain: that each external data source (FPL and Draft APIs, the historical datasets, Understat, football-data.org) still serves data of the expected shape and size, and that every club resolves across sources — the upstream drift that otherwise surfaces as plausible but wrong output, especially at a season rollover.
 
 ### Scouting Players
 
