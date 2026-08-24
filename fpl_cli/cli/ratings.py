@@ -102,6 +102,18 @@ def ratings_update(since_gw: int | None, dry_run: bool, use_xg: bool):
         )
 
     async def _update():
+        from fpl_cli.services.team_ratings_prior import (
+            BLENDING_CUTOFF_GW,
+            REGRESSION_CONSTANT,
+            blend_with_prior,
+            generate_prior,
+        )
+
+        service = TeamRatingsService()
+        # Captured before anything is written: save_ratings updates the
+        # service in place, so the Change column needs the pre-save state.
+        current_ratings = service.get_all_ratings()
+
         async with FPLClient() as client:
             calculator = TeamRatingsCalculator(client)
 
@@ -112,6 +124,12 @@ def ratings_update(since_gw: int | None, dry_run: bool, use_xg: bool):
                 source = "understat_xg"
                 method = "full_season_xg"
                 summary = "Understat xG (full season)"
+                # Understat covers the season to date, so the sample is however
+                # many gameweeks have completed.
+                fixtures = await client.get_fixtures()
+                sample_gws = max(
+                    (f.gameweek for f in fixtures if f.finished and f.gameweek), default=0
+                )
             else:
                 min_gw = since_gw or 1
                 method = "recent_form" if since_gw else "full_season"
@@ -124,18 +142,61 @@ def ratings_update(since_gw: int | None, dry_run: bool, use_xg: bool):
                 max_gw = max((f.gameweek for f in completed if f.gameweek), default=min_gw) if completed else min_gw
                 summary = f"GW{min_gw}-{max_gw} ({len(completed)} fixtures)"
                 based_on_gws = (min_gw, max_gw)
+                # Gameweeks of current-season evidence, not the absolute GW
+                # number: --since-gw 8 at GW10 is a three-gameweek sample.
+                sample_gws = max_gw - min_gw + 1 if completed else 0
 
-        if not ratings:
-            console.print("[red]No data available for calculation[/red]")
-            return
+            if not ratings:
+                # Nothing to rate teams on. Saving nothing leaves whatever is on
+                # disk in place, which at a season rollover is last season's
+                # table (ignored, so every fixture scores a neutral 4.0) — and
+                # `fpl doctor` sends users here precisely then. The
+                # previous-season prior is available the whole time.
+                if dry_run:
+                    console.print(
+                        "[yellow]No completed fixtures to calculate from - ratings would be "
+                        "estimated from last season's prior.[/yellow]"
+                    )
+                    return
+                console.print(
+                    "[yellow]No completed fixtures to calculate from - estimating from "
+                    "last season's prior.[/yellow]"
+                )
+                if not await service.seed_from_prior(client):
+                    error_console.print(
+                        "[red]No previous-season data available either - ratings unchanged[/red]"
+                    )
+                    return
+                console.print(
+                    f"\n[green]Estimated ratings saved to "
+                    f"{rich_escape(str(service.config_path))}[/green]"
+                )
+                console.print("[dim]Run `fpl ratings` to view them.[/dim]")
+                return
 
-        # Load current ratings for comparison
-        service = TeamRatingsService()
-        current_ratings = service.get_all_ratings()
+            # Same Bayesian shrinkage the auto-refresh applies. Without it this
+            # command would overwrite a blended file with twenty clubs rated on
+            # a handful of matches each, and stamp it fresh so the auto-refresh
+            # would not correct it.
+            blend_note = None
+            if 0 < sample_gws < BLENDING_CUTOFF_GW:
+                prior = await generate_prior(client)
+                if prior:
+                    ratings = blend_with_prior(prior, ratings, sample_gws)
+                    current_weight = sample_gws / (sample_gws + REGRESSION_CONSTANT)
+                    blend_note = (
+                        f"Blended with last season's prior: {current_weight:.0%} current form / "
+                        f"{1 - current_weight:.0%} prior (shrinkage ends at GW{BLENDING_CUTOFF_GW})"
+                    )
+                    source = f"{source}_blended"
+                    method = f"{method}_blended"
 
         # Display results
         console.print(Panel.fit("[bold blue]Calculated Team Ratings[/bold blue]"))
-        console.print(f"[dim]Based on {summary}[/dim]\n")
+        console.print(f"[dim]Based on {summary}[/dim]")
+        if blend_note:
+            console.print(f"[dim]{blend_note}[/dim]")
+        console.print()
 
         table = Table(show_header=True, header_style="bold")
         table.add_column("Team")

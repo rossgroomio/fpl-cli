@@ -35,7 +35,11 @@ def default_ratings_path() -> Path:
 
 
 PRESEASON_SOURCE = "preseason_prior"
-"""Marks ratings derived entirely from last season, before any GW has been played."""
+"""Marks ratings derived entirely from last season, with no current-season results behind them.
+
+Written pre-season and again in the gap after GW1 kicks off but before its
+results can rate anyone.
+"""
 
 
 @dataclass
@@ -280,7 +284,7 @@ class TeamRatingsService:
 
         max_completed_gw = next_gw["id"] - 1
         if max_completed_gw < 1:
-            await self._seed_from_prior(client)
+            await self.seed_from_prior(client)
             TeamRatingsService._refreshed_this_session = True
             return
 
@@ -316,6 +320,16 @@ class TeamRatingsService:
                 calculation_method="recent_form",
             )
             self._apply_overrides()
+        elif not self._ratings:
+            # A gameweek is under way but has produced nothing to rate teams on
+            # yet — every fixture is still in flight, or each team has played
+            # only one of its home/away pair. The pre-season branch above has
+            # already closed (next_gw moved on at GW1 kickoff), so without this
+            # the function returns having done nothing and, with no usable file
+            # on disk, get_positional_fdr serves a neutral 4.0 to every caller.
+            # The previous-season prior is available the whole time and is a
+            # strictly better answer than uniform difficulty.
+            await self.seed_from_prior(client)
 
         TeamRatingsService._refreshed_this_session = True
 
@@ -349,8 +363,8 @@ class TeamRatingsService:
             self._team_set_warning = f"⚠️ {mismatch} - run `fpl ratings update`"
         return self._team_set_warning
 
-    async def _seed_from_prior(self, client) -> None:
-        """Rebuild ratings from last season when no gameweek has been played yet.
+    async def seed_from_prior(self, client) -> bool:
+        """Rebuild ratings from last season when the current one cannot rate teams.
 
         Pre-season there are no results to rate teams on, and whatever sits in
         team_ratings.yaml is last season's table: it still carries relegated
@@ -359,15 +373,23 @@ class TeamRatingsService:
         the file is absent entirely and every team gets that 4.0 — uniform
         difficulty, presented as analysis.
 
+        The same hole reopens once GW1 kicks off: results exist in principle
+        but not yet in fact, so the current-season calculation returns nothing
+        while the pre-season branch has already closed. Both windows are
+        served from here.
+
         The previous-season prior (Understat xG, with Championship-adjusted
         ratings for promoted teams) is the better source, so use it and tag it
         so callers can label the output as an estimate.
+
+        Returns:
+            True if ratings were written, False if no prior was available.
         """
         from fpl_cli.services.team_ratings_prior import generate_prior
 
         prior = await generate_prior(client)
         if not prior:
-            return
+            return False
 
         self.save_ratings(
             prior,
@@ -375,6 +397,7 @@ class TeamRatingsService:
             calculation_method="preseason_prior",
         )
         self._apply_overrides()
+        return True
 
     def save_ratings(
         self,
@@ -524,7 +547,11 @@ class TeamRatingsService:
 
     @property
     def is_preseason_estimate(self) -> bool:
-        """Whether ratings are last-season estimates rather than current-season form."""
+        """Whether ratings are last-season estimates rather than current-season form.
+
+        True pre-season and in the gap after GW1 kicks off, before completed
+        results can rate anyone.
+        """
         self._ensure_loaded()
         return bool(self._metadata and self._metadata.source == PRESEASON_SOURCE)
 
@@ -610,8 +637,9 @@ class TeamRatingsService:
 
         if self.is_preseason_estimate:
             return (
-                "⚠️ Pre-season: ratings are estimated from last season (promoted teams "
-                "from Championship form). Fixture difficulty is indicative until GW1."
+                "⚠️ Ratings are estimated from last season (promoted teams from "
+                "Championship form) — no current-season results to rate teams on yet. "
+                "Fixture difficulty is indicative until results land."
             )
 
         days = self.days_since_update()

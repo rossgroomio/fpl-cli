@@ -54,7 +54,7 @@ Errors use `emit_json_error()` with `{"command", "error"}` shape.
 | `chips remove` | Remove a planned chip from a gameweek | No | Classic | No | direct-api |
 | `chips sync` | Sync chip usage from FPL API | No | Classic | No | direct-api |
 | `ratings` | Display team ratings | No | General | Yes | direct-api |
-| `ratings update` | Recalculate ratings from fixture results | No | General | Yes | direct-api |
+| `ratings update` | Recalculate ratings from fixture results (shrunk toward the previous-season prior before GW12; seeds from the prior when no results exist yet) | No | General | Yes | direct-api |
 | `intel` | Show season preview intel collected per team, with coverage and per-gameweek decay. JSON `metadata` carries `coverage.usable_as` (`full` / `negative_filter_only` / `none`), `section_confidence`, `sections_live`/`sections_expired`, `decay_schedule`, `team_set_warning` and `warnings`. `-g/--gameweek` ages the payload to any gameweek; `--show-decay` prints the expiry schedule | Yes | General | No | direct-api |
 | `intel schema` | Print the preview file format with every field explained | No | General | No | direct-api |
 | `intel init` | Scaffold an empty preview file per Premier League team (`--force` overwrites). Stubs never count toward coverage | No | General | No | direct-api |

@@ -239,7 +239,9 @@ fpl ratings update --since-gw 15   # Recent form only (actual goals)
 fpl ratings update --dry-run       # Preview changes without saving
 ```
 
-Before GW1 there are no results to rate teams on, so ratings are estimated from the previous season (promoted teams from Championship form) and every fixture-difficulty view says so until real results land.
+Until completed results can rate teams, ratings are estimated from the previous season (promoted teams from Championship form) and every fixture-difficulty view says so. That covers pre-season and the gap after GW1 kicks off, when results exist in principle but no club has both a home and an away result to rate it on yet. `fpl ratings update` falls back to the same estimate rather than reporting that there is nothing to calculate and leaving a stale file in place.
+
+Early-season results are shrunk toward that previous-season prior, by the automatic refresh and by `fpl ratings update` alike: a one-gameweek sample carries 1/7 of the weight, six gameweeks half, and the prior drops out entirely at GW12. The weight follows the size of the window rather than the gameweek number, so `--since-gw 10` at GW12 is weighted as three gameweeks of evidence. Blended files are stamped `calculated_blended` / `understat_xg_blended` so `fpl ratings` shows that shrinkage was applied.
 
 Ratings are tied to the season that produced them. A file carried across a season boundary is ignored rather than served, because it rates the three relegated clubs and knows nothing about the three promoted ones. Ratings that cover the wrong set of clubs are called out by name — `team_ratings.yaml is missing COV, HUL, IPS and still rates BUR, WHU, WOL` — which catches a rollover that a "days old" check cannot: a file rebuilt in early August is new by date and still describes last season's league.
 
