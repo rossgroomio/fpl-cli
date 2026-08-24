@@ -214,6 +214,21 @@ def _extract_status(val: Any) -> str:
     return str(val)
 
 
+def read_player_field(source: Any, name: str, default: Any = None) -> Any:
+    """Read one field from a ``Player`` model or a player-shaped mapping.
+
+    The single place that knows a player can arrive as either shape. Attribute
+    first, then mapping key, then *default* — ``build_player_evaluation`` and
+    the shrinkage hold-out both read through this so their notion of "does this
+    player have field X" cannot drift apart.
+    """
+    if hasattr(source, name):
+        return getattr(source, name)
+    if isinstance(source, Mapping):
+        return source.get(name, default)
+    return default
+
+
 def build_player_evaluation(
     player: Player | Mapping[str, Any],
     *,
@@ -227,15 +242,11 @@ def build_player_evaluation(
     Normalises both input shapes to the same field set. When *enrichment*
     is provided its keys overlay the base player data.
     """
-    # Unified accessor: try attribute first (Player model), fall back to dict
+    # Unified accessor: enrichment overlay, then the shared field reader
     def _get(key: str, default: Any = None) -> Any:
         if enrichment and key in enrichment:
             return enrichment[key]
-        if hasattr(player, key):
-            return getattr(player, key)
-        if isinstance(player, Mapping):
-            return player.get(key, default)
-        return default
+        return read_player_field(player, key, default)
 
     minutes = _get("minutes", 0)
     appearances = _get("appearances", 0)

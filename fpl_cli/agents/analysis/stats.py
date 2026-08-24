@@ -631,7 +631,7 @@ class StatsAgent(Agent):
         apply_shrinkage(
             differentials, "differential_score",
             getattr(self, "_player_priors", None), self._next_gw_id,
-            unavailable_player_ids(players, self._next_gw_id),
+            unavailable_ids=unavailable_player_ids(players, self._next_gw_id),
         )
 
         # Sort by differential score
@@ -737,7 +737,7 @@ class StatsAgent(Agent):
         apply_shrinkage(
             targets, "target_score",
             getattr(self, "_player_priors", None), self._next_gw_id,
-            unavailable_player_ids(players, self._next_gw_id),
+            unavailable_ids=unavailable_player_ids(players, self._next_gw_id),
         )
 
         # Sort by target score

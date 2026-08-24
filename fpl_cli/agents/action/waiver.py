@@ -316,7 +316,7 @@ class WaiverAgent(Agent):
         # to be playing (their low score is a fact, not a small sample) — #122
         apply_shrinkage(
             scored_players, "waiver_score", self._player_priors, next_gw_id,
-            unavailable_player_ids(available, next_gw_id),
+            unavailable_ids=unavailable_player_ids(available, next_gw_id),
         )
 
         # Sort by waiver score

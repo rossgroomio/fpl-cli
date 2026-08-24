@@ -138,10 +138,12 @@ class TransferEvalAgent(Agent):
                 (player_map[pid] for pid in all_ids), next_gw_id,
             )
             apply_shrinkage(
-                target_scored, "target_score", data.player_priors, next_gw_id, held_out,
+                target_scored, "target_score", data.player_priors, next_gw_id,
+                unavailable_ids=held_out,
             )
             apply_shrinkage(
-                lineup_scored, "lineup_score", data.player_priors, next_gw_id, held_out,
+                lineup_scored, "lineup_score", data.player_priors, next_gw_id,
+                unavailable_ids=held_out,
             )
 
             # Build result dicts

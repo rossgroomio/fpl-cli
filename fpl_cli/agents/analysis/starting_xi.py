@@ -112,7 +112,7 @@ class StartingXIAgent(Agent):
             # not to be playing (their low score is a fact, not a small sample)
             apply_shrinkage(
                 scored, "lineup_score", data.player_priors, next_gw_id,
-                unavailable_player_ids(squad_players, next_gw_id),
+                unavailable_ids=unavailable_player_ids(squad_players, next_gw_id),
             )
 
             # Build team_fixtures from scored players' positional FDR

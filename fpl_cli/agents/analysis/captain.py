@@ -165,7 +165,7 @@ class CaptainAgent(Agent):
             # not to be playing (their low score is a fact, not a small sample)
             apply_shrinkage(
                 scored_candidates, "captain_score", self._player_priors, next_gw_id,
-                unavailable_player_ids(candidates, next_gw_id),
+                unavailable_ids=unavailable_player_ids(candidates, next_gw_id),
             )
 
             # Sort by captain score

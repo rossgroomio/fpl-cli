@@ -111,7 +111,7 @@ class BenchOrderAgent(Agent):
             # not to be playing (their low score is a fact, not a small sample)
             apply_shrinkage(
                 scored_bench, "priority_score", data.player_priors, next_gw_id,
-                unavailable_player_ids(bench_players, next_gw_id),
+                unavailable_ids=unavailable_player_ids(bench_players, next_gw_id),
             )
 
             # Sort outfield by raw score (avoids ties from normalisation rounding), GK always last
