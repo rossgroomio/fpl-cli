@@ -3,7 +3,7 @@
 
 Both constants that place a promoted side on the Premier League scale --
 the level (CHAMPIONSHIP_GOALS_*_FACTOR) and the spread
-(CHAMPIONSHIP_EDGE_RETENTION) -- fall out of one regression per axis:
+(CHAMPIONSHIP_TRANSFER_COEFFICIENT) -- fall out of one regression per axis:
 
     y = a + k * z
 
@@ -12,9 +12,9 @@ where, for a team promoted from Championship season s into PL season s+1,
     z = its standardised rate within the Championship in season s
     y = its standardised rate within the Premier League in season s+1
 
-Both sides are standardised in their own league's units, so `k` is directly
-CHAMPIONSHIP_EDGE_RETENTION and `a` is the level in PL standard deviations --
-the same units `_rescale_to_pl` works in. Regressing measured-on-measured is
+Both sides are standardised in their own league's units, so `k` is the spread
+term `_rescale_to_pl` applies and `a` is the level in PL standard deviations --
+the same units that function works in. Regressing measured-on-measured is
 deliberate: the attenuation from Championship sampling noise is part of what we
 want the coefficient to carry, since the input at runtime is equally noisy.
 
@@ -24,8 +24,24 @@ Also reports, per season and per axis, the reliability
 
 -- the share of the observed cross-team spread that is not Poisson sampling
 noise. rho needs a single season, so it is available even where the free tier
-serves too little history to fit anything, and it bounds k from above (k <= rho,
-since at most all of the signal survives promotion).
+serves too little history to fit anything.
+
+rho bounds k from above as k <= sqrt(rho), NOT k <= rho. The retention constant
+scales a standard deviation where rho is a variance ratio, and the full
+decomposition is
+
+    k = tau * sqrt(rho_ELC * rho_PL)
+
+with rho_PL the reliability of the pool the promoted side is ranked in (a true
+gap is a smaller share of a noisy pool's observed sd than of its true one) and
+tau the transfer of true Championship standing to true PL standing. Only tau
+needs the regression; the two reliabilities are measurable from one season each.
+
+NOTE ON COVERAGE: as of 2026-08, football-data.org's free tier serves only the
+CURRENT season -- earlier ones return 403 -- so the regression below cannot run
+on a free key at all, since it needs Championship season s alongside Premier
+League season s+1. The reliability section still works. Run the regression only
+against a paid key, or a cache built up over several seasons.
 
 Usage:
     FOOTBALL_DATA_API_KEY=... python3 scripts/calibrate_promoted_prior.py
@@ -243,9 +259,10 @@ async def main() -> int:
             f"{intercept:>9.3f} {r2:>6.2f} {rho:>6.2f}"
         )
 
-    print("\nk is CHAMPIONSHIP_EDGE_RETENTION directly (currently 0.6).")
-    print("a is the level in PL standard deviations -- the calibrated stand-in")
-    print("for CHAMPIONSHIP_GOALS_SCORED_FACTOR / _CONCEDED_FACTOR.")
+    print("\nk is the whole spread term: divide by sqrt(rho_ELC * PL_POOL_RELIABILITY)")
+    print("to recover CHAMPIONSHIP_TRANSFER_COEFFICIENT, the only part of it that")
+    print("this regression is needed for. a is the level in PL standard deviations")
+    print("-- the calibrated stand-in for CHAMPIONSHIP_GOALS_SCORED/_CONCEDED_FACTOR.")
     return 0
 
 

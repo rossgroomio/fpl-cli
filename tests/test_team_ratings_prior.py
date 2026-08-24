@@ -250,6 +250,7 @@ class TestFootballDataGetMatches:
                     "awayTeam": {"id": 65, "tla": "MCI"},
                     "score": {"fullTime": {"home": 2, "away": 1}},
                     "matchday": 10,
+                    "stage": "REGULAR_SEASON",
                 },
             ],
         }
@@ -269,6 +270,9 @@ class TestFootballDataGetMatches:
         assert result[0]["away_team_id"] == 65
         assert result[0]["home_score"] == 2
         assert result[0]["matchday"] == 10
+        # Carried through so the prior can drop cup and playoff rounds, which
+        # football-data serves in the same batch as the league season.
+        assert result[0]["stage"] == "REGULAR_SEASON"
 
     async def test_get_matches_no_api_key(self):
         """Returns empty list when API key not set."""
@@ -475,7 +479,7 @@ class TestChampionshipSpread:
         pl_mean = mean(p.goals_conceded_home for p in LIVE_PL.values())
         assert min(p.goals_conceded_home for p in rescaled.values()) > pl_mean
 
-    def test_cohort_spread_is_a_fraction_of_the_premier_league_spread(self):
+    def test_cohort_spread_is_the_measured_fraction_of_the_pl_spread(self):
         """Standardising then re-expressing puts the cohort in PL units.
 
         Rescaling the whole division leaves z-scores with sd 1 by construction,
@@ -486,16 +490,20 @@ class TestChampionshipSpread:
         from statistics import pstdev
 
         from fpl_cli.services.team_ratings_prior import (
-            CHAMPIONSHIP_EDGE_RETENTION,
+            CHAMPIONSHIP_TRANSFER_COEFFICIENT,
+            PL_POOL_RELIABILITY,
+            _axis_reliability,
             _rescale_to_pl,
         )
 
         rescaled = _rescale_to_pl(LIVE_ELC, LIVE_PL, set(LIVE_ELC))
 
+        rho = _axis_reliability(LIVE_ELC.values(), "goals_conceded_home")
+        expected_k = CHAMPIONSHIP_TRANSFER_COEFFICIENT * (rho * PL_POOL_RELIABILITY) ** 0.5
         pl_sd = pstdev([p.goals_conceded_home for p in LIVE_PL.values()])
         cohort_sd = pstdev([p.goals_conceded_home for p in rescaled.values()])
 
-        assert cohort_sd == pytest.approx(CHAMPIONSHIP_EDGE_RETENTION * pl_sd)
+        assert cohort_sd == pytest.approx(expected_k * pl_sd)
         assert cohort_sd < pl_sd
 
     def test_level_is_exactly_what_the_factors_imply(self):
@@ -544,6 +552,140 @@ class TestChampionshipSpread:
             assert mid_table_only[team].goals_conceded_home == pytest.approx(
                 whole_division[team].goals_conceded_home
             )
+
+
+def _division(conceded_home: list[float], games: int = 23) -> dict[str, TeamPerformance]:
+    """A division whose teams differ only on conceded-at-home, over `games` games."""
+    return {
+        f"T{i:02d}": TeamPerformance(f"T{i:02d}", 1.4, 1.2, c, 1.4, games, games)
+        for i, c in enumerate(conceded_home)
+    }
+
+
+class TestAxisReliability:
+    """How much of a division's observed spread is signal rather than sampling noise."""
+
+    def test_spread_below_the_sampling_floor_reports_no_signal(self):
+        """24 records indistinguishable from 24 draws of the same number.
+
+        This is goals_conceded_away on live 2025-26 Championship results: the
+        observed spread is smaller than Poisson noise over 23 games alone
+        produces, so the ordering carries nothing to rank on.
+        """
+        from fpl_cli.services.team_ratings_prior import _axis_reliability
+
+        # mean 1.2 over 23 games has a noise sd of sqrt(1.2/23) = 0.23; this
+        # division's teams differ by a hundredth of that.
+        division = _division(_evenly_spread(1.199, 1.201, 24))
+
+        assert _axis_reliability(division.values(), "goals_conceded_home") == 0.0
+
+    def test_spread_well_clear_of_the_floor_reports_signal(self):
+        """A division that really does separate its teams keeps most of its spread."""
+        from fpl_cli.services.team_ratings_prior import _axis_reliability
+
+        division = _division(_evenly_spread(0.4, 2.4, 24))
+
+        assert _axis_reliability(division.values(), "goals_conceded_home") > 0.7
+
+    def test_more_games_lowers_the_noise_floor(self):
+        """The same spread is better evidence over a longer season."""
+        from fpl_cli.services.team_ratings_prior import _axis_reliability
+
+        rates = _evenly_spread(0.9, 1.5, 24)
+        short = _axis_reliability(_division(rates, games=6).values(), "goals_conceded_home")
+        long = _axis_reliability(_division(rates, games=46).values(), "goals_conceded_home")
+
+        assert long > short
+
+    def test_a_single_team_has_no_measurable_spread(self):
+        from fpl_cli.services.team_ratings_prior import _axis_reliability
+
+        assert _axis_reliability(_division([1.2]).values(), "goals_conceded_home") == 0.0
+
+    def test_an_axis_with_no_signal_gets_no_ordering(self):
+        """A zero-reliability axis must place every promoted side identically.
+
+        Ranking on it would be ranking noise, so the honest output is the level
+        term for everyone -- the same answer as having no Championship data.
+        """
+        from fpl_cli.services.team_ratings_prior import (
+            CHAMPIONSHIP_GOALS_CONCEDED_FACTOR,
+            _rescale_to_pl,
+        )
+
+        division = _division(_evenly_spread(1.199, 1.201, 24))
+
+        rescaled = _rescale_to_pl(division, LIVE_PL, {"T00", "T11", "T23"})
+
+        expected = 1.2 * CHAMPIONSHIP_GOALS_CONCEDED_FACTOR
+        for perf in rescaled.values():
+            assert perf.goals_conceded_home == pytest.approx(expected, abs=1e-3)
+
+    def test_a_noisier_axis_is_damped_harder_than_a_cleaner_one(self):
+        """Two axes in one division must not share a single damping factor."""
+        from statistics import pstdev
+
+        from fpl_cli.services.team_ratings_prior import _rescale_to_pl
+
+        # conceded_home separates the teams; conceded_away does not.
+        division = {
+            f"T{i:02d}": TeamPerformance(f"T{i:02d}", 1.4, 1.2, c, 1.4, 23, 23)
+            for i, c in enumerate(_evenly_spread(0.4, 2.4, 24))
+        }
+
+        rescaled = _rescale_to_pl(division, LIVE_PL, set(division))
+
+        clean = pstdev([p.goals_conceded_home for p in rescaled.values()])
+        noisy = pstdev([p.goals_conceded_away for p in rescaled.values()])
+        assert clean > 0
+        assert noisy == pytest.approx(0.0, abs=1e-9)
+
+
+class TestPlayoffMatchesExcluded:
+    """Championship playoffs must not count towards a promoted side's rates."""
+
+    @staticmethod
+    def _match(home, away, hs, a_s, stage="REGULAR_SEASON"):
+        return {
+            "home_team_tla": home, "away_team_tla": away,
+            "home_team_id": hash(home) % 1000, "away_team_id": hash(away) % 1000,
+            "home_score": hs, "away_score": a_s, "stage": stage,
+        }
+
+    def test_playoff_results_do_not_reach_performances(self):
+        """The playoff winner is a promoted side, so this lands where it hurts.
+
+        football-data serves the playoffs in the same batch as the league
+        season, and the final is at Wembley yet carries a nominal home team.
+        """
+        from fpl_cli.services.team_ratings_prior import _matches_to_performances
+
+        league = [
+            self._match("AAA", "BBB", 1, 0),
+            self._match("BBB", "AAA", 1, 0),
+        ]
+        with_playoff = [*league, self._match("AAA", "BBB", 5, 0, stage="PLAYOFFS")]
+
+        clean = _matches_to_performances(league)
+        contaminated = _matches_to_performances(with_playoff)
+
+        assert clean["AAA"].home_games == 1
+        assert contaminated["AAA"].home_games == 1
+        assert contaminated["AAA"].goals_scored_home == clean["AAA"].goals_scored_home
+
+    def test_matches_without_a_stage_are_kept(self):
+        """An unrecognised payload must degrade, not silently empty the prior."""
+        from fpl_cli.services.team_ratings_prior import _matches_to_performances
+
+        matches = [
+            {"home_team_tla": "AAA", "away_team_tla": "BBB", "home_team_id": 1,
+             "away_team_id": 2, "home_score": 1, "away_score": 0},
+            {"home_team_tla": "BBB", "away_team_tla": "AAA", "home_team_id": 2,
+             "away_team_id": 1, "home_score": 1, "away_score": 0},
+        ]
+
+        assert set(_matches_to_performances(matches)) == {"AAA", "BBB"}
 
 
 class TestChampionshipSpreadDegradation:
