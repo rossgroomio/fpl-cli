@@ -293,6 +293,48 @@ class TestFPLPriceScraper:
                 with pytest.raises(RuntimeError, match="ERR_CONNECTION_RESET"):
                     await scraper.scrape()
 
+    async def test_scrape_closes_the_browser_when_page_setup_fails(self):
+        """A browser that launched but could not open a page must still be closed.
+
+        launch() used to sit outside the try/finally, so a failure between it
+        and new_page() -- reachable now that FPL_BROWSER_EXECUTABLE lets users
+        point at a binary that starts but then misbehaves -- orphaned a
+        Chromium process for the life of the shell.
+        """
+        pytest.importorskip("playwright")
+        from unittest.mock import AsyncMock
+
+        env = {"FPL_EMAIL": "test@example.com", "FPL_PASSWORD": "secret"}
+        with patch.dict(os.environ, env, clear=True):
+            scraper = FPLPriceScraper()
+            with patch("playwright.async_api.async_playwright") as mock_pw:
+                mock_p = AsyncMock()
+                mock_browser = AsyncMock()
+                mock_browser.new_context = AsyncMock(side_effect=RuntimeError("target closed"))
+                mock_pw.return_value.__aenter__.return_value = mock_p
+                mock_p.chromium.launch.return_value = mock_browser
+
+                with pytest.raises(RuntimeError, match="target closed"):
+                    await scraper.scrape()
+
+        mock_browser.close.assert_awaited_once()
+
+    async def test_scrape_survives_a_launch_that_never_returns_a_browser(self):
+        """A launch() failure has nothing to close and must not raise on cleanup."""
+        pytest.importorskip("playwright")
+        from unittest.mock import AsyncMock
+
+        env = {"FPL_EMAIL": "test@example.com", "FPL_PASSWORD": "secret"}
+        with patch.dict(os.environ, env, clear=True):
+            scraper = FPLPriceScraper()
+            with patch("playwright.async_api.async_playwright") as mock_pw:
+                mock_p = AsyncMock()
+                mock_p.chromium.launch = AsyncMock(side_effect=RuntimeError("executable not found"))
+                mock_pw.return_value.__aenter__.return_value = mock_p
+
+                with pytest.raises(RuntimeError, match="executable not found"):
+                    await scraper.scrape()
+
     async def test_scrape_missing_credentials(self):
         """scrape() raises ValueError when no credentials available."""
         pytest.importorskip("playwright")

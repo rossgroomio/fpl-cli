@@ -132,6 +132,8 @@ def ratings_update(since_gw: int | None, dry_run: bool, use_xg: bool):
                 sample_gws = max(
                     (gw["id"] for gw in gameweeks if gw.get("finished")), default=0
                 )
+                # Full-season window, so the sample is the season to date.
+                season_gws = sample_gws
             else:
                 min_gw = since_gw or 1
                 method = "recent_form" if since_gw else "full_season"
@@ -147,6 +149,9 @@ def ratings_update(since_gw: int | None, dry_run: bool, use_xg: bool):
                 # Gameweeks of current-season evidence, not the absolute GW
                 # number: --since-gw 8 at GW10 is a three-gameweek sample.
                 sample_gws = max_gw - min_gw + 1 if completed else 0
+                # How far the season itself has run, which is what decides
+                # whether a prior is still worth blending in at all.
+                season_gws = max_gw if completed else 0
 
             if not ratings:
                 # Nothing to rate teams on for this window. A file already on
@@ -154,36 +159,51 @@ def ratings_update(since_gw: int | None, dry_run: bool, use_xg: bool):
                 # alone rather than replaced by a coarser prior estimate --
                 # e.g. --since-gw 15 requested before GW15 has produced a full
                 # home/away cycle for any club must not clobber GW1-14 data.
-                if current_ratings:
+                #
+                # Non-empty is not the same as usable, though: a file rating
+                # last season's twenty clubs passes every date check while
+                # missing the promoted sides entirely, and `fpl doctor` sends
+                # the user here to repair precisely that. Keeping it would make
+                # this command a dead end, so drift falls through to the prior.
+                team_set_drift = None
+                try:
+                    teams = await client.get_teams()
+                    team_set_drift = service.check_team_set(t.short_name for t in teams)
+                except Exception:  # noqa: BLE001 — a drift check must not break the command
+                    pass
+                if current_ratings and not team_set_drift:
                     console.print(
                         "[yellow]No completed fixtures to calculate from for this window - "
                         "keeping existing ratings unchanged.[/yellow]"
                     )
                     return
-                # Nothing usable is on disk either. Saving nothing here leaves
-                # a season-rollover file in place (ignored on its season
-                # stamp, so every fixture scores a neutral 4.0) — and
-                # `fpl doctor` sends users here precisely then. The
-                # previous-season prior is available the whole time.
+                # Nothing usable is on disk. Saving nothing here leaves a
+                # season-rollover file in place (ignored on its season stamp,
+                # so every fixture scores a neutral 4.0) — and `fpl doctor`
+                # sends users here precisely then. The previous-season prior is
+                # available the whole time.
+                reason = (
+                    "Existing ratings cover a different set of teams to the current league"
+                    if team_set_drift
+                    else "No completed fixtures to calculate from"
+                )
                 if dry_run:
                     # Check for real rather than assuming a prior exists, so
                     # this can't promise an outcome the real run refuses.
                     prior = await generate_prior(client)
                     if prior:
                         console.print(
-                            "[yellow]No completed fixtures to calculate from - ratings would "
-                            "be estimated from last season's prior.[/yellow]"
+                            f"[yellow]{reason} - ratings would be estimated from "
+                            f"last season's prior.[/yellow]"
                         )
                     else:
                         console.print(
-                            "[yellow]No completed fixtures to calculate from, and no "
-                            "previous-season data available either - ratings would be "
-                            "unchanged.[/yellow]"
+                            f"[yellow]{reason}, and no previous-season data available "
+                            f"either - ratings would be unchanged.[/yellow]"
                         )
                     return
                 console.print(
-                    "[yellow]No completed fixtures to calculate from - estimating from "
-                    "last season's prior.[/yellow]"
+                    f"[yellow]{reason} - estimating from last season's prior.[/yellow]"
                 )
                 if not await service.seed_from_prior(client):
                     error_console.print(
@@ -201,8 +221,13 @@ def ratings_update(since_gw: int | None, dry_run: bool, use_xg: bool):
             # command would overwrite a blended file with twenty clubs rated on
             # a handful of matches each, and stamp it fresh so the auto-refresh
             # would not correct it.
+            # Gated on season progress, not window length, so `--since-gw 30`
+            # at GW34 is the recent-form view it advertises rather than 55%
+            # last-season prior. This is the same test the auto-refresh applies
+            # (`max_completed_gw < BLENDING_CUTOFF_GW`), so the two write paths
+            # agree; the weight still comes from the sample actually observed.
             blend_note = None
-            if 0 < sample_gws < BLENDING_CUTOFF_GW:
+            if 0 < sample_gws and season_gws < BLENDING_CUTOFF_GW:
                 prior = await generate_prior(client)
                 if prior:
                     ratings = blend_with_prior(prior, ratings, sample_gws)

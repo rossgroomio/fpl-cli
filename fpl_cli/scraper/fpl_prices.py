@@ -221,16 +221,21 @@ class FPLPriceScraper:
             if channel := os.getenv("FPL_BROWSER_CHANNEL"):
                 launch_kwargs["channel"] = channel
 
-            browser = await p.chromium.launch(**launch_kwargs)
-            context = await browser.new_context(
-                viewport={"width": 1280, "height": 800},
-                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                          "AppleWebKit/537.36 (KHTML, like Gecko) "
-                          "Chrome/120.0.0.0 Safari/537.36",
-            )
-            page = await context.new_page()
-
+            # Inside the try, not before it: a launched browser whose context
+            # or page creation fails would otherwise be left running, and
+            # FPL_BROWSER_EXECUTABLE / FPL_BROWSER_ARGS make "launches but then
+            # misbehaves" a reachable state rather than a theoretical one.
+            browser = None
             try:
+                browser = await p.chromium.launch(**launch_kwargs)
+                context = await browser.new_context(
+                    viewport={"width": 1280, "height": 800},
+                    user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                              "AppleWebKit/537.36 (KHTML, like Gecko) "
+                              "Chrome/120.0.0.0 Safari/537.36",
+                )
+                page = await context.new_page()
+
                 await self._login(page, email, password)
 
                 # Verify we're on the FPL domain. If still on the IdP, login silently
@@ -252,10 +257,11 @@ class FPLPriceScraper:
                 return finances
 
             finally:
-                try:
-                    await browser.close()
-                except Exception as e:  # noqa: BLE001 — cleanup best-effort, must not mask the original error
-                    logger.debug("Failed to close browser cleanly: %s", e)
+                if browser is not None:
+                    try:
+                        await browser.close()
+                    except Exception as e:  # noqa: BLE001 — cleanup best-effort, must not mask the original error
+                        logger.debug("Failed to close browser cleanly: %s", e)
 
     # `or {}` on each step: FPL briefly returns {"player": null} in the post-login
     # window before the session is fully hydrated. .get(key, {}) only defaults on
