@@ -9,7 +9,9 @@ import pytest
 from fpl_cli.services.team_ratings import TeamPerformance, TeamRating
 from fpl_cli.services.team_ratings_prior import (
     BLENDING_CUTOFF_GW,
+    POOL_RELIABILITY_BY_SOURCE,
     PRIOR_CACHE_VERSION,
+    PRIOR_SOURCE_UNDERSTAT,
     REGRESSION_CONSTANT,
     blend_with_prior,
     generate_prior,
@@ -303,6 +305,10 @@ PL_POOL = {
     "MCI": TeamPerformance("MCI", 2.4, 2.1, 0.7, 0.9, 19, 19),
 }
 
+# Reliability of the Understat xG pool -- the tests' PL pools stand in for the
+# primary path, so the spread damping is measured in that path's units.
+XG_POOL = POOL_RELIABILITY_BY_SOURCE[PRIOR_SOURCE_UNDERSTAT]
+
 
 # COV wins the division outright; XXX and YYY draw with each other.
 DOMINANT_CHAMPIONSHIP = [
@@ -398,7 +404,7 @@ class TestChampionshipRescaling:
             "fpl_cli.api.football_data.FootballDataClient",
             return_value=_championship_fd(DOMINANT_CHAMPIONSHIP),
         ):
-            result = await _championship_performances({"COV"}, 2025, PL_POOL)
+            result = await _championship_performances({"COV"}, 2025, PL_POOL, XG_POOL)
 
         assert result is not None
         # COV's raw Championship rates: scored 3.0 home / 2.0 away, conceded 1.0 both.
@@ -415,7 +421,7 @@ class TestChampionshipRescaling:
         fd.is_configured = False
 
         with patch("fpl_cli.api.football_data.FootballDataClient", return_value=fd):
-            assert await _championship_performances({"COV"}, 2025, PL_POOL) is None
+            assert await _championship_performances({"COV"}, 2025, PL_POOL, XG_POOL) is None
 
 
 def _evenly_spread(low: float, high: float, count: int) -> list[float]:
@@ -454,7 +460,7 @@ class TestChampionshipSpread:
         from fpl_cli.services.team_ratings_prior import _rescale_to_pl
 
         pool = dict(LIVE_PL)
-        pool.update(_rescale_to_pl(LIVE_ELC, LIVE_PL, LIVE_PROMOTED))
+        pool.update(_rescale_to_pl(LIVE_ELC, LIVE_PL, LIVE_PROMOTED, XG_POOL))
 
         ratings = TeamRatingsCalculator._convert_to_ratings(pool)
 
@@ -474,7 +480,7 @@ class TestChampionshipSpread:
 
         from fpl_cli.services.team_ratings_prior import _rescale_to_pl
 
-        rescaled = _rescale_to_pl(LIVE_ELC, LIVE_PL, set(LIVE_ELC))
+        rescaled = _rescale_to_pl(LIVE_ELC, LIVE_PL, set(LIVE_ELC), XG_POOL)
 
         pl_mean = mean(p.goals_conceded_home for p in LIVE_PL.values())
         assert min(p.goals_conceded_home for p in rescaled.values()) > pl_mean
@@ -491,15 +497,14 @@ class TestChampionshipSpread:
 
         from fpl_cli.services.team_ratings_prior import (
             CHAMPIONSHIP_TRANSFER_COEFFICIENT,
-            PL_POOL_RELIABILITY,
             _axis_reliability,
             _rescale_to_pl,
         )
 
-        rescaled = _rescale_to_pl(LIVE_ELC, LIVE_PL, set(LIVE_ELC))
+        rescaled = _rescale_to_pl(LIVE_ELC, LIVE_PL, set(LIVE_ELC), XG_POOL)
 
         rho = _axis_reliability(LIVE_ELC.values(), "goals_conceded_home")
-        expected_k = CHAMPIONSHIP_TRANSFER_COEFFICIENT * (rho * PL_POOL_RELIABILITY) ** 0.5
+        expected_k = CHAMPIONSHIP_TRANSFER_COEFFICIENT * (rho * XG_POOL) ** 0.5
         pl_sd = pstdev([p.goals_conceded_home for p in LIVE_PL.values()])
         cohort_sd = pstdev([p.goals_conceded_home for p in rescaled.values()])
 
@@ -520,7 +525,7 @@ class TestChampionshipSpread:
             _rescale_to_pl,
         )
 
-        rescaled = _rescale_to_pl(LIVE_ELC, LIVE_PL, set(LIVE_ELC))
+        rescaled = _rescale_to_pl(LIVE_ELC, LIVE_PL, set(LIVE_ELC), XG_POOL)
 
         for axis, factor in CHAMPIONSHIP_AXES:
             elc_mean = mean(getattr(p, axis) for p in LIVE_ELC.values())
@@ -531,7 +536,7 @@ class TestChampionshipSpread:
         """Damping the spread must not scramble who was better than whom."""
         from fpl_cli.services.team_ratings_prior import _rescale_to_pl
 
-        rescaled = _rescale_to_pl(LIVE_ELC, LIVE_PL, set(LIVE_ELC))
+        rescaled = _rescale_to_pl(LIVE_ELC, LIVE_PL, set(LIVE_ELC), XG_POOL)
 
         by_raw = sorted(LIVE_ELC, key=lambda t: LIVE_ELC[t].goals_conceded_home)
         by_rescaled = sorted(rescaled, key=lambda t: rescaled[t].goals_conceded_home)
@@ -545,8 +550,8 @@ class TestChampionshipSpread:
         """
         from fpl_cli.services.team_ratings_prior import _rescale_to_pl
 
-        mid_table_only = _rescale_to_pl(LIVE_ELC, LIVE_PL, {"C10", "C11", "C12"})
-        whole_division = _rescale_to_pl(LIVE_ELC, LIVE_PL, set(LIVE_ELC))
+        mid_table_only = _rescale_to_pl(LIVE_ELC, LIVE_PL, {"C10", "C11", "C12"}, XG_POOL)
+        whole_division = _rescale_to_pl(LIVE_ELC, LIVE_PL, set(LIVE_ELC), XG_POOL)
 
         for team in mid_table_only:
             assert mid_table_only[team].goals_conceded_home == pytest.approx(
@@ -616,7 +621,7 @@ class TestAxisReliability:
 
         division = _division(_evenly_spread(1.199, 1.201, 24))
 
-        rescaled = _rescale_to_pl(division, LIVE_PL, {"T00", "T11", "T23"})
+        rescaled = _rescale_to_pl(division, LIVE_PL, {"T00", "T11", "T23"}, XG_POOL)
 
         expected = 1.2 * CHAMPIONSHIP_GOALS_CONCEDED_FACTOR
         for perf in rescaled.values():
@@ -634,7 +639,7 @@ class TestAxisReliability:
             for i, c in enumerate(_evenly_spread(0.4, 2.4, 24))
         }
 
-        rescaled = _rescale_to_pl(division, LIVE_PL, set(division))
+        rescaled = _rescale_to_pl(division, LIVE_PL, set(division), XG_POOL)
 
         clean = pstdev([p.goals_conceded_home for p in rescaled.values()])
         noisy = pstdev([p.goals_conceded_away for p in rescaled.values()])
@@ -688,6 +693,93 @@ class TestPlayoffMatchesExcluded:
         assert set(_matches_to_performances(matches)) == {"AAA", "BBB"}
 
 
+class TestPoolReliabilityBySource:
+    """How noisily the pool is measured decides how hard promoted sides are damped."""
+
+    def test_both_prior_sources_are_covered(self):
+        """A source with no entry would raise a KeyError in generate_prior."""
+        from fpl_cli.services.team_ratings_prior import (
+            POOL_RELIABILITY_BY_SOURCE,
+            PRIOR_SOURCE_FOOTBALL_DATA,
+            PRIOR_SOURCE_UNDERSTAT,
+        )
+
+        assert set(POOL_RELIABILITY_BY_SOURCE) == {
+            PRIOR_SOURCE_UNDERSTAT,
+            PRIOR_SOURCE_FOOTBALL_DATA,
+        }
+
+    def test_the_goals_pool_is_read_as_noisier_than_the_xg_pool(self):
+        """Actual goals over 19 games say less about a team than xG does."""
+        from fpl_cli.services.team_ratings_prior import (
+            POOL_RELIABILITY_BY_SOURCE,
+            PRIOR_SOURCE_FOOTBALL_DATA,
+            PRIOR_SOURCE_UNDERSTAT,
+        )
+
+        assert (
+            POOL_RELIABILITY_BY_SOURCE[PRIOR_SOURCE_FOOTBALL_DATA]
+            < POOL_RELIABILITY_BY_SOURCE[PRIOR_SOURCE_UNDERSTAT]
+        )
+
+    def test_a_noisier_pool_damps_the_promoted_cohort_harder(self):
+        """The same Championship evidence is worth less against a noisier pool.
+
+        Reusing the xG figure on the raw-goals fallback path would overstate
+        every promoted rating there, since a real gap is a smaller share of a
+        noisier pool's observed spread.
+        """
+        from statistics import pstdev
+
+        from fpl_cli.services.team_ratings_prior import (
+            POOL_RELIABILITY_BY_SOURCE,
+            PRIOR_SOURCE_FOOTBALL_DATA,
+            _rescale_to_pl,
+        )
+
+        goals_pool = POOL_RELIABILITY_BY_SOURCE[PRIOR_SOURCE_FOOTBALL_DATA]
+        against_xg = _rescale_to_pl(LIVE_ELC, LIVE_PL, set(LIVE_ELC), XG_POOL)
+        against_goals = _rescale_to_pl(LIVE_ELC, LIVE_PL, set(LIVE_ELC), goals_pool)
+
+        spread_xg = pstdev([p.goals_conceded_home for p in against_xg.values()])
+        spread_goals = pstdev([p.goals_conceded_home for p in against_goals.values()])
+        assert spread_goals < spread_xg
+
+    async def test_the_football_data_path_uses_the_goals_reliability(self, tmp_path):
+        """The source that produced the pool picks the figure, not a fixed constant."""
+        from unittest.mock import ANY
+
+        from fpl_cli.services.team_ratings_prior import (
+            POOL_RELIABILITY_BY_SOURCE,
+            PRIOR_SOURCE_FOOTBALL_DATA,
+        )
+        from tests.conftest import make_team
+
+        client = AsyncMock()
+        client.get_teams = AsyncMock(return_value=[
+            make_team(id=1, name="Arsenal", short_name="ARS"),
+            make_team(id=2, name="Man City", short_name="MCI"),
+            make_team(id=3, name="Coventry", short_name="COV"),
+        ])
+        championship = AsyncMock(return_value=None)
+
+        with (
+            patch("fpl_cli.services.team_ratings_prior.prior_config_path",
+                  return_value=tmp_path / "p.yaml"),
+            patch("fpl_cli.services.team_ratings_prior._prior_from_understat",
+                  new_callable=AsyncMock, return_value=None),
+            patch("fpl_cli.services.team_ratings_prior._prior_from_football_data",
+                  new_callable=AsyncMock, return_value=dict(PL_POOL)),
+            patch("fpl_cli.services.team_ratings_prior._championship_performances",
+                  championship),
+        ):
+            await generate_prior(client)
+
+        championship.assert_awaited_once_with(
+            {"COV"}, ANY, ANY, POOL_RELIABILITY_BY_SOURCE[PRIOR_SOURCE_FOOTBALL_DATA]
+        )
+
+
 class TestChampionshipSpreadDegradation:
     """Neither distribution having any spread leaves only the level to apply."""
 
@@ -700,7 +792,7 @@ class TestChampionshipSpreadDegradation:
 
         flat = _pool("C", [1.2, 1.2, 1.2])
 
-        rescaled = _rescale_to_pl(flat, LIVE_PL, set(flat))
+        rescaled = _rescale_to_pl(flat, LIVE_PL, set(flat), XG_POOL)
 
         for perf in rescaled.values():
             assert perf.goals_conceded_home == pytest.approx(
@@ -711,7 +803,7 @@ class TestChampionshipSpreadDegradation:
         """A one-team pool has no sd, so there is no PL spread to place teams on."""
         from fpl_cli.services.team_ratings_prior import _rescale_to_pl
 
-        rescaled = _rescale_to_pl(LIVE_ELC, _pool("P", [1.2]), LIVE_PROMOTED)
+        rescaled = _rescale_to_pl(LIVE_ELC, _pool("P", [1.2]), LIVE_PROMOTED, XG_POOL)
 
         values = {round(p.goals_conceded_home, 9) for p in rescaled.values()}
         assert len(values) == 1
@@ -720,7 +812,7 @@ class TestChampionshipSpreadDegradation:
         """The caller can reach here with no continuing-team records at all."""
         from fpl_cli.services.team_ratings_prior import _rescale_to_pl
 
-        rescaled = _rescale_to_pl(LIVE_ELC, {}, LIVE_PROMOTED)
+        rescaled = _rescale_to_pl(LIVE_ELC, {}, LIVE_PROMOTED, XG_POOL)
 
         assert set(rescaled) == LIVE_PROMOTED
 
@@ -732,7 +824,7 @@ class TestChampionshipSpreadDegradation:
         # spread dwarfs the level the cohort is placed at.
         wild_pl = _pool("P", [0.1, 40.0])
 
-        rescaled = _rescale_to_pl(LIVE_ELC, wild_pl, LIVE_PROMOTED)
+        rescaled = _rescale_to_pl(LIVE_ELC, wild_pl, LIVE_PROMOTED, XG_POOL)
 
         for perf in rescaled.values():
             for axis in ("goals_scored_home", "goals_scored_away",
@@ -920,7 +1012,7 @@ class TestMissingPerformanceRecordWarnings:
                 return_value=_championship_fd(DOMINANT_CHAMPIONSHIP),
             ),
         ):
-            result = await _championship_performances({"COV", "ZZZ"}, 2025, PL_POOL)
+            result = await _championship_performances({"COV", "ZZZ"}, 2025, PL_POOL, XG_POOL)
 
         assert result is not None
         assert "COV" in result

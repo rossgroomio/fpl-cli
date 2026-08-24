@@ -4,8 +4,8 @@ fpl-cli - CLI tool for Fantasy Premier League analysis (classic + draft). Distri
 ## Setup & Dev
 ```bash
 source .venv/bin/activate && pip install -e ".[dev]"            # local only — web sessions install globally via setup script
-ruff check fpl_cli/            # Lint
-pyright fpl_cli/               # Type check
+ruff check fpl_cli/ scripts/   # Lint
+pyright fpl_cli/ scripts/      # Type check
 python3 -m pytest tests/       # Tests
 ```
 Run tests as `python3 -m pytest`, never bare `pytest`: in web sessions the `pytest` on PATH is a uv tool shim with its own interpreter and none of the project's dependencies, so it fails at `import pydantic`. If pytest then rejects `--disable-socket` / `--allow-unix-socket`, the dev extra is incomplete — `pip install pytest-socket`.

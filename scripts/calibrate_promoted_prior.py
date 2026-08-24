@@ -57,11 +57,17 @@ import asyncio
 import os
 import sys
 from dataclasses import dataclass
-from statistics import mean, pstdev
+from statistics import mean
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from fpl_cli.api.football_data import FootballDataClient  # noqa: E402
+from fpl_cli.services.team_ratings_prior import (  # noqa: E402
+    _league_matches,
+    rate_reliability,
+    rate_spread,
+    z_score,
+)
 
 AXES = ("scored_home", "scored_away", "conceded_home", "conceded_away")
 
@@ -84,7 +90,14 @@ def aggregate(matches: list[dict]) -> dict[int, Rates]:
     Keyed on the numeric id rather than the tla: the tla is not unique (both
     Sheffield clubs are served as "SHE"), and unlike the production code this
     never has to join to FPL short names, so it can use the unambiguous key.
+
+    Playoffs are dropped through the same filter production uses. They matter
+    more here than there: the regression's whole sample is the three promoted
+    teams per season, one of which is the playoff winner, so counting its
+    Wembley final as an ordinary home match biases the very constants this
+    script exists to fit.
     """
+    matches = _league_matches(matches)
     buckets: dict[int, dict[str, list[float]]] = {}
 
     def bucket(team_id: int) -> dict[str, list[float]]:
@@ -115,6 +128,10 @@ def aggregate(matches: list[dict]) -> dict[int, Rates]:
 def reliability(rates: dict[int, Rates], axis: str) -> tuple[float, float, float]:
     """(observed sd, Poisson noise sd, rho) for one axis across a division.
 
+    The measurement itself is production's, so a correction to the noise-floor
+    model lands in both at once -- this script is only worth running if it
+    measures the constants the same way the code applying them does.
+
     Simulated against known planted talent spreads, this recovers rho to within
     ~0.02 above rho = 0.4 and carries a small upward bias below it (it reports
     ~0.07 where the truth is 0), because clamping a negative variance estimate
@@ -124,22 +141,16 @@ def reliability(rates: dict[int, Rates], axis: str) -> tuple[float, float, float
     team in the division each season, where the regression sees only the three
     promoted ones.
     """
-    values = [r.values[axis] for r in rates.values()]
-    if len(values) < 2:
-        return 0.0, 0.0, 0.0
-    observed_var = pstdev(values) ** 2
-    games = mean(r.games_for(axis) for r in rates.values())
-    noise_var = mean(values) / games if games else 0.0
-    rho = max(0.0, (observed_var - noise_var) / observed_var) if observed_var else 0.0
-    return observed_var**0.5, noise_var**0.5, rho
+    mean_rate, sd = rate_spread([r.values[axis] for r in rates.values()])
+    games = mean(r.games_for(axis) for r in rates.values()) if rates else 0.0
+    noise_var = mean_rate / games if games else 0.0
+    return sd, noise_var**0.5, rate_reliability(mean_rate, sd, games)
 
 
 def standardise(rates: dict[int, Rates], axis: str) -> dict[int, float]:
-    values = [r.values[axis] for r in rates.values()]
-    mu, sd = mean(values), pstdev(values)
-    if not sd:
-        return dict.fromkeys(rates, 0.0)
-    return {team_id: (r.values[axis] - mu) / sd for team_id, r in rates.items()}
+    """Z-scores within a division, on production's own zero-spread guard."""
+    mean_rate, sd = rate_spread([r.values[axis] for r in rates.values()])
+    return {tid: z_score(r.values[axis], mean_rate, sd) for tid, r in rates.items()}
 
 
 def ols(xs: list[float], ys: list[float]) -> tuple[float, float, float, float]:
@@ -160,10 +171,8 @@ def ols(xs: list[float], ys: list[float]) -> tuple[float, float, float, float]:
     return intercept, slope, se, (1 - sse / syy) if syy else 0.0
 
 
-async def fetch(fd: FootballDataClient, competition: str, season: int, pause: float) -> list[dict]:
-    matches = await fd.get_matches(competition=competition, season=season)
-    await asyncio.sleep(pause)
-    return matches
+async def fetch(fd: FootballDataClient, competition: str, season: int) -> list[dict]:
+    return await fd.get_matches(competition=competition, season=season)
 
 
 async def main() -> int:
@@ -190,16 +199,20 @@ async def main() -> int:
         if not fd.is_configured:
             print("FOOTBALL_DATA_API_KEY is not set.", file=sys.stderr)
             return 2
-        for season in seasons:
-            for competition, store in (("PL", pl), ("ELC", elc)):
-                matches = await fetch(fd, competition, season, args.request_interval)
-                if matches:
-                    store[season] = aggregate(matches)
-                print(
-                    f"  {competition} {season}: {len(matches):>4} matches, "
-                    f"{len(store.get(season, {})):>2} teams",
-                    file=sys.stderr,
-                )
+        requests = [(s, c, store) for s in seasons for c, store in (("PL", pl), ("ELC", elc))]
+        for index, (season, competition, store) in enumerate(requests):
+            matches = await fetch(fd, competition, season)
+            if matches:
+                store[season] = aggregate(matches)
+            print(
+                f"  {competition} {season}: {len(matches):>4} matches, "
+                f"{len(store.get(season, {})):>2} teams",
+                file=sys.stderr,
+            )
+            # Pace against the free tier's 10/min, but never after the last
+            # request -- there is nothing following it to pace against.
+            if index < len(requests) - 1:
+                await asyncio.sleep(args.request_interval)
 
     print("\n## Season coverage\n")
     print(f"PL  seasons served: {sorted(pl) or 'none'}")
