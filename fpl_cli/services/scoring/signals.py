@@ -16,7 +16,6 @@ from fpl_cli.services.scoring.constants import ATTACKING_POSITIONS
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-if TYPE_CHECKING:
     from fpl_cli.api.core_insights import MatchRecord
 
 
@@ -58,7 +57,7 @@ def _rolling_window(
     axis, so they can be neither windowed nor ordered. The three call sites
     this helper replaced each filtered on ``row.get(gw_key, 0)`` but sorted on
     ``row[gw_key]``, so a keyless row cleared the filter on the default of 0
-    whenever ``current_gw <= _WINDOW_LOOKBACK_GWS`` made the cutoff negative,
+    whenever ``current_gw < _WINDOW_LOOKBACK_GWS`` made the cutoff negative,
     and then raised KeyError on the sort (#118). Above that cutoff the same
     row was already being dropped, so dropping it always is the behaviour the
     working path had.
