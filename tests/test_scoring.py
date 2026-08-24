@@ -37,6 +37,7 @@ from fpl_cli.services.scoring import (
     StatWeight,
     apply_adjusted_npxg,
     apply_consistency,
+    apply_shrinkage,
     build_adjusted_npxg_lookup,
     build_consistency_lookup,
     build_fixture_matchups,
@@ -61,10 +62,12 @@ from fpl_cli.services.scoring import (
     compute_gk_consistency,
     compute_involvement_rate,
     compute_xgi_sustainability,
+    is_known_unavailable,
     normalise_score,
     prepare_scoring_data,
     select_starting_xi,
     shrink_scores,
+    unavailable_player_ids,
 )
 from fpl_cli.services.scoring.constants import _consistency_phase, _ownership_ceiling_for
 from fpl_cli.services.scoring.ownership import _matchup_bonus
@@ -545,6 +548,49 @@ class TestBuildPlayerEvaluation:
         player = make_player(minutes=0, total_points=0, points_per_game=0.0)
         evaluation, _ = build_player_evaluation(player)
         assert evaluation.appearances == 0
+
+    def test_zero_chance_of_playing_survives_from_a_dict(self):
+        """0 is "ruled out", not "unknown" — it must not fall through to None.
+
+        The dict path is the one that matters: an enriched dict spells the
+        field ``chance_of_playing``, so a truthiness fallback to the model's
+        ``chance_of_playing_next_round`` swallowed every 0% player and left
+        the evaluation reporting no availability information at all.
+        """
+        player_dict = {
+            "id": 1, "position": "MID", "status": "i", "chance_of_playing": 0,
+            "minutes": 600, "appearances": 7,
+        }
+        evaluation, _ = build_player_evaluation(player_dict)
+        assert evaluation.chance_of_playing == 0
+
+    def test_doubt_percentages_survive_from_a_dict(self):
+        for cop in (25, 50, 75, 100):
+            evaluation, _ = build_player_evaluation(
+                {"id": 1, "position": "MID", "status": "d", "chance_of_playing": cop},
+            )
+            assert evaluation.chance_of_playing == cop
+
+    def test_absent_chance_of_playing_stays_none(self):
+        """No availability key at all is genuinely 'unknown', unlike 0."""
+        evaluation, _ = build_player_evaluation({"id": 1, "position": "MID", "status": "a"})
+        assert evaluation.chance_of_playing is None
+
+    def test_zero_chance_of_playing_survives_from_a_model(self):
+        """The Player model spells it chance_of_playing_next_round."""
+        player = make_player(status=PlayerStatus.INJURED, chance_of_playing_next_round=0)
+        evaluation, _ = build_player_evaluation(player)
+        assert evaluation.chance_of_playing == 0
+
+    def test_ruled_out_player_takes_the_availability_penalty(self):
+        """The -3 fires for 0%, not just for the doubts that used to survive."""
+        base = {
+            "id": 1, "position": "MID", "team_short": "ARS", "form": 7.0, "ppg": 6.5,
+            "xGI_per_90": 0.6, "minutes": 600, "appearances": 7,
+        }
+        fit, _ = build_player_evaluation({**base, "status": "a"})
+        out, _ = build_player_evaluation({**base, "status": "i", "chance_of_playing": 0})
+        assert calculate_target_score(out, next_gw_id=8) < calculate_target_score(fit, next_gw_id=8)
 
     def test_early_season_mins_factor(self):
         """Early season mins_factor is tested via calculate_mins_factor directly."""
@@ -2527,7 +2573,7 @@ class TestShrinkScores:
             3: PlayerPrior(0.5, 0.5, "history"),
         }
         scores: list[tuple[int, float, Position]] = [(1, 80.0, "MID"), (2, 60.0, "MID"), (3, 40.0, "MID")]
-        result = shrink_scores(scores, prior_map, current_gw=3, cutoff_gw=10)
+        result = shrink_scores(scores, prior_map, current_gw=3, cutoff_gw=10, unavailable_ids=set())
 
         ids_scores = {pid: s for pid, s, _ in result}
         # Mean is ~60 (confidence-weighted, all equal -> simple mean)
@@ -2542,7 +2588,7 @@ class TestShrinkScores:
             2: PlayerPrior(1.0, 1.0, "history"),
         }
         scores: list[tuple[int, float, Position]] = [(1, 80.0, "MID"), (2, 40.0, "DEF")]
-        result = shrink_scores(scores, prior_map, current_gw=3, cutoff_gw=10)
+        result = shrink_scores(scores, prior_map, current_gw=3, cutoff_gw=10, unavailable_ids=set())
         assert result == scores
 
     def test_confidence_0_fully_shrinks_to_mean(self):
@@ -2553,7 +2599,7 @@ class TestShrinkScores:
             3: PlayerPrior(0.0, 0.0, "price"),
         }
         scores: list[tuple[int, float, Position]] = [(1, 80.0, "MID"), (2, 60.0, "MID"), (3, 40.0, "MID")]
-        result = shrink_scores(scores, prior_map, current_gw=3, cutoff_gw=10)
+        result = shrink_scores(scores, prior_map, current_gw=3, cutoff_gw=10, unavailable_ids=set())
 
         # Player 3 has conf=0.0, so fully shrunk to mean
         ids_scores = {pid: s for pid, s, _ in result}
@@ -2564,30 +2610,30 @@ class TestShrinkScores:
     def test_at_cutoff_returns_unmodified(self):
         prior_map = {1: PlayerPrior(0.5, 0.5, "history")}
         scores: list[tuple[int, float, Position]] = [(1, 80.0, "MID")]
-        result = shrink_scores(scores, prior_map, current_gw=10, cutoff_gw=10)
+        result = shrink_scores(scores, prior_map, current_gw=10, cutoff_gw=10, unavailable_ids=set())
         assert result == scores
 
     def test_beyond_cutoff_returns_unmodified(self):
         prior_map = {1: PlayerPrior(0.5, 0.5, "history")}
         scores: list[tuple[int, float, Position]] = [(1, 80.0, "MID")]
-        result = shrink_scores(scores, prior_map, current_gw=15, cutoff_gw=10)
+        result = shrink_scores(scores, prior_map, current_gw=15, cutoff_gw=10, unavailable_ids=set())
         assert result == scores
 
     def test_none_prior_map_returns_unmodified(self):
         scores: list[tuple[int, float, Position]] = [(1, 80.0, "MID")]
-        result = shrink_scores(scores, None, current_gw=3, cutoff_gw=10)
+        result = shrink_scores(scores, None, current_gw=3, cutoff_gw=10, unavailable_ids=set())
         assert result == scores
 
     def test_empty_scores_returns_empty(self):
         prior_map = {1: PlayerPrior(0.5, 0.5, "history")}
-        result = shrink_scores([], prior_map, current_gw=3, cutoff_gw=10)
+        result = shrink_scores([], prior_map, current_gw=3, cutoff_gw=10, unavailable_ids=set())
         assert result == []
 
     def test_player_not_in_prior_map_gets_no_shrinkage(self):
         """Players missing from prior_map default to confidence=1.0."""
         prior_map = {1: PlayerPrior(0.5, 0.5, "history")}
         scores: list[tuple[int, float, Position]] = [(1, 80.0, "MID"), (99, 40.0, "MID")]
-        result = shrink_scores(scores, prior_map, current_gw=3, cutoff_gw=10)
+        result = shrink_scores(scores, prior_map, current_gw=3, cutoff_gw=10, unavailable_ids=set())
 
         ids_scores = {pid: s for pid, s, _ in result}
         # Player 99 has conf=1.0, so: mean + 1.0 * (40 - mean) = 40
@@ -2597,7 +2643,7 @@ class TestShrinkScores:
         """Single player in a position: mean equals their score, no change."""
         prior_map = {1: PlayerPrior(0.0, 0.3, "price")}
         scores: list[tuple[int, float, Position]] = [(1, 75.0, "GK")]
-        result = shrink_scores(scores, prior_map, current_gw=3, cutoff_gw=10)
+        result = shrink_scores(scores, prior_map, current_gw=3, cutoff_gw=10, unavailable_ids=set())
         assert result[0][1] == pytest.approx(75.0)
 
     def test_mixed_positions_independent_means(self):
@@ -2612,7 +2658,7 @@ class TestShrinkScores:
             (1, 80.0, "MID"), (2, 40.0, "MID"),
             (3, 90.0, "DEF"), (4, 30.0, "DEF"),
         ]
-        result = shrink_scores(scores, prior_map, current_gw=3, cutoff_gw=10)
+        result = shrink_scores(scores, prior_map, current_gw=3, cutoff_gw=10, unavailable_ids=set())
 
         ids_scores = {pid: s for pid, s, _ in result}
         # MID mean = 60, DEF mean = 60 (equal conf -> simple mean)
@@ -2626,11 +2672,182 @@ class TestShrinkScores:
             2: PlayerPrior(0.5, 0.5, "history"),
         }
         scores: list[tuple[int, float, Position]] = [(1, 90.0, "FWD"), (2, 30.0, "FWD")]
-        result = shrink_scores(scores, prior_map, current_gw=3, cutoff_gw=10)
+        result = shrink_scores(scores, prior_map, current_gw=3, cutoff_gw=10, unavailable_ids=set())
 
         original_range = 90.0 - 30.0
         shrunk_range = result[0][1] - result[1][1]
         assert shrunk_range < original_range
+
+    def test_unavailable_ids_keep_their_score(self):
+        """A held-out player is returned untouched, however low their score."""
+        prior_map = {
+            1: PlayerPrior(1.0, 1.0, "history"),
+            2: PlayerPrior(0.1, 0.3, "price"),
+        }
+        scores: list[tuple[int, float, Position]] = [(1, 60.0, "MID"), (2, 0.0, "MID")]
+        result = shrink_scores(scores, prior_map, current_gw=1, cutoff_gw=10, unavailable_ids={2})
+
+        ids_scores = {pid: s for pid, s, _ in result}
+        assert ids_scores[2] == pytest.approx(0.0)
+
+    def test_unavailable_ids_excluded_from_position_mean(self):
+        """Held-out scores do not drag the mean the rest are shrunk toward."""
+        prior_map = {
+            1: PlayerPrior(1.0, 1.0, "history"),
+            2: PlayerPrior(0.5, 0.5, "history"),
+            3: PlayerPrior(0.5, 0.5, "price"),
+        }
+        scores: list[tuple[int, float, Position]] = [
+            (1, 60.0, "MID"), (2, 40.0, "MID"), (3, 0.0, "MID"),
+        ]
+        without = shrink_scores(scores, prior_map, current_gw=1, cutoff_gw=10, unavailable_ids=set())
+        with_holdout = shrink_scores(
+            scores, prior_map, current_gw=1, cutoff_gw=10, unavailable_ids={3},
+        )
+
+        # mean over {1, 2} only = (1.0*60 + 0.5*40) / 1.5 = 53.33, up from 40.0
+        assert with_holdout[1][1] == pytest.approx(53.333 + 0.5 * (40.0 - 53.333), abs=0.01)
+        assert with_holdout[1][1] > without[1][1]
+
+    def test_unavailable_player_no_longer_outranks_weak_available_one(self):
+        """Issue #122: shrinkage hoisted a known-out player above a playing one.
+
+        The reported pool, with the injured player entering at the post-#121
+        clamp floor of 0 and again at the pre-#121 raw of -13. Both rows put
+        the injured player above the weak-but-available 20 before the fix.
+        """
+        prior_map = {
+            1: PlayerPrior(1.0, 1.0, "history"),
+            2: PlayerPrior(1.0, 1.0, "history"),
+            3: PlayerPrior(0.9, 0.9, "history"),
+            4: PlayerPrior(0.1, 0.3, "price"),
+        }
+        for injured_raw in (0.0, -13.0):
+            scores: list[tuple[int, float, Position]] = [
+                (1, 60.0, "MID"), (2, 50.0, "MID"), (3, 20.0, "MID"), (4, injured_raw, "MID"),
+            ]
+            before = {pid: s for pid, s, _ in shrink_scores(scores, prior_map, 1, 10, unavailable_ids=set())}
+            after = {
+                pid: s
+                for pid, s, _ in shrink_scores(scores, prior_map, 1, 10, unavailable_ids={4})
+            }
+            assert before[4] > before[3], f"regression fixture no longer reproduces at {injured_raw}"
+            assert after[4] < after[3]
+
+    def test_empty_unavailable_ids_shrinks_the_whole_pool(self):
+        """An empty hold-out is the "shrink everything" case, not a no-op."""
+        prior_map = {
+            1: PlayerPrior(0.5, 0.5, "history"),
+            2: PlayerPrior(0.5, 0.5, "history"),
+        }
+        scores: list[tuple[int, float, Position]] = [(1, 80.0, "MID"), (2, 40.0, "MID")]
+        result = shrink_scores(scores, prior_map, 3, 10, unavailable_ids=set())
+
+        ids_scores = {pid: sc for pid, sc, _ in result}
+        assert ids_scores[1] == pytest.approx(70.0)  # 60 + 0.5*(80-60)
+        assert ids_scores[2] == pytest.approx(50.0)  # 60 + 0.5*(40-60)
+
+    def test_unavailable_ids_is_required(self):
+        """Forgetting the hold-out must fail loudly, not silently reintroduce #122."""
+        prior_map = {1: PlayerPrior(0.5, 0.5, "history")}
+        scores: list[tuple[int, float, Position]] = [(1, 80.0, "MID")]
+        with pytest.raises(TypeError):
+            shrink_scores(scores, prior_map, 3, 10)  # type: ignore[call-arg]
+        with pytest.raises(TypeError):
+            apply_shrinkage([{"id": 1, "position": "MID", "s": 1}], "s", prior_map, 3)  # type: ignore[call-arg]
+
+    def test_all_of_a_position_held_out_leaves_scores_untouched(self):
+        """No shrinkable pool for a position means no mean and no adjustment."""
+        prior_map = {
+            1: PlayerPrior(0.1, 0.2, "price"),
+            2: PlayerPrior(0.1, 0.2, "price"),
+        }
+        scores: list[tuple[int, float, Position]] = [(1, 0.0, "GK"), (2, 10.0, "GK")]
+        result = shrink_scores(scores, prior_map, 3, 10, unavailable_ids={1, 2})
+        assert result == scores
+
+
+class TestIsKnownUnavailable:
+    """Tests for the shrinkage hold-out classifier."""
+
+    def test_zero_chance_of_playing_is_unavailable(self):
+        assert is_known_unavailable(chance_of_playing=0, minutes=900, next_gw_id=7)
+
+    def test_doubt_is_not_unavailable(self):
+        """25/50/75 are doubts — genuinely uncertain, so shrinkage still applies."""
+        for cop in (25, 50, 75, 100):
+            assert not is_known_unavailable(chance_of_playing=cop, minutes=900, next_gw_id=7)
+
+    def test_missing_chance_of_playing_is_not_unavailable(self):
+        assert not is_known_unavailable(chance_of_playing=None, minutes=900, next_gw_id=7)
+
+    def test_no_minutes_is_unavailable_once_mins_factor_is_live(self):
+        assert is_known_unavailable(chance_of_playing=None, minutes=0, next_gw_id=6)
+
+    def test_no_minutes_carries_nothing_before_the_mins_factor_starts(self):
+        """At GW1-5 nobody has played much and the minutes factor is disabled."""
+        for gw in (1, 3, 5):
+            assert not is_known_unavailable(chance_of_playing=None, minutes=0, next_gw_id=gw)
+
+    def test_zero_chance_of_playing_applies_at_every_gameweek(self):
+        assert is_known_unavailable(chance_of_playing=0, minutes=900, next_gw_id=1)
+
+
+class TestUnavailablePlayerIds:
+    """Tests for building the hold-out set from mixed player representations."""
+
+    def test_reads_enriched_dicts(self):
+        players = [
+            {"id": 1, "chance_of_playing": 0, "minutes": 900},
+            {"id": 2, "chance_of_playing": 100, "minutes": 900},
+            {"id": 3, "minutes": 0},
+        ]
+        assert unavailable_player_ids(players, next_gw_id=7) == {1, 3}
+
+    def test_reads_player_models(self):
+        """The FPL model spells the flag chance_of_playing_next_round."""
+        out = make_player(id=1, chance_of_playing_next_round=0, minutes=900)
+        fit = make_player(id=2, chance_of_playing_next_round=None, minutes=900)
+        assert unavailable_player_ids([out, fit], next_gw_id=7) == {1}
+
+    def test_dicts_without_availability_keys_are_left_alone(self):
+        """A lossy projection must not be read as 'everyone is unavailable'."""
+        players = [{"id": 1, "minutes": 900}, {"id": 2, "minutes": 450}]
+        assert unavailable_player_ids(players, next_gw_id=7) == set()
+
+    def test_items_without_an_id_are_skipped(self):
+        assert unavailable_player_ids([{"minutes": 0}], next_gw_id=7) == set()
+
+    def test_a_key_present_but_none_falls_through_to_the_other_spelling(self):
+        """A dict carrying both spellings must find whichever one is filled in.
+
+        "Present but None" and "absent" both mean no signal, so the first name
+        holding None cannot shadow a real value under the second.
+        """
+        players = [{
+            "id": 2, "chance_of_playing": None,
+            "chance_of_playing_next_round": 0, "minutes": 900,
+        }]
+        assert unavailable_player_ids(players, next_gw_id=6) == {2}
+
+    def test_missing_minutes_is_unknown_not_a_confirmed_zero(self):
+        """A trimmed projection must get ordinary shrinkage, not the hold-out."""
+        assert unavailable_player_ids([{"id": 1}], next_gw_id=6) == set()
+        assert unavailable_player_ids([{"id": 1, "minutes": None}], next_gw_id=6) == set()
+
+    def test_confirmed_zero_minutes_still_holds_out(self):
+        assert unavailable_player_ids([{"id": 1, "minutes": 0}], next_gw_id=6) == {1}
+
+    def test_single_gw_scored_dicts_hold_out_nobody(self):
+        """The shape that made a derived fallback dangerous: no availability keys.
+
+        `calculate_bench_score` / `_captain_score` / `_lineup_score` put neither
+        ``minutes`` nor ``chance_of_playing`` in their scored dicts. Reading
+        availability off those would once have held out the entire pool from
+        GW6 and silently disabled shrinkage.
+        """
+        scored = [{"id": 1, "position": "MID"}, {"id": 2, "position": "DEF"}]
+        assert unavailable_player_ids(scored, next_gw_id=8) == set()
 
 
 class TestCalculateLineupScore:

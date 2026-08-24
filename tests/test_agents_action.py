@@ -6,6 +6,7 @@ import pytest
 
 from fpl_cli.agents.action.waiver import WaiverAgent
 from fpl_cli.agents.base import AgentStatus
+from fpl_cli.services.player_prior import PlayerPrior
 from fpl_cli.services.scoring import ScoringContext, ScoringData
 from tests.conftest import (
     make_draft_league_entry,
@@ -354,6 +355,90 @@ class TestWaiverAgentRun:
 
             assert result.status == AgentStatus.SUCCESS
             assert result.data["recent_releases"] == []
+
+
+class TestWaiverAgentShrinkage:
+    """Regression tests for #122: shrinkage must not hoist unavailable players."""
+
+    @staticmethod
+    def _pool() -> list[dict]:
+        """Three playing MIDs plus one ruled out of the next gameweek."""
+        base = {
+            "position": "MID",
+            "status": "a",
+            "team_short": "ARS",
+            "xGI_per_90": 0.3,
+            "appearances": 6,
+            "minutes": 540,
+        }
+        return [
+            {**base, "id": 1, "player_name": "Elite", "form": 8.0, "ppg": 7.0},
+            {**base, "id": 2, "player_name": "Good", "form": 6.0, "ppg": 5.5},
+            {**base, "id": 3, "player_name": "Fringe", "form": 1.0, "ppg": 1.5},
+            {
+                **base, "id": 4, "player_name": "Injured", "form": 0.0, "ppg": 0.0,
+                "status": "i", "chance_of_playing": 0, "minutes": 0, "appearances": 0,
+            },
+        ]
+
+    @staticmethod
+    def _priors() -> dict[int, PlayerPrior]:
+        """Low confidence for the injured player — the shrinkage that caused #122."""
+        return {
+            1: PlayerPrior(0.9, 1.0, "history"),
+            2: PlayerPrior(0.8, 1.0, "history"),
+            3: PlayerPrior(0.6, 0.9, "history"),
+            4: PlayerPrior(0.1, 0.3, "price"),
+        }
+
+    def _rank(self, next_gw_id: int) -> list[dict]:
+        agent = WaiverAgent()
+        agent._player_priors = self._priors()
+        squad_by_position = {"GK": [], "DEF": [], "MID": [], "FWD": []}
+        return agent._rank_waiver_targets(
+            self._pool(), [], squad_by_position, next_gw_id=next_gw_id,
+        )
+
+    def test_injured_player_ranks_below_weak_available_one(self):
+        """Early season, where shrinkage is live, is where #122 bit."""
+        ranked = self._rank(next_gw_id=3)
+        order = [p["id"] for p in ranked]
+        assert order.index(4) > order.index(3)
+
+    def test_injured_player_score_is_untouched_by_shrinkage(self):
+        """Held out means the ranked score is exactly the score that was computed."""
+        agent = WaiverAgent()
+        agent._player_priors = self._priors()
+        squad_by_position = {"GK": [], "DEF": [], "MID": [], "FWD": []}
+        pool = self._pool()
+        injured_in = next(p for p in pool if p["id"] == 4)
+
+        raw = agent._calculate_waiver_score(injured_in, squad_by_position, next_gw_id=3)
+        ranked = agent._rank_waiver_targets(pool, [], squad_by_position, next_gw_id=3)
+        injured_out = next(p for p in ranked if p["id"] == 4)
+
+        assert injured_out["waiver_score"] == raw
+
+    def test_ordering_unchanged_after_the_shrinkage_cutoff(self):
+        """From GW10 shrinkage is skipped entirely, so the hold-out is a no-op."""
+        ranked = self._rank(next_gw_id=12)
+        order = [p["id"] for p in ranked]
+        assert order.index(4) > order.index(3)
+
+    def test_available_players_still_shrink(self):
+        """The fix removes the unavailable player, not shrinkage itself."""
+        agent = WaiverAgent()
+        agent._player_priors = self._priors()
+        squad_by_position = {"GK": [], "DEF": [], "MID": [], "FWD": []}
+        pool = [p for p in self._pool() if p["id"] != 4]
+
+        early = agent._rank_waiver_targets(pool, [], squad_by_position, next_gw_id=3)
+        agent._player_priors = {pid: PlayerPrior(0.0, 1.0, "history") for pid in (1, 2, 3)}
+        unshrunk = agent._rank_waiver_targets(pool, [], squad_by_position, next_gw_id=3)
+
+        fringe_shrunk = next(p["waiver_score"] for p in early if p["id"] == 3)
+        fringe_raw = next(p["waiver_score"] for p in unshrunk if p["id"] == 3)
+        assert fringe_shrunk > fringe_raw
 
 
 class TestWaiverAgentScoring:

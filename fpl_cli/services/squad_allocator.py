@@ -20,6 +20,7 @@ from fpl_cli.services.scoring import (
     compute_quality_value,
     per_90_rates,
     shrink_scores,
+    unavailable_player_ids,
 )
 
 if TYPE_CHECKING:
@@ -65,7 +66,10 @@ def score_all_players(
 
     Uses compute_quality_value(raw=True) for float precision, then
     applies early-season shrinkage via shrink_scores() (avoids the
-    rounding in apply_shrinkage()).
+    rounding in apply_shrinkage()). Players known not to be playing are
+    held out of that shrinkage, same as every other scoring family —
+    they stay in the solver pool, they just stop being hoisted toward
+    the position mean while they are unavailable.
     """
     if scoring_data.players is None:
         msg = "scoring_data.players is required (pass include_players=True)"
@@ -101,13 +105,17 @@ def score_all_players(
         )
         scored.append((player, raw_quality, position, suspended_gw1))
 
-    # Apply early-season shrinkage (float-preserving)
+    # Apply early-season shrinkage (float-preserving), holding out players who
+    # are known not to be playing — their score is a fact, not a small sample
     shrinkage_input: list[tuple[int, float, Position]] = [(p.id, raw_q, pos) for p, raw_q, pos, _ in scored]
     shrunk = shrink_scores(
         shrinkage_input,
         scoring_data.player_priors,
         next_gw_id,
         CUTOFF_GW,
+        unavailable_ids=unavailable_player_ids(
+            (player for player, _, _, _ in scored), next_gw_id,
+        ),
     )
 
     return [

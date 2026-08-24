@@ -82,6 +82,7 @@ class PlayerStats(TypedDict):
     position_differential: NotRequired[float]
     positional_fdr: NotRequired[float]
     appearances: NotRequired[int]
+    chance_of_playing: NotRequired[int | None]
     matchup_avg_3gw: NotRequired[float]
     form_trajectory: NotRequired[float]
     xgi_sustainability: NotRequired[float]

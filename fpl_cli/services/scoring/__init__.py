@@ -83,7 +83,12 @@ from fpl_cli.services.scoring.ownership import (
     calculate_target_score,
     calculate_waiver_score,
 )
-from fpl_cli.services.scoring.shrinkage import apply_shrinkage, shrink_scores
+from fpl_cli.services.scoring.shrinkage import (
+    apply_shrinkage,
+    is_known_unavailable,
+    shrink_scores,
+    unavailable_player_ids,
+)
 from fpl_cli.services.scoring.signals import (
     NEUTRAL_SIGNALS,
     ConsistencySignals,
@@ -199,7 +204,9 @@ __all__ = [
     "compute_rolling_pts_per_m",
     # shrinkage
     "apply_shrinkage",
+    "is_known_unavailable",
     "shrink_scores",
+    "unavailable_player_ids",
     # ownership
     "calculate_differential_score",
     "calculate_target_score",

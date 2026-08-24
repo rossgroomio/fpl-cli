@@ -311,6 +311,16 @@ DEF_WAIVER_CEILING = (
 DEF_VALUE_CEILING = _def_quality_cap(VALUE_QUALITY_WEIGHTS) * _DEF_MULT
 
 # ---------------------------------------------------------------------------
+# Minutes factor activation
+# ---------------------------------------------------------------------------
+# The minutes factor is disabled at or before this gameweek: too few matches
+# have been played for minutes to separate a squad player from a starter, and
+# every player would be penalised for the season simply being young.
+
+MINS_FACTOR_START_GW = 5
+
+
+# ---------------------------------------------------------------------------
 # Consistency scoring magnitudes (Phase 2)
 # ---------------------------------------------------------------------------
 # All enter as additive bonuses: (signal - 0.5) * magnitude.

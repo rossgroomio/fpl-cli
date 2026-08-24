@@ -25,6 +25,7 @@ from fpl_cli.services.scoring import (
     compute_xgi_sustainability,
     normalise_score,
     prepare_scoring_data,
+    unavailable_player_ids,
 )
 
 if TYPE_CHECKING:
@@ -131,9 +132,19 @@ class TransferEvalAgent(Agent):
                 target_scored.append(target_entry)
                 lineup_scored.append(lineup_entry)
 
-            # Apply shrinkage to both score types
-            apply_shrinkage(target_scored, "target_score", data.player_priors, next_gw_id)
-            apply_shrinkage(lineup_scored, "lineup_score", data.player_priors, next_gw_id)
+            # Apply shrinkage to both score types, holding out players who are
+            # known not to be playing (a fact about them, not a small sample)
+            held_out = unavailable_player_ids(
+                (player_map[pid] for pid in all_ids), next_gw_id,
+            )
+            apply_shrinkage(
+                target_scored, "target_score", data.player_priors, next_gw_id,
+                unavailable_ids=held_out,
+            )
+            apply_shrinkage(
+                lineup_scored, "lineup_score", data.player_priors, next_gw_id,
+                unavailable_ids=held_out,
+            )
 
             # Build result dicts
             out_target = target_scored[0]["target_score"]

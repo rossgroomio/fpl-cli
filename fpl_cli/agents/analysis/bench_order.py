@@ -19,6 +19,7 @@ from fpl_cli.services.scoring import (
     compute_form_trajectory,
     compute_xgi_sustainability,
     prepare_scoring_data,
+    unavailable_player_ids,
 )
 
 if TYPE_CHECKING:
@@ -106,8 +107,12 @@ class BenchOrderAgent(Agent):
                 )
                 scored_bench.append(score_data)
 
-            # Apply early-season shrinkage
-            apply_shrinkage(scored_bench, "priority_score", data.player_priors, next_gw_id)
+            # Apply early-season shrinkage, holding out players who are known
+            # not to be playing (their low score is a fact, not a small sample)
+            apply_shrinkage(
+                scored_bench, "priority_score", data.player_priors, next_gw_id,
+                unavailable_ids=unavailable_player_ids(bench_players, next_gw_id),
+            )
 
             # Sort outfield by raw score (avoids ties from normalisation rounding), GK always last
             outfield = [p for p in scored_bench if p["position"] != "GK"]

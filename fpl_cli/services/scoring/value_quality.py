@@ -13,6 +13,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Literal, overload
 
 from fpl_cli.services.scoring.constants import (
+    MINS_FACTOR_START_GW,
     POSITION_SCORE_MULTIPLIER,
     Position,
     QualityWeights,
@@ -105,7 +106,7 @@ def calculate_mins_factor(
     Returns 1.0 for nailed starters, <1.0 for rotation-prone players,
     0.0 for players with no appearances. Disabled before GW5.
     """
-    if next_gw_id <= 5:
+    if next_gw_id <= MINS_FACTOR_START_GW:
         return 1.0
     if appearances <= 0:
         return 0.0

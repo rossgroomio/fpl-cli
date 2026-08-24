@@ -214,6 +214,21 @@ def _extract_status(val: Any) -> str:
     return str(val)
 
 
+def read_player_field(source: Any, name: str, default: Any = None) -> Any:
+    """Read one field from a ``Player`` model or a player-shaped mapping.
+
+    The single place that knows a player can arrive as either shape. Attribute
+    first, then mapping key, then *default* — ``build_player_evaluation`` and
+    the shrinkage hold-out both read through this so their notion of "does this
+    player have field X" cannot drift apart.
+    """
+    if hasattr(source, name):
+        return getattr(source, name)
+    if isinstance(source, Mapping):
+        return source.get(name, default)
+    return default
+
+
 def build_player_evaluation(
     player: Player | Mapping[str, Any],
     *,
@@ -227,18 +242,23 @@ def build_player_evaluation(
     Normalises both input shapes to the same field set. When *enrichment*
     is provided its keys overlay the base player data.
     """
-    # Unified accessor: try attribute first (Player model), fall back to dict
+    # Unified accessor: enrichment overlay, then the shared field reader
     def _get(key: str, default: Any = None) -> Any:
         if enrichment and key in enrichment:
             return enrichment[key]
-        if hasattr(player, key):
-            return getattr(player, key)
-        if isinstance(player, Mapping):
-            return player.get(key, default)
-        return default
+        return read_player_field(player, key, default)
 
     minutes = _get("minutes", 0)
     appearances = _get("appearances", 0)
+
+    # Availability: 0 is a real value ("ruled out of the next round"), not a
+    # missing one, so the fallback to the model's field name tests for None
+    # rather than truthiness. An ``or`` here read every 0% player as "no
+    # availability information" — exactly inverting the signal, since the
+    # 25/50/75 doubts survived it and the definitely-out players did not.
+    chance_of_playing = _get("chance_of_playing")
+    if chance_of_playing is None:
+        chance_of_playing = _get("chance_of_playing_next_round")
 
     # Position: Player model stores as enum, dicts store as string
     position_raw = _get("position")
@@ -269,7 +289,7 @@ def build_player_evaluation(
         gi_minus_xgi=float(_get("GI_minus_xGI", 0) or 0),
         ownership=float(_get("ownership", 0) or _get("selected_by_percent", 0) or 0),
         status=_extract_status(_get("status", "a")),
-        chance_of_playing=_get("chance_of_playing") or _get("chance_of_playing_next_round"),
+        chance_of_playing=chance_of_playing,
         team_id=int(_get("team_id", 0)),
         team_short=str(_get("team_short", "")),
         penalties_order=_get("penalties_order"),

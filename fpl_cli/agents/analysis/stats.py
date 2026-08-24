@@ -21,6 +21,7 @@ from fpl_cli.services.scoring import (
     compute_form_trajectory,
     compute_xgi_sustainability,
     prepare_scoring_data,
+    unavailable_player_ids,
 )
 
 RECOGNISED_VIEWS: frozenset[str] = frozenset({
@@ -348,6 +349,7 @@ class StatsAgent(Agent):
             "ppg": player.points_per_game,
             "dc_per_90": player.defensive_contribution_per_90,
             "appearances": player.appearances,
+            "chance_of_playing": player.chance_of_playing_next_round,
         }
 
     def _calculate_windowed_stats(
@@ -420,6 +422,7 @@ class StatsAgent(Agent):
             "ppg": round(ppg, 2),
             "dc_per_90": player.defensive_contribution_per_90,
             "appearances": player.appearances,
+            "chance_of_playing": player.chance_of_playing_next_round,
         }
 
     def _merge_understat_data(
@@ -623,10 +626,12 @@ class StatsAgent(Agent):
                 "cv_xgi_percentile": self._get_consistency_percentile(p["id"]),
             })
 
-        # Apply early-season shrinkage
+        # Apply early-season shrinkage, holding out players who are known not
+        # to be playing (their low score is a fact, not a small sample)
         apply_shrinkage(
             differentials, "differential_score",
             getattr(self, "_player_priors", None), self._next_gw_id,
+            unavailable_ids=unavailable_player_ids(players, self._next_gw_id),
         )
 
         # Sort by differential score
@@ -727,10 +732,12 @@ class StatsAgent(Agent):
                 "cv_xgi_percentile": self._get_consistency_percentile(p["id"]),
             })
 
-        # Apply early-season shrinkage
+        # Apply early-season shrinkage, holding out players who are known not
+        # to be playing (their low score is a fact, not a small sample)
         apply_shrinkage(
             targets, "target_score",
             getattr(self, "_player_priors", None), self._next_gw_id,
+            unavailable_ids=unavailable_player_ids(players, self._next_gw_id),
         )
 
         # Sort by target score

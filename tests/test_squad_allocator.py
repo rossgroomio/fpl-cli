@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from fpl_cli.models.player import PlayerPosition, PlayerStatus
+from fpl_cli.services.player_prior import PlayerPrior
 from fpl_cli.services.squad_allocator import (
     DEFAULT_BENCH_DISCOUNT,
     MODIFIER_FLOOR,
@@ -100,6 +101,66 @@ class TestIsExcluded:
 # ---------------------------------------------------------------------------
 # score_all_players
 # ---------------------------------------------------------------------------
+
+
+class TestScoreAllPlayersShrinkageHoldOut:
+    """`fpl allocate` must not hoist unavailable players either (#122).
+
+    `score_all_players` calls `shrink_scores` directly rather than through
+    `apply_shrinkage`, to keep float precision for the solver. That made it easy
+    to miss when the hold-out was wired into the agent call sites, so it gets
+    its own coverage.
+
+    The pool here is suspended rather than injured on purpose: `_is_excluded`
+    already drops INJURED-at-0%, so a suspended player at 0% is the case that
+    reaches shrinkage while genuinely not playing (see
+    `TestIsExcluded.test_suspended_not_excluded`).
+    """
+
+    @staticmethod
+    def _pool():
+        common = dict(
+            position=PlayerPosition.MIDFIELDER, team_id=1,
+            expected_goals=8.0, expected_assists=5.0,
+        )
+        return [
+            make_player(id=1, minutes=1800, form=8.0, points_per_game=7.0, **common),
+            make_player(id=2, minutes=1800, form=6.0, points_per_game=5.0, **common),
+            make_player(id=3, minutes=1200, form=1.0, points_per_game=1.5, **common),
+            make_player(
+                id=4, minutes=0, form=0.0, points_per_game=0.0,
+                status=PlayerStatus.SUSPENDED, chance_of_playing_next_round=0, **common,
+            ),
+        ]
+
+    @staticmethod
+    def _priors():
+        return {
+            1: PlayerPrior(0.9, 1.0, "history"),
+            2: PlayerPrior(0.8, 1.0, "history"),
+            3: PlayerPrior(0.6, 0.9, "history"),
+            4: PlayerPrior(0.1, 0.3, "price"),
+        }
+
+    def test_unavailable_player_is_not_shrunk_toward_the_position_mean(self):
+        sd = _make_scoring_data(self._pool(), player_priors=self._priors(), next_gw_id=3)
+        by_id = {sp.player.id: sp.raw_quality for sp in score_all_players(sd)}
+
+        unshrunk = _make_scoring_data(self._pool(), player_priors=None, next_gw_id=3)
+        raw_by_id = {sp.player.id: sp.raw_quality for sp in score_all_players(unshrunk)}
+
+        assert by_id[4] == pytest.approx(raw_by_id[4])
+        assert by_id[3] != pytest.approx(raw_by_id[3])  # available players still shrink
+
+    def test_unavailable_player_ranks_below_a_weak_available_one(self):
+        sd = _make_scoring_data(self._pool(), player_priors=self._priors(), next_gw_id=3)
+        by_id = {sp.player.id: sp.raw_quality for sp in score_all_players(sd)}
+        assert by_id[4] < by_id[3]
+
+    def test_unavailable_player_stays_in_the_solver_pool(self):
+        """Held out of shrinkage, not dropped — `_is_excluded` still decides membership."""
+        sd = _make_scoring_data(self._pool(), player_priors=self._priors(), next_gw_id=3)
+        assert {sp.player.id for sp in score_all_players(sd)} == {1, 2, 3, 4}
 
 
 class TestScoreAllPlayers:

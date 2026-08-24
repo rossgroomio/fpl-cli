@@ -38,7 +38,7 @@ Disabled before GW5 (insufficient data). A player averaging 70 minutes per appea
 
 **Form trajectory** (0.8-1.2) is computed from a median-filtered slope of per-GW points over the last 7 GWs played (12-GW lookback cap). Rising form boosts the form contribution; falling form discounts it. Applied to the form component in all scoring contexts.
 
-**Availability penalty** (-3pt) applied when a player's status != "a" and chance_of_playing < 75%.
+**Availability penalty** (-3pt) applied when a player's status != "a" and chance_of_playing < 75%. Reaches waiver scoring only -- see [Shared Flow](#shared-flow) for why target and differential are exempt.
 
 ## Matchup Scoring
 
@@ -154,8 +154,10 @@ All three ownership scores route through `_calculate_quality_based_score()` / `_
 1. **Quality baseline** via `calculate_player_quality_score()` with the relevant weight set
 2. **Underperformance regression bonus** for players outperforming xG
 3. **3-GW matchup** (scalar average, weight 0.75 via `_matchup_bonus`)
-4. **Availability penalty** (-3pt when status flagged < 75%)
+4. **Availability penalty** (-3pt when status flagged < 75%) -- **waiver only in practice**, see below
 5. All three include `penalty_xG` via `StatWeight`
+
+The availability penalty is in the shared flow but only reaches waiver scoring. It is gated on `status != "a"`, and the `PlayerStats` record behind `fpl stats --targets` / `--differentials` carries no `status` field, so the gate never opens there. That is deliberate rather than an oversight: those two lists are discovery surfaces answering a 3-6 GW question, while `chance_of_playing` is a next-round flag, and `fpl stats --available-only` already gives users an explicit lever for "only players I can field this week". Plumbing `status` into `PlayerStats` would silently switch the penalty on for both commands; `tests/test_stats.py::TestStatsAgentAvailabilityIsNotScored` fails if that happens.
 
 A minutes factor adjusts per-90 quality components and the fixture component.
 
@@ -259,6 +261,15 @@ adjusted_score = position_mean + confidence × (score - position_mean)
 Players with strong track records converge to current-season data faster; new signings with no PL history use a price-based confidence floor (capped at 0.5). Beyond GW10, confidence = 1.0 and scores are unmodified.
 
 This is the player-level analogue of the team-level early-season blending in [Team Ratings](#early-season-blending-gw1-11).
+
+### Who is left out
+
+Shrinkage treats a low score as a small sample, so it only makes sense for players whose score could plausibly be higher. Two groups are held out entirely -- excluded from the position mean as well as from the adjustment, so their scores pass through untouched:
+
+- **Ruled out of the next gameweek** (`chance_of_playing` is 0). This is FPL's own hard flag, not one of the 25/50/75 doubts, which stay in.
+- **No minutes at all from GW6 onward**, once the minutes factor is live. Before GW6 the factor is disabled and nobody has played much, so zero minutes says nothing.
+
+Without this, an injured or non-playing player is handed most of the position mean back and can rank above a player who is actually available with a weak but real score -- the low score is an observed fact about them, and confidence carries no availability signal to tell the two cases apart.
 
 ### Player Prior
 
@@ -450,7 +461,7 @@ flowchart TB
 
 `BenchOrderAgent` is enriched with Understat data (npxG, xGChain, penalty_xG) where available.
 
-**Early-season shrinkage.** Both families' normalised scores are subject to confidence shrinkage via `shrink_scores()` (GW1-10). Per-player confidence is derived from prior-season pts/90 (vaastav data) via `player_prior.py`. `prepare_scoring_data(include_prior=True)` fetches priors into `ScoringData.player_priors`; each agent calls `shrink_scores()` between scoring and ranking.
+**Early-season shrinkage.** Both families' normalised scores are subject to confidence shrinkage via `shrink_scores()` (GW1-10). Per-player confidence is derived from prior-season pts/90 (vaastav data) via `player_prior.py`. `prepare_scoring_data(include_prior=True)` fetches priors into `ScoringData.player_priors`; each agent calls `apply_shrinkage()` between scoring and ranking, passing the hold-out set that `unavailable_player_ids()` builds from live player data. See [Who is left out](#who-is-left-out).
 
 **player_prior** - Bayesian early-season confidence. See [Early-Season Confidence](#early-season-confidence-gw1-10).
 
