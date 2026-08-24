@@ -9,9 +9,12 @@ Core-Insights match records.
 from __future__ import annotations
 
 import dataclasses
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from fpl_cli.services.scoring.constants import ATTACKING_POSITIONS
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
 
 if TYPE_CHECKING:
     from fpl_cli.api.core_insights import MatchRecord
@@ -31,18 +34,54 @@ class ConsistencySignals:
 NEUTRAL_SIGNALS = ConsistencySignals()
 
 
-def _qualifying_window(
-    history: list[dict[str, Any]], current_gw: int, size: int = 7,
-) -> list[dict[str, Any]]:
-    """Recent qualifying GWs: minutes > 0, within 12-GW lookback, most recent *size*."""
-    cutoff = current_gw - 12
+_WINDOW_LOOKBACK_GWS = 12
+_WINDOW_SIZE = 7
+
+_RowT = TypeVar("_RowT", bound="Mapping[str, Any]")
+
+
+def _rolling_window(
+    rows: Sequence[_RowT],
+    current_gw: int,
+    *,
+    gw_key: str,
+    minutes_key: str,
+    min_minutes: int,
+    size: int = _WINDOW_SIZE,
+) -> list[_RowT]:
+    """The most recent *size* rows clearing *min_minutes* inside the lookback.
+
+    Shared by every rolling signal in this module: FPL history dicts keyed on
+    ``round``, and Core-Insights match records keyed on ``gameweek``.
+
+    Rows without *gw_key* are dropped. They cannot be placed on the gameweek
+    axis, so they can be neither windowed nor ordered. The three call sites
+    this helper replaced each filtered on ``row.get(gw_key, 0)`` but sorted on
+    ``row[gw_key]``, so a keyless row cleared the filter on the default of 0
+    whenever ``current_gw <= _WINDOW_LOOKBACK_GWS`` made the cutoff negative,
+    and then raised KeyError on the sort (#118). Above that cutoff the same
+    row was already being dropped, so dropping it always is the behaviour the
+    working path had.
+    """
+    cutoff = current_gw - _WINDOW_LOOKBACK_GWS
     qualifying = [
-        h
-        for h in history
-        if h.get("minutes", 0) > 0 and h.get("round", 0) > cutoff
+        row
+        for row in rows
+        if row.get(minutes_key, 0) >= min_minutes
+        and (gw := row.get(gw_key)) is not None
+        and gw > cutoff
     ]
-    qualifying.sort(key=lambda h: h["round"])
+    qualifying.sort(key=lambda row: row[gw_key])
     return qualifying[-size:]
+
+
+def _qualifying_window(
+    history: list[dict[str, Any]], current_gw: int, size: int = _WINDOW_SIZE,
+) -> list[dict[str, Any]]:
+    """Recent qualifying GWs: any minutes played, within the lookback, most recent *size*."""
+    return _rolling_window(
+        history, current_gw, gw_key="round", minutes_key="minutes", min_minutes=1, size=size,
+    )
 
 
 def compute_form_trajectory(history: list[dict[str, Any]], current_gw: int) -> float:
@@ -187,14 +226,14 @@ def _match_record_window(
     reflects limited playing time rather than output inconsistency.
     Aligns with FPL's meaningful-appearance boundary.
     """
-    cutoff = current_gw - 12
-    qualifying = [
-        m for m in match_records
-        if m.get("minutes_played", 0) >= _CONSISTENCY_MIN_MINUTES
-        and m.get("gameweek", 0) > cutoff
-    ]
-    qualifying.sort(key=lambda m: m["gameweek"])
-    return qualifying[-size:]
+    return _rolling_window(
+        match_records,
+        current_gw,
+        gw_key="gameweek",
+        minutes_key="minutes_played",
+        min_minutes=_CONSISTENCY_MIN_MINUTES,
+        size=size,
+    )
 
 
 def compute_cv_xgi(
@@ -575,13 +614,13 @@ def compute_adjusted_npxg(
     Returns None when fewer than 4 qualifying matches (same threshold as
     form_trajectory), triggering fallback to raw Understat npxG_per_90.
     """
-    cutoff = current_gw - 12
-    qualifying = [
-        m for m in match_records
-        if m.get("minutes_played", 0) > 0 and m.get("gameweek", 0) > cutoff
-    ]
-    qualifying.sort(key=lambda m: m["gameweek"])
-    window = qualifying[-7:]
+    window = _rolling_window(
+        match_records,
+        current_gw,
+        gw_key="gameweek",
+        minutes_key="minutes_played",
+        min_minutes=1,
+    )
 
     if len(window) < 4:
         return None

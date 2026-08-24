@@ -68,7 +68,12 @@ from fpl_cli.services.scoring import (
 )
 from fpl_cli.services.scoring.constants import _consistency_phase, _ownership_ceiling_for
 from fpl_cli.services.scoring.ownership import _matchup_bonus
-from fpl_cli.services.scoring.signals import _assign_percentile_ranks
+from fpl_cli.services.scoring.signals import (
+    _WINDOW_LOOKBACK_GWS,
+    _WINDOW_SIZE,
+    _assign_percentile_ranks,
+    _rolling_window,
+)
 from tests.conftest import make_player
 
 # ---------------------------------------------------------------------------
@@ -1752,6 +1757,110 @@ class TestComputeAggregateMatchup:
 # ---------------------------------------------------------------------------
 # compute_form_trajectory
 # ---------------------------------------------------------------------------
+
+
+class TestRollingWindow:
+    """Tests for the shared rolling-window helper behind every recent-form signal (#118)."""
+
+    @staticmethod
+    def _row(gw: int, minutes: int = 90) -> dict:
+        return {"round": gw, "minutes": minutes}
+
+    def test_returns_most_recent_in_gameweek_order(self):
+        rows = [self._row(gw) for gw in (3, 1, 9, 5, 7, 2, 8, 4, 6)]
+        window = _rolling_window(
+            rows, 10, gw_key="round", minutes_key="minutes", min_minutes=1,
+        )
+        assert [r["round"] for r in window] == [3, 4, 5, 6, 7, 8, 9]
+
+    def test_caps_at_window_size(self):
+        rows = [self._row(gw) for gw in range(1, 15)]
+        window = _rolling_window(
+            rows, 14, gw_key="round", minutes_key="minutes", min_minutes=1,
+        )
+        assert len(window) == _WINDOW_SIZE
+
+    def test_lookback_cutoff_is_exclusive(self):
+        """A row exactly on current_gw - _WINDOW_LOOKBACK_GWS is outside the window."""
+        current_gw = 20
+        boundary = current_gw - _WINDOW_LOOKBACK_GWS
+        rows = [self._row(boundary), self._row(boundary + 1)]
+        window = _rolling_window(
+            rows, current_gw, gw_key="round", minutes_key="minutes", min_minutes=1,
+        )
+        assert [r["round"] for r in window] == [boundary + 1]
+
+    def test_min_minutes_is_inclusive(self):
+        rows = [self._row(1, minutes=0), self._row(2, minutes=1), self._row(3, minutes=90)]
+        window = _rolling_window(
+            rows, 5, gw_key="round", minutes_key="minutes", min_minutes=1,
+        )
+        assert [r["round"] for r in window] == [2, 3]
+
+    def test_higher_min_minutes_excludes_cameos(self):
+        rows = [self._row(1, minutes=20), self._row(2, minutes=60), self._row(3, minutes=90)]
+        window = _rolling_window(
+            rows, 5, gw_key="round", minutes_key="minutes", min_minutes=60,
+        )
+        assert [r["round"] for r in window] == [2, 3]
+
+    def test_rows_without_gameweek_key_are_dropped(self):
+        """Pre-fix these cleared the .get(key, 0) filter and then raised KeyError on the sort."""
+        rows = [{"minutes": 90}, self._row(2), {"minutes": 90}]
+        window = _rolling_window(
+            rows, 5, gw_key="round", minutes_key="minutes", min_minutes=1,
+        )
+        assert [r["round"] for r in window] == [2]
+
+    def test_rows_without_minutes_key_are_dropped(self):
+        rows = [{"round": 1}, self._row(2)]
+        window = _rolling_window(
+            rows, 5, gw_key="round", minutes_key="minutes", min_minutes=1,
+        )
+        assert [r["round"] for r in window] == [2]
+
+    def test_missing_gameweek_dropped_above_the_cutoff_too(self):
+        """Above the cutoff the old filter already dropped these — behaviour is unchanged there."""
+        rows = [{"minutes": 90}, self._row(20)]
+        window = _rolling_window(
+            rows, 20, gw_key="round", minutes_key="minutes", min_minutes=1,
+        )
+        assert [r["round"] for r in window] == [20]
+
+
+class TestKeylessRowsDoNotCrashSignals:
+    """Regression tests for the KeyError at all three former call sites (#118).
+
+    Every one is reachable at ``current_gw <= _WINDOW_LOOKBACK_GWS``, i.e. the
+    whole early season, for any row the source returns without its gameweek key.
+    """
+
+    def test_form_trajectory_survives_history_without_round(self):
+        history = [{"minutes": 90, "total_points": 5} for _ in range(5)]
+        assert compute_form_trajectory(history, current_gw=5) == 1.0
+
+    def test_adjusted_npxg_survives_records_without_gameweek(self):
+        records = []
+        for _ in range(5):
+            record = dict(_make_match(1, xg=0.5, minutes_played=90, opponent_elo=MEDIAN_ELO))
+            del record["gameweek"]
+            records.append(record)
+        assert compute_adjusted_npxg(records, current_gw=5, median_elo=MEDIAN_ELO) is None
+
+    def test_cv_xgi_survives_records_without_gameweek(self):
+        records = []
+        for _ in range(8):
+            record = dict(_make_match(1, xg=0.5, minutes_played=90, opponent_elo=MEDIAN_ELO))
+            del record["gameweek"]
+            records.append(record)
+        assert compute_cv_xgi(records, current_gw=5, median_elo=MEDIAN_ELO) is None
+
+    def test_valid_rows_still_scored_alongside_keyless_ones(self):
+        """A keyless row is dropped without taking the usable rows with it."""
+        history = [{"round": gw, "total_points": pts, "minutes": 90}
+                   for gw, pts in zip(range(1, 8), [2, 4, 6, 8, 10, 12, 14])]
+        history.append({"minutes": 90, "total_points": 99})
+        assert compute_form_trajectory(history, current_gw=8) > 1.0
 
 
 class TestComputeFormTrajectory:
