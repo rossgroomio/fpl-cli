@@ -240,6 +240,15 @@ def build_player_evaluation(
     minutes = _get("minutes", 0)
     appearances = _get("appearances", 0)
 
+    # Availability: 0 is a real value ("ruled out of the next round"), not a
+    # missing one, so the fallback to the model's field name tests for None
+    # rather than truthiness. An ``or`` here read every 0% player as "no
+    # availability information" — exactly inverting the signal, since the
+    # 25/50/75 doubts survived it and the definitely-out players did not.
+    chance_of_playing = _get("chance_of_playing")
+    if chance_of_playing is None:
+        chance_of_playing = _get("chance_of_playing_next_round")
+
     # Position: Player model stores as enum, dicts store as string
     position_raw = _get("position")
     position: Position
@@ -269,7 +278,7 @@ def build_player_evaluation(
         gi_minus_xgi=float(_get("GI_minus_xGI", 0) or 0),
         ownership=float(_get("ownership", 0) or _get("selected_by_percent", 0) or 0),
         status=_extract_status(_get("status", "a")),
-        chance_of_playing=_get("chance_of_playing") or _get("chance_of_playing_next_round"),
+        chance_of_playing=chance_of_playing,
         team_id=int(_get("team_id", 0)),
         team_short=str(_get("team_short", "")),
         penalties_order=_get("penalties_order"),

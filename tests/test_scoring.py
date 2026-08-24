@@ -548,6 +548,49 @@ class TestBuildPlayerEvaluation:
         evaluation, _ = build_player_evaluation(player)
         assert evaluation.appearances == 0
 
+    def test_zero_chance_of_playing_survives_from_a_dict(self):
+        """0 is "ruled out", not "unknown" — it must not fall through to None.
+
+        The dict path is the one that matters: an enriched dict spells the
+        field ``chance_of_playing``, so a truthiness fallback to the model's
+        ``chance_of_playing_next_round`` swallowed every 0% player and left
+        the evaluation reporting no availability information at all.
+        """
+        player_dict = {
+            "id": 1, "position": "MID", "status": "i", "chance_of_playing": 0,
+            "minutes": 600, "appearances": 7,
+        }
+        evaluation, _ = build_player_evaluation(player_dict)
+        assert evaluation.chance_of_playing == 0
+
+    def test_doubt_percentages_survive_from_a_dict(self):
+        for cop in (25, 50, 75, 100):
+            evaluation, _ = build_player_evaluation(
+                {"id": 1, "position": "MID", "status": "d", "chance_of_playing": cop},
+            )
+            assert evaluation.chance_of_playing == cop
+
+    def test_absent_chance_of_playing_stays_none(self):
+        """No availability key at all is genuinely 'unknown', unlike 0."""
+        evaluation, _ = build_player_evaluation({"id": 1, "position": "MID", "status": "a"})
+        assert evaluation.chance_of_playing is None
+
+    def test_zero_chance_of_playing_survives_from_a_model(self):
+        """The Player model spells it chance_of_playing_next_round."""
+        player = make_player(status=PlayerStatus.INJURED, chance_of_playing_next_round=0)
+        evaluation, _ = build_player_evaluation(player)
+        assert evaluation.chance_of_playing == 0
+
+    def test_ruled_out_player_takes_the_availability_penalty(self):
+        """The -3 fires for 0%, not just for the doubts that used to survive."""
+        base = {
+            "id": 1, "position": "MID", "team_short": "ARS", "form": 7.0, "ppg": 6.5,
+            "xGI_per_90": 0.6, "minutes": 600, "appearances": 7,
+        }
+        fit, _ = build_player_evaluation({**base, "status": "a"})
+        out, _ = build_player_evaluation({**base, "status": "i", "chance_of_playing": 0})
+        assert calculate_target_score(out, next_gw_id=8) < calculate_target_score(fit, next_gw_id=8)
+
     def test_early_season_mins_factor(self):
         """Early season mins_factor is tested via calculate_mins_factor directly."""
         assert calculate_mins_factor(90, 2, 3) == 1.0
