@@ -8,8 +8,9 @@ at GW12.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from pathlib import Path
-from statistics import mean
+from statistics import mean, pstdev
 from typing import TYPE_CHECKING, Any
 
 import yaml
@@ -40,15 +41,47 @@ BLENDING_CUTOFF_GW = 12
 # `prior_default`. All three key on the current team names, so the team-set
 # check below sees zero mismatches and would serve them for the rest of the
 # season.
-PRIOR_CACHE_VERSION = 3
+# 4: promoted sides are damped onto the PL spread rather than scaled by a flat
+# factor. A v3 cache is where the division's best defence is saved as a top-3
+# Premier League one -- the exact rating this change exists to stop producing.
+PRIOR_CACHE_VERSION = 4
 
-# Championship-to-PL adjustment. A promoted side scores less in the PL against
-# better defences, and concedes more against better attacks, so the two
+# Championship-to-PL adjustment, level. A promoted side scores less in the PL
+# against better defences, and concedes more against better attacks, so the two
 # directions move opposite ways: applying one factor to both (or to raw match
 # scores, where one team's goal is another's concession) deflates conceded when
 # it should inflate it.
+#
+# These set where the promoted cohort's *mean* sits, and nothing else. They used
+# to multiply each team's own rates, which scaled the cohort's spread by the same
+# amount as its level -- so the conceded axes came out ~1.5x wider than the PL
+# distribution the teams were about to be ranked in, and the division's best and
+# worst defences both landed outside the PL's real range (#111).
 CHAMPIONSHIP_GOALS_SCORED_FACTOR = 0.665
 CHAMPIONSHIP_GOALS_CONCEDED_FACTOR = 1 / CHAMPIONSHIP_GOALS_SCORED_FACTOR
+
+# Championship-to-PL adjustment, spread: how much of a team's edge over its own
+# division survives promotion. Each side is standardised within the Championship
+# and re-expressed in Premier League standard deviations scaled by this, so the
+# cohort can only ever occupy this fraction of the PL's spread.
+#
+# 1.0 asserts a side that was 2 sd clear of the Championship will be 2 sd clear
+# of the Premier League; 0.0 collapses every promoted team onto identical rates,
+# i.e. _promoted_fallback() with a source of truth. At 0.6 promoted sides sit in
+# the bottom third with their ordering intact -- which is where they finish --
+# while a genuinely good one can still reach a mid-table bucket. Held at the low
+# end of the defensible range because the pool mixes Understat xG (continuing
+# teams) with actual goals (promoted, no Championship xG exists), and actual
+# goals carry more noise per game than xG does.
+CHAMPIONSHIP_EDGE_RETENTION = 0.6
+
+# The four TeamPerformance rate axes with the level factor each takes.
+CHAMPIONSHIP_AXES: tuple[tuple[str, float], ...] = (
+    ("goals_scored_home", CHAMPIONSHIP_GOALS_SCORED_FACTOR),
+    ("goals_scored_away", CHAMPIONSHIP_GOALS_SCORED_FACTOR),
+    ("goals_conceded_home", CHAMPIONSHIP_GOALS_CONCEDED_FACTOR),
+    ("goals_conceded_away", CHAMPIONSHIP_GOALS_CONCEDED_FACTOR),
+)
 
 # football-data.org TLA to FPL short name (only where they differ).
 # Most TLAs match directly; add exceptions here as discovered.
@@ -234,8 +267,9 @@ async def generate_prior(client: FPLClient) -> dict[str, TeamRating]:
 
     # Promoted teams join the same pool on PL-rescaled rates, so the 1-7 spread
     # is a ranking of the real 20 rather than two incomparable divisions. (On the
-    # Understat path the pool mixes xG rates with rescaled actual goals — close
-    # enough to nudge a promoted side by at most a bucket, not reorder the pool.)
+    # Understat path the pool mixes xG rates with rescaled actual goals, which are
+    # noisier per game; that extra variance is one of the reasons the promoted
+    # cohort's spread is damped rather than trusted — see CHAMPIONSHIP_EDGE_RETENTION.)
     # A promoted team the Championship data doesn't cover gets the flat estimate
     # individually, so partial coverage never promotes it to mid-table by omission.
     promoted = current_team_names - set(performances)
@@ -248,7 +282,9 @@ async def generate_prior(client: FPLClient) -> dict[str, TeamRating]:
             ", ".join(sorted(promoted)),
         )
     promoted_performances = (
-        await _championship_performances(promoted, prev_season_int) or {} if promoted else {}
+        await _championship_performances(promoted, prev_season_int, performances) or {}
+        if promoted
+        else {}
     )
     performances.update(promoted_performances)
     fallback = {team: _promoted_fallback() for team in promoted - set(promoted_performances)}
@@ -319,10 +355,79 @@ def _promoted_fallback() -> TeamRating:
     return TeamRating(5, 6, 5, 6)
 
 
+def _axis_spread(performances: Iterable[TeamPerformance], axis: str) -> tuple[float, float]:
+    """Mean and standard deviation of one rate axis across a set of teams.
+
+    Population rather than sample sd: a division's teams are the whole
+    population of that division, not a draw from a larger one. It also degrades
+    where sample sd raises -- a single team gives 0.0 spread, which the callers
+    below already handle as "no spread to work with".
+    """
+    values = [getattr(p, axis) for p in performances]
+    if not values:
+        return 0.0, 0.0
+    return mean(values), pstdev(values)
+
+
+def _rescale_to_pl(
+    championship: dict[str, TeamPerformance],
+    pl_performances: dict[str, TeamPerformance],
+    teams: set[str],
+) -> dict[str, TeamPerformance]:
+    """Re-express Championship rates in Premier League units.
+
+    Level and spread are set separately, because they are separate claims:
+
+        z  = (x - elc_mean) / elc_sd
+        x' = elc_mean * factor + k * z * pl_sd
+
+    The level term carries "promoted teams are worse than the league they are
+    joining" and comes from the factors alone, so it is unchanged from when
+    those factors were applied to each team directly. The spread term carries
+    "this much of a Championship edge survives promotion", which a single
+    multiplicative factor cannot express at all: multiplying scales spread and
+    level together, so pushing the cohort's conceded mean up 50% also spread it
+    50% wider than the distribution it was about to be ranked against.
+
+    `championship` supplies the distribution and must be the whole division,
+    not just `teams` -- a promoted side's edge is only meaningful against the
+    teams it beat. `pl_performances` supplies the units and must be the pool
+    the result will be bucketed in.
+
+    Either distribution collapsing (one team, or every team identical on an
+    axis) leaves no spread to carry, so every promoted side lands on the level
+    term. That is the flat estimate, which is the right answer when the data
+    holds no evidence of a difference between them.
+    """
+    rescaled: dict[str, dict[str, float]] = {team: {} for team in teams}
+    for axis, factor in CHAMPIONSHIP_AXES:
+        elc_mean, elc_sd = _axis_spread(championship.values(), axis)
+        _, pl_sd = _axis_spread(pl_performances.values(), axis)
+        target_level = elc_mean * factor
+        for team, values in rescaled.items():
+            z = (getattr(championship[team], axis) - elc_mean) / elc_sd if elc_sd else 0.0
+            # A per-game goal rate below zero is not a thing, however far out a
+            # team sits. Bucketing is ordinal so this only ever ties teams that
+            # are already both off the bottom of the scale.
+            values[axis] = max(0.0, target_level + CHAMPIONSHIP_EDGE_RETENTION * z * pl_sd)
+
+    return {
+        team: TeamPerformance(
+            team=team,
+            home_games=championship[team].home_games,
+            away_games=championship[team].away_games,
+            **values,
+        )
+        for team, values in rescaled.items()
+    }
+
+
 async def _championship_performances(
-    promoted_teams: set[str], prev_season: int
+    promoted_teams: set[str],
+    prev_season: int,
+    pl_performances: dict[str, TeamPerformance],
 ) -> dict[str, TeamPerformance] | None:
-    """Per-game rates for promoted teams, rescaled onto the Premier League.
+    """Per-game rates for promoted teams, re-expressed in Premier League units.
 
     Championship rates are converted to PL-equivalent ones here so the caller
     can rank a promoted side against the division it is joining rather than the
@@ -330,6 +435,10 @@ async def _championship_performances(
     rating of 1 -- nominally the best team in the Premier League -- because
     percentile bucketing is purely ordinal, so a uniform scale factor applied
     beforehand cannot shift the result at all.
+
+    `pl_performances` is the pool the caller will bucket the result against; it
+    sets the units the promoted cohort's spread is expressed in. See
+    :func:`_rescale_to_pl`.
 
     Returns None when Championship data is unavailable, leaving the caller to
     fall back to an undifferentiated estimate.
@@ -350,29 +459,19 @@ async def _championship_performances(
 
         championship = _matches_to_performances(matches)
 
-        result: dict[str, TeamPerformance] = {}
-        for team in promoted_teams:
-            # _matches_to_performances already keys by FPL short name (it maps
-            # TLAs through TLA_TO_FPL), so promoted teams are looked up directly.
-            perf = championship.get(team)
-            if perf is None:
-                logger.warning(
-                    "No Championship performance record for promoted team %s - "
-                    "falling back to the undifferentiated bottom-of-table estimate",
-                    team,
-                )
-                continue
-            result[team] = TeamPerformance(
-                team=team,
-                goals_scored_home=perf.goals_scored_home * CHAMPIONSHIP_GOALS_SCORED_FACTOR,
-                goals_scored_away=perf.goals_scored_away * CHAMPIONSHIP_GOALS_SCORED_FACTOR,
-                goals_conceded_home=perf.goals_conceded_home * CHAMPIONSHIP_GOALS_CONCEDED_FACTOR,
-                goals_conceded_away=perf.goals_conceded_away * CHAMPIONSHIP_GOALS_CONCEDED_FACTOR,
-                home_games=perf.home_games,
-                away_games=perf.away_games,
+        # _matches_to_performances already keys by FPL short name (it maps TLAs
+        # through TLA_TO_FPL), so promoted teams are looked up directly.
+        covered = {team for team in promoted_teams if team in championship}
+        for team in sorted(promoted_teams - covered):
+            logger.warning(
+                "No Championship performance record for promoted team %s - "
+                "falling back to the undifferentiated bottom-of-table estimate",
+                team,
             )
+        if not covered:
+            return None
 
-        return result or None
+        return _rescale_to_pl(championship, pl_performances, covered) or None
 
     except Exception:  # noqa: BLE001 — graceful degradation
         logger.warning("Failed to fetch Championship data for promoted teams", exc_info=True)

@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from fpl_cli.services.team_ratings import TeamRating
+from fpl_cli.services.team_ratings import TeamPerformance, TeamRating
 from fpl_cli.services.team_ratings_prior import (
     BLENDING_CUTOFF_GW,
     PRIOR_CACHE_VERSION,
@@ -291,6 +291,15 @@ def _championship_fd(matches):
     return fd
 
 
+# A two-team stand-in for the Premier League pool. It supplies the units the
+# promoted cohort's spread is expressed in, for tests that care about the
+# Championship side of the conversion rather than the resulting buckets.
+PL_POOL = {
+    "ARS": TeamPerformance("ARS", 2.5, 2.2, 0.6, 0.8, 19, 19),
+    "MCI": TeamPerformance("MCI", 2.4, 2.1, 0.7, 0.9, 19, 19),
+}
+
+
 # COV wins the division outright; XXX and YYY draw with each other.
 DOMINANT_CHAMPIONSHIP = [
     {"home_team_tla": "COV", "away_team_tla": "XXX", "home_score": 3, "away_score": 1},
@@ -319,12 +328,7 @@ class TestPromotedTeamsRankedAgainstPL:
 
     @pytest.fixture
     def pl_performances(self):
-        from fpl_cli.services.team_ratings import TeamPerformance
-
-        return {
-            "ARS": TeamPerformance("ARS", 2.5, 2.2, 0.6, 0.8, 19, 19),
-            "MCI": TeamPerformance("MCI", 2.4, 2.1, 0.7, 0.9, 19, 19),
-        }
+        return dict(PL_POOL)
 
     async def _prior(self, mock_client, pl_performances, tmp_path):
         with (
@@ -390,7 +394,7 @@ class TestChampionshipRescaling:
             "fpl_cli.api.football_data.FootballDataClient",
             return_value=_championship_fd(DOMINANT_CHAMPIONSHIP),
         ):
-            result = await _championship_performances({"COV"}, 2025)
+            result = await _championship_performances({"COV"}, 2025, PL_POOL)
 
         assert result is not None
         # COV's raw Championship rates: scored 3.0 home / 2.0 away, conceded 1.0 both.
@@ -407,7 +411,191 @@ class TestChampionshipRescaling:
         fd.is_configured = False
 
         with patch("fpl_cli.api.football_data.FootballDataClient", return_value=fd):
-            assert await _championship_performances({"COV"}, 2025) is None
+            assert await _championship_performances({"COV"}, 2025, PL_POOL) is None
+
+
+def _evenly_spread(low: float, high: float, count: int) -> list[float]:
+    """`count` values from `low` to `high` inclusive, evenly spaced."""
+    return [low + (high - low) * i / (count - 1) for i in range(count)]
+
+
+def _pool(prefix: str, conceded_home: list[float]) -> dict[str, TeamPerformance]:
+    """A set of teams differing only on the conceded-at-home axis."""
+    return {
+        f"{prefix}{i:02d}": TeamPerformance(f"{prefix}{i:02d}", 1.4, 1.2, c, c + 0.2, 19, 19)
+        for i, c in enumerate(conceded_home)
+    }
+
+
+# The 2025-26 live distributions from #111, to the sd quoted there: 17 continuing
+# PL sides conceding 0.78-1.62 at home (mean 1.20, sd 0.24) and a 24-team
+# Championship conceding 0.74-1.62 (mean 1.18, sd 0.25).
+LIVE_PL = _pool("P", _evenly_spread(0.78, 1.62, 17))
+LIVE_ELC = _pool("C", _evenly_spread(0.74, 1.62, 24))
+# Best, mid-table and worst defence in the division.
+LIVE_PROMOTED = {"C00", "C11", "C23"}
+
+
+class TestChampionshipSpread:
+    """A promoted cohort must fit inside the distribution it is ranked in (#111)."""
+
+    def test_division_best_defence_is_not_a_top_premier_league_defence(self):
+        """The headline case: Ipswich's league-best defence rated 3rd in the PL.
+
+        Multiplying every promoted rate by 1.504 inflated the cohort's spread by
+        the same 1.504 as its level, so the division's best defence undershot the
+        Premier League mean by more than any actual Premier League team did.
+        """
+        from fpl_cli.services.team_ratings import TeamRatingsCalculator
+        from fpl_cli.services.team_ratings_prior import _rescale_to_pl
+
+        pool = dict(LIVE_PL)
+        pool.update(_rescale_to_pl(LIVE_ELC, LIVE_PL, LIVE_PROMOTED))
+
+        ratings = TeamRatingsCalculator._convert_to_ratings(pool)
+
+        # Bottom third, as a promoted side finishes. The flat factor put this
+        # team at 3 -- third-best home defence in the Premier League.
+        assert ratings["C00"].def_home >= 5
+
+    def test_no_promoted_side_is_projected_above_the_premier_league_average(self):
+        """A calibration guard on the level and spread terms together.
+
+        The cohort sits ~0.5 goals a game worse than the Premier League mean, and
+        `k` lets a team claw back only 0.6 of a PL sd per sd of Championship edge,
+        so no plausible Championship record reaches average. Under the flat factor
+        the division's best defence cleared the PL mean outright.
+        """
+        from statistics import mean
+
+        from fpl_cli.services.team_ratings_prior import _rescale_to_pl
+
+        rescaled = _rescale_to_pl(LIVE_ELC, LIVE_PL, set(LIVE_ELC))
+
+        pl_mean = mean(p.goals_conceded_home for p in LIVE_PL.values())
+        assert min(p.goals_conceded_home for p in rescaled.values()) > pl_mean
+
+    def test_cohort_spread_is_a_fraction_of_the_premier_league_spread(self):
+        """Standardising then re-expressing puts the cohort in PL units.
+
+        Rescaling the whole division leaves z-scores with sd 1 by construction,
+        so the cohort's sd lands on exactly `k` PL standard deviations -- the
+        property a multiplicative factor cannot provide, since it scales the
+        cohort's own sd instead of adopting the target's.
+        """
+        from statistics import pstdev
+
+        from fpl_cli.services.team_ratings_prior import (
+            CHAMPIONSHIP_EDGE_RETENTION,
+            _rescale_to_pl,
+        )
+
+        rescaled = _rescale_to_pl(LIVE_ELC, LIVE_PL, set(LIVE_ELC))
+
+        pl_sd = pstdev([p.goals_conceded_home for p in LIVE_PL.values()])
+        cohort_sd = pstdev([p.goals_conceded_home for p in rescaled.values()])
+
+        assert cohort_sd == pytest.approx(CHAMPIONSHIP_EDGE_RETENTION * pl_sd)
+        assert cohort_sd < pl_sd
+
+    def test_level_is_exactly_what_the_factors_imply(self):
+        """A spread-only change: the cohort mean is unmoved from the old scaling.
+
+        Where each team was multiplied by the factor, the cohort mean was the
+        Championship mean times that factor. It still is -- only the distance of
+        each team from it has changed.
+        """
+        from statistics import mean
+
+        from fpl_cli.services.team_ratings_prior import (
+            CHAMPIONSHIP_AXES,
+            _rescale_to_pl,
+        )
+
+        rescaled = _rescale_to_pl(LIVE_ELC, LIVE_PL, set(LIVE_ELC))
+
+        for axis, factor in CHAMPIONSHIP_AXES:
+            elc_mean = mean(getattr(p, axis) for p in LIVE_ELC.values())
+            cohort_mean = mean(getattr(p, axis) for p in rescaled.values())
+            assert cohort_mean == pytest.approx(elc_mean * factor), axis
+
+    def test_ordering_within_the_division_survives(self):
+        """Damping the spread must not scramble who was better than whom."""
+        from fpl_cli.services.team_ratings_prior import _rescale_to_pl
+
+        rescaled = _rescale_to_pl(LIVE_ELC, LIVE_PL, set(LIVE_ELC))
+
+        by_raw = sorted(LIVE_ELC, key=lambda t: LIVE_ELC[t].goals_conceded_home)
+        by_rescaled = sorted(rescaled, key=lambda t: rescaled[t].goals_conceded_home)
+        assert by_rescaled == by_raw
+
+    def test_edge_is_measured_against_the_whole_division(self):
+        """A promoted side's standing comes from the teams it played.
+
+        Standardising over the promoted teams alone would make the best of the
+        three the best in the division by definition, however mid-table it was.
+        """
+        from fpl_cli.services.team_ratings_prior import _rescale_to_pl
+
+        mid_table_only = _rescale_to_pl(LIVE_ELC, LIVE_PL, {"C10", "C11", "C12"})
+        whole_division = _rescale_to_pl(LIVE_ELC, LIVE_PL, set(LIVE_ELC))
+
+        for team in mid_table_only:
+            assert mid_table_only[team].goals_conceded_home == pytest.approx(
+                whole_division[team].goals_conceded_home
+            )
+
+
+class TestChampionshipSpreadDegradation:
+    """Neither distribution having any spread leaves only the level to apply."""
+
+    def test_identical_championship_rates_collapse_onto_the_level(self):
+        """No evidence of a difference between promoted sides means no difference."""
+        from fpl_cli.services.team_ratings_prior import (
+            CHAMPIONSHIP_GOALS_CONCEDED_FACTOR,
+            _rescale_to_pl,
+        )
+
+        flat = _pool("C", [1.2, 1.2, 1.2])
+
+        rescaled = _rescale_to_pl(flat, LIVE_PL, set(flat))
+
+        for perf in rescaled.values():
+            assert perf.goals_conceded_home == pytest.approx(
+                1.2 * CHAMPIONSHIP_GOALS_CONCEDED_FACTOR
+            )
+
+    def test_a_single_premier_league_team_leaves_no_units_to_scale_by(self):
+        """A one-team pool has no sd, so there is no PL spread to place teams on."""
+        from fpl_cli.services.team_ratings_prior import _rescale_to_pl
+
+        rescaled = _rescale_to_pl(LIVE_ELC, _pool("P", [1.2]), LIVE_PROMOTED)
+
+        values = {round(p.goals_conceded_home, 9) for p in rescaled.values()}
+        assert len(values) == 1
+
+    def test_an_empty_premier_league_pool_does_not_raise(self):
+        """The caller can reach here with no continuing-team records at all."""
+        from fpl_cli.services.team_ratings_prior import _rescale_to_pl
+
+        rescaled = _rescale_to_pl(LIVE_ELC, {}, LIVE_PROMOTED)
+
+        assert set(rescaled) == LIVE_PROMOTED
+
+    def test_rates_never_go_negative(self):
+        """A per-game goal rate below zero is not a thing, however far out a team sits."""
+        from fpl_cli.services.team_ratings_prior import _rescale_to_pl
+
+        # A Championship where one side is far clear, against a pool whose own
+        # spread dwarfs the level the cohort is placed at.
+        wild_pl = _pool("P", [0.1, 40.0])
+
+        rescaled = _rescale_to_pl(LIVE_ELC, wild_pl, LIVE_PROMOTED)
+
+        for perf in rescaled.values():
+            for axis in ("goals_scored_home", "goals_scored_away",
+                         "goals_conceded_home", "goals_conceded_away"):
+                assert getattr(perf, axis) >= 0.0, axis
 
 
 class TestPromotedFallback:
@@ -590,7 +778,7 @@ class TestMissingPerformanceRecordWarnings:
                 return_value=_championship_fd(DOMINANT_CHAMPIONSHIP),
             ),
         ):
-            result = await _championship_performances({"COV", "ZZZ"}, 2025)
+            result = await _championship_performances({"COV", "ZZZ"}, 2025, PL_POOL)
 
         assert result is not None
         assert "COV" in result
