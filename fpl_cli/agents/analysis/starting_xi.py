@@ -20,6 +20,7 @@ from fpl_cli.services.scoring import (
     compute_xgi_sustainability,
     prepare_scoring_data,
     select_starting_xi,
+    unavailable_player_ids,
 )
 
 if TYPE_CHECKING:
@@ -107,8 +108,12 @@ class StartingXIAgent(Agent):
                 )
                 scored.append(score_data)
 
-            # Apply early-season shrinkage
-            apply_shrinkage(scored, "lineup_score", data.player_priors, next_gw_id)
+            # Apply early-season shrinkage, holding out players who are known
+            # not to be playing (their low score is a fact, not a small sample)
+            apply_shrinkage(
+                scored, "lineup_score", data.player_priors, next_gw_id,
+                unavailable_player_ids(squad_players, next_gw_id),
+            )
 
             # Build team_fixtures from scored players' positional FDR
             team_fixtures: dict[str, dict[str, float]] = {}

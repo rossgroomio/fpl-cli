@@ -14,6 +14,7 @@ from fpl_cli.services.scoring.constants import (
     CONSISTENCY_CV_DIFF,
     CONSISTENCY_CV_TARGET,
     DIFFERENTIAL_QUALITY_WEIGHTS,
+    MINS_FACTOR_START_GW,
     TARGET_QUALITY_WEIGHTS,
     WAIVER_QUALITY_WEIGHTS,
     QualityWeights,
@@ -193,7 +194,7 @@ def calculate_waiver_score(
     per_appearance = calculate_mins_factor(
         evaluation.minutes, evaluation.appearances, next_gw_id,
     )
-    if next_gw_id <= 5:
+    if next_gw_id <= MINS_FACTOR_START_GW:
         combined_mins_factor = 1.0
     elif evaluation.appearances > 0:
         availability = min(evaluation.minutes / 450, 1.0)

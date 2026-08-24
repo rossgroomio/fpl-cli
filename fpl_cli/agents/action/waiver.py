@@ -24,6 +24,7 @@ from fpl_cli.services.scoring import (
     compute_form_trajectory,
     compute_xgi_sustainability,
     prepare_scoring_data,
+    unavailable_player_ids,
 )
 
 
@@ -311,8 +312,12 @@ class WaiverAgent(Agent):
                 "reasons": reasons,
             })
 
-        # Apply early-season shrinkage
-        apply_shrinkage(scored_players, "waiver_score", self._player_priors, next_gw_id)
+        # Apply early-season shrinkage, holding out players who are known not
+        # to be playing (their low score is a fact, not a small sample) — #122
+        apply_shrinkage(
+            scored_players, "waiver_score", self._player_priors, next_gw_id,
+            unavailable_player_ids(available, next_gw_id),
+        )
 
         # Sort by waiver score
         scored_players.sort(key=lambda p: p["waiver_score"], reverse=True)

@@ -24,11 +24,10 @@ def normalise_score(raw: float, ceiling: float) -> int:
 
     The waiver list is the one consumer that does order on a normalised score,
     and the clamp only ties players there from GW10. Below that cutoff
-    ``apply_shrinkage`` runs on ``waiver_score`` between scoring and sorting
-    and pulls a clamped 0 toward the position mean, so the tie does not
-    survive. That shrinkage hoists unavailable players either way — it lifted
-    the negatives too, just less far — so it is tracked separately in #122
-    rather than worked around here.
+    ``apply_shrinkage`` runs on ``waiver_score`` between scoring and sorting,
+    so the tie does not survive: a clamped 0 is either held out of shrinkage
+    (players known not to be playing keep their 0) or pulled toward the
+    position mean like any other low-confidence score.
     """
     return max(0, min(round(raw / ceiling * 100), 100))
 
