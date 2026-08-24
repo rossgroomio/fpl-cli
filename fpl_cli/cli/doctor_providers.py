@@ -457,7 +457,7 @@ def _understat_team_titles(players: list[dict[str, Any]]) -> set[str]:
 
 
 async def _understat_checks(
-    team_names: list[str] | None, finished_gws: int
+    team_names: list[str] | None, finished_gws: int, *, bootstrap_available: bool
 ) -> list[CheckResult]:
     from fpl_cli.api.understat import TEAM_NAME_MAP, UnderstatClient
 
@@ -480,7 +480,20 @@ async def _understat_checks(
 
     results: list[CheckResult] = []
     if not players:
-        if finished_gws == 0:
+        if not bootstrap_available:
+            # finished_gws defaults to 0 when the FPL bootstrap was
+            # unreachable, which must not read as "season not started":
+            # that would classify a genuinely drifted empty response as
+            # skipped and let one provider being down mask another broken.
+            results.append(
+                CheckResult(
+                    league_name,
+                    CheckStatus.UNCHECKED,
+                    "no player data, and could not determine whether the season "
+                    "has started (FPL API unreachable)",
+                )
+            )
+        elif finished_gws == 0:
             results.append(
                 CheckResult(
                     league_name,
@@ -690,6 +703,8 @@ async def provider_checks() -> list[CheckResult]:
     except UserDirError as exc:
         results.append(CheckResult("Core-Insights", CheckStatus.BROKEN, str(exc)))
 
-    results += await _understat_checks(team_names, finished_gws)
+    results += await _understat_checks(
+        team_names, finished_gws, bootstrap_available=bootstrap is not None
+    )
     results += await _football_data_checks(short_names)
     return results

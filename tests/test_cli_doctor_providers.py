@@ -297,6 +297,24 @@ class TestLagAndUnreachability:
         assert "folder layout may have changed" in _flat(result)
 
     @respx.mock
+    def test_empty_understat_with_unreachable_fpl_is_unchecked(self, monkeypatch):
+        # finished_gws defaults to 0 when the bootstrap was unreachable, which
+        # must not read as "season not started" — that would classify a
+        # genuinely drifted empty Understat response as skipped and exit 0.
+        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
+        _register_routes(
+            fpl_error=httpx.ConnectError(
+                "boom", request=httpx.Request("GET", FPL_BOOTSTRAP_URL)
+            ),
+            understat_teams=[],
+        )
+        result = _run()
+        assert result.exit_code == 0
+        flat = _flat(result)
+        assert "could not determine whether the season has started" in flat
+        assert "Understat publishes once matches are played" not in flat
+
+    @respx.mock
     def test_unreachable_fpl_api_is_unchecked_not_broken(self, monkeypatch):
         monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
         _register_routes(

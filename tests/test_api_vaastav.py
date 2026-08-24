@@ -603,6 +603,25 @@ class TestContractTripwires:
         assert "transfers_balance" in caplog.text
 
     @respx.mock
+    async def test_merged_gw_value_drift_warns(self, tmp_path, caplog):
+        # element/round still parse here, so this exercises the second
+        # conversion: a player must not enter by_player until a row fully
+        # parses, or the empty-but-truthy buckets mask the tripwire.
+        drifted = _GW_HEADER + (
+            "Salah,MID,Liverpool,100,1,130.5,50000.0,80000,30000,12,90,1,8.5\n"
+            "Haaland,FWD,Manchester City,200,1,150.5,60000.0,90000,30000,15,90,1,9.0\n"
+        )
+        respx.get(f"{BASE}/2025-26/gws/merged_gw.csv").mock(
+            return_value=Response(200, text=drifted)
+        )
+        with caplog.at_level(logging.WARNING):
+            async with VaastavClient(_make_fetcher(tmp_path), seasons=("2025-26",)) as client:
+                trends = await client.get_gw_trends()
+
+        assert trends == {}
+        assert "none could be parsed" in caplog.text
+
+    @respx.mock
     async def test_merged_gw_unparseable_rows_warn(self, tmp_path, caplog):
         # The header survives but every value fails conversion: the file is
         # non-empty yet parses to nothing, which must not pass silently.

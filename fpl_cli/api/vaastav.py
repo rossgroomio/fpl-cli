@@ -298,12 +298,14 @@ class VaastavClient:
             except (ValueError, KeyError):
                 continue
 
-            player_gws = by_player.setdefault(element, {})
-
-            if rnd in player_gws:
+            # DGW dedup reads without inserting: a player must only enter
+            # by_player once a row fully parses, or a file whose every value
+            # fails conversion would fill it with empty-but-truthy buckets
+            # and slip past the all-rows-skipped tripwire below.
+            if rnd in by_player.get(element, {}):
                 continue
             try:
-                player_gws[rnd] = {
+                gw_row: _GwRow = {
                     "value": int(row["value"]),
                     "transfers_balance": int(row["transfers_balance"]),
                     "web_name": row.get("name", "???"),
@@ -312,6 +314,7 @@ class VaastavClient:
                 }
             except (ValueError, KeyError):
                 continue
+            by_player.setdefault(element, {})[rnd] = gw_row
 
         if row_count and not by_player:
             warn_all_rows_skipped("vaastav merged_gw.csv", row_count, degraded=degraded)
