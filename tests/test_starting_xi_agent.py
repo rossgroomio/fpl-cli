@@ -198,6 +198,58 @@ class TestStartingXIAgent:
         assert len(result.data["starting_xi"]) == 11
         assert len(result.data["bench"]) == 4
 
+    async def test_no_feasible_formation_returns_failed(self, squad_data):
+        """When too few players are fit to start, the agent should report
+        failure rather than a fabricated formation over an empty XI."""
+        players, teams, _ = squad_data
+        # Ground all but one DEF (chance_of_playing < 50 -> excluded from lineup).
+        # Every VALID_FORMATIONS entry needs at least 3 DEF, so none is feasible.
+        grounded_players = [
+            p.model_copy(update={"chance_of_playing_next_round": 0})
+            if p.position_name == "DEF" and p.web_name != "DEF1"
+            else p
+            for p in players
+        ]
+        scoring_data = _mock_scoring_data(grounded_players, teams)
+        squad_ids = [p.id for p in grounded_players]
+
+        with patch(
+            "fpl_cli.agents.analysis.starting_xi.prepare_scoring_data",
+            new_callable=AsyncMock,
+            return_value=scoring_data,
+        ):
+            async with StartingXIAgent() as agent:
+                result = await agent.run({"squad": squad_ids})
+
+        assert result.status == AgentStatus.FAILED
+        assert result.data == {}
+        assert "no legal starting xi" in result.message.lower()
+
+    async def test_both_gks_grounded_returns_failed(self, squad_data):
+        """A squad with no available GK should fail the same way as one
+        with too few available outfield players, not silently start 10."""
+        players, teams, _ = squad_data
+        grounded_players = [
+            p.model_copy(update={"chance_of_playing_next_round": 0})
+            if p.position_name == "GK"
+            else p
+            for p in players
+        ]
+        scoring_data = _mock_scoring_data(grounded_players, teams)
+        squad_ids = [p.id for p in grounded_players]
+
+        with patch(
+            "fpl_cli.agents.analysis.starting_xi.prepare_scoring_data",
+            new_callable=AsyncMock,
+            return_value=scoring_data,
+        ):
+            async with StartingXIAgent() as agent:
+                result = await agent.run({"squad": squad_ids})
+
+        assert result.status == AgentStatus.FAILED
+        assert result.data == {}
+        assert "no legal starting xi" in result.message.lower()
+
     async def test_no_squad_returns_failed(self):
         """Agent should return FAILED when no squad is provided."""
         async with StartingXIAgent() as agent:

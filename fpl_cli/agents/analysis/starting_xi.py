@@ -127,6 +127,24 @@ class StartingXIAgent(Agent):
 
             excluded = [p for p in scored if p["excluded"]]
 
+            if result["formation"] is None:
+                available_counts: dict[str, int] = {}
+                for p in scored:
+                    if not p["excluded"]:
+                        available_counts[p["position"]] = available_counts.get(p["position"], 0) + 1
+                counts = ", ".join(
+                    f"{pos}={available_counts.get(pos, 0)}" for pos in ("GK", "DEF", "MID", "FWD")
+                )
+                self.log_error("No legal starting XI: no valid formation fits the available players")
+                return self._create_result(
+                    AgentStatus.FAILED,
+                    message="No legal starting XI: not enough available players to fill any valid formation",
+                    errors=[
+                        f"Available by position (excludes chance_of_playing < 50%): {counts}",
+                        "A transfer is needed to field a full XI.",
+                    ],
+                )
+
             self.log_success("Starting XI selected")
 
             return self._create_result(

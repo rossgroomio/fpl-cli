@@ -2884,6 +2884,35 @@ class TestSelectStartingXI:
         bench_ids = {p["id"] for p in result["bench"]}
         assert 9 in bench_ids
 
+    def test_no_feasible_formation_returns_none_not_442(self):
+        """When too few players are available in a position, report no legal XI
+        rather than fabricating a 4-4-2 label over an empty lineup."""
+        squad = self._squad_15()
+        # Exclude 4 of 5 DEF - only 1 available, but every VALID_FORMATIONS
+        # entry needs at least 3 DEF.
+        for p in squad:
+            if p["position"] == "DEF" and p["id"] != 3:
+                p["excluded"] = True
+        result = select_starting_xi(squad)
+        assert result["formation"] is None
+        assert result["starting_xi"] == []
+        assert result["total_score"] == 0.0
+        assert len(result["bench"]) == 15
+
+    def test_no_feasible_formation_when_no_gk_available(self):
+        """A missing GK is infeasible too, even though every outfield
+        position has plenty of available players and a formation with
+        a high total score would otherwise be chosen."""
+        squad = self._squad_15()
+        for p in squad:
+            if p["position"] == "GK":
+                p["excluded"] = True
+        result = select_starting_xi(squad)
+        assert result["formation"] is None
+        assert result["starting_xi"] == []
+        assert result["total_score"] == 0.0
+        assert len(result["bench"]) == 15
+
     def test_bgw_multiple_zero_score_players(self):
         squad = self._squad_15()
         # Give several players 0 score (BGW)
