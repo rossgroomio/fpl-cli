@@ -286,7 +286,7 @@ def _team_ratings_check(teams: list[str] | None) -> CheckResult:
             name,
             CheckStatus.STALE,
             "not generated yet — fixture difficulty stays neutral until ratings exist",
-            "run `fpl ratings update` once results exist",
+            "run `fpl ratings update` to seed estimates from last season's prior",
         )
     try:
         if teams is not None:

@@ -294,11 +294,17 @@ Fetch completed fixtures from the rolling 12-GW window, aggregate per-game avera
 
 Current-season data is blended with a prior from the previous season's Understat xG using Bayesian shrinkage (C=6). Current data takes majority weight by GW7; prior drops out entirely at GW12.
 
-### Pre-Season (before GW1)
+Both write paths apply it - the automatic refresh in `ensure_fresh()` and the user-facing `fpl ratings update`. They must not disagree: `fpl ratings update` saves with `based_on_gws` stamped, so an unblended file written by the command would look current to the auto-refresh and never be corrected.
+
+The weight follows the number of gameweeks of current-season evidence in the sample, not the absolute gameweek number, so `--since-gw 10` at GW12 is weighted as a three-gameweek sample. Blended files carry a `_blended` suffix on `metadata.source`.
+
+### Before Results Land (pre-season, and GW1 in progress)
 
 The FPL API publishes no strength ratings before a season starts - `strength` comes back null and the four attack/defence axes are zeroed for all 20 teams - so there is nothing to rate teams on and last season's cached file still lists relegated sides while missing promoted ones.
 
-Ratings are therefore rebuilt from the previous-season prior alone (Understat xG, with Championship form for promoted teams) and tagged `preseason_prior`. Commands that show fixture difficulty print a warning that the ratings are estimates until GW1 results land.
+The same hole reopens once GW1 kicks off. The API then reports GW2 as next, closing the pre-season branch, while `calculate_from_fixtures()` still returns nothing: it needs each club to have both a home and an away result before it will rate anyone. `seed_from_prior()` covers both windows - pre-season by gameweek number, the gap by the calculation coming back empty with no usable file on disk.
+
+Ratings are therefore rebuilt from the previous-season prior alone (Understat xG, with Championship form for promoted teams) and tagged `preseason_prior`. Commands that show fixture difficulty print a warning that the ratings are estimates until real results land. `fpl ratings update` seeds from the same prior when there is nothing to calculate from, so `fpl doctor`'s "run `fpl ratings update`" hint resolves the stale file rather than dead-ending on it.
 
 Promoted teams are placed on the Premier League scale, not the Championship's. Their per-game rates are rescaled first - scored down, conceded up, since a promoted side does both against better opposition - and only then ranked in a single pool alongside the continuing teams, so the 1-7 spread describes the actual 20-team league. Ranking them among the division they just left would give its champion a rating of 1, nominally the best team in the Premier League, because the bucketing is purely ordinal. Without `FOOTBALL_DATA_API_KEY` there is no Championship data, and promoted teams share one undifferentiated bottom-of-table estimate instead.
 

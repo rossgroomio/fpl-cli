@@ -326,7 +326,12 @@ class TestRatingsQualityWarnings:
         assert service.is_uniform is True
         assert "do not separate" in service.get_staleness_warning()
 
-    def test_warns_that_pre_season_ratings_are_estimates(self, tmp_path):
+    def test_warns_that_prior_seeded_ratings_are_estimates(self, tmp_path):
+        """The warning covers pre-season and the GW1-in-progress gap alike.
+
+        Both write PRESEASON_SOURCE, so it must not promise the estimate ends
+        at GW1 -- it lasts until completed results can rate teams.
+        """
         service = self._service(
             tmp_path,
             {
@@ -336,7 +341,9 @@ class TestRatingsQualityWarnings:
             source=PRESEASON_SOURCE,
         )
 
-        assert "Pre-season" in service.get_staleness_warning()
+        warning = service.get_staleness_warning()
+        assert "estimated from last season" in warning
+        assert "until GW1" not in warning
 
     def test_no_warning_for_fresh_differentiated_ratings(self, tmp_path):
         service = self._service(
@@ -357,3 +364,179 @@ class TestRatingsQualityWarnings:
         )
 
         assert service.is_uniform is False
+
+
+class TestGameweekInProgressRatings:
+    """The gap between GW1 kickoff and GW1 results, where neither path used to fire.
+
+    Once GW1 kicks off the API reports GW2 as next, so the pre-season branch
+    closes; the current-season calculation still has nothing to rate teams on
+    until every club has both a home and an away result. Between the two,
+    ``_refresh`` used to save nothing and leave ``get_positional_fdr`` serving a
+    neutral 4.0 to captaincy, transfer and squad-grid scoring alike.
+    """
+
+    @pytest.fixture(autouse=True)
+    def reset_session_guard(self):
+        TeamRatingsService._refreshed_this_session = False
+        yield
+        TeamRatingsService._refreshed_this_session = False
+
+    @pytest.fixture
+    def last_season_config(self, tmp_path):
+        """Last season's file: rejected on its season stamp, so nothing is served."""
+        path = tmp_path / "team_ratings.yaml"
+        with open(path, "w", encoding="utf-8") as f:
+            yaml.dump(
+                {
+                    "metadata": {
+                        "season": "2025-26",
+                        "last_updated": "2026-05-25",
+                        "source": "auto_calculated",
+                        "staleness_threshold_days": 30,
+                        "based_on_gws": [26, 37],
+                        "calculation_method": "recent_form",
+                    },
+                    "ratings": {
+                        "ARS": {"atk_home": 2, "atk_away": 1, "def_home": 1, "def_away": 1},
+                        "IPS": {"atk_home": 6, "atk_away": 7, "def_home": 6, "def_away": 7},
+                    },
+                },
+                f,
+            )
+        return path
+
+    @pytest.fixture
+    def gw1_in_flight_client(self):
+        """GW1 has kicked off, so the API already reports GW2 as next."""
+        client = AsyncMock()
+        client.get_next_gameweek = AsyncMock(return_value={"id": 2})
+        client.get_fixtures = AsyncMock(return_value=[])
+        client.get_teams = AsyncMock(return_value=[])
+        return client
+
+    @pytest.fixture
+    def prior(self):
+        return {
+            "ARS": TeamRating(atk_home=1, atk_away=2, def_home=1, def_away=2),
+            "MCI": TeamRating(atk_home=2, atk_away=1, def_home=2, def_away=1),
+            "COV": TeamRating(atk_home=6, atk_away=7, def_home=6, def_away=7),
+            "LIV": TeamRating(atk_home=3, atk_away=3, def_home=4, def_away=3),
+        }
+
+    async def test_seeds_from_prior_when_calculation_yields_nothing(
+        self, last_season_config, gw1_in_flight_client, prior
+    ):
+        """An in-flight GW1 falls back to the prior instead of writing nothing."""
+        service = TeamRatingsService(config_path=last_season_config)
+
+        with (
+            patch(
+                "fpl_cli.services.team_ratings_prior.generate_prior", new_callable=AsyncMock
+            ) as mock_prior,
+            patch.object(
+                TeamRatingsCalculator, "calculate_from_fixtures", new_callable=AsyncMock
+            ) as mock_calc,
+        ):
+            mock_prior.return_value = prior
+            mock_calc.return_value = ({}, {})
+            await service.ensure_fresh(gw1_in_flight_client)
+
+        mock_calc.assert_awaited_once()
+        mock_prior.assert_awaited_once()
+        assert service.has_ratings is True
+        assert service.metadata.source == PRESEASON_SOURCE
+        assert service.get_rating("COV") is not None
+        # The relegated side last season's file still rated is gone.
+        assert service.get_rating("IPS") is None
+
+    async def test_pfdr_differentiates_teams_mid_gap(
+        self, last_season_config, gw1_in_flight_client, prior
+    ):
+        """The point of the fallback: fixture difficulty stops being one number."""
+        service = TeamRatingsService(config_path=last_season_config)
+
+        with (
+            patch(
+                "fpl_cli.services.team_ratings_prior.generate_prior", new_callable=AsyncMock
+            ) as mock_prior,
+            patch.object(
+                TeamRatingsCalculator, "calculate_from_fixtures", new_callable=AsyncMock
+            ) as mock_calc,
+        ):
+            mock_prior.return_value = prior
+            mock_calc.return_value = ({}, {})
+            await service.ensure_fresh(gw1_in_flight_client)
+
+        fdrs = {
+            team: service.get_positional_fdr("MID", team, "ARS", "home")
+            for team in ("MCI", "COV", "LIV")
+        }
+
+        assert len(set(fdrs.values())) > 1, f"pFDR identical for every team: {fdrs}"
+        assert service.is_uniform is False
+
+    async def test_keeps_existing_current_season_ratings(
+        self, tmp_path, gw1_in_flight_client, prior
+    ):
+        """A usable current-season file is not overwritten by the prior."""
+        path = tmp_path / "team_ratings.yaml"
+        with open(path, "w", encoding="utf-8") as f:
+            yaml.dump(
+                {
+                    "metadata": {
+                        "season": season_label(),
+                        "last_updated": "2026-08-16",
+                        "source": PRESEASON_SOURCE,
+                        "staleness_threshold_days": 30,
+                        "based_on_gws": None,
+                        "calculation_method": "preseason_prior",
+                    },
+                    "ratings": {
+                        "ARS": {"atk_home": 1, "atk_away": 2, "def_home": 1, "def_away": 2},
+                        "COV": {"atk_home": 6, "atk_away": 7, "def_home": 6, "def_away": 7},
+                    },
+                },
+                f,
+            )
+        service = TeamRatingsService(config_path=path)
+
+        with (
+            patch(
+                "fpl_cli.services.team_ratings_prior.generate_prior", new_callable=AsyncMock
+            ) as mock_prior,
+            patch.object(
+                TeamRatingsCalculator, "calculate_from_fixtures", new_callable=AsyncMock
+            ) as mock_calc,
+        ):
+            mock_prior.return_value = prior
+            mock_calc.return_value = ({}, {})
+            await service.ensure_fresh(gw1_in_flight_client)
+
+        mock_prior.assert_not_awaited()
+        assert service.get_rating("ARS").atk_home == 1
+
+    async def test_real_results_still_win_over_the_prior(
+        self, last_season_config, gw1_in_flight_client, prior
+    ):
+        """When fixtures do yield ratings the prior is only a blending input."""
+        service = TeamRatingsService(config_path=last_season_config)
+        calculated = {
+            "ARS": TeamRating(atk_home=1, atk_away=1, def_home=1, def_away=1),
+            "COV": TeamRating(atk_home=7, atk_away=7, def_home=7, def_away=7),
+        }
+
+        with (
+            patch(
+                "fpl_cli.services.team_ratings_prior.generate_prior", new_callable=AsyncMock
+            ) as mock_prior,
+            patch.object(
+                TeamRatingsCalculator, "calculate_from_fixtures", new_callable=AsyncMock
+            ) as mock_calc,
+        ):
+            mock_prior.return_value = prior
+            mock_calc.return_value = (calculated, {})
+            await service.ensure_fresh(gw1_in_flight_client)
+
+        assert service.metadata.source == "auto_calculated"
+        assert service.metadata.based_on_gws == (1, 1)

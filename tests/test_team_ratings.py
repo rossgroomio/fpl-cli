@@ -875,6 +875,25 @@ class TestCalculateFromXG:
 class TestRatingsUpdateCLI:
     """Tests for `fpl ratings update` CLI command."""
 
+    @pytest.fixture(autouse=True)
+    def no_completed_fixtures(self):
+        """Both paths date their sample from completed data before blending.
+
+        The non-xg path reads fixtures directly; the xg path reads the
+        cached gameweeks list. Empty results mean no current-season evidence
+        to weight, so these tests exercise the unblended display and save
+        path.
+        """
+        with (
+            patch(
+                "fpl_cli.api.fpl.FPLClient.get_fixtures", new_callable=AsyncMock, return_value=[]
+            ),
+            patch(
+                "fpl_cli.api.fpl.FPLClient.get_gameweeks", new_callable=AsyncMock, return_value=[]
+            ),
+        ):
+            yield
+
     @pytest.fixture
     def mock_ratings(self):
         return {
@@ -1000,6 +1019,257 @@ class TestRatingsUpdateCLI:
         assert "[vault]" in result.output.replace("\n", "")
 
 
+class TestRatingsUpdateBlending:
+    """`fpl ratings update` must apply the same shrinkage the auto-refresh does.
+
+    Without it the command overwrites a blended file with twenty clubs rated on
+    a handful of matches each -- and stamps `based_on_gws`, so the auto-refresh
+    then considers the file current and never corrects it. `fpl doctor` points
+    users at this command, so the two paths disagreeing is not academic.
+    """
+
+    @pytest.fixture
+    def raw_ratings(self):
+        return {
+            "ARS": TeamRating(atk_home=1, atk_away=1, def_home=1, def_away=1),
+            "MCI": TeamRating(atk_home=7, atk_away=7, def_home=7, def_away=7),
+        }
+
+    @pytest.fixture
+    def prior(self):
+        return {
+            "ARS": TeamRating(atk_home=4, atk_away=4, def_home=4, def_away=4),
+            "MCI": TeamRating(atk_home=2, atk_away=2, def_home=2, def_away=2),
+        }
+
+    @staticmethod
+    def _completed_through(max_gw: int):
+        from tests.conftest import make_fixture
+
+        return [
+            make_fixture(id=gw, gameweek=gw, finished=True, home_score=1, away_score=0)
+            for gw in range(1, max_gw + 1)
+        ]
+
+    def _run(self, args, ratings, prior, fixtures):
+        from click.testing import CliRunner
+
+        from fpl_cli.cli import main
+
+        with (
+            patch(
+                "fpl_cli.services.team_ratings.TeamRatingsCalculator.calculate_from_fixtures",
+                new_callable=AsyncMock,
+                return_value=(ratings, {}),
+            ),
+            patch(
+                "fpl_cli.api.fpl.FPLClient.get_fixtures",
+                new_callable=AsyncMock,
+                return_value=fixtures,
+            ),
+            patch(
+                "fpl_cli.services.team_ratings_prior.generate_prior",
+                new_callable=AsyncMock,
+                return_value=prior,
+            ) as mock_prior,
+            patch("fpl_cli.services.team_ratings.TeamRatingsService.get_all_ratings", return_value={}),
+            patch("fpl_cli.services.team_ratings.TeamRatingsService.save_ratings") as mock_save,
+            patch("fpl_cli.cli._context.load_settings", return_value={"custom_analysis": True}),
+        ):
+            result = CliRunner().invoke(main, args, catch_exceptions=False)
+
+        assert result.exit_code == 0, result.output
+        return result, mock_prior, mock_save
+
+    def test_single_gameweek_ratings_are_shrunk_toward_the_prior(self, raw_ratings, prior):
+        """GW1 carries 1/(1+6) of the weight, so the saved file is mostly prior."""
+        _, mock_prior, mock_save = self._run(
+            ["ratings", "update"], raw_ratings, prior, self._completed_through(1)
+        )
+
+        mock_prior.assert_awaited_once()
+        saved = mock_save.call_args.args[0]
+        # 6/7 x 4 + 1/7 x 1 = 3.57 -> 4;  6/7 x 2 + 1/7 x 7 = 2.71 -> 3
+        assert saved["ARS"].atk_home == 4
+        assert saved["MCI"].atk_home == 3
+        assert saved != raw_ratings
+
+    def test_blend_is_labelled_in_the_output_and_metadata(self, raw_ratings, prior):
+        """A blended file must not look like one calculated from results alone."""
+        result, _, mock_save = self._run(
+            ["ratings", "update"], raw_ratings, prior, self._completed_through(1)
+        )
+
+        assert "14% current form" in result.output.replace("\n", "")
+        assert mock_save.call_args.kwargs["source"] == "calculated_blended"
+
+    def test_no_blending_once_the_sample_reaches_the_cutoff(self, raw_ratings, prior):
+        """At GW12 the prior drops out entirely, as it does in the auto-refresh."""
+        from fpl_cli.services.team_ratings_prior import BLENDING_CUTOFF_GW
+
+        result, mock_prior, mock_save = self._run(
+            ["ratings", "update"],
+            raw_ratings,
+            prior,
+            self._completed_through(BLENDING_CUTOFF_GW),
+        )
+
+        mock_prior.assert_not_awaited()
+        assert mock_save.call_args.args[0] == raw_ratings
+        assert mock_save.call_args.kwargs["source"] == "calculated"
+        assert "prior" not in result.output.lower()
+
+    def test_since_gw_weights_the_window_not_the_gameweek_number(self, raw_ratings, prior):
+        """--since-gw 10 at GW12 is three gameweeks of evidence, not twelve."""
+        _, mock_prior, mock_save = self._run(
+            ["ratings", "update", "--since-gw", "10"],
+            raw_ratings,
+            prior,
+            self._completed_through(12),
+        )
+
+        mock_prior.assert_awaited_once()
+        # 3/(3+6) = 33% current: 0.67 x 4 + 0.33 x 1 = 3.0
+        assert mock_save.call_args.args[0]["ARS"].atk_home == 3
+
+    def test_dry_run_shows_the_blend_without_saving(self, raw_ratings, prior):
+        result, mock_prior, mock_save = self._run(
+            ["ratings", "update", "--dry-run"], raw_ratings, prior, self._completed_through(1)
+        )
+
+        mock_prior.assert_awaited_once()
+        mock_save.assert_not_called()
+        assert "14% current form" in result.output.replace("\n", "")
+
+    def test_use_xg_ratings_are_shrunk_toward_the_prior(self, raw_ratings, prior):
+        """--use-xg must apply the same shrinkage the non-xg path does."""
+        from click.testing import CliRunner
+
+        from fpl_cli.cli import main
+
+        gameweeks = [{"id": 1, "finished": True}, {"id": 2, "finished": False}]
+
+        with (
+            patch(
+                "fpl_cli.services.team_ratings.TeamRatingsCalculator.calculate_from_xg",
+                new_callable=AsyncMock,
+                return_value=(raw_ratings, {}),
+            ),
+            patch(
+                "fpl_cli.api.fpl.FPLClient.get_gameweeks",
+                new_callable=AsyncMock,
+                return_value=gameweeks,
+            ),
+            patch(
+                "fpl_cli.services.team_ratings_prior.generate_prior",
+                new_callable=AsyncMock,
+                return_value=prior,
+            ) as mock_prior,
+            patch(
+                "fpl_cli.services.team_ratings.TeamRatingsService.get_all_ratings",
+                return_value={},
+            ),
+            patch("fpl_cli.services.team_ratings.TeamRatingsService.save_ratings") as mock_save,
+            patch("fpl_cli.cli._context.load_settings", return_value={"custom_analysis": True}),
+        ):
+            result = CliRunner().invoke(
+                main, ["ratings", "update", "--use-xg"], catch_exceptions=False
+            )
+
+        assert result.exit_code == 0, result.output
+        mock_prior.assert_awaited_once()
+        saved = mock_save.call_args.args[0]
+        # 6/7 x 4 + 1/7 x 1 = 3.57 -> 4;  6/7 x 2 + 1/7 x 7 = 2.71 -> 3
+        assert saved["ARS"].atk_home == 4
+        assert saved["MCI"].atk_home == 3
+        assert mock_save.call_args.kwargs["source"] == "understat_xg_blended"
+
+
+class TestRatingsUpdateWithoutResults:
+    """`fpl doctor` sends users here at the rollover, when there is nothing to calculate.
+
+    Reporting "No data available for calculation" left last season's file in
+    place -- ignored on its season stamp, so every fixture scored a neutral 4.0
+    -- while the previous-season prior was available the whole time.
+    """
+
+    def _run(self, args, *, prior_seeds=True, dry_run_prior=None, current_ratings=None):
+        from click.testing import CliRunner
+
+        from fpl_cli.cli import main
+
+        if dry_run_prior is None:
+            dry_run_prior = {"ARS": TeamRating(atk_home=4, atk_away=4, def_home=4, def_away=4)}
+
+        with (
+            patch(
+                "fpl_cli.services.team_ratings.TeamRatingsCalculator.calculate_from_fixtures",
+                new_callable=AsyncMock,
+                return_value=({}, {}),
+            ),
+            patch(
+                "fpl_cli.api.fpl.FPLClient.get_fixtures", new_callable=AsyncMock, return_value=[]
+            ),
+            patch(
+                "fpl_cli.services.team_ratings.TeamRatingsService.get_all_ratings",
+                return_value=current_ratings or {},
+            ),
+            patch(
+                "fpl_cli.services.team_ratings.TeamRatingsService.seed_from_prior",
+                new_callable=AsyncMock,
+                return_value=prior_seeds,
+            ) as mock_seed,
+            # Only reached by --dry-run, to check whether a prior would
+            # actually be obtainable rather than assuming one is.
+            patch(
+                "fpl_cli.services.team_ratings_prior.generate_prior",
+                new_callable=AsyncMock,
+                return_value=dry_run_prior,
+            ),
+            patch("fpl_cli.cli._context.load_settings", return_value={"custom_analysis": True}),
+        ):
+            result = CliRunner().invoke(main, args, catch_exceptions=False)
+
+        assert result.exit_code == 0, result.output
+        return result, mock_seed
+
+    def test_falls_back_to_the_previous_season_prior(self):
+        result, mock_seed = self._run(["ratings", "update"])
+
+        mock_seed.assert_awaited_once()
+        assert "last season" in result.output
+        assert "Estimated ratings saved" in result.output.replace("\n", " ")
+
+    def test_dry_run_reports_the_fallback_without_writing(self):
+        result, mock_seed = self._run(["ratings", "update", "--dry-run"])
+
+        mock_seed.assert_not_called()
+        assert "would be" in result.output.replace("\n", " ")
+
+    def test_dry_run_reports_when_no_prior_is_available_either(self):
+        """Dry-run must not promise a fallback the real run would refuse."""
+        result, mock_seed = self._run(["ratings", "update", "--dry-run"], dry_run_prior={})
+
+        mock_seed.assert_not_called()
+        output = result.output.replace("\n", "").lower()
+        assert "no previous-season data available either" in output
+
+    def test_says_so_when_no_prior_is_available_either(self):
+        result, mock_seed = self._run(["ratings", "update"], prior_seeds=False)
+
+        mock_seed.assert_awaited_once()
+        assert "ratings unchanged" in result.output.replace("\n", " ")
+
+    def test_keeps_existing_ratings_instead_of_seeding_from_prior(self):
+        """A usable on-disk file must not be replaced just because this
+        window's calculation came back empty."""
+        current = {"ARS": TeamRating(atk_home=1, atk_away=1, def_home=1, def_away=1)}
+        result, mock_seed = self._run(["ratings", "update"], current_ratings=current)
+
+        mock_seed.assert_not_awaited()
+        assert "keeping existing ratings unchanged" in result.output.replace("\n", "").lower()
+
+
 class TestConfigPathProperty:
     """Tests for TeamRatingsService.config_path."""
 
@@ -1119,6 +1389,46 @@ class TestEnsureFresh:
 
         # Stale data still accessible
         assert service.get_rating("ARS") is not None
+        assert service.get_rating("ARS").atk_home == 1
+
+    async def test_ensure_fresh_retries_after_failed_prior_seed(self, tmp_path, mock_client):
+        """A failed seed_from_prior (no prior available) must not block retry.
+
+        The session guard used to be set unconditionally, so a transient
+        outage during the pre-season/GW1-gap fallback would permanently
+        disable ensure_fresh's recalculation for the rest of the process.
+        """
+        service = TeamRatingsService(config_path=tmp_path / "team_ratings.yaml")
+        mock_client.get_next_gameweek.return_value = {"id": 1}  # pre-season: max_completed_gw = 0
+
+        with patch(
+            "fpl_cli.services.team_ratings_prior.generate_prior",
+            new_callable=AsyncMock,
+            return_value={},
+        ):
+            await service.ensure_fresh(mock_client)
+
+        assert TeamRatingsService._refreshed_this_session is False
+
+    async def test_ensure_fresh_skips_blend_when_no_prior_available(self, tmp_path, mock_client):
+        """An empty prior must not regress calculated ratings toward the default 4."""
+        service = TeamRatingsService(config_path=tmp_path / "team_ratings.yaml")
+        mock_client.get_next_gameweek.return_value = {"id": 5}  # max_completed_gw = 4 (< cutoff)
+        new_ratings = {"ARS": TeamRating(atk_home=1, atk_away=1, def_home=1, def_away=1)}
+
+        with (
+            patch.object(
+                TeamRatingsCalculator, "calculate_from_fixtures", new_callable=AsyncMock
+            ) as mock_calc,
+            patch(
+                "fpl_cli.services.team_ratings_prior.generate_prior",
+                new_callable=AsyncMock,
+                return_value={},
+            ),
+        ):
+            mock_calc.return_value = (new_ratings, {})
+            await service.ensure_fresh(mock_client)
+
         assert service.get_rating("ARS").atk_home == 1
 
 
