@@ -16,18 +16,20 @@ logger = logging.getLogger(__name__)
 
 BASE_URL = "https://understat.com"
 
-# Map FPL team names to Understat team names
+# Map FPL team names to Understat team names (the current season's 20 clubs)
 TEAM_NAME_MAP = {
     "Arsenal": "Arsenal",
     "Aston Villa": "Aston Villa",
     "Bournemouth": "Bournemouth",
     "Brentford": "Brentford",
     "Brighton": "Brighton",
-    "Burnley": "Burnley",
     "Chelsea": "Chelsea",
+    "Coventry City": "Coventry",
     "Crystal Palace": "Crystal Palace",
     "Everton": "Everton",
     "Fulham": "Fulham",
+    "Hull City": "Hull",
+    "Ipswich Town": "Ipswich",
     "Leeds": "Leeds",
     "Liverpool": "Liverpool",
     "Man City": "Manchester City",
@@ -36,8 +38,6 @@ TEAM_NAME_MAP = {
     "Nott'm Forest": "Nottingham Forest",
     "Spurs": "Tottenham",
     "Sunderland": "Sunderland",
-    "West Ham": "West Ham",
-    "Wolves": "Wolverhampton Wanderers",
 }
 
 # Map Understat position tokens to FPL positions
