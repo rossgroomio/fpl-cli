@@ -107,7 +107,7 @@ class FootballDataClient:
 
         Returns:
             List of dicts with home_team_id, home_team_tla, away_team_id,
-            away_team_tla, home_score, away_score, matchday. Team id is
+            away_team_tla, home_score, away_score, matchday, stage. Team id is
             football-data's own numeric id -- unlike tla it is guaranteed
             unique, which matters because football-data reuses one tla across
             multiple clubs (e.g. "SHE" for both Sheffield United and
@@ -150,6 +150,7 @@ class FootballDataClient:
                 "home_score": score["home"],
                 "away_score": score["away"],
                 "matchday": match.get("matchday"),
+                "stage": match.get("stage"),
             })
 
         return result

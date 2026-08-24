@@ -28,10 +28,10 @@ jobs:
         run: pip install -e ".[dev]"
 
       - name: Lint
-        run: ruff check fpl_cli/
+        run: ruff check fpl_cli/ scripts/
 
       - name: Type check
-        run: pyright fpl_cli/
+        run: pyright fpl_cli/ scripts/
 
       - name: Test
         run: pytest
