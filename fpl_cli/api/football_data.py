@@ -98,7 +98,12 @@ class FootballDataClient:
             season: Starting year (e.g. 2025 for 2025/26). Omit for current season.
 
         Returns:
-            List of dicts with home_team_tla, away_team_tla, home_score, away_score, matchday.
+            List of dicts with home_team_id, home_team_tla, away_team_id,
+            away_team_tla, home_score, away_score, matchday. Team id is
+            football-data's own numeric id -- unlike tla it is guaranteed
+            unique, which matters because football-data reuses one tla across
+            multiple clubs (e.g. "SHE" for both Sheffield United and
+            Sheffield Wednesday).
             Empty list if not configured or on error.
         """
         if not self.api_key:
@@ -130,7 +135,9 @@ class FootballDataClient:
             if score.get("home") is None or score.get("away") is None:
                 continue
             result.append({
+                "home_team_id": home.get("id"),
                 "home_team_tla": home.get("tla", ""),
+                "away_team_id": away.get("id"),
                 "away_team_tla": away.get("tla", ""),
                 "home_score": score["home"],
                 "away_score": score["away"],

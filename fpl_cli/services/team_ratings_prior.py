@@ -33,7 +33,14 @@ BLENDING_CUTOFF_GW = 12
 # Bump whenever the prior methodology changes: a cache written by an older
 # version passes the team-set check below yet holds ratings the new code
 # would never produce, so it must be discarded rather than served.
-PRIOR_CACHE_VERSION = 2
+# 3: the tla join fixes (NOT -> NFO via TLA_TO_FPL, per-side exclusion on a
+# colliding tla), plus the removal of the uniform 4.0 fallback. A v2 cache is
+# the exact shape those changes exist to stop being used -- Forest rated as a
+# promoted side, two Sheffield clubs pooled, or a flat table saved under
+# `prior_default`. All three key on the current team names, so the team-set
+# check below sees zero mismatches and would serve them for the rest of the
+# season.
+PRIOR_CACHE_VERSION = 3
 
 # Championship-to-PL adjustment. A promoted side scores less in the PL against
 # better defences, and concedes more against better attacks, so the two
@@ -45,33 +52,65 @@ CHAMPIONSHIP_GOALS_CONCEDED_FACTOR = 1 / CHAMPIONSHIP_GOALS_SCORED_FACTOR
 
 # football-data.org TLA to FPL short name (only where they differ).
 # Most TLAs match directly; add exceptions here as discovered.
-TLA_TO_FPL: dict[str, str] = {}
+TLA_TO_FPL: dict[str, str] = {"NOT": "NFO"}
 
 
-def _matches_to_performances(
-    matches: list[dict[str, Any]], team_tlas: set[str]
-) -> dict[str, TeamPerformance]:
-    """Aggregate match results into per-game scored/conceded rates by venue."""
+def _tla_collisions(matches: list[dict[str, Any]]) -> dict[str, set[int]]:
+    """Map each football-data tla to the distinct team ids seen under it.
+
+    football-data's own tla is not a unique key -- the 2025-26 Championship
+    serves both Sheffield clubs as "SHE" (#110). A tla backed by more than
+    one id in this batch cannot be safely joined to a single FPL team, so
+    the caller must exclude it rather than pool two clubs' results together.
+    Ids are opaque here -- only distinctness matters, not their values -- so
+    this needs no football-data id -> FPL mapping to detect the collision.
+    """
+    ids_by_tla: dict[str, set[int]] = {}
+    for m in matches:
+        for tla_key, id_key in (("home_team_tla", "home_team_id"), ("away_team_tla", "away_team_id")):
+            tla = m[tla_key]
+            team_id = m.get(id_key)
+            if team_id is not None:
+                ids_by_tla.setdefault(tla, set()).add(team_id)
+    return {tla: ids for tla, ids in ids_by_tla.items() if len(ids) > 1}
+
+
+def _empty_bucket() -> dict[str, list[float]]:
+    return {"scored_home": [], "scored_away": [], "conceded_home": [], "conceded_away": []}
+
+
+def _matches_to_performances(matches: list[dict[str, Any]]) -> dict[str, TeamPerformance]:
+    """Aggregate match results into per-game scored/conceded rates by venue.
+
+    A match whose opponent has an ambiguous tla (see _tla_collisions) still
+    counts for the unambiguous side -- only the ambiguous team's own record
+    is withheld, rather than discarding the whole fixture.
+    """
+    collisions = _tla_collisions(matches)
+    if collisions:
+        logger.warning(
+            "football-data tla is ambiguous for %s (multiple team ids share it) - "
+            "excluding from prior generation rather than pooling different clubs' results",
+            ", ".join(f"{tla} (ids {sorted(ids)})" for tla, ids in sorted(collisions.items())),
+        )
+
     # Aggregate per-team stats
     stats: dict[str, dict[str, list[float]]] = {}
-    for tla in team_tlas:
-        fpl_name = TLA_TO_FPL.get(tla, tla)
-        stats[fpl_name] = {
-            "scored_home": [],
-            "scored_away": [],
-            "conceded_home": [],
-            "conceded_away": [],
-        }
-
     for m in matches:
-        home = TLA_TO_FPL.get(m["home_team_tla"], m["home_team_tla"])
-        away = TLA_TO_FPL.get(m["away_team_tla"], m["away_team_tla"])
-        if home not in stats or away not in stats:
-            continue
-        stats[home]["scored_home"].append(m["home_score"])
-        stats[home]["conceded_home"].append(m["away_score"])
-        stats[away]["scored_away"].append(m["away_score"])
-        stats[away]["conceded_away"].append(m["home_score"])
+        home_tla: str = m["home_team_tla"]
+        away_tla: str = m["away_team_tla"]
+
+        if home_tla not in collisions:
+            home = TLA_TO_FPL.get(home_tla, home_tla)
+            bucket = stats.setdefault(home, _empty_bucket())
+            bucket["scored_home"].append(m["home_score"])
+            bucket["conceded_home"].append(m["away_score"])
+
+        if away_tla not in collisions:
+            away = TLA_TO_FPL.get(away_tla, away_tla)
+            bucket = stats.setdefault(away, _empty_bucket())
+            bucket["scored_away"].append(m["away_score"])
+            bucket["conceded_away"].append(m["home_score"])
 
     performances: dict[str, TeamPerformance] = {}
     for team, data in stats.items():
@@ -200,6 +239,14 @@ async def generate_prior(client: FPLClient) -> dict[str, TeamRating]:
     # A promoted team the Championship data doesn't cover gets the flat estimate
     # individually, so partial coverage never promotes it to mid-table by omission.
     promoted = current_team_names - set(performances)
+    if promoted:
+        logger.info(
+            "No %s performance record for %s - treating as promoted and looking up "
+            "Championship data (a continuing team lands here if it fails to join, e.g. "
+            "a naming mismatch, rather than because it was actually promoted)",
+            source,
+            ", ".join(sorted(promoted)),
+        )
     promoted_performances = (
         await _championship_performances(promoted, prev_season_int) or {} if promoted else {}
     )
@@ -248,8 +295,7 @@ async def _prior_from_football_data(prev_season: int) -> dict[str, TeamPerforman
         if not matches:
             return None
 
-        tlas = {m["home_team_tla"] for m in matches} | {m["away_team_tla"] for m in matches}
-        return _matches_to_performances(matches, tlas)
+        return _matches_to_performances(matches)
 
     except Exception:  # noqa: BLE001 — graceful degradation
         logger.warning("Failed to generate prior from football-data.org", exc_info=True)
@@ -302,8 +348,7 @@ async def _championship_performances(
         if not matches:
             return None
 
-        tlas = {m["home_team_tla"] for m in matches} | {m["away_team_tla"] for m in matches}
-        championship = _matches_to_performances(matches, tlas)
+        championship = _matches_to_performances(matches)
 
         result: dict[str, TeamPerformance] = {}
         for team in promoted_teams:
@@ -311,6 +356,11 @@ async def _championship_performances(
             # TLAs through TLA_TO_FPL), so promoted teams are looked up directly.
             perf = championship.get(team)
             if perf is None:
+                logger.warning(
+                    "No Championship performance record for promoted team %s - "
+                    "falling back to the undifferentiated bottom-of-table estimate",
+                    team,
+                )
                 continue
             result[team] = TeamPerformance(
                 team=team,
