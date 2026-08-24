@@ -180,6 +180,69 @@ class TestFPLPriceScraper:
             assert call_email == "test@example.com"
             assert call_password == "secret"
 
+    async def test_scrape_honours_browser_override_env_vars(self):
+        """scrape() forwards FPL_BROWSER_* env vars to chromium.launch()."""
+        pytest.importorskip("playwright")
+        from unittest.mock import AsyncMock
+
+        env = {
+            "FPL_EMAIL": "test@example.com",
+            "FPL_PASSWORD": "secret",
+            "FPL_BROWSER_EXECUTABLE": "/opt/pw-browsers/chromium-1194/chrome-linux/chrome",
+            "FPL_BROWSER_CHANNEL": "chromium",
+            "FPL_BROWSER_ARGS": "--disable-features=EncryptedClientHello --foo=bar",
+            "FPL_BROWSER_IGNORE_CERTS": "1",
+        }
+        with patch.dict(os.environ, env):
+            scraper = FPLPriceScraper()
+            with patch.object(scraper, "_login", AsyncMock()), \
+                 patch.object(scraper, "_extract_finances", AsyncMock(
+                     return_value=TeamFinances(bank=0.0, free_transfers=0, squad=[], total_value=0.0))), \
+                 patch.object(scraper, "_fetch_my_team", AsyncMock(return_value=None)), \
+                 patch.object(scraper, "_accept_cookies", AsyncMock()), \
+                 patch("playwright.async_api.async_playwright") as mock_pw:
+                mock_p = AsyncMock()
+                mock_page = AsyncMock()
+                mock_page.url = "https://fantasy.premierleague.com/"
+                mock_pw.return_value.__aenter__.return_value = mock_p
+                mock_p.chromium.launch.return_value.new_context.return_value.new_page.return_value = mock_page
+
+                await scraper.scrape()
+
+        kwargs = mock_p.chromium.launch.call_args.kwargs
+        assert kwargs["executable_path"] == "/opt/pw-browsers/chromium-1194/chrome-linux/chrome"
+        assert kwargs["channel"] == "chromium"
+        assert "--disable-features=EncryptedClientHello" in kwargs["args"]
+        assert "--foo=bar" in kwargs["args"]
+        assert "--ignore-certificate-errors" in kwargs["args"]
+
+    async def test_scrape_omits_browser_override_when_env_unset(self):
+        """Without the override env vars, launch() gets no executable_path/channel."""
+        pytest.importorskip("playwright")
+        from unittest.mock import AsyncMock
+
+        clean = {"FPL_EMAIL": "test@example.com", "FPL_PASSWORD": "secret"}
+        with patch.dict(os.environ, clean, clear=True):
+            scraper = FPLPriceScraper()
+            with patch.object(scraper, "_login", AsyncMock()), \
+                 patch.object(scraper, "_extract_finances", AsyncMock(
+                     return_value=TeamFinances(bank=0.0, free_transfers=0, squad=[], total_value=0.0))), \
+                 patch.object(scraper, "_fetch_my_team", AsyncMock(return_value=None)), \
+                 patch.object(scraper, "_accept_cookies", AsyncMock()), \
+                 patch("playwright.async_api.async_playwright") as mock_pw:
+                mock_p = AsyncMock()
+                mock_page = AsyncMock()
+                mock_page.url = "https://fantasy.premierleague.com/"
+                mock_pw.return_value.__aenter__.return_value = mock_p
+                mock_p.chromium.launch.return_value.new_context.return_value.new_page.return_value = mock_page
+
+                await scraper.scrape()
+
+        kwargs = mock_p.chromium.launch.call_args.kwargs
+        assert "executable_path" not in kwargs
+        assert "channel" not in kwargs
+        assert kwargs["args"] == []
+
     async def test_scrape_missing_credentials(self):
         """scrape() raises ValueError when no credentials available."""
         pytest.importorskip("playwright")

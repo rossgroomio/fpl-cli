@@ -82,6 +82,13 @@ def sell_prices_command(ctx: click.Context, refresh: bool, visible: bool, output
             console.print("  1. Run: playwright install chromium")
             console.print("  2. Check credentials: `fpl credentials set`")
             console.print("  3. Try with --visible flag to see browser")
+            if "ERR_CONNECTION_RESET" in str(result) or "ERR_TUNNEL_CONNECTION_FAILED" in str(result):
+                console.print(
+                    "  4. Behind a TLS-inspecting proxy the browser's ClientHello may be"
+                    " rejected. Point at an older bundled browser, e.g."
+                    " FPL_BROWSER_EXECUTABLE=/path/to/chromium and"
+                    ' FPL_BROWSER_ARGS="--disable-features=EncryptedClientHello".'
+                )
             return
 
         finances = result

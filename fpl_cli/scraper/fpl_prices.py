@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shlex
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -190,7 +191,22 @@ class FPLPriceScraper:
             launch_args = []
             if os.getenv("FPL_BROWSER_IGNORE_CERTS"):
                 launch_args.append("--ignore-certificate-errors")
-            browser = await p.chromium.launch(headless=headless, args=launch_args)
+            # Extra flags for constrained environments, e.g. a TLS-inspecting proxy
+            # that rejects a modern ClientHello (see FPL_BROWSER_EXECUTABLE below).
+            if extra_args := os.getenv("FPL_BROWSER_ARGS"):
+                launch_args.extend(shlex.split(extra_args))
+
+            launch_kwargs = {"headless": headless, "args": launch_args}
+            # Let the environment pin a specific browser binary or channel. Some
+            # egress proxies RST any ClientHello over 512 bytes or carrying ECH,
+            # which the newest bundled Chrome always sends; pointing at an older
+            # bundled Chromium is the only way through.
+            if executable := os.getenv("FPL_BROWSER_EXECUTABLE"):
+                launch_kwargs["executable_path"] = executable
+            if channel := os.getenv("FPL_BROWSER_CHANNEL"):
+                launch_kwargs["channel"] = channel
+
+            browser = await p.chromium.launch(**launch_kwargs)
             context = await browser.new_context(
                 viewport={"width": 1280, "height": 800},
                 user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
