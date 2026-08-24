@@ -11,7 +11,7 @@ import pytest
 from fpl_cli.agents.analysis.transfer_eval import TransferEvalAgent
 from fpl_cli.agents.base import AgentStatus
 from fpl_cli.models.player import PlayerPosition, PlayerStatus
-from fpl_cli.services.player_scoring import (
+from fpl_cli.services.scoring import (
     VALUE_CEILING,
     VALUE_QUALITY_WEIGHTS,
     ScoringContext,

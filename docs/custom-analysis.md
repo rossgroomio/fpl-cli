@@ -24,7 +24,7 @@ Two distinct scoring families optimise for different decision horizons:
 
 ### QualityWeights System
 
-All formulas define weights via `StatWeight`-based `QualityWeights` instances. Each `StatWeight` has a `multiplier` and a `cap`, ensuring cross-formula comparability. Weight sets are defined as frozen instances in `player_scoring.py`.
+All formulas define weights via `StatWeight`-based `QualityWeights` instances. Each `StatWeight` has a `multiplier` and a `cap`, ensuring cross-formula comparability. Weight sets are defined as frozen instances in `fpl_cli/services/scoring/constants.py`.
 
 ### Shared Components
 
@@ -372,7 +372,7 @@ The same four families (target, differential, waiver, value) use analogous per-p
 
 ```mermaid
 flowchart TB
-    subgraph Scoring["player_scoring.py"]
+    subgraph Scoring["services/scoring/"]
         direction TB
         prepare["prepare_scoring_data() → ScoringData"]
         scoring_ctx["ScoringContext + build_scoring_context()"]
@@ -426,7 +426,7 @@ flowchart TB
     style TF fill:#f1f8e9,stroke:#33691e
 ```
 
-**player_scoring** - Central scoring engine. `prepare_scoring_data()` fetches teams, fixtures, next GW, creates TeamRatingsService, builds a `ScoringContext`, and returns everything in a `ScoringData` frozen dataclass. Optional flags control additional fetching: `include_players`, `include_understat`, `include_history`.
+**scoring** - Central scoring engine, a package under `fpl_cli/services/scoring/` with its public API re-exported from the package root (`constants` holds weights and ceilings, `signals` the form/consistency/npxG signals, `evaluation` the enrichment and evaluation types, `value_quality` / `ownership` / `single_gw` the scoring families, `display` the 0-100 normalisation, `shrinkage` the early-season adjustment, `data_prep` the shared fetching). `prepare_scoring_data()` fetches teams, fixtures, next GW, creates TeamRatingsService, builds a `ScoringContext`, and returns everything in a `ScoringData` frozen dataclass. Optional flags control additional fetching: `include_players`, `include_understat`, `include_history`, `include_prior` (Bayesian player priors) and `include_match_data` (Core-Insights consistency signals and fixture-adjusted npxG). `include_understat` and `include_prior` raise `ValueError` without `include_players`.
 
 - **Form trajectory.** `include_history` batch-fetches per-GW player history via `get_player_detail()` for all players with minutes > 0. `compute_form_trajectory()` calculates a median-filtered slope of recent GW points, returning a multiplier (0.8-1.2).
 - **Scoring context.** `ScoringContext` (frozen dataclass) holds pre-fetched data: team map, fixture map, ratings service, optional team form/understat. Built internally by `build_scoring_context()`.

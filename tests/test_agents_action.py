@@ -6,7 +6,7 @@ import pytest
 
 from fpl_cli.agents.action.waiver import WaiverAgent
 from fpl_cli.agents.base import AgentStatus
-from fpl_cli.services.player_scoring import ScoringContext, ScoringData
+from fpl_cli.services.scoring import ScoringContext, ScoringData
 from tests.conftest import (
     make_draft_league_entry,
     make_draft_player,

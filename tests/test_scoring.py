@@ -8,7 +8,7 @@ import pytest
 from fpl_cli.api.core_insights import MatchRecord
 from fpl_cli.models.player import PlayerPosition, PlayerStatus
 from fpl_cli.services.player_prior import PlayerPrior
-from fpl_cli.services.player_scoring import (
+from fpl_cli.services.scoring import (
     ATTACKING_POSITIONS,
     DEF_DIFFERENTIAL_CEILING,
     DEF_TARGET_CEILING,
@@ -35,10 +35,6 @@ from fpl_cli.services.player_scoring import (
     ScoringContext,
     ScoringData,
     StatWeight,
-    _assign_percentile_ranks,
-    _consistency_phase,
-    _matchup_bonus,
-    _ownership_ceiling_for,
     apply_adjusted_npxg,
     apply_consistency,
     build_adjusted_npxg_lookup,
@@ -70,6 +66,9 @@ from fpl_cli.services.player_scoring import (
     select_starting_xi,
     shrink_scores,
 )
+from fpl_cli.services.scoring.constants import _consistency_phase, _ownership_ceiling_for
+from fpl_cli.services.scoring.ownership import _matchup_bonus
+from fpl_cli.services.scoring.signals import _assign_percentile_ranks
 from tests.conftest import make_player
 
 # ---------------------------------------------------------------------------
@@ -1441,7 +1440,7 @@ class TestPrepareScoringData:
         client.get_players.return_value = players
 
         with patch(
-            "fpl_cli.services.player_scoring.build_understat_by_player_id",
+            "fpl_cli.services.scoring.data_prep.build_understat_by_player_id",
             new_callable=AsyncMock,
             return_value=mock_us,
         ) as mock_build_us:
@@ -2923,7 +2922,7 @@ class TestGKScoringPath:
 
     def test_understat_position_does_not_shadow_fpl_position(self):
         """us_match['position'] (understat taxonomy, e.g. 'F M S') must not leak into enrichment."""
-        from fpl_cli.services.player_scoring import build_player_evaluation, build_scoring_enrichment
+        from fpl_cli.services.scoring import build_player_evaluation, build_scoring_enrichment
 
         mid = make_player(
             id=996, web_name="MultiRole", team_id=1,
@@ -2941,7 +2940,7 @@ class TestGKScoringPath:
 
     def test_gk_xgc_quality_guards_zero_minutes(self):
         """GK enrichment: 0 minutes → gk_xgc_quality=0.0 (not 2.0 from inversion)."""
-        from fpl_cli.services.player_scoring import build_scoring_enrichment
+        from fpl_cli.services.scoring import build_scoring_enrichment
 
         gk = make_player(
             id=999, web_name="ZeroMin", team_id=1,
@@ -2954,7 +2953,7 @@ class TestGKScoringPath:
 
     def test_gk_cs_rate_no_div_zero(self):
         """GK enrichment: 0 appearances → no ZeroDivisionError (max(appearances, 1) guard)."""
-        from fpl_cli.services.player_scoring import build_scoring_enrichment
+        from fpl_cli.services.scoring import build_scoring_enrichment
 
         gk = make_player(
             id=998, web_name="ZeroApp", team_id=1,
@@ -2967,7 +2966,7 @@ class TestGKScoringPath:
 
     def test_gk_sample_ramp_attenuates_low_minutes(self):
         """GK with 90 minutes gets signals at 20% (90/450) of face value."""
-        from fpl_cli.services.player_scoring import build_scoring_enrichment
+        from fpl_cli.services.scoring import build_scoring_enrichment
 
         gk = make_player(
             id=997, web_name="OneApp", team_id=1,
@@ -2984,7 +2983,7 @@ class TestGKScoringPath:
 
     def test_gk_sample_ramp_full_at_450_minutes(self):
         """GK with 450+ minutes gets full signal values (ramp = 1.0)."""
-        from fpl_cli.services.player_scoring import build_scoring_enrichment
+        from fpl_cli.services.scoring import build_scoring_enrichment
 
         gk = make_player(
             id=996, web_name="FiveApp", team_id=1,
@@ -3002,7 +3001,7 @@ class TestGKScoringPath:
         """Regression guard: DEF path (without_xgi) is attenuated by POSITION_SCORE_MULTIPLIER[DEF]
         and normalised against DEF_TARGET_CEILING (empirical DEF cap, not MID-anchored × 0.85).
         """
-        from tests.test_player_scoring import TestCharacterisationSnapshot
+        from tests.test_scoring import TestCharacterisationSnapshot
         snap = TestCharacterisationSnapshot()
         def_eval, _ = snap._build_def()
         assert calculate_target_score(def_eval, next_gw_id=20) == 66
@@ -3016,7 +3015,7 @@ class TestGKScoringPath:
         attenuated = 19.59 * 0.7 = 13.71
         normalise(13.71, 18.83) = 73-75
         """
-        from fpl_cli.services.player_scoring import compute_quality_value
+        from fpl_cli.services.scoring import compute_quality_value
 
         gk = make_player(
             id=301, web_name="ValGK", team_id=3,
@@ -3030,7 +3029,7 @@ class TestGKScoringPath:
 
     def test_gk_value_uses_gk_ceiling_not_value_ceiling(self):
         """GK value score normalised against GK_VALUE_CEILING, not VALUE_CEILING."""
-        from fpl_cli.services.player_scoring import compute_quality_value
+        from fpl_cli.services.scoring import compute_quality_value
 
         gk = make_player(
             id=302, web_name="CeilGK", team_id=3,
@@ -4074,7 +4073,7 @@ class TestPositionMultiplierLock:
 
     def test_constant_values_locked(self):
         """Editing POSITION_SCORE_MULTIPLIER requires an explicit test update."""
-        from fpl_cli.services.player_scoring import POSITION_SCORE_MULTIPLIER
+        from fpl_cli.services.scoring import POSITION_SCORE_MULTIPLIER
         assert POSITION_SCORE_MULTIPLIER == {
             "FWD": 1.0,
             "MID": 1.0,
@@ -4169,7 +4168,7 @@ class TestCeilingValidationBands:
         )
 
     def _score(self, player, *, next_gw_id=20):
-        from fpl_cli.services.player_scoring import compute_quality_value
+        from fpl_cli.services.scoring import compute_quality_value
         score, _ = compute_quality_value(
             player, us_match={}, next_gw_id=next_gw_id, team_short="LIV",
         )
@@ -4197,7 +4196,7 @@ class TestCeilingValidationBands:
         position multiplier landed on the multi-GW path, elite GKs were
         out-ranking elite outfielders in the top-N raw_quality table.
         """
-        from fpl_cli.services.player_scoring import compute_quality_value
+        from fpl_cli.services.scoring import compute_quality_value
         fwd_raw = compute_quality_value(
             self._elite_fwd(), us_match={}, next_gw_id=20, team_short="LIV", raw=True,
         )
@@ -4265,7 +4264,7 @@ class TestPositionalDistributionGuard:
         return pool
 
     def test_top_15_has_at_most_three_gks(self):
-        from fpl_cli.services.player_scoring import compute_quality_value
+        from fpl_cli.services.scoring import compute_quality_value
         pool = self._build_pool()
         scored = [
             (p, compute_quality_value(
@@ -4310,7 +4309,7 @@ class TestUnifiedQualityScoreDisplay:
         reader can verify the two surfaces stay aligned without spinning
         up the solver.
         """
-        from fpl_cli.services.player_scoring import (
+        from fpl_cli.services.scoring import (
             compute_quality_value,
             normalise_score,
             pick_display_ceiling,
@@ -4323,7 +4322,7 @@ class TestUnifiedQualityScoreDisplay:
     @staticmethod
     def _value_display(player: Any) -> int:
         """Reproduce ``fpl player`` / ``fpl stats --value`` ``quality_score``."""
-        from fpl_cli.services.player_scoring import compute_quality_value
+        from fpl_cli.services.scoring import compute_quality_value
         score, _ = compute_quality_value(
             player, us_match={}, next_gw_id=20, team_short="LIV",
         )
@@ -4352,7 +4351,7 @@ class TestUnifiedQualityScoreDisplay:
         Pin the asymmetry so removing it (splitting single-GW lineup
         ceilings per position) is a conscious decision, not a silent drift.
         """
-        from fpl_cli.services.player_scoring import STARTING_XI_CEILING, pick_display_ceiling
+        from fpl_cli.services.scoring import STARTING_XI_CEILING, pick_display_ceiling
         for pos in ("GK", "DEF", "MID", "FWD"):
             assert pick_display_ceiling(pos, horizon=1) == STARTING_XI_CEILING
 
@@ -4378,7 +4377,7 @@ class TestDefValueEndToEnd:
 
     def test_elite_def_value_pin(self):
         """Pin the post-fix number for an elite DEF on the VALUE path."""
-        from fpl_cli.services.player_scoring import compute_quality_value
+        from fpl_cli.services.scoring import compute_quality_value
         elite = self._def_player(form=6.0, ppg=5.0)
         score, _ = compute_quality_value(
             elite, us_match={}, next_gw_id=20, team_short="LIV",
@@ -4396,7 +4395,7 @@ class TestDefValueEndToEnd:
         two disagree pins that the regression is structurally absent, not
         just numerically hidden behind a matching constant.
         """
-        from fpl_cli.services.player_scoring import (
+        from fpl_cli.services.scoring import (
             VALUE_CEILING,
             compute_quality_value,
             normalise_score,
@@ -4423,12 +4422,12 @@ class TestPickDisplayCeilingRouting:
     """Unit test ``pick_display_ceiling`` dispatch across position + horizon."""
 
     def test_horizon_1_is_starting_xi(self):
-        from fpl_cli.services.player_scoring import STARTING_XI_CEILING, pick_display_ceiling
+        from fpl_cli.services.scoring import STARTING_XI_CEILING, pick_display_ceiling
         for pos in ("GK", "DEF", "MID", "FWD"):
             assert pick_display_ceiling(pos, horizon=1) == STARTING_XI_CEILING
 
     def test_horizon_multi_uses_value_family(self):
-        from fpl_cli.services.player_scoring import (
+        from fpl_cli.services.scoring import (
             DEF_VALUE_CEILING,
             GK_VALUE_CEILING,
             VALUE_CEILING,

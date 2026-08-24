@@ -8,7 +8,7 @@ import pytest
 from fpl_cli.agents.analysis.captain import CaptainAgent
 from fpl_cli.agents.base import AgentStatus
 from fpl_cli.models.player import PlayerPosition
-from fpl_cli.services.player_scoring import ScoringContext
+from fpl_cli.services.scoring import ScoringContext
 from fpl_cli.services.team_ratings import TeamRating, TeamRatingsService
 from tests.conftest import make_fixture, make_player, make_team
 

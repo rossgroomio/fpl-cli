@@ -80,7 +80,7 @@ def _run_allocate(squad_result, args=None, scoring_data=None, *, return_mocks=Fa
         stack.enter_context(patch("fpl_cli.cli._context.load_settings", return_value=settings))
         stack.enter_context(patch("fpl_cli.api.fpl.FPLClient", return_value=mock_fpl))
         stack.enter_context(patch(
-            "fpl_cli.services.player_scoring.prepare_scoring_data",
+            "fpl_cli.services.scoring.prepare_scoring_data",
             new=AsyncMock(return_value=scoring_data),
         ))
         mock_score = stack.enter_context(patch(
@@ -420,7 +420,7 @@ class TestAllocateCommand:
 
     def test_horizon1_uses_starting_xi_ceiling(self):
         """--horizon 1 JSON output normalises quality using STARTING_XI_CEILING into single_gw_score."""
-        from fpl_cli.services.player_scoring import STARTING_XI_CEILING, normalise_score
+        from fpl_cli.services.scoring import STARTING_XI_CEILING, normalise_score
 
         sr = _make_squad_result()
         result = _run_allocate(sr, args=["--format", "json", "--horizon", "1"])
@@ -441,7 +441,7 @@ class TestAllocateCommand:
         replacing MID-anchored VALUE_CEILING * 0.85 — exercising only
         ``selected_players[0]`` (always a GK) would miss that path.
         """
-        from fpl_cli.services.player_scoring import normalise_score, pick_display_ceiling
+        from fpl_cli.services.scoring import normalise_score, pick_display_ceiling
 
         sr = _make_squad_result()
         result = _run_allocate(sr, args=["--format", "json"])
@@ -517,7 +517,7 @@ class TestAllocateCommand:
             stack.enter_context(patch("fpl_cli.cli._context.load_settings", return_value=settings))
             stack.enter_context(patch("fpl_cli.api.fpl.FPLClient", return_value=mock_fpl))
             stack.enter_context(patch(
-                "fpl_cli.services.player_scoring.prepare_scoring_data",
+                "fpl_cli.services.scoring.prepare_scoring_data",
                 new=AsyncMock(return_value=scoring_data),
             ))
             stack.enter_context(patch(

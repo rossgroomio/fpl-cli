@@ -1,7 +1,7 @@
 """Tests for compute_rolling_pts_per_m."""
 from __future__ import annotations
 
-from fpl_cli.services.player_scoring import compute_rolling_pts_per_m
+from fpl_cli.services.scoring import compute_rolling_pts_per_m
 
 
 def _make_history(entries: list[tuple[int, int, int]], fixture_start: int = 100) -> list[dict]:

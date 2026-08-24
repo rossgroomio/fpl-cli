@@ -11,7 +11,7 @@ from fpl_cli.agents.common import get_actual_squad_picks
 from fpl_cli.api.fpl import FPLClient
 from fpl_cli.models.player import Player
 from fpl_cli.models.types import CaptainCandidate
-from fpl_cli.services.player_scoring import (
+from fpl_cli.services.scoring import (
     ConsistencySignals,
     ScoringContext,
     apply_adjusted_npxg,

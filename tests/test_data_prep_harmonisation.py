@@ -7,7 +7,7 @@ Validates positional FDR numeric range compatibility with existing thresholds.
 from __future__ import annotations
 
 from fpl_cli.models.player import PlayerPosition
-from fpl_cli.services.player_scoring import (
+from fpl_cli.services.scoring import (
     FDR_EASY,
     FDR_MEDIUM,
     FixtureMatchup,

@@ -269,7 +269,7 @@ class TestScoreAllPlayers:
 
 def _make_sgw_matchup(*, opponent_short="CHE", is_home=True, matchup_score=4.0):
     """Build a FixtureMatchup for SGW tests."""
-    from fpl_cli.services.player_scoring import FixtureMatchup
+    from fpl_cli.services.scoring import FixtureMatchup
 
     return FixtureMatchup(
         opponent_short=opponent_short,
@@ -832,7 +832,7 @@ class TestSolveSquad:
 
     def test_valid_formation(self):
         """Exactly 11 starters in a valid formation."""
-        from fpl_cli.services.player_scoring import VALID_FORMATIONS
+        from fpl_cli.services.scoring import VALID_FORMATIONS
 
         players, coeffs = _build_player_pool()
         result = solve_squad(players, coeffs, budget=100.0)
