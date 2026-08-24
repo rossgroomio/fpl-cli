@@ -9,6 +9,7 @@ import pytest
 from fpl_cli.services.team_ratings import TeamRating
 from fpl_cli.services.team_ratings_prior import (
     BLENDING_CUTOFF_GW,
+    PRIOR_CACHE_VERSION,
     REGRESSION_CONSTANT,
     blend_with_prior,
     generate_prior,
@@ -162,14 +163,39 @@ class TestGeneratePrior:
 
         assert result["ARS"].atk_home == 2  # From cache
 
-    async def test_cache_from_older_version_is_discarded(self, mock_client, tmp_path):
+    @pytest.mark.parametrize(
+        "stale_metadata",
+        [
+            # Pre-versioning cache: same team set, no version stamp.
+            {"source": "prior_understat_xg", "teams": ["ARS", "MCI"]},
+            # Stamped with the previous version. This is the case a version
+            # bump exists for: the cache holds ratings the current code would
+            # never produce, yet keys on the same team names, so the team-set
+            # check alone would serve it for the rest of the season.
+            {
+                "version": PRIOR_CACHE_VERSION - 1,
+                "source": "prior_understat_xg",
+                "teams": ["ARS", "MCI"],
+            },
+            # The uniform 4.0 table the old code cached under this source. No
+            # longer written, but existing copies must not be served either.
+            {
+                "version": PRIOR_CACHE_VERSION - 1,
+                "source": "prior_default",
+                "teams": ["ARS", "MCI"],
+            },
+        ],
+        ids=["unversioned", "previous_version", "previous_version_flat_table"],
+    )
+    async def test_cache_from_older_version_is_discarded(
+        self, mock_client, tmp_path, stale_metadata
+    ):
         """A cache written by an older methodology is regenerated, not served."""
         import yaml
 
         cache_path = tmp_path / "prior.yaml"
         cached = {
-            # Pre-versioning cache: same team set, no version stamp.
-            "metadata": {"source": "prior_understat_xg", "teams": ["ARS", "MCI"]},
+            "metadata": stale_metadata,
             "ratings": {
                 "ARS": {"atk_home": 1, "atk_away": 1, "def_home": 1, "def_away": 1},
                 "MCI": {"atk_home": 1, "atk_away": 1, "def_home": 1, "def_away": 1},

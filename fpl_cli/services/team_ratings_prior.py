@@ -33,7 +33,14 @@ BLENDING_CUTOFF_GW = 12
 # Bump whenever the prior methodology changes: a cache written by an older
 # version passes the team-set check below yet holds ratings the new code
 # would never produce, so it must be discarded rather than served.
-PRIOR_CACHE_VERSION = 2
+# 3: the tla join fixes (NOT -> NFO via TLA_TO_FPL, per-side exclusion on a
+# colliding tla), plus the removal of the uniform 4.0 fallback. A v2 cache is
+# the exact shape those changes exist to stop being used -- Forest rated as a
+# promoted side, two Sheffield clubs pooled, or a flat table saved under
+# `prior_default`. All three key on the current team names, so the team-set
+# check below sees zero mismatches and would serve them for the rest of the
+# season.
+PRIOR_CACHE_VERSION = 3
 
 # Championship-to-PL adjustment. A promoted side scores less in the PL against
 # better defences, and concedes more against better attacks, so the two
