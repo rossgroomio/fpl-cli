@@ -244,7 +244,12 @@ class TestNormaliseScore:
         assert normalise_score(-100.0, 31.5) == 0
 
     def test_just_below_zero_clamped(self):
-        assert normalise_score(-0.01, 31.5) == 0
+        """-0.2 / 31.5 * 100 rounds to -1, so this fails without the max(0, ...).
+
+        A smaller magnitude would not exercise the clamp at all: -0.01 rounds
+        to 0 on its own and passes against the pre-fix body too.
+        """
+        assert normalise_score(-0.2, 31.5) == 0
 
 
 class TestOwnershipCeilingFor:

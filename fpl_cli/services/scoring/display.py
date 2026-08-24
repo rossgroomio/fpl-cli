@@ -18,12 +18,17 @@ def normalise_score(raw: float, ceiling: float) -> int:
     negative would be printed verbatim (an injured player at a club the squad
     is already three-deep in scores -23 on the waiver family).
 
-    Clamping is safe for ordering because the scoring engine sorts on the raw
-    scores it keeps alongside this one (``lineup_score_raw``,
-    ``priority_score_raw``), not on the display value. The one place that does
-    order on a normalised score, the waiver list, now ties every
-    negative-scoring player at 0 — they are all unpickable, and a ranking
-    derived from the relative size of their penalties was never meaningful.
+    Selection is unaffected: the scoring engine orders on the raw scores it
+    keeps alongside this one (``lineup_score_raw``, ``priority_score_raw``),
+    never on the display value.
+
+    The waiver list is the one consumer that does order on a normalised score,
+    and the clamp only ties players there from GW10. Below that cutoff
+    ``apply_shrinkage`` runs on ``waiver_score`` between scoring and sorting
+    and pulls a clamped 0 toward the position mean, so the tie does not
+    survive. That shrinkage hoists unavailable players either way — it lifted
+    the negatives too, just less far — so it is tracked separately in #122
+    rather than worked around here.
     """
     return max(0, min(round(raw / ceiling * 100), 100))
 
