@@ -743,6 +743,7 @@ Run `fpl init` to configure interactively. Only set values in `settings.yaml` th
 
 ```bash
 fpl doctor                      # Check IDs, data files, and directories
+fpl doctor --providers          # Probe the external data sources instead
 fpl doctor --format json        # Machine-readable report (for agents/scripts)
 ```
 
@@ -766,6 +767,17 @@ Rolling a setup into a new season silently invalidates IDs and per-team files: a
 **Environment** — which directory each of config/data/cache resolved to and whether an `FPL_CLI_*` override is in effect, plus whether `settings.yaml` exists.
 
 Each finding is classified as **broken** (wrong answers now — fix it today), **stale** (self-corrects or needs one routine refresh), **skipped** (not configured/present), or **unchecked** (API unreachable). Exits non-zero when anything is broken, so it can gate scripts.
+
+**`--providers`** checks the external data sources instead of the local setup. None of them version anything, and the tool degrades gracefully everywhere, so upstream drift otherwise surfaces as plausible but wrong output — a renamed stat field zeroes every player's xG without an error. Each probe asserts shape and volume, not just reachability:
+
+- **FPL API** — bootstrap has 20 teams / a sane player count / 38 gameweeks, and every stat field the tool reads is present in the raw data (a missing one would silently read as 0)
+- **Draft API** — bootstrap resolves with 20 teams and a sane player count
+- **vaastav dataset** — each historical season's `players_raw.csv` exists upstream, covers the columns the parser reads, and clears a row-count floor
+- **Core-Insights dataset** — same for `players.csv` and `playerstats.csv` (the sole current-season source), plus the per-gameweek folder layout at the latest finished gameweek — a folder missing only for the newest gameweek is a publishing lag (stale), missing for two in a row is a layout change (broken)
+- **Understat** — league data is non-empty, and every current club's name resolves to a team in Understat's own data (an unresolved club silently loses xG enrichment); early in the season an unresolved name is reported as stale, since Understat only lists a club once it has ingested a match for it
+- **football-data.org** — configured, standings has 20 rows, and every served TLA maps onto a live FPL short name (a failed join here doesn't produce a missing rating — it silently re-rates the club as promoted)
+
+The same classification applies, and transient unreachability is always **unchecked**, never broken. A scheduled CI job runs `fpl doctor --providers --format json` weekly and fails only on broken, so provider drift with no commit behind it still surfaces within days.
 
 ### Directories
 

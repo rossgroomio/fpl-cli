@@ -1,6 +1,7 @@
 """Tests for CoreInsightsClient CSV fetching and parsing."""
 from __future__ import annotations
 
+import logging
 from datetime import timedelta
 from pathlib import Path
 from unittest.mock import patch
@@ -787,3 +788,71 @@ class TestFactory:
             fetcher = make_core_insights_fetcher()
         assert str(fetcher.cache_dir).endswith("core-insights")
         assert fetcher.base_url == BASE_URL
+
+
+class TestContractTripwires:
+    """Upstream schema drift degrades with a warning, never silently (#97)."""
+
+    @respx.mock
+    async def test_players_csv_missing_column_warns_and_degrades(self, tmp_path, caplog):
+        drifted = PLAYERS_CSV.replace("player_id", "fpl_id")
+        respx.get(f"{BASE}/{CI_SEASON}/players.csv").mock(
+            return_value=Response(200, text=drifted)
+        )
+        with caplog.at_level(logging.WARNING):
+            async with CoreInsightsClient(_make_fetcher(tmp_path)) as client:
+                lookup = await client._fetch_player_lookup()
+
+        assert lookup == {}
+        assert "players.csv" in caplog.text
+        assert "player_id" in caplog.text
+
+    @respx.mock
+    async def test_playerstats_missing_column_warns_and_degrades(self, tmp_path, caplog):
+        respx.get(f"{BASE}/{CI_SEASON}/players.csv").mock(
+            return_value=Response(200, text=PLAYERS_CSV)
+        )
+        drifted = PLAYERSTATS_CSV.replace(",gw,", ",gameweek,")
+        respx.get(f"{BASE}/{CI_SEASON}/playerstats.csv").mock(
+            return_value=Response(200, text=drifted)
+        )
+        with caplog.at_level(logging.WARNING):
+            async with CoreInsightsClient(_make_fetcher(tmp_path)) as client:
+                data = await client._fetch_season_data()
+
+        assert all(rows == [] for rows in data.values())
+        assert "playerstats.csv" in caplog.text
+        assert "gw" in caplog.text
+
+    @respx.mock
+    async def test_playerstats_rows_unmatched_by_lookup_warn(self, tmp_path, caplog):
+        # Rows read but none survive (every id is missing from players.csv):
+        # non-empty input, empty output — the silent shape #97 exists to name.
+        respx.get(f"{BASE}/{CI_SEASON}/players.csv").mock(
+            return_value=Response(200, text=PLAYERS_CSV)
+        )
+        respx.get(f"{BASE}/{CI_SEASON}/playerstats.csv").mock(
+            return_value=Response(200, text=PLAYERSTATS_ORPHAN_CSV)
+        )
+        with caplog.at_level(logging.WARNING):
+            async with CoreInsightsClient(_make_fetcher(tmp_path)) as client:
+                data = await client._fetch_season_data()
+
+        assert all(rows == [] for rows in data.values())
+        assert "none could be parsed" in caplog.text
+
+    @respx.mock
+    async def test_healthy_files_emit_no_contract_warning(self, tmp_path, caplog):
+        respx.get(f"{BASE}/{CI_SEASON}/players.csv").mock(
+            return_value=Response(200, text=PLAYERS_CSV)
+        )
+        respx.get(f"{BASE}/{CI_SEASON}/playerstats.csv").mock(
+            return_value=Response(200, text=PLAYERSTATS_CSV)
+        )
+        with caplog.at_level(logging.WARNING):
+            async with CoreInsightsClient(_make_fetcher(tmp_path)) as client:
+                data = await client._fetch_season_data()
+
+        assert any(rows for rows in data.values())
+        assert "missing expected column" not in caplog.text
+        assert "none could be parsed" not in caplog.text

@@ -38,3 +38,27 @@ jobs:
 
       - name: Build package
         run: pip install hatch && hatch build
+
+  provider-probe:
+    # The hermetic test suite pins our assumption of each provider's schema,
+    # not the schema -- upstream can drift with no commit behind it, which is
+    # exactly what the Monday cron exists for. This job is the one place CI
+    # talks to the live providers: it fails only on "broken" (shape drift),
+    # never on transient unreachability, which the probe reports as unchecked.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install package
+        run: pip install .
+
+      - name: Probe providers
+        env:
+          # Optional: without it the football-data checks report skipped.
+          FOOTBALL_DATA_API_KEY: ${{ secrets.FOOTBALL_DATA_API_KEY }}
+        run: fpl doctor --providers --format json

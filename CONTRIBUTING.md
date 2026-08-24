@@ -25,6 +25,14 @@ the shared `stub_scoring_network_seams` fixture in `tests/conftest.py`
 and the autouse fixtures in `tests/test_cli_player.py` show the pattern. A test that genuinely needs
 a socket opts out with `@pytest.mark.enable_socket`.
 
+Because the suite is hermetic, it pins fpl-cli's *assumption* of each
+external provider's schema, not the schema itself. A scheduled
+`provider-probe` job in `.github/workflows/ci.yml` covers that gap: on
+the weekly cron (and on manual dispatch) it runs
+`fpl doctor --providers --format json` against the live providers and
+fails only on "broken" (shape drift), never on transient
+unreachability. It does not run on PRs.
+
 A separate `PR Title` check (`.github/workflows/pr-title.yml`) fails the
 PR when the title doesn't follow the conventional-commit format below.
 

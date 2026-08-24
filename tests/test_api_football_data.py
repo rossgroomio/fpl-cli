@@ -121,3 +121,17 @@ async def test_get_standings_returns_empty_when_not_configured():
         result = await c.get_standings()
 
     assert result == []
+
+
+async def test_get_standings_raise_on_error_propagates_http_failure(client):
+    # The doctor's provider probe needs transient unreachability kept distinct
+    # from shape drift, which the default empty-list degradation conflates.
+    client._http = AsyncMock()
+    client._http.get.side_effect = httpx.HTTPStatusError(
+        "Server Error",
+        request=httpx.Request("GET", "https://example.com"),
+        response=httpx.Response(500),
+    )
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await client.get_standings(raise_on_error=True)

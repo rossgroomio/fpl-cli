@@ -39,8 +39,14 @@ class FootballDataClient:
         """Check if the API key is configured."""
         return bool(self.api_key)
 
-    async def get_standings(self) -> list[dict[str, Any]]:
+    async def get_standings(self, *, raise_on_error: bool = False) -> list[dict[str, Any]]:
         """Fetch Premier League standings.
+
+        Args:
+            raise_on_error: Re-raise HTTP failures instead of degrading to an
+                empty list. The provider probe in `fpl doctor` needs
+                "unreachable" (transient) kept distinct from "reachable but
+                the wrong shape" (drift); commands keep the default.
 
         Returns:
             List of dicts with keys: position, name, short_name, played,
@@ -61,6 +67,8 @@ class FootballDataClient:
             response.raise_for_status()
             data = response.json()
         except httpx.HTTPError as e:
+            if raise_on_error:
+                raise
             logger.warning("Failed to fetch standings from football-data.org: %s", e)
             return []
 
