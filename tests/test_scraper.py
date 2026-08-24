@@ -130,8 +130,10 @@ class TestFPLPriceScraper:
 
         Returns (mock_login, context manager) - use as:
             mock_login, ctx = self._mock_playwright_stack(scraper)
-            with ctx:
+            with ctx() as mock_p:
                 await scraper.scrape()
+        `mock_p` is the mocked `playwright.async_api` root object - inspect
+        `mock_p.chromium.launch.call_args.kwargs` to assert on launch() args.
         """
         from contextlib import contextmanager
         from unittest.mock import AsyncMock
@@ -156,7 +158,7 @@ class TestFPLPriceScraper:
                 mock_p.chromium.launch.return_value = AsyncMock()
                 mock_p.chromium.launch.return_value.new_context.return_value = AsyncMock()
                 mock_p.chromium.launch.return_value.new_context.return_value.new_page.return_value = mock_page
-                yield
+                yield mock_p
 
         return mock_login, ctx
 
@@ -179,6 +181,117 @@ class TestFPLPriceScraper:
             _, call_email, call_password = mock_login.call_args[0]
             assert call_email == "test@example.com"
             assert call_password == "secret"
+
+    async def test_scrape_honours_browser_executable_env_var(self):
+        """scrape() forwards FPL_BROWSER_EXECUTABLE/ARGS/IGNORE_CERTS to chromium.launch()."""
+        pytest.importorskip("playwright")
+
+        env = {
+            "FPL_EMAIL": "test@example.com",
+            "FPL_PASSWORD": "secret",
+            "FPL_BROWSER_EXECUTABLE": "/opt/pw-browsers/chromium-1194/chrome-linux/chrome",
+            "FPL_BROWSER_ARGS": "--disable-features=EncryptedClientHello --foo=bar",
+            "FPL_BROWSER_IGNORE_CERTS": "1",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            scraper = FPLPriceScraper()
+            _, ctx = self._mock_playwright_stack(scraper)
+            with ctx() as mock_p:
+                await scraper.scrape()
+
+        kwargs = mock_p.chromium.launch.call_args.kwargs
+        assert kwargs["executable_path"] == "/opt/pw-browsers/chromium-1194/chrome-linux/chrome"
+        assert "channel" not in kwargs
+        assert "--disable-features=EncryptedClientHello" in kwargs["args"]
+        assert "--foo=bar" in kwargs["args"]
+        assert "--ignore-certificate-errors" in kwargs["args"]
+
+    async def test_scrape_honours_browser_channel_env_var(self):
+        """scrape() forwards FPL_BROWSER_CHANNEL to chromium.launch() when set alone."""
+        pytest.importorskip("playwright")
+
+        env = {
+            "FPL_EMAIL": "test@example.com",
+            "FPL_PASSWORD": "secret",
+            "FPL_BROWSER_CHANNEL": "chromium",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            scraper = FPLPriceScraper()
+            _, ctx = self._mock_playwright_stack(scraper)
+            with ctx() as mock_p:
+                await scraper.scrape()
+
+        kwargs = mock_p.chromium.launch.call_args.kwargs
+        assert kwargs["channel"] == "chromium"
+        assert "executable_path" not in kwargs
+
+    async def test_scrape_omits_browser_override_when_env_unset(self):
+        """Without the override env vars, launch() gets no executable_path/channel."""
+        pytest.importorskip("playwright")
+
+        clean = {"FPL_EMAIL": "test@example.com", "FPL_PASSWORD": "secret"}
+        with patch.dict(os.environ, clean, clear=True):
+            scraper = FPLPriceScraper()
+            _, ctx = self._mock_playwright_stack(scraper)
+            with ctx() as mock_p:
+                await scraper.scrape()
+
+        kwargs = mock_p.chromium.launch.call_args.kwargs
+        assert "executable_path" not in kwargs
+        assert "channel" not in kwargs
+        assert kwargs["args"] == []
+
+    async def test_scrape_rejects_conflicting_executable_and_channel_env_vars(self):
+        """FPL_BROWSER_EXECUTABLE and FPL_BROWSER_CHANNEL together raise instead of
+        silently dropping the channel (Playwright ignores channel once executable_path
+        is set)."""
+        pytest.importorskip("playwright")
+
+        env = {
+            "FPL_EMAIL": "test@example.com",
+            "FPL_PASSWORD": "secret",
+            "FPL_BROWSER_EXECUTABLE": "/opt/pw-browsers/chromium-1194/chrome-linux/chrome",
+            "FPL_BROWSER_CHANNEL": "chromium",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            scraper = FPLPriceScraper()
+            with pytest.raises(ValueError, match="mutually exclusive"):
+                await scraper.scrape()
+
+    async def test_scrape_raises_clear_error_for_malformed_browser_args(self):
+        """A quoting mistake in FPL_BROWSER_ARGS names the env var, not a bare
+        shlex error."""
+        pytest.importorskip("playwright")
+
+        env = {
+            "FPL_EMAIL": "test@example.com",
+            "FPL_PASSWORD": "secret",
+            "FPL_BROWSER_ARGS": "--foo='bar",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            scraper = FPLPriceScraper()
+            with pytest.raises(ValueError, match="FPL_BROWSER_ARGS is not valid shell syntax"):
+                await scraper.scrape()
+
+    async def test_scrape_preserves_original_error_when_close_also_fails(self):
+        """A failure while closing the browser must not mask the scrape's real error."""
+        pytest.importorskip("playwright")
+        from unittest.mock import AsyncMock
+
+        env = {"FPL_EMAIL": "test@example.com", "FPL_PASSWORD": "secret"}
+        with patch.dict(os.environ, env, clear=True):
+            scraper = FPLPriceScraper()
+            with patch.object(
+                scraper, "_login", AsyncMock(side_effect=RuntimeError("net::ERR_CONNECTION_RESET"))
+            ), patch("playwright.async_api.async_playwright") as mock_pw:
+                mock_p = AsyncMock()
+                mock_browser = AsyncMock()
+                mock_browser.close = AsyncMock(side_effect=OSError("close also failed"))
+                mock_pw.return_value.__aenter__.return_value = mock_p
+                mock_p.chromium.launch.return_value = mock_browser
+
+                with pytest.raises(RuntimeError, match="ERR_CONNECTION_RESET"):
+                    await scraper.scrape()
 
     async def test_scrape_missing_credentials(self):
         """scrape() raises ValueError when no credentials available."""

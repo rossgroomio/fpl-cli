@@ -429,6 +429,20 @@ fpl credentials set          # Store FPL email + password in system keyring
 
 **Troubleshooting (TLS-inspecting proxies):** If `--refresh` fails with `ERR_CERT_AUTHORITY_INVALID` (corporate MITM proxy, Zscaler/Netskope, or sandboxed cloud environments like Claude Code on the web), set `FPL_BROWSER_IGNORE_CERTS=1`. Chromium uses its own cert store and ignores `SSL_CERT_FILE` / `REQUESTS_CA_BUNDLE`, so this flag tells it to skip cert validation on launch. Opt-in only — leave unset on trusted networks.
 
+If instead it fails with `ERR_CONNECTION_RESET` or `ERR_TUNNEL_CONNECTION_FAILED` during the TLS handshake, the proxy is rejecting the browser's ClientHello itself (some legacy middleboxes RST any hello over 512 bytes or one carrying the Encrypted-ClientHello extension, which the newest bundled Chrome always sends). Point the scraper at a browser that emits a smaller, ECH-free hello:
+
+- `FPL_BROWSER_EXECUTABLE` — absolute path to a browser binary (e.g. an older bundled Chromium such as `chromium-1194` under Playwright's browsers path). Mutually exclusive with `FPL_BROWSER_CHANNEL`.
+- `FPL_BROWSER_CHANNEL` — a Playwright channel (`chrome`, `chromium`, `msedge`) instead of an explicit path. Mutually exclusive with `FPL_BROWSER_EXECUTABLE` — setting both raises an error rather than silently picking one.
+- `FPL_BROWSER_ARGS` — extra launch flags, space-separated (e.g. `--disable-features=EncryptedClientHello`). Parsed with POSIX shell-quoting rules, even on Windows — escape backslashes in a path (`C:\\Users\\foo`) or use forward slashes.
+
+```bash
+export FPL_BROWSER_EXECUTABLE=/path/to/chromium-1194/chrome-linux/chrome
+export FPL_BROWSER_ARGS="--disable-features=EncryptedClientHello"
+fpl squad sell-prices --refresh
+```
+
+Disabling ECH may additionally require a browser-level managed policy (`EncryptedClientHelloEnabled: false`) since the flag alone does not always strip it. All four env vars are opt-in — leave them unset on trusted networks.
+
 Output: free transfers, bank balance, squad sell prices, total team value. Data cached to `team_finances.json` in the data directory (see [Directories](#directories)) for 12 hours.
 
 **Wildcard / Free Hit workflow:** Use `--format json` to export sell prices, then pass to `fpl allocate --sell-prices` for accurate budgeting:
