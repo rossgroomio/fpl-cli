@@ -115,18 +115,26 @@ class TestGeneratePrior:
         assert "ARS" in result
         assert "MCI" in result
 
-    async def test_ultimate_fallback_to_default_4(self, mock_client, tmp_path):
-        """When all sources fail, all teams get default rating 4."""
+    async def test_no_source_data_returns_no_prior(self, mock_client, tmp_path):
+        """When every source fails there is no prior -- not a uniform 4.0 table.
+
+        A flat table would be indistinguishable from a real prior: callers
+        would save it as "estimated ratings" and blend genuine current form
+        towards it. An empty mapping is falsy, so each caller reports the
+        no-data case instead.
+        """
+        cache_path = tmp_path / "prior.yaml"
         with (
-            patch("fpl_cli.services.team_ratings_prior.prior_config_path", return_value=tmp_path / "prior.yaml"),
+            patch("fpl_cli.services.team_ratings_prior.prior_config_path", return_value=cache_path),
             patch("fpl_cli.services.team_ratings_prior._prior_from_understat", return_value=None),
             patch("fpl_cli.services.team_ratings_prior._prior_from_football_data", return_value=None),
             patch("fpl_cli.services.team_ratings_prior._championship_performances", new_callable=AsyncMock, return_value=None),
         ):
             result = await generate_prior(mock_client)
 
-        assert result["ARS"].atk_home == 4
-        assert result["MCI"].def_away == 4
+        assert result == {}
+        # Not cached either: the sources may recover on the next run.
+        assert not cache_path.exists()
 
     async def test_cache_reused_when_teams_match(self, mock_client, tmp_path):
         """Cached prior is returned if team list matches."""
@@ -170,15 +178,34 @@ class TestGeneratePrior:
         with open(cache_path, "w", encoding="utf-8") as f:
             yaml.dump(cached, f)
 
+        from fpl_cli.services.team_ratings import TeamPerformance
+
+        fd_performances = {
+            "ARS": TeamPerformance(
+                team="ARS", goals_scored_home=2.0, goals_scored_away=1.5,
+                goals_conceded_home=0.5, goals_conceded_away=1.0, home_games=19, away_games=19,
+            ),
+            "MCI": TeamPerformance(
+                team="MCI", goals_scored_home=1.0, goals_scored_away=0.5,
+                goals_conceded_home=2.0, goals_conceded_away=2.5, home_games=19, away_games=19,
+            ),
+        }
+
         with (
             patch("fpl_cli.services.team_ratings_prior.prior_config_path", return_value=cache_path),
             patch("fpl_cli.services.team_ratings_prior._prior_from_understat", return_value=None),
-            patch("fpl_cli.services.team_ratings_prior._prior_from_football_data", return_value=None),
+            patch(
+                "fpl_cli.services.team_ratings_prior._prior_from_football_data",
+                new_callable=AsyncMock,
+                return_value=fd_performances,
+            ),
         ):
             result = await generate_prior(mock_client)
 
-        # Regenerated from the fallback chain, not the stale cached 1s.
-        assert result["ARS"].atk_home == 4
+        # Regenerated from the fallback chain, not the stale cache -- which
+        # rated the two clubs identically, where the fresh data separates them.
+        assert result["MCI"].atk_home != 1
+        assert result["ARS"].atk_home < result["MCI"].atk_home
 
 
 class TestFootballDataGetMatches:
