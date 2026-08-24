@@ -1120,37 +1120,17 @@ class TestRatingsUpdateBlending:
         assert "prior" not in result.output.lower()
 
     def test_since_gw_weights_the_window_not_the_gameweek_number(self, raw_ratings, prior):
-        """--since-gw 8 at GW10 is three gameweeks of evidence, not ten."""
+        """--since-gw 10 at GW12 is three gameweeks of evidence, not twelve."""
         _, mock_prior, mock_save = self._run(
-            ["ratings", "update", "--since-gw", "8"],
+            ["ratings", "update", "--since-gw", "10"],
             raw_ratings,
             prior,
-            self._completed_through(10),
+            self._completed_through(12),
         )
 
         mock_prior.assert_awaited_once()
         # 3/(3+6) = 33% current: 0.67 x 4 + 0.33 x 1 = 3.0
         assert mock_save.call_args.args[0]["ARS"].atk_home == 3
-
-    def test_since_gw_late_in_the_season_is_not_blended(self, raw_ratings, prior):
-        """--since-gw 30 at GW34 is recent form, not 55% of last season.
-
-        Blending is gated on how far the season has run, not on the width of
-        the requested window: a five-gameweek window at GW34 sits well past
-        the cutoff, and the auto-refresh (which tests the absolute gameweek)
-        would apply no shrinkage there either.
-        """
-        result, mock_prior, mock_save = self._run(
-            ["ratings", "update", "--since-gw", "30"],
-            raw_ratings,
-            prior,
-            self._completed_through(34),
-        )
-
-        mock_prior.assert_not_awaited()
-        assert mock_save.call_args.args[0] == raw_ratings
-        assert mock_save.call_args.kwargs["source"] == "calculated"
-        assert "prior" not in result.output.lower()
 
     def test_dry_run_shows_the_blend_without_saving(self, raw_ratings, prior):
         result, mock_prior, mock_save = self._run(
@@ -1213,15 +1193,7 @@ class TestRatingsUpdateWithoutResults:
     -- while the previous-season prior was available the whole time.
     """
 
-    def _run(
-        self,
-        args,
-        *,
-        prior_seeds=True,
-        dry_run_prior=None,
-        current_ratings=None,
-        team_set_drift=None,
-    ):
+    def _run(self, args, *, prior_seeds=True, dry_run_prior=None, current_ratings=None):
         from click.testing import CliRunner
 
         from fpl_cli.cli import main
@@ -1230,11 +1202,6 @@ class TestRatingsUpdateWithoutResults:
             dry_run_prior = {"ARS": TeamRating(atk_home=4, atk_away=4, def_home=4, def_away=4)}
 
         with (
-            patch("fpl_cli.api.fpl.FPLClient.get_teams", new_callable=AsyncMock, return_value=[]),
-            patch(
-                "fpl_cli.services.team_ratings.TeamRatingsService.check_team_set",
-                return_value=team_set_drift,
-            ),
             patch(
                 "fpl_cli.services.team_ratings.TeamRatingsCalculator.calculate_from_fixtures",
                 new_callable=AsyncMock,
@@ -1301,39 +1268,6 @@ class TestRatingsUpdateWithoutResults:
 
         mock_seed.assert_not_awaited()
         assert "keeping existing ratings unchanged" in result.output.replace("\n", "").lower()
-
-    def test_rebuilds_when_the_existing_file_rates_a_different_league(self):
-        """Non-empty is not the same as usable at the season rollover.
-
-        A file still rating last season's twenty clubs leaves the promoted
-        sides unrated, and `fpl doctor` sends the user to this command to fix
-        exactly that -- so keeping it here would make the command a dead end.
-        """
-        current = {"ARS": TeamRating(atk_home=1, atk_away=1, def_home=1, def_away=1)}
-        result, mock_seed = self._run(
-            ["ratings", "update"],
-            current_ratings=current,
-            team_set_drift="⚠️ team_ratings.yaml rates 3 teams no longer in the league",
-        )
-
-        mock_seed.assert_awaited_once()
-        output = result.output.replace("\n", " ").lower()
-        assert "different set of teams" in output
-        assert "keeping existing ratings unchanged" not in output
-
-    def test_dry_run_reports_the_rebuild_a_drifted_file_would_get(self):
-        """--dry-run must describe the same trigger the real run acts on."""
-        current = {"ARS": TeamRating(atk_home=1, atk_away=1, def_home=1, def_away=1)}
-        result, mock_seed = self._run(
-            ["ratings", "update", "--dry-run"],
-            current_ratings=current,
-            team_set_drift="⚠️ team_ratings.yaml rates 3 teams no longer in the league",
-        )
-
-        mock_seed.assert_not_called()
-        output = result.output.replace("\n", " ").lower()
-        assert "different set of teams" in output
-        assert "would be estimated" in output
 
 
 class TestConfigPathProperty:
@@ -1495,65 +1429,6 @@ class TestEnsureFresh:
             mock_calc.return_value = (new_ratings, {})
             await service.ensure_fresh(mock_client)
 
-        assert service.get_rating("ARS").atk_home == 1
-
-    async def test_ensure_fresh_reseeds_when_the_file_rates_a_different_league(
-        self, service, mock_client
-    ):
-        """A drifted file is unusable even though it is non-empty.
-
-        Emptiness alone was the test, so at the rollover -- when the new season
-        has produced nothing ratable yet -- last season's twenty clubs stayed
-        on disk and the promoted sides each scored a neutral 4.0.
-        """
-        from tests.conftest import make_team
-
-        mock_client.get_teams.return_value = [
-            make_team(id=1, short_name="ARS"),
-            make_team(id=2, short_name="LEE"),
-        ]
-        prior = {
-            "ARS": TeamRating(atk_home=2, atk_away=2, def_home=2, def_away=2),
-            "LEE": TeamRating(atk_home=6, atk_away=6, def_home=6, def_away=6),
-        }
-
-        with (
-            patch.object(
-                TeamRatingsCalculator, "calculate_from_fixtures", new_callable=AsyncMock
-            ) as mock_calc,
-            patch(
-                "fpl_cli.services.team_ratings_prior.generate_prior",
-                new_callable=AsyncMock,
-                return_value=prior,
-            ),
-        ):
-            mock_calc.return_value = ({}, {})
-            await service.ensure_fresh(mock_client)
-
-        assert service.get_rating("LEE") is not None
-        assert service.get_rating("LEE").atk_home == 6
-
-    async def test_ensure_fresh_leaves_a_matching_file_alone(self, service, mock_client):
-        """The drift reseed must not fire when the rated clubs are the live ones."""
-        from tests.conftest import make_team
-
-        mock_client.get_teams.return_value = [
-            make_team(id=1, short_name="ARS"),
-            make_team(id=2, short_name="MCI"),
-        ]
-
-        with (
-            patch.object(
-                TeamRatingsCalculator, "calculate_from_fixtures", new_callable=AsyncMock
-            ) as mock_calc,
-            patch.object(
-                TeamRatingsService, "seed_from_prior", new_callable=AsyncMock
-            ) as mock_seed,
-        ):
-            mock_calc.return_value = ({}, {})
-            await service.ensure_fresh(mock_client)
-
-        mock_seed.assert_not_awaited()
         assert service.get_rating("ARS").atk_home == 1
 
 

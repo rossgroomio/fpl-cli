@@ -326,7 +326,7 @@ class TeamRatingsService:
             )
             self._apply_overrides()
             TeamRatingsService._refreshed_this_session = True
-        elif not self._ratings or await self._team_set_drifts(client):
+        elif not self._ratings:
             # A gameweek is under way but has produced nothing to rate teams on
             # yet — every fixture is still in flight, or each team has played
             # only one of its home/away pair. The pre-season branch above has
@@ -336,29 +336,10 @@ class TeamRatingsService:
             # The previous-season prior is available the whole time and is a
             # strictly better answer than uniform difficulty. As above, only
             # mark refreshed on success so a transient failure can be retried.
-            #
-            # A file that rates last season's clubs counts as unusable too: it
-            # is non-empty, so an emptiness test alone leaves the promoted
-            # sides unrated (a neutral 4.0 each) for as long as the new season
-            # produces no ratable results, which is exactly the rollover window
-            # this branch exists to cover.
             if await self.seed_from_prior(client):
                 TeamRatingsService._refreshed_this_session = True
         else:
             TeamRatingsService._refreshed_this_session = True
-
-    async def _team_set_drifts(self, client) -> bool:
-        """Whether the rated clubs no longer match the live league.
-
-        Wraps check_team_set for the refresh path, where a lookup failure must
-        read as "no drift known" rather than aborting the refresh.
-        """
-        try:
-            teams = await client.get_teams()
-        except Exception:  # noqa: BLE001 — a drift check must never break a refresh
-            logger.debug("Team-set drift check skipped", exc_info=True)
-            return False
-        return self.check_team_set(team.short_name for team in teams) is not None
 
     def check_team_set(self, current_teams: Iterable[str]) -> str | None:
         """Compare the rated clubs against the live league and record any drift.
