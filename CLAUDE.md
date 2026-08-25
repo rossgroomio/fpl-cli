@@ -76,6 +76,7 @@ For a complete inventory of CLI commands, analysis agents, and skills with JSON 
 - Draft has no captains, no budget, no transfers and no chips — acquisition is via waivers and free agents
 
 ## Rules
+- This repo is public: never put real manager or league names, entry/league IDs, or FPL account details into commits, PR titles or bodies, issues, or CHANGELOG.md. Use placeholders when quoting generated reports from the configured `reports.output_dir`. Footballer and club names are fine — they are public data. Before pushing, check the branch for a pre-existing leak and flag it rather than pushing over it.
 - Verify before asserting: don't state that a command, file, function, or data point exists without checking first (read the file, run the command, grep for the name)
 - Find-and-replace: review each replacement in context - don't blindly replace substrings in unrelated identifiers
 - Removing/replacing X: new implementation must have zero dependencies on X

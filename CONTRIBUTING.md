@@ -38,6 +38,8 @@ PR when the title doesn't follow the conventional-commit format below.
 
 ## Commit subjects & PR titles
 
+This repo is public. Keep real manager and league names, entry/league IDs, and FPL account details out of commit subjects, PR titles and bodies, issues, and the changelog — use placeholders when quoting a generated report. Footballer and club names are public data and are fine.
+
 Both follow [Conventional Commits](https://www.conventionalcommits.org).
 git-cliff (`cliff.toml`) turns them into changelog entries:
 
