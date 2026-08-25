@@ -492,9 +492,11 @@ class TestFailures:
         result = _run(["--format", "json"], prepare_error=RuntimeError("bootstrap unreachable"))
 
         assert result.exit_code == 1
-        error = json.loads(result.stderr)
+        # #141: the envelope rides stdout, the stream a consumer parses.
+        error = json.loads(result.stdout)
         assert error["command"] == "returnees"
         assert "bootstrap unreachable" in error["error"]
+        assert "{" not in result.stderr
 
     def test_upstream_failure_in_table_mode_exits_nonzero(self):
         result = _run(prepare_error=RuntimeError("bootstrap unreachable"))

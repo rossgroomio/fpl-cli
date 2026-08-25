@@ -50,6 +50,29 @@ Both filters (format and experimental) are independent and must both pass.
 
 Running a gated command reports the gate and the `settings.yaml` fpl-cli is actually reading, rather than click's default "No such command" — which would otherwise suggest the very command it had just refused.
 
+## JSON Output
+
+`--format json` puts **both** envelopes on **stdout** and every human-readable line on
+**stderr**, so one stream is the machine output and the other is the commentary. A
+consumer reads stdout for the payload and checks the exit code to know which envelope
+it got:
+
+| | Success | Failure |
+|---|---|---|
+| stdout | `{command, metadata, data}` | `{command, error}` |
+| stderr | warnings and progress, if any | the same failure as prose |
+| exit code | 0 | 1 |
+
+```bash
+fpl captain --format json >out.json 2>err.txt || jq -r .error out.json
+```
+
+Warnings never change the exit code — a command that produced its payload exits 0 and
+reports the problem in `metadata.warnings` (and on stderr), rather than failing. A few
+commands deliberately soften the *table* path to exit 0 where the JSON path exits 1
+(`league-recap` on an unresolvable gameweek prints the message and returns); the JSON
+contract above is the one to script against.
+
 ## Player Analysis
 
 ### Captain Picks
@@ -576,8 +599,9 @@ ledger, built from the rows this run assembled, so manager data is present even 
 store could not be written. `metadata` carries `coverage` (per gameweek: fidelity-tier
 counts, unknown managers, whether the file was readable), `season_phase`, `notes_pack`
 (every entry, including those below their reporting minimum), `synthesis_summary` (with
-`--summarise`), `warnings`, and `first_capture_store_path` (set only on a partition's
-first capture). Warning codes are listed under [Capture warnings](#capture-warnings).
+`--summarise`), `warnings`, and `first_capture_store_path` — always present, carrying the
+partition directory on its first capture and `null` on every run after that. Warning
+codes are listed under [Capture warnings](#capture-warnings).
 
 #### League history
 
@@ -661,8 +685,8 @@ are stable, so scripts should key on those.
 
 None of these change the exit code — `league-recap` exits 0 whenever the recap itself
 rendered. The single exit-1 case is a gameweek that could not be resolved at all under
-`--format json`, which emits the shared `{"command", "error"}` envelope; the table path
-prints the same message and exits 0.
+`--format json`, which emits the shared `{"command", "error"}` envelope on stdout (see
+[JSON Output](#json-output)); the table path prints the same message and exits 0.
 
 ## Season Preview Intel
 

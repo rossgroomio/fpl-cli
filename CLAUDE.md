@@ -35,7 +35,7 @@ For a complete inventory of CLI commands, analysis agents, and skills with JSON 
 - Analytical commands -> via agent (comment `# Pattern: via-agent`)
 - Help text: describe what the user sees, never reference internal components ("agent", "client")
 - Inner async function: always name `_run`
-- `--format json` commands emit the shared envelope via `emit_json()` / `emit_json_error()` (`cli/_json.py`), never a bare `json.dumps`
+- `--format json` commands emit the shared envelope via `emit_json()` / `emit_json_error()` (`cli/_json.py`), never a bare `json.dumps`. Both envelopes go to stdout and every human-readable line to stderr — success is `{command, metadata, data}` and exit 0, failure is `{command, error}` and exit 1, so a consumer parses one stream either way
 - **Format awareness:** New commands classified in `CLASSIC_ONLY`/`DRAFT_ONLY` frozensets in `_context.py` (omit for General). Shared commands use `@click.pass_context` and `fmt = get_format(ctx)` to gate irrelevant sections (see `league.py` for pattern).
 
 ### Agent Patterns

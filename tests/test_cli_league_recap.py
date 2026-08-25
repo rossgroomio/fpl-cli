@@ -1893,6 +1893,9 @@ class TestLeagueRecapJsonEnvelope:
         payload = json.loads(result.stdout)
         assert payload["command"] == "league-recap"
         assert "error" in payload
+        # #141: stdout carries the envelope and only the envelope; the prose
+        # explaining the failure stays on stderr.
+        assert "{" not in result.stderr
 
     def test_an_unresolved_gameweek_in_table_mode_exits_zero(self):
         """The deliberate divergence R9/R10 name: `emit_json_error` is the

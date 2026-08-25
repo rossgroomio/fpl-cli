@@ -176,7 +176,8 @@ class TestFixturesJsonFormat:
             result = runner.invoke(main, ["fixtures", "-g", "32", "--format", "json"])
 
         assert result.exit_code == 1
-        # emit_json_error writes to stderr; CliRunner mixes streams by default
-        error_payload = json.loads(result.output)
+        # #141: the error envelope rides stdout, same as the success envelope.
+        error_payload = json.loads(result.stdout)
         assert error_payload["command"] == "fixtures"
         assert "API down" in error_payload["error"]
+        assert "{" not in result.stderr
