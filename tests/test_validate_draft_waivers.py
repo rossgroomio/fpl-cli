@@ -753,6 +753,37 @@ def test_empty_pool_falls_back_to_top_targets(tmp_path, capsys):
     assert not any(f["type"] == "waiver-not-in-pool" for f in data["flags"])
 
 
+def test_empty_pool_beside_a_malformed_top_targets_does_not_crash(tmp_path, capsys):
+    """An empty `pool` clears the shape check without `top_targets` being looked
+    at, so the fallback can still land on a value that is not a list. Reporting
+    no pool costs a missed check; raising would exit non-zero and break the
+    orchestrator's contract that this script always exits 0."""
+    waivers = {
+        "command": "fpl waivers",
+        "data": {"pool": [], "top_targets": "corrupted"},
+    }
+    recs, w, s = _write_fixtures(tmp_path, _CLEAN_RECS, waivers=waivers)
+    _run(str(recs), str(w), str(s))
+    data = _parse(capsys)
+
+    assert isinstance(data["flags"], list)
+
+
+def test_a_pool_entry_that_is_not_a_record_is_skipped(tmp_path, capsys):
+    """The shape check only inspects the first entry, so a later one can still
+    be junk."""
+    good = _WAIVERS_WITH_POOL["data"]["pool"]
+    waivers = {
+        "command": "fpl waivers",
+        "data": {"pool": [*good, "not a record", None]},
+    }
+    recs, w, s = _write_fixtures(tmp_path, _CLEAN_RECS, waivers=waivers)
+    _run(str(recs), str(w), str(s))
+    data = _parse(capsys)
+
+    assert not any(f["type"] == "waiver-not-in-pool" for f in data["flags"])
+
+
 def test_cross_position_swap_still_blocks_against_the_pool(tmp_path, capsys):
     """R11: position-for-position is unchanged by this widening."""
     recs_content = """\

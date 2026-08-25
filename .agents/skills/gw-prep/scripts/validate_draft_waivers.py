@@ -25,7 +25,7 @@ import json
 import re
 import sys
 import unicodedata
-from typing import NotRequired, TypedDict
+from typing import NotRequired, TypedDict, cast
 
 from fpl_cli.utils.markdown import HeadingMatcher, find_section, leaf_body
 
@@ -142,6 +142,14 @@ def _shape_check_waivers(data: dict) -> bool:
     `pool` is the full unowned roster and is what membership is checked against;
     `top_targets` is the ranked subset older waivers JSON carried on its own.
     Either satisfies the guard, so a cached file still validates.
+
+    A `pool` key that is present but unusable deliberately fails the file rather
+    than falling through to `top_targets`. The two are not interchangeable: a
+    flagged player is kept out of `top_targets` by the availability factor no
+    matter how strong the case for claiming them, so checking membership
+    against the ranked subset reports every legitimate injury claim as a miss.
+    Failing here warns once and suppresses the pool check for the run, which
+    beats a page of false positives on exactly the claims this validates.
     """
     try:
         payload = data["data"]
@@ -165,10 +173,18 @@ def build_pool(waivers_data: dict) -> dict[tuple[str, str], PoolEntry]:
     payload = waivers_data.get("data", {})
     entries = payload.get("pool")
     if not isinstance(entries, list) or not entries:
-        entries = payload.get("top_targets", [])
+        entries = payload.get("top_targets")
+    if not isinstance(entries, list):
+        # The shape check clears a file on either key, so the fallback can still
+        # land on a malformed value. Reporting no pool costs a missed check;
+        # raising here would exit non-zero and break the orchestrator contract.
+        entries = []
 
     pool: dict[tuple[str, str], PoolEntry] = {}
-    for entry in entries:
+    for raw in entries:
+        if not isinstance(raw, dict):
+            continue
+        entry = cast(PoolEntry, raw)
         pos = entry.get("position", "")
         key = (pos, normalise(entry.get("player_name", "")))
         pool[key] = entry
