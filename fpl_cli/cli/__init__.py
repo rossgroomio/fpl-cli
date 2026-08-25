@@ -26,6 +26,7 @@ from fpl_cli.cli.preview import preview_command
 from fpl_cli.cli.price_changes import price_changes_command
 from fpl_cli.cli.price_history import price_history_command
 from fpl_cli.cli.ratings import ratings_group
+from fpl_cli.cli.returnees import returnees_command
 from fpl_cli.cli.review import review_command
 from fpl_cli.cli.squad import squad_group
 from fpl_cli.cli.stats import stats_command
@@ -80,6 +81,7 @@ main.add_command(price_history_command)
 main.add_command(captain_command)
 main.add_command(differentials_command)
 main.add_command(targets_command)
+main.add_command(returnees_command)
 main.add_command(review_command)
 main.add_command(league_recap_command)
 main.add_command(preview_command)
