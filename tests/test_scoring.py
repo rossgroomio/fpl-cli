@@ -1,7 +1,7 @@
 """Tests for centralised player scoring engine."""
 
 import dataclasses
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -15,6 +15,9 @@ from fpl_cli.services.scoring import (
     DEF_WAIVER_CEILING,
     DIFFERENTIAL_CEILING,
     DIFFERENTIAL_QUALITY_WEIGHTS,
+    FWD_DIFFERENTIAL_CEILING,
+    FWD_TARGET_CEILING,
+    FWD_WAIVER_CEILING,
     GK_DIFFERENTIAL_CEILING,
     GK_TARGET_CEILING,
     GK_VALUE_CEILING,
@@ -159,42 +162,45 @@ class TestCharacterisationSnapshot:
 
     def test_target_mid(self):
         eval_, _ = self._build_mid()
-        assert calculate_target_score(eval_, next_gw_id=20) == 52
+        # Same raw as pre-#88 (~16.5); MID target ceiling recalibrated 31.7 -> 20.65.
+        assert calculate_target_score(eval_, next_gw_id=20) == 80
 
     def test_target_def(self):
         eval_, _ = self._build_def()
-        # DEF target ceiling = DEF_TARGET_CEILING (empirical, from without_xgi caps × 0.85 + matchup).
-        assert calculate_target_score(eval_, next_gw_id=20) == 66
+        # DEF target ceiling = DEF_TARGET_CEILING (calibrated anchor + matchup/consistency headroom).
+        assert calculate_target_score(eval_, next_gw_id=20) == 68
 
     # --- Differential ---
 
     def test_differential_mid(self):
         eval_, _ = self._build_mid()
+        # Same raw as pre-#88 (~21.9); MID differential ceiling recalibrated 39.1 -> 27.405.
         assert calculate_differential_score(
             eval_, semi_differential_threshold=20.0, next_gw_id=20,
-        ) == 56
+        ) == 80
 
     def test_differential_def(self):
         eval_, _ = self._build_def()
         assert calculate_differential_score(
             eval_, semi_differential_threshold=20.0, next_gw_id=20,
-        ) == 66
+        ) == 67
 
     # --- Waiver ---
 
     def test_waiver_mid(self):
         eval_, _ = self._build_mid()
         squad = {"MID": [{"form": 4.0}, {"form": 3.0}], "DEF": [{"form": 5.0}, {"form": 4.0}]}
+        # Same raw as pre-#88 (~17.7); MID waiver ceiling recalibrated 37.5 -> 26.82.
         assert calculate_waiver_score(
             eval_, squad_by_position=squad, next_gw_id=20,
-        ) == 47
+        ) == 66
 
     def test_waiver_def(self):
         eval_, _ = self._build_def()
         squad = {"MID": [{"form": 4.0}, {"form": 3.0}], "DEF": [{"form": 5.0}, {"form": 4.0}]}
         assert calculate_waiver_score(
             eval_, squad_by_position=squad, next_gw_id=20,
-        ) == 51
+        ) == 53
 
     # --- Captain ---
 
@@ -242,7 +248,8 @@ class TestNormaliseScore:
         assert normalise_score(50.0, 31.5) == 100
 
     def test_target_ceiling(self):
-        assert normalise_score(16.75, TARGET_CEILING) == 53
+        # 16.75 / TARGET_CEILING (20.65) * 100 = 81.11 -> 81
+        assert normalise_score(16.75, TARGET_CEILING) == 81
 
     def test_negative_clamped_to_zero(self):
         """Raw scores go negative via the availability and stacking penalties (#116)."""
@@ -267,8 +274,7 @@ class TestOwnershipCeilingFor:
         ("GK", GK_TARGET_CEILING),
         ("DEF", DEF_TARGET_CEILING),
         ("MID", TARGET_CEILING),
-        ("FWD", TARGET_CEILING),
-        ("UNK", TARGET_CEILING),
+        ("FWD", FWD_TARGET_CEILING),
     ])
     def test_target_family(self, position, expected):
         assert _ownership_ceiling_for("target", position) == expected
@@ -277,8 +283,7 @@ class TestOwnershipCeilingFor:
         ("GK", GK_DIFFERENTIAL_CEILING),
         ("DEF", DEF_DIFFERENTIAL_CEILING),
         ("MID", DIFFERENTIAL_CEILING),
-        ("FWD", DIFFERENTIAL_CEILING),
-        ("UNK", DIFFERENTIAL_CEILING),
+        ("FWD", FWD_DIFFERENTIAL_CEILING),
     ])
     def test_differential_family(self, position, expected):
         assert _ownership_ceiling_for("differential", position) == expected
@@ -287,11 +292,16 @@ class TestOwnershipCeilingFor:
         ("GK", GK_WAIVER_CEILING),
         ("DEF", DEF_WAIVER_CEILING),
         ("MID", WAIVER_CEILING),
-        ("FWD", WAIVER_CEILING),
-        ("UNK", WAIVER_CEILING),
+        ("FWD", FWD_WAIVER_CEILING),
     ])
     def test_waiver_family(self, position, expected):
         assert _ownership_ceiling_for("waiver", position) == expected
+
+    @pytest.mark.parametrize("family", ["target", "differential", "waiver"])
+    def test_unknown_position_raises(self, family):
+        """#88 removed the silent base-ceiling fallback: unknown positions raise KeyError."""
+        with pytest.raises(KeyError):
+            _ownership_ceiling_for(family, cast(Position, "UNK"))
 
     def test_invalid_family_raises(self):
         with pytest.raises(KeyError):
@@ -398,8 +408,14 @@ class TestWeightConfigs:
 class TestValueQualityScore:
     """Verify VALUE_QUALITY_WEIGHTS scoring and VALUE_CEILING normalisation."""
 
-    def test_elite_mid_normalises_to_85_95(self):
-        """Salah-tier MID: high npxG, strong form, good PPG, on pens, xGI-backed."""
+    def test_elite_mid_clips_to_100(self):
+        """Salah-tier MID: high npxG, strong form, good PPG, on pens, xGI-backed.
+
+        Raw ~21.37 sits above the calibrated MID VALUE_CEILING (17.00, anchored
+        on real elite MID raws — this synthetic pushes every signal near its
+        cap simultaneously, which no real season does), so the score clips.
+        Pre-#88 the hand-tuned 24.3 ceiling put the same raw at 88.
+        """
         player = {
             "npxG_per_90": 0.55, "xGChain_per_90": 0.65,
             "form": 8.0, "ppg": 7.5, "penalty_xG_per_90": 0.12,
@@ -407,7 +423,7 @@ class TestValueQualityScore:
         }
         raw = calculate_player_quality_score(player, VALUE_QUALITY_WEIGHTS)
         score = normalise_score(raw, VALUE_CEILING)
-        assert 85 <= score <= 95, f"Elite MID scored {score}, expected 85-95"
+        assert score == 100, f"Elite MID scored {score}, expected clip to 100"
 
     def test_without_xgi_def_produces_meaningful_score(self):
         """Strong DEF: good dc_per_90, solid form and PPG."""
@@ -419,8 +435,9 @@ class TestValueQualityScore:
         weights = VALUE_QUALITY_WEIGHTS.without_xgi()
         raw = calculate_player_quality_score(player, weights)
         assert raw > 0
+        # raw 12.75 (dc 1.75 + form 7.0 + ppg 4.0) / VALUE_CEILING 17.00 = 75
         score = normalise_score(raw, VALUE_CEILING)
-        assert 30 <= score <= 60, f"Strong DEF scored {score}, expected 30-60"
+        assert 70 <= score <= 80, f"Strong DEF scored {score}, expected 70-80"
 
     def test_zero_minutes_player(self):
         """Zero-minute player: per-90 zeroed via mins_factor, form/PPG still contribute."""
@@ -443,8 +460,9 @@ class TestValueQualityScore:
         raw = calculate_player_quality_score(player, weights)
         # dc: min(1.25, 2)=1.25, form: min(5.85, 7)=5.85, ppg: min(3.2, 5)=3.2
         assert raw > 0
+        # raw 10.3 / VALUE_CEILING 17.00 = 61
         score = normalise_score(raw, VALUE_CEILING)
-        assert 25 <= score <= 50
+        assert 55 <= score <= 65
 
     def test_value_differs_from_target_for_same_player(self):
         """Same quality_dict produces different scores with VALUE vs TARGET weights."""
@@ -683,14 +701,16 @@ class TestCalculateTargetScore:
             positional_fdr=2.5,
         )
         score = calculate_target_score(eval, next_gw_id=20)
-        assert score == 58
+        # Same raw as pre-#88 (~18.4); MID target ceiling recalibrated 31.7 -> 20.65.
+        assert score == 89
 
     def test_gk_def_path(self):
         """GK uses for_gk() weights: xGI zeroed, GK signals active. Score normalised to GK_TARGET_CEILING."""
         # GK with no saves/xgc/cs data — only form+ppg+matchup contribute
         # form: min(4.0*1.0, 5)=4.0, ppg: min(4.5*0.5, 4)=2.25
+        # quality (4.0+2.25=6.25) attenuated by pos mult 0.7 = 4.375
         # matchup: 6.0*0.75*1.0=4.5 (mins_factor=min(1800/1760,1)=1.0)
-        # raw=10.75, normalise(10.75, GK_TARGET_CEILING=30.4) = round(35.36) = 35
+        # raw=8.875, normalise(8.875, GK_TARGET_CEILING=18.74) = round(47.36) = 47
         eval, _ = build_player_evaluation(
             {
                 "position": "GK",
@@ -703,8 +723,8 @@ class TestCalculateTargetScore:
             positional_fdr=3.0,
         )
         score = calculate_target_score(eval, next_gw_id=20)
-        # Post-2026-04-10 GK ceiling = 23.08 (was 30.4); quality attenuated by 0.7
-        assert score == 38
+        # Post-#88 calibrated GK target ceiling = 18.74 (was 23.08)
+        assert score == 47
 
     def test_zero_minutes(self):
         """Player with 0 appearances: mins_factor=0, matchup zeroed."""
@@ -716,7 +736,8 @@ class TestCalculateTargetScore:
             },
         )
         score = calculate_target_score(eval, next_gw_id=20)
-        assert score == 22
+        # raw 7.0 (form 5.0 + ppg 2.0) / TARGET_CEILING 20.65 = 34
+        assert score == 34
 
 
 class TestTargetDiffAvailabilityPenalty:
@@ -779,7 +800,8 @@ class TestCalculateDifferentialScore:
             positional_fdr=2.5,
         )
         score = calculate_differential_score(eval, semi_differential_threshold=10, next_gw_id=20)
-        assert score == 58
+        # Same raw as pre-#88 (~22.7); MID differential ceiling recalibrated 39.1 -> 27.405.
+        assert score == 83
 
     def test_no_matchup_avg_fallback(self):
         """Without matchup_avg_3gw, matchup contribution is 0 (fallback=0.0)."""
@@ -795,7 +817,8 @@ class TestCalculateDifferentialScore:
         score = calculate_differential_score(
             eval, semi_differential_threshold=10, next_gw_id=20,
         )
-        assert score == 38
+        # Same raw as pre-#88 (~14.9); MID differential ceiling recalibrated 39.1 -> 27.405.
+        assert score == 54
 
 
 class TestCalculateWaiverScore:
@@ -823,7 +846,8 @@ class TestCalculateWaiverScore:
             eval, squad_by_position=self._squad_by_pos(),
             team_counts=self._team_counts(), next_gw_id=20,
         )
-        assert score == 48
+        # Same raw as pre-#88 (~18.2); MID waiver ceiling recalibrated 37.5 -> 26.82.
+        assert score == 68
 
     def test_zero_appearances(self):
         eval, _ = build_player_evaluation(
@@ -835,7 +859,8 @@ class TestCalculateWaiverScore:
             eval, squad_by_position=self._squad_by_pos(),
             team_counts=self._team_counts(), next_gw_id=20,
         )
-        assert score == 27
+        # FWD now has its own calibrated ceiling (FWD_WAIVER_CEILING 29.87, was the shared 37.5).
+        assert score == 34
 
     def test_injured_player_at_stacked_club_floors_at_zero(self):
         """Availability + stacking penalties drove the raw score below zero (#116).
@@ -864,7 +889,8 @@ class TestCalculateWaiverScore:
             eval, squad_by_position=self._squad_by_pos(),
             team_counts=self._team_counts(), next_gw_id=20,
         )
-        assert score == 31
+        # Same raw as pre-#88 (~11.6); MID waiver ceiling recalibrated 37.5 -> 26.82.
+        assert score == 43
 
     def test_availability_penalty(self):
         eval, _ = build_player_evaluation(
@@ -877,8 +903,8 @@ class TestCalculateWaiverScore:
             eval, squad_by_position=self._squad_by_pos(),
             team_counts=self._team_counts(), next_gw_id=20,
         )
-        # DEF waiver ceiling = DEF_WAIVER_CEILING (empirical, from without_xgi caps × 0.85 + bonuses).
-        assert score == 45
+        # DEF waiver ceiling = DEF_WAIVER_CEILING (calibrated anchor + matchup/need/consistency headroom).
+        assert score == 46
 
     def test_position_need_empty(self):
         eval, _ = build_player_evaluation(
@@ -890,7 +916,8 @@ class TestCalculateWaiverScore:
             eval, squad_by_position=self._squad_by_pos(),
             team_counts=self._team_counts(), next_gw_id=20,
         )
-        assert score == 53
+        # FWD now has its own calibrated ceiling (FWD_WAIVER_CEILING 29.87, was the shared 37.5).
+        assert score == 67
 
     def test_early_season_combined_mins_factor_defaults_to_one(self):
         """Before GW5, combined_mins_factor hardcodes to 1.0 regardless of minutes."""
@@ -906,8 +933,9 @@ class TestCalculateWaiverScore:
         midseason = calculate_waiver_score(
             eval, squad_by_position=squad, team_counts={}, next_gw_id=20,
         )
-        assert early == 42
-        assert midseason == 35
+        # Same raws as pre-#88; MID waiver ceiling recalibrated 37.5 -> 26.82.
+        assert early == 59
+        assert midseason == 49
         assert early > midseason  # Early season is more generous
 
 
@@ -3215,9 +3243,9 @@ class TestGKScoringPath:
 
     Reference GK: form=5.0, ppg=4.0, minutes=1800, appearances=22
     GK signals (via enrichment): saves_per_90=3.5, xgc_quality=1.2, cs_rate=0.4
-    Signal contributions (TARGET weights):
-      saves: min(3.5*1.5, 6)=5.25, xgc: min(1.2*3, 3.5)=3.5, cs: min(0.4*8, 4)=3.2
-      form: min(5.0*1.0, 5)=5.0, ppg: min(4.0*0.5, 4)=2.0 → quality raw=18.95
+    Signal contributions (TARGET weights, gk_cs_rate mult halved to 4.0 on 2026-04-10):
+      saves: min(3.5*1.5, 6)=5.25, xgc: min(1.2*3, 3.5)=3.5, cs: min(0.4*4, 4)=1.6
+      form: min(5.0*1.0, 5)=5.0, ppg: min(4.0*0.5, 4)=2.0 → quality raw=17.35
     """
 
     @staticmethod
@@ -3251,12 +3279,13 @@ class TestGKScoringPath:
         return eval_, identity
 
     def test_gk_target_score(self):
-        """GK target: (quality raw 17.35 * 0.7) + matchup 4.5 = 16.645; normalise(16.645, 23.08)=72.
+        """GK target: (quality raw 17.35 * 0.7) + matchup 4.5 = 16.645.
 
-        Post-2026-04-10: position multiplier on ownership path + gk_cs_rate halved.
+        normalise(16.645, GK_TARGET_CEILING=18.74) = round(88.82) = 89
+        (#88 recalibrated the GK target ceiling 23.08 -> 18.74).
         """
         eval_, _ = self._build_gk()
-        assert calculate_target_score(eval_, next_gw_id=20) == 72
+        assert calculate_target_score(eval_, next_gw_id=20) == 89
 
     def test_gk_target_vs_def_score(self):
         """GK target uses for_gk() and GK_TARGET_CEILING, scoring differently from DEF."""
@@ -3386,21 +3415,21 @@ class TestGKScoringPath:
 
     def test_def_target_score_uses_pos_mult(self):
         """Regression guard: DEF path (without_xgi) is attenuated by POSITION_SCORE_MULTIPLIER[DEF]
-        and normalised against DEF_TARGET_CEILING (empirical DEF cap, not MID-anchored × 0.85).
+        and normalised against DEF_TARGET_CEILING (calibrated DEF anchor, not MID-anchored × 0.85).
         """
         from tests.test_scoring import TestCharacterisationSnapshot
         snap = TestCharacterisationSnapshot()
         def_eval, _ = snap._build_def()
-        assert calculate_target_score(def_eval, next_gw_id=20) == 66
+        assert calculate_target_score(def_eval, next_gw_id=20) == 68
 
     def test_gk_value_score(self):
         """GK value path: for_gk() from VALUE_QUALITY_WEIGHTS, normalised to GK_VALUE_CEILING.
 
-        Post-2026-04-10 (position multiplier + gk_cs_rate halved + non-atk form
-        headroom corrected to trajectory-only × 1.2):
-        saves 5.25 + xgc 3.5 + cs 1.636 + form 6.0 + ppg 3.2 ≈ 19.59
-        attenuated = 19.59 * 0.7 = 13.71
-        normalise(13.71, 18.83) = 73-75
+        saves min(3.5*1.5, 6)=5.25 + xgc min((2.0-0.577)*3, 3.5)=3.5
+        + cs min(0.45*4, 4)=1.8 + form min(5.0*1.3, 7)=6.5 + ppg min(4.0*0.8, 5)=3.2
+        = 20.25; attenuated = 20.25 * 0.7 = 14.175
+        normalise(14.175, GK_VALUE_CEILING=14.42) = round(98.3) = 98
+        (#88 recalibrated the GK value ceiling 18.83 -> 14.42).
         """
         from fpl_cli.services.scoring import compute_quality_value
 
@@ -3412,7 +3441,7 @@ class TestGKScoringPath:
             saves_per_90=3.5, expected_goals_conceded=11.54, clean_sheets=9,
         )
         score, _ = compute_quality_value(gk, us_match={}, next_gw_id=20, team_short="LIV")
-        assert score == 75
+        assert score == 98
 
     def test_gk_value_uses_gk_ceiling_not_value_ceiling(self):
         """GK value score normalised against GK_VALUE_CEILING, not VALUE_CEILING."""
@@ -4538,11 +4567,14 @@ class TestCeilingValidationBands:
         )
 
     def _elite_def(self):
+        # Gabriel-tier: form + ppg + heavy defensive contributions (the DEF
+        # quality path scores form/ppg/dc_per_90 — xGI is zeroed).
         return make_player(
             id=403, web_name="EliteDEF", team_id=3,
             position=PlayerPosition.DEFENDER,
             form=6.0, points_per_game=5.0, minutes=2000, total_points=140,
             now_cost=65, expected_goals=1.5, expected_assists=1.0,
+            defensive_contribution_per_90=10.0,
         )
 
     def _elite_gk(self):
@@ -4562,19 +4594,19 @@ class TestCeilingValidationBands:
         return score
 
     def test_elite_mid_in_band(self):
-        assert 55 <= self._score(self._elite_mid()) <= 100
+        # Post-#88 calibration: elite MIDs land 80+ like elite DEFs always
+        # did. These synthetic profiles sit at or above the calibration
+        # pool's best real player, so the top of the band is the 100 clamp.
+        assert 80 <= self._score(self._elite_mid()) <= 100
 
     def test_elite_fwd_in_band(self):
-        assert 55 <= self._score(self._elite_fwd()) <= 100
+        assert 80 <= self._score(self._elite_fwd()) <= 100
 
     def test_elite_def_in_band(self):
-        # DEF uses without_xgi() so the xGI family is zeroed. Elite DEFs
-        # land in the lower half of the 0-100 scale by design. See todo
-        # 006 for the display-ceiling inconsistency this exposes.
-        assert 45 <= self._score(self._elite_def()) <= 85
+        assert 70 <= self._score(self._elite_def()) <= 95
 
     def test_elite_gk_in_band(self):
-        assert 55 <= self._score(self._elite_gk()) <= 100
+        assert 80 <= self._score(self._elite_gk()) <= 100
 
     def test_elite_fwd_outranks_elite_gk_on_raw_quality(self):
         """Load-bearing regression: Haaland-tier FWD raw > Raya-tier GK raw.
@@ -4603,6 +4635,123 @@ class TestCeilingValidationBands:
         )
         score = self._score(backup_gk)
         assert 0 <= score <= 60
+
+
+class TestCalibrationDriftGuard:
+    """The calibrated quality ceilings stay tethered to the weights they measured.
+
+    The ceilings in QUALITY_CEILINGS are empirical: scripts/
+    calibrate_quality_ceilings.py measured elite raw quality per (family,
+    position) against a completed season under the weight configuration
+    current at the time, and recorded a fingerprint of that configuration.
+    A weight change without a re-run leaves ceilings describing a raw-score
+    distribution that no longer exists — the compounding failure documented
+    in the fpl-cli-docs solution note "ceiling arithmetic compounds across
+    weight changes".
+    """
+
+    def test_fingerprint_matches_recorded(self):
+        from fpl_cli.services.scoring import (
+            CALIBRATION_FINGERPRINT,
+            scoring_weights_fingerprint,
+        )
+        assert scoring_weights_fingerprint() == CALIBRATION_FINGERPRINT, (
+            "A scoring weight, position multiplier, or signal bound changed "
+            "since the quality ceilings were calibrated. Re-run "
+            "scripts/calibrate_quality_ceilings.py --write (network required) "
+            "and commit the regenerated block in services/scoring/constants.py."
+        )
+
+    def test_anchors_within_theoretical_bracket(self):
+        """Each calibrated anchor sits in a sane band around its cap sum.
+
+        The theoretical cap sum overestimates achievable raw quality (that
+        overestimate is what #88 fixed), so a healthy anchor lands below it
+        — but never above cap * 1.15 (the elite-target headroom can push an
+        anchor slightly past a genuinely saturating cap sum, DEF being the
+        live example) and never below cap * 0.35 (a plausible weight-cap
+        doubling without recalibration roughly halves the ratio, tripping
+        this floor). Families with an uncapped weight (waiver npxg) have an
+        infinite cap sum for ATK positions and are skipped there.
+        """
+        from math import isinf
+
+        from fpl_cli.services.scoring.constants import (
+            DIFFERENTIAL_QUALITY_WEIGHTS,
+            QUALITY_CEILINGS,
+            TARGET_QUALITY_WEIGHTS,
+            VALUE_QUALITY_WEIGHTS,
+            WAIVER_QUALITY_WEIGHTS,
+            _theoretical_quality_cap,
+        )
+
+        family_weights = {
+            "target": TARGET_QUALITY_WEIGHTS,
+            "differential": DIFFERENTIAL_QUALITY_WEIGHTS,
+            "waiver": WAIVER_QUALITY_WEIGHTS,
+            "value": VALUE_QUALITY_WEIGHTS,
+        }
+        for (family, position), anchor in QUALITY_CEILINGS.items():
+            cap = _theoretical_quality_cap(family_weights[family], position)
+            if isinf(cap):
+                continue
+            assert 0.35 * cap <= anchor <= 1.15 * cap, (
+                f"{family}/{position}: anchor {anchor} outside "
+                f"[{0.35 * cap:.2f}, {1.15 * cap:.2f}] bracket of theoretical "
+                f"cap {cap:.2f} — recalibrate or investigate the write path"
+            )
+
+
+class TestDgwMatchupClamp:
+    """DGW matchup windows must not blow through the calibrated ceilings.
+
+    compute_3gw_matchup sums fixtures within a gameweek, so a double
+    gameweek pushes matchup_avg_3gw past the single-fixture scale (a
+    confirmed double averages 12+). The ownership ceilings budget the
+    matchup bonus at _MATCHUP_MAX; without the clamp in _matchup_bonus,
+    every elite player in a DGW window clipped to 100 and tied — losing
+    the quality and consistency discrimination the headroom exists to
+    protect, with real ordering fallout on the waiver list (which sorts
+    on the normalised score).
+    """
+
+    def test_bonus_clamps_at_budget_and_passes_through_below_it(self):
+        from fpl_cli.services.scoring.constants import _MATCHUP_MAX
+        from fpl_cli.services.scoring.ownership import _matchup_bonus
+
+        assert _matchup_bonus(12.5, 1.0) == pytest.approx(_MATCHUP_MAX)
+        assert _matchup_bonus(4.0, 1.0) == pytest.approx(3.0)
+        # Rotation discount applies after the clamp
+        assert _matchup_bonus(12.5, 0.5) == pytest.approx(_MATCHUP_MAX * 0.5)
+
+    def _elite_mid_eval(self, cv: float):
+        player = make_player(
+            id=610, web_name="DgwMID", team_id=1,
+            position=PlayerPosition.MIDFIELDER,
+            form=6.5, points_per_game=5.0, minutes=2000, total_points=125,
+        )
+        eval_, _ = build_player_evaluation(
+            player,
+            enrichment={
+                "npxG_per_90": 0.45, "xGChain_per_90": 0.50,
+                "penalty_xG_per_90": 0.0, "cv_xgi_percentile": cv,
+                "team_short": "LIV",
+            },
+            matchup_avg_3gw=12.5,
+        )
+        return eval_
+
+    def test_dgw_elite_does_not_clip_and_consistency_still_discriminates(self):
+        from fpl_cli.services.scoring.constants import _OWNERSHIP_HEADROOM
+
+        # The scenario is a genuine would-be clip: the unclamped bonus alone
+        # (12.5 * 0.75 = 9.375) exceeds the target family's entire headroom.
+        assert 12.5 * 0.75 > _OWNERSHIP_HEADROOM["target"]
+
+        high_cv = calculate_target_score(self._elite_mid_eval(1.0), next_gw_id=20)
+        low_cv = calculate_target_score(self._elite_mid_eval(0.0), next_gw_id=20)
+        assert high_cv < 100
+        assert low_cv < high_cv
 
 
 class TestPositionalDistributionGuard:
@@ -4816,6 +4965,7 @@ class TestPickDisplayCeilingRouting:
     def test_horizon_multi_uses_value_family(self):
         from fpl_cli.services.scoring import (
             DEF_VALUE_CEILING,
+            FWD_VALUE_CEILING,
             GK_VALUE_CEILING,
             VALUE_CEILING,
             pick_display_ceiling,
@@ -4823,7 +4973,8 @@ class TestPickDisplayCeilingRouting:
         assert pick_display_ceiling("GK", horizon=3) == GK_VALUE_CEILING
         assert pick_display_ceiling("DEF", horizon=3) == DEF_VALUE_CEILING
         assert pick_display_ceiling("MID", horizon=6) == VALUE_CEILING
-        assert pick_display_ceiling("FWD", horizon=6) == VALUE_CEILING
+        # FWD no longer shares the MID value anchor (#88).
+        assert pick_display_ceiling("FWD", horizon=6) == FWD_VALUE_CEILING
 
 
 class TestDefScoreSpreadNotClustered:

@@ -309,7 +309,7 @@ Include all of this in the prompt field, populated with position-specific data:
    Run `fpl player "{name}" -f -H` **in parallel** for all candidates in your list.
    For season-start modes with no current-season data, also use `fpl history` data passed in context.
 
-7. **Scoring:** Score each candidate against the mode-specific criteria from rules. Use `quality_score` and `quality_per_m` when available (null for players without Understat data — don't penalise). **Both fields are elite-within-position: never rank or compare candidates across positions by `quality_score` or `quality_per_m`.** A DEF showing 85 and a MID showing 55 is not "the DEF is better" — the ceilings differ by design. Only compare within the position you are currently filling.
+7. **Scoring:** Score each candidate against the mode-specific criteria from rules. Use `quality_score` and `quality_per_m` when available (null for players without Understat data — don't penalise). **Both fields are elite-within-position: never rank or compare candidates across positions by `quality_score` or `quality_per_m`.** A GK showing 90 is "top of the GK pool", not "better than a MID showing 85" — every position is normalised against its own calibrated ceiling, MID and FWD included. Within a position the numbers are trustworthy: elite players in every position read 80+, so a MID at 55 genuinely is mid-tier among MIDs. Only compare within the position you are currently filling.
 
 8. **Return format:** Return a structured ranked list. Per candidate:
    ```

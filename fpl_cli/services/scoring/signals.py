@@ -11,7 +11,15 @@ from __future__ import annotations
 import dataclasses
 from typing import TYPE_CHECKING, Any, TypeVar
 
-from fpl_cli.services.scoring.constants import ATTACKING_POSITIONS
+from fpl_cli.services.scoring.constants import (
+    ATTACKING_POSITIONS,
+    FORM_TRAJECTORY_BOUNDS,
+    FORM_TRAJECTORY_SLOPE_RANGE,
+    SIGNAL_WINDOW_LOOKBACK_GWS,
+    SIGNAL_WINDOW_SIZE,
+    XGI_DIVERGENCE_SCALE,
+    XGI_SUSTAINABILITY_BOUNDS,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -33,8 +41,8 @@ class ConsistencySignals:
 NEUTRAL_SIGNALS = ConsistencySignals()
 
 
-_WINDOW_LOOKBACK_GWS = 12
-_WINDOW_SIZE = 7
+_WINDOW_LOOKBACK_GWS = SIGNAL_WINDOW_LOOKBACK_GWS
+_WINDOW_SIZE = SIGNAL_WINDOW_SIZE
 
 _RowT = TypeVar("_RowT", bound="Mapping[str, Any]")
 
@@ -127,17 +135,19 @@ def compute_form_trajectory(history: list[dict[str, Any]], current_gw: int) -> f
 
     slope = numerator / denominator
 
-    # Clamped linear interpolation to [0.8, 1.2]
-    # Neutral at slope=0; rising > 0, falling < 0
-    if slope <= -1.5:
-        return 0.8
+    # Clamped linear interpolation to FORM_TRAJECTORY_BOUNDS across
+    # FORM_TRAJECTORY_SLOPE_RANGE. Neutral at slope=0; rising > 0, falling < 0
+    low, high = FORM_TRAJECTORY_BOUNDS
+    slope_min, slope_max = FORM_TRAJECTORY_SLOPE_RANGE
+    if slope <= slope_min:
+        return low
     if slope <= 0.0:
-        # -1.5 -> 0.8, 0.0 -> 1.0
-        return 0.8 + (slope + 1.5) / 1.5 * 0.2
-    if slope <= 2.0:
-        # 0.0 -> 1.0, 2.0 -> 1.2
-        return 1.0 + slope / 2.0 * 0.2
-    return 1.2
+        # slope_min -> low, 0.0 -> 1.0
+        return low + (slope - slope_min) / -slope_min * (1.0 - low)
+    if slope <= slope_max:
+        # 0.0 -> 1.0, slope_max -> high
+        return 1.0 + slope / slope_max * (high - 1.0)
+    return high
 
 
 def compute_xgi_sustainability(
@@ -171,9 +181,10 @@ def compute_xgi_sustainability(
     ]
     avg_divergence = sum(divergences) / len(divergences)
 
-    # Linear interpolation: divergence=0 -> 1.0, divergence=±0.3 -> 0.85/1.15
-    raw_mult = 1.0 - (avg_divergence / 0.3) * 0.15
-    multiplier = max(0.85, min(1.15, raw_mult))
+    # Linear interpolation: divergence=0 -> 1.0, ±XGI_DIVERGENCE_SCALE -> the clamp bounds
+    low, high = XGI_SUSTAINABILITY_BOUNDS
+    raw_mult = 1.0 - (avg_divergence / XGI_DIVERGENCE_SCALE) * (high - 1.0)
+    multiplier = max(low, min(high, raw_mult))
 
     return multiplier, avg_divergence
 

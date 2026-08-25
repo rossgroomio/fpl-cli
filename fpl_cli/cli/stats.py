@@ -121,7 +121,9 @@ def stats_command(
         error_console.print(
             "[yellow]Warning: --value without --position produces a cross-position "
             "ranking. quality_score and quality_per_m are elite-within-position "
-            "indices; comparing GK/DEF against MID/FWD is not meaningful. "
+            "indices; every position is normalised against its own calibrated "
+            "ceiling, so comparing any two positions — MID against FWD included — "
+            "is not meaningful. "
             "Re-run with --position GK|DEF|MID|FWD for a reliable ranking.[/yellow]"
         )
 
@@ -317,9 +319,11 @@ def stats_command(
                     "message": (
                         "quality_score and quality_per_m are elite-within-position "
                         "indices. Sorting across all positions mixes incompatible "
-                        "scales (GK/DEF ceilings differ from MID/FWD). Re-run with "
-                        "--position GK|DEF|MID|FWD for a reliable ranking, or "
-                        "consume raw_quality for a position-agnostic proxy."
+                        "scales: every position is normalised against its own "
+                        "calibrated ceiling, MID and FWD included. Re-run with "
+                        "--position GK|DEF|MID|FWD for a reliable ranking, or use "
+                        "`fpl allocate --format json`'s raw_quality for a "
+                        "position-agnostic proxy."
                     ),
                 })
 

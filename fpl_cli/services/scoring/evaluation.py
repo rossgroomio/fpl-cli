@@ -13,7 +13,13 @@ import dataclasses
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
-from fpl_cli.services.scoring.constants import Position, _as_position, _position_from_element_type
+from fpl_cli.services.scoring.constants import (
+    GK_SAMPLE_RAMP_MINUTES,
+    GK_XGC_QUALITY_ANCHOR,
+    Position,
+    _as_position,
+    _position_from_element_type,
+)
 from fpl_cli.services.scoring.signals import (
     apply_consistency,
     compute_form_trajectory,
@@ -47,11 +53,13 @@ def build_scoring_enrichment(
     if player.position_name == "GK":
         # Sample-size ramp: per-90 rates are noisy below ~5 full games.
         # Consistent with waiver availability ramp (minutes / 450).
-        sample_ramp = min(player.minutes / 450, 1.0)
+        sample_ramp = min(player.minutes / GK_SAMPLE_RAMP_MINUTES, 1.0)
         enrichment["gk_saves_per_90"] = player.saves_per_90 * sample_ramp
         if player.minutes > 0:
             xgc_per_90 = (player.expected_goals_conceded / player.minutes) * 90
-            enrichment["gk_xgc_quality"] = max(0.0, 2.0 - xgc_per_90) * sample_ramp
+            enrichment["gk_xgc_quality"] = (
+                max(0.0, GK_XGC_QUALITY_ANCHOR - xgc_per_90) * sample_ramp
+            )
         else:
             enrichment["gk_xgc_quality"] = 0.0
         enrichment["gk_cs_rate"] = (player.clean_sheets / max(player.appearances, 1)) * sample_ramp

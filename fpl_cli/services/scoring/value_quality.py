@@ -13,6 +13,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Literal, overload
 
 from fpl_cli.services.scoring.constants import (
+    MINS_FACTOR_FULL_APPEARANCE,
     MINS_FACTOR_START_GW,
     POSITION_SCORE_MULTIPLIER,
     Position,
@@ -110,7 +111,7 @@ def calculate_mins_factor(
         return 1.0
     if appearances <= 0:
         return 0.0
-    return min(minutes / (appearances * 80), 1.0)
+    return min(minutes / (appearances * MINS_FACTOR_FULL_APPEARANCE), 1.0)
 
 
 @overload

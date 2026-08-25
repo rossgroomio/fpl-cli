@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from fpl_cli.services.scoring.constants import (
+    _MATCHUP_MAX,
     ATTACKING_POSITIONS,
     CONSISTENCY_CV_DIFF,
     CONSISTENCY_CV_TARGET,
@@ -34,8 +35,17 @@ def _matchup_bonus(matchup_avg_3gw: float | None, mins_factor: float) -> float:
     Parallel to ``single_gw.calculate_single_gw_core``'s ``matchup_weight``
     param which serves the same role for per-fixture data (captain 2.0,
     bench 1.5).
+
+    Clamped to the ``_MATCHUP_MAX`` headroom the calibrated ceilings budget
+    for it. DGW windows push ``matchup_avg_3gw`` past the single-fixture
+    scale (fixtures are summed within a gameweek — a confirmed double can
+    average 12+), and an unclamped bonus would blow through the ceiling and
+    pin every elite player in the window at 100, erasing the quality and
+    consistency discrimination between them — with real ordering fallout on
+    the waiver list, which sorts on the normalised score. Clamping the
+    shared team-level term instead keeps the per-player terms deciding.
     """
-    return (matchup_avg_3gw or 0.0) * 0.75 * mins_factor
+    return min((matchup_avg_3gw or 0.0) * 0.75, _MATCHUP_MAX) * mins_factor
 
 
 def _calculate_quality_based_raw(
