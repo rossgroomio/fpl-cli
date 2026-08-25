@@ -208,6 +208,10 @@ XGI_SUSTAINABILITY_BOUNDS: tuple[float, float] = (0.85, 1.15)
 # compute_xgi_sustainability divergence scale (signals.py): a per-match
 # GI-xGI divergence of ±SCALE maps to the clamp bounds
 XGI_DIVERGENCE_SCALE = 0.3
+# Rolling-window shape shared by both signals above (signals.py): the most
+# recent SIZE qualifying gameweeks inside a LOOKBACK-gameweek window
+SIGNAL_WINDOW_LOOKBACK_GWS = 12
+SIGNAL_WINDOW_SIZE = 7
 # gk_xgc_quality = max(0, ANCHOR - xGC_per_90) * ramp (evaluation.py)
 GK_XGC_QUALITY_ANCHOR = 2.0
 # GK signal sample-size ramp: min(minutes / RAMP, 1.0) (evaluation.py)
@@ -244,9 +248,11 @@ def scoring_weights_fingerprint() -> str:
     parts.append(f"form_trajectory_slope={FORM_TRAJECTORY_SLOPE_RANGE!r}")
     parts.append(f"xgi_sustainability={XGI_SUSTAINABILITY_BOUNDS!r}")
     parts.append(f"xgi_divergence_scale={XGI_DIVERGENCE_SCALE!r}")
+    parts.append(f"signal_window={(SIGNAL_WINDOW_LOOKBACK_GWS, SIGNAL_WINDOW_SIZE)!r}")
     parts.append(f"gk_xgc_anchor={GK_XGC_QUALITY_ANCHOR!r}")
     parts.append(f"gk_ramp={GK_SAMPLE_RAMP_MINUTES!r}")
     parts.append(f"mins_full_appearance={MINS_FACTOR_FULL_APPEARANCE!r}")
+    parts.append(f"mins_factor_start_gw={MINS_FACTOR_START_GW!r}")
     return hashlib.sha256("|".join(parts).encode()).hexdigest()[:16]
 
 
@@ -266,7 +272,11 @@ STARTING_XI_CEILING = 33.2
 # with ownership.py: _matchup_bonus, the ownership bonus in
 # _calculate_quality_based_raw, and the position-need bonus in
 # calculate_waiver_score.
-_MATCHUP_MAX = 6.0           # matchup_avg_3gw max 8.0 * 0.75 * mins_factor 1.0
+# The matchup-bonus budget the ownership ceilings reserve. Not a derived
+# maximum: DGW windows push matchup_avg_3gw past the single-fixture scale
+# (fixtures are summed within a gameweek), so ownership._matchup_bonus
+# clamps the bonus to this value — the budget is enforced, not assumed.
+_MATCHUP_MAX = 6.0
 _OWNERSHIP_MAX = 5.0         # (semi_differential_threshold 15 - 0) / divisor 3
 _POSITION_NEED_MAX = 5.0     # calculate_waiver_score empty-slot bonus
 # Form multipliers applied inside value_quality.calculate_player_quality_score.
@@ -327,7 +337,7 @@ def _theoretical_quality_cap(weights: QualityWeights, position: Position) -> flo
 # --- BEGIN calibrated quality ceilings (generated) ---
 # Calibrated by scripts/calibrate_quality_ceilings.py against 2025-26
 # (snapshots GW10, GW15, GW19, GW24, GW29, GW34, GW38; pool 300+ minutes;
-# elite anchor top_raw/0.92; run 2026-08-24).
+# elite anchor top_raw/0.92; run 2026-08-25).
 # Do not hand-edit: re-run the script with --write after any weight change.
 QUALITY_CEILINGS: dict[tuple[str, Position], float] = {
     ("target", "GK"): 11.99,
@@ -347,7 +357,7 @@ QUALITY_CEILINGS: dict[tuple[str, Position], float] = {
     ("value", "MID"): 17.00,
     ("value", "FWD"): 21.60,
 }
-CALIBRATION_FINGERPRINT = "dee364bf03a67756"
+CALIBRATION_FINGERPRINT = "d14f7c1b3886caea"
 # --- END calibrated quality ceilings (generated) ---
 
 # Ownership-family ceilings = calibrated quality anchor + bonus headroom.

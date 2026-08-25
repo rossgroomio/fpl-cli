@@ -4702,6 +4702,58 @@ class TestCalibrationDriftGuard:
             )
 
 
+class TestDgwMatchupClamp:
+    """DGW matchup windows must not blow through the calibrated ceilings.
+
+    compute_3gw_matchup sums fixtures within a gameweek, so a double
+    gameweek pushes matchup_avg_3gw past the single-fixture scale (a
+    confirmed double averages 12+). The ownership ceilings budget the
+    matchup bonus at _MATCHUP_MAX; without the clamp in _matchup_bonus,
+    every elite player in a DGW window clipped to 100 and tied — losing
+    the quality and consistency discrimination the headroom exists to
+    protect, with real ordering fallout on the waiver list (which sorts
+    on the normalised score).
+    """
+
+    def test_bonus_clamps_at_budget_and_passes_through_below_it(self):
+        from fpl_cli.services.scoring.constants import _MATCHUP_MAX
+        from fpl_cli.services.scoring.ownership import _matchup_bonus
+
+        assert _matchup_bonus(12.5, 1.0) == pytest.approx(_MATCHUP_MAX)
+        assert _matchup_bonus(4.0, 1.0) == pytest.approx(3.0)
+        # Rotation discount applies after the clamp
+        assert _matchup_bonus(12.5, 0.5) == pytest.approx(_MATCHUP_MAX * 0.5)
+
+    def _elite_mid_eval(self, cv: float):
+        player = make_player(
+            id=610, web_name="DgwMID", team_id=1,
+            position=PlayerPosition.MIDFIELDER,
+            form=6.5, points_per_game=5.0, minutes=2000, total_points=125,
+        )
+        eval_, _ = build_player_evaluation(
+            player,
+            enrichment={
+                "npxG_per_90": 0.45, "xGChain_per_90": 0.50,
+                "penalty_xG_per_90": 0.0, "cv_xgi_percentile": cv,
+                "team_short": "LIV",
+            },
+            matchup_avg_3gw=12.5,
+        )
+        return eval_
+
+    def test_dgw_elite_does_not_clip_and_consistency_still_discriminates(self):
+        from fpl_cli.services.scoring.constants import _OWNERSHIP_HEADROOM
+
+        # The scenario is a genuine would-be clip: the unclamped bonus alone
+        # (12.5 * 0.75 = 9.375) exceeds the target family's entire headroom.
+        assert 12.5 * 0.75 > _OWNERSHIP_HEADROOM["target"]
+
+        high_cv = calculate_target_score(self._elite_mid_eval(1.0), next_gw_id=20)
+        low_cv = calculate_target_score(self._elite_mid_eval(0.0), next_gw_id=20)
+        assert high_cv < 100
+        assert low_cv < high_cv
+
+
 class TestPositionalDistributionGuard:
     """Top-N composition under compute_quality_value. Guards against GK dominance."""
 

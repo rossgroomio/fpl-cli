@@ -22,8 +22,9 @@ def normalise_score(raw: float, ceiling: float) -> int:
     keeps alongside this one (``lineup_score_raw``, ``priority_score_raw``),
     never on the display value.
 
-    The waiver list is the one consumer that does order on a normalised score,
-    so it is the only place the clamp can tie players together. Below GW10
+    The waiver list orders on a normalised score, as do the target and
+    differential lists (StatsAgent sorts both on the normalised value), so
+    those are the places the clamp can tie players together. Below GW10
     ``apply_shrinkage`` runs on ``waiver_score`` between scoring and sorting
     and separates most of them again — a clamped 0 from a merely weak player is
     pulled toward the position mean like any other low-confidence score.

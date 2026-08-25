@@ -15,6 +15,8 @@ from fpl_cli.services.scoring.constants import (
     ATTACKING_POSITIONS,
     FORM_TRAJECTORY_BOUNDS,
     FORM_TRAJECTORY_SLOPE_RANGE,
+    SIGNAL_WINDOW_LOOKBACK_GWS,
+    SIGNAL_WINDOW_SIZE,
     XGI_DIVERGENCE_SCALE,
     XGI_SUSTAINABILITY_BOUNDS,
 )
@@ -39,8 +41,8 @@ class ConsistencySignals:
 NEUTRAL_SIGNALS = ConsistencySignals()
 
 
-_WINDOW_LOOKBACK_GWS = 12
-_WINDOW_SIZE = 7
+_WINDOW_LOOKBACK_GWS = SIGNAL_WINDOW_LOOKBACK_GWS
+_WINDOW_SIZE = SIGNAL_WINDOW_SIZE
 
 _RowT = TypeVar("_RowT", bound="Mapping[str, Any]")
 

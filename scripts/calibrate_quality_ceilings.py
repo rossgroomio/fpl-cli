@@ -27,8 +27,11 @@ Faithfulness notes (all deliberate):
 - Understat per-90 rates are season-long aggregates applied to every
   snapshot (Understat's league endpoint has no as-of-GW view). Attack-rate
   distributions are stable enough across a season for a p95-style anchor.
-- The Core-Insights Elo adjustment on npxG (clamped [0.80, 1.25]) is not
-  replayed; it recentres individual rates, not the pool's upper tail.
+- The Core-Insights adjusted-npxG override is not replayed. Production
+  REPLACES the season aggregate with a rolling 7-match rate, Elo-scaled up
+  to x1.25, so a hot streak can transiently exceed the season-aggregate
+  anchors measured here and read a clamped 100 for a week or two. Accepted:
+  the anchors target the sustained elite tier, not peak windows.
 - Players without an Understat name match take the xGI fallback branch,
   exactly as unmatched players do in production.
 
@@ -76,6 +79,8 @@ from fpl_cli.paths import user_cache_dir
 from fpl_cli.season import get_season_year, season_label
 from fpl_cli.services.scoring.constants import (
     DIFFERENTIAL_QUALITY_WEIGHTS,
+    GK_SAMPLE_RAMP_MINUTES,
+    GK_XGC_QUALITY_ANCHOR,
     TARGET_QUALITY_WEIGHTS,
     VALUE_QUALITY_WEIGHTS,
     WAIVER_QUALITY_WEIGHTS,
@@ -136,13 +141,21 @@ def _cache_dir() -> Path:
     return path
 
 
+def _cache_write(cache_file: Path, text: str) -> None:
+    """Atomic cache write — a killed run must not leave a truncated file
+    that later runs would treat as complete data."""
+    tmp = cache_file.with_suffix(cache_file.suffix + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(cache_file)
+
+
 def _fetch_text(url: str, cache_name: str) -> str:
     cache_file = _cache_dir() / cache_name
     if cache_file.exists():
         return cache_file.read_text(encoding="utf-8")
     response = httpx.get(url, timeout=120.0, follow_redirects=True)
     response.raise_for_status()
-    cache_file.write_text(response.text, encoding="utf-8")
+    _cache_write(cache_file, response.text)
     return response.text
 
 
@@ -159,7 +172,7 @@ def _fetch_understat_players(season_start_year: int) -> list[dict[str, Any]]:
             return await client.get_league_players()
 
     players = asyncio.run(_run())
-    cache_file.write_text(json.dumps(players), encoding="utf-8")
+    _cache_write(cache_file, json.dumps(players))
     return players
 
 
@@ -218,14 +231,34 @@ def load_season(season: str) -> list[SeasonPlayer]:
         f"{VAASTAV_BASE}/{season}/gws/merged_gw.csv",
         f"merged_gw-{season}.csv",
     )
+    reader = csv.DictReader(io.StringIO(text))
+    if "defensive_contribution" not in (reader.fieldnames or []):
+        raise SystemExit(
+            f"Season {season}'s merged_gw.csv has no defensive_contribution "
+            "column (the stat exists from 2025-26). Calibrating without it "
+            "would silently zero the DC term the DEF anchors are built on — "
+            "pick 2025-26 or later."
+        )
     players: dict[int, SeasonPlayer] = {}
-    for record in csv.DictReader(io.StringIO(text)):
+    # Vaastav's volunteer-maintained per-GW files demonstrably ship duplicate
+    # rows (same element + round + fixture); double-counting would distort
+    # minutes, ppg, form and mins_factor for the affected players.
+    seen_rows: set[tuple[int, int, int]] = set()
+    for record in reader:
         position = _POSITION_ALIASES.get((record.get("position") or "").strip().upper())
         if position is None:
             continue
         element = _to_int(record.get("element"))
         if element <= 0:
             continue
+        row_key = (
+            element,
+            _to_int(record.get("round") or record.get("GW")),
+            _to_int(record.get("fixture")),
+        )
+        if row_key in seen_rows:
+            continue
+        seen_rows.add(row_key)
         player = players.get(element)
         if player is None:
             player = SeasonPlayer(
@@ -379,10 +412,14 @@ def snapshot_quality_inputs(
         quality["penalty_xG_per_90"] = float(player.understat.get("penalty_xG_per_90", 0) or 0)
 
     if player.position == "GK":
-        ramp = min(minutes / 450, 1.0)
+        # Mirrors build_scoring_enrichment's GK block via the SAME named
+        # constants — a literal here would silently keep measuring with a
+        # stale value after a constant change, while --write stamps the new
+        # fingerprint, defeating the drift guard for exactly these inputs.
+        ramp = min(minutes / GK_SAMPLE_RAMP_MINUTES, 1.0)
         xgc_per_90 = sum(r.expected_goals_conceded for r in rows) / minutes * 90
         quality["gk_saves_per_90"] = sum(r.saves for r in rows) / minutes * 90 * ramp
-        quality["gk_xgc_quality"] = max(0.0, 2.0 - xgc_per_90) * ramp
+        quality["gk_xgc_quality"] = max(0.0, GK_XGC_QUALITY_ANCHOR - xgc_per_90) * ramp
         quality["gk_cs_rate"] = sum(r.clean_sheets for r in rows) / appearances * ramp
 
     mins_factor = calculate_mins_factor(minutes, appearances, next_gw_id)
@@ -514,6 +551,16 @@ def write_constants(
     constants_path: Path,
 ) -> None:
     """Rewrite the generated anchor block in scoring/constants.py in place."""
+    import math
+
+    bad = {k: v for k, v in anchors.items() if not math.isfinite(v) or v <= 0}
+    if bad:
+        raise SystemExit(
+            f"Refusing to write non-finite or non-positive anchors {bad} — "
+            "a corrupt input column would otherwise land in production "
+            "constants (inf silently zeroes a family's scores; nan breaks "
+            "the package import)."
+        )
     lines = [
         _BEGIN_MARK,
         f"# Calibrated by scripts/calibrate_quality_ceilings.py against {season}",
@@ -584,7 +631,9 @@ def main() -> None:
             f"Season {args.season} only has data through GW{max_round} in the "
             f"vaastav archive but snapshots request GW{max(snapshot_gws)} — "
             "an incomplete season would mis-anchor the ceilings. Pick an "
-            "earlier season or trim --snapshots."
+            "earlier season or trim --snapshots. If the archive has since "
+            "been completed upstream, this run read a cached copy: delete "
+            f"{_cache_dir()} and re-run."
         )
     understat = _fetch_understat_players(season_start_year)
     match_rate = attach_understat(players, understat, load_web_names(args.season))
