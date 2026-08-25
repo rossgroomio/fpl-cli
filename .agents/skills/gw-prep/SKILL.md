@@ -544,12 +544,12 @@ Proceed immediately (non-interactive).
 >    the player dropped for them plays the returnee's own position.
 > 4. **Beats the incumbent by the configured margin:** take the drop candidate your squad analysis
 >    already ranks lowest at that position, run C2.5's `transfer_eval.py --out "{that player}"
->    --in "{returnee}"`, and require `outlook_delta` to exceed `returnee_radar.stash_upgrade_margin`
->    from the effective settings (`fpl_cli/config/defaults.yaml`, overridden by `settings.yaml`);
->    both are quality points on the same 0-100 scale. If the script errors, or you cannot read the
->    margin, or the delta does not clear it, do not escalate. A drop-priority ordering always yields
->    a lowest-ranked player and so can never answer "no" — the margin is what makes this gate
->    refusable.
+>    --in "{returnee}"`, and require `outlook_delta` to exceed the radar's
+>    `metadata.stash_upgrade_margin`, which already carries the effective configured value; both
+>    are quality points on the same 0-100 scale. If the script errors, or the margin is missing
+>    from the metadata, or the delta does not clear it, do not escalate. A drop-priority ordering
+>    always yields a lowest-ranked player and so can never answer "no" — the margin is what makes
+>    this gate refusable.
 >
 > Write every stash claim as a stash, never as a straight upgrade: it spends a roster slot until the
 > player is fit again, and it is bought to lock the asset before a rival can claim them. Each stash

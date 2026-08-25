@@ -173,7 +173,7 @@ Each entry reports which branch judged it (`quality.basis`: `prior`, `season-qua
 
 **Week-over-week changes.** Each run stores the watchlist it produced in `returnee_snapshot.json` in the data directory (see [Directories](#directories)) and the next run diffs against it, marking who is newly flagged, whose chance moved, whose return date was set, moved or missed, and who left the list. The snapshot is rewritten only when the gameweek changes, so a second run inside one gameweek still diffs against last week rather than against itself. A file from a previous season is discarded rather than read — player IDs are reshuffled at the season boundary. The first run has no history to compare against and says so.
 
-JSON `metadata` carries `window`, `escalation_window`, `transitions_available`, `quality_bar_available`, `quality_bar_applied`, and the `enrichment_*` fields (`requested`, `available`, `note`, `count`); `data` is `{entries, departures}`.
+JSON `metadata` carries `window`, `escalation_window`, `stash_upgrade_margin`, `transitions_available`, `quality_bar_available`, `quality_bar_applied`, and the `enrichment_*` fields (`requested`, `available`, `note`, `count`); `data` is `{entries, departures}`.
 
 ## Fixture & Strategic Planning
 
@@ -889,6 +889,7 @@ returnee_radar:                  # `fpl returnees` - see Injury Returnees above
   price_watchlist_percentile: 0.80   # Quality/price bar, price-sourced player (0-1)
   price_stash_percentile: 0.90       # Same measure, escalation bar
   stash_upgrade_margin: 5.0      # Quality points a returnee must beat the incumbent by
+                                 # (published as metadata.stash_upgrade_margin)
   enrich_stale_news_days: 7      # --enrich re-checks a dated player whose news is older
   enrich_max_players: 8          # Most players one --enrich run will search for
 

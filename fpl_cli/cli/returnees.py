@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from datetime import date
@@ -65,7 +66,8 @@ _UNKNOWN_RETURN = "Unknown"
 
 @click.command(COMMAND)
 @click.option("--window", type=click.IntRange(min=1, max=38), default=None,
-              help="Only show returns expected within this many gameweeks (default: 6)")
+              help="Only show returns expected within this many gameweeks, overriding "
+                   "the configured window")
 @click.option("--all", "show_all", is_flag=True, default=False,
               help="List every flagged player, including those below the quality bar")
 @click.option("--enrich", is_flag=True, default=False,
@@ -115,6 +117,7 @@ def returnees_command(
             gameweek=inputs["next_gw_id"],
             window=config.window_gameweeks,
             escalation_window=config.stash_window_gameweeks,
+            stash_upgrade_margin=config.stash_upgrade_margin,
             quality_bar_available=quality_bar_available,
             quality_bar_applied=quality_bar_available and not show_all,
             enrichment=enrichment,
@@ -225,7 +228,8 @@ def _seasons_to_score(
 async def _load_understat_seasons(seasons: set[str]) -> dict[str, list[dict[str, Any]]]:
     """Whole-season Understat player lists keyed by season label.
 
-    Best-effort per season: a scrape that fails or comes back empty leaves that
+    Fetched concurrently and best-effort per season: the scrapes are
+    independent, so one that fails or comes back empty leaves only its own
     season out, and the players it would have sharpened are scored on their FPL
     stats alone.
     """
@@ -235,16 +239,29 @@ async def _load_understat_seasons(seasons: set[str]) -> dict[str, list[dict[str,
     from fpl_cli.api.understat import UnderstatClient
     from fpl_cli.season import understat_season
 
+    labels = sorted(seasons)
     fetched: dict[str, list[dict[str, Any]]] = {}
     try:
         async with UnderstatClient() as client:
-            for label in sorted(seasons):
-                players = await client.get_league_players(understat_season(int(label[:4])))
-                if players:
-                    fetched[label] = players
+            results = await asyncio.gather(
+                *(
+                    client.get_league_players(understat_season(int(label[:4])))
+                    for label in labels
+                ),
+                return_exceptions=True,
+            )
     except Exception:  # noqa: BLE001 — graceful degradation: xG sharpening is optional
         logger.info("Understat season data unavailable; scoring on FPL stats alone",
                     exc_info=True)
+        return fetched
+
+    for label, players in zip(labels, results, strict=True):
+        if isinstance(players, BaseException):
+            logger.info("Understat data unavailable for %s; scoring it on FPL stats alone",
+                        label, exc_info=players)
+            continue
+        if players:
+            fetched[label] = players
     return fetched
 
 
@@ -388,17 +405,18 @@ async def _enrich(
     failures: list[str] = []
     reason = ""
     try:
-        for entry in pending:
-            found, error = await _query_intel(
-                provider, entry, gameweeks=inputs["gameweeks"], gameweek=gameweek,
-            )
-            if found is None:
-                failures.append(entry.web_name)
-                reason = error or reason
-                continue
-            intel[entry.player_id] = found
+        answers = await _gather_intel(
+            provider, pending, gameweeks=inputs["gameweeks"], gameweek=gameweek,
+        )
     finally:
         await provider.close()
+
+    for entry, (found, error) in zip(pending, answers, strict=True):
+        if found is None:
+            failures.append(entry.web_name)
+            reason = error or reason
+            continue
+        intel[entry.player_id] = found
 
     if len(failures) < len(pending):
         try:
@@ -425,6 +443,37 @@ async def _enrich(
         note=note,
         count=sum(1 for entry in entries if entry.enrichment is not None),
     )
+
+
+# At most this many enrichment queries are in flight at once. The queries are
+# independent and the provider holds one client with no rate limiter of its
+# own, so a small ceiling is what keeps a shortlist from arriving as a burst.
+_ENRICH_CONCURRENCY = 4
+
+
+async def _gather_intel(
+    provider: Any,
+    entries: Sequence[RadarEntry],
+    *,
+    gameweeks: list[dict[str, Any]],
+    gameweek: int,
+) -> list[tuple[EnrichedReturn | None, str | None]]:
+    """Query every shortlisted player, a few at a time, in the order given.
+
+    Each query is a multi-second round trip that depends on nothing but its own
+    player, so running them one after another spent the shortlist's latency
+    needlessly. Results come back positionally, so a failure still lines up
+    with the player it belongs to.
+    """
+    limit = asyncio.Semaphore(_ENRICH_CONCURRENCY)
+
+    async def _one(entry: RadarEntry) -> tuple[EnrichedReturn | None, str | None]:
+        async with limit:
+            return await _query_intel(
+                provider, entry, gameweeks=gameweeks, gameweek=gameweek,
+            )
+
+    return list(await asyncio.gather(*(_one(entry) for entry in entries)))
 
 
 async def _query_intel(
@@ -480,6 +529,7 @@ def assemble(
     gameweek: int,
     window: int,
     escalation_window: int,
+    stash_upgrade_margin: float,
     quality_bar_available: bool,
     quality_bar_applied: bool,
     enrichment: _Enrichment,
@@ -512,6 +562,11 @@ def assemble(
         # worth holding a squad place for. Published so a consumer can state
         # the escalation rule without re-deriving the arithmetic.
         "escalation_window": escalation_window,
+        # Quality points a returnee must beat the incumbent by before a stash is
+        # worth a squad place. Published so a consumer applies the configured
+        # margin instead of reading settings.yaml itself and guessing when it
+        # cannot -- the gate is refusable only if the number is actually known.
+        "stash_upgrade_margin": stash_upgrade_margin,
         "transitions_available": result.transitions_available,
         "quality_bar_available": quality_bar_available,
         "quality_bar_applied": quality_bar_applied,

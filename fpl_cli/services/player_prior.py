@@ -67,8 +67,12 @@ def _extract_prev_season_pts_per_90(
     return None
 
 
-def _percentile_rank(value: float, values: list[float]) -> float:
-    """Compute percentile rank of value within values (0.0-1.0)."""
+def percentile_rank(value: float, values: list[float]) -> float:
+    """Compute percentile rank of value within values (0.0-1.0).
+
+    Public because the returnee radar's last-resort price bar ranks players by
+    the same rule, and two copies of a tie-handling formula drift apart.
+    """
     if len(values) <= 1:
         return 0.5
     below = sum(1 for v in values if v < value)
@@ -144,12 +148,12 @@ def generate_player_prior(
             # Has qualifying history
             pts_90 = player_pts_map[p.id]
             pos_values = position_pts.get(position, [])
-            prior_strength = _percentile_rank(pts_90, pos_values)
+            prior_strength = percentile_rank(pts_90, pos_values)
             source = "history"
         else:
             # No qualifying history (injured last season, new signing, no vaastav data)
             price_values = position_prices.get(position, [])
-            price_pct = _percentile_rank(float(p.now_cost), [float(v) for v in price_values])
+            price_pct = percentile_rank(float(p.now_cost), [float(v) for v in price_values])
             prior_strength = price_pct * PRICE_CONFIDENCE_FACTOR
             source = "price"
 
