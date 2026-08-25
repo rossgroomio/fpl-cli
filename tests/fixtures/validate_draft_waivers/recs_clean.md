@@ -19,3 +19,10 @@ Some classic content.
 | 3 | (depth) | Canvot (CRY) | DEF | A LIV / H MUN | Depth only. |
 | 4 | Beto (EVE) | Havertz (ARS) | FWD | H BUR / A NEW | Pool-only returnee: still flagged, claim before the return. |
 | 5 | - | - | - | - | No further moves. |
+
+### Returning Soon
+
+| Player | Team | Pos | Quality | Expected Return | Chance | Change | Verdict |
+|--------|------|-----|---------|-----------------|--------|--------|---------|
+| Havertz | ARS | FWD | history (stash) | 2026-09-13 | 25% | Date set | Stash |
+| Chalobah | CHE | DEF | history | Unknown | 0% | New | Watch |

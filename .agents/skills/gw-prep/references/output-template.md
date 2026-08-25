@@ -76,6 +76,18 @@ For each transfer, include:
 - Form summary
 - Price trend
 
+### Returning Soon
+
+_Informational only. Omit the section when the radar payload has no entries._
+
+| Player | Team | Pos | Quality | Expected Return | Chance | Change |
+|--------|------|-----|---------|-----------------|--------|--------|
+| | | | | | | |
+
+One row per entry in the `fpl returnees` payload (`data.entries`). Quality = `quality.basis` plus whether it clears the stash bar (`quality.meets_stash`). Expected Return = `expected_return`, or `return_gameweek` where only a gameweek is known, or `Unknown`. Chance = `chance_of_playing`. Change = `transition` since the previous run, blank when nothing moved.
+
+Every number here comes from the radar payload inlined into the sub-agent prompt, so the Momentum Alerts grounding rule is satisfied by citing it — but nothing beyond those fields may be asserted. No transfer recommendation above may name a tracked returnee (see the injury/suspension rule in `references/rules.md`).
+
 ### Classic Squad
 
 _Embed-mode only: the orchestrator replaces this placeholder at runtime with the `{embedded_classic_squad_block}` extracted from `gw{N}-squad-builder.md`. Do not populate this section manually — it is produced by the C1 sub-agent._
@@ -123,6 +135,18 @@ Cross-referenced against current squad holdings.
 | 5 | | | | | | | |
 
 Outlook = multi-GW quality delta (target score). This GW = lineup impact delta. Both from `transfer_eval.py`.
+
+### Returning Soon
+
+_Tracked returnees still unowned in the league. Omit the section when nothing qualifies._
+
+| Player | Team | Pos | Quality | Expected Return | Chance | Change | Verdict |
+|--------|------|-----|---------|-----------------|--------|--------|---------|
+| | | | | | | | |
+
+Rows are the `fpl returnees` payload (`data.entries`) intersected with the waivers `data.pool` by `id` — a returnee already owned by a rival is not listed at all. Columns as Classic. Verdict = `Stash` when every escalation gate in SKILL.md Phase C2 is met, in which case the player also appears in Waiver Recommendations above with their expected return and its `escalation_basis` in the Rationale; otherwise `Watch`.
+
+Every number here comes from the radar payload inlined into the sub-agent prompt, so the Momentum Alerts grounding rule is satisfied by citing it — but nothing beyond those fields may be asserted.
 
 ### Starting XI
 

@@ -658,6 +658,34 @@ def test_pool_only_claim_resolves_without_a_pool_miss(tmp_path, capsys):
     assert data["warnings"] == []
 
 
+def test_returning_soon_section_is_not_ingested_as_waiver_rows(tmp_path, capsys):
+    """The template's Returning Soon table sits beside the waiver table under
+    `## Draft`. Its rows name players who are not claims — a returnee still on
+    watch, a rival-owned one — so ingesting them would flag phantom pool misses."""
+    recs_content = """\
+## Draft
+
+### Waiver Recommendations
+
+| Priority | Drop | Claim | Position | Fixture Run | Rationale |
+|----------|------|-------|----------|-------------|-----------|
+| 1 | Beto (EVE) | Havertz (ARS) | FWD | H BUR / A NEW | Stash the returnee. |
+
+### Returning Soon
+
+| Player | Team | Pos | Quality | Expected Return | Chance | Change | Verdict |
+|--------|------|-----|---------|-----------------|--------|--------|---------|
+| Havertz | ARS | FWD | history (stash) | 2026-09-13 | 25 | Date set | Stash |
+| Chalobah | CHE | DEF | history | Unknown | 0 | New | Watch |
+"""
+    recs, w, s = _write_fixtures(tmp_path, recs_content, waivers=_WAIVERS_WITH_POOL)
+    _run(str(recs), str(w), str(s))
+    data = _parse(capsys)
+    assert data["ok"] is True
+    assert data["flags"] == []
+    assert data["warnings"] == []
+
+
 def test_claim_in_neither_pool_nor_top_targets_still_flagged(tmp_path, capsys):
     """Widening the pool must not blunt the check itself."""
     recs_content = """\

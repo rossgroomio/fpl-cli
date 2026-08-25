@@ -13,7 +13,7 @@ compatibility:
   copilot: fallback (sequential execution)
 ---
 
-<!-- CLI commands composed: status, chips, chips sync, chips timing, fdr, captain, waivers, squad grid, squad sell-prices, price-history, player, stats, intel -->
+<!-- CLI commands composed: status, chips, chips sync, chips timing, fdr, captain, waivers, squad grid, squad sell-prices, price-history, player, stats, intel, returnees -->
 
 # Gameweek Preparation
 
@@ -231,6 +231,31 @@ Read `metadata.coverage.usable_as` and store it as `intel_gate`:
 With partial coverage the written-up teams carry annotations and the rest carry nothing, so absence
 of a flag would read as absence of merit. Store the payload as `intel` for Phase C.
 
+### B10 -- Injury Returnee Radar
+
+```bash
+fpl returnees --enrich --format json
+```
+
+Flagged players -- injured, suspended, unavailable, doubtful -- whose expected return lands inside
+`metadata.window` gameweeks and who clear the radar's quality bar. Each entry in `data.entries`
+carries the return estimate and where it came from (`expected_return`, `return_gameweek`,
+`return_source`, `escalation_basis`), a quality verdict (`quality.passed`, `quality.meets_stash`)
+and what moved since the previous run (`transition`). `data.departures` says who left the
+watchlist and why.
+
+`--enrich` searches the web for fresher return timing on the players FPL's own news field is silent
+or stale about, which is what supplies a date for the injured majority. It needs a Perplexity API
+key; without one the command skips enrichment, records why in `metadata.enrichment_note` and still
+returns the FPL-sourced watchlist -- so this step is never a reason to abort the run.
+
+Store the payload as `returnee_radar` and inline it into both Phase C prompts as a labelled
+section. C1 renders it as an informational watchlist and is barred from naming its players in
+transfer recommendations; C2 renders the subset still in the waiver pool and may escalate an entry
+to a stash claim. The Returning Soon section quotes this payload, which is inlined into the prompt
+like every other cited source -- so its numbers are grounded the same way every other cited number
+is.
+
 <!-- ADAPT: Add your own further supplementary data sources here. Examples:
   - `fpl preview --save --scout` generates a GW preview with fixture analysis and scout insights.
     Read the saved file and inject its content into Phase C sub-agents as additional context.
@@ -288,6 +313,13 @@ Branch on `squad_builder_result` (set in Phase A3; unset on transfer weeks):
 >   ("Transfer Flow projects him starting"), never assert it. Under `negative_filter_only` use it
 >   only to downgrade. A player with no intel is not a worse player.
 >
+> - Returning soon: {returnee_radar} (from B10)
+>   **Informational only.** Render it as the Returning Soon section of the Classic output template,
+>   one row per entry in `data.entries`, quoting only fields present in that payload. The
+>   injury/suspension rule in the analysis rules above governs what may be recommended while a
+>   player is flagged, and its classic branch is what bars transfer recommendations -- inline
+>   late-change swaps included -- from naming a tracked returnee. Do not restate or relax it here.
+>
 > <!-- ADAPT: Add your own further supplementary data sources here (newsletters, external reports) -->
 >
 > **Embedded Classic Squad (from squad-builder — insert this as the `### Classic Squad` section):**
@@ -302,7 +334,7 @@ Branch on `squad_builder_result` (set in Phase A3; unset on transfer weeks):
 >
 > For Phase C2.5 (`transfer_eval.py`): on embed mode, the OUT-candidate pool is the 15 players in the Player column of the embedded Starting XI and Bench tables (not the current `fpl squad grid`). Use this to evaluate whether any late-breaking swaps are justified.
 >
-> **Sections to produce:** Chip Timing (from B6), Momentum Alerts (from B5/B8), pFDR Overview (from B1), and the `### Classic Squad` block (embedded verbatim or swap-edited with trailing note). **Suppress:** Captain Pick top-3 table (captain is inside the embedded block), standalone Bench Order section (bench order is inside the embedded block), and Transfer Recommendations section (any swaps are applied inline in the block).
+> **Sections to produce:** Chip Timing (from B6), Momentum Alerts (from B5/B8), Returning Soon (from B10), pFDR Overview (from B1), and the `### Classic Squad` block (embedded verbatim or swap-edited with trailing note). **Suppress:** Captain Pick top-3 table (captain is inside the embedded block), standalone Bench Order section (bench order is inside the embedded block), and Transfer Recommendations section (any swaps are applied inline in the block).
 >
 > **User workflow note:** The `### Classic Squad` block is the final 15-player squad the user should enter into FPL. If a trailing `> Late change:` note is present, it explains the swap — the user can revert it in the FPL site before saving if they disagree.
 >
@@ -359,6 +391,13 @@ Proceed immediately (non-interactive).
 >   ("Transfer Flow projects him starting"), never assert it. Under `negative_filter_only` use it
 >   only to downgrade. A player with no intel is not a worse player.
 >
+> - Returning soon: {returnee_radar} (from B10)
+>   **Informational only.** Render it as the Returning Soon section of the Classic output template,
+>   one row per entry in `data.entries`, quoting only fields present in that payload. The
+>   injury/suspension rule in the analysis rules above governs what may be recommended while a
+>   player is flagged, and its classic branch is what bars transfer recommendations -- inline
+>   late-change swaps included -- from naming a tracked returnee. Do not restate or relax it here.
+>
 > <!-- ADAPT: Add your own further supplementary data sources here (newsletters, external reports) -->
 >
 > Apply squad-builder rules from `references/rules.md` for full squad selection. Prepend the fallback banner (Variant A/B/C — see `references/output-template.md` for exact wording) on the line immediately before the Classic section heading in the output file. Do not include `squad_builder_mode` in the frontmatter — the squad was re-derived, not embedded from squad-builder.
@@ -391,7 +430,13 @@ Proceed immediately (non-interactive).
 > - Squad: {B4 output}
 > - Price movements: {B5 output}
 > - Chip timing: {B6 output}
-> - Stats: {stats_form}, {stats_transfer_momentum}, {stats_mid_xgi}, {stats_fwd_xgi}, {stats_def_clean_sheets} (from B8)
+> - Stats: {stats_form}, {stats_transfer_momentum}, {stats_mid_xgi}, {stats_fwd_xgi}, {stats_def_clean_sheets} (from B8)>
+> - Returning soon: {returnee_radar} (from B10)
+>   **Informational only.** Render it as the Returning Soon section of the Classic output template,
+>   one row per entry in `data.entries`, quoting only fields present in that payload. The
+>   injury/suspension rule in the analysis rules above governs what may be recommended while a
+>   player is flagged, and its classic branch is what bars transfer recommendations -- inline
+>   late-change swaps included -- from naming a tracked returnee. Do not restate or relax it here.
 >
 > **Bench Boost instructions:**
 >
@@ -436,6 +481,13 @@ Proceed immediately (non-interactive).
 >   ("Transfer Flow projects him starting"), never assert it. Under `negative_filter_only` use it
 >   only to downgrade. A player with no intel is not a worse player.
 >
+> - Returning soon: {returnee_radar} (from B10)
+>   **Informational only.** Render it as the Returning Soon section of the Classic output template,
+>   one row per entry in `data.entries`, quoting only fields present in that payload. The
+>   injury/suspension rule in the analysis rules above governs what may be recommended while a
+>   player is flagged, and its classic branch is what bars transfer recommendations -- inline
+>   late-change swaps included -- from naming a tracked returnee. Do not restate or relax it here.
+>
 > <!-- ADAPT: Add your own further supplementary data sources here (newsletters, external reports) -->
 >
 > Produce the **Classic** section of the output template.
@@ -463,6 +515,8 @@ Proceed immediately (non-interactive).
 >
 > **WAIVER POOL IS AUTHORITATIVE:** `fpl waivers` output is the only source for available players. All other data (stats, form tables, squad context) is for analysis only. Never recommend a claim not present in the waivers output — Phase D1 will flag pool misses as a warning. Cross-position recommendations (e.g. dropping a MID to claim a DEF) are structurally illegal and will be blocked by Phase D1.
 >
+> **`data.pool` is an availability roster, not a shortlist.** It lists every unowned player in the league — one `{id, player_name, position, team_short}` row each, unranked and untruncated — so membership answers only "may this player be claimed at all". Ranked claims come from `data.top_targets` and `data.targets_by_position`; presence in `data.pool` is never on its own a reason to recommend someone. The single claim allowed to rest on pool membership alone is a stash claim for a tracked returnee, which the waiver scoring suppresses by design and which therefore cannot reach the ranked targets.
+>
 > - Waivers: {B3 output}
 > - Squad: {B4 output}
 > - Stats: {stats_form}, {stats_transfer_momentum}, {stats_mid_xgi}, {stats_fwd_xgi}, {stats_def_clean_sheets} (from B8)
@@ -471,6 +525,38 @@ Proceed immediately (non-interactive).
 >   Gate: {intel_gate}. Governs **minutes and role only**, never how good a player is. Attribute it
 >   ("Transfer Flow projects him starting"), never assert it. Under `negative_filter_only` use it
 >   only to downgrade. A player with no intel is not a worse player.
+>
+> - Returning soon: {returnee_radar} (from B10)
+>   Render the Returning Soon section of the Draft output template from this payload, restricted to
+>   tracked returnees whose `id` appears in the waivers `data.pool` list. A returnee missing from
+>   the pool is already owned by a rival and is not actionable — leave it out rather than listing it
+>   as unavailable. Quote only fields present in this payload.
+>
+> **STASH CLAIMS:** a Returning Soon row escalates into the Waiver Recommendations table only when
+> **all four** gates below hold. Any one failing means watchlist only — no claim.
+>
+> 1. **Elite by prior:** `quality.meets_stash` is `true`.
+> 2. **Returning soon enough:** `escalation_eligible` is `true`. The command has already applied
+>    `metadata.escalation_window` and the citation gate, so do not re-derive the timing yourself:
+>    an enrichment date counts here only when it arrived cited, and `escalation_basis` names which
+>    source the verdict rests on (`fpl-news` or `ai-search`).
+> 3. **Claimable and position-for-position:** the returnee's `id` is in the waivers `data.pool`, and
+>    the player dropped for them plays the returnee's own position.
+> 4. **Beats the incumbent by the configured margin:** take the drop candidate your squad analysis
+>    already ranks lowest at that position, run C2.5's `transfer_eval.py --out "{that player}"
+>    --in "{returnee}"`, and require `outlook_delta` to exceed `returnee_radar.stash_upgrade_margin`
+>    from the effective settings (`fpl_cli/config/defaults.yaml`, overridden by `settings.yaml`);
+>    both are quality points on the same 0-100 scale. If the script errors, or you cannot read the
+>    margin, or the delta does not clear it, do not escalate. A drop-priority ordering always yields
+>    a lowest-ranked player and so can never answer "no" — the margin is what makes this gate
+>    refusable.
+>
+> Write every stash claim as a stash, never as a straight upgrade: it spends a roster slot until the
+> player is fit again, and it is bought to lock the asset before a rival can claim them. Each stash
+> row's Rationale must carry the expected return (`expected_return`, or `return_gameweek` where the
+> date is unknown) and name the provenance of that date from `escalation_basis`. The
+> injury/suspension rule in the analysis rules above is the single authority on what may be
+> recommended while a player is flagged.
 >
 > <!-- ADAPT: Add your own further supplementary data sources here (newsletters, external reports) -->
 >
