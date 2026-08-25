@@ -4625,7 +4625,14 @@ class TestCeilingValidationBands:
         assert fwd_raw > gk_raw
 
     def test_low_minutes_backup_gk_not_nonsense(self):
-        """Darlow-tier backup: 180 mins, ramp 0.4, still produces sane 0-100 score."""
+        """Darlow-tier backup: 180 mins, ramp 0.4, still produces sane 0-100 score.
+
+        Since #143 the GK ceiling scales with attainability at the player's
+        sample size, so a 180-minute keeper is read against what 180 minutes
+        can show — the band is wider than the full-sample one, but a
+        mediocre-form backup must stay clearly below the elite keeper's
+        reading and inside the scale.
+        """
         backup_gk = make_player(
             id=405, web_name="BackupGK", team_id=5,
             position=PlayerPosition.GOALKEEPER,
@@ -4634,7 +4641,145 @@ class TestCeilingValidationBands:
             saves_per_90=3.0, expected_goals_conceded=2.5, clean_sheets=1,
         )
         score = self._score(backup_gk)
-        assert 0 <= score <= 60
+        assert 0 <= score <= 80
+        assert score < self._score(self._elite_gk())
+
+
+class TestGkAttainableCeiling:
+    """Issue #143: GK scores normalise against the attainable ceiling.
+
+    ``build_scoring_enrichment`` ramps all three GK signals by
+    ``min(minutes / GK_SAMPLE_RAMP_MINUTES, 1)`` while the calibrated
+    anchors were measured at GW10+ snapshots where every regular keeper's
+    ramp is 1.0. Unscaled, the best keeper in the league capped at 72
+    going into GW2 (live reproduction, 2026-08-25) no matter how well
+    anyone played. ``gk_ceiling_attainability`` scales the anchor's ramped
+    share by the same ramp; from GK_SAMPLE_RAMP_MINUTES minutes it is the
+    identity and nothing changes.
+    """
+
+    def _gw1_elite_keeper(self):
+        # Kelleher-tier opener: 90 minutes, clean sheet, save points
+        return make_player(
+            id=410, web_name="EarlyGK", team_id=4,
+            position=PlayerPosition.GOALKEEPER,
+            form=7.0, points_per_game=7.0, minutes=90, total_points=7,
+            now_cost=45,
+            saves_per_90=5.0, expected_goals_conceded=1.0, clean_sheets=1,
+        )
+
+    def test_fraction_matches_cap_shares(self):
+        from fpl_cli.services.scoring import (
+            VALUE_QUALITY_WEIGHTS,
+            gk_ceiling_attainability,
+        )
+        from fpl_cli.services.scoring.constants import GK_SAMPLE_RAMP_MINUTES
+        gk = VALUE_QUALITY_WEIGHTS.for_gk()
+        ramped = gk.gk_saves_per_90.cap + gk.gk_xgc_quality.cap + gk.gk_cs_rate.cap
+        fixed = gk.form.cap + gk.ppg.cap
+        ramp = 90 / GK_SAMPLE_RAMP_MINUTES
+        expected = (fixed + ramp * ramped) / (fixed + ramped)
+        assert gk_ceiling_attainability(90, VALUE_QUALITY_WEIGHTS) == pytest.approx(expected)
+
+    def test_fraction_is_identity_from_full_sample(self):
+        from fpl_cli.services.scoring import VALUE_QUALITY_WEIGHTS, gk_ceiling_attainability
+        from fpl_cli.services.scoring.constants import GK_SAMPLE_RAMP_MINUTES
+        for minutes in (GK_SAMPLE_RAMP_MINUTES, 900, 3420):
+            assert gk_ceiling_attainability(minutes, VALUE_QUALITY_WEIGHTS) == 1.0
+
+    def test_fraction_monotonic_and_bounded(self):
+        from fpl_cli.services.scoring import VALUE_QUALITY_WEIGHTS, gk_ceiling_attainability
+        fractions = [
+            gk_ceiling_attainability(m, VALUE_QUALITY_WEIGHTS)
+            for m in (0, 90, 180, 270, 360, 450)
+        ]
+        assert fractions == sorted(fractions)
+        assert 0 < fractions[0] < 1
+        assert fractions[-1] == 1.0
+        # Negative minutes clamp to the zero-sample fraction, not below
+        assert gk_ceiling_attainability(-90, VALUE_QUALITY_WEIGHTS) == fractions[0]
+
+    def test_gw1_elite_keeper_reaches_elite_band(self):
+        """The #143 headline: an elite GW1 keeper reads 85+, not 72."""
+        from fpl_cli.services.scoring import compute_quality_value
+        score, _ = compute_quality_value(
+            self._gw1_elite_keeper(), us_match={}, next_gw_id=2, team_short="BRE",
+        )
+        assert score >= 85
+
+    def test_full_sample_value_ceiling_unchanged(self):
+        from fpl_cli.services.scoring.constants import _value_weights_and_ceiling
+        _, bare = _value_weights_and_ceiling("GK")
+        _, full = _value_weights_and_ceiling("GK", minutes=2000)
+        assert full == bare
+
+    def test_ownership_scaling_touches_anchor_only(self):
+        """Headroom (matchup/ownership/need/consistency) never scales."""
+        from fpl_cli.services.scoring import TARGET_QUALITY_WEIGHTS, gk_ceiling_attainability
+        from fpl_cli.services.scoring.constants import (
+            _OWNERSHIP_HEADROOM,
+            _ownership_ceiling_for,
+            QUALITY_CEILINGS,
+        )
+        frac = gk_ceiling_attainability(90, TARGET_QUALITY_WEIGHTS)
+        early = _ownership_ceiling_for("target", "GK", minutes=90)
+        anchor = QUALITY_CEILINGS[("target", "GK")]
+        assert early == pytest.approx(anchor * frac + _OWNERSHIP_HEADROOM["target"])
+        # No minutes → full ceiling (pre-#143 behaviour preserved)
+        assert _ownership_ceiling_for("target", "GK") == pytest.approx(
+            anchor + _OWNERSHIP_HEADROOM["target"]
+        )
+
+    def test_outfield_ceilings_ignore_minutes(self):
+        from fpl_cli.services.scoring.constants import (
+            _ownership_ceiling_for,
+            _value_weights_and_ceiling,
+        )
+        for pos in ("DEF", "MID", "FWD"):
+            assert _ownership_ceiling_for("target", pos, minutes=90) == (
+                _ownership_ceiling_for("target", pos)
+            )
+            assert _value_weights_and_ceiling(pos, minutes=90)[1] == (
+                _value_weights_and_ceiling(pos)[1]
+            )
+
+
+class TestEarlySeasonObservationOnly:
+    """Documents the #143 mechanism left deliberately unchanged (for now).
+
+    Before GW6 the quality surface is pure observation: form and ppg are
+    the same single-observation number after GW1, both caps saturate on one
+    good game, per-90 rates come from ≤90 minutes, and no prior enters this
+    path. A one-game wonder therefore out-reads a quiet-opener elite — the
+    Emersonn-100 / Haaland-59 picture reproduced live on 2026-08-25. The
+    prior-blend that would re-order this is #143's proposed follow-up,
+    gated on the early-season backtest; if that lands, this test should be
+    rewritten to pin the blended behaviour instead.
+    """
+
+    def test_one_game_wonder_outreads_quiet_elite_fwd(self):
+        from fpl_cli.services.scoring import compute_quality_value
+        wonder = make_player(
+            id=420, web_name="OneGameWonder", team_id=5,
+            position=PlayerPosition.FORWARD,
+            form=9.0, points_per_game=9.0, minutes=65, total_points=9,
+            now_cost=55, expected_goals=0.82, expected_assists=0.2,
+        )
+        quiet_elite = make_player(
+            id=421, web_name="QuietElite", team_id=6,
+            position=PlayerPosition.FORWARD,
+            form=2.0, points_per_game=2.0, minutes=90, total_points=2,
+            now_cost=140, expected_goals=0.74, expected_assists=0.15,
+        )
+        wonder_score, _ = compute_quality_value(
+            wonder, us_match={}, next_gw_id=2, team_short="IPS",
+        )
+        elite_score, _ = compute_quality_value(
+            quiet_elite, us_match={}, next_gw_id=2, team_short="MCI",
+        )
+        assert wonder_score >= 95
+        assert 40 <= elite_score <= 75
+        assert wonder_score > elite_score
 
 
 class TestCalibrationDriftGuard:

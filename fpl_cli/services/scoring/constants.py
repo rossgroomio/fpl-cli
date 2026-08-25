@@ -467,8 +467,49 @@ FDR_MODE = "difference"
 # Ceiling / weight selectors
 # ---------------------------------------------------------------------------
 
+_FAMILY_QUALITY_WEIGHTS: dict[str, QualityWeights] = {
+    "target": TARGET_QUALITY_WEIGHTS,
+    "differential": DIFFERENTIAL_QUALITY_WEIGHTS,
+    "waiver": WAIVER_QUALITY_WEIGHTS,
+    "value": VALUE_QUALITY_WEIGHTS,
+}
+
+
+def gk_ceiling_attainability(minutes: int, weights: QualityWeights) -> float:
+    """Fraction of the calibrated GK anchor attainable at *minutes* of sample.
+
+    ``build_scoring_enrichment`` scales all three GK signals (saves/90, xGC
+    quality, CS rate) by ``min(minutes / GK_SAMPLE_RAMP_MINUTES, 1)`` as a
+    deliberate small-sample guard. The calibrated anchors were measured at
+    GW10+ snapshots where every regular keeper's ramp is 1.0, so dividing an
+    early-season GK raw score by the full anchor caps the whole position in
+    the low 70s however well anyone plays (issue #143: best GK in the league
+    read 72 going into GW2). Scaling the anchor's ramped share by the same
+    ramp restores the scale's meaning — elite among what a keeper *could*
+    have shown at this sample size — without touching raw scores or the
+    recorded anchors.
+
+    The ramped/unramped split is approximated from the weight caps: an elite
+    keeper saturates the GK-signal caps at full sample (the premise the
+    calibration validated), so at ramp r those contributions scale ~linearly
+    with r while form/ppg do not. The position multiplier cancels in the
+    ratio. Returns 1.0 from GK_SAMPLE_RAMP_MINUTES minutes (~GW5 for an
+    ever-present keeper), where behaviour is identical to the full ceiling.
+    """
+    ramp = min(max(minutes, 0) / GK_SAMPLE_RAMP_MINUTES, 1.0)
+    if ramp >= 1.0:
+        return 1.0
+    gk = weights.for_gk()
+    ramped_caps = gk.gk_saves_per_90.cap + gk.gk_xgc_quality.cap + gk.gk_cs_rate.cap
+    fixed_caps = gk.form.cap + gk.ppg.cap
+    return (fixed_caps + ramp * ramped_caps) / (fixed_caps + ramped_caps)
+
+
 def _ownership_ceiling_for(
-    family: Literal["target", "differential", "waiver"], position: Position
+    family: Literal["target", "differential", "waiver"],
+    position: Position,
+    *,
+    minutes: int | None = None,
 ) -> float:
     """Calibrated ceiling for an ownership family — total over all four positions.
 
@@ -476,18 +517,37 @@ def _ownership_ceiling_for(
     (family, position) pair carries its own calibrated anchor. Raises
     KeyError on an unknown family (as before) and on an unknown position
     (previously the silent base-ceiling fallback).
+
+    *minutes*: when supplied for a GK, the anchor share of the ceiling is
+    scaled by ``gk_ceiling_attainability`` so early-season keepers are
+    normalised against what their ramped signals could actually reach. The
+    bonus headroom (matchup, ownership, position need, consistency) is
+    minutes-independent and never scales. Omitted (None) keeps the full
+    ceiling — the pre-#143 behaviour.
     """
     if family not in _OWNERSHIP_HEADROOM:
         raise KeyError(family)
-    return QUALITY_CEILINGS[(family, position)] + _OWNERSHIP_HEADROOM[family]
+    anchor = QUALITY_CEILINGS[(family, position)]
+    if position == "GK" and minutes is not None:
+        anchor *= gk_ceiling_attainability(minutes, _FAMILY_QUALITY_WEIGHTS[family])
+    return anchor + _OWNERSHIP_HEADROOM[family]
 
 
-def _value_weights_and_ceiling(position: Position) -> tuple[QualityWeights, float]:
-    """Select VALUE_QUALITY_WEIGHTS variant and calibrated ceiling for a position."""
+def _value_weights_and_ceiling(
+    position: Position, *, minutes: int | None = None
+) -> tuple[QualityWeights, float]:
+    """Select VALUE_QUALITY_WEIGHTS variant and calibrated ceiling for a position.
+
+    *minutes*: same GK attainability scaling as ``_ownership_ceiling_for``
+    (the value ceiling is the bare anchor, so the whole ceiling scales).
+    """
     if position == "GK":
         weights = VALUE_QUALITY_WEIGHTS.for_gk()
     elif position == "DEF":
         weights = VALUE_QUALITY_WEIGHTS.without_xgi()
     else:
         weights = VALUE_QUALITY_WEIGHTS
-    return weights, QUALITY_CEILINGS[("value", position)]
+    ceiling = QUALITY_CEILINGS[("value", position)]
+    if position == "GK" and minutes is not None:
+        ceiling *= gk_ceiling_attainability(minutes, VALUE_QUALITY_WEIGHTS)
+    return weights, ceiling

@@ -16,6 +16,7 @@ from rich.table import Table
 from fpl_cli.cli._context import CLIContext, Format, console, error_console, is_custom_analysis_enabled
 from fpl_cli.cli._helpers import _format_sort_value, _validate_team_filter
 from fpl_cli.cli._json import emit_json, json_output_mode, output_format_option
+from fpl_cli.services.scoring import MINS_FACTOR_START_GW
 
 # Valid sort fields for `fpl stats` command
 PLAYERS_SORT_FIELDS = [
@@ -187,6 +188,7 @@ def stats_command(
             rolling_map: dict[int, tuple[float | None, int | None]] = {}
             con_lookup: dict[int, ConsistencySignals] = {}
             value_active = False
+            _early_season_warning = False
 
             if value and filtered:
                 import httpx
@@ -205,6 +207,17 @@ def stats_command(
                     value_active = True
                     next_gw = await client.get_next_gameweek()
                     next_gw_id = next_gw["id"] if next_gw else 38
+                    _early_season_warning = next_gw_id <= MINS_FACTOR_START_GW
+                    if _early_season_warning and output_format != "json":
+                        error_console.print(
+                            "[yellow]Early-season notice: quality scores are "
+                            "small-sample dominated before GW6 — form and ppg "
+                            "reflect only the opening gameweek(s), so hot "
+                            "starters saturate the scale while elite players "
+                            "with a quiet start read low. Scores mature as "
+                            "minutes accumulate (~GW6-10). For a "
+                            "prior-informed ranking, use --sort ep_next.[/yellow]"
+                        )
 
                     # Match filtered players to Understat
                     us_matches: dict[int, dict] = {}
@@ -313,6 +326,21 @@ def stats_command(
             filtered = filtered[:limit]
 
             warnings: list[dict[str, str]] = []
+            if _early_season_warning:
+                warnings.append({
+                    "code": "early_season_small_sample",
+                    "message": (
+                        "Quality scores are small-sample dominated before "
+                        "GW6: form and ppg reflect only the opening "
+                        "gameweek(s) and per-90 rates come from very few "
+                        "minutes, so hot starters saturate the scale while "
+                        "elite players with a quiet start read low. GK "
+                        "ceilings scale with accumulated minutes until "
+                        "~GW5. Treat quality_score as provisional until "
+                        "~GW6-10; ep_next offers a prior-informed "
+                        "alternative ranking."
+                    ),
+                })
             if _cross_position_warning:
                 warnings.append({
                     "code": "cross_position_ranking_not_meaningful",

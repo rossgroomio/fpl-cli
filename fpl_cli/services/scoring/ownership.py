@@ -152,7 +152,7 @@ def calculate_target_score(
     next_gw_id: int,
 ) -> int:
     """Calculate a target score (pure performance, no ownership bias)."""
-    ceiling = _ownership_ceiling_for("target", evaluation.position)
+    ceiling = _ownership_ceiling_for("target", evaluation.position, minutes=evaluation.minutes)
     return _calculate_quality_based_score(
         evaluation,
         weights=TARGET_QUALITY_WEIGHTS,
@@ -168,7 +168,7 @@ def calculate_differential_score(
     next_gw_id: int,
 ) -> int:
     """Calculate a differential score for a player."""
-    ceiling = _ownership_ceiling_for("differential", evaluation.position)
+    ceiling = _ownership_ceiling_for("differential", evaluation.position, minutes=evaluation.minutes)
     return _calculate_quality_based_score(
         evaluation,
         weights=DIFFERENTIAL_QUALITY_WEIGHTS,
@@ -237,5 +237,5 @@ def calculate_waiver_score(
         elif current_count == 2:
             score -= 2
 
-    waiver_ceiling = _ownership_ceiling_for("waiver", evaluation.position)
+    waiver_ceiling = _ownership_ceiling_for("waiver", evaluation.position, minutes=evaluation.minutes)
     return normalise_score(score, waiver_ceiling)

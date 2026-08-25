@@ -38,7 +38,9 @@ def normalise_score(raw: float, ceiling: float) -> int:
     return max(0, min(round(raw / ceiling * 100), 100))
 
 
-def pick_display_ceiling(position: Position, horizon: int) -> float:
+def pick_display_ceiling(
+    position: Position, horizon: int, *, minutes: int | None = None
+) -> float:
     """Position + horizon aware ceiling for `fpl allocate` display normalisation.
 
     Two-column model downstream:
@@ -49,9 +51,11 @@ def pick_display_ceiling(position: Position, horizon: int) -> float:
       ranking in the single-GW context.
     - horizon >= 2 → ``quality_score``. Routes to VALUE-family ceilings via
       ``_value_weights_and_ceiling``, matching ``fpl player`` / ``fpl stats
-      --value`` / ``fpl transfer-eval`` for cross-command consistency.
+      --value`` / ``fpl transfer-eval`` for cross-command consistency. Pass
+      *minutes* so an early-season GK is normalised against the attainable
+      ceiling, same as those commands.
     """
     if horizon <= 1:
         return STARTING_XI_CEILING
-    _, ceiling = _value_weights_and_ceiling(position)
+    _, ceiling = _value_weights_and_ceiling(position, minutes=minutes)
     return ceiling
