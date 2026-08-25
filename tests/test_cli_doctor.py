@@ -317,6 +317,25 @@ class TestIdChecks:
         assert result.exit_code == 0
         assert "Draft Team" in result.output
 
+    def test_draft_entry_without_listed_leagues_is_not_condemned(self):
+        # A draft entry payload carrying no leagues is a shape change, not
+        # proof the entry left the league (mirrors the classic case).
+        profile = {
+            "entry": {
+                "name": "My Team",
+                "player_first_name": "Ross",
+                "player_last_name": "G",
+                "league_set": [],
+            }
+        }
+        result = _run(
+            _mock_client(),
+            settings={"fpl": {"draft_league_id": 4321, "draft_entry_id": 90368}},
+            draft_client=_mock_draft_client(entry_profile=profile),
+        )
+        assert result.exit_code == 0
+        assert "listed no draft leagues" in _flat(result)
+
     def test_draft_entry_not_condemned_when_league_is_dead(self):
         # When the league ID itself is stale, the membership miss proves
         # nothing about the entry -- the recycled-ID verdict must not fire.

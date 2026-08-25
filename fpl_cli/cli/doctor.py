@@ -173,14 +173,14 @@ def _classic_league_ids(entry: dict[str, Any]) -> set[int]:
     }
 
 
-def _classic_membership_gap(
-    league_id: int | None, league_verified: bool, membership: set[int]
+def _membership_gap(
+    league_id_setting: str, noun: str, league_id: int | None, membership: object
 ) -> str:
     if not league_id:
-        return "classic_league_id is not set"
+        return f"{league_id_setting} is not set"
     if not membership:
-        return "the entry listed no classic leagues"
-    return "classic_league_id failed its own check"
+        return f"the entry listed no {noun} leagues"
+    return f"{league_id_setting} failed its own check"
 
 
 async def _classic_entry_check(
@@ -225,7 +225,7 @@ async def _classic_entry_check(
         name,
         CheckStatus.OK,
         f'{entry_id} → "{team}" ({owner}) — league membership not checked '
-        f"({_classic_membership_gap(league_id, league_verified, membership)})",
+        f"({_membership_gap('classic_league_id', 'classic', league_id, membership)})",
     )
 
 
@@ -302,11 +302,14 @@ async def _draft_entry_check(
             f'{entry_id} → "{team}" ({owner}), in draft league {league_id} — '
             "check the name is yours",
         )
-    if league_id and league_verified:
+    if league_id and league_verified and league_set:
         # A recycled entry ID resolves fine, in a different league (#57) --
         # membership, not resolution, is what proves the ID is still yours.
         # Sound only when the league itself checked out: otherwise the stale
-        # ID may be the league's, and this would condemn a correct entry.
+        # ID may be the league's, and this would condemn a correct entry. An
+        # empty league_set means the payload changed shape, not that the
+        # entry left the league, so it never condemns (mirrors the classic
+        # check's empty-`leagues.classic` guard).
         return CheckResult(
             name,
             CheckStatus.BROKEN,
@@ -314,18 +317,11 @@ async def _draft_entry_check(
             "likely a recycled ID pointing at someone else's team",
             "update draft_entry_id in settings.yaml — draft entry IDs are reissued each season",
         )
-    if league_id:
-        return CheckResult(
-            name,
-            CheckStatus.OK,
-            f'{entry_id} → "{team}" ({owner}) — league membership not checked '
-            "(draft_league_id failed its own check)",
-        )
     return CheckResult(
         name,
         CheckStatus.OK,
         f'{entry_id} → "{team}" ({owner}) — league membership not checked '
-        "(draft_league_id is not set)",
+        f"({_membership_gap('draft_league_id', 'draft', league_id, league_set)})",
     )
 
 
