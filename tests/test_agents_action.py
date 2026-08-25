@@ -1,5 +1,9 @@
 """Tests for action agents (WaiverAgent)."""
 
+import json
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -139,6 +143,27 @@ def _mock_scoring_data() -> ScoringData:
     )
 
 
+@contextmanager
+def _stub_upstream_fetches():
+    """Patch the two seams that reach past the draft client.
+
+    Shared by every test that drives ``WaiverAgent.run`` end to end.
+    """
+    with (
+        patch(
+            "fpl_cli.agents.action.waiver.prepare_scoring_data",
+            new_callable=AsyncMock,
+            return_value=_mock_scoring_data(),
+        ),
+        patch(
+            "fpl_cli.agents.action.waiver.fetch_understat_lookup",
+            new_callable=AsyncMock,
+            return_value={},
+        ),
+    ):
+        yield
+
+
 @pytest.fixture
 def mock_waiver_order():
     """Mock waiver order (reverse standings)."""
@@ -183,18 +208,7 @@ class TestWaiverAgentRun:
         depend on the network nor report unrelated upstream breakage as a
         WaiverAgent failure.
         """
-        with (
-            patch(
-                "fpl_cli.agents.action.waiver.prepare_scoring_data",
-                new_callable=AsyncMock,
-                return_value=_mock_scoring_data(),
-            ),
-            patch(
-                "fpl_cli.agents.action.waiver.fetch_understat_lookup",
-                new_callable=AsyncMock,
-                return_value={},
-            ),
-        ):
+        with _stub_upstream_fetches():
             yield
 
     @pytest.mark.asyncio
@@ -355,6 +369,157 @@ class TestWaiverAgentRun:
 
             assert result.status == AgentStatus.SUCCESS
             assert result.data["recent_releases"] == []
+
+
+# --- Full unowned waiver pool ---
+
+GOLDEN_RANKED = Path(__file__).parent / "fixtures" / "waiver_ranked_golden.json"
+
+_POOL_TEAM_IDS = (1, 5, 6, 7, 13, 14)
+
+
+def _wide_bootstrap() -> dict[str, Any]:
+    """Draft bootstrap holding more players than ``top_targets`` can carry.
+
+    18 fit players plus one flagged returnee whose zero form and 90 minutes pin
+    it below every one of them, so the returnee is reachable only through the
+    full ``pool`` roster. Player 50 stands in for a rival-owned player: it is
+    never offered as available.
+    """
+    elements = [
+        make_draft_player(
+            id=i,
+            web_name=f"Player{i:02d}",
+            team=_POOL_TEAM_IDS[i % len(_POOL_TEAM_IDS)],
+            element_type=(i % 4) + 1,
+            form=8.0 - i * 0.2,
+            points_per_game=7.0 - i * 0.2,
+            minutes=1800,
+        )
+        for i in range(1, 19)
+    ]
+    elements.append(
+        make_draft_player(
+            id=99,
+            web_name="Returnee",
+            team=1,
+            element_type=3,
+            form=0.0,
+            points_per_game=0.0,
+            minutes=90,
+            status="i",
+            news="Hamstring injury - expected back 12 Apr",
+            chance_of_playing_next_round=25,
+        )
+    )
+    elements.append(make_draft_player(id=50, web_name="Owned", team=5, element_type=2))
+    return {
+        "elements": elements,
+        "teams": [
+            make_draft_team(id=1, name="Arsenal", short_name="ARS"),
+            make_draft_team(id=5, name="Tottenham", short_name="TOT"),
+            make_draft_team(id=6, name="Brighton", short_name="BHA"),
+            make_draft_team(id=7, name="West Ham", short_name="WHU"),
+            make_draft_team(id=13, name="Man City", short_name="MCI"),
+            make_draft_team(id=14, name="Liverpool", short_name="LIV"),
+        ],
+    }
+
+
+async def _run_waivers(
+    available_ids: list[int],
+    entry_id: int | None = None,
+    picks: list[int] | None = None,
+):
+    """Drive ``WaiverAgent.run`` over ``_wide_bootstrap`` with every seam stubbed."""
+    bootstrap = _wide_bootstrap()
+    by_id = {p["id"]: p for p in bootstrap["elements"]}
+    league_details = {
+        "league": {"id": 12345, "name": "Test Draft League"},
+        "league_entries": [make_draft_league_entry(id=1, entry_id=100, entry_name="My Team")],
+        "standings": [make_draft_standing(league_entry=1, rank=1, total=500, event_total=60)],
+    }
+    config: dict[str, Any] = {"draft_league_id": 12345}
+    if entry_id is not None:
+        config["draft_entry_id"] = entry_id
+
+    agent = WaiverAgent(config=config)
+    with (
+        _stub_upstream_fetches(),
+        patch.object(agent.client, "get_bootstrap_static", new_callable=AsyncMock, return_value=bootstrap),
+        patch.object(
+            agent.client, "get_available_players", new_callable=AsyncMock,
+            return_value=[by_id[i] for i in available_ids],
+        ),
+        patch.object(agent.client, "get_recent_releases", new_callable=AsyncMock, return_value=[]),
+        patch.object(agent.client, "get_league_details", new_callable=AsyncMock, return_value=league_details),
+        patch.object(agent.client, "get_game_state", new_callable=AsyncMock, return_value={"current_event": 25}),
+        patch.object(
+            agent.client, "get_entry_picks", new_callable=AsyncMock,
+            return_value={"picks": [{"element": pid, "position": n} for n, pid in enumerate(picks or [], 1)]},
+        ),
+        patch.object(agent.client, "get_waiver_order", new_callable=AsyncMock, return_value=[]),
+    ):
+        return await agent.run()
+
+
+_ALL_AVAILABLE = [*range(1, 19), 99]
+
+
+class TestWaiverAgentPool:
+    """The result carries the full unowned roster, not just the ranked subset."""
+
+    @pytest.mark.asyncio
+    async def test_flagged_player_absent_from_top_targets_is_in_pool(self):
+        """A flagged returnee can never reach the top 15 — the pool is its only route."""
+        result = await _run_waivers(_ALL_AVAILABLE)
+
+        assert result.status == AgentStatus.SUCCESS
+        assert "Returnee" not in {t["player_name"] for t in result.data["top_targets"]}
+        assert "Returnee" in {p["player_name"] for p in result.data["pool"]}
+
+    @pytest.mark.asyncio
+    async def test_pool_covers_every_unowned_player(self):
+        result = await _run_waivers(_ALL_AVAILABLE)
+
+        assert {p["id"] for p in result.data["pool"]} == set(_ALL_AVAILABLE)
+
+    @pytest.mark.asyncio
+    async def test_pool_entry_is_lean_id_name_position_team(self):
+        """The roster is an identity record, not a second copy of the scored target."""
+        result = await _run_waivers([99])
+
+        assert result.data["pool"] == [
+            {"id": 99, "player_name": "Returnee", "position": "MID", "team_short": "ARS"},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_owned_players_never_appear_in_pool(self):
+        """Player 50 is rostered, so it is in the squad and out of the pool."""
+        result = await _run_waivers([1, 2, 3], entry_id=100, picks=[50])
+
+        assert {p["id"] for p in result.data["pool"]} == {1, 2, 3}
+        assert 50 in {p["id"] for p in result.data["current_squad"]}
+
+    @pytest.mark.asyncio
+    async def test_ranked_output_is_untouched_by_the_pool_field(self):
+        """Golden guard: the two long-standing keys must not shift.
+
+        The fixture was generated from the agent as it stood before ``pool``
+        existed, so any drift in ``top_targets`` or ``targets_by_position``
+        fails here rather than in the skill scripts that read them.
+        """
+        result = await _run_waivers(_ALL_AVAILABLE)
+        golden = json.loads(GOLDEN_RANKED.read_text(encoding="utf-8"))
+
+        assert result.data["top_targets"] == golden["top_targets"]
+        assert result.data["targets_by_position"] == golden["targets_by_position"]
+
+    @pytest.mark.asyncio
+    async def test_empty_available_list_yields_empty_pool(self):
+        result = await _run_waivers([])
+
+        assert result.data["pool"] == []
 
 
 class TestWaiverAgentShrinkage:

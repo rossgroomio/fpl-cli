@@ -12,7 +12,7 @@ from fpl_cli.agents.common import (
 )
 from fpl_cli.api.fpl import FPLClient
 from fpl_cli.api.fpl_draft import FPLDraftClient
-from fpl_cli.models.types import EnrichedPlayer, WaiverTarget
+from fpl_cli.models.types import EnrichedPlayer, WaiverPoolEntry, WaiverTarget
 from fpl_cli.services.scoring import (
     ConsistencySignals,
     apply_adjusted_npxg,
@@ -229,6 +229,7 @@ class WaiverAgent(Agent):
                     "total_waiver_teams": len(waiver_order),
                     "top_targets": waiver_targets[:15],
                     "targets_by_position": self._group_by_position(waiver_targets[:30]),
+                    "pool": self._build_pool(parsed_available),
                     "current_squad": current_squad,
                     "squad_weaknesses": self._identify_weaknesses(squad_by_position),
                     "recommendations": self._generate_recommendations(
@@ -247,6 +248,26 @@ class WaiverAgent(Agent):
                 message="Failed to analyze waiver options",
                 errors=[str(e)],
             )
+
+    @staticmethod
+    def _build_pool(available: list[EnrichedPlayer]) -> list[WaiverPoolEntry]:
+        """Build the lean identity roster of every unowned player.
+
+        ``top_targets`` is the ranked top 15, and the availability factor in the
+        waiver score suppresses anyone who is not playing, so a flagged player
+        can never surface there. Draft validation checks pool membership against
+        this full roster instead, so a claim staked on a returnee is not
+        reported as a pool miss.
+        """
+        return [
+            WaiverPoolEntry(
+                id=int(p["id"] or 0),
+                player_name=p["player_name"],
+                position=p["position"],
+                team_short=p["team_short"],
+            )
+            for p in available
+        ]
 
     def _get_team_exposure(
         self,
