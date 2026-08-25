@@ -68,10 +68,20 @@ def _bootstrap(finished_gws: int = 5, drop_player_key: tuple[str, ...] = ()) -> 
     }
 
 
-def _csv(required: frozenset[str], rows: int = 400) -> str:
+def _csv(
+    required: frozenset[str], rows: int = 400, blank: frozenset[str] = frozenset()
+) -> str:
+    """A CSV carrying every required column; `blank` columns are present but empty.
+
+    The blank set is the #142 shape: a header that satisfies every column
+    check over values the parser cannot convert.
+    """
     cols = sorted(required)
-    lines = [",".join(cols)] + [",".join("1" for _ in cols)] * rows
-    return "\n".join(lines) + "\n"
+    row = ",".join("" if col in blank else "1" for col in cols)
+    return "\n".join([",".join(cols)] + [row] * rows) + "\n"
+
+
+BLANK_ELO = frozenset({"home_team_elo", "away_team_elo"})
 
 
 def _understat_players(team_names: list[str]) -> dict:
@@ -114,6 +124,8 @@ def _register_routes(
     vaastav_overrides: dict[str, Response] | None = None,
     understat_teams: list[str] | None = None,
     gw_missing: tuple[int, ...] = (),
+    gw_texts: dict[tuple[int, str], str] | None = None,
+    players_text: str | None = None,
     fd_tlas: list[str] | None = None,
 ) -> None:
     bootstrap = _bootstrap(finished_gws=finished_gws, drop_player_key=drop_player_key)
@@ -132,28 +144,40 @@ def _register_routes(
         respx.get(f"{VAASTAV_BASE}/{season}/players_raw.csv").mock(return_value=response)
 
     respx.get(f"{CI_BASE}/{CI_SEASON}/players.csv").mock(
-        return_value=Response(200, text=_csv(PLAYERS_CSV_REQUIRED_COLUMNS))
+        return_value=Response(
+            200,
+            text=players_text
+            if players_text is not None
+            else _csv(PLAYERS_CSV_REQUIRED_COLUMNS),
+        )
     )
     respx.get(f"{CI_BASE}/{CI_SEASON}/playerstats.csv").mock(
         return_value=Response(200, text=_csv(PLAYERSTATS_REQUIRED_COLUMNS))
     )
+    overridden = gw_texts or {}
     for gw in {finished_gws, finished_gws - 1}:
         if gw < 1:
             continue
         tournament = f"{CI_BASE}/{CI_SEASON}/By Tournament/Premier League/GW{gw}"
         gw_files = (
-            (f"{tournament}/matches.csv", MATCHES_REQUIRED_COLUMNS),
-            (f"{tournament}/playermatchstats.csv", PLAYERMATCHSTATS_REQUIRED_COLUMNS),
+            ("matches.csv", f"{tournament}/matches.csv", MATCHES_REQUIRED_COLUMNS),
             (
+                "playermatchstats.csv",
+                f"{tournament}/playermatchstats.csv",
+                PLAYERMATCHSTATS_REQUIRED_COLUMNS,
+            ),
+            (
+                "player_gameweek_stats.csv",
                 f"{CI_BASE}/{CI_SEASON}/By Gameweek/GW{gw}/player_gameweek_stats.csv",
                 GW_STATS_REQUIRED_COLUMNS,
             ),
         )
-        for url, columns in gw_files:
+        for filename, url, columns in gw_files:
             if gw in gw_missing:
                 respx.get(url).mock(return_value=Response(404))
-            else:
-                respx.get(url).mock(return_value=Response(200, text=_csv(columns, rows=5)))
+                continue
+            text = overridden.get((gw, filename), _csv(columns, rows=5))
+            respx.get(url).mock(return_value=Response(200, text=text))
 
     teams = understat_teams if understat_teams is not None else [
         f"Team {i:02d}" for i in range(1, 21)
@@ -186,7 +210,9 @@ class TestHealthyProviders:
         assert "player fields present" in flat
         for season in VAASTAV_SEASONS:
             assert f"vaastav {season}" in flat
-        assert "all per-GW files present" in flat
+        assert "all per-GW files present, parsing to" in flat
+        assert "player-match records" in flat
+        assert "players resolve for the join" in flat
         assert "resolve to an Understat team" in flat
         assert "resolve to FPL short names through TLA_TO_FPL" in flat
 
@@ -291,6 +317,120 @@ class TestShapeDrift:
         assert "TLA_TO_FPL is missing T20" in flat
         assert "still maps XXX" in flat
         assert "re-rated as promoted" in flat
+
+
+class TestParseDrift:
+    """#142: correct columns, values the parser yields nothing from.
+
+    The probe re-implemented a header check while the runtime join needed
+    more, so `doctor --providers` reported the per-GW files ok in the same
+    session every scoring command warned they had parsed to 0 records.
+    """
+
+    @respx.mock
+    def test_blank_elo_at_first_finished_gw_is_not_ok(self, monkeypatch):
+        # The reported shape: GW1 complete, Elo columns present but empty, so
+        # every row drops out of the match join. Nothing earlier in the season
+        # to compare against, so it reads as a backfill still in progress.
+        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
+        _register_routes(
+            finished_gws=1,
+            gw_texts={
+                (1, "matches.csv"): _csv(MATCHES_REQUIRED_COLUMNS, rows=5, blank=BLANK_ELO)
+            },
+        )
+        result = _run()
+        assert result.exit_code == 0
+        flat = _flat(result)
+        assert "parse to 0 records" in flat
+        assert "opponent-adjusted xG signals" in flat
+        assert "broken if it persists" in flat
+        assert "all per-GW files present" not in flat
+
+    @respx.mock
+    def test_blank_elo_is_stale_while_the_previous_gw_parses(self, monkeypatch):
+        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
+        _register_routes(
+            finished_gws=5,
+            gw_texts={
+                (5, "matches.csv"): _csv(MATCHES_REQUIRED_COLUMNS, rows=5, blank=BLANK_ELO)
+            },
+        )
+        result = _run()
+        assert result.exit_code == 0
+        flat = _flat(result)
+        assert "GW5: matches.csv + playermatchstats.csv parse to 0 records" in flat
+        assert "self-corrects" in flat
+
+    @respx.mock
+    def test_blank_elo_two_gameweeks_running_is_broken(self, monkeypatch):
+        # Not a backfill in progress: the join is gone for good.
+        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
+        blank = _csv(MATCHES_REQUIRED_COLUMNS, rows=5, blank=BLANK_ELO)
+        _register_routes(
+            finished_gws=5,
+            gw_texts={(5, "matches.csv"): blank, (4, "matches.csv"): blank},
+        )
+        result = _run()
+        assert result.exit_code == 1
+        flat = _flat(result)
+        assert "for GW5 and GW4" in flat
+        assert "no row survives the join" in flat
+        assert "opponent-adjusted xG signals are unavailable" in flat
+
+    @respx.mock
+    def test_unparseable_gameweek_stats_is_broken(self, monkeypatch):
+        # The same drift in the other per-GW parser: price-trend rows, not
+        # match records, and the row must name the signals it costs.
+        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
+        blank = _csv(GW_STATS_REQUIRED_COLUMNS, rows=5, blank=frozenset({"now_cost"}))
+        _register_routes(
+            finished_gws=5,
+            gw_texts={
+                (5, "player_gameweek_stats.csv"): blank,
+                (4, "player_gameweek_stats.csv"): blank,
+            },
+        )
+        result = _run()
+        assert result.exit_code == 1
+        flat = _flat(result)
+        assert "player_gameweek_stats.csv parse to 0 records" in flat
+        assert "price-trend and transfer-momentum signals are unavailable" in flat
+
+    @respx.mock
+    def test_unparseable_players_csv_is_broken_and_per_gw_unchecked(self, monkeypatch):
+        # players.csv resolves the id every other file joins on. When it
+        # parses to nothing the per-GW records are empty too — attribute that
+        # to the join table, not to the per-GW files.
+        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
+        _register_routes(
+            players_text=_csv(
+                PLAYERS_CSV_REQUIRED_COLUMNS, blank=frozenset({"player_id"})
+            )
+        )
+        result = _run()
+        assert result.exit_code == 1
+        flat = _flat(result)
+        assert "none parse into a player" in flat
+        assert "players.csv did not parse, so the per-GW join could not be checked" in flat
+
+    @respx.mock
+    def test_json_reports_the_parse_failure_as_broken(self, monkeypatch):
+        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
+        blank = _csv(MATCHES_REQUIRED_COLUMNS, rows=5, blank=BLANK_ELO)
+        _register_routes(
+            finished_gws=5,
+            gw_texts={(5, "matches.csv"): blank, (4, "matches.csv"): blank},
+        )
+        result = _run(["--format", "json"])
+        assert result.exit_code == 1
+        payload = json.loads(result.output)
+        row = next(
+            c
+            for c in payload["data"]["providers"]
+            if c["name"] == "Core-Insights per-GW files"
+        )
+        assert row["status"] == "broken"
 
 
 class TestLagAndUnreachability:

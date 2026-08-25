@@ -9,6 +9,7 @@ import asyncio
 import csv
 import io
 import logging
+from collections.abc import Mapping
 from datetime import timedelta
 from typing import ClassVar, TypedDict
 
@@ -101,7 +102,7 @@ def make_core_insights_fetcher(ttl: timedelta = DEFAULT_TTL) -> DatasetFetcher:
     )
 
 
-class _PlayerLookup:
+class PlayerLookup:
     """Parsed row from players.csv: maps FPL player_id to identity fields."""
 
     __slots__ = ("player_code", "web_name", "position", "team_code")
@@ -111,6 +112,144 @@ class _PlayerLookup:
         self.web_name = web_name
         self.position = position
         self.team_code = team_code
+
+
+def parse_player_lookup(text: str) -> tuple[dict[int, PlayerLookup], int]:
+    """Parse players.csv into the identity table every other parse joins on.
+
+    Returns the mapping and the number of data rows read, so a caller can
+    tell an empty file from one where nothing survived parsing.
+    """
+    reader = csv.DictReader(io.StringIO(text))
+    lookup: dict[int, PlayerLookup] = {}
+    row_count = 0
+    for row in reader:
+        row_count += 1
+        try:
+            pid = int(row["player_id"])
+            lookup[pid] = PlayerLookup(
+                player_code=int(row["player_code"]),
+                web_name=row["web_name"],
+                position=_POSITION_MAP.get(row["position"], "???"),
+                team_code=int(row["team_code"]),
+            )
+        except (ValueError, KeyError) as exc:
+            logger.debug("Skipping malformed row in players.csv: %s", exc)
+            continue
+    return lookup, row_count
+
+
+def parse_match_records(
+    matches_text: str,
+    stats_text: str,
+    lookup: Mapping[int, PlayerLookup],
+) -> dict[int, list[MatchRecord]]:
+    """Join one gameweek's playermatchstats.csv onto its matches.csv.
+
+    Every value a record depends on is converted here, so a column that is
+    present but blank upstream (Elo at the start of a season) drops the row
+    exactly as it does at runtime. The `fpl doctor --providers` per-GW probe
+    runs this same join rather than a weaker header check, so it cannot pass
+    a file the runtime reads as zero records (#142).
+    """
+    matches: dict[str, dict[str, str]] = {}
+    for row in csv.DictReader(io.StringIO(matches_text)):
+        mid = row.get("match_id", "")
+        if mid:
+            matches[mid] = row
+
+    result: dict[int, list[MatchRecord]] = {}
+    for row in csv.DictReader(io.StringIO(stats_text)):
+        try:
+            pid = int(row["player_id"])
+            mid = row["match_id"]
+        except (ValueError, KeyError):
+            continue
+
+        match = matches.get(mid)
+        if match is None:
+            continue
+
+        player = lookup.get(pid)
+        if player is None:
+            continue
+
+        try:
+            home_elo = float(match["home_team_elo"])
+            away_elo = float(match["away_team_elo"])
+            gameweek = int(float(match["gameweek"]))
+            home_team_code = int(float(match["home_team"]))
+        except (ValueError, KeyError):
+            continue
+
+        is_home = player.team_code == home_team_code
+        opponent_elo = away_elo if is_home else home_elo
+
+        try:
+            xg = float(row["xg"])
+            minutes_played = int(float(row["minutes_played"]))
+        except (ValueError, KeyError):
+            continue
+
+        record: MatchRecord = {
+            "player_id": pid,
+            "gameweek": gameweek,
+            "xg": xg,
+            "xa": float(row.get("xa") or 0),
+            "penalties_scored": int(float(row.get("penalties_scored") or 0)),
+            "penalties_missed": int(float(row.get("penalties_missed") or 0)),
+            "minutes_played": minutes_played,
+            "opponent_elo": opponent_elo,
+            "is_home": is_home,
+            "total_shots": int(float(row.get("total_shots") or 0)),
+            "chances_created": int(float(row.get("chances_created") or 0)),
+            "touches_opposition_box": int(float(row.get("touches_opposition_box") or 0)),
+            "clearances": int(float(row.get("clearances") or 0)),
+            "blocks": int(float(row.get("blocks") or 0)),
+            "interceptions": int(float(row.get("interceptions") or 0)),
+            "tackles_won": int(float(row.get("tackles_won") or 0)),
+            "recoveries": int(float(row.get("recoveries") or 0)),
+            "saves": int(float(row.get("saves") or 0)),
+            "xgot_faced": float(row.get("xgot_faced") or 0),
+            "goals_prevented": float(row.get("goals_prevented") or 0),
+        }
+        result.setdefault(pid, []).append(record)
+
+    return result
+
+
+def parse_gw_stat_rows(
+    text: str, lookup: Mapping[int, PlayerLookup]
+) -> tuple[dict[int, _GwRow], int]:
+    """Parse one gameweek's player_gameweek_stats.csv into {player_id: row}.
+
+    Returns the parsed rows and the number of data rows read. First row per
+    player wins, matching the dedupe the season-wide fetch relies on.
+    """
+    parsed: dict[int, _GwRow] = {}
+    rows_read = 0
+    for row in csv.DictReader(io.StringIO(text)):
+        rows_read += 1
+        try:
+            pid = int(row["id"])
+            now_cost = int(round(float(row["now_cost"]) * 10))
+            transfers_in = int(row.get("transfers_in_event", 0) or 0)
+            transfers_out = int(row.get("transfers_out_event", 0) or 0)
+        except (ValueError, KeyError):
+            continue
+
+        if pid in parsed:
+            continue
+
+        player = lookup.get(pid)
+        parsed[pid] = {
+            "value": now_cost,
+            "transfers_balance": transfers_in - transfers_out,
+            "web_name": player.web_name if player else row.get("web_name", "???"),
+            "position": player.position if player else "???",
+            "team_name": row.get("team_name", "???"),
+        }
+    return parsed, rows_read
 
 
 class CoreInsightsClient:
@@ -130,7 +269,7 @@ class CoreInsightsClient:
         self._season_year = get_season_year()
         self._season_label = season_label(self._season_year)
         self._ci_season = core_insights_season(self._season_year)
-        self._player_lookup: dict[int, _PlayerLookup] | None = None
+        self._player_lookup: dict[int, PlayerLookup] | None = None
         self._season_data: dict[str, list[SeasonHistory]] | None = None
         self._gw_rows: dict[int, dict[int, _GwRow]] | None = None
         self._match_records: dict[int, list[MatchRecord]] | None = None
@@ -147,35 +286,21 @@ class CoreInsightsClient:
 
     # --- Player lookup (players.csv join) ---
 
-    async def _fetch_player_lookup(self) -> dict[int, _PlayerLookup]:
-        """Fetch players.csv and build {player_id: _PlayerLookup} mapping."""
+    async def _fetch_player_lookup(self) -> dict[int, PlayerLookup]:
+        """Fetch players.csv and build {player_id: PlayerLookup} mapping."""
         if self._player_lookup is not None:
             return self._player_lookup
 
         text = await self.fetcher.get(f"{self._ci_season}/players.csv")
         degraded = "current-season player histories are unavailable"
-        reader = csv.DictReader(io.StringIO(text))
-        lookup: dict[int, _PlayerLookup] = {}
+        lookup: dict[int, PlayerLookup] = {}
         if header_covers(
             "Core-Insights players.csv",
-            reader.fieldnames,
+            csv.DictReader(io.StringIO(text)).fieldnames,
             PLAYERS_CSV_REQUIRED_COLUMNS,
             degraded=degraded,
         ):
-            row_count = 0
-            for row in reader:
-                row_count += 1
-                try:
-                    pid = int(row["player_id"])
-                    lookup[pid] = _PlayerLookup(
-                        player_code=int(row["player_code"]),
-                        web_name=row["web_name"],
-                        position=_POSITION_MAP.get(row["position"], "???"),
-                        team_code=int(row["team_code"]),
-                    )
-                except (ValueError, KeyError) as exc:
-                    logger.debug("Skipping malformed row in players.csv: %s", exc)
-                    continue
+            lookup, row_count = parse_player_lookup(text)
             if row_count and not lookup:
                 warn_all_rows_skipped("Core-Insights players.csv", row_count, degraded=degraded)
 
@@ -216,9 +341,10 @@ class CoreInsightsClient:
             self._match_records = {}
             return self._match_records
 
-        # Build match lookup from all GW matches.csv files
-        matches: dict[str, dict[str, str]] = {}
-        all_stats_text: list[str] = []
+        # One join per gameweek, through the same parser the provider probe
+        # runs (#142). A gameweek missing either file contributes nothing.
+        result: dict[int, list[MatchRecord]] = {}
+        joined_gws = 0
         for i, gw in enumerate(gw_range):
             matches_result = raw_results[i * 2]
             stats_result = raw_results[i * 2 + 1]
@@ -228,77 +354,18 @@ class CoreInsightsClient:
             if isinstance(stats_result, BaseException):
                 logger.debug("GW%d playermatchstats.csv unavailable: %s", gw, stats_result)
                 continue
-            for row in csv.DictReader(io.StringIO(matches_result)):
-                mid = row.get("match_id", "")
-                if mid:
-                    matches[mid] = row
-            all_stats_text.append(stats_result)
+            joined_gws += 1
+            for pid, records in parse_match_records(
+                matches_result, stats_result, lookup
+            ).items():
+                result.setdefault(pid, []).extend(records)
 
-        # Parse player match stats and join to matches
-        result: dict[int, list[MatchRecord]] = {}
-        for stats_text in all_stats_text:
-            for row in csv.DictReader(io.StringIO(stats_text)):
-                try:
-                    pid = int(row["player_id"])
-                    mid = row["match_id"]
-                except (ValueError, KeyError):
-                    continue
-
-                match = matches.get(mid)
-                if match is None:
-                    continue
-
-                player = lookup.get(pid)
-                if player is None:
-                    continue
-
-                try:
-                    home_elo = float(match["home_team_elo"])
-                    away_elo = float(match["away_team_elo"])
-                    gameweek = int(float(match["gameweek"]))
-                    home_team_code = int(float(match["home_team"]))
-                except (ValueError, KeyError):
-                    continue
-
-                is_home = player.team_code == home_team_code
-                opponent_elo = away_elo if is_home else home_elo
-
-                try:
-                    xg = float(row["xg"])
-                    minutes_played = int(float(row["minutes_played"]))
-                except (ValueError, KeyError):
-                    continue
-
-                record: MatchRecord = {
-                    "player_id": pid,
-                    "gameweek": gameweek,
-                    "xg": xg,
-                    "xa": float(row.get("xa") or 0),
-                    "penalties_scored": int(float(row.get("penalties_scored") or 0)),
-                    "penalties_missed": int(float(row.get("penalties_missed") or 0)),
-                    "minutes_played": minutes_played,
-                    "opponent_elo": opponent_elo,
-                    "is_home": is_home,
-                    "total_shots": int(float(row.get("total_shots") or 0)),
-                    "chances_created": int(float(row.get("chances_created") or 0)),
-                    "touches_opposition_box": int(float(row.get("touches_opposition_box") or 0)),
-                    "clearances": int(float(row.get("clearances") or 0)),
-                    "blocks": int(float(row.get("blocks") or 0)),
-                    "interceptions": int(float(row.get("interceptions") or 0)),
-                    "tackles_won": int(float(row.get("tackles_won") or 0)),
-                    "recoveries": int(float(row.get("recoveries") or 0)),
-                    "saves": int(float(row.get("saves") or 0)),
-                    "xgot_faced": float(row.get("xgot_faced") or 0),
-                    "goals_prevented": float(row.get("goals_prevented") or 0),
-                }
-                result.setdefault(pid, []).append(record)
-
-        if all_stats_text and not result:
+        if joined_gws and not result:
             logger.warning(
                 "Core-Insights match stats parsed to 0 records from %d gameweek file(s) — "
                 "the upstream format may have changed; opponent-adjusted xG signals "
                 "are unavailable",
-                len(all_stats_text),
+                joined_gws,
             )
         self._match_records = result
         return result
@@ -480,18 +547,16 @@ class CoreInsightsClient:
             self._gw_rows = await self._fetch_all_gw_rows()
         return self._compute_gw_profiles(self._gw_rows, last_n=last_n)
 
-    async def _fetch_single_gw(self, gw: int) -> list[dict[str, str]]:
-        """Fetch one GW's player_gameweek_stats.csv, return parsed rows."""
+    async def _fetch_single_gw(self, gw: int) -> str:
+        """Fetch one GW's player_gameweek_stats.csv, or "" when it 404s."""
         path = f"{self._ci_season}/By Gameweek/GW{gw}/player_gameweek_stats.csv"
         try:
             ttl = self.HISTORICAL_TTL if gw < self._latest_finished_gw() else None
-            text = await self.fetcher.get(path, ttl=ttl)
+            return await self.fetcher.get(path, ttl=ttl)
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 404:
-                return []
+                return ""
             raise
-        reader = csv.DictReader(io.StringIO(text))
-        return list(reader)
 
     def _latest_finished_gw(self) -> int:
         """Estimate latest finished GW from cached data, or 0 if unknown."""
@@ -517,30 +582,10 @@ class CoreInsightsClient:
             if isinstance(result, BaseException):
                 logger.warning("Failed to fetch GW%d: %s", gw, result)
                 continue
-            rows = result
-            for row in rows:
-                rows_read += 1
-                try:
-                    pid = int(row["id"])
-                    now_cost = int(round(float(row["now_cost"]) * 10))
-                    transfers_in = int(row.get("transfers_in_event", 0) or 0)
-                    transfers_out = int(row.get("transfers_out_event", 0) or 0)
-                except (ValueError, KeyError):
-                    continue
-
-                player = lookup.get(pid)
-                player_gws = by_player.setdefault(pid, {})
-
-                if gw in player_gws:
-                    continue
-
-                player_gws[gw] = {
-                    "value": now_cost,
-                    "transfers_balance": transfers_in - transfers_out,
-                    "web_name": player.web_name if player else row.get("web_name", "???"),
-                    "position": player.position if player else "???",
-                    "team_name": row.get("team_name", "???"),
-                }
+            parsed, gw_rows_read = parse_gw_stat_rows(result, lookup)
+            rows_read += gw_rows_read
+            for pid, row in parsed.items():
+                by_player.setdefault(pid, {})[gw] = row
 
         if rows_read and not by_player:
             warn_all_rows_skipped(

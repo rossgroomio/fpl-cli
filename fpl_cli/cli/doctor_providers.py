@@ -4,7 +4,10 @@ The counterpart to doctor's local checks, one layer down (#97): the six
 external data sources honour no versioned contract, so the only way to
 know one has drifted is to ask it. Each probe asserts shape and volume —
 not just reachability — against the same column constants the parsers
-index with, so a probe cannot pass while the parser fails.
+index with. Where a column check is not the contract, the probe runs the
+parser itself and asserts it yields records (#142): the Core-Insights
+per-GW files passed every shape test while the runtime read them as zero,
+so a probe that re-implements a weaker check is a probe that lies.
 
 Status mapping keeps #57's taxonomy honest for providers:
   - BROKEN: reachable but the wrong shape — needs a code or upstream fix,
@@ -24,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import csv
+import dataclasses
 import io
 import json
 from datetime import timedelta
@@ -38,6 +42,7 @@ from fpl_cli.season import TOTAL_GAMEWEEKS, get_season_year, season_label_range
 from fpl_cli.utils.teams import describe_team_set_mismatch
 
 if TYPE_CHECKING:
+    from fpl_cli.api.core_insights import PlayerLookup
     from fpl_cli.api.dataset_fetcher import DatasetFetcher
 
 # Force revalidation on every probe: serving a cached copy inside its TTL
@@ -256,6 +261,25 @@ async def _vaastav_checks() -> list[CheckResult]:
 # ---------------------------------------------------------------------------
 
 
+async def _ci_fetch_text(
+    fetcher: DatasetFetcher, name: str, path: str, filename: str
+) -> tuple[str | None, CheckResult | None]:
+    """Fetch one Core-Insights file, or the CheckResult explaining why not."""
+    try:
+        return await fetcher.get(path, ttl=PROBE_TTL), None
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            return None, CheckResult(
+                name,
+                CheckStatus.BROKEN,
+                f"{filename} is missing upstream — the sole current-season source; "
+                "the season directory may not exist yet or may have moved",
+            )
+        return None, CheckResult(name, CheckStatus.UNCHECKED, _unreachable(exc))
+    except httpx.HTTPError as exc:
+        return None, CheckResult(name, CheckStatus.UNCHECKED, _unreachable(exc))
+
+
 async def _ci_file_check(
     fetcher: DatasetFetcher,
     name: str,
@@ -265,34 +289,69 @@ async def _ci_file_check(
     *,
     row_floor: int,
 ) -> CheckResult:
-    try:
-        text = await fetcher.get(path, ttl=PROBE_TTL)
-    except httpx.HTTPStatusError as exc:
-        if exc.response.status_code == 404:
-            return CheckResult(
-                name,
-                CheckStatus.BROKEN,
-                f"{filename} is missing upstream — the sole current-season source; "
-                "the season directory may not exist yet or may have moved",
-            )
-        return CheckResult(name, CheckStatus.UNCHECKED, _unreachable(exc))
-    except httpx.HTTPError as exc:
-        return CheckResult(name, CheckStatus.UNCHECKED, _unreachable(exc))
+    text, failure = await _ci_fetch_text(fetcher, name, path, filename)
+    if failure is not None:
+        return failure
+    assert text is not None  # narrowed by failure is None
     return _csv_check(name, filename, text, required, row_floor=row_floor)
 
 
-async def _ci_gw_file_headers(
-    fetcher: DatasetFetcher, path: str
-) -> list[str] | None:
-    """Header row of one per-GW CSV, or None when it 404s upstream."""
+async def _ci_players_check(
+    fetcher: DatasetFetcher, season: str
+) -> tuple[CheckResult, dict[int, PlayerLookup]]:
+    """players.csv: shape, volume, and the identity join every parse below needs.
+
+    The join is the point (#142). players.csv resolves the player_id every
+    other Core-Insights file carries, so a file with the right columns whose
+    ids parse to nothing empties the per-GW records with no column to blame —
+    and the per-GW probe would otherwise report that as the per-GW files
+    breaking. The lookup it returns is what those probes join against.
+    """
+    from fpl_cli.api.core_insights import PLAYERS_CSV_REQUIRED_COLUMNS, parse_player_lookup
+
+    name = "Core-Insights players.csv"
+    text, failure = await _ci_fetch_text(
+        fetcher, name, f"{season}/players.csv", "players.csv"
+    )
+    if failure is not None:
+        return failure, {}
+    assert text is not None  # narrowed by failure is None
+
+    shape = _csv_check(
+        name, "players.csv", text, PLAYERS_CSV_REQUIRED_COLUMNS, row_floor=CSV_ROW_FLOOR
+    )
+    if shape.status is not CheckStatus.OK:
+        return shape, {}
+
+    lookup, rows_read = parse_player_lookup(text)
+    if not lookup:
+        return (
+            CheckResult(
+                name,
+                CheckStatus.BROKEN,
+                f"players.csv has {rows_read} row(s) with every expected column but "
+                "none parse into a player — every join onto it is empty",
+            ),
+            {},
+        )
+    return (
+        CheckResult(
+            name,
+            CheckStatus.OK,
+            f"players.csv: {rows_read} rows, {len(lookup)} players resolve for the join",
+        ),
+        lookup,
+    )
+
+
+async def _ci_gw_file_text(fetcher: DatasetFetcher, path: str) -> str | None:
+    """Contents of one per-GW CSV, or None when it 404s upstream."""
     try:
-        text = await fetcher.get(path, ttl=PROBE_TTL)
+        return await fetcher.get(path, ttl=PROBE_TTL)
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code == 404:
             return None
         raise
-    reader = csv.DictReader(io.StringIO(text))
-    return list(reader.fieldnames or ())
 
 
 def _ci_gw_paths(season: str, gw: int) -> list[tuple[str, str, frozenset[str]]]:
@@ -318,69 +377,173 @@ def _ci_gw_paths(season: str, gw: int) -> list[tuple[str, str, frozenset[str]]]:
     ]
 
 
-async def _ci_gw_check(
-    fetcher: DatasetFetcher, season: str, latest_finished_gw: int
-) -> CheckResult:
-    """Probe the per-GW folder layout at the latest finished gameweek.
+# The per-GW files parse in two units, each feeding signals of its own: the
+# match join wants both By Tournament files, the gameweek stats stand alone.
+MATCH_JOIN_UNIT = "matches.csv + playermatchstats.csv"
+GW_STATS_UNIT = "player_gameweek_stats.csv"
+GW_UNIT_SIGNALS = {
+    MATCH_JOIN_UNIT: "opponent-adjusted xG signals",
+    GW_STATS_UNIT: "price-trend and transfer-momentum signals",
+}
 
-    A folder missing for the newest gameweek but present for the previous one
-    is a publishing lag (the dataset updates a few times a day) and self-
-    corrects; missing for both is a layout change every future fetch will hit.
+
+@dataclasses.dataclass(frozen=True)
+class _GwProbe:
+    """What one gameweek's per-GW files look like to the runtime parsers."""
+
+    absent: list[str]
+    column_problems: list[str]
+    empty: list[str]
+    match_records: int
+    gw_stat_rows: int
+
+
+async def _ci_probe_gw(
+    fetcher: DatasetFetcher, season: str, gw: int, lookup: dict[int, PlayerLookup]
+) -> _GwProbe:
+    """Fetch one gameweek's per-GW files and run the real parsers over them.
+
+    Raises httpx.HTTPError for anything but a 404, which is the absence the
+    caller classifies as publishing lag or layout change.
     """
-    name = "Core-Insights per-GW files"
-    try:
-        headers = await asyncio.gather(
-            *(
-                _ci_gw_file_headers(fetcher, path)
-                for _, path, _ in _ci_gw_paths(season, latest_finished_gw)
+    from fpl_cli.api.core_insights import parse_gw_stat_rows, parse_match_records
+
+    files = _ci_gw_paths(season, gw)
+    texts = await asyncio.gather(
+        *(_ci_gw_file_text(fetcher, path) for _, path, _ in files)
+    )
+    by_name = {filename: text for (filename, _, _), text in zip(files, texts)}
+
+    absent = [filename for (filename, _, _), text in zip(files, texts) if text is None]
+    column_problems = [
+        f"{filename} is missing column(s) {', '.join(sorted(missing))}"
+        for (filename, _, required), text in zip(files, texts)
+        if text is not None
+        and (
+            missing := missing_columns(
+                csv.DictReader(io.StringIO(text)).fieldnames, required
             )
         )
+    ]
+
+    matches_text = by_name["matches.csv"]
+    stats_text = by_name["playermatchstats.csv"]
+    gw_stats_text = by_name["player_gameweek_stats.csv"]
+
+    match_records = 0
+    if matches_text is not None and stats_text is not None:
+        match_records = sum(
+            len(records)
+            for records in parse_match_records(matches_text, stats_text, lookup).values()
+        )
+    gw_stat_rows = 0
+    if gw_stats_text is not None:
+        gw_stat_rows = len(parse_gw_stat_rows(gw_stats_text, lookup)[0])
+
+    empty: list[str] = []
+    if matches_text is not None and stats_text is not None and not match_records:
+        empty.append(MATCH_JOIN_UNIT)
+    if gw_stats_text is not None and not gw_stat_rows:
+        empty.append(GW_STATS_UNIT)
+
+    return _GwProbe(absent, column_problems, empty, match_records, gw_stat_rows)
+
+
+def _ci_empty_phrase(units: list[str]) -> str:
+    """Name the parse that yielded nothing and the signals it costs."""
+    signals = sorted({GW_UNIT_SIGNALS[unit] for unit in units})
+    return (
+        f"{', '.join(units)} parse to 0 records — every expected column is "
+        f"present but no row survives the join, so {' and '.join(signals)} "
+        "are unavailable"
+    )
+
+
+async def _ci_gw_check(
+    fetcher: DatasetFetcher,
+    season: str,
+    latest_finished_gw: int,
+    lookup: dict[int, PlayerLookup],
+) -> CheckResult:
+    """Probe the per-GW files at the latest finished gameweek.
+
+    Shape alone is not the contract: #142 was a gameweek whose files carried
+    every expected column and still parsed to zero records (Elo published
+    blank at the start of a season), so the probe reported ok while every
+    scoring command warned the signal was gone. It runs the runtime parsers
+    here instead and asserts they yield something.
+
+    A file missing or empty for the newest gameweek but healthy for the
+    previous one is a publishing lag (the dataset updates a few times a day
+    and backfills) and self-corrects; the same problem two gameweeks running
+    is a break every future fetch will hit.
+    """
+    name = "Core-Insights per-GW files"
+    if not lookup:
+        return CheckResult(
+            name,
+            CheckStatus.UNCHECKED,
+            "players.csv did not parse, so the per-GW join could not be checked",
+        )
+    try:
+        probe = await _ci_probe_gw(fetcher, season, latest_finished_gw, lookup)
     except httpx.HTTPError as exc:
         return CheckResult(name, CheckStatus.UNCHECKED, _unreachable(exc))
 
-    files = _ci_gw_paths(season, latest_finished_gw)
-    absent = [filename for (filename, _, _), header in zip(files, headers) if header is None]
-    column_problems = [
-        f"{filename} is missing column(s) {', '.join(sorted(missing))}"
-        for (filename, _, required), header in zip(files, headers)
-        if header is not None and (missing := missing_columns(header, required))
-    ]
-    if column_problems:
-        return CheckResult(name, CheckStatus.BROKEN, "; ".join(column_problems))
-    if not absent:
+    if probe.column_problems:
+        return CheckResult(name, CheckStatus.BROKEN, "; ".join(probe.column_problems))
+    if not probe.absent and not probe.empty:
         return CheckResult(
             name,
             CheckStatus.OK,
-            f"GW{latest_finished_gw}: all per-GW files present with expected columns",
+            f"GW{latest_finished_gw}: all per-GW files present, parsing to "
+            f"{probe.match_records} player-match records and "
+            f"{probe.gw_stat_rows} gameweek stat rows",
         )
 
-    # Something is missing at the newest finished GW — decide lag vs layout
-    # change by whether the same files exist one gameweek earlier.
+    # Something is wrong at the newest finished GW — decide lag vs break by
+    # whether the previous gameweek carries the same problem. At the season's
+    # first finished gameweek there is nothing to compare against, so a
+    # backfill in progress and a break look identical: report the lag.
     previous_gw = latest_finished_gw - 1
+    previous: _GwProbe | None = None
     if previous_gw >= 1:
         try:
-            previous = await asyncio.gather(
-                *(
-                    _ci_gw_file_headers(fetcher, path)
-                    for filename, path, _ in _ci_gw_paths(season, previous_gw)
-                    if filename in absent
-                )
-            )
+            previous = await _ci_probe_gw(fetcher, season, previous_gw, lookup)
         except httpx.HTTPError as exc:
             return CheckResult(name, CheckStatus.UNCHECKED, _unreachable(exc))
-        if any(header is None for header in previous):
-            return CheckResult(
-                name,
-                CheckStatus.BROKEN,
-                f"{', '.join(absent)} missing upstream for GW{latest_finished_gw} and "
-                f"GW{previous_gw} — the per-GW folder layout may have changed",
+
+    persistent_absent = [
+        f for f in probe.absent if previous is not None and f in previous.absent
+    ]
+    persistent_empty = [
+        u for u in probe.empty if previous is not None and u in previous.empty
+    ]
+    if persistent_absent or persistent_empty:
+        problems = []
+        if persistent_absent:
+            problems.append(
+                f"{', '.join(persistent_absent)} missing upstream for "
+                f"GW{latest_finished_gw} and GW{previous_gw} — the per-GW folder "
+                "layout may have changed"
             )
+        if persistent_empty:
+            problems.append(
+                f"for GW{latest_finished_gw} and GW{previous_gw}, "
+                + _ci_empty_phrase(persistent_empty)
+            )
+        return CheckResult(name, CheckStatus.BROKEN, "; ".join(problems))
+
+    lag = []
+    if probe.absent:
+        lag.append(f"{', '.join(probe.absent)} not published upstream yet")
+    if probe.empty:
+        lag.append(_ci_empty_phrase(probe.empty))
     return CheckResult(
         name,
         CheckStatus.STALE,
-        f"GW{latest_finished_gw}: {', '.join(absent)} not published upstream yet — "
-        "the dataset updates a few times a day, so this self-corrects; "
-        "broken if it persists",
+        f"GW{latest_finished_gw}: {'; '.join(lag)} — the dataset updates a few times "
+        "a day and backfills, so this self-corrects; broken if it persists",
     )
 
 
@@ -388,7 +551,6 @@ async def _core_insights_checks(
     latest_finished_gw: int | None, *, bootstrap_available: bool
 ) -> list[CheckResult]:
     from fpl_cli.api.core_insights import (
-        PLAYERS_CSV_REQUIRED_COLUMNS,
         PLAYERSTATS_REQUIRED_COLUMNS,
         make_core_insights_fetcher,
     )
@@ -398,16 +560,8 @@ async def _core_insights_checks(
     fetcher = make_core_insights_fetcher()
     results: list[CheckResult] = []
     try:
-        results.append(
-            await _ci_file_check(
-                fetcher,
-                "Core-Insights players.csv",
-                f"{season}/players.csv",
-                "players.csv",
-                PLAYERS_CSV_REQUIRED_COLUMNS,
-                row_floor=CSV_ROW_FLOOR,
-            )
-        )
+        players_result, lookup = await _ci_players_check(fetcher, season)
+        results.append(players_result)
         results.append(
             await _ci_file_check(
                 fetcher,
@@ -431,10 +585,13 @@ async def _core_insights_checks(
                 )
             )
         else:
-            results.append(await _ci_gw_check(fetcher, season, latest_finished_gw))
+            results.append(
+                await _ci_gw_check(fetcher, season, latest_finished_gw, lookup)
+            )
     finally:
         await fetcher.close()
     return results
+
 
 
 # ---------------------------------------------------------------------------
