@@ -25,7 +25,7 @@ import json
 import re
 import sys
 import unicodedata
-from typing import TypedDict
+from typing import NotRequired, TypedDict, cast
 
 from fpl_cli.utils.markdown import HeadingMatcher, find_section, leaf_body
 
@@ -58,6 +58,7 @@ class PoolEntry(TypedDict):
     player_name: str
     position: str
     team_short: str
+    id: NotRequired[int]
 
 
 class SquadEntry(TypedDict):
@@ -125,24 +126,65 @@ def _shape_check_squad(data: dict) -> bool:
         return False
 
 
+def _entries_shape_ok(entries: object) -> bool:
+    """Return True if entries is a list of name/position records (empty is fine)."""
+    if not isinstance(entries, list):
+        return False
+    if not entries:
+        return True
+    sample = entries[0]
+    return isinstance(sample, dict) and "player_name" in sample and "position" in sample
+
+
 def _shape_check_waivers(data: dict) -> bool:
-    """Return True if waivers JSON has the expected shape."""
+    """Return True if waivers JSON has the expected shape.
+
+    `pool` is the full unowned roster and is what membership is checked against;
+    `top_targets` is the ranked subset older waivers JSON carried on its own.
+    Either satisfies the guard, so a cached file still validates.
+
+    A `pool` key that is present but unusable deliberately fails the file rather
+    than falling through to `top_targets`. The two are not interchangeable: a
+    flagged player is kept out of `top_targets` by the availability factor no
+    matter how strong the case for claiming them, so checking membership
+    against the ranked subset reports every legitimate injury claim as a miss.
+    Failing here warns once and suppresses the pool check for the run, which
+    beats a page of false positives on exactly the claims this validates.
+    """
     try:
-        targets = data["data"]["top_targets"]
-        if not isinstance(targets, list):
-            return False
-        if not targets:
-            return True
-        sample = targets[0]
-        return "player_name" in sample and "position" in sample
+        payload = data["data"]
+        if "pool" in payload:
+            return _entries_shape_ok(payload["pool"])
+        return _entries_shape_ok(payload["top_targets"])
     except (KeyError, TypeError):
         return False
 
 
 def build_pool(waivers_data: dict) -> dict[tuple[str, str], PoolEntry]:
-    """Build {(position, normalised_name) -> entry} from waivers JSON."""
+    """Build {(position, normalised_name) -> entry} from waivers JSON.
+
+    Reads the full unowned `pool` roster, so a claim for a flagged player is
+    resolvable: the availability factor in the waiver score keeps such a player
+    out of `top_targets` no matter how strong the case for claiming them. Falls
+    back to `top_targets` when `pool` is missing or empty -- an older cached
+    file then validates as it always did rather than reporting every claim as a
+    miss.
+    """
+    payload = waivers_data.get("data", {})
+    entries = payload.get("pool")
+    if not isinstance(entries, list) or not entries:
+        entries = payload.get("top_targets")
+    if not isinstance(entries, list):
+        # The shape check clears a file on either key, so the fallback can still
+        # land on a malformed value. Reporting no pool costs a missed check;
+        # raising here would exit non-zero and break the orchestrator contract.
+        entries = []
+
     pool: dict[tuple[str, str], PoolEntry] = {}
-    for entry in waivers_data.get("data", {}).get("top_targets", []):
+    for raw in entries:
+        if not isinstance(raw, dict):
+            continue
+        entry = cast(PoolEntry, raw)
         pos = entry.get("position", "")
         key = (pos, normalise(entry.get("player_name", "")))
         pool[key] = entry

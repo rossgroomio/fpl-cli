@@ -111,6 +111,21 @@ class WaiverTarget(TypedDict):
     xGChain_per_90: NotRequired[float]
 
 
+class WaiverPoolEntry(TypedDict):
+    """Identity record for one unowned player in a draft waiver pool.
+
+    Key names mirror the identity slice of ``PlayerStats``. Deliberately lean:
+    a consumer checking pool membership resolves a name at a position, so
+    carrying availability or scoring fields here would only grow a second,
+    divergent copy of the ranked ``WaiverTarget``.
+    """
+
+    id: int
+    player_name: str
+    position: str
+    team_short: str
+
+
 class EnrichedPlayer(TypedDict):
     id: int
     player_name: str

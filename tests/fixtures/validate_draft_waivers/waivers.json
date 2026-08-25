@@ -7,6 +7,13 @@
       {"player_name": "Pedro Porro", "position": "DEF", "team_short": "TOT"},
       {"player_name": "E.Le Fée", "position": "MID", "team_short": "SUN"},
       {"player_name": "Canvot", "position": "DEF", "team_short": "CRY"}
+    ],
+    "pool": [
+      {"id": 101, "player_name": "Lacroix", "position": "DEF", "team_short": "CRY"},
+      {"id": 102, "player_name": "Pedro Porro", "position": "DEF", "team_short": "TOT"},
+      {"id": 103, "player_name": "E.Le Fée", "position": "MID", "team_short": "SUN"},
+      {"id": 104, "player_name": "Canvot", "position": "DEF", "team_short": "CRY"},
+      {"id": 105, "player_name": "Havertz", "position": "FWD", "team_short": "ARS"}
     ]
   }
 }

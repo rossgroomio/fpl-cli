@@ -14,7 +14,7 @@ from fpl_cli.services.player_prior import (
     PlayerPrior,
     _compute_confidence,
     _extract_prev_season_pts_per_90,
-    _percentile_rank,
+    percentile_rank,
     _save_prior_cache,
     generate_player_prior,
     load_cached_priors,
@@ -86,25 +86,25 @@ class TestExtractPrevSeasonPts:
 
 
 # ---------------------------------------------------------------------------
-# _percentile_rank
+# percentile_rank
 # ---------------------------------------------------------------------------
 
 
 class TestPercentileRank:
     def test_middle_value(self):
-        assert _percentile_rank(3.0, [1.0, 2.0, 3.0, 4.0, 5.0]) == pytest.approx(0.5)
+        assert percentile_rank(3.0, [1.0, 2.0, 3.0, 4.0, 5.0]) == pytest.approx(0.5)
 
     def test_lowest_value(self):
-        assert _percentile_rank(1.0, [1.0, 2.0, 3.0, 4.0, 5.0]) == pytest.approx(0.1)
+        assert percentile_rank(1.0, [1.0, 2.0, 3.0, 4.0, 5.0]) == pytest.approx(0.1)
 
     def test_highest_value(self):
-        assert _percentile_rank(5.0, [1.0, 2.0, 3.0, 4.0, 5.0]) == pytest.approx(0.9)
+        assert percentile_rank(5.0, [1.0, 2.0, 3.0, 4.0, 5.0]) == pytest.approx(0.9)
 
     def test_single_value(self):
-        assert _percentile_rank(5.0, [5.0]) == 0.5
+        assert percentile_rank(5.0, [5.0]) == 0.5
 
     def test_all_equal(self):
-        assert _percentile_rank(3.0, [3.0, 3.0, 3.0]) == 0.5
+        assert percentile_rank(3.0, [3.0, 3.0, 3.0]) == 0.5
 
 
 # ---------------------------------------------------------------------------

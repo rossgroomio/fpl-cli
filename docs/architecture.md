@@ -285,6 +285,7 @@ flowchart LR
         chips["chips"]
         ratings["ratings"]
         intel["intel"]
+        returnees["returnees"]
         credentials["credentials"]
         init["init"]
     end
@@ -319,6 +320,7 @@ flowchart LR
     subgraph Stores["Durable Stores"]
         LH[("league_history<br/>append-only ledger")]
         LHC[("league_history_counters<br/>rebuildable projection")]
+        RS[("returnee_snapshot<br/>week-over-week state")]
     end
 
     preview --> FA & SA & CA & SCA & RA
@@ -327,6 +329,8 @@ flowchart LR
     recap -->|"records every run"| LH
     LH -->|"streaks, notes pack,<br/>season phase"| recap
     LH -.->|"rebuilds when stale"| LHC
+    returnees -->|"stores the watchlist it showed"| RS
+    RS -->|"week-over-week transitions"| returnees
     cap --> CA
     fdr --> FA
     xg --> SA
@@ -379,6 +383,7 @@ Services live in `fpl_cli/services/` and provide the computation layer between a
 | `fixture_predictions` | BGW/DGW predictions from YAML + live detection |
 | `season_previews` | Hand-curated per-team season intel from `<config dir>/previews/*.yaml`. Per-section decay (`SECTION_DECAY`) ages each kind of claim out at the gameweek something better supersedes it — injuries at GW2, projected XIs at GW7, team strength at GW13 to mirror `team_ratings_prior.BLENDING_CUTOFF_GW`. `coverage()` centralises the usage gate (`full` / `negative_filter_only` / `none`) so the three consuming skills cannot drift apart on the threshold. Deterministic name resolution (`resolve_name`) matches preview prose to `element_code`, reporting ambiguity rather than guessing; `write_resolved_codes` saves via round-trip YAML so hand-written comments survive |
 | `squad_allocator` | ILP squad allocator (PuLP CBC), horizon-aware, chip-aware |
+| `returnee_radar` | Injury returnee radar behind `fpl returnees`. Parses the FPL `news` grammar into a `ReturnSignal` (four shapes, only two of them dated), filters on a window and a **source-aware** quality bar, and diffs the result against a persisted snapshot for week-over-week transitions. The bar is source-aware because `player_prior` only assigns `source="history"` at 450+ minutes in the previous season and caps `prior_strength` at 0.5 on the `"price"` fallback, so one flat threshold would exclude exactly the players who missed most of last season through injury: history-sourced players are gated on `prior_strength`, price-sourced ones are scored through `value_quality` over their most recent season carrying real minutes, and the within-position price percentile is the last resort. `run_radar()` is the public entry point (snapshot I/O included); `build_radar()` is the pure core. **Fetches nothing** — the caller injects historical profiles and Understat season data, because `prepare_scoring_data` discards the profiles it built priors from and skips fetching them at all on a cache hit. Optional AI-search enrichment (`--enrich`) attaches an `EnrichedReturn` beside the FPL signal, never over it, and only a *cited* enriched date can decide an escalation |
 | `team_form` | Rolling team form stats (last 6 matches, venue splits) |
 | `league_history` | Durable league-history ledger: one NDJSON file per gameweek under `<data dir>/league_history/<season>/<format>-<league id>/`, written as a side effect of `league-recap`. Append-only — an identical row writes nothing, a differing one appends a superseding line, and readers resolve by highest fidelity tier then latest capture, with an unknown row ranking below every tier. Two deliberate inversions of house convention: loading **fails closed** (unlike `chip_plan`, which resets on a corrupt file) because the API cannot rebuild a past gameweek, and season is a **partition key** (unlike `team_ratings`, which discards a previous season) because per-gameweek granularity is destroyed at the July rollover. The consequence of partitioning is that the store only ever grows — nothing prunes a prior season, by design — at roughly a few megabytes per league per season |
 | `league_history_counters` | Declarative streak-condition registry (9 conditions: `weeks_on_top`, `bottom_half_run`, `gw_win_streak`, `gw_loss_streak`, `green_arrow_drought` shared; `captain_blank_run`, `hit_run` classic-only; `waiver_win_run`, `waiver_burn_run` draft-only) and the rebuildable counters projection it drives. Each predicate returns extend/reset/hold for one manager's row — hold on an unknown row, a fixture-less blank, or a gameweek the condition does not apply to, so a capture gap never lies about a streak in either direction. The projection is a disposable cache (never a second source of truth) under `<data dir>/league_history_counters/<season>/<format>-<league id>/counters.json`: it advances one gameweek at a time when its stamp is exactly one behind, and **fails open** to a full rebuild from `league_history`'s rows otherwise — missing, unreadable, wrong-version, or a stamp that isn't stamp+1 |
@@ -561,6 +566,7 @@ fpl_cli/
 │   ├── fixture_predictions.py    # BGW/DGW predictions from YAML + live detection
 │   ├── season_previews.py       # Per-team season intel: schema, per-section decay, coverage gate, name resolution
 │   ├── squad_allocator.py        # ILP squad allocator (PuLP CBC) - score, fixture coefficients, solver. Horizon-aware: horizon=1 uses single-GW scoring (GW_SELECTION_WEIGHTS), horizon>=2 uses ownership-family quality (VALUE_QUALITY_WEIGHTS). Chip-aware: --bench-discount (Free Hit), --bench-boost-gw (Bench Boost per-GW override to 1.0), --sell-prices (WC/FH sell-price budget correction via price_overrides dict)
+│   ├── returnee_radar.py         # Injury returnee radar: FPL news grammar -> ReturnSignal, source-aware quality bar, window filter, snapshot diff, optional AI-search enrichment. Pure core (build_radar) + I/O entry point (run_radar); fetches nothing itself
 │   ├── team_form.py              # Rolling team form stats
 │   ├── league_history.py         # League history ledger store: per-gameweek NDJSON, fail-closed load, supersession, coverage query
 │   ├── league_history_counters.py # Streak-condition registry (9 conditions, extend/reset/hold predicates) + rebuildable counters projection: own version + computed-through-gameweek stamp, fails open to a full rebuild from league_history
@@ -575,6 +581,7 @@ fpl_cli/
 ├── prompts/
 │   ├── scout.py                  # ScoutAgent system/user prompts
 │   ├── review.py                 # Review research prompts
+│   ├── returnees.py              # Return-intel search prompt for `fpl returnees --enrich` (one player per query, so a citation list belongs to a single player)
 │   └── league_recap.py           # League recap synthesis prompts, including the anchored League History section, its never-infer-history rule (emitted even when the pack is empty), and the season-phase framing instruction
 ├── parsers/
 │   └── recommendations.py        # Parse gw{N}-recommendations.md into structured decisions
@@ -604,6 +611,7 @@ platformdirs (user_config_dir / user_data_dir)  # macOS: ~/Library/Application S
 ├── player_prior.yaml             # Cached player priors (data dir, generated, season/GW invalidation)
 ├── chip_plan.json                # User's chip plan (data dir, created via `fpl chips add`)
 ├── team_finances.json            # Cached sell prices from scraper (data dir, 12h TTL)
+├── returnee_snapshot.json        # The watchlist `fpl returnees` last showed (data dir), the baseline the next run diffs against. Season-stamped and discarded on mismatch like `player_prior.yaml` — which is what makes keying records on season-local player id safe. Rewritten only when the gameweek changes, so a second run inside one gameweek does not diff against itself
 ├── league_history/<season>/<format>-<league id>/gwNN.ndjson
 │                                 # Append-only league history ledger (data dir). Season partitions rather than invalidates: prior seasons stay readable forever, because the API destroys per-gameweek granularity at the July rollover. Grows-only by design — nothing prunes a prior season
 └── league_history_counters/<season>/<format>-<league id>/{counters.json, earliest_gameweek.json}
@@ -671,5 +679,6 @@ User settings deep-merged over committed defaults via `platformdirs`. `.env` loa
 - **Draft parity.** Most commands work for both classic and draft formats. Draft support focuses on free-agent pickups via the waiver system - trade recommendations between managers are out of scope.
 - **Agent-friendly.** `--format json` on key commands with a consistent envelope. See [Agent Tools & Skills](../.agents/TOOLS.md).
 - **LLM features are opt-in.** Core analysis works without any API keys. LLM providers add narrative and research capabilities.
+- **The returnee radar is deliberately absent from [custom-analysis.md](custom-analysis.md).** That document covers the scoring formulas and the early-season shrinkage they share, and the radar has neither: it runs no shrinkage, so it needs no hold-out set for players known not to be playing, and it scores nothing for the ownership family, so the -3 availability penalty never applies — a flagged player is the radar's entire population, not a discount applied within it. The one existing formula it reuses, the VALUE quality score, it reuses unchanged. Its methodology is documented under [Injury Returnees](command-reference.md#injury-returnees) instead. The omission is the decision, not a gap.
 - **Deterministic memory before LLM memory.** `league-recap` records every run to an append-only ledger and computes streaks, trends and season phase from it in Python. The model is handed those as vetted facts through a single anchored prompt section and is never asked to remember, infer, or re-derive history — the one conduit is what makes an editorial's historical claims checkable against the store.
 

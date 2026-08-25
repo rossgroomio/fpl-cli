@@ -15,6 +15,7 @@ from fpl_cli.cli import main
 from fpl_cli.cli.doctor import _season_of_timestamp
 from fpl_cli.paths import SHIPPED_CONFIG_DIR
 from fpl_cli.season import get_season_year, season_label
+from fpl_cli.services.returnee_radar import SNAPSHOT_FILENAME
 from tests.conftest import make_team
 
 CURRENT_YEAR = get_season_year()
@@ -130,6 +131,13 @@ def _write_preview(team: str, published: str | None = None) -> None:
     previews.mkdir(parents=True, exist_ok=True)
     (previews / f"{team}.yaml").write_text(
         f"team: {team}\nsource: Test Preview\npublished: {published or f'{CURRENT_YEAR}-08-01'}\n",
+        encoding="utf-8",
+    )
+
+
+def _write_snapshot(season: str, gameweek: int = 5) -> None:
+    (_data_dir() / SNAPSHOT_FILENAME).write_text(
+        json.dumps({"metadata": {"season": season, "gameweek": gameweek}, "players": {}}),
         encoding="utf-8",
     )
 
@@ -326,6 +334,33 @@ class TestDataFileChecks:
         assert result.exit_code == 0
         assert "rebuilt automatically" in _flat(result)
 
+    def test_returnee_snapshot_absent_is_skipped(self):
+        result = _run(_mock_client())
+        assert result.exit_code == 0
+        assert SNAPSHOT_FILENAME in _flat(result)
+        assert "fpl returnees" in _flat(result)
+
+    def test_returnee_snapshot_wrong_season_is_stale(self):
+        _write_snapshot(PREVIOUS_SEASON)
+        result = _run(_mock_client())
+        assert result.exit_code == 0
+        assert PREVIOUS_SEASON in _flat(result)
+        assert "rebuilt" in _flat(result)
+
+    def test_returnee_snapshot_current_season_is_ok(self):
+        _write_snapshot(CURRENT_SEASON, gameweek=7)
+        result = _run(_mock_client())
+        assert result.exit_code == 0
+        assert f"season {CURRENT_SEASON}" in _flat(result)
+        assert "GW7" in _flat(result)
+
+    def test_returnee_snapshot_unreadable_is_broken(self):
+        (_data_dir() / SNAPSHOT_FILENAME).write_text("{ not json", encoding="utf-8")
+        result = _run(_mock_client())
+        assert result.exit_code == 1
+        assert "unreadable" in _flat(result)
+        assert "delete the file" in _flat(result)
+
     def test_team_ratings_missing_is_stale(self):
         result = _run(_mock_client())
         assert "team_ratings.yaml" in result.output
@@ -387,6 +422,10 @@ class TestDataFileChecks:
         )
         assert ratings_row["status"] == "broken"
         assert "FPL_CLI_DATA_DIR" in ratings_row["detail"]
+        snapshot_row = next(
+            c for c in payload["data"]["data_files"] if c["name"] == SNAPSHOT_FILENAME
+        )
+        assert snapshot_row["status"] == "broken"
 
     def test_broken_config_dir_still_reports_instead_of_aborting(self, tmp_path, monkeypatch):
         # Same guarantee for the config dir: settings become unreadable, so the
@@ -429,6 +468,15 @@ class TestJsonOutput:
         )
         assert entry_check["status"] == "broken"
         assert entry_check["fix"]
+
+    def test_json_lists_the_returnee_snapshot_check(self):
+        _write_snapshot(CURRENT_SEASON)
+        result = _run(_mock_client(), args=["--format", "json"])
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        row = next(c for c in payload["data"]["data_files"] if c["name"] == SNAPSHOT_FILENAME)
+        assert row["status"] == "ok"
+        assert CURRENT_SEASON in row["detail"]
 
     def test_json_healthy_run_exits_zero(self):
         result = _run(_mock_client(), args=["--format", "json"])

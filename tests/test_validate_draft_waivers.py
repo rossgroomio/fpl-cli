@@ -51,6 +51,23 @@ _WAIVERS_BASE = {
     },
 }
 
+# The full unowned roster: every ranked target plus a flagged returnee that the
+# `minutes / 450` availability factor keeps out of the top 15 forever.
+_WAIVERS_WITH_POOL = {
+    "command": "fpl waivers",
+    "metadata": {"gameweek": 34},
+    "data": {
+        "top_targets": _WAIVERS_BASE["data"]["top_targets"],
+        "pool": [
+            {"id": 101, "player_name": "Lacroix", "position": "DEF", "team_short": "CRY"},
+            {"id": 102, "player_name": "Pedro Porro", "position": "DEF", "team_short": "TOT"},
+            {"id": 103, "player_name": "E.Le Fée", "position": "MID", "team_short": "SUN"},
+            {"id": 104, "player_name": "Canvot", "position": "DEF", "team_short": "CRY"},
+            {"id": 105, "player_name": "Havertz", "position": "FWD", "team_short": "ARS"},
+        ],
+    },
+}
+
 _SQUAD_BASE = {
     "command": "fpl squad grid",
     "metadata": {"gameweek": 34},
@@ -616,6 +633,173 @@ def test_waivers_top_targets_wrong_type_warns(tmp_path, capsys):
     _run(str(recs), str(w), str(s))
     data = _parse(capsys)
     assert any(w["type"] == "waivers-json-shape-unknown" for w in data["warnings"])
+
+
+# ---- Full unowned pool ------------------------------------------------------
+
+_STASH_RECS = """\
+## Draft
+
+### Waiver Recommendations
+
+| Priority | Drop | Claim | Position | Fixture Run | Rationale |
+|----------|------|-------|----------|-------------|-----------|
+| 1 | Beto (EVE) | Havertz (ARS) | FWD | H BUR / A NEW | Stash the returnee. |
+"""
+
+
+def test_pool_only_claim_resolves_without_a_pool_miss(tmp_path, capsys):
+    """A flagged returnee lives in `pool` and never in `top_targets` — R14."""
+    recs, w, s = _write_fixtures(tmp_path, _STASH_RECS, waivers=_WAIVERS_WITH_POOL)
+    _run(str(recs), str(w), str(s))
+    data = _parse(capsys)
+    assert data["ok"] is True
+    assert data["flags"] == []
+    assert data["warnings"] == []
+
+
+def test_returning_soon_section_is_not_ingested_as_waiver_rows(tmp_path, capsys):
+    """The template's Returning Soon table sits beside the waiver table under
+    `## Draft`. Its rows name players who are not claims — a returnee still on
+    watch, a rival-owned one — so ingesting them would flag phantom pool misses."""
+    recs_content = """\
+## Draft
+
+### Waiver Recommendations
+
+| Priority | Drop | Claim | Position | Fixture Run | Rationale |
+|----------|------|-------|----------|-------------|-----------|
+| 1 | Beto (EVE) | Havertz (ARS) | FWD | H BUR / A NEW | Stash the returnee. |
+
+### Returning Soon
+
+| Player | Team | Pos | Quality | Expected Return | Chance | Change | Verdict |
+|--------|------|-----|---------|-----------------|--------|--------|---------|
+| Havertz | ARS | FWD | history (stash) | 2026-09-13 | 25 | Date set | Stash |
+| Chalobah | CHE | DEF | history | Unknown | 0 | New | Watch |
+"""
+    recs, w, s = _write_fixtures(tmp_path, recs_content, waivers=_WAIVERS_WITH_POOL)
+    _run(str(recs), str(w), str(s))
+    data = _parse(capsys)
+    assert data["ok"] is True
+    assert data["flags"] == []
+    assert data["warnings"] == []
+
+
+def test_claim_in_neither_pool_nor_top_targets_still_flagged(tmp_path, capsys):
+    """Widening the pool must not blunt the check itself."""
+    recs_content = """\
+## Draft
+
+### Waiver Recommendations
+
+| Priority | Drop | Claim | Position | Fixture Run | Rationale |
+|----------|------|-------|----------|-------------|-----------|
+| 1 | Beto (EVE) | Nobody (BRE) | FWD | H BUR | Not rosterable. |
+"""
+    recs, w, s = _write_fixtures(tmp_path, recs_content, waivers=_WAIVERS_WITH_POOL)
+    _run(str(recs), str(w), str(s))
+    data = _parse(capsys)
+    assert data["ok"] is False
+    assert [f["type"] for f in data["flags"]] == ["waiver-not-in-pool"]
+
+
+def test_waivers_json_without_pool_falls_back_to_top_targets(tmp_path, capsys):
+    """An older cached waivers JSON validates instead of flagging every claim."""
+    assert "pool" not in _WAIVERS_BASE["data"]
+    recs, w, s = _write_fixtures(tmp_path, _CLEAN_RECS)
+    _run(str(recs), str(w), str(s))
+    data = _parse(capsys)
+    assert data["ok"] is True
+    assert data["flags"] == []
+
+
+def test_pool_only_waivers_json_passes_the_shape_check(tmp_path, capsys):
+    """`pool` alone satisfies the shape guard — `top_targets` is not required."""
+    waivers = {
+        "command": "fpl waivers",
+        "data": {"pool": _WAIVERS_WITH_POOL["data"]["pool"]},
+    }
+    recs, w, s = _write_fixtures(tmp_path, _STASH_RECS, waivers=waivers)
+    _run(str(recs), str(w), str(s))
+    data = _parse(capsys)
+    assert data["warnings"] == []
+    assert data["flags"] == []
+
+
+def test_malformed_pool_field_warns_and_suppresses_pool_flags(tmp_path, capsys):
+    """A `pool` that is not a list is drift, not a licence to flag every claim."""
+    waivers = {
+        "command": "fpl waivers",
+        "data": {"pool": "nope", "top_targets": _WAIVERS_BASE["data"]["top_targets"]},
+    }
+    recs, w, s = _write_fixtures(tmp_path, _STASH_RECS, waivers=waivers)
+    _run(str(recs), str(w), str(s))
+    data = _parse(capsys)
+    assert any(x["type"] == "waivers-json-shape-unknown" for x in data["warnings"])
+    assert not any(f["type"] == "waiver-not-in-pool" for f in data["flags"])
+
+
+def test_empty_pool_falls_back_to_top_targets(tmp_path, capsys):
+    """An empty roster beside a populated ranked list is inconsistent output;
+    fall back rather than reporting every claim as a miss."""
+    waivers = {
+        "command": "fpl waivers",
+        "data": {"pool": [], "top_targets": _WAIVERS_BASE["data"]["top_targets"]},
+    }
+    recs, w, s = _write_fixtures(tmp_path, _CLEAN_RECS, waivers=waivers)
+    _run(str(recs), str(w), str(s))
+    data = _parse(capsys)
+    assert not any(f["type"] == "waiver-not-in-pool" for f in data["flags"])
+
+
+def test_empty_pool_beside_a_malformed_top_targets_does_not_crash(tmp_path, capsys):
+    """An empty `pool` clears the shape check without `top_targets` being looked
+    at, so the fallback can still land on a value that is not a list. Reporting
+    no pool costs a missed check; raising would exit non-zero and break the
+    orchestrator's contract that this script always exits 0."""
+    waivers = {
+        "command": "fpl waivers",
+        "data": {"pool": [], "top_targets": "corrupted"},
+    }
+    recs, w, s = _write_fixtures(tmp_path, _CLEAN_RECS, waivers=waivers)
+    _run(str(recs), str(w), str(s))
+    data = _parse(capsys)
+
+    assert isinstance(data["flags"], list)
+
+
+def test_a_pool_entry_that_is_not_a_record_is_skipped(tmp_path, capsys):
+    """The shape check only inspects the first entry, so a later one can still
+    be junk."""
+    good = _WAIVERS_WITH_POOL["data"]["pool"]
+    waivers = {
+        "command": "fpl waivers",
+        "data": {"pool": [*good, "not a record", None]},
+    }
+    recs, w, s = _write_fixtures(tmp_path, _CLEAN_RECS, waivers=waivers)
+    _run(str(recs), str(w), str(s))
+    data = _parse(capsys)
+
+    assert not any(f["type"] == "waiver-not-in-pool" for f in data["flags"])
+
+
+def test_cross_position_swap_still_blocks_against_the_pool(tmp_path, capsys):
+    """R11: position-for-position is unchanged by this widening."""
+    recs_content = """\
+## Draft
+
+### Waiver Recommendations
+
+| Priority | Drop | Claim | Position | Fixture Run | Rationale |
+|----------|------|-------|----------|-------------|-----------|
+| 1 | Hill (BOU) | Havertz (ARS) | FWD | H BUR | DEF out, FWD in. |
+"""
+    recs, w, s = _write_fixtures(tmp_path, recs_content, waivers=_WAIVERS_WITH_POOL)
+    _run(str(recs), str(w), str(s))
+    data = _parse(capsys)
+    assert data["ok"] is False
+    assert [f["type"] for f in data["flags"]] == ["cross-position-claim"]
 
 
 # ---- Drop ambiguous last-token match ---------------------------------------

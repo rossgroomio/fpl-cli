@@ -18,8 +18,9 @@ Most fpl-cli output is **deterministic computation** - fixed algorithms applied 
 | `preview --dry-run` | *None* | Builds scout prompts without calling the LLM |
 | `review --summarise` | Research + Synthesis | Community narrative (research) + personal analysis (synthesis) |
 | `league-recap --summarise` | Synthesis (Anthropic) | Newsletter-style editorial naming names and calling out decisions |
+| `returnees --enrich` | Research (Perplexity) | Fresher return timing for flagged players FPL is silent or stale about, attached beside the FPL news rather than over it |
 
-Everything else - captain picks, targets, differentials, waivers, FDR, team ratings, squad allocation, all stats commands - is pure computation. No AI involved.
+Everything else - captain picks, targets, differentials, waivers, FDR, team ratings, squad allocation, the returnee watchlist itself, all stats commands - is pure computation. No AI involved.
 
 ## Format & Gating
 
@@ -141,6 +142,38 @@ fpl waivers --format json
 Identifies squad weaknesses by position, ranks available free agents by waiver score, suggests who to drop for each pickup. This covers the waiver wire (unclaimed players) only - trade recommendations between managers are not in scope.
 
 Waiver score combines xGI, form, PPG, 3-GW matchup quality, and consistency (CV-xGI percentile bonus, phased in GW6-10), attenuated by position multiplier (GK 0.7, DEF 0.85), and normalised to 0-100. Uses a stricter minutes factor than target/differential because draft waivers are a season commitment. Subject to [early-season shrinkage](custom-analysis.md#early-season-confidence-gw1-10). See [Waiver Score](custom-analysis.md#waiver-score) for the full formula.
+
+### Injury Returnees
+
+Track injured and suspended players due back soon — early enough to claim one in draft before rivals notice, and to plan around one in classic.
+
+```bash
+fpl returnees                     # Watchlist for the default window
+fpl returnees --window 3          # Only returns expected within the next 3 gameweeks
+fpl returnees --all               # Every flagged player, quality bar bypassed
+fpl returnees --enrich            # Search the web for fresher return timing
+fpl returnees --format json       # JSON envelope
+```
+
+**The window.** `--window N` (1-38) keeps a player whose expected return lands within the next N gameweeks, counting from the next gameweek inclusive. It defaults to `returnee_radar.window_gameweeks` in [`defaults.yaml`](#configdefaultsyaml-committed). A player whose return date is unknown is always inside the window: nobody knows when they are back, which is the reason to watch them rather than a reason to drop them.
+
+**What FPL actually tells you.** Availability news comes in four shapes, and only two of them carry a date: `{reason} - Expected back {D} {Mmm}` and `Suspended until {D} {Mmm}`. The other two — `{reason} - {NN}% chance of playing` (the percentage is `chance_of_playing_next_round` restated) and `{reason} - Unknown return date` — state no timing at all. On a live snapshot of the player data taken in August 2026, 79 of 609 players were flagged and 10 of those 79 carried a parseable return date; among the long-term injuries the radar exists for (status `i`), 7 of 54 did. **Date-unknown is the normal output of this command, not an edge case**, and it is why `--enrich` exists.
+
+**The quality bar is source-aware.** A returnee has no current-season form and no cumulative minutes to be judged on — structurally, not accidentally. `player_prior` only assigns `source: "history"` to a player with 450+ minutes in the previous season; everyone else falls to `source: "price"`, where `prior_strength` is capped at 0.5. Gating the whole list on one `prior_strength` threshold would therefore exclude exactly the players who missed most of last season through injury. So:
+
+- **History-sourced** players are gated on `prior_strength` (`history_watchlist_strength`).
+- **Price-sourced** players are scored through the same VALUE quality function the rest of the tool uses, over their most recent season carrying real minutes, and compared against `price_watchlist_percentile` as a fraction of the position ceiling.
+- **Price percentile within position** is the last resort, for a player with no such season. Price tracks ownership churn and editorial pricing rather than output, so it is a floor, not a judgement.
+
+Each entry reports which branch judged it (`quality.basis`: `prior`, `season-quality` or `price`). A second, higher bar (`history_stash_strength` / `price_stash_percentile`) marks the players worth holding a squad place for while they are still unfit; combined with the shorter `stash_window_gameweeks`, that is what a draft skill escalates from a watch into a stash claim.
+
+**`--all`** lists every flagged player with the bar bypassed, and deliberately does not persist the snapshot — a filter-bypassed list as next week's baseline would make the following ordinary run report everyone it re-excluded as newly dropped.
+
+**`--enrich`** is opt-in and bounded. It shortlists the entries FPL is silent or stale about (`enrich_stale_news_days`, capped at `enrich_max_players`), queries the research LLM provider for each, and shows what comes back **beside** the FPL news, never over it: where both state a date, both are carried. It needs a Perplexity API key (see [LLM Providers](#llm-providers)) and skips with a note on stderr when none is configured. Answers are cached per season and gameweek in the cache directory. Intel that came back without a source citation is marked as such and is not enough on its own to justify an irreversible move.
+
+**Week-over-week changes.** Each run stores the watchlist it produced in `returnee_snapshot.json` in the data directory (see [Directories](#directories)) and the next run diffs against it, marking who is newly flagged, whose chance moved, whose return date was set, moved or missed, and who left the list. The snapshot is rewritten only when the gameweek changes, so a second run inside one gameweek still diffs against last week rather than against itself. A file from a previous season is discarded rather than read — player IDs are reshuffled at the season boundary. The first run has no history to compare against and says so.
+
+JSON `metadata` carries `window`, `escalation_window`, `stash_upgrade_margin`, `transitions_available`, `quality_bar_available`, `quality_bar_applied`, and the `enrichment_*` fields (`requested`, `available`, `note`, `count`); `data` is `{entries, departures}`.
 
 ## Fixture & Strategic Planning
 
@@ -763,6 +796,7 @@ Rolling a setup into a new season silently invalidates IDs and per-team files: a
 - `previews/` — optional season preview intel: a file for a club not in the current league is flagged (it loads and inflates the coverage gate), and files the loader skipped (previous season, malformed) are surfaced with `fpl intel` as the follow-up
 - `team_finances.json` — `scraped_at` falls within the current season
 - `player_prior.yaml` — season label matches (auto-invalidated otherwise)
+- `returnee_snapshot.json` — the returnee radar's week-over-week snapshot: season label matches (a previous season's is discarded and rebuilt on the next `fpl returnees` run)
 
 **Environment** — which directory each of config/data/cache resolved to and whether an `FPL_CLI_*` override is in effect, plus whether `settings.yaml` exists.
 
@@ -786,7 +820,7 @@ fpl-cli writes to three directories, each resolved via `platformdirs` and overri
 | Directory | Contents | Override |
 |-----------|----------|----------|
 | Config | `settings.yaml`, `.env` (credentials and API keys), `team_ratings_overrides.yaml`, optional `team_managers.yaml` (layered over the shipped copy per club) and `fixture_predictions.yaml` (replaces the shipped copy), the optional `previews/` directory of [season preview intel](#season-preview-intel), plus the `output/` and `research/` report directories (each partitioned by season -- see [Report layout](#report-layout)) | `FPL_CLI_CONFIG_DIR` |
-| Data | Generated files: `team_ratings.yaml`, `team_ratings_prior.yaml`, `player_prior.yaml`, `chip_plan.json`, `team_finances.json`, the [`league_history/`](#league-history) ledger and its rebuildable `league_history_counters/` cache | `FPL_CLI_DATA_DIR` |
+| Data | Generated files: `team_ratings.yaml`, `team_ratings_prior.yaml`, `player_prior.yaml`, `chip_plan.json`, `team_finances.json`, `returnee_snapshot.json` (the [returnee radar's](#injury-returnees) week-over-week snapshot), the [`league_history/`](#league-history) ledger and its rebuildable `league_history_counters/` cache | `FPL_CLI_DATA_DIR` |
 | Cache | Disposable API response caches | `FPL_CLI_CACHE_DIR` |
 
 **Ephemeral environments** (Claude Code on the web, CI, containers): the default config and data locations live inside the container and vanish with it. Point `FPL_CLI_CONFIG_DIR` and `FPL_CLI_DATA_DIR` at a persistent workspace directory so settings, credentials, generated reports, and generated data (team ratings, priors, chip plans, sell prices, league history) survive between sessions. The [league history ledger](#league-history) is the one thing there that a later run cannot rebuild: the API keeps per-gameweek detail only for the current season, so a container that vanishes mid-season takes those gameweeks with it. The cache is disposable by design and can stay container-local.
@@ -846,6 +880,18 @@ thresholds:
   differential_threshold: 5.0
   semi_differential_threshold: 15.0
   captain_differential_threshold: 10.0
+
+returnee_radar:                  # `fpl returnees` - see Injury Returnees above
+  window_gameweeks: 6            # Watchlist window, overridden per run by --window
+  stash_window_gameweeks: 2      # Shorter window that escalates a watch into a stash
+  history_watchlist_strength: 0.75   # prior_strength bar, history-sourced player (0-1)
+  history_stash_strength: 0.85       # prior_strength bar to escalate one
+  price_watchlist_percentile: 0.80   # Quality/price bar, price-sourced player (0-1)
+  price_stash_percentile: 0.90       # Same measure, escalation bar
+  stash_upgrade_margin: 5.0      # Quality points a returnee must beat the incumbent by
+                                 # (published as metadata.stash_upgrade_margin)
+  enrich_stale_news_days: 7      # --enrich re-checks a dated player whose news is older
+  enrich_max_players: 8          # Most players one --enrich run will search for
 
 llm:
   research:

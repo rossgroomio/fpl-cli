@@ -45,7 +45,7 @@ When `mode = "squad-builder"`:
 4. **Fixture run** -- as with classic, weight the next 3 gameweeks of fixtures rather than just the immediate one.
 5. **Maximum 5 waiver suggestions** -- for each: player to drop, player to claim, positional context, and fixture rationale.
 6. **Position-for-position only** -- FPL Draft squads are locked at 2 GK / 5 DEF / 5 MID / 3 FWD. Every waiver swap must be position-for-position (e.g. MID out → MID in). Cross-position swaps are structurally illegal and will be rejected by Phase D1.
-7. **Waiver pool discipline** -- only recommend players returned by `fpl waivers --format json`. Players appearing in other data sources (e.g. `fpl stats`) are not necessarily available; never recommend a claim not in the waiver pool.
+7. **Waiver pool discipline** -- only recommend players returned by `fpl waivers --format json`. Players appearing in other data sources (e.g. `fpl stats`) are not necessarily available; never recommend a claim not in the waiver pool. Within that output, `data.pool` establishes availability only -- it is the full unowned roster, unranked and untruncated. Ranked claims come from `data.top_targets` and `data.targets_by_position`; the one claim that may rest on `data.pool` membership alone is a stash claim for a tracked returnee, whom the waiver scoring suppresses by design.
 
 ## Transfer/Waiver Evaluation Script
 
@@ -63,7 +63,10 @@ For all formats:
 1. **Recent form** -- last 4 GW average points, minutes played (flag rotation risks below 60 mins average).
 2. **Expected stats** -- where available, prefer xG/xA-based analysis over raw goals/assists. Flag players significantly over- or under-performing their expected stats.
 3. **Set-piece involvement** -- note players on corners, free kicks, and penalties as these provide floor-raising opportunities.
-4. **Injury/suspension flags** -- check player availability. Never recommend a player flagged as injured or suspended without explicitly noting the risk.
+4. **Injury/suspension flags** -- check player availability. Never recommend a player flagged as injured or suspended without explicitly noting the risk. A **tracked returnee** -- any entry in `data.entries` of the `fpl returnees` payload, excluding those whose `status` is `"d"` with a non-zero `chance_of_playing` -- is held to a tighter rule than that:
+   - **Draft:** a tracked returnee may be recommended only as an explicit stash claim -- a roster slot spent until the player is fit, to lock the asset before a rival claims them. Never present one as a straight upgrade for this gameweek. Every stash claim must carry the expected return (`expected_return`, or `return_gameweek` where the date is unknown) and name the provenance of that date from `escalation_basis`. SKILL.md Phase C2 holds the gates a watchlist row must clear before it becomes a claim.
+   - **Classic:** the returnee watchlist is informational. Transfer recommendations -- including any inline late-change swap on an embedded squad -- must not name a tracked returnee. Classic has no scarcity race: a returnee can be bought the week they are actually back.
+   - **Unchanged for everyone else:** a doubtful (`d`) player with a non-zero chance of playing is not a tracked returnee. They may still be recommended with the risk explicitly noted, exactly as before.
 
 ## Momentum Alerts
 
