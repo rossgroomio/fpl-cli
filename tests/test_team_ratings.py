@@ -714,6 +714,340 @@ class TestTeamRatingsCalculator:
         assert ratings == {}
 
 
+class TestSingleVenueWindow:
+    """A window in which clubs have played only one venue must still rate them.
+
+    Requiring both a home and an away game per club (#138) emptied the whole
+    league in the one state where the command is most needed: GW1 finished,
+    GW2 not started. Every club has played exactly one match then, so every
+    club failed the guard and `fpl ratings update` reported "No completed
+    fixtures to calculate from" over ten finished results -- leaving the
+    preseason prior in place and `fpl doctor`'s named remedy a dead end.
+    """
+
+    @pytest.fixture
+    def mock_fpl_client(self):
+        from fpl_cli.api.fpl import FPLClient
+
+        client = FPLClient()
+        client.get_fixtures = AsyncMock()
+        client.get_teams = AsyncMock()
+        return client
+
+    @pytest.fixture
+    def calculator(self, mock_fpl_client):
+        return TeamRatingsCalculator(mock_fpl_client)
+
+    @pytest.fixture
+    def teams(self):
+        from tests.conftest import make_team
+
+        return [
+            make_team(id=1, name="Arsenal", short_name="ARS"),
+            make_team(id=2, name="Man City", short_name="MCI"),
+            make_team(id=3, name="Liverpool", short_name="LIV"),
+            make_team(id=4, name="Chelsea", short_name="CHE"),
+        ]
+
+    @staticmethod
+    def _gw1():
+        """GW1 as the API serves it once finished: two results, four clubs.
+
+        League rates: 2.0 goals per home side, 1.0 per away side.
+        """
+        from tests.conftest import make_fixture
+
+        return [
+            make_fixture(
+                id=1, gameweek=1, home_team_id=1, away_team_id=2,
+                finished=True, home_score=3, away_score=0,
+            ),
+            make_fixture(
+                id=2, gameweek=1, home_team_id=3, away_team_id=4,
+                finished=True, home_score=1, away_score=2,
+            ),
+        ]
+
+    async def test_gw1_finished_produces_ratings(self, calculator, mock_fpl_client, teams):
+        """The issue's repro: ten finished fixtures must not read as none."""
+        mock_fpl_client.get_fixtures.return_value = self._gw1()
+        mock_fpl_client.get_teams.return_value = teams
+
+        ratings, performances = await calculator.calculate_from_fixtures(min_gw=1)
+
+        assert set(ratings) == {"ARS", "MCI", "LIV", "CHE"}
+        assert set(performances) == {"ARS", "MCI", "LIV", "CHE"}
+
+    async def test_played_venue_uses_the_real_result(self, calculator, mock_fpl_client, teams):
+        """Estimating the missing venue must not disturb the observed one."""
+        mock_fpl_client.get_fixtures.return_value = self._gw1()
+        mock_fpl_client.get_teams.return_value = teams
+
+        _, performances = await calculator.calculate_from_fixtures(min_gw=1)
+
+        assert performances["ARS"].goals_scored_home == 3.0
+        assert performances["ARS"].goals_conceded_home == 0.0
+        assert performances["CHE"].goals_scored_away == 2.0
+        assert performances["CHE"].goals_conceded_away == 1.0
+
+    async def test_missing_venue_is_scaled_not_copied(self, calculator, mock_fpl_client, teams):
+        """Home and away are not the same league, so the estimate is rescaled.
+
+        Over this sample home sides average 2.0 and away sides 1.0, so a home
+        rate converts to an away one at half strength. Copying the played
+        venue across instead would rank a club that has only played at home
+        against clubs' genuine away records at inflated value.
+        """
+        mock_fpl_client.get_fixtures.return_value = self._gw1()
+        mock_fpl_client.get_teams.return_value = teams
+
+        _, performances = await calculator.calculate_from_fixtures(min_gw=1)
+
+        # Arsenal scored 3 at home -> 3 x (1.0 / 2.0) away
+        assert performances["ARS"].goals_scored_away == pytest.approx(1.5)
+        # Chelsea conceded 1 away -> 1 x (1.0 / 2.0) at home, where the goals
+        # against come from visiting sides rather than hosts
+        assert performances["CHE"].goals_conceded_home == pytest.approx(0.5)
+        # Man City conceded 3 away -> 3 x (1.0 / 2.0) at home
+        assert performances["MCI"].goals_conceded_home == pytest.approx(1.5)
+
+    async def test_game_counts_show_the_venue_was_not_played(
+        self, calculator, mock_fpl_client, teams
+    ):
+        """An estimate must not be presented as a played record."""
+        mock_fpl_client.get_fixtures.return_value = self._gw1()
+        mock_fpl_client.get_teams.return_value = teams
+
+        _, performances = await calculator.calculate_from_fixtures(min_gw=1)
+
+        assert (performances["ARS"].home_games, performances["ARS"].away_games) == (1, 0)
+        assert (performances["MCI"].home_games, performances["MCI"].away_games) == (0, 1)
+
+    async def test_results_still_drive_the_ordering(self, calculator, mock_fpl_client, teams):
+        """A single gameweek is thin evidence, but it is evidence."""
+        mock_fpl_client.get_fixtures.return_value = self._gw1()
+        mock_fpl_client.get_teams.return_value = teams
+
+        ratings, _ = await calculator.calculate_from_fixtures(min_gw=1)
+
+        # Arsenal won 3-0 at home, Liverpool lost 1-2 at home
+        assert ratings["ARS"].atk_home < ratings["LIV"].atk_home
+        assert ratings["ARS"].def_home < ratings["LIV"].def_home
+
+    async def test_unplayed_team_is_still_excluded(self, calculator, mock_fpl_client, teams):
+        """One venue is enough to rate a club; none is not."""
+        from tests.conftest import make_team
+
+        mock_fpl_client.get_fixtures.return_value = self._gw1()
+        mock_fpl_client.get_teams.return_value = [
+            *teams,
+            make_team(id=5, name="Everton", short_name="EVE"),
+        ]
+
+        ratings, performances = await calculator.calculate_from_fixtures(min_gw=1)
+
+        assert "EVE" not in performances
+        assert "EVE" not in ratings
+
+    async def test_single_gameweek_since_window(self, calculator, mock_fpl_client, teams):
+        """`--since-gw N` on the day GW N completes hits the same shape."""
+        from tests.conftest import make_fixture
+
+        mock_fpl_client.get_teams.return_value = teams
+        mock_fpl_client.get_fixtures.return_value = [
+            *self._gw1(),
+            make_fixture(
+                id=3, gameweek=15, home_team_id=2, away_team_id=1,
+                finished=True, home_score=2, away_score=1,
+            ),
+        ]
+
+        ratings, performances = await calculator.calculate_from_fixtures(min_gw=15)
+
+        assert set(ratings) == {"ARS", "MCI"}
+        assert performances["MCI"].goals_scored_home == 2.0
+        assert performances["ARS"].away_games == 1
+
+    async def test_both_venues_played_is_unchanged(self, calculator, mock_fpl_client, teams):
+        """No estimation once a club has a record at each venue."""
+        from tests.conftest import make_fixture
+
+        mock_fpl_client.get_teams.return_value = teams
+        mock_fpl_client.get_fixtures.return_value = [
+            *self._gw1(),
+            make_fixture(
+                id=3, gameweek=2, home_team_id=2, away_team_id=1,
+                finished=True, home_score=4, away_score=1,
+            ),
+            make_fixture(
+                id=4, gameweek=2, home_team_id=4, away_team_id=3,
+                finished=True, home_score=0, away_score=0,
+            ),
+        ]
+
+        _, performances = await calculator.calculate_from_fixtures(min_gw=1)
+
+        ars = performances["ARS"]
+        assert (ars.home_games, ars.away_games) == (1, 1)
+        assert ars.goals_scored_home == 3.0
+        assert ars.goals_scored_away == 1.0
+        assert ars.goals_conceded_home == 0.0
+        assert ars.goals_conceded_away == 4.0
+
+
+class TestSingleVenueWindowXG:
+    """The xG path carried the same both-venues guard, so --use-xg failed too."""
+
+    @pytest.fixture
+    def mock_fpl_client(self):
+        from fpl_cli.api.fpl import FPLClient
+
+        client = FPLClient()
+        client.get_teams = AsyncMock()
+        return client
+
+    @pytest.fixture
+    def calculator(self, mock_fpl_client):
+        return TeamRatingsCalculator(mock_fpl_client)
+
+    async def test_one_match_each_still_rates_both_clubs(self, calculator, mock_fpl_client):
+        """Understat holding GW1 is no use if the guard drops every club."""
+        from tests.conftest import make_team
+
+        mock_fpl_client.get_teams.return_value = [
+            make_team(id=1, name="Arsenal", short_name="ARS"),
+            make_team(id=2, name="Man City", short_name="MCI"),
+        ]
+        team_data = {
+            "Arsenal": {
+                "team": "Arsenal",
+                "players": [],
+                "matches": [
+                    {"isResult": True, "side": "h", "xG": {"h": "2.4", "a": "0.6"}}
+                ],
+            },
+            "Man City": {
+                "team": "Man City",
+                "players": [],
+                "matches": [
+                    {"isResult": True, "side": "a", "xG": {"h": "2.4", "a": "0.6"}}
+                ],
+            },
+        }
+
+        class _Understat:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def get_team(self, name, season=None):
+                return team_data.get(name)
+
+        with patch("fpl_cli.api.understat.UnderstatClient", return_value=_Understat()):
+            ratings, performances = await calculator.calculate_from_xg()
+
+        assert set(ratings) == {"ARS", "MCI"}
+        assert performances["ARS"].goals_scored_home == pytest.approx(2.4)
+        assert (performances["ARS"].home_games, performances["ARS"].away_games) == (1, 0)
+        assert performances["MCI"].goals_scored_away == pytest.approx(0.6)
+
+
+class TestGw1FinishedUpdateCLI:
+    """End-to-end cover for the state the issue was filed in.
+
+    GW1 all finished, GW2 not started: `fpl ratings update` must calculate and
+    save rather than report nothing to calculate from.
+    """
+
+    @staticmethod
+    def _gw1_fixtures():
+        from tests.conftest import make_fixture
+
+        return [
+            make_fixture(
+                id=1, gameweek=1, home_team_id=1, away_team_id=2,
+                finished=True, home_score=3, away_score=0,
+            ),
+            make_fixture(
+                id=2, gameweek=1, home_team_id=3, away_team_id=4,
+                finished=True, home_score=1, away_score=2,
+            ),
+        ]
+
+    @staticmethod
+    def _teams():
+        from tests.conftest import make_team
+
+        return [
+            make_team(id=1, name="Arsenal", short_name="ARS"),
+            make_team(id=2, name="Man City", short_name="MCI"),
+            make_team(id=3, name="Liverpool", short_name="LIV"),
+            make_team(id=4, name="Chelsea", short_name="CHE"),
+        ]
+
+    def _run(self, args):
+        from click.testing import CliRunner
+
+        from fpl_cli.cli import main
+
+        prior = {
+            short: TeamRating(atk_home=4, atk_away=4, def_home=4, def_away=4)
+            for short in ("ARS", "MCI", "LIV", "CHE")
+        }
+
+        with (
+            patch(
+                "fpl_cli.api.fpl.FPLClient.get_fixtures",
+                new_callable=AsyncMock,
+                return_value=self._gw1_fixtures(),
+            ),
+            patch(
+                "fpl_cli.api.fpl.FPLClient.get_teams",
+                new_callable=AsyncMock,
+                return_value=self._teams(),
+            ),
+            patch(
+                "fpl_cli.services.team_ratings_prior.generate_prior",
+                new_callable=AsyncMock,
+                return_value=prior,
+            ),
+            patch(
+                "fpl_cli.services.team_ratings.TeamRatingsService.get_all_ratings",
+                return_value={},
+            ),
+            patch(
+                "fpl_cli.services.team_ratings.TeamRatingsService.save_ratings"
+            ) as mock_save,
+            patch("fpl_cli.cli._context.load_settings", return_value={"custom_analysis": True}),
+        ):
+            result = CliRunner().invoke(main, args, catch_exceptions=False)
+
+        assert result.exit_code == 0, result.output
+        return result, mock_save
+
+    def test_ratings_are_calculated_and_saved(self):
+        result, mock_save = self._run(["ratings", "update"])
+
+        assert "No completed fixtures" not in result.output
+        mock_save.assert_called_once()
+        assert set(mock_save.call_args.args[0]) == {"ARS", "MCI", "LIV", "CHE"}
+        assert mock_save.call_args.kwargs["based_on_gws"] == (1, 1)
+
+    def test_output_flags_the_estimated_venue(self):
+        """Every club has played one venue here, so the caveat must be shown."""
+        result, _ = self._run(["ratings", "update"])
+
+        assert "only one venue" in result.output
+
+    def test_since_gw_1_behaves_the_same(self):
+        result, mock_save = self._run(["ratings", "update", "--since-gw", "1"])
+
+        assert "No completed fixtures" not in result.output
+        mock_save.assert_called_once()
+
+
 class TestCalculateFromXG:
     """Tests for TeamRatingsCalculator.calculate_from_xg()."""
 
@@ -1334,6 +1668,73 @@ class TestRatingsUpdateWithoutResults:
         output = result.output.replace("\n", " ").lower()
         assert "different set of teams" in output
         assert "would be estimated" in output
+
+
+class TestAutoRefreshAfterGw1:
+    """The auto-refresh reads the same calculation, so it stalled the same way.
+
+    `fpl doctor` flags a stale team_ratings.yaml and the auto-refresh is what
+    should clear it. With GW1 finished it kept falling through to
+    seed_from_prior(), so the file stayed tagged as a preseason estimate with
+    a full gameweek of results on record (#138).
+    """
+
+    @pytest.fixture(autouse=True)
+    def reset_session_guard(self):
+        TeamRatingsService._refreshed_this_session = False
+        yield
+        TeamRatingsService._refreshed_this_session = False
+
+    async def test_gw1_results_are_calculated_not_seeded(self, tmp_path):
+        from fpl_cli.api.fpl import FPLClient
+        from tests.conftest import make_fixture, make_team
+
+        teams = [
+            make_team(id=1, name="Arsenal", short_name="ARS"),
+            make_team(id=2, name="Man City", short_name="MCI"),
+            make_team(id=3, name="Liverpool", short_name="LIV"),
+            make_team(id=4, name="Chelsea", short_name="CHE"),
+        ]
+        fixtures = [
+            make_fixture(
+                id=1, gameweek=1, home_team_id=1, away_team_id=2,
+                finished=True, home_score=3, away_score=0,
+            ),
+            make_fixture(
+                id=2, gameweek=1, home_team_id=3, away_team_id=4,
+                finished=True, home_score=1, away_score=2,
+            ),
+        ]
+        prior = {
+            short: TeamRating(atk_home=4, atk_away=4, def_home=4, def_away=4)
+            for short in ("ARS", "MCI", "LIV", "CHE")
+        }
+
+        client = FPLClient()
+        client.get_next_gameweek = AsyncMock(return_value={"id": 2})
+        client.get_fixtures = AsyncMock(return_value=fixtures)
+        client.get_teams = AsyncMock(return_value=teams)
+
+        service = TeamRatingsService(config_path=tmp_path / "team_ratings.yaml")
+
+        with (
+            patch(
+                "fpl_cli.services.team_ratings_prior.generate_prior",
+                new_callable=AsyncMock,
+                return_value=prior,
+            ),
+            patch.object(
+                TeamRatingsService, "seed_from_prior", new_callable=AsyncMock
+            ) as mock_seed,
+        ):
+            await service.ensure_fresh(client)
+
+        mock_seed.assert_not_awaited()
+        assert service.metadata is not None
+        assert service.metadata.source == "auto_calculated"
+        assert service.metadata.based_on_gws == (1, 1)
+        assert set(service.get_all_ratings()) == {"ARS", "MCI", "LIV", "CHE"}
+        assert not service.is_preseason_estimate
 
 
 class TestConfigPathProperty:

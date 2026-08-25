@@ -328,8 +328,9 @@ class TeamRatingsService:
             TeamRatingsService._refreshed_this_session = True
         elif not self._ratings or await self._team_set_drifts(client):
             # A gameweek is under way but has produced nothing to rate teams on
-            # yet — every fixture is still in flight, or each team has played
-            # only one of its home/away pair. The pre-season branch above has
+            # yet — every fixture in the window is still in flight. The single
+            # finished gameweek that used to land here is now rated (#138), so
+            # this is the no-results-at-all case. The pre-season branch above has
             # already closed (next_gw moved on at GW1 kickoff), so without this
             # the function returns having done nothing and, with no usable file
             # on disk, get_positional_fdr serves a neutral 4.0 to every caller.
@@ -400,10 +401,10 @@ class TeamRatingsService:
         the file is absent entirely and every team gets that 4.0 — uniform
         difficulty, presented as analysis.
 
-        The same hole reopens once GW1 kicks off: results exist in principle
-        but not yet in fact, so the current-season calculation returns nothing
-        while the pre-season branch has already closed. Both windows are
-        served from here.
+        The same hole reopens once GW1 kicks off but before any fixture in it
+        finishes: results exist in principle but not yet in fact, so the
+        current-season calculation returns nothing while the pre-season branch
+        has already closed. Both windows are served from here.
 
         The previous-season prior (Understat xG, with Championship-adjusted
         ratings for promoted teams) is the better source, so use it and tag it
@@ -680,6 +681,82 @@ class TeamRatingsService:
         return None
 
 
+# The four rate axes a TeamPerformance carries, each paired with the axis that
+# measures the same thing at the other venue.
+_OTHER_VENUE: dict[str, str] = {
+    "scored_home": "scored_away",
+    "scored_away": "scored_home",
+    "conceded_home": "conceded_away",
+    "conceded_away": "conceded_home",
+}
+
+
+def performances_from_samples(
+    samples: dict[str, dict[str, list[float]]],
+) -> dict[str, TeamPerformance]:
+    """Turn per-match samples into the per-venue rates ratings are built from.
+
+    ``samples`` maps a team to four lists of per-match values, keyed
+    ``scored_home`` / ``scored_away`` / ``conceded_home`` / ``conceded_away``.
+
+    A team that has played only one venue is still rated: the venue it has not
+    played is estimated from the one it has, rescaled by the gap between the two
+    venues across the whole sample. Requiring both venues instead is what made
+    `fpl ratings update` report nothing to calculate from once GW1 finished
+    (#138) — every club has played exactly one match at that point, so every
+    club is missing a venue and the entire league falls out of the result. The
+    same hole reopens for any single-gameweek window, e.g. `--since-gw 15` on
+    the day GW15 completes.
+
+    home_games/away_games stay as observed, so an estimated axis is visible as a
+    0 in the counts rather than presented as a played record.
+    """
+    # League-wide baseline per axis. Home and away goals per match are the only
+    # two figures needed: a team's scoring at home and its opponents' conceding
+    # away are the same goals, so the four axes share two baselines.
+    home_goals = [v for data in samples.values() for v in data["scored_home"]]
+    away_goals = [v for data in samples.values() for v in data["scored_away"]]
+    home_rate = mean(home_goals) if home_goals else 0.0
+    away_rate = mean(away_goals) if away_goals else 0.0
+    baseline = {
+        "scored_home": home_rate,
+        "scored_away": away_rate,
+        "conceded_home": away_rate,
+        "conceded_away": home_rate,
+    }
+
+    performances: dict[str, TeamPerformance] = {}
+    for team, data in samples.items():
+        home_games = len(data["scored_home"])
+        away_games = len(data["scored_away"])
+        if home_games == 0 and away_games == 0:
+            continue
+
+        rates: dict[str, float] = {}
+        for axis, other in _OTHER_VENUE.items():
+            if data[axis]:
+                rates[axis] = mean(data[axis])
+            elif baseline[other]:
+                # Same team, other venue, moved onto this venue's level.
+                rates[axis] = mean(data[other]) * baseline[axis] / baseline[other]
+            else:
+                # A goalless sample gives nothing to scale by; the other
+                # venue's rate is the only evidence there is.
+                rates[axis] = mean(data[other])
+
+        performances[team] = TeamPerformance(
+            team=team,
+            goals_scored_home=rates["scored_home"],
+            goals_scored_away=rates["scored_away"],
+            goals_conceded_home=rates["conceded_home"],
+            goals_conceded_away=rates["conceded_away"],
+            home_games=home_games,
+            away_games=away_games,
+        )
+
+    return performances
+
+
 class TeamRatingsCalculator:
     """Calculate team ratings from fixture results.
 
@@ -749,24 +826,8 @@ class TeamRatingsCalculator:
             stats[away_team]["scored_away"].append(away_goals)
             stats[away_team]["conceded_away"].append(home_goals)
 
-        # Calculate per-game averages
-        performances: dict[str, TeamPerformance] = {}
-        for team, data in stats.items():
-            home_games = len(data["scored_home"])
-            away_games = len(data["scored_away"])
-
-            if home_games == 0 or away_games == 0:
-                continue
-
-            performances[team] = TeamPerformance(
-                team=team,
-                goals_scored_home=mean(data["scored_home"]) if data["scored_home"] else 0,
-                goals_scored_away=mean(data["scored_away"]) if data["scored_away"] else 0,
-                goals_conceded_home=mean(data["conceded_home"]) if data["conceded_home"] else 0,
-                goals_conceded_away=mean(data["conceded_away"]) if data["conceded_away"] else 0,
-                home_games=home_games,
-                away_games=away_games,
-            )
+        # Calculate per-game averages, estimating a venue a team has yet to play
+        performances = performances_from_samples(stats)
 
         # Convert to 1-7 ratings
         ratings = self._convert_to_ratings(performances)
@@ -789,8 +850,6 @@ class TeamRatingsCalculator:
             Tuple of (ratings dict, performance stats dict).
             Performance stats hold xG/xGA values in the goals_scored/conceded fields.
         """
-        from statistics import mean
-
         from fpl_cli.api.understat import UnderstatClient
 
         teams = await self.fpl.get_teams()
@@ -802,11 +861,13 @@ class TeamRatingsCalculator:
                 if not data:
                     continue
 
+                # Keyed on the shared axis names so performances_from_samples
+                # can treat xG exactly as it treats goals.
                 team_stats: dict[str, list[float]] = {
-                    "xg_home": [],
-                    "xg_away": [],
-                    "xga_home": [],
-                    "xga_away": [],
+                    "scored_home": [],
+                    "scored_away": [],
+                    "conceded_home": [],
+                    "conceded_away": [],
                 }
 
                 for match in data["matches"]:
@@ -817,32 +878,16 @@ class TeamRatingsCalculator:
                     xg = match.get("xG", {})
 
                     if side == "h":
-                        team_stats["xg_home"].append(float(xg.get("h", 0)))
-                        team_stats["xga_home"].append(float(xg.get("a", 0)))
+                        team_stats["scored_home"].append(float(xg.get("h", 0)))
+                        team_stats["conceded_home"].append(float(xg.get("a", 0)))
                     elif side == "a":
-                        team_stats["xg_away"].append(float(xg.get("a", 0)))
-                        team_stats["xga_away"].append(float(xg.get("h", 0)))
+                        team_stats["scored_away"].append(float(xg.get("a", 0)))
+                        team_stats["conceded_away"].append(float(xg.get("h", 0)))
 
-                if team_stats["xg_home"] and team_stats["xg_away"]:
+                if any(team_stats.values()):
                     raw[team.short_name] = team_stats
 
-        performances: dict[str, TeamPerformance] = {}
-        for abbr, data in raw.items():
-            home_games = len(data["xg_home"])
-            away_games = len(data["xg_away"])
-
-            if home_games == 0 or away_games == 0:
-                continue
-
-            performances[abbr] = TeamPerformance(
-                team=abbr,
-                goals_scored_home=mean(data["xg_home"]),
-                goals_scored_away=mean(data["xg_away"]),
-                goals_conceded_home=mean(data["xga_home"]),
-                goals_conceded_away=mean(data["xga_away"]),
-                home_games=home_games,
-                away_games=away_games,
-            )
+        performances = performances_from_samples(raw)
 
         ratings = self._convert_to_ratings(performances)
         return ratings, performances

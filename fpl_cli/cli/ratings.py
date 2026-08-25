@@ -157,8 +157,8 @@ def ratings_update(since_gw: int | None, dry_run: bool, use_xg: bool):
                 # Nothing to rate teams on for this window. A file already on
                 # disk (current_ratings, loaded before anything ran) is left
                 # alone rather than replaced by a coarser prior estimate --
-                # e.g. --since-gw 15 requested before GW15 has produced a full
-                # home/away cycle for any club must not clobber GW1-14 data.
+                # e.g. --since-gw 15 requested before GW15 has kicked off must
+                # not clobber GW1-14 data.
                 #
                 # Non-empty is not the same as usable, though: a file rating
                 # last season's twenty clubs passes every date check while
@@ -242,6 +242,18 @@ def ratings_update(since_gw: int | None, dry_run: bool, use_xg: bool):
         # Display results
         console.print(Panel.fit("[bold blue]Calculated Team Ratings[/bold blue]"))
         console.print(f"[dim]Based on {summary}[/dim]")
+        # One-venue clubs are rated, not dropped (#138), but say so: their
+        # unplayed venue is an estimate, and the Games column below is the
+        # only other place that shows it.
+        one_venue = sorted(
+            p.team for p in performances.values() if not p.home_games or not p.away_games
+        )
+        if one_venue:
+            verb = "has" if len(one_venue) == 1 else "have"
+            console.print(
+                f"[dim]{', '.join(one_venue)} {verb} played only one venue in this "
+                f"window - the other is estimated from it[/dim]"
+            )
         if blend_note:
             console.print(f"[dim]{blend_note}[/dim]")
         console.print()
