@@ -33,7 +33,7 @@ Parse contract:
   inventing a new state means a failed return stays on the watchlist instead of
   advertising a return gameweek that has already been missed.
 
-There is no cache here: every signal is derived from data the caller already
+Parsing caches nothing: every signal is derived from data the caller already
 holds. Internal date maths is UTC throughout; formatting a date for a user is
 the caller's job and goes through `fpl_cli.utils.time`.
 
@@ -63,6 +63,32 @@ fetching them at all on a cache hit -- so the historical seasons and the
 Understat season data the price-sourced branch needs are passed in by the
 caller. That keeps the service pure, keeps the deterministic core inside the
 data a run already fetched, and lets tests stub both seams with plain fixtures.
+
+Optional AI-search enrichment
+-----------------------------
+
+Most long-term injuries carry no parseable date at all, so return timing for
+exactly the players this radar exists to surface has to come from somewhere
+else. `select_enrichment_shortlist` picks the entries worth asking about --
+date-unknown, or dated so long ago it is worth re-checking -- and the caller
+queries a research provider for each, one player per query so the provider's
+citation list belongs to a single player.
+
+Three rules keep enrichment from quietly becoming load-bearing:
+
+* It never overwrites the FPL signal. `apply_enrichment` attaches an
+  `EnrichedReturn` in its own field, and where both sources state a date both
+  survive to the output (R8).
+* An enriched date only decides an irreversible action when it is cited.
+  `escalation_verdict` is where that lives: an FPL-stated date inside the
+  escalation window counts on its own, an enriched one only with a source
+  citation behind it (R16). Uncited intel still renders.
+* Answers are cached per season and gameweek in the *cache* dir, empty answers
+  included, so a second run in one gameweek buys nothing twice. Losing that
+  cache costs a re-query, not data.
+
+Nothing in this section fetches either: the caller runs the query and hands
+the response text and citations to `enrichment_from_response`.
 
 Week-over-week deltas
 ---------------------
@@ -121,9 +147,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Identifies where a return date came from. U5's optional AI-search enrichment
-# adds its own source alongside this one.
+# Identifies where a return date came from. The two never merge: an enriched
+# date is carried beside the FPL-derived one, never over it (R8).
 SOURCE_FPL_NEWS = "fpl-news"
+SOURCE_AI_SEARCH = "ai-search"
 
 # The availability statuses a radar entry can be built from. `u` (unavailable —
 # left the league) is deliberately absent: those players are gone, not due back.
@@ -318,6 +345,13 @@ class RadarConfig:
     price_watchlist_percentile: float = 0.80
     price_stash_percentile: float = 0.90
     stash_upgrade_margin: float = 5.0
+    # Optional AI-search enrichment. `enrich_stale_news_days` is how old FPL's
+    # news has to be before a *dated* entry is worth re-checking; a date-unknown
+    # entry is always worth it. `enrich_max_players` is the per-run query
+    # ceiling, because enrichment is billed per player and the watchlist is not
+    # bounded by anything the user typed.
+    enrich_stale_news_days: int = 7
+    enrich_max_players: int = 8
 
 
 def radar_config_from_settings(settings: Mapping[str, Any] | None) -> RadarConfig:
@@ -351,6 +385,12 @@ def radar_config_from_settings(settings: Mapping[str, Any] | None) -> RadarConfi
         stash_upgrade_margin=_setting_float(
             block, "stash_upgrade_margin", defaults.stash_upgrade_margin,
         ),
+        enrich_stale_news_days=_setting_int(
+            block, "enrich_stale_news_days", defaults.enrich_stale_news_days,
+        ),
+        enrich_max_players=_setting_int(
+            block, "enrich_max_players", defaults.enrich_max_players,
+        ),
     )
 
 
@@ -376,6 +416,35 @@ class QualityVerdict:
 
 
 @dataclass(frozen=True)
+class EnrichedReturn:
+    """Return intel from AI search, held beside the FPL signal (R8).
+
+    Never merged into `ReturnSignal`: an enriched date and an FPL-stated date
+    are different claims from different sources, and where both exist both are
+    carried. `citations` is the provider's own source list -- what makes an
+    enriched date usable for an irreversible decision (R16) rather than merely
+    readable.
+    """
+
+    summary: str = ""
+    return_date: date | None = None
+    return_gameweek: int | None = None
+    confidence: str | None = None
+    citations: tuple[str, ...] = ()
+    source: str = SOURCE_AI_SEARCH
+
+    @property
+    def cited(self) -> bool:
+        """Whether the intel arrived with at least one source citation."""
+        return bool(self.citations)
+
+    @property
+    def has_intel(self) -> bool:
+        """Whether the answer said anything at all worth showing."""
+        return bool(self.summary or self.return_date)
+
+
+@dataclass(frozen=True)
 class RadarEntry:
     """One flagged player worth watching, with why and when."""
 
@@ -394,6 +463,15 @@ class RadarEntry:
     # snapshot diff fills this in with `dataclasses.replace`; the radar core
     # holds no history of its own.
     transition: str | None = None
+    # AI-search intel, when the caller ran the optional enrichment pass and it
+    # found something. None means it was not run, or found nothing.
+    enrichment: EnrichedReturn | None = None
+    # Whether this entry's return lands inside the shorter escalation window,
+    # and whose date says so (R16). Precomputed rather than left to the reader,
+    # because the rule differs by source: an FPL-stated date counts on its own,
+    # an enriched one only when it carries a citation.
+    escalation_eligible: bool = False
+    escalation_basis: str | None = None
 
 
 @dataclass(frozen=True)
@@ -513,6 +591,9 @@ def build_radar(
             exclusions[player_id] = EXCLUDED_BY_QUALITY
             continue
 
+        eligible, basis = escalation_verdict(
+            signal, None, next_gw_id=next_gw_id, config=cfg,
+        )
         entries.append(RadarEntry(
             player_id=player_id,
             code=_as_int(read_player_field(player, "code")),
@@ -525,10 +606,224 @@ def build_radar(
             price=_player_price(player),
             signal=signal,
             quality=verdict,
+            escalation_eligible=eligible,
+            escalation_basis=basis,
         ))
 
     entries.sort(key=_entry_order)
     return RadarResult(entries=entries, exclusions=exclusions)
+
+
+# ---------------------------------------------------------------------------
+# Optional AI-search enrichment
+# ---------------------------------------------------------------------------
+
+
+ENRICHMENT_CACHE_DIRNAME = "returnee_enrichment"
+
+
+def select_enrichment_shortlist(
+    entries: Sequence[RadarEntry], *, config: RadarConfig | None = None,
+) -> list[RadarEntry]:
+    """The entries whose return timing is worth spending a query on.
+
+    Two populations qualify: an entry FPL states no usable date for (the
+    common case, and the one this radar exists to surface), and an entry whose
+    date FPL last touched long enough ago to be worth re-checking. A freshly
+    dated entry is left alone -- FPL has just said what it knows.
+
+    Bounded twice over: only the watchlist is considered, and only the best
+    `enrich_max_players` of it, because enrichment is billed per player while
+    the watchlist is not bounded by anything the user typed. Quality decides
+    the cut, since the point of the query is to act on the answer.
+    """
+    cfg = config or RadarConfig()
+    stale_after = cfg.enrich_stale_news_days
+    candidates = [
+        entry for entry in entries
+        if not entry.signal.has_return_date
+        or (
+            entry.signal.news_age_days is not None
+            and entry.signal.news_age_days >= stale_after
+        )
+    ]
+    candidates.sort(key=lambda entry: (-entry.quality.score, entry.web_name))
+    return candidates[: max(0, cfg.enrich_max_players)]
+
+
+def enrichment_from_response(
+    content: str,
+    *,
+    citations: Sequence[str] = (),
+    gameweeks: Sequence[Mapping[str, Any]] = (),
+) -> EnrichedReturn:
+    """Read one provider answer into return intel. Never raises.
+
+    The answer is asked for as a bare JSON object, but a model can wrap it in
+    a fence or refuse in prose. Anything unreadable yields intel with nothing
+    in it, which the caller renders as "asked, nothing found" rather than as an
+    error -- and which is still worth caching, so the same empty answer is not
+    bought twice in one gameweek.
+    """
+    payload = _extract_json_object(content)
+    summary = str(payload.get("summary", "") or "").strip()
+    return_date = _parse_date(_date_text(payload.get("expected_return")))
+    confidence = str(payload.get("confidence", "") or "").strip().lower() or None
+    if confidence not in (None, "high", "medium", "low"):
+        confidence = None
+    return EnrichedReturn(
+        summary=summary,
+        return_date=return_date,
+        return_gameweek=(
+            gameweek_for_date(return_date, gameweeks) if return_date is not None else None
+        ),
+        confidence=confidence,
+        citations=tuple(str(c) for c in citations if isinstance(c, str) and c.strip()),
+    )
+
+
+def apply_enrichment(
+    entries: Sequence[RadarEntry],
+    intel: Mapping[int, EnrichedReturn],
+    *,
+    next_gw_id: int,
+    config: RadarConfig | None = None,
+) -> list[RadarEntry]:
+    """Attach enriched intel to the entries it belongs to, and re-judge escalation.
+
+    The FPL signal is untouched (R8): the intel lands in its own field and both
+    dates survive. Escalation is recomputed because a cited enriched date is
+    exactly what can make a date-unknown entry eligible (R16); an entry with no
+    intel keeps the verdict `build_radar` gave it.
+    """
+    cfg = config or RadarConfig()
+    enriched: list[RadarEntry] = []
+    for entry in entries:
+        found = intel.get(entry.player_id)
+        if found is None or not found.has_intel:
+            enriched.append(entry)
+            continue
+        eligible, basis = escalation_verdict(
+            entry.signal, found, next_gw_id=next_gw_id, config=cfg,
+        )
+        enriched.append(replace(
+            entry, enrichment=found, escalation_eligible=eligible, escalation_basis=basis,
+        ))
+    return enriched
+
+
+def enrichment_cache_path(*, gameweek: int, season: str | None = None) -> Path:
+    """Where one gameweek's enriched intel is cached.
+
+    The cache dir, not the data dir: losing it costs one re-query, not data
+    (KTD5). Season and gameweek are both in the filename, so a later gameweek
+    can never serve an earlier one's answers -- return timing is the one thing
+    that goes stale fastest.
+    """
+    from fpl_cli.paths import user_cache_dir
+
+    label = season or season_label()
+    return user_cache_dir() / ENRICHMENT_CACHE_DIRNAME / f"{label}-gw{gameweek}.json"
+
+
+def load_enrichment_cache(
+    *, gameweek: int, season: str | None = None,
+) -> dict[int, EnrichedReturn]:
+    """Read this gameweek's cached intel, or an empty mapping.
+
+    Every failure mode -- no file, unreadable file, wrong shape -- is an empty
+    cache, which costs a re-query and nothing else.
+    """
+    try:
+        raw = json.loads(enrichment_cache_path(gameweek=gameweek, season=season)
+                         .read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as exc:
+        logger.info("Returnee enrichment cache unreadable (%s); re-querying", exc)
+        return {}
+
+    players = raw.get("players") if isinstance(raw, Mapping) else None
+    if not isinstance(players, Mapping):
+        return {}
+
+    cached: dict[int, EnrichedReturn] = {}
+    for key, value in players.items():
+        player_id = _as_int(key)
+        if player_id <= 0 or not isinstance(value, Mapping):
+            continue
+        citations = value.get("citations")
+        cached[player_id] = EnrichedReturn(
+            summary=str(value.get("summary", "") or ""),
+            return_date=_parse_date(value.get("expected_return")),
+            return_gameweek=_as_optional_int(value.get("return_gameweek")),
+            confidence=(str(value["confidence"]) if value.get("confidence") else None),
+            citations=tuple(
+                str(c) for c in citations if isinstance(c, str)
+            ) if isinstance(citations, list) else (),
+        )
+    return cached
+
+
+def save_enrichment_cache(
+    intel: Mapping[int, EnrichedReturn], *, gameweek: int, season: str | None = None,
+) -> None:
+    """Store this gameweek's intel, empty answers included.
+
+    An answer that found nothing is cached too: without it a second run in the
+    same gameweek would pay again to be told nothing again.
+    """
+    payload = {
+        "metadata": {"season": season or season_label(), "gameweek": gameweek},
+        "players": {
+            str(player_id): {
+                "summary": found.summary,
+                "expected_return": (
+                    found.return_date.isoformat() if found.return_date else None
+                ),
+                "return_gameweek": found.return_gameweek,
+                "confidence": found.confidence,
+                "citations": list(found.citations),
+            }
+            for player_id, found in sorted(intel.items())
+        },
+    }
+    atomic_write_text(
+        enrichment_cache_path(gameweek=gameweek, season=season),
+        json.dumps(payload, indent=2) + "\n",
+    )
+
+
+def _date_text(value: Any) -> str | None:
+    """The date portion of a model-supplied value, or None.
+
+    Tolerates a full timestamp where a date was asked for, and treats the
+    words a model reaches for instead of `null` as no date.
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text or text.lower() in ("null", "none", "unknown", "n/a", "tbc"):
+        return None
+    return text[:10]
+
+
+def _extract_json_object(content: str) -> dict[str, Any]:
+    """The first JSON object in a model reply, or an empty mapping.
+
+    A fenced block, leading prose or a trailing note are all survivable; a
+    reply with no object in it at all is simply no answer.
+    """
+    if not content:
+        return {}
+    start, end = content.find("{"), content.rfind("}")
+    if start < 0 or end <= start:
+        return {}
+    try:
+        parsed = json.loads(content[start:end + 1])
+    except ValueError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 # ---------------------------------------------------------------------------
@@ -930,6 +1225,43 @@ def _entry_order(entry: RadarEntry) -> tuple[int, int, float, str]:
     )
 
 
+def escalation_verdict(
+    signal: ReturnSignal,
+    enrichment: EnrichedReturn | None,
+    *,
+    next_gw_id: int,
+    config: RadarConfig,
+) -> tuple[bool, str | None]:
+    """Whether this return lands inside the escalation window, and on whose date.
+
+    The escalation window is the shorter one that separates "worth watching"
+    from "worth holding a squad place for". An FPL-stated date counts on its
+    own. An enriched date counts only when it carries a source citation (R16):
+    enrichment is the common route by which a date-unknown player acquires a
+    date at all, and the action it unlocks -- dropping a player to claim a
+    returnee -- cannot be taken back. Uncited intel still renders; it just
+    does not decide anything.
+
+    A gameweek before `next_gw_id` is already behind us and never qualifies,
+    which keeps a stale enriched date out without consulting the clock.
+    """
+    limit = next_gw_id + config.stash_window_gameweeks - 1
+    if signal.has_return_date and _inside(signal.return_gameweek, next_gw_id, limit):
+        return True, SOURCE_FPL_NEWS
+    if (
+        enrichment is not None
+        and enrichment.cited
+        and _inside(enrichment.return_gameweek, next_gw_id, limit)
+    ):
+        return True, enrichment.source
+    return False, None
+
+
+def _inside(gameweek: int | None, first: int, last: int) -> bool:
+    """Whether a gameweek is known and falls in the inclusive range."""
+    return gameweek is not None and first <= gameweek <= last
+
+
 def _within_window(signal: ReturnSignal, next_gw_id: int, window_gameweeks: int) -> bool:
     """Whether a signal falls inside the watchlist window.
 
@@ -1243,11 +1575,16 @@ def _current_deadline_date(gameweeks: Sequence[Mapping[str, Any]], now: datetime
     return latest
 
 
-def _as_chance(value: Any) -> int | None:
-    """Coerce a stored chance-of-playing to int, or None when it is not one."""
+def _as_optional_int(value: Any) -> int | None:
+    """Coerce a stored number to int, or None when it is not one."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     return int(value)
+
+
+def _as_chance(value: Any) -> int | None:
+    """Coerce a stored chance-of-playing to int, or None when it is not one."""
+    return _as_optional_int(value)
 
 
 def _parse_date(value: Any) -> date | None:

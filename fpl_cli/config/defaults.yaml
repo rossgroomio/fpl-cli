@@ -31,6 +31,8 @@ returnee_radar:
   price_watchlist_percentile: 0.80  # Bar for a price-sourced player: last healthy season's quality (0-1 of the position ceiling), or the within-position price percentile when no such season exists
   price_stash_percentile: 0.90  # Same measure, escalation bar
   stash_upgrade_margin: 5.0  # Quality points (0-100 scale) a returnee must beat the incumbent by
+  enrich_stale_news_days: 7  # With --enrich, re-check a dated player whose FPL news is at least this old
+  enrich_max_players: 8  # With --enrich, the most players one run will search for return intel
 
 llm:
   research:

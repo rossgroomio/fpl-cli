@@ -6,7 +6,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import nullcontext
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import date
 from typing import TYPE_CHECKING, Any
 
@@ -20,7 +20,12 @@ from fpl_cli.cli._json import emit_json, emit_json_error, output_format_option
 if TYPE_CHECKING:
     from fpl_cli.api.historical_types import PlayerProfile
     from fpl_cli.services.player_prior import PlayerPrior
-    from fpl_cli.services.returnee_radar import RadarEntry, RadarResult
+    from fpl_cli.services.returnee_radar import (
+        EnrichedReturn,
+        RadarConfig,
+        RadarEntry,
+        RadarResult,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -63,14 +68,23 @@ _UNKNOWN_RETURN = "Unknown"
               help="Only show returns expected within this many gameweeks (default: 6)")
 @click.option("--all", "show_all", is_flag=True, default=False,
               help="List every flagged player, including those below the quality bar")
+@click.option("--enrich", is_flag=True, default=False,
+              help="Search the web for fresher return news where FPL says nothing or "
+                   "says it a while ago (needs a Perplexity API key)")
 @output_format_option
-def returnees_command(window: int | None, show_all: bool, output_format: str) -> None:
+def returnees_command(
+    window: int | None, show_all: bool, enrich: bool, output_format: str,
+) -> None:
     """Track injured and suspended players who are due back soon.
 
     Reads the availability news that ships with the player data, works out when
     each flagged player is expected back, and keeps the list short by filtering
     on past performance. Each run remembers what it showed, so the next one can
     say what changed.
+
+    With --enrich it also searches the web for fresher return timing on the
+    players FPL is quiet or stale about, and shows what it finds alongside the
+    FPL news rather than in place of it.
     """
 
     async def _run() -> None:
@@ -86,7 +100,12 @@ def returnees_command(window: int | None, show_all: bool, output_format: str) ->
             console.print(f"[red]{message}[/red]")
             raise SystemExit(1) from exc
 
-        result = _run_radar(inputs, settings=settings, window=window, show_all=show_all)
+        config = _radar_config(settings, window=window)
+        result = _run_radar(inputs, config=config, show_all=show_all)
+        enrichment = await _enrich(
+            result, inputs=inputs, settings=settings, config=config, requested=enrich,
+        )
+        result = enrichment.result
         # Whether the bar *could* run is a property of the fetch, not of this
         # run's filters: --all supplies its own placeholder priors, so
         # result.degraded would report the bar as fine when nothing was fetched.
@@ -94,9 +113,11 @@ def returnees_command(window: int | None, show_all: bool, output_format: str) ->
         data, metadata = assemble(
             result,
             gameweek=inputs["next_gw_id"],
-            window=_window_gameweeks(settings, window),
+            window=config.window_gameweeks,
+            escalation_window=config.stash_window_gameweeks,
             quality_bar_available=quality_bar_available,
             quality_bar_applied=quality_bar_available and not show_all,
+            enrichment=enrichment,
         )
 
         if not quality_bar_available:
@@ -227,21 +248,23 @@ async def _load_understat_seasons(seasons: set[str]) -> dict[str, list[dict[str,
     return fetched
 
 
-def _window_gameweeks(settings: dict[str, Any], window: int | None) -> int:
+def _radar_config(settings: dict[str, Any], *, window: int | None) -> RadarConfig:
+    """The resolved knobs, with `--window` applied.
+
+    Built once per run: the radar pass, the enrichment shortlist and the
+    rendered metadata all have to agree on the same window.
+    """
     from fpl_cli.services.returnee_radar import radar_config_from_settings
 
-    return window if window is not None else radar_config_from_settings(settings).window_gameweeks
+    config = radar_config_from_settings(settings)
+    return config if window is None else replace(config, window_gameweeks=window)
 
 
 def _run_radar(
-    inputs: dict[str, Any], *, settings: dict[str, Any], window: int | None, show_all: bool,
+    inputs: dict[str, Any], *, config: RadarConfig, show_all: bool,
 ) -> RadarResult:
     """Apply the flags to the resolved config and run one radar pass."""
-    from fpl_cli.services.returnee_radar import radar_config_from_settings, run_radar
-
-    config = radar_config_from_settings(settings)
-    if window is not None:
-        config = replace(config, window_gameweeks=window)
+    from fpl_cli.services.returnee_radar import run_radar
 
     priors = inputs["priors"]
     if show_all:
@@ -299,6 +322,154 @@ def _warn_quality_bar_unavailable(result: RadarResult, *, show_all: bool) -> Non
 
 
 # ---------------------------------------------------------------------------
+# Optional AI-search enrichment -- opt-in, bounded, and never load-bearing
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _Enrichment:
+    """What the optional enrichment pass did, or why it did nothing.
+
+    Carries the watchlist back out because attaching intel rebuilds the
+    entries. `available` is whether the research provider resolved at all;
+    `note` says what went wrong when it did not, or what came back short.
+    """
+
+    result: RadarResult
+    requested: bool = False
+    available: bool = False
+    note: str | None = None
+    count: int = 0
+
+
+async def _enrich(
+    result: RadarResult,
+    *,
+    inputs: dict[str, Any],
+    settings: dict[str, Any],
+    config: RadarConfig,
+    requested: bool,
+) -> _Enrichment:
+    """Top up missing or stale return timing from AI search, if asked to.
+
+    Opt-in and bounded: without `--enrich` nothing external is contacted, and
+    with it only the shortlist -- date-unknown or stale-news entries, capped by
+    config -- is queried. The provider is resolved before any query work, so a
+    machine with no API key pays nothing and still gets the deterministic
+    watchlist (R7).
+    """
+    if not requested or result.degraded:
+        return _Enrichment(result=result, requested=requested)
+
+    from fpl_cli.api.providers import ProviderError, get_llm_provider
+
+    try:
+        provider = get_llm_provider("research", settings)
+    except ProviderError as exc:
+        note = f"Return intel enrichment skipped: {exc}"
+        error_console.print(f"[yellow]{note}[/yellow]")
+        error_console.print(
+            "[yellow]The watchlist below is built from FPL availability news alone.[/yellow]",
+        )
+        return _Enrichment(result=result, requested=True, note=note)
+
+    from fpl_cli.services.returnee_radar import (
+        apply_enrichment,
+        load_enrichment_cache,
+        save_enrichment_cache,
+        select_enrichment_shortlist,
+    )
+
+    gameweek = inputs["next_gw_id"]
+    shortlist = select_enrichment_shortlist(result.entries, config=config)
+    intel = load_enrichment_cache(gameweek=gameweek)
+    pending = [entry for entry in shortlist if entry.player_id not in intel]
+
+    failures: list[str] = []
+    reason = ""
+    try:
+        for entry in pending:
+            found, error = await _query_intel(
+                provider, entry, gameweeks=inputs["gameweeks"], gameweek=gameweek,
+            )
+            if found is None:
+                failures.append(entry.web_name)
+                reason = error or reason
+                continue
+            intel[entry.player_id] = found
+    finally:
+        await provider.close()
+
+    if len(failures) < len(pending):
+        try:
+            save_enrichment_cache(intel, gameweek=gameweek)
+        except OSError as exc:
+            # The intel is already in hand; losing the write costs a repeat
+            # query next run, not this run's output.
+            logger.warning("Could not cache the returnee enrichment: %s", exc)
+
+    entries = apply_enrichment(
+        result.entries, intel, next_gw_id=gameweek, config=config,
+    )
+    note = None
+    if failures:
+        note = (
+            f"Return intel could not be fetched for {len(failures)} player(s) "
+            f"({', '.join(failures)}): {reason or 'the search failed'}"
+        )
+        error_console.print(f"[yellow]{note}[/yellow]")
+    return _Enrichment(
+        result=replace(result, entries=entries),
+        requested=True,
+        available=True,
+        note=note,
+        count=sum(1 for entry in entries if entry.enrichment is not None),
+    )
+
+
+async def _query_intel(
+    provider: Any,
+    entry: RadarEntry,
+    *,
+    gameweeks: list[dict[str, Any]],
+    gameweek: int,
+) -> tuple[EnrichedReturn | None, str | None]:
+    """One player's enrichment query, and why it failed if it did.
+
+    A failed query is a missing top-up, never a failed run: the deterministic
+    watchlist is already built and stands on its own (R7).
+    """
+    from fpl_cli.prompts.returnees import (
+        RETURNEE_ENRICHMENT_SYSTEM_PROMPT,
+        build_returnee_enrichment_prompt,
+    )
+    from fpl_cli.services.returnee_radar import enrichment_from_response
+    from fpl_cli.utils.time import now_uk
+
+    prompt = build_returnee_enrichment_prompt(
+        web_name=entry.web_name,
+        team=entry.team_name,
+        position=entry.position,
+        status=_STATUS_LABELS.get(entry.status, entry.status),
+        news=entry.signal.news,
+        gameweek=gameweek,
+        today=now_uk().date(),
+        news_age_days=entry.signal.news_age_days,
+        chance_of_playing=entry.chance_of_playing,
+    )
+    try:
+        response = await provider.query(
+            prompt=prompt, system_prompt=RETURNEE_ENRICHMENT_SYSTEM_PROMPT,
+        )
+    except Exception as exc:  # noqa: BLE001 — graceful degradation: enrichment is a top-up
+        logger.info("Return intel query failed for %s: %s", entry.web_name, exc)
+        return None, str(exc)
+    return enrichment_from_response(
+        response.content, citations=response.citations, gameweeks=gameweeks,
+    ), None
+
+
+# ---------------------------------------------------------------------------
 # One assembled payload, rendered two ways
 # ---------------------------------------------------------------------------
 
@@ -308,8 +479,10 @@ def assemble(
     *,
     gameweek: int,
     window: int,
+    escalation_window: int,
     quality_bar_available: bool,
     quality_bar_applied: bool,
+    enrichment: _Enrichment,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Build the data and metadata both output paths render from.
 
@@ -335,9 +508,17 @@ def assemble(
         "season": season_label(),
         "gameweek": gameweek,
         "window": window,
+        # The shorter window an entry's return has to land inside before it is
+        # worth holding a squad place for. Published so a consumer can state
+        # the escalation rule without re-deriving the arithmetic.
+        "escalation_window": escalation_window,
         "transitions_available": result.transitions_available,
         "quality_bar_available": quality_bar_available,
         "quality_bar_applied": quality_bar_applied,
+        "enrichment_requested": enrichment.requested,
+        "enrichment_available": enrichment.available,
+        "enrichment_note": enrichment.note,
+        "enrichment_count": enrichment.count,
     }
     return data, metadata
 
@@ -363,6 +544,14 @@ def _entry_data(entry: RadarEntry) -> dict[str, Any]:
         "return_gameweek": signal.return_gameweek,
         "return_source": signal.source,
         "lapsed": signal.lapsed,
+        # Enriched intel sits beside the FPL signal above, never over it (R8):
+        # where both state a date, both are carried.
+        "enrichment": _enrichment_data(entry.enrichment),
+        # Whether this entry's return lands inside the escalation window, and
+        # whose date says so (R16). An enrichment date only counts here when it
+        # arrived with a source citation.
+        "escalation_eligible": entry.escalation_eligible,
+        "escalation_basis": entry.escalation_basis,
         "quality": {
             "basis": quality.basis,
             "score": round(quality.score, 3),
@@ -374,6 +563,23 @@ def _entry_data(entry: RadarEntry) -> dict[str, Any]:
             "quality_score": quality.quality_score,
         },
         "transition": entry.transition,
+    }
+
+
+def _enrichment_data(enrichment: EnrichedReturn | None) -> dict[str, Any] | None:
+    """Enriched return intel as plain data, or None when none was found."""
+    if enrichment is None:
+        return None
+    return {
+        "source": enrichment.source,
+        "expected_return": (
+            enrichment.return_date.isoformat() if enrichment.return_date else None
+        ),
+        "return_gameweek": enrichment.return_gameweek,
+        "summary": enrichment.summary,
+        "confidence": enrichment.confidence,
+        "citations": list(enrichment.citations),
+        "cited": enrichment.cited,
     }
 
 
@@ -395,6 +601,10 @@ def render_table(data: dict[str, Any], metadata: dict[str, Any]) -> None:
         _render_departures(data["departures"])
         return
 
+    # The intel column only earns its width when something came back, so an
+    # unenriched run renders exactly the table it always did.
+    show_intel = any(entry["enrichment"] for entry in entries)
+
     table = Table(title=f"Returnee Radar (GW{gameweek}, next {window} gameweeks)")
     table.add_column("Player", style="bold")
     table.add_column("Team")
@@ -402,22 +612,29 @@ def render_table(data: dict[str, Any], metadata: dict[str, Any]) -> None:
     table.add_column("Price", justify="right")
     table.add_column("Status")
     table.add_column("Expected Return")
+    if show_intel:
+        table.add_column("Searched Intel")
     table.add_column("Chance", justify="right")
     table.add_column("Quality", justify="right")
     table.add_column("Change")
 
     for entry in entries:
-        table.add_row(
+        row = [
             entry["web_name"],
             entry["team"] or "-",
             entry["position"],
             f"£{entry['price']:.1f}m",
             entry["status_label"],
             _return_cell(entry),
+        ]
+        if show_intel:
+            row.append(_intel_cell(entry["enrichment"]))
+        row.extend((
             _chance_cell(entry["chance_of_playing"]),
             _quality_cell(entry["quality"]),
             _transition_cell(entry["transition"], metadata["transitions_available"]),
-        )
+        ))
+        table.add_row(*row)
 
     console.print(table)
 
@@ -425,6 +642,18 @@ def render_table(data: dict[str, Any], metadata: dict[str, Any]) -> None:
         console.print(
             "[dim]* clears the higher bar worth holding a squad place for.[/dim]",
         )
+    if show_intel:
+        console.print(
+            "[dim]Searched intel is web-search return timing, shown beside the FPL news "
+            "rather than in place of it.[/dim]",
+        )
+        if any(
+            entry["enrichment"] and not entry["enrichment"]["cited"] for entry in entries
+        ):
+            console.print(
+                "[dim]Intel that came back without a source citation is marked, and is "
+                "not enough on its own to drop a player for.[/dim]",
+            )
     if not metadata["transitions_available"]:
         console.print(
             "[dim]No stored watchlist to compare against — this is the first run, "
@@ -473,6 +702,24 @@ def _format_return_date(value: str) -> str:
     except ValueError:  # pragma: no cover - the payload is built from a date
         return value
     return f"{parsed.day} {parsed:%b}"
+
+
+def _intel_cell(intel: dict[str, Any] | None) -> str:
+    """Searched return timing, with its date and whether it was sourced.
+
+    Never merged into the FPL cell beside it: where both state a date, the
+    reader sees both and can tell which is which.
+    """
+    if not intel:
+        return "[dim]-[/dim]"
+    stated = intel["expected_return"]
+    if stated:
+        gameweek = intel["return_gameweek"]
+        text = _format_return_date(stated)
+        cell = f"{text} (GW{gameweek})" if gameweek else text
+    else:
+        cell = intel["summary"][:40] or _UNKNOWN_RETURN
+    return cell if intel["cited"] else f"[yellow]{cell} (uncited)[/yellow]"
 
 
 def _chance_cell(chance: int | None) -> str:

@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from click.testing import CliRunner
 
+from fpl_cli.api.providers import LLMResponse, ProviderError, ProviderNotConfiguredError, TokenUsage
 from fpl_cli.cli import main
 from fpl_cli.models.player import PlayerPosition, PlayerStatus
 from fpl_cli.season import season_label
@@ -71,6 +72,7 @@ def _flagged(
     status: PlayerStatus = PlayerStatus.INJURED,
     chance: int | None = None,
     now_cost: int = 100,
+    news_days: int = 2,
 ) -> Any:
     return make_player(
         id=pid,
@@ -81,7 +83,7 @@ def _flagged(
         now_cost=now_cost,
         status=status,
         news=news,
-        news_added=(NOW - timedelta(days=2)).isoformat().replace("+00:00", "Z"),
+        news_added=(NOW - timedelta(days=news_days)).isoformat().replace("+00:00", "Z"),
         chance_of_playing_next_round=chance,
     )
 
@@ -113,13 +115,15 @@ def _default_priors() -> dict[int, PlayerPrior]:
 _UNSET: Any = object()
 
 
-def _scoring_data(players: list[Any] | None = None, priors: Any = _UNSET) -> Any:
+def _scoring_data(
+    players: list[Any] | None = None, priors: Any = _UNSET, next_gw_id: int = NEXT_GW,
+) -> Any:
     """A ScoringData stand-in. `priors=None` is the degraded-priors run."""
     data = MagicMock()
     data.players = _default_players() if players is None else players
     data.player_priors = _default_priors() if priors is _UNSET else priors
     data.teams = [make_team(id=1, name="Liverpool", short_name="LIV")]
-    data.next_gw_id = NEXT_GW
+    data.next_gw_id = next_gw_id
     return data
 
 
@@ -147,16 +151,32 @@ def _make_understat() -> Any:
 
 
 def _run(args: list[str] | None = None, *, scoring_data: Any = None,
-         prepare_error: Exception | None = None) -> Any:
-    """Invoke `fpl returnees` with every network seam stubbed."""
+         prepare_error: Exception | None = None,
+         provider_factory: Any = None,
+         settings: dict[str, Any] | None = None) -> Any:
+    """Invoke `fpl returnees` with every network seam stubbed.
+
+    `provider_factory` stands in for `get_llm_provider`, so no test can reach
+    a live LLM endpoint. The default raises the missing-key error, which is
+    what an unconfigured machine sees.
+    """
     if scoring_data is None:
         scoring_data = _scoring_data()
+    if provider_factory is None:
+        provider_factory = _unconfigured_factory()
 
     prepare = AsyncMock(side_effect=prepare_error) if prepare_error is not None \
         else AsyncMock(return_value=scoring_data)
 
     runner = CliRunner()
     with ExitStack() as stack:
+        stack.enter_context(patch(
+            "fpl_cli.api.providers.get_llm_provider", new=provider_factory,
+        ))
+        if settings is not None:
+            stack.enter_context(patch(
+                "fpl_cli.cli.returnees.load_settings", return_value=settings,
+            ))
         stack.enter_context(patch("fpl_cli.api.fpl.FPLClient", return_value=_make_client()))
         stack.enter_context(patch("fpl_cli.services.scoring.prepare_scoring_data", new=prepare))
         stack.enter_context(patch(
@@ -173,6 +193,86 @@ def _run(args: list[str] | None = None, *, scoring_data: Any = None,
         return runner.invoke(
             main, ["returnees"] + (args or []), env={"COLUMNS": "220"},
         )
+
+
+def _unconfigured_factory() -> Any:
+    """A `get_llm_provider` stand-in for a machine with no research API key."""
+    return MagicMock(side_effect=ProviderNotConfiguredError(
+        "PERPLEXITY_API_KEY not set. Get your key from https://example.invalid",
+    ))
+
+
+def _stub_provider(by_name: dict[str, Any] | None = None, default: Any = None) -> Any:
+    """A research provider that answers per player, keyed on the prompt.
+
+    Keying on the name rather than on call order keeps each expectation
+    attached to the player it is about. An answer that is an exception is
+    raised instead of returned, so a provider failure runs through the same
+    seam as a successful one.
+    """
+    answers = by_name or {}
+
+    async def _query(prompt: str = "", system_prompt: str | None = None, **kwargs: Any) -> Any:
+        answer = next(
+            (value for name, value in answers.items() if name in prompt),
+            default if default is not None else _intel(),
+        )
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    provider = MagicMock()
+    provider.query = AsyncMock(side_effect=_query)
+    provider.post_process = lambda text: text
+    provider.close = AsyncMock()
+    return provider
+
+
+def _provider_factory(provider: Any) -> Any:
+    return MagicMock(return_value=provider)
+
+
+def _intel(
+    expected_return: str | None = None,
+    *,
+    summary: str = "Back in full training",
+    confidence: str = "medium",
+    citations: list[str] | None = None,
+) -> LLMResponse:
+    """One provider answer, shaped as the prompt asks for it."""
+    body = json.dumps({
+        "expected_return": expected_return,
+        "summary": summary,
+        "confidence": confidence,
+    })
+    return LLMResponse(
+        content=body,
+        model="sonar-pro",
+        usage=TokenUsage(input_tokens=1, output_tokens=1),
+        citations=citations if citations is not None else [],
+    )
+
+
+def _enrichment_scoring_data(next_gw_id: int = NEXT_GW) -> Any:
+    """The default pool plus a player FPL dated a long time ago.
+
+    Spans the shortlist rule in one fixture: date-unknown (Sidelined), freshly
+    dated (Duesoon, Duelater) and dated-but-stale (Stalenews).
+    """
+    players = [*_default_players(), _flagged(6, "Stalenews", news=_returning_in_gw(6),
+                                             news_days=30)]
+    priors = _default_priors()
+    priors[6] = PlayerPrior(prior_strength=0.9, confidence=1.0, source="history")
+    return _scoring_data(players=players, priors=priors, next_gw_id=next_gw_id)
+
+
+def _entries_by_name(payload: dict[str, Any]) -> dict[str, Any]:
+    return {entry["web_name"]: entry for entry in payload["data"]["entries"]}
+
+
+def _prompts(provider: Any) -> list[str]:
+    """Every user prompt the run actually sent."""
+    return [call.kwargs.get("prompt", "") for call in provider.query.await_args_list]
 
 
 def _json_run(args: list[str] | None = None, **kwargs: Any) -> dict[str, Any]:
@@ -400,6 +500,298 @@ class TestFailures:
         result = _run(prepare_error=RuntimeError("bootstrap unreachable"))
 
         assert result.exit_code == 1
+
+
+# ---------------------------------------------------------------------------
+# AI-search enrichment (--enrich)
+# ---------------------------------------------------------------------------
+
+
+class TestEnrichmentProviderGate:
+    def test_missing_key_still_produces_the_deterministic_watchlist(self):
+        result = _run(["--enrich"])
+
+        assert result.exit_code == 0, result.output
+        for name in ("Sidelined", "Duesoon", "Duelater"):
+            assert name in result.output
+
+    def test_missing_key_note_goes_to_stderr_not_stdout(self):
+        result = _run(["--enrich"])
+
+        assert "PERPLEXITY_API_KEY" in result.stderr
+        assert "PERPLEXITY_API_KEY" not in result.stdout
+
+    def test_missing_key_is_recorded_in_json_metadata_not_as_a_failed_envelope(self):
+        payload = _json_run(["--enrich"])
+
+        metadata = payload["metadata"]
+        assert metadata["enrichment_requested"] is True
+        assert metadata["enrichment_available"] is False
+        assert "PERPLEXITY_API_KEY" in metadata["enrichment_note"]
+        assert metadata["enrichment_count"] == 0
+        assert payload["data"]["entries"], "the deterministic watchlist must stand on its own"
+
+    def test_provider_is_never_constructed_without_the_flag(self):
+        factory = _unconfigured_factory()
+
+        result = _run(provider_factory=factory)
+
+        assert result.exit_code == 0, result.output
+        factory.assert_not_called()
+
+    def test_metadata_reports_enrichment_unrequested_without_the_flag(self):
+        metadata = _json_run()["metadata"]
+
+        assert metadata["enrichment_requested"] is False
+        assert metadata["enrichment_available"] is False
+        assert metadata["enrichment_note"] is None
+
+
+class TestEnrichmentShortlist:
+    def test_only_date_unknown_and_stale_news_entries_are_queried(self):
+        provider = _stub_provider()
+
+        result = _run(["--enrich"], scoring_data=_enrichment_scoring_data(),
+                      provider_factory=_provider_factory(provider))
+
+        assert result.exit_code == 0, result.output
+        prompts = _prompts(provider)
+        assert len(prompts) == 2
+        assert any("Sidelined" in prompt for prompt in prompts)
+        assert any("Stalenews" in prompt for prompt in prompts)
+        # Freshly dated entries have nothing to top up.
+        assert not any("Duesoon" in prompt or "Duelater" in prompt for prompt in prompts)
+
+    def test_the_query_ceiling_bounds_the_shortlist(self):
+        provider = _stub_provider()
+
+        _run(["--enrich"], scoring_data=_enrichment_scoring_data(),
+             provider_factory=_provider_factory(provider),
+             settings={"returnee_radar": {"enrich_max_players": 1}})
+
+        assert len(_prompts(provider)) == 1
+
+    def test_the_prompt_names_the_player_and_their_current_news(self):
+        provider = _stub_provider()
+
+        _run(["--enrich"], scoring_data=_enrichment_scoring_data(),
+             provider_factory=_provider_factory(provider))
+
+        sidelined = next(p for p in _prompts(provider) if "Sidelined" in p)
+        assert "Liverpool" in sidelined
+        assert "Unknown return date" in sidelined
+
+
+class TestEnrichmentAttachment:
+    def test_enriched_intel_sits_beside_the_fpl_date_and_never_over_it(self):
+        provider = _stub_provider({"Stalenews": _intel(
+            _deadline(4).date().isoformat(),
+            summary="Back in team training",
+            citations=["https://example.invalid/report"],
+        )})
+
+        payload = _json_run(["--enrich"], scoring_data=_enrichment_scoring_data(),
+                            provider_factory=_provider_factory(provider))
+
+        stale = _entries_by_name(payload)["Stalenews"]
+        assert stale["expected_return"] == _deadline(6).date().isoformat()
+        assert stale["return_source"] == "fpl-news"
+        intel = stale["enrichment"]
+        assert intel["source"] == "ai-search"
+        assert intel["expected_return"] == _deadline(4).date().isoformat()
+        assert intel["return_gameweek"] == 4
+        assert intel["summary"] == "Back in team training"
+        assert intel["citations"] == ["https://example.invalid/report"]
+        assert intel["cited"] is True
+
+    def test_an_unenriched_entry_carries_no_intel(self):
+        provider = _stub_provider()
+
+        payload = _json_run(["--enrich"], scoring_data=_enrichment_scoring_data(),
+                            provider_factory=_provider_factory(provider))
+
+        assert _entries_by_name(payload)["Duesoon"]["enrichment"] is None
+
+    def test_metadata_counts_the_entries_that_gained_intel(self):
+        provider = _stub_provider()
+
+        payload = _json_run(["--enrich"], scoring_data=_enrichment_scoring_data(),
+                            provider_factory=_provider_factory(provider))
+
+        metadata = payload["metadata"]
+        assert metadata["enrichment_requested"] is True
+        assert metadata["enrichment_available"] is True
+        assert metadata["enrichment_note"] is None
+        assert metadata["enrichment_count"] == 2
+
+    def test_a_response_that_states_nothing_attaches_nothing(self):
+        junk = LLMResponse(content="I could not find any update.", model="sonar-pro",
+                           usage=TokenUsage(input_tokens=1, output_tokens=1))
+        provider = _stub_provider(default=junk)
+
+        payload = _json_run(["--enrich"], scoring_data=_enrichment_scoring_data(),
+                            provider_factory=_provider_factory(provider))
+
+        assert _entries_by_name(payload)["Sidelined"]["enrichment"] is None
+        assert payload["metadata"]["enrichment_count"] == 0
+
+
+class TestEscalationGate:
+    """R16: an enriched date decides an irreversible action only when cited."""
+
+    def test_an_fpl_stated_date_inside_the_window_needs_no_citation(self):
+        payload = _json_run()
+
+        due_soon = _entries_by_name(payload)["Duesoon"]
+        assert due_soon["return_gameweek"] == 4
+        assert due_soon["escalation_eligible"] is True
+        assert due_soon["escalation_basis"] == "fpl-news"
+
+    def test_a_date_unknown_entry_never_escalates_on_its_own(self):
+        payload = _json_run()
+
+        sidelined = _entries_by_name(payload)["Sidelined"]
+        assert sidelined["escalation_eligible"] is False
+        assert sidelined["escalation_basis"] is None
+
+    def test_an_uncited_enriched_date_renders_but_does_not_escalate(self):
+        provider = _stub_provider({"Sidelined": _intel(
+            _deadline(4).date().isoformat(), citations=[],
+        )})
+
+        payload = _json_run(["--enrich"], scoring_data=_enrichment_scoring_data(),
+                            provider_factory=_provider_factory(provider))
+
+        sidelined = _entries_by_name(payload)["Sidelined"]
+        assert sidelined["enrichment"]["expected_return"] == _deadline(4).date().isoformat()
+        assert sidelined["enrichment"]["cited"] is False
+        assert sidelined["escalation_eligible"] is False
+        assert sidelined["escalation_basis"] is None
+
+    def test_a_cited_enriched_date_escalates_and_names_its_provenance(self):
+        provider = _stub_provider({"Sidelined": _intel(
+            _deadline(4).date().isoformat(),
+            citations=["https://example.invalid/presser"],
+        )})
+
+        payload = _json_run(["--enrich"], scoring_data=_enrichment_scoring_data(),
+                            provider_factory=_provider_factory(provider))
+
+        sidelined = _entries_by_name(payload)["Sidelined"]
+        assert sidelined["escalation_eligible"] is True
+        assert sidelined["escalation_basis"] == "ai-search"
+        assert sidelined["enrichment"]["citations"] == ["https://example.invalid/presser"]
+
+    def test_a_cited_date_beyond_the_escalation_window_does_not_escalate(self):
+        provider = _stub_provider({"Sidelined": _intel(
+            _deadline(8).date().isoformat(),
+            citations=["https://example.invalid/presser"],
+        )})
+
+        payload = _json_run(["--enrich"], scoring_data=_enrichment_scoring_data(),
+                            provider_factory=_provider_factory(provider))
+
+        sidelined = _entries_by_name(payload)["Sidelined"]
+        assert sidelined["enrichment"]["return_gameweek"] == 8
+        assert sidelined["escalation_eligible"] is False
+
+    def test_metadata_publishes_the_escalation_window(self):
+        assert _json_run()["metadata"]["escalation_window"] == 2
+
+
+class TestEnrichmentCache:
+    def test_a_second_run_in_the_same_gameweek_queries_nothing(self):
+        provider = _stub_provider()
+        factory = _provider_factory(provider)
+
+        first = _json_run(["--enrich"], scoring_data=_enrichment_scoring_data(),
+                          provider_factory=factory)
+        queried = provider.query.await_count
+        second = _json_run(["--enrich"], scoring_data=_enrichment_scoring_data(),
+                           provider_factory=factory)
+
+        assert queried == 2
+        assert provider.query.await_count == queried
+        assert second["metadata"]["enrichment_count"] == first["metadata"]["enrichment_count"]
+        assert second["metadata"]["enrichment_count"] == 2
+
+    def test_a_later_gameweek_does_not_serve_the_earlier_cache(self):
+        provider = _stub_provider()
+        factory = _provider_factory(provider)
+
+        _json_run(["--enrich"], scoring_data=_enrichment_scoring_data(),
+                  provider_factory=factory)
+        queried = provider.query.await_count
+        _json_run(["--enrich"], scoring_data=_enrichment_scoring_data(next_gw_id=NEXT_GW + 1),
+                  provider_factory=factory)
+
+        assert provider.query.await_count > queried
+
+
+class TestEnrichmentFailure:
+    def test_a_provider_failure_degrades_to_the_deterministic_watchlist(self):
+        provider = _stub_provider(default=ProviderError("Perplexity request timed out"))
+
+        payload = _json_run(["--enrich"], scoring_data=_enrichment_scoring_data(),
+                            provider_factory=_provider_factory(provider))
+
+        assert _names(payload), "the deterministic watchlist must survive a failed query"
+        metadata = payload["metadata"]
+        assert metadata["enrichment_available"] is True
+        assert metadata["enrichment_count"] == 0
+        assert "timed out" in metadata["enrichment_note"]
+
+    def test_a_provider_failure_keeps_the_table_run_at_exit_zero(self):
+        provider = _stub_provider(default=ProviderError("Perplexity request timed out"))
+
+        result = _run(["--enrich"], scoring_data=_enrichment_scoring_data(),
+                      provider_factory=_provider_factory(provider))
+
+        assert result.exit_code == 0, result.output
+        assert "Sidelined" in result.output
+
+    def test_a_failed_query_does_not_poison_the_cache(self):
+        failing = _stub_provider(default=ProviderError("Perplexity request timed out"))
+        _run(["--enrich"], scoring_data=_enrichment_scoring_data(),
+             provider_factory=_provider_factory(failing))
+
+        working = _stub_provider()
+        _run(["--enrich"], scoring_data=_enrichment_scoring_data(),
+             provider_factory=_provider_factory(working))
+
+        assert working.query.await_count == 2
+
+
+class TestEnrichmentTable:
+    def test_intel_appears_in_its_own_column_beside_the_fpl_date(self):
+        provider = _stub_provider({"Sidelined": _intel(
+            _deadline(3).date().isoformat(),
+            citations=["https://example.invalid/presser"],
+        )})
+
+        result = _run(["--enrich"], scoring_data=_enrichment_scoring_data(),
+                      provider_factory=_provider_factory(provider))
+
+        assert result.exit_code == 0, result.output
+        assert "Intel" in result.output
+        # The enriched date renders on its own, without displacing the FPL cell.
+        assert "28 Aug" in result.output
+        assert "Unknown" in result.output
+
+    def test_uncited_intel_is_marked_as_such(self):
+        provider = _stub_provider({"Sidelined": _intel(
+            _deadline(3).date().isoformat(), citations=[],
+        )})
+
+        result = _run(["--enrich"], scoring_data=_enrichment_scoring_data(),
+                      provider_factory=_provider_factory(provider))
+
+        assert "uncited" in result.output
+
+    def test_no_intel_column_without_the_flag(self):
+        result = _run(scoring_data=_enrichment_scoring_data())
+
+        assert "Intel" not in result.output
 
 
 # ---------------------------------------------------------------------------
