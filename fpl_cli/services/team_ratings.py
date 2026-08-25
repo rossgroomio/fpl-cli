@@ -313,16 +313,22 @@ class TeamRatingsService:
                 generate_prior,
             )
 
+            blended = False
             if max_completed_gw < BLENDING_CUTOFF_GW:
                 prior = await generate_prior(client)
                 if prior:
                     ratings = blend_with_prior(prior, ratings, max_completed_gw)
+                    blended = True
 
+            # Tagged the same way `fpl ratings update` tags it. A blended file
+            # is mostly last season early on, and get_staleness_warning() reads
+            # this to say so -- an untagged one would present a GW1 blend as
+            # ordinary current-season form.
             self.save_ratings(
                 ratings,
-                source="auto_calculated",
+                source="auto_calculated_blended" if blended else "auto_calculated",
                 based_on_gws=(min_gw, max_completed_gw),
-                calculation_method="recent_form",
+                calculation_method="recent_form_blended" if blended else "recent_form",
             )
             self._apply_overrides()
             TeamRatingsService._refreshed_this_session = True
@@ -627,6 +633,32 @@ class TeamRatingsService:
 
         return (datetime.now() - self._metadata.last_updated).days
 
+    def _prior_dominance(self) -> tuple[int, float] | None:
+        """Window length and its blend weight, when last season still outweighs it.
+
+        A blended file built on one gameweek is 86% previous season, but it is
+        stamped with a real `based_on_gws` and a calculated source, so nothing
+        else on the staleness path treats it as an estimate. Between GW1
+        finishing and the sample reaching REGRESSION_CONSTANT gameweeks, the
+        ratings are named after current-season results while being mostly the
+        prior -- so say which.
+
+        Returns None once current form carries at least half the weight, and
+        for any file that was never blended.
+        """
+        from fpl_cli.services.team_ratings_prior import REGRESSION_CONSTANT
+
+        if not self._metadata or not (self._metadata.source or "").endswith("_blended"):
+            return None
+        if not self._metadata.based_on_gws:
+            return None
+
+        min_gw, max_gw = self._metadata.based_on_gws
+        window = max_gw - min_gw + 1
+        if window <= 0 or window >= REGRESSION_CONSTANT:
+            return None
+        return window, window / (window + REGRESSION_CONSTANT)
+
     def get_staleness_warning(self) -> str | None:
         """Get a warning about the quality of the ratings backing fixture difficulty.
 
@@ -668,6 +700,16 @@ class TeamRatingsService:
                 "⚠️ Ratings are estimated from last season (promoted teams from "
                 "Championship form) — no current-season results to rate teams on yet. "
                 "Fixture difficulty is indicative until results land."
+            )
+
+        prior_share = self._prior_dominance()
+        if prior_share:
+            window, weight = prior_share
+            gws = "gameweek" if window == 1 else "gameweeks"
+            return (
+                f"⚠️ Ratings are mostly last season's prior — {window} {gws} of results "
+                f"carries {weight:.0%} of the weight. Fixture difficulty is indicative "
+                f"until more results land."
             )
 
         days = self.days_since_update()

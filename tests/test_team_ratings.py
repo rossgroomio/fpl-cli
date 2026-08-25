@@ -1731,10 +1731,79 @@ class TestAutoRefreshAfterGw1:
 
         mock_seed.assert_not_awaited()
         assert service.metadata is not None
-        assert service.metadata.source == "auto_calculated"
+        assert service.metadata.source == "auto_calculated_blended"
         assert service.metadata.based_on_gws == (1, 1)
         assert set(service.get_all_ratings()) == {"ARS", "MCI", "LIV", "CHE"}
         assert not service.is_preseason_estimate
+
+
+class TestPriorDominatedWarning:
+    """A blended file early in the season is mostly last season, and must say so.
+
+    Rating GW1 (#138) means the file stops being tagged `preseason_prior` the
+    moment one gameweek completes -- so the "these are estimates" warning
+    stopped firing over ratings that are still 86% previous-season by weight.
+    """
+
+    def _service(self, tmp_path, *, source, based_on_gws):
+        import yaml as _yaml
+
+        path = tmp_path / "team_ratings.yaml"
+        path.write_text(
+            _yaml.dump(
+                {
+                    "metadata": {
+                        "last_updated": datetime.now().isoformat(),
+                        "source": source,
+                        "based_on_gws": list(based_on_gws),
+                        "season": season_label(),
+                        "staleness_threshold_days": 7,
+                    },
+                    "ratings": {
+                        "ARS": {"atk_home": 1, "atk_away": 2, "def_home": 3, "def_away": 4},
+                        "MCI": {"atk_home": 5, "atk_away": 6, "def_home": 7, "def_away": 1},
+                    },
+                }
+            )
+        )
+        return TeamRatingsService(config_path=path)
+
+    def test_single_gameweek_blend_is_flagged(self, tmp_path):
+        service = self._service(
+            tmp_path, source="auto_calculated_blended", based_on_gws=(1, 1)
+        )
+
+        warning = service.get_staleness_warning()
+        assert warning is not None
+        assert "mostly last season's prior" in warning
+        assert "1 gameweek" in warning
+        assert "14%" in warning
+
+    def test_warning_clears_once_current_form_carries_half_the_weight(self, tmp_path):
+        """Six gameweeks is the crossover REGRESSION_CONSTANT sets."""
+        service = self._service(
+            tmp_path, source="calculated_blended", based_on_gws=(1, 6)
+        )
+
+        assert service.get_staleness_warning() is None
+
+    def test_unblended_file_is_not_flagged(self, tmp_path):
+        """A late narrow window is recent form by design, not a prior-heavy blend."""
+        service = self._service(
+            tmp_path, source="calculated", based_on_gws=(30, 34)
+        )
+
+        assert service.get_staleness_warning() is None
+
+    def test_preseason_estimate_still_takes_precedence(self, tmp_path):
+        """The stronger claim wins: no current-season results at all."""
+        from fpl_cli.services.team_ratings import PRESEASON_SOURCE
+
+        service = self._service(tmp_path, source=PRESEASON_SOURCE, based_on_gws=(1, 1))
+
+        warning = service.get_staleness_warning()
+        assert warning is not None
+        assert "estimated from last season" in warning
 
 
 class TestConfigPathProperty:
