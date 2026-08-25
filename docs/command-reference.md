@@ -780,12 +780,12 @@ fpl doctor --providers          # Probe the external data sources instead
 fpl doctor --format json        # Machine-readable report (for agents/scripts)
 ```
 
-Rolling a setup into a new season silently invalidates IDs and per-team files: a dead draft league returns nothing, a recycled draft entry ID resolves to a stranger's team, and a per-team file rebuilt in August can still describe last season's twenty clubs. None of these error — they produce plausible output. `fpl doctor` checks all of it in one pass:
+Rolling a setup into a new season silently invalidates IDs and per-team files: a dead draft league returns nothing, entry and league IDs reissued over the summer resolve to a stranger's team or league, and a per-team file rebuilt in August can still describe last season's twenty clubs. None of these error — they produce plausible output. `fpl doctor` checks all of it in one pass:
 
 **IDs in `settings.yaml`** — each configured ID is resolved against the live API and the team/league name reported back, so a wrong-but-valid ID is visible:
 
-- `classic_entry_id` resolves, reporting the team and manager name
-- `classic_league_id` resolves, reporting the league name back — classic mini-leagues keep their ID across seasons, so resolution plus the name echo is the whole check
+- `classic_entry_id` resolves, reporting the team and manager name, **and belongs to `classic_league_id`** (via the entry's own `leagues.classic`) — catching an ID reissued over the summer that now points at someone else's team. The reissued-ID verdict only fires when the league itself checked out, so a stale league ID cannot condemn a correct entry
+- `classic_league_id` resolves, reporting the league name back. No season assertion: classic league IDs come from a sequence that restarts each July, so `created` always lands in the current season and last season's ID resolves to a *different* league rather than going dead. The stamp proves nothing here — the entry's membership check above is what proves the pairing is still yours
 - `draft_league_id` resolves; flagged when its draft was held in a previous season (draft leagues are recreated each season)
 - `draft_entry_id` resolves **and belongs to `draft_league_id`** (via the entry's `league_set`), catching a recycled ID that points at someone else's team — the recycled-ID verdict only fires when the league itself checked out, so a stale league ID cannot condemn a correct entry
 

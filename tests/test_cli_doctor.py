@@ -59,7 +59,12 @@ def _mock_client(
     else:
         client.get_manager_entry = AsyncMock(
             return_value=manager_entry
-            or {"name": "My Team", "player_first_name": "Ross", "player_last_name": "G"}
+            or {
+                "name": "My Team",
+                "player_first_name": "Ross",
+                "player_last_name": "G",
+                "leagues": {"classic": [{"id": 99}]},
+            }
         )
     if league_error is not None:
         client.get_classic_league_standings = AsyncMock(side_effect=league_error)
@@ -190,15 +195,84 @@ class TestIdChecks:
         assert result.exit_code == 1
         assert "does not resolve" in result.output
 
-    def test_classic_league_with_old_created_stays_ok(self):
-        # Classic mini-leagues keep their ID across seasons and `created` is
-        # the original creation date -- an old stamp must not flag the league.
+    def test_classic_league_created_stamp_never_flags_the_league(self):
+        # `created` is not a staleness signal for a classic league: the ID
+        # sequence restarts each July, so the stamp is always current and an
+        # odd one proves nothing. Pins that no season assertion creeps back in.
         client = _mock_client(
             classic_league={"league": {"name": "Old League", "created": "2019-08-01T00:00:00Z"}}
         )
         result = _run(client, settings={"fpl": {"classic_league_id": 99}})
         assert result.exit_code == 0
         assert "Old League" in result.output
+
+    def test_classic_entry_in_configured_league_is_ok(self):
+        result = _run(
+            _mock_client(), settings={"fpl": {"classic_entry_id": 123, "classic_league_id": 99}}
+        )
+        assert result.exit_code == 0
+        assert "in classic league 99" in _flat(result)
+
+    def test_classic_entry_in_wrong_league_is_broken(self):
+        # The classic half of issue 57: FPL reissues entry IDs each season, so
+        # last season's ID resolves to a live team belonging to someone else.
+        entry = {
+            "name": "Someone Else",
+            "player_first_name": "Other",
+            "player_last_name": "Manager",
+            "leagues": {"classic": [{"id": 111}]},
+        }
+        result = _run(
+            _mock_client(manager_entry=entry),
+            settings={"fpl": {"classic_entry_id": 123, "classic_league_id": 99}},
+        )
+        assert result.exit_code == 1
+        assert "Someone Else" in result.output
+        assert "reissued" in _flat(result)
+
+    def test_classic_entry_not_condemned_when_league_is_dead(self):
+        # A stale league ID makes the membership miss meaningless -- it may be
+        # the league that is wrong, so the entry must not be condemned for it.
+        entry = {
+            "name": "My Team",
+            "player_first_name": "Ross",
+            "player_last_name": "G",
+            "leagues": {"classic": [{"id": 111}]},
+        }
+        result = _run(
+            _mock_client(manager_entry=entry, league_error=_http_404()),
+            settings={"fpl": {"classic_entry_id": 123, "classic_league_id": 99}},
+        )
+        assert result.exit_code == 1  # the league row alone is broken
+        assert "reissued ID" not in _flat(result)
+        assert "membership not checked" in _flat(result)
+
+    def test_classic_entry_membership_holds_when_league_check_failed(self):
+        # Membership comes from the entry's own payload, so it is provable
+        # even when the league lookup errored.
+        request = httpx.Request("GET", "https://example.test")
+        result = _run(
+            _mock_client(league_error=httpx.ConnectError("boom", request=request)),
+            settings={"fpl": {"classic_entry_id": 123, "classic_league_id": 99}},
+        )
+        assert result.exit_code == 0
+        assert "in classic league 99" in _flat(result)
+
+    def test_classic_entry_without_listed_leagues_is_not_condemned(self):
+        # An entry payload carrying no classic leagues is a shape change, not
+        # proof the entry left the league.
+        entry = {"name": "My Team", "player_first_name": "Ross", "player_last_name": "G"}
+        result = _run(
+            _mock_client(manager_entry=entry),
+            settings={"fpl": {"classic_entry_id": 123, "classic_league_id": 99}},
+        )
+        assert result.exit_code == 0
+        assert "listed no classic leagues" in _flat(result)
+
+    def test_classic_entry_without_league_id_notes_unchecked_membership(self):
+        result = _run(_mock_client(), settings={"fpl": {"classic_entry_id": 123}})
+        assert result.exit_code == 0
+        assert "classic_league_id is not set" in _flat(result)
 
     def test_classic_league_current_season_is_ok(self):
         result = _run(_mock_client(), settings={"fpl": {"classic_league_id": 99}})

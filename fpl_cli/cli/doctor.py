@@ -1,9 +1,10 @@
 """Setup health check: dead IDs, stale per-team data, and directory resolution.
 
 The failure modes this command exists for are uniformly silent (#57): a
-recycled draft entry ID resolves to a stranger's team, a classic league ID
-from last season still returns standings, and a per-team file rebuilt in
-August happily describes last season's twenty clubs. None of them error --
+recycled draft entry ID resolves to a stranger's team, a classic entry or
+league ID from last season resolves to somebody else's (FPL reissues both from
+a sequence that restarts each July), and a per-team file rebuilt in August
+happily describes last season's twenty clubs. None of them error --
 they produce plausible output. Every check here reports the identity it
 resolved (team name, league name, season) so a wrong-but-valid value is
 visible, and distinguishes "broken, fix this" from "stale, will self-correct".
@@ -156,21 +157,75 @@ async def _resolve(
         )
 
 
-async def _classic_entry_check(client: Any, entry_id: int) -> CheckResult:
+_CLASSIC_ENTRY_FIX = (
+    "update classic_entry_id in settings.yaml — classic entry IDs are reissued "
+    "each season (or run `fpl init`)"
+)
+
+
+def _classic_league_ids(entry: dict[str, Any]) -> set[int]:
+    """IDs of every classic league the entry payload says it plays in."""
+    leagues = (entry.get("leagues") or {}).get("classic") or []
+    return {
+        league["id"]
+        for league in leagues
+        if isinstance(league, dict) and isinstance(league.get("id"), int)
+    }
+
+
+def _classic_membership_gap(
+    league_id: int | None, league_verified: bool, membership: set[int]
+) -> str:
+    if not league_id:
+        return "classic_league_id is not set"
+    if not membership:
+        return "the entry listed no classic leagues"
+    return "classic_league_id failed its own check"
+
+
+async def _classic_entry_check(
+    client: Any, entry_id: int, league_id: int | None, league_verified: bool
+) -> CheckResult:
     name = "classic_entry_id"
     entry, failure = await _resolve(
         name,
         client.get_manager_entry(entry_id),
         f"{entry_id} does not resolve — no FPL team has this entry ID",
-        "update classic_entry_id in settings.yaml (or run `fpl init`)",
+        _CLASSIC_ENTRY_FIX,
     )
     if failure or entry is None:
         return failure or CheckResult(name, CheckStatus.UNCHECKED, "no data returned")
     team = entry.get("name") or "?"
+    owner = _manager_name(entry) or "?"
+    membership = _classic_league_ids(entry)
+    if league_id and league_id in membership:
+        # Membership comes from the entry's own `leagues.classic`, so it holds
+        # even when the league lookup itself could not run.
+        return CheckResult(
+            name,
+            CheckStatus.OK,
+            f'{entry_id} → "{team}" ({owner}), in classic league {league_id} — '
+            "check the name is yours",
+        )
+    if league_id and league_verified and membership:
+        # The classic half of #57: a reissued entry ID resolves to a live team
+        # that belongs to someone else, so resolution proves nothing and only
+        # membership can fail it. Sound only when the league itself checked out
+        # -- otherwise the stale ID may be the league's, and this would condemn
+        # a correct entry. An empty membership set means the payload changed
+        # shape, not that the entry left the league, so it never condemns.
+        return CheckResult(
+            name,
+            CheckStatus.BROKEN,
+            f'{entry_id} → "{team}" ({owner}), which is not in classic league {league_id} — '
+            "likely a reissued ID pointing at someone else's team",
+            _CLASSIC_ENTRY_FIX,
+        )
     return CheckResult(
         name,
         CheckStatus.OK,
-        f'{entry_id} → "{team}" ({_manager_name(entry) or "?"}) — check the name is yours',
+        f'{entry_id} → "{team}" ({owner}) — league membership not checked '
+        f"({_classic_membership_gap(league_id, league_verified, membership)})",
     )
 
 
@@ -186,10 +241,13 @@ async def _classic_league_check(client: Any, league_id: int) -> CheckResult:
         return failure or CheckResult(name, CheckStatus.UNCHECKED, "no data returned")
     league = data.get("league") or {}
     league_name = league.get("name") or "?"
-    # No season assertion: classic mini-leagues keep their ID across seasons
-    # and `created` is the original creation date, never re-stamped -- so
-    # resolution plus the name echo is the whole check (a wrong ID shows a
-    # wrong name). Draft leagues are recreated each season; theirs checks more.
+    # No season assertion, but not because the ID is stable: classic league
+    # IDs come from a sequence that restarts each July, so `created` always
+    # lands in the current season. Last season's ID does not go dead -- it
+    # resolves to a *different* league created weeks ago, which is why the
+    # stamp is worthless as a staleness signal here while `draft_dt` works for
+    # draft. What proves the ID is still yours is `_classic_entry_check`
+    # finding this league in the entry's own `leagues.classic`.
     return CheckResult(
         name, CheckStatus.OK, f'{league_id} → "{league_name}" — check the name is yours'
     )
@@ -625,14 +683,28 @@ def doctor_command(providers_only: bool, output_format: str) -> None:
             except httpx.HTTPError:
                 teams = None
 
+            # The league runs first because the entry's reissued-ID verdict
+            # depends on it, but both rows keep their long-standing order in
+            # the report.
+            classic_league_result: CheckResult | None = None
+            if classic_league_id:
+                classic_league_result = await _classic_league_check(client, classic_league_id)
             if classic_entry_id:
-                id_results.append(await _classic_entry_check(client, classic_entry_id))
+                classic_league_verified = (
+                    classic_league_result is not None
+                    and classic_league_result.status is CheckStatus.OK
+                )
+                id_results.append(
+                    await _classic_entry_check(
+                        client, classic_entry_id, classic_league_id, classic_league_verified
+                    )
+                )
             else:
                 id_results.append(CheckResult("classic_entry_id", CheckStatus.SKIPPED, unset_detail))
-            if classic_league_id:
-                id_results.append(await _classic_league_check(client, classic_league_id))
-            else:
-                id_results.append(CheckResult("classic_league_id", CheckStatus.SKIPPED, unset_detail))
+            id_results.append(
+                classic_league_result
+                or CheckResult("classic_league_id", CheckStatus.SKIPPED, unset_detail)
+            )
 
         if draft_league_id or draft_entry_id:
             from fpl_cli.api.fpl_draft import FPLDraftClient as _FPLDraftClient
