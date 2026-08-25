@@ -19,6 +19,17 @@ from fpl_cli.cli._json import (
 )
 
 
+def _envelopes(stream: str) -> list[str]:
+    """Split a stream of indented JSON envelopes into one string each."""
+    envelopes, current = [], []
+    for line in stream.splitlines():
+        current.append(line)
+        if line == "}":
+            envelopes.append("\n".join(current))
+            current = []
+    return envelopes
+
+
 class TestJsonDefault:
     def test_datetime_to_iso(self):
         dt = datetime(2026, 3, 24, 14, 30, 0)
@@ -84,12 +95,26 @@ class TestEmitJsonError:
         assert data["command"] == "captain"
         assert data["error"] == "Agent failed"
 
-    def test_error_defaults_to_stderr(self, capsys):
+    def test_error_defaults_to_stdout(self, capsys):
+        """#141: failure goes down the same stream as success, so a consumer
+        parsing stdout sees the error rather than empty input."""
         with pytest.raises(SystemExit):
             emit_json_error("test", "boom")
         captured = capsys.readouterr()
-        data = json.loads(captured.err)
+        data = json.loads(captured.out)
         assert data["error"] == "boom"
+        assert captured.err == ""
+
+    def test_error_inside_json_output_mode_still_reaches_real_stdout(self, capsys):
+        """The handle `json_output_mode()` yields is optional, not load-bearing:
+        forgetting it must not put the envelope on the prose stream."""
+        with pytest.raises(SystemExit):
+            with json_output_mode():
+                print("prose")
+                emit_json_error("test", "boom")
+        captured = capsys.readouterr()
+        assert json.loads(captured.out)["error"] == "boom"
+        assert "prose" in captured.err
 
 
 class TestJsonOutputMode:
@@ -112,6 +137,34 @@ class TestJsonOutputMode:
             with json_output_mode():
                 raise ValueError("test")
         assert sys.stdout is original
+
+    def test_emit_json_inside_reaches_real_stdout_without_the_handle(self, capsys):
+        with json_output_mode():
+            emit_json("test", {"a": 1})
+        captured = capsys.readouterr()
+        assert json.loads(captured.out)["data"] == {"a": 1}
+        assert captured.err == ""
+
+    def test_a_nested_context_still_yields_the_real_stdout(self, capsys):
+        """A nested entry sees `sys.stdout` already pointing at stderr:
+        recording *that* as the real stdout would put the envelope on the
+        prose stream, which is #141 one level down."""
+        with json_output_mode():
+            with json_output_mode() as stdout:
+                emit_json("with-handle", {"x": 1}, file=stdout)
+                emit_json("without-handle", {"x": 2})
+        captured = capsys.readouterr()
+        commands = [json.loads(line)["command"] for line in _envelopes(captured.out)]
+        assert commands == ["with-handle", "without-handle"]
+        assert captured.err == ""
+
+    def test_nested_contexts_restore_the_outer_stream(self, capsys):
+        with json_output_mode():
+            with json_output_mode():
+                pass
+            emit_json("test", [])
+        captured = capsys.readouterr()
+        assert json.loads(captured.out)["command"] == "test"
 
     def test_print_inside_goes_to_stderr(self, capsys):
         with json_output_mode() as stdout:

@@ -532,7 +532,11 @@ class TestChipsTimingJsonFormat:
         with patch("fpl_cli.cli.chips.load_settings", return_value={"fpl": {}}):
             result = runner.invoke(main, ["chips", "timing", "--format", "json"])
         assert result.exit_code == 1
-        # Error goes to stderr, captured by CliRunner.mix_stderr default
+        # #141: the error envelope rides stdout, same as the success envelope.
+        payload = json.loads(result.stdout)
+        assert payload["command"] == "chips-timing"
+        assert "classic_entry_id" in payload["error"]
+        assert "{" not in result.stderr
 
     def test_json_error_agent_failure(self, runner: CliRunner):
         plan = ChipPlan(current_gw=30)

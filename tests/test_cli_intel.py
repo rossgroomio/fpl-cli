@@ -155,10 +155,12 @@ class TestShow:
         assert result.exit_code == 1
         assert "No preview for" in result.stdout
 
-    def test_missing_team_json_emits_error_envelope(self):
+    def test_missing_team_json_emits_error_envelope_on_stdout(self):
+        """#141: success and failure envelopes share one stream."""
         result = CliRunner().invoke(main, ["intel", "show", "ARS", "--format", "json"])
         assert result.exit_code == 1
-        assert json.loads(result.stderr)["error"].startswith("No preview for")
+        assert json.loads(result.stdout)["error"].startswith("No preview for")
+        assert "{" not in result.stderr
 
     def test_json_payload_is_decayed(self):
         write_preview("ARS", players=[{"name": "Saliba", "code": 1, "status": "starter",

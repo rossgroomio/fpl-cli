@@ -40,6 +40,19 @@ def _json_default(obj: object) -> Any:
     raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
 
+# Real stdout while `json_output_mode()` is active. Both envelopes must land
+# there: inside that context `sys.stdout` is stderr, so a call site that forgot
+# `file=stdout` would otherwise put JSON on the prose stream (#141).
+_real_stdout: IO[str] | None = None
+
+
+def _stream(file: IO[str] | None) -> IO[str]:
+    """Where an envelope goes: an explicit file, else the real stdout."""
+    if file is not None:
+        return file
+    return _real_stdout if _real_stdout is not None else sys.stdout
+
+
 def emit_json(
     command: str,
     data: Any,
@@ -51,11 +64,14 @@ def emit_json(
 
     Uses print() not click.echo() - JSON is always UTF-8 and
     click.echo's encoding handling can mangle bytes.
+
+    Inside `json_output_mode()` this still reaches the real stdout, whether
+    or not the caller passes the handle that context yields.
     """
     envelope: dict[str, Any] = {"command": command}
     envelope["metadata"] = metadata or {}
     envelope["data"] = data
-    print(json.dumps(envelope, indent=2, default=_json_default), file=file)
+    print(json.dumps(envelope, indent=2, default=_json_default), file=_stream(file))
 
 
 def emit_json_error(
@@ -64,13 +80,14 @@ def emit_json_error(
     *,
     file: IO[str] | None = None,
 ) -> None:
-    """Write a JSON error to stderr and exit with code 1.
+    """Write a JSON error envelope to stdout and exit with code 1.
 
-    If file is provided, writes there instead of stderr.
+    Failure goes down the same stream as success (#141): a consumer that
+    parses stdout gets either envelope, and one that only checks the exit
+    code still sees 1. Prose stays on stderr.
     """
     envelope: dict[str, Any] = {"command": command, "error": message}
-    target = file if file is not None else sys.stderr
-    print(json.dumps(envelope, indent=2, default=_json_default), file=target)
+    print(json.dumps(envelope, indent=2, default=_json_default), file=_stream(file))
     raise SystemExit(1)
 
 
@@ -78,15 +95,24 @@ def emit_json_error(
 def json_output_mode() -> Generator[IO[str], None, None]:
     """Redirect sys.stdout to stderr so JSON payload stays clean.
 
-    Yields the original stdout for the caller to write JSON to.
+    Yields the real stdout for the caller to write JSON to.
     All console.print() calls (both CLI and agent consoles) go to
     stderr while inside this context, preventing JSON stream corruption.
 
+    Only the outermost entry records the real stdout: on a nested entry
+    `sys.stdout` is already stderr, so recording it there would hand the
+    caller the prose stream -- #141 again, one level down.
+
     Safe in single-threaded asyncio.run() CLI.
     """
+    global _real_stdout
     original_stdout = sys.stdout
+    previous_real_stdout = _real_stdout
+    real_stdout = previous_real_stdout if previous_real_stdout is not None else sys.stdout
+    _real_stdout = real_stdout
     sys.stdout = sys.stderr
     try:
-        yield original_stdout
+        yield real_stdout
     finally:
         sys.stdout = original_stdout
+        _real_stdout = previous_real_stdout
