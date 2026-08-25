@@ -580,9 +580,9 @@ fpl_cli/
 │   └── types.py                  # TypedDicts: CaptainCandidate, WaiverTarget, EnrichedPlayer, etc.
 ├── prompts/
 │   ├── scout.py                  # ScoutAgent system/user prompts
-│   ├── review.py                 # Review research prompts
+│   ├── review.py                 # Review research + synthesis prompts. Squad lines in the synthesis data block carry each player's full club name, and the hard constraints bind club affiliation and blanket scored/blanked claims to that supplied data — an LLM's own club knowledge goes stale every transfer window
 │   ├── returnees.py              # Return-intel search prompt for `fpl returnees --enrich` (one player per query, so a citation list belongs to a single player)
-│   └── league_recap.py           # League recap synthesis prompts, including the anchored League History section, its never-infer-history rule (emitted even when the pack is empty), and the season-phase framing instruction
+│   └── league_recap.py           # League recap synthesis prompts, including the anchored League History section, its never-infer-history rule (emitted even when the pack is empty), and the season-phase framing instruction. No club data reaches this prompt, so it forbids naming a player's club at all
 ├── parsers/
 │   └── recommendations.py        # Parse gw{N}-recommendations.md into structured decisions
 ├── scraper/

@@ -37,6 +37,7 @@ Your audience is every member of this league. They want entertainment first, inf
 - Only reference transfers that appear explicitly in the Awards section or in a transfers note. If no transfer information is given, do not mention transfers, hits, or moves in and out at all - absence of transfer data means there is nothing to report, not licence to invent one.
 - NEVER claim a manager's bench outscored their team unless bench points are strictly greater than their GW points. Use the exact numbers provided.
 - NEVER alter player or manager names. Use the exact spelling provided in the data.
+- NEVER state or imply which club a player plays for. No club affiliations are supplied in this data, and players change clubs in the transfer windows, so anything you remember may be a season out of date. Name the player alone ("Haaland's 2 points"), never the player and a club you inferred.
 </rules>"""
 
 

@@ -115,12 +115,11 @@ async def _review_draft(
 
                                 gw_points, gw_minutes, red_cards = _live_player_stats(live_stats, main_elem_id)
 
-                                # Get team short name
+                                # Club names: short code for tables, full name for LLM prompts
                                 player_team_id = draft_player.get("team")
-                                team_short = (
-                                    teams.get(player_team_id).short_name
-                                    if teams.get(player_team_id) else "???"
-                                )
+                                player_team = teams.get(player_team_id)
+                                team_short = player_team.short_name if player_team else "???"
+                                team_name = player_team.name if player_team else "Unknown club"
 
                                 # Get position name from element_type
                                 pos_name = POSITION_MAP.get(draft_player.get("element_type"), "???")
@@ -133,6 +132,7 @@ async def _review_draft(
                                     "id": draft_elem_id,
                                     "name": draft_player.get("web_name", "Unknown"),
                                     "team": team_short,
+                                    "team_name": team_name,
                                     "position": pos_name,
                                     "points": gw_points,
                                     "minutes": gw_minutes,

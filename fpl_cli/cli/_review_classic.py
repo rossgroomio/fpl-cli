@@ -82,6 +82,7 @@ async def _review_classic_team(
                         "id": player.id,
                         "name": player.web_name,
                         "team": teams.get(player.team_id).short_name if teams.get(player.team_id) else "???",
+                        "team_name": teams.get(player.team_id).name if teams.get(player.team_id) else "Unknown club",
                         "position": player.position_name,
                         "points": gw_points,
                         "total_points": gw_points * multiplier,
@@ -118,6 +119,7 @@ async def _review_classic_team(
                 team_points_data.append({
                     "name": p["name"],
                     "team": p["team"],
+                    "team_name": p["team_name"],
                     "position": p["position"],
                     "points": p["points"],
                     "display_points": display_points,

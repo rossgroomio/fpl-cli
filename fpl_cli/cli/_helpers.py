@@ -233,7 +233,11 @@ def _format_review_player(p: dict, points_key: str = "points", show_captain: boo
     if p.get("dgw"):
         pts_str += " [DGW]"
 
-    line = f"- {p['name']} ({p['team']}, {p['position']}): {pts_str} pts"
+    # Full club name where we have one, not just the 3-letter code: the model
+    # otherwise has to expand the code itself, and for a player who changed
+    # clubs it expands from a stale training prior rather than from this data.
+    club = p.get("team_name") or p["team"]
+    line = f"- {p['name']} ({club}, {p['position']}): {pts_str} pts"
     if show_captain:
         if p.get("is_triple_captain"):
             line += " (TC)"

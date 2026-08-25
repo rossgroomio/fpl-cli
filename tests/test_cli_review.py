@@ -953,3 +953,36 @@ class TestReviewCompareRecsGw1:
         recs = _make_recs(roll=True)
         result = _review_compare_recs(recs, _make_collected(), {}, {})
         assert result["classic"]["actual_roll"] is True
+
+
+# ---------------------------------------------------------------------------
+# TestReviewPlayerClubLabel
+# ---------------------------------------------------------------------------
+
+class TestReviewPlayerClubLabel:
+    """#150: the prompt line is the only place the model learns a player's club,
+    so it spells the club out rather than leaving a code to expand."""
+
+    def test_classic_line_uses_full_club_name(self):
+        p = _classic_player(name="Gyökeres", team="ARS", position="FWD", display_points=9)
+        p["team_name"] = "Arsenal"
+        assert _format_review_classic_player(p) == "- Gyökeres (Arsenal, FWD): 9 pts"
+
+    def test_draft_line_uses_full_club_name(self):
+        p = _draft_player(name="Eze", team="ARS", position="MID", points=3)
+        p["team_name"] = "Arsenal"
+        assert _format_review_draft_player(p) == "- Eze (Arsenal, MID): 3 pts"
+
+    def test_falls_back_to_short_code_without_a_full_name(self):
+        # Older callers (and any squad row we couldn't resolve a club for) still
+        # produce a usable line rather than a KeyError.
+        p = _classic_player(name="Salah", team="LIV", position="MID", display_points=6)
+        assert _format_review_classic_player(p) == "- Salah (LIV, MID): 6 pts"
+
+    def test_club_label_survives_status_annotations(self):
+        p = _classic_player(name="Wissa", team="NEW", position="FWD", display_points=9,
+                            contributed=False)
+        p["team_name"] = "Newcastle"
+        line = _format_review_classic_player(p)
+        assert line.startswith("- Wissa (Newcastle, FWD):")
+        assert "[BENCH - 9 pts unused!]" in line

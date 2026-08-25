@@ -2235,6 +2235,24 @@ class TestPromptFormatting:
         assert "Only reference transfers that appear explicitly" in RECAP_SYNTHESIS_SYSTEM_PROMPT
         assert "not licence to invent" in RECAP_SYNTHESIS_SYSTEM_PROMPT
 
+    def test_synthesis_system_prompt_fences_club_invention(self):
+        """#150: no club data reaches this prompt, so naming one is always a guess."""
+        from fpl_cli.prompts.league_recap import RECAP_SYNTHESIS_SYSTEM_PROMPT
+
+        assert "NEVER state or imply which club a player plays for" in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        assert "players change clubs in the transfer windows" in RECAP_SYNTHESIS_SYSTEM_PROMPT
+
+    def test_synthesis_prompt_carries_no_club_data_to_ground_a_club_claim(self):
+        """Guards the premise of the rule above: if a future change starts
+        supplying clubs, the blanket ban has to be revisited, not silently kept."""
+        _, user = get_recap_synthesis_prompt(
+            gw=10, league_name="Test", fpl_format="classic",
+            awards_text="- **Gw Winner:** Manager A with 80 pts",
+            standings_text="| 1 | 1 | Manager A | 80 | 300 |",
+            fines_text="", captains_text="Total captains: 1\n- **Haaland** (x1): Manager A (14 pts)",
+        )
+        assert "Club" not in user
+
     def test_synthesis_prompt_omits_fines_when_empty(self):
         _, user = get_recap_synthesis_prompt(
             gw=10, league_name="Test", fpl_format="draft",
