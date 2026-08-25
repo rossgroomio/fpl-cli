@@ -239,6 +239,19 @@ def _format_research_context(
     }
 
 
+def _transfer_side(move: dict[str, Any], side: str) -> str:
+    """Name one side of a transfer with its club.
+
+    A transferred-in player is the single likeliest trigger for the stale-club
+    prior #150 fixed in the squad block -- they are, by definition, someone whose
+    situation changed. Falls back to the bare name when the club didn't resolve,
+    so the prompt's "no club label means don't state one" rule takes over.
+    """
+    name = move.get(f"player_{side}") or ("Free agent" if side == "out" else "Unknown")
+    club = move.get(f"player_{side}_team_name")
+    return f"{name} ({club})" if club else str(name)
+
+
 def _format_classic_section(
     team_points_data: list[dict[str, Any]],
     automatic_subs: list[dict[str, Any]],
@@ -279,8 +292,9 @@ def _format_classic_section(
 
     if classic_transfers_data:
         classic_transfers_str = "\n".join([
-            f"- {t['player_out']} ({t['player_out_points']} pts) → {t['player_in']}"
-            f" ({t['player_in_points']} pts) = {'+' if t['net'] > 0 else ''}{t['net']} ({t['verdict']})"
+            f"- {_transfer_side(t, 'out')} ({t['player_out_points']} pts)"
+            f" → {_transfer_side(t, 'in')} ({t['player_in_points']} pts)"
+            f" = {'+' if t['net'] > 0 else ''}{t['net']} ({t['verdict']})"
             for t in classic_transfers_data
         ])
     elif is_opening_gameweek(gameweek):
@@ -336,8 +350,8 @@ def _format_draft_section(
         draft_players_str += f"\n\nBench vs Starters (formation-valid swaps):\n{draft_bench}"
 
     draft_transactions_str = "\n".join([
-        f"- {t['player_out'] or 'Free agent'} ({t['player_out_points'] or 0} pts)"
-        f" → {t['player_in']} ({t['player_in_points']} pts)"
+        f"- {_transfer_side(t, 'out')} ({t['player_out_points'] or 0} pts)"
+        f" → {_transfer_side(t, 'in')} ({t['player_in_points']} pts)"
         f" = {'+' if t['net'] > 0 else ''}{t['net']} ({t['verdict']})"
         for t in draft_transactions
     ]) if draft_transactions else "No waivers this week"

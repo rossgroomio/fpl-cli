@@ -38,6 +38,7 @@ from fpl_cli.cli._league_recap_types import (
     RecapTransfer,
 )
 from fpl_cli.prompts.league_recap import (
+    collect_player_clubs,
     format_recap_awards_context,
     format_recap_captains_context,
     format_recap_chips_context,
@@ -2912,87 +2913,93 @@ class TestRecapPlayerClubs:
     """#150: the recap prompt carried no club data at all, so any club the
     narrative named came from training data a transfer window out of date."""
 
-    CLUBS = {
-        "ARS": "Arsenal", "MCI": "Man City", "NEW": "Newcastle",
-        "AVL": "Aston Villa", "MUN": "Man Utd", "LEE": "Leeds United",
-    }
-
     @staticmethod
-    def _data(managers):
-        return {"fpl_format": "classic", "managers": managers}
-
-    def _one_manager(self, **overrides):
+    def _data(**overrides):
         manager = {
             "manager_name": "Manager A",
             "captain": "Gyökeres",
             "captain_points": 9,
             "captain_played": True,
             "gw_points": 70,
-            "squad": [{"name": "Gyökeres", "team": "ARS"}, {"name": "Wissa", "team": "NEW"}],
+            "squad": [
+                {"name": "Gyökeres", "team": "ARS", "team_name": "Arsenal"},
+                {"name": "Wissa", "team": "NEW", "team_name": "Newcastle"},
+            ],
         }
         manager.update(overrides)
-        return self._data([manager])
+        return {"fpl_format": "classic", "managers": [manager]}
+
+    def _roster(self, **overrides):
+        return format_recap_player_clubs_context(collect_player_clubs(self._data(**overrides)))
 
     def test_roster_lists_every_squad_player_with_a_full_club_name(self):
-        text = format_recap_player_clubs_context(self._one_manager(), self.CLUBS)
+        text = self._roster()
         assert "- Gyökeres: Arsenal" in text
         assert "- Wissa: Newcastle" in text
 
     def test_roster_covers_transfers_as_well_as_squads(self):
-        data = self._one_manager(transfers=[{
-            "player_in": "Semenyo", "player_in_team": "MUN",
-            "player_out": "Watkins", "player_out_team": "AVL",
+        text = self._roster(transfers=[{
+            "player_in": "Semenyo", "player_in_team": "MUN", "player_in_team_name": "Man Utd",
+            "player_out": "Watkins", "player_out_team": "AVL", "player_out_team_name": "Aston Villa",
         }])
-        text = format_recap_player_clubs_context(data, self.CLUBS)
         assert "- Semenyo: Man Utd" in text
         assert "- Watkins: Aston Villa" in text
 
     def test_roster_covers_draft_waiver_transactions(self):
-        data = self._one_manager(transactions=[{
-            "player_in": "Semenyo", "player_in_team": "MUN",
-            "player_out": "Watkins", "player_out_team": "AVL",
+        text = self._roster(transactions=[{
+            "player_in": "Semenyo", "player_in_team": "MUN", "player_in_team_name": "Man Utd",
+            "player_out": "Watkins", "player_out_team": "AVL", "player_out_team_name": "Aston Villa",
         }])
-        text = format_recap_player_clubs_context(data, self.CLUBS)
         assert "- Semenyo: Man Utd" in text
 
     def test_roster_drops_a_name_two_clubs_claim(self):
         """Two players share a web_name most seasons. The recap names players by
         name alone, so neither club can be attributed - better absent than wrong."""
-        data = self._one_manager(squad=[
-            {"name": "Martínez", "team": "AVL"},
-            {"name": "Martínez", "team": "MUN"},
-            {"name": "Wissa", "team": "NEW"},
+        text = self._roster(squad=[
+            {"name": "Martínez", "team": "AVL", "team_name": "Aston Villa"},
+            {"name": "Martínez", "team": "MUN", "team_name": "Man Utd"},
+            {"name": "Wissa", "team": "NEW", "team_name": "Newcastle"},
         ])
-        text = format_recap_player_clubs_context(data, self.CLUBS)
         assert "Martínez" not in text
         assert "- Wissa: Newcastle" in text
 
-    def test_roster_drops_a_club_code_that_does_not_resolve(self):
-        """A bare 3-letter code in prose reads as a surname (LEE is Leeds, not
-        someone called Lee), so an unresolved code is omitted, not passed through."""
-        data = self._one_manager(squad=[{"name": "Calvert-Lewin", "team": "???"}])
-        assert format_recap_player_clubs_context(data, self.CLUBS) == ""
+    def test_ambiguity_survives_a_later_repeat_of_the_first_club(self):
+        """A third sighting matching the first club must not resurrect the name."""
+        clubs = collect_player_clubs(self._data(squad=[
+            {"name": "Martínez", "team": "AVL", "team_name": "Aston Villa"},
+            {"name": "Martínez", "team": "MUN", "team_name": "Man Utd"},
+            {"name": "Martínez", "team": "AVL", "team_name": "Aston Villa"},
+        ]))
+        assert "Martínez" not in clubs
 
-    def test_roster_empty_without_a_club_map(self):
-        assert format_recap_player_clubs_context(self._one_manager(), None) == ""
+    def test_roster_drops_a_player_whose_club_never_resolved(self):
+        """Collection sets team_name to None rather than a placeholder, so the
+        player simply has no club to state."""
+        assert self._roster(squad=[{"name": "Calvert-Lewin", "team": "???", "team_name": None}]) == ""
+
+    def test_roster_empty_when_no_squads_carry_clubs(self):
+        assert format_recap_player_clubs_context({}) == ""
 
     def test_roster_states_it_is_the_only_source(self):
-        text = format_recap_player_clubs_context(self._one_manager(), self.CLUBS)
-        assert "only source for a player's club" in text
+        assert "only source for a player's club" in self._roster()
 
     def test_captain_group_header_carries_the_club_inline(self):
-        text = format_recap_captains_context(self._one_manager(), self.CLUBS)
+        data = self._data()
+        text = format_recap_captains_context(data, collect_player_clubs(data))
         assert "- **Gyökeres (Arsenal)** (×1): Manager A (9 pts)" in text
 
-    def test_captain_group_header_unchanged_without_a_club_map(self):
-        text = format_recap_captains_context(self._one_manager(), None)
+    def test_captain_group_header_unchanged_without_a_roster(self):
+        text = format_recap_captains_context(self._data(), None)
         assert "- **Gyökeres** (×1): Manager A (9 pts)" in text
 
     def test_captain_group_header_omits_an_ambiguous_club(self):
-        data = self._one_manager(
+        data = self._data(
             captain="Martínez",
-            squad=[{"name": "Martínez", "team": "AVL"}, {"name": "Martínez", "team": "MUN"}],
+            squad=[
+                {"name": "Martínez", "team": "AVL", "team_name": "Aston Villa"},
+                {"name": "Martínez", "team": "MUN", "team_name": "Man Utd"},
+            ],
         )
-        text = format_recap_captains_context(data, self.CLUBS)
+        text = format_recap_captains_context(data, collect_player_clubs(data))
         assert "- **Martínez** (×1):" in text
         assert "Aston Villa" not in text

@@ -119,7 +119,8 @@ async def _review_draft(
                                 player_team_id = draft_player.get("team")
                                 player_team = teams.get(player_team_id)
                                 team_short = player_team.short_name if player_team else "???"
-                                team_name = player_team.name if player_team else "Unknown club"
+                                # None, never a placeholder -- see _review_classic.py.
+                                team_name = player_team.name if player_team else None
 
                                 # Get position name from element_type
                                 pos_name = POSITION_MAP.get(draft_player.get("element_type"), "???")
@@ -295,9 +296,11 @@ async def _review_draft(
                             draft_transactions_data.append({
                                 "player_out": draft_player_out.get("web_name"),
                                 "player_out_team": out_abbr,
+                                "player_out_team_name": out_team.name if out_team else None,
                                 "player_out_points": out_points,
                                 "player_in": draft_player_in.get("web_name", "Unknown"),
                                 "player_in_team": in_abbr,
+                                "player_in_team_name": in_team.name if in_team else None,
                                 "player_in_points": in_points,
                                 "net": net,
                                 "verdict": verdict_plain,

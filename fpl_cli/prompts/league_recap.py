@@ -211,54 +211,43 @@ def format_recap_chips_context(data: LeagueRecapData) -> str:
     return "\n".join(lines)
 
 
-# A name the data gives two different clubs for is two different players
-# sharing a web_name (the league has more than one Martínez most seasons).
-# The recap names players by name alone, so neither club can be attributed
-# safely -- the name is dropped from the roster and the rules then forbid
-# stating a club for it at all, which is the honest outcome.
-_AMBIGUOUS = object()
-
-
-def _collect_player_clubs(
-    data: LeagueRecapData, club_names: dict[str, str] | None,
-) -> dict[str, str]:
+def collect_player_clubs(data: LeagueRecapData) -> dict[str, str]:
     """Map player name -> full club name across every player in the recap data.
 
-    Squads and transfers carry a 3-letter code; `club_names` expands it. A code
-    that doesn't expand is dropped rather than passed through, because a bare
-    code in prose reads as a surname (LEE is Leeds, not someone called Lee).
+    Squads and transfers carry the club resolved at collection time, off the
+    player's `team_id`, so nothing is reconstructed here -- this only regroups
+    them by the name the recap prose actually uses.
+
+    That regrouping is what forces the one judgement call: the recap names
+    players by name alone, and most seasons have two players sharing a
+    web_name. When the data gives one name two clubs, neither can be attributed
+    to a mention of it, so the name is dropped and the prompt's rules then
+    forbid stating a club for it -- absent beats wrong.
     """
-    if not club_names:
-        return {}
+    resolved: dict[str, str] = {}
+    ambiguous: set[str] = set()
 
-    resolved: dict[str, str | object] = {}
-
-    def record(name: str | None, code: str | None) -> None:
-        club = club_names.get(code or "")
-        if not name or not club:
+    def record(name: str | None, club: str | None) -> None:
+        if not name or not club or name in ambiguous:
             return
-        existing = resolved.get(name)
-        if existing is None:
+        seen = resolved.get(name)
+        if seen is None:
             resolved[name] = club
-        elif existing != club:
-            resolved[name] = _AMBIGUOUS
+        elif seen != club:
+            del resolved[name]
+            ambiguous.add(name)
 
     for manager in data.get("managers", []):
         for player in manager.get("squad", []):
-            record(player.get("name"), player.get("team"))
-        for transfer in manager.get("transfers", []) or []:
-            record(transfer.get("player_in"), transfer.get("player_in_team"))
-            record(transfer.get("player_out"), transfer.get("player_out_team"))
-        for txn in manager.get("transactions", []) or []:
-            record(txn.get("player_in"), txn.get("player_in_team"))
-            record(txn.get("player_out"), txn.get("player_out_team"))
+            record(player.get("name"), player.get("team_name"))
+        for move in [*(manager.get("transfers") or []), *(manager.get("transactions") or [])]:
+            record(move.get("player_in"), move.get("player_in_team_name"))
+            record(move.get("player_out"), move.get("player_out_team_name"))
 
-    return {name: club for name, club in resolved.items() if isinstance(club, str)}
+    return resolved
 
 
-def format_recap_player_clubs_context(
-    data: LeagueRecapData, club_names: dict[str, str] | None = None,
-) -> str:
+def format_recap_player_clubs_context(player_clubs: dict[str, str]) -> str:
     """Roster of every player the recap can name, with the club they play for.
 
     Without it the prompt carries no club at all, and the model fills the gap
@@ -267,20 +256,19 @@ def format_recap_player_clubs_context(
     same squads and transfers the other sections are computed from, so anything
     the recap can name is something this section covers.
     """
-    clubs = _collect_player_clubs(data, club_names)
-    if not clubs:
+    if not player_clubs:
         return ""
 
     lines = [
         "The club each player plays for this season. This is the only source for a"
         " player's club - do not use your own knowledge of where they play.",
     ]
-    lines.extend(f"- {name}: {club}" for name, club in sorted(clubs.items()))
+    lines.extend(f"- {name}: {club}" for name, club in sorted(player_clubs.items()))
     return "\n".join(lines)
 
 
 def format_recap_captains_context(
-    data: LeagueRecapData, club_names: dict[str, str] | None = None,
+    data: LeagueRecapData, player_clubs: dict[str, str] | None = None,
 ) -> str:
     """Per-manager captain roster grouped by intended pick.
 
@@ -315,7 +303,7 @@ def format_recap_captains_context(
     if not by_captain:
         return ""
 
-    clubs = _collect_player_clubs(data, club_names)
+    clubs = player_clubs or {}
     groups = sorted(by_captain.items(), key=lambda kv: (-len(kv[1]), kv[0]))
     lines = [f"Total captains: {sum(len(v) for v in by_captain.values())}"]
     for player, entries in groups:

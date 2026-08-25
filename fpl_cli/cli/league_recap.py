@@ -272,7 +272,6 @@ def league_recap_command(
                         is_bgw=is_bgw, is_dgw=is_dgw,
                         season_length=TOTAL_GAMEWEEKS,
                         notes_pack=notes_pack,
-                        club_names={t.short_name: t.name for t in teams.values()},
                     )
                 except ProviderError as e:
                     error_console.print(f"[yellow]LLM summarisation failed: {e}[/yellow]")
@@ -481,15 +480,10 @@ async def _recap_llm_summarise(
     is_dgw: bool = False,
     season_length: int = 38,
     notes_pack: NotesPack | None = None,
-    club_names: dict[str, str] | None = None,
 ) -> None:
-    """Run LLM summarisation for league recap. Mutates collected_data to add summaries.
-
-    `club_names` maps a 3-letter club code to its full name, so the prompt can
-    tell the model which club each player actually plays for this season rather
-    than leaving it to recall one that may be a transfer window out of date.
-    """
+    """Run LLM summarisation for league recap. Mutates collected_data to add summaries."""
     from fpl_cli.prompts.league_recap import (
+        collect_player_clubs,
         format_recap_awards_context,
         format_recap_captains_context,
         format_recap_chips_context,
@@ -508,8 +502,10 @@ async def _recap_llm_summarise(
 
     awards_text = format_recap_awards_context(collected_data)
     standings_text = format_recap_standings_context(collected_data)
-    captains_text = format_recap_captains_context(collected_data, club_names)
-    player_clubs_text = format_recap_player_clubs_context(collected_data, club_names)
+    # One walk of the squads/transfers, shared by both sections that need it.
+    player_clubs = collect_player_clubs(collected_data)
+    captains_text = format_recap_captains_context(collected_data, player_clubs)
+    player_clubs_text = format_recap_player_clubs_context(player_clubs)
     chips_text = format_recap_chips_context(collected_data)
     fines_text = format_recap_fines_context(collected_data)
     league_history_text = format_recap_league_history_context(notes_pack)
