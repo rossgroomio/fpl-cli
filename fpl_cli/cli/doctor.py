@@ -443,6 +443,40 @@ def _player_prior_check() -> CheckResult:
     return CheckResult(name, CheckStatus.OK, f"season {file_season}")
 
 
+def _returnee_snapshot_check() -> CheckResult:
+    from fpl_cli.services.returnee_radar import SNAPSHOT_FILENAME
+
+    name = SNAPSHOT_FILENAME
+    path = user_data_file(name)
+    if not path.exists():
+        return CheckResult(
+            name, CheckStatus.SKIPPED, "not present — written by `fpl returnees`"
+        )
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        metadata = data.get("metadata", {})
+        file_season = metadata.get("season")
+        gameweek = metadata.get("gameweek")
+    except (json.JSONDecodeError, OSError, AttributeError) as exc:
+        return CheckResult(
+            name,
+            CheckStatus.BROKEN,
+            f"unreadable: {exc}",
+            "delete the file — the next `fpl returnees` run rebuilds it",
+        )
+    if file_season != season_label():
+        # The radar reads this itself and treats a season mismatch as a first
+        # run, so the only cost is one week of missing week-over-week changes.
+        return CheckResult(
+            name,
+            CheckStatus.STALE,
+            f"season label is {file_season!r} — discarded and rebuilt on the next "
+            "`fpl returnees` run",
+        )
+    written_for = f", written for GW{gameweek}" if isinstance(gameweek, int) else ""
+    return CheckResult(name, CheckStatus.OK, f"season {file_season}{written_for}")
+
+
 def _file_checks(teams: list[str] | None) -> list[CheckResult]:
     """Run the data-file checks, containing an unusable FPL_CLI_* override.
 
@@ -457,6 +491,7 @@ def _file_checks(teams: list[str] | None) -> list[CheckResult]:
         ("previews/", lambda: _previews_check(teams)),
         ("team_finances.json", _team_finances_check),
         ("player_prior.yaml", _player_prior_check),
+        ("returnee_snapshot.json", _returnee_snapshot_check),
     ]
     results: list[CheckResult] = []
     for name, check in checks:

@@ -82,7 +82,11 @@ $ fpl player Rice -f -u                   # Deep dive: fixtures + Understat anal
 $ fpl xg                                  # xG/xA analysis, over/underperformers
 $ fpl history                             # Career arc across 3 seasons
 $ fpl price-history -n 4 -s price_slope   # Bandwagon detection
+$ fpl returnees                           # Injured and suspended players due back soon
+$ fpl returnees --enrich                  # Add searched return timing where FPL says nothing
 ```
+
+`fpl returnees` reads the availability news attached to each player, works out who is due back inside the next few gameweeks, and keeps the list short by filtering on past performance — the players worth claiming in draft before they are fit again, and worth planning around in classic. FPL states a return date for only a small minority of flagged players, so `--enrich` searches the web for fresher timing on the ones it is quiet or stale about and shows what it finds alongside the FPL news rather than in place of it. Each run remembers what it showed, so the next one can say whose outlook moved.
 
 ### Before the Deadline
 
