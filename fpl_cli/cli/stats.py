@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NoReturn
 
 if TYPE_CHECKING:
     from fpl_cli.services.scoring import ConsistencySignals
@@ -15,7 +15,7 @@ from rich.table import Table
 
 from fpl_cli.cli._context import CLIContext, Format, console, error_console, is_custom_analysis_enabled
 from fpl_cli.cli._helpers import _format_sort_value, _validate_team_filter
-from fpl_cli.cli._json import emit_json, json_output_mode, output_format_option
+from fpl_cli.cli._json import emit_json, emit_json_error, json_output_mode, output_format_option
 
 # Valid sort fields for `fpl stats` command
 PLAYERS_SORT_FIELDS = [
@@ -40,6 +40,18 @@ _VALUE_SORT_FIELDS = frozenset({"quality_score", "quality_per_m", "rolling_pts_p
 
 # Sort field names that differ from Player model attribute names
 _SORT_FIELD_ALIASES = {"form_per_m": "value_form", "pts_per_m": "value_season"}
+
+
+def _fail(output_format: str, message: str) -> NoReturn:
+    """Report a usage error and exit 1, down whichever stream the caller parses.
+
+    In JSON mode that is the error envelope on stdout (#140): prose there would
+    sit ahead of nothing at all and break the parse at byte 0.
+    """
+    if output_format == "json":
+        emit_json_error("stats", message)
+    error_console.print(f"[red]{message}[/red]")
+    raise SystemExit(1)
 
 
 @click.command("stats")
@@ -83,17 +95,15 @@ def stats_command(
     custom_on = is_custom_analysis_enabled(settings)
     if not custom_on:
         if sort_field in _VALUE_SORT_FIELDS:
-            console.print(
-                f"[red]--sort {sort_field} requires custom analysis."
-                " Enable it with: fpl init[/red]"
+            _fail(
+                output_format,
+                f"--sort {sort_field} requires custom analysis. Enable it with: fpl init",
             )
-            raise SystemExit(1)
         value = False
 
     # Validate: value sort fields require --value flag
     if sort_field in _VALUE_SORT_FIELDS and not value:
-        console.print(f"[red]--sort {sort_field} requires the --value flag[/red]")
-        raise SystemExit(1)
+        _fail(output_format, f"--sort {sort_field} requires the --value flag")
 
     # Override default sort to quality_per_m when --value active and --sort not explicit
     explicit_value_sort = sort_field in _VALUE_SORT_FIELDS
@@ -221,7 +231,7 @@ def stats_command(
                     matched_players = [p for p in filtered if p.id in us_matches]
 
                     if len(matched_players) > 100:
-                        console.print(
+                        error_console.print(
                             f"[yellow]Scoring {len(matched_players)} players, this may take a moment. "
                             "Use --position to narrow.[/yellow]"
                         )
@@ -276,7 +286,7 @@ def stats_command(
             effective_sort = sort_field
             if sort_field in _VALUE_SORT_FIELDS and not value_active:
                 if explicit_value_sort:
-                    console.print(
+                    error_console.print(
                         "[yellow]Understat unavailable — falling back to total_points sort[/yellow]"
                     )
                 effective_sort = "total_points"

@@ -980,3 +980,96 @@ class TestStatsRollingPtsPerM:
         client = _make_client(_sample_players(), _sample_teams())
         result = _run(["--window", "3"], client=client)
         assert result.exit_code == 0, result.output
+
+
+def _many_players(count: int):
+    """Enough matched players to trip the >100 scoring progress notice."""
+    return [
+        make_player(
+            id=i, code=i, web_name=f"Player{i}", team_id=1,
+            position=PlayerPosition.MIDFIELDER, minutes=900, total_points=50, now_cost=70,
+        )
+        for i in range(1, count + 1)
+    ]
+
+
+class TestStatsJsonStdoutPurity:
+    """`--format json` must leave stdout parseable from byte 0 (#140).
+
+    Every prose line the command can emit on the way to the envelope --
+    progress notices, degradation warnings, usage errors -- has to go to
+    stderr or come back as the error envelope, never as a stdout preamble.
+    """
+
+    def test_scoring_progress_notice_stays_off_stdout(self):
+        """The >100-player notice used to precede the envelope on stdout."""
+        client = _make_value_client(_many_players(129), _sample_teams())
+        result = _run_with_value(["--format", "json"], client=client)
+        assert result.exit_code == 0, result.output
+        assert "this may take a moment" in result.stderr
+        assert "this may take a moment" not in result.stdout
+        data = json.loads(result.stdout)
+        assert data["command"] == "stats"
+
+    def test_scoring_progress_notice_still_shown_in_table_mode(self):
+        client = _make_value_client(_many_players(129), _sample_teams())
+        result = _run_with_value(client=client)
+        assert result.exit_code == 0, result.output
+        assert "this may take a moment" in result.stderr
+
+    def test_understat_fallback_notice_stays_off_stdout(self):
+        """Explicit --sort quality_score with Understat down warns, then falls back."""
+        import httpx
+
+        mock_understat = MagicMock()
+        mock_understat.get_league_players = AsyncMock(
+            side_effect=httpx.HTTPError("connection failed")
+        )
+        mock_understat.__aenter__ = AsyncMock(return_value=mock_understat)
+        mock_understat.__aexit__ = AsyncMock(return_value=False)
+
+        client = _make_value_client(_sample_players(), _sample_teams())
+        runner = CliRunner(env={"COLUMNS": "200"})
+        with (
+            patch("fpl_cli.api.fpl.FPLClient", return_value=client),
+            patch("fpl_cli.api.understat.UnderstatClient", return_value=mock_understat),
+            patch("fpl_cli.cli.stats.is_custom_analysis_enabled", return_value=True),
+        ):
+            result = runner.invoke(
+                main, ["stats", "--value", "--sort", "quality_score", "--format", "json"]
+            )
+        assert result.exit_code == 0, result.output
+        assert "falling back to total_points" in result.stderr
+        assert "falling back to total_points" not in result.stdout
+        data = json.loads(result.stdout)
+        # Scoring never ran, so the records carry no quality columns at all.
+        assert "quality_score" not in data["data"][0]
+        points = [r["total_points"] for r in data["data"]]
+        assert points == sorted(points, reverse=True)
+
+    def test_value_sort_without_value_flag_emits_error_envelope(self):
+        client = _make_client(_sample_players(), _sample_teams())
+        result = _run(
+            ["--sort", "quality_score", "--format", "json"], client=client, custom_analysis=True
+        )
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout)
+        assert payload["command"] == "stats"
+        assert "--value" in payload["error"]
+        assert "data" not in payload
+
+    def test_value_sort_without_custom_analysis_emits_error_envelope(self):
+        client = _make_client(_sample_players(), _sample_teams())
+        result = _run(
+            ["--sort", "quality_per_m", "--format", "json"], client=client, custom_analysis=False
+        )
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout)
+        assert "custom analysis" in payload["error"]
+
+    def test_usage_errors_stay_prose_in_table_mode(self):
+        client = _make_client(_sample_players(), _sample_teams())
+        result = _run(["--sort", "quality_score"], client=client, custom_analysis=True)
+        assert result.exit_code == 1
+        assert "--value" in result.stderr
+        assert result.stdout == ""
