@@ -159,8 +159,8 @@ $ fpl fdr --blanks --format json
 $ fpl league-recap --format json
 ```
 
-Failures come back on the same stream: `{"command", "error"}` on stdout with exit code 1,
-the human-readable message on stderr. Parse stdout either way — see
+Failures come back on the same stream: `{"command", "error"}` on stdout with exit code 1.
+Parse stdout either way, and read the message from `error` rather than from stderr — see
 [JSON Output](docs/command-reference.md#json-output).
 
 ## Configuration

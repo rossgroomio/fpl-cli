@@ -95,19 +95,24 @@ def emit_json_error(
 def json_output_mode() -> Generator[IO[str], None, None]:
     """Redirect sys.stdout to stderr so JSON payload stays clean.
 
-    Yields the original stdout for the caller to write JSON to.
+    Yields the real stdout for the caller to write JSON to.
     All console.print() calls (both CLI and agent consoles) go to
     stderr while inside this context, preventing JSON stream corruption.
+
+    Only the outermost entry records the real stdout: on a nested entry
+    `sys.stdout` is already stderr, so recording it there would hand the
+    caller the prose stream -- #141 again, one level down.
 
     Safe in single-threaded asyncio.run() CLI.
     """
     global _real_stdout
     original_stdout = sys.stdout
     previous_real_stdout = _real_stdout
+    real_stdout = previous_real_stdout if previous_real_stdout is not None else sys.stdout
+    _real_stdout = real_stdout
     sys.stdout = sys.stderr
-    _real_stdout = original_stdout
     try:
-        yield original_stdout
+        yield real_stdout
     finally:
         sys.stdout = original_stdout
         _real_stdout = previous_real_stdout

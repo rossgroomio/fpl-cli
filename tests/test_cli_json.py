@@ -19,6 +19,17 @@ from fpl_cli.cli._json import (
 )
 
 
+def _envelopes(stream: str) -> list[str]:
+    """Split a stream of indented JSON envelopes into one string each."""
+    envelopes, current = [], []
+    for line in stream.splitlines():
+        current.append(line)
+        if line == "}":
+            envelopes.append("\n".join(current))
+            current = []
+    return envelopes
+
+
 class TestJsonDefault:
     def test_datetime_to_iso(self):
         dt = datetime(2026, 3, 24, 14, 30, 0)
@@ -132,6 +143,19 @@ class TestJsonOutputMode:
             emit_json("test", {"a": 1})
         captured = capsys.readouterr()
         assert json.loads(captured.out)["data"] == {"a": 1}
+        assert captured.err == ""
+
+    def test_a_nested_context_still_yields_the_real_stdout(self, capsys):
+        """A nested entry sees `sys.stdout` already pointing at stderr:
+        recording *that* as the real stdout would put the envelope on the
+        prose stream, which is #141 one level down."""
+        with json_output_mode():
+            with json_output_mode() as stdout:
+                emit_json("with-handle", {"x": 1}, file=stdout)
+                emit_json("without-handle", {"x": 2})
+        captured = capsys.readouterr()
+        commands = [json.loads(line)["command"] for line in _envelopes(captured.out)]
+        assert commands == ["with-handle", "without-handle"]
         assert captured.err == ""
 
     def test_nested_contexts_restore_the_outer_stream(self, capsys):

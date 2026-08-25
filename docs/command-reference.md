@@ -60,12 +60,17 @@ it got:
 | | Success | Failure |
 |---|---|---|
 | stdout | `{command, metadata, data}` | `{command, error}` |
-| stderr | warnings and progress, if any | the same failure as prose |
+| stderr | warnings and progress, if any | warnings and progress, if any |
 | exit code | 0 | 1 |
 
 ```bash
 fpl captain --format json >out.json 2>err.txt || jq -r .error out.json
 ```
+
+The failure message lives in the envelope, not on stderr. Under `--format json` stderr
+carries only the prose the command had already written — a warning, or the reason it
+gave up on a step — which may or may not name the cause the envelope names, and for many
+commands is empty. Script against `error` and the exit code, never against stderr.
 
 Warnings never change the exit code — a command that produced its payload exits 0 and
 reports the problem in `metadata.warnings` (and on stderr), rather than failing. A few

@@ -19,8 +19,9 @@ All `--format json` commands emit a standard envelope via `emit_json()` in `fpl_
 - `data` - the payload (list or dict, varies per command)
 
 Errors use `emit_json_error()` with `{"command", "error"}` shape. **Both envelopes go to
-stdout**; prose, warnings and progress go to stderr. A failure exits 1, so parse stdout
-either way and read the exit code to know which envelope you got. Full contract:
+stdout** and exit 1 on failure, so parse stdout either way and read the exit code to know
+which envelope you got. Warnings and progress go to stderr; the failure message itself is
+in `error`, not on stderr. Full contract:
 [Command Reference](../docs/command-reference.md#json-output).
 
 ## CLI Commands
