@@ -842,6 +842,26 @@ class TestContractTripwires:
         assert "none could be parsed" in caplog.text
 
     @respx.mock
+    async def test_blank_elo_column_yields_no_records_and_warns(self, tmp_path, caplog):
+        # #142 upstream: the columns are all there, the Elo values are blank
+        # at the start of a season, and every row drops out of the join.
+        blank_elo = (
+            "match_id,gameweek,tournament,home_team,away_team,"
+            "home_team_elo,away_team_elo\n"
+            "m1,1,prem,14,13,,\n"
+        )
+        _mock_players()
+        _mock_gw(1, blank_elo, GW1_STATS)
+
+        with caplog.at_level(logging.WARNING):
+            async with CoreInsightsClient(_make_fetcher(tmp_path)) as client:
+                result = await client.get_match_stats(2)
+
+        assert result == {}
+        assert "parsed to 0 records" in caplog.text
+        assert "opponent-adjusted xG signals" in caplog.text
+
+    @respx.mock
     async def test_healthy_files_emit_no_contract_warning(self, tmp_path, caplog):
         respx.get(f"{BASE}/{CI_SEASON}/players.csv").mock(
             return_value=Response(200, text=PLAYERS_CSV)
