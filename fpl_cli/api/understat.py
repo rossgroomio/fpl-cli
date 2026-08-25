@@ -350,11 +350,14 @@ def match_fpl_to_understat(
 
     for player in understat_players:
         # A player who moved mid-season carries every club they have turned
-        # out for, comma-joined ("Arsenal,Crystal Palace"), so compare against
-        # the components rather than the whole title (#94). Season totals stay
-        # cumulative across both clubs, which is what the minutes bonus below
-        # wants — FPL's minutes are cumulative too.
-        if fpl_team_mapped not in split_team_titles(player["team"]):
+        # out for, comma-joined ("Arsenal,Crystal Palace"), so a title that is
+        # not an outright match still has to be checked component-wise (#94).
+        # Equality short-circuits that split for the overwhelming majority of
+        # rows, which matters on an O(players x candidates) scan. Season
+        # totals stay cumulative across both clubs, which is what the minutes
+        # bonus below wants — FPL's minutes are cumulative too.
+        team_title = player["team"]
+        if team_title != fpl_team_mapped and fpl_team_mapped not in split_team_titles(team_title):
             continue
         team_seen = True
 
