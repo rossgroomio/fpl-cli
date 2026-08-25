@@ -122,17 +122,17 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from fpl_cli.api.understat import match_fpl_to_understat
 from fpl_cli.models.player import POSITION_MAP
 from fpl_cli.paths import user_data_file
 from fpl_cli.season import TOTAL_GAMEWEEKS, get_season_year, season_label
-from fpl_cli.services.player_prior import MIN_MINUTES, PlayerPrior
+from fpl_cli.services.player_prior import MIN_MINUTES, PlayerPrior, percentile_rank
 from fpl_cli.services.scoring.constants import Position, _as_position, _value_weights_and_ceiling
 from fpl_cli.services.scoring.display import normalise_score
 from fpl_cli.services.scoring.evaluation import build_player_evaluation, read_player_field
@@ -146,6 +146,9 @@ if TYPE_CHECKING:
     from fpl_cli.api.historical_types import PlayerProfile, SeasonHistory
 
 logger = logging.getLogger(__name__)
+
+# int and float settings share one reader; the cast is what separates them.
+_NumberT = TypeVar("_NumberT", int, float)
 
 # Identifies where a return date came from. The two never merge: an enriched
 # date is carried beside the FPL-derived one, never over it (R8).
@@ -174,6 +177,11 @@ EXCLUDED_UNKNOWN = "unknown"
 # July cutover, matching `fpl_cli.season.get_season_year`: a month at or after
 # July belongs to the season start year, an earlier month to the year after.
 _CUTOVER_MONTH = 7
+
+# How far into the past a season-resolved return date may sit before it is read
+# as next season's instead. Half a year is comfortably longer than any date FPL
+# has actually let lapse, and comfortably shorter than the 12-month wrap.
+_NEXT_SEASON_LOOKBACK_DAYS = 183
 
 _MONTHS: dict[str, int] = {
     "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
@@ -211,6 +219,18 @@ class ReturnSignal:
         """Whether a return date is both known and still ahead of us."""
         return self.return_date is not None and not self.lapsed
 
+    @property
+    def mapped_gameweek(self) -> int | None:
+        """The gameweek this return lands in, or None when it has no usable one.
+
+        Two ways to have none, and both matter: the date may be unknown or
+        lapsed, or `gameweek_for_date` may have failed to place a date beyond
+        the last deadline on hand. Ordering, the watchlist window and
+        escalation all need the answer, so they read it from here rather than
+        each re-deriving the pair of conditions.
+        """
+        return self.return_gameweek if self.has_return_date else None
+
 
 def parse_news_date(news: str) -> tuple[int, int] | None:
     """Extract a `(day, month)` pair from FPL news text, or None.
@@ -231,20 +251,41 @@ def parse_news_date(news: str) -> tuple[int, int] | None:
     return None
 
 
-def resolve_return_date(day: int, month: int, season_year: int | None = None) -> date | None:
+def resolve_return_date(
+    day: int,
+    month: int,
+    season_year: int | None = None,
+    *,
+    now: datetime | None = None,
+) -> date | None:
     """Resolve a bare day/month against the season, or None if impossible.
 
     FPL states no year. Months at or after the July cutover belong to the
     season start year, earlier months to the following calendar year, so a
     February return in the 2026-27 season resolves to February 2027.
+
+    That season-relative rule alone can land a genuine future return in the
+    past: a preseason month quoted mid-season -- an ACL return given as
+    "15 Aug" while it is March -- resolves to a date already been and gone.
+    Anything further behind us than `_NEXT_SEASON_LOOKBACK_DAYS` is therefore
+    read as next season's, because a return date FPL really did miss slips by
+    days or weeks, never by half a year.
     """
     year = season_year if season_year is not None else get_season_year()
     if month < _CUTOVER_MONTH:
         year += 1
     try:
-        return date(year, month, day)
+        resolved = date(year, month, day)
     except ValueError:
         # e.g. "Expected back 31 Feb" -- treated as date-unknown, not an error.
+        return None
+    reference = (_as_utc(now) if now is not None else datetime.now(timezone.utc)).date()
+    if (reference - resolved).days <= _NEXT_SEASON_LOOKBACK_DAYS:
+        return resolved
+    try:
+        return date(year + 1, month, day)
+    except ValueError:
+        # 29 Feb rolling onto a non-leap year: no such date, so date-unknown.
         return None
 
 
@@ -302,13 +343,16 @@ def build_return_signal(
     added = read_player_field(player, "news_added")
 
     parsed = parse_news_date(news)
-    return_date = resolve_return_date(*parsed, season_year) if parsed else None
+    return_date = resolve_return_date(*parsed, season_year, now=now) if parsed else None
 
     lapsed = False
     return_gameweek: int | None = None
     if return_date is not None:
         current_deadline = _current_deadline_date(gameweeks, now)
-        lapsed = current_deadline is not None and return_date < current_deadline
+        # Inclusive, matching `gameweek_for_date`'s own boundary: a date on the
+        # deadline that has just passed maps to a gameweek already locked, so
+        # treating it as still upcoming would pin the entry there for good.
+        lapsed = current_deadline is not None and return_date <= current_deadline
         if not lapsed:
             return_gameweek = gameweek_for_date(return_date, gameweeks)
 
@@ -431,6 +475,10 @@ class EnrichedReturn:
     return_gameweek: int | None = None
     confidence: str | None = None
     citations: tuple[str, ...] = ()
+    # Every producer today is the AI-search path, so this never varies in
+    # practice. It is carried rather than assumed because `escalation_verdict`
+    # and the JSON both report *which* source a verdict rests on, and a second
+    # enrichment route would need to say so without touching either.
     source: str = SOURCE_AI_SEARCH
 
     @property
@@ -656,6 +704,7 @@ def enrichment_from_response(
     *,
     citations: Sequence[str] = (),
     gameweeks: Sequence[Mapping[str, Any]] = (),
+    now: datetime | None = None,
 ) -> EnrichedReturn:
     """Read one provider answer into return intel. Never raises.
 
@@ -663,11 +712,21 @@ def enrichment_from_response(
     a fence or refuse in prose. Anything unreadable yields intel with nothing
     in it, which the caller renders as "asked, nothing found" rather than as an
     error -- and which is still worth caching, so the same empty answer is not
-    bought twice in one gameweek.
+    bought twice in one gameweek. A date already behind the current deadline is
+    dropped on the way in, so intel can never date a return into the past.
     """
     payload = _extract_json_object(content)
     summary = str(payload.get("summary", "") or "").strip()
     return_date = _parse_date(_date_text(payload.get("expected_return")))
+    if return_date is not None:
+        current_deadline = _current_deadline_date(gameweeks, now)
+        if current_deadline is not None and return_date <= current_deadline:
+            # The same lapse test the FPL-news path applies. The prompt asks for
+            # an upcoming date, but a model can still answer with one the season
+            # has left behind, and rendering that as a return still to come --
+            # or letting it clear the escalation window -- is worse than saying
+            # nothing. The summary survives; only the unusable date is dropped.
+            return_date = None
     confidence = str(payload.get("confidence", "") or "").strip().lower() or None
     if confidence not in (None, "high", "medium", "low"):
         confidence = None
@@ -915,7 +974,7 @@ def load_snapshot(*, season: str | None = None) -> RadarSnapshot | None:
             continue
         records[player_id] = SnapshotRecord(
             status=str(value.get("status", "") or ""),
-            chance_of_playing=_as_chance(value.get("chance")),
+            chance_of_playing=_as_optional_int(value.get("chance")),
             return_date=_parse_date(value.get("return_date")),
             lapsed=bool(value.get("lapsed", False)),
             web_name=str(value.get("web_name", "") or ""),
@@ -1216,7 +1275,7 @@ def run_radar(
 
 def _entry_order(entry: RadarEntry) -> tuple[int, int, float, str]:
     """Near-term returns first, date-unknown last, quality breaking ties."""
-    known = entry.signal.has_return_date and entry.signal.return_gameweek is not None
+    known = entry.signal.mapped_gameweek is not None
     return (
         0 if known else 1,
         entry.signal.return_gameweek or 0,
@@ -1246,7 +1305,7 @@ def escalation_verdict(
     which keeps a stale enriched date out without consulting the clock.
     """
     limit = next_gw_id + config.stash_window_gameweeks - 1
-    if signal.has_return_date and _inside(signal.return_gameweek, next_gw_id, limit):
+    if _inside(signal.mapped_gameweek, next_gw_id, limit):
         return True, SOURCE_FPL_NEWS
     if (
         enrichment is not None
@@ -1269,9 +1328,10 @@ def _within_window(signal: ReturnSignal, next_gw_id: int, window_gameweeks: int)
     R4 keeps those on the list precisely because nobody knows when they are
     back, and they are the majority of flagged players.
     """
-    if not signal.has_return_date or signal.return_gameweek is None:
+    gameweek = signal.mapped_gameweek
+    if gameweek is None:
         return True
-    return signal.return_gameweek <= next_gw_id + window_gameweeks - 1
+    return gameweek <= next_gw_id + window_gameweeks - 1
 
 
 def _judge_quality(
@@ -1462,8 +1522,9 @@ def _understat_match(
 def _price_percentiles(players: Sequence[Any]) -> dict[int, float]:
     """Within-position price percentile per player id (0.0-1.0).
 
-    Mirrors `player_prior._percentile_rank` so the last-resort bar and the
-    prior's own price fallback rank a player identically.
+    Ranks through `player_prior.percentile_rank`, so the last-resort bar and
+    the prior's own price fallback stay the same measure rather than two
+    copies of one formula.
     """
     prices: dict[int, tuple[Position, float]] = {}
     by_position: dict[Position, list[float]] = {}
@@ -1475,16 +1536,10 @@ def _price_percentiles(players: Sequence[Any]) -> dict[int, float]:
         prices[_as_int(read_player_field(player, "id"))] = (position, price)
         by_position.setdefault(position, []).append(price)
 
-    result: dict[int, float] = {}
-    for player_id, (position, price) in prices.items():
-        values = by_position[position]
-        if len(values) <= 1:
-            result[player_id] = 0.5
-            continue
-        below = sum(1 for v in values if v < price)
-        equal = sum(1 for v in values if v == price)
-        result[player_id] = (below + equal * 0.5) / len(values)
-    return result
+    return {
+        player_id: percentile_rank(price, by_position[position])
+        for player_id, (position, price) in prices.items()
+    }
 
 
 def _player_position(player: Any) -> Position | None:
@@ -1524,20 +1579,28 @@ def _as_int(value: Any) -> int:
         return 0
 
 
-def _setting_int(block: Mapping[str, Any], key: str, default: int) -> int:
-    """Read one integer setting, falling back on anything unusable."""
+def _setting_number(
+    block: Mapping[str, Any], key: str, default: _NumberT, cast: Callable[[Any], _NumberT],
+) -> _NumberT:
+    """Read one numeric setting, falling back on anything unusable.
+
+    Shared by the int and float readers so a tightening of what counts as
+    usable applies to every knob at once rather than half of them.
+    """
     value = block.get(key, default)
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return default
-    return int(value)
+    return cast(value)
+
+
+def _setting_int(block: Mapping[str, Any], key: str, default: int) -> int:
+    """Read one integer setting, falling back on anything unusable."""
+    return _setting_number(block, key, default, int)
 
 
 def _setting_float(block: Mapping[str, Any], key: str, default: float) -> float:
     """Read one float setting, falling back on anything unusable."""
-    value = block.get(key, default)
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return default
-    return float(value)
+    return _setting_number(block, key, default, float)
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -1580,11 +1643,6 @@ def _as_optional_int(value: Any) -> int | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     return int(value)
-
-
-def _as_chance(value: Any) -> int | None:
-    """Coerce a stored chance-of-playing to int, or None when it is not one."""
-    return _as_optional_int(value)
 
 
 def _parse_date(value: Any) -> date | None:

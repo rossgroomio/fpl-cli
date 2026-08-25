@@ -89,7 +89,7 @@ def build_returnee_enrichment_prompt(
     chance = (
         f"FPL puts their chance of playing the next match at {chance_of_playing}%."
         if chance_of_playing is not None
-        else "FPL states no chance of playing for the next match."
+        else "FPL publishes no chance-of-playing figure for the next match."
     )
     return RETURNEE_ENRICHMENT_USER_PROMPT_TEMPLATE.format(
         web_name=web_name,

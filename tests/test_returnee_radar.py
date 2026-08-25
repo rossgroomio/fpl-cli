@@ -22,6 +22,7 @@ from fpl_cli.services.returnee_radar import (
     ReturnSignal,
     build_radar,
     build_return_signal,
+    enrichment_from_response,
     gameweek_for_date,
     news_age_days,
     radar_config_from_settings,
@@ -179,6 +180,27 @@ def test_february_date_in_august_start_season_lands_next_year():
     assert signal.return_date == date(2027, 2, 14)
 
 
+def test_preseason_month_quoted_mid_season_resolves_to_next_season():
+    """A long recovery given as a preseason month must not resolve backwards.
+
+    Read against the season alone, "15 Aug" in a 2026-27 season is 15 Aug 2026 --
+    already gone by the following March, so a real return months away would be
+    marked lapsed and its date silently thrown away.
+    """
+    march = datetime(2027, 3, 1, 12, 0, tzinfo=timezone.utc)
+
+    assert resolve_return_date(15, 8, SEASON_YEAR, now=march) == date(2027, 8, 15)
+
+
+def test_a_date_only_recently_missed_still_resolves_into_this_season():
+    """The rollforward must not swallow an ordinary lapse.
+
+    A return date FPL actually missed slips by days or weeks; only something
+    half a year behind us is next season's.
+    """
+    assert resolve_return_date(5, 9, SEASON_YEAR, now=POST_GW5_NOW) == date(2026, 9, 5)
+
+
 def test_season_year_defaults_to_the_current_season():
     signal = _signal("Calf injury - Expected back 5 Sep", season_year=None, gameweeks=[])
 
@@ -258,6 +280,21 @@ def test_nothing_lapses_before_the_first_deadline():
 
     assert signal.lapsed is False
     assert signal.has_return_date is True
+
+
+def test_date_landing_exactly_on_the_last_passed_deadline_lapses():
+    """The boundary `gameweek_for_date` treats as inclusive, treated so here too.
+
+    GW5's deadline is 19 Sep and has passed. A return stated for 19 Sep maps to
+    GW5, which is already locked, so calling it upcoming would pin the entry on
+    a gameweek nobody can act on and freeze its week-over-week diff.
+    """
+    signal = _signal("Calf injury - Expected back 19 Sep", now=POST_GW5_NOW)
+
+    assert signal.lapsed is True
+    assert signal.has_return_date is False
+    assert signal.return_gameweek is None
+    assert signal.return_date == date(2026, 9, 19)
 
 
 def test_date_unknown_signal_is_never_marked_lapsed():
@@ -1392,3 +1429,39 @@ def test_radar_departure_is_frozen():
 
     with pytest.raises(AttributeError):
         departure.reason = "window"  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# Enriched intel is held to the same lapse rule as FPL news
+# ---------------------------------------------------------------------------
+
+
+def _intel_json(expected_return: str | None) -> str:
+    return (
+        '{"expected_return": ' + ("null" if expected_return is None
+                                  else f'"{expected_return}"')
+        + ', "summary": "Back in training", "confidence": "high"}'
+    )
+
+
+def test_an_enriched_date_already_behind_the_deadline_is_dropped():
+    """A model can answer with a date the season has passed; rendering it as an
+    upcoming return -- or letting it clear the escalation window -- is worse
+    than reporting no date at all."""
+    enrichment = enrichment_from_response(
+        _intel_json("2026-09-05"), gameweeks=GAMEWEEKS, now=POST_GW5_NOW,
+    )
+
+    assert enrichment.return_date is None
+    assert enrichment.return_gameweek is None
+    # Only the unusable date goes; what the search actually said survives.
+    assert enrichment.summary == "Back in training"
+
+
+def test_an_enriched_date_still_ahead_of_the_deadline_is_kept():
+    enrichment = enrichment_from_response(
+        _intel_json("2026-10-10"), gameweeks=GAMEWEEKS, now=POST_GW5_NOW,
+    )
+
+    assert enrichment.return_date == date(2026, 10, 10)
+    assert enrichment.return_gameweek == 6

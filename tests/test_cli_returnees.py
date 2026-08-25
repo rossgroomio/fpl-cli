@@ -581,6 +581,22 @@ class TestEnrichmentShortlist:
         assert "Liverpool" in sidelined
         assert "Unknown return date" in sidelined
 
+    def test_a_missing_chance_is_not_put_to_the_model_as_a_stated_zero(self):
+        """FPL publishes no percentage for most suspensions and fresh flags.
+        Phrasing that absence as a confirmed no-chance biases the answer."""
+        provider = _stub_provider()
+
+        _run(["--enrich"], scoring_data=_enrichment_scoring_data(),
+             provider_factory=_provider_factory(provider))
+
+        # Stalenews carries no chance figure; Sidelined carries 25%.
+        stale = next(p for p in _prompts(provider) if "Stalenews" in p)
+        assert "publishes no chance-of-playing figure" in stale
+        assert "no chance of playing" not in stale
+
+        sidelined = next(p for p in _prompts(provider) if "Sidelined" in p)
+        assert "chance of playing the next match at 25%" in sidelined
+
 
 class TestEnrichmentAttachment:
     def test_enriched_intel_sits_beside_the_fpl_date_and_never_over_it(self):
@@ -623,6 +639,41 @@ class TestEnrichmentAttachment:
         assert metadata["enrichment_available"] is True
         assert metadata["enrichment_note"] is None
         assert metadata["enrichment_count"] == 2
+
+    def test_one_failed_query_names_the_player_it_actually_belonged_to(self):
+        """Answers come back positionally now that the queries run concurrently,
+        so a failure must still line up with the player it was asked about."""
+        provider = _stub_provider({"Sidelined": ProviderError("search timed out")})
+
+        result = _run(["--enrich"], scoring_data=_enrichment_scoring_data(),
+                      provider_factory=_provider_factory(provider))
+
+        assert "Sidelined" in result.stderr
+        assert "Stalenews" not in result.stderr
+
+    def test_shortlisted_queries_are_not_issued_one_after_another(self):
+        """The queries depend on nothing but their own player, so a shortlist
+        should not cost the sum of its round trips."""
+        import asyncio
+
+        in_flight = 0
+        peak = 0
+
+        async def _slow(prompt: str = "", **kwargs: Any) -> Any:
+            nonlocal in_flight, peak
+            in_flight += 1
+            peak = max(peak, in_flight)
+            await asyncio.sleep(0)
+            in_flight -= 1
+            return _intel()
+
+        provider = _stub_provider()
+        provider.query = AsyncMock(side_effect=_slow)
+
+        _run(["--enrich"], scoring_data=_enrichment_scoring_data(),
+             provider_factory=_provider_factory(provider))
+
+        assert peak > 1
 
     def test_a_response_that_states_nothing_attaches_nothing(self):
         junk = LLMResponse(content="I could not find any update.", model="sonar-pro",
@@ -697,6 +748,11 @@ class TestEscalationGate:
 
     def test_metadata_publishes_the_escalation_window(self):
         assert _json_run()["metadata"]["escalation_window"] == 2
+
+    def test_metadata_publishes_the_stash_upgrade_margin(self):
+        """gw-prep refuses a stash that misses this margin, so the number has to
+        arrive with the radar rather than be read out of settings.yaml."""
+        assert _json_run()["metadata"]["stash_upgrade_margin"] == 5.0
 
 
 class TestEnrichmentCache:
