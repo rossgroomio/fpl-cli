@@ -249,6 +249,22 @@ class TestShapeDrift:
         assert "TEAM_NAME_MAP" in flat
 
     @respx.mock
+    def test_understat_comma_joined_title_resolves_both_clubs(self, monkeypatch):
+        # A transferred player carries both clubs in one title (#94), padded
+        # here to pin the trimming: neither club may read as unresolved.
+        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
+        _register_routes(
+            finished_gws=5,
+            understat_teams=[f"Team {i:02d}" for i in range(1, 19)] + ["Team 19, Team 20"],
+        )
+        result = _run()
+        assert result.exit_code == 0
+        flat = _flat(result)
+        assert "19 players across 20 teams" in flat
+        assert "resolve to an Understat team" in flat
+        assert "TEAM_NAME_MAP" not in flat
+
+    @respx.mock
     def test_understat_unresolved_club_is_stale_early_season(self, monkeypatch):
         # Understat only lists a club once it has ingested a match for it, so
         # in the first gameweeks an unresolved name may be lag, not drift.

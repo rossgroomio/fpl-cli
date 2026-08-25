@@ -6,7 +6,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from fpl_cli.api.understat import TEAM_NAME_MAP, UnderstatClient, match_fpl_to_understat
+from fpl_cli.api.understat import (
+    TEAM_NAME_MAP,
+    UnderstatClient,
+    match_fpl_to_understat,
+    split_team_titles,
+)
 from fpl_cli.season import understat_season
 
 # Derived from the same helper the client uses, so assertions follow the
@@ -593,6 +598,73 @@ class TestMatchFPLToUnderstat:
         )
         assert result is None
 
+    def test_match_transferred_player_comma_joined_team(self):
+        """A mid-season mover's comma-joined team_title still joins (#94)."""
+        players = [
+            {
+                "id": 8706,
+                "name": "Eberechi Eze",
+                "team": "Arsenal,Crystal Palace",
+                "position": "M",
+                "minutes": 1928,
+            },
+        ]
+        result = match_fpl_to_understat(
+            "Eze", "Arsenal", players, fpl_position="MID", fpl_minutes=1928
+        )
+        assert result is not None
+        assert result["id"] == 8706
+
+    def test_match_transferred_player_matches_former_club(self):
+        """Either component of a comma-joined title resolves the same player."""
+        players = [
+            {
+                "id": 8706,
+                "name": "Eberechi Eze",
+                "team": "Arsenal,Crystal Palace",
+                "position": "M",
+                "minutes": 1928,
+            },
+        ]
+        result = match_fpl_to_understat(
+            "Eze", "Crystal Palace", players, fpl_position="MID", fpl_minutes=1928
+        )
+        assert result is not None
+        assert result["id"] == 8706
+
+    def test_match_transferred_player_mapped_team_name(self):
+        """The FPL→Understat name map still applies to a joined title."""
+        players = [
+            {
+                "id": 1,
+                "name": "Antoine Semenyo",
+                "team": "Bournemouth,Manchester City",
+                "position": "F M S",
+                "minutes": 3220,
+            },
+        ]
+        result = match_fpl_to_understat(
+            "Semenyo", "Man City", players, fpl_position="MID", fpl_minutes=3220
+        )
+        assert result is not None
+        assert result["id"] == 1
+
+    def test_match_comma_title_does_not_match_unrelated_team(self):
+        """Splitting must not turn the gate into a substring match."""
+        players = [
+            {
+                "id": 1,
+                "name": "Eberechi Eze",
+                "team": "Arsenal,Crystal Palace",
+                "position": "M",
+                "minutes": 1928,
+            },
+        ]
+        result = match_fpl_to_understat(
+            "Eze", "Liverpool", players, fpl_position="MID", fpl_minutes=1928
+        )
+        assert result is None
+
     def test_match_is_sync(self):
         """match_fpl_to_understat should be a sync function (no async)."""
         import inspect
@@ -706,6 +778,21 @@ class TestContractTripwires:
         assert match is not None
         assert "TEAM_NAME_MAP may need updating" not in caplog.text
 
+    def test_comma_joined_team_does_not_warn(self, caplog):
+        # A transferred player's joined title resolves, so it must not read as
+        # a TEAM_NAME_MAP failure (#94).
+        from fpl_cli.api import understat
+
+        understat._unmatched_team_warned.clear()
+        players = [
+            {"name": "Eberechi Eze", "team": "Arsenal,Crystal Palace", "position": "M", "minutes": 1928},
+        ]
+        with caplog.at_level(logging.WARNING):
+            match = match_fpl_to_understat("Eze", "Arsenal", players)
+
+        assert match is not None
+        assert "TEAM_NAME_MAP may need updating" not in caplog.text
+
     def test_empty_understat_list_does_not_warn_per_team(self, caplog):
         # No Understat data at all is the league-level tripwire's job; the
         # team-level warning would misattribute it to TEAM_NAME_MAP.
@@ -717,3 +804,21 @@ class TestContractTripwires:
 
         assert match is None
         assert "TEAM_NAME_MAP" not in caplog.text
+
+
+# --- TestSplitTeamTitles ---
+
+class TestSplitTeamTitles:
+    """Understat comma-joins every club a player appeared for (#94)."""
+
+    def test_single_club(self):
+        assert split_team_titles("Arsenal") == ["Arsenal"]
+
+    def test_joined_clubs(self):
+        assert split_team_titles("Arsenal,Crystal Palace") == ["Arsenal", "Crystal Palace"]
+
+    def test_strips_surrounding_whitespace(self):
+        assert split_team_titles("Chelsea, Fulham") == ["Chelsea", "Fulham"]
+
+    def test_empty_title(self):
+        assert split_team_titles("") == [""]

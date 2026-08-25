@@ -448,11 +448,11 @@ def _understat_team_titles(players: list[dict[str, Any]]) -> set[str]:
     A player who moved clubs mid-season carries a comma-joined title
     ("Chelsea,Fulham"), so titles are split before collecting.
     """
+    from fpl_cli.api.understat import split_team_titles
+
     titles: set[str] = set()
     for player in players:
-        for part in str(player.get("team", "")).split(","):
-            if part:
-                titles.add(part)
+        titles.update(part for part in split_team_titles(str(player.get("team", ""))) if part)
     return titles
 
 

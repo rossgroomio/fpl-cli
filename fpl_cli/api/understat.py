@@ -314,6 +314,15 @@ def _normalise(text: str) -> str:
     return re.sub(r" +", " ", text).strip()  # Collapse whitespace
 
 
+def split_team_titles(team_title: str) -> list[str]:
+    """Split an Understat ``team_title`` into its constituent club names.
+
+    Understat comma-joins every club a player has appeared for in the season,
+    so a mid-season transfer reads ``"Arsenal,Crystal Palace"``.
+    """
+    return [part.strip() for part in team_title.split(",")]
+
+
 # FPL teams already reported as matching no Understat players, so the join-drop
 # warning below fires once per team per process rather than once per player.
 _unmatched_team_warned: set[str] = set()
@@ -340,7 +349,15 @@ def match_fpl_to_understat(
     team_seen = False
 
     for player in understat_players:
-        if player["team"] != fpl_team_mapped:
+        # A player who moved mid-season carries every club they have turned
+        # out for, comma-joined ("Arsenal,Crystal Palace"), so a title that is
+        # not an outright match still has to be checked component-wise (#94).
+        # Equality short-circuits that split for the overwhelming majority of
+        # rows, which matters on an O(players x candidates) scan. Season
+        # totals stay cumulative across both clubs, which is what the minutes
+        # bonus below wants — FPL's minutes are cumulative too.
+        team_title = player["team"]
+        if team_title != fpl_team_mapped and fpl_team_mapped not in split_team_titles(team_title):
             continue
         team_seen = True
 
