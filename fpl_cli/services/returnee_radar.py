@@ -63,19 +63,49 @@ fetching them at all on a cache hit -- so the historical seasons and the
 Understat season data the price-sourced branch needs are passed in by the
 caller. That keeps the service pure, keeps the deterministic core inside the
 data a run already fetched, and lets tests stub both seams with plain fixtures.
+
+Week-over-week deltas
+---------------------
+
+The actionable trigger is not "this player is injured" but "this player's
+availability improved since last week", and that needs memory. Each run stores
+the watchlist it produced in one season-stamped JSON file in the data dir, and
+the next run diffs against it. The store follows `player_prior.yaml`: read it,
+compare the season label, discard and rebuild when it does not match -- which
+is what makes keying records on season-local player id safe, since a snapshot
+never survives the id reshuffle at a season boundary. Anything unreadable, of
+the wrong shape or from another season is a first run, not an error.
+
+Two rules keep the delta worth reading:
+
+* The snapshot is rewritten only when the stored gameweek differs from the
+  current one. Writing every run would make the second run in a gameweek diff
+  against the first and report nothing changed.
+* A player who has left the watchlist is resolved against their live status
+  before anything is said about them. Only status `a` is a return; a player
+  the window or the quality bar excluded is reported as dropped off the list,
+  naming which filter did it. Reporting a slipped return as a return is the
+  most misleading thing this watchlist could say.
+
+`run_radar` is all of that in one call. `build_radar` stays pure for callers
+that want no history, and `diff_transitions` compares with no I/O of its own.
 """
 
 from __future__ import annotations
 
+import json
+import logging
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from fpl_cli.api.understat import match_fpl_to_understat
 from fpl_cli.models.player import POSITION_MAP
-from fpl_cli.season import TOTAL_GAMEWEEKS, get_season_year
+from fpl_cli.paths import user_data_file
+from fpl_cli.season import TOTAL_GAMEWEEKS, get_season_year, season_label
 from fpl_cli.services.player_prior import MIN_MINUTES, PlayerPrior
 from fpl_cli.services.scoring.constants import Position, _as_position, _value_weights_and_ceiling
 from fpl_cli.services.scoring.display import normalise_score
@@ -84,9 +114,12 @@ from fpl_cli.services.scoring.value_quality import (
     calculate_mins_factor,
     calculate_player_quality_score,
 )
+from fpl_cli.utils.files import atomic_write_text
 
 if TYPE_CHECKING:
     from fpl_cli.api.historical_types import PlayerProfile, SeasonHistory
+
+logger = logging.getLogger(__name__)
 
 # Identifies where a return date came from. U5's optional AI-search enrichment
 # adds its own source alongside this one.
@@ -102,6 +135,14 @@ FLAGGED_STATUSES: frozenset[str] = frozenset({"d", "i", "s", "n"})
 QUALITY_BASIS_PRIOR = "prior"
 QUALITY_BASIS_SEASON = "season-quality"
 QUALITY_BASIS_PRICE = "price"
+
+# Why a still-flagged player is no longer an entry, reported alongside
+# `TRANSITION_DROPPED`. Naming the filter is the whole point: a player the
+# window pushed out has not returned, and rendering that as a return is the
+# most misleading thing this watchlist could say.
+EXCLUDED_BY_WINDOW = "window"
+EXCLUDED_BY_QUALITY = "quality"
+EXCLUDED_UNKNOWN = "unknown"
 
 # July cutover, matching `fpl_cli.season.get_season_year`: a month at or after
 # July belongs to the season start year, an earlier month to the year after.
@@ -369,6 +410,18 @@ class RadarResult:
     entries: list[RadarEntry] = field(default_factory=list)
     degraded: bool = False
     degraded_reason: str | None = None
+    # Previously tracked players who are no longer entries, and whether each
+    # is back or merely filtered out. Empty unless the run diffed a snapshot.
+    departures: list[RadarDeparture] = field(default_factory=list)
+    # False on a first run, a corrupt snapshot or a season change: there is
+    # nothing to diff against, so an absent transition means "not known", not
+    # "nothing changed" (R6).
+    transitions_available: bool = False
+    # Player id to the filter that dropped them (`EXCLUDED_BY_WINDOW` /
+    # `EXCLUDED_BY_QUALITY` / `EXCLUDED_UNKNOWN`). Carried because a player
+    # who left the watchlist is indistinguishable from one who returned
+    # without it -- `diff_transitions` reads it, callers rarely need it.
+    exclusions: dict[int, str] = field(default_factory=dict)
 
 
 def build_radar(
@@ -423,6 +476,7 @@ def build_radar(
     names = team_names or {}
     percentiles = _price_percentiles(players)
     entries: list[RadarEntry] = []
+    exclusions: dict[int, str] = {}
 
     for player in players:
         status = _status_code(player)
@@ -434,12 +488,14 @@ def build_radar(
         if prior is None or position is None:
             # No prior entry means no bar to clear: drop the player rather than
             # guessing, and rather than raising on a pool/prior mismatch.
+            exclusions[player_id] = EXCLUDED_UNKNOWN
             continue
 
         signal = build_return_signal(
             player, gameweeks=gameweeks, now=now, season_year=season_year,
         )
         if not _within_window(signal, next_gw_id, cfg.window_gameweeks):
+            exclusions[player_id] = EXCLUDED_BY_WINDOW
             continue
 
         team_id = _as_int(read_player_field(player, "team_id"))
@@ -454,6 +510,7 @@ def build_radar(
             price_percentile=percentiles.get(player_id, 0.0),
         )
         if not verdict.passed:
+            exclusions[player_id] = EXCLUDED_BY_QUALITY
             continue
 
         entries.append(RadarEntry(
@@ -471,7 +528,390 @@ def build_radar(
         ))
 
     entries.sort(key=_entry_order)
-    return RadarResult(entries=entries)
+    return RadarResult(entries=entries, exclusions=exclusions)
+
+
+# ---------------------------------------------------------------------------
+# Week-over-week snapshot store
+# ---------------------------------------------------------------------------
+
+
+SNAPSHOT_FILENAME = "returnee_snapshot.json"
+
+
+def snapshot_path() -> Path:
+    """Location of the week-over-week snapshot file.
+
+    Resolved per call so an `FPL_CLI_DATA_DIR` set after import (notably from
+    the `.env` the CLI loads late) is honoured; a module-level constant would
+    freeze the override at import time.
+    """
+    return user_data_file(SNAPSHOT_FILENAME)
+
+
+@dataclass(frozen=True)
+class SnapshotRecord:
+    """One tracked player's availability state as of the last stored run.
+
+    `return_date` is stored even when the signal displays as date-unknown
+    because it lapsed, and `lapsed` records which of the two it was. Without
+    the date a later FPL update would diff as a newly stated return rather
+    than a moved one; without the flag, a lapse would re-fire every week.
+    `web_name` is carried so a player who has since left the player pool
+    entirely can still be named in the departure list.
+    """
+
+    status: str
+    chance_of_playing: int | None = None
+    return_date: date | None = None
+    lapsed: bool = False
+    web_name: str = ""
+
+
+@dataclass(frozen=True)
+class RadarSnapshot:
+    """The stored watchlist state, stamped with the season and gameweek.
+
+    The season stamp is what makes keying records on season-local player id
+    safe: a snapshot never survives the id reshuffle at a season boundary.
+    """
+
+    season: str
+    gameweek: int
+    players: dict[int, SnapshotRecord] = field(default_factory=dict)
+
+
+def load_snapshot(*, season: str | None = None) -> RadarSnapshot | None:
+    """Load the stored snapshot, or None when there is nothing usable.
+
+    None covers all four ways a run can have no history to diff against: no
+    file yet, an unreadable or truncated one, a payload whose shape does not
+    match, and one stamped with a different season. Each is a first run, not
+    an error -- the radar's deltas are a convenience layered over output that
+    stands on its own.
+    """
+    expected = season or season_label()
+    try:
+        raw = json.loads(snapshot_path().read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as exc:
+        logger.info("Returnee snapshot unreadable (%s); treating this as a first run", exc)
+        return None
+
+    if not isinstance(raw, Mapping):
+        return None
+    meta, players = raw.get("metadata"), raw.get("players")
+    if not isinstance(meta, Mapping) or not isinstance(players, Mapping):
+        return None
+    if meta.get("season") != expected:
+        logger.info(
+            "Returnee snapshot stale (season %s != %s)", meta.get("season"), expected,
+        )
+        return None
+    gameweek = meta.get("gameweek")
+    if not isinstance(gameweek, int) or isinstance(gameweek, bool):
+        return None
+
+    records: dict[int, SnapshotRecord] = {}
+    for key, value in players.items():
+        player_id = _as_int(key)
+        if player_id <= 0 or not isinstance(value, Mapping):
+            continue
+        records[player_id] = SnapshotRecord(
+            status=str(value.get("status", "") or ""),
+            chance_of_playing=_as_chance(value.get("chance")),
+            return_date=_parse_date(value.get("return_date")),
+            lapsed=bool(value.get("lapsed", False)),
+            web_name=str(value.get("web_name", "") or ""),
+        )
+    return RadarSnapshot(season=expected, gameweek=gameweek, players=records)
+
+
+def save_snapshot(snapshot: RadarSnapshot) -> None:
+    """Write the snapshot atomically, so an interrupted run cannot poison the next diff."""
+    payload: dict[str, Any] = {
+        "metadata": {"season": snapshot.season, "gameweek": snapshot.gameweek},
+        "players": {
+            str(player_id): {
+                "status": record.status,
+                "chance": record.chance_of_playing,
+                "return_date": record.return_date.isoformat() if record.return_date else None,
+                "lapsed": record.lapsed,
+                "web_name": record.web_name,
+            }
+            for player_id, record in sorted(snapshot.players.items())
+        },
+    }
+    atomic_write_text(snapshot_path(), json.dumps(payload, indent=2) + "\n")
+
+
+def snapshot_from_entries(
+    entries: Sequence[RadarEntry], *, gameweek: int, season: str | None = None,
+) -> RadarSnapshot:
+    """Capture the current watchlist as the state next week will diff against.
+
+    Only the entries are stored: a player the quality bar or the window has
+    always excluded is not tracked, so they can never be reported as having
+    dropped off a list they were never on.
+    """
+    return RadarSnapshot(
+        season=season or season_label(),
+        gameweek=gameweek,
+        players={
+            entry.player_id: SnapshotRecord(
+                status=entry.status,
+                chance_of_playing=entry.chance_of_playing,
+                return_date=entry.signal.return_date,
+                lapsed=entry.signal.lapsed,
+                web_name=entry.web_name,
+            )
+            for entry in entries
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Week-over-week transitions
+# ---------------------------------------------------------------------------
+
+
+# Markers carried on a surviving entry.
+TRANSITION_NEWLY_FLAGGED = "newly-flagged"
+TRANSITION_CHANCE_IMPROVED = "chance-improved"
+TRANSITION_CHANCE_WORSENED = "chance-worsened"
+TRANSITION_NEWLY_DATED = "newly-dated"
+TRANSITION_DATE_EARLIER = "date-moved-earlier"
+TRANSITION_DATE_LATER = "date-moved-later"
+TRANSITION_DATE_LAPSED = "date-lapsed"
+TRANSITION_DATE_WITHDRAWN = "date-withdrawn"
+# Markers carried on a player who left the watchlist, which no surviving entry
+# can hold.
+TRANSITION_NOW_AVAILABLE = "now-available"
+TRANSITION_DROPPED = "dropped-from-watchlist"
+
+# One entry carries one marker, so several simultaneous moves are ranked.
+# Improvements outrank deteriorations because they are the actionable trigger
+# (KD4), and a date beats a chance because it is the more specific claim.
+_TRANSITION_PRIORITY: tuple[str, ...] = (
+    TRANSITION_DATE_EARLIER,
+    TRANSITION_NEWLY_DATED,
+    TRANSITION_CHANCE_IMPROVED,
+    TRANSITION_DATE_LAPSED,
+    TRANSITION_DATE_WITHDRAWN,
+    TRANSITION_DATE_LATER,
+    TRANSITION_CHANCE_WORSENED,
+)
+
+
+@dataclass(frozen=True)
+class RadarDeparture:
+    """A previously tracked player who is no longer on the watchlist.
+
+    Three very different things look identical from the entry list alone: the
+    player is fit again, the window pushed their return out of range, or the
+    quality bar stopped clearing them. `transition` separates the first from
+    the other two and `reason` names which filter did it.
+    """
+
+    player_id: int
+    web_name: str
+    status: str
+    transition: str
+    reason: str | None = None
+
+
+def diff_transitions(
+    entries: Sequence[RadarEntry],
+    *,
+    snapshot: RadarSnapshot | None,
+    players: Sequence[Any] = (),
+    exclusions: Mapping[int, str] | None = None,
+) -> tuple[list[RadarEntry], list[RadarDeparture]]:
+    """Mark entries against the last stored run and list who left it.
+
+    Pure: does no I/O of its own. With no snapshot (a first run, a corrupt
+    file, a season change) every transition stays unset and no departure is
+    reported -- R6's degrade to snapshot-only output.
+
+    Args:
+        entries: This run's watchlist.
+        snapshot: The state the last stored run left behind, or None.
+        players: The full current player pool, needed to tell a tracked
+            player who is fit again from one a filter excluded.
+        exclusions: Player id to the filter that dropped them
+            (`EXCLUDED_BY_WINDOW` / `EXCLUDED_BY_QUALITY`), as `build_radar`
+            recorded it.
+    """
+    if snapshot is None:
+        return list(entries), []
+
+    previous = snapshot.players
+    marked = [
+        replace(entry, transition=_entry_transition(entry, previous.get(entry.player_id)))
+        for entry in entries
+    ]
+
+    current_ids = {entry.player_id for entry in entries}
+    pool = {_as_int(read_player_field(p, "id")): p for p in players}
+    reasons = exclusions or {}
+    departures = [
+        _departure(player_id, previous[player_id], pool.get(player_id), reasons)
+        for player_id in previous
+        if player_id not in current_ids
+    ]
+    departures.sort(key=lambda d: (d.web_name, d.player_id))
+    return marked, departures
+
+
+def _entry_transition(entry: RadarEntry, record: SnapshotRecord | None) -> str | None:
+    """The single most actionable move this entry made since the last run."""
+    if record is None:
+        return TRANSITION_NEWLY_FLAGGED
+    candidates = (
+        _date_transition(entry.signal, record),
+        _chance_transition(entry.chance_of_playing, record.chance_of_playing),
+    )
+    found = [marker for marker in candidates if marker is not None]
+    if not found:
+        return None
+    return min(found, key=_TRANSITION_PRIORITY.index)
+
+
+def _date_transition(signal: ReturnSignal, record: SnapshotRecord) -> str | None:
+    """Compare stated return dates, lapsed ones included.
+
+    The comparison is on `return_date` rather than `has_return_date`, because
+    a lapsed date is still the date FPL last stated: an update that follows it
+    is a moved return, not a newly stated one.
+    """
+    before, after = record.return_date, signal.return_date
+    if before is None:
+        return TRANSITION_NEWLY_DATED if after is not None else None
+    if after is None:
+        return TRANSITION_DATE_WITHDRAWN
+    if after < before:
+        return TRANSITION_DATE_EARLIER
+    if after > before:
+        return TRANSITION_DATE_LATER
+    # Same date as last run: the only thing that can have changed is whether
+    # it has now been missed, which fires once rather than every week after.
+    return TRANSITION_DATE_LAPSED if signal.lapsed and not record.lapsed else None
+
+
+def _chance_transition(current: int | None, previous: int | None) -> str | None:
+    """Compare chance of playing, when both runs actually stated one."""
+    if current is None or previous is None or current == previous:
+        return None
+    return TRANSITION_CHANCE_IMPROVED if current > previous else TRANSITION_CHANCE_WORSENED
+
+
+def _departure(
+    player_id: int,
+    record: SnapshotRecord,
+    player: Any | None,
+    exclusions: Mapping[int, str],
+) -> RadarDeparture:
+    """Resolve a tracked player who is no longer an entry against live status.
+
+    Only status `a` is a return. Anything else is still flagged, so the run
+    reports which filter excluded them -- reporting a slipped return as a
+    return would be worse than saying nothing.
+    """
+    status = _status_code(player) if player is not None else record.status
+    name = str(read_player_field(player, "web_name", "") or "") if player is not None else ""
+    if status == "a":
+        transition, reason = TRANSITION_NOW_AVAILABLE, None
+    else:
+        transition = TRANSITION_DROPPED
+        reason = exclusions.get(player_id, EXCLUDED_UNKNOWN)
+    return RadarDeparture(
+        player_id=player_id,
+        web_name=name or record.web_name,
+        status=status,
+        transition=transition,
+        reason=reason,
+    )
+
+
+# ---------------------------------------------------------------------------
+# The entry point a caller wants: watchlist plus week-over-week deltas
+# ---------------------------------------------------------------------------
+
+
+def run_radar(
+    players: Sequence[Any],
+    *,
+    priors: Mapping[int, PlayerPrior] | None,
+    next_gw_id: int,
+    gameweeks: Sequence[Mapping[str, Any]] = (),
+    config: RadarConfig | None = None,
+    profiles: Mapping[int, PlayerProfile] | None = None,
+    understat_seasons: Mapping[str, Sequence[dict[str, Any]]] | None = None,
+    team_names: Mapping[int, str] | None = None,
+    now: datetime | None = None,
+    season_year: int | None = None,
+    persist: bool = True,
+) -> RadarResult:
+    """Build the watchlist, diff it against the last stored run, and store it.
+
+    The one call a command wants: `build_radar` for the entries, the snapshot
+    store for the deltas. Arguments are `build_radar`'s, plus:
+
+    Args:
+        persist: Whether this run may become the state next week diffs
+            against. A run that widened the filters (an `--all` style bypass)
+            should pass False: storing its larger watchlist would make the
+            next ordinary run report everyone it re-excluded as having
+            dropped off the list.
+
+    The snapshot is rewritten only when the stored gameweek differs from this
+    one, so a second run inside a gameweek diffs against the same state as the
+    first and reports the same transitions. The alternative -- writing every
+    run -- empties the delta that is the point of storing anything.
+    """
+    result = build_radar(
+        players,
+        priors=priors,
+        next_gw_id=next_gw_id,
+        gameweeks=gameweeks,
+        config=config,
+        profiles=profiles,
+        understat_seasons=understat_seasons,
+        team_names=team_names,
+        now=now,
+        season_year=season_year,
+    )
+    if result.degraded:
+        # The quality bar could not run, so this run's empty watchlist says
+        # nothing about who is flagged. Storing it would erase the last real
+        # one and report the whole watchlist as newly flagged next week.
+        return result
+
+    season = season_label(season_year)
+    snapshot = load_snapshot(season=season)
+    entries, departures = diff_transitions(
+        result.entries,
+        snapshot=snapshot,
+        players=players,
+        exclusions=result.exclusions,
+    )
+    if persist and (snapshot is None or snapshot.gameweek != next_gw_id):
+        try:
+            save_snapshot(
+                snapshot_from_entries(result.entries, gameweek=next_gw_id, season=season),
+            )
+        except OSError as exc:
+            # The watchlist stands on its own; losing the write costs next
+            # week's deltas, not this week's output.
+            logger.warning("Could not store the returnee snapshot: %s", exc)
+
+    return replace(
+        result,
+        entries=entries,
+        departures=departures,
+        transitions_available=snapshot is not None,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -801,3 +1241,20 @@ def _current_deadline_date(gameweeks: Sequence[Mapping[str, Any]], now: datetime
         if latest is None or deadline.date() > latest:
             latest = deadline.date()
     return latest
+
+
+def _as_chance(value: Any) -> int | None:
+    """Coerce a stored chance-of-playing to int, or None when it is not one."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return int(value)
+
+
+def _parse_date(value: Any) -> date | None:
+    """Coerce a stored ISO date to a date, or None when it is unusable."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        return None

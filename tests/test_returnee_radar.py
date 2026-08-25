@@ -10,7 +10,7 @@ import pytest
 from fpl_cli.api.historical_types import PlayerProfile, SeasonHistory
 from fpl_cli.cli._context import load_settings
 from fpl_cli.models.player import PlayerPosition, PlayerStatus
-from fpl_cli.season import TOTAL_GAMEWEEKS, get_season_year
+from fpl_cli.season import TOTAL_GAMEWEEKS, get_season_year, season_label
 from fpl_cli.services import returnee_radar
 from fpl_cli.services.player_prior import MIN_MINUTES, PlayerPrior
 from fpl_cli.services.returnee_radar import (
@@ -850,3 +850,545 @@ def test_radar_entry_is_frozen():
 
     with pytest.raises(AttributeError):
         entry.transition = "new"  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# Snapshot store
+# ---------------------------------------------------------------------------
+
+
+def _record(
+    *,
+    status: str = "i",
+    chance: int | None = None,
+    return_date: date | None = None,
+    lapsed: bool = False,
+    web_name: str = "Flagged",
+) -> Any:
+    return returnee_radar.SnapshotRecord(
+        status=status,
+        chance_of_playing=chance,
+        return_date=return_date,
+        lapsed=lapsed,
+        web_name=web_name,
+    )
+
+
+def _snapshot(gameweek: int = 1, season: str = "2026-27", **players: Any) -> Any:
+    return returnee_radar.RadarSnapshot(
+        season=season,
+        gameweek=gameweek,
+        players={int(pid): record for pid, record in players.items()},
+    )
+
+
+def test_snapshot_path_lands_in_the_isolated_data_dir(tmp_path):
+    path = returnee_radar.snapshot_path()
+
+    assert path == tmp_path / "user-data" / returnee_radar.SNAPSHOT_FILENAME
+
+
+def test_saved_snapshot_round_trips_through_load(tmp_path):
+    snapshot = _snapshot(
+        gameweek=4,
+        **{"7": _record(status="d", chance=25, return_date=date(2026, 10, 5), web_name="Rider")},
+    )
+
+    returnee_radar.save_snapshot(snapshot)
+    loaded = returnee_radar.load_snapshot(season="2026-27")
+
+    assert (tmp_path / "user-data" / returnee_radar.SNAPSHOT_FILENAME).is_file()
+    assert loaded == snapshot
+
+
+def test_snapshot_keeps_the_return_date_of_a_lapsed_signal(tmp_path):
+    snapshot = _snapshot(**{"7": _record(return_date=date(2026, 9, 5), lapsed=True)})
+
+    returnee_radar.save_snapshot(snapshot)
+    loaded = returnee_radar.load_snapshot(season="2026-27")
+
+    assert loaded is not None
+    assert loaded.players[7].return_date == date(2026, 9, 5)
+    assert loaded.players[7].lapsed is True
+
+
+def test_missing_snapshot_file_loads_as_none():
+    assert returnee_radar.load_snapshot(season="2026-27") is None
+
+
+def test_snapshot_from_a_previous_season_is_discarded():
+    returnee_radar.save_snapshot(_snapshot(season="2025-26", **{"7": _record()}))
+
+    assert returnee_radar.load_snapshot(season="2026-27") is None
+
+
+def test_snapshot_defaults_to_the_current_season_label():
+    returnee_radar.save_snapshot(
+        returnee_radar.RadarSnapshot(season=season_label(), gameweek=2, players={7: _record()}),
+    )
+
+    loaded = returnee_radar.load_snapshot()
+
+    assert loaded is not None and loaded.gameweek == 2
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '{"metadata": {"season": "2026-27", "gameweek": 3}, "play',  # truncated
+        "not json at all",
+        "[]",
+        '{"metadata": {"season": "2026-27"}}',  # no players block
+    ],
+)
+def test_corrupt_snapshot_file_loads_as_none_without_raising(text: str):
+    returnee_radar.snapshot_path().write_text(text, encoding="utf-8")
+
+    assert returnee_radar.load_snapshot(season="2026-27") is None
+
+
+def test_interrupted_write_leaves_the_previous_snapshot_readable(monkeypatch):
+    import os as os_module
+
+    returnee_radar.save_snapshot(_snapshot(gameweek=1, **{"7": _record(chance=25)}))
+
+    def _boom(src: Any, dst: Any) -> None:
+        raise OSError("interrupted")
+
+    monkeypatch.setattr(os_module, "replace", _boom)
+    with pytest.raises(OSError):
+        returnee_radar.save_snapshot(_snapshot(gameweek=2, **{"7": _record(chance=75)}))
+    monkeypatch.undo()
+
+    loaded = returnee_radar.load_snapshot(season="2026-27")
+    assert loaded is not None
+    assert loaded.gameweek == 1
+    assert loaded.players[7].chance_of_playing == 25
+
+
+# ---------------------------------------------------------------------------
+# Transition diffing
+# ---------------------------------------------------------------------------
+
+
+def _entry(
+    pid: int = 1,
+    *,
+    news: str = "Knee injury - Unknown return date",
+    chance: int | None = None,
+    status: PlayerStatus = PlayerStatus.INJURED,
+    web_name: str = "Flagged",
+    now: datetime = PRESEASON_NOW,
+    next_gw_id: int = NEXT_GW,
+) -> Any:
+    player = make_player(
+        id=pid,
+        code=1000 + pid,
+        web_name=web_name,
+        team_id=1,
+        position=PlayerPosition.MIDFIELDER,
+        now_cost=100,
+        status=status,
+        news=news,
+        chance_of_playing_next_round=chance,
+    )
+    result = _radar([player], {pid: _prior(0.9)}, now=now, next_gw_id=next_gw_id)
+    return result.entries[0]
+
+
+def _diff(entries: list[Any], snapshot: Any, **kwargs: Any) -> Any:
+    return returnee_radar.diff_transitions(
+        entries,
+        snapshot=snapshot,
+        players=kwargs.pop("players", []),
+        exclusions=kwargs.pop("exclusions", {}),
+        **kwargs,
+    )
+
+
+def test_no_snapshot_leaves_every_transition_unset():
+    marked, departures = _diff([_entry(chance=25)], None)
+
+    assert [e.transition for e in marked] == [None]
+    assert departures == []
+
+
+def test_chance_moving_up_marks_chance_improved():
+    entry = _entry(chance=25)
+    snapshot = _snapshot(**{"1": _record(chance=0)})
+
+    marked, _ = _diff([entry], snapshot)
+
+    assert [e.transition for e in marked] == [returnee_radar.TRANSITION_CHANCE_IMPROVED]
+
+
+def test_chance_moving_down_marks_chance_worsened():
+    marked, _ = _diff([_entry(chance=25)], _snapshot(**{"1": _record(chance=50)}))
+
+    assert [e.transition for e in marked] == [returnee_radar.TRANSITION_CHANCE_WORSENED]
+
+
+def test_a_return_date_pulled_forward_marks_moved_earlier():
+    entry = _entry(news="Calf injury - Expected back 5 Sep")
+    snapshot = _snapshot(**{"1": _record(return_date=date(2026, 10, 10))})
+
+    marked, _ = _diff([entry], snapshot)
+
+    assert [e.transition for e in marked] == [returnee_radar.TRANSITION_DATE_EARLIER]
+
+
+def test_a_return_date_pushed_back_marks_moved_later():
+    entry = _entry(news="Calf injury - Expected back 5 Sep")
+    snapshot = _snapshot(**{"1": _record(return_date=date(2026, 8, 29))})
+
+    marked, _ = _diff([entry], snapshot)
+
+    assert [e.transition for e in marked] == [returnee_radar.TRANSITION_DATE_LATER]
+
+
+def test_a_date_appearing_where_there_was_none_marks_newly_dated():
+    entry = _entry(news="Calf injury - Expected back 5 Sep")
+
+    marked, _ = _diff([entry], _snapshot(**{"1": _record(return_date=None)}))
+
+    assert [e.transition for e in marked] == [returnee_radar.TRANSITION_NEWLY_DATED]
+
+
+def test_a_lapsed_date_still_diffs_against_the_fpl_update_that_follows_it():
+    # The stored date is kept through the lapse (U1 keeps `return_date`), so a
+    # later FPL update reads as a moved return rather than a brand new one.
+    entry = _entry(news="Calf injury - Expected back 10 Oct", now=POST_GW5_NOW, next_gw_id=6)
+    snapshot = _snapshot(**{"1": _record(return_date=date(2026, 9, 5), lapsed=True)})
+
+    marked, _ = _diff([entry], snapshot)
+
+    assert [e.transition for e in marked] == [returnee_radar.TRANSITION_DATE_LATER]
+
+
+def test_a_stated_return_passing_without_arriving_marks_date_lapsed():
+    # now is past the GW5 deadline, so a 5 Sep return has been missed.
+    entry = _entry(
+        news="Calf injury - Expected back 5 Sep",
+        now=datetime(2026, 9, 15, 12, 0, tzinfo=timezone.utc),
+        next_gw_id=6,
+    )
+    snapshot = _snapshot(**{"1": _record(return_date=date(2026, 9, 5), lapsed=False)})
+
+    assert entry.signal.lapsed is True
+    marked, _ = _diff([entry], snapshot)
+
+    assert [e.transition for e in marked] == [returnee_radar.TRANSITION_DATE_LAPSED]
+
+
+def test_an_already_lapsed_date_does_not_re_fire_the_lapse():
+    entry = _entry(
+        news="Calf injury - Expected back 5 Sep",
+        now=datetime(2026, 9, 15, 12, 0, tzinfo=timezone.utc),
+        next_gw_id=6,
+    )
+    snapshot = _snapshot(**{"1": _record(return_date=date(2026, 9, 5), lapsed=True)})
+
+    marked, _ = _diff([entry], snapshot)
+
+    assert [e.transition for e in marked] == [None]
+
+
+def test_fpl_replacing_a_date_with_an_unknown_return_marks_date_withdrawn():
+    entry = _entry(news="Calf injury - Unknown return date")
+    snapshot = _snapshot(**{"1": _record(return_date=date(2026, 9, 5))})
+
+    marked, _ = _diff([entry], snapshot)
+
+    assert [e.transition for e in marked] == [returnee_radar.TRANSITION_DATE_WITHDRAWN]
+
+
+def test_a_player_absent_from_the_previous_snapshot_marks_newly_flagged():
+    marked, _ = _diff([_entry(pid=1)], _snapshot(**{"9": _record()}))
+
+    assert [e.transition for e in marked] == [returnee_radar.TRANSITION_NEWLY_FLAGGED]
+
+
+def test_an_unchanged_player_marks_no_transition():
+    entry = _entry(chance=25, news="Calf injury - Expected back 5 Sep")
+    snapshot = _snapshot(**{"1": _record(chance=25, return_date=date(2026, 9, 5))})
+
+    marked, _ = _diff([entry], snapshot)
+
+    assert [e.transition for e in marked] == [None]
+
+
+def test_an_unknown_chance_on_either_side_reports_no_chance_transition():
+    forwards, _ = _diff([_entry(chance=25)], _snapshot(**{"1": _record(chance=None)}))
+    backwards, _ = _diff([_entry(chance=None)], _snapshot(**{"1": _record(chance=25)}))
+
+    assert [e.transition for e in forwards] == [None]
+    assert [e.transition for e in backwards] == [None]
+
+
+def test_the_improving_signal_wins_when_date_and_chance_both_move():
+    entry = _entry(chance=50, news="Calf injury - Expected back 5 Sep")
+    snapshot = _snapshot(**{"1": _record(chance=25, return_date=date(2026, 10, 10))})
+
+    marked, _ = _diff([entry], snapshot)
+
+    assert [e.transition for e in marked] == [returnee_radar.TRANSITION_DATE_EARLIER]
+
+
+# --- Departures ------------------------------------------------------------
+
+
+def test_a_tracked_player_now_available_marks_now_available():
+    pool = [_flagged(pid=1, status=PlayerStatus.AVAILABLE, web_name="Back")]
+
+    _, departures = _diff([], _snapshot(**{"1": _record()}), players=pool)
+
+    assert [(d.player_id, d.transition) for d in departures] == [
+        (1, returnee_radar.TRANSITION_NOW_AVAILABLE),
+    ]
+    assert departures[0].web_name == "Back"
+    assert departures[0].reason is None
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [returnee_radar.EXCLUDED_BY_WINDOW, returnee_radar.EXCLUDED_BY_QUALITY],
+)
+def test_a_still_flagged_player_that_left_the_list_names_the_filter(reason: str):
+    pool = [_flagged(pid=1, status=PlayerStatus.INJURED)]
+
+    _, departures = _diff(
+        [], _snapshot(**{"1": _record()}), players=pool, exclusions={1: reason},
+    )
+
+    assert [(d.transition, d.reason) for d in departures] == [
+        (returnee_radar.TRANSITION_DROPPED, reason),
+    ]
+
+
+def test_a_tracked_player_who_left_the_player_pool_is_named_from_the_snapshot():
+    _, departures = _diff([], _snapshot(**{"1": _record(web_name="Gone")}), players=[])
+
+    assert [(d.web_name, d.transition, d.reason) for d in departures] == [
+        ("Gone", returnee_radar.TRANSITION_DROPPED, returnee_radar.EXCLUDED_UNKNOWN),
+    ]
+
+
+def test_a_player_still_on_the_watchlist_is_never_a_departure():
+    entry = _entry(pid=1)
+    pool = [_flagged(pid=1)]
+
+    marked, departures = _diff([entry], _snapshot(**{"1": _record()}), players=pool)
+
+    assert len(marked) == 1
+    assert departures == []
+
+
+# ---------------------------------------------------------------------------
+# run_radar: assembly, persistence and degradation
+# ---------------------------------------------------------------------------
+
+
+def _run(
+    players: list[Any],
+    priors: dict[int, PlayerPrior] | None,
+    **kwargs: Any,
+) -> Any:
+    return returnee_radar.run_radar(
+        players,
+        priors=priors,
+        next_gw_id=kwargs.pop("next_gw_id", NEXT_GW),
+        gameweeks=kwargs.pop("gameweeks", RADAR_GAMEWEEKS),
+        team_names=kwargs.pop("team_names", TEAM_NAMES),
+        now=kwargs.pop("now", PRESEASON_NOW),
+        season_year=kwargs.pop("season_year", SEASON_YEAR),
+        **kwargs,
+    )
+
+
+def _tracked(pid: int = 1, *, chance: int | None = None, **kwargs: Any) -> Any:
+    player = _flagged(pid=pid, **kwargs)
+    return make_player(
+        id=player.id,
+        code=player.code,
+        web_name=player.web_name,
+        team_id=player.team_id,
+        position=player.position,
+        now_cost=player.now_cost,
+        status=player.status,
+        news=player.news,
+        chance_of_playing_next_round=chance,
+    )
+
+
+def test_first_run_reports_no_transitions_and_writes_a_snapshot(tmp_path):
+    result = _run([_tracked(chance=0)], {1: _prior(0.9)})
+
+    assert [e.player_id for e in result.entries] == [1]
+    assert [e.transition for e in result.entries] == [None]
+    assert result.departures == []
+    assert result.transitions_available is False
+    stored = returnee_radar.load_snapshot(season="2026-27")
+    assert stored is not None
+    assert stored.gameweek == NEXT_GW
+    assert stored.players[1].chance_of_playing == 0
+    assert (tmp_path / "user-data" / returnee_radar.SNAPSHOT_FILENAME).is_file()
+
+
+def test_second_run_marks_the_chance_improvement_against_the_stored_run():
+    _run([_tracked(chance=0)], {1: _prior(0.9)})
+
+    result = _run([_tracked(chance=25)], {1: _prior(0.9)})
+
+    assert [e.transition for e in result.entries] == [returnee_radar.TRANSITION_CHANCE_IMPROVED]
+    assert result.transitions_available is True
+
+
+def test_two_runs_in_one_gameweek_report_the_same_delta_and_write_once():
+    _run([_tracked(chance=0)], {1: _prior(0.9)})
+
+    second = _run([_tracked(chance=25)], {1: _prior(0.9)})
+    written = returnee_radar.snapshot_path().read_text(encoding="utf-8")
+    third = _run([_tracked(chance=25)], {1: _prior(0.9)})
+
+    assert [e.transition for e in third.entries] == [e.transition for e in second.entries]
+    assert returnee_radar.snapshot_path().read_text(encoding="utf-8") == written
+    # Still the first run's state: a per-run write would have emptied the delta.
+    stored = returnee_radar.load_snapshot(season="2026-27")
+    assert stored is not None and stored.players[1].chance_of_playing == 0
+
+
+def test_a_later_gameweek_rewrites_the_snapshot_after_diffing_the_previous_one():
+    _run([_tracked(chance=0)], {1: _prior(0.9)})
+
+    result = _run([_tracked(chance=25)], {1: _prior(0.9)}, next_gw_id=2)
+
+    assert [e.transition for e in result.entries] == [returnee_radar.TRANSITION_CHANCE_IMPROVED]
+    stored = returnee_radar.load_snapshot(season="2026-27")
+    assert stored is not None
+    assert stored.gameweek == 2
+    assert stored.players[1].chance_of_playing == 25
+
+
+def test_a_snapshot_from_last_season_resets_the_run_to_first_run_behaviour():
+    returnee_radar.save_snapshot(
+        returnee_radar.RadarSnapshot(
+            season="2025-26", gameweek=NEXT_GW, players={1: _record(chance=0)},
+        ),
+    )
+
+    result = _run([_tracked(chance=25)], {1: _prior(0.9)})
+
+    assert [e.transition for e in result.entries] == [None]
+    assert result.transitions_available is False
+    stored = returnee_radar.load_snapshot(season="2026-27")
+    assert stored is not None and stored.season == "2026-27"
+
+
+def test_a_corrupt_snapshot_resets_the_run_to_first_run_behaviour():
+    returnee_radar.snapshot_path().write_text('{"metadata": {"seas', encoding="utf-8")
+
+    result = _run([_tracked(chance=25)], {1: _prior(0.9)})
+
+    assert [e.transition for e in result.entries] == [None]
+    assert result.transitions_available is False
+    assert returnee_radar.load_snapshot(season="2026-27") is not None
+
+
+def test_a_tracked_player_who_became_available_is_reported_as_a_return():
+    _run([_tracked(pid=1)], {1: _prior(0.9)})
+
+    result = _run([_tracked(pid=1, status=PlayerStatus.AVAILABLE)], {1: _prior(0.9)})
+
+    assert result.entries == []
+    assert [(d.player_id, d.transition) for d in result.departures] == [
+        (1, returnee_radar.TRANSITION_NOW_AVAILABLE),
+    ]
+
+
+def test_a_still_flagged_player_pushed_out_by_the_window_is_not_reported_as_a_return():
+    _run([_tracked(pid=1)], {1: _prior(0.9)})
+
+    result = _run([_tracked(pid=1, news=_news_returning_in_gw(9))], {1: _prior(0.9)})
+
+    assert result.entries == []
+    assert [(d.transition, d.reason) for d in result.departures] == [
+        (returnee_radar.TRANSITION_DROPPED, returnee_radar.EXCLUDED_BY_WINDOW),
+    ]
+
+
+def test_a_still_flagged_player_dropped_by_the_quality_bar_names_that_filter():
+    _run([_tracked(pid=1)], {1: _prior(0.9)})
+
+    result = _run([_tracked(pid=1)], {1: _prior(0.5)})
+
+    assert result.entries == []
+    assert [(d.transition, d.reason) for d in result.departures] == [
+        (returnee_radar.TRANSITION_DROPPED, returnee_radar.EXCLUDED_BY_QUALITY),
+    ]
+
+
+def test_build_radar_records_why_each_flagged_player_was_excluded():
+    result = _radar(
+        [_flagged(pid=1, news=_news_returning_in_gw(9)), _flagged(pid=2)],
+        {1: _prior(0.9), 2: _prior(0.5)},
+    )
+
+    assert result.exclusions == {
+        1: returnee_radar.EXCLUDED_BY_WINDOW,
+        2: returnee_radar.EXCLUDED_BY_QUALITY,
+    }
+
+
+def test_a_degraded_run_leaves_the_stored_snapshot_untouched():
+    _run([_tracked(chance=0)], {1: _prior(0.9)})
+    before = returnee_radar.snapshot_path().read_text(encoding="utf-8")
+
+    result = _run([_tracked(chance=25)], None, next_gw_id=2)
+
+    assert result.degraded is True
+    assert result.entries == []
+    assert result.departures == []
+    assert returnee_radar.snapshot_path().read_text(encoding="utf-8") == before
+
+
+def test_persist_false_diffs_without_storing_the_run():
+    _run([_tracked(chance=0)], {1: _prior(0.9)})
+    before = returnee_radar.snapshot_path().read_text(encoding="utf-8")
+
+    result = _run([_tracked(chance=25)], {1: _prior(0.9)}, next_gw_id=2, persist=False)
+
+    assert [e.transition for e in result.entries] == [returnee_radar.TRANSITION_CHANCE_IMPROVED]
+    assert returnee_radar.snapshot_path().read_text(encoding="utf-8") == before
+
+
+def test_run_radar_without_a_stored_gameweek_still_returns_the_ordered_watchlist():
+    players = [
+        _tracked(pid=1, web_name="Unknown"),
+        _tracked(pid=2, web_name="Near", news=_news_returning_in_gw(2)),
+    ]
+
+    result = _run(players, {1: _prior(0.95), 2: _prior(0.9)})
+
+    assert [e.web_name for e in result.entries] == ["Near", "Unknown"]
+
+
+def test_a_failed_snapshot_write_still_returns_the_watchlist(monkeypatch):
+    def _boom(snapshot: Any) -> None:
+        raise OSError("read-only data dir")
+
+    monkeypatch.setattr(returnee_radar, "save_snapshot", _boom)
+
+    result = _run([_tracked(chance=0)], {1: _prior(0.9)})
+
+    assert [e.player_id for e in result.entries] == [1]
+    assert result.transitions_available is False
+
+
+def test_radar_departure_is_frozen():
+    _run([_tracked(pid=1)], {1: _prior(0.9)})
+    departure = _run(
+        [_tracked(pid=1, status=PlayerStatus.AVAILABLE)], {1: _prior(0.9)},
+    ).departures[0]
+
+    with pytest.raises(AttributeError):
+        departure.reason = "window"  # type: ignore[misc]
