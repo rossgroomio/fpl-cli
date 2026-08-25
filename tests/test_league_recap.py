@@ -38,11 +38,13 @@ from fpl_cli.cli._league_recap_types import (
     RecapTransfer,
 )
 from fpl_cli.prompts.league_recap import (
+    collect_player_clubs,
     format_recap_awards_context,
     format_recap_captains_context,
     format_recap_chips_context,
     format_recap_fines_context,
     format_recap_league_history_context,
+    format_recap_player_clubs_context,
     format_recap_standings_context,
     get_recap_synthesis_prompt,
 )
@@ -2235,6 +2237,37 @@ class TestPromptFormatting:
         assert "Only reference transfers that appear explicitly" in RECAP_SYNTHESIS_SYSTEM_PROMPT
         assert "not licence to invent" in RECAP_SYNTHESIS_SYSTEM_PROMPT
 
+    def test_synthesis_system_prompt_binds_club_claims_to_the_data(self):
+        """#150: clubs are supplied now, so the rule binds to them rather than
+        banning the subject outright."""
+        from fpl_cli.prompts.league_recap import RECAP_SYNTHESIS_SYSTEM_PROMPT
+
+        assert (
+            "NEVER state a club for a player other than the club given for them"
+            in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        )
+        assert "## Player Clubs" in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        assert "goes a season out of date" in RECAP_SYNTHESIS_SYSTEM_PROMPT
+
+    def test_synthesis_prompt_carries_the_player_clubs_section(self):
+        _, user = get_recap_synthesis_prompt(
+            gw=10, league_name="Test", fpl_format="classic",
+            awards_text="awards", standings_text="standings", fines_text="",
+            player_clubs_text="- Gyokeres: Arsenal",
+        )
+        assert "## Player Clubs" in user
+        assert "- Gyokeres: Arsenal" in user
+
+    def test_synthesis_prompt_omits_player_clubs_when_unresolved(self):
+        """No club map (a replay, or a team lookup that failed) leaves the
+        section out, and the rule then forbids naming any club."""
+        _, user = get_recap_synthesis_prompt(
+            gw=10, league_name="Test", fpl_format="classic",
+            awards_text="awards", standings_text="standings", fines_text="",
+        )
+        assert "## Player Clubs" not in user
+
+
     def test_synthesis_prompt_omits_fines_when_empty(self):
         _, user = get_recap_synthesis_prompt(
             gw=10, league_name="Test", fpl_format="draft",
@@ -2874,3 +2907,99 @@ class TestCollectorLedgerContract:
         assert by_name["Star"]["unmatched"] is False
         assert by_name["Nobody"]["code"] is None
         assert by_name["Nobody"]["unmatched"] is True
+
+
+class TestRecapPlayerClubs:
+    """#150: the recap prompt carried no club data at all, so any club the
+    narrative named came from training data a transfer window out of date."""
+
+    @staticmethod
+    def _data(**overrides):
+        manager = {
+            "manager_name": "Manager A",
+            "captain": "Gyökeres",
+            "captain_points": 9,
+            "captain_played": True,
+            "gw_points": 70,
+            "squad": [
+                {"name": "Gyökeres", "team": "ARS", "team_name": "Arsenal"},
+                {"name": "Wissa", "team": "NEW", "team_name": "Newcastle"},
+            ],
+        }
+        manager.update(overrides)
+        return {"fpl_format": "classic", "managers": [manager]}
+
+    def _roster(self, **overrides):
+        return format_recap_player_clubs_context(collect_player_clubs(self._data(**overrides)))
+
+    def test_roster_lists_every_squad_player_with_a_full_club_name(self):
+        text = self._roster()
+        assert "- Gyökeres: Arsenal" in text
+        assert "- Wissa: Newcastle" in text
+
+    def test_roster_covers_transfers_as_well_as_squads(self):
+        text = self._roster(transfers=[{
+            "player_in": "Semenyo", "player_in_team": "MUN", "player_in_team_name": "Man Utd",
+            "player_out": "Watkins", "player_out_team": "AVL", "player_out_team_name": "Aston Villa",
+        }])
+        assert "- Semenyo: Man Utd" in text
+        assert "- Watkins: Aston Villa" in text
+
+    def test_roster_covers_draft_waiver_transactions(self):
+        text = self._roster(transactions=[{
+            "player_in": "Semenyo", "player_in_team": "MUN", "player_in_team_name": "Man Utd",
+            "player_out": "Watkins", "player_out_team": "AVL", "player_out_team_name": "Aston Villa",
+        }])
+        assert "- Semenyo: Man Utd" in text
+
+    def test_roster_drops_a_name_two_clubs_claim(self):
+        """Two players share a web_name most seasons. The recap names players by
+        name alone, so neither club can be attributed - better absent than wrong."""
+        text = self._roster(squad=[
+            {"name": "Martínez", "team": "AVL", "team_name": "Aston Villa"},
+            {"name": "Martínez", "team": "MUN", "team_name": "Man Utd"},
+            {"name": "Wissa", "team": "NEW", "team_name": "Newcastle"},
+        ])
+        assert "Martínez" not in text
+        assert "- Wissa: Newcastle" in text
+
+    def test_ambiguity_survives_a_later_repeat_of_the_first_club(self):
+        """A third sighting matching the first club must not resurrect the name."""
+        clubs = collect_player_clubs(self._data(squad=[
+            {"name": "Martínez", "team": "AVL", "team_name": "Aston Villa"},
+            {"name": "Martínez", "team": "MUN", "team_name": "Man Utd"},
+            {"name": "Martínez", "team": "AVL", "team_name": "Aston Villa"},
+        ]))
+        assert "Martínez" not in clubs
+
+    def test_roster_drops_a_player_whose_club_never_resolved(self):
+        """Collection sets team_name to None rather than a placeholder, so the
+        player simply has no club to state."""
+        assert self._roster(squad=[{"name": "Calvert-Lewin", "team": "???", "team_name": None}]) == ""
+
+    def test_roster_empty_when_no_squads_carry_clubs(self):
+        assert format_recap_player_clubs_context({}) == ""
+
+    def test_roster_states_it_is_the_only_source(self):
+        assert "only source for a player's club" in self._roster()
+
+    def test_captain_group_header_carries_the_club_inline(self):
+        data = self._data()
+        text = format_recap_captains_context(data, collect_player_clubs(data))
+        assert "- **Gyökeres (Arsenal)** (×1): Manager A (9 pts)" in text
+
+    def test_captain_group_header_unchanged_without_a_roster(self):
+        text = format_recap_captains_context(self._data(), None)
+        assert "- **Gyökeres** (×1): Manager A (9 pts)" in text
+
+    def test_captain_group_header_omits_an_ambiguous_club(self):
+        data = self._data(
+            captain="Martínez",
+            squad=[
+                {"name": "Martínez", "team": "AVL", "team_name": "Aston Villa"},
+                {"name": "Martínez", "team": "MUN", "team_name": "Man Utd"},
+            ],
+        )
+        text = format_recap_captains_context(data, collect_player_clubs(data))
+        assert "- **Martínez** (×1):" in text
+        assert "Aston Villa" not in text

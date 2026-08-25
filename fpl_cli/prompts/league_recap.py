@@ -37,6 +37,7 @@ Your audience is every member of this league. They want entertainment first, inf
 - Only reference transfers that appear explicitly in the Awards section or in a transfers note. If no transfer information is given, do not mention transfers, hits, or moves in and out at all - absence of transfer data means there is nothing to report, not licence to invent one.
 - NEVER claim a manager's bench outscored their team unless bench points are strictly greater than their GW points. Use the exact numbers provided.
 - NEVER alter player or manager names. Use the exact spelling provided in the data.
+- NEVER state a club for a player other than the club given for them in this data - the "## Player Clubs" section, or the club printed beside a name elsewhere. Players change clubs in the transfer windows and your own knowledge of who plays where goes a season out of date, so that section is the only authority. A player it does not list has no club you can state: name them alone ("Haaland's 2 points") rather than supplying one from memory.
 </rules>"""
 
 
@@ -51,6 +52,7 @@ def get_recap_synthesis_prompt(
     *,
     captains_text: str = "",
     chips_text: str = "",
+    player_clubs_text: str = "",
     league_history_text: str = "",
     is_bgw: bool = False,
     is_dgw: bool = False,
@@ -92,6 +94,9 @@ def get_recap_synthesis_prompt(
 
     if chips_text:
         sections.extend(["", "## Chips Played", chips_text])
+
+    if player_clubs_text:
+        sections.extend(["", "## Player Clubs", player_clubs_text])
 
     if fines_text:
         sections.extend(["", "## Fines", fines_text])
@@ -206,12 +211,74 @@ def format_recap_chips_context(data: LeagueRecapData) -> str:
     return "\n".join(lines)
 
 
-def format_recap_captains_context(data: LeagueRecapData) -> str:
+def collect_player_clubs(data: LeagueRecapData) -> dict[str, str]:
+    """Map player name -> full club name across every player in the recap data.
+
+    Squads and transfers carry the club resolved at collection time, off the
+    player's `team_id`, so nothing is reconstructed here -- this only regroups
+    them by the name the recap prose actually uses.
+
+    That regrouping is what forces the one judgement call: the recap names
+    players by name alone, and most seasons have two players sharing a
+    web_name. When the data gives one name two clubs, neither can be attributed
+    to a mention of it, so the name is dropped and the prompt's rules then
+    forbid stating a club for it -- absent beats wrong.
+    """
+    resolved: dict[str, str] = {}
+    ambiguous: set[str] = set()
+
+    def record(name: str | None, club: str | None) -> None:
+        if not name or not club or name in ambiguous:
+            return
+        seen = resolved.get(name)
+        if seen is None:
+            resolved[name] = club
+        elif seen != club:
+            del resolved[name]
+            ambiguous.add(name)
+
+    for manager in data.get("managers", []):
+        for player in manager.get("squad", []):
+            record(player.get("name"), player.get("team_name"))
+        for move in [*(manager.get("transfers") or []), *(manager.get("transactions") or [])]:
+            record(move.get("player_in"), move.get("player_in_team_name"))
+            record(move.get("player_out"), move.get("player_out_team_name"))
+
+    return resolved
+
+
+def format_recap_player_clubs_context(player_clubs: dict[str, str]) -> str:
+    """Roster of every player the recap can name, with the club they play for.
+
+    Without it the prompt carries no club at all, and the model fills the gap
+    from training data that goes a season stale at every transfer window (#150)
+    -- so a summer signing gets written up at the club they left. Built from the
+    same squads and transfers the other sections are computed from, so anything
+    the recap can name is something this section covers.
+    """
+    if not player_clubs:
+        return ""
+
+    lines = [
+        "The club each player plays for this season. This is the only source for a"
+        " player's club - do not use your own knowledge of where they play.",
+    ]
+    lines.extend(f"- {name}: {club}" for name, club in sorted(player_clubs.items()))
+    return "\n".join(lines)
+
+
+def format_recap_captains_context(
+    data: LeagueRecapData, player_clubs: dict[str, str] | None = None,
+) -> str:
     """Per-manager captain roster grouped by intended pick.
 
     Mirrors the chips section: prevents the synthesis LLM from hallucinating
     captain outliers when the modal pick crowds out the per-award detail.
     Suppressed for draft (no captaincy).
+
+    Captains are the most-named players in a recap, so their club is printed
+    inline rather than left to the Player Clubs lookup -- grounding a claim
+    beats supplying a table to check it against.
     """
     if data.get("fpl_format") != "classic":
         return ""
@@ -236,12 +303,15 @@ def format_recap_captains_context(data: LeagueRecapData) -> str:
     if not by_captain:
         return ""
 
+    clubs = player_clubs or {}
     groups = sorted(by_captain.items(), key=lambda kv: (-len(kv[1]), kv[0]))
     lines = [f"Total captains: {sum(len(v) for v in by_captain.values())}"]
     for player, entries in groups:
         entries.sort(key=lambda e: e[0])
         joined = ", ".join(f"{name} ({ann})" for name, ann in entries)
-        lines.append(f"- **{player}** (×{len(entries)}): {joined}")
+        club = clubs.get(player)
+        label = f"{player} ({club})" if club else player
+        lines.append(f"- **{label}** (×{len(entries)}): {joined}")
     return "\n".join(lines)
 
 

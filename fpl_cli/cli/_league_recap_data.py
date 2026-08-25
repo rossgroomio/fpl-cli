@@ -325,9 +325,11 @@ async def _fetch_all_manager_data(
             if is_bench and player.id not in auto_sub_in_ids and not is_bench_boost_player:
                 bench_points += pts
 
+            player_team = teams.get(player.team_id)
             squad.append(RecapManagerPlayer(
                 name=player.web_name,
-                team=t.short_name if (t := teams.get(player.team_id)) else "???",
+                team=player_team.short_name if player_team else "???",
+                team_name=player_team.name if player_team else None,
                 position=player.position_name,
                 code=player.code or None,
                 points=pts,
@@ -382,9 +384,11 @@ async def _fetch_all_manager_data(
                         transfer = RecapTransfer(
                             player_in=pin.web_name,
                             player_in_team=pin_team.short_name if pin_team else "???",
+                            player_in_team_name=pin_team.name if pin_team else None,
                             player_in_points=pin_pts,
                             player_out=pout.web_name,
                             player_out_team=pout_team.short_name if pout_team else "???",
+                            player_out_team_name=pout_team.name if pout_team else None,
                             player_out_points=pout_pts,
                             net=pin_pts - pout_pts,
                             cost=transfer_cost,
@@ -1168,9 +1172,11 @@ def _contract_draft_txn_chains(
             contracted.append(RecapDraftTransaction(
                 player_in=current["player_in"],
                 player_in_team=current["player_in_team"],
+                player_in_team_name=current.get("player_in_team_name"),
                 player_in_points=current["player_in_points"],
                 player_out=start["player_out"],
                 player_out_team=start["player_out_team"],
+                player_out_team_name=start.get("player_out_team_name"),
                 player_out_points=start["player_out_points"],
                 net=current["player_in_points"] - start["player_out_points"],
                 kind=current["kind"],
@@ -1377,7 +1383,8 @@ async def collect_draft_recap_data(
                 unmatched = main_id is None
                 pts, _, red_cards = _live_player_stats(live_stats, main_id)
                 pos_name = POSITION_MAP.get(draft_player.get("element_type"), "???")
-                team_short = t.short_name if (t := teams.get(draft_player.get("team"))) else "???"
+                draft_team = teams.get(draft_player.get("team"))
+                team_short = draft_team.short_name if draft_team else "???"
                 squad_position = pick.get("position", 1)
                 is_bench = squad_position > 11
                 contributed = not is_bench
@@ -1392,6 +1399,7 @@ async def collect_draft_recap_data(
                 squad.append(RecapManagerPlayer(
                     name=draft_player.get("web_name", "Unknown"),
                     team=team_short,
+                    team_name=draft_team.name if draft_team else None,
                     position=pos_name,
                     code=draft_to_main_code.get(draft_elem_id),
                     points=pts,
@@ -1440,15 +1448,17 @@ async def collect_draft_recap_data(
                 main_out_id = draft_to_main_id.get(pout_id) if pout_id else None
                 out_pts, _, _ = _live_player_stats(live_stats, main_out_id)
 
-                in_team = t.short_name if (t := teams.get(dp_in.get("team"))) else "???"
-                out_team = t.short_name if (t := teams.get(dp_out.get("team"))) else "???"
+                in_club = teams.get(dp_in.get("team"))
+                out_club = teams.get(dp_out.get("team"))
 
                 transaction = RecapDraftTransaction(
                     player_in=dp_in.get("web_name", "Unknown"),
-                    player_in_team=in_team,
+                    player_in_team=in_club.short_name if in_club else "???",
+                    player_in_team_name=in_club.name if in_club else None,
                     player_in_points=in_pts,
                     player_out=dp_out.get("web_name", "Unknown"),
-                    player_out_team=out_team,
+                    player_out_team=out_club.short_name if out_club else "???",
+                    player_out_team_name=out_club.name if out_club else None,
                     player_out_points=out_pts,
                     net=in_pts - out_pts,
                     kind=txn.get("kind", "w"),

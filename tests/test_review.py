@@ -2638,3 +2638,120 @@ class TestOpeningGameweekSynthesisPrompt:
     def test_net_points_qualifier_survives_the_block_rewrite(self):
         _, prompt = self._prompts(14, use_net_points=True)
         assert "GW Position: 6 of 10 (by net points this gameweek)" in prompt
+
+
+class TestSynthesisClubGrounding:
+    """#150: the personal-analysis narrative filed a player under a club he had
+    left in the summer window, while the same report's tables had his current
+    club right. Behavioural LLM output can't be pinned, but the grounding can:
+    every squad player's club must reach the prompt, spelled out, and the model
+    must be told the supplied data is the only authority on club and on
+    blanket scored/blanked claims.
+    """
+
+    @staticmethod
+    def _classic_squad():
+        # Gyökeres moved Sporting -> Arsenal in the summer: exactly the shape
+        # that invites a stale training prior to override the data.
+        return [
+            {
+                "name": "Gyökeres", "team": "ARS", "team_name": "Arsenal", "position": "FWD",
+                "points": 9, "display_points": 9, "contributed": True,
+            },
+            {
+                "name": "Mbeumo", "team": "MUN", "team_name": "Man Utd", "position": "MID",
+                "points": 6, "display_points": 12, "contributed": True, "is_captain": True,
+            },
+            {
+                "name": "Sánchez", "team": "CHE", "team_name": "Chelsea", "position": "GK",
+                "points": 2, "display_points": 2, "contributed": True,
+            },
+            {
+                "name": "Wissa", "team": "NEW", "team_name": "Newcastle", "position": "FWD",
+                "points": 0, "display_points": 0, "contributed": False,
+            },
+        ]
+
+    @staticmethod
+    def _draft_squad():
+        return [
+            {
+                "name": "Šeško", "team": "MUN", "team_name": "Man Utd", "position": "FWD",
+                "points": 5, "contributed": True,
+            },
+            {
+                "name": "Eze", "team": "ARS", "team_name": "Arsenal", "position": "MID",
+                "points": 3, "contributed": True,
+            },
+        ]
+
+    def _prompt(self):
+        from fpl_cli.cli._review_summarisation import _format_classic_section, _format_draft_section
+
+        classic_fmt = _format_classic_section(self._classic_squad(), [], {}, [], gameweek=9)
+        draft_fmt = _format_draft_section(self._draft_squad(), [], {}, [])
+        _, prompt = get_review_synthesis_prompt(
+            gameweek=9,
+            research_summary="Community summary",
+            classic_points=61,
+            classic_average=52,
+            classic_highest=118,
+            classic_gw_rank=900_000,
+            classic_overall_rank=750_000,
+            classic_captain="Mbeumo (12 pts = 6 raw × 2)",
+            classic_captain_points=12,
+            classic_captain_hindsight="Gyökeres would have been better (+6 pts)",
+            classic_players=classic_fmt["players"],
+            classic_transfers=classic_fmt["transfers"],
+            classic_league_name="Office League",
+            classic_gw_position=4,
+            classic_position=5,
+            classic_total=11,
+            classic_rivals="- 1. Rival: 500 pts",
+            classic_worst_performers="1. Rival - 30 pts",
+            classic_transfer_impact=None,
+            draft_points=44,
+            draft_league_name="Draft League",
+            draft_players=draft_fmt["players"],
+            draft_transactions=draft_fmt["transactions"],
+            draft_gw_position=2,
+            draft_position=3,
+            draft_total=8,
+        )
+        return prompt
+
+    def test_every_classic_squad_player_carries_its_club(self):
+        prompt = self._prompt()
+        for player in self._classic_squad():
+            assert f"{player['name']} ({player['team_name']}," in prompt
+
+    def test_every_draft_squad_player_carries_its_club(self):
+        prompt = self._prompt()
+        for player in self._draft_squad():
+            assert f"{player['name']} ({player['team_name']}," in prompt
+
+    def test_club_is_the_full_name_not_the_three_letter_code(self):
+        # A code makes the model expand it from memory, which is where the
+        # stale prior gets in. The transferred player is the one that matters.
+        prompt = self._prompt()
+        assert "Gyökeres (Arsenal, FWD)" in prompt
+        assert "Gyökeres (ARS" not in prompt
+
+    def test_context_block_names_the_club_label_as_authoritative(self):
+        system = _build_system_prompt(has_fines=False)
+        assert "`- Name (Club, POS): N pts`" in system
+        assert "it overrides anything you remember about them" in system
+
+    @pytest.mark.parametrize("has_fines", [True, False])
+    def test_system_prompt_binds_club_claims_to_the_data(self, has_fines):
+        system = _build_system_prompt(has_fines=has_fines)
+        assert "State or imply a club for any player other than the club printed beside their name" in system
+        assert "Players change clubs in the transfer windows" in system
+
+    @pytest.mark.parametrize("has_fines", [True, False])
+    def test_system_prompt_forbids_blanket_scored_claims(self, has_fines):
+        # "everyone scored" over a Bench Boost bench holding a 0 was the second
+        # half of #150.
+        system = _build_system_prompt(has_fines=has_fines)
+        assert "Make a blanket scored-or-blanked claim" in system
+        assert "Under Bench Boost the bench totals are part of the claim" in system

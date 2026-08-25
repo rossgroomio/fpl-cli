@@ -483,11 +483,13 @@ async def _recap_llm_summarise(
 ) -> None:
     """Run LLM summarisation for league recap. Mutates collected_data to add summaries."""
     from fpl_cli.prompts.league_recap import (
+        collect_player_clubs,
         format_recap_awards_context,
         format_recap_captains_context,
         format_recap_chips_context,
         format_recap_fines_context,
         format_recap_league_history_context,
+        format_recap_player_clubs_context,
         format_recap_standings_context,
         get_recap_synthesis_prompt,
     )
@@ -500,7 +502,10 @@ async def _recap_llm_summarise(
 
     awards_text = format_recap_awards_context(collected_data)
     standings_text = format_recap_standings_context(collected_data)
-    captains_text = format_recap_captains_context(collected_data)
+    # One walk of the squads/transfers, shared by both sections that need it.
+    player_clubs = collect_player_clubs(collected_data)
+    captains_text = format_recap_captains_context(collected_data, player_clubs)
+    player_clubs_text = format_recap_player_clubs_context(player_clubs)
     chips_text = format_recap_chips_context(collected_data)
     fines_text = format_recap_fines_context(collected_data)
     league_history_text = format_recap_league_history_context(notes_pack)
@@ -514,6 +519,7 @@ async def _recap_llm_summarise(
         fines_text=fines_text,
         captains_text=captains_text,
         chips_text=chips_text,
+        player_clubs_text=player_clubs_text,
         league_history_text=league_history_text,
         is_bgw=is_bgw,
         is_dgw=is_dgw,

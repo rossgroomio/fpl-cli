@@ -10,6 +10,11 @@ class RecapManagerPlayer(TypedDict):
 
     name: str
     team: str
+    # Full club name, for prose that has to state where a player plays. The
+    # 3-letter `team` reads as a surname in a sentence (LEE is Leeds, not
+    # someone called Lee). None when the club didn't resolve -- consumers omit
+    # the club rather than printing a placeholder that reads like one.
+    team_name: NotRequired[str | None]
     position: str
     # Stable cross-season element_code, so a recorded squad still identifies
     # its players after the API reshuffles seasonal ids. None when the
@@ -37,10 +42,12 @@ class RecapTransfer(TypedDict):
 
     player_in: str
     player_in_team: str
+    player_in_team_name: NotRequired[str | None]
     player_in_points: int
     player_in_code: NotRequired[int]
     player_out: str
     player_out_team: str
+    player_out_team_name: NotRequired[str | None]
     player_out_points: int
     player_out_code: NotRequired[int]
     net: int
@@ -53,10 +60,12 @@ class RecapDraftTransaction(TypedDict):
 
     player_in: str
     player_in_team: str
+    player_in_team_name: NotRequired[str | None]
     player_in_points: int
     player_in_code: NotRequired[int]
     player_out: str
     player_out_team: str
+    player_out_team_name: NotRequired[str | None]
     player_out_points: int
     player_out_code: NotRequired[int]
     net: int

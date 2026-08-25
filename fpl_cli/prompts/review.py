@@ -227,6 +227,8 @@ _HARD_CONSTRAINTS_BASE_NEVER = """\
 - Ignore bench points - if players on the bench outscored starters, call it out
 - Infer a scoring breakdown from a player's total points. You only receive totals - you do NOT know how many minutes they played, whether they kept a clean sheet, scored, assisted, got bonus, or were booked. Never write phrases like "presumably a clean sheet appearance", "must have got an assist", "looks like a 60+ minute cameo", or any similar guess. If the total is low, just state the total ("Mac Allister managed 1 point") without speculating on the components
 - Attribute DGW or BGW status to any team not listed in the `<gw_fixtures>` block. That block is authoritative - if the community narrative implies a team played twice or blanked, ignore it unless the team is explicitly in the DGW/BGW list. Every team not listed played ONCE. Never write "in a DGW", "from a double gameweek", "blanked in their DGW" etc. for a single-gameweek team
+- State or imply a club for any player other than the club printed beside their name in the supplied data. Squad lines read `- Name (Club, POS): N pts` - that club is the only authority on who they play for. Players change clubs in the transfer windows and your training data lags behind, so a player you "know" at one club may have moved. This applies to grouping too: only put players together as a club's contingent ("the Brighton pair") when every one of them carries that club label in the data. If you want to name a player who has no club label anywhere in the data, name them without a club rather than guessing one
+- Make a blanket scored-or-blanked claim - "everyone scored", "nobody blanked", "the whole bench delivered", "all 15 contributed" - without checking every points total it covers. One player on 0 makes it false. Under Bench Boost the bench totals are part of the claim, since all 15 count. Either name what the data actually shows or drop the sweeping line
 - Use the word "league" to refer to the global FPL game. In this prompt, "league" ALWAYS means the user's mini-league (Classic or Draft) by name. The "Global FPL top score" and "Global FPL average" are community-wide stats across all FPL managers worldwide - refer to them as "the global top score", "the overall average", or "the best manager in the game". NEVER write "the highest in the league", "the top score in the league", or any phrasing that implies these global stats came from the user's mini-league\""""
 
 _HARD_CONSTRAINTS_FINE_NEVER = """\
@@ -265,6 +267,7 @@ Chips (each changes how you should frame the verdict):
 - **Wildcard (WC)** = unlimited free transfers (squad persists). All transfers were free - do not evaluate individual transfer hits/misses. Frame as squad construction quality: did the new squad deliver?
 
 In the player data:
+- Every squad line reads `- Name (Club, POS): N pts`. The club in those brackets is where that player plays this season, taken from the FPL API - it is the only source for their club, and it overrides anything you remember about them
 - Players with points shown normally contributed to your score
 - `[AUTO-SUB IN]` = bench player who came on when a starter didn't play
 - `[DIDN'T PLAY - auto-subbed out]` = starter who was replaced (0 pts)

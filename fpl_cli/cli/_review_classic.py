@@ -78,10 +78,15 @@ async def _review_classic_team(
 
                     squad_slot = pick.get("position", 0)
                     multiplier = pick.get("multiplier", 1)
+                    player_team = teams.get(player.team_id)
                     my_picks_data.append({
                         "id": player.id,
                         "name": player.web_name,
-                        "team": teams.get(player.team_id).short_name if teams.get(player.team_id) else "???",
+                        "team": player_team.short_name if player_team else "???",
+                        # None, never a placeholder: the LLM prompt presents this
+                        # as the authority on the player's club, and "Unknown club"
+                        # reads like one. Absent, the formatter falls back to the code.
+                        "team_name": player_team.name if player_team else None,
                         "position": player.position_name,
                         "points": gw_points,
                         "total_points": gw_points * multiplier,
@@ -118,6 +123,7 @@ async def _review_classic_team(
                 team_points_data.append({
                     "name": p["name"],
                     "team": p["team"],
+                    "team_name": p["team_name"],
                     "position": p["position"],
                     "points": p["points"],
                     "display_points": display_points,
@@ -305,9 +311,11 @@ async def _review_classic_transfers(client, entry_id, gw, player_map, teams, liv
                     classic_transfers_data.append({
                         "player_out": player_out.web_name,
                         "player_out_team": out_abbr,
+                        "player_out_team_name": out_team.name if out_team else None,
                         "player_out_points": out_points,
                         "player_in": player_in.web_name,
                         "player_in_team": in_abbr,
+                        "player_in_team_name": in_team.name if in_team else None,
                         "player_in_points": in_points,
                         "net": net,
                         "verdict": verdict_plain,

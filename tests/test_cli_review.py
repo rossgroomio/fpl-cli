@@ -953,3 +953,91 @@ class TestReviewCompareRecsGw1:
         recs = _make_recs(roll=True)
         result = _review_compare_recs(recs, _make_collected(), {}, {})
         assert result["classic"]["actual_roll"] is True
+
+
+# ---------------------------------------------------------------------------
+# TestReviewPlayerClubLabel
+# ---------------------------------------------------------------------------
+
+class TestReviewPlayerClubLabel:
+    """#150: the prompt line is the only place the model learns a player's club,
+    so it spells the club out rather than leaving a code to expand."""
+
+    def test_classic_line_uses_full_club_name(self):
+        p = _classic_player(name="Gyökeres", team="ARS", position="FWD", display_points=9)
+        p["team_name"] = "Arsenal"
+        assert _format_review_classic_player(p) == "- Gyökeres (Arsenal, FWD): 9 pts"
+
+    def test_draft_line_uses_full_club_name(self):
+        p = _draft_player(name="Eze", team="ARS", position="MID", points=3)
+        p["team_name"] = "Arsenal"
+        assert _format_review_draft_player(p) == "- Eze (Arsenal, MID): 3 pts"
+
+    def test_falls_back_to_short_code_without_a_full_name(self):
+        # Older callers (and any squad row we couldn't resolve a club for) still
+        # produce a usable line rather than a KeyError.
+        p = _classic_player(name="Salah", team="LIV", position="MID", display_points=6)
+        assert _format_review_classic_player(p) == "- Salah (LIV, MID): 6 pts"
+
+    def test_club_label_survives_status_annotations(self):
+        p = _classic_player(name="Wissa", team="NEW", position="FWD", display_points=9,
+                            contributed=False)
+        p["team_name"] = "Newcastle"
+        line = _format_review_classic_player(p)
+        assert line.startswith("- Wissa (Newcastle, FWD):")
+        assert "[BENCH - 9 pts unused!]" in line
+
+
+# ---------------------------------------------------------------------------
+# TestReviewTransferClubLabel
+# ---------------------------------------------------------------------------
+
+class TestReviewTransferClubLabel:
+    """A player transferred in is by definition someone whose situation just
+    changed — the likeliest #150 trigger of all — so the Transfers block names
+    them with a club rather than leaving it to the model."""
+
+    @staticmethod
+    def _transfer(**overrides):
+        move = {
+            "player_out": "Watkins", "player_out_team": "AVL",
+            "player_out_team_name": "Aston Villa", "player_out_points": 2,
+            "player_in": "Gyökeres", "player_in_team": "ARS",
+            "player_in_team_name": "Arsenal", "player_in_points": 9,
+            "net": 7, "verdict": "✓ Hit", "kind": "w",
+        }
+        move.update(overrides)
+        return move
+
+    def test_classic_transfer_line_names_both_clubs(self):
+        from fpl_cli.cli._review_summarisation import _format_classic_section
+
+        text = _format_classic_section([], [], {}, [self._transfer()], gameweek=9)["transfers"]
+        assert "Watkins (Aston Villa) (2 pts) → Gyökeres (Arsenal) (9 pts)" in text
+
+    def test_draft_waiver_line_names_both_clubs(self):
+        from fpl_cli.cli._review_summarisation import _format_draft_section
+
+        text = _format_draft_section([], [], {}, [self._transfer()])["transactions"]
+        assert "Watkins (Aston Villa) (2 pts) → Gyökeres (Arsenal) (9 pts)" in text
+
+    def test_falls_back_to_a_bare_name_when_the_club_did_not_resolve(self):
+        from fpl_cli.cli._review_summarisation import _format_classic_section
+
+        move = self._transfer(player_in_team_name=None, player_out_team_name=None)
+        text = _format_classic_section([], [], {}, [move], gameweek=9)["transfers"]
+        assert "- Watkins (2 pts) → Gyökeres (9 pts)" in text
+
+    def test_draft_free_agent_pickup_keeps_its_placeholder(self):
+        from fpl_cli.cli._review_summarisation import _format_draft_section
+
+        move = self._transfer(player_out=None, player_out_team_name=None, player_out_points=0)
+        text = _format_draft_section([], [], {}, [move])["transactions"]
+        assert "- Free agent (0 pts) → Gyökeres (Arsenal) (9 pts)" in text
+
+    def test_no_placeholder_club_reaches_the_squad_line(self):
+        """"Unknown club" beside a name reads like a real club to the model,
+        right where the prompt calls that bracket authoritative."""
+        p = _classic_player(name="Mystery", team="???", display_points=1)
+        p["team_name"] = None
+        assert _format_review_classic_player(p) == "- Mystery (???, MID): 1 pts"
