@@ -1,6 +1,26 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [2.2.0] - 2026-08-25
+
+### Bug Fixes
+
+- stop early-season fixture difficulty falling back to a flat 4.0 or one gameweek (#109)
+- repair stale team ratings and stop over-weighting last season (#114)
+- stop NOT/NFO mismatch and SHE tla collisions corrupting team priors (#113)
+- stop early-season scoring signals crashing on incomplete history (#120)
+- stop scores printing negative in columns documented as 0-100 (#121)
+- stop select_starting_xi labelling an empty XI as 4-4-2 (#124)
+- stop promoted teams being rated among the Premier League's best (#125)
+- stop unavailable players outranking ones who are actually playing (#126)
+- calibrate MID/FWD/GK quality ceilings so elite players read 85+ (#127)
+
+### Features
+
+- allow choosing the browser for TLS-inspecting proxies (#108)
+- warn on data-provider drift and add fpl doctor --providers (#123)
+- surface injured players worth claiming before they return (#133)
+
 ## [2.1.0] - 2026-08-23
 
 ### Bug Fixes
