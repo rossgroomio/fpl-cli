@@ -2,19 +2,29 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 import pytest
 
-from fpl_cli.models.player import PlayerStatus
-from fpl_cli.season import get_season_year
+from fpl_cli.api.historical_types import PlayerProfile, SeasonHistory
+from fpl_cli.cli._context import load_settings
+from fpl_cli.models.player import PlayerPosition, PlayerStatus
+from fpl_cli.season import TOTAL_GAMEWEEKS, get_season_year
+from fpl_cli.services import returnee_radar
+from fpl_cli.services.player_prior import MIN_MINUTES, PlayerPrior
 from fpl_cli.services.returnee_radar import (
+    QUALITY_BASIS_PRICE,
+    QUALITY_BASIS_PRIOR,
+    QUALITY_BASIS_SEASON,
     SOURCE_FPL_NEWS,
+    RadarConfig,
     ReturnSignal,
+    build_radar,
     build_return_signal,
     gameweek_for_date,
     news_age_days,
+    radar_config_from_settings,
     resolve_return_date,
 )
 from tests.conftest import make_player
@@ -347,3 +357,496 @@ def test_return_signal_is_frozen():
 
     with pytest.raises(AttributeError):
         signal.return_date = date(2026, 9, 5)  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# Radar configuration
+# ---------------------------------------------------------------------------
+
+
+def test_radar_config_defaults_match_the_shipped_settings():
+    config = radar_config_from_settings(load_settings())
+
+    assert config.window_gameweeks == 6
+    assert config.stash_window_gameweeks == 2
+    assert config.history_watchlist_strength == 0.75
+    assert config.history_stash_strength == 0.85
+    assert config.price_watchlist_percentile == 0.80
+    assert config.price_stash_percentile == 0.90
+    assert config.stash_upgrade_margin == 5.0
+
+
+def test_radar_config_applies_user_overrides_key_by_key():
+    config = radar_config_from_settings({"returnee_radar": {"window_gameweeks": 3}})
+
+    assert config.window_gameweeks == 3
+    # Untouched keys keep their committed defaults.
+    assert config.history_watchlist_strength == 0.75
+
+
+def test_radar_config_survives_a_missing_block():
+    assert radar_config_from_settings({}).window_gameweeks == 6
+    assert radar_config_from_settings(None).window_gameweeks == 6
+
+
+# ---------------------------------------------------------------------------
+# Radar assembly fixtures
+# ---------------------------------------------------------------------------
+
+# A plain weekly schedule, so "N gameweeks out" is a readable date. Deadline
+# dates double as the news text a return maps onto: gameweek_for_date takes the
+# first deadline on or after the date, so a date sitting exactly on GW6's
+# deadline resolves to GW6.
+RADAR_GAMEWEEKS: list[dict[str, Any]] = [
+    {
+        "id": gw,
+        "deadline_time": (
+            datetime(2026, 8, 14, 17, 30, tzinfo=timezone.utc) + timedelta(days=7 * (gw - 1))
+        ).isoformat().replace("+00:00", "Z"),
+    }
+    for gw in range(1, 21)
+]
+
+NEXT_GW = 1
+TEAM_NAMES = {1: "Test FC"}
+LAST_SEASON = "2024-25"
+
+
+def _gw_deadline(gw: int) -> date:
+    return datetime(2026, 8, 14, 17, 30, tzinfo=timezone.utc).date() + timedelta(days=7 * (gw - 1))
+
+
+def _news_returning_in_gw(gw: int) -> str:
+    """News text whose stated date resolves to exactly *gw*."""
+    deadline = _gw_deadline(gw)
+    return f"Calf injury - Expected back {deadline.day} {deadline.strftime('%b')}"
+
+
+def _prior(strength: float, source: str = "history") -> PlayerPrior:
+    return PlayerPrior(prior_strength=strength, confidence=1.0, source=source)
+
+
+def _flagged(
+    pid: int = 1,
+    *,
+    news: str = "Knee injury - Unknown return date",
+    status: PlayerStatus = PlayerStatus.INJURED,
+    position: PlayerPosition = PlayerPosition.MIDFIELDER,
+    now_cost: int = 100,
+    web_name: str = "Flagged",
+    code: int | None = None,
+) -> Any:
+    return make_player(
+        id=pid,
+        code=code if code is not None else 1000 + pid,
+        web_name=web_name,
+        team_id=1,
+        position=position,
+        now_cost=now_cost,
+        status=status,
+        news=news,
+    )
+
+
+def _season(
+    code: int,
+    *,
+    season: str = LAST_SEASON,
+    minutes: int = 2600,
+    starts: int = 30,
+    total_points: int = 190,
+    expected_goals: float = 14.0,
+    expected_assists: float = 9.0,
+    position: str = "MID",
+) -> SeasonHistory:
+    return SeasonHistory(
+        element_code=code,
+        season=season,
+        total_points=total_points,
+        minutes=minutes,
+        starts=starts,
+        goals=int(expected_goals),
+        assists=int(expected_assists),
+        expected_goals=expected_goals,
+        expected_assists=expected_assists,
+        expected_goal_involvements=expected_goals + expected_assists,
+        start_cost=100,
+        end_cost=100,
+        position=position,
+        web_name="Flagged",
+        team_id=1,
+    )
+
+
+def _profile(code: int, *seasons: SeasonHistory) -> PlayerProfile:
+    return PlayerProfile(
+        element_code=code,
+        web_name="Flagged",
+        current_position="MID",
+        seasons=list(seasons),
+    )
+
+
+def _radar(
+    players: list[Any],
+    priors: dict[int, PlayerPrior] | None,
+    **kwargs: Any,
+) -> Any:
+    return build_radar(
+        players,
+        priors=priors,
+        next_gw_id=kwargs.pop("next_gw_id", NEXT_GW),
+        gameweeks=kwargs.pop("gameweeks", RADAR_GAMEWEEKS),
+        team_names=kwargs.pop("team_names", TEAM_NAMES),
+        now=kwargs.pop("now", PRESEASON_NOW),
+        season_year=kwargs.pop("season_year", SEASON_YEAR),
+        **kwargs,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Status selection
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "status",
+    [PlayerStatus.DOUBTFUL, PlayerStatus.INJURED, PlayerStatus.SUSPENDED, PlayerStatus.NOT_AVAILABLE],
+)
+def test_every_flagged_status_can_become_an_entry(status: PlayerStatus):
+    player = _flagged(status=status)
+
+    result = _radar([player], {1: _prior(0.9)})
+
+    assert [e.player_id for e in result.entries] == [1]
+    assert result.entries[0].status == status.value
+
+
+@pytest.mark.parametrize("status", [PlayerStatus.AVAILABLE, PlayerStatus.UNAVAILABLE])
+def test_unflagged_and_departed_players_are_never_entries(status: PlayerStatus):
+    player = _flagged(status=status)
+
+    result = _radar([player], {1: _prior(0.99)})
+
+    assert result.entries == []
+    assert result.degraded is False
+
+
+# ---------------------------------------------------------------------------
+# Quality bar: history-sourced
+# ---------------------------------------------------------------------------
+
+
+def test_history_sourced_player_above_the_bar_is_kept():
+    result = _radar([_flagged()], {1: _prior(0.80)})
+
+    assert [e.player_id for e in result.entries] == [1]
+    assert result.entries[0].quality.basis == QUALITY_BASIS_PRIOR
+    assert result.entries[0].quality.score == pytest.approx(0.80)
+
+
+def test_history_sourced_player_below_the_bar_is_dropped():
+    result = _radar([_flagged()], {1: _prior(0.70)})
+
+    assert result.entries == []
+
+
+def test_history_sourced_stash_bar_is_reported_separately():
+    below = _radar([_flagged()], {1: _prior(0.80)}).entries[0]
+    above = _radar([_flagged()], {1: _prior(0.90)}).entries[0]
+
+    assert below.quality.meets_stash is False
+    assert above.quality.meets_stash is True
+
+
+# ---------------------------------------------------------------------------
+# Quality bar: price-sourced (KTD3 regression guard)
+# ---------------------------------------------------------------------------
+
+
+def test_price_sourced_player_with_a_strong_last_healthy_season_is_kept():
+    # prior_strength 0.45 is below every history threshold and cannot rise:
+    # the price fallback caps it at PRICE_CONFIDENCE_FACTOR (0.5). A flat
+    # threshold above 0.5 would drop exactly this player.
+    player = _flagged(code=4242)
+    profiles = {4242: _profile(4242, _season(4242))}
+
+    result = _radar([player], {1: _prior(0.45, source="price")}, profiles=profiles)
+
+    assert [e.player_id for e in result.entries] == [1]
+    quality = result.entries[0].quality
+    assert quality.basis == QUALITY_BASIS_SEASON
+    assert quality.season == LAST_SEASON
+    assert quality.quality_score is not None and quality.quality_score >= 80
+
+
+def test_price_sourced_player_with_a_weak_last_healthy_season_is_dropped():
+    player = _flagged(code=4243)
+    weak = _season(
+        4243, minutes=900, starts=10, total_points=25, expected_goals=1.0, expected_assists=1.0,
+    )
+
+    result = _radar(
+        [player], {1: _prior(0.45, source="price")}, profiles={4243: _profile(4243, weak)},
+    )
+
+    assert result.entries == []
+
+
+def test_price_sourced_scoring_picks_the_most_recent_season_with_real_minutes():
+    player = _flagged(code=4244)
+    # Last season was the injured one: below MIN_MINUTES, so it cannot be the
+    # baseline. The season before it is the last healthy one.
+    profiles = {
+        4244: _profile(
+            4244,
+            _season(4244, season="2023-24", minutes=2600),
+            _season(4244, season=LAST_SEASON, minutes=300, starts=3, total_points=12),
+        ),
+    }
+
+    result = _radar([player], {1: _prior(0.45, source="price")}, profiles=profiles)
+
+    assert [e.quality.season for e in result.entries] == ["2023-24"]
+
+
+def test_price_sourced_quality_uses_the_seasons_appearances_for_the_minutes_factor(monkeypatch):
+    seen: list[tuple[int, int, int, float]] = []
+    real = returnee_radar.calculate_mins_factor
+
+    def _spy(minutes: int, appearances: int, next_gw_id: int) -> float:
+        value = real(minutes, appearances, next_gw_id)
+        seen.append((minutes, appearances, next_gw_id, value))
+        return value
+
+    monkeypatch.setattr(returnee_radar, "calculate_mins_factor", _spy)
+    player = _flagged(code=4245)
+    # A rotation-prone season: 60 minutes a start, so the factor lands strictly
+    # between 0 and 1 and demonstrably comes from this season's own numbers.
+    rotated = _season(4245, minutes=1200, starts=20, total_points=90)
+
+    _radar(
+        [player],
+        {1: _prior(0.45, source="price")},
+        profiles={4245: _profile(4245, rotated)},
+    )
+
+    assert seen == [(1200, 20, TOTAL_GAMEWEEKS, pytest.approx(0.75))]
+    # The trap KTD3 exists to avoid: a returnee has no current appearances, so
+    # scoring them on current-season totals would zero the per-90 component.
+    assert seen[0][3] > 0
+
+
+def test_understat_npxg_reaches_the_season_score():
+    player = _flagged(code=4246)
+    # A mid-tier season, so neither run clamps at the position ceiling and the
+    # two scores can actually be compared. The bar is lowered so both survive.
+    modest = _season(
+        4246, minutes=1600, starts=20, total_points=80,
+        expected_goals=4.0, expected_assists=3.0,
+    )
+    profiles = {4246: _profile(4246, modest)}
+    understat = {
+        LAST_SEASON: [
+            {
+                "name": "Flagged",
+                "team": "Test FC",
+                "position": "F M S",
+                "minutes": 1600,
+                "npxG_per_90": 0.6,
+                "xGChain_per_90": 1.1,
+                "penalty_xG_per_90": 0.1,
+                "xGI_per_90": 0.8,
+            },
+        ],
+    }
+    config = RadarConfig(price_watchlist_percentile=0.1)
+
+    matched = _radar(
+        [player], {1: _prior(0.45, source="price")},
+        profiles=profiles, understat_seasons=understat, config=config,
+    )
+    unmatched = _radar(
+        [player], {1: _prior(0.45, source="price")}, profiles=profiles, config=config,
+    )
+
+    # Understat's npxG path replaces the FPL xGI fallback rather than being
+    # silently dropped, so the enriched run scores strictly higher.
+    assert matched.entries[0].quality.quality_score > unmatched.entries[0].quality.quality_score
+
+
+def test_empty_understat_season_still_scores_from_fpl_stats_alone():
+    player = _flagged(code=4247)
+    profiles = {4247: _profile(4247, _season(4247))}
+
+    result = _radar(
+        [player], {1: _prior(0.45, source="price")},
+        profiles=profiles, understat_seasons={LAST_SEASON: []},
+    )
+
+    assert [e.player_id for e in result.entries] == [1]
+    assert result.entries[0].quality.quality_score is not None
+    assert result.entries[0].quality.quality_score > 0
+
+
+# ---------------------------------------------------------------------------
+# Quality bar: price-percentile last resort
+# ---------------------------------------------------------------------------
+
+
+def _price_pool(flagged_cost: int) -> list[Any]:
+    pool = [_flagged(pid=1, now_cost=flagged_cost)]
+    pool += [
+        make_player(id=100 + i, code=5000 + i, team_id=1,
+                    position=PlayerPosition.MIDFIELDER, now_cost=40 + 5 * i)
+        for i in range(10)
+    ]
+    return pool
+
+
+def test_price_sourced_player_with_no_qualifying_season_falls_back_to_price_percentile():
+    result = _radar(_price_pool(130), {1: _prior(0.45, source="price")})
+
+    assert [e.player_id for e in result.entries] == [1]
+    assert result.entries[0].quality.basis == QUALITY_BASIS_PRICE
+    assert result.entries[0].quality.score >= 0.80
+
+
+def test_cheap_price_sourced_player_with_no_qualifying_season_is_dropped():
+    result = _radar(_price_pool(45), {1: _prior(0.45, source="price")})
+
+    assert result.entries == []
+
+
+def test_a_season_below_the_minutes_floor_is_not_a_qualifying_season():
+    player = _flagged(code=4248, now_cost=45)
+    thin = _season(4248, minutes=MIN_MINUTES - 1, starts=5, total_points=20)
+    pool = _price_pool(45)
+    pool[0] = player
+
+    result = _radar(pool, {1: _prior(0.45, source="price")}, profiles={4248: _profile(4248, thin)})
+
+    # Falls through to the price percentile, which this cheap player fails.
+    assert result.entries == []
+
+
+# ---------------------------------------------------------------------------
+# Window filtering
+# ---------------------------------------------------------------------------
+
+
+def test_return_inside_the_default_window_is_kept():
+    player = _flagged(news=_news_returning_in_gw(6))
+
+    result = _radar([player], {1: _prior(0.9)})
+
+    assert [e.signal.return_gameweek for e in result.entries] == [6]
+
+
+def test_return_beyond_the_default_window_is_dropped():
+    player = _flagged(news=_news_returning_in_gw(9))
+
+    result = _radar([player], {1: _prior(0.9)})
+
+    assert result.entries == []
+
+
+def test_date_unknown_player_is_kept_regardless_of_the_window():
+    player = _flagged(news="Knee injury - Unknown return date")
+
+    result = _radar([player], {1: _prior(0.9)}, config=RadarConfig(window_gameweeks=1))
+
+    assert [e.player_id for e in result.entries] == [1]
+    assert result.entries[0].signal.has_return_date is False
+
+
+def test_a_non_default_window_from_settings_changes_what_is_kept():
+    player = _flagged(news=_news_returning_in_gw(6))
+    config = radar_config_from_settings({"returnee_radar": {"window_gameweeks": 2}})
+
+    result = _radar([player], {1: _prior(0.9)}, config=config)
+
+    assert result.entries == []
+
+
+# ---------------------------------------------------------------------------
+# Ordering
+# ---------------------------------------------------------------------------
+
+
+def test_entries_order_by_return_gameweek_then_quality_with_unknown_last():
+    players = [
+        _flagged(pid=1, web_name="Unknown", news="Knee injury - Unknown return date"),
+        _flagged(pid=2, web_name="Far", news=_news_returning_in_gw(5)),
+        _flagged(pid=3, web_name="NearWeak", news=_news_returning_in_gw(2)),
+        _flagged(pid=4, web_name="NearStrong", news=_news_returning_in_gw(2)),
+    ]
+    priors = {1: _prior(0.95), 2: _prior(0.90), 3: _prior(0.80), 4: _prior(0.92)}
+
+    result = _radar(players, priors)
+
+    assert [e.web_name for e in result.entries] == ["NearStrong", "NearWeak", "Far", "Unknown"]
+
+
+# ---------------------------------------------------------------------------
+# Degraded and missing data
+# ---------------------------------------------------------------------------
+
+
+def test_missing_priors_map_is_a_degraded_run_not_an_empty_one():
+    result = _radar([_flagged()], None)
+
+    assert result.entries == []
+    assert result.degraded is True
+    assert result.degraded_reason
+
+
+def test_empty_priors_map_reports_the_same_degraded_run():
+    result = _radar([_flagged()], {})
+
+    assert result.entries == []
+    assert result.degraded is True
+    assert result.degraded_reason
+
+
+def test_player_absent_from_the_priors_map_is_dropped_without_raising():
+    result = _radar([_flagged(pid=1)], {999: _prior(0.99)})
+
+    assert result.entries == []
+    assert result.degraded is False
+
+
+def test_no_flagged_players_is_a_healthy_empty_result():
+    result = _radar([_flagged(status=PlayerStatus.AVAILABLE)], {1: _prior(0.99)})
+
+    assert result.entries == []
+    assert result.degraded is False
+
+
+# ---------------------------------------------------------------------------
+# Entry shape
+# ---------------------------------------------------------------------------
+
+
+def test_entry_carries_identity_signal_and_an_empty_transition_slot():
+    player = _flagged(news="Calf injury - Expected back 18 Sep", web_name="Returnee")
+
+    entry = _radar([player], {1: _prior(0.9)}).entries[0]
+
+    assert entry.player_id == 1
+    assert entry.code == 1001
+    assert entry.web_name == "Returnee"
+    assert entry.team_id == 1
+    assert entry.team_name == "Test FC"
+    assert entry.position == "MID"
+    assert entry.price == pytest.approx(10.0)
+    assert entry.signal.return_date == date(2026, 9, 18)
+    # U3 fills this in from the persisted week-over-week snapshot.
+    assert entry.transition is None
+
+
+def test_radar_entry_is_frozen():
+    entry = _radar([_flagged()], {1: _prior(0.9)}).entries[0]
+
+    with pytest.raises(AttributeError):
+        entry.transition = "new"  # type: ignore[misc]

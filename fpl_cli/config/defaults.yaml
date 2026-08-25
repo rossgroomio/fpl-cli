@@ -16,6 +16,22 @@ thresholds:
   semi_differential_threshold: 15.0
   captain_differential_threshold: 10.0
 
+# Injury returnee radar (`fpl returnees`). Tuning knobs — the right values are
+# only knowable from real watchlists, so they live here rather than in code.
+# The two quality bars are source-aware because a player who missed most of
+# last season through injury cannot be prior-sourced: `generate_player_prior`
+# only assigns source "history" at 450+ minutes, and the "price" fallback caps
+# prior_strength at 0.5, so one flat threshold would exclude exactly the
+# population this radar exists to surface.
+returnee_radar:
+  window_gameweeks: 6  # Keep a returnee whose expected return lands in the next N gameweeks
+  stash_window_gameweeks: 2  # Escalate from watch to stash inside this shorter window
+  history_watchlist_strength: 0.75  # prior_strength bar for a history-sourced player (0-1)
+  history_stash_strength: 0.85  # prior_strength bar to escalate a history-sourced player
+  price_watchlist_percentile: 0.80  # Bar for a price-sourced player: last healthy season's quality (0-1 of the position ceiling), or the within-position price percentile when no such season exists
+  price_stash_percentile: 0.90  # Same measure, escalation bar
+  stash_upgrade_margin: 5.0  # Quality points (0-100 scale) a returnee must beat the incumbent by
+
 llm:
   research:
     provider: perplexity
