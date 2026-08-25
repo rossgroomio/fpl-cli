@@ -379,11 +379,18 @@ def _ci_gw_paths(season: str, gw: int) -> list[tuple[str, str, frozenset[str]]]:
 
 # The per-GW files parse in two units, each feeding signals of its own: the
 # match join wants both By Tournament files, the gameweek stats stand alone.
+# A unit is what persistence is judged on — how it failed matters to the
+# message, not to whether the gameweek yielded anything.
 MATCH_JOIN_UNIT = "matches.csv + playermatchstats.csv"
 GW_STATS_UNIT = "player_gameweek_stats.csv"
 GW_UNIT_SIGNALS = {
     MATCH_JOIN_UNIT: "opponent-adjusted xG signals",
     GW_STATS_UNIT: "price-trend and transfer-momentum signals",
+}
+FILE_UNITS = {
+    "matches.csv": MATCH_JOIN_UNIT,
+    "playermatchstats.csv": MATCH_JOIN_UNIT,
+    "player_gameweek_stats.csv": GW_STATS_UNIT,
 }
 
 
@@ -394,27 +401,69 @@ class _GwProbe:
     absent: list[str]
     column_problems: list[str]
     empty: list[str]
+    unknown: list[str]
     match_records: int
     gw_stat_rows: int
 
+    @property
+    def unusable_units(self) -> set[str]:
+        """Units this gameweek yields nothing from, however they failed.
+
+        Absent and empty are the same outcome one gameweek later — the data
+        is not there — so persistence is judged on the unit, not on the
+        failure kind. Comparing kind against kind would let a unit that
+        404s one gameweek and parses to nothing the next read as two
+        separate one-off lags.
+        """
+        return {FILE_UNITS[f] for f in self.absent} | set(self.empty)
+
+    @property
+    def unknown_units(self) -> set[str]:
+        """Units carrying a file this probe could not fetch at all."""
+        return {FILE_UNITS[f] for f in self.unknown}
+
 
 async def _ci_probe_gw(
-    fetcher: DatasetFetcher, season: str, gw: int, lookup: dict[int, PlayerLookup]
+    fetcher: DatasetFetcher,
+    season: str,
+    gw: int,
+    lookup: dict[int, PlayerLookup],
+    *,
+    tolerate_errors: bool = False,
 ) -> _GwProbe:
     """Fetch one gameweek's per-GW files and run the real parsers over them.
 
     Raises httpx.HTTPError for anything but a 404, which is the absence the
-    caller classifies as publishing lag or layout change.
+    caller classifies as publishing lag or layout change. Pass
+    ``tolerate_errors`` when probing an earlier gameweek only to compare
+    against: a file that will not fetch is recorded as unknown rather than
+    thrown, so one unrelated file being down cannot discard a diagnosis the
+    other files already support.
     """
     from fpl_cli.api.core_insights import parse_gw_stat_rows, parse_match_records
 
     files = _ci_gw_paths(season, gw)
-    texts = await asyncio.gather(
-        *(_ci_gw_file_text(fetcher, path) for _, path, _ in files)
+    results = await asyncio.gather(
+        *(_ci_gw_file_text(fetcher, path) for _, path, _ in files),
+        return_exceptions=tolerate_errors,
     )
+    unknown = [
+        filename
+        for (filename, _, _), result in zip(files, results)
+        if isinstance(result, BaseException)
+    ]
+    texts: list[str | None] = [
+        None if isinstance(result, BaseException) else result for result in results
+    ]
     by_name = {filename: text for (filename, _, _), text in zip(files, texts)}
 
-    absent = [filename for (filename, _, _), text in zip(files, texts) if text is None]
+    # A file we could not fetch is unknown, not absent: it says nothing about
+    # whether the gameweek published it.
+    absent = [
+        filename
+        for (filename, _, _), text in zip(files, texts)
+        if text is None and filename not in unknown
+    ]
     column_problems = [
         f"{filename} is missing column(s) {', '.join(sorted(missing))}"
         for (filename, _, required), text in zip(files, texts)
@@ -446,7 +495,7 @@ async def _ci_probe_gw(
     if gw_stats_text is not None and not gw_stat_rows:
         empty.append(GW_STATS_UNIT)
 
-    return _GwProbe(absent, column_problems, empty, match_records, gw_stat_rows)
+    return _GwProbe(absent, column_problems, empty, unknown, match_records, gw_stat_rows)
 
 
 def _ci_empty_phrase(units: list[str]) -> str:
@@ -473,17 +522,23 @@ async def _ci_gw_check(
     scoring command warned the signal was gone. It runs the runtime parsers
     here instead and asserts they yield something.
 
-    A file missing or empty for the newest gameweek but healthy for the
-    previous one is a publishing lag (the dataset updates a few times a day
-    and backfills) and self-corrects; the same problem two gameweeks running
-    is a break every future fetch will hit.
+    A unit that yields nothing for the newest gameweek but is healthy for
+    the previous one is a publishing lag (the dataset updates a few times a
+    day and backfills) and self-corrects; a unit yielding nothing two
+    gameweeks running is a break every future fetch will hit — whether it
+    404s one gameweek and parses to nothing the next makes no difference to
+    that, only to how the row reads.
     """
     name = "Core-Insights per-GW files"
     if not lookup:
+        # Deliberately no cause: players.csv yields no lookup when it is
+        # unreachable, when its columns drifted, and when its rows will not
+        # parse. Its own row above names which — this one must not guess.
         return CheckResult(
             name,
             CheckStatus.UNCHECKED,
-            "players.csv did not parse, so the per-GW join could not be checked",
+            "no players.csv lookup to join against (see the players.csv row), "
+            "so the per-GW join could not be checked",
         )
     try:
         probe = await _ci_probe_gw(fetcher, season, latest_finished_gw, lookup)
@@ -502,48 +557,67 @@ async def _ci_gw_check(
         )
 
     # Something is wrong at the newest finished GW — decide lag vs break by
-    # whether the previous gameweek carries the same problem. At the season's
-    # first finished gameweek there is nothing to compare against, so a
-    # backfill in progress and a break look identical: report the lag.
+    # whether the previous gameweek yielded anything from the same unit. At
+    # the season's first finished gameweek there is nothing to compare
+    # against, so a backfill in progress and a break look identical: report
+    # the lag. Errors there are tolerated per file rather than thrown: an
+    # unrelated file being down must not discard the diagnosis in hand.
     previous_gw = latest_finished_gw - 1
     previous: _GwProbe | None = None
     if previous_gw >= 1:
-        try:
-            previous = await _ci_probe_gw(fetcher, season, previous_gw, lookup)
-        except httpx.HTTPError as exc:
-            return CheckResult(name, CheckStatus.UNCHECKED, _unreachable(exc))
+        previous = await _ci_probe_gw(
+            fetcher, season, previous_gw, lookup, tolerate_errors=True
+        )
 
-    persistent_absent = [
-        f for f in probe.absent if previous is not None and f in previous.absent
-    ]
-    persistent_empty = [
-        u for u in probe.empty if previous is not None and u in previous.empty
-    ]
-    if persistent_absent or persistent_empty:
+    broken_units = probe.unusable_units & (
+        previous.unusable_units if previous is not None else set()
+    )
+    if broken_units:
         problems = []
-        if persistent_absent:
+        absent_now = [f for f in probe.absent if FILE_UNITS[f] in broken_units]
+        empty_now = [u for u in probe.empty if u in broken_units]
+        if absent_now:
             problems.append(
-                f"{', '.join(persistent_absent)} missing upstream for "
-                f"GW{latest_finished_gw} and GW{previous_gw} — the per-GW folder "
+                f"{', '.join(absent_now)} missing upstream — the per-GW folder "
                 "layout may have changed"
             )
-        if persistent_empty:
-            problems.append(
-                f"for GW{latest_finished_gw} and GW{previous_gw}, "
-                + _ci_empty_phrase(persistent_empty)
-            )
-        return CheckResult(name, CheckStatus.BROKEN, "; ".join(problems))
+        if empty_now:
+            problems.append(_ci_empty_phrase(empty_now))
+        # previous is not None whenever broken_units is non-empty.
+        assert previous is not None
+        prev_cause = (
+            f" ({'; '.join(previous.column_problems)})"
+            if previous.column_problems
+            else ""
+        )
+        return CheckResult(
+            name,
+            CheckStatus.BROKEN,
+            f"GW{latest_finished_gw}: {'; '.join(problems)}; GW{previous_gw} yields "
+            f"nothing either{prev_cause}, so this is not publishing lag",
+        )
 
     lag = []
     if probe.absent:
         lag.append(f"{', '.join(probe.absent)} not published upstream yet")
     if probe.empty:
         lag.append(_ci_empty_phrase(probe.empty))
+    # Say so when the comparison gameweek could not settle it, rather than
+    # letting "self-corrects" imply a check that never happened.
+    unconfirmed = previous is not None and bool(
+        probe.unusable_units & previous.unknown_units
+    )
+    caveat = (
+        f"GW{previous_gw} could not be fetched to confirm, so this may already "
+        "be broken"
+        if unconfirmed
+        else "the dataset updates a few times a day and backfills, so this "
+        "self-corrects; broken if it persists"
+    )
     return CheckResult(
         name,
         CheckStatus.STALE,
-        f"GW{latest_finished_gw}: {'; '.join(lag)} — the dataset updates a few times "
-        "a day and backfills, so this self-corrects; broken if it persists",
+        f"GW{latest_finished_gw}: {'; '.join(lag)} — {caveat}",
     )
 
 

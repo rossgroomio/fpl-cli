@@ -125,6 +125,8 @@ def _register_routes(
     understat_teams: list[str] | None = None,
     gw_missing: tuple[int, ...] = (),
     gw_texts: dict[tuple[int, str], str] | None = None,
+    gw_404: frozenset[tuple[int, str]] = frozenset(),
+    gw_errors: frozenset[tuple[int, str]] = frozenset(),
     players_text: str | None = None,
     fd_tlas: list[str] | None = None,
 ) -> None:
@@ -173,8 +175,11 @@ def _register_routes(
             ),
         )
         for filename, url, columns in gw_files:
-            if gw in gw_missing:
+            if gw in gw_missing or (gw, filename) in gw_404:
                 respx.get(url).mock(return_value=Response(404))
+                continue
+            if (gw, filename) in gw_errors:
+                respx.get(url).mock(return_value=Response(500))
                 continue
             text = overridden.get((gw, filename), _csv(columns, rows=5))
             respx.get(url).mock(return_value=Response(200, text=text))
@@ -374,7 +379,7 @@ class TestParseDrift:
         result = _run()
         assert result.exit_code == 1
         flat = _flat(result)
-        assert "for GW5 and GW4" in flat
+        assert "GW4 yields nothing either" in flat
         assert "no row survives the join" in flat
         assert "opponent-adjusted xG signals are unavailable" in flat
 
@@ -412,7 +417,89 @@ class TestParseDrift:
         assert result.exit_code == 1
         flat = _flat(result)
         assert "none parse into a player" in flat
-        assert "players.csv did not parse, so the per-GW join could not be checked" in flat
+        # The per-GW row must point at the players.csv row, not name a cause
+        # of its own: an unreachable or column-drifted players.csv lands here
+        # too, and neither is a parse failure.
+        assert "no players.csv lookup to join against (see the players.csv row)" in flat
+
+    @respx.mock
+    def test_unit_that_changes_failure_kind_is_still_broken(self, monkeypatch):
+        # 404 at GW4, published-but-unparseable at GW5: two gameweeks with no
+        # match join either way. Comparing absent against absent and empty
+        # against empty would read this as two unrelated one-off lags.
+        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
+        _register_routes(
+            finished_gws=5,
+            gw_404=frozenset({(4, "matches.csv")}),
+            gw_texts={
+                (5, "matches.csv"): _csv(MATCHES_REQUIRED_COLUMNS, rows=5, blank=BLANK_ELO)
+            },
+        )
+        result = _run()
+        assert result.exit_code == 1
+        flat = _flat(result)
+        assert "GW4 yields nothing either" in flat
+        assert "not publishing lag" in flat
+
+    @respx.mock
+    def test_unrelated_file_error_does_not_discard_the_diagnosis(self, monkeypatch):
+        # The match join is provably dead at both gameweeks; an unrelated
+        # per-GW file failing at the comparison gameweek must not turn that
+        # into "could not check".
+        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
+        blank = _csv(MATCHES_REQUIRED_COLUMNS, rows=5, blank=BLANK_ELO)
+        _register_routes(
+            finished_gws=5,
+            gw_texts={(5, "matches.csv"): blank, (4, "matches.csv"): blank},
+            gw_errors=frozenset({(4, "player_gameweek_stats.csv")}),
+        )
+        result = _run()
+        assert result.exit_code == 1
+        flat = _flat(result)
+        assert "GW4 yields nothing either" in flat
+        assert "could not check" not in flat
+
+    @respx.mock
+    def test_unfetchable_comparison_gameweek_says_it_could_not_confirm(self, monkeypatch):
+        # The problem unit itself is what would not fetch at GW4, so lag and
+        # break really are indistinguishable — say that instead of implying a
+        # comparison that never happened.
+        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
+        _register_routes(
+            finished_gws=5,
+            gw_texts={
+                (5, "matches.csv"): _csv(MATCHES_REQUIRED_COLUMNS, rows=5, blank=BLANK_ELO)
+            },
+            gw_errors=frozenset({(4, "matches.csv")}),
+        )
+        result = _run()
+        assert result.exit_code == 0
+        flat = _flat(result)
+        assert "GW4 could not be fetched to confirm" in flat
+        assert "may already be broken" in flat
+        assert "self-corrects" not in flat
+
+    @respx.mock
+    def test_broken_row_names_a_column_drift_at_the_comparison_gameweek(self, monkeypatch):
+        # GW5 has every column and parses to nothing; GW4 lost the column
+        # outright. The row carries that cause rather than reporting both
+        # gameweeks as the same unexplained empty join.
+        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
+        renamed = _csv(MATCHES_REQUIRED_COLUMNS, rows=5).replace(
+            "home_team_elo", "home_elo"
+        )
+        _register_routes(
+            finished_gws=5,
+            gw_texts={
+                (5, "matches.csv"): _csv(MATCHES_REQUIRED_COLUMNS, rows=5, blank=BLANK_ELO),
+                (4, "matches.csv"): renamed,
+            },
+        )
+        result = _run()
+        assert result.exit_code == 1
+        flat = _flat(result)
+        assert "GW4 yields nothing either" in flat
+        assert "missing column(s) home_team_elo" in flat
 
     @respx.mock
     def test_json_reports_the_parse_failure_as_broken(self, monkeypatch):
