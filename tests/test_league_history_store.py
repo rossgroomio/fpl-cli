@@ -529,6 +529,31 @@ class TestStoreVersioning:
         assert row.global_gw_rank is None
         assert row.version == 2
 
+    def test_a_version_3_row_without_fine_rules_evaluated_still_reads(self):
+        """Issue #136: `fine_rules_evaluated` is purely additive too, and its
+        `None` is load-bearing -- a row written before the field existed
+        genuinely does not record what its capture ruled, so filling it in on
+        the way through would backdate a ruling that never happened."""
+        import json
+
+        from fpl_cli.services.league_history import LeagueHistoryStore
+
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        payload = make_history_row(
+            gameweek=5, gross_points=50,
+            fines=[LedgerFine(manager_key=1, rule_type="last-place", message="Finished last.")],
+        ).model_dump(mode="json")
+        payload["version"] = 3
+        del payload["fine_rules_evaluated"]
+        path = store.gameweek_file(5)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+        row = store.load_gameweek(5)[0]
+        assert [f.rule_type for f in row.fines] == ["last-place"]
+        assert row.fine_rules_evaluated is None
+        assert row.version == 3
+
     def test_a_future_version_line_is_skipped_with_a_warning_and_survives(self, caplog):
         import json
         import logging

@@ -49,6 +49,32 @@ def _no_league_data(rule: FineRule) -> FineResult:
     return FineResult(rule_type=rule.type, triggered=False, message="No league data available.")
 
 
+def rules_for_format(config: FinesConfig, format_name: str) -> list[FineRule]:
+    """The rules configured for one format, in config order."""
+    return list(config.classic if format_name == "classic" else config.draft)
+
+
+def evaluate_rules(
+    rules: list[FineRule],
+    league_data: FinesLeagueData | None,
+    team_data: list[FinesTeamPlayer],
+    *,
+    use_net_points: bool = False,
+) -> list[FineResult]:
+    """Evaluate an explicit rule list, one result per rule.
+
+    Split out from `evaluate_fines` so a caller that can only rule *some* of
+    the configured rules -- the coarse ledger backfill, which has no squad --
+    can narrow the list up front. Narrowing matters: every handler returns a
+    result either way, and a red-card handler handed an empty squad returns
+    "no red card fine", which is a false acquittal rather than an abstention.
+    """
+    return [
+        _RULE_HANDLERS[rule.type].evaluate(rule, league_data, team_data, use_net_points)
+        for rule in rules
+    ]
+
+
 def evaluate_fines(
     config: FinesConfig,
     format_name: str,
@@ -61,8 +87,10 @@ def evaluate_fines(
 
     Returns a list of FineResult for each configured rule.
     """
-    rules = config.classic if format_name == "classic" else config.draft
-    return [_RULE_HANDLERS[rule.type](rule, league_data, team_data, use_net_points) for rule in rules]
+    return evaluate_rules(
+        rules_for_format(config, format_name), league_data, team_data,
+        use_net_points=use_net_points,
+    )
 
 
 def _eval_last_place(
@@ -159,11 +187,35 @@ def _eval_below_threshold(
     )
 
 
-_RULE_HANDLERS: dict[str, _RuleHandler] = {
-    "last-place": _eval_last_place,
-    "red-card": _eval_red_card,
-    "below-threshold": _eval_below_threshold,
+@dataclass(frozen=True)
+class _Rule:
+    """One rule type's handler, plus what it needs to be able to rule at all.
+
+    `needs_squad` is declared here, beside the handler it describes, rather
+    than in a separate list of rule types: a handler that reads `team_data`
+    and a classification that says it does not are the kind of pair that
+    drifts silently, and the cost of the drift is a false acquittal (a
+    squad-dependent handler run against an empty squad answers "no fine")
+    recorded as a real ruling (issue #136).
+    """
+
+    evaluate: _RuleHandler
+    needs_squad: bool
+
+
+_RULE_HANDLERS: dict[str, _Rule] = {
+    "last-place": _Rule(_eval_last_place, needs_squad=False),
+    "red-card": _Rule(_eval_red_card, needs_squad=True),
+    "below-threshold": _Rule(_eval_below_threshold, needs_squad=False),
 }
+
+# Rule types rulable from cohort points alone -- derived from the registry
+# above, so a new rule type is classified by the same edit that adds it.
+# The ledger's coarse tier (the manager-history endpoint) carries no squad,
+# so a backfill running at that tier can rule these and only these.
+COHORT_ONLY_RULE_TYPES = frozenset(
+    rule_type for rule_type, rule in _RULE_HANDLERS.items() if not rule.needs_squad
+)
 
 
 def compute_bench_analysis(team_data: list[dict[str, Any]]) -> str | None:
