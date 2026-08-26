@@ -226,9 +226,9 @@ class TestGwRankStreaks:
         store = LeagueHistoryStore("2026-27", "classic", 1)
         for gw in (1, 2):
             store.append_rows(gw, [
-                make_history_row(gameweek=gw, manager_key=1, gw_rank=1),
-                make_history_row(gameweek=gw, manager_key=2, gw_rank=2),
-                make_history_row(gameweek=gw, manager_key=3, gw_rank=3),
+                make_history_row(gameweek=gw, manager_key=1, gross_points=87),
+                make_history_row(gameweek=gw, manager_key=2, gross_points=60),
+                make_history_row(gameweek=gw, manager_key=3, gross_points=40),
             ])
 
         projection = rebuild_counters_through(store, 2)
@@ -239,8 +239,57 @@ class TestGwRankStreaks:
         assert manager_condition_views(projection, 2)["gw_win_streak"].length == 0
         assert manager_condition_views(projection, 2)["gw_loss_streak"].length == 0
 
+    def test_a_tie_for_the_week_extends_every_tied_manager(self):
+        """A shared gameweek win or loss must credit every tied manager, not
+        just whichever the cohort's ordinal gw_rank happened to land on
+        first (issue #163) -- and, since resetting a genuine run on a mere
+        tie would be the destructive failure mode, must not reset the
+        untied manager's run either."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        for gw in (1, 2):
+            store.append_rows(gw, [
+                make_history_row(gameweek=gw, manager_key=1, gross_points=87),
+                make_history_row(gameweek=gw, manager_key=2, gross_points=87),
+                make_history_row(gameweek=gw, manager_key=3, gross_points=40),
+            ])
+
+        projection = rebuild_counters_through(store, 2)
+
+        assert manager_condition_views(projection, 1)["gw_win_streak"].length == 2
+        assert manager_condition_views(projection, 2)["gw_win_streak"].length == 2
+        assert manager_condition_views(projection, 3)["gw_loss_streak"].length == 2
+
+    def test_a_tie_for_the_week_is_the_same_regardless_of_cohort_order(self):
+        """The predicates must not depend on the order rows are given in --
+        unlike the ordinal `gw_rank` they used to compare, which broke ties
+        on cohort order (issue #163)."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(1, [
+            make_history_row(gameweek=1, manager_key=2, gross_points=87),
+            make_history_row(gameweek=1, manager_key=1, gross_points=87),
+            make_history_row(gameweek=1, manager_key=3, gross_points=40),
+        ])
+
+        projection = rebuild_counters_through(store, 1)
+
+        assert manager_condition_views(projection, 1)["gw_win_streak"].length == 1
+        assert manager_condition_views(projection, 2)["gw_win_streak"].length == 1
+
+    def test_tie_compares_net_of_transfer_cost_not_raw_points(self):
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(1, [
+            make_history_row(gameweek=1, manager_key=1, gross_points=87, transfer_cost=4),
+            make_history_row(gameweek=1, manager_key=2, gross_points=83),
+            make_history_row(gameweek=1, manager_key=3, gross_points=40),
+        ])
+
+        projection = rebuild_counters_through(store, 1)
+
+        assert manager_condition_views(projection, 1)["gw_win_streak"].length == 1
+        assert manager_condition_views(projection, 2)["gw_win_streak"].length == 1
+
     def test_unknown_manager_holds_but_last_place_is_still_correctly_identified(self):
-        """Gameweek rank is computed over every cohort member, so a manager
+        """Gameweek points are read over every cohort member, so a manager
         whose picks fetch failed does not hand the week's worst score to
         whoever actually finished second-last. Both gameweek-rank
         conditions hold for the failed-fetch manager; the cohort still
@@ -248,10 +297,12 @@ class TestGwRankStreaks:
         store = LeagueHistoryStore("2026-27", "classic", 1)
         for gw in (1, 2):
             store.append_rows(gw, [
-                make_history_row(gameweek=gw, manager_key=1, gw_rank=1),
-                make_history_row(gameweek=gw, manager_key=2, gw_rank=2),
-                make_history_row(gameweek=gw, manager_key=3, gw_rank=3, capture_status="unknown"),
-                make_history_row(gameweek=gw, manager_key=4, gw_rank=4),
+                make_history_row(gameweek=gw, manager_key=1, gross_points=87),
+                make_history_row(gameweek=gw, manager_key=2, gross_points=60),
+                make_history_row(
+                    gameweek=gw, manager_key=3, gross_points=50, capture_status="unknown",
+                ),
+                make_history_row(gameweek=gw, manager_key=4, gross_points=40),
             ])
 
         projection = rebuild_counters_through(store, 2)
@@ -265,16 +316,16 @@ class TestGwRankStreaks:
         second_last = manager_condition_views(projection, 2)["gw_loss_streak"]
         assert second_last.length == 0
 
-        # Manager 4 is genuinely last, accounting for manager 3's rank slot.
+        # Manager 4 is genuinely last, accounting for manager 3's points.
         genuinely_last = manager_condition_views(projection, 4)["gw_loss_streak"]
         assert genuinely_last.length == 2
 
         top = manager_condition_views(projection, 1)["gw_win_streak"]
         assert top.length == 2
 
-    def test_missing_gw_rank_holds(self):
+    def test_missing_gross_points_holds(self):
         store = LeagueHistoryStore("2026-27", "classic", 1)
-        store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, gw_rank=None)])
+        store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, gross_points=None)])
         projection = rebuild_counters_through(store, 1)
         view = manager_condition_views(projection, 1)["gw_win_streak"]
         assert view.length == 0
@@ -395,9 +446,9 @@ class TestConditionsAreIndependent:
         store = LeagueHistoryStore("2026-27", "classic", 1)
         for gw in (1, 2):
             store.append_rows(gw, [
-                make_history_row(gameweek=gw, manager_key=1, league_position=1, gw_rank=3),
-                make_history_row(gameweek=gw, manager_key=2, league_position=5, gw_rank=1),
-                make_history_row(gameweek=gw, manager_key=3, league_position=3, gw_rank=2),
+                make_history_row(gameweek=gw, manager_key=1, league_position=1, gross_points=40),
+                make_history_row(gameweek=gw, manager_key=2, league_position=5, gross_points=87),
+                make_history_row(gameweek=gw, manager_key=3, league_position=3, gross_points=60),
             ])
 
         projection = rebuild_counters_through(store, 2)

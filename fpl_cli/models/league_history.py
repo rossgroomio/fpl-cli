@@ -351,10 +351,17 @@ def resolve_rows(rows: list[LeagueHistoryRow]) -> dict[int, LeagueHistoryRow]:
 # these are just the shapes that get serialised.
 
 # Bump whenever the projection's shape changes in a way older code cannot
-# read. Unlike LEAGUE_HISTORY_VERSION, a mismatch here is never fatal: the
-# projection is a rebuildable cache, so a stale version rebuilds silently
-# from the ledger's rows rather than blocking anything (KTD10).
-LEAGUE_HISTORY_COUNTERS_VERSION = 1
+# read, or whenever a predicate's *meaning* changes such that a cache built
+# under the old logic would report different runs today (a fix to a
+# predicate is exactly this: same shape, different runs). Unlike
+# LEAGUE_HISTORY_VERSION, a mismatch here is never fatal: the projection is
+# a rebuildable cache, so a stale version rebuilds silently from the
+# ledger's rows rather than blocking anything (KTD10).
+#
+# 2: gw_win_streak/gw_loss_streak now extend for every manager tied on
+# net-of-hit gameweek points, not just whichever the ordinal gw_rank landed
+# on first (issue #163).
+LEAGUE_HISTORY_COUNTERS_VERSION = 2
 
 
 class ConditionRunState(BaseModel):

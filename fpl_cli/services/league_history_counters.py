@@ -120,25 +120,44 @@ def _bottom_half_run(
     return RunAction.EXTEND if row.league_position > half else RunAction.RESET
 
 
+def _net_gw_points(row: LeagueHistoryRow) -> int | None:
+    """This row's gameweek points, net of any transfer-cost hit -- the same
+    measure `_assign_cohort_ranks` (`fpl_cli/cli/_league_recap_history.py`)
+    derives `gw_rank` from. `gw_win_streak`/`gw_loss_streak` compare this
+    directly rather than the ordinal `gw_rank` it produces: `gw_rank` breaks
+    ties on cohort order alone (see `derive_point_in_time_positions`), so two
+    managers who genuinely tied for the week's best or worst would otherwise
+    see only one of them credited -- and which one depends on standings
+    order, not on anything about their gameweek."""
+    if row.gross_points is None:
+        return None
+    return row.gross_points - (row.transfer_cost or 0)
+
+
 def _gw_win_streak(
     row: LeagueHistoryRow, previous_row: LeagueHistoryRow | None, cohort: list[LeagueHistoryRow],
 ) -> RunAction:
-    del previous_row, cohort
-    if row.gw_rank is None:
+    del previous_row
+    row_points = _net_gw_points(row)
+    if row_points is None:
         return RunAction.HOLD
-    return RunAction.EXTEND if row.gw_rank == 1 else RunAction.RESET
+    known_points = [p for member in cohort if (p := _net_gw_points(member)) is not None]
+    if not known_points:
+        return RunAction.HOLD
+    return RunAction.EXTEND if row_points == max(known_points) else RunAction.RESET
 
 
 def _gw_loss_streak(
     row: LeagueHistoryRow, previous_row: LeagueHistoryRow | None, cohort: list[LeagueHistoryRow],
 ) -> RunAction:
     del previous_row
-    if row.gw_rank is None:
+    row_points = _net_gw_points(row)
+    if row_points is None:
         return RunAction.HOLD
-    known_ranks = [member.gw_rank for member in cohort if member.gw_rank is not None]
-    if not known_ranks:
+    known_points = [p for member in cohort if (p := _net_gw_points(member)) is not None]
+    if not known_points:
         return RunAction.HOLD
-    return RunAction.EXTEND if row.gw_rank == max(known_ranks) else RunAction.RESET
+    return RunAction.EXTEND if row_points == min(known_points) else RunAction.RESET
 
 
 def _green_arrow_drought(
@@ -233,11 +252,11 @@ CONDITIONS: tuple[ConditionDefinition, ...] = (
     ),
     ConditionDefinition(
         key="gw_win_streak", formats=_BOTH, label="Gameweek win streak", min_run=2,
-        needs=("gw_rank",), predicate=_gw_win_streak,
+        needs=("gross_points", "transfer_cost"), predicate=_gw_win_streak,
     ),
     ConditionDefinition(
         key="gw_loss_streak", formats=_BOTH, label="Gameweek loss streak", min_run=2,
-        needs=("gw_rank",), predicate=_gw_loss_streak,
+        needs=("gross_points", "transfer_cost"), predicate=_gw_loss_streak,
     ),
     ConditionDefinition(
         key="green_arrow_drought", formats=_BOTH, label="Green arrow drought", min_run=4,
