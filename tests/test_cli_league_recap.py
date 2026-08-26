@@ -905,6 +905,109 @@ class TestCoarseTierFinesArePartialAndSaySo:
         assert _store().resolved_gameweek(1)[1].fine_rules_evaluated == []
 
 
+class TestRulingsAreFrozenAtCapture:
+    """A repair re-fetches the whole cohort and re-rules it. Left alone that
+    re-rules managers whose data never changed, under whatever config is
+    current at repair time -- so editing a threshold in March would silently
+    rewrite every already-ruled gameweek a later repair touches (#165
+    review)."""
+
+    _LENIENT = {
+        "fpl": {"classic_league_id": 42},
+        "fines": {"classic": [{"type": "below-threshold", "threshold": 40, "penalty": "Pint"}]},
+    }
+    _HARSH = {
+        "fpl": {"classic_league_id": 42},
+        "fines": {"classic": [{"type": "below-threshold", "threshold": 100, "penalty": "Pint"}]},
+    }
+
+    @staticmethod
+    def _config(settings: dict[str, Any]):
+        from fpl_cli.cli._fines_config import parse_fines_config
+
+        return parse_fines_config(settings)
+
+    def _data(self):
+        return _recap_data(
+            gameweek=2,
+            managers=[_manager(name="Alice", entry_id=1)],
+            cohort=_cohort((1, "Alice", 1, 60, 300), (2, "Bob", 2, 5, 200)),
+        )
+
+    async def _capture(self, settings, *, reachable: set[int]):
+        client = _HistoryClient(
+            {entry: [_history_row(gw, 60 if entry == 1 else 5, 60 * gw) for gw in (1, 2)]
+             for entry in reachable},
+            fail={2} - reachable,
+        )
+        return await capture_recap_history(
+            self._data(), season=SEASON, history_client=client, finished_gameweeks=[1, 2],
+            fines_config=self._config(settings),
+        )
+
+    async def test_a_config_change_does_not_rewrite_an_already_ruled_gameweek(self):
+        await self._capture(self._LENIENT, reachable={1})
+        assert _store().resolved_gameweek(1)[1].fines == []
+
+        # Bob is still unreachable, so GW1 is still "incomplete" and gets
+        # repaired again -- this time under a threshold that would fine Alice.
+        await self._capture(self._HARSH, reachable={1})
+
+        alice = _store().resolved_gameweek(1)[1]
+        assert alice.fines == [], "a ruling already recorded is history, not a re-derivation"
+        assert alice.fine_rules_evaluated == ["below-threshold"]
+
+    async def test_a_repair_that_actually_fills_a_gap_rules_the_cohort_together(self):
+        """Config drift must not re-rule, but a real repair must: leaving the
+        already-ruled half frozen while the newly-filled half is ruled could
+        record two managers as last place in one gameweek."""
+        await self._capture(self._LENIENT, reachable={1})
+        assert _store().resolved_gameweek(1)[2].capture_status is CaptureStatus.UNKNOWN
+
+        await self._capture(self._LENIENT, reachable={1, 2})
+
+        resolved = _store().resolved_gameweek(1)
+        assert resolved[2].capture_status is CaptureStatus.OK
+        assert [f.rule_type for f in resolved[2].fines] == ["below-threshold"]
+        assert resolved[2].fine_rules_evaluated == ["below-threshold"]
+
+    async def test_a_detailed_upgrade_still_rules_what_the_coarse_tier_could_not(self):
+        """Freezing must not block a tier upgrade: the detailed replay can
+        rule `red-card`, which the coarse capture recorded as unruled."""
+        await capture_recap_history(
+            self._data(), season=SEASON,
+            history_client=_HistoryClient(
+                {1: [_history_row(gw, 60, 60 * gw) for gw in (1, 2)],
+                 2: [_history_row(gw, 5, 5 * gw) for gw in (1, 2)]},
+            ),
+            finished_gameweeks=[1, 2],
+            fines_config=self._config(_ALL_THREE_RULES),
+        )
+        assert _store().resolved_gameweek(1)[1].fine_rules_evaluated == [
+            "last-place", "below-threshold",
+        ]
+
+        replayed = _recap_data(
+            gameweek=1,
+            managers=[_manager(name="Alice", entry_id=1, gross_points=60)],
+            cohort=_cohort((1, "Alice", 1, 60, 60)),
+        )
+        replayed["fine_rules_evaluated"] = ["last-place", "below-threshold", "red-card"]
+
+        async def _replay(gameweek: int):
+            return replayed if gameweek == 1 else None
+
+        await capture_recap_history(
+            self._data(), season=SEASON, finished_gameweeks=[1, 2],
+            replay_gameweek=_replay, backfill_detail=True,
+            fines_config=self._config(_ALL_THREE_RULES),
+        )
+
+        assert _store().resolved_gameweek(1)[1].fine_rules_evaluated == [
+            "last-place", "below-threshold", "red-card",
+        ]
+
+
 # ---------------------------------------------------------------------------
 # U7: two-tier backfill and coverage
 # ---------------------------------------------------------------------------
@@ -2262,6 +2365,26 @@ class TestSeasonFinesSurfaces:
         output = result.output.replace("\n", "")
         assert "Season Fines" in output
         assert "Bob: 1 (1 last-place)" in output
+
+    def test_manager_names_in_the_season_block_are_not_read_as_markup(self):
+        """Both the per-manager lines and the qualifiers beneath them carry
+        names, which are user-supplied (#165 review)."""
+        data = _recap_data(
+            gameweek=CHIP_SPLIT_GW,
+            managers=[
+                _manager(name="Alice", entry_id=1, gross_points=60),
+                _manager(name="[b]B[/b]", entry_id=2, gross_points=10, gw_rank=2, overall_rank=2),
+            ],
+            cohort=_cohort((1, "Alice", 1, 60, 300), (2, "[b]B[/b]", 2, 10, 200)),
+        )
+
+        result = _invoke_recap(
+            data, client=_fpl_client(CHIP_SPLIT_GW), settings=_LAST_PLACE_ONLY,
+            gw=CHIP_SPLIT_GW,
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "[b]B[/b]: 1 (1 last-place)" in result.output.replace("\n", "")
 
     def test_the_finale_prints_them_too(self):
         result = self._run(TOTAL_GAMEWEEKS)

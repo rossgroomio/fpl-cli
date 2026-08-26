@@ -196,6 +196,11 @@ class LeagueRecapData(TypedDict):
     # when the caller never evaluated fines at all, which is not the same as
     # present-and-empty ("evaluated, nothing configured").
     fine_rules_evaluated: NotRequired[list[str]]
+    # The manager keys `fine_rules_evaluated` actually holds for. A manager
+    # whose own evaluation raised is absent, so their row records nothing
+    # ruled rather than a rule list they were never measured against.
+    # Absent entirely means the caller ruled every manager it collected.
+    fines_ruled_manager_keys: NotRequired[list[int]]
     synthesis_summary: NotRequired[str]
     # Ledger partition key and the league's own start gameweek (absent or 1
     # means it started at GW1, so there is nothing to offset or skip).

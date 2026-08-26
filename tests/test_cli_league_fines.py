@@ -115,6 +115,34 @@ class TestTableOutput:
 
         assert "GW1-GW1" in output
 
+    def test_a_manager_name_in_a_qualifier_line_is_not_interpreted_either(self):
+        """The qualifier lines carry manager names too, so escaping only the
+        table cells leaves half the surface exposed (#165 review)."""
+        store = _store()
+        store.append_rows(1, [make_history_row(
+            season=SEASON, league_id=LEAGUE_ID, gameweek=1, manager_key=1,
+            manager_name="Alice", fine_rules_evaluated=ALL_RULES,
+        )])
+        # A joiner, so their name reaches a qualifier line rather than only a
+        # table cell.
+        store.append_rows(2, [
+            make_history_row(
+                season=SEASON, league_id=LEAGUE_ID, gameweek=2, manager_key=1,
+                manager_name="Alice", fine_rules_evaluated=ALL_RULES,
+            ),
+            make_history_row(
+                season=SEASON, league_id=LEAGUE_ID, gameweek=2, manager_key=2,
+                manager_name="[b]B[/b]", fine_rules_evaluated=ALL_RULES,
+            ),
+        ])
+
+        output = _invoke().output.replace("\n", "")
+
+        assert "recorded history begins at GW2" in output
+        # Twice: once in their table cell, once in the joiner qualifier. One
+        # occurrence means the qualifier swallowed the brackets as markup.
+        assert output.count("[b]B[/b]") == 2
+
     def test_a_manager_name_with_markup_is_not_interpreted(self):
         _store().append_rows(1, [make_history_row(
             season=SEASON, league_id=LEAGUE_ID, gameweek=1, manager_key=1,

@@ -14,6 +14,7 @@ from fpl_cli.services.league_history_notes import (
 )
 from tests.conftest import make_history_row
 
+
 class TestSeasonMilestones:
     """A once-a-season set-piece fires at a moment, not across a phase."""
 
@@ -23,8 +24,12 @@ class TestSeasonMilestones:
     def test_the_finale_is_a_milestone(self):
         assert is_season_milestone(38) is True
 
-    def test_a_gameweek_past_the_constant_is_still_the_finale(self):
-        assert is_season_milestone(39) is True
+    def test_a_gameweek_past_the_constant_is_not_a_second_finale(self):
+        """`derive_season_phase` calls GW38 *and beyond* the finale, which is
+        right for a phase and wrong for a moment: gating on it would print a
+        once-a-season set-piece at GW38 and again at GW39."""
+        assert is_season_milestone(39) is False
+        assert derive_season_phase(39) is SeasonPhase.FINALE
 
     def test_the_rest_of_the_midpoint_phase_is_not(self):
         """`derive_season_phase` calls GW19-31 the midpoint. Gating on the

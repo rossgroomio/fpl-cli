@@ -800,7 +800,11 @@ fpl league-fines --format json    # JSON envelope for scripting/agents
 Reads the ledger and nothing else, so it makes no network calls and works for any season
 still on disk. Nothing is re-ruled: a fine is counted exactly as the gameweek recorded it,
 so changing a `below-threshold` value in settings moves future rulings and leaves history
-alone.
+alone. Backfill holds the same line — a repair carries an already-recorded ruling forward
+untouched, and re-rules a gameweek only when it genuinely fills something in (a manager
+repaired out of an unknown row, or a coarse gameweek upgraded to a fidelity that can rule
+more), in which case it re-rules the whole cohort together so a cohort-relative rule like
+`last-place` cannot end up recorded against two managers in one gameweek.
 
 **Counts, not money.** `penalty` is free text, so "4 last-place, 1 red-card" is supportable
 and "£14 owed" is not — that would need a numeric amount stamped onto the row at capture
@@ -808,8 +812,8 @@ time. Settlement and the configured `escalation_note` are not modelled.
 
 **Coverage is stated, not assumed.** A zero is only trustworthy when the gameweeks behind
 it were ruled, so every gameweek that was not is named beneath the table: never captured,
-unreadable, captured before rulings were recorded, captured with no rules configured, or
-captured at a fidelity that could not rule a given rule. A manager's own gaps are named
+unreadable, captured but reaching nobody, holding no record of what was ruled, recording a
+ruling on no rules at all, or captured at a fidelity that could not rule a given rule. A manager's own gaps are named
 too — an unknown capture row means nothing was ruled against them that week — and their
 "GWs ruled" count carries an asterisk whenever their span holds one. A mid-season joiner
 keeps their real, lower totals and is qualified rather than scaled up; a manager who has

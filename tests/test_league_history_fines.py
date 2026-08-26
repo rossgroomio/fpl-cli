@@ -254,9 +254,7 @@ class TestCoverageQualifiers:
 
         assert _by_name(tally, "Alice").total == 1, "a recorded fine is still recorded history"
         assert _by_name(tally, "Alice").ruled_gameweeks == []
-        assert any(
-            "captured before fine rulings were recorded" in line for line in tally.qualifiers
-        )
+        assert any("holds no record of what was ruled" in line for line in tally.qualifiers)
 
     def test_a_gameweek_captured_with_no_rules_configured_reads_as_uncovered(self):
         store = _store()
@@ -266,9 +264,63 @@ class TestCoverageQualifiers:
 
         tally = _tally_for(store, 1, league_start_gameweek=1, rule_types=[])
 
-        assert any(
-            "captured with no fine rules configured" in line for line in tally.qualifiers
-        )
+        assert any("recorded a ruling on no rules at all" in line for line in tally.qualifiers)
+
+    def test_a_gameweek_the_capture_reached_nobody_says_so(self):
+        """Every row unknown is a failed capture, not an unconfigured one.
+        Reading it as "no fine rules configured" hides the real cause and
+        tells the reader nothing they can act on (#165 review)."""
+        store = _store()
+        store.append_rows(1, [
+            make_history_row(gameweek=1, manager_key=1, manager_name="Alice",
+                             capture_status="unknown"),
+            make_history_row(gameweek=1, manager_key=2, manager_name="Bob",
+                             capture_status="unknown"),
+        ])
+
+        tally = _tally_for(store, 1, league_start_gameweek=1, rule_types=ALL_RULES)
+
+        assert any("the capture reached nobody" in line for line in tally.qualifiers)
+        assert not any("no rules at all" in line for line in tally.qualifiers)
+
+    def test_one_unknown_row_beside_a_ruled_one_is_not_an_unreached_gameweek(self):
+        store = _store()
+        store.append_rows(1, [
+            make_history_row(gameweek=1, manager_key=1, manager_name="Alice",
+                             fine_rules_evaluated=ALL_RULES),
+            make_history_row(gameweek=1, manager_key=2, manager_name="Bob",
+                             capture_status="unknown"),
+        ])
+
+        tally = _tally_for(store, 1, league_start_gameweek=1, rule_types=ALL_RULES)
+
+        assert not any("reached nobody" in line for line in tally.qualifiers)
+
+    def test_an_empty_ruling_at_the_coarse_tier_names_the_missing_squad(self):
+        """A league configuring only squad-dependent rules records `[]` at the
+        coarse tier. Saying "no rules configured" there is false -- the rule
+        is configured, just not rulable without a squad (#165 review)."""
+        store = _store()
+        store.append_rows(1, [make_history_row(
+            gameweek=1, manager_key=1, manager_name="Alice",
+            tier=FidelityTier.COARSE, fine_rules_evaluated=[],
+        )])
+
+        tally = _tally_for(store, 1, league_start_gameweek=1, rule_types=["red-card"])
+
+        line = next(line for line in tally.qualifiers if "no rules at all" in line)
+        assert "carries no squad" in line
+
+    def test_an_empty_ruling_at_the_detailed_tier_claims_no_tier_cause(self):
+        store = _store()
+        store.append_rows(1, [make_history_row(
+            gameweek=1, manager_key=1, manager_name="Alice", fine_rules_evaluated=[],
+        )])
+
+        tally = _tally_for(store, 1, league_start_gameweek=1, rule_types=[])
+
+        line = next(line for line in tally.qualifiers if "no rules at all" in line)
+        assert "coarse tier" not in line
 
     def test_an_unreadable_gameweek_is_reported_rather_than_raising(self):
         store = _store()

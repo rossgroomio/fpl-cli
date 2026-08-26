@@ -45,15 +45,6 @@ class FineResult:
     message: str
 
 
-# Rule types rulable from cohort points alone. Everything outside this set
-# needs the manager's squad, which the ledger's coarse tier -- the
-# manager-history endpoint -- does not carry, so a backfill running at that
-# tier can rule these and only these (issue #136). `tests/test_fines.py`
-# asserts every valid rule type is on one side of this split or the other, so
-# adding a rule type forces the choice rather than defaulting it.
-COHORT_ONLY_RULE_TYPES = frozenset({"last-place", "below-threshold"})
-
-
 def _no_league_data(rule: FineRule) -> FineResult:
     return FineResult(rule_type=rule.type, triggered=False, message="No league data available.")
 
@@ -78,7 +69,10 @@ def evaluate_rules(
     result either way, and a red-card handler handed an empty squad returns
     "no red card fine", which is a false acquittal rather than an abstention.
     """
-    return [_RULE_HANDLERS[rule.type](rule, league_data, team_data, use_net_points) for rule in rules]
+    return [
+        _RULE_HANDLERS[rule.type].evaluate(rule, league_data, team_data, use_net_points)
+        for rule in rules
+    ]
 
 
 def evaluate_fines(
@@ -193,11 +187,35 @@ def _eval_below_threshold(
     )
 
 
-_RULE_HANDLERS: dict[str, _RuleHandler] = {
-    "last-place": _eval_last_place,
-    "red-card": _eval_red_card,
-    "below-threshold": _eval_below_threshold,
+@dataclass(frozen=True)
+class _Rule:
+    """One rule type's handler, plus what it needs to be able to rule at all.
+
+    `needs_squad` is declared here, beside the handler it describes, rather
+    than in a separate list of rule types: a handler that reads `team_data`
+    and a classification that says it does not are the kind of pair that
+    drifts silently, and the cost of the drift is a false acquittal (a
+    squad-dependent handler run against an empty squad answers "no fine")
+    recorded as a real ruling (issue #136).
+    """
+
+    evaluate: _RuleHandler
+    needs_squad: bool
+
+
+_RULE_HANDLERS: dict[str, _Rule] = {
+    "last-place": _Rule(_eval_last_place, needs_squad=False),
+    "red-card": _Rule(_eval_red_card, needs_squad=True),
+    "below-threshold": _Rule(_eval_below_threshold, needs_squad=False),
 }
+
+# Rule types rulable from cohort points alone -- derived from the registry
+# above, so a new rule type is classified by the same edit that adds it.
+# The ledger's coarse tier (the manager-history endpoint) carries no squad,
+# so a backfill running at that tier can rule these and only these.
+COHORT_ONLY_RULE_TYPES = frozenset(
+    rule_type for rule_type, rule in _RULE_HANDLERS.items() if not rule.needs_squad
+)
 
 
 def compute_bench_analysis(team_data: list[dict[str, Any]]) -> str | None:

@@ -200,6 +200,31 @@ class TestRuleNarrowing:
         needs_squad = VALID_RULE_TYPES - COHORT_ONLY_RULE_TYPES
         assert needs_squad == {"red-card"}
 
+    def test_a_rule_declared_cohort_only_really_ignores_the_squad(self):
+        """The declaration is what `_coarse_fine_rules` trusts when it runs a
+        handler against no squad at all. A rule that reads `team_data` but is
+        declared squad-free would rule differently there and record the
+        difference as fact, so the claim is checked rather than taken
+        (#165 review)."""
+        from fpl_cli.cli._fines import _RULE_HANDLERS
+
+        league: FinesLeagueData = {
+            "user_gw_points": 20,
+            "worst_performers": [{"is_user": True, "points": 20, "gross_points": 20, "name": "A"}],
+        }
+        squad = [
+            {"name": "P1", "red_cards": 1, "contributed": True, "auto_sub_out": False},
+            {"name": "P2", "red_cards": 0, "contributed": True, "auto_sub_out": False},
+        ]
+
+        for rule_type, rule in _RULE_HANDLERS.items():
+            if rule.needs_squad:
+                continue
+            configured = FineRule(type=rule_type, threshold=30, penalty="Pint")
+            assert rule.evaluate(configured, league, [], False) == rule.evaluate(
+                configured, league, squad, False,
+            ), f"'{rule_type}' is declared cohort-only but reads the squad"
+
     def test_rules_for_format_returns_the_configured_order(self):
         config = _config(classic=[THRESHOLD_RULE, LAST_PLACE_RULE], draft=[RED_CARD_RULE])
         assert [r.type for r in rules_for_format(config, "classic")] == [

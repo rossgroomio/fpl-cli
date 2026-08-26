@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from fpl_cli.cli._league_recap_types import LeagueRecapData
-from fpl_cli.services.league_history_fines import SeasonFinesTally
+from fpl_cli.services.league_history_fines import SeasonFinesTally, format_fine_breakdown
 from fpl_cli.services.league_history_notes import NotesPack, NoteSurface
 from fpl_cli.utils.gameweek import is_opening_gameweek
 
@@ -399,10 +399,12 @@ def format_recap_season_fines_context(tally: SeasonFinesTally | None) -> str:
     fined = tally.fined_managers
     if fined:
         for manager in fined:
-            breakdown = ", ".join(
-                f"{count} {rule_type}" for rule_type, count in sorted(manager.counts.items())
+            # Same helper the console block uses, so the wording the model is
+            # given and the wording the user reads cannot drift apart.
+            lines.append(
+                f"- {manager.manager_name}: {manager.total} "
+                f"({format_fine_breakdown(manager)})",
             )
-            lines.append(f"- {manager.manager_name}: {manager.total} ({breakdown})")
     else:
         lines.append("- Nobody has been fined this season.")
 

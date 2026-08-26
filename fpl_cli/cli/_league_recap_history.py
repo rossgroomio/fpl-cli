@@ -174,6 +174,27 @@ def _captaincy(
     )
 
 
+def _ruled_rules_for(data: LeagueRecapData, manager_key: int) -> list[str] | None:
+    """The rule types this manager was actually ruled against, if any.
+
+    `fine_rules_evaluated` is a fact about the gameweek's configuration;
+    whether a given manager was measured against it is a fact about their
+    own evaluation, which `evaluate_league_fines` drops silently when a rule
+    handler raises. Stamping the configured list onto that manager anyway
+    would record "all rules ruled, none triggered" for someone nothing was
+    ruled against, so they get the same `None` a never-evaluated capture
+    gets -- silence, which the season tally qualifies rather than counting
+    as a clean week (issue #136).
+    """
+    rules = data.get("fine_rules_evaluated")
+    if rules is None:
+        return None
+    ruled = data.get("fines_ruled_manager_keys")
+    if ruled is not None and manager_key not in ruled:
+        return None
+    return rules
+
+
 def _fines_for(
     data: LeagueRecapData, manager_key: int, manager_name: str,
 ) -> list[LedgerFine]:
@@ -294,7 +315,7 @@ def _known_row(
         # the caller never evaluated fines at all, which stays `None` -- the
         # "nothing is recorded either way" state -- rather than collapsing
         # into the `[]` that means "ruled, nothing configured" (issue #136).
-        fine_rules_evaluated=data.get("fine_rules_evaluated"),
+        fine_rules_evaluated=_ruled_rules_for(data, manager_key),
         team_value=manager.get("team_value"),
         bank=manager.get("bank"),
         global_rank=manager.get("global_rank"),
@@ -684,12 +705,6 @@ def _apply_coarse_fines(
         return
 
     rule_types = [rule.type for rule in rules]
-    if not rules:
-        # Nothing configured this tier can rule: still a recorded "no rule
-        # covers this row", not silence.
-        for row in ruled:
-            row.fine_rules_evaluated = rule_types
-        return
 
     def _gameweek_points(row: LeagueHistoryRow) -> int:
         gross = row.gross_points or 0
@@ -697,15 +712,19 @@ def _apply_coarse_fines(
 
     # Same measure and same single-winner tie-break the live path uses
     # (`evaluate_league_fines`): whichever manager `min` reaches first is the
-    # one fined, so a tie for last does not fine everyone tied.
+    # one fined, so a tie for last does not fine everyone tied. With no
+    # rules to run this is wasted but harmless -- `evaluate_rules([], ...)`
+    # returns `[]`, so every row still lands on the recorded "no rule covers
+    # this row" that a special case here would have written by hand.
     worst = min(ruled, key=_gameweek_points)
+    worst_points = _gameweek_points(worst)
 
     for row in ruled:
         league_data = FinesLeagueData(
             user_gw_points=row.gross_points or 0,
             worst_performers=[WorstPerformer(
                 is_user=row.manager_key == worst.manager_key,
-                points=_gameweek_points(worst),
+                points=worst_points,
                 gross_points=worst.gross_points or 0,
                 name=worst.manager_name,
             )],
@@ -728,6 +747,65 @@ def _apply_coarse_fines(
             for result in results if result.triggered
         ]
         row.fine_rules_evaluated = rule_types
+
+
+def _freeze_recorded_fines(
+    store: LeagueHistoryStore, gameweek: int, rows: list[LeagueHistoryRow],
+) -> None:
+    """Keep a ruling already on disk instead of re-ruling it under today's config.
+
+    A backfill re-fetches a past gameweek's whole cohort, and both tiers rule
+    fines over all of it. Left alone that re-rules managers whose data never
+    changed, under whatever `fines` config happens to be current at repair
+    time -- so editing a `below-threshold` value in March silently rewrites
+    every already-ruled gameweek a repair touches afterwards, because
+    `append_rows` supersedes any same-tier row whose content differs
+    (issue #136 review). Rulings are frozen at capture; this is what freezes
+    them.
+
+    The decision is per gameweek, not per row: if *anything* in the cohort
+    genuinely needs ruling -- a manager with no recorded ruling (an unknown
+    row now repaired), a tier upgrade that can rule more than the recorded
+    ruling did, or points that changed under a manager -- the whole gameweek
+    is re-ruled together, because a cohort-relative rule like `last-place`
+    ruled half-and-half would record two managers as last in one gameweek.
+    Otherwise every recorded ruling is carried forward verbatim, the rows
+    come out byte-identical, and `append_rows` writes nothing at all.
+
+    Only backfill uses this. The gameweek being recapped now is ruled live
+    each run on purpose: it is still being scored, and a config fix made
+    this week should apply to this week.
+    """
+    try:
+        previous = store.resolved_gameweek(gameweek)
+    except LeagueHistoryError:
+        # Unreadable: `append_rows` raises on the same file moments later and
+        # the caller warns there. Nothing to carry forward either way.
+        return
+    if not previous:
+        return
+
+    carried: dict[int, LeagueHistoryRow] = {}
+    for row in rows:
+        if row.capture_status is not CaptureStatus.OK:
+            continue
+        prior = previous.get(row.manager_key)
+        if (
+            prior is None
+            or prior.capture_status is not CaptureStatus.OK
+            or prior.fine_rules_evaluated is None
+            or not set(prior.fine_rules_evaluated) >= set(row.fine_rules_evaluated or ())
+            or (prior.gross_points, prior.transfer_cost)
+            != (row.gross_points, row.transfer_cost)
+        ):
+            return
+        carried[row.manager_key] = prior
+
+    for row in rows:
+        prior = carried.get(row.manager_key)
+        if prior is not None:
+            row.fines = list(prior.fines)
+            row.fine_rules_evaluated = list(prior.fine_rules_evaluated or ())
 
 
 async def _coarse_backfill(
@@ -822,6 +900,7 @@ async def _coarse_backfill(
             continue
         _assign_cohort_ranks(gameweek_rows)
         _apply_coarse_fines(gameweek_rows, rules=fine_rules, use_net_points=use_net_points)
+        _freeze_recorded_fines(store, gameweek, gameweek_rows)
         try:
             written = store.append_rows(gameweek, gameweek_rows)
         except LeagueHistoryError as exc:
@@ -895,6 +974,7 @@ async def _detailed_backfill(
             tier=FidelityTier.DETAILED,
             is_live_gw=False,
         )
+        _freeze_recorded_fines(store, gameweek, rows)
         try:
             written = store.append_rows(gameweek, rows)
         except LeagueHistoryError as exc:

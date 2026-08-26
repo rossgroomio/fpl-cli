@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from fpl_cli.cli._fines import (
@@ -807,6 +808,20 @@ def _recap_fine_message(result: FineResult, manager_name: str) -> str:
     return result.message
 
 
+@dataclass(frozen=True)
+class LeagueFinesRuling:
+    """What one gameweek's fine evaluation produced, and who it covered.
+
+    `ruled_manager_keys` is deliberately not "every manager passed in": a
+    manager whose evaluation raised is absent from it, which is what stops
+    their ledger row from recording an acquittal nothing actually ruled
+    (issue #136).
+    """
+
+    fines: list[RecapFineResult]
+    ruled_manager_keys: frozenset[int]
+
+
 def configured_fine_rule_types(settings: dict[str, Any], format_name: str) -> list[str]:
     """The rule types `evaluate_league_fines` would rule on, in config order.
 
@@ -830,14 +845,29 @@ def evaluate_league_fines(
     managers: list[RecapManagerEntry],
     settings: dict[str, Any],
     format_name: str,
-) -> list[RecapFineResult]:
-    """Evaluate fines for each manager. Returns only triggered fines.
+) -> LeagueFinesRuling:
+    """Rule the configured fines against each manager.
 
-    Gracefully returns empty list if fines are unconfigured or evaluation fails.
+    Returns the triggered fines *and* the managers whose evaluation actually
+    completed. The two are separate facts: a manager whose evaluation raised
+    is dropped from `fines` silently, and stamping the configured rule list
+    onto their ledger row anyway would record "every rule was ruled, none
+    triggered" -- a false acquittal for a manager nothing was ruled against
+    (issue #136). `ruled_manager_keys` is what lets the caller leave that row
+    unstamped instead.
+
+    Never raises: an unconfigured or failing evaluation degrades to an empty
+    ruling.
     """
     fines_config = parse_fines_config(settings)
     if fines_config is None:
-        return []
+        # Every manager counts as ruled: there was no rule to run and so
+        # nothing that could fail, which is the "ruled, nothing configured"
+        # state the ledger records as an empty list rather than as silence.
+        return LeagueFinesRuling(
+            fines=[],
+            ruled_manager_keys=frozenset(recap_manager_key(m) for m in managers),
+        )
 
     use_net_points = settings.get("use_net_points", False)
 
@@ -845,6 +875,7 @@ def evaluate_league_fines(
     worst = min(managers, key=lambda m: m["gw_points"]) if managers else None
 
     triggered: list[RecapFineResult] = []
+    ruled: set[int] = set()
 
     from fpl_cli.cli._fines import WorstPerformer
 
@@ -901,11 +932,19 @@ def evaluate_league_fines(
                         rule_type=r.rule_type,
                         message=msg,
                     ))
+            ruled.add(recap_manager_key(m))
 
         except Exception:  # noqa: BLE001 — best-effort enrichment
-            logger.debug("Fines evaluation failed for %s", m["manager_name"], exc_info=True)
+            # Warned, not debugged: this is the one signal that a rule
+            # handler is broken, and the row it produces records silence
+            # rather than an acquittal, so nothing downstream will ever
+            # surface it either (issue #136).
+            logger.warning(
+                "Fines evaluation failed for %s; nothing is recorded as ruled for them",
+                m["manager_name"], exc_info=True,
+            )
 
-    return triggered
+    return LeagueFinesRuling(fines=triggered, ruled_manager_keys=frozenset(ruled))
 
 
 # ---------------------------------------------------------------------------

@@ -142,20 +142,15 @@ def _serialize_managers(tally: SeasonFinesTally) -> list[dict[str, Any]]:
     Zero-total managers are included on purpose: "recorded and not fined" is
     a fact a consumer needs, and dropping them would leave a caller unable to
     tell them from a manager the ledger has never seen.
+
+    Row shape comes from `serialize_manager_fine_tally`, which `league-recap
+    --format json` uses too, so the two commands cannot describe the same
+    dataclass differently.
     """
+    from fpl_cli.services.league_history_fines import serialize_manager_fine_tally
+
     return [
-        {
-            "manager_key": manager.manager_key,
-            "manager_name": manager.manager_name,
-            "total": manager.total,
-            "counts": {rule: manager.counts.get(rule, 0) for rule in tally.rule_types},
-            "fined_gameweeks": manager.fined_gameweeks,
-            "ruled_gameweeks": manager.ruled_gameweeks,
-            "unruled_gameweeks": manager.unruled_gameweeks,
-            "first_recorded_gameweek": manager.first_recorded_gameweek,
-            "last_recorded_gameweek": manager.last_recorded_gameweek,
-            "is_fully_ruled": manager.is_fully_ruled,
-        }
+        serialize_manager_fine_tally(manager, tally.rule_types)
         for manager in tally.managers
     ]
 
@@ -191,7 +186,10 @@ def _render_tally(tally: SeasonFinesTally) -> None:
     if tally.qualifiers:
         console.print()
         for line in tally.qualifiers:
-            console.print(f"[dim]{line}[/dim]")
+            # Escaped for the same reason the table cells are: these lines
+            # carry manager names, and Rich reads square brackets in them as
+            # markup.
+            console.print(f"[dim]{rich_escape(line)}[/dim]")
 
 
 def _manager_row(manager: ManagerFineTally, tally: SeasonFinesTally) -> list[str]:

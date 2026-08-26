@@ -62,7 +62,7 @@ from fpl_cli.services.league_history import LeagueHistoryError, LeagueHistorySto
 from fpl_cli.utils.gameweek import format_gameweek_list
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Iterable, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -200,6 +200,10 @@ class _SpanCoverage:
 
     uncaptured: list[int] = field(default_factory=list)
     unreadable: list[int] = field(default_factory=list)
+    # Captured and holding rows, every one of them unknown (R19): the capture
+    # ran and reached nobody. Distinct from `unrecorded`, where the capture
+    # reached managers but recorded nothing about what it ruled.
+    unreached: list[int] = field(default_factory=list)
     # Captured and holding rows, but at least one of them predates schema
     # version 4 and so records nothing about what it ruled. Distinct from
     # `unconfigured`, where the capture did record a ruling -- of nothing.
@@ -210,13 +214,58 @@ class _SpanCoverage:
     # is what usually lands here.
     partial: dict[str, list[int]] = field(default_factory=dict)
     coarse: set[int] = field(default_factory=set)
-    # Gameweeks that recorded a ruling of some kind, in ascending order.
-    ruled: list[int] = field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Shared renderings
+# ---------------------------------------------------------------------------
+
+
+def format_fine_breakdown(manager: ManagerFineTally) -> str:
+    """One manager's counts as "2 last-place, 1 red-card".
+
+    Shared by every surface that spells a manager's fines out -- the console
+    highlights, the recap prompt -- so the human-facing wording and the
+    wording the editorial is given can never drift apart.
+    """
+    return ", ".join(
+        f"{count} {rule_type}" for rule_type, count in sorted(manager.counts.items())
+    )
+
+
+def serialize_manager_fine_tally(
+    manager: ManagerFineTally, rule_types: Sequence[str],
+) -> dict[str, object]:
+    """One manager's tally, JSON-shaped, against a fixed column order.
+
+    Shared by `league-fines --format json` and `league-recap --format json`
+    so the same dataclass cannot reach two consumers in two shapes; the
+    `counts` map is filled out against `rule_types` rather than emitted
+    sparsely, so a configured rule nobody triggered is a recorded zero.
+    """
+    return {
+        "manager_key": manager.manager_key,
+        "manager_name": manager.manager_name,
+        "total": manager.total,
+        "counts": {rule: manager.counts.get(rule, 0) for rule in rule_types},
+        "fined_gameweeks": manager.fined_gameweeks,
+        "ruled_gameweeks": manager.ruled_gameweeks,
+        "unruled_gameweeks": manager.unruled_gameweeks,
+        "first_recorded_gameweek": manager.first_recorded_gameweek,
+        "last_recorded_gameweek": manager.last_recorded_gameweek,
+        "is_fully_ruled": manager.is_fully_ruled,
+    }
 
 
 # ---------------------------------------------------------------------------
 # Coverage qualifiers
 # ---------------------------------------------------------------------------
+
+
+def _subject(gameweeks: Iterable[int]) -> str:
+    """"That gameweek is" / "Those gameweeks are", for a clause that follows
+    a rendered gameweek list."""
+    return "That gameweek is" if len(set(gameweeks)) == 1 else "Those gameweeks are"
 
 
 def _span_qualifiers(coverage: _SpanCoverage, start_gameweek: int, through_gameweek: int) -> list[str]:
@@ -232,16 +281,34 @@ def _span_qualifiers(coverage: _SpanCoverage, start_gameweek: int, through_gamew
             f"{format_gameweek_list(coverage.unreadable)} could not be read and is left out of "
             f"these totals; move the file aside and re-run the recap to recapture it.",
         )
-    if coverage.unrecorded:
+    if coverage.unreached:
         lines.append(
-            f"{format_gameweek_list(coverage.unrecorded)} was captured before fine rulings were "
-            f"recorded, so the fines counted there are real but a zero is not proof of a clean "
-            f"week.",
+            f"{format_gameweek_list(coverage.unreached)} was captured but the capture reached "
+            f"nobody, so no fine was ruled there for anyone and nobody's total counts it; "
+            f"re-run the recap to retry it.",
+        )
+    if coverage.unrecorded:
+        # Deliberately silent on *why*: a row captured before fine rulings
+        # were recorded and a row whose rule evaluation raised look
+        # identical from here, and naming either cause would assert more
+        # than the ledger holds.
+        lines.append(
+            f"{format_gameweek_list(coverage.unrecorded)} holds no record of what was ruled, so "
+            f"the fines counted there are real but a zero is not proof of a clean week.",
         )
     if coverage.unconfigured:
+        # Likewise: an empty ruling means no rule *could be* ruled there,
+        # which is "nothing configured" for a detailed capture and "nothing
+        # configured that this tier can rule" for a coarse one.
+        cause = ""
+        if set(coverage.unconfigured) <= coverage.coarse:
+            cause = (
+                f" {_subject(coverage.unconfigured)} recorded at the coarse tier, which carries "
+                f"no squad, so a rule needing one was never rulable there."
+            )
         lines.append(
-            f"{format_gameweek_list(coverage.unconfigured)} was captured with no fine rules "
-            f"configured, so no rule covered it.",
+            f"{format_gameweek_list(coverage.unconfigured)} recorded a ruling on no rules at "
+            f"all, so no fine could be recorded there.{cause}",
         )
     for rule_type, gameweeks in sorted(coverage.partial.items()):
         # Naming the cause where the ledger can prove it: the coarse tier is
@@ -249,12 +316,9 @@ def _span_qualifiers(coverage: _SpanCoverage, start_gameweek: int, through_gamew
         # squad, so a rule needing one was never merely skipped there.
         cause = ""
         if set(gameweeks) <= coverage.coarse:
-            subject = (
-                "That gameweek is" if len(set(gameweeks)) == 1 else "Those gameweeks are"
-            )
             cause = (
-                f" {subject} recorded at the coarse tier, which carries no squad, so that "
-                f"ruling is not recoverable there."
+                f" {_subject(gameweeks)} recorded at the coarse tier, which carries no squad, so "
+                f"that ruling is not recoverable there."
             )
         lines.append(
             f"'{rule_type}' was not ruled in {format_gameweek_list(gameweeks)}, so no "
@@ -331,6 +395,9 @@ def build_season_fines_tally(
     other ledger reader.
     """
     captured = [gw for gw in store.captured_gameweeks() if gw <= through_gameweek]
+    # Membership only -- `captured` stays a list because its order and first
+    # element are what set the span below.
+    captured_set = set(captured)
     start_gameweek = (
         league_start_gameweek
         if league_start_gameweek is not None
@@ -345,7 +412,7 @@ def build_season_fines_tally(
     populated: list[int] = []
 
     for gameweek in span:
-        if gameweek not in captured:
+        if gameweek not in captured_set:
             coverage.uncaptured.append(gameweek)
             continue
         try:
@@ -364,6 +431,7 @@ def build_season_fines_tally(
         populated.append(gameweek)
         ruled_here: set[str] = set()
         predates_recording = False
+        reached_anyone = False
 
         for manager_key, row in resolved.items():
             accumulator = accumulators.get(manager_key)
@@ -392,8 +460,10 @@ def build_season_fines_tally(
             if row_rules:
                 accumulator.ruled_gameweeks.add(gameweek)
                 ruled_here.update(row_rules)
-            if row.capture_status is CaptureStatus.OK and row.fine_rules_evaluated is None:
-                predates_recording = True
+            if row.capture_status is CaptureStatus.OK:
+                reached_anyone = True
+                if row.fine_rules_evaluated is None:
+                    predates_recording = True
             if row.tier is FidelityTier.COARSE:
                 coverage.coarse.add(gameweek)
 
@@ -402,14 +472,16 @@ def build_season_fines_tally(
                 observed_rule_types.append(rule_type)
 
         if ruled_here:
-            coverage.ruled.append(gameweek)
             ruled_types_by_gameweek[gameweek] = ruled_here
+        elif not reached_anyone:
+            # Every row unknown (R19). Not "nothing was configured": the
+            # capture never got far enough to rule anything either way.
+            coverage.unreached.append(gameweek)
         elif predates_recording:
             coverage.unrecorded.append(gameweek)
         else:
             # A recorded ruling of nothing: rows carry `fine_rules_evaluated`
-            # and it is empty, which means no rule was configured for this
-            # format when the gameweek was captured.
+            # and it is empty, so no rule was rulable here.
             coverage.unconfigured.append(gameweek)
 
     ordered_rule_types = [*(rule_types or ())]
@@ -419,9 +491,9 @@ def build_season_fines_tally(
     # rule. A gameweek that recorded nothing is already stated once, in its
     # own qualifier, and claiming a specific rule went unruled there would
     # assert more than the row supports.
-    for gameweek in coverage.ruled:
+    for gameweek, ruled_types in ruled_types_by_gameweek.items():
         for rule_type in ordered_rule_types:
-            if rule_type not in ruled_types_by_gameweek[gameweek]:
+            if rule_type not in ruled_types:
                 coverage.partial.setdefault(rule_type, []).append(gameweek)
 
     last_populated = populated[-1] if populated else None
@@ -464,7 +536,8 @@ def build_season_fines_tally(
             managers, start_gameweek,
             # Every gameweek the span-level lines above already account for.
             set(coverage.uncaptured) | set(coverage.unreadable)
-            | set(coverage.unrecorded) | set(coverage.unconfigured),
+            | set(coverage.unreached) | set(coverage.unrecorded)
+            | set(coverage.unconfigured),
         ))
 
     return SeasonFinesTally(

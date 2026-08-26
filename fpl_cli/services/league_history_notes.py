@@ -141,13 +141,16 @@ def is_season_milestone(
     chip-availability boundary, which is `TOTAL_GAMEWEEKS // 2` and so is
     the halfway point too -- and the finale.
 
-    The finale is asked of `derive_season_phase` rather than compared to
-    `total_gameweeks` here, so a season whose real final gameweek differs
-    from the constant still reaches it exactly once.
+    Both are compared exactly rather than asked of `derive_season_phase`,
+    whose FINALE branch is deliberately open-ended (`>= total_gameweeks`, so
+    a season running past the constant still has a phase). Open-ended is
+    right for a phase and wrong for a moment: a season rearranged out to
+    GW39 would satisfy it at GW38 and again at GW39, and print the
+    once-a-season set-piece twice. The moment is the constant's own final
+    gameweek, which fires once whatever the real season length turns out to
+    be.
     """
-    if gameweek == chip_split_gw:
-        return True
-    return derive_season_phase(gameweek, total_gameweeks, chip_split_gw) is SeasonPhase.FINALE
+    return gameweek in (chip_split_gw, total_gameweeks)
 
 
 # ---------------------------------------------------------------------------

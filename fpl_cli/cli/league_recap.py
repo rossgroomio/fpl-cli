@@ -24,7 +24,12 @@ from fpl_cli.cli._json import (
 )
 from fpl_cli.cli._league_recap_types import LeagueRecapData
 from fpl_cli.services.league_history import GameweekCoverage
-from fpl_cli.services.league_history_fines import ManagerFineTally, SeasonFinesTally
+from fpl_cli.services.league_history_fines import (
+    ManagerFineTally,
+    SeasonFinesTally,
+    format_fine_breakdown,
+    serialize_manager_fine_tally,
+)
 from fpl_cli.services.league_history_notes import (
     NotesPack,
     NotesPackEntry,
@@ -210,18 +215,21 @@ def league_recap_command(
                 collected_data["waiver_deadline"] = waiver_deadline  # type: ignore[typeddict-unknown-key]
 
             # Evaluate fines per manager (graceful skip when unconfigured)
-            fines = evaluate_league_fines(
+            ruling = evaluate_league_fines(
                 collected_data["managers"], settings, collected_data["fpl_format"],
             )
-            if fines:
-                collected_data["fines"] = fines
+            if ruling.fines:
+                collected_data["fines"] = ruling.fines
             # Recorded whether or not anything triggered: a gameweek with no
             # fines and a gameweek nobody ruled on are different facts, and
             # only this tells the season tally which one it is read
-            # (issue #136).
+            # (issue #136). Paired with the managers the evaluation actually
+            # completed for, so a manager it raised on records silence rather
+            # than the acquittal this list alone would imply.
             collected_data["fine_rules_evaluated"] = configured_fine_rule_types(
                 settings, collected_data["fpl_format"],
             )
+            collected_data["fines_ruled_manager_keys"] = sorted(ruling.ruled_manager_keys)
 
             async def _replay_gameweek(target_gw: int) -> LeagueRecapData | None:
                 """Re-collect one finished gameweek for the detailed backfill.
@@ -258,13 +266,16 @@ def league_recap_command(
                 # so missing a week and then repairing it un-fined that week
                 # permanently, with the repair making the gap look closed
                 # (issue #136).
-                replayed_fines = evaluate_league_fines(
+                replayed_ruling = evaluate_league_fines(
                     replayed["managers"], settings, replayed["fpl_format"],
                 )
-                if replayed_fines:
-                    replayed["fines"] = replayed_fines
+                if replayed_ruling.fines:
+                    replayed["fines"] = replayed_ruling.fines
                 replayed["fine_rules_evaluated"] = configured_fine_rule_types(
                     settings, replayed["fpl_format"],
+                )
+                replayed["fines_ruled_manager_keys"] = sorted(
+                    replayed_ruling.ruled_manager_keys,
                 )
                 return replayed
 
@@ -514,10 +525,7 @@ def _season_fine_line(manager: ManagerFineTally) -> str:
     """
     if not manager.total:
         return f"{manager.manager_name}: none"
-    breakdown = ", ".join(
-        f"{count} {rule_type}" for rule_type, count in sorted(manager.counts.items())
-    )
-    return f"{manager.manager_name}: {manager.total} ({breakdown})"
+    return f"{manager.manager_name}: {manager.total} ({format_fine_breakdown(manager)})"
 
 
 def _serialize_fines_tally(tally: SeasonFinesTally) -> dict[str, Any]:
@@ -535,19 +543,10 @@ def _serialize_fines_tally(tally: SeasonFinesTally) -> dict[str, Any]:
         "rule_types": tally.rule_types,
         "total_fines": tally.total_fines,
         "qualifiers": tally.qualifiers,
+        # Same row shape `league-fines --format json` emits, from the same
+        # helper: one dataclass, one serialization.
         "managers": [
-            {
-                "manager_key": manager.manager_key,
-                "manager_name": manager.manager_name,
-                "total": manager.total,
-                "counts": {rule: manager.counts.get(rule, 0) for rule in tally.rule_types},
-                "fined_gameweeks": manager.fined_gameweeks,
-                "ruled_gameweeks": manager.ruled_gameweeks,
-                "unruled_gameweeks": manager.unruled_gameweeks,
-                "first_recorded_gameweek": manager.first_recorded_gameweek,
-                "last_recorded_gameweek": manager.last_recorded_gameweek,
-                "is_fully_ruled": manager.is_fully_ruled,
-            }
+            serialize_manager_fine_tally(manager, tally.rule_types)
             for manager in tally.managers
         ],
     }
@@ -609,11 +608,14 @@ def _render_console_highlights(
         )
         if fined:
             for manager in fined:
-                console.print(f"  [red]{_season_fine_line(manager)}[/red]")
+                # Escaped: both these lines carry manager names, which are
+                # user-supplied and full of square brackets often enough that
+                # Rich would read one as markup.
+                console.print(f"  [red]{rich_escape(_season_fine_line(manager))}[/red]")
         else:
             console.print("  [dim]Nobody has been fined this season.[/dim]")
         for line in fines_tally.qualifiers:
-            console.print(f"  [dim]{line}[/dim]")
+            console.print(f"  [dim]{rich_escape(line)}[/dim]")
 
     # Standings movement. A manager missing either position has no movement
     # to report -- see _assign_point_in_time_positions, which leaves both
