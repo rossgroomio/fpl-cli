@@ -313,23 +313,30 @@ class TeamRatingsService:
                 generate_prior,
             )
 
+            blended = False
             if max_completed_gw < BLENDING_CUTOFF_GW:
                 prior = await generate_prior(client)
                 if prior:
                     ratings = blend_with_prior(prior, ratings, max_completed_gw)
+                    blended = True
 
+            # Tagged the same way `fpl ratings update` tags it. A blended file
+            # is mostly last season early on, and get_staleness_warning() reads
+            # this to say so -- an untagged one would present a GW1 blend as
+            # ordinary current-season form.
             self.save_ratings(
                 ratings,
-                source="auto_calculated",
+                source="auto_calculated_blended" if blended else "auto_calculated",
                 based_on_gws=(min_gw, max_completed_gw),
-                calculation_method="recent_form",
+                calculation_method="recent_form_blended" if blended else "recent_form",
             )
             self._apply_overrides()
             TeamRatingsService._refreshed_this_session = True
         elif not self._ratings or await self._team_set_drifts(client):
             # A gameweek is under way but has produced nothing to rate teams on
-            # yet — every fixture is still in flight, or each team has played
-            # only one of its home/away pair. The pre-season branch above has
+            # yet — every fixture in the window is still in flight. The single
+            # finished gameweek that used to land here is now rated (#138), so
+            # this is the no-results-at-all case. The pre-season branch above has
             # already closed (next_gw moved on at GW1 kickoff), so without this
             # the function returns having done nothing and, with no usable file
             # on disk, get_positional_fdr serves a neutral 4.0 to every caller.
@@ -400,10 +407,10 @@ class TeamRatingsService:
         the file is absent entirely and every team gets that 4.0 — uniform
         difficulty, presented as analysis.
 
-        The same hole reopens once GW1 kicks off: results exist in principle
-        but not yet in fact, so the current-season calculation returns nothing
-        while the pre-season branch has already closed. Both windows are
-        served from here.
+        The same hole reopens once GW1 kicks off but before any fixture in it
+        finishes: results exist in principle but not yet in fact, so the
+        current-season calculation returns nothing while the pre-season branch
+        has already closed. Both windows are served from here.
 
         The previous-season prior (Understat xG, with Championship-adjusted
         ratings for promoted teams) is the better source, so use it and tag it
@@ -626,6 +633,73 @@ class TeamRatingsService:
 
         return (datetime.now() - self._metadata.last_updated).days
 
+    def _prior_dominance(self) -> tuple[int, float] | None:
+        """Window length and its blend weight, when last season still outweighs it.
+
+        A blended file built on one gameweek is 86% previous season, but it is
+        stamped with a real `based_on_gws` and a calculated source, so nothing
+        else on the staleness path treats it as an estimate. Between GW1
+        finishing and the sample reaching REGRESSION_CONSTANT gameweeks, the
+        ratings are named after current-season results while being mostly the
+        prior -- so say which.
+
+        Returns None once current form carries at least half the weight, and
+        for any file that was never blended.
+
+        Detection is by the `_blended` source tag, which means a file written
+        before that tag existed reads as unblended and stays silent here even
+        when it is prior-dominated. That is a one-gameweek gap, not a lasting
+        one: the next completed gameweek moves `based_on_gws` on, the refresh
+        rewrites the file with the tag, and the warning starts firing. Inferring
+        a blend from the window alone instead would claim "mostly last season's
+        prior" over files that never had a prior blended into them (none was
+        available), which is a worse failure than staying quiet for a week.
+        """
+        from fpl_cli.services.team_ratings_prior import REGRESSION_CONSTANT
+
+        if not self._metadata or not (self._metadata.source or "").endswith("_blended"):
+            return None
+        if not self._metadata.based_on_gws:
+            return None
+
+        min_gw, max_gw = self._metadata.based_on_gws
+        window = max_gw - min_gw + 1
+        if window <= 0 or window >= REGRESSION_CONSTANT:
+            return None
+        return window, window / (window + REGRESSION_CONSTANT)
+
+    def _prior_dominance_warning(self) -> str | None:
+        """The prior-dominance note, or None when it does not apply."""
+        share = self._prior_dominance()
+        if not share:
+            return None
+        window, weight = share
+        gws = "gameweek" if window == 1 else "gameweeks"
+        return (
+            f"⚠️ Ratings are mostly last season's prior — {window} {gws} of results "
+            f"carries {weight:.0%} of the weight. Fixture difficulty is indicative "
+            f"until more results land."
+        )
+
+    def advisory_warning(self) -> str | None:
+        """The active warning, when it describes healthy ratings rather than a fault.
+
+        An early-season blend that is still mostly last season is the correct
+        answer, not a problem: no command clears it and GW`REGRESSION_CONSTANT`
+        will. Callers that triage rather than just display -- `fpl doctor` --
+        need to tell that note apart from a stale or drifted file, or they
+        report a fault with no remedy, which is the dead-end #138 was about.
+
+        Derived from get_staleness_warning() rather than from _prior_dominance()
+        directly, so precedence is honoured in one place: a prior-dominated file
+        that has ALSO drifted off the current team set reports the drift, and
+        that is a real fault, so this returns None for it.
+        """
+        warning = self.get_staleness_warning()
+        if warning and warning == self._prior_dominance_warning():
+            return warning
+        return None
+
     def get_staleness_warning(self) -> str | None:
         """Get a warning about the quality of the ratings backing fixture difficulty.
 
@@ -669,6 +743,10 @@ class TeamRatingsService:
                 "Fixture difficulty is indicative until results land."
             )
 
+        advisory = self._prior_dominance_warning()
+        if advisory:
+            return advisory
+
         days = self.days_since_update()
 
         if days < 0:
@@ -678,6 +756,90 @@ class TeamRatingsService:
             return f"⚠️ Team ratings are {days} days old - consider running `fpl ratings update`"
 
         return None
+
+
+# The four rate axes a TeamPerformance carries, each paired with the axis that
+# measures the same thing at the other venue.
+_OTHER_VENUE: dict[str, str] = {
+    "scored_home": "scored_away",
+    "scored_away": "scored_home",
+    "conceded_home": "conceded_away",
+    "conceded_away": "conceded_home",
+}
+
+
+def performances_from_samples(
+    samples: dict[str, dict[str, list[float]]],
+) -> dict[str, TeamPerformance]:
+    """Turn per-match samples into the per-venue rates ratings are built from.
+
+    ``samples`` maps a team to four lists of per-match values, keyed
+    ``scored_home`` / ``scored_away`` / ``conceded_home`` / ``conceded_away``.
+
+    A team that has played only one venue is still rated: the venue it has not
+    played is estimated from the one it has, rescaled by the gap between the two
+    venues across the whole sample. Requiring both venues instead is what made
+    `fpl ratings update` report nothing to calculate from once GW1 finished
+    (#138) — every club has played exactly one match at that point, so every
+    club is missing a venue and the entire league falls out of the result. The
+    same hole reopens for any single-gameweek window, e.g. `--since-gw 15` on
+    the day GW15 completes.
+
+    home_games/away_games stay as observed, so an estimated axis is visible as a
+    0 in the counts rather than presented as a played record.
+    """
+    # League-wide baseline per axis. Home and away goals per match are the only
+    # two figures needed: a team's scoring at home and its opponents' conceding
+    # away are the same goals, so the four axes share two baselines.
+    home_goals = [v for data in samples.values() for v in data["scored_home"]]
+    away_goals = [v for data in samples.values() for v in data["scored_away"]]
+    home_rate = mean(home_goals) if home_goals else 0.0
+    away_rate = mean(away_goals) if away_goals else 0.0
+    baseline = {
+        "scored_home": home_rate,
+        "scored_away": away_rate,
+        "conceded_home": away_rate,
+        "conceded_away": home_rate,
+    }
+
+    performances: dict[str, TeamPerformance] = {}
+    for team, data in samples.items():
+        home_games = len(data["scored_home"])
+        away_games = len(data["scored_away"])
+        if home_games == 0 and away_games == 0:
+            continue
+
+        rates: dict[str, float] = {}
+        for axis, other in _OTHER_VENUE.items():
+            if data[axis]:
+                rates[axis] = mean(data[axis])
+            elif baseline[other]:
+                # Same team, other venue, moved onto this venue's level.
+                rates[axis] = mean(data[other]) * baseline[axis] / baseline[other]
+            else:
+                # No conversion ratio to measure: the counterpart venue
+                # produced nothing across the entire window. That collapses to
+                # zero rather than to an unscaled copy of the played venue --
+                # this team's counterpart values are members of the very pool
+                # whose mean is baseline[other], and goals and xG are both
+                # non-negative, so a zero pooled mean means every one of them
+                # is zero. (A pool assembled per-team rather than per-match can
+                # in principle break that correspondence -- calculate_from_xg
+                # skips a club Understat has no data for -- so this is written
+                # as an explicit zero rather than left to the arithmetic.)
+                rates[axis] = 0.0
+
+        performances[team] = TeamPerformance(
+            team=team,
+            goals_scored_home=rates["scored_home"],
+            goals_scored_away=rates["scored_away"],
+            goals_conceded_home=rates["conceded_home"],
+            goals_conceded_away=rates["conceded_away"],
+            home_games=home_games,
+            away_games=away_games,
+        )
+
+    return performances
 
 
 class TeamRatingsCalculator:
@@ -749,24 +911,8 @@ class TeamRatingsCalculator:
             stats[away_team]["scored_away"].append(away_goals)
             stats[away_team]["conceded_away"].append(home_goals)
 
-        # Calculate per-game averages
-        performances: dict[str, TeamPerformance] = {}
-        for team, data in stats.items():
-            home_games = len(data["scored_home"])
-            away_games = len(data["scored_away"])
-
-            if home_games == 0 or away_games == 0:
-                continue
-
-            performances[team] = TeamPerformance(
-                team=team,
-                goals_scored_home=mean(data["scored_home"]) if data["scored_home"] else 0,
-                goals_scored_away=mean(data["scored_away"]) if data["scored_away"] else 0,
-                goals_conceded_home=mean(data["conceded_home"]) if data["conceded_home"] else 0,
-                goals_conceded_away=mean(data["conceded_away"]) if data["conceded_away"] else 0,
-                home_games=home_games,
-                away_games=away_games,
-            )
+        # Calculate per-game averages, estimating a venue a team has yet to play
+        performances = performances_from_samples(stats)
 
         # Convert to 1-7 ratings
         ratings = self._convert_to_ratings(performances)
@@ -789,8 +935,6 @@ class TeamRatingsCalculator:
             Tuple of (ratings dict, performance stats dict).
             Performance stats hold xG/xGA values in the goals_scored/conceded fields.
         """
-        from statistics import mean
-
         from fpl_cli.api.understat import UnderstatClient
 
         teams = await self.fpl.get_teams()
@@ -802,11 +946,13 @@ class TeamRatingsCalculator:
                 if not data:
                     continue
 
+                # Keyed on the shared axis names so performances_from_samples
+                # can treat xG exactly as it treats goals.
                 team_stats: dict[str, list[float]] = {
-                    "xg_home": [],
-                    "xg_away": [],
-                    "xga_home": [],
-                    "xga_away": [],
+                    "scored_home": [],
+                    "scored_away": [],
+                    "conceded_home": [],
+                    "conceded_away": [],
                 }
 
                 for match in data["matches"]:
@@ -817,32 +963,16 @@ class TeamRatingsCalculator:
                     xg = match.get("xG", {})
 
                     if side == "h":
-                        team_stats["xg_home"].append(float(xg.get("h", 0)))
-                        team_stats["xga_home"].append(float(xg.get("a", 0)))
+                        team_stats["scored_home"].append(float(xg.get("h", 0)))
+                        team_stats["conceded_home"].append(float(xg.get("a", 0)))
                     elif side == "a":
-                        team_stats["xg_away"].append(float(xg.get("a", 0)))
-                        team_stats["xga_away"].append(float(xg.get("h", 0)))
+                        team_stats["scored_away"].append(float(xg.get("a", 0)))
+                        team_stats["conceded_away"].append(float(xg.get("h", 0)))
 
-                if team_stats["xg_home"] and team_stats["xg_away"]:
+                if any(team_stats.values()):
                     raw[team.short_name] = team_stats
 
-        performances: dict[str, TeamPerformance] = {}
-        for abbr, data in raw.items():
-            home_games = len(data["xg_home"])
-            away_games = len(data["xg_away"])
-
-            if home_games == 0 or away_games == 0:
-                continue
-
-            performances[abbr] = TeamPerformance(
-                team=abbr,
-                goals_scored_home=mean(data["xg_home"]),
-                goals_scored_away=mean(data["xg_away"]),
-                goals_conceded_home=mean(data["xga_home"]),
-                goals_conceded_away=mean(data["xga_away"]),
-                home_games=home_games,
-                away_games=away_games,
-            )
+        performances = performances_from_samples(raw)
 
         ratings = self._convert_to_ratings(performances)
         return ratings, performances

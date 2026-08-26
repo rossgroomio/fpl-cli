@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import click
 from rich.markup import escape as rich_escape
@@ -11,6 +12,8 @@ from rich.panel import Panel
 from rich.table import Table
 
 from fpl_cli.cli._context import console, error_console
+
+logger = logging.getLogger(__name__)
 
 
 @click.group("ratings", invoke_without_command=True)
@@ -134,6 +137,14 @@ def ratings_update(since_gw: int | None, dry_run: bool, use_xg: bool):
                 )
                 # Full-season window, so the sample is the season to date.
                 season_gws = sample_gws
+                # Stamped like the fixtures path. Without it the xG file saved
+                # no window at all, so the prior-dominance warning could never
+                # fire over it however prior-heavy it was -- and the auto-refresh,
+                # which reads based_on_gws to decide whether the file covers the
+                # completed gameweeks, treated it as covering nothing and
+                # overwrote the user's requested xG ratings with goals-based ones
+                # on the very next command.
+                based_on_gws = (1, sample_gws) if sample_gws else None
             else:
                 min_gw = since_gw or 1
                 method = "recent_form" if since_gw else "full_season"
@@ -157,20 +168,30 @@ def ratings_update(since_gw: int | None, dry_run: bool, use_xg: bool):
                 # Nothing to rate teams on for this window. A file already on
                 # disk (current_ratings, loaded before anything ran) is left
                 # alone rather than replaced by a coarser prior estimate --
-                # e.g. --since-gw 15 requested before GW15 has produced a full
-                # home/away cycle for any club must not clobber GW1-14 data.
+                # e.g. --since-gw 15 requested before GW15 has kicked off must
+                # not clobber GW1-14 data.
                 #
                 # Non-empty is not the same as usable, though: a file rating
                 # last season's twenty clubs passes every date check while
                 # missing the promoted sides entirely, and `fpl doctor` sends
                 # the user here to repair precisely that. Keeping it would make
                 # this command a dead end, so drift falls through to the prior.
+                # A failure here reads as "no drift known", which then takes
+                # the keep-existing-ratings branch below -- so a file that
+                # genuinely mismatches the current team set survives a lookup
+                # outage. Degrading that way is deliberate (a drift check must
+                # not break the command), but it is logged rather than
+                # swallowed, so the reason is recoverable from `-v` output
+                # instead of looking like the file passed the check.
                 team_set_drift = None
                 try:
                     teams = await client.get_teams()
                     team_set_drift = service.check_team_set(t.short_name for t in teams)
                 except Exception:  # noqa: BLE001 — a drift check must not break the command
-                    pass
+                    logger.warning(
+                        "Team-set drift check failed - keeping existing ratings without it",
+                        exc_info=True,
+                    )
                 if current_ratings and not team_set_drift:
                     console.print(
                         "[yellow]No completed fixtures to calculate from for this window - "
@@ -242,6 +263,18 @@ def ratings_update(since_gw: int | None, dry_run: bool, use_xg: bool):
         # Display results
         console.print(Panel.fit("[bold blue]Calculated Team Ratings[/bold blue]"))
         console.print(f"[dim]Based on {summary}[/dim]")
+        # One-venue clubs are rated, not dropped (#138), but say so: their
+        # unplayed venue is an estimate, and the Games column below is the
+        # only other place that shows it.
+        one_venue = sorted(
+            p.team for p in performances.values() if not p.home_games or not p.away_games
+        )
+        if one_venue:
+            verb = "has" if len(one_venue) == 1 else "have"
+            console.print(
+                f"[dim]{', '.join(one_venue)} {verb} played only one venue in this "
+                f"window - the other is estimated from it[/dim]"
+            )
         if blend_note:
             console.print(f"[dim]{blend_note}[/dim]")
         console.print()

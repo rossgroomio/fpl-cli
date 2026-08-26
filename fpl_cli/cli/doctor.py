@@ -355,7 +355,13 @@ def _team_ratings_check(teams: list[str] | None) -> CheckResult:
             "delete the file and run `fpl ratings update`",
         )
     if warning:
-        # The service already ignores or rebuilds bad ratings, so every
+        # An early-season blend that is still mostly last season is a note on a
+        # healthy file, not a fault: `fpl ratings update` cannot clear it and
+        # the next few gameweeks will. Reporting it STALE with no remedy is the
+        # dead-end #138 was filed about, so it stays OK and carries the note.
+        if service.advisory_warning():
+            return CheckResult(name, CheckStatus.OK, warning.removeprefix("⚠️").strip())
+        # The service already ignores or rebuilds bad ratings, so every other
         # problem it reports is the stale kind, not the broken kind.
         return CheckResult(name, CheckStatus.STALE, warning.removeprefix("⚠️").strip())
     return CheckResult(name, CheckStatus.OK, f"current season, updated {days} days ago")

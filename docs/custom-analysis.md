@@ -296,6 +296,8 @@ The data source behind FDR, captain picks, squad grid, and other fixture-aware c
 
 Fetch completed fixtures from the rolling 12-GW window, aggregate per-game averages for each team across four axes, then convert to 1-7 via percentile ranking against all 20 teams. Top 14% = 1, bottom 14% = 7.
 
+A club needs a result at only one venue to be rated. Where it has none at the other, that axis is estimated from the venue it has played, rescaled by the ratio between home and away scoring across the whole window - home and away are different scoring environments, so copying a home rate straight onto the away axis would rank the club against other clubs' genuine away records at inflated value. `home_games` / `away_games` keep the counts actually observed, so an estimated axis reads as `1H/0A` rather than as a played record, and `fpl ratings update` names the clubs it estimated for. Requiring both venues instead emptied the league in the state where the command matters most: with GW1 finished and GW2 not started, every club has played exactly one match, so every club failed the check and ten finished results reported as nothing to calculate from.
+
 ### Position-Specific FDR
 
 - FWD/MID fixtures scored by opponent's **defensive** rating (attacking opportunity).
@@ -307,13 +309,15 @@ Current-season data is blended with a prior from the previous season's Understat
 
 Both write paths apply it - the automatic refresh in `ensure_fresh()` and the user-facing `fpl ratings update`. They must not disagree: `fpl ratings update` saves with `based_on_gws` stamped, so an unblended file written by the command would look current to the auto-refresh and never be corrected.
 
+A blend that is still mostly prior is labelled as such. Rating a single finished gameweek (see Calculation above) means the file stops being tagged `preseason_prior` as soon as GW1 completes, so the pre-season estimate warning no longer applies - but at a one-gameweek sample the ratings are 86% previous season, which is not ordinary current-season form either. `get_staleness_warning()` covers that middle ground while the sample is shorter than `REGRESSION_CONSTANT` gameweeks, quoting the weight the current sample actually carries. It is a note on a healthy file, not a fault: `advisory_warning()` marks it as such so `fpl doctor` reports OK and carries the note, rather than a stale finding with no remedy that clears it. Precedence still holds - a file that has also drifted off the current team set reports the drift, which is a real fault. Both write paths tag a blended file `_blended` so this is detectable at all - the auto-refresh previously saved a blended file as plain `auto_calculated`.
+
 Whether a prior is blended in at all follows the season, not the window: shrinkage applies while fewer than 12 gameweeks have completed and stops after that, so `--since-gw 30` at GW34 is the recent-form view it advertises rather than a mostly-last-season one. Within that window the weight follows the gameweeks of current-season evidence in the sample rather than the absolute gameweek number, so `--since-gw 8` at GW10 is weighted as a three-gameweek sample. Blended files carry a `_blended` suffix on `metadata.source`.
 
 ### Before Results Land (pre-season, and GW1 in progress)
 
 The FPL API publishes no strength ratings before a season starts - `strength` comes back null and the four attack/defence axes are zeroed for all 20 teams - so there is nothing to rate teams on and last season's cached file still lists relegated sides while missing promoted ones.
 
-The same hole reopens once GW1 kicks off. The API then reports GW2 as next, closing the pre-season branch, while `calculate_from_fixtures()` still returns nothing: it needs each club to have both a home and an away result before it will rate anyone. `seed_from_prior()` covers both windows - pre-season by gameweek number, the gap by the calculation coming back empty with no usable file on disk. "Usable" means more than non-empty: a file whose rated clubs no longer match the live league (`check_team_set()`) is treated as unusable too, since keeping it would leave the promoted sides unrated for as long as the new season produces nothing ratable.
+The same hole reopens once GW1 kicks off but before any of its fixtures finish. The API then reports GW2 as next, closing the pre-season branch, while `calculate_from_fixtures()` still returns nothing because no result exists yet. It narrows to that window only: as soon as one gameweek completes, single-venue clubs are rated on it (see Calculation above) rather than falling through to here. `seed_from_prior()` covers both windows - pre-season by gameweek number, the gap by the calculation coming back empty with no usable file on disk. "Usable" means more than non-empty: a file whose rated clubs no longer match the live league (`check_team_set()`) is treated as unusable too, since keeping it would leave the promoted sides unrated for as long as the new season produces nothing ratable.
 
 Ratings are therefore rebuilt from the previous-season prior alone (Understat xG, with Championship form for promoted teams) and tagged `preseason_prior`. Commands that show fixture difficulty print a warning that the ratings are estimates until real results land. `fpl ratings update` seeds from the same prior when there is nothing to calculate from, or when the file on disk rates a different set of clubs to the current league, so `fpl doctor`'s "run `fpl ratings update`" hint resolves the stale file rather than dead-ending on it.
 
@@ -340,6 +344,8 @@ Two degenerate cases are called out explicitly rather than ranked silently: no r
 ### xG-Based Calculation
 
 `fpl ratings update --use-xg` recalculates using Understat xG instead of actual goals. Less noise, uses full season data rather than rolling window.
+
+It stamps `based_on_gws` as `(1, gameweeks completed)`, the same way the fixtures path stamps its window. Saving no window at all meant the auto-refresh - which reads `based_on_gws` to decide whether a file already covers the completed gameweeks - treated an xG file as covering nothing and recalculated over it from goals on the next command, discarding the source the user had asked for; and the prior-dominance warning above, which needs a window to size the blend, could never fire over an xG file however prior-heavy it was.
 
 ### Manual Overrides
 
