@@ -77,13 +77,13 @@ class TestLeagueHistoryRowModel:
 
     def test_classic_row_carries_the_four_rollover_only_fields(self):
         row = make_history_row(
-            squad_value=1013, bank=7, global_rank=400_000, transfers_made=2,
+            team_value=1013, bank=7, global_rank=400_000, transfers_made=2,
         )
-        assert (row.squad_value, row.bank, row.global_rank, row.transfers_made) == (1013, 7, 400_000, 2)
+        assert (row.team_value, row.bank, row.global_rank, row.transfers_made) == (1013, 7, 400_000, 2)
 
     def test_draft_row_omits_all_four_and_still_validates(self):
         row = make_history_row(fpl_format="draft", manager_key=10, gross_points=51)
-        assert row.squad_value is None
+        assert row.team_value is None
         assert row.bank is None
         assert row.global_rank is None
         assert row.transfers_made is None
@@ -420,7 +420,9 @@ class TestStoreVersioning:
 
         store = svc.LeagueHistoryStore("2026-27", "classic", 1)
         store.append_rows(5, [make_history_row(gameweek=5, gross_points=50)])
-        monkeypatch.setattr(svc, "MIN_READABLE_LEAGUE_HISTORY_VERSION", 2)
+        monkeypatch.setattr(
+            svc, "MIN_READABLE_LEAGUE_HISTORY_VERSION", LEAGUE_HISTORY_VERSION + 1,
+        )
 
         with pytest.raises(svc.LeagueHistoryError):
             store.load_gameweek(5)
@@ -440,6 +442,49 @@ class TestStoreVersioning:
 
         rows = store.load_gameweek(5)
         assert [r.gross_points for r in rows] == [50]
+
+    def test_a_version_1_row_reads_its_squad_value_back_as_team_value(self):
+        """Issue #147: v1 stored the API's bank-inclusive `value` under
+        `squad_value`. Same number, renamed on the way in -- a season of
+        already-written rows must stay readable, and `extra="forbid"` would
+        otherwise reject every one of them."""
+        import json
+
+        from fpl_cli.services.league_history import LeagueHistoryStore
+
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        payload = make_history_row(
+            gameweek=5, gross_points=50, team_value=1000, bank=5,
+        ).model_dump(mode="json")
+        payload["version"] = 1
+        payload["squad_value"] = payload.pop("team_value")
+        path = store.gameweek_file(5)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+        row = store.load_gameweek(5)[0]
+        assert (row.team_value, row.bank) == (1000, 5)
+        assert row.version == 1
+
+    def test_a_version_1_row_without_a_squad_value_still_reads(self):
+        """A draft row, or a classic one whose response omitted the figure,
+        carries no `squad_value` key at all -- the migration must not invent
+        a `team_value` for it."""
+        import json
+
+        from fpl_cli.services.league_history import LeagueHistoryStore
+
+        store = LeagueHistoryStore("2026-27", "draft", 1)
+        payload = make_history_row(
+            fpl_format="draft", gameweek=5, gross_points=50,
+        ).model_dump(mode="json")
+        payload["version"] = 1
+        del payload["team_value"]
+        path = store.gameweek_file(5)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+        assert store.load_gameweek(5)[0].team_value is None
 
     def test_a_future_version_line_is_skipped_with_a_warning_and_survives(self, caplog):
         import json

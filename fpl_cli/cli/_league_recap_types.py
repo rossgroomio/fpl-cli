@@ -106,8 +106,11 @@ class RecapManagerEntry(TypedDict):
     # Classic only: four figures the picks response's `entry_history` carries
     # and the season rollover destroys. Draft has no budget, no FPL-wide rank,
     # and acquires by waiver, so it omits all four.
-    # Prices are in the repo's £0.1m units (1000 = £100.0m).
-    squad_value: NotRequired[int]
+    # Prices are in the repo's £0.1m units (1000 = £100.0m). `team_value` is
+    # the API's `value` verbatim: squad selling value *plus* the bank, which
+    # is why it is not called `squad_value` (issue #147) -- squad-only value
+    # is `team_value - bank`.
+    team_value: NotRequired[int]
     bank: NotRequired[int]
     # The manager's FPL-wide rank. Deliberately not `overall_rank`, which on
     # this TypedDict means league position.

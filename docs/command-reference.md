@@ -628,17 +628,39 @@ are cached separately, under `<data dir>/league_history_counters/`, and rebuilt 
 ledger whenever that cache is missing, stale, or unreadable — it is safe to delete, and
 is never read as a source of truth.
 
+Three fields say nothing rather than something convenient, because a row outlives the
+API that could correct it.
+
+`team_value` is the figure FPL reports as the team's value, and **FPL counts the bank in
+it**. A squad worth £99.0m with £1.0m unspent is stored as `team_value: 1000, bank: 10` —
+prices are in £0.1m units, so that reads £100.0m and £1.0m. The players alone are
+`team_value - bank`: 990, or £99.0m. Both numbers are stored exactly as the API reports
+them, so either view is derivable from the row. The field was named `squad_value` before
+schema version 2, where the name claimed an exclusion the number never made — a row read
+from before that version has the name corrected on the way in.
+
+On the league's first scored gameweek there is no previous table, so
+`previous_league_position` is empty rather than repeating the current position, which
+would be indistinguishable from a manager who genuinely held their place. And a draft row
+leaves `transfer_cost` empty rather than zero: draft charges nothing for a squad change,
+so there is no hit to have avoided.
+
 Rows are append-only. Re-running a gameweek that has not changed writes nothing; a
 re-run whose numbers differ (bonus points settled, a failed fetch repaired, a coarse
 gameweek filled in) appends a superseding row and leaves the old one in place. A file
 that cannot be parsed is never reset or overwritten: the run says which file and what to
 do about it, still prints the recap from live data, and exits 0.
 
+Each row carries the schema version it was written under. A row from an older version is
+brought up to the current shape as it is read, and the line on disk is left as it is; a
+row from a newer version — an install ahead of this one, sharing a synced data directory —
+is skipped with a warning and preserved untouched rather than read wrongly or discarded.
+
 Two fidelity tiers, both recorded on the row:
 
 | Tier | Source | Carries |
 |---|---|---|
-| Coarse | Classic manager-history endpoint, one request per manager for the whole season | Points, cumulative total, transfer count and cost, bench points, squad value, bank |
+| Coarse | Classic manager-history endpoint, one request per manager for the whole season | Points, cumulative total, transfer count and cost, bench points, team value, bank |
 | Detailed | A live recap run, or `--backfill-detail` replaying a past gameweek | Everything above plus captain, vice, full squad, and transfer or waiver detail |
 
 Classic gaps fill at the coarse tier automatically. `--backfill-detail` upgrades them,

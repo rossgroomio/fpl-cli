@@ -847,9 +847,12 @@ def save_enrichment_cache(
             for player_id, found in sorted(intel.items())
         },
     }
+    # Raw UTF-8 rather than escapes, for the same reason `save_snapshot`
+    # below writes it: these files get read by a person when an answer looks
+    # wrong, and a name is easier to recognise spelled the way it is spelled.
     atomic_write_text(
         enrichment_cache_path(gameweek=gameweek, season=season),
-        json.dumps(payload, indent=2) + "\n",
+        json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
     )
 
 
@@ -997,7 +1000,13 @@ def save_snapshot(snapshot: RadarSnapshot) -> None:
             for player_id, record in sorted(snapshot.players.items())
         },
     }
-    atomic_write_text(snapshot_path(), json.dumps(payload, indent=2) + "\n")
+    # `ensure_ascii=False`: player names keep their accents rather than
+    # becoming `\u00e9` escapes. The snapshot is a file a person reads and
+    # diffs week to week, and the league-history ledger beside it already
+    # writes raw UTF-8 -- two generated files should not disagree on it.
+    atomic_write_text(
+        snapshot_path(), json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+    )
 
 
 def snapshot_from_entries(
