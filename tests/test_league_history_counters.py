@@ -17,6 +17,8 @@ from fpl_cli.models.league_history import (
 from fpl_cli.services.league_history import LeagueHistoryStore
 from fpl_cli.services.league_history_counters import (
     CONDITIONS,
+    ConditionRunView,
+    CountSurfacePolicy,
     all_condition_views,
     compute_counters_through,
     conditions_for_format,
@@ -94,15 +96,37 @@ class TestConditionRegistry:
         assert drought.count_label_one == "gameweek without a green arrow"
         assert drought.count_label_many == "gameweeks without a green arrow"
 
-    def test_count_cadence_classes_match_the_spec(self):
-        """Event conditions (a discrete thing happened this gameweek) render
-        their season count weekly; state conditions (a standing table
-        position half the league increments every week) are milestone-only
-        material. The split is exactly performance vs table position."""
-        weekly = {c.key for c in CONDITIONS if c.count_weekly}
-        assert weekly == {
-            "gw_win_streak", "gw_loss_streak", "captain_blank_run",
-            "hit_run", "waiver_win_run", "waiver_burn_run",
+    def test_count_surface_policies_match_the_spec(self):
+        """Each condition's weekly-render rule, locked to the agreed spec.
+        A rare, discrete event affords a generous rule; a standing table
+        position half the league increments every gameweek needs a strict
+        one, or the weekly report is wallpaper."""
+        policies = {c.key: c.count_policy for c in CONDITIONS}
+        assert policies == {
+            "gw_win_streak": CountSurfacePolicy(step=3, first_in_second_half=True),
+            "gw_loss_streak": CountSurfacePolicy(step=3, first_in_second_half=True),
+            "captain_blank_run": CountSurfacePolicy(step=5, ride_along_min=3),
+            "hit_run": CountSurfacePolicy(step=3, ride_along_min=2),
+            "waiver_win_run": CountSurfacePolicy(step=5),
+            "waiver_burn_run": CountSurfacePolicy(step=5),
+            "weeks_on_top": CountSurfacePolicy(step=5),
+            "bottom_half_run": CountSurfacePolicy(
+                step=10, ride_along_min=6, second_half_only=True,
+            ),
+            "green_arrow_drought": CountSurfacePolicy(run_milestones=frozenset({5, 10})),
+        }
+
+    def test_the_waiver_counts_name_the_outcome_they_actually_measure(self):
+        """Both waiver conditions key off whether the week's moves netted
+        points, not off winning a claim -- so the count labels say haul and
+        backfire rather than win and burn."""
+        labels = {
+            c.key: (c.count_label_one, c.count_label_many)
+            for c in CONDITIONS if c.key.startswith("waiver_")
+        }
+        assert labels == {
+            "waiver_win_run": ("waiver haul", "waiver hauls"),
+            "waiver_burn_run": ("waiver backfire", "waiver backfires"),
         }
 
 
@@ -1023,6 +1047,60 @@ class TestPublicViews:
         below_minimum = manager_condition_views(rebuild_counters_through(store, 1), 1)["weeks_on_top"]
         assert below_minimum.excess == -1
         assert below_minimum.is_reportable is False
+
+
+# ---------------------------------------------------------------------------
+# Count surface policies (issue #164)
+# ---------------------------------------------------------------------------
+
+
+def _view(occurrences: int = 1, length: int = 1) -> ConditionRunView:
+    """A view carrying only what `CountSurfacePolicy` reads."""
+    return ConditionRunView(
+        condition_key="k", label="L", length=length, start_gameweek=1, held_in_run=0,
+        min_run=2, occurrences=occurrences, held_total=0, last_occurrence_gameweek=1,
+        first_evaluated_gameweek=1, count_label_one="thing", count_label_many="things",
+        count_policy=CountSurfacePolicy(),
+    )
+
+
+class TestCountSurfacePolicy:
+    def test_step_fires_only_on_a_multiple(self):
+        policy = CountSurfacePolicy(step=3)
+        fired = [
+            n for n in range(1, 10)
+            if policy.qualifies(_view(occurrences=n), second_half=False)
+        ]
+        assert fired == [3, 6, 9]
+
+    def test_run_milestones_fire_on_the_open_run_not_the_season_total(self):
+        """A drought only reads as a story unbroken: the run length is what
+        fires it, and a manager whose season total is high but whose
+        current run is short says nothing."""
+        policy = CountSurfacePolicy(run_milestones=frozenset({5, 10}))
+        assert policy.qualifies(_view(occurrences=5, length=5), second_half=False) is True
+        assert policy.qualifies(_view(occurrences=20, length=3), second_half=False) is False
+        # Capped deliberately: a manager stuck at the top or bottom of the
+        # table must not re-fire forever on a fact the table already shows.
+        assert policy.qualifies(_view(occurrences=15, length=15), second_half=False) is False
+
+    def test_a_first_occurrence_fires_only_in_the_second_half(self):
+        policy = CountSurfacePolicy(step=3, first_in_second_half=True)
+        assert policy.qualifies(_view(occurrences=1), second_half=True) is True
+        assert policy.qualifies(_view(occurrences=1), second_half=False) is False
+        # The step still applies in both halves.
+        assert policy.qualifies(_view(occurrences=3), second_half=False) is True
+
+    def test_second_half_only_silences_the_whole_condition_early(self):
+        policy = CountSurfacePolicy(step=10, second_half_only=True)
+        assert policy.qualifies(_view(occurrences=10), second_half=False) is False
+        assert policy.qualifies(_view(occurrences=10), second_half=True) is True
+
+    def test_ride_along_needs_the_floor_and_is_off_by_default(self):
+        assert CountSurfacePolicy(step=3).rides_along(_view(occurrences=9)) is False
+        policy = CountSurfacePolicy(step=5, ride_along_min=3)
+        assert policy.rides_along(_view(occurrences=3)) is True
+        assert policy.rides_along(_view(occurrences=2)) is False
 
 
 # ---------------------------------------------------------------------------

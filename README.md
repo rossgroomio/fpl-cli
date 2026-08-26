@@ -76,13 +76,15 @@ question any week you want it.
 
 Streaks come with season totals: the recap counts every time a condition has occurred
 this season — gameweek wins, last places, weeks on top, captain blanks — across resets,
-so a report or editorial can say "their fourth gameweek win of the season", not just
-"two in a row". Event counts (wins, last places, captain blanks, hits, waiver moves)
-surface in the week they grow; standing table counts (weeks on top, bottom half,
-green-arrow droughts) surface only when someone's total lands on a multiple of three —
-everyone else who added to that count the same week rides along — and in full at the
-season set-piece at GW19 and the finale, where every count prints alongside the fines
-table. Unjudged gameweeks are always stated beside the number.
+so a report or editorial can say "their sixth gameweek win of the season", not just
+"two in a row". Each count has its own rule for when it is worth mentioning, tuned to
+how often it happens: wins and last places on every third, captain blanks and waiver
+hauls on every fifth, bottom-half gameweeks only in the second half of the season and
+only on every tenth, and a green-arrow drought only while unbroken at five or ten
+gameweeks. Some bring along others who added to the same count that week. The full list
+prints twice a season, at GW19 and the finale, alongside the fines table. Unjudged
+gameweeks are always stated beside the number — see
+[Season counts](docs/command-reference.md#league-recap) for the per-count rules.
 
 ### Checking Your Setup
 

@@ -323,15 +323,16 @@ def league_recap_command(
                 collected_data["league_history_streak_lines"] = [
                     entry.text for entry in notes_pack.entries if NoteSurface.REPORT in entry.surfaces
                 ]
-                # The report's Season Counts section follows the registry's
-                # two cadence classes (issue #164): on an ordinary week,
-                # event-class counts that grew this gameweek carry the
-                # report surface (wins, last places, captain blanks, hits,
-                # waiver moves -- a handful of newsy lines), state-class
-                # counts only in a week one lands on the round-number step,
-                # and at the two milestone gameweeks the whole nonzero set
-                # does, the same set-piece rhythm as the printed fines
-                # table. The whole set reaches `--format json` regardless.
+                # The report's Season Counts section follows each
+                # condition's own CountSurfacePolicy in the registry
+                # (issue #164): on an ordinary week only the counts whose
+                # increment fired their condition -- a round-number total,
+                # an unbroken drought at a run milestone, a second-half
+                # first -- plus that condition's qualifying ride-alongs
+                # carry the report surface, while at the two milestone
+                # gameweeks the whole nonzero set does, the same set-piece
+                # rhythm as the printed fines table. The whole set reaches
+                # `--format json` regardless.
                 collected_data["league_history_season_count_lines"] = [
                     entry.text
                     for entry in notes_pack.season_count_entries

@@ -77,6 +77,64 @@ ConditionPredicate = Callable[
 
 
 @dataclass(frozen=True)
+class CountSurfacePolicy:
+    """When one condition's season count earns a weekly render (issue #164).
+
+    Purely declarative, one per registry entry, consumed by U9's
+    season-count entries: the count itself accumulates identically for
+    every condition, and this only decides which increments are worth
+    saying out loud on an ordinary gameweek. The two season milestones
+    print every nonzero count regardless of any policy here, and
+    `--format json` always carries the full set (KTD8).
+
+    A manager *fires* the condition (`qualifies`) when their own increment
+    this gameweek is the notable one; when anyone fires, other managers
+    who also incremented that condition this gameweek *ride along*
+    (`rides_along`) if their running total has reached `ride_along_min` --
+    context for the round number, without resurfacing every first-timer.
+    A condition with no `ride_along_min` shows only the managers who
+    fired.
+    """
+
+    # Fires when the manager's season total lands on a multiple of this.
+    step: int | None = None
+    # Fires when the *currently-open run* -- consecutive occurrences, as
+    # the projection folds them -- reaches exactly one of these lengths.
+    # A deliberate cap rather than "every multiple": a manager stuck at
+    # the top (who structurally cannot improve) or rooted to the bottom
+    # would otherwise re-fire forever on a fact the table already shows.
+    run_milestones: frozenset[int] = frozenset()
+    # Fires on a manager's first occurrence of the season -- but only in
+    # the season's second half, where a first is a story ("their first
+    # gameweek win, in April") rather than everyone's ordinary opener.
+    first_in_second_half: bool = False
+    # The whole condition stays off the weekly render in the season's
+    # first half (the milestone set-pieces are unaffected).
+    second_half_only: bool = False
+    # Same-gameweek incrementers ride along once their total reaches
+    # this. None: nobody rides along.
+    ride_along_min: int | None = None
+
+    def qualifies(self, view: ConditionRunView, *, second_half: bool) -> bool:
+        """Whether this manager's increment *this gameweek* fires the
+        condition. The caller guarantees the increment happened this
+        gameweek; this only judges whether it is the notable kind."""
+        if self.second_half_only and not second_half:
+            return False
+        if self.step is not None and view.occurrences % self.step == 0:
+            return True
+        if view.length in self.run_milestones:
+            return True
+        return self.first_in_second_half and second_half and view.occurrences == 1
+
+    def rides_along(self, view: ConditionRunView) -> bool:
+        """Whether this manager's increment this gameweek is shown beside a
+        firing peer's. Only consulted once someone fired, so the
+        second-half gate has already been applied."""
+        return self.ride_along_min is not None and view.occurrences >= self.ride_along_min
+
+
+@dataclass(frozen=True)
 class ConditionDefinition:
     """One entry in the streak-condition registry (KTD7).
 
@@ -99,18 +157,13 @@ class ConditionDefinition:
     ("gameweeks in the bottom half"), so appending an "s" cannot be
     trusted mechanically.
 
-    `count_weekly` splits the conditions into two cadence classes for the
-    season count's rendering (U9 consumes it). True marks an *event*
-    condition -- one occurrence is a discrete thing that happened this
-    gameweek (a win, a last place, a captain blank, a hit, a waiver move),
-    so its season total is news in the week it grows. False marks a
-    *state* condition -- the occurrence is a standing table position that
-    persists week over week (being top, being in the bottom half, going
-    another week without a green arrow), so roughly the same half of the
-    league increments it every single gameweek and an ungated weekly
-    render would be wallpaper; U9 withholds it weekly except when an
-    increment lands a total on a round-number step, and prints the full
-    set at the two season milestones.
+    `count_policy` is the condition's own rule for when its season count
+    earns a weekly render (see `CountSurfacePolicy`): a rare, discrete
+    event (a captain blank) can afford a generous rule, while a standing
+    table position half the league increments every gameweek (bottom
+    half, green-arrow drought) needs a strict one or it wallpapers every
+    report. U9 consumes it; the milestone set-pieces and `--format json`
+    ignore it.
     """
 
     key: str
@@ -121,7 +174,7 @@ class ConditionDefinition:
     predicate: ConditionPredicate
     count_label_one: str
     count_label_many: str
-    count_weekly: bool
+    count_policy: CountSurfacePolicy
 
 
 # ---------------------------------------------------------------------------
@@ -299,63 +352,66 @@ CONDITIONS: tuple[ConditionDefinition, ...] = (
         needs=("league_position",), predicate=_weeks_on_top,
         count_label_one="gameweek on top of the league",
         count_label_many="gameweeks on top of the league",
-        count_weekly=False,
+        count_policy=CountSurfacePolicy(step=5),
     ),
     ConditionDefinition(
         key="bottom_half_run", formats=_BOTH, label="Bottom-half run", min_run=3,
         needs=("league_position",), predicate=_bottom_half_run,
         count_label_one="gameweek in the bottom half",
         count_label_many="gameweeks in the bottom half",
-        count_weekly=False,
+        count_policy=CountSurfacePolicy(step=10, ride_along_min=6, second_half_only=True),
     ),
     ConditionDefinition(
         key="gw_win_streak", formats=_BOTH, label="Gameweek win streak", min_run=2,
         needs=("gross_points", "transfer_cost"), predicate=_gw_win_streak,
         count_label_one="gameweek win",
         count_label_many="gameweek wins",
-        count_weekly=True,
+        count_policy=CountSurfacePolicy(step=3, first_in_second_half=True),
     ),
     ConditionDefinition(
         key="gw_loss_streak", formats=_BOTH, label="Gameweek loss streak", min_run=2,
         needs=("gross_points", "transfer_cost"), predicate=_gw_loss_streak,
         count_label_one="last-place finish",
         count_label_many="last-place finishes",
-        count_weekly=True,
+        count_policy=CountSurfacePolicy(step=3, first_in_second_half=True),
     ),
     ConditionDefinition(
         key="green_arrow_drought", formats=_BOTH, label="Green arrow drought", min_run=4,
         needs=("league_position",), predicate=_green_arrow_drought,
         count_label_one="gameweek without a green arrow",
         count_label_many="gameweeks without a green arrow",
-        count_weekly=False,
+        # Run-based, capped at 5 and 10: only an unbroken drought is a
+        # story, and a manager parked at the very top (structurally unable
+        # to improve) or rooted to the bottom must not re-fire it forever.
+        count_policy=CountSurfacePolicy(run_milestones=frozenset({5, 10})),
     ),
     ConditionDefinition(
         key="captain_blank_run", formats=_CLASSIC_ONLY, label="Captain blank run", min_run=2,
         needs=("captain",), predicate=_captain_blank_run,
         count_label_one="captain blank",
         count_label_many="captain blanks",
-        count_weekly=True,
+        count_policy=CountSurfacePolicy(step=5, ride_along_min=3),
     ),
     ConditionDefinition(
         key="hit_run", formats=_CLASSIC_ONLY, label="Hit run", min_run=3,
         needs=("transfer_cost",), predicate=_hit_run,
         count_label_one="gameweek with a transfer hit",
         count_label_many="gameweeks with a transfer hit",
-        count_weekly=True,
+        count_policy=CountSurfacePolicy(step=3, ride_along_min=2),
     ),
     ConditionDefinition(
         key="waiver_win_run", formats=_DRAFT_ONLY, label="Waiver win run", min_run=2,
         needs=("transactions",), predicate=_waiver_win_run,
-        count_label_one="waiver win",
-        count_label_many="waiver wins",
-        count_weekly=True,
+        count_label_one="waiver haul",
+        count_label_many="waiver hauls",
+        count_policy=CountSurfacePolicy(step=5),
     ),
     ConditionDefinition(
         key="waiver_burn_run", formats=_DRAFT_ONLY, label="Waiver burn run", min_run=2,
         needs=("transactions",), predicate=_waiver_burn_run,
-        count_label_one="waiver burn",
-        count_label_many="waiver burns",
-        count_weekly=True,
+        count_label_one="waiver backfire",
+        count_label_many="waiver backfires",
+        count_policy=CountSurfacePolicy(step=5),
     ),
 )
 
@@ -759,7 +815,7 @@ class ConditionRunView:
     first_evaluated_gameweek: int | None
     count_label_one: str
     count_label_many: str
-    count_weekly: bool
+    count_policy: CountSurfacePolicy
 
     @property
     def is_reportable(self) -> bool:
@@ -800,7 +856,7 @@ def manager_condition_views(
             first_evaluated_gameweek=state.first_evaluated_gameweek,
             count_label_one=condition.count_label_one,
             count_label_many=condition.count_label_many,
-            count_weekly=condition.count_weekly,
+            count_policy=condition.count_policy,
         )
     return views
 

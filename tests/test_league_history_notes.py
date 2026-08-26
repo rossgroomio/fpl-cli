@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fpl_cli.models.league_history import FidelityTier, LedgerCaptaincy
+from fpl_cli.models.league_history import FidelityTier, LedgerCaptaincy, LedgerTransaction
 from fpl_cli.services.league_history import LeagueHistoryStore
 from fpl_cli.services.league_history_notes import (
     GameweekWindow,
@@ -53,6 +53,12 @@ class TestSeasonMilestones:
 
 def _captain(points: int, had_fixture: bool | None = True) -> LedgerCaptaincy:
     return LedgerCaptaincy(name="Cap", points=points, played=True, had_fixture=had_fixture)
+
+
+def _transaction(net: int) -> LedgerTransaction:
+    return LedgerTransaction(
+        player_in="In Guy", player_in_team="AAA", player_out="Out Guy", player_out_team="BBB", net=net,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -352,9 +358,10 @@ class TestSeasonCountEntries:
         )
         assert entry.window == GameweekWindow(start_gameweek=1, end_gameweek=3)
 
-    def test_an_event_class_count_that_grew_this_gameweek_surfaces_weekly(self):
-        """A hit taken this gameweek is news: its season count reaches
-        report and prompt in the week it grows, on any ordinary gameweek."""
+    def test_a_count_off_its_conditions_rule_is_withheld_from_every_surface(self):
+        """A hit taken this gameweek is real but not yet notable: hits fire
+        on multiples of three, so a first one stays off the weekly render.
+        Retained for `--format json` regardless (KTD8)."""
         store = LeagueHistoryStore("2026-27", "classic", 1)
         store.append_rows(1, [make_history_row(
             gameweek=1, manager_key=1, manager_name="Alice", transfer_cost=4,
@@ -363,86 +370,187 @@ class TestSeasonCountEntries:
         pack = build_notes_pack(store, 1)
         entry = self._count_entry(pack, "Alice", "hit_run")
 
-        assert entry.surfaces == frozenset({NoteSurface.REPORT, NoteSurface.PROMPT})
+        assert entry.occurrences == 1
+        assert entry.surfaces == frozenset()
         assert entry.text == (
             "Alice: 1 gameweek with a transfer hit this season (GW1-GW1), "
             "the first this gameweek."
         )
 
-    def test_a_state_class_count_is_withheld_weekly_off_the_step(self):
-        """Being top of the table is a standing state, not an event: half
-        the league increments a state-class count every single gameweek, so
-        its season total stays off the weekly render until a total lands on
-        the round-number step. Retained for `--format json` regardless
-        (KTD8)."""
+    def test_a_count_landing_on_its_step_fires_and_the_week_before_does_not(self):
+        """Weeks on top fire on multiples of five: GW5 surfaces, GW4 does
+        not."""
         store = LeagueHistoryStore("2026-27", "classic", 1)
-        store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, manager_name="Alice", league_position=1)])
+        for gw in range(1, 6):
+            store.append_rows(gw, [make_history_row(
+                gameweek=gw, manager_key=1, manager_name="Alice", league_position=1,
+            )])
 
-        pack = build_notes_pack(store, 1)
-        entry = self._count_entry(pack, "Alice", "weeks_on_top")
+        fourth = self._count_entry(build_notes_pack(store, 4), "Alice", "weeks_on_top")
+        fifth = self._count_entry(build_notes_pack(store, 5), "Alice", "weeks_on_top")
 
+        assert (fourth.occurrences, fourth.surfaces) == (4, frozenset())
+        assert fifth.occurrences == 5
+        assert fifth.surfaces == frozenset({NoteSurface.REPORT, NoteSurface.PROMPT})
+
+    def test_a_first_win_fires_in_the_second_half_but_not_the_first(self):
+        """A manager's first gameweek win is unremarkable in September and
+        a story in April, so the first-occurrence rule is gated on the
+        season's half."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+
+        def _append(gw: int, winner: int) -> None:
+            store.append_rows(gw, [
+                make_history_row(
+                    gameweek=gw, manager_key=key, manager_name=f"M{key}",
+                    gross_points=60 if key == winner else 40, transfer_cost=0,
+                )
+                for key in (1, 2)
+            ])
+
+        _append(1, winner=1)  # first half: M1's first win
+        for gw in range(2, 21):
+            _append(gw, winner=1)
+        _append(21, winner=2)  # second half: M2's first win
+
+        early = self._count_entry(build_notes_pack(store, 1), "M1", "gw_win_streak")
+        late = self._count_entry(build_notes_pack(store, 21), "M2", "gw_win_streak")
+
+        assert (early.occurrences, early.surfaces) == (1, frozenset())
+        assert late.occurrences == 1
+        assert late.surfaces == frozenset({NoteSurface.REPORT, NoteSurface.PROMPT})
+
+    def test_bottom_half_stays_silent_in_the_first_half_of_the_season(self):
+        """Ten gameweeks in the bottom half is the rule's step, but the
+        condition says nothing at all before the halfway boundary."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        for gw in range(1, 11):
+            store.append_rows(gw, [
+                make_history_row(gameweek=gw, manager_key=1, manager_name="Alice", league_position=1),
+                make_history_row(gameweek=gw, manager_key=2, manager_name="Bob", league_position=2),
+            ])
+
+        entry = self._count_entry(build_notes_pack(store, 10), "Bob", "bottom_half_run")
+
+        assert entry.occurrences == 10  # on the step, and still withheld
         assert entry.surfaces == frozenset()
-        assert entry.text == (
-            "Alice: 1 gameweek on top of the league this season (GW1-GW1), "
-            "the first this gameweek."
-        )
 
-    def test_a_state_count_surfaces_weekly_when_a_total_lands_on_the_step(self):
-        """A state-class count earns its weekly render at a round-number
-        moment: the increment that lands a total on a multiple of the step
-        surfaces, the week before it stays quiet."""
+    def test_a_firing_condition_carries_only_peers_past_its_ride_along_floor(self):
+        """Captain blanks fire on a multiple of five and carry other
+        blankers whose own total has reached three -- so a peer on two
+        stays out, and a peer who did not blank at all this gameweek stays
+        out however high their total."""
         store = LeagueHistoryStore("2026-27", "classic", 1)
-        for gw in (1, 2, 3):
-            store.append_rows(gw, [make_history_row(gameweek=gw, manager_key=1, manager_name="Alice", league_position=1)])
-
-        second = self._count_entry(build_notes_pack(store, 2), "Alice", "weeks_on_top")
-        third = self._count_entry(build_notes_pack(store, 3), "Alice", "weeks_on_top")
-
-        assert second.occurrences == 2
-        assert second.surfaces == frozenset()
-        assert third.occurrences == 3
-        assert third.surfaces == frozenset({NoteSurface.REPORT, NoteSurface.PROMPT})
-
-    def test_the_step_carries_every_incrementing_peer_of_that_condition(self):
-        """When one manager's total lands on the step, everyone who
-        incremented that same condition this gameweek surfaces with them --
-        but only that condition: another state count that also grew without
-        reaching the step stays withheld, and a manager who did not
-        increment this gameweek stays out entirely."""
-        store = LeagueHistoryStore("2026-27", "classic", 1)
-        positions = {1: (1, 1, 1), 2: (2, 2, 3), 3: (3, 3, 2), 4: (4, 4, 4)}
-        names = {1: "Alice", 2: "Carol", 3: "Bob", 4: "Dan"}
-        for gw in (1, 2, 3):
+        # Alice blanks every gameweek (reaching 5 at GW5); Bob blanks GW1-3
+        # then captains well at GW5; Carol blanks GW4-5 only (total 2).
+        blanks = {
+            1: (True, True, False),
+            2: (True, True, False),
+            3: (True, True, False),
+            4: (True, False, True),
+            5: (True, False, True),
+        }
+        names = {1: "Alice", 2: "Bob", 3: "Carol"}
+        for gw, flags in blanks.items():
             store.append_rows(gw, [
                 make_history_row(
                     gameweek=gw, manager_key=key, manager_name=names[key],
-                    league_position=positions[key][gw - 1],
+                    captain=_captain(0 if blanked else 12),
                 )
-                for key in (1, 2, 3, 4)
+                for key, blanked in zip((1, 2, 3), flags)
             ])
 
-        pack = build_notes_pack(store, 3)
+        pack = build_notes_pack(store, 5)
+        surfaced = frozenset({NoteSurface.REPORT, NoteSurface.PROMPT})
 
-        # Bottom half (positions 3-4 of 4): Dan's GW3 increment lands on 3,
-        # so Carol -- who only just dropped in, count 1 -- rides along.
-        dan = self._count_entry(pack, "Dan", "bottom_half_run")
-        carol = self._count_entry(pack, "Carol", "bottom_half_run")
-        assert dan.occurrences == 3
-        assert dan.surfaces == frozenset({NoteSurface.REPORT, NoteSurface.PROMPT})
-        assert carol.occurrences == 1
-        assert carol.surfaces == frozenset({NoteSurface.REPORT, NoteSurface.PROMPT})
+        alice = self._count_entry(pack, "Alice", "captain_blank_run")
+        assert (alice.occurrences, alice.surfaces) == (5, surfaced)
 
-        # Bob spent GW1-2 in the bottom half but climbed out this gameweek:
-        # no increment, so the step his peers hit does not surface him.
-        bob = self._count_entry(pack, "Bob", "bottom_half_run")
-        assert bob.occurrences == 2
-        assert bob.surfaces == frozenset()
+        # Carol blanked this gameweek too, but her total of 2 is below the
+        # ride-along floor of 3.
+        carol = self._count_entry(pack, "Carol", "captain_blank_run")
+        assert (carol.occurrences, carol.surfaces) == (2, frozenset())
 
-        # Dan's green-arrow drought also grew this gameweek (to 2), but no
-        # green-arrow total reached the step, so that condition stays quiet.
-        dan_drought = self._count_entry(pack, "Dan", "green_arrow_drought")
-        assert dan_drought.occurrences == 2
-        assert dan_drought.surfaces == frozenset()
+        # Bob's total is 3, past the floor -- but he did not blank this
+        # gameweek, so he is not part of the moment.
+        bob = self._count_entry(pack, "Bob", "captain_blank_run")
+        assert (bob.occurrences, bob.surfaces) == (3, frozenset())
+
+    def test_a_condition_with_no_ride_along_shows_only_who_fired(self):
+        """Waiver counts fire on a multiple of five and carry nobody: a
+        second manager's waiver haul in the same gameweek is not part of
+        someone else's milestone."""
+        store = LeagueHistoryStore("2026-27", "draft", 1)
+        for gw in range(1, 6):
+            rows = [make_history_row(
+                gameweek=gw, fpl_format="draft", manager_key=1, manager_name="Alice",
+                transactions=[_transaction(6)],
+            )]
+            if gw == 5:  # Bob hauls only in the milestone gameweek
+                rows.append(make_history_row(
+                    gameweek=gw, fpl_format="draft", manager_key=2, manager_name="Bob",
+                    transactions=[_transaction(4)],
+                ))
+            store.append_rows(gw, rows)
+
+        pack = build_notes_pack(store, 5)
+
+        alice = self._count_entry(pack, "Alice", "waiver_win_run")
+        assert alice.occurrences == 5
+        assert alice.surfaces == frozenset({NoteSurface.REPORT, NoteSurface.PROMPT})
+        assert "waiver hauls" in alice.text
+
+        bob = self._count_entry(pack, "Bob", "waiver_win_run")
+        assert (bob.occurrences, bob.surfaces) == (1, frozenset())
+
+    def test_a_green_arrow_drought_fires_on_an_unbroken_run_and_carries_nobody(self):
+        """The drought is only interesting as a streak, so its rule reads
+        the open run rather than the season total -- and it names nobody
+        else, however many managers also failed to climb."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        # Alice sits 2nd throughout (never improves: a 5-gameweek drought
+        # by GW6); Bob holds 3rd, also never improving.
+        for gw in range(1, 7):
+            store.append_rows(gw, [
+                make_history_row(gameweek=gw, manager_key=3, manager_name="Zoe", league_position=1),
+                make_history_row(gameweek=gw, manager_key=1, manager_name="Alice", league_position=2),
+                make_history_row(gameweek=gw, manager_key=2, manager_name="Bob", league_position=3),
+            ])
+
+        pack = build_notes_pack(store, 6)
+        alice = self._count_entry(pack, "Alice", "green_arrow_drought")
+
+        assert alice.occurrences == 5
+        assert alice.surfaces == frozenset({NoteSurface.REPORT, NoteSurface.PROMPT})
+        # Run-framed: the line leads with the run it fired on, so a reader
+        # is never left wondering why a season total showed up this week.
+        assert alice.text.startswith(
+            "Alice: 5 gameweeks without a green arrow in a row, 5 this season",
+        )
+        # Bob's drought is identical, but the condition carries no
+        # ride-alongs -- only the managers who fired it themselves show.
+        bob = self._count_entry(pack, "Bob", "green_arrow_drought")
+        assert bob.occurrences == 5
+        assert bob.surfaces == frozenset({NoteSurface.REPORT, NoteSurface.PROMPT})
+
+    def test_a_permanently_stuck_manager_stops_firing_past_the_last_milestone(self):
+        """The run milestones are capped at 5 and 10 rather than every
+        multiple: a manager rooted to one table position would otherwise
+        re-announce the same non-fact every fifth gameweek forever."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        for gw in range(1, 17):
+            store.append_rows(gw, [
+                make_history_row(gameweek=gw, manager_key=3, manager_name="Zoe", league_position=1),
+                make_history_row(gameweek=gw, manager_key=1, manager_name="Alice", league_position=2),
+            ])
+
+        # GW11 is drought run 10 (fires); GW16 would be run 15 (does not).
+        at_ten = self._count_entry(build_notes_pack(store, 11), "Alice", "green_arrow_drought")
+        at_fifteen = self._count_entry(build_notes_pack(store, 16), "Alice", "green_arrow_drought")
+
+        assert at_ten.surfaces == frozenset({NoteSurface.REPORT, NoteSurface.PROMPT})
+        assert at_fifteen.occurrences == 15
+        assert at_fifteen.surfaces == frozenset()
 
     def test_a_milestone_gameweek_surfaces_every_nonzero_count_to_report_and_prompt(self):
         """At the halfway boundary and the finale the whole nonzero set is

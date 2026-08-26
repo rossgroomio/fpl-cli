@@ -257,9 +257,9 @@ class NotesPack:
     re-sorting (KTD8's ranking rule). `season_count_entries` holds the
     per-manager season occurrence totals (issue #164), sorted by descending
     count: one per cohort manager x condition that has occurred at all this
-    season, surfaced by cadence class -- an event-class count in the week
-    it grew, a state-class condition's incrementers in a week one of them
-    lands on the round-number step, the whole nonzero set at the two
+    season, surfaced per the registry's own `CountSurfacePolicy` rules --
+    the managers who fired their condition this gameweek plus that
+    condition's qualifying ride-alongs, the whole nonzero set at the two
     season milestones, nothing beyond `--format json` otherwise (see
     `_season_count_entries`). `season_phase_entry` and `coverage_entries`
     are always
@@ -407,17 +407,6 @@ def _streak_entries(
 # Season-count entries (issue #164)
 # ---------------------------------------------------------------------------
 
-# A state-class season count (registry `count_weekly=False`) earns a weekly
-# render only at a round-number moment: some manager's increment this
-# gameweek lands their total on a multiple of this step ("their ninth week
-# in the bottom half"). Roughly half a league increments those counts every
-# single gameweek, so ungated they would wallpaper every report; the step
-# keeps the weekly section quiet until a total is worth saying out loud,
-# and the season milestones print the full set regardless. When the step
-# does fire for a condition, every manager who incremented it this
-# gameweek surfaces alongside the round number for context.
-STATE_COUNT_SURFACE_STEP: int = 3
-
 
 def _season_count_text(
     manager_name: str,
@@ -428,6 +417,9 @@ def _season_count_text(
     window: GameweekWindow,
     *,
     occurred_this_gameweek: bool,
+    run_length: int = 0,
+    run_held: int = 0,
+    run_framed: bool = False,
 ) -> str:
     """Render a season total as a count over the span it was computed on.
 
@@ -440,12 +432,32 @@ def _season_count_text(
     exactly when the fold's own `last_occurrence_gameweek` says the count
     grew now, so a consumer quoting the line can tell fresh colour from a
     stale total.
+
+    `run_framed` inverts which number leads, for a condition whose policy
+    fires on the open run rather than the total (the green-arrow drought).
+    Such a line surfacing at "22 this season" would never say why it
+    appeared -- what is notable is the unbroken run of 5 -- so the run
+    leads and the season total follows as context. Both numbers are still
+    stated: dropping either would make the line answer a question it was
+    not asked. "In a row" obeys the same rule it does in `_streak_text`:
+    only a run that held nothing may claim it, since a run crossing an
+    unjudged gameweek is a count over a span, not a consecutive sequence.
     """
     label = label_one if occurrences == 1 else label_many
     span = f"GW{window.start_gameweek}-GW{window.end_gameweek}"
-    text = f"{manager_name}: {occurrences} {label} this season ({span})"
-    if occurred_this_gameweek:
-        text += ", the first this gameweek" if occurrences == 1 else ", the latest this gameweek"
+
+    if run_framed and run_length > 0:
+        run_label = label_one if run_length == 1 else label_many
+        shape = "in a row" if run_held == 0 else "in their current run"
+        text = (
+            f"{manager_name}: {run_length} {run_label} {shape}, "
+            f"{occurrences} this season ({span})"
+        )
+    else:
+        text = f"{manager_name}: {occurrences} {label} this season ({span})"
+        if occurred_this_gameweek:
+            text += ", the first this gameweek" if occurrences == 1 else ", the latest this gameweek"
+
     if held_total:
         plural = "" if held_total == 1 else "s"
         text += f", with {held_total} gameweek{plural} not judged either way"
@@ -459,6 +471,7 @@ def _season_count_entries(
     projection: LeagueHistoryCountersProjection,
     rows_by_gameweek: dict[int, dict[int, LeagueHistoryRow]],
     milestone: bool,
+    second_half: bool,
 ) -> list[NotesPackEntry]:
     """One entry per manager x applicable condition that has occurred at all.
 
@@ -466,24 +479,21 @@ def _season_count_entries(
     manager no longer in this gameweek's rows keeps a frozen count in
     `projection.runs`, and surfacing it in a later pack would present it as
     live. Every nonzero count is emitted so `--format json` carries the
-    whole season picture (KTD8); which of them carry rendering surfaces
-    follows the registry's two cadence classes plus the season-fines
-    milestone rule. On an ordinary gameweek, an *event*-class count
-    (`count_weekly` in the registry: wins, last places, captain blanks,
-    hits, waiver moves) that grew *this* gameweek reaches report+prompt --
-    "their fourth gameweek win of the season" is news in the week of the
-    win. A *state*-class count (weeks on top, bottom half, green-arrow
-    drought) grows for roughly the same half of the league every single
-    gameweek, so it is withheld weekly -- the streak entries already cover
-    the ongoing run -- except at a round-number moment: when any manager's
-    increment lands their total on a multiple of `STATE_COUNT_SURFACE_STEP`,
-    that condition's incrementers all surface together, the round number
-    with its context. At the two season milestones the whole nonzero set
-    of both classes carries report+prompt: the halfway and finale reports
-    get their `## Season Counts` set-piece, and the editorial gets the
-    season-spanning facts exactly when its phase framing invites a
-    retrospective. Console is always excluded: it is a highlights view,
-    and the streak leaders already cover it.
+    whole season picture (KTD8); which of them carry rendering surfaces on
+    an ordinary gameweek is each condition's own `CountSurfacePolicy` in
+    the registry, evaluated here in two passes because a firing is
+    cross-manager: first, who *fired* their condition with this gameweek's
+    increment (a total on the condition's step, an unbroken run at one of
+    its run milestones, a second-half first); then, for each condition
+    someone fired, which same-gameweek incrementers *ride along* beside
+    them (their total past the condition's ride-along floor). A condition
+    nobody fired stays entirely quiet however many totals grew. At the two
+    season milestones the whole nonzero set carries report+prompt
+    regardless: the halfway and finale reports get their `## Season
+    Counts` set-piece, and the editorial gets the season-spanning facts
+    exactly when its phase framing invites a retrospective. Console is
+    always excluded: it is a highlights view, and the streak leaders
+    already cover it.
 
     The window is the manager's own evaluated span
     (`first_evaluated_gameweek`..this gameweek), not the league's -- a
@@ -499,24 +509,23 @@ def _season_count_entries(
             occurred_this_gameweek = view.last_occurrence_gameweek == gameweek
             counted.append((manager_key, manager_row, condition_key, view, occurred_this_gameweek))
 
-    # The state-class weekly gate is cross-manager, so it needs the whole
-    # cohort collected first: a condition fires when any incrementing
-    # manager's new total is a multiple of the step, and then every
-    # manager who incremented it this gameweek rides along.
-    step_reached = {
-        condition_key
-        for _, _, condition_key, view, occurred in counted
-        if occurred and not view.count_weekly
-        and view.occurrences % STATE_COUNT_SURFACE_STEP == 0
+    fired_managers = {
+        (manager_key, condition_key)
+        for manager_key, _, condition_key, view, occurred in counted
+        if occurred and view.count_policy.qualifies(view, second_half=second_half)
     }
+    fired_conditions = {condition_key for _, condition_key in fired_managers}
 
     entries: list[NotesPackEntry] = []
     for manager_key, manager_row, condition_key, view, occurred_this_gameweek in counted:
         window = GameweekWindow(
             start_gameweek=view.first_evaluated_gameweek or gameweek, end_gameweek=gameweek,
         )
-        weekly_worthy = view.count_weekly or condition_key in step_reached
-        if milestone or (occurred_this_gameweek and weekly_worthy):
+        shown_weekly = occurred_this_gameweek and (
+            (manager_key, condition_key) in fired_managers
+            or (condition_key in fired_conditions and view.count_policy.rides_along(view))
+        )
+        if milestone or shown_weekly:
             surfaces = _REPORT_AND_PROMPT
         else:
             surfaces = frozenset()
@@ -530,6 +539,13 @@ def _season_count_entries(
                 view.held_total,
                 window,
                 occurred_this_gameweek=occurred_this_gameweek,
+                run_length=view.length,
+                run_held=view.held_in_run,
+                # A run-milestone condition is one whose whole point is the
+                # unbroken sequence, so its line leads with the run it
+                # actually fired on rather than a season total that would
+                # leave the reader wondering why this week.
+                run_framed=bool(view.count_policy.run_milestones),
             ),
             surfaces=surfaces,
             tier=_entry_tier(window, manager_key, rows_by_gameweek),
@@ -839,6 +855,10 @@ def build_notes_pack(
         season_count_entries=_season_count_entries(
             gameweek=gameweek, cohort=cohort, projection=projection, rows_by_gameweek=rows_by_gameweek,
             milestone=is_season_milestone(gameweek, total_gameweeks, chip_split_gw),
+            # The chip boundary is the season's halfway point (GW19 of 38),
+            # so its deadline is where "second half" starts for the count
+            # policies' first-in-second-half and second-half-only rules.
+            second_half=gameweek > chip_split_gw,
         ),
         coverage_entries=_coverage_entries(
             store=store, gameweek=gameweek, league_start_gameweek=league_start_gameweek,

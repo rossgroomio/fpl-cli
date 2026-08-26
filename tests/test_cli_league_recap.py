@@ -2287,16 +2287,22 @@ class TestLeagueRecapJsonEnvelope:
         assert "Alice" in streak_managers
 
         # Season counts ride the same pack (issue #164): Alice topped GW1-4
-        # and again in the recapped GW5, so her count is 5 -- but weeks on
-        # top is a state-class count, so on an ordinary gameweek it carries
-        # no rendering surfaces and waits for the milestone set-piece. The
-        # JSON payload gets it regardless (KTD8).
+        # and again in the recapped GW5, so her count is 5 -- exactly the
+        # step weeks-on-top fires on, so it carries rendering surfaces this
+        # gameweek. Bob's own counts are below their rules' thresholds and
+        # reach the payload with none, which is what KTD8 asks of `--format
+        # json`: the whole set, surfaced or not.
         alice_top = next(
             entry for entry in pack["season_count_entries"]
             if entry["manager_name"] == "Alice" and entry["condition_key"] == "weeks_on_top"
         )
         assert alice_top["occurrences"] == 5
-        assert alice_top["surfaces"] == []
+        assert alice_top["surfaces"] == ["prompt", "report"]
+
+        assert any(
+            entry["manager_name"] == "Bob" and entry["surfaces"] == []
+            for entry in pack["season_count_entries"]
+        )
 
     def test_a_partial_coverage_run_reports_tiers_and_unknowns_per_gameweek(self):
         """U11's own Definition of Done row: the payload parses cleanly on a
