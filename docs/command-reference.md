@@ -645,6 +645,15 @@ would be indistinguishable from a manager who genuinely held their place. And a 
 leaves `transfer_cost` empty rather than zero: draft charges nothing for a squad change,
 so there is no hit to have avoided.
 
+Two rank fields carry the manager's FPL-wide standing, distinct from any position
+inside the league: `global_rank` is the cumulative rank for the season to date, and
+`global_gw_rank` (schema version 3) is the rank for that gameweek's points alone — the
+API's `overall_rank` and `rank` respectively. Both are destroyed at the July rollover
+like everything else on this row, which is why `global_gw_rank` exists at all: it was
+the one per-gameweek figure the ledger captured `global_rank` for but not itself, until
+schema version 3 added it. A row written before that version reads it back as empty
+rather than guessed.
+
 Rows are append-only. Re-running a gameweek that has not changed writes nothing; a
 re-run whose numbers differ (bonus points settled, a failed fetch repaired, a coarse
 gameweek filled in) appends a superseding row and leaves the old one in place. A file
@@ -660,7 +669,7 @@ Two fidelity tiers, both recorded on the row:
 
 | Tier | Source | Carries |
 |---|---|---|
-| Coarse | Classic manager-history endpoint, one request per manager for the whole season | Points, cumulative total, transfer count and cost, bench points, team value, bank |
+| Coarse | Classic manager-history endpoint, one request per manager for the whole season | Points, cumulative total, transfer count and cost, bench points, team value, bank, world rank (season and gameweek) |
 | Detailed | A live recap run, or `--backfill-detail` replaying a past gameweek | Everything above plus captain, vice, full squad, and transfer or waiver detail |
 
 Classic gaps fill at the coarse tier automatically. `--backfill-detail` upgrades them,

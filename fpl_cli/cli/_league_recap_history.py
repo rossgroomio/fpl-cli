@@ -279,6 +279,7 @@ def _known_row(
         team_value=manager.get("team_value"),
         bank=manager.get("bank"),
         global_rank=manager.get("global_rank"),
+        global_gw_rank=manager.get("global_gw_rank"),
         transfers_made=transfers_made,
         transfer_detail_shortfall=shortfall,
     )
@@ -617,6 +618,7 @@ def _coarse_row(
         team_value=_int("value"),
         bank=_int("bank"),
         global_rank=_int("overall_rank"),
+        global_gw_rank=_int("rank"),
         transfers_made=_int("event_transfers"),
     )
 

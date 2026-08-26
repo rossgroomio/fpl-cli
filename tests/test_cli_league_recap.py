@@ -107,7 +107,7 @@ def _manager(
     )
     for key in (
         "transfers", "transactions", "league_entry_id",
-        "team_value", "bank", "global_rank", "transfers_made",
+        "team_value", "bank", "global_rank", "global_gw_rank", "transfers_made",
     ):
         if key in kwargs:
             entry[key] = kwargs[key]  # type: ignore[literal-required]
@@ -263,7 +263,7 @@ class TestBuildHistoryRows:
 
     def test_the_classic_only_fields_are_carried_through(self):
         data = _recap_data(managers=[_manager(
-            team_value=1013, bank=7, global_rank=400_000, transfers_made=1,
+            team_value=1013, bank=7, global_rank=400_000, global_gw_rank=12_345, transfers_made=1,
             transfers=[RecapTransfer(
                 player_in="In", player_in_team="ARS", player_in_points=8,
                 player_out="Out", player_out_team="LIV", player_out_points=2,
@@ -271,7 +271,9 @@ class TestBuildHistoryRows:
             )],
         )])
         row = build_history_rows(data, season=SEASON, captured_at=CAPTURED_AT)[0]
-        assert (row.team_value, row.bank, row.global_rank, row.transfers_made) == (1013, 7, 400_000, 1)
+        assert (
+            row.team_value, row.bank, row.global_rank, row.global_gw_rank, row.transfers_made,
+        ) == (1013, 7, 400_000, 12_345, 1)
         assert row.transfer_detail_shortfall == 0
         assert [t.player_in for t in row.transfers] == ["In"]
 
@@ -290,7 +292,7 @@ class TestBuildHistoryRows:
         data = _recap_data(managers=[_manager(transfers_made=0, transfers=[])])
         assert build_history_rows(data, season=SEASON, captured_at=CAPTURED_AT)[0].transfer_detail_shortfall == 0
 
-    def test_a_draft_row_omits_the_four_classic_only_fields(self):
+    def test_a_draft_row_omits_the_five_classic_only_fields(self):
         data = _recap_data(
             fpl_format="draft",
             managers=[_manager(name="Alice", entry_id=1, league_entry_id=10, transactions=[
@@ -305,7 +307,9 @@ class TestBuildHistoryRows:
         row = build_history_rows(data, season=SEASON, captured_at=CAPTURED_AT)[0]
         assert row.manager_key == 10
         assert row.entry_id == 1
-        assert (row.team_value, row.bank, row.global_rank, row.transfers_made) == (None, None, None, None)
+        assert (
+            row.team_value, row.bank, row.global_rank, row.global_gw_rank, row.transfers_made,
+        ) == (None, None, None, None, None)
         assert row.transfer_detail_shortfall is None
         assert [t.player_in for t in row.transactions] == ["In"]
 
@@ -709,6 +713,7 @@ def _history_row(event: int, points: int, total: int, **kwargs: Any) -> dict[str
         "points_on_bench": 3,
         "value": 1000,
         "bank": 5,
+        "rank": 12_345,
         "overall_rank": 400_000,
     }
     row.update(kwargs)
@@ -793,6 +798,27 @@ class TestCoarseBackfill:
         assert resolved[2].league_position == 2
         assert resolved[1].gw_rank == 1
         assert resolved[2].gw_rank == 2
+
+    async def test_the_coarse_tier_captures_the_per_gameweek_world_rank_too(self):
+        """Issue #148: `/entry/{id}/history`'s `rank` (this gameweek alone) is
+        a different field from `overall_rank` (season-cumulative), and both
+        must be captured rather than the world rank collapsing onto one."""
+        data = _recap_data(
+            gameweek=2,
+            managers=[_manager(name="Alice", entry_id=1)],
+            cohort=_cohort((1, "Alice", 1, 60, 300)),
+        )
+        client = _HistoryClient({
+            1: [_history_row(gw, 50, 50 * gw, rank=9_999, overall_rank=400_000) for gw in range(1, 3)],
+        })
+
+        await capture_recap_history(
+            data, season=SEASON, history_client=client, finished_gameweeks=range(1, 3),
+        )
+
+        row = _store().resolved_gameweek(1)[1]
+        assert row.global_gw_rank == 9_999
+        assert row.global_rank == 400_000
 
     async def test_a_league_that_started_late_reports_no_gap_before_its_start(self):
         data = _recap_data(
@@ -960,6 +986,38 @@ class TestDetailedBackfill:
         assert resolved[1].gross_points == 1
         # The coarse line is superseded, never removed.
         assert len(_store().load_gameweek(1)) == 2
+
+    async def test_a_backfill_detail_run_retrofits_the_per_gameweek_world_rank(self):
+        """Issue #148: `--backfill-detail` is the suggested retrofit path for
+        a gameweek already captured only at the coarse tier -- the
+        superseding detailed row it writes must carry `global_gw_rank`, not
+        just the fields the coarse tier already had."""
+        data = _recap_data(
+            gameweek=3,
+            managers=[_manager(name="Alice", entry_id=1)],
+            cohort=_cohort((1, "Alice", 1, 60, 300)),
+        )
+        coarse = _HistoryClient({1: [_history_row(gw, 40, 40 * gw, rank=9_999) for gw in range(1, 4)]})
+        await capture_recap_history(
+            data, season=SEASON, history_client=coarse, finished_gameweeks=range(1, 4),
+        )
+        assert _store().resolved_gameweek(1)[1].global_gw_rank == 9_999
+
+        async def _replay_with_gw_rank(gameweek: int) -> LeagueRecapData | None:
+            return _recap_data(
+                gameweek=gameweek,
+                managers=[_manager(name="Alice", entry_id=1, global_gw_rank=1_234)],
+                cohort=_cohort((1, "Alice", 1, gameweek, 0)),
+            )
+
+        await capture_recap_history(
+            data, season=SEASON, finished_gameweeks=range(1, 4),
+            replay_gameweek=_replay_with_gw_rank, backfill_detail=True,
+        )
+
+        resolved = _store().resolved_gameweek(1)
+        assert resolved[1].tier is FidelityTier.DETAILED
+        assert resolved[1].global_gw_rank == 1_234
 
     async def test_gameweeks_are_replayed_one_at_a_time(self):
         live = {"now": 0, "peak": 0}

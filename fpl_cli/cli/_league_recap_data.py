@@ -422,11 +422,13 @@ async def _fetch_all_manager_data(
             transfers=transfers,
             transfers_made=num_transfers,
         )
-        # Three more figures the rollover destroys, already in hand on the
+        # Four more figures the rollover destroys, already in hand on the
         # object the headline numbers came from (R2). Recorded only where the
         # response actually carried them, so a partial one leaves them absent
-        # rather than zero. `global_rank` is the FPL-wide rank, never a league
-        # position (KTD12).
+        # rather than zero. `global_rank` is the FPL-wide cumulative rank,
+        # `global_gw_rank` the FPL-wide rank for this gameweek alone -- the
+        # API's `rank` and `overall_rank` respectively -- and neither is a
+        # league position (KTD12, issue #148).
         # `value` is bank-inclusive, hence `team_value` rather than
         # `squad_value` -- the squad alone is `team_value - bank`.
         team_value = entry_history.get("value")
@@ -438,6 +440,9 @@ async def _fetch_all_manager_data(
         global_rank = entry_history.get("overall_rank")
         if isinstance(global_rank, int):
             result["global_rank"] = global_rank
+        global_gw_rank = entry_history.get("rank")
+        if isinstance(global_gw_rank, int):
+            result["global_gw_rank"] = global_gw_rank
         return result
 
     tasks = [_fetch_one(entry, i + 1) for i, entry in enumerate(standings)]
