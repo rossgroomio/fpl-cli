@@ -12,7 +12,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from fpl_cli.cli._context import Format, console, error_console, get_format, load_settings
-from fpl_cli.cli._json import emit_json, emit_json_error, json_output_mode, output_format_option
+from fpl_cli.cli._json import emit_failure, emit_json, json_output_mode, output_format_option
 from fpl_cli.season import is_season_label, season_label
 
 if TYPE_CHECKING:
@@ -71,28 +71,29 @@ def league_fines_command(
     with json_output_mode() if output_format == "json" else nullcontext() as stdout:
         season = season_override or season_label()
         if season_override and not is_season_label(season_override):
-            message = (
+            # Through `emit_failure` rather than a hand-rolled branch (#159):
+            # it is the one place that knows prose and an envelope are
+            # mutually exclusive, and it escapes the message -- which matters
+            # here, because `season_override` is user input on its way into a
+            # Rich console.
+            emit_failure(
+                "league-fines",
                 f"'{season_override}' is not a season label. Use the ledger's own form, "
-                f"e.g. {season_label()}."
+                f"e.g. {season_label()}.",
+                output_format,
+                stream=error_console,
             )
-            if output_format == "json":
-                emit_json_error("league-fines", message, file=stdout)
-                return
-            error_console.print(f"[red]{message}[/red]")
-            raise SystemExit(1)
 
         key = "draft_league_id" if is_draft else "classic_league_id"
         league_id = settings.get("fpl", {}).get(key)
         if not league_id:
-            message = (
-                f"No {fpl_format} league id is configured, so there is no ledger partition to "
-                f"read. Set fpl.{key} in settings.yaml (or run 'fpl init')."
+            emit_failure(
+                "league-fines",
+                f"No {fpl_format} league id is configured, so there is no ledger partition "
+                f"to read. Set fpl.{key} in settings.yaml (or run 'fpl init').",
+                output_format,
+                stream=error_console,
             )
-            if output_format == "json":
-                emit_json_error("league-fines", message, file=stdout)
-                return
-            error_console.print(f"[red]{message}[/red]")
-            raise SystemExit(1)
 
         store = LeagueHistoryStore(season, fpl_format, league_id)
         captured = store.captured_gameweeks()

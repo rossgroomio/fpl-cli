@@ -168,6 +168,42 @@ class TestJsonOutput:
         assert "league id" in payload["error"]
 
 
+class TestFailureContract:
+    """#159's contract: stdout parses either way, and the prose channel never
+    interprets user input as markup."""
+
+    def test_a_malformed_season_label_is_not_read_as_rich_markup(self):
+        """`--season` is user input on its way into a Rich console. Routed
+        through `emit_failure`, which escapes it; a hand-rolled
+        `console.print(f"[red]{message}[/red]")` would not."""
+        result = _invoke(["--season", "[bold]2025[/bold]"])
+
+        assert result.exit_code == 1
+        assert "[bold]2025[/bold]" in result.output
+
+    def test_the_command_completes_with_every_http_transport_broken(self):
+        """It reads the ledger and nothing else, which is why it carries no
+        `api_failure_boundary`. If that ever stops being true this fails
+        rather than the omission going unnoticed."""
+        import httpx
+
+        def _boom(*args: Any, **kwargs: Any):
+            raise httpx.ConnectError("connection refused")
+
+        async def _async_boom(*args: Any, **kwargs: Any):
+            raise httpx.ConnectError("connection refused")
+
+        _seed_two_gameweeks()
+        with (
+            patch.object(httpx.AsyncClient, "send", _async_boom),
+            patch.object(httpx.Client, "send", _boom),
+        ):
+            result = _invoke(["--format", "json"])
+
+        assert result.exit_code == 0, result.output
+        assert _payload(result)["metadata"]["total_fines"] == 2
+
+
 class TestSelection:
     def test_a_bad_season_label_is_refused_rather_than_read_as_a_partition(self):
         result = _invoke(["--season", "not-a-season"])
