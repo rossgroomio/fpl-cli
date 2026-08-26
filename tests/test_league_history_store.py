@@ -120,6 +120,16 @@ class TestLeagueHistoryRowModel:
     def test_content_notices_a_changed_value(self):
         assert make_history_row(gross_points=50).content() != make_history_row(gross_points=51).content()
 
+    def test_content_ignores_a_schema_version_bump_alone(self):
+        """A schema bump is an install fact, not a gameweek fact: an
+        unchanged row rebuilt under a newer version must still compare equal
+        in content, or every gameweek captured before an upgrade appends a
+        pointless superseding duplicate on its very next re-run."""
+        old = make_history_row(gross_points=50, version=2)
+        new = make_history_row(gross_points=50, version=LEAGUE_HISTORY_VERSION)
+        assert old.content() == new.content()
+        assert old != new
+
 
 class TestRowResolution:
     """R3: highest fidelity tier, then latest capture; unknown ranks below all."""

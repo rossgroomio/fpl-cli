@@ -427,7 +427,7 @@ async def _fetch_all_manager_data(
         # response actually carried them, so a partial one leaves them absent
         # rather than zero. `global_rank` is the FPL-wide cumulative rank,
         # `global_gw_rank` the FPL-wide rank for this gameweek alone -- the
-        # API's `rank` and `overall_rank` respectively -- and neither is a
+        # API's `overall_rank` and `rank` respectively -- and neither is a
         # league position (KTD12, issue #148).
         # `value` is bank-inclusive, hence `team_value` rather than
         # `squad_value` -- the squad alone is `team_value - bank`.

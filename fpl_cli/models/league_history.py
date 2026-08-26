@@ -306,13 +306,16 @@ class LeagueHistoryRow(BaseModel):
     transfer_detail_shortfall: int | None = None
 
     def content(self) -> dict[str, Any]:
-        """The row's values excluding when it was captured.
+        """The row's values excluding when it was captured and its own schema version.
 
         R3's no-op condition is same-*content*, not same-timestamp: a re-run
         that reproduces a row exactly must write nothing, and every re-run has
-        a later `captured_at`.
+        a later `captured_at`. `version` is excluded for the same reason: a
+        schema bump alone must not make an unchanged gameweek's re-run look
+        like new content and append a superseding duplicate -- an install
+        upgrade is not a fact about the gameweek.
         """
-        return self.model_dump(mode="json", exclude={"captured_at"})
+        return self.model_dump(mode="json", exclude={"captured_at", "version"})
 
     def resolution_sort_key(self) -> tuple[int, datetime]:
         """Sort key for picking the winning row among duplicates of one key.
