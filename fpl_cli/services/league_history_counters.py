@@ -107,8 +107,10 @@ class ConditionDefinition:
     *state* condition -- the occurrence is a standing table position that
     persists week over week (being top, being in the bottom half, going
     another week without a green arrow), so roughly the same half of the
-    league increments it every single gameweek and a weekly render would
-    be wallpaper; its season total is milestone material only.
+    league increments it every single gameweek and an ungated weekly
+    render would be wallpaper; U9 withholds it weekly except when an
+    increment lands a total on a round-number step, and prints the full
+    set at the two season milestones.
     """
 
     key: str

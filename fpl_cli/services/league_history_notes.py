@@ -58,6 +58,7 @@ from fpl_cli.models.league_history import (
 from fpl_cli.season import CHIP_SPLIT_GW, TOTAL_GAMEWEEKS
 from fpl_cli.services.league_history import LeagueHistoryError, LeagueHistoryStore
 from fpl_cli.services.league_history_counters import (
+    ConditionRunView,
     compute_counters_through,
     counters_partition_dir,
     manager_condition_views,
@@ -257,9 +258,11 @@ class NotesPack:
     per-manager season occurrence totals (issue #164), sorted by descending
     count: one per cohort manager x condition that has occurred at all this
     season, surfaced by cadence class -- an event-class count in the week
-    it grew, the whole nonzero set at the two season milestones, nothing
-    beyond `--format json` otherwise (see `_season_count_entries`).
-    `season_phase_entry` and `coverage_entries` are always
+    it grew, a state-class condition's incrementers in a week one of them
+    lands on the round-number step, the whole nonzero set at the two
+    season milestones, nothing beyond `--format json` otherwise (see
+    `_season_count_entries`). `season_phase_entry` and `coverage_entries`
+    are always
     populated -- never absent, never merely implied by an empty `entries`
     list -- as their own dedicated fields: a pack with no open streaks
     still has something to say about where the season is and what history
@@ -404,6 +407,17 @@ def _streak_entries(
 # Season-count entries (issue #164)
 # ---------------------------------------------------------------------------
 
+# A state-class season count (registry `count_weekly=False`) earns a weekly
+# render only at a round-number moment: some manager's increment this
+# gameweek lands their total on a multiple of this step ("their ninth week
+# in the bottom half"). Roughly half a league increments those counts every
+# single gameweek, so ungated they would wallpaper every report; the step
+# keeps the weekly section quiet until a total is worth saying out loud,
+# and the season milestones print the full set regardless. When the step
+# does fire for a condition, every manager who incremented it this
+# gameweek surfaces alongside the round number for context.
+STATE_COUNT_SURFACE_STEP: int = 3
+
 
 def _season_count_text(
     manager_name: str,
@@ -454,61 +468,78 @@ def _season_count_entries(
     live. Every nonzero count is emitted so `--format json` carries the
     whole season picture (KTD8); which of them carry rendering surfaces
     follows the registry's two cadence classes plus the season-fines
-    milestone rule. On an ordinary gameweek, only an *event*-class count
+    milestone rule. On an ordinary gameweek, an *event*-class count
     (`count_weekly` in the registry: wins, last places, captain blanks,
     hits, waiver moves) that grew *this* gameweek reaches report+prompt --
     "their fourth gameweek win of the season" is news in the week of the
     win. A *state*-class count (weeks on top, bottom half, green-arrow
-    drought) is withheld weekly even when it grew: roughly the same half
-    of the league increments those every single gameweek, so a weekly
-    render would open every report with the table's wallpaper -- and the
-    streak entries already cover the ongoing run. At the two season
-    milestones the whole nonzero set of both classes carries
-    report+prompt: the halfway and finale reports get their `## Season
-    Counts` set-piece, and the editorial gets the season-spanning facts
-    exactly when its phase framing invites a retrospective. Console is
-    always excluded: it is a highlights view, and the streak leaders
-    already cover it.
+    drought) grows for roughly the same half of the league every single
+    gameweek, so it is withheld weekly -- the streak entries already cover
+    the ongoing run -- except at a round-number moment: when any manager's
+    increment lands their total on a multiple of `STATE_COUNT_SURFACE_STEP`,
+    that condition's incrementers all surface together, the round number
+    with its context. At the two season milestones the whole nonzero set
+    of both classes carries report+prompt: the halfway and finale reports
+    get their `## Season Counts` set-piece, and the editorial gets the
+    season-spanning facts exactly when its phase framing invites a
+    retrospective. Console is always excluded: it is a highlights view,
+    and the streak leaders already cover it.
 
     The window is the manager's own evaluated span
     (`first_evaluated_gameweek`..this gameweek), not the league's -- a
     mid-season joiner's count is bounded to the gameweeks it was actually
     folded over, and R17's joiner coverage entry beside it states why.
     """
-    entries: list[NotesPackEntry] = []
+    counted: list[tuple[int, LeagueHistoryRow, str, ConditionRunView, bool]] = []
     for manager_key, manager_row in cohort.items():
         views = manager_condition_views(projection, manager_key)
         for condition_key, view in views.items():
             if view.occurrences <= 0 or view.first_evaluated_gameweek is None:
                 continue
-            window = GameweekWindow(
-                start_gameweek=view.first_evaluated_gameweek, end_gameweek=gameweek,
-            )
             occurred_this_gameweek = view.last_occurrence_gameweek == gameweek
-            if milestone or (occurred_this_gameweek and view.count_weekly):
-                surfaces = _REPORT_AND_PROMPT
-            else:
-                surfaces = frozenset()
-            entries.append(NotesPackEntry(
-                kind=NoteKind.SEASON_COUNT,
-                text=_season_count_text(
-                    manager_row.manager_name,
-                    view.count_label_one,
-                    view.count_label_many,
-                    view.occurrences,
-                    view.held_total,
-                    window,
-                    occurred_this_gameweek=occurred_this_gameweek,
-                ),
-                surfaces=surfaces,
-                tier=_entry_tier(window, manager_key, rows_by_gameweek),
-                window=window,
-                manager_key=manager_key,
-                manager_name=manager_row.manager_name,
-                condition_key=condition_key,
-                held_count=view.held_total,
-                occurrences=view.occurrences,
-            ))
+            counted.append((manager_key, manager_row, condition_key, view, occurred_this_gameweek))
+
+    # The state-class weekly gate is cross-manager, so it needs the whole
+    # cohort collected first: a condition fires when any incrementing
+    # manager's new total is a multiple of the step, and then every
+    # manager who incremented it this gameweek rides along.
+    step_reached = {
+        condition_key
+        for _, _, condition_key, view, occurred in counted
+        if occurred and not view.count_weekly
+        and view.occurrences % STATE_COUNT_SURFACE_STEP == 0
+    }
+
+    entries: list[NotesPackEntry] = []
+    for manager_key, manager_row, condition_key, view, occurred_this_gameweek in counted:
+        window = GameweekWindow(
+            start_gameweek=view.first_evaluated_gameweek or gameweek, end_gameweek=gameweek,
+        )
+        weekly_worthy = view.count_weekly or condition_key in step_reached
+        if milestone or (occurred_this_gameweek and weekly_worthy):
+            surfaces = _REPORT_AND_PROMPT
+        else:
+            surfaces = frozenset()
+        entries.append(NotesPackEntry(
+            kind=NoteKind.SEASON_COUNT,
+            text=_season_count_text(
+                manager_row.manager_name,
+                view.count_label_one,
+                view.count_label_many,
+                view.occurrences,
+                view.held_total,
+                window,
+                occurred_this_gameweek=occurred_this_gameweek,
+            ),
+            surfaces=surfaces,
+            tier=_entry_tier(window, manager_key, rows_by_gameweek),
+            window=window,
+            manager_key=manager_key,
+            manager_name=manager_row.manager_name,
+            condition_key=condition_key,
+            held_count=view.held_total,
+            occurrences=view.occurrences,
+        ))
 
     def _sort_key(entry: NotesPackEntry) -> tuple[int, str, str]:
         return (-(entry.occurrences or 0), entry.manager_name or "", entry.condition_key or "")

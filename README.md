@@ -79,9 +79,10 @@ this season — gameweek wins, last places, weeks on top, captain blanks — acr
 so a report or editorial can say "their fourth gameweek win of the season", not just
 "two in a row". Event counts (wins, last places, captain blanks, hits, waiver moves)
 surface in the week they grow; standing table counts (weeks on top, bottom half,
-green-arrow droughts) wait for the season set-piece at GW19 and the finale, where the
-full list prints alongside the fines table. Unjudged gameweeks are always stated beside
-the number.
+green-arrow droughts) surface only when someone's total lands on a multiple of three —
+everyone else who added to that count the same week rides along — and in full at the
+season set-piece at GW19 and the finale, where every count prints alongside the fines
+table. Unjudged gameweeks are always stated beside the number.
 
 ### Checking Your Setup
 

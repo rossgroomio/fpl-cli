@@ -369,11 +369,12 @@ class TestSeasonCountEntries:
             "the first this gameweek."
         )
 
-    def test_a_state_class_count_is_withheld_weekly_even_when_it_grew(self):
+    def test_a_state_class_count_is_withheld_weekly_off_the_step(self):
         """Being top of the table is a standing state, not an event: half
         the league increments a state-class count every single gameweek, so
-        its season total waits for the milestone set-piece. Retained for
-        `--format json` regardless (KTD8)."""
+        its season total stays off the weekly render until a total lands on
+        the round-number step. Retained for `--format json` regardless
+        (KTD8)."""
         store = LeagueHistoryStore("2026-27", "classic", 1)
         store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, manager_name="Alice", league_position=1)])
 
@@ -385,6 +386,63 @@ class TestSeasonCountEntries:
             "Alice: 1 gameweek on top of the league this season (GW1-GW1), "
             "the first this gameweek."
         )
+
+    def test_a_state_count_surfaces_weekly_when_a_total_lands_on_the_step(self):
+        """A state-class count earns its weekly render at a round-number
+        moment: the increment that lands a total on a multiple of the step
+        surfaces, the week before it stays quiet."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        for gw in (1, 2, 3):
+            store.append_rows(gw, [make_history_row(gameweek=gw, manager_key=1, manager_name="Alice", league_position=1)])
+
+        second = self._count_entry(build_notes_pack(store, 2), "Alice", "weeks_on_top")
+        third = self._count_entry(build_notes_pack(store, 3), "Alice", "weeks_on_top")
+
+        assert second.occurrences == 2
+        assert second.surfaces == frozenset()
+        assert third.occurrences == 3
+        assert third.surfaces == frozenset({NoteSurface.REPORT, NoteSurface.PROMPT})
+
+    def test_the_step_carries_every_incrementing_peer_of_that_condition(self):
+        """When one manager's total lands on the step, everyone who
+        incremented that same condition this gameweek surfaces with them --
+        but only that condition: another state count that also grew without
+        reaching the step stays withheld, and a manager who did not
+        increment this gameweek stays out entirely."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        positions = {1: (1, 1, 1), 2: (2, 2, 3), 3: (3, 3, 2), 4: (4, 4, 4)}
+        names = {1: "Alice", 2: "Carol", 3: "Bob", 4: "Dan"}
+        for gw in (1, 2, 3):
+            store.append_rows(gw, [
+                make_history_row(
+                    gameweek=gw, manager_key=key, manager_name=names[key],
+                    league_position=positions[key][gw - 1],
+                )
+                for key in (1, 2, 3, 4)
+            ])
+
+        pack = build_notes_pack(store, 3)
+
+        # Bottom half (positions 3-4 of 4): Dan's GW3 increment lands on 3,
+        # so Carol -- who only just dropped in, count 1 -- rides along.
+        dan = self._count_entry(pack, "Dan", "bottom_half_run")
+        carol = self._count_entry(pack, "Carol", "bottom_half_run")
+        assert dan.occurrences == 3
+        assert dan.surfaces == frozenset({NoteSurface.REPORT, NoteSurface.PROMPT})
+        assert carol.occurrences == 1
+        assert carol.surfaces == frozenset({NoteSurface.REPORT, NoteSurface.PROMPT})
+
+        # Bob spent GW1-2 in the bottom half but climbed out this gameweek:
+        # no increment, so the step his peers hit does not surface him.
+        bob = self._count_entry(pack, "Bob", "bottom_half_run")
+        assert bob.occurrences == 2
+        assert bob.surfaces == frozenset()
+
+        # Dan's green-arrow drought also grew this gameweek (to 2), but no
+        # green-arrow total reached the step, so that condition stays quiet.
+        dan_drought = self._count_entry(pack, "Dan", "green_arrow_drought")
+        assert dan_drought.occurrences == 2
+        assert dan_drought.surfaces == frozenset()
 
     def test_a_milestone_gameweek_surfaces_every_nonzero_count_to_report_and_prompt(self):
         """At the halfway boundary and the finale the whole nonzero set is

@@ -355,13 +355,14 @@ def format_recap_league_history_context(pack: NotesPack | None) -> str:
     for entry in prompt_entries:
         lines.append(f"- {entry.text}")
     # Season counts (issue #164): the pack surfaces these by cadence class
-    # -- on an ordinary week only event-class counts that grew this
-    # gameweek, so the model gets "their fourth gameweek win of the season"
-    # for the win that just happened rather than a season ledger to pad the
-    # recap out of; at the two season milestones the whole nonzero set,
-    # state-class table counts included, the season-spanning facts the
-    # retrospective framing calls for. The explicit total keeps the
-    # enumerate-and-lock shape the other sections use.
+    # -- on an ordinary week, event-class counts that grew this gameweek
+    # (so the model gets "their fourth gameweek win of the season" for the
+    # win that just happened, rather than a season ledger to pad the recap
+    # out of) plus any state-class condition whose incrementers include a
+    # round-number total this week; at the two season milestones the whole
+    # nonzero set, the season-spanning facts the retrospective framing
+    # calls for. The explicit total keeps the enumerate-and-lock shape the
+    # other sections use.
     count_entries = [
         entry for entry in pack.season_count_entries if NoteSurface.PROMPT in entry.surfaces
     ]
