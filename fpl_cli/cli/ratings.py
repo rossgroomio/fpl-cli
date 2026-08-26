@@ -134,6 +134,14 @@ def ratings_update(since_gw: int | None, dry_run: bool, use_xg: bool):
                 )
                 # Full-season window, so the sample is the season to date.
                 season_gws = sample_gws
+                # Stamped like the fixtures path. Without it the xG file saved
+                # no window at all, so the prior-dominance warning could never
+                # fire over it however prior-heavy it was -- and the auto-refresh,
+                # which reads based_on_gws to decide whether the file covers the
+                # completed gameweeks, treated it as covering nothing and
+                # overwrote the user's requested xG ratings with goals-based ones
+                # on the very next command.
+                based_on_gws = (1, sample_gws) if sample_gws else None
             else:
                 min_gw = since_gw or 1
                 method = "recent_form" if since_gw else "full_season"

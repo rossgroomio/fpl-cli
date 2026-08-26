@@ -645,6 +645,15 @@ class TeamRatingsService:
 
         Returns None once current form carries at least half the weight, and
         for any file that was never blended.
+
+        Detection is by the `_blended` source tag, which means a file written
+        before that tag existed reads as unblended and stays silent here even
+        when it is prior-dominated. That is a one-gameweek gap, not a lasting
+        one: the next completed gameweek moves `based_on_gws` on, the refresh
+        rewrites the file with the tag, and the warning starts firing. Inferring
+        a blend from the window alone instead would claim "mostly last season's
+        prior" over files that never had a prior blended into them (none was
+        available), which is a worse failure than staying quiet for a week.
         """
         from fpl_cli.services.team_ratings_prior import REGRESSION_CONSTANT
 
@@ -782,9 +791,17 @@ def performances_from_samples(
                 # Same team, other venue, moved onto this venue's level.
                 rates[axis] = mean(data[other]) * baseline[axis] / baseline[other]
             else:
-                # A goalless sample gives nothing to scale by; the other
-                # venue's rate is the only evidence there is.
-                rates[axis] = mean(data[other])
+                # No conversion ratio to measure: the counterpart venue
+                # produced nothing across the entire window. That collapses to
+                # zero rather than to an unscaled copy of the played venue --
+                # this team's counterpart values are members of the very pool
+                # whose mean is baseline[other], and goals and xG are both
+                # non-negative, so a zero pooled mean means every one of them
+                # is zero. (A pool assembled per-team rather than per-match can
+                # in principle break that correspondence -- calculate_from_xg
+                # skips a club Understat has no data for -- so this is written
+                # as an explicit zero rather than left to the arithmetic.)
+                rates[axis] = 0.0
 
         performances[team] = TeamPerformance(
             team=team,

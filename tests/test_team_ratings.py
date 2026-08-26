@@ -1737,6 +1737,170 @@ class TestAutoRefreshAfterGw1:
         assert not service.is_preseason_estimate
 
 
+class TestUseXgWindowStamp:
+    """--use-xg saved no window, so nothing downstream could read its sample.
+
+    Two consequences: the prior-dominance warning could never fire over an xG
+    file however prior-heavy it was, and the auto-refresh -- which reads
+    based_on_gws to decide whether a file already covers the completed
+    gameweeks -- treated it as covering nothing and recalculated over it.
+    """
+
+    def _run(self, finished_gws, ratings=None, prior=None):
+        from click.testing import CliRunner
+
+        from fpl_cli.cli import main
+
+        ratings = ratings or {
+            "ARS": TeamRating(atk_home=1, atk_away=1, def_home=1, def_away=1),
+            "MCI": TeamRating(atk_home=7, atk_away=7, def_home=7, def_away=7),
+        }
+        perfs = {
+            "ARS": TeamPerformance("ARS", 2.0, 1.5, 0.5, 1.0, 1, 1),
+            "MCI": TeamPerformance("MCI", 1.0, 0.8, 1.5, 2.0, 1, 1),
+        }
+        gameweeks = [{"id": i, "finished": i <= finished_gws} for i in range(1, 39)]
+
+        with (
+            patch(
+                "fpl_cli.services.team_ratings.TeamRatingsCalculator.calculate_from_xg",
+                new_callable=AsyncMock,
+                return_value=(ratings, perfs),
+            ),
+            patch(
+                "fpl_cli.api.fpl.FPLClient.get_gameweeks",
+                new_callable=AsyncMock,
+                return_value=gameweeks,
+            ),
+            patch(
+                "fpl_cli.services.team_ratings_prior.generate_prior",
+                new_callable=AsyncMock,
+                return_value=prior if prior is not None else {},
+            ),
+            patch(
+                "fpl_cli.services.team_ratings.TeamRatingsService.get_all_ratings",
+                return_value={},
+            ),
+            patch(
+                "fpl_cli.services.team_ratings.TeamRatingsService.save_ratings"
+            ) as mock_save,
+            patch("fpl_cli.cli._context.load_settings", return_value={"custom_analysis": True}),
+        ):
+            result = CliRunner().invoke(
+                main, ["ratings", "update", "--use-xg"], catch_exceptions=False
+            )
+
+        assert result.exit_code == 0, result.output
+        return mock_save
+
+    def test_window_covers_the_season_to_date(self):
+        mock_save = self._run(finished_gws=4)
+
+        assert mock_save.call_args.kwargs["based_on_gws"] == (1, 4)
+
+    def test_single_gameweek_window_is_readable_as_prior_dominated(self):
+        """The whole point: a GW1 xG file must be able to raise the warning."""
+        prior = {
+            "ARS": TeamRating(atk_home=4, atk_away=4, def_home=4, def_away=4),
+            "MCI": TeamRating(atk_home=4, atk_away=4, def_home=4, def_away=4),
+        }
+        mock_save = self._run(finished_gws=1, prior=prior)
+
+        kwargs = mock_save.call_args.kwargs
+        assert kwargs["based_on_gws"] == (1, 1)
+        assert kwargs["source"] == "understat_xg_blended"
+
+        # And that metadata pair is what the warning reads.
+        import yaml as _yaml
+
+        from fpl_cli.paths import user_data_dir
+
+        path = user_data_dir() / "xg_window.yaml"
+        path.write_text(
+            _yaml.dump({
+                "metadata": {
+                    "last_updated": datetime.now().isoformat(),
+                    "source": kwargs["source"],
+                    "based_on_gws": list(kwargs["based_on_gws"]),
+                    "season": season_label(),
+                    "staleness_threshold_days": 7,
+                },
+                "ratings": {
+                    "ARS": {"atk_home": 1, "atk_away": 2, "def_home": 3, "def_away": 4},
+                    "MCI": {"atk_home": 5, "atk_away": 6, "def_home": 7, "def_away": 1},
+                },
+            })
+        )
+        warning = TeamRatingsService(config_path=path).get_staleness_warning()
+        assert warning is not None
+        assert "mostly last season's prior" in warning
+
+    def test_no_finished_gameweeks_stamps_no_window(self):
+        """An empty season has no window to claim - not a degenerate (1, 0)."""
+        mock_save = self._run(finished_gws=0)
+
+        assert mock_save.call_args.kwargs["based_on_gws"] is None
+
+
+class TestGoallessWindowEstimation:
+    """The venue conversion has no ratio to measure when a venue drew a blank.
+
+    The fallback must not become an unscaled copy of the played venue -- that
+    is the exact behaviour single-venue estimation exists to avoid.
+    """
+
+    def test_all_goalless_window(self):
+        from fpl_cli.services.team_ratings import performances_from_samples
+
+        perfs = performances_from_samples({
+            "A": {"scored_home": [0], "conceded_home": [0],
+                  "scored_away": [], "conceded_away": []},
+            "B": {"scored_home": [], "conceded_home": [],
+                  "scored_away": [0], "conceded_away": [0]},
+        })
+
+        assert perfs["A"].goals_scored_away == 0
+        assert perfs["B"].goals_scored_home == 0
+
+    def test_one_venue_goalless_does_not_copy_the_other(self):
+        """Two home wins to nil: nobody has scored away, so no ratio exists."""
+        from fpl_cli.services.team_ratings import performances_from_samples
+
+        perfs = performances_from_samples({
+            "A": {"scored_home": [2], "conceded_home": [0],
+                  "scored_away": [], "conceded_away": []},
+            "B": {"scored_home": [], "conceded_home": [],
+                  "scored_away": [0], "conceded_away": [2]},
+            "C": {"scored_home": [3], "conceded_home": [0],
+                  "scored_away": [], "conceded_away": []},
+            "D": {"scored_home": [], "conceded_home": [],
+                  "scored_away": [0], "conceded_away": [3]},
+        })
+
+        # B and D conceded 2 and 3 away; their unplayed home axis must not
+        # inherit those figures unscaled.
+        assert perfs["B"].goals_conceded_home == 0
+        assert perfs["D"].goals_conceded_home == 0
+        # A and C scored at home; their unplayed away axis scales to the
+        # away level, which this window measured at zero.
+        assert perfs["A"].goals_scored_away == 0
+        assert perfs["C"].goals_scored_away == 0
+
+    def test_played_venues_survive_a_goalless_counterpart(self):
+        """Only the estimated axes collapse - real records are untouched."""
+        from fpl_cli.services.team_ratings import performances_from_samples
+
+        perfs = performances_from_samples({
+            "A": {"scored_home": [2], "conceded_home": [0],
+                  "scored_away": [], "conceded_away": []},
+            "B": {"scored_home": [], "conceded_home": [],
+                  "scored_away": [0], "conceded_away": [2]},
+        })
+
+        assert perfs["A"].goals_scored_home == 2
+        assert perfs["B"].goals_conceded_away == 2
+
+
 class TestPriorDominatedWarning:
     """A blended file early in the season is mostly last season, and must say so.
 

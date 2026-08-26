@@ -345,6 +345,8 @@ Two degenerate cases are called out explicitly rather than ranked silently: no r
 
 `fpl ratings update --use-xg` recalculates using Understat xG instead of actual goals. Less noise, uses full season data rather than rolling window.
 
+It stamps `based_on_gws` as `(1, gameweeks completed)`, the same way the fixtures path stamps its window. Saving no window at all meant the auto-refresh - which reads `based_on_gws` to decide whether a file already covers the completed gameweeks - treated an xG file as covering nothing and recalculated over it from goals on the next command, discarding the source the user had asked for; and the prior-dominance warning above, which needs a window to size the blend, could never fire over an xG file however prior-heavy it was.
+
 ### Manual Overrides
 
 `team_ratings_overrides.yaml` (user config dir, `FPL_CLI_CONFIG_DIR`) lets you override specific axes for specific teams. Overrides are applied in-memory only and survive auto-refresh cycles.
