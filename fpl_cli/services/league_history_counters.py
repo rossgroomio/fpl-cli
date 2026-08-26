@@ -134,6 +134,11 @@ def _net_gw_points(row: LeagueHistoryRow) -> int | None:
     return row.gross_points - (row.transfer_cost or 0)
 
 
+def _cohort_known_points(cohort: list[LeagueHistoryRow]) -> list[int]:
+    """Net-of-hit points for every cohort member who has a score to compare."""
+    return [p for member in cohort if (p := _net_gw_points(member)) is not None]
+
+
 def _gw_win_streak(
     row: LeagueHistoryRow, previous_row: LeagueHistoryRow | None, cohort: list[LeagueHistoryRow],
 ) -> RunAction:
@@ -141,10 +146,19 @@ def _gw_win_streak(
     row_points = _net_gw_points(row)
     if row_points is None:
         return RunAction.HOLD
-    known_points = [p for member in cohort if (p := _net_gw_points(member)) is not None]
+    known_points = _cohort_known_points(cohort)
     if not known_points:
         return RunAction.HOLD
-    return RunAction.EXTEND if row_points == max(known_points) else RunAction.RESET
+    best, worst = max(known_points), min(known_points)
+    # Every known cohort member scored the same this gameweek -- there is no
+    # winner to distinguish from a loser, so this holds rather than
+    # extending (or resetting) either streak. Without this, a fully tied
+    # cohort would satisfy both `row_points == best` and `row_points ==
+    # worst` at once, crediting the same manager with a win streak and a
+    # loss streak in the same gameweek.
+    if best == worst:
+        return RunAction.HOLD
+    return RunAction.EXTEND if row_points == best else RunAction.RESET
 
 
 def _gw_loss_streak(
@@ -154,10 +168,13 @@ def _gw_loss_streak(
     row_points = _net_gw_points(row)
     if row_points is None:
         return RunAction.HOLD
-    known_points = [p for member in cohort if (p := _net_gw_points(member)) is not None]
+    known_points = _cohort_known_points(cohort)
     if not known_points:
         return RunAction.HOLD
-    return RunAction.EXTEND if row_points == min(known_points) else RunAction.RESET
+    best, worst = max(known_points), min(known_points)
+    if best == worst:  # see _gw_win_streak
+        return RunAction.HOLD
+    return RunAction.EXTEND if row_points == worst else RunAction.RESET
 
 
 def _green_arrow_drought(

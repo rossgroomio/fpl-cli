@@ -259,6 +259,50 @@ class TestGwRankStreaks:
         assert manager_condition_views(projection, 2)["gw_win_streak"].length == 2
         assert manager_condition_views(projection, 3)["gw_loss_streak"].length == 2
 
+    def test_a_fully_tied_cohort_holds_both_streaks_instead_of_extending_both(self):
+        """When every known cohort member scores the same, there is no
+        winner to distinguish from a loser -- extending both would credit
+        the same manager with a win streak and a loss streak in the same
+        gameweek. This must hold rather than reset, so a genuine run open
+        before the tie survives it."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(1, [
+            make_history_row(gameweek=1, manager_key=1, gross_points=60),
+            make_history_row(gameweek=1, manager_key=2, gross_points=40),
+        ])
+        for gw in (2, 3, 4):
+            store.append_rows(gw, [
+                make_history_row(gameweek=gw, manager_key=1, gross_points=50),
+                make_history_row(gameweek=gw, manager_key=2, gross_points=50),
+            ])
+
+        projection = rebuild_counters_through(store, 4)
+
+        # GW1 opens a win streak for manager 1 and a loss streak for
+        # manager 2; GW2-4 tie every week and must hold, not reset, either.
+        win_view = manager_condition_views(projection, 1)["gw_win_streak"]
+        loss_view = manager_condition_views(projection, 2)["gw_loss_streak"]
+        assert win_view.length == 1
+        assert win_view.held_in_run == 3
+        assert loss_view.length == 1
+        assert loss_view.held_in_run == 3
+
+        # Neither manager is credited with the opposite streak from the tie.
+        assert manager_condition_views(projection, 1)["gw_loss_streak"].length == 0
+        assert manager_condition_views(projection, 2)["gw_win_streak"].length == 0
+
+    def test_a_single_member_cohort_holds_rather_than_extending_both_streaks(self):
+        """A lone cohort member (e.g. a one-manager league, or every other
+        fetch failed) has nobody to be better or worse than -- the same
+        max-equals-min case as a fully tied cohort."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, gross_points=60)])
+
+        projection = rebuild_counters_through(store, 1)
+
+        assert manager_condition_views(projection, 1)["gw_win_streak"].length == 0
+        assert manager_condition_views(projection, 1)["gw_loss_streak"].length == 0
+
     def test_a_tie_for_the_week_is_the_same_regardless_of_cohort_order(self):
         """The predicates must not depend on the order rows are given in --
         unlike the ordinal `gw_rank` they used to compare, which broke ties
