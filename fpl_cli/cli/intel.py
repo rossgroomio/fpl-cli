@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, NoReturn
+from typing import Any
 
 import click
 from rich.markup import escape as rich_escape
@@ -12,7 +12,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from fpl_cli.cli._context import console, error_console
-from fpl_cli.cli._json import emit_json, emit_json_error, output_format_option
+from fpl_cli.cli._json import emit_failure, emit_json, output_format_option
 from fpl_cli.season import season_label
 from fpl_cli.services.season_previews import (
     SECTION_DECAY,
@@ -52,15 +52,6 @@ def _warn_load_problems(service: SeasonPreviewsService) -> None:
     """
     for warning in service.load_warnings:
         error_console.print(f"[yellow]{rich_escape(warning)}[/yellow]")
-
-
-def _fail(message: str, output_format: str, cause: BaseException | None = None) -> NoReturn:
-    """Report *message* on the right channel for the format, then exit 1."""
-    if output_format == "json":
-        emit_json_error(COMMAND, message)
-    else:
-        console.print(f"[red]{rich_escape(message)}[/red]")
-    raise SystemExit(1) from cause
 
 
 async def _upcoming_gameweek(client: Any) -> int:
@@ -274,7 +265,7 @@ def show_command(ctx: click.Context, team: str, gameweek: int | None, output_for
     if preview is None:
         if output_format != "json":
             _warn_load_problems(service)
-        _fail(f"No preview for '{team}' in {service.previews_path}", output_format)
+        emit_failure(COMMAND, f"No preview for '{team}' in {service.previews_path}", output_format)
 
     try:
         gw = asyncio.run(_resolve_gameweek(gameweek))
@@ -448,7 +439,7 @@ def resolve_command(team: str, write: bool, resolve_all: bool, output_format: st
     service = SeasonPreviewsService()
     preview = service.get_preview(team)
     if preview is None or preview.path is None:
-        _fail(f"No preview for '{team}' in {service.previews_path}", output_format)
+        emit_failure(COMMAND, f"No preview for '{team}' in {service.previews_path}", output_format)
 
     async def _run() -> list[Any]:
         async with FPLClient() as client:
@@ -460,10 +451,16 @@ def resolve_command(team: str, write: bool, resolve_all: bool, output_format: st
     try:
         squad = asyncio.run(_run())
     except Exception as exc:  # noqa: BLE001 -- report the failure rather than a stack trace
-        _fail(f"Could not fetch the squad from the FPL API: {exc}", output_format, cause=exc)
+        emit_failure(
+            COMMAND, f"Could not fetch the squad from the FPL API: {exc}", output_format,
+            cause=exc,
+        )
 
     if not squad:
-        _fail(f"No Premier League squad found for team code '{preview.team}'", output_format)
+        emit_failure(
+            COMMAND, f"No Premier League squad found for team code '{preview.team}'",
+            output_format,
+        )
 
     matches = resolve_preview_names(preview, squad, only_missing=not resolve_all)
     # --all re-resolves entries that already carry a code, so its writes must be

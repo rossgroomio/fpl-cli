@@ -8,9 +8,12 @@ from contextlib import contextmanager
 from datetime import datetime
 from decimal import Decimal
 from enum import Enum
-from typing import IO, Any, Callable, Generator, TypeVar
+from typing import IO, Any, Callable, Generator, NoReturn, TypeVar
 
 import click
+from rich.markup import escape as rich_escape
+
+from fpl_cli.cli._context import console
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -89,6 +92,27 @@ def emit_json_error(
     envelope: dict[str, Any] = {"command": command, "error": message}
     print(json.dumps(envelope, indent=2, default=_json_default), file=_stream(file))
     raise SystemExit(1)
+
+
+def emit_failure(
+    command: str,
+    message: str,
+    output_format: str,
+    *,
+    cause: BaseException | None = None,
+) -> NoReturn:
+    """Report *message* on the channel the caller parses, then exit 1.
+
+    JSON consumers read the `{command, error}` envelope; a terminal reads red
+    prose. The two are mutually exclusive: prose printed under `--format json`
+    would sit ahead of an envelope that never arrives and break the parse at
+    byte 0 (#140).
+    """
+    if output_format == "json":
+        emit_json_error(command, message)
+    else:
+        console.print(f"[red]{rich_escape(message)}[/red]")
+    raise SystemExit(1) from cause
 
 
 @contextmanager

@@ -119,7 +119,9 @@ def price_history_command(
                 })
 
             # Filter
-            team_upper = _validate_team_filter(team, all_teams)
+            team_upper = _validate_team_filter(
+                team, all_teams, command="price-history", output_format=output_format,
+            )
             if position:
                 records = [r for r in records if r["position"] == position.upper()]
             if team_upper:

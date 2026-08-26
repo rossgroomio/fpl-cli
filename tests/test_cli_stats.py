@@ -1017,8 +1017,11 @@ class TestStatsJsonStdoutPurity:
         assert result.exit_code == 0, result.output
         assert "this may take a moment" in result.stderr
 
-    def test_understat_fallback_notice_stays_off_stdout(self):
-        """Explicit --sort quality_score with Understat down warns, then falls back."""
+    @staticmethod
+    def _run_understat_down(args):
+        """`--sort quality_score` with Understat unreachable: scoring is skipped
+        and the sort falls back to total_points.
+        """
         import httpx
 
         mock_understat = MagicMock()
@@ -1035,17 +1038,40 @@ class TestStatsJsonStdoutPurity:
             patch("fpl_cli.api.understat.UnderstatClient", return_value=mock_understat),
             patch("fpl_cli.cli.stats.is_custom_analysis_enabled", return_value=True),
         ):
-            result = runner.invoke(
-                main, ["stats", "--value", "--sort", "quality_score", "--format", "json"]
-            )
+            return runner.invoke(main, ["stats", "--value", "--sort", "quality_score"] + args)
+
+    def test_understat_fallback_notice_stays_off_stdout(self):
+        result = self._run_understat_down(["--format", "json"])
         assert result.exit_code == 0, result.output
-        assert "falling back to total_points" in result.stderr
-        assert "falling back to total_points" not in result.stdout
+        assert "falling back to total_points" not in result.output
         data = json.loads(result.stdout)
         # Scoring never ran, so the records carry no quality columns at all.
         assert "quality_score" not in data["data"][0]
         points = [r["total_points"] for r in data["data"]]
         assert points == sorted(points, reverse=True)
+
+    def test_understat_fallback_carries_a_metadata_warning(self):
+        """The sort silently changed, so JSON consumers get it structurally --
+        `filters.sort` still echoes what was asked for, not what was applied.
+        """
+        result = self._run_understat_down(["--format", "json"])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.stdout)
+        codes = [w["code"] for w in data["metadata"]["warnings"]]
+        assert "value_sort_unavailable_fell_back" in codes
+        assert data["metadata"]["filters"]["sort"] == "quality_score"
+
+    def test_understat_fallback_is_prose_in_table_mode(self):
+        result = self._run_understat_down([])
+        assert result.exit_code == 0, result.output
+        assert "falling back to total_points" in result.stderr
+
+    def test_no_fallback_warning_when_scoring_succeeds(self):
+        result = _run_with_value(["--sort", "quality_score", "--format", "json"])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.stdout)
+        codes = [w["code"] for w in data["metadata"]["warnings"]]
+        assert "value_sort_unavailable_fell_back" not in codes
 
     def test_value_sort_without_value_flag_emits_error_envelope(self):
         client = _make_client(_sample_players(), _sample_teams())
@@ -1071,5 +1097,22 @@ class TestStatsJsonStdoutPurity:
         client = _make_client(_sample_players(), _sample_teams())
         result = _run(["--sort", "quality_score"], client=client, custom_analysis=True)
         assert result.exit_code == 1
-        assert "--value" in result.stderr
-        assert result.stdout == ""
+        assert "--value" in result.output
+        assert "{" not in result.output
+
+    def test_unknown_team_emits_error_envelope(self):
+        """`--team` validation is shared with `fpl price-history` and used to
+        print prose whatever the format.
+        """
+        client = _make_client(_sample_players(), _sample_teams())
+        result = _run(["--team", "BADCODE", "--format", "json"], client=client)
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout)
+        assert payload["command"] == "stats"
+        assert "BADCODE" in payload["error"]
+
+    def test_unknown_team_stays_prose_in_table_mode(self):
+        client = _make_client(_sample_players(), _sample_teams())
+        result = _run(["--team", "BADCODE"], client=client)
+        assert result.exit_code == 1
+        assert "Unknown team" in result.output

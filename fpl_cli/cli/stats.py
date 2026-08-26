@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, NoReturn
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from fpl_cli.services.scoring import ConsistencySignals
@@ -15,7 +15,12 @@ from rich.table import Table
 
 from fpl_cli.cli._context import CLIContext, Format, console, error_console, is_custom_analysis_enabled
 from fpl_cli.cli._helpers import _format_sort_value, _validate_team_filter
-from fpl_cli.cli._json import emit_json, emit_json_error, json_output_mode, output_format_option
+from fpl_cli.cli._json import (
+    emit_failure,
+    emit_json,
+    json_output_mode,
+    output_format_option,
+)
 
 # Valid sort fields for `fpl stats` command
 PLAYERS_SORT_FIELDS = [
@@ -40,18 +45,6 @@ _VALUE_SORT_FIELDS = frozenset({"quality_score", "quality_per_m", "rolling_pts_p
 
 # Sort field names that differ from Player model attribute names
 _SORT_FIELD_ALIASES = {"form_per_m": "value_form", "pts_per_m": "value_season"}
-
-
-def _fail(output_format: str, message: str) -> NoReturn:
-    """Report a usage error and exit 1, down whichever stream the caller parses.
-
-    In JSON mode that is the error envelope on stdout (#140): prose there would
-    sit ahead of nothing at all and break the parse at byte 0.
-    """
-    if output_format == "json":
-        emit_json_error("stats", message)
-    error_console.print(f"[red]{message}[/red]")
-    raise SystemExit(1)
 
 
 @click.command("stats")
@@ -95,15 +88,16 @@ def stats_command(
     custom_on = is_custom_analysis_enabled(settings)
     if not custom_on:
         if sort_field in _VALUE_SORT_FIELDS:
-            _fail(
-                output_format,
+            emit_failure(
+                "stats",
                 f"--sort {sort_field} requires custom analysis. Enable it with: fpl init",
+                output_format,
             )
         value = False
 
     # Validate: value sort fields require --value flag
     if sort_field in _VALUE_SORT_FIELDS and not value:
-        _fail(output_format, f"--sort {sort_field} requires the --value flag")
+        emit_failure("stats", f"--sort {sort_field} requires the --value flag", output_format)
 
     # Override default sort to quality_per_m when --value active and --sort not explicit
     explicit_value_sort = sort_field in _VALUE_SORT_FIELDS
@@ -174,7 +168,9 @@ def stats_command(
                         error_console.print(f"[yellow]Draft ownership lookup failed: {e}[/yellow]")
 
             # Filter
-            team_upper = _validate_team_filter(team, all_teams)
+            team_upper = _validate_team_filter(
+                team, all_teams, command="stats", output_format=output_format,
+            )
             filtered = all_players
             if position:
                 target_pos = position_map[position.upper()]
@@ -282,10 +278,15 @@ def stats_command(
                     else:
                         con_lookup = {}
 
-            # Fall back from value sort if scoring failed
+            # Fall back from value sort if scoring failed. Surfaced in both
+            # channels like the cross-position warning above: prose on stderr for
+            # tables, a metadata entry for JSON, since a consumer reading
+            # `filters.sort` alone would never learn the sort it asked for was
+            # not the sort it got.
             effective_sort = sort_field
-            if sort_field in _VALUE_SORT_FIELDS and not value_active:
-                if explicit_value_sort:
+            _sort_fell_back = sort_field in _VALUE_SORT_FIELDS and not value_active
+            if _sort_fell_back:
+                if explicit_value_sort and output_format != "json":
                     error_console.print(
                         "[yellow]Understat unavailable — falling back to total_points sort[/yellow]"
                     )
@@ -334,6 +335,16 @@ def stats_command(
                         "--position GK|DEF|MID|FWD for a reliable ranking, or use "
                         "`fpl allocate --format json`'s raw_quality for a "
                         "position-agnostic proxy."
+                    ),
+                })
+            if _sort_fell_back and explicit_value_sort:
+                warnings.append({
+                    "code": "value_sort_unavailable_fell_back",
+                    "message": (
+                        f"Understat data was unavailable, so {sort_field} could not "
+                        "be computed and the results are sorted by total_points "
+                        "instead. The quality and value fields are absent from every "
+                        "record for the same reason."
                     ),
                 })
 
