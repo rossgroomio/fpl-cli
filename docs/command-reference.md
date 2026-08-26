@@ -629,10 +629,18 @@ ledger whenever that cache is missing, stale, or unreadable — it is safe to de
 is never read as a source of truth.
 
 Three fields say nothing rather than something convenient, because a row outlives the
-API that could correct it. `team_value` is the figure FPL reports as the team's value,
-which counts whatever is in the bank as well as the squad — the squad alone is
-`team_value - bank`. On the league's first scored gameweek there is no previous table,
-so `previous_league_position` is empty rather than repeating the current position, which
+API that could correct it.
+
+`team_value` is the figure FPL reports as the team's value, and **FPL counts the bank in
+it**. A squad worth £99.0m with £1.0m unspent is stored as `team_value: 1000, bank: 10` —
+prices are in £0.1m units, so that reads £100.0m and £1.0m. The players alone are
+`team_value - bank`: 990, or £99.0m. Both numbers are stored exactly as the API reports
+them, so either view is derivable from the row. The field was named `squad_value` before
+schema version 2, where the name claimed an exclusion the number never made — a row read
+from before that version has the name corrected on the way in.
+
+On the league's first scored gameweek there is no previous table, so
+`previous_league_position` is empty rather than repeating the current position, which
 would be indistinguishable from a manager who genuinely held their place. And a draft row
 leaves `transfer_cost` empty rather than zero: draft charges nothing for a squad change,
 so there is no hit to have avoided.
