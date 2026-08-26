@@ -387,7 +387,13 @@ def resolve_rows(rows: list[LeagueHistoryRow]) -> dict[int, LeagueHistoryRow]:
 # (issue #164). Because the counts derive from rows already on disk, the
 # rebuild this bump forces reports correct season totals back to the
 # partition's first captured gameweek.
-LEAGUE_HISTORY_COUNTERS_VERSION = 3
+# 4: two changes to what a position-reading predicate sees. League
+# positions are competition-ranked, so managers level on points share a
+# place rather than being split by whichever order the cohort arrived in;
+# and green_arrow_drought holds instead of extending for a gameweek that
+# began at first place, where climbing was impossible and the absent green
+# arrow is therefore no failure (issue #164 review).
+LEAGUE_HISTORY_COUNTERS_VERSION = 4
 
 
 class ConditionRunState(BaseModel):

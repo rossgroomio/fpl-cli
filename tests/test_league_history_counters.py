@@ -506,6 +506,68 @@ class TestPositionConditions:
 
         assert view.length == 0
 
+    def test_green_arrow_drought_holds_while_top_of_the_table(self):
+        """First place has nowhere to climb, so a gameweek that began there
+        could not have produced a green arrow however well it went. That is
+        a structural impossibility rather than a failure to improve, and
+        counting it would score the league leader as the league's worst
+        offender."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        for gw in (1, 2, 3, 4):
+            store.append_rows(gw, [make_history_row(gameweek=gw, manager_key=1, league_position=1)])
+
+        view = manager_condition_views(rebuild_counters_through(store, 4), 1)["green_arrow_drought"]
+
+        assert view.length == 0
+        assert view.occurrences == 0
+        # Held, not silently ignored: the gameweeks are stated as unjudged
+        # rather than counted as clean.
+        assert view.held_total == 4
+
+    def test_climbing_to_first_still_breaks_a_drought(self):
+        """Gated on where the gameweek *began*, not where it ended: gating
+        on this gameweek's position would suppress the biggest green arrow
+        there is and leave the run open."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        for gw, position in ((1, 4), (2, 4), (3, 4), (4, 1)):
+            store.append_rows(gw, [make_history_row(
+                gameweek=gw, manager_key=1, league_position=position,
+            )])
+
+        third = manager_condition_views(rebuild_counters_through(store, 3), 1)["green_arrow_drought"]
+        fourth = manager_condition_views(rebuild_counters_through(store, 4), 1)["green_arrow_drought"]
+
+        assert third.length == 2  # GW2 and GW3 failed to improve on 4th
+        assert fourth.length == 0  # climbing to the summit resets it
+
+    def test_falling_off_the_top_holds_rather_than_extending(self):
+        """They had nowhere to climb from either, so the gameweek is still
+        unjudgeable for this condition -- and the drop is already told by
+        standings movement and by `weeks_on_top` resetting."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        for gw, position in ((1, 1), (2, 1), (3, 5)):
+            store.append_rows(gw, [make_history_row(
+                gameweek=gw, manager_key=1, league_position=position,
+            )])
+
+        view = manager_condition_views(rebuild_counters_through(store, 3), 1)["green_arrow_drought"]
+
+        assert view.occurrences == 0
+        assert view.held_total == 3
+
+    def test_a_drought_resumes_normally_once_off_the_top(self):
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        for gw, position in ((1, 1), (2, 1), (3, 5), (4, 5), (5, 6)):
+            store.append_rows(gw, [make_history_row(
+                gameweek=gw, manager_key=1, league_position=position,
+            )])
+
+        view = manager_condition_views(rebuild_counters_through(store, 5), 1)["green_arrow_drought"]
+
+        # GW4 and GW5 both began outside the top and failed to improve.
+        assert view.length == 2
+        assert view.start_gameweek == 4
+
     def test_green_arrow_drought_holds_on_the_first_ever_gameweek(self):
         store = LeagueHistoryStore("2026-27", "classic", 1)
         store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, league_position=5)])

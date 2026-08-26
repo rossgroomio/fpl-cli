@@ -99,9 +99,11 @@ class CountSurfacePolicy:
     step: int | None = None
     # Fires when the *currently-open run* -- consecutive occurrences, as
     # the projection folds them -- reaches exactly one of these lengths.
-    # A deliberate cap rather than "every multiple": a manager stuck at
-    # the top (who structurally cannot improve) or rooted to the bottom
-    # would otherwise re-fire forever on a fact the table already shows.
+    # A deliberate cap rather than "every multiple": a manager rooted to
+    # the bottom of the table would otherwise re-fire forever on a fact
+    # the table already shows. (A manager stuck at the *top* never
+    # accrues the run at all -- `_green_arrow_drought` holds where
+    # climbing was impossible -- so only the bottom needs the cap.)
     run_milestones: frozenset[int] = frozenset()
     # Fires on a manager's first occurrence of the season -- but only in
     # the season's second half, where a first is a story ("their first
@@ -305,6 +307,21 @@ def _green_arrow_drought(
     if previous_row is None or previous_row.capture_status is CaptureStatus.UNKNOWN:
         return RunAction.HOLD
     if previous_row.league_position is None:
+        return RunAction.HOLD
+    # Top of the table has nowhere to climb, so a gameweek that *began* at
+    # first place could not have produced a green arrow however well it
+    # went: that is a structural impossibility, not a failure to improve,
+    # and counting it would score the league leader as the worst offender
+    # in the league. It holds, like any other gameweek the condition
+    # cannot rule (R20's fixture-less blank is the same shape).
+    #
+    # Gated on where they *started*, not where they finished. Gating on
+    # this gameweek's position would suppress the biggest green arrow
+    # there is -- climbing to first breaks a drought, and holding there
+    # would leave the run open. A manager who fell off the top holds too:
+    # they had nowhere to climb from either, and the drop is already told
+    # by standings movement and by `weeks_on_top` resetting.
+    if previous_row.league_position == 1:
         return RunAction.HOLD
     improved = row.league_position < previous_row.league_position
     return RunAction.RESET if improved else RunAction.EXTEND
