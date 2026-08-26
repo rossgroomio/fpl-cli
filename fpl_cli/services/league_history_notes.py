@@ -127,6 +127,29 @@ def derive_season_phase(
     return SeasonPhase.MIDPOINT
 
 
+def is_season_milestone(
+    gameweek: int,
+    total_gameweeks: int = TOTAL_GAMEWEEKS,
+    chip_split_gw: int = CHIP_SPLIT_GW,
+) -> bool:
+    """Whether this gameweek is one of the season's two milestone *moments*.
+
+    Deliberately not "is this gameweek in a milestone phase": `MIDPOINT`
+    spans thirteen gameweeks, so gating a once-a-season set-piece on the
+    phase would fire it thirteen times and turn the set-piece into
+    wallpaper. The moment is the phase's own first gameweek -- the
+    chip-availability boundary, which is `TOTAL_GAMEWEEKS // 2` and so is
+    the halfway point too -- and the finale.
+
+    The finale is asked of `derive_season_phase` rather than compared to
+    `total_gameweeks` here, so a season whose real final gameweek differs
+    from the constant still reaches it exactly once.
+    """
+    if gameweek == chip_split_gw:
+        return True
+    return derive_season_phase(gameweek, total_gameweeks, chip_split_gw) is SeasonPhase.FINALE
+
+
 # ---------------------------------------------------------------------------
 # Notes pack shapes (R14, KTD8)
 # ---------------------------------------------------------------------------

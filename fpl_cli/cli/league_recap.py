@@ -25,7 +25,12 @@ from fpl_cli.cli._json import (
 from fpl_cli.cli._league_recap_types import LeagueRecapData
 from fpl_cli.services.league_history import GameweekCoverage
 from fpl_cli.services.league_history_fines import ManagerFineTally, SeasonFinesTally
-from fpl_cli.services.league_history_notes import NotesPack, NotesPackEntry, NoteSurface
+from fpl_cli.services.league_history_notes import (
+    NotesPack,
+    NotesPackEntry,
+    NoteSurface,
+    is_season_milestone,
+)
 
 # KTD8: the console stays a highlights view -- only the top few streaks by
 # excess-over-minimum, so a rare streak is not buried under common ones (R12).
@@ -311,12 +316,24 @@ def league_recap_command(
                     entry.text for entry in notes_pack.coverage_entries
                 ]
 
-            # Season fines, stashed as plain strings for the same reason the
-            # history text above is: the template needs no knowledge of the
-            # tally's shape. Absent entirely for a league with no fine rules
-            # configured and none ever ruled, so the template's `is defined`
-            # guards skip the section rather than heading an empty table.
-            fines_tally = capture_result.fines_tally
+            # Season fines are a set-piece, not a weekly fixture: the table
+            # answers "who owes what this season", which is worth reading at
+            # the halfway boundary and at the finale and is noise in between.
+            # Every other week the recap stays a this-week view and `fpl
+            # league-fines` answers the season question on demand. The gate
+            # covers console, report and prompt alike -- feeding the model
+            # season totals it was told not to print would just move the
+            # weekly table into the editorial.
+            fines_tally = (
+                capture_result.fines_tally if is_season_milestone(gw) else None
+            )
+
+            # Stashed as plain strings for the same reason the history text
+            # above is: the template needs no knowledge of the tally's shape.
+            # Absent entirely for a non-milestone gameweek, and for a league
+            # with no fine rules configured and none ever ruled, so the
+            # template's `is defined` guards skip the section rather than
+            # heading an empty table.
             if fines_tally is not None and fines_tally.is_reportable:
                 collected_data["season_fines_span"] = (
                     f"GW{fines_tally.start_gameweek}-GW{fines_tally.through_gameweek}"
@@ -340,7 +357,7 @@ def league_recap_command(
                         is_bgw=is_bgw, is_dgw=is_dgw,
                         season_length=TOTAL_GAMEWEEKS,
                         notes_pack=notes_pack,
-                        fines_tally=capture_result.fines_tally,
+                        fines_tally=fines_tally,
                     )
                 except ProviderError as e:
                     error_console.print(f"[yellow]LLM summarisation failed: {e}[/yellow]")
@@ -349,7 +366,7 @@ def league_recap_command(
                     error_console.print("[yellow]LLM summarisation failed (unexpected error)[/yellow]")
 
             # Display key highlights to console
-            _render_console_highlights(collected_data, notes_pack, capture_result.fines_tally)
+            _render_console_highlights(collected_data, notes_pack, fines_tally)
 
             # Generate report if saving
             if save or output:
@@ -379,6 +396,11 @@ def league_recap_command(
                         "coverage": _serialize_coverage(capture_result.coverage),
                         "season_phase": notes_pack.phase if notes_pack is not None else None,
                         "notes_pack": _serialize_notes_pack(notes_pack) if notes_pack is not None else None,
+                        # `capture_result.fines_tally`, deliberately not the
+                        # milestone-gated `fines_tally` the human surfaces
+                        # read: a consumer asking for JSON every week should
+                        # not have the season table appear and disappear on
+                        # a calendar it cannot see (KTD8).
                         "season_fines": (
                             _serialize_fines_tally(capture_result.fines_tally)
                             if capture_result.fines_tally is not None else None
@@ -488,10 +510,12 @@ def _season_fine_line(manager: ManagerFineTally) -> str:
 
 
 def _serialize_fines_tally(tally: SeasonFinesTally) -> dict[str, Any]:
-    """The whole tally, JSON-shaped -- emitted whether or not it is reportable,
-    on the same principle KTD8 sets for the notes pack: `--format json` is a
-    machine surface and carries everything the fold computed, leaving the
-    is-it-worth-showing judgement to the human-facing surfaces."""
+    """The whole tally, JSON-shaped -- emitted every week, whether or not it
+    is reportable and whether or not the gameweek is a milestone, on the same
+    principle KTD8 sets for the notes pack: `--format json` is a machine
+    surface and carries everything the fold computed, leaving both the
+    is-it-worth-showing and the is-this-the-week judgements to the
+    human-facing surfaces."""
     return {
         "season": tally.season,
         "fpl_format": tally.fpl_format,
@@ -559,11 +583,13 @@ def _render_console_highlights(
         for f in fines:
             console.print(f"  [red]{f['manager_name']}:[/red] {f['message']}")
 
-    # Season totals, so the console answers "who owes what" and not only
-    # "who was fined this week". Only the fined are listed here -- the
-    # console is a highlights view and the full table is `fpl league-fines`
-    # -- but the coverage lines still print, because a total nobody can
-    # trust is worse than no total.
+    # Season totals, at the milestone gameweeks the caller gates on -- a
+    # `None` tally here means either "not a milestone week" or "no fine
+    # rules configured", and this renderer deliberately does not
+    # re-litigate which. Only the fined are listed, since the console is a
+    # highlights view and the full table is `fpl league-fines`, but the
+    # coverage lines still print: a total nobody can trust is worse than no
+    # total.
     if fines_tally is not None and fines_tally.is_reportable:
         fined = fines_tally.fined_managers
         console.print(

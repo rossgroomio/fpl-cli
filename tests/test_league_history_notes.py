@@ -10,8 +10,36 @@ from fpl_cli.services.league_history_notes import (
     SeasonPhase,
     build_notes_pack,
     derive_season_phase,
+    is_season_milestone,
 )
 from tests.conftest import make_history_row
+
+class TestSeasonMilestones:
+    """A once-a-season set-piece fires at a moment, not across a phase."""
+
+    def test_the_halfway_boundary_is_a_milestone(self):
+        assert is_season_milestone(19) is True
+
+    def test_the_finale_is_a_milestone(self):
+        assert is_season_milestone(38) is True
+
+    def test_a_gameweek_past_the_constant_is_still_the_finale(self):
+        assert is_season_milestone(39) is True
+
+    def test_the_rest_of_the_midpoint_phase_is_not(self):
+        """`derive_season_phase` calls GW19-31 the midpoint. Gating on the
+        phase would fire a once-a-season table thirteen times."""
+        assert all(derive_season_phase(gw) is SeasonPhase.MIDPOINT for gw in range(19, 32))
+        assert [gw for gw in range(20, 32) if is_season_milestone(gw)] == []
+
+    def test_no_ordinary_gameweek_qualifies(self):
+        assert [gw for gw in range(1, 39) if is_season_milestone(gw)] == [19, 38]
+
+    def test_a_shorter_season_moves_both_milestones_with_it(self):
+        assert is_season_milestone(10, total_gameweeks=20, chip_split_gw=10) is True
+        assert is_season_milestone(20, total_gameweeks=20, chip_split_gw=10) is True
+        assert is_season_milestone(19, total_gameweeks=20, chip_split_gw=10) is False
+
 
 # ---------------------------------------------------------------------------
 # Local helpers

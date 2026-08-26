@@ -616,12 +616,20 @@ fpl league-recap --format json     # JSON envelope for scripting/agents
 
 **Standings movement:** position changes derived from point differentials, per-manager highlights.
 
-**Fines:** evaluates fines for every manager (not just you) when configured, records the
-ruling against the gameweek, and prints the season totals so far. A backfilled gameweek is
-ruled too — the detailed replay rules every configured rule, the coarse tier rules the ones
+**Fines:** evaluates fines for every manager (not just you) when configured and records the
+ruling against the gameweek. A backfilled gameweek is ruled too — the detailed replay rules every configured rule, the coarse tier rules the ones
 derivable from cohort points (`last-place`, `below-threshold`) and records that it could not
 rule `red-card`, which needs a squad the manager-history endpoint does not return. See
 [Season Fines](#season-fines) for the table this builds up.
+
+**Season fines:** the season-to-date table appears in the recap only at the two milestone
+gameweeks — GW19 (the chip-availability boundary, which is also the halfway point) and the
+finale. Every other week the recap stays a this-week view, and
+[`fpl league-fines`](#season-fines) answers the season question on demand. The gate covers
+console, report and editorial alike: handing the model season totals it was told not to
+print would only move the weekly table into the prose. `--format json` is unaffected —
+`metadata.season_fines` is emitted every week, so a scripted consumer never sees the table
+appear and disappear on a calendar it cannot see.
 
 **LLM editorial** (`--summarise`): Newsletter-style narrative via synthesis provider. Names names, calls out decisions. The editorial is an add-on: if the synthesis provider has no usable API key the recap still renders, still saves its report and still captures the ledger, with the reason on stderr and a `synthesis_provider_unavailable` warning in JSON. `synthesis_summary` is `null` on such a run — the warning is what distinguishes it from a run that never asked for an editorial.
 
@@ -634,7 +642,7 @@ ledger, built from the rows this run assembled, so manager data is present even 
 store could not be written. `metadata` carries `coverage` (per gameweek: fidelity-tier
 counts, unknown managers, whether the file was readable), `season_phase`, `notes_pack`
 (every entry, including those below their reporting minimum), `season_fines` (the whole
-season tally, emitted whether or not it is worth showing a human), `synthesis_summary` (with
+season tally, emitted every week regardless of the milestone gate the printed surfaces use), `synthesis_summary` (with
 `--summarise`), `warnings`, and `first_capture_store_path` — always present, carrying the
 partition directory on its first capture and `null` on every run after that. Warning
 codes are listed under [Capture warnings](#capture-warnings).
@@ -773,7 +781,9 @@ matters when scripting a retry — an outage is worth retrying, the other two ar
 
 ### Season Fines
 
-Who owes what this season, folded out of the fines each `league-recap` recorded.
+Who owes what this season, folded out of the fines each `league-recap` recorded. The recap
+prints this table only at GW19 and the finale; this command answers the same question any
+time.
 
 ```bash
 fpl league-fines                  # Season totals through the latest recorded gameweek

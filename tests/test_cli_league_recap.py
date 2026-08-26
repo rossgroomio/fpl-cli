@@ -33,7 +33,7 @@ from fpl_cli.cli._league_recap_types import (
     RecapTransfer,
 )
 from fpl_cli.models.league_history import CaptureStatus, FidelityTier, LedgerCaptaincy, LedgerTransaction
-from fpl_cli.season import season_label
+from fpl_cli.season import CHIP_SPLIT_GW, TOTAL_GAMEWEEKS, season_label
 from fpl_cli.services.league_history import LeagueHistoryStore
 from fpl_cli.services.league_history_notes import (
     GameweekWindow,
@@ -591,7 +591,7 @@ class TestCaptureRecapHistory:
 # ---------------------------------------------------------------------------
 
 
-def _fpl_client() -> MagicMock:
+def _fpl_client(gw: int = 5) -> MagicMock:
     client = MagicMock()
     client.__aenter__ = AsyncMock(return_value=client)
     client.__aexit__ = AsyncMock(return_value=False)
@@ -599,7 +599,9 @@ def _fpl_client() -> MagicMock:
     client.get_teams = AsyncMock(return_value=[])
     client.get_gameweek_live = AsyncMock(return_value={"elements": []})
     client.get_fixtures = AsyncMock(return_value=[])
-    client.get_gameweeks = AsyncMock(return_value=[{"id": 5, "finished": True}])
+    # `gw` is the latest finished gameweek, so a run resolving that gameweek
+    # sees it as live -- the same relationship the real API reports.
+    client.get_gameweeks = AsyncMock(return_value=[{"id": gw, "finished": True}])
     return client
 
 
@@ -608,6 +610,7 @@ def _invoke_recap(
     client: MagicMock | None = None,
     settings: dict[str, Any] | None = None,
     replays: list[LeagueRecapData] | None = None,
+    gw: int = 5,
 ):
     """Run the command with the collector stubbed.
 
@@ -626,7 +629,7 @@ def _invoke_recap(
             return_value=settings or {"fpl": {"classic_league_id": 42}},
         ),
         patch("fpl_cli.api.fpl.FPLClient", return_value=client),
-        patch("fpl_cli.cli.review._review_resolve_gw", AsyncMock(return_value={"gw": 5})),
+        patch("fpl_cli.cli.review._review_resolve_gw", AsyncMock(return_value={"gw": gw})),
         patch("fpl_cli.cli._league_recap_data.collect_classic_recap_data", collector),
     ):
         from fpl_cli.cli.league_recap import league_recap_command
@@ -2236,8 +2239,9 @@ class TestSeasonFinesSurfaces:
     """The tally reaches console, report, prompt and `--format json`
     together, or the recap can only ever talk about this week (issue #136)."""
 
-    def _fined_data(self) -> LeagueRecapData:
+    def _fined_data(self, gameweek: int = 5) -> LeagueRecapData:
         return _recap_data(
+            gameweek=gameweek,
             managers=[
                 _manager(name="Alice", entry_id=1, gross_points=60),
                 _manager(name="Bob", entry_id=2, gross_points=10, gw_rank=2, overall_rank=2),
@@ -2245,24 +2249,50 @@ class TestSeasonFinesSurfaces:
             cohort=_cohort((1, "Alice", 1, 60, 300), (2, "Bob", 2, 10, 200)),
         )
 
-    def test_the_console_prints_season_totals_alongside_this_week(self):
-        result = _invoke_recap(self._fined_data(), settings=_LAST_PLACE_ONLY)
+    def _run(self, gameweek: int, args: list[str] | None = None):
+        return _invoke_recap(
+            self._fined_data(gameweek), args, client=_fpl_client(gameweek),
+            settings=_LAST_PLACE_ONLY, gw=gameweek,
+        )
+
+    def test_the_console_prints_season_totals_at_the_halfway_boundary(self):
+        result = self._run(CHIP_SPLIT_GW)
 
         assert result.exit_code == 0, result.output
         output = result.output.replace("\n", "")
         assert "Season Fines" in output
         assert "Bob: 1 (1 last-place)" in output
 
+    def test_the_finale_prints_them_too(self):
+        result = self._run(TOTAL_GAMEWEEKS)
+
+        assert result.exit_code == 0, result.output
+        assert "Season Fines" in result.output.replace("\n", "")
+
+    def test_an_ordinary_gameweek_stays_a_this_week_view(self):
+        """The season table is a set-piece: printing it all 38 weeks would
+        turn it into wallpaper, and `fpl league-fines` answers the season
+        question on demand in between."""
+        result = self._run(5)
+
+        assert result.exit_code == 0, result.output
+        output = result.output.replace("\n", "")
+        assert "Season Fines" not in output
+        assert "Fines:" in output, "this gameweek's own fines still print"
+
     def test_a_league_with_no_fine_rules_gets_no_season_section(self):
-        result = _invoke_recap(_recap_data())
+        result = _invoke_recap(
+            _recap_data(gameweek=CHIP_SPLIT_GW), client=_fpl_client(CHIP_SPLIT_GW),
+            gw=CHIP_SPLIT_GW,
+        )
 
         assert result.exit_code == 0, result.output
         assert "Season Fines" not in result.output
 
-    def test_the_json_metadata_carries_the_tally(self):
-        result = _invoke_recap(
-            self._fined_data(), ["--format", "json"], settings=_LAST_PLACE_ONLY,
-        )
+    def test_the_json_metadata_carries_the_tally_on_an_ordinary_gameweek_too(self):
+        """A consumer polling `--format json` weekly must not have the season
+        table appear and disappear on a calendar it cannot see (KTD8)."""
+        result = self._run(5, ["--format", "json"])
 
         assert result.exit_code == 0, result.output
         tally = json.loads(result.stdout)["metadata"]["season_fines"]
@@ -2274,16 +2304,16 @@ class TestSeasonFinesSurfaces:
         assert bob["fined_gameweeks"] == [5]
         assert tally["qualifiers"]
 
-    def test_the_prompt_gets_its_own_anchored_section(self):
+    def test_the_prompt_section_reads_as_a_season_table(self):
         from fpl_cli.prompts.league_recap import format_recap_season_fines_context
         from fpl_cli.services.league_history_fines import build_season_fines_tally
 
-        _invoke_recap(self._fined_data(), settings=_LAST_PLACE_ONLY)
-        tally = build_season_fines_tally(_store(), 5, rule_types=["last-place"])
+        self._run(CHIP_SPLIT_GW)
+        tally = build_season_fines_tally(_store(), CHIP_SPLIT_GW, rule_types=["last-place"])
 
         text = format_recap_season_fines_context(tally)
 
-        assert "Season fine totals, GW5 through GW5" in text
+        assert f"Season fine totals, GW{CHIP_SPLIT_GW} through GW{CHIP_SPLIT_GW}" in text
         assert "- Bob: 1 (1 last-place)" in text
         assert "Not fined so far: Alice" in text
         assert "Coverage:" in text
@@ -2360,7 +2390,17 @@ class TestEndToEndPromptThroughTheFullCommand:
         assert "Stick to what happened this gameweek, with one exception" in system_prompt
         assert "season phase" in system_prompt.lower()
 
-    def test_a_dry_run_writes_the_season_fines_section_and_its_rule(
+    def _fined_at(self, gameweek: int) -> LeagueRecapData:
+        return _recap_data(
+            gameweek=gameweek,
+            managers=[
+                _manager(name="Alice", entry_id=1, gross_points=60),
+                _manager(name="Bob", entry_id=2, gross_points=10, gw_rank=2, overall_rank=2),
+            ],
+            cohort=_cohort((1, "Alice", 1, 60, 300), (2, "Bob", 2, 10, 200)),
+        )
+
+    def test_a_milestone_dry_run_writes_the_season_fines_section_and_its_rule(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ):
         """The narrative can only reference season totals it was handed, and
@@ -2368,15 +2408,8 @@ class TestEndToEndPromptThroughTheFullCommand:
         monkeypatch.chdir(tmp_path)
 
         result = _invoke_recap(
-            _recap_data(
-                managers=[
-                    _manager(name="Alice", entry_id=1, gross_points=60),
-                    _manager(name="Bob", entry_id=2, gross_points=10, gw_rank=2, overall_rank=2),
-                ],
-                cohort=_cohort((1, "Alice", 1, 60, 300), (2, "Bob", 2, 10, 200)),
-            ),
-            ["--dry-run"],
-            settings=_LAST_PLACE_ONLY,
+            self._fined_at(CHIP_SPLIT_GW), ["--dry-run"],
+            client=_fpl_client(CHIP_SPLIT_GW), settings=_LAST_PLACE_ONLY, gw=CHIP_SPLIT_GW,
         )
 
         assert result.exit_code == 0, result.output
@@ -2387,12 +2420,32 @@ class TestEndToEndPromptThroughTheFullCommand:
         assert "Bob: 1 (1 last-place)" in user_prompt
         assert "NEVER add up fines yourself" in system_prompt
 
+    def test_an_ordinary_gameweek_hands_the_model_no_season_totals(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ):
+        """The gate covers the prompt as well as the printed surfaces:
+        feeding the model a season table it was told not to print would just
+        move the weekly table into the editorial."""
+        monkeypatch.chdir(tmp_path)
+
+        result = _invoke_recap(
+            self._fined_at(5), ["--dry-run"], settings=_LAST_PLACE_ONLY,
+        )
+
+        assert result.exit_code == 0, result.output
+        user_prompt = (tmp_path / "data" / "debug" / "recap_prompt.txt").read_text(encoding="utf-8")
+        assert "## Season Fines" not in user_prompt
+        assert "## Fines" in user_prompt, "this gameweek's own fines still reach the prompt"
+
     def test_no_season_fines_section_without_configured_rules(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ):
         monkeypatch.chdir(tmp_path)
 
-        result = _invoke_recap(_recap_data(), ["--dry-run"])
+        result = _invoke_recap(
+            _recap_data(gameweek=CHIP_SPLIT_GW), ["--dry-run"],
+            client=_fpl_client(CHIP_SPLIT_GW), gw=CHIP_SPLIT_GW,
+        )
 
         assert result.exit_code == 0, result.output
         user_prompt = (tmp_path / "data" / "debug" / "recap_prompt.txt").read_text(encoding="utf-8")
