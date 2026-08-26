@@ -16,6 +16,7 @@ from fpl_cli.cli._league_recap_data import (
     _PICKS_CONCURRENCY,
     RecapReconciliationError,
     _apply_league_start_offset,
+    _assign_point_in_time_positions,
     _bucket_draft_txns_by_league_entry,
     _classic_pick_flags,
     _compute_shared_awards,
@@ -725,10 +726,10 @@ class TestStandingsMovement:
         ]
         _compute_standings_movement(managers)
         # Previous totals: Alice=420, Bob=460, Charlie=420
-        # Previous order: Bob(460)=1st, Alice(420)=2nd, Charlie(420)=3rd
+        # Previous table: Bob(460)=1st, Alice and Charlie level on 420=joint 2nd
         assert managers[1]["previous_rank"] == 1  # Bob was 1st
-        # Alice and Charlie both had 420 - rank depends on sort stability
-        assert managers[0]["previous_rank"] in (2, 3)  # Alice was 2nd or 3rd
+        assert managers[0]["previous_rank"] == 2  # Alice and Charlie shared 2nd
+        assert managers[2]["previous_rank"] == 2
 
     def test_movement_single_manager(self):
         managers = [_make_manager(name="Solo", entry_id=1)]
@@ -763,9 +764,9 @@ class TestStandingsMovement:
         assert [m["previous_rank"] for m in managers] == [1, 2, 4, 5]
         assert all(m["previous_rank"] == m["overall_rank"] for m in managers)
 
-    def test_tied_previous_totals_break_on_standings_order(self):
-        """Managers level on the previous table keep the order the league
-        itself put them in, rather than being reshuffled arbitrarily.
+    def test_tied_previous_totals_all_share_the_first_place(self):
+        """Managers level on the previous table shared it, so none of them can
+        be reported as having been above the others.
 
         (This is the shape GW1 would produce -- every previous total zero --
         but the collectors never call this function there: see
@@ -777,11 +778,11 @@ class TestStandingsMovement:
             for i in range(1, 20)
         ]
         _compute_standings_movement(managers, league_rows)
-        assert [m["previous_rank"] for m in managers] == list(range(1, 20))
+        assert [m["previous_rank"] for m in managers] == [1] * 19
 
     def test_tied_previous_totals_survive_a_dropped_manager(self):
         """The all-tied case must survive a manager dropping out mid-table:
-        ranking survivors alone would renumber everyone below the gap."""
+        the gap must not shift anyone off the place they shared."""
         league_rows = [(i, 500 + 80 - i, 80 - i) for i in range(1, 20)]
         managers = [
             _make_manager(name=f"M{i:02d}", entry_id=i, gw_points=80 - i,
@@ -789,8 +790,28 @@ class TestStandingsMovement:
             for i in range(1, 20) if i != 5
         ]
         _compute_standings_movement(managers, league_rows)
-        assert [m["manager_name"] for m in managers
-                if m["previous_rank"] != m["overall_rank"]] == []
+        assert [m["previous_rank"] for m in managers] == [1] * 18
+
+    def test_a_manager_level_on_points_two_weeks_running_has_not_moved(self):
+        """Movement is the difference between two tables, so both have to be
+        ranked the same way. Ordinal previous ranks against competition
+        current ones arrowed a tied manager up or down for a tie they never
+        left (issue #164 review)."""
+        league_rows = [(1, 500, 50), (2, 500, 50), (3, 400, 50)]
+        managers = [
+            _make_manager(name="Alice", entry_id=1, gw_points=50, total_points=500),
+            _make_manager(name="Bob", entry_id=2, gw_points=50, total_points=500),
+            _make_manager(name="Charlie", entry_id=3, gw_points=50, total_points=400),
+        ]
+        _assign_point_in_time_positions(
+            managers, [(1, 500), (2, 500), (3, 400)], allow_standings_fallback=True,
+        )
+        _compute_standings_movement(managers, league_rows)
+        # Alice and Bob were level on 450 before this gameweek and are level on
+        # 500 after it: neither passed the other, so neither may show an arrow.
+        assert [m["overall_rank"] for m in managers] == [1, 1, 3]
+        assert [m["previous_rank"] for m in managers] == [1, 1, 3]
+        assert all(m["previous_rank"] == m["overall_rank"] for m in managers)
 
     def test_a_league_that_started_late_has_no_movement_on_its_first_gameweek(self):
         """A league created at GW12 has no table before GW12 either, even
@@ -1216,14 +1237,22 @@ class TestDerivePointInTimePositions:
         assert 2 not in result
         assert result == {1: 1}
 
-    def test_ties_break_on_input_order_stably(self):
-        totals = [(1, 100), (2, 100), (3, 90)]
-        first = derive_point_in_time_positions(totals)
-        second = derive_point_in_time_positions(totals)
-        assert first == second
-        assert first[1] == 1
-        assert first[2] == 2
-        assert first[3] == 3
+    def test_tied_entries_share_a_place_and_the_next_total_skips_it(self):
+        """Competition ranking, not ordinal: two managers level on points
+        are genuinely indistinguishable here (classic breaks such a tie on
+        fewest transfers, which nothing in the ledger records), so inventing
+        an order for them would assert more than the data supports."""
+        assert derive_point_in_time_positions([(1, 100), (2, 100), (3, 90)]) == {1: 1, 2: 1, 3: 3}
+
+    def test_a_tie_ranks_the_same_whatever_order_it_arrives_in(self):
+        """The input order is cohort standings order, which itself moves
+        through the season -- so an ordinal tie-break made the same gameweek
+        rank differently on a later backfill (issue #164 review)."""
+        totals = [(1, 100), (2, 100), (3, 100), (4, 40)]
+        assert derive_point_in_time_positions(totals) == derive_point_in_time_positions(
+            list(reversed(totals)),
+        )
+        assert set(derive_point_in_time_positions(totals).values()) == {1, 4}
 
     def test_empty_input_returns_empty_mapping(self):
         assert derive_point_in_time_positions([]) == {}
@@ -2510,6 +2539,7 @@ def _history_pack(
     entries: list[NotesPackEntry] | None = None,
     coverage_entries: list[NotesPackEntry] | None = None,
     *,
+    season_count_entries: list[NotesPackEntry] | None = None,
     phase: SeasonPhase = SeasonPhase.MIDPOINT,
     phase_text: str = "GW20 is the season midpoint.",
     fpl_format: str = "classic",
@@ -2522,6 +2552,7 @@ def _history_pack(
             surfaces=frozenset({NoteSurface.REPORT, NoteSurface.PROMPT}),
         ),
         entries=entries or [],
+        season_count_entries=season_count_entries or [],
         coverage_entries=coverage_entries if coverage_entries is not None else [
             NotesPackEntry(
                 kind=NoteKind.COVERAGE, text="Recorded history is complete from its start (GW1) through GW20.",
@@ -2609,15 +2640,50 @@ class TestFormatRecapLeagueHistoryContext:
             assert "Carol" not in line
             assert "Recorded history is complete" not in line
 
-        # The very next non-blank content is a coverage label, not a
+        # The very next non-blank content is the season-count total (its own
+        # counted block, empty here), then the coverage label -- never a
         # third, uncounted streak-shaped bullet.
         remainder = [line for line in lines[count_index + 3 :] if line]
-        assert remainder[0] == "Coverage:"
-        assert remainder[1] == "- Recorded history is complete from its start (GW1) through GW20."
-        assert remainder[2] == (
+        assert remainder[0] == "Total season-count entries: 0"
+        assert remainder[1] == "Coverage:"
+        assert remainder[2] == "- Recorded history is complete from its start (GW1) through GW20."
+        assert remainder[3] == (
             "- Carol: recorded history begins at GW10, later than the league's "
             "start (GW1); earlier gameweeks are not available for this manager."
         )
+
+    def test_a_surfaced_season_count_renders_under_its_own_total(self):
+        count_entry = NotesPackEntry(
+            kind=NoteKind.SEASON_COUNT,
+            text="Alice: 4 gameweek wins this season (GW1-GW20), the latest this gameweek.",
+            surfaces=frozenset({NoteSurface.REPORT, NoteSurface.PROMPT}),
+            occurrences=4,
+        )
+        text = format_recap_league_history_context(
+            _history_pack(season_count_entries=[count_entry]),
+        )
+        lines = text.splitlines()
+
+        count_index = lines.index("Total season-count entries: 1")
+        assert lines[count_index + 1] == (
+            "- Alice: 4 gameweek wins this season (GW1-GW20), the latest this gameweek."
+        )
+
+    def test_a_count_that_did_not_grow_this_gameweek_is_withheld_from_the_prompt(self):
+        """A surfaceless season count (retained for `--format json` only)
+        must not leak into the prompt as stale colour."""
+        stale = NotesPackEntry(
+            kind=NoteKind.SEASON_COUNT,
+            text="Bob: 2 captain blanks this season (GW1-GW20).",
+            surfaces=frozenset(),
+            occurrences=2,
+        )
+        text = format_recap_league_history_context(
+            _history_pack(season_count_entries=[stale]),
+        )
+
+        assert "Total season-count entries: 0" in text
+        assert "Bob: 2 captain blanks" not in text
 
 
 class TestLeagueHistoryPromptSection:
@@ -2648,6 +2714,12 @@ class TestLeagueHistoryPromptSection:
 
         assert "Stick to what happened this gameweek, with one exception" in RECAP_SYNTHESIS_SYSTEM_PROMPT
         assert '"## League History" section' in RECAP_SYNTHESIS_SYSTEM_PROMPT
+
+    def test_the_season_count_rule_frames_counts_as_optional_colour(self):
+        from fpl_cli.prompts.league_recap import RECAP_SYNTHESIS_SYSTEM_PROMPT
+
+        assert "season-count line" in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        assert "never derive or extrapolate a season total" in RECAP_SYNTHESIS_SYSTEM_PROMPT
 
     def test_a_held_run_must_not_be_simplified_to_consecutive(self):
         from fpl_cli.prompts.league_recap import RECAP_SYNTHESIS_SYSTEM_PROMPT

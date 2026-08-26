@@ -74,6 +74,19 @@ stays a set-piece — though with `--summarise` its editorial knows the running 
 every week and may work one into a sentence. `fpl league-fines` answers the season
 question any week you want it.
 
+Streaks come with season totals: the recap counts every time a condition has occurred
+this season — gameweek wins, last places, weeks on top, captain blanks — across resets,
+so a report or editorial can say "their sixth gameweek win of the season", not just
+"two in a row". Each count has its own rule for when it is worth mentioning, tuned to
+how often it happens: wins and last places on every third, captain blanks and waiver
+hauls on every fifth, bottom-half gameweeks only in the second half of the season and
+only on every tenth, and a green-arrow drought only while unbroken at five or ten
+gameweeks, never counting the weeks a manager spent top of the table with nowhere
+to climb. Some bring along others who added to the same count that week. The full list
+prints twice a season, at GW19 and the finale, alongside the fines table. Unjudged
+gameweeks are always stated beside the number — see
+[Season counts](docs/command-reference.md#league-recap) for the per-count rules.
+
 ### Checking Your Setup
 
 ```console

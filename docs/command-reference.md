@@ -614,7 +614,7 @@ fpl league-recap --format json     # JSON envelope for scripting/agents
 
 **Awards:** GW winner/loser, biggest bench haul, best/worst captain, transfer/waiver genius and disaster.
 
-**Standings movement:** position changes derived from point differentials, per-manager highlights.
+**Standings movement:** position changes derived from point differentials, per-manager highlights. Both tables — this gameweek's and the one before it — are ranked the same way, so managers level on points share a place on each and no arrow is reported for a tie nobody left.
 
 **Fines:** evaluates fines for every manager (not just you) when configured and records the
 ruling against the gameweek. A backfilled gameweek is ruled too — the detailed replay rules every configured rule, the coarse tier rules the ones
@@ -637,7 +637,24 @@ week, so a scripted consumer never sees it appear and disappear on a calendar it
 
 **LLM editorial** (`--summarise`): Newsletter-style narrative via synthesis provider. Names names, calls out decisions. The editorial is an add-on: if the synthesis provider has no usable API key the recap still renders, still saves its report and still captures the ledger, with the reason on stderr and a `synthesis_provider_unavailable` warning in JSON. `synthesis_summary` is `null` on such a run — the warning is what distinguishes it from a run that never asked for an editorial.
 
-**Streaks:** notable open streaks (weeks on top, win/loss runs, captain blanks, green-arrow droughts, waiver activity, and more) print under `Streaks:` on console — leaders only, so console stays a highlights view — and in full as a `# League History` section in the saved report. Each is reported as an observed count over its true span (e.g. "3 in the last 11, with 8 not recorded") rather than a bare "in a row" once any gameweek went uncaptured.
+**Streaks:** notable open streaks print under `Streaks:` on console — leaders only, so console stays a highlights view — and in full as a `# League History` section in the saved report. Each is reported as an observed count over its true span (e.g. "3 in the last 11, with 8 not recorded") rather than a bare "in a row" once any gameweek went uncaptured. A streak surfaces once its run reaches the condition's own minimum: 2 gameweeks for weeks on top, gameweek wins, last-place finishes, captain blanks and transfer hits; 3 for waiver hauls and backfires. Bottom-half gameweeks and green-arrow droughts never surface as streaks at all — both restate where the table already shows a manager is, so their run exists to drive the season count's firing rule rather than to be read on its own.
+
+**Season counts:** alongside each streak's currently-open run, every condition keeps a season occurrence total that survives resets, so "their sixth gameweek win of the season" is a stated fact, not an inference. Each condition has its own rule for when a total is worth saying out loud — a rare, discrete event affords a generous rule, while a standing table position half the league increments every week needs a strict one:
+
+| Count | Surfaces in an ordinary gameweek when | Others shown alongside |
+|---|---|---|
+| Gameweek wins | Total hits a multiple of 3; in the season's second half, also a manager's first win | — |
+| Last-place finishes | Total hits a multiple of 3; in the second half, also a manager's first | — |
+| Captain blanks | Someone's total hits a multiple of 5 | Others blanking that week whose total is ≥ 3 |
+| Gameweeks with a transfer hit | Someone's total hits a multiple of 3 | Others taking a hit that week whose total is ≥ 2 |
+| Waiver hauls / backfires (draft) | Total hits a multiple of 5 | — |
+| Gameweeks on top of the league | Total hits a multiple of 5 | — |
+| Gameweeks in the bottom half | Second half of the season only, and someone's total hits a multiple of 10 | Others dropping in that week whose total is within 5 of a milestone |
+| Gameweeks without a green arrow | An *unbroken* drought reaches 5 or 10 gameweeks. Gameweeks that began in first place are never counted | — |
+
+League positions used by these conditions are competition-ranked: managers level on points share a place and the next distinct total skips the places they consumed (1, 2, 2, 4), so a tie is never split by the order the cohort happened to arrive in. Classic breaks a points tie on fewest transfers season-to-date, which the ledger does not record, so two managers level on points are genuinely indistinguishable here — a shared lead credits both with the week on top, and a tie straddling the halfway line puts neither in the bottom half. A live draft capture takes the league's own rank instead, which already applies the head-to-head points-for tie-break.
+
+The green-arrow drought reads the current run rather than the season total, since only an unbroken drought tells a story, and it stops firing past 10 so a manager rooted to the bottom of the table never re-announces the same non-fact. A gameweek that *began* in first place never counts towards the drought at all: the leader had nowhere to climb, so the missing green arrow is a structural impossibility rather than a failure, and it is recorded as an unjudged gameweek instead. That gate reads where the gameweek started, not where it finished, so climbing to the summit still breaks a drought — and a manager who falls off the top holds too, since they had nowhere to climb from either and the drop is already told by standings movement. Where a count carries others alongside it, the qualifying rule matches how that count grows: captain blanks and hits stay rare enough that a fixed floor keeps its meaning all season, while bottom-half totals climb every week for half the league, so the company is measured relative to the milestone instead — the managers genuinely level with it, not everyone who has ever been down there. A firing count appears in the report's `## Season Counts` subsection and in the editorial's League History section; everything else stays off both. The full set-piece comes twice a season: at the two milestone gameweeks (GW19 and the finale) both surfaces carry every nonzero count, the same rhythm as the printed fines table. The table above governs the ordinary weeks only — the milestone is deliberately the whole picture, so a count held back all season still appears there, and the second-half rule on bottom-half gameweeks does not keep them out of the GW19 table that closes the first half. Every line states its span and any not-judged gameweeks beside the number; a held gameweek (unknown capture, fixture-less blank, condition not applicable) is never counted and never read as innocence. Totals are computed from ledger rows already on disk, so the first run after upgrading counts back to the partition's first captured gameweek rather than starting from zero. What it counts back over is those rows as they were written: the ledger is append-only, and the two conditions that read a league position (gameweeks on top, gameweeks in the bottom half) take the position stored on each row, which only a fresh capture or an explicit `--backfill-detail` ever derives. A gameweek captured before the competition-ranking fix therefore keeps whatever place its tie was split into, and re-backfilling those gameweeks is what picks the fix up for them.
 
 **Unavailable:** a manager whose position or points total can't be derived this run (e.g. a replayed draft gameweek with no earlier rows) is named under `Unavailable:` on console and in the report rather than silently dropped from Standings Movement.
 
@@ -645,7 +662,8 @@ week, so a scripted consumer never sees it appear and disappear on a calendar it
 ledger, built from the rows this run assembled, so manager data is present even when the
 store could not be written. `metadata` carries `coverage` (per gameweek: fidelity-tier
 counts, unknown managers, whether the file was readable), `season_phase`, `notes_pack`
-(every entry, including those below their reporting minimum), `season_fines` (the whole
+(every entry, including those below their reporting minimum and every nonzero season
+count whether or not it grew this gameweek), `season_fines` (the whole
 season tally, emitted every week regardless of the milestone gate the printed surfaces use), `synthesis_summary` (with
 `--summarise`), `warnings`, and `first_capture_store_path` — always present, carrying the
 partition directory on its first capture and `null` on every run after that. Warning

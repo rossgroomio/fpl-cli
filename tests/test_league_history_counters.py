@@ -17,6 +17,8 @@ from fpl_cli.models.league_history import (
 from fpl_cli.services.league_history import LeagueHistoryStore
 from fpl_cli.services.league_history_counters import (
     CONDITIONS,
+    ConditionRunView,
+    CountSurfacePolicy,
     all_condition_views,
     compute_counters_through,
     conditions_for_format,
@@ -57,18 +59,28 @@ class TestConditionRegistry:
         assert len({c.key for c in CONDITIONS}) == 9
 
     def test_min_run_lengths_match_the_spec(self):
+        """`None` marks a condition that never surfaces as a streak at all:
+        the bottom half and the green-arrow drought restate where the table
+        already shows you are, so their run exists only to drive the season
+        count's firing rule."""
         min_runs = {c.key: c.min_run for c in CONDITIONS}
         assert min_runs == {
             "weeks_on_top": 2,
-            "bottom_half_run": 3,
+            "bottom_half_run": None,
             "gw_win_streak": 2,
             "gw_loss_streak": 2,
-            "green_arrow_drought": 4,
+            "green_arrow_drought": None,
             "captain_blank_run": 2,
-            "hit_run": 3,
-            "waiver_win_run": 2,
-            "waiver_burn_run": 2,
+            "hit_run": 2,
+            "waiver_win_run": 3,
+            "waiver_burn_run": 3,
         }
+
+    def test_a_streakless_condition_is_never_reportable_however_long_the_run(self):
+        view = _view(occurrences=40, length=40)
+        streakless = ConditionRunView(**{**view.__dict__, "min_run": None})
+        assert streakless.is_reportable is False
+        assert streakless.excess == 0
 
     def test_conditions_for_classic_excludes_waiver_conditions(self):
         keys = {c.key for c in conditions_for_format("classic")}
@@ -82,6 +94,49 @@ class TestConditionRegistry:
         assert keys == {
             "weeks_on_top", "bottom_half_run", "gw_win_streak", "gw_loss_streak",
             "green_arrow_drought", "waiver_win_run", "waiver_burn_run",
+        }
+
+    def test_every_condition_names_its_occurrence_in_both_forms(self):
+        """Issue #164: the season count needs a noun for one occurrence, and
+        the drought's must state the *absence* it counts -- "gameweeks
+        without a green arrow" -- rather than leaving the inversion for the
+        reader to infer from the run label."""
+        assert all(c.count_label_one and c.count_label_many for c in CONDITIONS)
+        drought = next(c for c in CONDITIONS if c.key == "green_arrow_drought")
+        assert drought.count_label_one == "gameweek without a green arrow"
+        assert drought.count_label_many == "gameweeks without a green arrow"
+
+    def test_count_surface_policies_match_the_spec(self):
+        """Each condition's weekly-render rule, locked to the agreed spec.
+        A rare, discrete event affords a generous rule; a standing table
+        position half the league increments every gameweek needs a strict
+        one, or the weekly report is wallpaper."""
+        policies = {c.key: c.count_policy for c in CONDITIONS}
+        assert policies == {
+            "gw_win_streak": CountSurfacePolicy(step=3, first_in_second_half=True),
+            "gw_loss_streak": CountSurfacePolicy(step=3, first_in_second_half=True),
+            "captain_blank_run": CountSurfacePolicy(step=5, ride_along_min=3),
+            "hit_run": CountSurfacePolicy(step=3, ride_along_min=2),
+            "waiver_win_run": CountSurfacePolicy(step=5),
+            "waiver_burn_run": CountSurfacePolicy(step=5),
+            "weeks_on_top": CountSurfacePolicy(step=5),
+            "bottom_half_run": CountSurfacePolicy(
+                step=10, ride_along_within=5, second_half_only=True,
+            ),
+            "green_arrow_drought": CountSurfacePolicy(run_milestones=frozenset({5, 10})),
+        }
+
+    def test_the_waiver_counts_name_the_outcome_they_actually_measure(self):
+        """Both waiver conditions key off whether the week's moves netted
+        points, not off winning a claim -- so the count labels say haul and
+        backfire rather than win and burn."""
+        labels = {
+            c.key: (c.count_label_one, c.count_label_many)
+            for c in CONDITIONS if c.key.startswith("waiver_")
+        }
+        assert labels == {
+            "waiver_win_run": ("waiver haul", "waiver hauls"),
+            "waiver_burn_run": ("waiver backfire", "waiver backfires"),
         }
 
 
@@ -450,6 +505,68 @@ class TestPositionConditions:
         view = manager_condition_views(projection, 1)["green_arrow_drought"]
 
         assert view.length == 0
+
+    def test_green_arrow_drought_holds_while_top_of_the_table(self):
+        """First place has nowhere to climb, so a gameweek that began there
+        could not have produced a green arrow however well it went. That is
+        a structural impossibility rather than a failure to improve, and
+        counting it would score the league leader as the league's worst
+        offender."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        for gw in (1, 2, 3, 4):
+            store.append_rows(gw, [make_history_row(gameweek=gw, manager_key=1, league_position=1)])
+
+        view = manager_condition_views(rebuild_counters_through(store, 4), 1)["green_arrow_drought"]
+
+        assert view.length == 0
+        assert view.occurrences == 0
+        # Held, not silently ignored: the gameweeks are stated as unjudged
+        # rather than counted as clean.
+        assert view.held_total == 4
+
+    def test_climbing_to_first_still_breaks_a_drought(self):
+        """Gated on where the gameweek *began*, not where it ended: gating
+        on this gameweek's position would suppress the biggest green arrow
+        there is and leave the run open."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        for gw, position in ((1, 4), (2, 4), (3, 4), (4, 1)):
+            store.append_rows(gw, [make_history_row(
+                gameweek=gw, manager_key=1, league_position=position,
+            )])
+
+        third = manager_condition_views(rebuild_counters_through(store, 3), 1)["green_arrow_drought"]
+        fourth = manager_condition_views(rebuild_counters_through(store, 4), 1)["green_arrow_drought"]
+
+        assert third.length == 2  # GW2 and GW3 failed to improve on 4th
+        assert fourth.length == 0  # climbing to the summit resets it
+
+    def test_falling_off_the_top_holds_rather_than_extending(self):
+        """They had nowhere to climb from either, so the gameweek is still
+        unjudgeable for this condition -- and the drop is already told by
+        standings movement and by `weeks_on_top` resetting."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        for gw, position in ((1, 1), (2, 1), (3, 5)):
+            store.append_rows(gw, [make_history_row(
+                gameweek=gw, manager_key=1, league_position=position,
+            )])
+
+        view = manager_condition_views(rebuild_counters_through(store, 3), 1)["green_arrow_drought"]
+
+        assert view.occurrences == 0
+        assert view.held_total == 3
+
+    def test_a_drought_resumes_normally_once_off_the_top(self):
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        for gw, position in ((1, 1), (2, 1), (3, 5), (4, 5), (5, 6)):
+            store.append_rows(gw, [make_history_row(
+                gameweek=gw, manager_key=1, league_position=position,
+            )])
+
+        view = manager_condition_views(rebuild_counters_through(store, 5), 1)["green_arrow_drought"]
+
+        # GW4 and GW5 both began outside the top and failed to improve.
+        assert view.length == 2
+        assert view.start_gameweek == 4
 
     def test_green_arrow_drought_holds_on_the_first_ever_gameweek(self):
         store = LeagueHistoryStore("2026-27", "classic", 1)
@@ -1002,6 +1119,200 @@ class TestPublicViews:
         below_minimum = manager_condition_views(rebuild_counters_through(store, 1), 1)["weeks_on_top"]
         assert below_minimum.excess == -1
         assert below_minimum.is_reportable is False
+
+
+# ---------------------------------------------------------------------------
+# Count surface policies (issue #164)
+# ---------------------------------------------------------------------------
+
+
+def _view(occurrences: int = 1, length: int = 1) -> ConditionRunView:
+    """A view carrying only what `CountSurfacePolicy` reads."""
+    return ConditionRunView(
+        condition_key="k", label="L", length=length, start_gameweek=1, held_in_run=0,
+        min_run=2, occurrences=occurrences, held_total=0, last_occurrence_gameweek=1,
+        first_evaluated_gameweek=1, count_label_one="thing", count_label_many="things",
+        count_policy=CountSurfacePolicy(),
+    )
+
+
+class TestCountSurfacePolicy:
+    def test_step_fires_only_on_a_multiple(self):
+        policy = CountSurfacePolicy(step=3)
+        fired = [
+            n for n in range(1, 10)
+            if policy.qualifies(_view(occurrences=n), second_half=False)
+        ]
+        assert fired == [3, 6, 9]
+
+    def test_a_condition_that_never_occurred_never_fires_on_its_own_absence(self):
+        """Zero is a multiple of every step, so an unfired condition would
+        fire on a bare modulo. The caller filters zeroes out before asking,
+        but the policy decides notability and must not lean on it to."""
+        assert CountSurfacePolicy(step=3).qualifies(_view(occurrences=0), second_half=False) is False
+        assert CountSurfacePolicy(step=5).qualifies(_view(occurrences=0), second_half=True) is False
+
+    def test_run_milestones_fire_on_the_open_run_not_the_season_total(self):
+        """A drought only reads as a story unbroken: the run length is what
+        fires it, and a manager whose season total is high but whose
+        current run is short says nothing."""
+        policy = CountSurfacePolicy(run_milestones=frozenset({5, 10}))
+        assert policy.qualifies(_view(occurrences=5, length=5), second_half=False) is True
+        assert policy.qualifies(_view(occurrences=20, length=3), second_half=False) is False
+        # Capped deliberately: a manager stuck at the top or bottom of the
+        # table must not re-fire forever on a fact the table already shows.
+        assert policy.qualifies(_view(occurrences=15, length=15), second_half=False) is False
+
+    def test_a_first_occurrence_fires_only_in_the_second_half(self):
+        policy = CountSurfacePolicy(step=3, first_in_second_half=True)
+        assert policy.qualifies(_view(occurrences=1), second_half=True) is True
+        assert policy.qualifies(_view(occurrences=1), second_half=False) is False
+        # The step still applies in both halves.
+        assert policy.qualifies(_view(occurrences=3), second_half=False) is True
+
+    def test_second_half_only_silences_the_whole_condition_early(self):
+        policy = CountSurfacePolicy(step=10, second_half_only=True)
+        assert policy.qualifies(_view(occurrences=10), second_half=False) is False
+        assert policy.qualifies(_view(occurrences=10), second_half=True) is True
+
+    def test_ride_along_needs_the_floor_and_is_off_by_default(self):
+        no_ride = CountSurfacePolicy(step=3)
+        assert no_ride.rides_along(_view(occurrences=9), fired_totals=[9]) is False
+        policy = CountSurfacePolicy(step=5, ride_along_min=3)
+        assert policy.rides_along(_view(occurrences=3), fired_totals=[5]) is True
+        assert policy.rides_along(_view(occurrences=2), fired_totals=[5]) is False
+
+    def test_a_relative_window_measures_against_the_nearest_firing_total(self):
+        """A count that climbs all season outgrows any fixed floor -- by
+        midseason every peer has passed it -- so the window is measured
+        against the milestone itself, and against the *nearest* one when
+        two managers fired at once."""
+        policy = CountSurfacePolicy(step=10, ride_along_within=5)
+        assert policy.rides_along(_view(occurrences=26), fired_totals=[30]) is True
+        assert policy.rides_along(_view(occurrences=24), fired_totals=[30]) is False
+        # Nearest, not largest: 24 is far from 30 but level with 20.
+        assert policy.rides_along(_view(occurrences=24), fired_totals=[20, 30]) is True
+
+    def test_a_relative_window_with_no_firing_totals_carries_nobody(self):
+        policy = CountSurfacePolicy(step=10, ride_along_within=5)
+        assert policy.rides_along(_view(occurrences=10), fired_totals=[]) is False
+
+
+# ---------------------------------------------------------------------------
+# Season occurrence counts (issue #164)
+# ---------------------------------------------------------------------------
+
+
+class TestSeasonOccurrenceCounts:
+    """Every extending gameweek counts once for the season, across resets;
+    holds are tallied separately as the count's coverage qualifier."""
+
+    def test_occurrences_accumulate_across_resets(self):
+        """The issue's own repro shape: a manager whose condition fired in
+        GW2, GW7, GW11 and GW19 shows a season count of 4 after GW19, even
+        though the currently-open run is back to 1."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        top_gameweeks = {2, 7, 11, 19}
+        for gw in range(1, 20):
+            store.append_rows(gw, [make_history_row(
+                gameweek=gw, manager_key=1,
+                league_position=1 if gw in top_gameweeks else 2,
+            )])
+
+        view = manager_condition_views(rebuild_counters_through(store, 19), 1)["weeks_on_top"]
+
+        assert view.occurrences == 4
+        assert view.length == 1
+        assert view.last_occurrence_gameweek == 19
+        assert view.first_evaluated_gameweek == 1
+
+    def test_a_reset_wipes_the_run_but_not_the_season_fields(self):
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, league_position=1)])
+        store.append_rows(2, [make_history_row(gameweek=2, manager_key=1, league_position=2)])
+
+        view = manager_condition_views(rebuild_counters_through(store, 2), 1)["weeks_on_top"]
+
+        assert view.length == 0
+        assert view.start_gameweek is None
+        assert view.held_in_run == 0
+        assert view.occurrences == 1
+        assert view.last_occurrence_gameweek == 1
+        assert view.first_evaluated_gameweek == 1
+
+    def test_a_hold_is_tallied_but_never_counted(self):
+        """R19 applied to the season count: an unknown gameweek neither
+        advances the count nor acquits it -- it lands in `held_total`, the
+        "not judged" figure a consumer must state beside the number."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, league_position=1)])
+        store.append_rows(2, [make_history_row(gameweek=2, manager_key=1, capture_status="unknown")])
+        store.append_rows(3, [make_history_row(gameweek=3, manager_key=1, league_position=1)])
+
+        view = manager_condition_views(rebuild_counters_through(store, 3), 1)["weeks_on_top"]
+
+        assert view.occurrences == 2
+        assert view.held_total == 1
+        assert view.length == 2
+        assert view.held_in_run == 1
+        assert view.last_occurrence_gameweek == 3
+
+    def test_a_hold_before_any_run_opens_still_counts_toward_held_total(self):
+        """A run has nothing to annotate before it opens, but the season
+        count's coverage does: GW1 was not judged whether or not a run ever
+        follows it."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(1, [make_history_row(
+            gameweek=1, manager_key=1, capture_status="unknown",
+        )])
+
+        view = manager_condition_views(rebuild_counters_through(store, 1), 1)["weeks_on_top"]
+
+        assert view.occurrences == 0
+        assert view.held_total == 1
+        assert view.length == 0
+        assert view.held_in_run == 0
+        assert view.first_evaluated_gameweek == 1
+
+    def test_first_evaluated_gameweek_is_the_managers_own_first_row(self):
+        """A mid-season joiner's count spans the gameweeks it was actually
+        folded over, not the partition's -- the honest window for their
+        season total (R17's per-manager coverage, applied here)."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, league_position=1)])
+        for gw in (3, 4):
+            store.append_rows(gw, [
+                make_history_row(gameweek=gw, manager_key=1, league_position=1),
+                make_history_row(
+                    gameweek=gw, manager_key=2, manager_name="Bob", league_position=2,
+                ),
+            ])
+
+        views = manager_condition_views(rebuild_counters_through(store, 4), 2)
+
+        assert views["weeks_on_top"].first_evaluated_gameweek == 3
+        # A gameweek the manager is wholly absent from is neither judged nor
+        # held for them -- GW1 and the never-captured GW2 land in neither
+        # counter.
+        assert views["weeks_on_top"].held_total == 0
+
+    def test_incremental_advance_agrees_with_a_full_rebuild_on_season_fields(self):
+        """The weekly fast path folds one gameweek onto persisted state; the
+        season fields must come out identical to a from-scratch rebuild, or
+        a cache hit would change a manager's season total."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        for gw, position in ((1, 1), (2, 2), (3, 1)):
+            store.append_rows(gw, [make_history_row(
+                gameweek=gw, manager_key=1, league_position=position,
+            )])
+
+        for gw in (1, 2, 3):
+            advanced = compute_counters_through(store, gw)
+
+        assert advanced.runs == rebuild_counters_through(store, 3).runs
+        view = manager_condition_views(advanced, 1)["weeks_on_top"]
+        assert view.occurrences == 2
+        assert view.length == 1
 
 
 # ---------------------------------------------------------------------------

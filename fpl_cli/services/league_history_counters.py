@@ -16,6 +16,15 @@ lying in either direction. R19 specifically -- an unknown row never
 advances or breaks a streak -- is enforced centrally in :func:`_evaluate`
 rather than trusted to every predicate.
 
+Alongside the currently-open run, each condition's state accumulates
+season-wide occurrence totals (issue #164): every extending gameweek
+counts once, a reset wipes only the open run, and holds are tallied
+separately as the count's coverage qualifier -- a held gameweek was never
+judged, and "un-ruled is not innocent" applies to a season count exactly
+as it does to the fines tally. So "their fourth gameweek win of the
+season" is derivable from the projection, not just "three gameweeks
+running".
+
 The projection this registry drives is a rebuildable cache, never a second
 source of truth (KTD10): it carries its own version and a
 computed-through-gameweek stamp, advances by one gameweek only when the
@@ -68,6 +77,93 @@ ConditionPredicate = Callable[
 
 
 @dataclass(frozen=True)
+class CountSurfacePolicy:
+    """When one condition's season count earns a weekly render (issue #164).
+
+    Purely declarative, one per registry entry, consumed by U9's
+    season-count entries: the count itself accumulates identically for
+    every condition, and this only decides which increments are worth
+    saying out loud on an ordinary gameweek. The two season milestones
+    print every nonzero count regardless of any policy here, and
+    `--format json` always carries the full set (KTD8).
+
+    A manager *fires* the condition (`qualifies`) when their own increment
+    this gameweek is the notable one; when anyone fires, other managers
+    who also incremented that condition this gameweek *ride along*
+    (`rides_along`) -- context for the round number, without resurfacing
+    every first-timer. A condition with neither ride-along field set shows
+    only the managers who fired.
+    """
+
+    # Fires when the manager's season total lands on a multiple of this.
+    step: int | None = None
+    # Fires when the *currently-open run* -- consecutive occurrences, as
+    # the projection folds them -- reaches exactly one of these lengths.
+    # A deliberate cap rather than "every multiple": a manager rooted to
+    # the bottom of the table would otherwise re-fire forever on a fact
+    # the table already shows. (A manager stuck at the *top* never
+    # accrues the run at all -- `_green_arrow_drought` holds where
+    # climbing was impossible -- so only the bottom needs the cap.)
+    run_milestones: frozenset[int] = frozenset()
+    # Fires on a manager's first occurrence of the season -- but only in
+    # the season's second half, where a first is a story ("their first
+    # gameweek win, in April") rather than everyone's ordinary opener.
+    first_in_second_half: bool = False
+    # The whole condition stays off the weekly render in the season's
+    # first half (the milestone set-pieces are unaffected).
+    second_half_only: bool = False
+    # Same-gameweek incrementers ride along once their total reaches this
+    # absolute floor. Suits a condition whose totals stay small all season
+    # (a captain blank, a hit), where "reached 3" keeps its meaning in
+    # April.
+    ride_along_min: int | None = None
+    # Same-gameweek incrementers ride along when their total is within
+    # this many of the firing manager's. For a condition whose totals
+    # climb all season (the bottom half, where half the league increments
+    # every week), an absolute floor stops filtering by midseason -- every
+    # peer has long passed it -- so the window is relative instead: it
+    # names the managers genuinely level with the milestone and drops the
+    # one on 12 when someone reaches 30.
+    ride_along_within: int | None = None
+
+    def qualifies(self, view: ConditionRunView, *, second_half: bool) -> bool:
+        """Whether this manager's increment *this gameweek* fires the
+        condition. The caller guarantees the increment happened this
+        gameweek; this only judges whether it is the notable kind."""
+        if self.second_half_only and not second_half:
+            return False
+        # `> 0` guards the step, because zero is a multiple of everything: a
+        # condition that has never occurred would otherwise fire on its own
+        # absence. The caller filters those out before asking, so this is
+        # belt-and-braces rather than a live bug -- but the policy is the
+        # thing that decides notability, and it should not depend on the
+        # caller to stay honest (issue #164 review).
+        if self.step is not None and view.occurrences > 0 and view.occurrences % self.step == 0:
+            return True
+        if view.length in self.run_milestones:
+            return True
+        return self.first_in_second_half and second_half and view.occurrences == 1
+
+    def rides_along(self, view: ConditionRunView, *, fired_totals: Collection[int]) -> bool:
+        """Whether this manager's increment this gameweek is shown beside a
+        firing peer's.
+
+        Only consulted once someone fired, so the second-half gate has
+        already been applied. `fired_totals` is every firing manager's
+        total for this condition this gameweek: a relative window measures
+        against the nearest of them, so a manager sits in the company they
+        are actually close to rather than being judged against whichever
+        milestone happened to be largest.
+        """
+        if self.ride_along_min is not None and view.occurrences >= self.ride_along_min:
+            return True
+        if self.ride_along_within is None or not fired_totals:
+            return False
+        nearest = min(abs(view.occurrences - total) for total in fired_totals)
+        return nearest <= self.ride_along_within
+
+
+@dataclass(frozen=True)
 class ConditionDefinition:
     """One entry in the streak-condition registry (KTD7).
 
@@ -79,14 +175,41 @@ class ConditionDefinition:
     them mechanically. Cohort- or previous-row-dependence (e.g.
     `bottom_half_run` needing the full cohort, `green_arrow_drought`
     needing the previous gameweek) lives in the predicate body, not here.
+
+    `count_label_one`/`count_label_many` name one occurrence of the
+    condition -- what a single extending gameweek *is* -- for the season
+    totals issue #164 adds. Not every condition reads naturally as a count
+    of the thing its run label names: `green_arrow_drought` extends on the
+    *absence* of a green arrow, so its occurrence is "gameweek without a
+    green arrow", stated in the label rather than left for the reader to
+    infer. Two explicit forms because English pluralises mid-phrase
+    ("gameweeks in the bottom half"), so appending an "s" cannot be
+    trusted mechanically.
+
+    `count_policy` is the condition's own rule for when its season count
+    earns a weekly render (see `CountSurfacePolicy`): a rare, discrete
+    event (a captain blank) can afford a generous rule, while a standing
+    table position half the league increments every gameweek (bottom
+    half, green-arrow drought) needs a strict one or it wallpapers every
+    report. U9 consumes it; the milestone set-pieces and `--format json`
+    ignore it.
     """
 
     key: str
     formats: frozenset[LeagueFormat]
     label: str
-    min_run: int
+    # The shortest open run worth reporting as a streak, or None for a
+    # condition that never surfaces as one. None is not "min_run of 0": it
+    # says the run is machinery rather than news -- the bottom half and the
+    # green-arrow drought describe where the table already shows you are,
+    # so their run exists to drive the season count's firing rule (see
+    # `count_policy`) and has nothing to say on its own.
+    min_run: int | None
     needs: tuple[str, ...]
     predicate: ConditionPredicate
+    count_label_one: str
+    count_label_many: str
+    count_policy: CountSurfacePolicy
 
 
 # ---------------------------------------------------------------------------
@@ -124,11 +247,13 @@ def _net_gw_points(row: LeagueHistoryRow) -> int | None:
     """This row's gameweek points, net of any transfer-cost hit -- the same
     measure `_assign_cohort_ranks` (`fpl_cli/cli/_league_recap_history.py`)
     derives `gw_rank` from. `gw_win_streak`/`gw_loss_streak` compare this
-    directly rather than the ordinal `gw_rank` it produces: `gw_rank` breaks
-    ties on cohort order alone (see `derive_point_in_time_positions`), so two
-    managers who genuinely tied for the week's best or worst would otherwise
-    see only one of them credited -- and which one depends on standings
-    order, not on anything about their gameweek."""
+    directly rather than reading the stored `gw_rank`, and still do now that
+    `derive_point_in_time_positions` shares a place between managers level on
+    points: the ledger is append-only, so a row captured before that fix
+    carries a `gw_rank` that split a tie on cohort order and no rebuild ever
+    rewrites it. Points are the one field on the row that means the same
+    thing whenever it was written, so folding over them keeps a season total
+    consistent across the gameweeks either side of a ranking change."""
     if row.gross_points is None:
         return None
     return row.gross_points - (row.transfer_cost or 0)
@@ -190,6 +315,21 @@ def _green_arrow_drought(
     if previous_row is None or previous_row.capture_status is CaptureStatus.UNKNOWN:
         return RunAction.HOLD
     if previous_row.league_position is None:
+        return RunAction.HOLD
+    # Top of the table has nowhere to climb, so a gameweek that *began* at
+    # first place could not have produced a green arrow however well it
+    # went: that is a structural impossibility, not a failure to improve,
+    # and counting it would score the league leader as the worst offender
+    # in the league. It holds, like any other gameweek the condition
+    # cannot rule (R20's fixture-less blank is the same shape).
+    #
+    # Gated on where they *started*, not where they finished. Gating on
+    # this gameweek's position would suppress the biggest green arrow
+    # there is -- climbing to first breaks a drought, and holding there
+    # would leave the run open. A manager who fell off the top holds too:
+    # they had nowhere to climb from either, and the drop is already told
+    # by standings movement and by `weeks_on_top` resetting.
+    if previous_row.league_position == 1:
         return RunAction.HOLD
     improved = row.league_position < previous_row.league_position
     return RunAction.RESET if improved else RunAction.EXTEND
@@ -262,38 +402,70 @@ CONDITIONS: tuple[ConditionDefinition, ...] = (
     ConditionDefinition(
         key="weeks_on_top", formats=_BOTH, label="Weeks on top", min_run=2,
         needs=("league_position",), predicate=_weeks_on_top,
+        count_label_one="gameweek on top of the league",
+        count_label_many="gameweeks on top of the league",
+        count_policy=CountSurfacePolicy(step=5),
     ),
     ConditionDefinition(
-        key="bottom_half_run", formats=_BOTH, label="Bottom-half run", min_run=3,
+        key="bottom_half_run", formats=_BOTH, label="Bottom-half run", min_run=None,
         needs=("league_position",), predicate=_bottom_half_run,
+        count_label_one="gameweek in the bottom half",
+        count_label_many="gameweeks in the bottom half",
+        count_policy=CountSurfacePolicy(
+            step=10, ride_along_within=5, second_half_only=True,
+        ),
     ),
     ConditionDefinition(
         key="gw_win_streak", formats=_BOTH, label="Gameweek win streak", min_run=2,
         needs=("gross_points", "transfer_cost"), predicate=_gw_win_streak,
+        count_label_one="gameweek win",
+        count_label_many="gameweek wins",
+        count_policy=CountSurfacePolicy(step=3, first_in_second_half=True),
     ),
     ConditionDefinition(
         key="gw_loss_streak", formats=_BOTH, label="Gameweek loss streak", min_run=2,
         needs=("gross_points", "transfer_cost"), predicate=_gw_loss_streak,
+        count_label_one="last-place finish",
+        count_label_many="last-place finishes",
+        count_policy=CountSurfacePolicy(step=3, first_in_second_half=True),
     ),
     ConditionDefinition(
-        key="green_arrow_drought", formats=_BOTH, label="Green arrow drought", min_run=4,
+        key="green_arrow_drought", formats=_BOTH, label="Green arrow drought", min_run=None,
         needs=("league_position",), predicate=_green_arrow_drought,
+        count_label_one="gameweek without a green arrow",
+        count_label_many="gameweeks without a green arrow",
+        # Run-based, capped at 5 and 10: only an unbroken drought is a
+        # story, and a manager parked at the very top (structurally unable
+        # to improve) or rooted to the bottom must not re-fire it forever.
+        count_policy=CountSurfacePolicy(run_milestones=frozenset({5, 10})),
     ),
     ConditionDefinition(
         key="captain_blank_run", formats=_CLASSIC_ONLY, label="Captain blank run", min_run=2,
         needs=("captain",), predicate=_captain_blank_run,
+        count_label_one="captain blank",
+        count_label_many="captain blanks",
+        count_policy=CountSurfacePolicy(step=5, ride_along_min=3),
     ),
     ConditionDefinition(
-        key="hit_run", formats=_CLASSIC_ONLY, label="Hit run", min_run=3,
+        key="hit_run", formats=_CLASSIC_ONLY, label="Hit run", min_run=2,
         needs=("transfer_cost",), predicate=_hit_run,
+        count_label_one="gameweek with a transfer hit",
+        count_label_many="gameweeks with a transfer hit",
+        count_policy=CountSurfacePolicy(step=3, ride_along_min=2),
     ),
     ConditionDefinition(
-        key="waiver_win_run", formats=_DRAFT_ONLY, label="Waiver win run", min_run=2,
+        key="waiver_win_run", formats=_DRAFT_ONLY, label="Waiver win run", min_run=3,
         needs=("transactions",), predicate=_waiver_win_run,
+        count_label_one="waiver haul",
+        count_label_many="waiver hauls",
+        count_policy=CountSurfacePolicy(step=5),
     ),
     ConditionDefinition(
-        key="waiver_burn_run", formats=_DRAFT_ONLY, label="Waiver burn run", min_run=2,
+        key="waiver_burn_run", formats=_DRAFT_ONLY, label="Waiver burn run", min_run=3,
         needs=("transactions",), predicate=_waiver_burn_run,
+        count_label_one="waiver backfire",
+        count_label_many="waiver backfires",
+        count_policy=CountSurfacePolicy(step=5),
     ),
 )
 
@@ -329,27 +501,61 @@ def _evaluate(
 
 
 def _next_state(current: ConditionRunState, gameweek: int, action: RunAction) -> ConditionRunState:
-    """The run state after applying one gameweek's action to the current one."""
+    """The run state after applying one gameweek's action to the current one.
+
+    The run fields reset together; the season-wide fields (issue #164)
+    never reset -- a RESET wipes the open run and nothing else, so
+    `occurrences` accumulates every extending gameweek of the season and
+    `held_total` every held one. A HOLD counts towards `held_total` whether
+    or not a run is open: the season count's qualifier is "how many
+    gameweeks were never judged", and a hold before any run has opened is
+    exactly as unjudged as one inside a run. `first_evaluated_gameweek` is
+    set by the first action of any kind and never moved -- the span the
+    season fields have actually been folded over.
+    """
+    first_evaluated = (
+        current.first_evaluated_gameweek
+        if current.first_evaluated_gameweek is not None
+        else gameweek
+    )
     if action is RunAction.EXTEND:
         if current.length == 0:
-            return ConditionRunState(length=1, start_gameweek=gameweek, held_in_run=0)
+            return ConditionRunState(
+                length=1, start_gameweek=gameweek, held_in_run=0,
+                occurrences=current.occurrences + 1,
+                held_total=current.held_total,
+                last_occurrence_gameweek=gameweek,
+                first_evaluated_gameweek=first_evaluated,
+            )
         return ConditionRunState(
             length=current.length + 1,
             start_gameweek=current.start_gameweek,
             held_in_run=current.held_in_run,
+            occurrences=current.occurrences + 1,
+            held_total=current.held_total,
+            last_occurrence_gameweek=gameweek,
+            first_evaluated_gameweek=first_evaluated,
         )
     if action is RunAction.RESET:
-        return ConditionRunState()
-    # HOLD: before any run has opened there is nothing to record. Once one
-    # is open, a hold extends its held-gameweek count without touching
-    # length or where it started (KTD7) -- the run is not "broken" by a
-    # hold, only annotated as having crossed one.
-    if current.length == 0:
-        return current
+        return ConditionRunState(
+            occurrences=current.occurrences,
+            held_total=current.held_total,
+            last_occurrence_gameweek=current.last_occurrence_gameweek,
+            first_evaluated_gameweek=first_evaluated,
+        )
+    # HOLD: before any run has opened there is no *run* to annotate, only
+    # the season-wide hold count. Once one is open, a hold extends its
+    # held-gameweek count without touching length or where it started
+    # (KTD7) -- the run is not "broken" by a hold, only annotated as
+    # having crossed one.
     return ConditionRunState(
         length=current.length,
         start_gameweek=current.start_gameweek,
-        held_in_run=current.held_in_run + 1,
+        held_in_run=current.held_in_run + 1 if current.length else 0,
+        occurrences=current.occurrences,
+        held_total=current.held_total + 1,
+        last_occurrence_gameweek=current.last_occurrence_gameweek,
+        first_evaluated_gameweek=first_evaluated,
     )
 
 
@@ -645,7 +851,10 @@ class ConditionRunView:
     persisted): adds `label`, `is_reportable` (length >= the condition's own
     minimum), and `excess` (R12: how far a run has gone past its minimum, so
     a caller can rank surfaced entries by it) -- so a caller, U9's rendering,
-    not built here, never has to cross-reference the registry itself.
+    not built here, never has to cross-reference the registry itself. The
+    season-wide fields (issue #164) ride along with the registry's own
+    occurrence labels for the same reason: a caller rendering "4 gameweek
+    wins this season, with 2 not judged" reads everything off this view.
     """
 
     condition_key: str
@@ -653,17 +862,27 @@ class ConditionRunView:
     length: int
     start_gameweek: int | None
     held_in_run: int
-    min_run: int
+    min_run: int | None
+    occurrences: int
+    held_total: int
+    last_occurrence_gameweek: int | None
+    first_evaluated_gameweek: int | None
+    count_label_one: str
+    count_label_many: str
+    count_policy: CountSurfacePolicy
 
     @property
     def is_reportable(self) -> bool:
-        return self.length >= self.min_run
+        return self.min_run is not None and self.length >= self.min_run
 
     @property
     def excess(self) -> int:
         """How far `length` sits past `min_run`. Negative below the minimum;
         the ranking signal R12 asks for is only meaningful once
-        `is_reportable` is true."""
+        `is_reportable` is true. Zero for a condition that never surfaces as
+        a streak (`min_run is None`), which is never ranked at all."""
+        if self.min_run is None:
+            return 0
         return self.length - self.min_run
 
 
@@ -688,6 +907,13 @@ def manager_condition_views(
             start_gameweek=state.start_gameweek,
             held_in_run=state.held_in_run,
             min_run=condition.min_run,
+            occurrences=state.occurrences,
+            held_total=state.held_total,
+            last_occurrence_gameweek=state.last_occurrence_gameweek,
+            first_evaluated_gameweek=state.first_evaluated_gameweek,
+            count_label_one=condition.count_label_one,
+            count_label_many=condition.count_label_many,
+            count_policy=condition.count_policy,
         )
     return views
 

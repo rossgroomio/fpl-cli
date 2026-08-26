@@ -53,7 +53,7 @@
 {{ standings_block }}
 ```
 
-{% if (league_history_streak_lines is defined and league_history_streak_lines) or (league_history_coverage_lines is defined and league_history_coverage_lines) %}
+{% if (league_history_streak_lines is defined and league_history_streak_lines) or (league_history_season_count_lines is defined and league_history_season_count_lines) or (league_history_coverage_lines is defined and league_history_coverage_lines) %}
 ---
 
 # League History
@@ -62,6 +62,14 @@
 ## Streaks
 
 {% for line in league_history_streak_lines %}
+- {{ line }}
+{% endfor %}
+
+{% endif %}
+{% if league_history_season_count_lines is defined and league_history_season_count_lines %}
+## Season Counts
+
+{% for line in league_history_season_count_lines %}
 - {{ line }}
 {% endfor %}
 
