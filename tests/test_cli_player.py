@@ -300,14 +300,18 @@ class TestPlayerDefensiveContribution:
         assert "DC/90: 1.5" in result.output
 
     def test_dc_hidden_for_goalkeeper(self):
+        # Named Salah because `_run` searches for that name -- seeded as "Raya"
+        # the lookup found nothing and the assertion below passed against an
+        # empty report rather than a goalkeeper's (#159 review).
         client, fixture_agent, ratings_svc = _make_mocks()
         client.get_players = AsyncMock(return_value=[
-            make_player(id=1, web_name="Raya", team_id=1,
+            make_player(id=1, web_name="Salah", team_id=1,
                         position=PlayerPosition.GOALKEEPER,
                         defensive_contribution_per_90=2.0)
         ])
         result = _run([], client, fixture_agent, ratings_svc)
         assert result.exit_code == 0, result.output
+        assert "Salah" in result.output
         assert "DC/90:" not in result.output
 
     def test_dc_hidden_when_zero(self):
@@ -1128,7 +1132,7 @@ class TestPlayerErrorHandling:
         client.get_teams = AsyncMock(side_effect=ValueError("boom"))
         result = _run([], client, fixture_agent, ratings_svc)
         assert result.exit_code != 0
-        assert "Error: boom" in result.output
+        assert "Could not load player data: boom" in result.output
         assert "adj. npxG/90:" not in result.output
 
 
@@ -1151,7 +1155,7 @@ class TestUnderstatFetchDeferral:
     def test_unmatched_name_skips_league_scrape(self):
         client, fixture_agent, ratings_svc = _make_mocks()
         result, mock_understat = self._invoke("Zzzzzz", client, fixture_agent, ratings_svc)
-        assert result.exit_code == 0, result.output
+        assert result.exit_code == 1
         assert "No players found matching 'Zzzzzz'" in result.stderr
         mock_understat.get_league_players.assert_not_awaited()
 
@@ -1207,7 +1211,7 @@ class TestDraftFetchDeferral:
     def test_unmatched_name_skips_draft_fetches(self):
         client, fixture_agent, ratings_svc = _make_mocks()
         result, draft = self._invoke("Zzzzzz", client, fixture_agent, ratings_svc)
-        assert result.exit_code == 0, result.output
+        assert result.exit_code == 1
         assert "No players found matching 'Zzzzzz'" in result.stderr
         draft.get_league_details.assert_not_awaited()
         draft.get_bootstrap_static.assert_not_awaited()

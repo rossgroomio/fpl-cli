@@ -16,6 +16,7 @@ from rich.table import Table
 from fpl_cli.cli._context import CLIContext, Format, console, error_console, is_custom_analysis_enabled
 from fpl_cli.cli._helpers import _format_sort_value, _validate_team_filter
 from fpl_cli.cli._json import (
+    api_failure_boundary,
     emit_failure,
     emit_json,
     json_output_mode,
@@ -538,4 +539,5 @@ def stats_command(
 
             console.print(table)
 
-    asyncio.run(_run())
+    with api_failure_boundary("stats", output_format):
+        asyncio.run(_run())

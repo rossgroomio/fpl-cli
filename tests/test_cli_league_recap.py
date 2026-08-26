@@ -657,6 +657,58 @@ class TestLeagueRecapCapturesOnEveryRun:
         assert seen == {"captured": True}
 
 
+class TestSummariseWithoutAKey:
+    """An unusable synthesis provider must not take the recap down with it (#144).
+
+    The editorial is opt-in garnish. The ledger capture underneath it is
+    append-only and, for draft, unreconstructable once the season moves on --
+    so a missing API key used to cost a gameweek of history, silently, with
+    exit 0 and the reason printed to stdout.
+    """
+
+    def _no_key(self):
+        from fpl_cli.api.providers import ProviderError
+
+        return patch(
+            "fpl_cli.api.providers.get_llm_provider",
+            side_effect=ProviderError("ANTHROPIC_API_KEY not set"),
+        )
+
+    def test_the_recap_still_runs_and_captures_the_ledger(self):
+        with self._no_key():
+            result = _invoke_recap(_recap_data(), ["--summarise"])
+
+        assert result.exit_code == 0, result.output
+        assert _store().captured_gameweeks() == [5], "the ledger capture was skipped"
+        assert "Test League" in result.output, "the recap itself was skipped"
+
+    def test_the_skipped_editorial_is_reported_on_stderr(self):
+        with self._no_key():
+            result = _invoke_recap(_recap_data(), ["--summarise"])
+
+        assert "ANTHROPIC_API_KEY not set" in result.stderr
+        assert "ANTHROPIC_API_KEY" not in result.stdout
+
+    def test_json_keeps_stdout_parseable_and_names_the_skip(self):
+        with self._no_key():
+            result = _invoke_recap(_recap_data(), ["--summarise", "--format", "json"])
+
+        assert result.exit_code == 0, result.stderr
+        envelope = json.loads(result.stdout)
+        assert envelope["metadata"]["synthesis_summary"] is None
+        codes = [w["code"] for w in envelope["metadata"]["warnings"]]
+        assert "synthesis_provider_unavailable" in codes, (
+            "a null synthesis_summary alone cannot say whether one was asked for"
+        )
+
+    def test_a_run_that_never_asked_for_an_editorial_carries_no_warning(self):
+        result = _invoke_recap(_recap_data(), ["--format", "json"])
+
+        envelope = json.loads(result.stdout)
+        codes = [w["code"] for w in envelope["metadata"]["warnings"]]
+        assert "synthesis_provider_unavailable" not in codes
+
+
 @pytest.mark.parametrize("fpl_format", ["classic", "draft"])
 def test_the_row_shape_survives_a_store_round_trip(fpl_format: str):
     """The stored row and the in-memory row are the same object (R2, one schema)."""

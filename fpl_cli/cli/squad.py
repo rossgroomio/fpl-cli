@@ -18,7 +18,14 @@ from fpl_cli.cli._context import (
     handle_agent_failure,
     load_settings,
 )
-from fpl_cli.cli._json import emit_json, emit_json_error, json_output_mode, output_format_option
+from fpl_cli.cli._helpers import require_entry_id
+from fpl_cli.cli._json import (
+    api_failure_boundary,
+    emit_json,
+    emit_json_error,
+    json_output_mode,
+    output_format_option,
+)
 from fpl_cli.cli._plan_grid import grid_command
 from fpl_cli.cli.sell_prices import sell_prices_command
 
@@ -38,7 +45,6 @@ def squad_group(ctx: click.Context, is_draft: bool, output_format: str) -> None:
     from fpl_cli.agents.common import get_draft_squad_players
 
     settings = load_settings()
-    fpl_cfg = settings.get("fpl", {})
     fmt = get_format(ctx)
 
     # Auto-select in single-format mode; respect --draft flag in BOTH mode
@@ -47,24 +53,18 @@ def squad_group(ctx: click.Context, is_draft: bool, output_format: str) -> None:
     elif fmt == Format.CLASSIC:
         is_draft = False
 
-    entry_id = fpl_cfg.get("classic_entry_id")
-    draft_entry_id = fpl_cfg.get("draft_entry_id")
-
+    # A missing entry ID is a failure, not a quiet no-op: it used to print a
+    # hint and return 0, so a script saw success and an empty stdout (#144).
+    entry_id: int | None = None
+    draft_entry_id: int | None = None
     if is_draft:
-        if not draft_entry_id:
-            console.print(
-                "[yellow]Please set draft_entry_id in config/settings.yaml[/yellow]"
-            )
-            return
-    elif not entry_id:
-        console.print(
-            "[yellow]Please provide your entry ID via classic_entry_id"
-            " in config/settings.yaml[/yellow]"
+        draft_entry_id = require_entry_id(
+            settings, is_draft=True, command="squad", output_format=output_format,
         )
-        console.print(
-            "Find it in your FPL URL: fantasy.premierleague.com/entry/[bold]ENTRY_ID[/bold]/event/..."
+    else:
+        entry_id = require_entry_id(
+            settings, is_draft=False, command="squad", output_format=output_format,
         )
-        return
 
     def _report_no_squad(gameweek: int) -> None:
         # Pre-season / before the first deadline, the picks endpoint legitimately
@@ -89,6 +89,7 @@ def squad_group(ctx: click.Context, is_draft: bool, output_format: str) -> None:
             if is_draft:
                 from fpl_cli.api.fpl_draft import FPLDraftClient
 
+                assert draft_entry_id is not None
                 async with FPLDraftClient() as draft_client:
                     try:
                         squad_players = await get_draft_squad_players(
@@ -105,6 +106,7 @@ def squad_group(ctx: click.Context, is_draft: bool, output_format: str) -> None:
             else:
                 # Resolve picks here so the agent doesn't refetch bootstrap-static
                 target_gw = max(gw - 1, 1)
+                assert entry_id is not None
                 try:
                     picks_data, _ = await get_actual_squad_picks(client, entry_id, target_gw)
                 except httpx.HTTPStatusError as exc:
@@ -136,7 +138,8 @@ def squad_group(ctx: click.Context, is_draft: bool, output_format: str) -> None:
 
         _render(result.data, is_draft)
 
-    asyncio.run(_run())
+    with api_failure_boundary("squad", output_format):
+        asyncio.run(_run())
 
 
 squad_group.add_command(sell_prices_command)

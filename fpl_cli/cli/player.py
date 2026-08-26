@@ -13,7 +13,12 @@ from rich.panel import Panel
 
 from fpl_cli.cli._context import Format, console, error_console, get_format, is_custom_analysis_enabled, load_settings
 from fpl_cli.cli._helpers import _fdr_style
-from fpl_cli.cli._json import emit_json, json_output_mode, output_format_option
+from fpl_cli.cli._json import (
+    emit_failure,
+    emit_json,
+    json_output_mode,
+    output_format_option,
+)
 from fpl_cli.models.player import resolve_players
 from fpl_cli.services.scoring import (
     ConsistencySignals,
@@ -84,8 +89,13 @@ def player_command(
                 matches = resolve_players(name, players, teams=team_list)
 
                 if not matches:
-                    error_console.print(f"[yellow]No players found matching '{name}'[/yellow]")
-                    return
+                    # Reported, not returned: this ran ahead of the JSON branch
+                    # below, so `--format json` exited 0 with empty stdout and a
+                    # consumer could not tell a typo from a working lookup (#159 review).
+                    emit_failure(
+                        "player", f"No players found matching '{name}'", output_format,
+                        stream=error_console,
+                    )
 
                 display = matches[:5]
 
@@ -534,8 +544,10 @@ def player_command(
                             error_console.print("[yellow]No historical data available[/yellow]")
 
             except Exception as e:  # noqa: BLE001 — display resilience
-                console.print(f"[red]Error: {e}[/red]")
-                raise SystemExit(1) from e
+                # Routed through the shared helper because this handler sits
+                # outside the `json_output_mode()` block above: printing here
+                # would put prose on the stdout a consumer is parsing (#140).
+                emit_failure("player", f"Could not load player data: {e}", output_format, cause=e)
 
     asyncio.run(_run())
 

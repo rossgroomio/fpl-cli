@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from unittest.mock import AsyncMock, patch
 
 from click.testing import CliRunner
@@ -106,7 +107,8 @@ class TestNoCache:
         runner = CliRunner()
         with patch("fpl_cli.scraper.fpl_prices.load_cache", return_value=None):
             result = runner.invoke(sell_prices_command)
-        assert result.exit_code == 0
+        # Nothing to show is a failure, not a silent success (#144).
+        assert result.exit_code == 1
         assert "--refresh" in result.output
 
 
@@ -119,7 +121,10 @@ class TestRefreshFlag:
              patch("fpl_cli.scraper.fpl_prices.save_cache"), \
              patch("fpl_cli.scraper.fpl_prices.load_cache"):
             mock_scraper = mock_scraper_cls.return_value
-            mock_scraper.scrape.return_value = finances
+            # AsyncMock, not a bare return_value: awaiting a MagicMock raises,
+            # which the command used to swallow into an exit-0 error message,
+            # so this passed without a scrape ever succeeding.
+            mock_scraper.scrape = AsyncMock(return_value=finances)
             result = runner.invoke(sell_prices_command, ["--refresh"])
 
         assert result.exit_code == 0
@@ -146,7 +151,7 @@ class TestRouting:
         runner = CliRunner()
         ctx_obj = CLIContext(format=Format.DRAFT, settings={})
         result = runner.invoke(squad_group, ["sell-prices"], obj=ctx_obj)
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         assert "not available in draft format" in result.output
 
 
@@ -169,7 +174,7 @@ class TestProxyTroubleshootingHint:
                 side_effect=Exception("net::ERR_CONNECTION_RESET at https://fantasy.premierleague.com/")
             )
             result = runner.invoke(sell_prices_command, ["--refresh"])
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         assert "TLS-inspecting proxy" in result.output
         assert "FPL_BROWSER_EXECUTABLE" in result.output
 
@@ -181,7 +186,7 @@ class TestProxyTroubleshootingHint:
                 side_effect=Exception("net::ERR_TUNNEL_CONNECTION_FAILED")
             )
             result = runner.invoke(sell_prices_command, ["--refresh"])
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         assert "TLS-inspecting proxy" in result.output
 
     def test_shows_hint_on_ssl_protocol_error(self):
@@ -193,7 +198,7 @@ class TestProxyTroubleshootingHint:
                 side_effect=Exception("net::ERR_SSL_PROTOCOL_ERROR")
             )
             result = runner.invoke(sell_prices_command, ["--refresh"])
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         assert "TLS-inspecting proxy" in result.output
 
     def test_omits_hint_for_unrelated_error(self):
@@ -204,7 +209,7 @@ class TestProxyTroubleshootingHint:
                 side_effect=Exception("FPL credentials required.")
             )
             result = runner.invoke(sell_prices_command, ["--refresh"])
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         assert "Troubleshooting" in result.output
         assert "TLS-inspecting proxy" not in result.output
 
@@ -248,3 +253,74 @@ class TestSaveMessage:
 
         assert result.exit_code == 0
         assert "[vault]" in result.output.replace("\n", "")
+
+
+class TestJsonFailurePaths:
+    """A --format json run reports on stdout or not at all (#140, #144)."""
+
+    def test_no_cache_is_an_error_envelope(self):
+        with patch("fpl_cli.scraper.fpl_prices.load_cache", return_value=None):
+            result = CliRunner().invoke(sell_prices_command, ["--format", "json"])
+
+        assert result.exit_code == 1
+        assert json.loads(result.stdout)["command"] == "sell-prices"
+        assert "--refresh" in json.loads(result.stdout)["error"]
+
+    def test_a_failed_scrape_is_an_error_envelope_with_hints_on_stderr(self):
+        with patch("fpl_cli.scraper.fpl_prices.FPLPriceScraper") as mock_scraper_cls, \
+             patch("fpl_cli.scraper.fpl_prices.load_cache"):
+            mock_scraper_cls.return_value.scrape = AsyncMock(
+                side_effect=Exception("net::ERR_CONNECTION_RESET")
+            )
+            result = CliRunner().invoke(sell_prices_command, ["--refresh", "--format", "json"])
+
+        assert result.exit_code == 1
+        assert "ERR_CONNECTION_RESET" in json.loads(result.stdout)["error"]
+        # The hints are for a human, so they belong on the other stream.
+        assert "Troubleshooting" in result.stderr
+        assert "Troubleshooting" not in result.stdout
+
+    def _scrape(self, finances, args):
+        for player in finances.squad:
+            player.element_id = 1  # past the DOM-fallback check, to the suspect one
+        with patch("fpl_cli.scraper.fpl_prices.FPLPriceScraper") as mock_scraper_cls, \
+             patch("fpl_cli.scraper.fpl_prices.save_cache"), \
+             patch("fpl_cli.scraper.fpl_prices.load_cache", return_value=None):
+            mock_scraper_cls.return_value.scrape = AsyncMock(return_value=finances)
+            return CliRunner().invoke(sell_prices_command, args)
+
+    def test_suspect_data_is_refused_rather_than_handed_over(self):
+        """`fpl allocate --sell-prices` budgets off `data` and never reads
+        metadata, so a warning would not reach the one consumer this flag
+        exists for. It gets the refusal instead."""
+        finances = _make_finances()  # 3 players: the extraction heuristics distrust it
+        assert finances.is_suspect
+
+        result = self._scrape(finances, ["--refresh", "--format", "json"])
+
+        assert result.exit_code == 1
+        envelope = json.loads(result.stdout)
+        assert "data" not in envelope
+        assert "suspect data" in envelope["error"]
+        assert "3 players" in envelope["error"]
+
+    def test_suspect_data_still_reaches_a_terminal(self):
+        """A human can see the label and count the rows, so the table keeps it."""
+        finances = _make_finances()
+        result = self._scrape(finances, ["--refresh"])
+
+        assert result.exit_code == 0, result.output
+        assert "Squad Budget (Suspect)" in result.output
+        assert "Haaland" in result.output
+
+    def test_a_trustworthy_scrape_comes_back_as_data(self):
+        finances = _make_finances()
+        finances.squad = finances.squad * 5  # 15 players clears the heuristic
+        assert not finances.is_suspect
+
+        result = self._scrape(finances, ["--refresh", "--format", "json"])
+
+        assert result.exit_code == 0, result.stderr
+        envelope = json.loads(result.stdout)
+        assert len(envelope["data"]) == 15
+        assert "warnings" not in envelope["metadata"]

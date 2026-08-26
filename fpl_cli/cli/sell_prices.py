@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import nullcontext
 from datetime import datetime, timezone
 
 import click
@@ -12,8 +13,16 @@ from rich.panel import Panel
 from rich.table import Table
 
 from fpl_cli.cli._context import Format, console, error_console, get_format
-from fpl_cli.cli._json import emit_json, emit_json_error, json_output_mode, output_format_option
+from fpl_cli.cli._json import (
+    emit_failure,
+    emit_json,
+    emit_json_error,
+    json_output_mode,
+    output_format_option,
+)
 from fpl_cli.scraper.fpl_prices import TeamFinances
+
+COMMAND = "sell-prices"
 
 # Chromium error codes a TLS-inspecting proxy rejecting the ClientHello can surface as,
 # depending on whether it RSTs the connection or just drops/hangs it.
@@ -41,17 +50,31 @@ def sell_prices_command(ctx: click.Context, refresh: bool, visible: bool, output
     First run: playwright install chromium
     Credentials: `fpl credentials set` or FPL_EMAIL/FPL_PASSWORD env vars.
     """
-    if get_format(ctx) == Format.DRAFT:
-        error_console.print("[yellow]sell-prices is not available in draft format[/yellow]")
-        return
-
     from fpl_cli.scraper.fpl_prices import FPLPriceScraper, cache_file, load_cache, save_cache
 
     is_json = output_format == "json"
 
-    if not refresh:
-        cached = load_cache()
-        if cached:
+    # Held open for the whole body rather than just the scrape, so every
+    # console.print below lands on stderr under --format json. The manual
+    # `sys.stdout = sys.stderr` this replaces covered only the scrape, which
+    # left the paths that bail before it writing prose to stdout -- and the
+    # ones that bail after it writing no envelope at all (#140, #144).
+    with json_output_mode() if is_json else nullcontext():
+        if get_format(ctx) == Format.DRAFT:
+            emit_failure(
+                COMMAND, "sell-prices is not available in draft format.", output_format,
+                stream=error_console,
+            )
+
+        if not refresh:
+            cached = load_cache()
+            if not cached:
+                emit_failure(
+                    COMMAND,
+                    "No cached sell-price data. Run with --refresh to scrape it.",
+                    output_format,
+                    stream=error_console,
+                )
             if is_json:
                 _emit_json_finances(cached)
                 return
@@ -60,21 +83,8 @@ def sell_prices_command(ctx: click.Context, refresh: bool, visible: bool, output
                 console.print(f"[dim]Data from {_cache_age_str(cached.scraped_at)}[/dim]\n")
             _display_finances(cached)
             return
-        else:
-            error_console.print("[yellow]No cached data found. Run with --refresh to scrape.[/yellow]")
-            return
 
-    import sys
-
-    scraper = FPLPriceScraper()
-    original_stdout = sys.stdout
-
-    # When JSON output is requested, redirect all console output to stderr
-    # so shell redirection (> file.json) captures only the JSON envelope.
-    if is_json:
-        sys.stdout = sys.stderr
-
-    try:
+        scraper = FPLPriceScraper()
         console.print("[bold]Scraping FPL transfers page...[/bold]")
         console.print("[dim]This requires browser automation (may take 10-20 seconds)[/dim]\n")
 
@@ -87,7 +97,17 @@ def sell_prices_command(ctx: click.Context, refresh: bool, visible: bool, output
         result = asyncio.run(_run())
 
         if isinstance(result, Exception):
-            console.print(f"[red]Error scraping FPL: {result}[/red]")
+            # Not `emit_failure`, which picks one channel or the other: the
+            # troubleshooting steps are worth printing even when a script is
+            # parsing, and inside this block prose is already on stderr. So
+            # both get written -- the reason first, then the steps, then the
+            # envelope on the stdout a consumer is reading.
+            message = f"Error scraping FPL: {result}"
+            # Escaped: a Playwright timeout embeds the selector it waited on
+            # (`locator("[data-test-id='...']")`), which Rich would parse as
+            # markup and silently drop -- losing the one detail these
+            # troubleshooting lines exist to show (#159 review).
+            console.print(f"[red]{rich_escape(message)}[/red]")
             console.print("\nTroubleshooting:")
             console.print("  1. Run: playwright install chromium")
             console.print("  2. Check credentials: `fpl credentials set`")
@@ -99,7 +119,9 @@ def sell_prices_command(ctx: click.Context, refresh: bool, visible: bool, output
                     " FPL_BROWSER_EXECUTABLE=/path/to/chromium and"
                     ' FPL_BROWSER_ARGS="--disable-features=EncryptedClientHello".'
                 )
-            return
+            if is_json:
+                emit_json_error(COMMAND, message, cause=result)
+            raise SystemExit(1) from result
 
         finances = result
 
@@ -113,28 +135,56 @@ def sell_prices_command(ctx: click.Context, refresh: bool, visible: bool, output
                 console.print("[red]Existing cache preserved (not overwritten with bad data).[/red]")
                 console.print("[dim]Try with --visible flag to debug the scrape.[/dim]")
             else:
-                save_cache(finances)
+                _save_cache_or_fail(finances, save_cache, output_format)
                 error_console.print(
                     f"[yellow]Saved suspect data to {rich_escape(str(cache_file()))}"
                     f" (no valid cache to preserve).[/yellow]"
                 )
                 console.print("[dim]Try with --visible flag to debug the scrape.[/dim]")
 
+            if is_json:
+                # The table below shows these numbers too, but to someone who
+                # can see the (Suspect) label and count the rows. A consumer
+                # cannot, and the one documented JSON pipeline --
+                # `fpl allocate --sell-prices` -- reads `data` and never
+                # `metadata.warnings`, so a warning would not reach it. It
+                # gets the refusal instead, matching the element_id check
+                # below that already errors on a milder defect than this.
+                emit_json_error(
+                    COMMAND,
+                    "Scrape returned suspect data - likely a failed extraction"
+                    f" ({len(finances.squad)} players). Re-run with --refresh,"
+                    " or --visible to watch the browser.",
+                )
             console.print(Panel.fit("[bold blue]Squad Budget (Suspect)[/bold blue]"))
             _display_finances(finances)
             return
 
+        _save_cache_or_fail(finances, save_cache, output_format)
+
+        if is_json:
+            _emit_json_finances(finances)
+            return
+
+        console.print(Panel.fit("[bold blue]Squad Budget[/bold blue]"))
+        _display_finances(finances)
+        console.print(f"\n[green]Data saved to {rich_escape(str(cache_file()))}[/green]")
+
+
+def _save_cache_or_fail(finances: TeamFinances, save_cache, output_format: str) -> None:
+    """Persist the scrape, reporting a write failure instead of raising through.
+
+    A read-only data directory or a full disk raised straight out of the
+    command, so `--format json` exited 1 with empty stdout and no envelope --
+    the failure mode this contract exists to close (#159 review).
+    """
+    try:
         save_cache(finances)
-    finally:
-        sys.stdout = original_stdout
-
-    if is_json:
-        _emit_json_finances(finances)
-        return
-
-    console.print(Panel.fit("[bold blue]Squad Budget[/bold blue]"))
-    _display_finances(finances)
-    console.print(f"\n[green]Data saved to {rich_escape(str(cache_file()))}[/green]")
+    except OSError as exc:
+        emit_failure(
+            COMMAND, f"Could not write the sell-price cache: {exc}", output_format,
+            cause=exc, stream=error_console,
+        )
 
 
 def _cache_age_str(scraped_at: str) -> str:
@@ -165,13 +215,13 @@ def _format_pl(value: float) -> str:
 def _emit_json_finances(finances: TeamFinances) -> None:
     """Emit sell-prices data as JSON. Errors if any player lacks element_id."""
     if any(p.element_id is None for p in finances.squad):
-        with json_output_mode() as stdout:
-            emit_json_error(
-                "sell-prices",
-                "Sell-price data lacks player IDs (scraped via DOM fallback). "
-                "Re-run with --refresh to capture IDs from the FPL API.",
-                file=stdout,
-            )
+        # No `json_output_mode()` here: the command body holds it open, and
+        # both emitters already fall back to the real stdout (#159 review).
+        emit_json_error(
+            COMMAND,
+            "Sell-price data lacks player IDs (scraped via DOM fallback). "
+            "Re-run with --refresh to capture IDs from the FPL API.",
+        )
 
     squad_data = [
         {
@@ -183,13 +233,12 @@ def _emit_json_finances(finances: TeamFinances) -> None:
         for p in finances.squad
     ]
     sell_total = sum(p.sell_price for p in finances.squad)
-    with json_output_mode() as stdout:
-        emit_json("sell-prices", squad_data, metadata={
-            "bank": finances.bank,
-            "total_sell_value": sell_total,
-            "free_transfers": finances.free_transfers,
-            "scraped_at": finances.scraped_at,
-        }, file=stdout)
+    emit_json(COMMAND, squad_data, metadata={
+        "bank": finances.bank,
+        "total_sell_value": sell_total,
+        "free_transfers": finances.free_transfers,
+        "scraped_at": finances.scraped_at,
+    })
 
 
 def _display_finances(finances: TeamFinances) -> None:

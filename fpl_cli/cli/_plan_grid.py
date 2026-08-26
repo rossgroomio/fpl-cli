@@ -9,9 +9,19 @@ import httpx
 from rich.table import Table
 
 from fpl_cli.cli._context import console, error_console, load_settings
-from fpl_cli.cli._helpers import _fdr_style
-from fpl_cli.cli._json import emit_json, json_output_mode, output_format_option
+from fpl_cli.cli._helpers import _fdr_style, require_entry_id
+from fpl_cli.cli._json import (
+    api_failure_boundary,
+    emit_failure,
+    emit_json,
+    json_output_mode,
+    output_format_option,
+)
 from fpl_cli.models.player import resolve_player
+
+# The envelope name predates the `squad grid` spelling and is what JSON
+# consumers already key on -- kept so a failure envelope matches its success one.
+COMMAND = "plan-grid"
 
 
 @click.command("grid")
@@ -32,15 +42,13 @@ def grid_command(gws: int, watch: tuple[str, ...], mode: str, is_draft: bool, ou
     entry_id: int | None = None
 
     if is_draft:
-        draft_entry_id = settings.get("fpl", {}).get("draft_entry_id")
-        if not draft_entry_id:
-            console.print("[red]Error: draft_entry_id not configured in settings.yaml[/red]")
-            return
+        draft_entry_id = require_entry_id(
+            settings, is_draft=True, command=COMMAND, output_format=output_format,
+        )
     else:
-        entry_id = settings.get("fpl", {}).get("classic_entry_id")
-        if not entry_id:
-            console.print("[red]Error: classic_entry_id not configured in settings.yaml[/red]")
-            return
+        entry_id = require_entry_id(
+            settings, is_draft=False, command=COMMAND, output_format=output_format,
+        )
 
     async def _grid():
         from fpl_cli.api.fpl import FPLClient
@@ -54,8 +62,7 @@ def grid_command(gws: int, watch: tuple[str, ...], mode: str, is_draft: bool, ou
             teams = await client.get_teams()
             current_gw_data = await client.get_next_gameweek() or await client.get_current_gameweek()
             if not current_gw_data:
-                console.print("[red]Could not determine current gameweek[/red]")
-                return
+                emit_failure(COMMAND, "Could not determine the current gameweek.", output_format)
             start_gw = current_gw_data["id"]
 
             player_map = {p.id: p for p in players}
@@ -73,8 +80,9 @@ def grid_command(gws: int, watch: tuple[str, ...], mode: str, is_draft: bool, ou
                             log=lambda msg: error_console.print(f"[yellow]{msg}[/yellow]"),
                         )
                     except Exception as e:  # noqa: BLE001 — display resilience
-                        console.print(f"[red]Could not fetch draft squad: {e}[/red]")
-                        return
+                        emit_failure(
+                            COMMAND, f"Could not fetch draft squad: {e}", output_format, cause=e,
+                        )
             else:
                 assert entry_id is not None
                 try:
@@ -92,8 +100,7 @@ def grid_command(gws: int, watch: tuple[str, ...], mode: str, is_draft: bool, ou
                     pick_ids = [p["element"] for p in picks_data.get("picks", [])]
                     squad_players = [player_map[pid] for pid in pick_ids if pid in player_map]
                 except Exception as e:  # noqa: BLE001 — display resilience
-                    console.print(f"[red]Could not fetch squad: {e}[/red]")
-                    return
+                    emit_failure(COMMAND, f"Could not fetch squad: {e}", output_format, cause=e)
 
             watch_players = []
             for name in watch:
@@ -161,7 +168,7 @@ def grid_command(gws: int, watch: tuple[str, ...], mode: str, is_draft: bool, ou
                 "mode": mode,
             }
             with json_output_mode() as stdout:
-                emit_json("plan-grid", records, metadata=metadata, file=stdout)
+                emit_json(COMMAND, records, metadata=metadata, file=stdout)
             return
 
         table = Table(show_header=True, header_style="bold", box=None, padding=(0, 1))
@@ -219,4 +226,5 @@ def grid_command(gws: int, watch: tuple[str, ...], mode: str, is_draft: bool, ou
         )
         console.print(table)
 
-    asyncio.run(_grid())
+    with api_failure_boundary(COMMAND, output_format):
+        asyncio.run(_grid())

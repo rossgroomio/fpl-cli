@@ -11,7 +11,13 @@ from rich.table import Table
 
 from fpl_cli.cli._context import Format, console, get_format
 from fpl_cli.cli._helpers import _fdr_style
-from fpl_cli.cli._json import emit_json, emit_json_error, json_output_mode, output_format_option
+from fpl_cli.cli._json import (
+    api_failure_boundary,
+    emit_json,
+    emit_json_error,
+    json_output_mode,
+    output_format_option,
+)
 from fpl_cli.utils.text import strip_diacritics
 
 
@@ -125,7 +131,8 @@ def transfer_eval_command(ctx: click.Context, out_player: str, in_players: str, 
         else:
             _render_table(data, finances, sell_price, fmt)
 
-    asyncio.run(_run())
+    with api_failure_boundary("transfer-eval", output_format):
+        asyncio.run(_run())
 
 
 def _find_sell_price(finances, out_name: str) -> float | None:

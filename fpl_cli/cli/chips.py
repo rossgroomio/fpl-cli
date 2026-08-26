@@ -11,7 +11,13 @@ from rich.panel import Panel
 from rich.table import Table
 
 from fpl_cli.cli._context import console, error_console, load_settings
-from fpl_cli.cli._json import emit_json, emit_json_error, json_output_mode, output_format_option
+from fpl_cli.cli._json import (
+    api_failure_boundary,
+    emit_json,
+    emit_json_error,
+    json_output_mode,
+    output_format_option,
+)
 from fpl_cli.models.chip_plan import ChipPlan, ChipType, PlannedChip, UsedChip
 from fpl_cli.season import TOTAL_GAMEWEEKS
 
@@ -484,4 +490,5 @@ def chips_timing(output_format: str) -> None:
 
         console.print(table)
 
-    asyncio.run(_run())
+    with api_failure_boundary("chips-timing", output_format):
+        asyncio.run(_run())

@@ -269,6 +269,31 @@ def _format_pts_display(p: dict, points_key: str = "points") -> str:
         return f"[dim]({pts})[/dim]"
 
 
+def require_entry_id(
+    settings: dict[str, Any], *, is_draft: bool, command: str, output_format: str,
+) -> int:
+    """Return the configured entry ID for the active format, or report and exit 1.
+
+    `squad`, `squad grid` and any later consumer need the same lookup and the
+    same message, and both call sites used to carry their own copy of both --
+    including, for a while, two different wordings of the same error (#159
+    review). *command* and *output_format* are required for the same reason
+    they are on `_validate_team_filter`: the caller's format decides whether
+    this comes back as prose or as the error envelope.
+    """
+    from fpl_cli.cli._json import emit_failure
+
+    key = "draft_entry_id" if is_draft else "classic_entry_id"
+    entry_id = settings.get("fpl", {}).get(key)
+    if not entry_id:
+        hint = "" if is_draft else (
+            " Find it in your FPL URL:"
+            " fantasy.premierleague.com/entry/ENTRY_ID/event/..."
+        )
+        emit_failure(command, f"{key} is not set in settings.yaml.{hint}", output_format)
+    return entry_id
+
+
 def _validate_team_filter(
     team: str | None, all_teams: list, *, command: str, output_format: str,
 ) -> str | None:

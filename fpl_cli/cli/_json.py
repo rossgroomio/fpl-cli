@@ -11,6 +11,8 @@ from enum import Enum
 from typing import IO, Any, Callable, Generator, NoReturn, TypeVar
 
 import click
+import httpx
+from rich.console import Console
 from rich.markup import escape as rich_escape
 
 from fpl_cli.cli._context import console
@@ -82,16 +84,21 @@ def emit_json_error(
     message: str,
     *,
     file: IO[str] | None = None,
-) -> None:
+    cause: BaseException | None = None,
+) -> NoReturn:
     """Write a JSON error envelope to stdout and exit with code 1.
 
     Failure goes down the same stream as success (#141): a consumer that
     parses stdout gets either envelope, and one that only checks the exit
     code still sees 1. Prose stays on stderr.
+
+    *cause* chains the original exception onto the `SystemExit`. It has to be
+    raised here rather than by the caller: this function never returns, so a
+    `raise ... from exc` after the call is unreachable and the chain is lost.
     """
     envelope: dict[str, Any] = {"command": command, "error": message}
     print(json.dumps(envelope, indent=2, default=_json_default), file=_stream(file))
-    raise SystemExit(1)
+    raise SystemExit(1) from cause
 
 
 def emit_failure(
@@ -100,6 +107,7 @@ def emit_failure(
     output_format: str,
     *,
     cause: BaseException | None = None,
+    stream: Console | None = None,
 ) -> NoReturn:
     """Report *message* on the channel the caller parses, then exit 1.
 
@@ -107,12 +115,48 @@ def emit_failure(
     prose. The two are mutually exclusive: prose printed under `--format json`
     would sit ahead of an envelope that never arrives and break the parse at
     byte 0 (#140).
+
+    *stream* picks which console the table-mode prose goes to, and exists only
+    because the repo is not consistent about it: `intel` and `stats` have
+    always put these messages on stdout, `player` and `sell-prices` on stderr.
+    Defaulting to `console` and letting the two stderr callers say so keeps
+    this helper from silently moving anyone's output between streams.
+    Unifying them is worth doing, but it is a change of its own.
     """
     if output_format == "json":
-        emit_json_error(command, message)
-    else:
-        console.print(f"[red]{rich_escape(message)}[/red]")
+        emit_json_error(command, message, cause=cause)
+    (stream or console).print(f"[red]{rich_escape(message)}[/red]")
     raise SystemExit(1) from cause
+
+
+@contextmanager
+def api_failure_boundary(command: str, output_format: str) -> Generator[None, None, None]:
+    """Turn an unreachable upstream into an error envelope instead of a traceback.
+
+    An outage is the likeliest way any of these commands fails, and it
+    surfaces as an `httpx.HTTPError` raised deep in a client call -- far from
+    the code that knows the command name and the output format. Left
+    uncaught it reaches click as a traceback: stdout stays empty, so a JSON
+    consumer gets no envelope at all and cannot tell an outage from a crash.
+
+    Wrap the `asyncio.run()` call rather than each request, so a client added
+    to an existing command inherits the handling. Only `httpx.HTTPError` is
+    caught -- a bug in our own code still raises, where it can be seen.
+    """
+    try:
+        yield
+    except httpx.HTTPStatusError as exc:
+        # Reached, not unreachable: say so. A command that lets a 404 through
+        # here has a gap in its own handling, and reporting it as an outage
+        # would send the reader looking at their network (#159 review).
+        emit_failure(
+            command,
+            f"The FPL API returned {exc.response.status_code} for {exc.request.url.path}",
+            output_format,
+            cause=exc,
+        )
+    except httpx.HTTPError as exc:
+        emit_failure(command, f"Could not reach the FPL API: {exc}", output_format, cause=exc)
 
 
 @contextmanager

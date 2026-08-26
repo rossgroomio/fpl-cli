@@ -10,11 +10,18 @@ from pathlib import Path
 from typing import Any
 
 import click
+from rich.markup import escape as rich_escape
 from rich.panel import Panel
 
 from fpl_cli.api.providers import ProviderError
 from fpl_cli.cli._context import Format, console, error_console, get_format, load_settings, resolve_output_dir
-from fpl_cli.cli._json import emit_json, emit_json_error, json_output_mode, output_format_option
+from fpl_cli.cli._json import (
+    api_failure_boundary,
+    emit_json,
+    emit_json_error,
+    json_output_mode,
+    output_format_option,
+)
 from fpl_cli.cli._league_recap_types import LeagueRecapData
 from fpl_cli.services.league_history import GameweekCoverage
 from fpl_cli.services.league_history_notes import NotesPack, NotesPackEntry, NoteSurface
@@ -69,6 +76,7 @@ def league_recap_command(
         is_draft = False
 
     synthesis_provider = None
+    synthesis_unavailable: str | None = None
 
     if summarise or dry_run:
         if not dry_run:
@@ -77,8 +85,14 @@ def league_recap_command(
             try:
                 synthesis_provider = get_llm_provider("synthesis", settings)
             except ProviderError as e:
-                console.print(f"[red]Error: {e}[/red]")
-                return
+                # The editorial is an add-on. The recap, the saved report and
+                # above all the append-only ledger capture are not, and once
+                # the season moves on a missed draft capture cannot be
+                # reconstructed. Aborting the lot over an absent API key --
+                # and doing it with exit 0 and the error on stdout -- cost
+                # more than the narrative was worth (#144), so it degrades.
+                synthesis_unavailable = str(e)
+                error_console.print(f"[yellow]Editorial skipped: {rich_escape(str(e))}[/yellow]")
 
     async def _run() -> None:
         from contextlib import AsyncExitStack, nullcontext
@@ -169,7 +183,12 @@ def league_recap_command(
             except RecapReconciliationError as e:
                 # A stop condition, not a soft skip: exit non-zero so a
                 # scripted caller (the gw-prep skill) sees the failure
-                # rather than an empty but successful run.
+                # rather than an empty but successful run. Under --format
+                # json that has to be the envelope -- `click.ClickException`
+                # writes its own prose to stderr and leaves stdout empty,
+                # which is the same silence in a different shape (#159 review).
+                if output_format == "json":
+                    emit_json_error("league-recap", str(e), file=stdout, cause=e)
                 raise click.ClickException(str(e)) from e
 
             # Add context metadata
@@ -263,7 +282,11 @@ def league_recap_command(
                 ]
 
             # LLM summarisation (opt-in via --summarise or --dry-run)
-            if summarise or dry_run:
+            if (summarise or dry_run) and synthesis_unavailable is None:
+                # Skipped outright when the provider is already known unusable:
+                # the call would format the whole awards/standings/history
+                # context and build the prompt, only to reach neither of its
+                # two branches (#159 review).
                 try:
                     await _recap_llm_summarise(
                         collected_data, gw,
@@ -311,7 +334,20 @@ def league_recap_command(
                         "season_phase": notes_pack.phase if notes_pack is not None else None,
                         "notes_pack": _serialize_notes_pack(notes_pack) if notes_pack is not None else None,
                         "synthesis_summary": collected_data.get("synthesis_summary"),
-                        "warnings": capture_result.warnings,
+                        # The skipped editorial rides the same channel as the
+                        # capture's own warnings: `synthesis_summary` being
+                        # null does not say whether it was asked for.
+                        "warnings": capture_result.warnings + (
+                            [{
+                                "code": "synthesis_provider_unavailable",
+                                "message": (
+                                    "The editorial was requested but skipped:"
+                                    f" {synthesis_unavailable}. Everything else in"
+                                    " this recap, the ledger capture included, ran"
+                                    " normally."
+                                ),
+                            }] if synthesis_unavailable else []
+                        ),
                         # Only set on this partition's very first capture --
                         # the one moment a container-local data directory is
                         # still cheap to notice (table mode prints this to
@@ -325,7 +361,8 @@ def league_recap_command(
                     file=stdout,
                 )
 
-    asyncio.run(_run())
+    with api_failure_boundary("league-recap", output_format):
+        asyncio.run(_run())
 
 
 def _serialize_coverage(coverage: list[GameweekCoverage]) -> list[dict[str, Any]]:

@@ -388,3 +388,80 @@ class TestFdrCustomAnalysisToggle:
         assert parsed["metadata"]["mode"] == "raw"
         assert parsed["metadata"]["custom_analysis"] is False
         assert "easy_fixture_runs" in parsed["data"]
+
+
+class TestFdrJsonStdoutPurity:
+    """Nothing but the envelope reaches stdout under --format json (#140)."""
+
+    def _blanks(self, args, *, is_stale=False, custom_on=False):
+        client = _make_fpl_client_for_raw_fdr()
+        with (
+            patch("fpl_cli.cli.fdr.is_custom_analysis_enabled", return_value=custom_on),
+            patch("fpl_cli.api.fpl.FPLClient", return_value=client),
+            # Patched where fdr binds it, not where it is defined: the name is
+            # imported at module scope, so the source module is the wrong target.
+            patch("fpl_cli.cli.fdr.FixturePredictionsService") as mock_preds,
+        ):
+            mock_preds.return_value.is_stale = is_stale
+            mock_preds.return_value.load_warnings = []
+            mock_preds.return_value.get_predicted_blanks.return_value = []
+            mock_preds.return_value.get_predicted_doubles.return_value = []
+            mock_preds.return_value.get_metadata.return_value = {"last_updated": "2026-04-01"}
+            return CliRunner().invoke(fdr_command, args)
+
+    def test_stale_predictions_notice_stays_off_stdout(self):
+        result = self._blanks(["--blanks", "--format", "json"], is_stale=True)
+
+        assert result.exit_code == 0, result.stderr
+        parsed = json.loads(result.stdout)
+        assert parsed["command"] == "fdr"
+        assert "may be stale" not in result.stdout
+
+    def test_stale_predictions_reach_json_as_a_metadata_warning(self):
+        """Dropping the notice entirely would trade one bug for a quieter one."""
+        result = self._blanks(["--blanks", "--format", "json"], is_stale=True)
+
+        parsed = json.loads(result.stdout)
+        codes = [w["code"] for w in parsed["metadata"]["warnings"]]
+        assert codes == ["fixture_predictions_stale"]
+        assert "2026-04-01" in parsed["metadata"]["warnings"][0]["message"]
+
+    def test_fresh_predictions_carry_an_empty_warning_list(self):
+        """Present but empty, as `stats` and `league-recap` do it -- a consumer
+        indexes the key rather than checking for it first."""
+        result = self._blanks(["--blanks", "--format", "json"], is_stale=False)
+
+        parsed = json.loads(result.stdout)
+        assert parsed["metadata"]["warnings"] == []
+
+    def test_stale_predictions_still_warn_a_terminal(self):
+        result = self._blanks(["--blanks"], is_stale=True)
+
+        assert result.exit_code == 0, result.output
+        assert "may be stale" in result.output
+
+    def test_position_gate_reports_an_error_envelope(self):
+        """The usage error used to print prose to the stdout being parsed."""
+        with patch("fpl_cli.cli.fdr.is_custom_analysis_enabled", return_value=False):
+            result = CliRunner().invoke(fdr_command, ["--position", "atk", "--format", "json"])
+
+        assert result.exit_code == 1
+        assert json.loads(result.stdout) == {
+            "command": "fdr",
+            "error": "--position atk requires custom analysis (Bayesian ATK/DEF split)."
+                     " Enable it with: fpl init",
+        }
+
+    def test_an_unreachable_api_is_an_envelope_not_a_traceback(self):
+        import httpx
+
+        client = _make_fpl_client_for_raw_fdr()
+        client.get_next_gameweek = AsyncMock(side_effect=httpx.ConnectError("refused"))
+        with (
+            patch("fpl_cli.cli.fdr.is_custom_analysis_enabled", return_value=False),
+            patch("fpl_cli.api.fpl.FPLClient", return_value=client),
+        ):
+            result = CliRunner().invoke(fdr_command, ["--format", "json"])
+
+        assert result.exit_code == 1
+        assert "Could not reach the FPL API" in json.loads(result.stdout)["error"]
