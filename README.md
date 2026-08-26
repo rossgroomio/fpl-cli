@@ -77,8 +77,11 @@ question any week you want it.
 Streaks come with season totals: the recap counts every time a condition has occurred
 this season — gameweek wins, last places, weeks on top, captain blanks — across resets,
 so a report or editorial can say "their fourth gameweek win of the season", not just
-"two in a row". A total surfaces only in the week it grows, with any unjudged gameweeks
-stated beside it.
+"two in a row". Event counts (wins, last places, captain blanks, hits, waiver moves)
+surface in the week they grow; standing table counts (weeks on top, bottom half,
+green-arrow droughts) wait for the season set-piece at GW19 and the finale, where the
+full list prints alongside the fines table. Unjudged gameweeks are always stated beside
+the number.
 
 ### Checking Your Setup
 

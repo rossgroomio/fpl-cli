@@ -256,10 +256,10 @@ class NotesPack:
     re-sorting (KTD8's ranking rule). `season_count_entries` holds the
     per-manager season occurrence totals (issue #164), sorted by descending
     count: one per cohort manager x condition that has occurred at all this
-    season, surfaced beyond `--format json` only when the count grew this
-    gameweek -- a season total is colour for the thing that just happened,
-    the same call the season fines prompt section makes, not a weekly
-    ledger dump. `season_phase_entry` and `coverage_entries` are always
+    season, surfaced by cadence class -- an event-class count in the week
+    it grew, the whole nonzero set at the two season milestones, nothing
+    beyond `--format json` otherwise (see `_season_count_entries`).
+    `season_phase_entry` and `coverage_entries` are always
     populated -- never absent, never merely implied by an empty `entries`
     list -- as their own dedicated fields: a pack with no open streaks
     still has something to say about where the season is and what history
@@ -444,6 +444,7 @@ def _season_count_entries(
     cohort: dict[int, LeagueHistoryRow],
     projection: LeagueHistoryCountersProjection,
     rows_by_gameweek: dict[int, dict[int, LeagueHistoryRow]],
+    milestone: bool,
 ) -> list[NotesPackEntry]:
     """One entry per manager x applicable condition that has occurred at all.
 
@@ -451,13 +452,23 @@ def _season_count_entries(
     manager no longer in this gameweek's rows keeps a frozen count in
     `projection.runs`, and surfacing it in a later pack would present it as
     live. Every nonzero count is emitted so `--format json` carries the
-    whole season picture (KTD8), but only a count that grew *this* gameweek
-    gets report/prompt surfaces: the editorial use of a season total is
-    "their fourth gameweek win of the season", which is colour for the win
-    that just happened -- a total for something that did not happen this
-    week is the stale kind of history R14 exists to keep out of a recap's
-    mouth. Console is deliberately excluded even then: it is a highlights
-    view, and the streak leaders already cover it.
+    whole season picture (KTD8); which of them carry rendering surfaces
+    follows the registry's two cadence classes plus the season-fines
+    milestone rule. On an ordinary gameweek, only an *event*-class count
+    (`count_weekly` in the registry: wins, last places, captain blanks,
+    hits, waiver moves) that grew *this* gameweek reaches report+prompt --
+    "their fourth gameweek win of the season" is news in the week of the
+    win. A *state*-class count (weeks on top, bottom half, green-arrow
+    drought) is withheld weekly even when it grew: roughly the same half
+    of the league increments those every single gameweek, so a weekly
+    render would open every report with the table's wallpaper -- and the
+    streak entries already cover the ongoing run. At the two season
+    milestones the whole nonzero set of both classes carries
+    report+prompt: the halfway and finale reports get their `## Season
+    Counts` set-piece, and the editorial gets the season-spanning facts
+    exactly when its phase framing invites a retrospective. Console is
+    always excluded: it is a highlights view, and the streak leaders
+    already cover it.
 
     The window is the manager's own evaluated span
     (`first_evaluated_gameweek`..this gameweek), not the league's -- a
@@ -474,6 +485,10 @@ def _season_count_entries(
                 start_gameweek=view.first_evaluated_gameweek, end_gameweek=gameweek,
             )
             occurred_this_gameweek = view.last_occurrence_gameweek == gameweek
+            if milestone or (occurred_this_gameweek and view.count_weekly):
+                surfaces = _REPORT_AND_PROMPT
+            else:
+                surfaces = frozenset()
             entries.append(NotesPackEntry(
                 kind=NoteKind.SEASON_COUNT,
                 text=_season_count_text(
@@ -485,7 +500,7 @@ def _season_count_entries(
                     window,
                     occurred_this_gameweek=occurred_this_gameweek,
                 ),
-                surfaces=_REPORT_AND_PROMPT if occurred_this_gameweek else frozenset(),
+                surfaces=surfaces,
                 tier=_entry_tier(window, manager_key, rows_by_gameweek),
                 window=window,
                 manager_key=manager_key,
@@ -792,6 +807,7 @@ def build_notes_pack(
         ),
         season_count_entries=_season_count_entries(
             gameweek=gameweek, cohort=cohort, projection=projection, rows_by_gameweek=rows_by_gameweek,
+            milestone=is_season_milestone(gameweek, total_gameweeks, chip_split_gw),
         ),
         coverage_entries=_coverage_entries(
             store=store, gameweek=gameweek, league_start_gameweek=league_start_gameweek,

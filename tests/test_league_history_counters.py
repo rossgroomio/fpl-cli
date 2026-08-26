@@ -94,6 +94,17 @@ class TestConditionRegistry:
         assert drought.count_label_one == "gameweek without a green arrow"
         assert drought.count_label_many == "gameweeks without a green arrow"
 
+    def test_count_cadence_classes_match_the_spec(self):
+        """Event conditions (a discrete thing happened this gameweek) render
+        their season count weekly; state conditions (a standing table
+        position half the league increments every week) are milestone-only
+        material. The split is exactly performance vs table position."""
+        weekly = {c.key for c in CONDITIONS if c.count_weekly}
+        assert weekly == {
+            "gw_win_streak", "gw_loss_streak", "captain_blank_run",
+            "hit_run", "waiver_win_run", "waiver_burn_run",
+        }
+
 
 # ---------------------------------------------------------------------------
 # captain_blank_run (classic only)

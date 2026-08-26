@@ -221,8 +221,9 @@ class LeagueRecapData(TypedDict):
     # not build a notes pack at all.
     league_history_phase_text: NotRequired[str]
     league_history_streak_lines: NotRequired[list[str]]
-    # Season counts whose total grew this gameweek (issue #164) -- the
-    # report's Season Counts subsection stays a this-week view.
+    # Season occurrence totals (issue #164). Populated only at the two
+    # season milestones -- the report's Season Counts subsection is a
+    # set-piece on the fines cadence, absent every other week.
     league_history_season_count_lines: NotRequired[list[str]]
     league_history_coverage_lines: NotRequired[list[str]]
     # Report-surfaced season fine tally (issue #136). All three are absent

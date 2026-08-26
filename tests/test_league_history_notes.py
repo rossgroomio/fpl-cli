@@ -352,18 +352,57 @@ class TestSeasonCountEntries:
         )
         assert entry.window == GameweekWindow(start_gameweek=1, end_gameweek=3)
 
-    def test_a_count_that_grew_this_gameweek_reaches_report_and_prompt_but_not_console(self):
+    def test_an_event_class_count_that_grew_this_gameweek_surfaces_weekly(self):
+        """A hit taken this gameweek is news: its season count reaches
+        report and prompt in the week it grows, on any ordinary gameweek."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(1, [make_history_row(
+            gameweek=1, manager_key=1, manager_name="Alice", transfer_cost=4,
+        )])
+
+        pack = build_notes_pack(store, 1)
+        entry = self._count_entry(pack, "Alice", "hit_run")
+
+        assert entry.surfaces == frozenset({NoteSurface.REPORT, NoteSurface.PROMPT})
+        assert entry.text == (
+            "Alice: 1 gameweek with a transfer hit this season (GW1-GW1), "
+            "the first this gameweek."
+        )
+
+    def test_a_state_class_count_is_withheld_weekly_even_when_it_grew(self):
+        """Being top of the table is a standing state, not an event: half
+        the league increments a state-class count every single gameweek, so
+        its season total waits for the milestone set-piece. Retained for
+        `--format json` regardless (KTD8)."""
         store = LeagueHistoryStore("2026-27", "classic", 1)
         store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, manager_name="Alice", league_position=1)])
 
         pack = build_notes_pack(store, 1)
         entry = self._count_entry(pack, "Alice", "weeks_on_top")
 
-        assert entry.surfaces == frozenset({NoteSurface.REPORT, NoteSurface.PROMPT})
+        assert entry.surfaces == frozenset()
         assert entry.text == (
             "Alice: 1 gameweek on top of the league this season (GW1-GW1), "
             "the first this gameweek."
         )
+
+    def test_a_milestone_gameweek_surfaces_every_nonzero_count_to_report_and_prompt(self):
+        """At the halfway boundary and the finale the whole nonzero set is
+        the season set-piece -- a count that did not grow this week included,
+        exactly as the fines table prints everyone's totals at a milestone."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, manager_name="Alice", league_position=1)])
+        for gw in (2, 3, 4):
+            store.append_rows(gw, [make_history_row(gameweek=gw, manager_key=1, manager_name="Alice", league_position=2)])
+
+        # GW4 is the halfway milestone under these shortened constants; the
+        # weeks_on_top count last grew at GW1.
+        pack = build_notes_pack(store, 4, total_gameweeks=8, chip_split_gw=4)
+        entry = self._count_entry(pack, "Alice", "weeks_on_top")
+
+        assert entry.occurrences == 1
+        assert entry.surfaces == frozenset({NoteSurface.REPORT, NoteSurface.PROMPT})
+        assert "this gameweek" not in entry.text  # stale total, honestly phrased
 
     def test_a_count_that_did_not_grow_this_gameweek_is_retained_without_surfaces(self):
         """A season total for something that did not happen this week is

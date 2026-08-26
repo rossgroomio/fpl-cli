@@ -98,6 +98,17 @@ class ConditionDefinition:
     infer. Two explicit forms because English pluralises mid-phrase
     ("gameweeks in the bottom half"), so appending an "s" cannot be
     trusted mechanically.
+
+    `count_weekly` splits the conditions into two cadence classes for the
+    season count's rendering (U9 consumes it). True marks an *event*
+    condition -- one occurrence is a discrete thing that happened this
+    gameweek (a win, a last place, a captain blank, a hit, a waiver move),
+    so its season total is news in the week it grows. False marks a
+    *state* condition -- the occurrence is a standing table position that
+    persists week over week (being top, being in the bottom half, going
+    another week without a green arrow), so roughly the same half of the
+    league increments it every single gameweek and a weekly render would
+    be wallpaper; its season total is milestone material only.
     """
 
     key: str
@@ -108,6 +119,7 @@ class ConditionDefinition:
     predicate: ConditionPredicate
     count_label_one: str
     count_label_many: str
+    count_weekly: bool
 
 
 # ---------------------------------------------------------------------------
@@ -285,54 +297,63 @@ CONDITIONS: tuple[ConditionDefinition, ...] = (
         needs=("league_position",), predicate=_weeks_on_top,
         count_label_one="gameweek on top of the league",
         count_label_many="gameweeks on top of the league",
+        count_weekly=False,
     ),
     ConditionDefinition(
         key="bottom_half_run", formats=_BOTH, label="Bottom-half run", min_run=3,
         needs=("league_position",), predicate=_bottom_half_run,
         count_label_one="gameweek in the bottom half",
         count_label_many="gameweeks in the bottom half",
+        count_weekly=False,
     ),
     ConditionDefinition(
         key="gw_win_streak", formats=_BOTH, label="Gameweek win streak", min_run=2,
         needs=("gross_points", "transfer_cost"), predicate=_gw_win_streak,
         count_label_one="gameweek win",
         count_label_many="gameweek wins",
+        count_weekly=True,
     ),
     ConditionDefinition(
         key="gw_loss_streak", formats=_BOTH, label="Gameweek loss streak", min_run=2,
         needs=("gross_points", "transfer_cost"), predicate=_gw_loss_streak,
         count_label_one="last-place finish",
         count_label_many="last-place finishes",
+        count_weekly=True,
     ),
     ConditionDefinition(
         key="green_arrow_drought", formats=_BOTH, label="Green arrow drought", min_run=4,
         needs=("league_position",), predicate=_green_arrow_drought,
         count_label_one="gameweek without a green arrow",
         count_label_many="gameweeks without a green arrow",
+        count_weekly=False,
     ),
     ConditionDefinition(
         key="captain_blank_run", formats=_CLASSIC_ONLY, label="Captain blank run", min_run=2,
         needs=("captain",), predicate=_captain_blank_run,
         count_label_one="captain blank",
         count_label_many="captain blanks",
+        count_weekly=True,
     ),
     ConditionDefinition(
         key="hit_run", formats=_CLASSIC_ONLY, label="Hit run", min_run=3,
         needs=("transfer_cost",), predicate=_hit_run,
         count_label_one="gameweek with a transfer hit",
         count_label_many="gameweeks with a transfer hit",
+        count_weekly=True,
     ),
     ConditionDefinition(
         key="waiver_win_run", formats=_DRAFT_ONLY, label="Waiver win run", min_run=2,
         needs=("transactions",), predicate=_waiver_win_run,
         count_label_one="waiver win",
         count_label_many="waiver wins",
+        count_weekly=True,
     ),
     ConditionDefinition(
         key="waiver_burn_run", formats=_DRAFT_ONLY, label="Waiver burn run", min_run=2,
         needs=("transactions",), predicate=_waiver_burn_run,
         count_label_one="waiver burn",
         count_label_many="waiver burns",
+        count_weekly=True,
     ),
 )
 
@@ -736,6 +757,7 @@ class ConditionRunView:
     first_evaluated_gameweek: int | None
     count_label_one: str
     count_label_many: str
+    count_weekly: bool
 
     @property
     def is_reportable(self) -> bool:
@@ -776,6 +798,7 @@ def manager_condition_views(
             first_evaluated_gameweek=state.first_evaluated_gameweek,
             count_label_one=condition.count_label_one,
             count_label_many=condition.count_label_many,
+            count_weekly=condition.count_weekly,
         )
     return views
 

@@ -31,7 +31,7 @@ Your audience is every member of this league. They want entertainment first, inf
 - NEVER speculate about future gameweeks
 - Stick to what happened this gameweek, with one exception: a historical claim (a streak, trend, or season-arc fact spanning more than this gameweek) is permitted only when it appears in the "## League History" section, stated using that section's own wording for counts, spans, and holds. A streak, trend, or season-arc fact not listed there is forbidden to mention, however obvious it might seem. Do NOT infer history from the Awards or GW Standings sections - they are compressed and can misrepresent what actually happened over time
 - A League History entry phrased as an observed count over a span (e.g. "3 in the last 11, with 8 not recorded") must be repeated that way, never simplified to "in a row" or "consecutive" unless the section itself already uses that phrasing
-- A League History season-count line (e.g. "4 gameweek wins this season") is optional colour in the Season Fines mould: use one when it sharpens something that happened this gameweek ("Bob's fourth gameweek win of the season"), take the count verbatim, repeat its "not judged" qualifier alongside it or leave the line out, and never derive or extrapolate a season total yourself from the weekly sections
+- A League History season-count line (e.g. "4 gameweek wins this season") is optional colour in the Season Fines mould: use one when it sharpens something that happened this gameweek ("Bob's fourth gameweek win of the season"), or - when the section carries the season's full counts, at the halfway boundary and the finale - to ground a season retrospective. Take the count verbatim, repeat its "not judged" qualifier alongside it or leave the line out, and never derive or extrapolate a season total yourself from the weekly sections
 - If fines were triggered, make them a highlight
 - The "## Season Fines" section is optional colour, not a required beat. Use it when a season total sharpens what already happened this gameweek ("Bob's fourth last-place of the season"), and leave it out entirely when it adds nothing - do not open or close on the season table, do not list it out, and never pad the recap with it. A gameweek where nobody was fined rarely needs it at all
 - When you do use it, take its numbers verbatim and only from that section. NEVER add up fines yourself from the "## Fines" section, which covers this gameweek alone, and never present a total the Season Fines section qualifies as incomplete as though it were final - repeat its qualification alongside it or leave the number out
@@ -354,11 +354,14 @@ def format_recap_league_history_context(pack: NotesPack | None) -> str:
     ]
     for entry in prompt_entries:
         lines.append(f"- {entry.text}")
-    # Season counts (issue #164): only the counts that grew this gameweek --
-    # the pack already restricts surfaces to exactly those -- so the model
-    # gets "their fourth gameweek win of the season" for the win that just
-    # happened, never a season ledger to pad the recap out of. The explicit
-    # total keeps the enumerate-and-lock shape the other sections use.
+    # Season counts (issue #164): the pack surfaces these by cadence class
+    # -- on an ordinary week only event-class counts that grew this
+    # gameweek, so the model gets "their fourth gameweek win of the season"
+    # for the win that just happened rather than a season ledger to pad the
+    # recap out of; at the two season milestones the whole nonzero set,
+    # state-class table counts included, the season-spanning facts the
+    # retrospective framing calls for. The explicit total keeps the
+    # enumerate-and-lock shape the other sections use.
     count_entries = [
         entry for entry in pack.season_count_entries if NoteSurface.PROMPT in entry.surfaces
     ]
