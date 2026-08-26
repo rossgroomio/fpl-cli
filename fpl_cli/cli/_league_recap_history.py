@@ -944,8 +944,8 @@ def _carry_recorded_identity(
             warnings, HISTORY_WARNING_IDENTITY_CARRIED,
             f"League history: GW{gameweek} kept the name, club, position or player "
             f"reference already recorded for {carried} player(s) rather than the ones "
-            f"they carry today. A replay resolves picks against the current bootstrap, "
-            f"which has moved on.",
+            f"they carry today. Picks are resolved against the current bootstrap, "
+            f"which has moved on since the gameweek was played.",
         )
     return carried
 
