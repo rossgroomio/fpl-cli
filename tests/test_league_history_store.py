@@ -75,17 +75,28 @@ class TestLeagueHistoryRowModel:
         assert row.global_rank == 400_000
         assert row.league_position == 1
 
-    def test_classic_row_carries_the_four_rollover_only_fields(self):
-        row = make_history_row(
-            team_value=1013, bank=7, global_rank=400_000, transfers_made=2,
-        )
-        assert (row.team_value, row.bank, row.global_rank, row.transfers_made) == (1013, 7, 400_000, 2)
+    def test_global_gw_rank_is_a_separate_field_from_global_rank(self):
+        """Issue #148: the per-gameweek world rank must not collapse onto the
+        season-cumulative one -- they come from different API fields
+        (`rank` vs `overall_rank`) and can move in opposite directions."""
+        row = make_history_row(global_rank=400_000, global_gw_rank=12_345)
+        assert row.global_rank == 400_000
+        assert row.global_gw_rank == 12_345
 
-    def test_draft_row_omits_all_four_and_still_validates(self):
+    def test_classic_row_carries_the_five_rollover_only_fields(self):
+        row = make_history_row(
+            team_value=1013, bank=7, global_rank=400_000, global_gw_rank=12_345, transfers_made=2,
+        )
+        assert (
+            row.team_value, row.bank, row.global_rank, row.global_gw_rank, row.transfers_made,
+        ) == (1013, 7, 400_000, 12_345, 2)
+
+    def test_draft_row_omits_all_five_and_still_validates(self):
         row = make_history_row(fpl_format="draft", manager_key=10, gross_points=51)
         assert row.team_value is None
         assert row.bank is None
         assert row.global_rank is None
+        assert row.global_gw_rank is None
         assert row.transfers_made is None
         assert row.gross_points == 51
 
@@ -108,6 +119,16 @@ class TestLeagueHistoryRowModel:
 
     def test_content_notices_a_changed_value(self):
         assert make_history_row(gross_points=50).content() != make_history_row(gross_points=51).content()
+
+    def test_content_ignores_a_schema_version_bump_alone(self):
+        """A schema bump is an install fact, not a gameweek fact: an
+        unchanged row rebuilt under a newer version must still compare equal
+        in content, or every gameweek captured before an upgrade appends a
+        pointless superseding duplicate on its very next re-run."""
+        old = make_history_row(gross_points=50, version=2)
+        new = make_history_row(gross_points=50, version=LEAGUE_HISTORY_VERSION)
+        assert old.content() == new.content()
+        assert old != new
 
 
 class TestRowResolution:
@@ -485,6 +506,28 @@ class TestStoreVersioning:
         path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
 
         assert store.load_gameweek(5)[0].team_value is None
+
+    def test_a_version_2_row_without_global_gw_rank_still_reads(self):
+        """Issue #148: `global_gw_rank` is purely additive -- a row written
+        before it existed carries no such key at all, and must still load
+        with the field defaulting to None rather than needing an `_upgrade`
+        branch of its own."""
+        import json
+
+        from fpl_cli.services.league_history import LeagueHistoryStore
+
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        payload = make_history_row(gameweek=5, gross_points=50, global_rank=400_000).model_dump(mode="json")
+        payload["version"] = 2
+        del payload["global_gw_rank"]
+        path = store.gameweek_file(5)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+        row = store.load_gameweek(5)[0]
+        assert row.global_rank == 400_000
+        assert row.global_gw_rank is None
+        assert row.version == 2
 
     def test_a_future_version_line_is_skipped_with_a_warning_and_survives(self, caplog):
         import json

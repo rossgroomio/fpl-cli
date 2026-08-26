@@ -32,7 +32,10 @@ from pydantic import BaseModel, ConfigDict, Field
 #
 # 2: `squad_value` renamed to `team_value`, the name the number always
 #    deserved -- it is the API's bank-inclusive `value` (issue #147).
-LEAGUE_HISTORY_VERSION = 2
+# 3: `global_gw_rank` added -- the FPL-wide rank for this gameweek alone,
+#    distinct from `global_rank`'s season-cumulative one. Purely additive, so
+#    a version-2 row still validates with it defaulting to None (issue #148).
+LEAGUE_HISTORY_VERSION = 3
 
 # The oldest version this code can still parse. Raising this floor bricks every
 # store holding older lines, so it moves only alongside a one-time rewrite that
@@ -272,9 +275,9 @@ class LeagueHistoryRow(BaseModel):
     fines: list[LedgerFine] = Field(default_factory=list)
 
     # -- classic-only (R2) ---------------------------------------------------
-    # All four sit in the picks response's `entry_history` object, all four are
+    # All five sit in the picks response's `entry_history` object, all five are
     # destroyed by the season rollover, and none of them exists in draft (no
-    # budget, no global rank, no transfers). A draft row omits all four.
+    # budget, no global rank, no transfers). A draft row omits all five.
     # Prices are in the repo's £0.1m units (1000 = £100.0m).
     #
     # `team_value` is the API's `value` verbatim, which is the squad's selling
@@ -284,10 +287,18 @@ class LeagueHistoryRow(BaseModel):
     # exclusion the number never made (issue #147).
     team_value: int | None = None
     bank: int | None = None
-    # The manager's FPL-wide rank. Named so it can never be read as a league
-    # position, which is what every condition and every recap surface means by
-    # "rank" (KTD12).
+    # The manager's FPL-wide rank, cumulative across the season to date. Named
+    # so it can never be read as a league position, which is what every
+    # condition and every recap surface means by "rank" (KTD12).
     global_rank: int | None = None
+    # The manager's FPL-wide rank for this gameweek's points alone, not the
+    # season-cumulative figure `global_rank` carries -- the API's `rank`,
+    # distinct from its `overall_rank`. The rollover destroys this exactly
+    # like `global_rank`, and it is the one field of the five worth a
+    # dedicated capture push: unlike the other four, nothing else in the row
+    # can reconstruct a season's world-rank trajectory once it is gone
+    # (issue #148).
+    global_gw_rank: int | None = None
     transfers_made: int | None = None
     # R21: how many transfers the recorded count claims that the captured
     # detail does not carry. The transfer fetch is best-effort, so without this
@@ -295,13 +306,16 @@ class LeagueHistoryRow(BaseModel):
     transfer_detail_shortfall: int | None = None
 
     def content(self) -> dict[str, Any]:
-        """The row's values excluding when it was captured.
+        """The row's values excluding when it was captured and its own schema version.
 
         R3's no-op condition is same-*content*, not same-timestamp: a re-run
         that reproduces a row exactly must write nothing, and every re-run has
-        a later `captured_at`.
+        a later `captured_at`. `version` is excluded for the same reason: a
+        schema bump alone must not make an unchanged gameweek's re-run look
+        like new content and append a superseding duplicate -- an install
+        upgrade is not a fact about the gameweek.
         """
-        return self.model_dump(mode="json", exclude={"captured_at"})
+        return self.model_dump(mode="json", exclude={"captured_at", "version"})
 
     def resolution_sort_key(self) -> tuple[int, datetime]:
         """Sort key for picking the winning row among duplicates of one key.

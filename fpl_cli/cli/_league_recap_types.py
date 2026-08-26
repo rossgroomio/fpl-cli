@@ -103,18 +103,21 @@ class RecapManagerEntry(TypedDict):
     auto_subs: list[str]
     transfers: NotRequired[list[RecapTransfer]]
     transactions: NotRequired[list[RecapDraftTransaction]]
-    # Classic only: four figures the picks response's `entry_history` carries
+    # Classic only: five figures the picks response's `entry_history` carries
     # and the season rollover destroys. Draft has no budget, no FPL-wide rank,
-    # and acquires by waiver, so it omits all four.
+    # and acquires by waiver, so it omits all five.
     # Prices are in the repo's £0.1m units (1000 = £100.0m). `team_value` is
     # the API's `value` verbatim: squad selling value *plus* the bank, which
     # is why it is not called `squad_value` (issue #147) -- squad-only value
     # is `team_value - bank`.
     team_value: NotRequired[int]
     bank: NotRequired[int]
-    # The manager's FPL-wide rank. Deliberately not `overall_rank`, which on
-    # this TypedDict means league position.
+    # The manager's FPL-wide rank, cumulative for the season. Deliberately not
+    # `overall_rank`, which on this TypedDict means league position.
     global_rank: NotRequired[int]
+    # The manager's FPL-wide rank for this gameweek alone -- the API's `rank`,
+    # not its `overall_rank` (issue #148).
+    global_gw_rank: NotRequired[int]
     # How many transfers the API says were made. `transfers` is best-effort, so
     # this is the only way to tell an empty list apart from a manager who made
     # none -- and to detect a captured list that came back short.
