@@ -202,8 +202,8 @@ class TestStreakEntries:
         store = LeagueHistoryStore("2026-27", "classic", 1)
         for gw in (1, 2, 3):
             store.append_rows(gw, [
-                make_history_row(gameweek=gw, manager_key=1, manager_name="Alice", league_position=1, gw_rank=1),
-                make_history_row(gameweek=gw, manager_key=2, manager_name="Bob", league_position=5, gw_rank=2),
+                make_history_row(gameweek=gw, manager_key=1, manager_name="Alice", league_position=1, gross_points=87),
+                make_history_row(gameweek=gw, manager_key=2, manager_name="Bob", league_position=5, gross_points=40),
             ])
 
         pack = build_notes_pack(store, 3)
