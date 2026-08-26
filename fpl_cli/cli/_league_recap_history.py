@@ -22,9 +22,18 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from fpl_cli.cli._context import error_console
+from fpl_cli.cli._fines import (
+    COHORT_ONLY_RULE_TYPES,
+    FinesLeagueData,
+    WorstPerformer,
+    evaluate_rules,
+    rules_for_format,
+)
+from fpl_cli.cli._fines_config import FineRule, FinesConfig
 from fpl_cli.cli._league_recap_data import (
     _PICKS_CONCURRENCY,
     _has_previous_gameweek,
+    _recap_fine_message,
     derive_point_in_time_positions,
     raw_chip_name,
     recap_manager_key,
@@ -52,7 +61,9 @@ from fpl_cli.services.league_history import (
     LeagueHistoryStore,
 )
 from fpl_cli.services.league_history_counters import invalidate_if_repaired
+from fpl_cli.services.league_history_fines import SeasonFinesTally, build_season_fines_tally
 from fpl_cli.services.league_history_notes import NotesPack, build_notes_pack
+from fpl_cli.utils.gameweek import format_gameweek_list
 
 if TYPE_CHECKING:
     from fpl_cli.cli._league_recap_data import ManagerHistoryClient
@@ -92,6 +103,9 @@ class CaptureResult:
     # store to build from, and R4's degrade-gracefully contract means a
     # store failure costs the pack, not the rest of the recap.
     notes_pack: NotesPack | None = None
+    # None for the same reason `notes_pack` is: the tally is a fold over the
+    # store, so an unreadable store costs it rather than costing the recap.
+    fines_tally: SeasonFinesTally | None = None
     # Set only on this partition's very first capture -- computed once here,
     # from the same `is_first_season_capture` check the stderr notice below
     # already makes, rather than a second, independent probe against a fresh
@@ -276,6 +290,11 @@ def _known_row(
         gameweek_blank=data.get("is_bgw"),
         gameweek_double=data.get("is_dgw"),
         fines=_fines_for(data, manager_key, manager["manager_name"]),
+        # What was ruled, not just what triggered. Absent from `data` means
+        # the caller never evaluated fines at all, which stays `None` -- the
+        # "nothing is recorded either way" state -- rather than collapsing
+        # into the `[]` that means "ruled, nothing configured" (issue #136).
+        fine_rules_evaluated=data.get("fine_rules_evaluated"),
         team_value=manager.get("team_value"),
         bank=manager.get("bank"),
         global_rank=manager.get("global_rank"),
@@ -623,6 +642,94 @@ def _coarse_row(
     )
 
 
+def _coarse_fine_rules(fines_config: FinesConfig | None, fpl_format: LeagueFormat) -> list[FineRule]:
+    """The configured rules the coarse tier can actually rule on.
+
+    The manager-history endpoint carries headline numbers and no squad, so
+    `red-card` is structurally unevaluable there -- and a red-card handler
+    handed an empty squad answers "no red card fine", which would record a
+    false acquittal rather than an abstention (issue #136). Narrowing here,
+    and stamping the narrowed list onto the row as `fine_rules_evaluated`,
+    is what makes the partial ruling honest rather than implied complete.
+    """
+    if fines_config is None:
+        return []
+    return [
+        rule for rule in rules_for_format(fines_config, fpl_format)
+        if rule.type in COHORT_ONLY_RULE_TYPES
+    ]
+
+
+def _apply_coarse_fines(
+    rows: list[LeagueHistoryRow], *, rules: list[FineRule], use_net_points: bool,
+) -> None:
+    """Rule the cohort-only fines across one coarse gameweek, in place.
+
+    Runs after `_assign_cohort_ranks` for the same reason that does: last
+    place is a fact about the whole cohort, not about one row. Only
+    `capture_status == OK` rows carrying points are ruled -- an unknown row
+    reached nobody, so it records no ruling at all (R19) rather than an
+    acquittal by default.
+
+    Every ruled row is stamped even when nothing triggered, which is the
+    point: `fines == []` with `fine_rules_evaluated == ["last-place"]` is a
+    recorded acquittal on that rule, while `fine_rules_evaluated is None` is
+    silence.
+    """
+    ruled = [
+        row for row in rows
+        if row.capture_status is CaptureStatus.OK and row.gross_points is not None
+    ]
+    if not ruled:
+        return
+
+    rule_types = [rule.type for rule in rules]
+    if not rules:
+        # Nothing configured this tier can rule: still a recorded "no rule
+        # covers this row", not silence.
+        for row in ruled:
+            row.fine_rules_evaluated = rule_types
+        return
+
+    def _gameweek_points(row: LeagueHistoryRow) -> int:
+        gross = row.gross_points or 0
+        return gross - (row.transfer_cost or 0) if use_net_points else gross
+
+    # Same measure and same single-winner tie-break the live path uses
+    # (`evaluate_league_fines`): whichever manager `min` reaches first is the
+    # one fined, so a tie for last does not fine everyone tied.
+    worst = min(ruled, key=_gameweek_points)
+
+    for row in ruled:
+        league_data = FinesLeagueData(
+            user_gw_points=row.gross_points or 0,
+            worst_performers=[WorstPerformer(
+                is_user=row.manager_key == worst.manager_key,
+                points=_gameweek_points(worst),
+                gross_points=worst.gross_points or 0,
+                name=worst.manager_name,
+            )],
+        )
+        if use_net_points:
+            league_data["user_gw_net_points"] = _gameweek_points(row)
+
+        try:
+            results = evaluate_rules(rules, league_data, [], use_net_points=use_net_points)
+        except Exception:  # noqa: BLE001 — one bad rule must not cost the backfill
+            logger.debug("Coarse fines evaluation failed for %s", row.manager_name, exc_info=True)
+            continue
+
+        row.fines = [
+            LedgerFine(
+                manager_key=row.manager_key,
+                rule_type=result.rule_type,
+                message=_recap_fine_message(result, row.manager_name),
+            )
+            for result in results if result.triggered
+        ]
+        row.fine_rules_evaluated = rule_types
+
+
 async def _coarse_backfill(
     data: LeagueRecapData,
     *,
@@ -631,6 +738,8 @@ async def _coarse_backfill(
     league_id: int,
     history_client: ManagerHistoryClient,
     gameweeks: list[int],
+    fine_rules: list[FineRule],
+    use_net_points: bool,
     warnings: list[dict[str, str]],
 ) -> set[int]:
     """Fill classic gameweeks from the manager-history endpoint.
@@ -712,6 +821,7 @@ async def _coarse_backfill(
         if not gameweek_rows:
             continue
         _assign_cohort_ranks(gameweek_rows)
+        _apply_coarse_fines(gameweek_rows, rules=fine_rules, use_net_points=use_net_points)
         try:
             written = store.append_rows(gameweek, gameweek_rows)
         except LeagueHistoryError as exc:
@@ -806,6 +916,8 @@ async def _backfill(
     finished_gameweeks: Collection[int],
     replay_gameweek: ReplayGameweek | None,
     backfill_detail: bool,
+    fines_config: FinesConfig | None,
+    use_net_points: bool,
     warnings: list[dict[str, str]],
 ) -> set[int]:
     """Fill what this run is allowed to fill, cheapest tier first.
@@ -828,6 +940,8 @@ async def _backfill(
             repaired |= await _coarse_backfill(
                 data, store=store, season=season, league_id=league_id,
                 history_client=history_client, gameweeks=coarse_targets,
+                fine_rules=_coarse_fine_rules(fines_config, fpl_format),
+                use_net_points=use_net_points,
                 warnings=warnings,
             )
             gaps = _gaps(store.coverage(), targets)
@@ -859,21 +973,6 @@ async def _backfill(
 # ---------------------------------------------------------------------------
 
 
-def _format_gameweeks(gameweeks: Collection[int]) -> str:
-    """Render a gameweek list compactly, e.g. "GW1-3, GW7"."""
-    ordered = sorted(gameweeks)
-    if not ordered:
-        return ""
-    runs: list[tuple[int, int]] = [(ordered[0], ordered[0])]
-    for gameweek in ordered[1:]:
-        start, end = runs[-1]
-        if gameweek == end + 1:
-            runs[-1] = (start, gameweek)
-        else:
-            runs.append((gameweek, gameweek))
-    return ", ".join(f"GW{s}" if s == e else f"GW{s}-{e}" for s, e in runs)
-
-
 def _report_coverage(
     coverage: list[GameweekCoverage],
     *,
@@ -895,14 +994,14 @@ def _report_coverage(
     lines: list[str] = []
     if coarse:
         lines.append(
-            f"League history: {_format_gameweeks(coarse)} captured at the coarse tier "
+            f"League history: {format_gameweek_list(coarse)} captured at the coarse tier "
             f"(headline numbers only). Held back until filled: "
             f"{'; '.join(COARSE_HELD_BACK)}. Re-run with {DETAIL_FLAG} to fill them.",
         )
     if uncaptured:
         if fpl_format == "draft":
             lines.append(
-                f"League history: {_format_gameweeks(uncaptured)} has no recorded rows. Draft "
+                f"League history: {format_gameweek_list(uncaptured)} has no recorded rows. Draft "
                 f"exposes no per-manager history endpoint, so each of those gameweeks' "
                 f"league position and cumulative total is unavailable by name, and becomes "
                 f"permanently unrecoverable at the July season rollover. "
@@ -910,18 +1009,18 @@ def _report_coverage(
             )
         else:
             lines.append(
-                f"League history: {_format_gameweeks(uncaptured)} has no recorded rows. "
+                f"League history: {format_gameweek_list(uncaptured)} has no recorded rows. "
                 f"Re-run with {DETAIL_FLAG} to fill them.",
             )
     if unknown:
         lines.append(
-            f"League history: {_format_gameweeks(unknown)} holds managers whose data could not "
+            f"League history: {format_gameweek_list(unknown)} holds managers whose data could not "
             f"be fetched. They are recorded as unknown -- no streak is extended or broken "
             f"across them -- and every later run re-attempts them.",
         )
     if unreadable:
         lines.append(
-            f"League history: {_format_gameweeks(unreadable)} could not be read and is skipped. "
+            f"League history: {format_gameweek_list(unreadable)} could not be read and is skipped. "
             f"Move the file aside to recapture it; the rest of the season is unaffected.",
         )
 
@@ -977,6 +1076,8 @@ async def capture_recap_history(
     finished_gameweeks: Collection[int] = (),
     replay_gameweek: ReplayGameweek | None = None,
     backfill_detail: bool = False,
+    fines_config: FinesConfig | None = None,
+    use_net_points: bool = False,
 ) -> CaptureResult:
     """Record this gameweek, fill what the API still allows, and report the rest.
 
@@ -989,6 +1090,14 @@ async def capture_recap_history(
     manager *per gameweek* and therefore runs only behind `backfill_detail` --
     except to repair a gameweek already holding unknown rows, which is bounded
     and is the only way R19's unknown rows ever get fixed.
+
+    `fines_config` lets the coarse tier rule the fines it structurally can --
+    the ones derivable from cohort points alone. Without it a backfilled
+    gameweek lands fine-free, and an empty list is indistinguishable from a
+    week nobody was fined in, so missing a week would un-fine it permanently
+    (issue #136). The detailed tier needs nothing here: its replay goes
+    through the same collectors and the same `evaluate_league_fines` the live
+    path does, and arrives with `data["fines"]` already ruled.
     """
     season = season or season_label()
     league_id = data.get("league_id")
@@ -1057,6 +1166,8 @@ async def capture_recap_history(
         finished_gameweeks=finished_gameweeks,
         replay_gameweek=replay_gameweek,
         backfill_detail=backfill_detail,
+        fines_config=fines_config,
+        use_net_points=use_net_points,
         warnings=warnings,
     )
     # A repair `_backfill` just made can land on a gameweek the counters
@@ -1082,6 +1193,18 @@ async def capture_recap_history(
         store, data["gameweek"], league_start_gameweek=data.get("league_start_event") or 1,
     )
 
+    # Also built from the store rather than from `rows`: the season table is a
+    # fold over every captured gameweek, and this run's rows are already in it
+    # by the time this is reached. Shares the store's memoized gameweek reads
+    # with the notes pack above, so the gameweeks they both touch are read
+    # once (issue #136).
+    fines_tally = build_season_fines_tally(
+        store,
+        data["gameweek"],
+        league_start_gameweek=data.get("league_start_event") or 1,
+        rule_types=data.get("fine_rules_evaluated") or [],
+    )
+
     return CaptureResult(
         rows=rows,
         written=written,
@@ -1089,5 +1212,6 @@ async def capture_recap_history(
         warnings=warnings,
         coverage=coverage,
         notes_pack=notes_pack,
+        fines_tally=fines_tally,
         first_capture_store_path=first_capture_store_path,
     )

@@ -190,6 +190,12 @@ class LeagueRecapData(TypedDict):
     managers: list[RecapManagerEntry]
     awards: RecapAwards
     fines: NotRequired[list[RecapFineResult]]
+    # Which fine rule types were ruled on for this gameweek, whether or not
+    # any triggered -- stamped onto every captured row so the ledger can tell
+    # "nobody was fined" apart from "nothing was ruled" (issue #136). Absent
+    # when the caller never evaluated fines at all, which is not the same as
+    # present-and-empty ("evaluated, nothing configured").
+    fine_rules_evaluated: NotRequired[list[str]]
     synthesis_summary: NotRequired[str]
     # Ledger partition key and the league's own start gameweek (absent or 1
     # means it started at GW1, so there is nothing to offset or skip).
@@ -211,3 +217,10 @@ class LeagueRecapData(TypedDict):
     league_history_phase_text: NotRequired[str]
     league_history_streak_lines: NotRequired[list[str]]
     league_history_coverage_lines: NotRequired[list[str]]
+    # Report-surfaced season fine tally (issue #136). All three are absent
+    # together for a league with no fine rules configured and none ever
+    # ruled, so the report omits the section rather than heading an empty
+    # table.
+    season_fines_span: NotRequired[str]
+    season_fines_lines: NotRequired[list[str]]
+    season_fines_coverage_lines: NotRequired[list[str]]

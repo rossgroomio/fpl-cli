@@ -61,7 +61,13 @@ $ fpl review --save --summarise    # Full review with LLM narrative
 $ fpl league                       # Live league standings
 $ fpl league-recap                 # Awards, standings movement, and running streaks
 $ fpl league-recap --summarise     # Add the LLM editorial for the group chat
+$ fpl league-fines                 # Who owes what this season, and which weeks were ruled
 ```
+
+Fines are ruled per gameweek by `league-recap` and recorded against it, so `fpl
+league-fines` reads them straight back off disk — no network, and any season still
+on disk (`--season 2025-26`). Every gameweek that could not be ruled is named
+beneath the table, because a zero there means "not known", not "not fined".
 
 ### Checking Your Setup
 
@@ -157,6 +163,7 @@ $ fpl stats --format json -p MID -s expected_goal_involvements
 $ fpl status --format json
 $ fpl fdr --blanks --format json
 $ fpl league-recap --format json
+$ fpl league-fines --format json
 ```
 
 Failures come back on the same stream: `{"command", "error"}` on stdout with exit code 1.

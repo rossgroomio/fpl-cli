@@ -1,7 +1,14 @@
 """Tests for fine evaluation logic."""
 
-from fpl_cli.cli._fines import FinesLeagueData, FinesTeamPlayer, evaluate_fines
-from fpl_cli.cli._fines_config import FineRule, FinesConfig
+from fpl_cli.cli._fines import (
+    COHORT_ONLY_RULE_TYPES,
+    FinesLeagueData,
+    FinesTeamPlayer,
+    evaluate_fines,
+    evaluate_rules,
+    rules_for_format,
+)
+from fpl_cli.cli._fines_config import VALID_RULE_TYPES, FineRule, FinesConfig
 
 
 def _config(classic: list[FineRule] | None = None, draft: list[FineRule] | None = None) -> FinesConfig:
@@ -179,3 +186,43 @@ class TestEvaluateFines:
         assert len(results) == 2
         assert results[0].triggered is False  # last-place
         assert results[1].triggered is True   # red-card
+
+
+class TestRuleNarrowing:
+    """Splitting the rules a caller can actually rule from the ones it can't
+    (issue #136): the coarse ledger tier has headline numbers and no squad."""
+
+    def test_every_valid_rule_type_is_classified_as_cohort_only_or_not(self):
+        """A new rule type must be a deliberate choice, not a default. This
+        fails the moment one is added without deciding whether the coarse
+        backfill can rule it."""
+        assert COHORT_ONLY_RULE_TYPES <= VALID_RULE_TYPES
+        needs_squad = VALID_RULE_TYPES - COHORT_ONLY_RULE_TYPES
+        assert needs_squad == {"red-card"}
+
+    def test_rules_for_format_returns_the_configured_order(self):
+        config = _config(classic=[THRESHOLD_RULE, LAST_PLACE_RULE], draft=[RED_CARD_RULE])
+        assert [r.type for r in rules_for_format(config, "classic")] == [
+            "below-threshold", "last-place",
+        ]
+        assert [r.type for r in rules_for_format(config, "draft")] == ["red-card"]
+
+    def test_narrowing_abstains_where_evaluating_would_falsely_acquit(self):
+        """An empty squad makes the red-card handler answer "no red card
+        fine", which reads as a ruling. Dropping the rule records nothing at
+        all instead."""
+        league: FinesLeagueData = {"user_gw_points": 40}
+        rules = [THRESHOLD_RULE, RED_CARD_RULE]
+
+        acquitted = evaluate_rules(rules, league, [])
+        abstained = evaluate_rules(
+            [r for r in rules if r.type in COHORT_ONLY_RULE_TYPES], league, [],
+        )
+
+        assert [r.rule_type for r in acquitted] == ["below-threshold", "red-card"]
+        assert [r.rule_type for r in abstained] == ["below-threshold"]
+
+    def test_evaluate_fines_still_rules_every_configured_rule(self):
+        league: FinesLeagueData = {"user_gw_points": 40}
+        results = evaluate_fines(_config(classic=[THRESHOLD_RULE, RED_CARD_RULE]), "classic", league, [])
+        assert [r.rule_type for r in results] == ["below-threshold", "red-card"]

@@ -616,7 +616,12 @@ fpl league-recap --format json     # JSON envelope for scripting/agents
 
 **Standings movement:** position changes derived from point differentials, per-manager highlights.
 
-**Fines:** evaluates fines for every manager (not just you) when configured.
+**Fines:** evaluates fines for every manager (not just you) when configured, records the
+ruling against the gameweek, and prints the season totals so far. A backfilled gameweek is
+ruled too — the detailed replay rules every configured rule, the coarse tier rules the ones
+derivable from cohort points (`last-place`, `below-threshold`) and records that it could not
+rule `red-card`, which needs a squad the manager-history endpoint does not return. See
+[Season Fines](#season-fines) for the table this builds up.
 
 **LLM editorial** (`--summarise`): Newsletter-style narrative via synthesis provider. Names names, calls out decisions. The editorial is an add-on: if the synthesis provider has no usable API key the recap still renders, still saves its report and still captures the ledger, with the reason on stderr and a `synthesis_provider_unavailable` warning in JSON. `synthesis_summary` is `null` on such a run — the warning is what distinguishes it from a run that never asked for an editorial.
 
@@ -628,7 +633,8 @@ fpl league-recap --format json     # JSON envelope for scripting/agents
 ledger, built from the rows this run assembled, so manager data is present even when the
 store could not be written. `metadata` carries `coverage` (per gameweek: fidelity-tier
 counts, unknown managers, whether the file was readable), `season_phase`, `notes_pack`
-(every entry, including those below their reporting minimum), `synthesis_summary` (with
+(every entry, including those below their reporting minimum), `season_fines` (the whole
+season tally, emitted whether or not it is worth showing a human), `synthesis_summary` (with
 `--summarise`), `warnings`, and `first_capture_store_path` — always present, carrying the
 partition directory on its first capture and `null` on every run after that. Warning
 codes are listed under [Capture warnings](#capture-warnings).
@@ -675,6 +681,16 @@ the one per-gameweek figure the ledger captured `global_rank` for but not itself
 schema version 3 added it. A row written before that version reads it back as empty
 rather than guessed.
 
+`fines` records the fines ruled against that manager that gameweek, keyed by manager
+rather than display name so a mid-season rename cannot split a tally and two managers
+sharing a name cannot merge into one. Beside it, `fine_rules_evaluated` (schema version
+4) records which rule types were actually ruled, whether or not any triggered — without
+it an empty `fines` list means three different things at once (nobody was fined, no
+rules were configured, no rule was ever checked), and [Season Fines](#season-fines)
+would score all three as innocence. A list names exactly the rules ruled, `[]` means
+nothing was configured, and empty means nothing is recorded either way: an unknown
+capture row, or a row written before schema version 4.
+
 Rows are append-only. Re-running a gameweek that has not changed writes nothing; a
 re-run whose numbers differ (bonus points settled, a failed fetch repaired, a coarse
 gameweek filled in) appends a superseding row and leaves the old one in place. A file
@@ -690,7 +706,7 @@ Two fidelity tiers, both recorded on the row:
 
 | Tier | Source | Carries |
 |---|---|---|
-| Coarse | Classic manager-history endpoint, one request per manager for the whole season | Points, cumulative total, transfer count and cost, bench points, team value, bank, world rank (season and gameweek) |
+| Coarse | Classic manager-history endpoint, one request per manager for the whole season | Points, cumulative total, transfer count and cost, bench points, team value, bank, world rank (season and gameweek), and the fines derivable from cohort points alone (`last-place`, `below-threshold`) |
 | Detailed | A live recap run, or `--backfill-detail` replaying a past gameweek | Everything above plus captain, vice, full squad, and transfer or waiver detail |
 
 Classic gaps fill at the coarse tier automatically. `--backfill-detail` upgrades them,
@@ -754,6 +770,44 @@ under `--format json` (see [JSON Output](#json-output)): an unreachable FPL API,
 gameweek that could not be resolved at all, and a reconciliation failure. Only the second
 softens on the table path, where it prints the same message and exits 0. The distinction
 matters when scripting a retry — an outage is worth retrying, the other two are not.
+
+### Season Fines
+
+Who owes what this season, folded out of the fines each `league-recap` recorded.
+
+```bash
+fpl league-fines                  # Season totals through the latest recorded gameweek
+fpl league-fines -g 12            # Tally through GW12 only
+fpl league-fines --season 2025-26 # An earlier season - the ledger partitions by season
+fpl league-fines --draft          # Use draft league
+fpl league-fines --format json    # JSON envelope for scripting/agents
+```
+
+Reads the ledger and nothing else, so it makes no network calls and works for any season
+still on disk. Nothing is re-ruled: a fine is counted exactly as the gameweek recorded it,
+so changing a `below-threshold` value in settings moves future rulings and leaves history
+alone.
+
+**Counts, not money.** `penalty` is free text, so "4 last-place, 1 red-card" is supportable
+and "£14 owed" is not — that would need a numeric amount stamped onto the row at capture
+time. Settlement and the configured `escalation_note` are not modelled.
+
+**Coverage is stated, not assumed.** A zero is only trustworthy when the gameweeks behind
+it were ruled, so every gameweek that was not is named beneath the table: never captured,
+unreadable, captured before rulings were recorded, captured with no rules configured, or
+captured at a fidelity that could not rule a given rule. A manager's own gaps are named
+too — an unknown capture row means nothing was ruled against them that week — and their
+"GWs ruled" count carries an asterisk whenever their span holds one. A mid-season joiner
+keeps their real, lower totals and is qualified rather than scaled up; a manager who has
+since left the league keeps the fines already ruled against them.
+
+**JSON:** `--format json` emits one entry per recorded manager, fined or not, each with
+`counts` (one key per rule type, zero included), `total`, `fined_gameweeks`,
+`ruled_gameweeks`, `unruled_gameweeks`, `first_recorded_gameweek`, `last_recorded_gameweek`
+and `is_fully_ruled`. `metadata` carries `season`, `fpl_format`, `league_id`, `gameweek`
+(the through point), `start_gameweek`, `rule_types`, `total_fines` and `qualifiers` — the
+same sentences printed beneath the table. Exits 1 with the shared `{"command", "error"}`
+envelope when no league id is configured for the format, or the season label is malformed.
 
 ## Season Preview Intel
 

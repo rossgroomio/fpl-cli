@@ -28,6 +28,7 @@ from fpl_cli.cli._league_recap_data import (
     _reconcile_classic_headline_numbers,
     collect_classic_recap_data,
     collect_draft_recap_data,
+    configured_fine_rule_types,
     derive_point_in_time_positions,
     evaluate_league_fines,
 )
@@ -2060,6 +2061,36 @@ class TestEvaluateLeagueFines:
         # Bob is last place and should get fined despite empty squad
         assert any(r["manager_name"] == "Bob" for r in result)
 
+    def test_below_threshold_is_measured_on_gross_points_not_gross_plus_the_hit(self):
+        """`gross_points` is already gross whatever `use_net_points` says.
+        Adding the hit back to `gw_points` overshot it on the gross side of
+        that flip, inflating the score the threshold was measured against and
+        letting a fined week slip through (issue #136)."""
+        squad = [_make_squad_player(name=f"P{i}") for i in range(11)]
+        rules = [{"type": "below-threshold", "threshold": 30, "penalty": "Pint"}]
+        managers = [
+            _make_manager(name="Alice", gw_points=28, gross_points=28, transfer_cost=4, squad=squad),
+        ]
+
+        result = evaluate_league_fines(managers, self._settings_with_fines(rules), "classic")
+
+        assert [r["rule_type"] for r in result] == ["below-threshold"]
+
+    def test_last_place_reports_the_real_gross_score_not_an_inflated_one(self):
+        squad = [_make_squad_player(name=f"P{i}") for i in range(11)]
+        rules = [{"type": "last-place", "penalty": "Pint"}]
+        managers = [
+            _make_manager(name="Alice", gw_points=60, gross_points=60, squad=squad),
+            _make_manager(
+                name="Bob", entry_id=2, gw_points=20, gross_points=20,
+                transfer_cost=8, squad=squad,
+            ),
+        ]
+
+        result = evaluate_league_fines(managers, self._settings_with_fines(rules), "classic")
+
+        assert [r["manager_name"] for r in result] == ["Bob"]
+
     def test_multiple_fines_for_same_manager(self):
         red_player = _make_squad_player(name="Hothead", red_cards=1, contributed=True)
         squad = [red_player] + [_make_squad_player(name=f"P{i}") for i in range(10)]
@@ -2077,6 +2108,30 @@ class TestEvaluateLeagueFines:
         assert len(bob_fines) >= 1  # At least last-place
         rule_types = {f["rule_type"] for f in bob_fines}
         assert "last-place" in rule_types
+
+
+class TestConfiguredFineRuleTypes:
+    """What a capture records as ruled, so an empty `fines` list can be told
+    apart from a gameweek nobody ruled (issue #136)."""
+
+    def test_unconfigured_fines_report_an_empty_ruling(self):
+        assert configured_fine_rule_types({}, "classic") == []
+
+    def test_the_configured_rules_come_back_in_config_order(self):
+        settings = {"fines": {"classic": [
+            {"type": "below-threshold", "threshold": 25},
+            {"type": "last-place"},
+        ]}}
+        assert configured_fine_rule_types(settings, "classic") == [
+            "below-threshold", "last-place",
+        ]
+
+    def test_each_format_reports_only_its_own_rules(self):
+        settings = {"fines": {
+            "classic": [{"type": "red-card"}],
+            "draft": [{"type": "last-place"}],
+        }}
+        assert configured_fine_rule_types(settings, "draft") == ["last-place"]
 
 
 # ---------------------------------------------------------------------------

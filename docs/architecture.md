@@ -288,6 +288,7 @@ flowchart LR
         returnees["returnees"]
         credentials["credentials"]
         init["init"]
+        fines["league-fines"]
     end
 
     subgraph ViaAgent["Agent-Backed Commands"]
@@ -327,7 +328,8 @@ flowchart LR
     review --> RA
     recap --> RA
     recap -->|"records every run"| LH
-    LH -->|"streaks, notes pack,<br/>season phase"| recap
+    LH -->|"streaks, notes pack,<br/>season phase, season fines"| recap
+    LH -->|"season fine tally"| fines
     LH -.->|"rebuilds when stale"| LHC
     returnees -->|"stores the watchlist it showed"| RS
     RS -->|"week-over-week transitions"| returnees
@@ -387,6 +389,7 @@ Services live in `fpl_cli/services/` and provide the computation layer between a
 | `team_form` | Rolling team form stats (last 6 matches, venue splits) |
 | `league_history` | Durable league-history ledger: one NDJSON file per gameweek under `<data dir>/league_history/<season>/<format>-<league id>/`, written as a side effect of `league-recap`. Append-only — an identical row writes nothing, a differing one appends a superseding line, and readers resolve by highest fidelity tier then latest capture, with an unknown row ranking below every tier. Each row carries its own schema version: an older one is upgraded in memory on read (the line on disk is never rewritten, so a store shared with an older install stays readable by it), a newer one is skipped with a warning and preserved byte-for-byte. Two deliberate inversions of house convention: loading **fails closed** (unlike `chip_plan`, which resets on a corrupt file) because the API cannot rebuild a past gameweek, and season is a **partition key** (unlike `team_ratings`, which discards a previous season) because per-gameweek granularity is destroyed at the July rollover. The consequence of partitioning is that the store only ever grows — nothing prunes a prior season, by design — at roughly a few megabytes per league per season |
 | `league_history_counters` | Declarative streak-condition registry (9 conditions: `weeks_on_top`, `bottom_half_run`, `gw_win_streak`, `gw_loss_streak`, `green_arrow_drought` shared; `captain_blank_run`, `hit_run` classic-only; `waiver_win_run`, `waiver_burn_run` draft-only) and the rebuildable counters projection it drives. Each predicate returns extend/reset/hold for one manager's row — hold on an unknown row, a fixture-less blank, or a gameweek the condition does not apply to, so a capture gap never lies about a streak in either direction. The projection is a disposable cache (never a second source of truth) under `<data dir>/league_history_counters/<season>/<format>-<league id>/counters.json`: it advances one gameweek at a time when its stamp is exactly one behind, and **fails open** to a full rebuild from `league_history`'s rows otherwise — missing, unreadable, wrong-version, or a stamp that isn't stamp+1 |
+| `league_history_fines` | Season fine tally (`build_season_fines_tally()`): a pure fold over `league_history`'s rows into per-manager, per-rule counts, with no cache and no second source of truth. Counts only what a row already recorded, so a settings change moves future rulings and leaves history alone. Every gameweek that could not be ruled is named as a qualifier rather than folded in as a zero — never captured, unreadable, captured before rulings were recorded (schema version < 4), captured with no rules configured, or captured at a fidelity that could not rule a given rule. A mid-season joiner keeps their real, lower totals and is qualified; a manager who has since left keeps the fines already ruled against them, bounded to the gameweeks they were recorded for |
 | `league_history_notes` | Notes pack (`build_notes_pack()`) and season-phase marker (`derive_season_phase()`, standalone) built from `league_history_counters`'s projection plus a bounded trailing window of raw ledger rows (`TRAILING_WINDOW_GAMEWEEKS = 6`, reused as the run-in phase's own length). Every open streak renders as an observed count over its true span rather than "in a row" once any gameweek held (e.g. "3 in the last 11, with 8 not recorded"); each entry declares which of console/report/prompt it reaches — a reportable streak reaches all three, the season-phase marker and coverage statements reach report+prompt only, and a below-minimum streak is retained (exposed via `--format json`) with no surfaces. A "since GW X" qualifier is stated only when a partition's or a specific manager's own recorded coverage genuinely begins later than the league's start gameweek, never merely because a trailing window was read. Only the finale phase rescans every captured gameweek (via `rebuild_counters_through`, never the cached `compute_counters_through`) so weekly cost stays flat as the season progresses |
 
 ## LLM Provider Abstraction
@@ -521,8 +524,9 @@ fpl_cli/
 │   ├── _banner.py                # Startup banner
 │   ├── _plan_grid.py             # Fixture grid rendering
 │   ├── _review_*.py              # Review command helpers (analysis, classic, draft, summarisation)
-│   ├── _league_recap_*.py        # League recap helpers & types (`_league_recap_history.py` orchestrates capture: builds ledger rows, corrects previous league position from recorded rows, runs the two-tier backfill, and returns the notes pack the console, report, prompt and JSON payload all read)
-│   ├── _fines.py / _fines_config.py  # League fines system
+│   ├── _league_recap_*.py        # League recap helpers & types (`_league_recap_history.py` orchestrates capture: builds ledger rows, corrects previous league position from recorded rows, runs the two-tier backfill including the coarse tier's partial fine ruling, and returns the notes pack and season fine tally the console, report, prompt and JSON payload all read)
+│   ├── _fines.py / _fines_config.py  # League fines system, including the cohort-only/needs-a-squad rule split the coarse ledger tier narrows by
+│   ├── league_fines.py           # `league-fines`: season fine table read straight off the ledger, no network
 │   ├── doctor_providers.py       # Live provider probes for `doctor --providers` (shape/volume/join checks; the Core-Insights per-GW probe runs the real parsers, so it cannot pass a file the runtime reads as zero records)
 │   └── [command files]           # One file per command/group
 ├── agents/
@@ -570,13 +574,14 @@ fpl_cli/
 │   ├── team_form.py              # Rolling team form stats
 │   ├── league_history.py         # League history ledger store: per-gameweek NDJSON, fail-closed load, supersession, coverage query
 │   ├── league_history_counters.py # Streak-condition registry (9 conditions, extend/reset/hold predicates) + rebuildable counters projection: own version + computed-through-gameweek stamp, fails open to a full rebuild from league_history
+│   ├── league_history_fines.py   # Season fine tally (build_season_fines_tally): per-manager, per-rule counts folded straight off the ledger, plus honest coverage qualifiers. No cache, no re-ruling
 │   └── league_history_notes.py   # Notes pack (build_notes_pack) + derive_season_phase(): per-manager streak factoids in observed-count phrasing, season-phase marker, coverage/"since GW X" statements. Counters projection + a bounded trailing window of rows; full season only at the finale
 ├── models/
 │   ├── player.py                 # Player, PlayerStatus, PlayerPosition, POSITION_MAP, BLANK_POINTS_THRESHOLD
 │   ├── team.py                   # Team
 │   ├── fixture.py                # Fixture
 │   ├── chip_plan.py              # ChipPlan, ChipType, PlannedChip, UsedChip
-│   ├── league_history.py         # LeagueHistoryRow + Ledger* sub-models, CaptureStatus, FidelityTier, schema version constants; ConditionRunState + LeagueHistoryCountersProjection for the counters cache; ManagerEarliestGameweekCache for the first-captured-gameweek memo
+│   ├── league_history.py         # LeagueHistoryRow + Ledger* sub-models, CaptureStatus, FidelityTier, schema version constants (v4 adds `fine_rules_evaluated`, which tells an unfined gameweek from an unruled one); ConditionRunState + LeagueHistoryCountersProjection for the counters cache; ManagerEarliestGameweekCache for the first-captured-gameweek memo
 │   └── types.py                  # TypedDicts: CaptainCandidate, WaiverTarget, EnrichedPlayer, etc.
 ├── prompts/
 │   ├── scout.py                  # ScoutAgent system/user prompts
@@ -680,5 +685,5 @@ User settings deep-merged over committed defaults via `platformdirs`. `.env` loa
 - **Agent-friendly.** `--format json` on key commands with a consistent envelope. See [Agent Tools & Skills](../.agents/TOOLS.md).
 - **LLM features are opt-in.** Core analysis works without any API keys. LLM providers add narrative and research capabilities.
 - **The returnee radar is deliberately absent from [custom-analysis.md](custom-analysis.md).** That document covers the scoring formulas and the early-season shrinkage they share, and the radar has neither: it runs no shrinkage, so it needs no hold-out set for players known not to be playing, and it scores nothing for the ownership family, so the -3 availability penalty never applies — a flagged player is the radar's entire population, not a discount applied within it. The one existing formula it reuses, the VALUE quality score, it reuses unchanged. Its methodology is documented under [Injury Returnees](command-reference.md#injury-returnees) instead. The omission is the decision, not a gap.
-- **Deterministic memory before LLM memory.** `league-recap` records every run to an append-only ledger and computes streaks, trends and season phase from it in Python. The model is handed those as vetted facts through a single anchored prompt section and is never asked to remember, infer, or re-derive history — the one conduit is what makes an editorial's historical claims checkable against the store.
+- **Deterministic memory before LLM memory.** `league-recap` records every run to an append-only ledger and computes streaks, trends, season phase and the season fine tally from it in Python. The model is handed those as vetted facts through anchored prompt sections and is never asked to remember, infer, or re-derive history — the one conduit per fact is what makes an editorial's historical claims checkable against the store. The fines section makes the rule explicit: season totals may only be quoted from it, never summed by the model out of the current gameweek's fines.
 

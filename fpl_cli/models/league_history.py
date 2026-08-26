@@ -35,7 +35,10 @@ from pydantic import BaseModel, ConfigDict, Field
 # 3: `global_gw_rank` added -- the FPL-wide rank for this gameweek alone,
 #    distinct from `global_rank`'s season-cumulative one. Purely additive, so
 #    a version-2 row still validates with it defaulting to None (issue #148).
-LEAGUE_HISTORY_VERSION = 3
+# 4: `fine_rules_evaluated` added, so an empty `fines` list can be told apart
+#    from a capture that never ruled any fine at all. Purely additive too, so
+#    an older row still validates with it defaulting to None (issue #136).
+LEAGUE_HISTORY_VERSION = 4
 
 # The oldest version this code can still parse. Raising this floor bricks every
 # store holding older lines, so it moves only alongside a one-time rewrite that
@@ -273,6 +276,22 @@ class LeagueHistoryRow(BaseModel):
 
     # -- fines ---------------------------------------------------------------
     fines: list[LedgerFine] = Field(default_factory=list)
+    # Which fine rule types this capture actually ruled on, whether or not any
+    # of them triggered. Without it an empty `fines` list means three different
+    # things at once -- nobody was fined, no rules were configured, or the
+    # capture never evaluated any -- and a season tally reading it back would
+    # score all three as innocence (issue #136). Three states, all distinct:
+    #
+    # - a list of rule types: exactly those were ruled here. Shorter than the
+    #   configured set on a coarse row, which carries no squad and so cannot
+    #   rule anything needing one (`COHORT_ONLY_RULE_TYPES` in
+    #   `fpl_cli/cli/_fines.py`).
+    # - `[]`: this capture ruled nothing, because nothing was configured for
+    #   this format -- a real "no ruling covers this row", not an absence.
+    # - `None`: nothing is recorded either way. An unknown-status row (R19),
+    #   which never reached the manager, or a row written before schema
+    #   version 4 existed.
+    fine_rules_evaluated: list[str] | None = None
 
     # -- classic-only (R2) ---------------------------------------------------
     # All five sit in the picks response's `entry_history` object, all five are

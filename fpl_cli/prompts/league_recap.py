@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from fpl_cli.cli._league_recap_types import LeagueRecapData
+from fpl_cli.services.league_history_fines import SeasonFinesTally
 from fpl_cli.services.league_history_notes import NotesPack, NoteSurface
 from fpl_cli.utils.gameweek import is_opening_gameweek
 
@@ -31,6 +32,7 @@ Your audience is every member of this league. They want entertainment first, inf
 - Stick to what happened this gameweek, with one exception: a historical claim (a streak, trend, or season-arc fact spanning more than this gameweek) is permitted only when it appears in the "## League History" section, stated using that section's own wording for counts, spans, and holds. A streak, trend, or season-arc fact not listed there is forbidden to mention, however obvious it might seem. Do NOT infer history from the Awards or GW Standings sections - they are compressed and can misrepresent what actually happened over time
 - A League History entry phrased as an observed count over a span (e.g. "3 in the last 11, with 8 not recorded") must be repeated that way, never simplified to "in a row" or "consecutive" unless the section itself already uses that phrasing
 - If fines were triggered, make them a highlight
+- Season-long fine totals may be referenced only from the "## Season Fines" section, using its numbers verbatim. NEVER add up fines yourself from the "## Fines" section, which covers this gameweek alone, and never present a total the Season Fines section qualifies as incomplete as though it were final - repeat its qualification alongside it or leave the number out
 - The biggest bench haul is always funny - lean into it
 - If a manager played a chip, that's a big narrative hook. A chip that flopped deserves mockery; a chip that paid off deserves grudging respect. When referencing chip users, treat the "Chips Played" section as the source of truth — it includes an explicit total count; use that number verbatim. Do NOT count tags in the standings table. Do not name a subset as "the X wildcards" — either name all users of that chip or none.
 - When referencing captain choices, treat the "## Captains" section as the source of truth. It lists every manager grouped by their intended captain pick, with an explicit total count. Use those counts verbatim. NEVER name a captain "outlier", "dissenter", or "the manager(s) who picked Y" unless they appear under that captain in the section. If you describe N managers as picking the modal captain, it must match the section's group size for that player. Do NOT infer captain choices from the awards or standings — they are compressed and miss managers whose pick was neither the best nor the worst.
@@ -50,6 +52,7 @@ def get_recap_synthesis_prompt(
     fines_text: str,
     research_summary: str | None = None,
     *,
+    season_fines_text: str = "",
     captains_text: str = "",
     chips_text: str = "",
     player_clubs_text: str = "",
@@ -100,6 +103,9 @@ def get_recap_synthesis_prompt(
 
     if fines_text:
         sections.extend(["", "## Fines", fines_text])
+
+    if season_fines_text:
+        sections.extend(["", "## Season Fines", season_fines_text])
 
     if league_history_text:
         sections.extend(["", "## League History", league_history_text])
@@ -360,3 +366,42 @@ def format_recap_fines_context(data: LeagueRecapData) -> str:
     if not fines:
         return ""
     return "\n".join(f"- {f['manager_name']}: {f['message']}" for f in fines)
+
+
+def format_recap_season_fines_context(tally: SeasonFinesTally | None) -> str:
+    """Format the season-long fine tally for the LLM prompt (issue #136).
+
+    Empty for a league that has never configured a fine rule -- the section
+    is then omitted entirely rather than rendered as a header over nothing.
+
+    The coverage qualifiers are carried through verbatim, and every manager
+    the ledger holds is named on one side or the other, so the model can
+    reference the season table without ever having to count fines itself
+    from this gameweek's section.
+    """
+    if tally is None or not tally.is_reportable:
+        return ""
+
+    lines = [
+        f"Season fine totals, GW{tally.start_gameweek} through GW{tally.through_gameweek} "
+        f"({tally.total_fines} fine(s) recorded in total):",
+    ]
+    fined = tally.fined_managers
+    if fined:
+        for manager in fined:
+            breakdown = ", ".join(
+                f"{count} {rule_type}" for rule_type, count in sorted(manager.counts.items())
+            )
+            lines.append(f"- {manager.manager_name}: {manager.total} ({breakdown})")
+    else:
+        lines.append("- Nobody has been fined this season.")
+
+    unfined = [manager.manager_name for manager in tally.managers if not manager.total]
+    if unfined and fined:
+        lines.append(f"Not fined so far: {', '.join(unfined)}")
+
+    if tally.qualifiers:
+        lines.append("")
+        lines.append("Coverage:")
+        lines.extend(f"- {line}" for line in tally.qualifiers)
+    return "\n".join(lines)

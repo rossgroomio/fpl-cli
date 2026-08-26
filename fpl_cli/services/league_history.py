@@ -330,6 +330,11 @@ def _upgrade(payload: dict, version: int) -> dict:
     one-time rewrite of the upgraded lines first, or every store holding them
     becomes unreadable.
     """
+    # Version 4 added `fine_rules_evaluated` with no branch here on purpose: a
+    # pre-v4 row genuinely does not record what its capture ruled, and the
+    # field's `None` default says exactly that. Filling it in with the rule
+    # types configured today would backdate a ruling those rows never made
+    # (issue #136).
     if version < 2 and "squad_value" in payload:
         # v1 called the API's bank-inclusive `value` `squad_value`. Same
         # number, honest name -- a straight rename, no arithmetic (issue #147).

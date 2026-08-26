@@ -7,7 +7,13 @@ import logging
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
-from fpl_cli.cli._fines import FineResult, FinesLeagueData, FinesTeamPlayer, evaluate_fines
+from fpl_cli.cli._fines import (
+    FineResult,
+    FinesLeagueData,
+    FinesTeamPlayer,
+    evaluate_fines,
+    rules_for_format,
+)
 from fpl_cli.cli._fines_config import parse_fines_config
 from fpl_cli.cli._helpers import _live_player_stats
 
@@ -801,6 +807,25 @@ def _recap_fine_message(result: FineResult, manager_name: str) -> str:
     return result.message
 
 
+def configured_fine_rule_types(settings: dict[str, Any], format_name: str) -> list[str]:
+    """The rule types `evaluate_league_fines` would rule on, in config order.
+
+    Stamped onto every row a capture writes (`fine_rules_evaluated`), so a
+    season tally reading the ledger back can tell "nobody was fined" apart
+    from "nothing was ruled" -- an empty `fines` list says both (issue #136).
+    An empty list here is itself a ruling: nothing is configured for this
+    format, so no rule covers the gameweek.
+
+    Gracefully returns an empty list when fines are unconfigured, matching
+    `evaluate_league_fines`, so the two can never disagree about whether a
+    gameweek was ruled.
+    """
+    fines_config = parse_fines_config(settings)
+    if fines_config is None:
+        return []
+    return [rule.type for rule in rules_for_format(fines_config, format_name)]
+
+
 def evaluate_league_fines(
     managers: list[RecapManagerEntry],
     settings: dict[str, Any],
@@ -834,12 +859,18 @@ def evaluate_league_fines(
                     # all of them for one team's last place (KTD11).
                     is_user=recap_manager_key(m) == recap_manager_key(worst),
                     points=worst["gw_points"],
-                    gross_points=worst["gw_points"] + worst["transfer_cost"],
+                    # `gross_points` is already gross whatever `use_net_points`
+                    # is set to; `gw_points` flips. Adding the hit back to
+                    # `gw_points` only reaches gross on the net side of that
+                    # flip -- on the gross side it added the hit to a figure
+                    # that never had it deducted, inflating the score a
+                    # below-threshold rule is measured against (issue #136).
+                    gross_points=worst["gross_points"],
                     name=worst["manager_name"],
                 )]
 
             league_data = FinesLeagueData(
-                user_gw_points=m["gw_points"] + m["transfer_cost"],
+                user_gw_points=m["gross_points"],
                 worst_performers=worst_list,
             )
             if use_net_points:

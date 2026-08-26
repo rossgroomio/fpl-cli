@@ -45,8 +45,40 @@ class FineResult:
     message: str
 
 
+# Rule types rulable from cohort points alone. Everything outside this set
+# needs the manager's squad, which the ledger's coarse tier -- the
+# manager-history endpoint -- does not carry, so a backfill running at that
+# tier can rule these and only these (issue #136). `tests/test_fines.py`
+# asserts every valid rule type is on one side of this split or the other, so
+# adding a rule type forces the choice rather than defaulting it.
+COHORT_ONLY_RULE_TYPES = frozenset({"last-place", "below-threshold"})
+
+
 def _no_league_data(rule: FineRule) -> FineResult:
     return FineResult(rule_type=rule.type, triggered=False, message="No league data available.")
+
+
+def rules_for_format(config: FinesConfig, format_name: str) -> list[FineRule]:
+    """The rules configured for one format, in config order."""
+    return list(config.classic if format_name == "classic" else config.draft)
+
+
+def evaluate_rules(
+    rules: list[FineRule],
+    league_data: FinesLeagueData | None,
+    team_data: list[FinesTeamPlayer],
+    *,
+    use_net_points: bool = False,
+) -> list[FineResult]:
+    """Evaluate an explicit rule list, one result per rule.
+
+    Split out from `evaluate_fines` so a caller that can only rule *some* of
+    the configured rules -- the coarse ledger backfill, which has no squad --
+    can narrow the list up front. Narrowing matters: every handler returns a
+    result either way, and a red-card handler handed an empty squad returns
+    "no red card fine", which is a false acquittal rather than an abstention.
+    """
+    return [_RULE_HANDLERS[rule.type](rule, league_data, team_data, use_net_points) for rule in rules]
 
 
 def evaluate_fines(
@@ -61,8 +93,10 @@ def evaluate_fines(
 
     Returns a list of FineResult for each configured rule.
     """
-    rules = config.classic if format_name == "classic" else config.draft
-    return [_RULE_HANDLERS[rule.type](rule, league_data, team_data, use_net_points) for rule in rules]
+    return evaluate_rules(
+        rules_for_format(config, format_name), league_data, team_data,
+        use_net_points=use_net_points,
+    )
 
 
 def _eval_last_place(

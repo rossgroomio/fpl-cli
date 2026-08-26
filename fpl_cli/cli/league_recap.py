@@ -24,6 +24,7 @@ from fpl_cli.cli._json import (
 )
 from fpl_cli.cli._league_recap_types import LeagueRecapData
 from fpl_cli.services.league_history import GameweekCoverage
+from fpl_cli.services.league_history_fines import ManagerFineTally, SeasonFinesTally
 from fpl_cli.services.league_history_notes import NotesPack, NotesPackEntry, NoteSurface
 
 # KTD8: the console stays a highlights view -- only the top few streaks by
@@ -57,10 +58,12 @@ def league_recap_command(
     """Recap a completed gameweek for the whole league - awards, standings, and banter."""
     from fpl_cli.agents.orchestration.report import ReportAgent
     from fpl_cli.api.fpl import FPLClient
+    from fpl_cli.cli._fines_config import parse_fines_config
     from fpl_cli.cli._league_recap_data import (
         RecapReconciliationError,
         collect_classic_recap_data,
         collect_draft_recap_data,
+        configured_fine_rule_types,
         evaluate_league_fines,
     )
     from fpl_cli.cli._league_recap_history import capture_recap_history
@@ -207,6 +210,13 @@ def league_recap_command(
             )
             if fines:
                 collected_data["fines"] = fines
+            # Recorded whether or not anything triggered: a gameweek with no
+            # fines and a gameweek nobody ruled on are different facts, and
+            # only this tells the season tally which one it is read
+            # (issue #136).
+            collected_data["fine_rules_evaluated"] = configured_fine_rule_types(
+                settings, collected_data["fpl_format"],
+            )
 
             async def _replay_gameweek(target_gw: int) -> LeagueRecapData | None:
                 """Re-collect one finished gameweek for the detailed backfill.
@@ -237,6 +247,20 @@ def league_recap_command(
                     )
                 replayed["is_bgw"] = len(target_fixtures) < 10
                 replayed["is_dgw"] = len(target_fixtures) > 10
+                # Ruled here, not only on the live path: without this a
+                # replayed gameweek lands with `fines=[]`, which reads as "a
+                # week nobody was fined" rather than "a week nobody ruled" --
+                # so missing a week and then repairing it un-fined that week
+                # permanently, with the repair making the gap look closed
+                # (issue #136).
+                replayed_fines = evaluate_league_fines(
+                    replayed["managers"], settings, replayed["fpl_format"],
+                )
+                if replayed_fines:
+                    replayed["fines"] = replayed_fines
+                replayed["fine_rules_evaluated"] = configured_fine_rule_types(
+                    settings, replayed["fpl_format"],
+                )
                 return replayed
 
             # Record the gameweek, then fill what the API still allows.
@@ -265,6 +289,12 @@ def league_recap_command(
                     finished_gameweeks=finished_gws,
                     replay_gameweek=_replay_gameweek,
                     backfill_detail=backfill_detail,
+                    # The coarse tier rules what it structurally can --
+                    # last place and below-threshold, both derivable from
+                    # cohort points; a red card needs a squad the
+                    # manager-history endpoint never returns (issue #136).
+                    fines_config=parse_fines_config(settings),
+                    use_net_points=bool(settings.get("use_net_points", False)),
                 )
             notes_pack = capture_result.notes_pack
 
@@ -281,6 +311,21 @@ def league_recap_command(
                     entry.text for entry in notes_pack.coverage_entries
                 ]
 
+            # Season fines, stashed as plain strings for the same reason the
+            # history text above is: the template needs no knowledge of the
+            # tally's shape. Absent entirely for a league with no fine rules
+            # configured and none ever ruled, so the template's `is defined`
+            # guards skip the section rather than heading an empty table.
+            fines_tally = capture_result.fines_tally
+            if fines_tally is not None and fines_tally.is_reportable:
+                collected_data["season_fines_span"] = (
+                    f"GW{fines_tally.start_gameweek}-GW{fines_tally.through_gameweek}"
+                )
+                collected_data["season_fines_lines"] = [
+                    _season_fine_line(manager) for manager in fines_tally.managers
+                ]
+                collected_data["season_fines_coverage_lines"] = list(fines_tally.qualifiers)
+
             # LLM summarisation (opt-in via --summarise or --dry-run)
             if (summarise or dry_run) and synthesis_unavailable is None:
                 # Skipped outright when the provider is already known unusable:
@@ -295,6 +340,7 @@ def league_recap_command(
                         is_bgw=is_bgw, is_dgw=is_dgw,
                         season_length=TOTAL_GAMEWEEKS,
                         notes_pack=notes_pack,
+                        fines_tally=capture_result.fines_tally,
                     )
                 except ProviderError as e:
                     error_console.print(f"[yellow]LLM summarisation failed: {e}[/yellow]")
@@ -303,7 +349,7 @@ def league_recap_command(
                     error_console.print("[yellow]LLM summarisation failed (unexpected error)[/yellow]")
 
             # Display key highlights to console
-            _render_console_highlights(collected_data, notes_pack)
+            _render_console_highlights(collected_data, notes_pack, capture_result.fines_tally)
 
             # Generate report if saving
             if save or output:
@@ -333,6 +379,10 @@ def league_recap_command(
                         "coverage": _serialize_coverage(capture_result.coverage),
                         "season_phase": notes_pack.phase if notes_pack is not None else None,
                         "notes_pack": _serialize_notes_pack(notes_pack) if notes_pack is not None else None,
+                        "season_fines": (
+                            _serialize_fines_tally(capture_result.fines_tally)
+                            if capture_result.fines_tally is not None else None
+                        ),
                         "synthesis_summary": collected_data.get("synthesis_summary"),
                         # The skipped editorial rides the same channel as the
                         # capture's own warnings: `synthesis_summary` being
@@ -421,7 +471,59 @@ def _serialize_notes_pack(pack: NotesPack) -> dict[str, Any]:
     }
 
 
-def _render_console_highlights(data: LeagueRecapData, notes_pack: NotesPack | None = None) -> None:
+def _season_fine_line(manager: ManagerFineTally) -> str:
+    """One manager's season fine record as a single sentence-fragment line.
+
+    Everyone the ledger holds gets a line, fined or not: a fines table that
+    lists only the fined reads as though everyone else were checked and
+    cleared, which is exactly the claim the coverage lines beside it exist to
+    qualify.
+    """
+    if not manager.total:
+        return f"{manager.manager_name}: none"
+    breakdown = ", ".join(
+        f"{count} {rule_type}" for rule_type, count in sorted(manager.counts.items())
+    )
+    return f"{manager.manager_name}: {manager.total} ({breakdown})"
+
+
+def _serialize_fines_tally(tally: SeasonFinesTally) -> dict[str, Any]:
+    """The whole tally, JSON-shaped -- emitted whether or not it is reportable,
+    on the same principle KTD8 sets for the notes pack: `--format json` is a
+    machine surface and carries everything the fold computed, leaving the
+    is-it-worth-showing judgement to the human-facing surfaces."""
+    return {
+        "season": tally.season,
+        "fpl_format": tally.fpl_format,
+        "league_id": tally.league_id,
+        "through_gameweek": tally.through_gameweek,
+        "start_gameweek": tally.start_gameweek,
+        "rule_types": tally.rule_types,
+        "total_fines": tally.total_fines,
+        "qualifiers": tally.qualifiers,
+        "managers": [
+            {
+                "manager_key": manager.manager_key,
+                "manager_name": manager.manager_name,
+                "total": manager.total,
+                "counts": {rule: manager.counts.get(rule, 0) for rule in tally.rule_types},
+                "fined_gameweeks": manager.fined_gameweeks,
+                "ruled_gameweeks": manager.ruled_gameweeks,
+                "unruled_gameweeks": manager.unruled_gameweeks,
+                "first_recorded_gameweek": manager.first_recorded_gameweek,
+                "last_recorded_gameweek": manager.last_recorded_gameweek,
+                "is_fully_ruled": manager.is_fully_ruled,
+            }
+            for manager in tally.managers
+        ],
+    }
+
+
+def _render_console_highlights(
+    data: LeagueRecapData,
+    notes_pack: NotesPack | None = None,
+    fines_tally: SeasonFinesTally | None = None,
+) -> None:
     """Print key recap highlights to console."""
     awards = data.get("awards", {})
     managers = data.get("managers", [])
@@ -456,6 +558,25 @@ def _render_console_highlights(data: LeagueRecapData, notes_pack: NotesPack | No
         console.print("\n[bold]Fines:[/bold]")
         for f in fines:
             console.print(f"  [red]{f['manager_name']}:[/red] {f['message']}")
+
+    # Season totals, so the console answers "who owes what" and not only
+    # "who was fined this week". Only the fined are listed here -- the
+    # console is a highlights view and the full table is `fpl league-fines`
+    # -- but the coverage lines still print, because a total nobody can
+    # trust is worse than no total.
+    if fines_tally is not None and fines_tally.is_reportable:
+        fined = fines_tally.fined_managers
+        console.print(
+            f"\n[bold]Season Fines[/bold] [dim](GW{fines_tally.start_gameweek}-"
+            f"GW{fines_tally.through_gameweek})[/dim]",
+        )
+        if fined:
+            for manager in fined:
+                console.print(f"  [red]{_season_fine_line(manager)}[/red]")
+        else:
+            console.print("  [dim]Nobody has been fined this season.[/dim]")
+        for line in fines_tally.qualifiers:
+            console.print(f"  [dim]{line}[/dim]")
 
     # Standings movement. A manager missing either position has no movement
     # to report -- see _assign_point_in_time_positions, which leaves both
@@ -517,6 +638,7 @@ async def _recap_llm_summarise(
     is_dgw: bool = False,
     season_length: int = 38,
     notes_pack: NotesPack | None = None,
+    fines_tally: SeasonFinesTally | None = None,
 ) -> None:
     """Run LLM summarisation for league recap. Mutates collected_data to add summaries."""
     from fpl_cli.prompts.league_recap import (
@@ -527,6 +649,7 @@ async def _recap_llm_summarise(
         format_recap_fines_context,
         format_recap_league_history_context,
         format_recap_player_clubs_context,
+        format_recap_season_fines_context,
         format_recap_standings_context,
         get_recap_synthesis_prompt,
     )
@@ -546,6 +669,7 @@ async def _recap_llm_summarise(
     chips_text = format_recap_chips_context(collected_data)
     fines_text = format_recap_fines_context(collected_data)
     league_history_text = format_recap_league_history_context(notes_pack)
+    season_fines_text = format_recap_season_fines_context(fines_tally)
 
     system_prompt, user_prompt = get_recap_synthesis_prompt(
         gw=gw,
@@ -554,6 +678,7 @@ async def _recap_llm_summarise(
         awards_text=awards_text,
         standings_text=standings_text,
         fines_text=fines_text,
+        season_fines_text=season_fines_text,
         captains_text=captains_text,
         chips_text=chips_text,
         player_clubs_text=player_clubs_text,

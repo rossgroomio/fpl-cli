@@ -604,17 +604,30 @@ def _fpl_client() -> MagicMock:
 
 
 def _invoke_recap(
-    collected: LeagueRecapData, args: list[str] | None = None, *, client: MagicMock | None = None,
+    collected: LeagueRecapData, args: list[str] | None = None, *,
+    client: MagicMock | None = None,
+    settings: dict[str, Any] | None = None,
+    replays: list[LeagueRecapData] | None = None,
 ):
+    """Run the command with the collector stubbed.
+
+    `replays` are handed back, in order, to the calls a detailed backfill
+    makes after the live collection -- the collector is the same one the
+    replay path goes through, so a backfill test cannot stub it separately.
+    """
     client = client or _fpl_client()
+    collector = (
+        AsyncMock(side_effect=[collected, *replays])
+        if replays else AsyncMock(return_value=collected)
+    )
     with (
-        patch("fpl_cli.cli.league_recap.load_settings", return_value={"fpl": {"classic_league_id": 42}}),
+        patch(
+            "fpl_cli.cli.league_recap.load_settings",
+            return_value=settings or {"fpl": {"classic_league_id": 42}},
+        ),
         patch("fpl_cli.api.fpl.FPLClient", return_value=client),
         patch("fpl_cli.cli.review._review_resolve_gw", AsyncMock(return_value={"gw": 5})),
-        patch(
-            "fpl_cli.cli._league_recap_data.collect_classic_recap_data",
-            AsyncMock(return_value=collected),
-        ),
+        patch("fpl_cli.cli._league_recap_data.collect_classic_recap_data", collector),
     ):
         from fpl_cli.cli.league_recap import league_recap_command
 
@@ -724,6 +737,169 @@ def test_the_row_shape_survives_a_store_round_trip(fpl_format: str):
     store.append_rows(5, rows)
 
     assert store.load_gameweek(5) == rows
+
+
+# ---------------------------------------------------------------------------
+# Fines capture (issue #136)
+# ---------------------------------------------------------------------------
+
+
+_LAST_PLACE_ONLY = {
+    "fpl": {"classic_league_id": 42},
+    "fines": {"classic": [{"type": "last-place", "penalty": "Pint on video"}]},
+}
+_ALL_THREE_RULES = {
+    "fpl": {"classic_league_id": 42},
+    "fines": {"classic": [
+        {"type": "last-place", "penalty": "Pint"},
+        {"type": "below-threshold", "threshold": 40, "penalty": "Pint"},
+        {"type": "red-card", "penalty": "Round"},
+    ]},
+}
+
+
+class TestFinesAreRecordedNotJustRendered:
+    def test_a_live_capture_records_what_was_ruled_even_when_nothing_triggered(self):
+        """`fines == []` says three different things at once without this; the
+        row has to record which rules were actually checked."""
+        result = _invoke_recap(_recap_data(), settings=_LAST_PLACE_ONLY)
+
+        assert result.exit_code == 0, result.output
+        row = _store().resolved_gameweek(5)[1]
+        assert row.fine_rules_evaluated == ["last-place"]
+
+    def test_no_configured_rules_records_an_empty_ruling_not_silence(self):
+        result = _invoke_recap(_recap_data())
+
+        assert result.exit_code == 0, result.output
+        assert _store().resolved_gameweek(5)[1].fine_rules_evaluated == []
+
+    def test_a_triggered_fine_reaches_the_stored_row(self):
+        data = _recap_data(
+            managers=[
+                _manager(name="Alice", entry_id=1, gross_points=60),
+                _manager(name="Bob", entry_id=2, gross_points=10, gw_rank=2, overall_rank=2),
+            ],
+            cohort=_cohort((1, "Alice", 1, 60, 300), (2, "Bob", 2, 10, 200)),
+        )
+
+        result = _invoke_recap(data, settings=_LAST_PLACE_ONLY)
+
+        assert result.exit_code == 0, result.output
+        resolved = _store().resolved_gameweek(5)
+        assert [f.rule_type for f in resolved[2].fines] == ["last-place"]
+        assert resolved[1].fines == []
+
+    def test_a_replayed_gameweek_records_its_fines_rather_than_landing_empty(self):
+        """The bug this fixes: `--backfill-detail` repaired every other field
+        of a past gameweek to the detailed tier while its fines stayed empty,
+        so missing a week un-fined it permanently."""
+        gw5 = _recap_data(gameweek=5)
+        gw4 = _recap_data(
+            gameweek=4,
+            managers=[
+                _manager(name="Alice", entry_id=1, gross_points=60),
+                _manager(name="Bob", entry_id=2, gross_points=5, gw_rank=2, overall_rank=2),
+            ],
+            cohort=_cohort((1, "Alice", 1, 60, 240), (2, "Bob", 2, 5, 180)),
+        )
+        client = _fpl_client()
+        client.get_gameweeks = AsyncMock(return_value=[
+            {"id": 4, "finished": True}, {"id": 5, "finished": True},
+        ])
+        client.get_manager_history = AsyncMock(return_value={"current": []})
+
+        result = _invoke_recap(
+            gw5, ["--backfill-detail"], client=client,
+            settings=_LAST_PLACE_ONLY, replays=[gw4],
+        )
+
+        assert result.exit_code == 0, result.output
+        replayed = _store().resolved_gameweek(4)
+        assert [f.rule_type for f in replayed[2].fines] == ["last-place"]
+        assert replayed[2].fine_rules_evaluated == ["last-place"]
+
+
+class TestCoarseTierFinesArePartialAndSaySo:
+    async def test_the_cohort_only_rules_are_ruled_from_headline_points(self):
+        from fpl_cli.cli._fines_config import parse_fines_config
+
+        data = _recap_data(
+            gameweek=2,
+            managers=[_manager(name="Alice", entry_id=1)],
+            cohort=_cohort((1, "Alice", 1, 60, 300), (2, "Bob", 2, 5, 200)),
+        )
+        client = _HistoryClient({
+            1: [_history_row(gw, 60, 60 * gw) for gw in (1, 2)],
+            2: [_history_row(gw, 5, 5 * gw) for gw in (1, 2)],
+        })
+
+        await capture_recap_history(
+            data, season=SEASON, history_client=client, finished_gameweeks=[1, 2],
+            fines_config=parse_fines_config(_ALL_THREE_RULES),
+        )
+
+        coarse = _store().resolved_gameweek(1)
+        assert coarse[2].tier is FidelityTier.COARSE
+        assert sorted(f.rule_type for f in coarse[2].fines) == ["below-threshold", "last-place"]
+        assert coarse[1].fines == []
+
+    async def test_red_card_is_recorded_as_unruled_rather_than_acquitted(self):
+        """The manager-history endpoint carries no squad, so a red-card
+        handler run there would answer "no red card fine" -- a false
+        acquittal, not an abstention."""
+        from fpl_cli.cli._fines_config import parse_fines_config
+
+        data = _recap_data(
+            gameweek=2,
+            managers=[_manager(name="Alice", entry_id=1)],
+            cohort=_cohort((1, "Alice", 1, 60, 300)),
+        )
+        client = _HistoryClient({1: [_history_row(gw, 60, 60 * gw) for gw in (1, 2)]})
+
+        await capture_recap_history(
+            data, season=SEASON, history_client=client, finished_gameweeks=[1, 2],
+            fines_config=parse_fines_config(_ALL_THREE_RULES),
+        )
+
+        assert _store().resolved_gameweek(1)[1].fine_rules_evaluated == [
+            "last-place", "below-threshold",
+        ]
+
+    async def test_an_unreached_manager_records_no_ruling_at_all(self):
+        from fpl_cli.cli._fines_config import parse_fines_config
+
+        data = _recap_data(
+            gameweek=2,
+            managers=[_manager(name="Alice", entry_id=1)],
+            cohort=_cohort((1, "Alice", 1, 60, 300), (2, "Bob", 2, 5, 200)),
+        )
+        client = _HistoryClient(
+            {1: [_history_row(gw, 60, 60 * gw) for gw in (1, 2)]}, fail={2},
+        )
+
+        await capture_recap_history(
+            data, season=SEASON, history_client=client, finished_gameweeks=[1, 2],
+            fines_config=parse_fines_config(_ALL_THREE_RULES),
+        )
+
+        bob = _store().resolved_gameweek(1)[2]
+        assert bob.capture_status is CaptureStatus.UNKNOWN
+        assert bob.fine_rules_evaluated is None
+
+    async def test_no_fines_config_still_records_an_empty_coarse_ruling(self):
+        data = _recap_data(
+            gameweek=2,
+            managers=[_manager(name="Alice", entry_id=1)],
+            cohort=_cohort((1, "Alice", 1, 60, 300)),
+        )
+        client = _HistoryClient({1: [_history_row(gw, 60, 60 * gw) for gw in (1, 2)]})
+
+        await capture_recap_history(
+            data, season=SEASON, history_client=client, finished_gameweeks=[1, 2],
+        )
+
+        assert _store().resolved_gameweek(1)[1].fine_rules_evaluated == []
 
 
 # ---------------------------------------------------------------------------
@@ -1439,28 +1615,6 @@ class TestMultiIterationLoops:
         assert "Captured 2 draft player(s)" in err
 
 
-class TestFormatGameweeks:
-    def test_contiguous_runs_collapse_and_gaps_split(self):
-        from fpl_cli.cli._league_recap_history import _format_gameweeks
-
-        assert _format_gameweeks([1, 2, 3, 7, 9, 10]) == "GW1-3, GW7, GW9-10"
-
-    def test_a_single_gameweek_renders_alone(self):
-        from fpl_cli.cli._league_recap_history import _format_gameweeks
-
-        assert _format_gameweeks([4]) == "GW4"
-
-    def test_an_empty_list_renders_as_nothing(self):
-        from fpl_cli.cli._league_recap_history import _format_gameweeks
-
-        assert _format_gameweeks([]) == ""
-
-    def test_unsorted_input_is_ordered_first(self):
-        from fpl_cli.cli._league_recap_history import _format_gameweeks
-
-        assert _format_gameweeks([3, 1, 2]) == "GW1-3"
-
-
 # ---------------------------------------------------------------------------
 # U10: console and report rendering
 # ---------------------------------------------------------------------------
@@ -2078,6 +2232,102 @@ class TestLeagueRecapJsonEnvelope:
 # ---------------------------------------------------------------------------
 
 
+class TestSeasonFinesSurfaces:
+    """The tally reaches console, report, prompt and `--format json`
+    together, or the recap can only ever talk about this week (issue #136)."""
+
+    def _fined_data(self) -> LeagueRecapData:
+        return _recap_data(
+            managers=[
+                _manager(name="Alice", entry_id=1, gross_points=60),
+                _manager(name="Bob", entry_id=2, gross_points=10, gw_rank=2, overall_rank=2),
+            ],
+            cohort=_cohort((1, "Alice", 1, 60, 300), (2, "Bob", 2, 10, 200)),
+        )
+
+    def test_the_console_prints_season_totals_alongside_this_week(self):
+        result = _invoke_recap(self._fined_data(), settings=_LAST_PLACE_ONLY)
+
+        assert result.exit_code == 0, result.output
+        output = result.output.replace("\n", "")
+        assert "Season Fines" in output
+        assert "Bob: 1 (1 last-place)" in output
+
+    def test_a_league_with_no_fine_rules_gets_no_season_section(self):
+        result = _invoke_recap(_recap_data())
+
+        assert result.exit_code == 0, result.output
+        assert "Season Fines" not in result.output
+
+    def test_the_json_metadata_carries_the_tally(self):
+        result = _invoke_recap(
+            self._fined_data(), ["--format", "json"], settings=_LAST_PLACE_ONLY,
+        )
+
+        assert result.exit_code == 0, result.output
+        tally = json.loads(result.stdout)["metadata"]["season_fines"]
+        assert tally["rule_types"] == ["last-place"]
+        assert tally["total_fines"] == 1
+        assert tally["through_gameweek"] == 5
+        bob = next(m for m in tally["managers"] if m["manager_name"] == "Bob")
+        assert bob["counts"] == {"last-place": 1}
+        assert bob["fined_gameweeks"] == [5]
+        assert tally["qualifiers"]
+
+    def test_the_prompt_gets_its_own_anchored_section(self):
+        from fpl_cli.prompts.league_recap import format_recap_season_fines_context
+        from fpl_cli.services.league_history_fines import build_season_fines_tally
+
+        _invoke_recap(self._fined_data(), settings=_LAST_PLACE_ONLY)
+        tally = build_season_fines_tally(_store(), 5, rule_types=["last-place"])
+
+        text = format_recap_season_fines_context(tally)
+
+        assert "Season fine totals, GW5 through GW5" in text
+        assert "- Bob: 1 (1 last-place)" in text
+        assert "Not fined so far: Alice" in text
+        assert "Coverage:" in text
+
+    def test_the_prompt_section_is_empty_without_configured_rules(self):
+        from fpl_cli.prompts.league_recap import format_recap_season_fines_context
+        from fpl_cli.services.league_history_fines import build_season_fines_tally
+
+        _invoke_recap(_recap_data())
+
+        assert format_recap_season_fines_context(
+            build_season_fines_tally(_store(), 5, rule_types=[]),
+        ) == ""
+
+    async def test_the_report_renders_a_season_fines_section(self, tmp_path: Path):
+        from fpl_cli.agents.orchestration.report import ReportAgent
+
+        agent = ReportAgent(config={"output_dir": str(tmp_path)})
+        data = dict(_recap_data(managers=[_manager(name="Alice", overall_rank=1, previous_rank=1)]))
+        data["season_fines_span"] = "GW1-GW5"
+        data["season_fines_lines"] = ["Bob: 2 (2 last-place)", "Alice: none"]
+        data["season_fines_coverage_lines"] = ["GW3 was never captured, so no fine was ruled there."]
+
+        result = await agent.run(context={"report_type": "league-recap", "gameweek": 5, "data": data})
+
+        content = Path(result.data["report_path"]).read_text(encoding="utf-8")
+        assert "# Season Fines" in content
+        assert "GW1-GW5" in content
+        assert "- Bob: 2 (2 last-place)" in content
+        assert "- Alice: none" in content
+        assert "GW3 was never captured" in content
+
+    async def test_no_season_fines_section_when_the_tally_has_nothing_to_show(self, tmp_path: Path):
+        from fpl_cli.agents.orchestration.report import ReportAgent
+
+        agent = ReportAgent(config={"output_dir": str(tmp_path)})
+        data = dict(_recap_data(managers=[_manager(name="Alice", overall_rank=1, previous_rank=1)]))
+
+        result = await agent.run(context={"report_type": "league-recap", "gameweek": 5, "data": data})
+
+        content = Path(result.data["report_path"]).read_text(encoding="utf-8")
+        assert "# Season Fines" not in content
+
+
 class TestEndToEndPromptThroughTheFullCommand:
     """U12's own verification criterion: a dry run against a seeded
     multi-gameweek partition writes a prompt containing the League History
@@ -2109,3 +2359,41 @@ class TestEndToEndPromptThroughTheFullCommand:
         assert "Season phase:" in user_prompt
         assert "Stick to what happened this gameweek, with one exception" in system_prompt
         assert "season phase" in system_prompt.lower()
+
+    def test_a_dry_run_writes_the_season_fines_section_and_its_rule(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ):
+        """The narrative can only reference season totals it was handed, and
+        only in the section's own wording (issue #136)."""
+        monkeypatch.chdir(tmp_path)
+
+        result = _invoke_recap(
+            _recap_data(
+                managers=[
+                    _manager(name="Alice", entry_id=1, gross_points=60),
+                    _manager(name="Bob", entry_id=2, gross_points=10, gw_rank=2, overall_rank=2),
+                ],
+                cohort=_cohort((1, "Alice", 1, 60, 300), (2, "Bob", 2, 10, 200)),
+            ),
+            ["--dry-run"],
+            settings=_LAST_PLACE_ONLY,
+        )
+
+        assert result.exit_code == 0, result.output
+        system_prompt = (tmp_path / "data" / "debug" / "recap_system.txt").read_text(encoding="utf-8")
+        user_prompt = (tmp_path / "data" / "debug" / "recap_prompt.txt").read_text(encoding="utf-8")
+
+        assert "## Season Fines" in user_prompt
+        assert "Bob: 1 (1 last-place)" in user_prompt
+        assert "NEVER add up fines yourself" in system_prompt
+
+    def test_no_season_fines_section_without_configured_rules(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ):
+        monkeypatch.chdir(tmp_path)
+
+        result = _invoke_recap(_recap_data(), ["--dry-run"])
+
+        assert result.exit_code == 0, result.output
+        user_prompt = (tmp_path / "data" / "debug" / "recap_prompt.txt").read_text(encoding="utf-8")
+        assert "## Season Fines" not in user_prompt

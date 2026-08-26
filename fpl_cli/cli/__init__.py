@@ -20,6 +20,7 @@ from fpl_cli.cli.history import history_command
 from fpl_cli.cli.init import init_command
 from fpl_cli.cli.intel import intel_group
 from fpl_cli.cli.league import league_command
+from fpl_cli.cli.league_fines import league_fines_command
 from fpl_cli.cli.league_recap import league_recap_command
 from fpl_cli.cli.player import player_command
 from fpl_cli.cli.preview import preview_command
@@ -84,6 +85,7 @@ main.add_command(targets_command)
 main.add_command(returnees_command)
 main.add_command(review_command)
 main.add_command(league_recap_command)
+main.add_command(league_fines_command)
 main.add_command(preview_command)
 main.add_command(transfer_eval_command)
 main.add_command(allocate_command)
