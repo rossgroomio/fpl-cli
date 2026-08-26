@@ -1432,7 +1432,7 @@ async def collect_draft_recap_data(
     capture; a replayed gameweek leaves it unset (R10) until a ledger exists
     to sum it from (U6, not built yet).
     """
-    from fpl_cli.api.fpl_draft import FPLDraftClient
+    from fpl_cli.api.fpl_draft import FPLDraftClient, match_draft_to_main
     from fpl_cli.models.player import POSITION_MAP
 
     draft_league_id = settings.get("fpl", {}).get("draft_league_id")
@@ -1449,20 +1449,20 @@ async def collect_draft_recap_data(
         draft_elements = draft_bootstrap.get("elements", [])
         draft_player_map = {p["id"]: p for p in draft_elements}
 
-        main_player_by_name_team = {(p.web_name, p.team_id): p for p in players}
-        draft_to_main_id: dict[int, int] = {}
+        matched_main_players = match_draft_to_main(draft_elements, players)
+        draft_to_main_id = {
+            draft_id: main_player.id
+            for draft_id, main_player in matched_main_players.items()
+        }
         # The stable cross-season code, resolved through the same match. A
         # draft id with no entry here is exactly the unmatched case, so the
         # recorded squad carries a null code alongside its unmatched marker
         # rather than a seasonal id that means nothing next year (R6).
-        draft_to_main_code: dict[int, int] = {}
-        for dp in draft_elements:
-            key = (dp.get("web_name"), dp.get("team"))
-            main_player = main_player_by_name_team.get(key)
-            if main_player:
-                draft_to_main_id[dp["id"]] = main_player.id
-                if main_player.code:
-                    draft_to_main_code[dp["id"]] = main_player.code
+        draft_to_main_code = {
+            draft_id: main_player.code
+            for draft_id, main_player in matched_main_players.items()
+            if main_player.code
+        }
 
         # Fetch all transactions for the league, filter to this GW
         txn_response = await draft_client.get_league_transactions(draft_league_id)

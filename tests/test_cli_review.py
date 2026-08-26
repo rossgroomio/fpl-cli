@@ -1,6 +1,6 @@
 """Tests for review-related CLI helpers."""
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -10,7 +10,7 @@ from fpl_cli.cli._review_classic import (
     _review_classic_league,
     _review_classic_transfers,
 )
-from fpl_cli.cli._review_draft import _format_review_draft_player
+from fpl_cli.cli._review_draft import _format_review_draft_player, _review_draft
 from fpl_cli.cli._review_summarisation import (
     _classic_fines_league_data,
     _classic_position_fields,
@@ -22,6 +22,7 @@ from fpl_cli.cli._review_summarisation import (
 )
 from fpl_cli.cli.preview import _preview_build_fixture_map
 from fpl_cli.cli.review import _review_resolve_gw
+from tests.conftest import make_draft_player, make_player, make_team
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1041,3 +1042,64 @@ class TestReviewTransferClubLabel:
         p = _classic_player(name="Mystery", team="???", display_points=1)
         p["team_name"] = None
         assert _format_review_classic_player(p) == "- Mystery (???, MID): 1 pts"
+
+
+class TestReviewDraftPlayerMatching:
+    """#168: the draft→main ID map is what pulls a draft player's live stats,
+    so a name the main game changed must not quietly zero their gameweek."""
+
+    @staticmethod
+    def _draft_client(draft_elements, picks):
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        client.get_league_details = AsyncMock(return_value={
+            "league": {"name": "Draft League"},
+            "standings": [{"league_entry": 10, "event_total": 9, "total": 9, "rank": 1}],
+            "league_entries": [
+                {"id": 10, "entry_id": 1, "player_first_name": "A", "player_last_name": "B"},
+            ],
+        })
+        client.get_bootstrap_static = AsyncMock(return_value={"elements": draft_elements})
+        client.get_entry_picks = AsyncMock(return_value={"picks": picks, "subs": []})
+        client.get_league_transactions = AsyncMock(return_value={"transactions": []})
+        return client
+
+    async def _run(self, draft_elements, picks, players, live_stats):
+        client = self._draft_client(draft_elements, picks)
+        with patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=client):
+            return await _review_draft(
+                MagicMock(), 1, 1, gw=15, api_current_gw_id=15,
+                players=players, player_map={p.id: p for p in players},
+                teams={19: make_team(id=19, short_name="MCI", name="Man City")},
+                live_stats=live_stats,
+            )
+
+    async def test_renamed_draft_player_takes_the_main_games_points(self):
+        """The draft game kept `Savinho` after the main game moved to `Sávio`.
+        Both bootstraps still agree on the code, so his 9 points must land."""
+        renamed = make_draft_player(id=403, code=510281, web_name="Savinho", team=19, element_type=3)
+        main_player = make_player(id=403, code=510281, web_name="Sávio", team_id=19)
+
+        data = await self._run(
+            [renamed], [{"element": 403, "position": 1}], [main_player],
+            {403: {"total_points": 9, "minutes": 90}},
+        )
+
+        squad = data["draft_squad_points_data"]
+        assert [p["name"] for p in squad] == ["Savinho"]
+        assert squad[0]["points"] == 9
+        assert squad[0]["minutes"] == 90
+
+    async def test_a_player_neither_key_resolves_still_reads_zero(self):
+        """The fallback must not invent a match: an element the main game has
+        no row for keeps the zero it has always had."""
+        stranger = make_draft_player(id=901, code=999999, web_name="Mystery", team=19, element_type=3)
+        main_player = make_player(id=403, code=510281, web_name="Sávio", team_id=19)
+
+        data = await self._run(
+            [stranger], [{"element": 901, "position": 1}], [main_player],
+            {403: {"total_points": 9, "minutes": 90}},
+        )
+
+        assert data["draft_squad_points_data"][0]["points"] == 0

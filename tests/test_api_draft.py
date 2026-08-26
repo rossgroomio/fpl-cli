@@ -4,12 +4,13 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from fpl_cli.api.fpl_draft import FPLDraftClient
+from fpl_cli.api.fpl_draft import FPLDraftClient, match_draft_to_main
 from tests.conftest import (
     make_draft_league_entry,
     make_draft_player,
     make_draft_standing,
     make_draft_team,
+    make_player,
 )
 
 # --- Fixtures ---
@@ -533,3 +534,55 @@ class TestFPLDraftClientParsePlayer:
         assert result["ppg"] == 6.2
         assert result["expected_goals"] == 10.5
         assert result["expected_assists"] == 5.3
+
+
+class TestMatchDraftToMain:
+    """#168: the draft->main join is `code`, not `web_name`."""
+
+    def test_matches_a_player_the_main_game_renamed_mid_season(self):
+        """The main game renamed Savinho to Savio and the draft game kept the
+        old spelling. Same code, same team, so the join must still land."""
+        draft = make_draft_player(id=403, code=510281, web_name="Savinho", team=19)
+        main = make_player(id=403, code=510281, web_name="Sávio", team_id=19)
+
+        assert match_draft_to_main([draft], [main]) == {403: main}
+
+    def test_matches_a_player_the_draft_game_moved_to_another_club(self):
+        """A January transfer lands in the two bootstraps at different times,
+        so the team half of the old key is no more stable than the name."""
+        draft = make_draft_player(id=403, code=510281, web_name="Savinho", team=19)
+        main = make_player(id=403, code=510281, web_name="Savinho", team_id=13)
+
+        assert match_draft_to_main([draft], [main]) == {403: main}
+
+    def test_falls_back_to_name_and_team_for_a_codeless_element(self):
+        draft = make_draft_player(id=900, web_name="Star", team=1)
+        main = make_player(id=5, web_name="Star", team_id=1)
+
+        assert match_draft_to_main([draft], [main]) == {900: main}
+
+    def test_name_fallback_folds_diacritics(self):
+        draft = make_draft_player(id=900, web_name="Gyokeres", team=1)
+        main = make_player(id=5, web_name="Gyökeres", team_id=1)
+
+        assert match_draft_to_main([draft], [main]) == {900: main}
+
+    def test_name_fallback_keeps_two_players_of_the_same_name_apart(self):
+        draft = make_draft_player(id=900, web_name="Martinez", team=1)
+        wrong_club = make_player(id=5, web_name="Martinez", team_id=2)
+
+        assert match_draft_to_main([draft], [wrong_club]) == {}
+
+    def test_a_genuine_miss_stays_missing(self):
+        draft = make_draft_player(id=900, code=111, web_name="Mystery", team=1)
+        main = make_player(id=5, code=222, web_name="Star", team_id=1)
+
+        assert match_draft_to_main([draft], [main]) == {}
+
+    def test_a_zero_code_is_not_a_join_key(self):
+        """`Player.code` defaults to 0 for a main player built without one, so
+        a codeless draft element must not collide with it on a falsy key."""
+        draft = make_draft_player(id=900, code=0, web_name="Mystery", team=1)
+        main = make_player(id=5, code=0, web_name="Star", team_id=1)
+
+        assert match_draft_to_main([draft], [main]) == {}

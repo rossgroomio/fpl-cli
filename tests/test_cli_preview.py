@@ -7,6 +7,7 @@ from click.testing import CliRunner
 
 from fpl_cli.cli.preview import preview_command
 from fpl_cli.season import season_label
+from tests.conftest import make_draft_player, make_player
 
 
 def _make_fpl_client(gw=25):
@@ -247,3 +248,71 @@ class TestScoutReportsAreSeasonPartitioned:
             tmp_path / "02_Research" / "ai-scout-reports" / season_label() / "gw25-scout-preview.md"
         )
         assert f"season: {season_label()}" in report.read_text(encoding="utf-8")
+
+
+class TestPreviewDraftSquadMatching:
+    """#168: the draft squad's Status column comes from the matched main-game
+    player, so a name the main game changed must not read as fit."""
+
+    @staticmethod
+    def _draft_client(draft_elements):
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        client.get_bootstrap_static = AsyncMock(return_value={
+            "elements": draft_elements,
+            "teams": [{"id": 19, "short_name": "MCI", "name": "Man City"}],
+        })
+        client.get_entry_picks = AsyncMock(
+            return_value={"picks": [{"element": 403, "position": 1}]},
+        )
+        return client
+
+    def _run(self, draft_elements, main_players):
+        fpl_client = _make_fpl_client()
+        fpl_client.get_players = AsyncMock(return_value=main_players)
+        settings = {
+            "custom_analysis": True,
+            "fpl": {"draft_league_id": 1, "draft_entry_id": 1},
+        }
+        runner = CliRunner()
+        with (
+            patch("fpl_cli.cli.preview.is_custom_analysis_enabled", return_value=True),
+            patch("fpl_cli.cli.preview.load_settings", return_value=settings),
+            patch("fpl_cli.api.fpl.FPLClient", return_value=fpl_client),
+            patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=self._draft_client(draft_elements)),
+            patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=_make_agent(data={})),
+            patch("fpl_cli.agents.analysis.stats.StatsAgent", return_value=_make_agent(data={})),
+            patch("fpl_cli.agents.data.price.PriceAgent", return_value=_make_agent(data={})),
+        ):
+            return runner.invoke(preview_command, [])
+
+    def test_renamed_draft_player_carries_the_main_games_injury_news(self):
+        """The draft game kept `Savinho` after the main game moved to `Sávio`.
+        Matching on the shared code is what surfaces his doubt."""
+        renamed = make_draft_player(id=403, code=510281, web_name="Savinho", team=19, element_type=3)
+        main_player = make_player(
+            id=403, code=510281, web_name="Sávio", team_id=19,
+            chance_of_playing_next_round=25, news="Knock",
+        )
+
+        result = self._run([renamed], [main_player])
+
+        assert result.exit_code == 0
+        assert "Savinho" in result.output
+        assert "25%" in result.output
+
+    def test_a_player_neither_key_resolves_is_left_unannotated(self):
+        """The fallback must not invent a match: an element the main game has
+        no row for keeps the bare tick it has always had."""
+        stranger = make_draft_player(id=403, code=999999, web_name="Mystery", team=19, element_type=3)
+        main_player = make_player(
+            id=1, code=510281, web_name="Sávio", team_id=19,
+            chance_of_playing_next_round=25, news="Knock",
+        )
+
+        result = self._run([stranger], [main_player])
+
+        assert result.exit_code == 0
+        assert "Mystery" in result.output
+        assert "25%" not in result.output

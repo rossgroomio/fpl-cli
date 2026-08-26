@@ -52,7 +52,7 @@ def preview_command(ctx: click.Context, save: bool, output: str | None, scout: b
     from fpl_cli.agents.data.price import PriceAgent
     from fpl_cli.agents.orchestration.report import ReportAgent
     from fpl_cli.api.fpl import FPLClient
-    from fpl_cli.api.fpl_draft import FPLDraftClient
+    from fpl_cli.api.fpl_draft import FPLDraftClient, match_draft_to_main
     from fpl_cli.utils.time import format_deadline, format_generated_at, format_kickoff
 
     fmt = get_format(ctx)
@@ -221,13 +221,15 @@ def preview_command(ctx: click.Context, save: bool, output: str | None, scout: b
                         picks_response = await draft_client.get_entry_picks(draft_entry_id, last_gw)
                     picks = picks_response.get("picks", [])
                     # O(1) lookup for draft→main FPL player mapping
-                    main_by_name_team = {(p.web_name, p.team_id): p for p in all_players}
+                    matched_main = match_draft_to_main(
+                        draft_bootstrap.get("elements", []), all_players,
+                    )
                     draft_squad = []
                     for pick in picks:
                         dp = draft_players.get(pick["element"])
                         if dp:
                             dt = draft_teams.get(dp.get("team"))
-                            main_player = main_by_name_team.get((dp.get("web_name"), dp.get("team")))
+                            main_player = matched_main.get(pick["element"])
 
                             if main_player:
                                 cop = main_player.chance_of_playing_next_round

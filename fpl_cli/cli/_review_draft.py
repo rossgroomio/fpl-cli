@@ -15,7 +15,6 @@ from fpl_cli.cli._helpers import (
     _slice_with_ties,
 )
 from fpl_cli.models.player import POSITION_MAP
-from fpl_cli.utils.text import strip_diacritics
 
 
 def _format_review_draft_player(p: dict) -> str:
@@ -29,7 +28,7 @@ async def _review_draft(
     *, bgw_team_ids: frozenset[int] = frozenset(), dgw_team_ids: frozenset[int] = frozenset(),
 ):
     """Fetch and display draft league data. Returns dict with draft data."""
-    from fpl_cli.api.fpl_draft import FPLDraftClient
+    from fpl_cli.api.fpl_draft import FPLDraftClient, match_draft_to_main
 
     draft_league_data = None
     draft_league_name = "Draft League"
@@ -59,15 +58,11 @@ async def _review_draft(
             draft_elements = draft_bootstrap.get("elements", [])
             draft_player_map = {p["id"]: p for p in draft_elements}
 
-            # Map Draft element IDs to Main FPL element IDs by web_name AND team for GW history lookup
-            # Using (web_name, team_id) tuple to avoid ambiguous matches (e.g., two players named Martinez)
-            main_player_by_name_team = {(strip_diacritics(p.web_name).lower(), p.team_id): p for p in players}
-            draft_to_main_id = {}
-            for dp in draft_elements:
-                key = (strip_diacritics(dp.get("web_name", "")).lower(), dp.get("team"))
-                main_player = main_player_by_name_team.get(key)
-                if main_player:
-                    draft_to_main_id[dp["id"]] = main_player.id
+            # Map Draft element IDs to Main FPL element IDs for GW history lookup
+            draft_to_main_id = {
+                draft_id: main_player.id
+                for draft_id, main_player in match_draft_to_main(draft_elements, players).items()
+            }
 
             # Get standings and entry mapping
             # Note: standings use 'league_entry' which maps to 'id' in league_entries

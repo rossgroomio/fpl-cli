@@ -44,6 +44,7 @@ For a complete inventory of CLI commands, analysis agents, and skills with JSON 
 - LLM access is not a client attribute: resolve it per role with `get_llm_provider(role, settings)` from `fpl_cli.api.providers` (see `ScoutAgent.research_provider`)
 - Position map: import `POSITION_MAP` from `fpl_cli/models/player.py`, never redefine locally
 - Understat enrichment: import `match_fpl_to_understat` from `fpl_cli/api/understat`
+- Draft-to-main player matching: import `match_draft_to_main` from `fpl_cli/api/fpl_draft`, never join on `(web_name, team_id)` — `code` is the stable key and a mid-season rename breaks the name join
 
 ### API Method Naming
 - Use `get_` prefix for all data-fetching methods
