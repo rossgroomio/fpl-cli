@@ -170,7 +170,9 @@ def compute_quality_value(
 
     evaluation, _ = build_player_evaluation(player, enrichment=enrichment)
     q_dict = evaluation.as_quality_dict()
-    weights, value_ceiling = _value_weights_and_ceiling(player.position_name)
+    weights, value_ceiling = _value_weights_and_ceiling(
+        player.position_name, next_gw_id=next_gw_id,
+    )
     mins_factor = calculate_mins_factor(player.minutes, player.appearances, next_gw_id)
     raw_score = calculate_player_quality_score(
         q_dict, weights, mins_factor, position=_as_position(player.position_name),

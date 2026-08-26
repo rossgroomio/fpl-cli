@@ -714,6 +714,340 @@ class TestTeamRatingsCalculator:
         assert ratings == {}
 
 
+class TestSingleVenueWindow:
+    """A window in which clubs have played only one venue must still rate them.
+
+    Requiring both a home and an away game per club (#138) emptied the whole
+    league in the one state where the command is most needed: GW1 finished,
+    GW2 not started. Every club has played exactly one match then, so every
+    club failed the guard and `fpl ratings update` reported "No completed
+    fixtures to calculate from" over ten finished results -- leaving the
+    preseason prior in place and `fpl doctor`'s named remedy a dead end.
+    """
+
+    @pytest.fixture
+    def mock_fpl_client(self):
+        from fpl_cli.api.fpl import FPLClient
+
+        client = FPLClient()
+        client.get_fixtures = AsyncMock()
+        client.get_teams = AsyncMock()
+        return client
+
+    @pytest.fixture
+    def calculator(self, mock_fpl_client):
+        return TeamRatingsCalculator(mock_fpl_client)
+
+    @pytest.fixture
+    def teams(self):
+        from tests.conftest import make_team
+
+        return [
+            make_team(id=1, name="Arsenal", short_name="ARS"),
+            make_team(id=2, name="Man City", short_name="MCI"),
+            make_team(id=3, name="Liverpool", short_name="LIV"),
+            make_team(id=4, name="Chelsea", short_name="CHE"),
+        ]
+
+    @staticmethod
+    def _gw1():
+        """GW1 as the API serves it once finished: two results, four clubs.
+
+        League rates: 2.0 goals per home side, 1.0 per away side.
+        """
+        from tests.conftest import make_fixture
+
+        return [
+            make_fixture(
+                id=1, gameweek=1, home_team_id=1, away_team_id=2,
+                finished=True, home_score=3, away_score=0,
+            ),
+            make_fixture(
+                id=2, gameweek=1, home_team_id=3, away_team_id=4,
+                finished=True, home_score=1, away_score=2,
+            ),
+        ]
+
+    async def test_gw1_finished_produces_ratings(self, calculator, mock_fpl_client, teams):
+        """The issue's repro: ten finished fixtures must not read as none."""
+        mock_fpl_client.get_fixtures.return_value = self._gw1()
+        mock_fpl_client.get_teams.return_value = teams
+
+        ratings, performances = await calculator.calculate_from_fixtures(min_gw=1)
+
+        assert set(ratings) == {"ARS", "MCI", "LIV", "CHE"}
+        assert set(performances) == {"ARS", "MCI", "LIV", "CHE"}
+
+    async def test_played_venue_uses_the_real_result(self, calculator, mock_fpl_client, teams):
+        """Estimating the missing venue must not disturb the observed one."""
+        mock_fpl_client.get_fixtures.return_value = self._gw1()
+        mock_fpl_client.get_teams.return_value = teams
+
+        _, performances = await calculator.calculate_from_fixtures(min_gw=1)
+
+        assert performances["ARS"].goals_scored_home == 3.0
+        assert performances["ARS"].goals_conceded_home == 0.0
+        assert performances["CHE"].goals_scored_away == 2.0
+        assert performances["CHE"].goals_conceded_away == 1.0
+
+    async def test_missing_venue_is_scaled_not_copied(self, calculator, mock_fpl_client, teams):
+        """Home and away are not the same league, so the estimate is rescaled.
+
+        Over this sample home sides average 2.0 and away sides 1.0, so a home
+        rate converts to an away one at half strength. Copying the played
+        venue across instead would rank a club that has only played at home
+        against clubs' genuine away records at inflated value.
+        """
+        mock_fpl_client.get_fixtures.return_value = self._gw1()
+        mock_fpl_client.get_teams.return_value = teams
+
+        _, performances = await calculator.calculate_from_fixtures(min_gw=1)
+
+        # Arsenal scored 3 at home -> 3 x (1.0 / 2.0) away
+        assert performances["ARS"].goals_scored_away == pytest.approx(1.5)
+        # Chelsea conceded 1 away -> 1 x (1.0 / 2.0) at home, where the goals
+        # against come from visiting sides rather than hosts
+        assert performances["CHE"].goals_conceded_home == pytest.approx(0.5)
+        # Man City conceded 3 away -> 3 x (1.0 / 2.0) at home
+        assert performances["MCI"].goals_conceded_home == pytest.approx(1.5)
+
+    async def test_game_counts_show_the_venue_was_not_played(
+        self, calculator, mock_fpl_client, teams
+    ):
+        """An estimate must not be presented as a played record."""
+        mock_fpl_client.get_fixtures.return_value = self._gw1()
+        mock_fpl_client.get_teams.return_value = teams
+
+        _, performances = await calculator.calculate_from_fixtures(min_gw=1)
+
+        assert (performances["ARS"].home_games, performances["ARS"].away_games) == (1, 0)
+        assert (performances["MCI"].home_games, performances["MCI"].away_games) == (0, 1)
+
+    async def test_results_still_drive_the_ordering(self, calculator, mock_fpl_client, teams):
+        """A single gameweek is thin evidence, but it is evidence."""
+        mock_fpl_client.get_fixtures.return_value = self._gw1()
+        mock_fpl_client.get_teams.return_value = teams
+
+        ratings, _ = await calculator.calculate_from_fixtures(min_gw=1)
+
+        # Arsenal won 3-0 at home, Liverpool lost 1-2 at home
+        assert ratings["ARS"].atk_home < ratings["LIV"].atk_home
+        assert ratings["ARS"].def_home < ratings["LIV"].def_home
+
+    async def test_unplayed_team_is_still_excluded(self, calculator, mock_fpl_client, teams):
+        """One venue is enough to rate a club; none is not."""
+        from tests.conftest import make_team
+
+        mock_fpl_client.get_fixtures.return_value = self._gw1()
+        mock_fpl_client.get_teams.return_value = [
+            *teams,
+            make_team(id=5, name="Everton", short_name="EVE"),
+        ]
+
+        ratings, performances = await calculator.calculate_from_fixtures(min_gw=1)
+
+        assert "EVE" not in performances
+        assert "EVE" not in ratings
+
+    async def test_single_gameweek_since_window(self, calculator, mock_fpl_client, teams):
+        """`--since-gw N` on the day GW N completes hits the same shape."""
+        from tests.conftest import make_fixture
+
+        mock_fpl_client.get_teams.return_value = teams
+        mock_fpl_client.get_fixtures.return_value = [
+            *self._gw1(),
+            make_fixture(
+                id=3, gameweek=15, home_team_id=2, away_team_id=1,
+                finished=True, home_score=2, away_score=1,
+            ),
+        ]
+
+        ratings, performances = await calculator.calculate_from_fixtures(min_gw=15)
+
+        assert set(ratings) == {"ARS", "MCI"}
+        assert performances["MCI"].goals_scored_home == 2.0
+        assert performances["ARS"].away_games == 1
+
+    async def test_both_venues_played_is_unchanged(self, calculator, mock_fpl_client, teams):
+        """No estimation once a club has a record at each venue."""
+        from tests.conftest import make_fixture
+
+        mock_fpl_client.get_teams.return_value = teams
+        mock_fpl_client.get_fixtures.return_value = [
+            *self._gw1(),
+            make_fixture(
+                id=3, gameweek=2, home_team_id=2, away_team_id=1,
+                finished=True, home_score=4, away_score=1,
+            ),
+            make_fixture(
+                id=4, gameweek=2, home_team_id=4, away_team_id=3,
+                finished=True, home_score=0, away_score=0,
+            ),
+        ]
+
+        _, performances = await calculator.calculate_from_fixtures(min_gw=1)
+
+        ars = performances["ARS"]
+        assert (ars.home_games, ars.away_games) == (1, 1)
+        assert ars.goals_scored_home == 3.0
+        assert ars.goals_scored_away == 1.0
+        assert ars.goals_conceded_home == 0.0
+        assert ars.goals_conceded_away == 4.0
+
+
+class TestSingleVenueWindowXG:
+    """The xG path carried the same both-venues guard, so --use-xg failed too."""
+
+    @pytest.fixture
+    def mock_fpl_client(self):
+        from fpl_cli.api.fpl import FPLClient
+
+        client = FPLClient()
+        client.get_teams = AsyncMock()
+        return client
+
+    @pytest.fixture
+    def calculator(self, mock_fpl_client):
+        return TeamRatingsCalculator(mock_fpl_client)
+
+    async def test_one_match_each_still_rates_both_clubs(self, calculator, mock_fpl_client):
+        """Understat holding GW1 is no use if the guard drops every club."""
+        from tests.conftest import make_team
+
+        mock_fpl_client.get_teams.return_value = [
+            make_team(id=1, name="Arsenal", short_name="ARS"),
+            make_team(id=2, name="Man City", short_name="MCI"),
+        ]
+        team_data = {
+            "Arsenal": {
+                "team": "Arsenal",
+                "players": [],
+                "matches": [
+                    {"isResult": True, "side": "h", "xG": {"h": "2.4", "a": "0.6"}}
+                ],
+            },
+            "Man City": {
+                "team": "Man City",
+                "players": [],
+                "matches": [
+                    {"isResult": True, "side": "a", "xG": {"h": "2.4", "a": "0.6"}}
+                ],
+            },
+        }
+
+        class _Understat:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def get_team(self, name, season=None):
+                return team_data.get(name)
+
+        with patch("fpl_cli.api.understat.UnderstatClient", return_value=_Understat()):
+            ratings, performances = await calculator.calculate_from_xg()
+
+        assert set(ratings) == {"ARS", "MCI"}
+        assert performances["ARS"].goals_scored_home == pytest.approx(2.4)
+        assert (performances["ARS"].home_games, performances["ARS"].away_games) == (1, 0)
+        assert performances["MCI"].goals_scored_away == pytest.approx(0.6)
+
+
+class TestGw1FinishedUpdateCLI:
+    """End-to-end cover for the state the issue was filed in.
+
+    GW1 all finished, GW2 not started: `fpl ratings update` must calculate and
+    save rather than report nothing to calculate from.
+    """
+
+    @staticmethod
+    def _gw1_fixtures():
+        from tests.conftest import make_fixture
+
+        return [
+            make_fixture(
+                id=1, gameweek=1, home_team_id=1, away_team_id=2,
+                finished=True, home_score=3, away_score=0,
+            ),
+            make_fixture(
+                id=2, gameweek=1, home_team_id=3, away_team_id=4,
+                finished=True, home_score=1, away_score=2,
+            ),
+        ]
+
+    @staticmethod
+    def _teams():
+        from tests.conftest import make_team
+
+        return [
+            make_team(id=1, name="Arsenal", short_name="ARS"),
+            make_team(id=2, name="Man City", short_name="MCI"),
+            make_team(id=3, name="Liverpool", short_name="LIV"),
+            make_team(id=4, name="Chelsea", short_name="CHE"),
+        ]
+
+    def _run(self, args):
+        from click.testing import CliRunner
+
+        from fpl_cli.cli import main
+
+        prior = {
+            short: TeamRating(atk_home=4, atk_away=4, def_home=4, def_away=4)
+            for short in ("ARS", "MCI", "LIV", "CHE")
+        }
+
+        with (
+            patch(
+                "fpl_cli.api.fpl.FPLClient.get_fixtures",
+                new_callable=AsyncMock,
+                return_value=self._gw1_fixtures(),
+            ),
+            patch(
+                "fpl_cli.api.fpl.FPLClient.get_teams",
+                new_callable=AsyncMock,
+                return_value=self._teams(),
+            ),
+            patch(
+                "fpl_cli.services.team_ratings_prior.generate_prior",
+                new_callable=AsyncMock,
+                return_value=prior,
+            ),
+            patch(
+                "fpl_cli.services.team_ratings.TeamRatingsService.get_all_ratings",
+                return_value={},
+            ),
+            patch(
+                "fpl_cli.services.team_ratings.TeamRatingsService.save_ratings"
+            ) as mock_save,
+            patch("fpl_cli.cli._context.load_settings", return_value={"custom_analysis": True}),
+        ):
+            result = CliRunner().invoke(main, args, catch_exceptions=False)
+
+        assert result.exit_code == 0, result.output
+        return result, mock_save
+
+    def test_ratings_are_calculated_and_saved(self):
+        result, mock_save = self._run(["ratings", "update"])
+
+        assert "No completed fixtures" not in result.output
+        mock_save.assert_called_once()
+        assert set(mock_save.call_args.args[0]) == {"ARS", "MCI", "LIV", "CHE"}
+        assert mock_save.call_args.kwargs["based_on_gws"] == (1, 1)
+
+    def test_output_flags_the_estimated_venue(self):
+        """Every club has played one venue here, so the caveat must be shown."""
+        result, _ = self._run(["ratings", "update"])
+
+        assert "only one venue" in result.output
+
+    def test_since_gw_1_behaves_the_same(self):
+        result, mock_save = self._run(["ratings", "update", "--since-gw", "1"])
+
+        assert "No completed fixtures" not in result.output
+        mock_save.assert_called_once()
+
+
 class TestCalculateFromXG:
     """Tests for TeamRatingsCalculator.calculate_from_xg()."""
 
@@ -1334,6 +1668,383 @@ class TestRatingsUpdateWithoutResults:
         output = result.output.replace("\n", " ").lower()
         assert "different set of teams" in output
         assert "would be estimated" in output
+
+
+class TestAutoRefreshAfterGw1:
+    """The auto-refresh reads the same calculation, so it stalled the same way.
+
+    `fpl doctor` flags a stale team_ratings.yaml and the auto-refresh is what
+    should clear it. With GW1 finished it kept falling through to
+    seed_from_prior(), so the file stayed tagged as a preseason estimate with
+    a full gameweek of results on record (#138).
+    """
+
+    @pytest.fixture(autouse=True)
+    def reset_session_guard(self):
+        TeamRatingsService._refreshed_this_session = False
+        yield
+        TeamRatingsService._refreshed_this_session = False
+
+    async def test_gw1_results_are_calculated_not_seeded(self, tmp_path):
+        from fpl_cli.api.fpl import FPLClient
+        from tests.conftest import make_fixture, make_team
+
+        teams = [
+            make_team(id=1, name="Arsenal", short_name="ARS"),
+            make_team(id=2, name="Man City", short_name="MCI"),
+            make_team(id=3, name="Liverpool", short_name="LIV"),
+            make_team(id=4, name="Chelsea", short_name="CHE"),
+        ]
+        fixtures = [
+            make_fixture(
+                id=1, gameweek=1, home_team_id=1, away_team_id=2,
+                finished=True, home_score=3, away_score=0,
+            ),
+            make_fixture(
+                id=2, gameweek=1, home_team_id=3, away_team_id=4,
+                finished=True, home_score=1, away_score=2,
+            ),
+        ]
+        prior = {
+            short: TeamRating(atk_home=4, atk_away=4, def_home=4, def_away=4)
+            for short in ("ARS", "MCI", "LIV", "CHE")
+        }
+
+        client = FPLClient()
+        client.get_next_gameweek = AsyncMock(return_value={"id": 2})
+        client.get_fixtures = AsyncMock(return_value=fixtures)
+        client.get_teams = AsyncMock(return_value=teams)
+
+        service = TeamRatingsService(config_path=tmp_path / "team_ratings.yaml")
+
+        with (
+            patch(
+                "fpl_cli.services.team_ratings_prior.generate_prior",
+                new_callable=AsyncMock,
+                return_value=prior,
+            ),
+            patch.object(
+                TeamRatingsService, "seed_from_prior", new_callable=AsyncMock
+            ) as mock_seed,
+        ):
+            await service.ensure_fresh(client)
+
+        mock_seed.assert_not_awaited()
+        assert service.metadata is not None
+        assert service.metadata.source == "auto_calculated_blended"
+        assert service.metadata.based_on_gws == (1, 1)
+        assert set(service.get_all_ratings()) == {"ARS", "MCI", "LIV", "CHE"}
+        assert not service.is_preseason_estimate
+
+
+class TestUseXgWindowStamp:
+    """--use-xg saved no window, so nothing downstream could read its sample.
+
+    Two consequences: the prior-dominance warning could never fire over an xG
+    file however prior-heavy it was, and the auto-refresh -- which reads
+    based_on_gws to decide whether a file already covers the completed
+    gameweeks -- treated it as covering nothing and recalculated over it.
+    """
+
+    def _run(self, finished_gws, ratings=None, prior=None):
+        from click.testing import CliRunner
+
+        from fpl_cli.cli import main
+
+        ratings = ratings or {
+            "ARS": TeamRating(atk_home=1, atk_away=1, def_home=1, def_away=1),
+            "MCI": TeamRating(atk_home=7, atk_away=7, def_home=7, def_away=7),
+        }
+        perfs = {
+            "ARS": TeamPerformance("ARS", 2.0, 1.5, 0.5, 1.0, 1, 1),
+            "MCI": TeamPerformance("MCI", 1.0, 0.8, 1.5, 2.0, 1, 1),
+        }
+        gameweeks = [{"id": i, "finished": i <= finished_gws} for i in range(1, 39)]
+
+        with (
+            patch(
+                "fpl_cli.services.team_ratings.TeamRatingsCalculator.calculate_from_xg",
+                new_callable=AsyncMock,
+                return_value=(ratings, perfs),
+            ),
+            patch(
+                "fpl_cli.api.fpl.FPLClient.get_gameweeks",
+                new_callable=AsyncMock,
+                return_value=gameweeks,
+            ),
+            patch(
+                "fpl_cli.services.team_ratings_prior.generate_prior",
+                new_callable=AsyncMock,
+                return_value=prior if prior is not None else {},
+            ),
+            patch(
+                "fpl_cli.services.team_ratings.TeamRatingsService.get_all_ratings",
+                return_value={},
+            ),
+            patch(
+                "fpl_cli.services.team_ratings.TeamRatingsService.save_ratings"
+            ) as mock_save,
+            patch("fpl_cli.cli._context.load_settings", return_value={"custom_analysis": True}),
+        ):
+            result = CliRunner().invoke(
+                main, ["ratings", "update", "--use-xg"], catch_exceptions=False
+            )
+
+        assert result.exit_code == 0, result.output
+        return mock_save
+
+    def test_window_covers_the_season_to_date(self):
+        mock_save = self._run(finished_gws=4)
+
+        assert mock_save.call_args.kwargs["based_on_gws"] == (1, 4)
+
+    def test_single_gameweek_window_is_readable_as_prior_dominated(self):
+        """The whole point: a GW1 xG file must be able to raise the warning."""
+        prior = {
+            "ARS": TeamRating(atk_home=4, atk_away=4, def_home=4, def_away=4),
+            "MCI": TeamRating(atk_home=4, atk_away=4, def_home=4, def_away=4),
+        }
+        mock_save = self._run(finished_gws=1, prior=prior)
+
+        kwargs = mock_save.call_args.kwargs
+        assert kwargs["based_on_gws"] == (1, 1)
+        assert kwargs["source"] == "understat_xg_blended"
+
+        # And that metadata pair is what the warning reads.
+        import yaml as _yaml
+
+        from fpl_cli.paths import user_data_dir
+
+        path = user_data_dir() / "xg_window.yaml"
+        path.write_text(
+            _yaml.dump({
+                "metadata": {
+                    "last_updated": datetime.now().isoformat(),
+                    "source": kwargs["source"],
+                    "based_on_gws": list(kwargs["based_on_gws"]),
+                    "season": season_label(),
+                    "staleness_threshold_days": 7,
+                },
+                "ratings": {
+                    "ARS": {"atk_home": 1, "atk_away": 2, "def_home": 3, "def_away": 4},
+                    "MCI": {"atk_home": 5, "atk_away": 6, "def_home": 7, "def_away": 1},
+                },
+            })
+        )
+        warning = TeamRatingsService(config_path=path).get_staleness_warning()
+        assert warning is not None
+        assert "mostly last season's prior" in warning
+
+    def test_no_finished_gameweeks_stamps_no_window(self):
+        """An empty season has no window to claim - not a degenerate (1, 0)."""
+        mock_save = self._run(finished_gws=0)
+
+        assert mock_save.call_args.kwargs["based_on_gws"] is None
+
+
+class TestDoctorTreatsBlendNoteAsHealthy:
+    """An early-season blend is the right answer, not a fault to report.
+
+    `fpl doctor` turns any staleness warning into a STALE finding. The
+    prior-dominance note would have made team_ratings.yaml read as STALE for
+    GW1-5 of every season with no remedy that clears it -- the same dead-end
+    #138 was filed about.
+    """
+
+    def _write(self, tmp_path, *, source, based_on_gws, ratings=None):
+        import yaml as _yaml
+
+        path = tmp_path / "team_ratings.yaml"
+        path.write_text(
+            _yaml.dump({
+                "metadata": {
+                    "last_updated": datetime.now().isoformat(),
+                    "source": source,
+                    "based_on_gws": list(based_on_gws),
+                    "season": season_label(),
+                    "staleness_threshold_days": 30,
+                },
+                "ratings": ratings or {
+                    "ARS": {"atk_home": 1, "atk_away": 2, "def_home": 3, "def_away": 4},
+                    "MCI": {"atk_home": 5, "atk_away": 6, "def_home": 7, "def_away": 1},
+                },
+            })
+        )
+        return path
+
+    def _check(self, path, teams=None):
+        from fpl_cli.cli.doctor import _team_ratings_check
+
+        with patch(
+            "fpl_cli.services.team_ratings.TeamRatingsService.config_path",
+            new_callable=lambda: property(lambda self: path),
+        ):
+            return _team_ratings_check(teams)
+
+    def test_prior_dominated_file_is_ok_with_the_note(self, tmp_path):
+        from fpl_cli.cli.doctor import CheckStatus
+
+        path = self._write(tmp_path, source="auto_calculated_blended", based_on_gws=(1, 1))
+        result = self._check(path)
+
+        assert result.status is CheckStatus.OK
+        assert "mostly last season's prior" in result.detail
+
+    def test_drift_still_reports_stale_even_when_prior_dominated(self, tmp_path):
+        """Precedence: a drifted file is a real fault, note or not."""
+        from fpl_cli.cli.doctor import CheckStatus
+
+        path = self._write(tmp_path, source="auto_calculated_blended", based_on_gws=(1, 1))
+        result = self._check(path, teams=["ARS", "MCI", "COV"])
+
+        assert result.status is CheckStatus.STALE
+        assert "mostly last season's prior" not in result.detail
+
+    def test_preseason_estimate_still_reports_stale(self, tmp_path):
+        from fpl_cli.cli.doctor import CheckStatus
+        from fpl_cli.services.team_ratings import PRESEASON_SOURCE
+
+        path = self._write(tmp_path, source=PRESEASON_SOURCE, based_on_gws=(1, 1))
+        result = self._check(path)
+
+        assert result.status is CheckStatus.STALE
+
+    def test_advisory_is_none_when_a_real_fault_outranks_it(self, tmp_path):
+        """advisory_warning() must follow get_staleness_warning()'s precedence."""
+        path = self._write(tmp_path, source="auto_calculated_blended", based_on_gws=(1, 1))
+        service = TeamRatingsService(config_path=path)
+        service.check_team_set(["ARS", "MCI", "COV"])
+
+        assert service.advisory_warning() is None
+        assert "missing COV" in (service.get_staleness_warning() or "")
+
+
+class TestGoallessWindowEstimation:
+    """The venue conversion has no ratio to measure when a venue drew a blank.
+
+    The fallback must not become an unscaled copy of the played venue -- that
+    is the exact behaviour single-venue estimation exists to avoid.
+    """
+
+    def test_all_goalless_window(self):
+        from fpl_cli.services.team_ratings import performances_from_samples
+
+        perfs = performances_from_samples({
+            "A": {"scored_home": [0], "conceded_home": [0],
+                  "scored_away": [], "conceded_away": []},
+            "B": {"scored_home": [], "conceded_home": [],
+                  "scored_away": [0], "conceded_away": [0]},
+        })
+
+        assert perfs["A"].goals_scored_away == 0
+        assert perfs["B"].goals_scored_home == 0
+
+    def test_one_venue_goalless_does_not_copy_the_other(self):
+        """Two home wins to nil: nobody has scored away, so no ratio exists."""
+        from fpl_cli.services.team_ratings import performances_from_samples
+
+        perfs = performances_from_samples({
+            "A": {"scored_home": [2], "conceded_home": [0],
+                  "scored_away": [], "conceded_away": []},
+            "B": {"scored_home": [], "conceded_home": [],
+                  "scored_away": [0], "conceded_away": [2]},
+            "C": {"scored_home": [3], "conceded_home": [0],
+                  "scored_away": [], "conceded_away": []},
+            "D": {"scored_home": [], "conceded_home": [],
+                  "scored_away": [0], "conceded_away": [3]},
+        })
+
+        # B and D conceded 2 and 3 away; their unplayed home axis must not
+        # inherit those figures unscaled.
+        assert perfs["B"].goals_conceded_home == 0
+        assert perfs["D"].goals_conceded_home == 0
+        # A and C scored at home; their unplayed away axis scales to the
+        # away level, which this window measured at zero.
+        assert perfs["A"].goals_scored_away == 0
+        assert perfs["C"].goals_scored_away == 0
+
+    def test_played_venues_survive_a_goalless_counterpart(self):
+        """Only the estimated axes collapse - real records are untouched."""
+        from fpl_cli.services.team_ratings import performances_from_samples
+
+        perfs = performances_from_samples({
+            "A": {"scored_home": [2], "conceded_home": [0],
+                  "scored_away": [], "conceded_away": []},
+            "B": {"scored_home": [], "conceded_home": [],
+                  "scored_away": [0], "conceded_away": [2]},
+        })
+
+        assert perfs["A"].goals_scored_home == 2
+        assert perfs["B"].goals_conceded_away == 2
+
+
+class TestPriorDominatedWarning:
+    """A blended file early in the season is mostly last season, and must say so.
+
+    Rating GW1 (#138) means the file stops being tagged `preseason_prior` the
+    moment one gameweek completes -- so the "these are estimates" warning
+    stopped firing over ratings that are still 86% previous-season by weight.
+    """
+
+    def _service(self, tmp_path, *, source, based_on_gws):
+        import yaml as _yaml
+
+        path = tmp_path / "team_ratings.yaml"
+        path.write_text(
+            _yaml.dump(
+                {
+                    "metadata": {
+                        "last_updated": datetime.now().isoformat(),
+                        "source": source,
+                        "based_on_gws": list(based_on_gws),
+                        "season": season_label(),
+                        "staleness_threshold_days": 7,
+                    },
+                    "ratings": {
+                        "ARS": {"atk_home": 1, "atk_away": 2, "def_home": 3, "def_away": 4},
+                        "MCI": {"atk_home": 5, "atk_away": 6, "def_home": 7, "def_away": 1},
+                    },
+                }
+            )
+        )
+        return TeamRatingsService(config_path=path)
+
+    def test_single_gameweek_blend_is_flagged(self, tmp_path):
+        service = self._service(
+            tmp_path, source="auto_calculated_blended", based_on_gws=(1, 1)
+        )
+
+        warning = service.get_staleness_warning()
+        assert warning is not None
+        assert "mostly last season's prior" in warning
+        assert "1 gameweek" in warning
+        assert "14%" in warning
+
+    def test_warning_clears_once_current_form_carries_half_the_weight(self, tmp_path):
+        """Six gameweeks is the crossover REGRESSION_CONSTANT sets."""
+        service = self._service(
+            tmp_path, source="calculated_blended", based_on_gws=(1, 6)
+        )
+
+        assert service.get_staleness_warning() is None
+
+    def test_unblended_file_is_not_flagged(self, tmp_path):
+        """A late narrow window is recent form by design, not a prior-heavy blend."""
+        service = self._service(
+            tmp_path, source="calculated", based_on_gws=(30, 34)
+        )
+
+        assert service.get_staleness_warning() is None
+
+    def test_preseason_estimate_still_takes_precedence(self, tmp_path):
+        """The stronger claim wins: no current-season results at all."""
+        from fpl_cli.services.team_ratings import PRESEASON_SOURCE
+
+        service = self._service(tmp_path, source=PRESEASON_SOURCE, based_on_gws=(1, 1))
+
+        warning = service.get_staleness_warning()
+        assert warning is not None
+        assert "estimated from last season" in warning
 
 
 class TestConfigPathProperty:

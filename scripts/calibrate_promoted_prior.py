@@ -115,6 +115,11 @@ def aggregate(matches: list[dict]) -> dict[int, Rates]:
 
     rates = {}
     for team_id, data in buckets.items():
+        # Strict on purpose, unlike performances_from_samples() in the live
+        # ratings path (#138): this fits constants from a completed season, and
+        # reliability() below divides the observed spread by a Poisson floor
+        # sized from games actually played. Estimating a venue a club never
+        # played would feed that fit evidence it never had.
         if not data["scored_home"] or not data["scored_away"]:
             continue
         rates[team_id] = Rates(

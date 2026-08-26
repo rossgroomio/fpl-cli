@@ -743,6 +743,73 @@ class TestStatsValueCrossPositionWarning:
         assert data["metadata"]["warnings"] == []
 
 
+class TestStatsValueEarlySeasonWarning:
+    """Pre-GW6 quality scores are small-sample dominated (issue #143).
+
+    Going into GW2 the whole quality surface reflects one gameweek: form
+    and ppg are the same single observation, per-90 rates come from ≤90
+    minutes, and the minutes factor is disabled. Elite players with a quiet
+    opener read low while one-game wonders saturate the scale. Surface that
+    in both channels, same pattern as the cross-position warning.
+    """
+
+    def _invoke(self, args, next_gw_id=2):
+        client = _make_value_client(_sample_players(), _sample_teams())
+        client.get_next_gameweek = AsyncMock(return_value={"id": next_gw_id})
+        mock_understat = MagicMock()
+        mock_understat.get_league_players = AsyncMock(return_value=[{"id": 100}])
+        mock_understat.__aenter__ = AsyncMock(return_value=mock_understat)
+        mock_understat.__aexit__ = AsyncMock(return_value=False)
+        runner = CliRunner()
+        with (
+            patch("fpl_cli.api.fpl.FPLClient", return_value=client),
+            patch("fpl_cli.api.understat.UnderstatClient", return_value=mock_understat),
+            patch("fpl_cli.api.understat.match_fpl_to_understat", return_value=_make_us_match()),
+            patch("fpl_cli.cli.stats.is_custom_analysis_enabled", return_value=True),
+        ):
+            return runner.invoke(main, ["stats", *args])
+
+    def test_table_mode_emits_stderr_notice_at_gw2(self):
+        result = self._invoke(["--value", "-p", "MID"])
+        assert result.exit_code == 0, result.output
+        assert "Early-season notice" in result.output
+        assert "ep_next" in result.output
+
+    def test_json_mode_has_metadata_warning_at_gw2(self):
+        result = self._invoke(["--value", "-p", "MID", "--format", "json"])
+        assert result.exit_code == 0, result.output
+        assert "Early-season notice" not in result.output
+        data = json.loads(result.output)
+        warnings = data["metadata"]["warnings"]
+        assert len(warnings) == 1
+        assert warnings[0]["code"] == "early_season_small_sample"
+        assert "ep_next" in warnings[0]["message"]
+
+    def test_no_warning_from_gw6(self):
+        result = self._invoke(["--value", "-p", "MID", "--format", "json"], next_gw_id=6)
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["metadata"]["warnings"] == []
+        table = self._invoke(["--value", "-p", "MID"], next_gw_id=6)
+        assert "Early-season notice" not in table.output
+
+    def test_warning_gated_on_value_flag(self):
+        """Without --value there are no quality scores to caveat."""
+        result = self._invoke(["-p", "MID", "--format", "json"])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["metadata"]["warnings"] == []
+
+    def test_coexists_with_cross_position_warning(self):
+        result = self._invoke(["--value", "--format", "json"])
+        assert result.exit_code == 0, result.output
+        codes = [w["code"] for w in json.loads(result.output)["metadata"]["warnings"]]
+        assert codes == [
+            "early_season_small_sample",
+            "cross_position_ranking_not_meaningful",
+        ]
+
+
 class TestStatsValueErrorPaths:
     """Tests for error handling in scoring pipeline."""
 

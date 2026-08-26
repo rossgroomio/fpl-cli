@@ -31,6 +31,31 @@ if TYPE_CHECKING:
     from fpl_cli.services.scoring.signals import ConsistencySignals
 
 
+def gk_signal_enrichment(player: Any) -> dict[str, float]:
+    """Ramped GK signals (saves/90, xGC quality, CS rate) from season aggregates.
+
+    Takes a classic ``Player`` model (needs ``minutes``, ``saves_per_90``,
+    ``expected_goals_conceded``, ``clean_sheets``, ``appearances``). Shared
+    by ``build_scoring_enrichment`` and the stats agent's target/differential
+    enrichment — every consumer of the GK-inclusive calibrated anchors must
+    populate these signals, or elite keepers are silently scored on form+ppg
+    alone against a ceiling that budgets for the full GK block (issue #143).
+    """
+    # Sample-size ramp: per-90 rates are noisy below ~5 full games.
+    # Consistent with waiver availability ramp (minutes / 450).
+    sample_ramp = min(player.minutes / GK_SAMPLE_RAMP_MINUTES, 1.0)
+    signals: dict[str, float] = {"gk_saves_per_90": player.saves_per_90 * sample_ramp}
+    if player.minutes > 0:
+        xgc_per_90 = (player.expected_goals_conceded / player.minutes) * 90
+        signals["gk_xgc_quality"] = (
+            max(0.0, GK_XGC_QUALITY_ANCHOR - xgc_per_90) * sample_ramp
+        )
+    else:
+        signals["gk_xgc_quality"] = 0.0
+    signals["gk_cs_rate"] = (player.clean_sheets / max(player.appearances, 1)) * sample_ramp
+    return signals
+
+
 def build_scoring_enrichment(
     player: Any,
     us_match: dict[str, Any],
@@ -51,18 +76,7 @@ def build_scoring_enrichment(
     )
     enrichment["dc_per_90"] = player.defensive_contribution_per_90
     if player.position_name == "GK":
-        # Sample-size ramp: per-90 rates are noisy below ~5 full games.
-        # Consistent with waiver availability ramp (minutes / 450).
-        sample_ramp = min(player.minutes / GK_SAMPLE_RAMP_MINUTES, 1.0)
-        enrichment["gk_saves_per_90"] = player.saves_per_90 * sample_ramp
-        if player.minutes > 0:
-            xgc_per_90 = (player.expected_goals_conceded / player.minutes) * 90
-            enrichment["gk_xgc_quality"] = (
-                max(0.0, GK_XGC_QUALITY_ANCHOR - xgc_per_90) * sample_ramp
-            )
-        else:
-            enrichment["gk_xgc_quality"] = 0.0
-        enrichment["gk_cs_rate"] = (player.clean_sheets / max(player.appearances, 1)) * sample_ramp
+        enrichment.update(gk_signal_enrichment(player))
 
     if gw_history:
         enrichment["form_trajectory"] = compute_form_trajectory(gw_history, next_gw_id)

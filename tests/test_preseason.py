@@ -538,5 +538,7 @@ class TestGameweekInProgressRatings:
             mock_calc.return_value = (calculated, {})
             await service.ensure_fresh(gw1_in_flight_client)
 
-        assert service.metadata.source == "auto_calculated"
+        # Blended, and tagged as such: one gameweek carries 1/7 of the weight,
+        # so the file is mostly prior and get_staleness_warning() says so.
+        assert service.metadata.source == "auto_calculated_blended"
         assert service.metadata.based_on_gws == (1, 1)

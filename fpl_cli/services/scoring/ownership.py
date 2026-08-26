@@ -152,7 +152,7 @@ def calculate_target_score(
     next_gw_id: int,
 ) -> int:
     """Calculate a target score (pure performance, no ownership bias)."""
-    ceiling = _ownership_ceiling_for("target", evaluation.position)
+    ceiling = _ownership_ceiling_for("target", evaluation.position, next_gw_id=next_gw_id)
     return _calculate_quality_based_score(
         evaluation,
         weights=TARGET_QUALITY_WEIGHTS,
@@ -168,7 +168,7 @@ def calculate_differential_score(
     next_gw_id: int,
 ) -> int:
     """Calculate a differential score for a player."""
-    ceiling = _ownership_ceiling_for("differential", evaluation.position)
+    ceiling = _ownership_ceiling_for("differential", evaluation.position, next_gw_id=next_gw_id)
     return _calculate_quality_based_score(
         evaluation,
         weights=DIFFERENTIAL_QUALITY_WEIGHTS,
@@ -237,5 +237,9 @@ def calculate_waiver_score(
         elif current_count == 2:
             score -= 2
 
+    # No next_gw_id on purpose: the draft waiver path scores keepers without
+    # the GK signal block (EnrichedPlayer carries no saves/xGC fields), and a
+    # scaled denominator over a signal-less numerator inflates GKs ~30% at
+    # GW2 (#143 / PR #156 review). Full anchor until the signals are wired.
     waiver_ceiling = _ownership_ceiling_for("waiver", evaluation.position)
     return normalise_score(score, waiver_ceiling)

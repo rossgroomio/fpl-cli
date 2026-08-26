@@ -23,6 +23,7 @@ from fpl_cli.services.scoring import (
     compute_form_trajectory,
     compute_rolling_pts_per_m,
     compute_xgi_sustainability,
+    gk_signal_enrichment,
     normalise_score,
     prepare_scoring_data,
     unavailable_player_ids,
@@ -212,6 +213,11 @@ class TransferEvalAgent(Agent):
         minutes_safe = max(player.minutes, 1)
         enrichment["xGI_per_90"] = (player.expected_goals + player.expected_assists) / minutes_safe * 90
         enrichment["dc_per_90"] = player.defensive_contribution_per_90
+        if player.position_name == "GK":
+            # The calibrated GK anchors budget for the ramped GK block; scoring
+            # keepers on form+ppg alone against them under-reads all season and
+            # inflates once the ceiling scales pre-GW6 (issue #143)
+            enrichment.update(gk_signal_enrichment(player))
 
         has_understat = False
         if understat_by_id:
@@ -248,7 +254,9 @@ class TransferEvalAgent(Agent):
         quality_per_m: float | None = None
         if has_understat:
             q_dict = evaluation.as_quality_dict()
-            te_weights, te_ceiling = _value_weights_and_ceiling(_as_position(player.position_name))
+            te_weights, te_ceiling = _value_weights_and_ceiling(
+                _as_position(player.position_name), next_gw_id=next_gw_id,
+            )
             mins_factor = calculate_mins_factor(player.minutes, player.appearances, next_gw_id)
             raw = calculate_player_quality_score(
                 q_dict, te_weights, mins_factor, position=_as_position(player.position_name),

@@ -190,6 +190,10 @@ class GwRow:
     saves: int
     clean_sheets: int
     defensive_contribution: float
+    # FPL's own expected-points prediction for the row's gameweek (the
+    # ep_next-equivalent available historically). Unused by calibration;
+    # carried for the early-season backtest's baseline comparison.
+    xp: float = 0.0
 
 
 @dataclass
@@ -285,6 +289,7 @@ def load_season(season: str) -> list[SeasonPlayer]:
                 saves=_to_int(record.get("saves")),
                 clean_sheets=_to_int(record.get("clean_sheets")),
                 defensive_contribution=_to_float(record.get("defensive_contribution")),
+                xp=_to_float(record.get("xP")),
             )
         )
     for player in players.values():
@@ -354,16 +359,19 @@ def _effective_weights(weights: QualityWeights, position: Position) -> QualityWe
 
 
 def snapshot_quality_inputs(
-    player: SeasonPlayer, gw: int, snapshot_date: datetime | None
+    player: SeasonPlayer, gw: int, snapshot_date: datetime | None,
+    *, min_minutes: int = 300,
 ) -> tuple[dict[str, Any], float] | None:
     """Rebuild (quality_dict, mins_factor) as of the end of *gw*.
 
-    Returns None for players below 300 season minutes at the snapshot —
-    matching the pool the issue's validation criteria are stated over.
+    Returns None for players below *min_minutes* season minutes at the
+    snapshot — the default 300 matches the pool issue #88's validation
+    criteria are stated over; the early-season backtest lowers it, since
+    nobody has 300 minutes at a GW1-3 snapshot.
     """
     rows = [r for r in player.rows if r.round <= gw]
     minutes = sum(r.minutes for r in rows)
-    if minutes < 300:
+    if minutes < min_minutes:
         return None
     played = [r for r in rows if r.minutes > 0]
     appearances = len(played)

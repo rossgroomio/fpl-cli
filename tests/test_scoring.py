@@ -4625,7 +4625,13 @@ class TestCeilingValidationBands:
         assert fwd_raw > gk_raw
 
     def test_low_minutes_backup_gk_not_nonsense(self):
-        """Darlow-tier backup: 180 mins, ramp 0.4, still produces sane 0-100 score."""
+        """Darlow-tier backup: 180 mins, ramp 0.4, still produces sane 0-100 score.
+
+        Scored at next_gw_id=20, where the #143 calendar scaling is the
+        identity — a mid-season low-minute keeper keeps the pre-#143 read
+        (their suppressed signals are information about the player, not the
+        date) and stays clearly below the elite keeper.
+        """
         backup_gk = make_player(
             id=405, web_name="BackupGK", team_id=5,
             position=PlayerPosition.GOALKEEPER,
@@ -4635,6 +4641,201 @@ class TestCeilingValidationBands:
         )
         score = self._score(backup_gk)
         assert 0 <= score <= 60
+        assert score < self._score(self._elite_gk())
+
+
+class TestGkAttainableCeiling:
+    """Issue #143: GK scores normalise against the attainable ceiling.
+
+    ``build_scoring_enrichment`` ramps all three GK signals by
+    ``min(minutes / GK_SAMPLE_RAMP_MINUTES, 1)`` while the calibrated
+    anchors were measured at GW10+ snapshots where every regular keeper's
+    ramp is 1.0. Unscaled, the best keeper in the league capped at 72
+    going into GW2 (live reproduction, 2026-08-25) no matter how well
+    anyone played. ``gk_ceiling_attainability`` scales the anchor's ramped
+    share by the calendar's possible sample — (next_gw_id - 1) * 90 —
+    so it is the identity from GW6, uniform across every keeper at a given
+    gameweek, and a low-minute keeper deep into the season keeps reading
+    low (their small sample is information about the player, not the date
+    — PR #156 review).
+    """
+
+    def _gw1_elite_keeper(self):
+        # Kelleher-tier opener: 90 minutes, clean sheet, save points
+        return make_player(
+            id=410, web_name="EarlyGK", team_id=4,
+            position=PlayerPosition.GOALKEEPER,
+            form=7.0, points_per_game=7.0, minutes=90, total_points=7,
+            now_cost=45,
+            saves_per_90=5.0, expected_goals_conceded=1.0, clean_sheets=1,
+        )
+
+    def test_fraction_matches_cap_shares(self):
+        from fpl_cli.services.scoring import (
+            VALUE_QUALITY_WEIGHTS,
+            gk_ceiling_attainability,
+        )
+        from fpl_cli.services.scoring.constants import GK_SAMPLE_RAMP_MINUTES
+        gk = VALUE_QUALITY_WEIGHTS.for_gk()
+        ramped = gk.gk_saves_per_90.cap + gk.gk_xgc_quality.cap + gk.gk_cs_rate.cap
+        fixed = gk.form.cap + gk.ppg.cap
+        ramp = 90 / GK_SAMPLE_RAMP_MINUTES  # going into GW2 the calendar has supplied one match
+        expected = (fixed + ramp * ramped) / (fixed + ramped)
+        assert gk_ceiling_attainability(2, VALUE_QUALITY_WEIGHTS) == pytest.approx(expected)
+
+    def test_fraction_is_identity_from_gw6(self):
+        from fpl_cli.services.scoring import VALUE_QUALITY_WEIGHTS, gk_ceiling_attainability
+        for next_gw_id in (6, 10, 38):
+            assert gk_ceiling_attainability(next_gw_id, VALUE_QUALITY_WEIGHTS) == 1.0
+
+    def test_fraction_monotonic_and_bounded(self):
+        from fpl_cli.services.scoring import VALUE_QUALITY_WEIGHTS, gk_ceiling_attainability
+        fractions = [
+            gk_ceiling_attainability(gw, VALUE_QUALITY_WEIGHTS)
+            for gw in (1, 2, 3, 4, 5, 6)
+        ]
+        assert fractions == sorted(fractions)
+        assert 0 < fractions[0] < 1
+        assert fractions[-1] == 1.0
+        # Pre-season / degenerate ids clamp to the zero-sample fraction, not below
+        assert gk_ceiling_attainability(0, VALUE_QUALITY_WEIGHTS) == fractions[0]
+
+    def test_gw1_elite_keeper_reaches_elite_band(self):
+        """The #143 headline: an elite GW1 keeper reads 85+, not 72."""
+        from fpl_cli.services.scoring import compute_quality_value
+        score, _ = compute_quality_value(
+            self._gw1_elite_keeper(), us_match={}, next_gw_id=2, team_short="BRE",
+        )
+        assert score >= 85
+
+    def test_late_season_backup_stays_below_full_sample_starter(self):
+        """PR #156 review: the rescale must expire with the calendar.
+
+        A per-player-minutes ceiling handed a 180-minute GW30 backup a
+        private low denominator that ranked him above an ever-present
+        starter. Calendar keying makes GW30 the identity: the backup's
+        suppressed signals read as what they are.
+        """
+        from fpl_cli.services.scoring import compute_quality_value
+        backup = make_player(
+            id=411, web_name="LateBackup", team_id=5,
+            position=PlayerPosition.GOALKEEPER,
+            form=3.0, points_per_game=2.5, minutes=180, total_points=12,
+            now_cost=40,
+            saves_per_90=3.5, expected_goals_conceded=1.6, clean_sheets=1,
+        )
+        starter = make_player(
+            id=412, web_name="EverPresent", team_id=6,
+            position=PlayerPosition.GOALKEEPER,
+            form=5.5, points_per_game=4.8, minutes=2700, total_points=130,
+            now_cost=55,
+            saves_per_90=3.5, expected_goals_conceded=30.0, clean_sheets=12,
+        )
+        backup_score, _ = compute_quality_value(
+            backup, us_match={}, next_gw_id=30, team_short="AVL",
+        )
+        starter_score, _ = compute_quality_value(
+            starter, us_match={}, next_gw_id=30, team_short="NEW",
+        )
+        assert backup_score < starter_score
+
+    def test_full_sample_value_ceiling_unchanged(self):
+        from fpl_cli.services.scoring.constants import _value_weights_and_ceiling
+        _, bare = _value_weights_and_ceiling("GK")
+        _, full = _value_weights_and_ceiling("GK", next_gw_id=20)
+        assert full == bare
+
+    def test_ownership_scaling_touches_anchor_only(self):
+        """Headroom (matchup/ownership/need/consistency) never scales."""
+        from fpl_cli.services.scoring import TARGET_QUALITY_WEIGHTS, gk_ceiling_attainability
+        from fpl_cli.services.scoring.constants import (
+            _OWNERSHIP_HEADROOM,
+            _ownership_ceiling_for,
+            QUALITY_CEILINGS,
+        )
+        frac = gk_ceiling_attainability(2, TARGET_QUALITY_WEIGHTS)
+        early = _ownership_ceiling_for("target", "GK", next_gw_id=2)
+        anchor = QUALITY_CEILINGS[("target", "GK")]
+        assert early == pytest.approx(anchor * frac + _OWNERSHIP_HEADROOM["target"])
+        # No gameweek → full ceiling (pre-#143 behaviour preserved)
+        assert _ownership_ceiling_for("target", "GK") == pytest.approx(
+            anchor + _OWNERSHIP_HEADROOM["target"]
+        )
+
+    def test_outfield_ceilings_ignore_gameweek(self):
+        from fpl_cli.services.scoring.constants import (
+            _ownership_ceiling_for,
+            _value_weights_and_ceiling,
+        )
+        for pos in ("DEF", "MID", "FWD"):
+            assert _ownership_ceiling_for("target", pos, next_gw_id=2) == (
+                _ownership_ceiling_for("target", pos)
+            )
+            assert _value_weights_and_ceiling(pos, next_gw_id=2)[1] == (
+                _value_weights_and_ceiling(pos)[1]
+            )
+
+    def test_waiver_gk_ceiling_never_scales(self):
+        """The draft waiver numerator has no GK signals (EnrichedPlayer gap),
+        so its ceiling must stay on the full anchor: scaling only the
+        denominator inflates keepers ~30% at GW2 (PR #156 review). Identical
+        GK evaluations at GW2 and GW3 must score identically — a scaled
+        ceiling would differ between those calendar points while every
+        other input (mins factor 1.0, consistency phase 0) is constant.
+        """
+        from fpl_cli.services.scoring import build_player_evaluation, calculate_waiver_score
+        gk = make_player(
+            id=413, web_name="DraftGK", team_id=7,
+            position=PlayerPosition.GOALKEEPER,
+            form=6.0, points_per_game=6.0, minutes=90, total_points=6,
+            now_cost=45,
+        )
+        evaluation, _ = build_player_evaluation(gk)
+        scores = {
+            gw: calculate_waiver_score(
+                evaluation, squad_by_position={}, next_gw_id=gw,
+            )
+            for gw in (2, 3)
+        }
+        assert scores[2] == scores[3]
+
+
+class TestEarlySeasonObservationOnly:
+    """Documents the #143 mechanism left deliberately unchanged (for now).
+
+    Before GW6 the quality surface is pure observation: form and ppg are
+    the same single-observation number after GW1, both caps saturate on one
+    good game, per-90 rates come from ≤90 minutes, and no prior enters this
+    path. A one-game wonder therefore out-reads a quiet-opener elite — the
+    Emersonn-100 / Haaland-59 picture reproduced live on 2026-08-25. The
+    prior-blend that would re-order this is #143's proposed follow-up,
+    gated on the early-season backtest; if that lands, this test should be
+    rewritten to pin the blended behaviour instead.
+    """
+
+    def test_one_game_wonder_outreads_quiet_elite_fwd(self):
+        from fpl_cli.services.scoring import compute_quality_value
+        wonder = make_player(
+            id=420, web_name="OneGameWonder", team_id=5,
+            position=PlayerPosition.FORWARD,
+            form=9.0, points_per_game=9.0, minutes=65, total_points=9,
+            now_cost=55, expected_goals=0.82, expected_assists=0.2,
+        )
+        quiet_elite = make_player(
+            id=421, web_name="QuietElite", team_id=6,
+            position=PlayerPosition.FORWARD,
+            form=2.0, points_per_game=2.0, minutes=90, total_points=2,
+            now_cost=140, expected_goals=0.74, expected_assists=0.15,
+        )
+        wonder_score, _ = compute_quality_value(
+            wonder, us_match={}, next_gw_id=2, team_short="IPS",
+        )
+        elite_score, _ = compute_quality_value(
+            quiet_elite, us_match={}, next_gw_id=2, team_short="MCI",
+        )
+        assert wonder_score >= 95
+        assert 40 <= elite_score <= 75
+        assert wonder_score > elite_score
 
 
 class TestCalibrationDriftGuard:

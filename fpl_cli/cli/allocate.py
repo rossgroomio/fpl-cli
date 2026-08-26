@@ -199,7 +199,10 @@ def _emit_result(
     ):
         team = team_map.get(sp.player.team_id)
         team_short = team.short_name if team else "???"
-        q_score = normalise_score(sp.raw_quality, pick_display_ceiling(sp.position, horizon))
+        q_score = normalise_score(
+            sp.raw_quality,
+            pick_display_ceiling(sp.position, horizon, next_gw_id=start_gw),
+        )
         role = "starter" if sp.player.id in result.starter_ids else "bench"
         captain_gws = captain_gws_by_player.get(sp.player.id, [])
 

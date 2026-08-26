@@ -467,8 +467,64 @@ FDR_MODE = "difference"
 # Ceiling / weight selectors
 # ---------------------------------------------------------------------------
 
+_FAMILY_QUALITY_WEIGHTS: dict[str, QualityWeights] = {
+    "target": TARGET_QUALITY_WEIGHTS,
+    "differential": DIFFERENTIAL_QUALITY_WEIGHTS,
+    "waiver": WAIVER_QUALITY_WEIGHTS,
+    "value": VALUE_QUALITY_WEIGHTS,
+}
+
+
+# A full match's minutes: converts a gameweek count into the most sample the
+# calendar can have supplied an ever-present keeper.
+_FULL_MATCH_MINUTES = 90
+
+
+def gk_ceiling_attainability(next_gw_id: int, weights: QualityWeights) -> float:
+    """Fraction of the calibrated GK anchor attainable by this point of the season.
+
+    ``build_scoring_enrichment`` scales all three GK signals (saves/90, xGC
+    quality, CS rate) by ``min(minutes / GK_SAMPLE_RAMP_MINUTES, 1)`` as a
+    deliberate small-sample guard. The calibrated anchors were measured at
+    GW10+ snapshots where every regular keeper's ramp is 1.0, so dividing an
+    early-season GK raw score by the full anchor caps the whole position in
+    the low 70s however well anyone plays (issue #143: best GK in the league
+    read 72 going into GW2). Scaling the anchor's ramped share restores the
+    scale's meaning — elite among what a keeper *could* have shown by now —
+    without touching raw scores or the recorded anchors.
+
+    Keyed to the league calendar, not the player's own minutes: the most
+    sample the calendar can have supplied is ``(next_gw_id - 1) * 90``, and
+    only while that sits below ``GK_SAMPLE_RAMP_MINUTES`` is a small sample
+    an artefact of the date. From GW6 the function is the identity, and a
+    low-minute keeper's suppressed signals read as what they are — evidence
+    the player does not play — instead of earning a private, lower ceiling
+    that would rank a 180-minute backup above an ever-present starter
+    (PR #156 review). A calendar-wide denominator also keeps every keeper in
+    a list normalised against the same ceiling, so display order can never
+    invert raw order within the position.
+
+    The ramped/unramped split is approximated from the weight caps: an elite
+    keeper saturates the GK-signal caps at full sample (the premise the
+    calibration validated), so at ramp r those contributions scale ~linearly
+    with r while form/ppg do not. The position multiplier cancels in the
+    ratio.
+    """
+    calendar_minutes = max(next_gw_id - 1, 0) * _FULL_MATCH_MINUTES
+    ramp = min(calendar_minutes / GK_SAMPLE_RAMP_MINUTES, 1.0)
+    if ramp >= 1.0:
+        return 1.0
+    gk = weights.for_gk()
+    ramped_caps = gk.gk_saves_per_90.cap + gk.gk_xgc_quality.cap + gk.gk_cs_rate.cap
+    fixed_caps = gk.form.cap + gk.ppg.cap
+    return (fixed_caps + ramp * ramped_caps) / (fixed_caps + ramped_caps)
+
+
 def _ownership_ceiling_for(
-    family: Literal["target", "differential", "waiver"], position: Position
+    family: Literal["target", "differential", "waiver"],
+    position: Position,
+    *,
+    next_gw_id: int | None = None,
 ) -> float:
     """Calibrated ceiling for an ownership family — total over all four positions.
 
@@ -476,18 +532,40 @@ def _ownership_ceiling_for(
     (family, position) pair carries its own calibrated anchor. Raises
     KeyError on an unknown family (as before) and on an unknown position
     (previously the silent base-ceiling fallback).
+
+    *next_gw_id*: when supplied for a GK, the anchor share of the ceiling is
+    scaled by ``gk_ceiling_attainability`` so pre-GW6 keepers are normalised
+    against what the calendar has let their ramped signals reach. Pass it
+    only from paths whose evaluations carry the GK signal block — a scaled
+    denominator over a signal-less numerator inflates keepers instead
+    (PR #156 review: transfer-eval +44%, draft waiver +30% at GW2). The
+    bonus headroom (matchup, ownership, position need, consistency) never
+    scales. Omitted (None) keeps the full ceiling — the pre-#143 behaviour.
     """
     if family not in _OWNERSHIP_HEADROOM:
         raise KeyError(family)
-    return QUALITY_CEILINGS[(family, position)] + _OWNERSHIP_HEADROOM[family]
+    anchor = QUALITY_CEILINGS[(family, position)]
+    if position == "GK" and next_gw_id is not None:
+        anchor *= gk_ceiling_attainability(next_gw_id, _FAMILY_QUALITY_WEIGHTS[family])
+    return anchor + _OWNERSHIP_HEADROOM[family]
 
 
-def _value_weights_and_ceiling(position: Position) -> tuple[QualityWeights, float]:
-    """Select VALUE_QUALITY_WEIGHTS variant and calibrated ceiling for a position."""
+def _value_weights_and_ceiling(
+    position: Position, *, next_gw_id: int | None = None
+) -> tuple[QualityWeights, float]:
+    """Select VALUE_QUALITY_WEIGHTS variant and calibrated ceiling for a position.
+
+    *next_gw_id*: same GK attainability scaling as ``_ownership_ceiling_for``
+    (the value ceiling is the bare anchor, so the whole ceiling scales), with
+    the same contract — pass it only when the numerator carries GK signals.
+    """
     if position == "GK":
         weights = VALUE_QUALITY_WEIGHTS.for_gk()
     elif position == "DEF":
         weights = VALUE_QUALITY_WEIGHTS.without_xgi()
     else:
         weights = VALUE_QUALITY_WEIGHTS
-    return weights, QUALITY_CEILINGS[("value", position)]
+    ceiling = QUALITY_CEILINGS[("value", position)]
+    if position == "GK" and next_gw_id is not None:
+        ceiling *= gk_ceiling_attainability(next_gw_id, VALUE_QUALITY_WEIGHTS)
+    return weights, ceiling
