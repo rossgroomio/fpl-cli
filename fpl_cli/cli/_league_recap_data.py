@@ -59,6 +59,7 @@ from fpl_cli.cli._league_recap_types import (
     RecapStandingsEntry,
     RecapTransfer,
 )
+from fpl_cli.services.fixture_predictions import had_fixture
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +154,7 @@ async def collect_classic_recap_data(
     *,
     is_live_gw: bool = True,
     bgw_team_ids: frozenset[int] = frozenset(),
+    players_with_fixture: frozenset[int] | None = None,
 ) -> LeagueRecapData:
     """Fetch all managers' picks and compute league-wide recap data.
 
@@ -163,7 +165,11 @@ async def collect_classic_recap_data(
 
     `bgw_team_ids` is the set of clubs with no fixture this gameweek, so a
     recorded squad can tell a player who blanked apart from one who never
-    kicked a ball (R20).
+    kicked a ball (R20). `players_with_fixture` answers the same question
+    from the gameweek's own live data and takes precedence where it can, so a
+    replay does not read the blank off a club the player has since moved to
+    (issue #169); `resolve_players_with_fixture` (`services/fixture_predictions.py`)
+    builds it.
 
     Returns a LeagueRecapData dict ready for template rendering.
     """
@@ -179,7 +185,7 @@ async def collect_classic_recap_data(
     managers = await _fetch_all_manager_data(
         client, standings, gw, live_stats, player_map, teams,
         use_net_points=use_net_points, is_live_gw=is_live_gw,
-        bgw_team_ids=bgw_team_ids,
+        bgw_team_ids=bgw_team_ids, players_with_fixture=players_with_fixture,
     )
 
     league_rows = [
@@ -263,6 +269,7 @@ async def _fetch_all_manager_data(
     use_net_points: bool = False,
     is_live_gw: bool = True,
     bgw_team_ids: frozenset[int] = frozenset(),
+    players_with_fixture: frozenset[int] | None = None,
 ) -> list[RecapManagerEntry]:
     """Fetch picks for every manager in the league, extract recap data.
 
@@ -349,7 +356,11 @@ async def _fetch_all_manager_data(
                 auto_sub_out=player.id in auto_sub_out_ids,
                 red_cards=red_cards,
                 unmatched=False,
-                had_fixture=player.team_id not in bgw_team_ids,
+                had_fixture=had_fixture(
+                    player.id, player.team_id,
+                    players_with_fixture=players_with_fixture,
+                    bgw_team_ids=bgw_team_ids,
+                ),
             ))
 
             if pick.get("is_captain"):
@@ -1420,6 +1431,7 @@ async def collect_draft_recap_data(
     *,
     is_live_gw: bool = True,
     bgw_team_ids: frozenset[int] = frozenset(),
+    players_with_fixture: frozenset[int] | None = None,
 ) -> LeagueRecapData:
     """Fetch all managers' draft picks and compute league-wide recap data.
 
@@ -1543,7 +1555,11 @@ async def collect_draft_recap_data(
                     auto_sub_out=draft_elem_id in auto_sub_out_ids,
                     red_cards=red_cards,
                     unmatched=unmatched,
-                    had_fixture=draft_player.get("team") not in bgw_team_ids,
+                    had_fixture=had_fixture(
+                        main_id, draft_player.get("team"),
+                        players_with_fixture=players_with_fixture,
+                        bgw_team_ids=bgw_team_ids,
+                    ),
                 ))
 
             # Build auto-sub descriptions

@@ -147,11 +147,19 @@ def league_recap_command(
             # Which clubs had no fixture, so a recorded squad can tell a
             # player who blanked apart from one who never kicked a ball. Same
             # threading shape `review` uses for its per-format helpers.
-            from fpl_cli.services.fixture_predictions import find_blank_gameweeks
+            from fpl_cli.services.fixture_predictions import (
+                find_blank_gameweeks,
+                resolve_players_with_fixture,
+            )
 
             teams_list = list(teams.values())
             blank_gws = find_blank_gameweeks({gw: raw_fixtures}, teams_list, gw, gw)
             bgw_team_ids = frozenset(t["team_id"] for t in blank_gws.get(gw, []))
+            # Same question answered from the gameweek rather than from
+            # today's clubs, which is the only answer a replay can trust
+            # (issue #169). None whenever the gameweek cannot answer, and
+            # `bgw_team_ids` carries it as before.
+            with_fixture = resolve_players_with_fixture(live_data, raw_fixtures)
 
             # Get next GW deadline
             from datetime import datetime, timedelta
@@ -185,13 +193,14 @@ def league_recap_command(
                     collected_data = await collect_draft_recap_data(
                         settings=settings, gw=gw, live_stats=live_stats,
                         players=players, teams=teams, is_live_gw=is_live_gw,
-                        bgw_team_ids=bgw_team_ids,
+                        bgw_team_ids=bgw_team_ids, players_with_fixture=with_fixture,
                     )
                 else:
                     collected_data = await collect_classic_recap_data(
                         client=client, settings=settings, gw=gw,
                         live_stats=live_stats, player_map=player_map, teams=teams,
                         is_live_gw=is_live_gw, bgw_team_ids=bgw_team_ids,
+                        players_with_fixture=with_fixture,
                     )
             except RecapReconciliationError as e:
                 # A stop condition, not a soft skip: exit non-zero so a
@@ -246,17 +255,22 @@ def league_recap_command(
                 target_bgw_ids = frozenset(
                     t["team_id"] for t in target_blanks.get(target_gw, [])
                 )
+                target_with_fixture = resolve_players_with_fixture(
+                    target_live, target_fixtures,
+                )
                 if is_draft:
                     replayed = await collect_draft_recap_data(
                         settings=settings, gw=target_gw, live_stats=target_stats,
                         players=players, teams=teams, is_live_gw=False,
                         bgw_team_ids=target_bgw_ids,
+                        players_with_fixture=target_with_fixture,
                     )
                 else:
                     replayed = await collect_classic_recap_data(
                         client=client, settings=settings, gw=target_gw,
                         live_stats=target_stats, player_map=player_map, teams=teams,
                         is_live_gw=False, bgw_team_ids=target_bgw_ids,
+                        players_with_fixture=target_with_fixture,
                     )
                 replayed["is_bgw"] = len(target_fixtures) < 10
                 replayed["is_dgw"] = len(target_fixtures) > 10

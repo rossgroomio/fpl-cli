@@ -1644,6 +1644,27 @@ class TestDraftPointInTimeReconstruction:
         assert squad_player["unmatched"] is True
         assert squad_player["points"] == 0
 
+    async def test_an_unmatched_draft_player_falls_back_to_his_club_for_the_blank(self):
+        """issue #169: with no main-game id there is nothing to look up in the
+        gameweek's live data, so the club is all that is left to answer with."""
+        draft_player = make_draft_player(id=900, web_name="Mystery", team=2, element_type=3)
+        league_details = self._league_details(
+            standings=[{"league_entry": 10, "event_total": 0, "total": 500}],
+            entries=[{"id": 10, "entry_id": 1, "player_first_name": "A", "player_last_name": "B"}],
+        )
+        picks = {1: {"picks": [{"element": 900, "position": 1}], "subs": []}}
+        client = self._make_draft_client(league_details, [draft_player], [], picks)
+
+        with patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=client):
+            data = await collect_draft_recap_data(
+                {"fpl": {"draft_league_id": 1}}, gw=15, live_stats={},
+                players=[], teams={}, is_live_gw=True,
+                bgw_team_ids=frozenset({2}), players_with_fixture=frozenset({900}),
+            )
+        squad_player = data["managers"][0]["squad"][0]
+        assert squad_player["unmatched"] is True
+        assert squad_player["had_fixture"] is False
+
     async def test_unmatched_player_shortfall_does_not_abort_the_recap(self):
         """One name/team mapping miss makes the computed sum short by
         construction. That is a known gap in the mapping, not the wrong
@@ -3083,6 +3104,60 @@ class TestCollectorLedgerContract:
             live_stats={}, player_map={5: player}, teams={}, is_live_gw=False,
         )
         assert all(p["had_fixture"] for p in data["managers"][0]["squad"])
+
+    async def test_a_replay_reads_the_blank_off_the_gameweek_not_the_current_club(self):
+        """issue #169: `had_fixture` was `player.team_id not in bgw_team_ids`, so
+        a replay asked today's bootstrap which club the player is at. A player
+        who has since moved to a club that blanked that gameweek had his own
+        real fixture erased -- and `LedgerCaptaincy.had_fixture` gates the
+        captain-blank condition, so the streak silently moved with him."""
+        # Today he is at club 2, which blanked GW10. In GW10 he was at club 1
+        # and played, which is what the gameweek's own live data records.
+        mover = make_player(id=5, code=1, web_name="Mover", team_id=2)
+        standings = [{"entry": 1, "player_name": "Alice", "event_total": 6, "total": 6}]
+        picks = _picks_response(points=6, total_points=6)
+        picks["picks"] = [{"element": 5, "position": 1, "multiplier": 1}]
+        client = _FakeClassicClient(_standings_response(standings), {1: picks})
+
+        data = await collect_classic_recap_data(
+            client, {"fpl": {"classic_league_id": 1}}, gw=10,
+            live_stats={}, player_map={5: mover}, teams={}, is_live_gw=False,
+            bgw_team_ids=frozenset({2}), players_with_fixture=frozenset({5}),
+        )
+        assert data["managers"][0]["squad"][0]["had_fixture"] is True
+
+    async def test_a_replay_does_not_invent_a_fixture_for_a_player_who_had_none(self):
+        """The other direction, and the more damaging one: he has since moved to
+        a club that played, so the club derivation records a blank he could
+        never have had and the captain-blank run counts it."""
+        mover = make_player(id=5, code=1, web_name="Mover", team_id=1)
+        standings = [{"entry": 1, "player_name": "Alice", "event_total": 6, "total": 6}]
+        picks = _picks_response(points=6, total_points=6)
+        picks["picks"] = [{"element": 5, "position": 1, "multiplier": 1}]
+        client = _FakeClassicClient(_standings_response(standings), {1: picks})
+
+        data = await collect_classic_recap_data(
+            client, {"fpl": {"classic_league_id": 1}}, gw=10,
+            live_stats={}, player_map={5: mover}, teams={}, is_live_gw=False,
+            bgw_team_ids=frozenset(), players_with_fixture=frozenset(),
+        )
+        assert data["managers"][0]["squad"][0]["had_fixture"] is False
+
+    async def test_without_the_gameweek_signal_the_club_still_answers(self):
+        """`players_with_fixture=None` is the gameweek declining to answer, and
+        must leave the existing club-based derivation exactly as it was."""
+        blanking = make_player(id=6, code=2, web_name="Blanks", team_id=2)
+        standings = [{"entry": 1, "player_name": "Alice", "event_total": 6, "total": 6}]
+        picks = _picks_response(points=6, total_points=6)
+        picks["picks"] = [{"element": 6, "position": 1, "multiplier": 1}]
+        client = _FakeClassicClient(_standings_response(standings), {1: picks})
+
+        data = await collect_classic_recap_data(
+            client, {"fpl": {"classic_league_id": 1}}, gw=10,
+            live_stats={}, player_map={6: blanking}, teams={}, is_live_gw=False,
+            bgw_team_ids=frozenset({2}), players_with_fixture=None,
+        )
+        assert data["managers"][0]["squad"][0]["had_fixture"] is False
 
     async def test_classic_transfers_carry_both_player_codes(self):
         pin = make_player(id=5, code=111, web_name="In", team_id=1)

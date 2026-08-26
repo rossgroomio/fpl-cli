@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 from enum import Enum
@@ -325,6 +326,60 @@ def find_blank_gameweeks(
             blank_gws[gw] = teams_not_playing
 
     return blank_gws
+
+
+def resolve_players_with_fixture(
+    live_data: dict[str, Any], fixtures: Sequence[Fixture],
+) -> frozenset[int] | None:
+    """Players whose club had a fixture, as the gameweek itself recorded it.
+
+    `find_blank_gameweeks` answers the same question from the club a player is
+    at *now*, which is the only club the bootstrap knows. That is right while
+    the gameweek is the current one and wrong for every earlier one a player
+    has since been transferred out of (issue #169), so anything replaying a
+    past gameweek wants this instead.
+
+    The live endpoint carries an `explain` entry per club fixture for every
+    player on that club's books at the time, whether or not they featured, so
+    its emptiness is a point-in-time fact about the club's fixture list.
+
+    None when the gameweek cannot answer and the caller has to fall back to
+    the club. An unstarted gameweek returns no elements at all, and a partly
+    played one has no `explain` yet for a fixture still to kick off, so the
+    signal is only read once every fixture has finished. Even then the payload
+    has to carry at least one `explain`: a finished fixture puts two clubs on
+    the pitch, so a gameweek where nobody has one is a payload that has not
+    populated rather than a league-wide blank, and answering `frozenset()`
+    there would record every player in every squad as having had no fixture.
+    """
+    if not fixtures or not all(f.finished for f in fixtures):
+        return None
+    elements = live_data.get("elements") or []
+    with_fixture = frozenset(
+        player_id
+        for e in elements
+        if e.get("explain") and (player_id := e.get("id")) is not None
+    )
+    return with_fixture or None
+
+
+def had_fixture(
+    player_id: int | None,
+    team_id: int | None,
+    *,
+    players_with_fixture: frozenset[int] | None,
+    bgw_team_ids: frozenset[int],
+) -> bool:
+    """Whether this player's club had a fixture in the gameweek being read.
+
+    Prefers `resolve_players_with_fixture`'s point-in-time answer and falls
+    back to the club whenever the gameweek declined to give one, or the
+    player has no main-game id to look up (a draft player the main game never
+    matched).
+    """
+    if players_with_fixture is not None and player_id is not None:
+        return player_id in players_with_fixture
+    return team_id not in bgw_team_ids
 
 
 def find_double_gameweeks(
