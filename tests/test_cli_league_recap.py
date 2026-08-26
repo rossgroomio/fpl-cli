@@ -2914,6 +2914,73 @@ class TestReplayKeepsRecordedIdentity:
         assert resolved[1].transfers[0].player_out_code == 222
 
 
+# ---------------------------------------------------------------------------
+# issue #178: a current-gameweek recapture must not restamp a recorded row
+# ---------------------------------------------------------------------------
+
+
+class TestLiveCaptureKeepsRecordedIdentity:
+    """`capture_recap_history`'s direct write path -- no `replay_gameweek`
+    involved -- is what the ordinary `league-recap` command runs every time.
+    A gameweek stays "current" (and so keeps landing on this path) for the
+    whole window between its last fixture and the next deadline, and FPL
+    keeps processing transfers throughout that window (issue #178)."""
+
+    def _data(self, squad, *, gameweek: int = 1, **manager_kwargs):
+        return _recap_data(
+            gameweek=gameweek,
+            managers=[_manager(name="Alice", entry_id=1, squad=squad, **manager_kwargs)],
+            cohort=_cohort((1, "Alice", 1, 60, 300)),
+        )
+
+    async def test_a_recapture_of_a_finished_gameweek_keeps_the_recorded_club(self):
+        await capture_recap_history(
+            self._data([_player(name="Mover", code=510_281, team="MCI", is_captain=True)]),
+            season=SEASON, finished_gameweeks=[1],
+        )
+        await capture_recap_history(
+            self._data([_player(name="Mover", code=510_281, team="TOT", is_captain=True)]),
+            season=SEASON, finished_gameweeks=[1],
+        )
+        resolved = _store().resolved_gameweek(1)
+        assert resolved[1].squad[0].team == "MCI"
+
+    async def test_a_recapture_reports_the_carry(self):
+        await capture_recap_history(
+            self._data([_player(name="Mover", code=510_281, team="MCI", is_captain=True)]),
+            season=SEASON, finished_gameweeks=[1],
+        )
+        result = await capture_recap_history(
+            self._data([_player(name="Mover", code=510_281, team="TOT", is_captain=True)]),
+            season=SEASON, finished_gameweeks=[1],
+        )
+        assert any(w["code"] == HISTORY_WARNING_IDENTITY_CARRIED for w in result.warnings)
+
+    async def test_a_gameweek_not_yet_finished_is_not_gated_into_carrying(self):
+        """Absent from `finished_gameweeks`, the gameweek is still being
+        played, so its squad can legitimately change between captures -- the
+        carry must not run."""
+        await capture_recap_history(
+            self._data([_player(name="Mover", code=510_281, team="MCI", is_captain=True)]),
+            season=SEASON, finished_gameweeks=[],
+        )
+        await capture_recap_history(
+            self._data([_player(name="Mover", code=510_281, team="TOT", is_captain=True)]),
+            season=SEASON, finished_gameweeks=[],
+        )
+        resolved = _store().resolved_gameweek(1)
+        assert resolved[1].squad[0].team == "TOT"
+
+    async def test_a_first_capture_is_unaffected(self):
+        result = await capture_recap_history(
+            self._data([_player(name="Mover", code=510_281, team="TOT", is_captain=True)]),
+            season=SEASON, finished_gameweeks=[1],
+        )
+        resolved = _store().resolved_gameweek(1)
+        assert resolved[1].squad[0].team == "TOT"
+        assert not any(w["code"] == HISTORY_WARNING_IDENTITY_CARRIED for w in result.warnings)
+
+
 class TestPairSquads:
     """issue #175 review: which recorded entry each replayed one supersedes."""
 

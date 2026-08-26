@@ -1408,6 +1408,17 @@ async def capture_recap_history(
         captured_at=datetime.now(tz=timezone.utc),
         is_live_gw=is_live_gw,
     )
+    # A gameweek whose fixtures have all finished is done moving: its picks,
+    # captain and transfers are fixed, and this run's rows are resolved
+    # against *today's* bootstrap, which may have moved on since (issue #178).
+    # `finished_gameweeks` -- not `is_live_gw` -- is the gate, because a
+    # gameweek stays "current" (and so keeps landing on this path) for the
+    # whole window between its last fixture and the next deadline, and that
+    # window is exactly when a transfer can restamp a correct recorded row.
+    # `_carry_recorded_identity` already no-ops when nothing is recorded yet,
+    # so a genuine first capture is unaffected.
+    if data["gameweek"] in finished_gameweeks:
+        _carry_recorded_identity(store, data["gameweek"], rows, warnings=warnings)
     if fpl_format == "draft" and rows:
         _fill_draft_cumulative_totals(
             store, rows,
