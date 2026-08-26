@@ -361,6 +361,8 @@ Filter by position (`-p`), team (`-t`), minimum minutes (`--min-minutes`). Sort 
 
 **Value columns** (`--value` / `-v`): Adds Quality (0-100), Quality/£m, and Rolling pts/£m columns. Default sort switches to `quality_per_m` when active. Requires Understat data - players without a match show `-`. Use with a position filter for best results; scoring all players takes longer. `quality_score`, `quality_per_m`, `pts_per_m`, `form_per_m`, and `rolling_pts_per_m` are available as `--sort` fields when `--value` is active. Requires `custom_analysis: true` - silently ignored when off. See [Quality & Value Scores](custom-analysis.md#quality--value-scores) for methodology.
 
+**Early-season notice:** before GW6 quality scores are dominated by tiny samples (form and ppg reflect only the opening gameweek(s)), so hot starters saturate the scale while elite players with a quiet start read low. Table mode prints a stderr notice; JSON mode adds an `early_season_small_sample` entry to `metadata.warnings` (alongside the existing `cross_position_ranking_not_meaningful` code when sorting `--value` without a position). `--sort ep_next` gives FPL's own prior-informed ranking in the meantime. See [the early-season caveat](custom-analysis.md#quality--value-scores).
+
 **Rolling window** (`--window` / `-w`): Sets the lookback window for `rolling_pts_per_m` (range 3-10, default from config). Only applies when `--value` is active. `rolling_pts_per_m` measures points per million over the last N qualifying fixtures (minutes > 0), capturing recent form-adjusted value.
 
 ### Historical Data

@@ -53,6 +53,7 @@ from fpl_cli.services.scoring.constants import (
     MID_TARGET_CEILING,
     MID_VALUE_CEILING,
     MID_WAIVER_CEILING,
+    MINS_FACTOR_START_GW,
     POSITION_SCORE_MULTIPLIER,
     QUALITY_CEILINGS,
     STARTING_XI_CEILING,
@@ -69,6 +70,7 @@ from fpl_cli.services.scoring.constants import (
     _as_position,
     _position_from_element_type,
     _value_weights_and_ceiling,
+    gk_ceiling_attainability,
     scoring_weights_fingerprint,
 )
 from fpl_cli.services.scoring.data_prep import (
@@ -88,6 +90,7 @@ from fpl_cli.services.scoring.evaluation import (
     PlayerIdentity,
     build_player_evaluation,
     build_scoring_enrichment,
+    gk_signal_enrichment,
 )
 from fpl_cli.services.scoring.ownership import (
     calculate_differential_score,
@@ -167,6 +170,7 @@ __all__ = [
     "GK_WAIVER_CEILING",
     "GW_SELECTION_WEIGHTS",
     "MAX_GAMEWEEKS",
+    "MINS_FACTOR_START_GW",
     "MID_DIFFERENTIAL_CEILING",
     "MID_TARGET_CEILING",
     "MID_VALUE_CEILING",
@@ -190,6 +194,7 @@ __all__ = [
     "_as_position",
     "_position_from_element_type",
     "_value_weights_and_ceiling",
+    "gk_ceiling_attainability",
     "scoring_weights_fingerprint",
     # signals
     "NEUTRAL_SIGNALS",
@@ -216,6 +221,7 @@ __all__ = [
     "PlayerIdentity",
     "build_player_evaluation",
     "build_scoring_enrichment",
+    "gk_signal_enrichment",
     # display
     "normalise_score",
     "pick_display_ceiling",
