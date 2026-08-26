@@ -65,7 +65,7 @@ def player_command(
       fpl player Haaland --understat --history --format json
     """
     from fpl_cli.api.fpl import FPLClient
-    from fpl_cli.api.fpl_draft import FPLDraftClient
+    from fpl_cli.api.fpl_draft import FPLDraftClient, match_draft_to_main
 
     fmt = get_format(ctx)
     show_draft = fmt != Format.CLASSIC
@@ -128,14 +128,12 @@ def player_command(
                             # Create mapping from main FPL IDs to draft IDs
                             # Draft API may use different player IDs than main FPL API
                             draft_players = draft_bootstrap.get("elements", [])
-                            draft_by_name_team = {
-                                (dp.get("web_name"), dp.get("team")): dp["id"]
-                                for dp in draft_players
-                            }
-                            for p in display:
-                                draft_id = draft_by_name_team.get((p.web_name, p.team_id))
-                                if draft_id:
-                                    main_to_draft_id[p.id] = draft_id
+                            main_to_draft_id.update({
+                                main_player.id: draft_id
+                                for draft_id, main_player in match_draft_to_main(
+                                    draft_players, display,
+                                ).items()
+                            })
                     except Exception as e:  # noqa: BLE001 — best-effort enrichment
                         logger.warning("Draft ID mapping failed: %s", e)
 

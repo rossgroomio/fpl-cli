@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Sequence
 from typing import Any
 
 import httpx
 
-from fpl_cli.models.player import POSITION_MAP
+from fpl_cli.models.player import POSITION_MAP, Player
+from fpl_cli.utils.text import strip_diacritics
 
 logger = logging.getLogger(__name__)
 
@@ -396,3 +398,40 @@ class FPLDraftClient:
             "expected_goals": float(player_data.get("expected_goals", 0)),
             "expected_assists": float(player_data.get("expected_assists", 0)),
         }
+
+
+def match_draft_to_main(
+    draft_elements: Sequence[dict[str, Any]],
+    main_players: Sequence[Player],
+) -> dict[int, Player]:
+    """Map draft element IDs onto the main-game player they represent.
+
+    The join is `code`, the stable cross-season identifier both bootstraps
+    carry on every element. `web_name` is not stable: the main game renamed
+    Savinho to Sávio mid-season and the draft game kept the old spelling, so
+    a `(web_name, team)` join dropped a player the two APIs agreed on in
+    every other field (#168). Names survive only as a fallback for an element
+    with no code, folded for diacritics and paired with the team so two
+    players sharing a surname stay apart.
+
+    Returns only the draft IDs that matched; a missing key is a genuine miss.
+    """
+    by_code = {p.code: p for p in main_players if p.code}
+    by_name_team = {
+        (strip_diacritics(p.web_name).lower(), p.team_id): p for p in main_players
+    }
+
+    matched: dict[int, Player] = {}
+    for dp in draft_elements:
+        draft_id = dp.get("id")
+        if draft_id is None:
+            continue
+        code = dp.get("code")
+        main_player = by_code.get(code) if code else None
+        if main_player is None:
+            name, team = dp.get("web_name"), dp.get("team")
+            if name and team is not None:
+                main_player = by_name_team.get((strip_diacritics(name).lower(), team))
+        if main_player is not None:
+            matched[draft_id] = main_player
+    return matched

@@ -12,13 +12,13 @@ if TYPE_CHECKING:
     from fpl_cli.models.player import Player
 
 from fpl_cli.api.fpl import FPLClient
+from fpl_cli.api.fpl_draft import match_draft_to_main
 from fpl_cli.api.understat import UnderstatClient, match_fpl_to_understat
 from fpl_cli.constants import MIN_MINUTES_FOR_PER90
 from fpl_cli.models.types import EnrichedPlayer
 
 # Re-export: canonical location is now fpl_cli.services.scoring
 from fpl_cli.services.scoring import build_understat_by_player_id as build_understat_by_player_id
-from fpl_cli.utils.text import strip_diacritics
 
 
 def enrich_player(
@@ -145,13 +145,13 @@ async def get_draft_squad_players(
             raise
 
     pick_ids = [p["element"] for p in picks_data.get("picks", [])]
-    main_by_key = {(strip_diacritics(p.web_name).lower(), p.team_id): p for p in main_players}
+    matched = match_draft_to_main(draft_bootstrap.get("elements", []), main_players)
     squad: list[Player] = []
     for dpid in pick_ids:
         dp = draft_players.get(dpid)
         if not dp:
             continue
-        match = main_by_key.get((strip_diacritics(dp["web_name"]).lower(), dp["team"]))
+        match = matched.get(dpid)
         if match:
             squad.append(match)
         elif log:
@@ -191,15 +191,12 @@ async def get_draft_ownership_mapping(
         draft_league_id, draft_bootstrap, league_details,
     )
 
-    draft_by_name_team = {
-        (dp.get("web_name"), dp.get("team")): dp["id"]
-        for dp in draft_bootstrap.get("elements", [])
+    main_to_draft_id = {
+        main_player.id: draft_id
+        for draft_id, main_player in match_draft_to_main(
+            draft_bootstrap.get("elements", []), main_players,
+        ).items()
     }
-    main_to_draft_id: dict[int, int] = {}
-    for p in main_players:
-        draft_id = draft_by_name_team.get((p.web_name, p.team_id))
-        if draft_id:
-            main_to_draft_id[p.id] = draft_id
 
     return draft_owned, draft_entries, main_to_draft_id
 

@@ -540,7 +540,7 @@ fpl_cli/
 │   ├── contract.py               # Runtime tripwires: CSV header checks + empty-output warnings for dataset drift
 │   ├── dataset_fetcher.py         # DatasetFetcher (disk cache with ETag/TTL for GitHub CSVs)
 │   ├── fpl.py                    # FPLClient (main API, caches bootstrap-static)
-│   ├── fpl_draft.py              # FPLDraftClient
+│   ├── fpl_draft.py              # FPLDraftClient + match_draft_to_main()
 │   ├── understat.py              # UnderstatClient + match_fpl_to_understat()
 │   ├── historical_types.py       # Shared dataclasses (SeasonHistory, PlayerProfile, GwTrendProfile) + compute_trend/compute_acceleration/compute_reliability
 │   ├── vaastav.py                # VaastavClient (historical seasons 2022-25 via DatasetFetcher)

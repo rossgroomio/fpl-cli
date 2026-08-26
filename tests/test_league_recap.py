@@ -3195,6 +3195,37 @@ class TestCollectorLedgerContract:
         assert by_name["Nobody"]["code"] is None
         assert by_name["Nobody"]["unmatched"] is True
 
+    async def test_draft_player_renamed_in_the_main_game_still_matches(self):
+        """#168: the main game renamed Savinho to Savio and the draft game
+        kept the old spelling, so a (web_name, team) join dropped him to
+        unmatched with a null code and a fabricated zero. Both bootstraps
+        carry the same code, which is what the join uses."""
+        renamed = make_draft_player(id=403, code=510281, web_name="Savinho", team=19, element_type=3)
+        main_player = make_player(id=403, code=510281, web_name="Sávio", team_id=19)
+        league_details = {
+            "league": {"name": "Draft League"},
+            "standings": [{"league_entry": 10, "event_total": 9, "total": 9}],
+            "league_entries": [{"id": 10, "entry_id": 1, "player_first_name": "A", "player_last_name": "B"}],
+        }
+        picks = {1: {"picks": [{"element": 403, "position": 1}], "subs": []}}
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        client.get_league_details = AsyncMock(return_value=league_details)
+        client.get_bootstrap_static = AsyncMock(return_value={"elements": [renamed]})
+        client.get_league_transactions = AsyncMock(return_value={"transactions": []})
+        client.get_entry_picks = AsyncMock(side_effect=lambda entry_id, gw: picks[entry_id])
+
+        with patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=client):
+            data = await collect_draft_recap_data(
+                {"fpl": {"draft_league_id": 1}}, gw=1, live_stats={403: {"total_points": 9}},
+                players=[main_player], teams={}, is_live_gw=False,
+            )
+        squad_player = data["managers"][0]["squad"][0]
+        assert squad_player["unmatched"] is False
+        assert squad_player["code"] == 510281
+        assert squad_player["points"] == 9
+
 
 class TestRecapPlayerClubs:
     """#150: the recap prompt carried no club data at all, so any club the
