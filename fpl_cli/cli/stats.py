@@ -15,7 +15,12 @@ from rich.table import Table
 
 from fpl_cli.cli._context import CLIContext, Format, console, error_console, is_custom_analysis_enabled
 from fpl_cli.cli._helpers import _format_sort_value, _validate_team_filter
-from fpl_cli.cli._json import emit_json, json_output_mode, output_format_option
+from fpl_cli.cli._json import (
+    emit_failure,
+    emit_json,
+    json_output_mode,
+    output_format_option,
+)
 from fpl_cli.services.scoring import MINS_FACTOR_START_GW
 
 # Valid sort fields for `fpl stats` command
@@ -84,17 +89,16 @@ def stats_command(
     custom_on = is_custom_analysis_enabled(settings)
     if not custom_on:
         if sort_field in _VALUE_SORT_FIELDS:
-            console.print(
-                f"[red]--sort {sort_field} requires custom analysis."
-                " Enable it with: fpl init[/red]"
+            emit_failure(
+                "stats",
+                f"--sort {sort_field} requires custom analysis. Enable it with: fpl init",
+                output_format,
             )
-            raise SystemExit(1)
         value = False
 
     # Validate: value sort fields require --value flag
     if sort_field in _VALUE_SORT_FIELDS and not value:
-        console.print(f"[red]--sort {sort_field} requires the --value flag[/red]")
-        raise SystemExit(1)
+        emit_failure("stats", f"--sort {sort_field} requires the --value flag", output_format)
 
     # Override default sort to quality_per_m when --value active and --sort not explicit
     explicit_value_sort = sort_field in _VALUE_SORT_FIELDS
@@ -165,7 +169,9 @@ def stats_command(
                         error_console.print(f"[yellow]Draft ownership lookup failed: {e}[/yellow]")
 
             # Filter
-            team_upper = _validate_team_filter(team, all_teams)
+            team_upper = _validate_team_filter(
+                team, all_teams, command="stats", output_format=output_format,
+            )
             filtered = all_players
             if position:
                 target_pos = position_map[position.upper()]
@@ -234,7 +240,7 @@ def stats_command(
                     matched_players = [p for p in filtered if p.id in us_matches]
 
                     if len(matched_players) > 100:
-                        console.print(
+                        error_console.print(
                             f"[yellow]Scoring {len(matched_players)} players, this may take a moment. "
                             "Use --position to narrow.[/yellow]"
                         )
@@ -285,11 +291,16 @@ def stats_command(
                     else:
                         con_lookup = {}
 
-            # Fall back from value sort if scoring failed
+            # Fall back from value sort if scoring failed. Surfaced in both
+            # channels like the cross-position warning above: prose on stderr for
+            # tables, a metadata entry for JSON, since a consumer reading
+            # `filters.sort` alone would never learn the sort it asked for was
+            # not the sort it got.
             effective_sort = sort_field
-            if sort_field in _VALUE_SORT_FIELDS and not value_active:
-                if explicit_value_sort:
-                    console.print(
+            _sort_fell_back = sort_field in _VALUE_SORT_FIELDS and not value_active
+            if _sort_fell_back:
+                if explicit_value_sort and output_format != "json":
+                    error_console.print(
                         "[yellow]Understat unavailable — falling back to total_points sort[/yellow]"
                     )
                 effective_sort = "total_points"
@@ -353,6 +364,16 @@ def stats_command(
                         "--position GK|DEF|MID|FWD for a reliable ranking, or use "
                         "`fpl allocate --format json`'s raw_quality for a "
                         "position-agnostic proxy."
+                    ),
+                })
+            if _sort_fell_back and explicit_value_sort:
+                warnings.append({
+                    "code": "value_sort_unavailable_fell_back",
+                    "message": (
+                        f"Understat data was unavailable, so {sort_field} could not "
+                        "be computed and the results are sorted by total_points "
+                        "instead. The quality and value fields are absent from every "
+                        "record for the same reason."
                     ),
                 })
 

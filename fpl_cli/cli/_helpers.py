@@ -269,19 +269,26 @@ def _format_pts_display(p: dict, points_key: str = "points") -> str:
         return f"[dim]({pts})[/dim]"
 
 
-def _validate_team_filter(team: str | None, all_teams: list) -> str | None:
-    """Return uppercase short name or exit with error if team is unknown."""
+def _validate_team_filter(
+    team: str | None, all_teams: list, *, command: str, output_format: str,
+) -> str | None:
+    """Return uppercase short name, or report an unknown team and exit 1.
+
+    *command* and *output_format* are required because the caller's format
+    decides the channel: under `--format json` an unknown team has to come back
+    as the error envelope, not as prose on stdout ahead of it (#140).
+    """
     if not team:
         return None
-    from fpl_cli.cli._context import console
+    from fpl_cli.cli._json import emit_failure
     valid = {t.short_name.upper(): t.short_name for t in all_teams}
     if team.upper() not in valid:
         sorted_names = sorted(valid.values())
-        console.print(
-            f"[red]Unknown team '{team}'. Valid teams:[/red] "
-            f"{', '.join(sorted_names)}"
+        emit_failure(
+            command,
+            f"Unknown team '{team}'. Valid teams: {', '.join(sorted_names)}",
+            output_format,
         )
-        raise SystemExit(1)
     return team.upper()
 
 
