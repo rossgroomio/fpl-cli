@@ -426,11 +426,13 @@ class TestFdrJsonStdoutPurity:
         assert codes == ["fixture_predictions_stale"]
         assert "2026-04-01" in parsed["metadata"]["warnings"][0]["message"]
 
-    def test_fresh_predictions_carry_no_warning(self):
+    def test_fresh_predictions_carry_an_empty_warning_list(self):
+        """Present but empty, as `stats` and `league-recap` do it -- a consumer
+        indexes the key rather than checking for it first."""
         result = self._blanks(["--blanks", "--format", "json"], is_stale=False)
 
         parsed = json.loads(result.stdout)
-        assert "warnings" not in parsed["metadata"]
+        assert parsed["metadata"]["warnings"] == []
 
     def test_stale_predictions_still_warn_a_terminal(self):
         result = self._blanks(["--blanks"], is_stale=True)

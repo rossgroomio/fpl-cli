@@ -13,6 +13,7 @@ from rich.table import Table
 from fpl_cli.cli._context import console
 from fpl_cli.cli._json import (
     api_failure_boundary,
+    emit_failure,
     emit_json,
     emit_json_error,
     json_output_mode,
@@ -29,12 +30,17 @@ def load_sell_prices(
     budget: float,
     *,
     budget_from_command_line: bool,
+    output_format: str = "table",
 ) -> tuple[dict[int, float] | None, float]:
     """Read sell-price overrides and resolve the budget to solve against.
 
     Without a sell-prices file the budget is returned untouched. With one, the budget is
     auto-computed as sum(sell_prices) + bank unless --budget was given explicitly, in which
     case the explicit value wins. Exits with status 1 on an unreadable or malformed file.
+
+    *output_format* decides the channel that failure is reported on. This runs before
+    the command's own `api_failure_boundary`, so without it a malformed file put prose
+    on the stdout a JSON consumer was parsing (#159 review).
     """
     import json as json_mod
 
@@ -45,15 +51,17 @@ def load_sell_prices(
         with open(sell_prices_path, encoding="utf-8") as f:
             sp_data = json_mod.load(f)
     except (json_mod.JSONDecodeError, OSError) as exc:
-        console.print(f"[red]Error reading sell-prices file: {exc}[/red]")
-        raise SystemExit(1) from exc
+        emit_failure(
+            "allocate", f"Error reading sell-prices file: {exc}", output_format, cause=exc,
+        )
 
     players_list = sp_data.get("data", [])
     try:
         price_overrides = {p["id"]: p["sell_price"] for p in players_list}
     except KeyError as exc:
-        console.print(f"[red]Sell-prices JSON missing required field: {exc}[/red]")
-        raise SystemExit(1) from exc
+        emit_failure(
+            "allocate", f"Sell-prices JSON missing required field: {exc}", output_format, cause=exc,
+        )
 
     if not budget_from_command_line:
         sp_bank = sp_data.get("metadata", {}).get("bank", 0.0)
@@ -89,6 +97,7 @@ def allocate_command(
         sell_prices_path,
         budget,
         budget_from_command_line=ctx.get_parameter_source("budget") == ParameterSource.COMMANDLINE,
+        output_format=output_format,
     )
 
     async def _run() -> None:

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import click
+from rich.markup import escape as rich_escape
 from rich.panel import Panel
 
 from fpl_cli.api.providers import ProviderError
@@ -91,7 +92,7 @@ def league_recap_command(
                 # and doing it with exit 0 and the error on stdout -- cost
                 # more than the narrative was worth (#144), so it degrades.
                 synthesis_unavailable = str(e)
-                error_console.print(f"[yellow]Editorial skipped: {e}[/yellow]")
+                error_console.print(f"[yellow]Editorial skipped: {rich_escape(str(e))}[/yellow]")
 
     async def _run() -> None:
         from contextlib import AsyncExitStack, nullcontext
@@ -182,7 +183,12 @@ def league_recap_command(
             except RecapReconciliationError as e:
                 # A stop condition, not a soft skip: exit non-zero so a
                 # scripted caller (the gw-prep skill) sees the failure
-                # rather than an empty but successful run.
+                # rather than an empty but successful run. Under --format
+                # json that has to be the envelope -- `click.ClickException`
+                # writes its own prose to stderr and leaves stdout empty,
+                # which is the same silence in a different shape (#159 review).
+                if output_format == "json":
+                    emit_json_error("league-recap", str(e), file=stdout, cause=e)
                 raise click.ClickException(str(e)) from e
 
             # Add context metadata
@@ -276,7 +282,11 @@ def league_recap_command(
                 ]
 
             # LLM summarisation (opt-in via --summarise or --dry-run)
-            if summarise or dry_run:
+            if (summarise or dry_run) and synthesis_unavailable is None:
+                # Skipped outright when the provider is already known unusable:
+                # the call would format the whole awards/standings/history
+                # context and build the prompt, only to reach neither of its
+                # two branches (#159 review).
                 try:
                     await _recap_llm_summarise(
                         collected_data, gw,

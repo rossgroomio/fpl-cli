@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import ExitStack
+from contextlib import nullcontext
 from datetime import datetime, timezone
 
 import click
@@ -59,13 +59,11 @@ def sell_prices_command(ctx: click.Context, refresh: bool, visible: bool, output
     # `sys.stdout = sys.stderr` this replaces covered only the scrape, which
     # left the paths that bail before it writing prose to stdout -- and the
     # ones that bail after it writing no envelope at all (#140, #144).
-    with ExitStack() as stack:
-        if is_json:
-            stack.enter_context(json_output_mode())
-
+    with json_output_mode() if is_json else nullcontext():
         if get_format(ctx) == Format.DRAFT:
             emit_failure(
                 COMMAND, "sell-prices is not available in draft format.", output_format,
+                stream=error_console,
             )
 
         if not refresh:
@@ -75,6 +73,7 @@ def sell_prices_command(ctx: click.Context, refresh: bool, visible: bool, output
                     COMMAND,
                     "No cached sell-price data. Run with --refresh to scrape it.",
                     output_format,
+                    stream=error_console,
                 )
             if is_json:
                 _emit_json_finances(cached)
@@ -104,7 +103,11 @@ def sell_prices_command(ctx: click.Context, refresh: bool, visible: bool, output
             # both get written -- the reason first, then the steps, then the
             # envelope on the stdout a consumer is reading.
             message = f"Error scraping FPL: {result}"
-            console.print(f"[red]{message}[/red]")
+            # Escaped: a Playwright timeout embeds the selector it waited on
+            # (`locator("[data-test-id='...']")`), which Rich would parse as
+            # markup and silently drop -- losing the one detail these
+            # troubleshooting lines exist to show (#159 review).
+            console.print(f"[red]{rich_escape(message)}[/red]")
             console.print("\nTroubleshooting:")
             console.print("  1. Run: playwright install chromium")
             console.print("  2. Check credentials: `fpl credentials set`")
@@ -117,7 +120,7 @@ def sell_prices_command(ctx: click.Context, refresh: bool, visible: bool, output
                     ' FPL_BROWSER_ARGS="--disable-features=EncryptedClientHello".'
                 )
             if is_json:
-                emit_json_error(COMMAND, message)
+                emit_json_error(COMMAND, message, cause=result)
             raise SystemExit(1) from result
 
         finances = result
@@ -132,7 +135,7 @@ def sell_prices_command(ctx: click.Context, refresh: bool, visible: bool, output
                 console.print("[red]Existing cache preserved (not overwritten with bad data).[/red]")
                 console.print("[dim]Try with --visible flag to debug the scrape.[/dim]")
             else:
-                save_cache(finances)
+                _save_cache_or_fail(finances, save_cache, output_format)
                 error_console.print(
                     f"[yellow]Saved suspect data to {rich_escape(str(cache_file()))}"
                     f" (no valid cache to preserve).[/yellow]"
@@ -157,7 +160,7 @@ def sell_prices_command(ctx: click.Context, refresh: bool, visible: bool, output
             _display_finances(finances)
             return
 
-        save_cache(finances)
+        _save_cache_or_fail(finances, save_cache, output_format)
 
         if is_json:
             _emit_json_finances(finances)
@@ -166,6 +169,22 @@ def sell_prices_command(ctx: click.Context, refresh: bool, visible: bool, output
         console.print(Panel.fit("[bold blue]Squad Budget[/bold blue]"))
         _display_finances(finances)
         console.print(f"\n[green]Data saved to {rich_escape(str(cache_file()))}[/green]")
+
+
+def _save_cache_or_fail(finances: TeamFinances, save_cache, output_format: str) -> None:
+    """Persist the scrape, reporting a write failure instead of raising through.
+
+    A read-only data directory or a full disk raised straight out of the
+    command, so `--format json` exited 1 with empty stdout and no envelope --
+    the failure mode this contract exists to close (#159 review).
+    """
+    try:
+        save_cache(finances)
+    except OSError as exc:
+        emit_failure(
+            COMMAND, f"Could not write the sell-price cache: {exc}", output_format,
+            cause=exc, stream=error_console,
+        )
 
 
 def _cache_age_str(scraped_at: str) -> str:
@@ -196,13 +215,13 @@ def _format_pl(value: float) -> str:
 def _emit_json_finances(finances: TeamFinances) -> None:
     """Emit sell-prices data as JSON. Errors if any player lacks element_id."""
     if any(p.element_id is None for p in finances.squad):
-        with json_output_mode() as stdout:
-            emit_json_error(
-                COMMAND,
-                "Sell-price data lacks player IDs (scraped via DOM fallback). "
-                "Re-run with --refresh to capture IDs from the FPL API.",
-                file=stdout,
-            )
+        # No `json_output_mode()` here: the command body holds it open, and
+        # both emitters already fall back to the real stdout (#159 review).
+        emit_json_error(
+            COMMAND,
+            "Sell-price data lacks player IDs (scraped via DOM fallback). "
+            "Re-run with --refresh to capture IDs from the FPL API.",
+        )
 
     squad_data = [
         {
@@ -214,13 +233,12 @@ def _emit_json_finances(finances: TeamFinances) -> None:
         for p in finances.squad
     ]
     sell_total = sum(p.sell_price for p in finances.squad)
-    with json_output_mode() as stdout:
-        emit_json(COMMAND, squad_data, metadata={
-            "bank": finances.bank,
-            "total_sell_value": sell_total,
-            "free_transfers": finances.free_transfers,
-            "scraped_at": finances.scraped_at,
-        }, file=stdout)
+    emit_json(COMMAND, squad_data, metadata={
+        "bank": finances.bank,
+        "total_sell_value": sell_total,
+        "free_transfers": finances.free_transfers,
+        "scraped_at": finances.scraped_at,
+    })
 
 
 def _display_finances(finances: TeamFinances) -> None:

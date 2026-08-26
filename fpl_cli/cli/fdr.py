@@ -8,6 +8,7 @@ from collections import defaultdict
 from typing import Any
 
 import click
+import httpx
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -85,6 +86,18 @@ def _render_blanks_doubles(
                     f"  GW{pred.gameweek}: {team_names} "
                     f"[{color}]({pred.confidence.value})[/{color}]"
                 )
+
+
+async def _picks_for_exposure(client, entry_id: int, last_gw: int) -> dict:
+    """The manager's picks for *last_gw*, stepping back over a Free Hit.
+
+    A Free Hit squad is a one-week aberration, so exposure is more useful
+    measured against the squad the manager will actually return to.
+    """
+    picks_data = await client.get_manager_picks(entry_id, last_gw)
+    if picks_data.get("active_chip") == "freehit" and last_gw > 1:
+        picks_data = await client.get_manager_picks(entry_id, last_gw - 1)
+    return picks_data
 
 
 @click.command("fdr")
@@ -208,22 +221,27 @@ def fdr_command(
                     ],
                     "last_updated": last_updated,
                 }
-                blanks_metadata: dict[str, Any] = {
-                    "gameweek": current_gw,
-                    "mode": "blanks",
-                    "from_gw": start_gw,
-                    "to_gw": end_gw,
-                }
+                # `warnings` is always present, empty or not, matching `stats`
+                # and `league-recap`: a consumer indexes it rather than
+                # checking for the key first (#159 review).
+                warnings: list[dict[str, str]] = []
                 if pred_service.is_stale:
-                    blanks_metadata["warnings"] = [{
+                    warnings.append({
                         "code": "fixture_predictions_stale",
                         "message": (
                             f"Fixture predictions were last updated {last_updated}"
                             " and may be out of date. The predicted_blanks and"
                             " predicted_doubles entries are the affected ones."
                         ),
-                    }]
-                emit_json("fdr", blanks_data, metadata=blanks_metadata)
+                    })
+                with json_output_mode() as stdout:
+                    emit_json("fdr", blanks_data, metadata={
+                        "gameweek": current_gw,
+                        "mode": "blanks",
+                        "from_gw": start_gw,
+                        "to_gw": end_gw,
+                        "warnings": warnings,
+                    }, file=stdout)
                 return
 
             gw_label = f"GW{start_gw}-{end_gw}"
@@ -389,10 +407,25 @@ def fdr_command(
                         next_gw_data = await client.get_next_gameweek()
                         last_gw = (next_gw_data["id"] - 1) if next_gw_data else None
                         if last_gw and last_gw > 0:
-                            picks_data = await client.get_manager_picks(entry_id, last_gw)
-                            if picks_data.get("active_chip") == "freehit":
-                                last_gw -= 1
-                                picks_data = await client.get_manager_picks(entry_id, last_gw)
+                            try:
+                                picks_data = await _picks_for_exposure(client, entry_id, last_gw)
+                            except httpx.HTTPStatusError as exc:
+                                if exc.response.status_code != 404:
+                                    raise
+                                # Normal before the first deadline. Left to the
+                                # command's api_failure_boundary this read as
+                                # "could not reach the FPL API", making a benign
+                                # state look like an outage (#159 review). The
+                                # exposure section is dropped; the FDR analysis
+                                # the command is actually for still runs.
+                                error_console.print(
+                                    f"[yellow]No squad submitted for GW{last_gw} yet"
+                                    " - skipping squad exposure[/yellow]"
+                                )
+                                picks_data = None
+                        else:
+                            picks_data = None
+                        if picks_data is not None:
                             pick_ids = [p["element"] for p in picks_data.get("picks", [])]
                             players = await client.get_players()
                             player_map = {p.id: p for p in players}

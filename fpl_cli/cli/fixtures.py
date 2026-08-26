@@ -13,6 +13,7 @@ from fpl_cli.cli._context import console
 from fpl_cli.cli._helpers import _fdr_style
 from fpl_cli.cli._json import (
     api_failure_boundary,
+    emit_failure,
     emit_json,
     emit_json_error,
     output_format_option,
@@ -128,7 +129,10 @@ def fixtures_command(gameweek: int | None, output_format: str):
                 console.print(table)
 
             except Exception as e:  # noqa: BLE001 — display resilience
-                console.print(f"[red]Error fetching fixtures: {e}[/red]")
+                # Reports and exits 1. Printing and falling off the end left
+                # table mode exiting 0 on a failure, and swallowed the error
+                # before `api_failure_boundary` below could see it (#159 review).
+                emit_failure("fixtures", f"Error fetching fixtures: {e}", output_format, cause=e)
 
     with api_failure_boundary("fixtures", output_format):
         asyncio.run(_run())

@@ -14,7 +14,6 @@ from rich.panel import Panel
 from fpl_cli.cli._context import Format, console, error_console, get_format, is_custom_analysis_enabled, load_settings
 from fpl_cli.cli._helpers import _fdr_style
 from fpl_cli.cli._json import (
-    api_failure_boundary,
     emit_failure,
     emit_json,
     json_output_mode,
@@ -90,8 +89,13 @@ def player_command(
                 matches = resolve_players(name, players, teams=team_list)
 
                 if not matches:
-                    error_console.print(f"[yellow]No players found matching '{name}'[/yellow]")
-                    return
+                    # Reported, not returned: this ran ahead of the JSON branch
+                    # below, so `--format json` exited 0 with empty stdout and a
+                    # consumer could not tell a typo from a working lookup (#159 review).
+                    emit_failure(
+                        "player", f"No players found matching '{name}'", output_format,
+                        stream=error_console,
+                    )
 
                 display = matches[:5]
 
@@ -545,8 +549,7 @@ def player_command(
                 # would put prose on the stdout a consumer is parsing (#140).
                 emit_failure("player", f"Could not load player data: {e}", output_format, cause=e)
 
-    with api_failure_boundary("player", output_format):
-        asyncio.run(_run())
+    asyncio.run(_run())
 
 
 def _build_set_piece_line(player: Player) -> str | None:

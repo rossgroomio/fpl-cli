@@ -9,7 +9,7 @@ import httpx
 from rich.table import Table
 
 from fpl_cli.cli._context import console, error_console, load_settings
-from fpl_cli.cli._helpers import _fdr_style
+from fpl_cli.cli._helpers import _fdr_style, require_entry_id
 from fpl_cli.cli._json import (
     api_failure_boundary,
     emit_failure,
@@ -42,17 +42,13 @@ def grid_command(gws: int, watch: tuple[str, ...], mode: str, is_draft: bool, ou
     entry_id: int | None = None
 
     if is_draft:
-        draft_entry_id = settings.get("fpl", {}).get("draft_entry_id")
-        if not draft_entry_id:
-            emit_failure(
-                COMMAND, "draft_entry_id is not set in settings.yaml.", output_format,
-            )
+        draft_entry_id = require_entry_id(
+            settings, is_draft=True, command=COMMAND, output_format=output_format,
+        )
     else:
-        entry_id = settings.get("fpl", {}).get("classic_entry_id")
-        if not entry_id:
-            emit_failure(
-                COMMAND, "classic_entry_id is not set in settings.yaml.", output_format,
-            )
+        entry_id = require_entry_id(
+            settings, is_draft=False, command=COMMAND, output_format=output_format,
+        )
 
     async def _grid():
         from fpl_cli.api.fpl import FPLClient

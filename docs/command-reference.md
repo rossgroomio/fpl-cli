@@ -716,9 +716,13 @@ it shares the channel: `synthesis_provider_unavailable`.
 | `synthesis_provider_unavailable` | `--summarise` was asked for but the synthesis provider had no usable key; everything else in the recap, the capture included, ran normally |
 
 None of these change the exit code — `league-recap` exits 0 whenever the recap itself
-rendered. The single exit-1 case is a gameweek that could not be resolved at all under
-`--format json`, which emits the shared `{"command", "error"}` envelope on stdout (see
-[JSON Output](#json-output)); the table path prints the same message and exits 0.
+rendered, and a skipped editorial (`synthesis_provider_unavailable`) is no exception.
+
+Three things do exit 1, all emitting the shared `{"command", "error"}` envelope on stdout
+under `--format json` (see [JSON Output](#json-output)): an unreachable FPL API, a
+gameweek that could not be resolved at all, and a reconciliation failure. Only the second
+softens on the table path, where it prints the same message and exits 0. The distinction
+matters when scripting a retry — an outage is worth retrying, the other two are not.
 
 ## Season Preview Intel
 
