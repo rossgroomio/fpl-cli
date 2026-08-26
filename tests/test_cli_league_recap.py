@@ -14,8 +14,10 @@ import pytest
 from click.testing import CliRunner
 
 from fpl_cli.cli._league_recap_history import (
+    _pair_squads,
     HISTORY_WARNING_BACKFILL_MANAGER_UNREACHABLE,
     HISTORY_WARNING_BACKFILL_REPLAY_FAILED,
+    HISTORY_WARNING_IDENTITY_CARRIED,
     HISTORY_WARNING_STANDINGS_TRUNCATED,
     HISTORY_WARNING_STORE_UNREADABLE,
     HISTORY_WARNING_TRANSFER_DETAIL_SHORT,
@@ -32,7 +34,13 @@ from fpl_cli.cli._league_recap_types import (
     RecapStandingsEntry,
     RecapTransfer,
 )
-from fpl_cli.models.league_history import CaptureStatus, FidelityTier, LedgerCaptaincy, LedgerTransaction
+from fpl_cli.models.league_history import (
+    CaptureStatus,
+    FidelityTier,
+    LedgerCaptaincy,
+    LedgerPlayer,
+    LedgerTransaction,
+)
 from fpl_cli.season import CHIP_SPLIT_GW, TOTAL_GAMEWEEKS, season_label
 from fpl_cli.services.league_history import LeagueHistoryStore
 from fpl_cli.services.league_history_notes import (
@@ -2661,3 +2669,288 @@ class TestEndToEndPromptThroughTheFullCommand:
         assert result.exit_code == 0, result.output
         user_prompt = (tmp_path / "data" / "debug" / "recap_prompt.txt").read_text(encoding="utf-8")
         assert "## Season Fines" not in user_prompt
+
+
+# ---------------------------------------------------------------------------
+# issue #169: a replay must not restamp a row with today's identity
+# ---------------------------------------------------------------------------
+
+
+class TestReplayKeepsRecordedIdentity:
+    """A backfill resolves every pick against today's bootstrap, so a player
+    transferred or renamed since comes back wearing his current club on a row
+    describing a gameweek where that was not true."""
+
+    def _cohort(self):
+        return _cohort((1, "Alice", 1, 60, 300), (2, "Bob", 2, 40, 280))
+
+    def _data(self, squad, *, gameweek: int = 1, **manager_kwargs):
+        return _recap_data(
+            gameweek=gameweek,
+            managers=[_manager(name="Alice", entry_id=1, squad=squad, **manager_kwargs)],
+            cohort=self._cohort(),
+        )
+
+    async def _replay(self, squad, *, warnings_out=None, **manager_kwargs):
+        """Capture GW1 with `squad`, leaving Bob unknown so GW1 stays
+        incomplete and every later run replays the whole cohort."""
+        replayed = self._data(squad, **manager_kwargs)
+
+        async def _replay_gw(gameweek: int):
+            return replayed if gameweek == 1 else None
+
+        result = await capture_recap_history(
+            self._data([_player()]), season=SEASON, finished_gameweeks=[1],
+            replay_gameweek=_replay_gw, backfill_detail=False,
+        )
+        if warnings_out is not None:
+            warnings_out.extend(result.warnings)
+        return _store().resolved_gameweek(1)
+
+    async def _capture_original(self, squad, **manager_kwargs):
+        await capture_recap_history(
+            self._data(squad, **manager_kwargs), season=SEASON, finished_gameweeks=[1],
+        )
+
+    async def test_a_replay_keeps_the_club_the_gameweek_recorded(self):
+        await self._capture_original(
+            [_player(name="Mover", code=510_281, team="MCI", is_captain=True)],
+        )
+        resolved = await self._replay(
+            [_player(name="Mover", code=510_281, team="TOT", is_captain=True)],
+        )
+        assert resolved[1].squad[0].team == "MCI"
+
+    async def test_a_replay_keeps_the_name_the_gameweek_recorded(self):
+        await self._capture_original(
+            [_player(name="Savinho", code=510_281, team="MCI", is_captain=True)],
+            captain="Savinho",
+        )
+        resolved = await self._replay(
+            [_player(name="Sávio", code=510_281, team="MCI", is_captain=True)],
+            captain="Sávio",
+        )
+        assert resolved[1].squad[0].name == "Savinho"
+        assert resolved[1].captain.name == "Savinho", "captaincy must follow the squad's rename"
+
+    async def test_a_gameweek_an_earlier_replay_already_degraded_is_repaired(self):
+        """The property that needs the store read to be every line rather than
+        the resolved winner: by now the degraded row is the winner, so carrying
+        *that* forward would just re-copy the mistake."""
+        await self._capture_original(
+            [_player(name="Mover", code=510_281, team="MCI", is_captain=True)],
+        )
+        await self._replay([_player(name="Mover", code=510_281, team="TOT", is_captain=True)])
+        assert _store().resolved_gameweek(1)[1].squad[0].team == "MCI"
+
+        # A second replay, still wrong, still repaired.
+        resolved = await self._replay(
+            [_player(name="Mover", code=510_281, team="TOT", is_captain=True)],
+        )
+        assert resolved[1].squad[0].team == "MCI"
+
+    async def test_a_replay_never_lowers_a_resolved_code(self):
+        await self._capture_original(
+            [_player(name="Mover", code=510_281, team="MCI", is_captain=True)],
+            captain="Mover",
+        )
+        resolved = await self._replay(
+            [_player(name="Mover", code=None, team="MCI", is_captain=True, unmatched=True)],
+            captain="Mover",
+        )
+        recorded = resolved[1].squad[0]
+        assert recorded.code == 510_281, "the cross-season join key survives a drifted bootstrap"
+        assert recorded.unmatched is True, (
+            "restoring a code does not make this replay's zero a real score"
+        )
+        assert resolved[1].captain.code == 510_281, (
+            "a captaincy entry is a value copy, not a reference into the squad"
+        )
+
+    async def test_restoring_a_code_is_reported_even_when_nothing_else_moved(self):
+        """The repair the issue asks to be warned about: name and club agree, so
+        only the recovered join key marks that the bootstrap has drifted."""
+        await self._capture_original(
+            [_player(name="Mover", code=510_281, team="MCI", is_captain=True)],
+        )
+        warnings: list[dict[str, str]] = []
+        await self._replay(
+            [_player(name="Mover", code=None, team="MCI", is_captain=True, unmatched=True)],
+            warnings_out=warnings,
+        )
+        assert any(w["code"] == HISTORY_WARNING_IDENTITY_CARRIED for w in warnings)
+
+    async def test_what_the_gameweek_re_derives_is_left_to_the_replay(self):
+        """Points, cards and the blank gate come from the gameweek's own data,
+        so a replay that improves them must win -- only who a player *was* is
+        carried."""
+        await self._capture_original([
+            _player(name="Mover", code=510_281, team="MCI", points=2,
+                    is_captain=True, had_fixture=True, red_cards=0),
+        ])
+        resolved = await self._replay([
+            _player(name="Mover", code=510_281, team="TOT", points=9,
+                    is_captain=True, had_fixture=False, red_cards=1),
+        ])
+        player = resolved[1].squad[0]
+        assert (player.points, player.had_fixture, player.red_cards) == (9, False, 1)
+        assert player.team == "MCI"
+
+    async def test_a_player_who_has_left_the_game_does_not_strand_the_rest(self):
+        """The collectors skip a pick today's bootstrap cannot resolve, so a
+        replayed squad can be shorter. Slot alignment is off; the code join
+        still carries everyone it can reach."""
+        await self._capture_original([
+            _player(name="Gone", code=111, team="LIV"),
+            _player(name="Mover", code=510_281, team="MCI", is_captain=True),
+        ])
+        resolved = await self._replay(
+            [_player(name="Mover", code=510_281, team="TOT", is_captain=True)],
+        )
+        assert [(p.name, p.team) for p in resolved[1].squad] == [("Mover", "MCI")]
+
+    async def test_a_transfer_keeps_the_clubs_the_gameweek_recorded(self):
+        await self._capture_original(
+            [_player(name="Mover", code=510_281, team="MCI", is_captain=True)],
+            transfers=[RecapTransfer(
+                player_in="Mover", player_in_team="MCI", player_in_points=6,
+                player_in_code=510_281,
+                player_out="Other", player_out_team="LIV", player_out_points=1,
+                player_out_code=222,
+                net=5, cost=0,
+            )],
+        )
+        resolved = await self._replay(
+            [_player(name="Mover", code=510_281, team="TOT", is_captain=True)],
+            transfers=[RecapTransfer(
+                player_in="Mover", player_in_team="TOT", player_in_points=6,
+                player_in_code=510_281,
+                player_out="Other", player_out_team="EVE", player_out_points=1,
+                player_out_code=222,
+                net=5, cost=0,
+            )],
+        )
+        transfer = resolved[1].transfers[0]
+        assert (transfer.player_in_team, transfer.player_out_team) == ("MCI", "LIV")
+
+    async def test_carrying_identity_forward_is_reported(self):
+        await self._capture_original(
+            [_player(name="Mover", code=510_281, team="MCI", is_captain=True)],
+        )
+        warnings: list[dict[str, str]] = []
+        await self._replay(
+            [_player(name="Mover", code=510_281, team="TOT", is_captain=True)],
+            warnings_out=warnings,
+        )
+        assert any(w["code"] == HISTORY_WARNING_IDENTITY_CARRIED for w in warnings)
+
+    async def test_a_replay_that_agrees_with_the_record_says_nothing(self):
+        await self._capture_original(
+            [_player(name="Mover", code=510_281, team="MCI", is_captain=True)],
+        )
+        warnings: list[dict[str, str]] = []
+        await self._replay(
+            [_player(name="Mover", code=510_281, team="MCI", is_captain=True)],
+            warnings_out=warnings,
+        )
+        assert not any(w["code"] == HISTORY_WARNING_IDENTITY_CARRIED for w in warnings)
+
+    async def test_a_gameweek_with_nothing_recorded_yet_is_left_alone(self):
+        """A first fill and a coarse upgrade have no recorded squad to carry,
+        so the replay's own values stand."""
+        resolved = await self._replay(
+            [_player(name="Mover", code=510_281, team="TOT", is_captain=True)],
+        )
+        assert resolved[1].squad[0].team == "TOT"
+
+    async def test_a_player_moved_out_is_renamed_too(self):
+        """A sold player is by definition absent from the squad, so the squad
+        pairing can never reach him -- the move lists have to pair themselves."""
+        await self._capture_original(
+            [_player(name="Mover", code=510_281, team="MCI", is_captain=True)],
+            transfers=[RecapTransfer(
+                player_in="Mover", player_in_team="MCI", player_in_points=6,
+                player_in_code=510_281,
+                player_out="Savinho", player_out_team="MCI", player_out_points=1,
+                player_out_code=222,
+                net=5, cost=0,
+            )],
+        )
+        resolved = await self._replay(
+            [_player(name="Mover", code=510_281, team="TOT", is_captain=True)],
+            transfers=[RecapTransfer(
+                player_in="Mover", player_in_team="TOT", player_in_points=6,
+                player_in_code=510_281,
+                player_out="Sávio", player_out_team="EVE", player_out_points=1,
+                player_out_code=222,
+                net=5, cost=0,
+            )],
+        )
+        transfer = resolved[1].transfers[0]
+        assert (transfer.player_out, transfer.player_out_team) == ("Savinho", "MCI")
+
+    async def test_a_move_never_lowers_a_resolved_code(self):
+        """The same guarantee the squad gets: a move whose code the replay lost
+        keeps the cross-season join key the gameweek resolved."""
+        await self._capture_original(
+            [_player(name="Mover", code=510_281, team="MCI", is_captain=True)],
+            transfers=[RecapTransfer(
+                player_in="Mover", player_in_team="MCI", player_in_points=6,
+                player_in_code=510_281,
+                player_out="Other", player_out_team="LIV", player_out_points=1,
+                player_out_code=222,
+                net=5, cost=0,
+            )],
+        )
+        resolved = await self._replay(
+            [_player(name="Mover", code=510_281, team="MCI", is_captain=True)],
+            transfers=[RecapTransfer(
+                player_in="Mover", player_in_team="MCI", player_in_points=6,
+                player_in_code=510_281,
+                player_out="Other", player_out_team="LIV", player_out_points=1,
+                net=5, cost=0,
+            )],
+        )
+        assert resolved[1].transfers[0].player_out_code == 222
+
+
+class TestPairSquads:
+    """issue #175 review: which recorded entry each replayed one supersedes."""
+
+    def _p(self, name: str, code: int | None) -> LedgerPlayer:
+        return LedgerPlayer(name=name, team="MCI", position="MID", code=code)
+
+    def test_slots_align_when_the_codes_they_share_agree(self):
+        replayed = [self._p("A", 1), self._p("B", None)]
+        recorded = [self._p("X", 1), self._p("Y", 2)]
+        assert _pair_squads(replayed, recorded) == [
+            (replayed[0], recorded[0]), (replayed[1], recorded[1]),
+        ]
+
+    def test_two_squads_sharing_no_code_at_all_do_not_align_on_hope(self):
+        """`all()` over no comparisons is vacuously true, so equal length alone
+        would otherwise stamp each recorded entry onto whichever slot happened
+        to sit opposite it."""
+        replayed = [self._p("A", None), self._p("B", None)]
+        recorded = [self._p("X", 1), self._p("Y", 2)]
+        assert _pair_squads(replayed, recorded) == []
+
+    def test_a_single_unidentified_entry_is_still_reached_off_the_slot_path(self):
+        """Codes disagree by slot, so pairing falls back to the codes -- and the
+        one entry the replay could not identify has exactly one candidate
+        left, which is enough to place it."""
+        replayed = [self._p("A", 2), self._p("B", None)]
+        recorded = [self._p("X", 1), self._p("Y", 2)]
+        assert _pair_squads(replayed, recorded) == [
+            (replayed[0], recorded[1]), (replayed[1], recorded[0]),
+        ]
+
+    def test_two_unidentified_entries_are_left_alone(self):
+        replayed = [self._p("A", 3), self._p("B", None), self._p("C", None)]
+        recorded = [self._p("X", 1), self._p("Y", 2), self._p("Z", 3)]
+        assert _pair_squads(replayed, recorded) == [(replayed[0], recorded[2])]
+
+    def test_a_player_gone_from_the_game_leaves_the_rest_paired_by_code(self):
+        replayed = [self._p("B", 2)]
+        recorded = [self._p("X", 1), self._p("Y", 2)]
+        assert _pair_squads(replayed, recorded) == [(replayed[0], recorded[1])]

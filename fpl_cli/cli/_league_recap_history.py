@@ -88,6 +88,7 @@ HISTORY_WARNING_COVERAGE = "league_history_coverage"
 HISTORY_WARNING_BACKFILL_MANAGER_UNREACHABLE = "league_history_backfill_manager_unreachable"
 HISTORY_WARNING_BACKFILL_REPLAY_FAILED = "league_history_backfill_replay_failed"
 HISTORY_WARNING_BACKFILL_WRITE_FAILED = "league_history_backfill_write_failed"
+HISTORY_WARNING_IDENTITY_CARRIED = "league_history_identity_carried"
 
 
 @dataclass
@@ -808,6 +809,202 @@ def _freeze_recorded_fines(
             row.fine_rules_evaluated = list(prior.fine_rules_evaluated or ())
 
 
+def _first_recorded(rows: list[LeagueHistoryRow]) -> dict[int, LeagueHistoryRow]:
+    """Per manager, the earliest line that recorded a squad.
+
+    Deliberately not `resolved_gameweek`'s winner. The ledger is append-only,
+    so a row an earlier replay degraded sits on disk *above* the original
+    capture and wins resolution -- carrying that forward would just re-copy
+    the degraded value. The earliest line is the one written closest to the
+    gameweek, and reading it is what turns "nothing is destroyed" into an
+    actual repair rather than a preserved mistake (issue #169).
+    """
+    earliest: dict[int, LeagueHistoryRow] = {}
+    for row in rows:
+        if row.capture_status is CaptureStatus.OK and row.squad:
+            earliest.setdefault(row.manager_key, row)
+    return earliest
+
+
+def _pair_squads(
+    replayed: list[LedgerPlayer], recorded: list[LedgerPlayer],
+) -> list[tuple[LedgerPlayer, LedgerPlayer]]:
+    """Pair each replayed squad entry with the recorded entry it supersedes.
+
+    Prefers slot alignment: the picks endpoint returns a manager's squad in a
+    fixed order for a given gameweek, so two squads of equal length whose
+    codes corroborate each other are the same players in the same slots. That
+    reaches an entry the replay could not identify at all, which a code join
+    by definition cannot. At least one slot has to carry a code on both sides
+    for that corroboration to mean anything -- `all()` over no comparisons at
+    all is vacuously true, and two squads full of unidentified players would
+    otherwise align on nothing but hope.
+
+    Otherwise pairs on `code`, which still holds when the squads differ in
+    length: a player who has since left the game entirely drops out of a
+    replay, because the collectors skip a pick today's bootstrap cannot
+    resolve. A single entry left unpaired on each side is then paired too --
+    with one candidate each way there is nothing to confuse it with, and it
+    is the one case where a code the replay lost is still recoverable here.
+    Only when the replay lost it, though: an entry that *has* a code the
+    recorded squad does not is a different player, not an unidentified one,
+    and pairing it with whatever is left would stamp a stranger's name on it.
+    """
+    slots = list(zip(replayed, recorded, strict=False)) if len(replayed) == len(recorded) else []
+    corroborating = [
+        (new, old) for new, old in slots
+        if new.code is not None and old.code is not None
+    ]
+    if corroborating and all(new.code == old.code for new, old in corroborating):
+        return slots
+
+    recorded_by_code = {p.code: i for i, p in enumerate(recorded) if p.code is not None}
+    pairs: list[tuple[LedgerPlayer, LedgerPlayer]] = []
+    claimed: set[int] = set()
+    unpaired: list[LedgerPlayer] = []
+    for new in replayed:
+        index = recorded_by_code.get(new.code) if new.code is not None else None
+        if index is None:
+            unpaired.append(new)
+            continue
+        pairs.append((new, recorded[index]))
+        claimed.add(index)
+
+    spare = [p for i, p in enumerate(recorded) if i not in claimed]
+    if len(unpaired) == 1 and len(spare) == 1 and unpaired[0].code is None:
+        pairs.append((unpaired[0], spare[0]))
+    return pairs
+
+
+def _carry_recorded_identity(
+    store: LeagueHistoryStore, gameweek: int, rows: list[LeagueHistoryRow],
+    *, warnings: list[dict[str, str]],
+) -> int:
+    """Keep the name, club and position the gameweek recorded for each player.
+
+    A replay resolves every pick against *today's* bootstrap, so a player
+    transferred or renamed since comes back wearing his current club and
+    current name on a row describing a gameweek where neither was true
+    (issue #169). Points, cards and the pick flags are all re-derived from the
+    gameweek's own data and stay as the replay found them; only the fields
+    that describe who a player *was* are carried.
+
+    Identity is never lowered either: where the recorded row resolved a code
+    and this replay did not, the code is restored, so the ledger's
+    cross-season join key survives a bootstrap that has drifted. The replay's
+    `unmatched` marker and its zero stay put -- they describe what this replay
+    could score, and a restored code does not make those points real.
+
+    Returns the number of players whose recorded identity differed from the
+    replay's, so the caller can say so.
+    """
+    try:
+        previous = store.load_gameweek(gameweek)
+    except LeagueHistoryError:
+        # Degrades silently for the reason `_freeze_recorded_fines` gives.
+        return 0
+    if not previous:
+        return 0
+
+    recorded_rows = _first_recorded(previous)
+    carried = 0
+    for row in rows:
+        recorded = recorded_rows.get(row.manager_key)
+        if recorded is None or row.capture_status is not CaptureStatus.OK:
+            continue
+
+        pairs = _pair_squads(row.squad, recorded.squad)
+        # `_captaincy` built the captain and vice by matching the *replayed*
+        # name, so index on that -- before the loop below rewrites it.
+        recorded_by_replayed_name = {new.name: old for new, old in pairs}
+
+        for new, old in pairs:
+            before = (new.name, new.team, new.position, new.code)
+            new.name, new.team, new.position = old.name, old.team, old.position
+            if new.code is None and old.code is not None:
+                new.code = old.code
+            if (new.name, new.team, new.position, new.code) != before:
+                carried += 1
+
+        # A captaincy entry is a value copy rather than a reference into the
+        # squad, so restoring a squad slot's code leaves the same player's
+        # captaincy code untouched unless it is carried here too.
+        for pick in (row.captain, row.vice_captain):
+            old_pick = recorded_by_replayed_name.get(pick.name) if pick else None
+            if pick is None or old_pick is None:
+                continue
+            pick.name = old_pick.name
+            if pick.code is None and old_pick.code is not None:
+                pick.code = old_pick.code
+
+        _carry_move_identity(row, recorded)
+
+    if carried:
+        _warn(
+            warnings, HISTORY_WARNING_IDENTITY_CARRIED,
+            f"League history: GW{gameweek} kept the name, club, position or player "
+            f"reference already recorded for {carried} player(s) rather than the ones "
+            f"they carry today. A replay resolves picks against the current bootstrap, "
+            f"which has moved on.",
+        )
+    return carried
+
+
+# The three fields naming one side of a transfer or waiver move.
+_MOVE_SIDES = (
+    ("player_in", "player_in_team", "player_in_code"),
+    ("player_out", "player_out_team", "player_out_code"),
+)
+
+
+def _carry_move_identity(row: LeagueHistoryRow, recorded: LeagueHistoryRow) -> None:
+    """Apply the same rule to the row's transfers and waiver moves.
+
+    Slot-aligned like the squad, and for the same reason: a manager's moves in
+    one gameweek come back in a fixed order, so equal-length lists pair
+    position for position -- which is what reaches the player moved *out*, who
+    by definition need never appear in the squad and so cannot be recovered
+    from it.
+
+    Where the lists disagree in length there is no order to trust, and each
+    side falls back to what the recorded row knows about that code. That
+    carries a name and club but cannot restore a code, since a move whose code
+    the replay lost is exactly the one this path cannot identify.
+    """
+    known = {
+        code: (name, team)
+        for source in (recorded.transfers, recorded.transactions)
+        for move in source
+        for name, team, code in (
+            (move.player_in, move.player_in_team, move.player_in_code),
+            (move.player_out, move.player_out_team, move.player_out_code),
+        )
+        if code is not None
+    } | {p.code: (p.name, p.team) for p in recorded.squad if p.code is not None}
+
+    for replayed_moves, recorded_moves in (
+        (row.transfers, recorded.transfers),
+        (row.transactions, recorded.transactions),
+    ):
+        aligned = len(replayed_moves) == len(recorded_moves)
+        for index, move in enumerate(replayed_moves):
+            for name_attr, team_attr, code_attr in _MOVE_SIDES:
+                if aligned:
+                    old = recorded_moves[index]
+                    name, team = getattr(old, name_attr), getattr(old, team_attr)
+                    old_code = getattr(old, code_attr)
+                else:
+                    code = getattr(move, code_attr)
+                    if code is None or code not in known:
+                        continue
+                    name, team = known[code]
+                    old_code = None
+                setattr(move, name_attr, name)
+                setattr(move, team_attr, team)
+                if getattr(move, code_attr) is None and old_code is not None:
+                    setattr(move, code_attr, old_code)
+
+
 async def _coarse_backfill(
     data: LeagueRecapData,
     *,
@@ -974,6 +1171,7 @@ async def _detailed_backfill(
             tier=FidelityTier.DETAILED,
             is_live_gw=False,
         )
+        _carry_recorded_identity(store, gameweek, rows, warnings=warnings)
         _freeze_recorded_fines(store, gameweek, rows)
         try:
             written = store.append_rows(gameweek, rows)
