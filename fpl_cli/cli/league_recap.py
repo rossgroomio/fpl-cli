@@ -75,7 +75,6 @@ def league_recap_command(
         collect_draft_recap_data,
         configured_fine_rule_types,
         evaluate_league_fines,
-        resolve_players_with_fixture,
     )
     from fpl_cli.cli._league_recap_history import capture_recap_history
     from fpl_cli.cli.review import _review_resolve_gw
@@ -148,7 +147,10 @@ def league_recap_command(
             # Which clubs had no fixture, so a recorded squad can tell a
             # player who blanked apart from one who never kicked a ball. Same
             # threading shape `review` uses for its per-format helpers.
-            from fpl_cli.services.fixture_predictions import find_blank_gameweeks
+            from fpl_cli.services.fixture_predictions import (
+                find_blank_gameweeks,
+                resolve_players_with_fixture,
+            )
 
             teams_list = list(teams.values())
             blank_gws = find_blank_gameweeks({gw: raw_fixtures}, teams_list, gw, gw)

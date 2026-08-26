@@ -19,7 +19,6 @@ from fpl_cli.cli._fines_config import parse_fines_config
 from fpl_cli.cli._helpers import _live_player_stats
 
 if TYPE_CHECKING:
-    from fpl_cli.models.fixture import Fixture
     from fpl_cli.models.player import Player
     from fpl_cli.models.team import Team
 
@@ -60,6 +59,7 @@ from fpl_cli.cli._league_recap_types import (
     RecapStandingsEntry,
     RecapTransfer,
 )
+from fpl_cli.services.fixture_predictions import had_fixture
 
 logger = logging.getLogger(__name__)
 
@@ -144,58 +144,6 @@ def _classic_pick_flags(
 # ---------------------------------------------------------------------------
 
 
-def resolve_players_with_fixture(
-    live_data: dict[str, Any], fixtures: Sequence[Fixture],
-) -> frozenset[int] | None:
-    """Players whose club had a fixture, as the gameweek itself recorded it.
-
-    The live endpoint carries an `explain` entry per club fixture for every
-    player on that club's books at the time, whether or not they featured, so
-    its emptiness is a point-in-time fact about the club's fixture list --
-    unlike `Player.team_id`, which is only ever today's club.
-
-    None when the gameweek cannot answer and the caller has to fall back: an
-    unstarted gameweek returns no elements at all, and a partly played one
-    has no `explain` yet for a fixture still to kick off, so only a gameweek
-    whose every fixture has finished can be read this way.
-    """
-    if not fixtures or not all(f.finished for f in fixtures):
-        return None
-    elements = live_data.get("elements") or []
-    if not elements:
-        return None
-    return frozenset(
-        player_id
-        for e in elements
-        if e.get("explain") and (player_id := e.get("id")) is not None
-    )
-
-
-def _had_fixture(
-    player_id: int | None,
-    team_id: int | None,
-    *,
-    players_with_fixture: frozenset[int] | None,
-    bgw_team_ids: frozenset[int],
-) -> bool:
-    """Whether this player's club had a fixture in the gameweek being captured.
-
-    Read off the gameweek's own live data wherever it can answer, because the
-    club-based derivation asks today's bootstrap which club the player is at
-    -- right for a live capture, wrong for a replay of a gameweek he has since
-    been transferred out of (issue #169). This is not inert storage:
-    `LedgerCaptaincy.had_fixture` gates the captain-blank condition (R20), so
-    a stale club silently rewrites a streak in either direction -- a real
-    blank stops counting, or one that was structurally impossible starts.
-
-    Falls back to the club when the gameweek cannot answer, and for a draft
-    player the main game never matched, who has no live entry to look up.
-    """
-    if players_with_fixture is not None and player_id is not None:
-        return player_id in players_with_fixture
-    return team_id not in bgw_team_ids
-
-
 async def collect_classic_recap_data(
     client: ClassicRecapClient,
     settings: dict[str, Any],
@@ -220,7 +168,8 @@ async def collect_classic_recap_data(
     kicked a ball (R20). `players_with_fixture` answers the same question
     from the gameweek's own live data and takes precedence where it can, so a
     replay does not read the blank off a club the player has since moved to
-    (issue #169); `resolve_players_with_fixture` builds it.
+    (issue #169); `resolve_players_with_fixture` (`services/fixture_predictions.py`)
+    builds it.
 
     Returns a LeagueRecapData dict ready for template rendering.
     """
@@ -407,7 +356,7 @@ async def _fetch_all_manager_data(
                 auto_sub_out=player.id in auto_sub_out_ids,
                 red_cards=red_cards,
                 unmatched=False,
-                had_fixture=_had_fixture(
+                had_fixture=had_fixture(
                     player.id, player.team_id,
                     players_with_fixture=players_with_fixture,
                     bgw_team_ids=bgw_team_ids,
@@ -1606,7 +1555,7 @@ async def collect_draft_recap_data(
                     auto_sub_out=draft_elem_id in auto_sub_out_ids,
                     red_cards=red_cards,
                     unmatched=unmatched,
-                    had_fixture=_had_fixture(
+                    had_fixture=had_fixture(
                         main_id, draft_player.get("team"),
                         players_with_fixture=players_with_fixture,
                         bgw_team_ids=bgw_team_ids,

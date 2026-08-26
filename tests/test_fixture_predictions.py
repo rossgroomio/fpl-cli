@@ -16,7 +16,10 @@ from fpl_cli.services.fixture_predictions import (
     DoublePrediction,
     FixturePredictionsService,
     build_prediction_lookup,
+    had_fixture,
+    resolve_players_with_fixture,
 )
+from tests.conftest import make_fixture
 
 # Derived from the same helper the service uses for staleness, so fixtures stay
 # on the intended side of the season cutover year-round.
@@ -501,3 +504,78 @@ class TestBuildPredictionLookup:
         assert CONFIDENCE_MULTIPLIERS[Confidence.HIGH] == 0.8
         assert CONFIDENCE_MULTIPLIERS[Confidence.MEDIUM] == 0.5
         assert CONFIDENCE_MULTIPLIERS[Confidence.LOW] == 0.25
+
+
+class TestPlayersWithFixtureSignal:
+    """issue #169: when the gameweek can answer "did his club play" itself,
+    instead of asking which club the player is at today."""
+
+    _LIVE = {"elements": [
+        {"id": 1, "stats": {}, "explain": [{"fixture": 7, "stats": []}]},
+        {"id": 2, "stats": {}, "explain": []},
+    ]}
+
+    def test_a_finished_gameweek_names_the_players_whose_club_had_a_fixture(self):
+        fixtures = [make_fixture(id=7, finished=True, started=True)]
+        assert resolve_players_with_fixture(self._LIVE, fixtures) == frozenset({1})
+
+    def test_a_gameweek_still_in_play_declines_to_answer(self):
+        """An `explain` is written per fixture, so until every one has finished
+        an empty one means "not kicked off yet" rather than "no fixture"."""
+        fixtures = [
+            make_fixture(id=7, finished=True, started=True),
+            make_fixture(id=8, finished=False, started=False),
+        ]
+        assert resolve_players_with_fixture(self._LIVE, fixtures) is None
+
+    def test_an_unstarted_gameweek_declines_to_answer(self):
+        """The live endpoint returns no elements at all until a gameweek starts."""
+        fixtures = [make_fixture(id=7, finished=False)]
+        assert resolve_players_with_fixture({"elements": []}, fixtures) is None
+
+    def test_a_finished_gameweek_with_an_empty_payload_declines_rather_than_blanking_everyone(self):
+        fixtures = [make_fixture(id=7, finished=True, started=True)]
+        assert resolve_players_with_fixture({"elements": []}, fixtures) is None
+
+    def test_a_payload_whose_explains_have_not_populated_declines_too(self):
+        """The dangerous shape (PR #173 review): elements present, every
+        `explain` empty. A finished fixture puts two clubs on the pitch, so
+        nobody having one is a payload that has not populated rather than a
+        league-wide blank -- and answering `frozenset()` would write every
+        player in every squad into the append-only ledger as fixtureless."""
+        fixtures = [make_fixture(id=7, finished=True, started=True)]
+        live = {"elements": [
+            {"id": 1, "stats": {}, "explain": []},
+            {"id": 2, "stats": {}, "explain": []},
+        ]}
+        assert resolve_players_with_fixture(live, fixtures) is None
+
+    def test_no_fixtures_at_all_declines_to_answer(self):
+        assert resolve_players_with_fixture(self._LIVE, []) is None
+
+
+class TestHadFixture:
+    def test_the_gameweeks_answer_beats_the_club_the_player_is_at_today(self):
+        # Club 2 blanked; the gameweek says he played, because he was elsewhere then.
+        assert had_fixture(
+            5, 2, players_with_fixture=frozenset({5}), bgw_team_ids=frozenset({2}),
+        ) is True
+
+    def test_the_gameweek_also_overrides_a_fixture_the_player_never_had(self):
+        assert had_fixture(
+            5, 1, players_with_fixture=frozenset(), bgw_team_ids=frozenset(),
+        ) is False
+
+    def test_without_an_answer_the_club_decides(self):
+        assert had_fixture(
+            5, 2, players_with_fixture=None, bgw_team_ids=frozenset({2}),
+        ) is False
+        assert had_fixture(
+            5, 1, players_with_fixture=None, bgw_team_ids=frozenset({2}),
+        ) is True
+
+    def test_a_player_with_no_main_game_id_falls_back_to_his_club(self):
+        """An unmatched draft player has nothing to look up in the live data."""
+        assert had_fixture(
+            None, 2, players_with_fixture=frozenset({5}), bgw_team_ids=frozenset({2}),
+        ) is False

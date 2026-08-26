@@ -32,7 +32,6 @@ from fpl_cli.cli._league_recap_data import (
     configured_fine_rule_types,
     derive_point_in_time_positions,
     evaluate_league_fines,
-    resolve_players_with_fixture,
 )
 from fpl_cli.cli._league_recap_types import (
     RecapAwards,
@@ -60,7 +59,7 @@ from fpl_cli.services.league_history_notes import (
     NoteSurface,
     SeasonPhase,
 )
-from tests.conftest import make_draft_player, make_fixture, make_player
+from tests.conftest import make_draft_player, make_player
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -3301,40 +3300,6 @@ class TestCollectorLedgerContract:
         assert squad_player["unmatched"] is False
         assert squad_player["code"] == 510281
         assert squad_player["points"] == 9
-
-
-class TestPlayersWithFixtureSignal:
-    """issue #169: when the gameweek can answer "did his club play" itself."""
-
-    _LIVE = {"elements": [
-        {"id": 1, "stats": {}, "explain": [{"fixture": 7, "stats": []}]},
-        {"id": 2, "stats": {}, "explain": []},
-    ]}
-
-    def test_a_finished_gameweek_names_the_players_whose_club_had_a_fixture(self):
-        fixtures = [make_fixture(id=7, finished=True, started=True)]
-        assert resolve_players_with_fixture(self._LIVE, fixtures) == frozenset({1})
-
-    def test_a_gameweek_still_in_play_declines_to_answer(self):
-        """An `explain` is written per fixture, so until every one has finished
-        an empty one means "not kicked off yet" rather than "no fixture"."""
-        fixtures = [
-            make_fixture(id=7, finished=True, started=True),
-            make_fixture(id=8, finished=False, started=False),
-        ]
-        assert resolve_players_with_fixture(self._LIVE, fixtures) is None
-
-    def test_an_unstarted_gameweek_declines_to_answer(self):
-        """The live endpoint returns no elements at all until a gameweek starts."""
-        fixtures = [make_fixture(id=7, finished=False)]
-        assert resolve_players_with_fixture({"elements": []}, fixtures) is None
-
-    def test_a_finished_gameweek_with_an_empty_payload_declines_rather_than_blanking_everyone(self):
-        fixtures = [make_fixture(id=7, finished=True, started=True)]
-        assert resolve_players_with_fixture({"elements": []}, fixtures) is None
-
-    def test_no_fixtures_at_all_declines_to_answer(self):
-        assert resolve_players_with_fixture(self._LIVE, []) is None
 
 
 class TestRecapPlayerClubs:
