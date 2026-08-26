@@ -1,6 +1,14 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [2.3.1] - 2026-08-26
+
+### Bug Fixes
+
+- keep draft players matched to the main game when FPL renames them (#171)
+- judge a replayed gameweek's blanks by the clubs players had then (#173)
+- keep the club and name a replayed gameweek already recorded (#175)
+
 ## [2.3.0] - 2026-08-26
 
 ### Bug Fixes
