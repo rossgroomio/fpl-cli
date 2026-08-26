@@ -794,7 +794,7 @@ it shares the channel: `synthesis_provider_unavailable`.
 | `league_history_backfill_manager_unreachable` | One manager's history could not be fetched; their gameweeks stay unknown and are re-attempted next run |
 | `league_history_backfill_replay_failed` | One gameweek could not be replayed in detail; the others are unaffected |
 | `league_history_backfill_write_failed` | A backfilled gameweek could not be written; the rest of the backfill continues |
-| `league_history_identity_carried` | A replayed gameweek kept the club and name it already had recorded for one or more players, rather than the ones today's bootstrap gives them |
+| `league_history_identity_carried` | A replayed gameweek kept the name, club or position it already had recorded for one or more players rather than the ones today's bootstrap gives them, or restored a player reference the replay had lost. Any one of the four on its own raises it |
 | `synthesis_provider_unavailable` | `--summarise` was asked for but the synthesis provider had no usable key; everything else in the recap, the capture included, ran normally |
 
 None of these change the exit code — `league-recap` exits 0 whenever the recap itself
