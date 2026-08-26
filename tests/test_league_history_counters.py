@@ -1145,6 +1145,13 @@ class TestCountSurfacePolicy:
         ]
         assert fired == [3, 6, 9]
 
+    def test_a_condition_that_never_occurred_never_fires_on_its_own_absence(self):
+        """Zero is a multiple of every step, so an unfired condition would
+        fire on a bare modulo. The caller filters zeroes out before asking,
+        but the policy decides notability and must not lean on it to."""
+        assert CountSurfacePolicy(step=3).qualifies(_view(occurrences=0), second_half=False) is False
+        assert CountSurfacePolicy(step=5).qualifies(_view(occurrences=0), second_half=True) is False
+
     def test_run_milestones_fire_on_the_open_run_not_the_season_total(self):
         """A drought only reads as a story unbroken: the run length is what
         fires it, and a manager whose season total is high but whose

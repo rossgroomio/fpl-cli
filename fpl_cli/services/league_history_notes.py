@@ -537,6 +537,15 @@ def _season_count_entries(
                 )
             )
         )
+        # A milestone deliberately bypasses the policy rather than relaxing
+        # it: the GW19 and finale set-pieces are the season's whole picture,
+        # so a count the weekly rules held back all season is exactly what
+        # they exist to show. Routing them through `qualifies` instead would
+        # gate the set-piece by step and leave the table with holes -- and
+        # `second_half_only` would empty the bottom-half rows from the very
+        # table that closes the first half. Any per-condition gate added to
+        # `CountSurfacePolicy` inherits this: it governs the ordinary weeks,
+        # and the milestone overrides it by design (issue #164 review).
         if milestone or shown_weekly:
             surfaces = _REPORT_AND_PROMPT
         else:
@@ -565,6 +574,11 @@ def _season_count_entries(
             manager_key=manager_key,
             manager_name=manager_row.manager_name,
             condition_key=condition_key,
+            # Carried even though the count, not the run, is this entry's
+            # subject: a run-framed line states a run length in its text, and
+            # a `--format json` consumer reading the structured field beside
+            # it must not be told the run is zero (issue #164 review).
+            length=view.length,
             held_count=view.held_total,
             occurrences=view.occurrences,
         ))

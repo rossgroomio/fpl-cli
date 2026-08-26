@@ -654,6 +654,49 @@ class TestSeasonCountEntries:
         assert entry.surfaces == frozenset({NoteSurface.REPORT, NoteSurface.PROMPT})
         assert "this gameweek" not in entry.text  # stale total, honestly phrased
 
+    def test_a_milestone_carries_a_count_its_weekly_rule_would_have_withheld(self):
+        """The milestone bypasses each condition's own surfacing policy
+        rather than relaxing it. Bottom-half gameweeks are `second_half_only`
+        precisely so they stay off the ordinary weeks -- but the halfway
+        table closes the first half, and a first half with the bottom-half
+        rows missing is not the season set-piece it claims to be.
+
+        The boundary gameweek is the sharp case: `second_half` is still
+        False at the milestone itself, so routing it through `qualifies`
+        would empty exactly this table (issue #164 review)."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        for gw in (1, 2, 3, 4):
+            store.append_rows(gw, [
+                make_history_row(gameweek=gw, manager_key=1, manager_name="Alice", league_position=1),
+                make_history_row(gameweek=gw, manager_key=2, manager_name="Bob", league_position=2),
+            ])
+
+        # GW4 is the halfway boundary under these shortened constants, so
+        # `second_half` is False here -- the condition's weekly gate is shut.
+        milestone = build_notes_pack(store, 4, total_gameweeks=8, chip_split_gw=4)
+        ordinary = build_notes_pack(store, 3, total_gameweeks=8, chip_split_gw=4)
+
+        assert self._count_entry(ordinary, "Bob", "bottom_half_run").surfaces == frozenset()
+        assert self._count_entry(milestone, "Bob", "bottom_half_run").surfaces == frozenset(
+            {NoteSurface.REPORT, NoteSurface.PROMPT},
+        )
+
+    def test_a_run_framed_count_carries_the_run_length_it_states(self):
+        """A drought line names a run length in its text, so the structured
+        field a `--format json` consumer reads beside it has to agree --
+        it defaulted to 0 while the text said five (issue #164 review)."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        for gw in range(1, 7):
+            store.append_rows(gw, [
+                make_history_row(gameweek=gw, manager_key=3, manager_name="Zoe", league_position=1),
+                make_history_row(gameweek=gw, manager_key=1, manager_name="Alice", league_position=2),
+            ])
+
+        entry = self._count_entry(build_notes_pack(store, 6), "Alice", "green_arrow_drought")
+
+        assert entry.length == 5
+        assert entry.text.startswith("Alice: 5 gameweeks without a green arrow in a row")
+
     def test_a_count_that_did_not_grow_this_gameweek_is_retained_without_surfaces(self):
         """A season total for something that did not happen this week is
         stale colour: still in the pack for `--format json` (KTD8), off

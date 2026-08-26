@@ -132,7 +132,13 @@ class CountSurfacePolicy:
         gameweek; this only judges whether it is the notable kind."""
         if self.second_half_only and not second_half:
             return False
-        if self.step is not None and view.occurrences % self.step == 0:
+        # `> 0` guards the step, because zero is a multiple of everything: a
+        # condition that has never occurred would otherwise fire on its own
+        # absence. The caller filters those out before asking, so this is
+        # belt-and-braces rather than a live bug -- but the policy is the
+        # thing that decides notability, and it should not depend on the
+        # caller to stay honest (issue #164 review).
+        if self.step is not None and view.occurrences > 0 and view.occurrences % self.step == 0:
             return True
         if view.length in self.run_milestones:
             return True
@@ -241,11 +247,13 @@ def _net_gw_points(row: LeagueHistoryRow) -> int | None:
     """This row's gameweek points, net of any transfer-cost hit -- the same
     measure `_assign_cohort_ranks` (`fpl_cli/cli/_league_recap_history.py`)
     derives `gw_rank` from. `gw_win_streak`/`gw_loss_streak` compare this
-    directly rather than the ordinal `gw_rank` it produces: `gw_rank` breaks
-    ties on cohort order alone (see `derive_point_in_time_positions`), so two
-    managers who genuinely tied for the week's best or worst would otherwise
-    see only one of them credited -- and which one depends on standings
-    order, not on anything about their gameweek."""
+    directly rather than reading the stored `gw_rank`, and still do now that
+    `derive_point_in_time_positions` shares a place between managers level on
+    points: the ledger is append-only, so a row captured before that fix
+    carries a `gw_rank` that split a tie on cohort order and no rebuild ever
+    rewrites it. Points are the one field on the row that means the same
+    thing whenever it was written, so folding over them keeps a season total
+    consistent across the gameweeks either side of a ranking change."""
     if row.gross_points is None:
         return None
     return row.gross_points - (row.transfer_cost or 0)

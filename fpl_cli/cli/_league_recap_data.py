@@ -794,8 +794,14 @@ def _compute_standings_movement(
                 return
 
     prev_totals = [(entry_id, total - gw_pts) for entry_id, total, gw_pts in rows]
-    prev_totals.sort(key=lambda x: -x[1])
-    prev_rank_map = {entry_id: rank + 1 for rank, (entry_id, _) in enumerate(prev_totals)}
+    # The same ranking helper `overall_rank` is derived through, not a local
+    # re-derivation: movement is the difference between two tables, so both
+    # have to be built the same way or the difference reports a move nobody
+    # made. Ordinal numbering here against competition ranking there gave
+    # managers level on points distinct previous places and a shared current
+    # one, arrowing a manager up or down for a tie they never left (issue
+    # #164 review).
+    prev_rank_map = derive_point_in_time_positions(prev_totals)
 
     for m in managers:
         rank = prev_rank_map.get(m["entry_id"])

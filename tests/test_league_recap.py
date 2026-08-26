@@ -16,6 +16,7 @@ from fpl_cli.cli._league_recap_data import (
     _PICKS_CONCURRENCY,
     RecapReconciliationError,
     _apply_league_start_offset,
+    _assign_point_in_time_positions,
     _bucket_draft_txns_by_league_entry,
     _classic_pick_flags,
     _compute_shared_awards,
@@ -725,10 +726,10 @@ class TestStandingsMovement:
         ]
         _compute_standings_movement(managers)
         # Previous totals: Alice=420, Bob=460, Charlie=420
-        # Previous order: Bob(460)=1st, Alice(420)=2nd, Charlie(420)=3rd
+        # Previous table: Bob(460)=1st, Alice and Charlie level on 420=joint 2nd
         assert managers[1]["previous_rank"] == 1  # Bob was 1st
-        # Alice and Charlie both had 420 - rank depends on sort stability
-        assert managers[0]["previous_rank"] in (2, 3)  # Alice was 2nd or 3rd
+        assert managers[0]["previous_rank"] == 2  # Alice and Charlie shared 2nd
+        assert managers[2]["previous_rank"] == 2
 
     def test_movement_single_manager(self):
         managers = [_make_manager(name="Solo", entry_id=1)]
@@ -763,9 +764,9 @@ class TestStandingsMovement:
         assert [m["previous_rank"] for m in managers] == [1, 2, 4, 5]
         assert all(m["previous_rank"] == m["overall_rank"] for m in managers)
 
-    def test_tied_previous_totals_break_on_standings_order(self):
-        """Managers level on the previous table keep the order the league
-        itself put them in, rather than being reshuffled arbitrarily.
+    def test_tied_previous_totals_all_share_the_first_place(self):
+        """Managers level on the previous table shared it, so none of them can
+        be reported as having been above the others.
 
         (This is the shape GW1 would produce -- every previous total zero --
         but the collectors never call this function there: see
@@ -777,11 +778,11 @@ class TestStandingsMovement:
             for i in range(1, 20)
         ]
         _compute_standings_movement(managers, league_rows)
-        assert [m["previous_rank"] for m in managers] == list(range(1, 20))
+        assert [m["previous_rank"] for m in managers] == [1] * 19
 
     def test_tied_previous_totals_survive_a_dropped_manager(self):
         """The all-tied case must survive a manager dropping out mid-table:
-        ranking survivors alone would renumber everyone below the gap."""
+        the gap must not shift anyone off the place they shared."""
         league_rows = [(i, 500 + 80 - i, 80 - i) for i in range(1, 20)]
         managers = [
             _make_manager(name=f"M{i:02d}", entry_id=i, gw_points=80 - i,
@@ -789,8 +790,28 @@ class TestStandingsMovement:
             for i in range(1, 20) if i != 5
         ]
         _compute_standings_movement(managers, league_rows)
-        assert [m["manager_name"] for m in managers
-                if m["previous_rank"] != m["overall_rank"]] == []
+        assert [m["previous_rank"] for m in managers] == [1] * 18
+
+    def test_a_manager_level_on_points_two_weeks_running_has_not_moved(self):
+        """Movement is the difference between two tables, so both have to be
+        ranked the same way. Ordinal previous ranks against competition
+        current ones arrowed a tied manager up or down for a tie they never
+        left (issue #164 review)."""
+        league_rows = [(1, 500, 50), (2, 500, 50), (3, 400, 50)]
+        managers = [
+            _make_manager(name="Alice", entry_id=1, gw_points=50, total_points=500),
+            _make_manager(name="Bob", entry_id=2, gw_points=50, total_points=500),
+            _make_manager(name="Charlie", entry_id=3, gw_points=50, total_points=400),
+        ]
+        _assign_point_in_time_positions(
+            managers, [(1, 500), (2, 500), (3, 400)], allow_standings_fallback=True,
+        )
+        _compute_standings_movement(managers, league_rows)
+        # Alice and Bob were level on 450 before this gameweek and are level on
+        # 500 after it: neither passed the other, so neither may show an arrow.
+        assert [m["overall_rank"] for m in managers] == [1, 1, 3]
+        assert [m["previous_rank"] for m in managers] == [1, 1, 3]
+        assert all(m["previous_rank"] == m["overall_rank"] for m in managers)
 
     def test_a_league_that_started_late_has_no_movement_on_its_first_gameweek(self):
         """A league created at GW12 has no table before GW12 either, even
