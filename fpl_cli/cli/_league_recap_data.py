@@ -553,16 +553,41 @@ def derive_point_in_time_positions(
 
     `totals` is (entry_id, point-in-time cumulative total) for every member
     with a known total -- omit a member with none rather than passing a
-    placeholder; they simply get no entry in the returned mapping. Ties break
-    on the order `totals` is given in (Python's sort is stable), so callers
-    should pass entries in a fixed, reproducible order (e.g. standings order)
-    for a derived position to be reproducible across runs.
+    placeholder; they simply get no entry in the returned mapping.
+
+    Competition ranking, not ordinal: entries level on points share the
+    better position and the next distinct total skips the places they
+    consumed (1, 2, 2, 4). Ordinal numbering handed tied managers distinct
+    positions decided by the order `totals` happened to arrive in -- cohort
+    standings order, which itself moves through the season -- so the same
+    gameweek could rank a tie differently on a later backfill, and every
+    consumer of a position inherited an ordering nothing in the data
+    supported (issue #164 review; issue #163 fixed the same defect where
+    `gw_rank` reached the streak predicates).
+
+    Sharing the place is the honest reading rather than merely the safer
+    one: classic breaks a points tie on fewest transfers season-to-date
+    (`docs/fpl-rules.md`), which nothing in the ledger records, so two
+    managers level on points are genuinely indistinguishable here. Where a
+    tie *can* be broken authoritatively the API does it for us and this
+    function is never consulted -- a live draft capture takes the league's
+    own `rank`, which already applies the h2h points-for tie-break.
 
     Reusable across both collectors and, per KTD12, by the coarse-backfill
     path that has no collector to call.
     """
     ordered = sorted(totals, key=lambda kv: -kv[1])
-    return {entry_id: rank + 1 for rank, (entry_id, _) in enumerate(ordered)}
+    positions: dict[int, int] = {}
+    previous_total: int | None = None
+    shared_position = 0
+    for index, (entry_id, total) in enumerate(ordered):
+        if total != previous_total:
+            # A new distinct total starts at the place this entry actually
+            # occupies, so a shared place consumes the ones behind it.
+            shared_position = index + 1
+            previous_total = total
+        positions[entry_id] = shared_position
+    return positions
 
 
 def _assign_point_in_time_positions(

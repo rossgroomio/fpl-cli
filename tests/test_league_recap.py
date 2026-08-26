@@ -1216,14 +1216,22 @@ class TestDerivePointInTimePositions:
         assert 2 not in result
         assert result == {1: 1}
 
-    def test_ties_break_on_input_order_stably(self):
-        totals = [(1, 100), (2, 100), (3, 90)]
-        first = derive_point_in_time_positions(totals)
-        second = derive_point_in_time_positions(totals)
-        assert first == second
-        assert first[1] == 1
-        assert first[2] == 2
-        assert first[3] == 3
+    def test_tied_entries_share_a_place_and_the_next_total_skips_it(self):
+        """Competition ranking, not ordinal: two managers level on points
+        are genuinely indistinguishable here (classic breaks such a tie on
+        fewest transfers, which nothing in the ledger records), so inventing
+        an order for them would assert more than the data supports."""
+        assert derive_point_in_time_positions([(1, 100), (2, 100), (3, 90)]) == {1: 1, 2: 1, 3: 3}
+
+    def test_a_tie_ranks_the_same_whatever_order_it_arrives_in(self):
+        """The input order is cohort standings order, which itself moves
+        through the season -- so an ordinal tie-break made the same gameweek
+        rank differently on a later backfill (issue #164 review)."""
+        totals = [(1, 100), (2, 100), (3, 100), (4, 40)]
+        assert derive_point_in_time_positions(totals) == derive_point_in_time_positions(
+            list(reversed(totals)),
+        )
+        assert set(derive_point_in_time_positions(totals).values()) == {1, 4}
 
     def test_empty_input_returns_empty_mapping(self):
         assert derive_point_in_time_positions([]) == {}

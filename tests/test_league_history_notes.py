@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from fpl_cli.models.league_history import FidelityTier, LedgerCaptaincy, LedgerTransaction
+from fpl_cli.cli._league_recap_data import derive_point_in_time_positions
 from fpl_cli.services.league_history import LeagueHistoryStore
 from fpl_cli.services.league_history_notes import (
     GameweekWindow,
@@ -250,7 +251,10 @@ class TestStreakEntries:
 
         assert ("Alice", "weeks_on_top") in reportable_pairs
         assert ("Alice", "gw_win_streak") in reportable_pairs
-        assert ("Bob", "bottom_half_run") in reportable_pairs
+        # Bob's bottom-half run is tracked and counted, but never surfaces
+        # as a streak: the condition carries no `min_run`, since restating
+        # where the table already shows him is not news.
+        assert ("Bob", "bottom_half_run") not in reportable_pairs
         assert ("Bob", "gw_loss_streak") in reportable_pairs
         assert ("Alice", "bottom_half_run") not in reportable_pairs
         assert ("Bob", "gw_win_streak") not in reportable_pairs
@@ -329,6 +333,56 @@ class TestStreakEntries:
 # ---------------------------------------------------------------------------
 # Season-count entries (issue #164)
 # ---------------------------------------------------------------------------
+
+
+class TestTiedPositionsDoNotDependOnCohortOrder:
+    """Issue #164 review: `league_position` was an ordinal ranking whose ties
+    broke on cohort standings order, so three conditions read a position
+    nothing in the data supported -- and standings order shifts through the
+    season, so a backfill could rule the same gameweek differently."""
+
+    def _pack_for(self, order: list[int], totals: dict[int, int]):
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        positions = derive_point_in_time_positions([(k, totals[k]) for k in order])
+        store.append_rows(1, [
+            make_history_row(
+                gameweek=1, manager_key=k, manager_name=f"M{k}",
+                total_points=totals[k], league_position=positions[k],
+            )
+            for k in order
+        ])
+        return build_notes_pack(store, 1)
+
+    def test_a_four_way_tie_rules_the_same_whichever_order_the_cohort_arrives_in(self):
+        totals = dict.fromkeys((1, 2, 3, 4), 60)
+
+        def verdicts(order):
+            pack = self._pack_for(order, totals)
+            return {
+                (e.manager_name, e.condition_key): e.occurrences
+                for e in pack.season_count_entries
+            }
+
+        assert verdicts([1, 2, 3, 4]) == verdicts([4, 3, 2, 1])
+
+    def test_a_whole_cohort_tied_on_points_is_nobody_in_the_bottom_half(self):
+        """Every manager level means no one is below the median, so the
+        bottom-half count opens for nobody rather than for whichever half
+        the cohort order happened to put last."""
+        pack = self._pack_for([1, 2, 3, 4], dict.fromkeys((1, 2, 3, 4), 60))
+        assert not [
+            e for e in pack.season_count_entries if e.condition_key == "bottom_half_run"
+        ]
+
+    def test_two_managers_tied_at_the_summit_are_both_credited(self):
+        """The same defect #163 fixed for gameweek wins: a shared lead must
+        not hand one manager the week on top and the other nothing."""
+        pack = self._pack_for([1, 2, 3], {1: 90, 2: 90, 3: 50})
+        on_top = {
+            e.manager_name for e in pack.season_count_entries
+            if e.condition_key == "weeks_on_top"
+        }
+        assert on_top == {"M1", "M2"}
 
 
 class TestSeasonCountEntries:

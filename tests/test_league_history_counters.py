@@ -59,18 +59,28 @@ class TestConditionRegistry:
         assert len({c.key for c in CONDITIONS}) == 9
 
     def test_min_run_lengths_match_the_spec(self):
+        """`None` marks a condition that never surfaces as a streak at all:
+        the bottom half and the green-arrow drought restate where the table
+        already shows you are, so their run exists only to drive the season
+        count's firing rule."""
         min_runs = {c.key: c.min_run for c in CONDITIONS}
         assert min_runs == {
             "weeks_on_top": 2,
-            "bottom_half_run": 3,
+            "bottom_half_run": None,
             "gw_win_streak": 2,
             "gw_loss_streak": 2,
-            "green_arrow_drought": 4,
+            "green_arrow_drought": None,
             "captain_blank_run": 2,
-            "hit_run": 3,
-            "waiver_win_run": 2,
-            "waiver_burn_run": 2,
+            "hit_run": 2,
+            "waiver_win_run": 3,
+            "waiver_burn_run": 3,
         }
+
+    def test_a_streakless_condition_is_never_reportable_however_long_the_run(self):
+        view = _view(occurrences=40, length=40)
+        streakless = ConditionRunView(**{**view.__dict__, "min_run": None})
+        assert streakless.is_reportable is False
+        assert streakless.excess == 0
 
     def test_conditions_for_classic_excludes_waiver_conditions(self):
         keys = {c.key for c in conditions_for_format("classic")}

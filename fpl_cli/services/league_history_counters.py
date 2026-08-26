@@ -190,7 +190,13 @@ class ConditionDefinition:
     key: str
     formats: frozenset[LeagueFormat]
     label: str
-    min_run: int
+    # The shortest open run worth reporting as a streak, or None for a
+    # condition that never surfaces as one. None is not "min_run of 0": it
+    # says the run is machinery rather than news -- the bottom half and the
+    # green-arrow drought describe where the table already shows you are,
+    # so their run exists to drive the season count's firing rule (see
+    # `count_policy`) and has nothing to say on its own.
+    min_run: int | None
     needs: tuple[str, ...]
     predicate: ConditionPredicate
     count_label_one: str
@@ -376,7 +382,7 @@ CONDITIONS: tuple[ConditionDefinition, ...] = (
         count_policy=CountSurfacePolicy(step=5),
     ),
     ConditionDefinition(
-        key="bottom_half_run", formats=_BOTH, label="Bottom-half run", min_run=3,
+        key="bottom_half_run", formats=_BOTH, label="Bottom-half run", min_run=None,
         needs=("league_position",), predicate=_bottom_half_run,
         count_label_one="gameweek in the bottom half",
         count_label_many="gameweeks in the bottom half",
@@ -399,7 +405,7 @@ CONDITIONS: tuple[ConditionDefinition, ...] = (
         count_policy=CountSurfacePolicy(step=3, first_in_second_half=True),
     ),
     ConditionDefinition(
-        key="green_arrow_drought", formats=_BOTH, label="Green arrow drought", min_run=4,
+        key="green_arrow_drought", formats=_BOTH, label="Green arrow drought", min_run=None,
         needs=("league_position",), predicate=_green_arrow_drought,
         count_label_one="gameweek without a green arrow",
         count_label_many="gameweeks without a green arrow",
@@ -416,21 +422,21 @@ CONDITIONS: tuple[ConditionDefinition, ...] = (
         count_policy=CountSurfacePolicy(step=5, ride_along_min=3),
     ),
     ConditionDefinition(
-        key="hit_run", formats=_CLASSIC_ONLY, label="Hit run", min_run=3,
+        key="hit_run", formats=_CLASSIC_ONLY, label="Hit run", min_run=2,
         needs=("transfer_cost",), predicate=_hit_run,
         count_label_one="gameweek with a transfer hit",
         count_label_many="gameweeks with a transfer hit",
         count_policy=CountSurfacePolicy(step=3, ride_along_min=2),
     ),
     ConditionDefinition(
-        key="waiver_win_run", formats=_DRAFT_ONLY, label="Waiver win run", min_run=2,
+        key="waiver_win_run", formats=_DRAFT_ONLY, label="Waiver win run", min_run=3,
         needs=("transactions",), predicate=_waiver_win_run,
         count_label_one="waiver haul",
         count_label_many="waiver hauls",
         count_policy=CountSurfacePolicy(step=5),
     ),
     ConditionDefinition(
-        key="waiver_burn_run", formats=_DRAFT_ONLY, label="Waiver burn run", min_run=2,
+        key="waiver_burn_run", formats=_DRAFT_ONLY, label="Waiver burn run", min_run=3,
         needs=("transactions",), predicate=_waiver_burn_run,
         count_label_one="waiver backfire",
         count_label_many="waiver backfires",
@@ -831,7 +837,7 @@ class ConditionRunView:
     length: int
     start_gameweek: int | None
     held_in_run: int
-    min_run: int
+    min_run: int | None
     occurrences: int
     held_total: int
     last_occurrence_gameweek: int | None
@@ -842,13 +848,16 @@ class ConditionRunView:
 
     @property
     def is_reportable(self) -> bool:
-        return self.length >= self.min_run
+        return self.min_run is not None and self.length >= self.min_run
 
     @property
     def excess(self) -> int:
         """How far `length` sits past `min_run`. Negative below the minimum;
         the ranking signal R12 asks for is only meaningful once
-        `is_reportable` is true."""
+        `is_reportable` is true. Zero for a condition that never surfaces as
+        a streak (`min_run is None`), which is never ranked at all."""
+        if self.min_run is None:
+            return 0
         return self.length - self.min_run
 
 
