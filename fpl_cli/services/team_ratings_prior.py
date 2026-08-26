@@ -47,7 +47,12 @@ BLENDING_CUTOFF_GW = 12
 # 5: that damping is now measured per axis from the season's data instead of one
 # hand-picked figure, and Championship playoff results no longer count towards a
 # promoted side's rates. Both change the ratings a v4 cache holds.
-PRIOR_CACHE_VERSION = 5
+# 6: the PL half of the prior comes from calculate_from_xg(), which no longer
+# drops a club that has xG at only one venue -- it estimates the other. That
+# changes which clubs reach _prior_from_understat's >= 10 gate, so a v5 cache can
+# hold a football-data fallback table where this code now returns an xG one, or
+# an xG table built from fewer clubs than this code would use.
+PRIOR_CACHE_VERSION = 6
 
 # Championship-to-PL adjustment, level. A promoted side scores less in the PL
 # against better defences, and concedes more against better attacks, so the two
@@ -202,6 +207,15 @@ def _matches_to_performances(matches: list[dict[str, Any]]) -> dict[str, TeamPer
     for team, data in stats.items():
         h = len(data["scored_home"])
         a = len(data["scored_away"])
+        # Deliberately stricter than performances_from_samples(), which rates a
+        # club on one venue because the live path has to (#138). This aggregator
+        # reads a *completed* 46-game season, where a club missing a whole venue
+        # means the fetch is broken rather than early -- and the estimate would
+        # be fed to _axis_games()/_axis_reliability(), which average the matches
+        # behind an axis to size the Poisson noise floor. A zero-game axis pulls
+        # that average down and damps every promoted rating on evidence that was
+        # never played. Revisit only if this is ever pointed at a season in
+        # progress, and re-measure the damping if so.
         if h == 0 or a == 0:
             continue
         performances[team] = TeamPerformance(

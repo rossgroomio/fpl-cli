@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import click
 from rich.markup import escape as rich_escape
@@ -11,6 +12,8 @@ from rich.panel import Panel
 from rich.table import Table
 
 from fpl_cli.cli._context import console, error_console
+
+logger = logging.getLogger(__name__)
 
 
 @click.group("ratings", invoke_without_command=True)
@@ -173,12 +176,22 @@ def ratings_update(since_gw: int | None, dry_run: bool, use_xg: bool):
                 # missing the promoted sides entirely, and `fpl doctor` sends
                 # the user here to repair precisely that. Keeping it would make
                 # this command a dead end, so drift falls through to the prior.
+                # A failure here reads as "no drift known", which then takes
+                # the keep-existing-ratings branch below -- so a file that
+                # genuinely mismatches the current team set survives a lookup
+                # outage. Degrading that way is deliberate (a drift check must
+                # not break the command), but it is logged rather than
+                # swallowed, so the reason is recoverable from `-v` output
+                # instead of looking like the file passed the check.
                 team_set_drift = None
                 try:
                     teams = await client.get_teams()
                     team_set_drift = service.check_team_set(t.short_name for t in teams)
                 except Exception:  # noqa: BLE001 — a drift check must not break the command
-                    pass
+                    logger.warning(
+                        "Team-set drift check failed - keeping existing ratings without it",
+                        exc_info=True,
+                    )
                 if current_ratings and not team_set_drift:
                     console.print(
                         "[yellow]No completed fixtures to calculate from for this window - "

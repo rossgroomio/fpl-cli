@@ -1842,6 +1842,83 @@ class TestUseXgWindowStamp:
         assert mock_save.call_args.kwargs["based_on_gws"] is None
 
 
+class TestDoctorTreatsBlendNoteAsHealthy:
+    """An early-season blend is the right answer, not a fault to report.
+
+    `fpl doctor` turns any staleness warning into a STALE finding. The
+    prior-dominance note would have made team_ratings.yaml read as STALE for
+    GW1-5 of every season with no remedy that clears it -- the same dead-end
+    #138 was filed about.
+    """
+
+    def _write(self, tmp_path, *, source, based_on_gws, ratings=None):
+        import yaml as _yaml
+
+        path = tmp_path / "team_ratings.yaml"
+        path.write_text(
+            _yaml.dump({
+                "metadata": {
+                    "last_updated": datetime.now().isoformat(),
+                    "source": source,
+                    "based_on_gws": list(based_on_gws),
+                    "season": season_label(),
+                    "staleness_threshold_days": 30,
+                },
+                "ratings": ratings or {
+                    "ARS": {"atk_home": 1, "atk_away": 2, "def_home": 3, "def_away": 4},
+                    "MCI": {"atk_home": 5, "atk_away": 6, "def_home": 7, "def_away": 1},
+                },
+            })
+        )
+        return path
+
+    def _check(self, path, teams=None):
+        from fpl_cli.cli.doctor import _team_ratings_check
+
+        with patch(
+            "fpl_cli.services.team_ratings.TeamRatingsService.config_path",
+            new_callable=lambda: property(lambda self: path),
+        ):
+            return _team_ratings_check(teams)
+
+    def test_prior_dominated_file_is_ok_with_the_note(self, tmp_path):
+        from fpl_cli.cli.doctor import CheckStatus
+
+        path = self._write(tmp_path, source="auto_calculated_blended", based_on_gws=(1, 1))
+        result = self._check(path)
+
+        assert result.status is CheckStatus.OK
+        assert "mostly last season's prior" in result.detail
+
+    def test_drift_still_reports_stale_even_when_prior_dominated(self, tmp_path):
+        """Precedence: a drifted file is a real fault, note or not."""
+        from fpl_cli.cli.doctor import CheckStatus
+
+        path = self._write(tmp_path, source="auto_calculated_blended", based_on_gws=(1, 1))
+        result = self._check(path, teams=["ARS", "MCI", "COV"])
+
+        assert result.status is CheckStatus.STALE
+        assert "mostly last season's prior" not in result.detail
+
+    def test_preseason_estimate_still_reports_stale(self, tmp_path):
+        from fpl_cli.cli.doctor import CheckStatus
+        from fpl_cli.services.team_ratings import PRESEASON_SOURCE
+
+        path = self._write(tmp_path, source=PRESEASON_SOURCE, based_on_gws=(1, 1))
+        result = self._check(path)
+
+        assert result.status is CheckStatus.STALE
+
+    def test_advisory_is_none_when_a_real_fault_outranks_it(self, tmp_path):
+        """advisory_warning() must follow get_staleness_warning()'s precedence."""
+        path = self._write(tmp_path, source="auto_calculated_blended", based_on_gws=(1, 1))
+        service = TeamRatingsService(config_path=path)
+        service.check_team_set(["ARS", "MCI", "COV"])
+
+        assert service.advisory_warning() is None
+        assert "missing COV" in (service.get_staleness_warning() or "")
+
+
 class TestGoallessWindowEstimation:
     """The venue conversion has no ratio to measure when a venue drew a blank.
 

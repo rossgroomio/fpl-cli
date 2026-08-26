@@ -668,6 +668,38 @@ class TeamRatingsService:
             return None
         return window, window / (window + REGRESSION_CONSTANT)
 
+    def _prior_dominance_warning(self) -> str | None:
+        """The prior-dominance note, or None when it does not apply."""
+        share = self._prior_dominance()
+        if not share:
+            return None
+        window, weight = share
+        gws = "gameweek" if window == 1 else "gameweeks"
+        return (
+            f"⚠️ Ratings are mostly last season's prior — {window} {gws} of results "
+            f"carries {weight:.0%} of the weight. Fixture difficulty is indicative "
+            f"until more results land."
+        )
+
+    def advisory_warning(self) -> str | None:
+        """The active warning, when it describes healthy ratings rather than a fault.
+
+        An early-season blend that is still mostly last season is the correct
+        answer, not a problem: no command clears it and GW`REGRESSION_CONSTANT`
+        will. Callers that triage rather than just display -- `fpl doctor` --
+        need to tell that note apart from a stale or drifted file, or they
+        report a fault with no remedy, which is the dead-end #138 was about.
+
+        Derived from get_staleness_warning() rather than from _prior_dominance()
+        directly, so precedence is honoured in one place: a prior-dominated file
+        that has ALSO drifted off the current team set reports the drift, and
+        that is a real fault, so this returns None for it.
+        """
+        warning = self.get_staleness_warning()
+        if warning and warning == self._prior_dominance_warning():
+            return warning
+        return None
+
     def get_staleness_warning(self) -> str | None:
         """Get a warning about the quality of the ratings backing fixture difficulty.
 
@@ -711,15 +743,9 @@ class TeamRatingsService:
                 "Fixture difficulty is indicative until results land."
             )
 
-        prior_share = self._prior_dominance()
-        if prior_share:
-            window, weight = prior_share
-            gws = "gameweek" if window == 1 else "gameweeks"
-            return (
-                f"⚠️ Ratings are mostly last season's prior — {window} {gws} of results "
-                f"carries {weight:.0%} of the weight. Fixture difficulty is indicative "
-                f"until more results land."
-            )
+        advisory = self._prior_dominance_warning()
+        if advisory:
+            return advisory
 
         days = self.days_since_update()
 
