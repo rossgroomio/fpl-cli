@@ -318,6 +318,25 @@ class TestBuildHistoryRows:
         assert row.league_position == 3
         assert row.previous_league_position is None
 
+    def test_a_late_starting_league_records_none_on_its_own_first_gameweek(self):
+        """A league created at GW12 has no table before GW12 either, so the
+        row asks the same helper the collectors gate their derivations with
+        rather than assuming the season's first gameweek is the league's."""
+        data = _recap_data(
+            gameweek=12, league_start_event=12,
+            managers=[_manager(overall_rank=3, previous_rank=3)],
+        )
+        row = build_history_rows(data, season=SEASON, captured_at=CAPTURED_AT)[0]
+        assert row.previous_league_position is None
+
+    def test_a_late_starting_league_records_movement_from_its_second_gameweek(self):
+        data = _recap_data(
+            gameweek=13, league_start_event=12,
+            managers=[_manager(overall_rank=3, previous_rank=5)],
+        )
+        row = build_history_rows(data, season=SEASON, captured_at=CAPTURED_AT)[0]
+        assert row.previous_league_position == 5
+
     def test_a_later_gameweek_still_records_the_previous_position(self):
         data = _recap_data(gameweek=2, managers=[_manager(overall_rank=3, previous_rank=5)])
         row = build_history_rows(data, season=SEASON, captured_at=CAPTURED_AT)[0]

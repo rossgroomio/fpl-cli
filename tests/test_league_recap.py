@@ -890,7 +890,10 @@ class TestFirstGameweekHasNoPreviousPosition:
         assert by_name["Alice"]["previous_rank"] == 1
         assert by_name["Bob"]["previous_rank"] == 2
 
-    async def _draft_data(self, *, gw: int, last_rank: int):
+    async def _draft_data(self, *, gw: int, last_rank: int | None):
+        """One live draft manager. `last_rank=None` omits the field, which is
+        what sends the collector to its derived-movement fallback instead of
+        trusting the league's own figure."""
         draft_player = make_draft_player(id=900, web_name="Star", team=1, element_type=3)
         main_player = make_player(id=5, web_name="Star", team_id=1)
         client = MagicMock()
@@ -898,10 +901,10 @@ class TestFirstGameweekHasNoPreviousPosition:
         client.__aexit__ = AsyncMock(return_value=False)
         client.get_league_details = AsyncMock(return_value={
             "league": {"name": "Draft League"},
-            "standings": [{
-                "league_entry": 10, "event_total": 52, "total": 500,
-                "rank": 1, "last_rank": last_rank,
-            }],
+            "standings": [
+                {"league_entry": 10, "event_total": 52, "total": 500, "rank": 1}
+                | ({} if last_rank is None else {"last_rank": last_rank}),
+            ],
             "league_entries": [
                 {"id": 10, "entry_id": 1, "player_first_name": "A", "player_last_name": "B"},
             ],
@@ -925,6 +928,20 @@ class TestFirstGameweekHasNoPreviousPosition:
     async def test_draft_gw2_carries_the_api_last_rank(self):
         data = await self._draft_data(gw=2, last_rank=3)
         assert data["managers"][0]["previous_rank"] == 3
+
+    async def test_draft_gw1_derives_no_movement_when_the_api_omits_last_rank(self):
+        """Without `last_rank` the collector falls back to deriving movement
+        itself, which is the path GW1 breaks: every previous total is zero,
+        so each manager would be handed back their own current position."""
+        data = await self._draft_data(gw=1, last_rank=None)
+        assert data["managers"][0]["overall_rank"] == 1
+        assert "previous_rank" not in data["managers"][0]
+
+    async def test_draft_gw2_derives_movement_when_the_api_omits_last_rank(self):
+        """The same fallback still runs once a previous gameweek exists --
+        otherwise the test above would pass with the derivation removed."""
+        data = await self._draft_data(gw=2, last_rank=None)
+        assert data["managers"][0]["previous_rank"] == 1
 
     async def test_draft_treats_a_zero_last_rank_as_no_previous_table(self):
         """Zero is the API's "nobody stood anywhere yet" sentinel, not a
