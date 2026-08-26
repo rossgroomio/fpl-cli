@@ -111,7 +111,7 @@ class TestConditionRegistry:
             "waiver_burn_run": CountSurfacePolicy(step=5),
             "weeks_on_top": CountSurfacePolicy(step=5),
             "bottom_half_run": CountSurfacePolicy(
-                step=10, ride_along_min=6, second_half_only=True,
+                step=10, ride_along_within=5, second_half_only=True,
             ),
             "green_arrow_drought": CountSurfacePolicy(run_milestones=frozenset({5, 10})),
         }
@@ -1097,10 +1097,26 @@ class TestCountSurfacePolicy:
         assert policy.qualifies(_view(occurrences=10), second_half=True) is True
 
     def test_ride_along_needs_the_floor_and_is_off_by_default(self):
-        assert CountSurfacePolicy(step=3).rides_along(_view(occurrences=9)) is False
+        no_ride = CountSurfacePolicy(step=3)
+        assert no_ride.rides_along(_view(occurrences=9), fired_totals=[9]) is False
         policy = CountSurfacePolicy(step=5, ride_along_min=3)
-        assert policy.rides_along(_view(occurrences=3)) is True
-        assert policy.rides_along(_view(occurrences=2)) is False
+        assert policy.rides_along(_view(occurrences=3), fired_totals=[5]) is True
+        assert policy.rides_along(_view(occurrences=2), fired_totals=[5]) is False
+
+    def test_a_relative_window_measures_against_the_nearest_firing_total(self):
+        """A count that climbs all season outgrows any fixed floor -- by
+        midseason every peer has passed it -- so the window is measured
+        against the milestone itself, and against the *nearest* one when
+        two managers fired at once."""
+        policy = CountSurfacePolicy(step=10, ride_along_within=5)
+        assert policy.rides_along(_view(occurrences=26), fired_totals=[30]) is True
+        assert policy.rides_along(_view(occurrences=24), fired_totals=[30]) is False
+        # Nearest, not largest: 24 is far from 30 but level with 20.
+        assert policy.rides_along(_view(occurrences=24), fired_totals=[20, 30]) is True
+
+    def test_a_relative_window_with_no_firing_totals_carries_nobody(self):
+        policy = CountSurfacePolicy(step=10, ride_along_within=5)
+        assert policy.rides_along(_view(occurrences=10), fired_totals=[]) is False
 
 
 # ---------------------------------------------------------------------------

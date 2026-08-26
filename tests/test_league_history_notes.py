@@ -476,6 +476,36 @@ class TestSeasonCountEntries:
         bob = self._count_entry(pack, "Bob", "captain_blank_run")
         assert (bob.occurrences, bob.surfaces) == (3, frozenset())
 
+    def test_bottom_half_carries_only_peers_level_with_the_milestone(self):
+        """Bottom-half totals climb all season, so its ride-along window is
+        relative: a manager genuinely level with the milestone shows, one
+        far behind it does not -- which is what stops five bottom-half
+        lines landing in the report every other week."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        # Four managers, positions 3-4 of 4 are the bottom half. Alice and
+        # Bob sit there from GW1 (reaching 20 and 19 by GW20); Carol drops
+        # in only for the last three gameweeks, ending far behind on 3.
+        for gw in range(1, 21):
+            bottom = [1, 2] if gw <= 17 else [1, 3]
+            middle = [3, 4] if gw <= 17 else [2, 4]
+            rows = []
+            for rank, key in enumerate([*middle, *bottom], start=1):
+                rows.append(make_history_row(
+                    gameweek=gw, manager_key=key, manager_name={1: "Alice", 2: "Bob", 3: "Carol", 4: "Dan"}[key],
+                    league_position=rank,
+                ))
+            store.append_rows(gw, rows)
+
+        pack = build_notes_pack(store, 20)
+        alice = self._count_entry(pack, "Alice", "bottom_half_run")
+        carol = self._count_entry(pack, "Carol", "bottom_half_run")
+
+        assert alice.occurrences == 20  # on the step, in the second half
+        assert alice.surfaces == frozenset({NoteSurface.REPORT, NoteSurface.PROMPT})
+        # Carol dropped in this gameweek too, but 3 is nowhere near 20.
+        assert carol.occurrences == 3
+        assert carol.surfaces == frozenset()
+
     def test_a_condition_with_no_ride_along_shows_only_who_fired(self):
         """Waiver counts fire on a multiple of five and carry nobody: a
         second manager's waiver haul in the same gameweek is not part of

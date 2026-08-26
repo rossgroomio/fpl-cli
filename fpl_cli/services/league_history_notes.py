@@ -486,7 +486,9 @@ def _season_count_entries(
     increment (a total on the condition's step, an unbroken run at one of
     its run milestones, a second-half first); then, for each condition
     someone fired, which same-gameweek incrementers *ride along* beside
-    them (their total past the condition's ride-along floor). A condition
+    them -- their total past the condition's absolute floor, or within its
+    relative window of a firing total, which is why the firing totals are
+    collected per condition rather than a bare set of keys. A condition
     nobody fired stays entirely quiet however many totals grew. At the two
     season milestones the whole nonzero set carries report+prompt
     regardless: the halfway and finale reports get their `## Season
@@ -514,7 +516,12 @@ def _season_count_entries(
         for manager_key, _, condition_key, view, occurred in counted
         if occurred and view.count_policy.qualifies(view, second_half=second_half)
     }
-    fired_conditions = {condition_key for _, condition_key in fired_managers}
+    # Per condition, the totals its firing managers landed on -- a relative
+    # ride-along window measures against these rather than a fixed floor.
+    fired_totals: dict[str, list[int]] = {}
+    for manager_key, _, condition_key, view, _ in counted:
+        if (manager_key, condition_key) in fired_managers:
+            fired_totals.setdefault(condition_key, []).append(view.occurrences)
 
     entries: list[NotesPackEntry] = []
     for manager_key, manager_row, condition_key, view, occurred_this_gameweek in counted:
@@ -523,7 +530,12 @@ def _season_count_entries(
         )
         shown_weekly = occurred_this_gameweek and (
             (manager_key, condition_key) in fired_managers
-            or (condition_key in fired_conditions and view.count_policy.rides_along(view))
+            or (
+                condition_key in fired_totals
+                and view.count_policy.rides_along(
+                    view, fired_totals=fired_totals[condition_key],
+                )
+            )
         )
         if milestone or shown_weekly:
             surfaces = _REPORT_AND_PROMPT

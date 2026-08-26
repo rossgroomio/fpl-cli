@@ -90,10 +90,9 @@ class CountSurfacePolicy:
     A manager *fires* the condition (`qualifies`) when their own increment
     this gameweek is the notable one; when anyone fires, other managers
     who also incremented that condition this gameweek *ride along*
-    (`rides_along`) if their running total has reached `ride_along_min` --
-    context for the round number, without resurfacing every first-timer.
-    A condition with no `ride_along_min` shows only the managers who
-    fired.
+    (`rides_along`) -- context for the round number, without resurfacing
+    every first-timer. A condition with neither ride-along field set shows
+    only the managers who fired.
     """
 
     # Fires when the manager's season total lands on a multiple of this.
@@ -111,9 +110,19 @@ class CountSurfacePolicy:
     # The whole condition stays off the weekly render in the season's
     # first half (the milestone set-pieces are unaffected).
     second_half_only: bool = False
-    # Same-gameweek incrementers ride along once their total reaches
-    # this. None: nobody rides along.
+    # Same-gameweek incrementers ride along once their total reaches this
+    # absolute floor. Suits a condition whose totals stay small all season
+    # (a captain blank, a hit), where "reached 3" keeps its meaning in
+    # April.
     ride_along_min: int | None = None
+    # Same-gameweek incrementers ride along when their total is within
+    # this many of the firing manager's. For a condition whose totals
+    # climb all season (the bottom half, where half the league increments
+    # every week), an absolute floor stops filtering by midseason -- every
+    # peer has long passed it -- so the window is relative instead: it
+    # names the managers genuinely level with the milestone and drops the
+    # one on 12 when someone reaches 30.
+    ride_along_within: int | None = None
 
     def qualifies(self, view: ConditionRunView, *, second_half: bool) -> bool:
         """Whether this manager's increment *this gameweek* fires the
@@ -127,11 +136,23 @@ class CountSurfacePolicy:
             return True
         return self.first_in_second_half and second_half and view.occurrences == 1
 
-    def rides_along(self, view: ConditionRunView) -> bool:
+    def rides_along(self, view: ConditionRunView, *, fired_totals: Collection[int]) -> bool:
         """Whether this manager's increment this gameweek is shown beside a
-        firing peer's. Only consulted once someone fired, so the
-        second-half gate has already been applied."""
-        return self.ride_along_min is not None and view.occurrences >= self.ride_along_min
+        firing peer's.
+
+        Only consulted once someone fired, so the second-half gate has
+        already been applied. `fired_totals` is every firing manager's
+        total for this condition this gameweek: a relative window measures
+        against the nearest of them, so a manager sits in the company they
+        are actually close to rather than being judged against whichever
+        milestone happened to be largest.
+        """
+        if self.ride_along_min is not None and view.occurrences >= self.ride_along_min:
+            return True
+        if self.ride_along_within is None or not fired_totals:
+            return False
+        nearest = min(abs(view.occurrences - total) for total in fired_totals)
+        return nearest <= self.ride_along_within
 
 
 @dataclass(frozen=True)
@@ -359,7 +380,9 @@ CONDITIONS: tuple[ConditionDefinition, ...] = (
         needs=("league_position",), predicate=_bottom_half_run,
         count_label_one="gameweek in the bottom half",
         count_label_many="gameweeks in the bottom half",
-        count_policy=CountSurfacePolicy(step=10, ride_along_min=6, second_half_only=True),
+        count_policy=CountSurfacePolicy(
+            step=10, ride_along_within=5, second_half_only=True,
+        ),
     ),
     ConditionDefinition(
         key="gw_win_streak", formats=_BOTH, label="Gameweek win streak", min_run=2,
