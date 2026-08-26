@@ -280,34 +280,47 @@ class TestJsonFailurePaths:
         assert "Troubleshooting" in result.stderr
         assert "Troubleshooting" not in result.stdout
 
-    def test_suspect_data_stays_a_success_envelope_but_says_so(self):
-        """The table path shows the numbers too -- flagged. JSON needs the flag."""
-        finances = _make_finances()  # 3 players: the extraction heuristics distrust it
-        assert finances.is_suspect
+    def _scrape(self, finances, args):
         for player in finances.squad:
-            player.element_id = 1
+            player.element_id = 1  # past the DOM-fallback check, to the suspect one
         with patch("fpl_cli.scraper.fpl_prices.FPLPriceScraper") as mock_scraper_cls, \
              patch("fpl_cli.scraper.fpl_prices.save_cache"), \
              patch("fpl_cli.scraper.fpl_prices.load_cache", return_value=None):
             mock_scraper_cls.return_value.scrape = AsyncMock(return_value=finances)
-            result = CliRunner().invoke(sell_prices_command, ["--refresh", "--format", "json"])
+            return CliRunner().invoke(sell_prices_command, args)
+
+    def test_suspect_data_is_refused_rather_than_handed_over(self):
+        """`fpl allocate --sell-prices` budgets off `data` and never reads
+        metadata, so a warning would not reach the one consumer this flag
+        exists for. It gets the refusal instead."""
+        finances = _make_finances()  # 3 players: the extraction heuristics distrust it
+        assert finances.is_suspect
+
+        result = self._scrape(finances, ["--refresh", "--format", "json"])
+
+        assert result.exit_code == 1
+        envelope = json.loads(result.stdout)
+        assert "data" not in envelope
+        assert "suspect data" in envelope["error"]
+        assert "3 players" in envelope["error"]
+
+    def test_suspect_data_still_reaches_a_terminal(self):
+        """A human can see the label and count the rows, so the table keeps it."""
+        finances = _make_finances()
+        result = self._scrape(finances, ["--refresh"])
+
+        assert result.exit_code == 0, result.output
+        assert "Squad Budget (Suspect)" in result.output
+        assert "Haaland" in result.output
+
+    def test_a_trustworthy_scrape_comes_back_as_data(self):
+        finances = _make_finances()
+        finances.squad = finances.squad * 5  # 15 players clears the heuristic
+        assert not finances.is_suspect
+
+        result = self._scrape(finances, ["--refresh", "--format", "json"])
 
         assert result.exit_code == 0, result.stderr
         envelope = json.loads(result.stdout)
-        assert len(envelope["data"]) == 3
-        assert [w["code"] for w in envelope["metadata"]["warnings"]] == ["scrape_suspect"]
-
-    def test_a_trustworthy_scrape_carries_no_warning(self):
-        finances = _make_finances()
-        finances.squad = finances.squad * 5  # 15 players clears the heuristic
-        for player in finances.squad:
-            player.element_id = 1
-        assert not finances.is_suspect
-        with patch("fpl_cli.scraper.fpl_prices.FPLPriceScraper") as mock_scraper_cls, \
-             patch("fpl_cli.scraper.fpl_prices.save_cache"), \
-             patch("fpl_cli.scraper.fpl_prices.load_cache", return_value=None):
-            mock_scraper_cls.return_value.scrape = AsyncMock(return_value=finances)
-            result = CliRunner().invoke(sell_prices_command, ["--refresh", "--format", "json"])
-
-        assert result.exit_code == 0, result.stderr
-        assert "warnings" not in json.loads(result.stdout)["metadata"]
+        assert len(envelope["data"]) == 15
+        assert "warnings" not in envelope["metadata"]

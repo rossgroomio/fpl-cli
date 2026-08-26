@@ -140,11 +140,19 @@ def sell_prices_command(ctx: click.Context, refresh: bool, visible: bool, output
                 console.print("[dim]Try with --visible flag to debug the scrape.[/dim]")
 
             if is_json:
-                # Still a success envelope -- the table path shows the numbers
-                # too, loudly flagged. A consumer cannot see the flag, so it
-                # travels in metadata.warnings rather than being dropped.
-                _emit_json_finances(finances, suspect=True)
-                return
+                # The table below shows these numbers too, but to someone who
+                # can see the (Suspect) label and count the rows. A consumer
+                # cannot, and the one documented JSON pipeline --
+                # `fpl allocate --sell-prices` -- reads `data` and never
+                # `metadata.warnings`, so a warning would not reach it. It
+                # gets the refusal instead, matching the element_id check
+                # below that already errors on a milder defect than this.
+                emit_json_error(
+                    COMMAND,
+                    "Scrape returned suspect data - likely a failed extraction"
+                    f" ({len(finances.squad)} players). Re-run with --refresh,"
+                    " or --visible to watch the browser.",
+                )
             console.print(Panel.fit("[bold blue]Squad Budget (Suspect)[/bold blue]"))
             _display_finances(finances)
             return
@@ -185,13 +193,8 @@ def _format_pl(value: float) -> str:
     return "[dim]\u2014[/dim]"
 
 
-def _emit_json_finances(finances: TeamFinances, *, suspect: bool = False) -> None:
-    """Emit sell-prices data as JSON. Errors if any player lacks element_id.
-
-    *suspect* marks a scrape the extraction heuristics distrust. It stays a
-    success envelope, since the table path shows the same numbers, but the
-    warning a table reader can see has to reach a consumer some other way.
-    """
+def _emit_json_finances(finances: TeamFinances) -> None:
+    """Emit sell-prices data as JSON. Errors if any player lacks element_id."""
     if any(p.element_id is None for p in finances.squad):
         with json_output_mode() as stdout:
             emit_json_error(
@@ -211,23 +214,13 @@ def _emit_json_finances(finances: TeamFinances, *, suspect: bool = False) -> Non
         for p in finances.squad
     ]
     sell_total = sum(p.sell_price for p in finances.squad)
-    metadata: dict = {
-        "bank": finances.bank,
-        "total_sell_value": sell_total,
-        "free_transfers": finances.free_transfers,
-        "scraped_at": finances.scraped_at,
-    }
-    if suspect:
-        metadata["warnings"] = [{
-            "code": "scrape_suspect",
-            "message": (
-                f"The scrape extracted {len(finances.squad)} players and the"
-                " extraction heuristics distrust the result. Re-run with"
-                " --refresh, or --visible to watch the browser."
-            ),
-        }]
     with json_output_mode() as stdout:
-        emit_json(COMMAND, squad_data, metadata=metadata, file=stdout)
+        emit_json(COMMAND, squad_data, metadata={
+            "bank": finances.bank,
+            "total_sell_value": sell_total,
+            "free_transfers": finances.free_transfers,
+            "scraped_at": finances.scraped_at,
+        }, file=stdout)
 
 
 def _display_finances(finances: TeamFinances) -> None:

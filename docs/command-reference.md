@@ -525,12 +525,13 @@ Disabling ECH may additionally require a browser-level managed policy (`Encrypte
 Output: free transfers, bank balance, squad sell prices, total team value. Data cached to `team_finances.json` in the data directory (see [Directories](#directories)) for 12 hours.
 
 **Suspect scrapes:** a scrape that returns far fewer players than a squad holds is
-reported rather than trusted — the page usually rendered late or the login silently
-failed. Table mode labels the panel `Squad Budget (Suspect)` and keeps any valid cache;
-JSON mode still emits the data, with a `scrape_suspect` entry in `metadata.warnings`, so
-a consumer can tell the difference a table reader can see. Re-run with `--refresh`, or
+refused rather than trusted — the page usually rendered late or the login silently
+failed. Table mode labels the panel `Squad Budget (Suspect)`, shows the numbers and keeps
+any valid cache, because a reader can see the label and count the rows. `--format json`
+gets an `error` envelope and exit 1 instead: `fpl allocate --sell-prices` budgets from
+`data` and would take a three-player squad at face value. Re-run with `--refresh`, or
 `--visible` to watch the browser. With nothing cached and no `--refresh`, the command
-exits 1 with an `error` envelope rather than exiting 0 having shown nothing.
+likewise exits 1 with an `error` envelope rather than exiting 0 having shown nothing.
 
 **Wildcard / Free Hit workflow:** Use `--format json` to export sell prices, then pass to `fpl allocate --sell-prices` for accurate budgeting:
 ```bash
