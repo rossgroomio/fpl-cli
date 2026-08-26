@@ -1,6 +1,12 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [2.3.2] - 2026-08-26
+
+### Bug Fixes
+
+- keep a recorded club when a current gameweek's league-recap re-runs (#179)
+
 ## [2.3.1] - 2026-08-26
 
 ### Bug Fixes
