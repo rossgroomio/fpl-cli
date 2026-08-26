@@ -69,9 +69,10 @@ league-fines` reads them straight back off disk — no network, and any season s
 on disk (`--season 2025-26`). Every gameweek that could not be ruled is named
 beneath the table, because a zero there means "not known", not "not fined".
 
-The recap itself stays a this-week view: it shows the season table only at GW19 and
-at the finale, so the set-piece stays a set-piece. `fpl league-fines` answers the
-season question any week you want it.
+The recap prints the season table only at GW19 and at the finale, so the set-piece
+stays a set-piece — though with `--summarise` its editorial knows the running totals
+every week and may work one into a sentence. `fpl league-fines` answers the season
+question any week you want it.
 
 ### Checking Your Setup
 

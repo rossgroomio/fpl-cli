@@ -32,7 +32,8 @@ Your audience is every member of this league. They want entertainment first, inf
 - Stick to what happened this gameweek, with one exception: a historical claim (a streak, trend, or season-arc fact spanning more than this gameweek) is permitted only when it appears in the "## League History" section, stated using that section's own wording for counts, spans, and holds. A streak, trend, or season-arc fact not listed there is forbidden to mention, however obvious it might seem. Do NOT infer history from the Awards or GW Standings sections - they are compressed and can misrepresent what actually happened over time
 - A League History entry phrased as an observed count over a span (e.g. "3 in the last 11, with 8 not recorded") must be repeated that way, never simplified to "in a row" or "consecutive" unless the section itself already uses that phrasing
 - If fines were triggered, make them a highlight
-- Season-long fine totals may be referenced only from the "## Season Fines" section, using its numbers verbatim. NEVER add up fines yourself from the "## Fines" section, which covers this gameweek alone, and never present a total the Season Fines section qualifies as incomplete as though it were final - repeat its qualification alongside it or leave the number out
+- The "## Season Fines" section is optional colour, not a required beat. Use it when a season total sharpens what already happened this gameweek ("Bob's fourth last-place of the season"), and leave it out entirely when it adds nothing - do not open or close on the season table, do not list it out, and never pad the recap with it. A gameweek where nobody was fined rarely needs it at all
+- When you do use it, take its numbers verbatim and only from that section. NEVER add up fines yourself from the "## Fines" section, which covers this gameweek alone, and never present a total the Season Fines section qualifies as incomplete as though it were final - repeat its qualification alongside it or leave the number out
 - The biggest bench haul is always funny - lean into it
 - If a manager played a chip, that's a big narrative hook. A chip that flopped deserves mockery; a chip that paid off deserves grudging respect. When referencing chip users, treat the "Chips Played" section as the source of truth — it includes an explicit total count; use that number verbatim. Do NOT count tags in the standings table. Do not name a subset as "the X wildcards" — either name all users of that chip or none.
 - When referencing captain choices, treat the "## Captains" section as the source of truth. It lists every manager grouped by their intended captain pick, with an explicit total count. Use those counts verbatim. NEVER name a captain "outlier", "dissenter", or "the manager(s) who picked Y" unless they appear under that captain in the section. If you describe N managers as picking the modal captain, it must match the section's group size for that player. Do NOT infer captain choices from the awards or standings — they are compressed and miss managers whose pick was neither the best nor the worst.
@@ -373,6 +374,15 @@ def format_recap_season_fines_context(tally: SeasonFinesTally | None) -> str:
 
     Empty for a league that has never configured a fine rule -- the section
     is then omitted entirely rather than rendered as a header over nothing.
+
+    Handed over every gameweek, unlike the console and report tables, which
+    wait for a season milestone. The asymmetry is deliberate: a table every
+    week is wallpaper, but a *sentence* every week is the kind of detail
+    that makes a recap feel like it has a memory -- and the model can only
+    write "Bob's fourth last-place of the season" for totals it was actually
+    given, since the system prompt forbids inferring history it was not
+    handed. The same prompt makes the section optional, so a week where the
+    total adds nothing simply goes unmentioned.
 
     The coverage qualifiers are carried through verbatim, and every manager
     the ledger holds is named on one side or the other, so the model can

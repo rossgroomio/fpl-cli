@@ -2269,10 +2269,11 @@ class TestSeasonFinesSurfaces:
         assert result.exit_code == 0, result.output
         assert "Season Fines" in result.output.replace("\n", "")
 
-    def test_an_ordinary_gameweek_stays_a_this_week_view(self):
-        """The season table is a set-piece: printing it all 38 weeks would
+    def test_an_ordinary_gameweek_prints_no_season_table(self):
+        """The printed table is a set-piece: showing it all 38 weeks would
         turn it into wallpaper, and `fpl league-fines` answers the season
-        question on demand in between."""
+        question on demand in between. The editorial still gets the totals --
+        see `TestEndToEndPromptThroughTheFullCommand`."""
         result = self._run(5)
 
         assert result.exit_code == 0, result.output
@@ -2303,6 +2304,33 @@ class TestSeasonFinesSurfaces:
         assert bob["counts"] == {"last-place": 1}
         assert bob["fined_gameweeks"] == [5]
         assert tally["qualifiers"]
+
+    def test_a_saved_report_carries_the_table_only_at_a_milestone(self, tmp_path: Path):
+        """The report is the surface that gets shared, so its gate matters
+        most: a full season table every week is exactly the wallpaper the
+        milestone rule exists to avoid."""
+        milestone = _invoke_recap(
+            self._fined_data(CHIP_SPLIT_GW), ["--save", "--output", str(tmp_path)],
+            client=_fpl_client(CHIP_SPLIT_GW), settings=_LAST_PLACE_ONLY, gw=CHIP_SPLIT_GW,
+        )
+        assert milestone.exit_code == 0, milestone.output
+        at_milestone = (
+            tmp_path / season_label() / f"gw{CHIP_SPLIT_GW}-league-recap.md"
+        ).read_text(encoding="utf-8")
+
+        ordinary = _invoke_recap(
+            self._fined_data(5), ["--save", "--output", str(tmp_path)],
+            settings=_LAST_PLACE_ONLY,
+        )
+        assert ordinary.exit_code == 0, ordinary.output
+        at_ordinary = (
+            tmp_path / season_label() / "gw5-league-recap.md"
+        ).read_text(encoding="utf-8")
+
+        assert "# Season Fines" in at_milestone
+        assert "Bob: 1 (1 last-place)" in at_milestone
+        assert "# Season Fines" not in at_ordinary
+        assert "# Fines" in at_ordinary, "this gameweek's own fines still render"
 
     def test_the_prompt_section_reads_as_a_season_table(self):
         from fpl_cli.prompts.league_recap import format_recap_season_fines_context
@@ -2420,12 +2448,13 @@ class TestEndToEndPromptThroughTheFullCommand:
         assert "Bob: 1 (1 last-place)" in user_prompt
         assert "NEVER add up fines yourself" in system_prompt
 
-    def test_an_ordinary_gameweek_hands_the_model_no_season_totals(
+    def test_an_ordinary_gameweek_still_hands_the_model_season_totals(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ):
-        """The gate covers the prompt as well as the printed surfaces:
-        feeding the model a season table it was told not to print would just
-        move the weekly table into the editorial."""
+        """The milestone gate covers the printed table, not the prompt: a
+        table every week is wallpaper, but a sentence every week is what
+        makes a recap feel like it has a memory -- and the model can only
+        write one for totals it was actually handed."""
         monkeypatch.chdir(tmp_path)
 
         result = _invoke_recap(
@@ -2433,13 +2462,34 @@ class TestEndToEndPromptThroughTheFullCommand:
         )
 
         assert result.exit_code == 0, result.output
+        system_prompt = (tmp_path / "data" / "debug" / "recap_system.txt").read_text(encoding="utf-8")
         user_prompt = (tmp_path / "data" / "debug" / "recap_prompt.txt").read_text(encoding="utf-8")
-        assert "## Season Fines" not in user_prompt
-        assert "## Fines" in user_prompt, "this gameweek's own fines still reach the prompt"
+
+        assert "## Season Fines" in user_prompt
+        assert "Bob: 1 (1 last-place)" in user_prompt
+        # ...and it is offered, never demanded.
+        assert "optional colour, not a required beat" in system_prompt
+
+    def test_the_ordinary_gameweek_prompt_is_not_matched_by_the_printed_table(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ):
+        """The two surfaces genuinely diverge on an ordinary gameweek: the
+        model is told, the console is not."""
+        monkeypatch.chdir(tmp_path)
+
+        result = _invoke_recap(
+            self._fined_at(5), ["--dry-run"], settings=_LAST_PLACE_ONLY,
+        )
+
+        user_prompt = (tmp_path / "data" / "debug" / "recap_prompt.txt").read_text(encoding="utf-8")
+        assert "## Season Fines" in user_prompt
+        assert "Season Fines" not in result.output.replace("\n", "")
 
     def test_no_season_fines_section_without_configured_rules(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ):
+        """The one case that still omits the section from the prompt: a
+        league with no fine rules configured and none ever ruled."""
         monkeypatch.chdir(tmp_path)
 
         result = _invoke_recap(

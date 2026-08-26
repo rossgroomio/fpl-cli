@@ -316,15 +316,22 @@ def league_recap_command(
                     entry.text for entry in notes_pack.coverage_entries
                 ]
 
-            # Season fines are a set-piece, not a weekly fixture: the table
-            # answers "who owes what this season", which is worth reading at
-            # the halfway boundary and at the finale and is noise in between.
-            # Every other week the recap stays a this-week view and `fpl
-            # league-fines` answers the season question on demand. The gate
-            # covers console, report and prompt alike -- feeding the model
-            # season totals it was told not to print would just move the
-            # weekly table into the editorial.
-            fines_tally = (
+            # The *printed* season table is a set-piece, not a weekly
+            # fixture: a full standings-style table answers "who owes what
+            # this season", which is worth reading at the halfway boundary
+            # and at the finale and is noise in between. Every other week the
+            # console and the saved report stay a this-week view, and `fpl
+            # league-fines` answers the season question on demand.
+            #
+            # The prompt is deliberately *not* gated with them. A table and a
+            # sentence are different things: the editorial can drop "Bob's
+            # fourth last-place of the season" into a paragraph without
+            # turning the recap into a ledger dump, and it can only do that
+            # for totals it was actually handed -- the system prompt forbids
+            # it inferring history it was not given. So the model sees the
+            # section every week and decides whether the fact earns its
+            # place; only the printed table waits for a milestone.
+            printed_fines_tally = (
                 capture_result.fines_tally if is_season_milestone(gw) else None
             )
 
@@ -334,14 +341,17 @@ def league_recap_command(
             # with no fine rules configured and none ever ruled, so the
             # template's `is defined` guards skip the section rather than
             # heading an empty table.
-            if fines_tally is not None and fines_tally.is_reportable:
+            if printed_fines_tally is not None and printed_fines_tally.is_reportable:
                 collected_data["season_fines_span"] = (
-                    f"GW{fines_tally.start_gameweek}-GW{fines_tally.through_gameweek}"
+                    f"GW{printed_fines_tally.start_gameweek}-"
+                    f"GW{printed_fines_tally.through_gameweek}"
                 )
                 collected_data["season_fines_lines"] = [
-                    _season_fine_line(manager) for manager in fines_tally.managers
+                    _season_fine_line(manager) for manager in printed_fines_tally.managers
                 ]
-                collected_data["season_fines_coverage_lines"] = list(fines_tally.qualifiers)
+                collected_data["season_fines_coverage_lines"] = list(
+                    printed_fines_tally.qualifiers,
+                )
 
             # LLM summarisation (opt-in via --summarise or --dry-run)
             if (summarise or dry_run) and synthesis_unavailable is None:
@@ -357,7 +367,9 @@ def league_recap_command(
                         is_bgw=is_bgw, is_dgw=is_dgw,
                         season_length=TOTAL_GAMEWEEKS,
                         notes_pack=notes_pack,
-                        fines_tally=fines_tally,
+                        # Ungated: see above -- the model gets season totals
+                        # every week and chooses whether to use them.
+                        fines_tally=capture_result.fines_tally,
                     )
                 except ProviderError as e:
                     error_console.print(f"[yellow]LLM summarisation failed: {e}[/yellow]")
@@ -366,7 +378,7 @@ def league_recap_command(
                     error_console.print("[yellow]LLM summarisation failed (unexpected error)[/yellow]")
 
             # Display key highlights to console
-            _render_console_highlights(collected_data, notes_pack, fines_tally)
+            _render_console_highlights(collected_data, notes_pack, printed_fines_tally)
 
             # Generate report if saving
             if save or output:
@@ -396,11 +408,10 @@ def league_recap_command(
                         "coverage": _serialize_coverage(capture_result.coverage),
                         "season_phase": notes_pack.phase if notes_pack is not None else None,
                         "notes_pack": _serialize_notes_pack(notes_pack) if notes_pack is not None else None,
-                        # `capture_result.fines_tally`, deliberately not the
-                        # milestone-gated `fines_tally` the human surfaces
-                        # read: a consumer asking for JSON every week should
-                        # not have the season table appear and disappear on
-                        # a calendar it cannot see (KTD8).
+                        # Ungated, like the prompt's copy and unlike the
+                        # printed table: a consumer asking for JSON every
+                        # week should not have the season tally appear and
+                        # disappear on a calendar it cannot see (KTD8).
                         "season_fines": (
                             _serialize_fines_tally(capture_result.fines_tally)
                             if capture_result.fines_tally is not None else None
@@ -513,9 +524,8 @@ def _serialize_fines_tally(tally: SeasonFinesTally) -> dict[str, Any]:
     """The whole tally, JSON-shaped -- emitted every week, whether or not it
     is reportable and whether or not the gameweek is a milestone, on the same
     principle KTD8 sets for the notes pack: `--format json` is a machine
-    surface and carries everything the fold computed, leaving both the
-    is-it-worth-showing and the is-this-the-week judgements to the
-    human-facing surfaces."""
+    surface and carries everything the fold computed, leaving the
+    is-it-worth-showing judgement to the human-facing surfaces."""
     return {
         "season": tally.season,
         "fpl_format": tally.fpl_format,
@@ -589,7 +599,8 @@ def _render_console_highlights(
     # re-litigate which. Only the fined are listed, since the console is a
     # highlights view and the full table is `fpl league-fines`, but the
     # coverage lines still print: a total nobody can trust is worse than no
-    # total.
+    # total. The editorial gets the tally every week regardless; only this
+    # printed block waits for a milestone.
     if fines_tally is not None and fines_tally.is_reportable:
         fined = fines_tally.fined_managers
         console.print(

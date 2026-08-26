@@ -622,14 +622,18 @@ derivable from cohort points (`last-place`, `below-threshold`) and records that 
 rule `red-card`, which needs a squad the manager-history endpoint does not return. See
 [Season Fines](#season-fines) for the table this builds up.
 
-**Season fines:** the season-to-date table appears in the recap only at the two milestone
-gameweeks — GW19 (the chip-availability boundary, which is also the halfway point) and the
-finale. Every other week the recap stays a this-week view, and
-[`fpl league-fines`](#season-fines) answers the season question on demand. The gate covers
-console, report and editorial alike: handing the model season totals it was told not to
-print would only move the weekly table into the prose. `--format json` is unaffected —
-`metadata.season_fines` is emitted every week, so a scripted consumer never sees the table
-appear and disappear on a calendar it cannot see.
+**Season fines:** the season-to-date *table* appears on console and in the saved report only
+at the two milestone gameweeks — GW19 (the chip-availability boundary, which is also the
+halfway point) and the finale. Every other week those surfaces stay a this-week view, and
+[`fpl league-fines`](#season-fines) answers the season question on demand.
+
+The editorial is deliberately not gated with them. A table and a sentence are different
+things: with `--summarise`, the narrative gets the season totals every week and may drop one
+into a paragraph where it sharpens what happened ("Bob's fourth last-place of the season"),
+taking the numbers verbatim and repeating any qualification the tally carries. It is offered
+as optional colour, never a required beat, so a gameweek the total adds nothing to simply
+goes unmentioned. `--format json` is ungated too — `metadata.season_fines` is emitted every
+week, so a scripted consumer never sees it appear and disappear on a calendar it cannot see.
 
 **LLM editorial** (`--summarise`): Newsletter-style narrative via synthesis provider. Names names, calls out decisions. The editorial is an add-on: if the synthesis provider has no usable API key the recap still renders, still saves its report and still captures the ledger, with the reason on stderr and a `synthesis_provider_unavailable` warning in JSON. `synthesis_summary` is `null` on such a run — the warning is what distinguishes it from a run that never asked for an editorial.
 
@@ -782,8 +786,8 @@ matters when scripting a retry — an outage is worth retrying, the other two ar
 ### Season Fines
 
 Who owes what this season, folded out of the fines each `league-recap` recorded. The recap
-prints this table only at GW19 and the finale; this command answers the same question any
-time.
+prints this table only at GW19 and the finale (though its editorial may reference the totals
+any week); this command answers the same question any time.
 
 ```bash
 fpl league-fines                  # Season totals through the latest recorded gameweek
