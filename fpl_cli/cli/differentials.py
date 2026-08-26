@@ -11,7 +11,13 @@ from rich.panel import Panel
 from rich.table import Table
 
 from fpl_cli.cli._context import console, handle_agent_failure
-from fpl_cli.cli._json import emit_json, emit_json_error, json_output_mode, output_format_option
+from fpl_cli.cli._json import (
+    api_failure_boundary,
+    emit_json,
+    emit_json_error,
+    json_output_mode,
+    output_format_option,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -166,4 +172,5 @@ def differentials_command(threshold: float, min_minutes: int, output_format: str
             else:
                 console.print("  [dim]No viable differential captain picks this week[/dim]")
 
-    asyncio.run(_run())
+    with api_failure_boundary("differentials", output_format):
+        asyncio.run(_run())

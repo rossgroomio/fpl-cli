@@ -17,7 +17,7 @@ from fpl_cli.cli._context import Format, console, get_format, is_custom_analysis
 from fpl_cli.cli._fines import FinesLeagueData, FinesTeamPlayer, evaluate_fines
 from fpl_cli.cli._fines_config import FinesConfig, parse_fines_config
 from fpl_cli.cli._helpers import _entry_league_meta
-from fpl_cli.cli._json import emit_json, output_format_option
+from fpl_cli.cli._json import api_failure_boundary, emit_json, output_format_option
 from fpl_cli.cli.chips import CHIP_NAMES
 from fpl_cli.models.chip_plan import ChipPlan, ChipType, UsedChip
 from fpl_cli.models.player import Player, PlayerStatus
@@ -320,7 +320,8 @@ def status_command(ctx: click.Context, output_format: str) -> None:
                     "available — run `fpl init` to enable[/dim]"
                 )
 
-    asyncio.run(_run())
+    with api_failure_boundary("status", output_format):
+        asyncio.run(_run())
 
 
 async def _fetch_classic_data(

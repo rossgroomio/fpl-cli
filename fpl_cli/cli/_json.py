@@ -11,6 +11,7 @@ from enum import Enum
 from typing import IO, Any, Callable, Generator, NoReturn, TypeVar
 
 import click
+import httpx
 from rich.markup import escape as rich_escape
 
 from fpl_cli.cli._context import console
@@ -113,6 +114,26 @@ def emit_failure(
     else:
         console.print(f"[red]{rich_escape(message)}[/red]")
     raise SystemExit(1) from cause
+
+
+@contextmanager
+def api_failure_boundary(command: str, output_format: str) -> Generator[None, None, None]:
+    """Turn an unreachable upstream into an error envelope instead of a traceback.
+
+    An outage is the likeliest way any of these commands fails, and it
+    surfaces as an `httpx.HTTPError` raised deep in a client call -- far from
+    the code that knows the command name and the output format. Left
+    uncaught it reaches click as a traceback: stdout stays empty, so a JSON
+    consumer gets no envelope at all and cannot tell an outage from a crash.
+
+    Wrap the `asyncio.run()` call rather than each request, so a client added
+    to an existing command inherits the handling. Only `httpx.HTTPError` is
+    caught -- a bug in our own code still raises, where it can be seen.
+    """
+    try:
+        yield
+    except httpx.HTTPError as exc:
+        emit_failure(command, f"Could not reach the FPL API: {exc}", output_format, cause=exc)
 
 
 @contextmanager

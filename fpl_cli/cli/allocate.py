@@ -11,7 +11,13 @@ from rich.panel import Panel
 from rich.table import Table
 
 from fpl_cli.cli._context import console
-from fpl_cli.cli._json import emit_json, emit_json_error, json_output_mode, output_format_option
+from fpl_cli.cli._json import (
+    api_failure_boundary,
+    emit_json,
+    emit_json_error,
+    json_output_mode,
+    output_format_option,
+)
 from fpl_cli.services.scoring import normalise_score, pick_display_ceiling
 
 if TYPE_CHECKING:
@@ -168,7 +174,8 @@ def allocate_command(
             free_transfers=free_transfers,
         )
 
-    asyncio.run(_run())
+    with api_failure_boundary("allocate", output_format):
+        asyncio.run(_run())
 
 
 def _emit_result(

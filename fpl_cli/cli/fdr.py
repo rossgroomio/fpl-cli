@@ -24,7 +24,14 @@ from fpl_cli.cli._context import (
     warn_prediction_problems,
 )
 from fpl_cli.cli._helpers import _fdr_style
-from fpl_cli.cli._json import emit_json, emit_json_error, json_output_mode, output_format_option
+from fpl_cli.cli._json import (
+    api_failure_boundary,
+    emit_failure,
+    emit_json,
+    emit_json_error,
+    json_output_mode,
+    output_format_option,
+)
 from fpl_cli.season import TOTAL_GAMEWEEKS
 from fpl_cli.services.fixture_predictions import (
     BlankPrediction,
@@ -135,11 +142,12 @@ def fdr_command(
 
     # Position-specific FDR requires Bayesian ratings (custom analysis)
     if not custom_on and position != "all" and not blanks:
-        console.print(
-            f"[red]--position {position} requires custom analysis (Bayesian ATK/DEF split)."
-            " Enable it with: fpl init[/red]"
+        emit_failure(
+            "fdr",
+            f"--position {position} requires custom analysis (Bayesian ATK/DEF split)."
+            " Enable it with: fpl init",
+            output_format,
         )
-        raise SystemExit(1)
 
     async def _run():
         # direct-api: blanks-only path bypasses agent
@@ -147,8 +155,7 @@ def fdr_command(
             async with FPLClient() as client:
                 next_gw = await client.get_next_gameweek()
                 if not next_gw:
-                    console.print("[red]Could not determine next gameweek[/red]")
-                    return
+                    emit_failure("fdr", "Could not determine the next gameweek.", output_format)
 
                 current_gw = next_gw["id"]
                 start_gw = from_gw if from_gw is not None else current_gw
@@ -170,8 +177,11 @@ def fdr_command(
             warn_prediction_problems(pred_service)
             metadata = pred_service.get_metadata()
             last_updated = metadata.get("last_updated") or "unknown"
-            if pred_service.is_stale:
-                console.print(
+            # Both channels, like every other advisory here: stderr prose for a
+            # terminal, a metadata entry for JSON. On stdout it would sit ahead
+            # of the envelope and break the parse (#140).
+            if pred_service.is_stale and output_format != "json":
+                error_console.print(
                     f"[yellow]Fixture predictions may be stale"
                     f" (last updated: {last_updated})[/yellow]\n",
                 )
@@ -198,12 +208,22 @@ def fdr_command(
                     ],
                     "last_updated": last_updated,
                 }
-                emit_json("fdr", blanks_data, metadata={
+                blanks_metadata: dict[str, Any] = {
                     "gameweek": current_gw,
                     "mode": "blanks",
                     "from_gw": start_gw,
                     "to_gw": end_gw,
-                })
+                }
+                if pred_service.is_stale:
+                    blanks_metadata["warnings"] = [{
+                        "code": "fixture_predictions_stale",
+                        "message": (
+                            f"Fixture predictions were last updated {last_updated}"
+                            " and may be out of date. The predicted_blanks and"
+                            " predicted_doubles entries are the affected ones."
+                        ),
+                    }]
+                emit_json("fdr", blanks_data, metadata=blanks_metadata)
                 return
 
             gw_label = f"GW{start_gw}-{end_gw}"
@@ -222,8 +242,7 @@ def fdr_command(
             async with FPLClient() as client:
                 next_gw = await client.get_next_gameweek()
                 if not next_gw:
-                    console.print("[red]Could not determine next gameweek[/red]")
-                    return
+                    emit_failure("fdr", "Could not determine the next gameweek.", output_format)
 
                 current_gw = next_gw["id"]
                 start_gw = from_gw if from_gw is not None else current_gw
@@ -508,4 +527,5 @@ def fdr_command(
             else:
                 console.print("  [dim]No blank/double GW overlap with your squad[/dim]")
 
-    asyncio.run(_run())
+    with api_failure_boundary("fdr", output_format):
+        asyncio.run(_run())

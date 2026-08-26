@@ -188,7 +188,8 @@ class TestPlanGridDraft:
             patch("fpl_cli.cli._plan_grid.load_settings", return_value={"fpl": {}}),
         ):
             result = runner.invoke(main, ["squad", "grid", "--draft"])
-            assert "draft_entry_id not configured" in result.output
+            assert result.exit_code == 1
+            assert "draft_entry_id is not set" in result.output
 
     def test_draft_with_watch_list(self):
         squad = _squad()

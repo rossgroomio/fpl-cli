@@ -14,7 +14,13 @@ from rich.panel import Panel
 
 from fpl_cli.api.providers import ProviderError
 from fpl_cli.cli._context import Format, console, error_console, get_format, load_settings, resolve_output_dir
-from fpl_cli.cli._json import emit_json, emit_json_error, json_output_mode, output_format_option
+from fpl_cli.cli._json import (
+    api_failure_boundary,
+    emit_json,
+    emit_json_error,
+    json_output_mode,
+    output_format_option,
+)
 from fpl_cli.cli._league_recap_types import LeagueRecapData
 from fpl_cli.services.league_history import GameweekCoverage
 from fpl_cli.services.league_history_notes import NotesPack, NotesPackEntry, NoteSurface
@@ -69,6 +75,7 @@ def league_recap_command(
         is_draft = False
 
     synthesis_provider = None
+    synthesis_unavailable: str | None = None
 
     if summarise or dry_run:
         if not dry_run:
@@ -77,8 +84,14 @@ def league_recap_command(
             try:
                 synthesis_provider = get_llm_provider("synthesis", settings)
             except ProviderError as e:
-                console.print(f"[red]Error: {e}[/red]")
-                return
+                # The editorial is an add-on. The recap, the saved report and
+                # above all the append-only ledger capture are not, and once
+                # the season moves on a missed draft capture cannot be
+                # reconstructed. Aborting the lot over an absent API key --
+                # and doing it with exit 0 and the error on stdout -- cost
+                # more than the narrative was worth (#144), so it degrades.
+                synthesis_unavailable = str(e)
+                error_console.print(f"[yellow]Editorial skipped: {e}[/yellow]")
 
     async def _run() -> None:
         from contextlib import AsyncExitStack, nullcontext
@@ -311,7 +324,20 @@ def league_recap_command(
                         "season_phase": notes_pack.phase if notes_pack is not None else None,
                         "notes_pack": _serialize_notes_pack(notes_pack) if notes_pack is not None else None,
                         "synthesis_summary": collected_data.get("synthesis_summary"),
-                        "warnings": capture_result.warnings,
+                        # The skipped editorial rides the same channel as the
+                        # capture's own warnings: `synthesis_summary` being
+                        # null does not say whether it was asked for.
+                        "warnings": capture_result.warnings + (
+                            [{
+                                "code": "synthesis_provider_unavailable",
+                                "message": (
+                                    "The editorial was requested but skipped:"
+                                    f" {synthesis_unavailable}. Everything else in"
+                                    " this recap, the ledger capture included, ran"
+                                    " normally."
+                                ),
+                            }] if synthesis_unavailable else []
+                        ),
                         # Only set on this partition's very first capture --
                         # the one moment a container-local data directory is
                         # still cheap to notice (table mode prints this to
@@ -325,7 +351,8 @@ def league_recap_command(
                     file=stdout,
                 )
 
-    asyncio.run(_run())
+    with api_failure_boundary("league-recap", output_format):
+        asyncio.run(_run())
 
 
 def _serialize_coverage(coverage: list[GameweekCoverage]) -> list[dict[str, Any]]:

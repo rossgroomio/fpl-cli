@@ -11,7 +11,12 @@ from rich.table import Table
 
 from fpl_cli.cli._context import console
 from fpl_cli.cli._helpers import _fdr_style
-from fpl_cli.cli._json import emit_json, emit_json_error, output_format_option
+from fpl_cli.cli._json import (
+    api_failure_boundary,
+    emit_json,
+    emit_json_error,
+    output_format_option,
+)
 
 
 @click.command("fixtures")
@@ -125,4 +130,5 @@ def fixtures_command(gameweek: int | None, output_format: str):
             except Exception as e:  # noqa: BLE001 — display resilience
                 console.print(f"[red]Error fetching fixtures: {e}[/red]")
 
-    asyncio.run(_run())
+    with api_failure_boundary("fixtures", output_format):
+        asyncio.run(_run())

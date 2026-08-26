@@ -1128,7 +1128,7 @@ class TestPlayerErrorHandling:
         client.get_teams = AsyncMock(side_effect=ValueError("boom"))
         result = _run([], client, fixture_agent, ratings_svc)
         assert result.exit_code != 0
-        assert "Error: boom" in result.output
+        assert "Could not load player data: boom" in result.output
         assert "adj. npxG/90:" not in result.output
 
 

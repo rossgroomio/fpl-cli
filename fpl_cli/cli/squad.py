@@ -18,7 +18,14 @@ from fpl_cli.cli._context import (
     handle_agent_failure,
     load_settings,
 )
-from fpl_cli.cli._json import emit_json, emit_json_error, json_output_mode, output_format_option
+from fpl_cli.cli._json import (
+    api_failure_boundary,
+    emit_failure,
+    emit_json,
+    emit_json_error,
+    json_output_mode,
+    output_format_option,
+)
 from fpl_cli.cli._plan_grid import grid_command
 from fpl_cli.cli.sell_prices import sell_prices_command
 
@@ -50,21 +57,20 @@ def squad_group(ctx: click.Context, is_draft: bool, output_format: str) -> None:
     entry_id = fpl_cfg.get("classic_entry_id")
     draft_entry_id = fpl_cfg.get("draft_entry_id")
 
+    # A missing entry ID is a failure, not a quiet no-op: it used to print a
+    # hint and return 0, so a script saw success and an empty stdout (#144).
     if is_draft:
         if not draft_entry_id:
-            console.print(
-                "[yellow]Please set draft_entry_id in config/settings.yaml[/yellow]"
+            emit_failure(
+                "squad", "draft_entry_id is not set in settings.yaml.", output_format,
             )
-            return
     elif not entry_id:
-        console.print(
-            "[yellow]Please provide your entry ID via classic_entry_id"
-            " in config/settings.yaml[/yellow]"
+        emit_failure(
+            "squad",
+            "classic_entry_id is not set in settings.yaml. Find it in your FPL URL:"
+            " fantasy.premierleague.com/entry/ENTRY_ID/event/...",
+            output_format,
         )
-        console.print(
-            "Find it in your FPL URL: fantasy.premierleague.com/entry/[bold]ENTRY_ID[/bold]/event/..."
-        )
-        return
 
     def _report_no_squad(gameweek: int) -> None:
         # Pre-season / before the first deadline, the picks endpoint legitimately
@@ -136,7 +142,8 @@ def squad_group(ctx: click.Context, is_draft: bool, output_format: str) -> None:
 
         _render(result.data, is_draft)
 
-    asyncio.run(_run())
+    with api_failure_boundary("squad", output_format):
+        asyncio.run(_run())
 
 
 squad_group.add_command(sell_prices_command)

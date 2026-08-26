@@ -78,6 +78,11 @@ commands deliberately soften the *table* path to exit 0 where the JSON path exit
 (`league-recap` on an unresolvable gameweek prints the message and returns); the JSON
 contract above is the one to script against.
 
+The table applies to every way a command can end, not just the ones it was written for.
+A command that cannot reach the FPL API, that needs an entry ID you have not configured,
+or that has nothing cached to show reports it as an `error` envelope and exits 1 — where
+several used to print the reason to stdout, or exit 0 with nothing on it at all.
+
 ## Player Analysis
 
 ### Captain Picks
@@ -259,6 +264,13 @@ fpl fdr --blanks                     # Blank/double GW schedule (confirmed + pre
 fpl fdr --format json                # JSON envelope (metadata: {gameweek, format, mode, position})
 fpl fdr --blanks --format json       # JSON envelope (metadata: {gameweek, mode: "blanks", from_gw, to_gw})
 ```
+
+**Stale predictions:** `--blanks` mixes confirmed fixtures with predicted ones, and the
+predictions carry a `last_updated` date. When it is old enough that the service distrusts
+it, table mode prints a stderr notice and JSON mode adds a `fixture_predictions_stale`
+entry to `metadata.warnings` — the `predicted_blanks` and `predicted_doubles` entries are
+the affected ones. Confirmed blanks and doubles come from the fixture list and are
+unaffected either way.
 
 #### FDR Modes (`-m`)
 
@@ -512,6 +524,14 @@ Disabling ECH may additionally require a browser-level managed policy (`Encrypte
 
 Output: free transfers, bank balance, squad sell prices, total team value. Data cached to `team_finances.json` in the data directory (see [Directories](#directories)) for 12 hours.
 
+**Suspect scrapes:** a scrape that returns far fewer players than a squad holds is
+reported rather than trusted — the page usually rendered late or the login silently
+failed. Table mode labels the panel `Squad Budget (Suspect)` and keeps any valid cache;
+JSON mode still emits the data, with a `scrape_suspect` entry in `metadata.warnings`, so
+a consumer can tell the difference a table reader can see. Re-run with `--refresh`, or
+`--visible` to watch the browser. With nothing cached and no `--refresh`, the command
+exits 1 with an `error` envelope rather than exiting 0 having shown nothing.
+
 **Wildcard / Free Hit workflow:** Use `--format json` to export sell prices, then pass to `fpl allocate --sell-prices` for accurate budgeting:
 ```bash
 fpl squad sell-prices --format json > /tmp/sell-prices.json
@@ -597,7 +617,7 @@ fpl league-recap --format json     # JSON envelope for scripting/agents
 
 **Fines:** evaluates fines for every manager (not just you) when configured.
 
-**LLM editorial** (`--summarise`): Newsletter-style narrative via synthesis provider. Names names, calls out decisions.
+**LLM editorial** (`--summarise`): Newsletter-style narrative via synthesis provider. Names names, calls out decisions. The editorial is an add-on: if the synthesis provider has no usable API key the recap still renders, still saves its report and still captures the ledger, with the reason on stderr and a `synthesis_provider_unavailable` warning in JSON. `synthesis_summary` is `null` on such a run — the warning is what distinguishes it from a run that never asked for an editorial.
 
 **Streaks:** notable open streaks (weeks on top, win/loss runs, captain blanks, green-arrow droughts, waiver activity, and more) print under `Streaks:` on console — leaders only, so console stays a highlights view — and in full as a `# League History` section in the saved report. Each is reported as an observed count over its true span (e.g. "3 in the last 11, with 8 not recorded") rather than a bare "in a row" once any gameweek went uncaptured.
 
@@ -678,7 +698,8 @@ notes pack — an unreadable store, or no league id configured for the format.
 
 Every capture problem is reported on stderr as prose and, under `--format json`, in
 `metadata.warnings` as a `{"code", "message"}` pair. The prose is rewritable; the codes
-are stable, so scripts should key on those.
+are stable, so scripts should key on those. One non-capture code shares the list, since
+it shares the channel: `synthesis_provider_unavailable`.
 
 | Code | Raised when |
 |---|---|
@@ -691,6 +712,7 @@ are stable, so scripts should key on those.
 | `league_history_backfill_manager_unreachable` | One manager's history could not be fetched; their gameweeks stay unknown and are re-attempted next run |
 | `league_history_backfill_replay_failed` | One gameweek could not be replayed in detail; the others are unaffected |
 | `league_history_backfill_write_failed` | A backfilled gameweek could not be written; the rest of the backfill continues |
+| `synthesis_provider_unavailable` | `--summarise` was asked for but the synthesis provider had no usable key; everything else in the recap, the capture included, ran normally |
 
 None of these change the exit code — `league-recap` exits 0 whenever the recap itself
 rendered. The single exit-1 case is a gameweek that could not be resolved at all under
