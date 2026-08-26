@@ -39,7 +39,7 @@ def normalise_score(raw: float, ceiling: float) -> int:
 
 
 def pick_display_ceiling(
-    position: Position, horizon: int, *, minutes: int | None = None
+    position: Position, horizon: int, *, next_gw_id: int | None = None
 ) -> float:
     """Position + horizon aware ceiling for `fpl allocate` display normalisation.
 
@@ -52,10 +52,12 @@ def pick_display_ceiling(
     - horizon >= 2 → ``quality_score``. Routes to VALUE-family ceilings via
       ``_value_weights_and_ceiling``, matching ``fpl player`` / ``fpl stats
       --value`` / ``fpl transfer-eval`` for cross-command consistency. Pass
-      *minutes* so an early-season GK is normalised against the attainable
-      ceiling, same as those commands.
+      *next_gw_id* so a pre-GW6 GK is normalised against the calendar-scaled
+      attainable ceiling, same as those commands — being calendar-keyed the
+      ceiling is identical for every keeper in the table, so the printed
+      score can never invert the ``raw_quality`` order the solver used.
     """
     if horizon <= 1:
         return STARTING_XI_CEILING
-    _, ceiling = _value_weights_and_ceiling(position, minutes=minutes)
+    _, ceiling = _value_weights_and_ceiling(position, next_gw_id=next_gw_id)
     return ceiling

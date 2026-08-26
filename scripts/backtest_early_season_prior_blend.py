@@ -175,11 +175,17 @@ def build_prior_strengths(
     players: list[Any],
     season: str,
     prev_season: str,
-) -> dict[int, float]:
+) -> tuple[dict[int, float], float]:
     """element id -> prior_strength, mirroring generate_player_prior's rules.
 
     History source: previous-season pts/90 percentile within position.
     Price source (no qualifying history): price percentile * 0.5.
+
+    Also returns the share of players whose prior came from history — counted
+    by source, not by comparing the strength against a threshold: history
+    strengths are percentiles in [0, 1] while PRICE_CONFIDENCE_FACTOR is a
+    confidence weight, so a value comparison would misclassify every
+    below-median history player as a price fallback.
     """
     codes = load_player_codes(season)
     costs = load_player_costs(season)
@@ -193,6 +199,7 @@ def build_prior_strengths(
         cost_by_position[player.position].append(float(costs.get(player.element, 0)))
 
     strengths: dict[int, float] = {}
+    history_sourced = 0
     for player in players:
         code = codes.get(player.element, 0)
         history = prev.get(code)
@@ -200,13 +207,15 @@ def build_prior_strengths(
             strengths[player.element] = percentile_rank(
                 history[1], prev_by_position[player.position]
             )
+            history_sourced += 1
         else:
             price_pct = percentile_rank(
                 float(costs.get(player.element, 0)),
                 cost_by_position[player.position],
             )
             strengths[player.element] = price_pct * PRICE_CONFIDENCE_FACTOR
-    return strengths
+    history_share = history_sourced / len(players) if players else 0.0
+    return strengths, history_share
 
 
 # ---------------------------------------------------------------------------
@@ -411,13 +420,10 @@ def main() -> None:
 
     snapshots = tuple(int(s) for s in args.snapshots.split(",") if s.strip())
     players = calib.load_season(args.season)
-    strengths = build_prior_strengths(players, args.season, args.prev_season)
-    history_share = sum(1 for s in strengths.values() if s > PRICE_CONFIDENCE_FACTOR) / max(
-        len(strengths), 1
-    )
+    strengths, history_share = build_prior_strengths(players, args.season, args.prev_season)
     print(
         f"{args.season}: {len(players)} players; priors from {args.prev_season} "
-        f"({history_share:.0%} above the price-fallback band)"
+        f"({history_share:.0%} history-sourced, rest price fallback)"
     )
 
     results = evaluate(players, strengths, snapshots)

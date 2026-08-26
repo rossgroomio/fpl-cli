@@ -335,8 +335,9 @@ def stats_command(
                         "gameweek(s) and per-90 rates come from very few "
                         "minutes, so hot starters saturate the scale while "
                         "elite players with a quiet start read low. GK "
-                        "ceilings scale with accumulated minutes until "
-                        "~GW5. Treat quality_score as provisional until "
+                        "ceilings scale with the sample the calendar has "
+                        "made possible, reaching full scale at GW6. Treat "
+                        "quality_score as provisional until "
                         "~GW6-10; ep_next offers a prior-informed "
                         "alternative ranking."
                     ),
