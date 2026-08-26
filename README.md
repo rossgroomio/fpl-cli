@@ -74,6 +74,12 @@ stays a set-piece — though with `--summarise` its editorial knows the running 
 every week and may work one into a sentence. `fpl league-fines` answers the season
 question any week you want it.
 
+Streaks come with season totals: the recap counts every time a condition has occurred
+this season — gameweek wins, last places, weeks on top, captain blanks — across resets,
+so a report or editorial can say "their fourth gameweek win of the season", not just
+"two in a row". A total surfaces only in the week it grows, with any unjudged gameweeks
+stated beside it.
+
 ### Checking Your Setup
 
 ```console

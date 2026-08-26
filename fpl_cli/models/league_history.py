@@ -380,7 +380,14 @@ def resolve_rows(rows: list[LeagueHistoryRow]) -> dict[int, LeagueHistoryRow]:
 # 2: gw_win_streak/gw_loss_streak now extend for every manager tied on
 # net-of-hit gameweek points, not just whichever the ordinal gw_rank landed
 # on first (issue #163).
-LEAGUE_HISTORY_COUNTERS_VERSION = 2
+# 3: season-wide occurrence fields added to `ConditionRunState`
+# (`occurrences`, `held_total`, `last_occurrence_gameweek`,
+# `first_evaluated_gameweek`), so a rebuild counts every time a condition
+# has occurred this season rather than only the currently-open run
+# (issue #164). Because the counts derive from rows already on disk, the
+# rebuild this bump forces reports correct season totals back to the
+# partition's first captured gameweek.
+LEAGUE_HISTORY_COUNTERS_VERSION = 3
 
 
 class ConditionRunState(BaseModel):
@@ -395,6 +402,21 @@ class ConditionRunState(BaseModel):
     accumulate this count: three non-held extends that held eight
     gameweeks somewhere in between is still reported as length 3, held 8,
     not silently rounded down to "3, consecutive" (KTD7, consumed by U9).
+
+    The remaining four fields are season-wide and survive a reset, which
+    is what makes a season total representable at all (issue #164):
+    `occurrences` counts every gameweek that ever extended this condition
+    -- a manager who won GW2, GW7, GW11 and GW19 shows 4 here while
+    `length` is back to 1. `held_total` counts every held gameweek across
+    the whole season, open run or not: it is the count's honesty
+    qualifier, the same "un-ruled is not innocent" problem the fines
+    tally documents, so a consumer can say "with N not judged" beside the
+    number rather than presenting it bare. `last_occurrence_gameweek` is
+    the most recent extending gameweek, which is how a consumer tells "the
+    count grew this gameweek" from stale colour. `first_evaluated_gameweek`
+    is the first gameweek any action at all was folded for this manager --
+    the span the count was actually computed over, set once and never
+    moved.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -402,6 +424,10 @@ class ConditionRunState(BaseModel):
     length: int = 0
     start_gameweek: int | None = None
     held_in_run: int = 0
+    occurrences: int = 0
+    held_total: int = 0
+    last_occurrence_gameweek: int | None = None
+    first_evaluated_gameweek: int | None = None
 
 
 class LeagueHistoryCountersProjection(BaseModel):

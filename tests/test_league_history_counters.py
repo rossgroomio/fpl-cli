@@ -84,6 +84,16 @@ class TestConditionRegistry:
             "green_arrow_drought", "waiver_win_run", "waiver_burn_run",
         }
 
+    def test_every_condition_names_its_occurrence_in_both_forms(self):
+        """Issue #164: the season count needs a noun for one occurrence, and
+        the drought's must state the *absence* it counts -- "gameweeks
+        without a green arrow" -- rather than leaving the inversion for the
+        reader to infer from the run label."""
+        assert all(c.count_label_one and c.count_label_many for c in CONDITIONS)
+        drought = next(c for c in CONDITIONS if c.key == "green_arrow_drought")
+        assert drought.count_label_one == "gameweek without a green arrow"
+        assert drought.count_label_many == "gameweeks without a green arrow"
+
 
 # ---------------------------------------------------------------------------
 # captain_blank_run (classic only)
@@ -1002,6 +1012,123 @@ class TestPublicViews:
         below_minimum = manager_condition_views(rebuild_counters_through(store, 1), 1)["weeks_on_top"]
         assert below_minimum.excess == -1
         assert below_minimum.is_reportable is False
+
+
+# ---------------------------------------------------------------------------
+# Season occurrence counts (issue #164)
+# ---------------------------------------------------------------------------
+
+
+class TestSeasonOccurrenceCounts:
+    """Every extending gameweek counts once for the season, across resets;
+    holds are tallied separately as the count's coverage qualifier."""
+
+    def test_occurrences_accumulate_across_resets(self):
+        """The issue's own repro shape: a manager whose condition fired in
+        GW2, GW7, GW11 and GW19 shows a season count of 4 after GW19, even
+        though the currently-open run is back to 1."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        top_gameweeks = {2, 7, 11, 19}
+        for gw in range(1, 20):
+            store.append_rows(gw, [make_history_row(
+                gameweek=gw, manager_key=1,
+                league_position=1 if gw in top_gameweeks else 2,
+            )])
+
+        view = manager_condition_views(rebuild_counters_through(store, 19), 1)["weeks_on_top"]
+
+        assert view.occurrences == 4
+        assert view.length == 1
+        assert view.last_occurrence_gameweek == 19
+        assert view.first_evaluated_gameweek == 1
+
+    def test_a_reset_wipes_the_run_but_not_the_season_fields(self):
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, league_position=1)])
+        store.append_rows(2, [make_history_row(gameweek=2, manager_key=1, league_position=2)])
+
+        view = manager_condition_views(rebuild_counters_through(store, 2), 1)["weeks_on_top"]
+
+        assert view.length == 0
+        assert view.start_gameweek is None
+        assert view.held_in_run == 0
+        assert view.occurrences == 1
+        assert view.last_occurrence_gameweek == 1
+        assert view.first_evaluated_gameweek == 1
+
+    def test_a_hold_is_tallied_but_never_counted(self):
+        """R19 applied to the season count: an unknown gameweek neither
+        advances the count nor acquits it -- it lands in `held_total`, the
+        "not judged" figure a consumer must state beside the number."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, league_position=1)])
+        store.append_rows(2, [make_history_row(gameweek=2, manager_key=1, capture_status="unknown")])
+        store.append_rows(3, [make_history_row(gameweek=3, manager_key=1, league_position=1)])
+
+        view = manager_condition_views(rebuild_counters_through(store, 3), 1)["weeks_on_top"]
+
+        assert view.occurrences == 2
+        assert view.held_total == 1
+        assert view.length == 2
+        assert view.held_in_run == 1
+        assert view.last_occurrence_gameweek == 3
+
+    def test_a_hold_before_any_run_opens_still_counts_toward_held_total(self):
+        """A run has nothing to annotate before it opens, but the season
+        count's coverage does: GW1 was not judged whether or not a run ever
+        follows it."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(1, [make_history_row(
+            gameweek=1, manager_key=1, capture_status="unknown",
+        )])
+
+        view = manager_condition_views(rebuild_counters_through(store, 1), 1)["weeks_on_top"]
+
+        assert view.occurrences == 0
+        assert view.held_total == 1
+        assert view.length == 0
+        assert view.held_in_run == 0
+        assert view.first_evaluated_gameweek == 1
+
+    def test_first_evaluated_gameweek_is_the_managers_own_first_row(self):
+        """A mid-season joiner's count spans the gameweeks it was actually
+        folded over, not the partition's -- the honest window for their
+        season total (R17's per-manager coverage, applied here)."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, league_position=1)])
+        for gw in (3, 4):
+            store.append_rows(gw, [
+                make_history_row(gameweek=gw, manager_key=1, league_position=1),
+                make_history_row(
+                    gameweek=gw, manager_key=2, manager_name="Bob", league_position=2,
+                ),
+            ])
+
+        views = manager_condition_views(rebuild_counters_through(store, 4), 2)
+
+        assert views["weeks_on_top"].first_evaluated_gameweek == 3
+        # A gameweek the manager is wholly absent from is neither judged nor
+        # held for them -- GW1 and the never-captured GW2 land in neither
+        # counter.
+        assert views["weeks_on_top"].held_total == 0
+
+    def test_incremental_advance_agrees_with_a_full_rebuild_on_season_fields(self):
+        """The weekly fast path folds one gameweek onto persisted state; the
+        season fields must come out identical to a from-scratch rebuild, or
+        a cache hit would change a manager's season total."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        for gw, position in ((1, 1), (2, 2), (3, 1)):
+            store.append_rows(gw, [make_history_row(
+                gameweek=gw, manager_key=1, league_position=position,
+            )])
+
+        for gw in (1, 2, 3):
+            advanced = compute_counters_through(store, gw)
+
+        assert advanced.runs == rebuild_counters_through(store, 3).runs
+        view = manager_condition_views(advanced, 1)["weeks_on_top"]
+        assert view.occurrences == 2
+        assert view.length == 1
 
 
 # ---------------------------------------------------------------------------

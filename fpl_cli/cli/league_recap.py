@@ -323,6 +323,14 @@ def league_recap_command(
                 collected_data["league_history_streak_lines"] = [
                     entry.text for entry in notes_pack.entries if NoteSurface.REPORT in entry.surfaces
                 ]
+                # Only the counts that grew this gameweek carry the report
+                # surface (issue #164), so the saved report stays a this-week
+                # view -- the whole set still reaches `--format json` below.
+                collected_data["league_history_season_count_lines"] = [
+                    entry.text
+                    for entry in notes_pack.season_count_entries
+                    if NoteSurface.REPORT in entry.surfaces
+                ]
                 collected_data["league_history_coverage_lines"] = [
                     entry.text for entry in notes_pack.coverage_entries
                 ]
@@ -495,6 +503,7 @@ def _serialize_notes_pack_entry(entry: NotesPackEntry) -> dict[str, Any]:
         "length": entry.length,
         "held_count": entry.held_count,
         "excess": entry.excess,
+        "occurrences": entry.occurrences,
     }
 
 
@@ -510,6 +519,12 @@ def _serialize_notes_pack(pack: NotesPack) -> dict[str, Any]:
         "league_start_gameweek": pack.league_start_gameweek,
         "season_phase_entry": _serialize_notes_pack_entry(pack.season_phase_entry),
         "entries": [_serialize_notes_pack_entry(entry) for entry in pack.entries],
+        # Every nonzero season count, not just the ones that grew this
+        # gameweek and earned surfaces (issue #164) -- same KTD8 rule the
+        # below-minimum streaks follow.
+        "season_count_entries": [
+            _serialize_notes_pack_entry(entry) for entry in pack.season_count_entries
+        ],
         "coverage_entries": [_serialize_notes_pack_entry(entry) for entry in pack.coverage_entries],
         "entry_count": pack.entry_count,
     }

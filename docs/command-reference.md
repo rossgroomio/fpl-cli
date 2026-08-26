@@ -639,13 +639,16 @@ week, so a scripted consumer never sees it appear and disappear on a calendar it
 
 **Streaks:** notable open streaks (weeks on top, win/loss runs, captain blanks, green-arrow droughts, waiver activity, and more) print under `Streaks:` on console — leaders only, so console stays a highlights view — and in full as a `# League History` section in the saved report. Each is reported as an observed count over its true span (e.g. "3 in the last 11, with 8 not recorded") rather than a bare "in a row" once any gameweek went uncaptured.
 
+**Season counts:** alongside each streak's currently-open run, every condition keeps a season occurrence total that survives resets — gameweek wins, last-place finishes, weeks on top, gameweeks in the bottom half, gameweeks without a green arrow, captain blanks, transfer-hit gameweeks, waiver wins and burns — so "their fourth gameweek win of the season" is a stated fact, not an inference. A count appears in the report's `## Season Counts` subsection and the editorial's League History section only in a week it actually grew (the same optional-colour footing as Season Fines), always with its span and any not-judged gameweeks stated beside it; a held gameweek (unknown capture, fixture-less blank, condition not applicable) is never counted and never read as innocence. Totals are computed from ledger rows already on disk, so the first run after upgrading reports correct season totals back to the partition's first captured gameweek.
+
 **Unavailable:** a manager whose position or points total can't be derived this run (e.g. a replayed draft gameweek with no earlier rows) is named under `Unavailable:` on console and in the report rather than silently dropped from Standings Movement.
 
 **JSON:** `--format json` emits one row per manager — the same shape written to the
 ledger, built from the rows this run assembled, so manager data is present even when the
 store could not be written. `metadata` carries `coverage` (per gameweek: fidelity-tier
 counts, unknown managers, whether the file was readable), `season_phase`, `notes_pack`
-(every entry, including those below their reporting minimum), `season_fines` (the whole
+(every entry, including those below their reporting minimum and every nonzero season
+count whether or not it grew this gameweek), `season_fines` (the whole
 season tally, emitted every week regardless of the milestone gate the printed surfaces use), `synthesis_summary` (with
 `--summarise`), `warnings`, and `first_capture_store_path` — always present, carrying the
 partition directory on its first capture and `null` on every run after that. Warning

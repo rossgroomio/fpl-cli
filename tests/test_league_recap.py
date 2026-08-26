@@ -2510,6 +2510,7 @@ def _history_pack(
     entries: list[NotesPackEntry] | None = None,
     coverage_entries: list[NotesPackEntry] | None = None,
     *,
+    season_count_entries: list[NotesPackEntry] | None = None,
     phase: SeasonPhase = SeasonPhase.MIDPOINT,
     phase_text: str = "GW20 is the season midpoint.",
     fpl_format: str = "classic",
@@ -2522,6 +2523,7 @@ def _history_pack(
             surfaces=frozenset({NoteSurface.REPORT, NoteSurface.PROMPT}),
         ),
         entries=entries or [],
+        season_count_entries=season_count_entries or [],
         coverage_entries=coverage_entries if coverage_entries is not None else [
             NotesPackEntry(
                 kind=NoteKind.COVERAGE, text="Recorded history is complete from its start (GW1) through GW20.",
@@ -2609,15 +2611,50 @@ class TestFormatRecapLeagueHistoryContext:
             assert "Carol" not in line
             assert "Recorded history is complete" not in line
 
-        # The very next non-blank content is a coverage label, not a
+        # The very next non-blank content is the season-count total (its own
+        # counted block, empty here), then the coverage label -- never a
         # third, uncounted streak-shaped bullet.
         remainder = [line for line in lines[count_index + 3 :] if line]
-        assert remainder[0] == "Coverage:"
-        assert remainder[1] == "- Recorded history is complete from its start (GW1) through GW20."
-        assert remainder[2] == (
+        assert remainder[0] == "Total season-count entries: 0"
+        assert remainder[1] == "Coverage:"
+        assert remainder[2] == "- Recorded history is complete from its start (GW1) through GW20."
+        assert remainder[3] == (
             "- Carol: recorded history begins at GW10, later than the league's "
             "start (GW1); earlier gameweeks are not available for this manager."
         )
+
+    def test_a_surfaced_season_count_renders_under_its_own_total(self):
+        count_entry = NotesPackEntry(
+            kind=NoteKind.SEASON_COUNT,
+            text="Alice: 4 gameweek wins this season (GW1-GW20), the latest this gameweek.",
+            surfaces=frozenset({NoteSurface.REPORT, NoteSurface.PROMPT}),
+            occurrences=4,
+        )
+        text = format_recap_league_history_context(
+            _history_pack(season_count_entries=[count_entry]),
+        )
+        lines = text.splitlines()
+
+        count_index = lines.index("Total season-count entries: 1")
+        assert lines[count_index + 1] == (
+            "- Alice: 4 gameweek wins this season (GW1-GW20), the latest this gameweek."
+        )
+
+    def test_a_count_that_did_not_grow_this_gameweek_is_withheld_from_the_prompt(self):
+        """A surfaceless season count (retained for `--format json` only)
+        must not leak into the prompt as stale colour."""
+        stale = NotesPackEntry(
+            kind=NoteKind.SEASON_COUNT,
+            text="Bob: 2 captain blanks this season (GW1-GW20).",
+            surfaces=frozenset(),
+            occurrences=2,
+        )
+        text = format_recap_league_history_context(
+            _history_pack(season_count_entries=[stale]),
+        )
+
+        assert "Total season-count entries: 0" in text
+        assert "Bob: 2 captain blanks" not in text
 
 
 class TestLeagueHistoryPromptSection:
@@ -2648,6 +2685,12 @@ class TestLeagueHistoryPromptSection:
 
         assert "Stick to what happened this gameweek, with one exception" in RECAP_SYNTHESIS_SYSTEM_PROMPT
         assert '"## League History" section' in RECAP_SYNTHESIS_SYSTEM_PROMPT
+
+    def test_the_season_count_rule_frames_counts_as_optional_colour(self):
+        from fpl_cli.prompts.league_recap import RECAP_SYNTHESIS_SYSTEM_PROMPT
+
+        assert "season-count line" in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        assert "never derive or extrapolate a season total" in RECAP_SYNTHESIS_SYSTEM_PROMPT
 
     def test_a_held_run_must_not_be_simplified_to_consecutive(self):
         from fpl_cli.prompts.league_recap import RECAP_SYNTHESIS_SYSTEM_PROMPT

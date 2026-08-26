@@ -7,12 +7,14 @@ never a second source of truth:
   midpoint, run-in, finale) a gameweek sits in (R15). A standalone, pure
   function so a later unit can call it without a store or a built pack.
 - `build_notes_pack`: atomic, provenance-stamped factoids for one gameweek
-  (R14) -- one per manager per streak condition with an open run, plus the
-  season-phase marker and a coverage/negative-context statement, all bundled
-  into one `NotesPack`. This is the object a later unit (U12) renders into
-  its own anchored prompt section; the prompt text and the "forbid inferring
-  history elsewhere" rule are that unit's job, not this one's. This module's
-  job stops at producing correctly-windowed, honestly-qualified facts.
+  (R14) -- one per manager per streak condition with an open run, one per
+  manager per condition with a season occurrence count (issue #164), plus
+  the season-phase marker and a coverage/negative-context statement, all
+  bundled into one `NotesPack`. This is the object a later unit (U12)
+  renders into its own anchored prompt section; the prompt text and the
+  "forbid inferring history elsewhere" rule are that unit's job, not this
+  one's. This module's job stops at producing correctly-windowed,
+  honestly-qualified facts.
 
 Two rules this module exists to enforce (R14, R20, R17):
 
@@ -168,6 +170,7 @@ class NoteKind(str, Enum):
     """
 
     STREAK = "streak"
+    SEASON_COUNT = "season_count"
     SEASON_PHASE = "season_phase"
     COVERAGE = "coverage"
 
@@ -235,6 +238,12 @@ class NotesPackEntry:
     length: int = 0
     held_count: int = 0
     excess: int | None = None
+    # Season-count entries only (issue #164): how many gameweeks have ever
+    # extended this condition this season, across every reset. For those
+    # entries `held_count` carries the season-wide held total -- the same
+    # "how much of the span was never judged" meaning it has for a streak,
+    # applied to the count's whole window. None for every other kind.
+    occurrences: int | None = None
 
 
 @dataclass(frozen=True)
@@ -244,13 +253,18 @@ class NotesPack:
 
     `entries` holds only the per-manager streak factoids: pre-sorted by
     descending `excess` so a console renderer can take the leaders without
-    re-sorting (KTD8's ranking rule). `season_phase_entry` and
-    `coverage_entries` are always populated -- never absent, never merely
-    implied by an empty `entries` list -- as their own dedicated fields:
-    a pack with no open streaks still has something to say about where the
-    season is and what history exists. `all_entries` gives a consumer
-    everything at once, e.g. for a `--format json` unit (KTD8: "emits the
-    whole pack regardless").
+    re-sorting (KTD8's ranking rule). `season_count_entries` holds the
+    per-manager season occurrence totals (issue #164), sorted by descending
+    count: one per cohort manager x condition that has occurred at all this
+    season, surfaced beyond `--format json` only when the count grew this
+    gameweek -- a season total is colour for the thing that just happened,
+    the same call the season fines prompt section makes, not a weekly
+    ledger dump. `season_phase_entry` and `coverage_entries` are always
+    populated -- never absent, never merely implied by an empty `entries`
+    list -- as their own dedicated fields: a pack with no open streaks
+    still has something to say about where the season is and what history
+    exists. `all_entries` gives a consumer everything at once, e.g. for a
+    `--format json` unit (KTD8: "emits the whole pack regardless").
     """
 
     season: str
@@ -261,6 +275,7 @@ class NotesPack:
     league_start_gameweek: int
     season_phase_entry: NotesPackEntry
     entries: list[NotesPackEntry] = field(default_factory=list)
+    season_count_entries: list[NotesPackEntry] = field(default_factory=list)
     coverage_entries: list[NotesPackEntry] = field(default_factory=list)
 
     @property
@@ -272,9 +287,15 @@ class NotesPack:
 
     @property
     def all_entries(self) -> list[NotesPackEntry]:
-        """Every entry the pack holds -- streaks, then the season-phase
-        marker, then coverage statements -- flattened into one list."""
-        return [*self.entries, self.season_phase_entry, *self.coverage_entries]
+        """Every entry the pack holds -- streaks, then season counts, then
+        the season-phase marker, then coverage statements -- flattened into
+        one list."""
+        return [
+            *self.entries,
+            *self.season_count_entries,
+            self.season_phase_entry,
+            *self.coverage_entries,
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -374,6 +395,108 @@ def _streak_entries(
     def _sort_key(entry: NotesPackEntry) -> tuple[int, str, str]:
         excess = entry.excess if entry.excess is not None else 0
         return (-excess, entry.manager_name or "", entry.condition_key or "")
+
+    entries.sort(key=_sort_key)
+    return entries
+
+
+# ---------------------------------------------------------------------------
+# Season-count entries (issue #164)
+# ---------------------------------------------------------------------------
+
+
+def _season_count_text(
+    manager_name: str,
+    label_one: str,
+    label_many: str,
+    occurrences: int,
+    held_total: int,
+    window: GameweekWindow,
+    *,
+    occurred_this_gameweek: bool,
+) -> str:
+    """Render a season total as a count over the span it was computed on.
+
+    Same honesty rules as `_streak_text`: the count is never a bare number.
+    The span is stated inline, a held gameweek is stated as unjudged rather
+    than silently rounded into innocence (a hold means the gameweek could
+    not be ruled either way -- an unknown capture, a fixture-less blank, a
+    condition that did not apply -- and #136 documents why that is not the
+    same as "it didn't happen"), and the "this gameweek" marker appears
+    exactly when the fold's own `last_occurrence_gameweek` says the count
+    grew now, so a consumer quoting the line can tell fresh colour from a
+    stale total.
+    """
+    label = label_one if occurrences == 1 else label_many
+    span = f"GW{window.start_gameweek}-GW{window.end_gameweek}"
+    text = f"{manager_name}: {occurrences} {label} this season ({span})"
+    if occurred_this_gameweek:
+        text += ", the first this gameweek" if occurrences == 1 else ", the latest this gameweek"
+    if held_total:
+        plural = "" if held_total == 1 else "s"
+        text += f", with {held_total} gameweek{plural} not judged either way"
+    return text + "."
+
+
+def _season_count_entries(
+    *,
+    gameweek: int,
+    cohort: dict[int, LeagueHistoryRow],
+    projection: LeagueHistoryCountersProjection,
+    rows_by_gameweek: dict[int, dict[int, LeagueHistoryRow]],
+) -> list[NotesPackEntry]:
+    """One entry per manager x applicable condition that has occurred at all.
+
+    Restricted to `cohort` for the same reason `_streak_entries` is: a
+    manager no longer in this gameweek's rows keeps a frozen count in
+    `projection.runs`, and surfacing it in a later pack would present it as
+    live. Every nonzero count is emitted so `--format json` carries the
+    whole season picture (KTD8), but only a count that grew *this* gameweek
+    gets report/prompt surfaces: the editorial use of a season total is
+    "their fourth gameweek win of the season", which is colour for the win
+    that just happened -- a total for something that did not happen this
+    week is the stale kind of history R14 exists to keep out of a recap's
+    mouth. Console is deliberately excluded even then: it is a highlights
+    view, and the streak leaders already cover it.
+
+    The window is the manager's own evaluated span
+    (`first_evaluated_gameweek`..this gameweek), not the league's -- a
+    mid-season joiner's count is bounded to the gameweeks it was actually
+    folded over, and R17's joiner coverage entry beside it states why.
+    """
+    entries: list[NotesPackEntry] = []
+    for manager_key, manager_row in cohort.items():
+        views = manager_condition_views(projection, manager_key)
+        for condition_key, view in views.items():
+            if view.occurrences <= 0 or view.first_evaluated_gameweek is None:
+                continue
+            window = GameweekWindow(
+                start_gameweek=view.first_evaluated_gameweek, end_gameweek=gameweek,
+            )
+            occurred_this_gameweek = view.last_occurrence_gameweek == gameweek
+            entries.append(NotesPackEntry(
+                kind=NoteKind.SEASON_COUNT,
+                text=_season_count_text(
+                    manager_row.manager_name,
+                    view.count_label_one,
+                    view.count_label_many,
+                    view.occurrences,
+                    view.held_total,
+                    window,
+                    occurred_this_gameweek=occurred_this_gameweek,
+                ),
+                surfaces=_REPORT_AND_PROMPT if occurred_this_gameweek else frozenset(),
+                tier=_entry_tier(window, manager_key, rows_by_gameweek),
+                window=window,
+                manager_key=manager_key,
+                manager_name=manager_row.manager_name,
+                condition_key=condition_key,
+                held_count=view.held_total,
+                occurrences=view.occurrences,
+            ))
+
+    def _sort_key(entry: NotesPackEntry) -> tuple[int, str, str]:
+        return (-(entry.occurrences or 0), entry.manager_name or "", entry.condition_key or "")
 
     entries.sort(key=_sort_key)
     return entries
@@ -665,6 +788,9 @@ def build_notes_pack(
         league_start_gameweek=league_start_gameweek,
         season_phase_entry=_season_phase_entry(phase, gameweek, total_gameweeks, chip_split_gw),
         entries=_streak_entries(
+            gameweek=gameweek, cohort=cohort, projection=projection, rows_by_gameweek=rows_by_gameweek,
+        ),
+        season_count_entries=_season_count_entries(
             gameweek=gameweek, cohort=cohort, projection=projection, rows_by_gameweek=rows_by_gameweek,
         ),
         coverage_entries=_coverage_entries(

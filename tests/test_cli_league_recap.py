@@ -1957,6 +1957,26 @@ class TestLeagueHistoryReportSection:
         assert "Recorded history is complete from its start (GW1) through GW20." in content
         assert "GW20 is the season midpoint." in content
 
+    async def test_season_counts_render_under_their_own_subheading(self, tmp_path: Path):
+        from fpl_cli.agents.orchestration.report import ReportAgent
+
+        agent = ReportAgent(config={"output_dir": str(tmp_path)})
+        data = dict(_recap_data(managers=[_manager(name="Alice", overall_rank=1, previous_rank=1)]))
+        data["league_history_phase_text"] = "GW20 is the season midpoint."
+        data["league_history_streak_lines"] = []
+        data["league_history_season_count_lines"] = [
+            "Alice: 4 gameweek wins this season (GW1-GW20), the latest this gameweek.",
+        ]
+        data["league_history_coverage_lines"] = []
+
+        result = await agent.run(context={"report_type": "league-recap", "gameweek": 20, "data": data})
+
+        content = Path(result.data["report_path"]).read_text(encoding="utf-8")
+        assert "# League History" in content
+        assert "## Season Counts" in content
+        assert "## Streaks" not in content
+        assert "Alice: 4 gameweek wins this season (GW1-GW20), the latest this gameweek." in content
+
     async def test_no_streaks_heading_when_the_pack_has_no_open_runs(self, tmp_path: Path):
         from fpl_cli.agents.orchestration.report import ReportAgent
 
@@ -2265,6 +2285,16 @@ class TestLeagueRecapJsonEnvelope:
         pack = payload["metadata"]["notes_pack"]
         streak_managers = {entry["manager_name"] for entry in pack["entries"]}
         assert "Alice" in streak_managers
+
+        # Season counts ride the same pack (issue #164): Alice topped GW1-4
+        # and again in the recapped GW5, so her count is 5 and, having grown
+        # this gameweek, carries rendering surfaces.
+        alice_top = next(
+            entry for entry in pack["season_count_entries"]
+            if entry["manager_name"] == "Alice" and entry["condition_key"] == "weeks_on_top"
+        )
+        assert alice_top["occurrences"] == 5
+        assert "report" in alice_top["surfaces"]
 
     def test_a_partial_coverage_run_reports_tiers_and_unknowns_per_gameweek(self):
         """U11's own Definition of Done row: the payload parses cleanly on a

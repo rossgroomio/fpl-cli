@@ -16,6 +16,15 @@ lying in either direction. R19 specifically -- an unknown row never
 advances or breaks a streak -- is enforced centrally in :func:`_evaluate`
 rather than trusted to every predicate.
 
+Alongside the currently-open run, each condition's state accumulates
+season-wide occurrence totals (issue #164): every extending gameweek
+counts once, a reset wipes only the open run, and holds are tallied
+separately as the count's coverage qualifier -- a held gameweek was never
+judged, and "un-ruled is not innocent" applies to a season count exactly
+as it does to the fines tally. So "their fourth gameweek win of the
+season" is derivable from the projection, not just "three gameweeks
+running".
+
 The projection this registry drives is a rebuildable cache, never a second
 source of truth (KTD10): it carries its own version and a
 computed-through-gameweek stamp, advances by one gameweek only when the
@@ -79,6 +88,16 @@ class ConditionDefinition:
     them mechanically. Cohort- or previous-row-dependence (e.g.
     `bottom_half_run` needing the full cohort, `green_arrow_drought`
     needing the previous gameweek) lives in the predicate body, not here.
+
+    `count_label_one`/`count_label_many` name one occurrence of the
+    condition -- what a single extending gameweek *is* -- for the season
+    totals issue #164 adds. Not every condition reads naturally as a count
+    of the thing its run label names: `green_arrow_drought` extends on the
+    *absence* of a green arrow, so its occurrence is "gameweek without a
+    green arrow", stated in the label rather than left for the reader to
+    infer. Two explicit forms because English pluralises mid-phrase
+    ("gameweeks in the bottom half"), so appending an "s" cannot be
+    trusted mechanically.
     """
 
     key: str
@@ -87,6 +106,8 @@ class ConditionDefinition:
     min_run: int
     needs: tuple[str, ...]
     predicate: ConditionPredicate
+    count_label_one: str
+    count_label_many: str
 
 
 # ---------------------------------------------------------------------------
@@ -262,38 +283,56 @@ CONDITIONS: tuple[ConditionDefinition, ...] = (
     ConditionDefinition(
         key="weeks_on_top", formats=_BOTH, label="Weeks on top", min_run=2,
         needs=("league_position",), predicate=_weeks_on_top,
+        count_label_one="gameweek on top of the league",
+        count_label_many="gameweeks on top of the league",
     ),
     ConditionDefinition(
         key="bottom_half_run", formats=_BOTH, label="Bottom-half run", min_run=3,
         needs=("league_position",), predicate=_bottom_half_run,
+        count_label_one="gameweek in the bottom half",
+        count_label_many="gameweeks in the bottom half",
     ),
     ConditionDefinition(
         key="gw_win_streak", formats=_BOTH, label="Gameweek win streak", min_run=2,
         needs=("gross_points", "transfer_cost"), predicate=_gw_win_streak,
+        count_label_one="gameweek win",
+        count_label_many="gameweek wins",
     ),
     ConditionDefinition(
         key="gw_loss_streak", formats=_BOTH, label="Gameweek loss streak", min_run=2,
         needs=("gross_points", "transfer_cost"), predicate=_gw_loss_streak,
+        count_label_one="last-place finish",
+        count_label_many="last-place finishes",
     ),
     ConditionDefinition(
         key="green_arrow_drought", formats=_BOTH, label="Green arrow drought", min_run=4,
         needs=("league_position",), predicate=_green_arrow_drought,
+        count_label_one="gameweek without a green arrow",
+        count_label_many="gameweeks without a green arrow",
     ),
     ConditionDefinition(
         key="captain_blank_run", formats=_CLASSIC_ONLY, label="Captain blank run", min_run=2,
         needs=("captain",), predicate=_captain_blank_run,
+        count_label_one="captain blank",
+        count_label_many="captain blanks",
     ),
     ConditionDefinition(
         key="hit_run", formats=_CLASSIC_ONLY, label="Hit run", min_run=3,
         needs=("transfer_cost",), predicate=_hit_run,
+        count_label_one="gameweek with a transfer hit",
+        count_label_many="gameweeks with a transfer hit",
     ),
     ConditionDefinition(
         key="waiver_win_run", formats=_DRAFT_ONLY, label="Waiver win run", min_run=2,
         needs=("transactions",), predicate=_waiver_win_run,
+        count_label_one="waiver win",
+        count_label_many="waiver wins",
     ),
     ConditionDefinition(
         key="waiver_burn_run", formats=_DRAFT_ONLY, label="Waiver burn run", min_run=2,
         needs=("transactions",), predicate=_waiver_burn_run,
+        count_label_one="waiver burn",
+        count_label_many="waiver burns",
     ),
 )
 
@@ -329,27 +368,61 @@ def _evaluate(
 
 
 def _next_state(current: ConditionRunState, gameweek: int, action: RunAction) -> ConditionRunState:
-    """The run state after applying one gameweek's action to the current one."""
+    """The run state after applying one gameweek's action to the current one.
+
+    The run fields reset together; the season-wide fields (issue #164)
+    never reset -- a RESET wipes the open run and nothing else, so
+    `occurrences` accumulates every extending gameweek of the season and
+    `held_total` every held one. A HOLD counts towards `held_total` whether
+    or not a run is open: the season count's qualifier is "how many
+    gameweeks were never judged", and a hold before any run has opened is
+    exactly as unjudged as one inside a run. `first_evaluated_gameweek` is
+    set by the first action of any kind and never moved -- the span the
+    season fields have actually been folded over.
+    """
+    first_evaluated = (
+        current.first_evaluated_gameweek
+        if current.first_evaluated_gameweek is not None
+        else gameweek
+    )
     if action is RunAction.EXTEND:
         if current.length == 0:
-            return ConditionRunState(length=1, start_gameweek=gameweek, held_in_run=0)
+            return ConditionRunState(
+                length=1, start_gameweek=gameweek, held_in_run=0,
+                occurrences=current.occurrences + 1,
+                held_total=current.held_total,
+                last_occurrence_gameweek=gameweek,
+                first_evaluated_gameweek=first_evaluated,
+            )
         return ConditionRunState(
             length=current.length + 1,
             start_gameweek=current.start_gameweek,
             held_in_run=current.held_in_run,
+            occurrences=current.occurrences + 1,
+            held_total=current.held_total,
+            last_occurrence_gameweek=gameweek,
+            first_evaluated_gameweek=first_evaluated,
         )
     if action is RunAction.RESET:
-        return ConditionRunState()
-    # HOLD: before any run has opened there is nothing to record. Once one
-    # is open, a hold extends its held-gameweek count without touching
-    # length or where it started (KTD7) -- the run is not "broken" by a
-    # hold, only annotated as having crossed one.
-    if current.length == 0:
-        return current
+        return ConditionRunState(
+            occurrences=current.occurrences,
+            held_total=current.held_total,
+            last_occurrence_gameweek=current.last_occurrence_gameweek,
+            first_evaluated_gameweek=first_evaluated,
+        )
+    # HOLD: before any run has opened there is no *run* to annotate, only
+    # the season-wide hold count. Once one is open, a hold extends its
+    # held-gameweek count without touching length or where it started
+    # (KTD7) -- the run is not "broken" by a hold, only annotated as
+    # having crossed one.
     return ConditionRunState(
         length=current.length,
         start_gameweek=current.start_gameweek,
-        held_in_run=current.held_in_run + 1,
+        held_in_run=current.held_in_run + 1 if current.length else 0,
+        occurrences=current.occurrences,
+        held_total=current.held_total + 1,
+        last_occurrence_gameweek=current.last_occurrence_gameweek,
+        first_evaluated_gameweek=first_evaluated,
     )
 
 
@@ -645,7 +718,10 @@ class ConditionRunView:
     persisted): adds `label`, `is_reportable` (length >= the condition's own
     minimum), and `excess` (R12: how far a run has gone past its minimum, so
     a caller can rank surfaced entries by it) -- so a caller, U9's rendering,
-    not built here, never has to cross-reference the registry itself.
+    not built here, never has to cross-reference the registry itself. The
+    season-wide fields (issue #164) ride along with the registry's own
+    occurrence labels for the same reason: a caller rendering "4 gameweek
+    wins this season, with 2 not judged" reads everything off this view.
     """
 
     condition_key: str
@@ -654,6 +730,12 @@ class ConditionRunView:
     start_gameweek: int | None
     held_in_run: int
     min_run: int
+    occurrences: int
+    held_total: int
+    last_occurrence_gameweek: int | None
+    first_evaluated_gameweek: int | None
+    count_label_one: str
+    count_label_many: str
 
     @property
     def is_reportable(self) -> bool:
@@ -688,6 +770,12 @@ def manager_condition_views(
             start_gameweek=state.start_gameweek,
             held_in_run=state.held_in_run,
             min_run=condition.min_run,
+            occurrences=state.occurrences,
+            held_total=state.held_total,
+            last_occurrence_gameweek=state.last_occurrence_gameweek,
+            first_evaluated_gameweek=state.first_evaluated_gameweek,
+            count_label_one=condition.count_label_one,
+            count_label_many=condition.count_label_many,
         )
     return views
 
