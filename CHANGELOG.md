@@ -1,6 +1,28 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [2.3.0] - 2026-08-26
+
+### Bug Fixes
+
+- catch a classic entry ID reissued to another manager over the summer (#137)
+- restore xG enrichment for players who moved club mid-season (#151)
+- put the JSON error envelope on stdout alongside the success one (#153)
+- stop LLM narratives putting players at clubs they left (#152)
+- catch Core-Insights gameweek files that parse to zero records (#154)
+- scale GK ceilings to sample size and warn on early-season quality (#156)
+- rate teams from GW1 results instead of waiting for GW2 (#155)
+- keep `--format json` stdout parseable on stats and price-history (#157)
+- stop league-history rows claiming facts the gameweek never had (#158)
+- report every `--format json` failure as an envelope on stdout (#159)
+- credit every tied manager on gameweek win/loss streaks (#166)
+
+### Features
+
+- capture the per-gameweek world rank in the league-history ledger (#161)
+- track fines across the season instead of only the current gameweek (#165)
+- report how many times each streak has happened this season (#167)
+
 ## [2.2.0] - 2026-08-25
 
 ### Bug Fixes
