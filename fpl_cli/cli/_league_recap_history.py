@@ -241,11 +241,23 @@ def _known_row(
         manager_name=manager["manager_name"],
         entry_id=cohort_entry["entry_id"] if cohort_entry else (manager["entry_id"] or None),
         gross_points=manager["gross_points"],
-        transfer_cost=manager["transfer_cost"],
+        # Draft charges nothing for a squad change, so there is no hit to
+        # measure: the collector's structural zero would otherwise be stored
+        # as a recorded "took no hit" (issue #147).
+        transfer_cost=manager["transfer_cost"] if fpl_format == "classic" else None,
         total_points=manager.get("total_points"),
         gw_rank=manager["gw_rank"],
         league_position=manager.get("overall_rank"),
-        previous_league_position=manager.get("previous_rank"),
+        # Null on the season's first gameweek whatever the collector handed
+        # over: there was no table to move from, and a row saying "same
+        # position as last week" is indistinguishable from a real flat week
+        # once the API has collapsed the season (issue #147). The collectors
+        # no longer derive one either -- `_has_previous_gameweek` in
+        # `_league_recap_data.py` -- and `_apply_recorded_previous_positions`
+        # below already treats GW1 the same way.
+        previous_league_position=(
+            manager.get("previous_rank") if data["gameweek"] > 1 else None
+        ),
         captain=_captaincy(
             squad, manager["captain"], manager["captain_points"],
             played=manager["captain_played"],
@@ -261,7 +273,7 @@ def _known_row(
         gameweek_blank=data.get("is_bgw"),
         gameweek_double=data.get("is_dgw"),
         fines=_fines_for(data, manager_key, manager["manager_name"]),
-        squad_value=manager.get("squad_value"),
+        team_value=manager.get("team_value"),
         bank=manager.get("bank"),
         global_rank=manager.get("global_rank"),
         transfers_made=transfers_made,
@@ -599,7 +611,7 @@ def _coarse_row(
         # scores its members only from its own start, so the baseline comes off.
         total_points=None if total is None else total - baseline_total,
         bench_points=_int("points_on_bench"),
-        squad_value=_int("value"),
+        team_value=_int("value"),
         bank=_int("bank"),
         global_rank=_int("overall_rank"),
         transfers_made=_int("event_transfers"),

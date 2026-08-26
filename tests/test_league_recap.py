@@ -24,6 +24,7 @@ from fpl_cli.cli._league_recap_data import (
     _compute_waiver_awards,
     _contract_draft_txn_chains,
     _fetch_all_manager_data,
+    _has_previous_gameweek,
     _reconcile_classic_headline_numbers,
     collect_classic_recap_data,
     collect_draft_recap_data,
@@ -761,28 +762,40 @@ class TestStandingsMovement:
         assert [m["previous_rank"] for m in managers] == [1, 2, 4, 5]
         assert all(m["previous_rank"] == m["overall_rank"] for m in managers)
 
-    def test_gw1_zero_previous_totals_report_no_movement(self):
-        """In GW1 every previous total is zero; ties break on standings order."""
-        league_rows = [(i, 80 - i, 80 - i) for i in range(1, 20)]
+    def test_tied_previous_totals_break_on_standings_order(self):
+        """Managers level on the previous table keep the order the league
+        itself put them in, rather than being reshuffled arbitrarily.
+
+        (This is the shape GW1 would produce -- every previous total zero --
+        but the collectors never call this function there: see
+        TestFirstGameweekHasNoPreviousPosition.)"""
+        league_rows = [(i, 500 + 80 - i, 80 - i) for i in range(1, 20)]
         managers = [
             _make_manager(name=f"M{i:02d}", entry_id=i, gw_points=80 - i,
-                          total_points=80 - i, overall_rank=i)
+                          total_points=500 + 80 - i, overall_rank=i)
             for i in range(1, 20)
         ]
         _compute_standings_movement(managers, league_rows)
-        assert all(m["previous_rank"] == m["overall_rank"] for m in managers)
+        assert [m["previous_rank"] for m in managers] == list(range(1, 20))
 
-    def test_gw1_dropped_manager_reports_no_movement(self):
-        """The GW1 all-zeros tie must survive a manager dropping out mid-table."""
-        league_rows = [(i, 80 - i, 80 - i) for i in range(1, 20)]
+    def test_tied_previous_totals_survive_a_dropped_manager(self):
+        """The all-tied case must survive a manager dropping out mid-table:
+        ranking survivors alone would renumber everyone below the gap."""
+        league_rows = [(i, 500 + 80 - i, 80 - i) for i in range(1, 20)]
         managers = [
             _make_manager(name=f"M{i:02d}", entry_id=i, gw_points=80 - i,
-                          total_points=80 - i, overall_rank=i)
+                          total_points=500 + 80 - i, overall_rank=i)
             for i in range(1, 20) if i != 5
         ]
         _compute_standings_movement(managers, league_rows)
         assert [m["manager_name"] for m in managers
                 if m["previous_rank"] != m["overall_rank"]] == []
+
+    def test_a_league_that_started_late_has_no_movement_on_its_first_gameweek(self):
+        """A league created at GW12 has no table before GW12 either, even
+        though GW11 exists for the rest of FPL."""
+        assert _has_previous_gameweek(12, 12) is False
+        assert _has_previous_gameweek(13, 12) is True
 
     def test_fetched_points_take_precedence_over_standings_row(self):
         """use_net_points adjusts gw_points on the entry; the standings row must not win."""
@@ -822,6 +835,102 @@ class TestStandingsMovement:
         # Double-subtracting the hit (500-(42-8)=466) would wrongly rank Alice 1st.
         assert managers[1]["previous_rank"] == 1
         assert managers[0]["previous_rank"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Issue #147: the season's first gameweek has nothing to have moved from
+# ---------------------------------------------------------------------------
+
+
+class TestFirstGameweekHasNoPreviousPosition:
+    """Neither collector may hand a GW1 manager a previous position.
+
+    Derived, it is always their current one (every previous total is zero,
+    so the tie-break gives everyone their place back); taken from draft's
+    `last_rank`, it is whatever the API puts there before a table exists.
+    Either way "held their position" is indistinguishable from "there was
+    no previous gameweek" -- most damagingly in the ledger row, which
+    outlives the API that could settle it.
+    """
+
+    async def test_classic_gw1_derives_no_previous_rank(self):
+        standings = [
+            {"entry": i, "player_name": f"M{i}", "event_total": 80 - i, "total": 80 - i}
+            for i in range(1, 4)
+        ]
+        client = _FakeClassicClient(
+            _standings_response(standings),
+            {i: _picks_response(points=80 - i, total_points=80 - i) for i in range(1, 4)},
+        )
+        data = await collect_classic_recap_data(
+            client, {"fpl": {"classic_league_id": 1}}, gw=1,
+            live_stats={}, player_map={}, teams={}, is_live_gw=True,
+        )
+        assert [m["overall_rank"] for m in data["managers"]] == [1, 2, 3]
+        assert all("previous_rank" not in m for m in data["managers"])
+
+    async def test_classic_gw2_still_derives_movement(self):
+        standings = [
+            {"entry": 1, "player_name": "Alice", "event_total": 20, "total": 100},
+            {"entry": 2, "player_name": "Bob", "event_total": 70, "total": 90},
+        ]
+        client = _FakeClassicClient(
+            _standings_response(standings),
+            {
+                1: _picks_response(points=20, total_points=100),
+                2: _picks_response(points=70, total_points=90),
+            },
+        )
+        data = await collect_classic_recap_data(
+            client, {"fpl": {"classic_league_id": 1}}, gw=2,
+            live_stats={}, player_map={}, teams={}, is_live_gw=True,
+        )
+        # Previous totals: Alice 80, Bob 20 -- so Alice held 1st and Bob rose.
+        by_name = {m["manager_name"]: m for m in data["managers"]}
+        assert by_name["Alice"]["previous_rank"] == 1
+        assert by_name["Bob"]["previous_rank"] == 2
+
+    async def _draft_data(self, *, gw: int, last_rank: int):
+        draft_player = make_draft_player(id=900, web_name="Star", team=1, element_type=3)
+        main_player = make_player(id=5, web_name="Star", team_id=1)
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        client.get_league_details = AsyncMock(return_value={
+            "league": {"name": "Draft League"},
+            "standings": [{
+                "league_entry": 10, "event_total": 52, "total": 500,
+                "rank": 1, "last_rank": last_rank,
+            }],
+            "league_entries": [
+                {"id": 10, "entry_id": 1, "player_first_name": "A", "player_last_name": "B"},
+            ],
+        })
+        client.get_bootstrap_static = AsyncMock(return_value={"elements": [draft_player]})
+        client.get_league_transactions = AsyncMock(return_value={"transactions": []})
+        client.get_entry_picks = AsyncMock(
+            return_value={"picks": [{"element": 900, "position": 1}], "subs": []},
+        )
+        with patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=client):
+            return await collect_draft_recap_data(
+                {"fpl": {"draft_league_id": 1}}, gw=gw, live_stats={5: {"total_points": 52}},
+                players=[main_player], teams={}, is_live_gw=True,
+            )
+
+    async def test_draft_gw1_ignores_the_api_last_rank(self):
+        data = await self._draft_data(gw=1, last_rank=1)
+        assert data["managers"][0]["overall_rank"] == 1
+        assert "previous_rank" not in data["managers"][0]
+
+    async def test_draft_gw2_carries_the_api_last_rank(self):
+        data = await self._draft_data(gw=2, last_rank=3)
+        assert data["managers"][0]["previous_rank"] == 3
+
+    async def test_draft_treats_a_zero_last_rank_as_no_previous_table(self):
+        """Zero is the API's "nobody stood anywhere yet" sentinel, not a
+        position -- stored as one it renders as a drop from 0th."""
+        data = await self._draft_data(gw=2, last_rank=0)
+        assert "previous_rank" not in data["managers"][0]
 
 
 # ---------------------------------------------------------------------------
@@ -2744,7 +2853,8 @@ class TestCollectorLedgerContract:
             live_stats={}, player_map={}, teams={}, is_live_gw=True,
         )
         m = data["managers"][0]
-        assert m["squad_value"] == 1013
+        # The API's `value` verbatim, bank included -- hence `team_value`.
+        assert m["team_value"] == 1013
         assert m["bank"] == 7
         assert m["global_rank"] == 412_345
         assert m["transfers_made"] == 2

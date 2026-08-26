@@ -29,7 +29,10 @@ from pydantic import BaseModel, ConfigDict, Field
 # Bump whenever the row shape changes in a way older code cannot read. A line
 # carrying a *higher* version than this is skipped (with a warning) and
 # preserved byte-for-byte, so two installs can share one store.
-LEAGUE_HISTORY_VERSION = 1
+#
+# 2: `squad_value` renamed to `team_value`, the name the number always
+#    deserved -- it is the API's bank-inclusive `value` (issue #147).
+LEAGUE_HISTORY_VERSION = 2
 
 # The oldest version this code can still parse. Raising this floor bricks every
 # store holding older lines, so it moves only alongside a one-time rewrite that
@@ -235,12 +238,19 @@ class LeagueHistoryRow(BaseModel):
     # rather than handing someone else the week's best or worst. Any reader
     # that needs a verified-gross figure must check `capture_status` first.
     gross_points: int | None = None
+    # Classic only: the points hit taken for extra transfers. Null on a draft
+    # row, which has no transfers to be charged for -- a zero there reads as a
+    # measured "took no hit" for a mechanic the format does not have.
     transfer_cost: int | None = None
     total_points: int | None = None
     # Rank within the league for this gameweek's points, and position on the
     # league table. Never a global FPL rank -- see `global_rank` (KTD12).
     gw_rank: int | None = None
     league_position: int | None = None
+    # Where they stood after the previous gameweek. Null on the league's first
+    # scored gameweek, where no previous table existed: a value equal to
+    # `league_position` there would claim a flat week rather than an absent
+    # one, and nothing downstream could tell the two apart (issue #147).
     previous_league_position: int | None = None
 
     # -- per-manager detail --------------------------------------------------
@@ -266,7 +276,13 @@ class LeagueHistoryRow(BaseModel):
     # destroyed by the season rollover, and none of them exists in draft (no
     # budget, no global rank, no transfers). A draft row omits all four.
     # Prices are in the repo's £0.1m units (1000 = £100.0m).
-    squad_value: int | None = None
+    #
+    # `team_value` is the API's `value` verbatim, which is the squad's selling
+    # value *plus* whatever sits in the bank -- the two are stored as the API
+    # reports them, so squad-only value is `team_value - bank`. Named
+    # `squad_value` until schema version 2, where the name asserted an
+    # exclusion the number never made (issue #147).
+    team_value: int | None = None
     bank: int | None = None
     # The manager's FPL-wide rank. Named so it can never be read as a league
     # position, which is what every condition and every recap surface means by

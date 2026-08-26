@@ -202,11 +202,12 @@ async def collect_classic_recap_data(
         [(entry_id, total) for entry_id, total, _ in league_rows],
         allow_standings_fallback=is_live_gw,
     )
-    _compute_standings_movement(
-        managers, league_rows,
-        use_net_points=use_net_points,
-        allow_standings_fallback=is_live_gw,
-    )
+    if _has_previous_gameweek(gw, start_event):
+        _compute_standings_movement(
+            managers, league_rows,
+            use_net_points=use_net_points,
+            allow_standings_fallback=is_live_gw,
+        )
 
     awards = _compute_shared_awards(managers, format_name="classic", total_managers=len(standings))
 
@@ -426,9 +427,11 @@ async def _fetch_all_manager_data(
         # response actually carried them, so a partial one leaves them absent
         # rather than zero. `global_rank` is the FPL-wide rank, never a league
         # position (KTD12).
-        squad_value = entry_history.get("value")
-        if isinstance(squad_value, int):
-            result["squad_value"] = squad_value
+        # `value` is bank-inclusive, hence `team_value` rather than
+        # `squad_value` -- the squad alone is `team_value - bank`.
+        team_value = entry_history.get("value")
+        if isinstance(team_value, int):
+            result["team_value"] = team_value
         bank = entry_history.get("bank")
         if isinstance(bank, int):
             result["bank"] = bank
@@ -662,6 +665,26 @@ async def _apply_league_start_offset(
 # ---------------------------------------------------------------------------
 
 
+def _has_previous_gameweek(gw: int, start_event: int | None = None) -> bool:
+    """Whether a gameweek this league scored comes before `gw`.
+
+    Movement is a claim about a table that existed a week ago. On the
+    league's first scored gameweek no such table exists, and every
+    derivation quietly says "no movement" instead of "no previous
+    gameweek": subtracting gameweek points from a cumulative total leaves
+    every manager on zero, so the tie-break hands each of them back their
+    current position. The two are indistinguishable downstream -- in the
+    ledger row most of all, which outlives the API that could settle it --
+    so no previous position is derived at all rather than a flat one
+    fabricated (issue #147).
+
+    `start_event` is the league's own first gameweek: a league created
+    after GW1 scores its members only from there, so that gameweek has no
+    predecessor either even though GW1 exists.
+    """
+    return gw > max(1, start_event or 1)
+
+
 def _compute_standings_movement(
     managers: list[RecapManagerEntry],
     league_rows: Sequence[tuple[int, int, int]] | None = None,
@@ -675,9 +698,12 @@ def _compute_standings_movement(
     league-standings order, including managers whose picks failed to fetch.
     `overall_rank` is assigned over that same full cohort, so ranking the
     previous table over survivors alone renumbers everyone below a missing
-    manager and reports the whole tail as having moved. Ordering the rows by
-    standings position also fixes the tie-break in GW1, where every previous
-    total is zero.
+    manager and reports the whole tail as having moved.
+
+    Only ever called for a gameweek with a predecessor (`_has_previous_gameweek`):
+    on the league's first one every previous total is zero and the ranking
+    below would hand every manager back their current position as though
+    they had held it.
 
     Fetched managers keep their own points; standings values only fill in
     entries that could not be fetched -- and only when
@@ -1525,8 +1551,16 @@ async def collect_draft_recap_data(
                 api_rank = standing.get("rank")
                 if isinstance(api_rank, int):
                     result["overall_rank"] = api_rank
+                # Only where a previous gameweek exists to have stood in:
+                # the API reports `last_rank` from the league's first
+                # gameweek onward, and a zero there is its "no previous
+                # table" sentinel rather than a position anyone held.
                 api_last_rank = standing.get("last_rank")
-                if isinstance(api_last_rank, int):
+                if (
+                    isinstance(api_last_rank, int)
+                    and api_last_rank > 0
+                    and _has_previous_gameweek(gw)
+                ):
                     result["previous_rank"] = api_last_rank
             return result
 
@@ -1569,7 +1603,7 @@ async def collect_draft_recap_data(
             for s in standings
         )
 
-    if not api_movement:
+    if not api_movement and _has_previous_gameweek(gw):
         _compute_standings_movement(managers, league_rows, allow_standings_fallback=is_live_gw)
     awards = _compute_shared_awards(managers, format_name="draft", total_managers=len(standings))
 

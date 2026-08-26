@@ -938,6 +938,19 @@ def test_saved_snapshot_round_trips_through_load(tmp_path):
     assert loaded == snapshot
 
 
+def test_snapshot_writes_accented_names_as_utf8_not_escapes(tmp_path):
+    """Issue #147: the snapshot is a file a person reads and diffs week to
+    week, so an accented name stays legible rather than becoming a run of
+    `\\u00e9` escapes -- matching the league-history ledger beside it."""
+    returnee_radar.save_snapshot(_snapshot(**{"7": _record(web_name="Ekitiké")}))
+
+    text = (tmp_path / "user-data" / returnee_radar.SNAPSHOT_FILENAME).read_text(
+        encoding="utf-8",
+    )
+    assert "Ekitiké" in text
+    assert "\\u00e9" not in text
+
+
 def test_snapshot_keeps_the_return_date_of_a_lapsed_signal(tmp_path):
     snapshot = _snapshot(**{"7": _record(return_date=date(2026, 9, 5), lapsed=True)})
 

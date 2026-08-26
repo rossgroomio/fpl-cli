@@ -107,7 +107,7 @@ def _manager(
     )
     for key in (
         "transfers", "transactions", "league_entry_id",
-        "squad_value", "bank", "global_rank", "transfers_made",
+        "team_value", "bank", "global_rank", "transfers_made",
     ):
         if key in kwargs:
             entry[key] = kwargs[key]  # type: ignore[literal-required]
@@ -263,7 +263,7 @@ class TestBuildHistoryRows:
 
     def test_the_classic_only_fields_are_carried_through(self):
         data = _recap_data(managers=[_manager(
-            squad_value=1013, bank=7, global_rank=400_000, transfers_made=1,
+            team_value=1013, bank=7, global_rank=400_000, transfers_made=1,
             transfers=[RecapTransfer(
                 player_in="In", player_in_team="ARS", player_in_points=8,
                 player_out="Out", player_out_team="LIV", player_out_points=2,
@@ -271,7 +271,7 @@ class TestBuildHistoryRows:
             )],
         )])
         row = build_history_rows(data, season=SEASON, captured_at=CAPTURED_AT)[0]
-        assert (row.squad_value, row.bank, row.global_rank, row.transfers_made) == (1013, 7, 400_000, 1)
+        assert (row.team_value, row.bank, row.global_rank, row.transfers_made) == (1013, 7, 400_000, 1)
         assert row.transfer_detail_shortfall == 0
         assert [t.player_in for t in row.transfers] == ["In"]
 
@@ -305,9 +305,47 @@ class TestBuildHistoryRows:
         row = build_history_rows(data, season=SEASON, captured_at=CAPTURED_AT)[0]
         assert row.manager_key == 10
         assert row.entry_id == 1
-        assert (row.squad_value, row.bank, row.global_rank, row.transfers_made) == (None, None, None, None)
+        assert (row.team_value, row.bank, row.global_rank, row.transfers_made) == (None, None, None, None)
         assert row.transfer_detail_shortfall is None
         assert [t.player_in for t in row.transactions] == ["In"]
+
+    def test_the_first_gameweek_records_no_previous_position(self):
+        """Issue #147: GW1 has no previous table, and a row claiming the
+        current position as the previous one is indistinguishable from a
+        manager who genuinely held their place."""
+        data = _recap_data(gameweek=1, managers=[_manager(overall_rank=3, previous_rank=3)])
+        row = build_history_rows(data, season=SEASON, captured_at=CAPTURED_AT)[0]
+        assert row.league_position == 3
+        assert row.previous_league_position is None
+
+    def test_a_later_gameweek_still_records_the_previous_position(self):
+        data = _recap_data(gameweek=2, managers=[_manager(overall_rank=3, previous_rank=5)])
+        row = build_history_rows(data, season=SEASON, captured_at=CAPTURED_AT)[0]
+        assert row.previous_league_position == 5
+
+    def test_a_draft_row_records_no_transfer_cost(self):
+        """Issue #147: draft charges nothing for a squad change, so a zero
+        would be a measurement of a mechanic the format does not have."""
+        data = _recap_data(
+            fpl_format="draft",
+            managers=[_manager(name="Alice", entry_id=1, league_entry_id=10, transfer_cost=0)],
+            cohort=_cohort((10, "Alice", 1, 60, 300)),
+        )
+        row = build_history_rows(data, season=SEASON, captured_at=CAPTURED_AT)[0]
+        assert row.transfer_cost is None
+
+    def test_a_classic_row_records_the_hit_it_took(self):
+        data = _recap_data(managers=[_manager(transfer_cost=4)])
+        row = build_history_rows(data, season=SEASON, captured_at=CAPTURED_AT)[0]
+        assert row.transfer_cost == 4
+
+    def test_team_value_is_the_bank_inclusive_figure_the_api_reports(self):
+        """Issue #147: `value` counts the bank, so the row stores it under a
+        name that does not claim otherwise -- the squad alone is the
+        difference."""
+        data = _recap_data(managers=[_manager(team_value=1000, bank=5)])
+        row = build_history_rows(data, season=SEASON, captured_at=CAPTURED_AT)[0]
+        assert (row.team_value, row.bank) == (1000, 5)
 
     def test_rows_default_to_the_detailed_tier(self):
         assert build_history_rows(_recap_data(), season=SEASON, captured_at=CAPTURED_AT)[0].tier is FidelityTier.DETAILED

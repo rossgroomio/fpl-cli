@@ -323,13 +323,18 @@ class LeagueHistoryStore:
 def _upgrade(payload: dict, version: int) -> dict:
     """Bring an older-but-readable row payload up to the current shape, in memory.
 
-    Nothing to do while the floor equals the current version. Each future
-    migration adds a branch here; raising
+    In memory only: the line on disk is never rewritten, so a store shared
+    with an older install keeps lines that install can still read. Each
+    future migration adds a branch here; raising
     MIN_READABLE_LEAGUE_HISTORY_VERSION past a version means shipping a
     one-time rewrite of the upgraded lines first, or every store holding them
     becomes unreadable.
     """
-    del version  # No migrations exist yet; the parameter pins the seam.
+    if version < 2 and "squad_value" in payload:
+        # v1 called the API's bank-inclusive `value` `squad_value`. Same
+        # number, honest name -- a straight rename, no arithmetic (issue #147).
+        payload = {**payload, "team_value": payload["squad_value"]}
+        del payload["squad_value"]
     return payload
 
 
