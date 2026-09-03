@@ -20,7 +20,7 @@
 {% for team in easy_list[:8] %}
 | {{ team.short_name }} | {{ "%.1f"|format(team.average_fdr) }} | {{ "%.1f"|format(team.average_fdr_atk) }} | {{ "%.1f"|format(team.average_fdr_def) }} | {{ team.fixtures_summary }} |
 {% endfor %}
-*FDR scale: 1 (easiest) - 7 (hardest). ATK = for attackers, DEF = for defenders/GKs.*
+*{{ fdr_columns_footer(fixtures.fdr_mode | default("difference")) }}*
 {% endif %}
 
 ---

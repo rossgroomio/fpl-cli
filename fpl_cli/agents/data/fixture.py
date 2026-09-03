@@ -117,6 +117,8 @@ class FixtureAgent(Agent):
 
             result_data: dict[str, Any] = {
                 "current_gameweek": current_gw,
+                # Every FDR figure below (general, ATK, DEF) is scored in this mode
+                "fdr_mode": self.fdr_mode,
                 "fixtures": [self._fixture_to_dict(f, team_map) for f in upcoming_fixtures],
                 "fixtures_by_gameweek": {
                     gw: [self._fixture_to_dict(f, team_map) for f in fixtures]
@@ -273,9 +275,10 @@ class FixtureAgent(Agent):
     ) -> dict[str, dict[str, Any]]:
         """Analyze fixture difficulty ratings for each team.
 
-        Includes both general FDR and position-specific FDR:
+        Every figure is scored in the agent's ``fdr_mode`` at the fixture's venue:
         - fdr_atk: For attackers (FWD/MID) based on opponent's defensive weakness
         - fdr_def: For defenders (DEF/GK) based on opponent's offensive threat
+        - fdr: General FDR, the mean of fdr_atk and fdr_def
         """
         fdr_by_team: dict[int, list[dict[str, Any]]] = defaultdict(list)
 
@@ -287,13 +290,7 @@ class FixtureAgent(Agent):
             away_team = team_map.get(f.away_team_id)
 
             if home_team and away_team:
-                # General FDR from team ratings (opponent's avg_overall_fdr), API fallback
-                away_rating = self.ratings_service.get_rating(away_team.short_name)
-                home_rating = self.ratings_service.get_rating(home_team.short_name)
-                home_fdr = away_rating.avg_overall_fdr if away_rating else f.home_difficulty
-                away_fdr = home_rating.avg_overall_fdr if home_rating else f.away_difficulty
-
-                # Positional FDR
+                # Positional FDR in the agent's mode
                 home_pos_fdr = self.get_fixture_fdr_by_position(
                     team_short=home_team.short_name,
                     opponent_short=away_team.short_name,
@@ -304,6 +301,18 @@ class FixtureAgent(Agent):
                     opponent_short=home_team.short_name,
                     is_home=False,
                 )
+
+                # General FDR is the ATK/DEF mean, so it sits on the same model
+                # and venue as the two columns shown beside it and the "overall"
+                # ranking agrees with them (#186). The old opponent-only,
+                # venue-blind avg_overall_fdr ranked the league's weakest side
+                # above its strongest because it could not see either team.
+                # No API-difficulty fallback for unrated clubs: that put their
+                # fixtures on the API's 1-5 scale inside a 1-7 ranking, so they
+                # floated up the easiest-runs table. They score the same
+                # neutral 4.0 the positional columns already give them.
+                home_fdr = self.general_fdr(home_pos_fdr)
+                away_fdr = self.general_fdr(away_pos_fdr)
 
                 fdr_by_team[f.home_team_id].append({
                     "gameweek": f.gameweek,
@@ -399,30 +408,31 @@ class FixtureAgent(Agent):
         }
 
     def _fixture_to_dict(self, fixture: Fixture, team_map: dict[int, Any]) -> dict[str, Any]:
-        """Convert fixture to dictionary with team names and positional FDR."""
+        """Convert fixture to dictionary with team names and positional FDR.
+
+        ``home_fdr`` / ``away_fdr`` are the same general FDR ``_analyze_fdr``
+        records, so one fixture reads identically here and in ``fdr_by_team``.
+        Only a team missing from ``team_map`` altogether (so no short name to
+        rate) keeps the FPL API's difficulty; ``_analyze_fdr`` skips those.
+        """
         home = team_map.get(fixture.home_team_id)
         away = team_map.get(fixture.away_team_id)
 
-        # Team ratings FDR, fallback to FPL API
-        away_rating = self.ratings_service.get_rating(away.short_name) if away else None
-        home_fdr = away_rating.avg_overall_fdr if away_rating else fixture.home_difficulty
-        home_rating_obj = self.ratings_service.get_rating(home.short_name) if home else None
-        away_fdr = home_rating_obj.avg_overall_fdr if home_rating_obj else fixture.away_difficulty
-
-        result = {
+        result: dict[str, Any] = {
             "id": fixture.id,
             "gameweek": fixture.gameweek,
             "home_team": home.short_name if home else "???",
             "home_team_id": fixture.home_team_id,
             "away_team": away.short_name if away else "???",
             "away_team_id": fixture.away_team_id,
-            "home_fdr": home_fdr,
-            "away_fdr": away_fdr,
+            # FPL API difficulty, replaced below when both teams are known
+            "home_fdr": fixture.home_difficulty,
+            "away_fdr": fixture.away_difficulty,
             "kickoff": fixture.kickoff_time.isoformat() if fixture.kickoff_time else None,
             "finished": fixture.finished,
         }
 
-        # Add positional FDR if team ratings are available
+        # Positional FDR, and the general FDR as their mean, when both teams are known
         if home and away:
             home_pos_fdr = self.get_fixture_fdr_by_position(
                 team_short=home.short_name,
@@ -438,8 +448,26 @@ class FixtureAgent(Agent):
             result["home_fdr_def"] = home_pos_fdr["DEF"]
             result["away_fdr_atk"] = away_pos_fdr["ATK"]
             result["away_fdr_def"] = away_pos_fdr["DEF"]
+            result["home_fdr"] = self.general_fdr(home_pos_fdr)
+            result["away_fdr"] = self.general_fdr(away_pos_fdr)
 
         return result
+
+    @staticmethod
+    def general_fdr(positional_fdr: dict[str, float]) -> float:
+        """General FDR for one fixture: the mean of its ATK and DEF positional FDRs.
+
+        Keeps the general figure on the same model, and at the same venue, as
+        the two positional ones it is shown beside. In difference mode that
+        blends the team's own strength with the opponent's; in opponent mode
+        it is the opponent's strength at the venue. A fixture involving an
+        unrated club scores the ratings service's neutral 4.0 on all three,
+        keeping every figure on one 1-7 scale.
+
+        Args:
+            positional_fdr: ``get_fixture_fdr_by_position`` output for the fixture
+        """
+        return round((positional_fdr["ATK"] + positional_fdr["DEF"]) / 2, 2)
 
     def get_positional_fdr(
         self,
