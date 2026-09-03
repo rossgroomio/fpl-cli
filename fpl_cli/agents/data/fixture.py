@@ -307,12 +307,12 @@ class FixtureAgent(Agent):
                 # ranking agrees with them (#186). The old opponent-only,
                 # venue-blind avg_overall_fdr ranked the league's weakest side
                 # above its strongest because it could not see either team.
-                if self._both_rated(home_team.short_name, away_team.short_name):
-                    home_fdr = self.general_fdr(home_pos_fdr)
-                    away_fdr = self.general_fdr(away_pos_fdr)
-                else:
-                    home_fdr = f.home_difficulty
-                    away_fdr = f.away_difficulty
+                # No API-difficulty fallback for unrated clubs: that put their
+                # fixtures on the API's 1-5 scale inside a 1-7 ranking, so they
+                # floated up the easiest-runs table. They score the same
+                # neutral 4.0 the positional columns already give them.
+                home_fdr = self.general_fdr(home_pos_fdr)
+                away_fdr = self.general_fdr(away_pos_fdr)
 
                 fdr_by_team[f.home_team_id].append({
                     "gameweek": f.gameweek,
@@ -412,6 +412,8 @@ class FixtureAgent(Agent):
 
         ``home_fdr`` / ``away_fdr`` are the same general FDR ``_analyze_fdr``
         records, so one fixture reads identically here and in ``fdr_by_team``.
+        Only a team missing from ``team_map`` altogether (so no short name to
+        rate) keeps the FPL API's difficulty; ``_analyze_fdr`` skips those.
         """
         home = team_map.get(fixture.home_team_id)
         away = team_map.get(fixture.away_team_id)
@@ -423,7 +425,7 @@ class FixtureAgent(Agent):
             "home_team_id": fixture.home_team_id,
             "away_team": away.short_name if away else "???",
             "away_team_id": fixture.away_team_id,
-            # FPL API difficulty, replaced below once team ratings can score it
+            # FPL API difficulty, replaced below when both teams are known
             "home_fdr": fixture.home_difficulty,
             "away_fdr": fixture.away_difficulty,
             "kickoff": fixture.kickoff_time.isoformat() if fixture.kickoff_time else None,
@@ -446,9 +448,8 @@ class FixtureAgent(Agent):
             result["home_fdr_def"] = home_pos_fdr["DEF"]
             result["away_fdr_atk"] = away_pos_fdr["ATK"]
             result["away_fdr_def"] = away_pos_fdr["DEF"]
-            if self._both_rated(home.short_name, away.short_name):
-                result["home_fdr"] = self.general_fdr(home_pos_fdr)
-                result["away_fdr"] = self.general_fdr(away_pos_fdr)
+            result["home_fdr"] = self.general_fdr(home_pos_fdr)
+            result["away_fdr"] = self.general_fdr(away_pos_fdr)
 
         return result
 
@@ -459,24 +460,14 @@ class FixtureAgent(Agent):
         Keeps the general figure on the same model, and at the same venue, as
         the two positional ones it is shown beside. In difference mode that
         blends the team's own strength with the opponent's; in opponent mode
-        it is the opponent's strength at the venue.
+        it is the opponent's strength at the venue. A fixture involving an
+        unrated club scores the ratings service's neutral 4.0 on all three,
+        keeping every figure on one 1-7 scale.
 
         Args:
             positional_fdr: ``get_fixture_fdr_by_position`` output for the fixture
         """
         return round((positional_fdr["ATK"] + positional_fdr["DEF"]) / 2, 2)
-
-    def _both_rated(self, team_short: str, opponent_short: str) -> bool:
-        """Whether positional FDR carries any signal for this fixture.
-
-        The ratings service scores a fixture as a neutral 4.0 when either side
-        is unrated, so the general FDR falls back to the FPL API's difficulty
-        there rather than rank every such fixture run as identical.
-        """
-        return (
-            self.ratings_service.get_rating(team_short) is not None
-            and self.ratings_service.get_rating(opponent_short) is not None
-        )
 
     def get_positional_fdr(
         self,

@@ -43,6 +43,7 @@ from fpl_cli.services.fixture_predictions import (
     find_blank_gameweeks,
     find_double_gameweeks,
 )
+from fpl_cli.services.team_ratings import fdr_columns_footer
 
 _CONFIDENCE_COLORS = {
     "confirmed": "green", "high": "green", "medium": "yellow", "low": "red",
@@ -525,7 +526,7 @@ def fdr_command(
         console.print(table)
 
         if position == "all":
-            console.print("[dim]FDR / ATK / DEF all on 1-7 scale (1 = easiest); FDR is the mean of ATK and DEF[/dim]")
+            console.print(f"[dim]{fdr_columns_footer(data.get('fdr_mode', mode))}[/dim]")
 
         # Show blank/double gameweeks (confirmed + predicted, filtered to current GW+)
         pred_service = FixturePredictionsService()

@@ -53,7 +53,7 @@ def preview_command(ctx: click.Context, save: bool, output: str | None, scout: b
     from fpl_cli.agents.orchestration.report import ReportAgent
     from fpl_cli.api.fpl import FPLClient
     from fpl_cli.api.fpl_draft import FPLDraftClient, match_draft_to_main
-    from fpl_cli.services.team_ratings import FDR_MODE_GLOSS
+    from fpl_cli.services.team_ratings import fdr_columns_footer
     from fpl_cli.utils.time import format_deadline, format_generated_at, format_kickoff
 
     fmt = get_format(ctx)
@@ -111,6 +111,12 @@ def preview_command(ctx: click.Context, save: bool, output: str | None, scout: b
             if fixture_result.success:
                 collected_data["fixtures"] = fixture_result.data
                 console.print("[green]✓[/green] Fixture analysis complete")
+                # Same rating-quality note `fpl fdr` prints: with no usable
+                # ratings every FDR cell below is the neutral 4.0, and a flat
+                # table needs saying so rather than reading as analysis
+                ratings_warning = fixture_result.data.get("ratings_warning")
+                if ratings_warning:
+                    error_console.print(f"[yellow]{ratings_warning}[/yellow]")
             else:
                 error_console.print(f"[yellow]⚠[/yellow] Fixture analysis: {fixture_result.message}")
 
@@ -436,10 +442,7 @@ def preview_command(ctx: click.Context, save: bool, output: str | None, scout: b
             console.print(table)
             if custom_on:
                 fdr_mode = data["fixtures"].get("fdr_mode", "difference")
-                console.print(
-                    f"[dim]FDR scale: 1 (easiest) - 7 (hardest). All three columns use {fdr_mode} mode"
-                    f" ({FDR_MODE_GLOSS.get(fdr_mode, fdr_mode)}); FDR is the mean of ATK and DEF.[/dim]"
-                )
+                console.print(f"[dim]{fdr_columns_footer(fdr_mode)}[/dim]")
             console.print("")
 
         # --- Team Form ---

@@ -237,6 +237,27 @@ class TestFdrJsonOutput:
         assert result.exit_code == 0, result.output
         assert "Fixture Analysis" in result.output
 
+    def test_table_footer_names_mode_and_column_relationship(self, mock_fixture_agent):
+        """The all-positions table says which mode its FDR/ATK/DEF columns share (#186)."""
+        mock_fixture_agent.run.return_value.data["fdr_mode"] = "opponent"
+        with (
+            patch("fpl_cli.cli.fdr.is_custom_analysis_enabled", return_value=True),
+            patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=mock_fixture_agent),
+            patch("fpl_cli.services.team_ratings.TeamRatingsService") as mock_ratings,
+            patch("fpl_cli.services.fixture_predictions.FixturePredictionsService") as mock_preds,
+        ):
+            mock_ratings.return_value.get_staleness_warning.return_value = None
+            mock_preds.return_value.get_predicted_blanks.return_value = []
+            mock_preds.return_value.get_predicted_doubles.return_value = []
+
+            runner = CliRunner()
+            result = runner.invoke(fdr_command, ["--mode", "opponent"])
+
+        assert result.exit_code == 0, result.output
+        flat = " ".join(result.output.split())
+        assert "All three columns use opponent mode (opponent strength at the venue only)" in flat
+        assert "FDR is the mean of ATK and DEF" in flat
+
     def test_table_agent_failure_exits_nonzero(self, mock_fixture_agent):
         """Table-mode agent failure must exit nonzero, not just print and succeed (#47)."""
         mock_fixture_agent.run = AsyncMock(return_value=MagicMock(

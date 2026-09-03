@@ -133,6 +133,16 @@ class TestPreviewCustomAnalysisToggle:
         flat = " ".join(result.output.split())
         assert "All three columns use opponent mode (opponent strength at the venue only)" in flat
 
+    def test_ratings_warning_surfaces(self):
+        """With no usable ratings every FDR cell is a neutral 4.0, and the preview says so."""
+        result = _run_preview(custom_analysis=True, fixture_data={
+            "ratings_warning": "⚠️ No team ratings available - every fixture will score a neutral 4.0.",
+            "easy_fixture_runs": {"overall": []},
+            "team_form": [],
+        })
+        assert result.exit_code == 0, result.output
+        assert "No team ratings available" in result.output
+
     def test_toggle_off_no_fdr_footer(self):
         """With ATK/DEF hidden there is no column relationship to explain."""
         result = _run_preview(custom_analysis=False)

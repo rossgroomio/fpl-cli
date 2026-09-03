@@ -13,7 +13,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from fpl_cli.agents.base import Agent, AgentResult, AgentStatus
 from fpl_cli.cli._league_recap_types import RecapManagerEntry
 from fpl_cli.paths import TEMPLATE_DIR
-from fpl_cli.services.team_ratings import FDR_MODE_GLOSS
+from fpl_cli.services.team_ratings import fdr_columns_footer
 from fpl_cli.utils.time import format_generated_at
 
 
@@ -52,7 +52,7 @@ class ReportAgent(Agent):
         )
         # Footer wording for FDR tables, shared with the CLI so the saved
         # report and the terminal describe the columns the same way
-        self.jinja_env.globals["fdr_mode_gloss"] = FDR_MODE_GLOSS
+        self.jinja_env.globals["fdr_columns_footer"] = fdr_columns_footer
 
     async def run(self, context: dict[str, Any] | None = None) -> AgentResult:
         """Generate a report from provided data.
@@ -198,11 +198,7 @@ class ReportAgent(Agent):
                     f"| {team['short_name']} | {fdr:.2f} | {fdr_atk:.2f} | {fdr_def:.2f} | {team['fixtures_summary']} |"
                 )
             fdr_mode = data["fixtures"].get("fdr_mode", "difference")
-            lines.append(
-                f"*FDR scale: 1 (easiest) - 7 (hardest). All three columns use {fdr_mode} mode"
-                f" ({FDR_MODE_GLOSS.get(fdr_mode, fdr_mode)}); FDR is the mean of ATK and DEF."
-                " ATK = for attackers, DEF = for defenders/GKs.*"
-            )
+            lines.append(f"*{fdr_columns_footer(fdr_mode)}*")
             lines.append("")
 
         # --- Team Form ---

@@ -48,6 +48,22 @@ FDR_MODE_GLOSS: dict[str, str] = {
 """One-line reading of each ``get_positional_fdr`` mode, for the footers of FDR tables."""
 
 
+def fdr_columns_footer(mode: str) -> str:
+    """Footer for a table showing FDR beside ATK and DEF, all scored in ``mode``.
+
+    One sentence shared by every renderer (terminal, saved report, inline
+    fallback) so they describe the columns identically. It holds
+    unconditionally: the general FDR is always the ATK/DEF mean, and a fixture
+    involving an unrated club scores the neutral 4.0 on all three.
+    """
+    gloss = FDR_MODE_GLOSS.get(mode, mode)
+    return (
+        f"FDR scale: 1 (easiest) - 7 (hardest). All three columns use {mode} mode ({gloss}); "
+        "FDR is the mean of ATK and DEF. ATK = for attackers, DEF = for defenders/GKs. "
+        "Fixtures involving an unrated club score a neutral 4.0."
+    )
+
+
 @dataclass
 class TeamRating:
     """4-axis rating for a single team."""
@@ -378,10 +394,10 @@ class TeamRatingsService:
 
         A ratings file rebuilt in early August passes every date check while
         still rating three relegated clubs and knowing nothing about the three
-        promoted ones -- get_rating returns None for those, and callers fall
-        back to raw FDR without saying that three teams are being handled
-        differently from the other seventeen. Diffing the keys against
-        bootstrap-static is what catches the rollover.
+        promoted ones -- get_rating returns None for those, so every fixture
+        they are in scores a neutral 4.0 without saying that three teams are
+        being handled differently from the other seventeen. Diffing the keys
+        against bootstrap-static is what catches the rollover.
 
         Args:
             current_teams: Team short names in the league right now

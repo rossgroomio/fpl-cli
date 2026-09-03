@@ -376,11 +376,12 @@ class TestFixtureAgent:
         assert fdr["ARS"]["average_fdr_def"] == 5.0
         assert fdr["ARS"]["average_fdr"] == 4.5  # venue-blind avg_overall_fdr would say 5.5
 
-    def test_analyze_fdr_unrated_side_falls_back_to_api_difficulty(self, agent, mock_teams, tmp_path):
-        """With either side unrated, positional FDR is a neutral 4.0 and carries no signal.
+    def test_analyze_fdr_unrated_side_scores_neutral_on_every_column(self, agent, mock_teams, tmp_path):
+        """A fixture involving an unrated club is the neutral 4.0 on FDR, ATK and DEF alike.
 
-        The general FDR falls back to the FPL API's difficulty there rather than
-        rank every such fixture run as identical.
+        Falling back to the FPL API's difficulty here would put that club on a
+        1-5 scale inside a 1-7 ranking, so the general FDR stays the ATK/DEF
+        mean and reads 4.0 like the columns beside it.
         """
         from fpl_cli.services.team_ratings import TeamRatingsService
 
@@ -393,9 +394,41 @@ class TestFixtureAgent:
 
         fdr = agent._analyze_fdr(fixtures, team_map, 25, 25)
 
-        assert fdr["ARS"]["fixtures"][0]["fdr_atk"] == 4.0
-        assert fdr["ARS"]["average_fdr"] == 2.0
-        assert fdr["MCI"]["average_fdr"] == 5.0
+        for side in ("ARS", "MCI"):
+            row = fdr[side]["fixtures"][0]
+            assert (row["fdr"], row["fdr_atk"], row["fdr_def"]) == (4.0, 4.0, 4.0)
+            assert fdr[side]["average_fdr"] == 4.0
+
+    def test_easy_runs_unrated_club_does_not_float_on_a_second_scale(self, agent, mock_teams, tmp_path):
+        """Review repro: an unrated club must not rank as "easy" via the API's 1-5 scale.
+
+        With ARS/MCI/LIV rated 4 on every axis and CHE unrated, the API fallback
+        scored CHE's run (and its opponent's) on the FPL API's 1-5 difficulty,
+        so CHE landed second on the easiest-runs table for no footballing
+        reason. Every fixture here is neutral, so the table is flat.
+        """
+        from fpl_cli.services.team_ratings import TeamRatingsService
+
+        agent.ratings_service = TeamRatingsService(config_path=_write_ratings(tmp_path, {
+            "ARS": {"atk_home": 4, "atk_away": 4, "def_home": 4, "def_away": 4},
+            "MCI": {"atk_home": 4, "atk_away": 4, "def_home": 4, "def_away": 4},
+            "LIV": {"atk_home": 4, "atk_away": 4, "def_home": 4, "def_away": 4},
+        }))
+        team_map = {t.id: t for t in mock_teams}
+        fixtures = [
+            # Low API difficulty on the unrated pairing is exactly what used to leak in
+            make_fixture(id=1, gameweek=25, home_team_id=1, away_team_id=4,
+                         home_difficulty=2, away_difficulty=2),  # ARS v CHE (unrated)
+            make_fixture(id=2, gameweek=25, home_team_id=2, away_team_id=3,
+                         home_difficulty=4, away_difficulty=4),  # MCI v LIV
+        ]
+
+        fdr = agent._analyze_fdr(fixtures, team_map, 25, 25)
+        easy_runs = agent._find_easy_runs(fdr, team_map)
+
+        assert {t["average_fdr"] for t in easy_runs["overall"]} == {4.0}
+        assert fdr["CHE"]["average_fdr"] == 4.0
+        assert fdr["ARS"]["average_fdr"] == 4.0  # its unrated opponent does not drag it onto the API scale
 
     def test_find_easy_runs(self, agent, mock_teams):
         """Test finding teams with easy fixture runs."""
@@ -466,8 +499,8 @@ class TestFixtureAgent:
         assert fixture_dict["home_fdr"] == by_team["ARS"]["fixtures"][0]["fdr"]
         assert fixture_dict["away_fdr"] == by_team["MCI"]["fixtures"][0]["fdr"]
 
-    def test_fixture_to_dict_unrated_side_falls_back_to_api_difficulty(self, agent, mock_teams, tmp_path):
-        """API difficulty stands in for the general FDR when either side is unrated."""
+    def test_fixture_to_dict_unrated_side_scores_neutral(self, agent, mock_teams, tmp_path):
+        """An unrated side gives the neutral 4.0 on every FDR key, never the API's 1-5 difficulty."""
         from fpl_cli.services.team_ratings import TeamRatingsService
 
         agent.ratings_service = TeamRatingsService(config_path=_write_ratings(tmp_path, {
@@ -479,9 +512,8 @@ class TestFixtureAgent:
 
         result = agent._fixture_to_dict(fixture, team_map)
 
-        assert result["home_fdr"] == 3
-        assert result["away_fdr"] == 4
-        assert result["home_fdr_atk"] == 4.0  # neutral positional FDR still reported
+        assert result["home_fdr"] == result["away_fdr"] == 4.0
+        assert result["home_fdr_atk"] == result["away_fdr_def"] == 4.0
 
     def test_fixture_to_dict_unknown_team(self, agent, mock_teams):
         """A team missing from the team map gets API difficulty and no positional FDR."""
