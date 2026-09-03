@@ -135,7 +135,6 @@ Issue all reads and CLI commands in a **single parallel tool-call block**:
 - `fpl stats --value -p GK -s quality_per_m --min-minutes {mins_pos} -n 8 --available-only --format json`
 - `fpl stats -s now_cost -r --min-minutes {mins_pos} -n 15 --available-only --format json` (cheapest playing options)
 - `fpl stats -s form --min-minutes {mins_form} -n 20 --available-only --format json` (in-form across positions)
-- `fpl stats -s ep_next --min-minutes {mins_form} -n 20 --available-only --format json` (**pre-GW6 only** -- prior-informed projection; ranking on form or quality that early sorts mostly on sample, per Phase C step 7)
 - `fpl stats -s transfers_in_event -n 15 --format json` (transfer momentum)
 - `fpl price-history --sort price_slope -n 30 --format json` (season price trajectory - non-blocking, skip if command fails)
 - `fpl intel --format json` (season preview intel, if you keep any. Sections age out by design --

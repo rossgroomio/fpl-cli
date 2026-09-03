@@ -26,16 +26,31 @@ SKILL_DOCS = sorted(
     ]
 )
 
-# `--min-minutes 450`, but not `--min-minutes {mins_pos}`.
-LITERAL_MIN_MINUTES = re.compile(r"--min-minutes\s+(\d+)")
+# `--min-minutes 450` and `--min-minutes=450` -- Click accepts either -- but not
+# `--min-minutes {mins_pos}`.
+LITERAL_MIN_MINUTES = re.compile(r"--min-minutes(?:=|\s+)(\d+)")
 
 # The placeholder form the skills are expected to use instead.
-PLACEHOLDER_MIN_MINUTES = re.compile(r"--min-minutes\s+\{[a-z_]+\}")
+PLACEHOLDER_MIN_MINUTES = re.compile(r"--min-minutes(?:=|\s+)\{[a-z_]+\}")
+
+
+def _skill_name(doc: Path) -> str:
+    """The skill a doc belongs to -- `<skill>/SKILL.md` or `<skill>/references/*.md`."""
+    return doc.parent.name if doc.name == "SKILL.md" else doc.parent.parent.name
 
 
 def test_skill_docs_were_found():
     # Guard the guard: a stale glob would silently check nothing.
     assert any(p.name == "SKILL.md" for p in SKILL_DOCS)
+
+
+def test_the_pattern_catches_both_click_spellings():
+    # Click accepts `--min-minutes 450` and `--min-minutes=450` for the same
+    # option, so a guard that only knows the space form waves the other through.
+    assert LITERAL_MIN_MINUTES.search("fpl stats --min-minutes 450 -n 15")
+    assert LITERAL_MIN_MINUTES.search("fpl stats --min-minutes=450 -n 15")
+    assert not LITERAL_MIN_MINUTES.search("fpl stats --min-minutes {mins_pos} -n 15")
+    assert PLACEHOLDER_MIN_MINUTES.search("fpl stats --min-minutes={mins_pos} -n 15")
 
 
 @pytest.mark.parametrize("doc", SKILL_DOCS, ids=lambda p: str(p.relative_to(REPO_ROOT)))
@@ -57,4 +72,4 @@ def test_the_skills_that_filter_on_minutes_use_the_placeholder():
     # The rule above is only meaningful while some skill still filters on
     # minutes -- if every call dropped the flag, the tripwire would pass vacuously.
     users = [d for d in SKILL_DOCS if PLACEHOLDER_MIN_MINUTES.search(d.read_text(encoding="utf-8"))]
-    assert {d.parent.name for d in users} == {"gw-prep", "squad-builder"}
+    assert {_skill_name(d) for d in users} == {"gw-prep", "squad-builder"}
