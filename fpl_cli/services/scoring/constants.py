@@ -296,6 +296,44 @@ _CONSISTENCY_MAX_DIFF = 0.375    # (1.0 - 0.5) * CONSISTENCY_CV_DIFF (0.75)
 _CONSISTENCY_MAX_WAIVER = 0.75   # waiver uses CONSISTENCY_CV_TARGET too
 
 
+def _position_weights(weights: QualityWeights, position: Position) -> QualityWeights:
+    """The weight variant a position's quality path actually scores against."""
+    if position == "GK":
+        return weights.for_gk()
+    if position == "DEF":
+        return weights.without_xgi()
+    return weights
+
+
+def _quality_term_caps(weights: QualityWeights) -> dict[str, float]:
+    """Cap per scoring term for one weight variant, keyed by term name.
+
+    The one place the shape of a variant's headroom is written down, so
+    ``_theoretical_quality_cap`` and ``ceiling_attainability`` cannot drift
+    apart or from ``QualityWeights`` itself (a test asserts every StatWeight
+    field is covered here).
+
+    ``npxg``/``xg_chain`` and ``xgi_fallback`` are two routes to the same
+    attacking signal — ``calculate_player_quality_score`` takes one or the
+    other, never both — so they collapse into a single ``attacking`` term
+    worth whichever route caps higher. Summing all three would invent
+    headroom no player can reach.
+
+    A cap may be ``inf`` where a weight is uncapped (waiver npxg); it is each
+    caller's business whether that is meaningful for what it computes.
+    """
+    return {
+        "attacking": max(weights.npxg.cap + weights.xg_chain.cap, weights.xgi_fallback.cap),
+        "penalty_xg": weights.penalty_xg.cap,
+        "form": weights.form.cap,
+        "ppg": weights.ppg.cap,
+        "dc_per_90": weights.dc_per_90.cap,
+        "gk_saves_per_90": weights.gk_saves_per_90.cap,
+        "gk_xgc_quality": weights.gk_xgc_quality.cap,
+        "gk_cs_rate": weights.gk_cs_rate.cap,
+    }
+
+
 def _theoretical_quality_cap(weights: QualityWeights, position: Position) -> float:
     """Weight-cap sum for a position's quality path, post-attenuation.
 
@@ -309,23 +347,19 @@ def _theoretical_quality_cap(weights: QualityWeights, position: Position) -> flo
     outran the recorded calibration. May be ``inf`` where a weight is
     uncapped (waiver npxg) — the bracket test skips those terms' families.
     """
-    if position == "GK":
-        gk = weights.for_gk()
-        per90 = gk.gk_saves_per_90.cap + gk.gk_xgc_quality.cap + gk.gk_cs_rate.cap
-        form_max = _NON_ATK_FORM_MAX
-        form_cap, ppg_cap = gk.form.cap, gk.ppg.cap
-    elif position == "DEF":
-        defw = weights.without_xgi()
-        per90 = defw.dc_per_90.cap
-        form_max = _NON_ATK_FORM_MAX
-        form_cap, ppg_cap = defw.form.cap, defw.ppg.cap
-    else:
-        per90 = (
-            max(weights.npxg.cap + weights.xg_chain.cap, weights.xgi_fallback.cap)
-            + weights.penalty_xg.cap
-        )
-        form_max = FORM_TRAJECTORY_BOUNDS[1] * XGI_SUSTAINABILITY_BOUNDS[1]
-        form_cap, ppg_cap = weights.form.cap, weights.ppg.cap
+    variant = _position_weights(weights, position)
+    caps = _quality_term_caps(variant)
+    form_cap, ppg_cap = caps["form"], caps["ppg"]
+    # Everything the variant weights except form and ppg, which are attenuated
+    # separately below. The zeroed terms of each variant contribute nothing, so
+    # this is the GK block for a keeper, dc/90 for a defender, and the attacking
+    # route plus penalty xG for the rest.
+    per90 = sum(cap for name, cap in caps.items() if name not in ("form", "ppg"))
+    form_max = (
+        _NON_ATK_FORM_MAX
+        if position in ("GK", "DEF")
+        else FORM_TRAJECTORY_BOUNDS[1] * XGI_SUSTAINABILITY_BOUNDS[1]
+    )
     return (per90 + form_cap * form_max + ppg_cap) * POSITION_SCORE_MULTIPLIER[position]
 
 
@@ -481,28 +515,6 @@ _FAMILY_QUALITY_WEIGHTS: dict[str, QualityWeights] = {
 _FULL_MATCH_MINUTES = 90
 
 
-def _quality_term_caps(weights: QualityWeights) -> dict[str, float]:
-    """Cap per scoring term for one weight variant, keyed by term name.
-
-    ``npxg``/``xg_chain`` and ``xgi_fallback`` are two routes to the same
-    attacking signal — ``calculate_player_quality_score`` takes one or the
-    other, never both — so they collapse into a single ``attacking`` term
-    worth whichever route caps higher. Summing all three would invent
-    headroom no player can reach and understate every attainability ratio
-    derived from it.
-    """
-    return {
-        "attacking": max(weights.npxg.cap + weights.xg_chain.cap, weights.xgi_fallback.cap),
-        "penalty_xg": weights.penalty_xg.cap,
-        "form": weights.form.cap,
-        "ppg": weights.ppg.cap,
-        "dc_per_90": weights.dc_per_90.cap,
-        "gk_saves_per_90": weights.gk_saves_per_90.cap,
-        "gk_xgc_quality": weights.gk_xgc_quality.cap,
-        "gk_cs_rate": weights.gk_cs_rate.cap,
-    }
-
-
 # The three signals `gk_signal_enrichment` supplies, and the only terms the
 # GK weight variant activates beyond form and ppg.
 GK_SIGNAL_TERMS: tuple[str, ...] = ("gk_saves_per_90", "gk_xgc_quality", "gk_cs_rate")
@@ -535,10 +547,22 @@ def ceiling_attainability(
     signals early in a season. The position multiplier cancels in the ratio,
     and the result never reaches 0 — form and ppg are always supplied — so it
     is always safe as a ``normalise_score`` denominator.
+
+    A variant carrying an uncapped term (waiver npxg, on the base variant)
+    raises ValueError: there is no share of unbounded headroom to take, and a
+    silent 1.0 would leave a caller's ceiling undiscounted and its fix looking
+    like it did nothing. Neither current caller can reach it — the GK path
+    always passes ``for_gk()`` and the returnee radar the VALUE variants,
+    all of which cap every term they weight.
     """
     caps = _quality_term_caps(weights)
     total = sum(caps.values())
-    if not isfinite(total) or total <= 0:
+    if not isfinite(total):
+        uncapped = ", ".join(sorted(n for n, cap in caps.items() if not isfinite(cap)))
+        raise ValueError(
+            f"ceiling attainability is undefined for uncapped terms: {uncapped}"
+        )
+    if total <= 0:
         return 1.0
     shortfall = sum(caps[name] for name in missing) * (1.0 - ramp)
     reachable = total - shortfall
@@ -620,12 +644,7 @@ def _value_weights_and_ceiling(
     (the value ceiling is the bare anchor, so the whole ceiling scales), with
     the same contract — pass it only when the numerator carries GK signals.
     """
-    if position == "GK":
-        weights = VALUE_QUALITY_WEIGHTS.for_gk()
-    elif position == "DEF":
-        weights = VALUE_QUALITY_WEIGHTS.without_xgi()
-    else:
-        weights = VALUE_QUALITY_WEIGHTS
+    weights = _position_weights(VALUE_QUALITY_WEIGHTS, position)
     ceiling = QUALITY_CEILINGS[("value", position)]
     if position == "GK" and next_gw_id is not None:
         ceiling *= gk_ceiling_attainability(next_gw_id, VALUE_QUALITY_WEIGHTS)

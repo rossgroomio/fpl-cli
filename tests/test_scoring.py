@@ -4705,11 +4705,28 @@ class TestCeilingAttainability:
             base.npxg.cap + base.xg_chain.cap, base.xgi_fallback.cap,
         )
 
+    def test_an_uncapped_term_raises_rather_than_silently_not_scaling(self):
+        """PR #205 review: a silent 1.0 would make a caller's fix look inert.
+
+        Neither current caller can reach this — the GK path always passes
+        `for_gk()` and the radar the VALUE variants — but the base waiver
+        variant leaves npxg uncapped, and there is no share of unbounded
+        headroom to take.
+        """
+        from fpl_cli.services.scoring import WAIVER_QUALITY_WEIGHTS, ceiling_attainability
+        with pytest.raises(ValueError, match="uncapped"):
+            ceiling_attainability(WAIVER_QUALITY_WEIGHTS, ("dc_per_90",))
+        # The variants the real callers pass all cap every term they weight.
+        assert ceiling_attainability(WAIVER_QUALITY_WEIGHTS.for_gk(), ()) == 1.0
+        assert ceiling_attainability(WAIVER_QUALITY_WEIGHTS.without_xgi(), ()) == 1.0
+
     def test_every_weight_term_is_accounted_for(self):
         """A new StatWeight field must join the caps table or silently vanish.
 
         An unlisted term is headroom the ratio never counts, which drifts
-        every attainability-scaled ceiling the day a weight is added.
+        every attainability-scaled ceiling — and, since `_theoretical_quality_cap`
+        reads the same table, the calibration bracket too — the day a weight
+        is added.
         """
         import dataclasses
 
@@ -4765,6 +4782,19 @@ class TestGkAttainableCeiling:
         ramp = 90 / GK_SAMPLE_RAMP_MINUTES  # going into GW2 the calendar has supplied one match
         expected = (fixed + ramp * ramped) / (fixed + ramped)
         assert gk_ceiling_attainability(2, VALUE_QUALITY_WEIGHTS) == pytest.approx(expected)
+
+    def test_gk_signal_terms_name_exactly_the_ramped_signals(self):
+        """PR #205 review: the tuple is hand-written; the ramp is not.
+
+        `gk_ceiling_attainability` treats these terms as the ramped share and
+        everything else as always attainable. A GK signal added to
+        `gk_signal_enrichment` — which ramps whatever it returns — but not to
+        this tuple would be counted as fixed headroom, silently
+        under-discounting every early-season keeper.
+        """
+        from fpl_cli.services.scoring import gk_signal_enrichment
+        from fpl_cli.services.scoring.constants import GK_SIGNAL_TERMS
+        assert set(GK_SIGNAL_TERMS) == set(gk_signal_enrichment(self._gw1_elite_keeper()))
 
     def test_fraction_is_identity_from_gw6(self):
         from fpl_cli.services.scoring import VALUE_QUALITY_WEIGHTS, gk_ceiling_attainability

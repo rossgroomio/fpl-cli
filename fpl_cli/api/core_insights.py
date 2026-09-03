@@ -13,6 +13,7 @@ import io
 import logging
 from collections.abc import Mapping
 from datetime import timedelta
+from math import isfinite
 from typing import ClassVar, TypedDict
 
 import httpx
@@ -116,10 +117,20 @@ def _optional_float(row: Mapping[str, str], column: str) -> float | None:
     if not raw:
         return None
     try:
-        return float(raw)
+        value = float(raw)
     except ValueError:
         logger.debug("Non-numeric %s in playerstats.csv: %r", column, raw)
         return None
+    if not isfinite(value):
+        # `float()` parses "nan" and "inf" without raising, and every one of
+        # these columns is a count-over-minutes division upstream, which is
+        # exactly how a zero-minute row serialises. Neither is a measurement:
+        # NaN reaches `normalise_score`, whose `round()` raises and takes the
+        # whole command down for every player; inf saturates its weight cap
+        # and credits the maximum for a signal nobody recorded.
+        logger.debug("Non-finite %s in playerstats.csv: %r", column, raw)
+        return None
+    return value
 
 
 def make_core_insights_fetcher(ttl: timedelta = DEFAULT_TTL) -> DatasetFetcher:

@@ -342,6 +342,34 @@ class TestSeasonAggregates:
         assert keeper.clean_sheets_per_90 == 0.45
 
     @respx.mock
+    @pytest.mark.parametrize("token", ["nan", "NaN", "inf", "-inf", "Infinity"])
+    async def test_non_finite_rates_stay_none(self, tmp_path, token: str):
+        """`float()` parses these without raising, and both outcomes are bad.
+
+        Every one of these columns is a count-over-minutes division upstream,
+        so a zero-minute row can serialise as either token. A NaN reaching
+        `normalise_score` raises out of `round()` and takes `fpl returnees`
+        down for the whole pool; an inf saturates its weight cap and credits
+        the maximum for a signal nobody recorded — the exact inverse of the
+        None-not-zero rule these fields exist for.
+        """
+        stats = (
+            "id,now_cost,cost_change_start,total_points,minutes,starts,gw,"
+            "defensive_contribution_per_90,saves_per_90,clean_sheets_per_90,"
+            "expected_goals_conceded_per_90\n"
+            f"300,4.5,0,150,3420,38,38,{token},{token},{token},{token}\n"
+        )
+        _mock_season_files(CI_SEASON, PLAYERS_CSV, stats)
+        async with CoreInsightsClient(_make_fetcher(tmp_path)) as client:
+            data = await client._fetch_season_data()
+
+        keeper = [r for r in data[client._season_label] if r.element_code == 500000][0]
+        assert keeper.defensive_contribution_per_90 is None
+        assert keeper.saves_per_90 is None
+        assert keeper.clean_sheets_per_90 is None
+        assert keeper.expected_goals_conceded_per_90 is None
+
+    @respx.mock
     async def test_orphan_player_skipped(self, tmp_path):
         """Player in playerstats but not in players.csv is skipped."""
         respx.get(f"{BASE}/{CI_SEASON}/players.csv").mock(
