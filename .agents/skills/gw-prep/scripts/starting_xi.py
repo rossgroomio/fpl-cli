@@ -18,10 +18,10 @@ import json
 import sys
 
 from _bootstrap import bootstrap_user_dirs
-from _resolve import resolve_all
 
 from fpl_cli.agents.analysis.starting_xi import StartingXIAgent
 from fpl_cli.api.fpl import FPLClient
+from fpl_cli.models.player import resolve_players_or_report
 
 
 async def _run(squad_names: list[str]) -> None:
@@ -30,7 +30,9 @@ async def _run(squad_names: list[str]) -> None:
         all_teams = await client.get_teams()
 
     errors: list[str] = []
-    squad = resolve_all(squad_names, all_players, all_teams, label="squad", errors=errors)
+    squad = resolve_players_or_report(
+        squad_names, all_players, all_teams, label="squad", errors=errors,
+    )
 
     if errors:
         json.dump({"error": True, "messages": errors}, sys.stdout, indent=2)

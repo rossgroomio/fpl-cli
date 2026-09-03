@@ -39,9 +39,9 @@ def _load_script() -> ModuleType:
 _mod = _load_script()
 _run = _mod._run
 
-# Name resolution itself lives in `_resolve.py`, shared with the other two
-# scripts, and is covered by tests/test_gw_prep_resolve.py; the library
-# function under it by tests/test_player_resolution.py.
+# Name resolution itself is `resolve_players_or_report` in the package,
+# shared with the other two scripts and covered by
+# tests/test_player_resolution.py.
 
 
 # -- _run integration tests --

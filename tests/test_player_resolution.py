@@ -6,7 +6,9 @@ from fpl_cli.models.player import (
     AmbiguousPlayerError,
     PlayerPosition,
     resolve_player,
+    resolve_player_or_report,
     resolve_players,
+    resolve_players_or_report,
 )
 from tests.conftest import make_player, make_team
 
@@ -214,3 +216,100 @@ class TestResolvePlayerAmbiguity:
 
     def test_ambiguous_error_is_a_value_error(self):
         assert issubclass(AmbiguousPlayerError, ValueError)
+
+
+def _reporting_players():
+    return _players() + _hendersons()
+
+
+class TestResolvePlayerOrReport:
+    def test_returns_the_player_and_leaves_errors_empty(self):
+        errors: list[str] = []
+        resolved = resolve_player_or_report(
+            "Salah", _reporting_players(), _teams(), label="OUT", errors=errors,
+        )
+        assert resolved.id == 1
+        assert errors == []
+
+    def test_unresolvable_reports_the_name_and_label(self):
+        errors: list[str] = []
+        resolved = resolve_player_or_report(
+            "Nobody", _reporting_players(), _teams(), label="OUT", errors=errors,
+        )
+        assert resolved is None
+        assert errors == ["Could not resolve OUT player: 'Nobody'"]
+
+    def test_ambiguous_reports_both_candidates(self):
+        errors: list[str] = []
+        teams = _teams() + [make_team(id=7, name="Crystal Palace", short_name="CRY")]
+        resolved = resolve_player_or_report(
+            "Henderson", _reporting_players(), teams, label="OUT", errors=errors,
+        )
+        assert resolved is None
+        assert len(errors) == 1
+        assert errors[0].startswith("Ambiguous OUT player:")
+        assert "Henderson (CRY)" in errors[0]
+        assert "Henderson (CHE)" in errors[0]
+
+    def test_team_disambiguator_resolves_the_tie(self):
+        errors: list[str] = []
+        teams = _teams() + [make_team(id=7, name="Crystal Palace", short_name="CRY")]
+        resolved = resolve_player_or_report(
+            "Henderson (CRY)", _reporting_players(), teams, label="OUT", errors=errors,
+        )
+        assert resolved.id == 100
+        assert errors == []
+
+    def test_teams_are_optional(self):
+        errors: list[str] = []
+        resolved = resolve_player_or_report(
+            "Salah", _reporting_players(), label="OUT", errors=errors,
+        )
+        assert resolved.id == 1
+        assert errors == []
+
+
+class TestResolvePlayersOrReport:
+    def test_returns_players_in_order(self):
+        errors: list[str] = []
+        resolved = resolve_players_or_report(
+            ["Saka", "Salah"], _reporting_players(), _teams(), label="bench", errors=errors,
+        )
+        assert [p.id for p in resolved] == [2, 1]
+        assert errors == []
+
+    def test_reports_every_failure_rather_than_stopping_at_the_first(self):
+        """A caller who mistyped two names should hear about both."""
+        errors: list[str] = []
+        teams = _teams() + [make_team(id=7, name="Crystal Palace", short_name="CRY")]
+        resolved = resolve_players_or_report(
+            ["Nobody", "Salah", "Henderson"], _reporting_players(), teams,
+            label="squad", errors=errors,
+        )
+        assert [p.id for p in resolved] == [1]
+        assert len(errors) == 2
+        assert "Could not resolve squad player: 'Nobody'" in errors
+        assert any(e.startswith("Ambiguous squad player:") for e in errors)
+
+    def test_accumulates_into_a_shared_error_list(self):
+        """Callers resolve two lists into one list of errors before reporting."""
+        errors: list[str] = []
+        players = _reporting_players()
+        resolve_players_or_report(
+            ["Nobody"], players, _teams(), label="starting", errors=errors,
+        )
+        resolve_players_or_report(
+            ["Nobody2"], players, _teams(), label="bench", errors=errors,
+        )
+        assert errors == [
+            "Could not resolve starting player: 'Nobody'",
+            "Could not resolve bench player: 'Nobody2'",
+        ]
+
+    def test_empty_names_resolve_to_nothing(self):
+        errors: list[str] = []
+        result = resolve_players_or_report(
+            [], _reporting_players(), _teams(), label="bench", errors=errors,
+        )
+        assert result == []
+        assert errors == []

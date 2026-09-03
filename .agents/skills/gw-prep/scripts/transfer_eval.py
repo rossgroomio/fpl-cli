@@ -18,10 +18,10 @@ import json
 import sys
 
 from _bootstrap import bootstrap_user_dirs
-from _resolve import resolve_all, resolve_one
 
 from fpl_cli.agents.analysis.transfer_eval import TransferEvalAgent
 from fpl_cli.api.fpl import FPLClient
+from fpl_cli.models.player import resolve_player_or_report, resolve_players_or_report
 
 
 async def _run(out_name: str, in_names: list[str]) -> None:
@@ -30,8 +30,12 @@ async def _run(out_name: str, in_names: list[str]) -> None:
         all_teams = await client.get_teams()
 
     errors: list[str] = []
-    out_player = resolve_one(out_name, all_players, all_teams, label="OUT", errors=errors)
-    in_players = resolve_all(in_names, all_players, all_teams, label="IN", errors=errors)
+    out_player = resolve_player_or_report(
+        out_name, all_players, all_teams, label="OUT", errors=errors,
+    )
+    in_players = resolve_players_or_report(
+        in_names, all_players, all_teams, label="IN", errors=errors,
+    )
 
     if errors:
         json.dump({"error": True, "messages": errors}, sys.stdout, indent=2)

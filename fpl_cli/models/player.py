@@ -309,3 +309,54 @@ def resolve_player(
     if exact and len(matches) > 1:
         raise AmbiguousPlayerError(query, matches, teams)
     return matches[0]
+
+
+def resolve_player_or_report(
+    name: str,
+    players: list[Player],
+    teams: list[Team] | None = None,
+    *,
+    label: str,
+    errors: list[str],
+) -> Player | None:
+    """Resolve one name, appending to *errors* and returning None on failure.
+
+    The reporting form of :func:`resolve_player`, for the commands and scripts
+    that take player names as user input: both ways of failing to land on one
+    player -- nothing matched, or several did -- become a message the caller
+    shows, rather than a None it has to describe and an exception it has to
+    catch. *label* names the role in that message ("bench", "squad", "OUT").
+
+    Pass *teams* wherever the caller has them: it is what makes the
+    ``Name (TEAM)`` disambiguator work, so someone holding one of two players
+    who share a surname can say which they mean.
+    """
+    try:
+        player = resolve_player(name, players, teams=teams)
+    except AmbiguousPlayerError as exc:
+        errors.append(f"Ambiguous {label} player: {exc}")
+        return None
+    if player is None:
+        errors.append(f"Could not resolve {label} player: '{name}'")
+    return player
+
+
+def resolve_players_or_report(
+    names: list[str],
+    players: list[Player],
+    teams: list[Team] | None = None,
+    *,
+    label: str,
+    errors: list[str],
+) -> list[Player]:
+    """Resolve every name, collecting failures into *errors*.
+
+    Resolves the whole list rather than stopping at the first failure, so a
+    caller who mistyped two names hears about both. See
+    :func:`resolve_player_or_report`.
+    """
+    resolved = [
+        resolve_player_or_report(name, players, teams, label=label, errors=errors)
+        for name in names
+    ]
+    return [p for p in resolved if p is not None]
