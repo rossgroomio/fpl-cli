@@ -1129,7 +1129,7 @@ class TestPublicViews:
 def _view(occurrences: int = 1, length: int = 1) -> ConditionRunView:
     """A view carrying only what `CountSurfacePolicy` reads."""
     return ConditionRunView(
-        condition_key="k", label="L", length=length, start_gameweek=1, held_in_run=0,
+        condition_key="k", length=length, start_gameweek=1, held_in_run=0,
         min_run=2, occurrences=occurrences, held_total=0, last_occurrence_gameweek=1,
         first_evaluated_gameweek=1, count_label_one="thing", count_label_many="things",
         count_policy=CountSurfacePolicy(),

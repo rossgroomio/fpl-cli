@@ -1,12 +1,13 @@
 """Streak-condition registry and rebuildable counters projection (U8).
 
 Conditions are a declarative registry, not hand-written counters (KTD7):
-each entry declares its key, the formats it applies to, a label, the
-minimum run length worth reporting, the row fields it reads, and a
-predicate that returns extend, reset, or hold for one manager's row that
-gameweek. A predicate receives the row, the manager's row for the previous
-gameweek (or None), and the full set of rows recorded for that gameweek --
-so a cohort-relative condition (who's top, who's last) has its denominator
+each entry declares its key, the formats it applies to, the minimum run
+length worth reporting, the row fields it reads, a predicate that returns
+extend, reset, or hold for one manager's row that gameweek, and the
+one/many labels a single occurrence renders under (issue #188). A
+predicate receives the row, the manager's row for the previous gameweek
+(or None), and the full set of rows recorded for that gameweek -- so a
+cohort-relative condition (who's top, who's last) has its denominator
 without a second query.
 
 Hold is what makes R19 and R20 work: an unknown row, a fixture-less blank,
@@ -178,13 +179,15 @@ class ConditionDefinition:
 
     `count_label_one`/`count_label_many` name one occurrence of the
     condition -- what a single extending gameweek *is* -- for the season
-    totals issue #164 adds. Not every condition reads naturally as a count
-    of the thing its run label names: `green_arrow_drought` extends on the
-    *absence* of a green arrow, so its occurrence is "gameweek without a
-    green arrow", stated in the label rather than left for the reader to
-    infer. Two explicit forms because English pluralises mid-phrase
-    ("gameweeks in the bottom half"), so appending an "s" cannot be
-    trusted mechanically.
+    totals issue #164 adds, and are also what U9's streak lines lead with
+    (issue #188: a run rendered as "{name} of {length}" reads wrong for any
+    condition whose name ends in a preposition-attracting word, e.g. "Weeks
+    on top of 2"). Not every condition reads naturally as a plain count of
+    the thing it tracks: `green_arrow_drought` extends on the *absence* of
+    a green arrow, so its occurrence is "gameweek without a green arrow",
+    stated explicitly rather than left for the reader to infer. Two
+    explicit forms because English pluralises mid-phrase ("gameweeks in the
+    bottom half"), so appending an "s" cannot be trusted mechanically.
 
     `count_policy` is the condition's own rule for when its season count
     earns a weekly render (see `CountSurfacePolicy`): a rare, discrete
@@ -197,7 +200,6 @@ class ConditionDefinition:
 
     key: str
     formats: frozenset[LeagueFormat]
-    label: str
     # The shortest open run worth reporting as a streak, or None for a
     # condition that never surfaces as one. None is not "min_run of 0": it
     # says the run is machinery rather than news -- the bottom half and the
@@ -400,14 +402,14 @@ _DRAFT_ONLY: frozenset[LeagueFormat] = frozenset({"draft"})
 # independently, and none reads another condition's state.
 CONDITIONS: tuple[ConditionDefinition, ...] = (
     ConditionDefinition(
-        key="weeks_on_top", formats=_BOTH, label="Weeks on top", min_run=2,
+        key="weeks_on_top", formats=_BOTH, min_run=2,
         needs=("league_position",), predicate=_weeks_on_top,
         count_label_one="gameweek on top of the league",
         count_label_many="gameweeks on top of the league",
         count_policy=CountSurfacePolicy(step=5),
     ),
     ConditionDefinition(
-        key="bottom_half_run", formats=_BOTH, label="Bottom-half run", min_run=None,
+        key="bottom_half_run", formats=_BOTH, min_run=None,
         needs=("league_position",), predicate=_bottom_half_run,
         count_label_one="gameweek in the bottom half",
         count_label_many="gameweeks in the bottom half",
@@ -416,21 +418,21 @@ CONDITIONS: tuple[ConditionDefinition, ...] = (
         ),
     ),
     ConditionDefinition(
-        key="gw_win_streak", formats=_BOTH, label="Gameweek win streak", min_run=2,
+        key="gw_win_streak", formats=_BOTH, min_run=2,
         needs=("gross_points", "transfer_cost"), predicate=_gw_win_streak,
         count_label_one="gameweek win",
         count_label_many="gameweek wins",
         count_policy=CountSurfacePolicy(step=3, first_in_second_half=True),
     ),
     ConditionDefinition(
-        key="gw_loss_streak", formats=_BOTH, label="Gameweek loss streak", min_run=2,
+        key="gw_loss_streak", formats=_BOTH, min_run=2,
         needs=("gross_points", "transfer_cost"), predicate=_gw_loss_streak,
         count_label_one="last-place finish",
         count_label_many="last-place finishes",
         count_policy=CountSurfacePolicy(step=3, first_in_second_half=True),
     ),
     ConditionDefinition(
-        key="green_arrow_drought", formats=_BOTH, label="Green arrow drought", min_run=None,
+        key="green_arrow_drought", formats=_BOTH, min_run=None,
         needs=("league_position",), predicate=_green_arrow_drought,
         count_label_one="gameweek without a green arrow",
         count_label_many="gameweeks without a green arrow",
@@ -440,28 +442,28 @@ CONDITIONS: tuple[ConditionDefinition, ...] = (
         count_policy=CountSurfacePolicy(run_milestones=frozenset({5, 10})),
     ),
     ConditionDefinition(
-        key="captain_blank_run", formats=_CLASSIC_ONLY, label="Captain blank run", min_run=2,
+        key="captain_blank_run", formats=_CLASSIC_ONLY, min_run=2,
         needs=("captain",), predicate=_captain_blank_run,
         count_label_one="captain blank",
         count_label_many="captain blanks",
         count_policy=CountSurfacePolicy(step=5, ride_along_min=3),
     ),
     ConditionDefinition(
-        key="hit_run", formats=_CLASSIC_ONLY, label="Hit run", min_run=2,
+        key="hit_run", formats=_CLASSIC_ONLY, min_run=2,
         needs=("transfer_cost",), predicate=_hit_run,
         count_label_one="gameweek with a transfer hit",
         count_label_many="gameweeks with a transfer hit",
         count_policy=CountSurfacePolicy(step=3, ride_along_min=2),
     ),
     ConditionDefinition(
-        key="waiver_win_run", formats=_DRAFT_ONLY, label="Waiver win run", min_run=3,
+        key="waiver_win_run", formats=_DRAFT_ONLY, min_run=3,
         needs=("transactions",), predicate=_waiver_win_run,
         count_label_one="waiver haul",
         count_label_many="waiver hauls",
         count_policy=CountSurfacePolicy(step=5),
     ),
     ConditionDefinition(
-        key="waiver_burn_run", formats=_DRAFT_ONLY, label="Waiver burn run", min_run=3,
+        key="waiver_burn_run", formats=_DRAFT_ONLY, min_run=3,
         needs=("transactions",), predicate=_waiver_burn_run,
         count_label_one="waiver backfire",
         count_label_many="waiver backfires",
@@ -848,8 +850,8 @@ class ConditionRunView:
     """One manager's run for one condition, combined with its registry threshold.
 
     The read-facing counterpart to `ConditionRunState` (what gets
-    persisted): adds `label`, `is_reportable` (length >= the condition's own
-    minimum), and `excess` (R12: how far a run has gone past its minimum, so
+    persisted): adds `is_reportable` (length >= the condition's own
+    minimum) and `excess` (R12: how far a run has gone past its minimum, so
     a caller can rank surfaced entries by it) -- so a caller, U9's rendering,
     not built here, never has to cross-reference the registry itself. The
     season-wide fields (issue #164) ride along with the registry's own
@@ -858,7 +860,6 @@ class ConditionRunView:
     """
 
     condition_key: str
-    label: str
     length: int
     start_gameweek: int | None
     held_in_run: int
@@ -902,7 +903,6 @@ def manager_condition_views(
         state = manager_runs.get(condition.key, ConditionRunState())
         views[condition.key] = ConditionRunView(
             condition_key=condition.key,
-            label=condition.label,
             length=state.length,
             start_gameweek=state.start_gameweek,
             held_in_run=state.held_in_run,
