@@ -9,6 +9,7 @@ from fpl_cli.agents.base import Agent, AgentResult, AgentStatus
 from fpl_cli.agents.common import (
     enrich_player,
     fetch_understat_lookup,
+    rekey_for_draft,
 )
 from fpl_cli.api.fpl import FPLClient
 from fpl_cli.api.fpl_draft import FPLDraftClient, match_draft_to_main
@@ -183,10 +184,6 @@ class WaiverAgent(Agent):
                 include_match_data=True,
             )
             next_gw_id = data.next_gw_id
-            self._player_histories = data.player_histories or {}
-            self._player_priors = data.player_priors
-            self._adjusted_npxg_lookup = data.adjusted_npxg_lookup
-            self._consistency_lookup = data.consistency_lookup
             scoring_ctx = data.scoring_ctx
 
             # The draft bootstrap carries neither saves nor expected goals
@@ -194,6 +191,26 @@ class WaiverAgent(Agent):
             # main game's player. Joined on `code`, never on (web_name,
             # team_id) — a mid-season rename breaks the name join (#168).
             self._main_player_map = match_draft_to_main(available, data.players or [])
+
+            # Every lookup below arrives keyed by the main game's element id,
+            # and the pool scored from here on is keyed by the draft's, so
+            # each one is translated through the same join exactly once (#209).
+            # Read raw they land on whichever main-game player happens to
+            # share the draft id: the two numberings coincide for most of the
+            # pool and diverge over the elements each bootstrap registered
+            # after the other, so the miss is silent and player-specific.
+            self._player_histories = rekey_for_draft(
+                data.player_histories, self._main_player_map,
+            ) or {}
+            self._player_priors = rekey_for_draft(
+                data.player_priors, self._main_player_map,
+            )
+            self._adjusted_npxg_lookup = rekey_for_draft(
+                data.adjusted_npxg_lookup, self._main_player_map,
+            )
+            self._consistency_lookup = rekey_for_draft(
+                data.consistency_lookup, self._main_player_map,
+            )
 
             # Enrich available players with matchup and FDR
             matchup_cache: dict[tuple[int, str], float] = {}

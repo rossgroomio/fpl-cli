@@ -8,6 +8,7 @@ from fpl_cli.agents.common import (
     get_actual_squad_picks,
     get_draft_ownership_mapping,
     get_draft_squad_players,
+    rekey_for_draft,
 )
 from fpl_cli.services.matchup import build_team_fixture_map
 from tests.conftest import make_draft_player, make_draft_team, make_fixture, make_player
@@ -331,3 +332,28 @@ class TestGetDraftOwnershipMapping:
         assert owned == {99: 7}
         assert entries == {7: "Ross Groom"}
         assert main_to_draft == {1: 99}
+
+
+class TestRekeyForDraft:
+    """#209: main-keyed scoring lookups translated into the draft id space."""
+
+    def _map(self):
+        """Draft 5 is main 500 — the two spaces disagree for this player."""
+        return {5: make_player(id=500, web_name="Semenyo", team_id=1)}
+
+    def test_value_moves_from_the_main_id_to_the_draft_id(self):
+        assert rekey_for_draft({500: "own"}, self._map()) == {5: "own"}
+
+    def test_a_row_under_the_draft_id_is_never_borrowed(self):
+        """The whole bug: reading raw, draft id 5 found main player 5's row."""
+        assert rekey_for_draft({5: "stranger"}, self._map()) == {}
+
+    def test_unmatched_draft_element_is_absent_rather_than_guessed(self):
+        assert rekey_for_draft({500: "own"}, {}) == {}
+
+    def test_none_stays_none(self):
+        """Callers distinguish 'not requested' from 'requested and empty'."""
+        assert rekey_for_draft(None, self._map()) is None
+
+    def test_empty_lookup_stays_empty(self):
+        assert rekey_for_draft({}, self._map()) == {}

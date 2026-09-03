@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
-from typing import TYPE_CHECKING, Any, cast
+from collections.abc import Callable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 import httpx
 
@@ -19,6 +19,37 @@ from fpl_cli.models.types import EnrichedPlayer
 
 # Re-export: canonical location is now fpl_cli.services.scoring
 from fpl_cli.services.scoring import build_understat_by_player_id as build_understat_by_player_id
+
+T = TypeVar("T")
+
+
+def rekey_for_draft(
+    lookup: Mapping[int, T] | None,
+    main_player_map: Mapping[int, Player],
+) -> dict[int, T] | None:
+    """Re-key a main-game-keyed lookup into the draft element id space.
+
+    Everything ``prepare_scoring_data`` builds — histories, priors, the
+    fixture-adjusted npxG lookup, the consistency lookup — is keyed by the
+    main game's element id, while a draft agent scores dicts carrying the
+    draft element id. The two spaces are genuinely different: they agree for
+    most of the pool and drift apart at the tail, because each bootstrap
+    appends new registrations in its own order. A mis-keyed read there is not
+    a miss but a *swap* — the draft id lands on a real main element belonging
+    to somebody else, so the player is scored on a stranger's history.
+
+    *main_player_map* is ``match_draft_to_main``'s output, so a draft element
+    with no main-game counterpart is simply absent from the result: that read
+    misses, which is the correct degradation. ``None`` in, ``None`` out —
+    callers distinguish "lookup not requested" from "requested and empty".
+    """
+    if lookup is None:
+        return None
+    return {
+        draft_id: lookup[main_player.id]
+        for draft_id, main_player in main_player_map.items()
+        if main_player.id in lookup
+    }
 
 
 def enrich_player(
