@@ -7,7 +7,7 @@ import pytest
 from click.testing import CliRunner
 
 from fpl_cli.cli.fdr import fdr_command
-from tests.conftest import make_draft_player, make_fixture, make_team
+from tests.conftest import make_agent, make_draft_player, make_fixture, make_team
 
 
 def _make_draft_client(picks_data: dict, bootstrap_elements: list, current_gw: int = 25):
@@ -24,20 +24,13 @@ def _make_draft_client(picks_data: dict, bootstrap_elements: list, current_gw: i
 @pytest.fixture
 def mock_fixture_agent():
     """Fixture agent mock that returns minimal success data."""
-    agent = MagicMock()
-    agent.__aenter__ = AsyncMock(return_value=agent)
-    agent.__aexit__ = AsyncMock(return_value=False)
-    result = MagicMock()
-    result.success = True
-    result.data = {
+    return make_agent({
         "current_gameweek": 25,
         "easy_fixture_runs": {"overall": [], "for_attackers": [], "for_defenders": []},
         "blank_gameweeks": {},
         "double_gameweeks": {},
         "squad_exposure": [],
-    }
-    agent.run = AsyncMock(return_value=result)
-    return agent
+    })
 
 
 def test_fdr_my_squad_draft_builds_context(mock_fixture_agent):

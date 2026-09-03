@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from click.testing import CliRunner
 
 from fpl_cli.cli._context import CLIContext, Format
+from tests.conftest import make_agent
 
 # ---------------------------------------------------------------------------
 # league.py - section gating
@@ -145,20 +146,13 @@ class TestFdrFormatAwareSquad:
     """fdr --my-squad auto-selects squad source based on format."""
 
     def _mock_fixture_agent(self):
-        agent = MagicMock()
-        agent.__aenter__ = AsyncMock(return_value=agent)
-        agent.__aexit__ = AsyncMock(return_value=False)
-        result = MagicMock()
-        result.success = True
-        result.data = {
+        return make_agent({
             "current_gameweek": 25,
             "easy_fixture_runs": {"overall": [], "for_attackers": [], "for_defenders": []},
             "blank_gameweeks": {},
             "double_gameweeks": {},
             "squad_exposure": [],
-        }
-        agent.run = AsyncMock(return_value=result)
-        return agent
+        })
 
     def _mock_draft_client(self, picks_data, bootstrap_elements, current_gw=25):
         client = MagicMock()

@@ -83,6 +83,8 @@ Momentum Alert bullets must only cite numbers that appear in the CLI/stats outpu
 
 ## pFDR (Positional FDR) Analysis
 
+**When the prompt carries a Data quality caveat, pFDR is indicative, not decisive.** Those warnings mean the team ratings under every number below are stale, absent, describing last season's league, or unable to separate any two clubs -- the table still renders, it just is not measuring what it claims. Keep producing the pFDR Overview section (a reader needs to see the fixtures), but do not let a fixture run alone carry a transfer, captaincy or waiver recommendation; lead on form, minutes and preview intel, and say in the Rationale that fixtures were discounted. With no caveat present, weight pFDR normally.
+
 For each position (GK, DEF, MID, FWD):
 
 1. Identify the 3 best fixture runs over the next 5 GWs (lowest average pFDR).
