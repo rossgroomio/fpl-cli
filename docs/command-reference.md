@@ -785,17 +785,23 @@ first time a season's partition is created, the run prints where it went.
 #### Season phase
 
 Every recap is stamped with where its gameweek sits in the season's arc. The phase sets
-the framing line in the report and the editorial's tone, and the finale is the one phase
-whose notes pack rescans every captured gameweek instead of a trailing six-gameweek
-window.
+the editorial's tone in the retrospective prompt — it is scene-setting context for the
+writer, never printed in the saved report — and the finale is the one phase whose notes
+pack rescans every captured gameweek instead of a trailing six-gameweek window.
 
 | Phase | Gameweeks | Framing it states |
 |---|---|---|
 | `opener` | The first gameweek (GW1) | "the season opener" |
-| `pre_chip_boundary` | Up to the gameweek before the chip split (GW2-18) | "before the GW19 chip-availability boundary" |
-| `midpoint` | Chip split to the start of the run-in (GW19-31) | "the season midpoint, past the GW19 chip boundary and before the run-in" |
+| `pre_chip_boundary` (classic) | Up to the gameweek before the chip split (GW2-18) | "before the GW19 chip-availability boundary" |
+| `pre_chip_boundary` (draft) | Up to the gameweek before the chip split (GW2-18) | "before the season's halfway point (GW19)" |
+| `midpoint` (classic) | Chip split to the start of the run-in (GW19-31) | "the season midpoint, past the GW19 chip boundary and before the run-in" |
+| `midpoint` (draft) | Chip split to the start of the run-in (GW19-31) | "the season midpoint, past the GW19 halfway point and before the run-in" |
 | `run_in` | The last six gameweeks before the final one (GW32-37) | "in the run-in to the season finale (GW38)" |
 | `finale` | The final gameweek and anything past it (GW38+) | "the season finale" |
+
+Draft has no chip mechanics, so `pre_chip_boundary` and `midpoint` drop the chip framing
+for a draft league in favour of the same halfway-point wording, plain of any chip
+language.
 
 Boundaries derive from the season-length and chip-split constants rather than fixed
 dates, so a season of a different length moves them and the stated gameweek numbers move
