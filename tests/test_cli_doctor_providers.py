@@ -22,7 +22,9 @@ from fpl_cli.api.core_insights import (
     PLAYERMATCHSTATS_REQUIRED_COLUMNS,
     PLAYERS_CSV_REQUIRED_COLUMNS,
     PLAYERSTATS_REQUIRED_COLUMNS,
+    season_dir,
 )
+from fpl_cli.api.historical import historical_season_windows
 from fpl_cli.api.vaastav import (
     BASE_URL as VAASTAV_BASE,
 )
@@ -31,19 +33,17 @@ from fpl_cli.api.vaastav import (
 )
 from fpl_cli.cli import main
 from fpl_cli.models.player import Player
-from fpl_cli.season import (
-    core_insights_season,
-    get_season_year,
-    season_label_range,
-    understat_season,
-)
+from fpl_cli.season import core_insights_season, understat_season
 
 FPL_BOOTSTRAP_URL = "https://fantasy.premierleague.com/api/bootstrap-static/"
 DRAFT_BOOTSTRAP_URL = "https://draft.premierleague.com/api/bootstrap-static"
 UNDERSTAT_URL = f"https://understat.com/getLeagueData/EPL/{understat_season()}"
 FD_STANDINGS_URL = "https://api.football-data.org/v4/competitions/PL/standings"
 
-VAASTAV_SEASONS = season_label_range(get_season_year() - 1, count=3)
+# The allocation the probes read from (#101): vaastav the two oldest seasons
+# of the window, Core-Insights last season and the one in progress.
+VAASTAV_SEASONS = historical_season_windows().vaastav
+CI_SEASONS = historical_season_windows().core_insights
 CI_SEASON = core_insights_season()
 
 # The JSON keys the probe asserts on a bootstrap element — same derivation as
@@ -122,6 +122,7 @@ def _register_routes(
     drop_player_key: tuple[str, ...] = (),
     fpl_error: Exception | None = None,
     vaastav_overrides: dict[str, Response] | None = None,
+    ci_overrides: dict[tuple[str, str], Response] | None = None,
     understat_teams: list[str] | None = None,
     gw_missing: tuple[int, ...] = (),
     gw_texts: dict[tuple[int, str], str] | None = None,
@@ -145,17 +146,24 @@ def _register_routes(
         )
         respx.get(f"{VAASTAV_BASE}/{season}/players_raw.csv").mock(return_value=response)
 
-    respx.get(f"{CI_BASE}/{CI_SEASON}/players.csv").mock(
-        return_value=Response(
-            200,
-            text=players_text
-            if players_text is not None
-            else _csv(PLAYERS_CSV_REQUIRED_COLUMNS),
+    # Root files for every season Core-Insights serves; `ci_overrides` is
+    # keyed by (season label, filename) and `players_text` applies to the
+    # season in progress, the one the per-GW files join against.
+    ci_responses = ci_overrides or {}
+    for season in CI_SEASONS:
+        directory = season_dir(season)
+        players = _csv(PLAYERS_CSV_REQUIRED_COLUMNS)
+        if players_text is not None and season == CI_SEASONS[-1]:
+            players = players_text
+        respx.get(f"{CI_BASE}/{directory}/players.csv").mock(
+            return_value=ci_responses.get((season, "players.csv"), Response(200, text=players))
         )
-    )
-    respx.get(f"{CI_BASE}/{CI_SEASON}/playerstats.csv").mock(
-        return_value=Response(200, text=_csv(PLAYERSTATS_REQUIRED_COLUMNS))
-    )
+        respx.get(f"{CI_BASE}/{directory}/playerstats.csv").mock(
+            return_value=ci_responses.get(
+                (season, "playerstats.csv"),
+                Response(200, text=_csv(PLAYERSTATS_REQUIRED_COLUMNS)),
+            )
+        )
     overridden = gw_texts or {}
     for gw in {finished_gws, finished_gws - 1}:
         if gw < 1:
@@ -215,6 +223,8 @@ class TestHealthyProviders:
         assert "player fields present" in flat
         for season in VAASTAV_SEASONS:
             assert f"vaastav {season}" in flat
+        for season in CI_SEASONS:
+            assert f"Core-Insights {season}" in flat
         assert "all per-GW files present, parsing to" in flat
         assert "player-match records" in flat
         assert "players resolve for the join" in flat
@@ -252,6 +262,33 @@ class TestShapeDrift:
         flat = _flat(result)
         assert f"vaastav {VAASTAV_SEASONS[0]}" in flat
         assert "missing upstream" in flat
+
+    @respx.mock
+    def test_core_insights_missing_completed_season_is_broken(self, monkeypatch):
+        # Core-Insights is the only source for last season (#101): a vanished
+        # directory costs every profile a whole season, and it is not a
+        # rollover lag the way a missing current-season directory can be.
+        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
+        last_season = CI_SEASONS[0]
+        _register_routes(ci_overrides={(last_season, "playerstats.csv"): Response(404)})
+        result = _run()
+        assert result.exit_code == 1
+        flat = _flat(result)
+        assert f"sole source for {last_season} player history" in flat
+        assert "may not exist yet" not in flat
+        # The season in progress is still probed in full.
+        assert "all per-GW files present, parsing to" in flat
+
+    @respx.mock
+    def test_core_insights_missing_current_season_may_be_rollover_lag(self, monkeypatch):
+        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
+        _register_routes(ci_overrides={(CI_SEASONS[-1], "players.csv"): Response(404)})
+        result = _run()
+        assert result.exit_code == 1
+        flat = _flat(result)
+        assert "sole current-season source" in flat
+        assert "may not exist yet" in flat
+        assert "no players.csv lookup to join against" in flat
 
     @respx.mock
     def test_vaastav_renamed_column_is_broken(self, monkeypatch):

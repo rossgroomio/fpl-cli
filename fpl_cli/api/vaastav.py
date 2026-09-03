@@ -169,7 +169,11 @@ class VaastavClient:
                 end_cost=now_cost,
                 position=POSITION_MAP.get(element_type, "???"),
                 web_name=row["web_name"],
-                team_id=int(row.get("team", 0)),
+                # The stable club code, as Core-Insights carries it, so a
+                # profile's seasons agree on what team_id means whichever
+                # source served them. `team` is the season-local id, which
+                # means nothing outside that season's own bootstrap.
+                team_id=int(row.get("team_code", 0) or 0),
             ))
 
         return histories

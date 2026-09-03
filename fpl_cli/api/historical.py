@@ -3,24 +3,54 @@
 Provides a single entry point for CLI commands and services that need
 cross-season player histories and intra-season GW trends.
 
-Season allocation:
-  - vaastav: 2022-23, 2023-24, 2024-25 (frozen historical data)
-  - Core-Insights: 2025-26+ (current season, updated 3x daily)
+Season allocation (`historical_season_windows`): a four-season trailing
+window ending at the season in progress, Core-Insights serving the newest
+two -- all it publishes, refreshed 3x daily -- and vaastav the frozen two
+before them. Both windows come from that one function, so they roll
+together at the July cutover and cannot overlap by accident (#101).
 """
 from __future__ import annotations
 
 import logging
 from collections.abc import Mapping, Sequence
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, NamedTuple
 
 from fpl_cli.api.historical_types import GwTrendProfile, PlayerProfile, SeasonHistory
-from fpl_cli.season import get_season_year, season_label_range
+from fpl_cli.season import season_label_range
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
 logger = logging.getLogger(__name__)
+
+HISTORICAL_SEASON_COUNT = 4
+CORE_INSIGHTS_SEASON_COUNT = 2
+
+
+class HistoricalSeasonWindows(NamedTuple):
+    """The seasons each source serves, oldest first, newest last."""
+
+    vaastav: tuple[str, ...]
+    core_insights: tuple[str, ...]
+
+
+def historical_season_windows(year: int | None = None) -> HistoricalSeasonWindows:
+    """Split the trailing season window between the two sources, disjointly.
+
+    Core-Insights takes the newest ``CORE_INSIGHTS_SEASON_COUNT`` seasons of
+    the ``HISTORICAL_SEASON_COUNT``-season window ending at ``year`` (the
+    current season by default); vaastav takes the rest. Widening one side
+    without narrowing the other is exactly the overlap `merge_season_histories`
+    guards against, which is why both windows come from here and nowhere
+    else -- ``fpl doctor --providers`` probes the same allocation.
+
+    >>> historical_season_windows(2026)
+    HistoricalSeasonWindows(vaastav=('2023-24', '2024-25'), core_insights=('2025-26', '2026-27'))
+    """
+    window = season_label_range(year, count=HISTORICAL_SEASON_COUNT)
+    split = HISTORICAL_SEASON_COUNT - CORE_INSIGHTS_SEASON_COUNT
+    return HistoricalSeasonWindows(vaastav=window[:split], core_insights=window[split:])
 
 
 def merge_season_histories(
@@ -72,7 +102,7 @@ def merge_season_histories(
 
 
 class HistoricalDataProvider:
-    """Merges vaastav (historical seasons) and Core-Insights (current season)."""
+    """Merges vaastav (the older seasons) and Core-Insights (the newest)."""
 
     _session_profiles: ClassVar[dict[int, PlayerProfile] | None] = None
 
@@ -133,16 +163,15 @@ async def make_historical_provider() -> AsyncIterator[HistoricalDataProvider]:
     from fpl_cli.api.core_insights import CoreInsightsClient, make_core_insights_fetcher
     from fpl_cli.api.vaastav import VaastavClient, make_vaastav_fetcher
 
-    # Vaastav covers historical seasons (all except current).
-    vaastav_seasons = season_label_range(get_season_year() - 1, count=3)
+    windows = historical_season_windows()
 
     ci_fetcher = None
     vaastav_fetcher = None
     try:
         vaastav_fetcher = make_vaastav_fetcher()
         ci_fetcher = make_core_insights_fetcher()
-        vaastav = VaastavClient(vaastav_fetcher, seasons=vaastav_seasons)
-        ci = CoreInsightsClient(ci_fetcher)
+        vaastav = VaastavClient(vaastav_fetcher, seasons=windows.vaastav)
+        ci = CoreInsightsClient(ci_fetcher, seasons=windows.core_insights)
         yield HistoricalDataProvider(vaastav, ci)
     finally:
         if ci_fetcher is not None:

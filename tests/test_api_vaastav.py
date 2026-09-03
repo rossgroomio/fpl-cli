@@ -38,20 +38,22 @@ def _stub_fetcher() -> MagicMock:
 
 
 # Minimal CSV that mirrors players_raw.csv columns we use
+# `team` is the season-local id, `team_code` the stable club code the parser
+# reads; they differ here so a test can tell which column was used.
 SAMPLE_CSV = (
-    "code,web_name,element_type,team,total_points,minutes,starts,"
+    "code,web_name,element_type,team,team_code,total_points,minutes,starts,"
     "goals_scored,assists,expected_goals,expected_assists,"
     "expected_goal_involvements,now_cost,cost_change_start\n"
-    "80201,Salah,3,14,265,2800,31,19,13,17.5,10.2,27.7,130,5\n"
-    "206325,Haaland,4,13,220,2500,28,25,5,22.0,3.5,25.5,150,10\n"
+    "80201,Salah,3,11,14,265,2800,31,19,13,17.5,10.2,27.7,130,5\n"
+    "206325,Haaland,4,12,43,220,2500,28,25,5,22.0,3.5,25.5,150,10\n"
 )
 
 SAMPLE_CSV_SEASON2 = (
-    "code,web_name,element_type,team,total_points,minutes,starts,"
+    "code,web_name,element_type,team,team_code,total_points,minutes,starts,"
     "goals_scored,assists,expected_goals,expected_assists,"
     "expected_goal_involvements,now_cost,cost_change_start\n"
-    "80201,Salah,3,14,230,2600,29,15,11,14.0,9.0,23.0,125,0\n"
-    "206325,Haaland,4,13,200,2200,25,22,3,20.0,2.5,22.5,140,5\n"
+    "80201,Salah,3,11,14,230,2600,29,15,11,14.0,9.0,23.0,125,0\n"
+    "206325,Haaland,4,12,43,200,2200,25,22,3,20.0,2.5,22.5,140,5\n"
 )
 
 BASE = VaastavClient.BASE_URL
@@ -82,6 +84,7 @@ class TestVaastavClientParsing:
         assert salah.end_cost == 130
         assert salah.position == "MID"
         assert salah.season == "2024-25"
+        assert salah.team_id == 14  # the club code, as Core-Insights carries it, not `team`
 
     @respx.mock
     async def test_position_mapping(self, tmp_path):

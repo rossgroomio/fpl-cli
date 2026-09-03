@@ -7,11 +7,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from fpl_cli.api.historical import (
+    HISTORICAL_SEASON_COUNT,
     HistoricalDataProvider,
+    historical_season_windows,
     make_historical_provider,
     merge_season_histories,
 )
 from fpl_cli.api.historical_types import GwTrendProfile, PlayerProfile, SeasonHistory, compute_reliability
+from fpl_cli.season import get_season_year, season_label, season_label_range
 
 
 @pytest.fixture(autouse=True)
@@ -328,6 +331,41 @@ class TestGwTrends:
         provider = HistoricalDataProvider(vaastav, ci)
         await provider.get_gw_trends(last_n=5)
         ci.get_gw_trends.assert_called_once_with(last_n=5)
+
+
+class TestHistoricalSeasonWindows:
+    """#101: one allocation, disjoint by construction, read by every consumer."""
+
+    def test_core_insights_takes_the_newest_two_and_vaastav_the_two_before(self):
+        windows = historical_season_windows(2026)
+        assert windows.vaastav == ("2023-24", "2024-25")
+        assert windows.core_insights == ("2025-26", "2026-27")
+
+    def test_windows_are_disjoint_and_together_form_the_trailing_window(self):
+        for year in range(2020, 2040):
+            windows = historical_season_windows(year)
+            assert not set(windows.vaastav) & set(windows.core_insights)
+            assert windows.vaastav + windows.core_insights == season_label_range(
+                year, count=HISTORICAL_SEASON_COUNT
+            )
+            assert windows.core_insights[-1] == season_label(year)
+
+    def test_defaults_to_the_current_season(self):
+        assert historical_season_windows() == historical_season_windows(get_season_year())
+
+    async def test_provider_hands_each_client_its_window(self):
+        with (
+            patch("fpl_cli.api.vaastav.make_vaastav_fetcher"),
+            patch("fpl_cli.api.core_insights.make_core_insights_fetcher"),
+            patch("fpl_cli.api.vaastav.VaastavClient") as vaastav_cls,
+            patch("fpl_cli.api.core_insights.CoreInsightsClient") as ci_cls,
+        ):
+            async with make_historical_provider():
+                pass
+
+        windows = historical_season_windows()
+        assert vaastav_cls.call_args.kwargs["seasons"] == windows.vaastav
+        assert ci_cls.call_args.kwargs["seasons"] == windows.core_insights
 
 
 class TestContextManager:

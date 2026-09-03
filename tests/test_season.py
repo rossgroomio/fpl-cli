@@ -3,6 +3,8 @@
 from datetime import date
 from pathlib import Path
 
+import pytest
+
 from fpl_cli.season import (
     CHIP_SPLIT_GW,
     TOTAL_GAMEWEEKS,
@@ -11,6 +13,7 @@ from fpl_cli.season import (
     is_season_label,
     season_label,
     season_partition,
+    season_start_year,
     understat_season,
     vaastav_season,
     vaastav_season_range,
@@ -217,3 +220,18 @@ class TestIsSeasonLabel:
 
     def test_every_generated_label_round_trips(self):
         assert all(is_season_label(season_label(y)) for y in range(1995, 2100))
+
+
+# -- season_start_year -------------------------------------------------------
+
+class TestSeasonStartYear:
+    def test_parses_the_leading_year(self):
+        assert season_start_year("2025-26") == 2025
+
+    def test_round_trips_season_label(self):
+        assert all(season_start_year(season_label(y)) == y for y in range(1995, 2100))
+
+    def test_rejects_anything_that_is_not_a_season_label(self):
+        for bad in ("2025-2026", "2026-28", "reports", "2025", ""):
+            with pytest.raises(ValueError):
+                season_start_year(bad)

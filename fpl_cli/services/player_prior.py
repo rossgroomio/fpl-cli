@@ -1,7 +1,7 @@
 """Player-level Bayesian prior for early-season confidence.
 
-Uses previous-season pts/90 from vaastav data to determine per-player
-confidence. Scores are shrunk toward position means with shrinkage
+Uses previous-season pts/90 from the historical datasets to determine
+per-player confidence. Scores are shrunk toward position means with shrinkage
 reduced for players with strong historical track records. A price-based
 confidence floor handles new signings with no PL history.
 
@@ -48,7 +48,7 @@ class PlayerPrior:
 
 
 def _previous_season_label() -> str:
-    """Get the vaastav season label for the previous season."""
+    """Get the season label for the previous season."""
     return season_label(get_season_year() - 1)
 
 
@@ -97,10 +97,11 @@ def generate_player_prior(
     players: list[Player],
     current_gw: int,
 ) -> dict[int, PlayerPrior]:
-    """Generate per-player priors from vaastav history and current FPL data.
+    """Generate per-player priors from player history and current FPL data.
 
     Args:
-        profiles: Vaastav PlayerProfile keyed by element_code.
+        profiles: PlayerProfile keyed by element_code, as
+            `HistoricalDataProvider.get_all_player_histories()` returns them.
         players: Current FPL players (needed for code->id mapping and prices).
         current_gw: Current gameweek number.
 
@@ -151,7 +152,7 @@ def generate_player_prior(
             prior_strength = percentile_rank(pts_90, pos_values)
             source = "history"
         else:
-            # No qualifying history (injured last season, new signing, no vaastav data)
+            # No qualifying history (injured last season, new signing, no historical data)
             price_values = position_prices.get(position, [])
             price_pct = percentile_rank(float(p.now_cost), [float(v) for v in price_values])
             prior_strength = price_pct * PRICE_CONFIDENCE_FACTOR

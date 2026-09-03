@@ -1522,9 +1522,9 @@ def _understat_match(
     """Find this player in the injected Understat season, or None.
 
     A missing or empty season degrades to the FPL-only path. Matching uses the
-    player's *current* club: vaastav's `team_id` is that season's league-local
-    id and cannot be resolved to a name here, so a player who has since moved
-    simply fails to match and loses the xG sharpening.
+    player's *current* club: the season's `team_id` is the FPL club code and
+    no team map reaches here to resolve it to a name, so a player who has
+    since moved simply fails to match and loses the xG sharpening.
     """
     if not understat_seasons:
         return None
