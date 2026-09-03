@@ -188,6 +188,7 @@ def calculate_waiver_score(
     squad_by_position: dict[str, list],
     team_counts: dict[str, int] | None = None,
     next_gw_id: int,
+    gk_signals_supplied: bool = False,
 ) -> int:
     """Calculate a waiver priority score for a player.
 
@@ -199,6 +200,15 @@ def calculate_waiver_score(
 
     Position-need and team-stacking adjustments are waiver-specific
     and applied to the raw score before normalisation.
+
+    *gk_signals_supplied* says whether this evaluation carries the GK signal
+    block, which decides whether the GK anchor is calendar-scaled. The draft
+    bootstrap publishes neither saves nor expected goals conceded, so the
+    caller reaches them by joining the draft element to its main-game
+    ``Player`` on ``code`` — a join that can miss. Passing True for a keeper
+    it missed would divide a signal-less numerator by a scaled denominator
+    and inflate him ~30% at GW2 (#143 / PR #156 review), so the flag is
+    per-player, not per-run. Ignored for outfielders.
     """
     # Combined minutes factor: per_appearance * availability (waiver-specific)
     per_appearance = calculate_mins_factor(
@@ -237,9 +247,12 @@ def calculate_waiver_score(
         elif current_count == 2:
             score -= 2
 
-    # No next_gw_id on purpose: the draft waiver path scores keepers without
-    # the GK signal block (EnrichedPlayer carries no saves/xGC fields), and a
-    # scaled denominator over a signal-less numerator inflates GKs ~30% at
-    # GW2 (#143 / PR #156 review). Full anchor until the signals are wired.
-    waiver_ceiling = _ownership_ceiling_for("waiver", evaluation.position)
+    # The GK anchor is calendar-scaled only for a keeper whose signals this
+    # evaluation actually carries; without them the full anchor stands, or a
+    # scaled denominator over a signal-less numerator inflates him (#207).
+    waiver_ceiling = _ownership_ceiling_for(
+        "waiver",
+        evaluation.position,
+        next_gw_id=next_gw_id if gk_signals_supplied else None,
+    )
     return normalise_score(score, waiver_ceiling)

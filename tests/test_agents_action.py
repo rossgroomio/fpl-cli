@@ -10,6 +10,7 @@ import pytest
 
 from fpl_cli.agents.action.waiver import WaiverAgent
 from fpl_cli.agents.base import AgentStatus
+from fpl_cli.models.player import PlayerPosition
 from fpl_cli.services.player_prior import PlayerPrior
 from fpl_cli.services.scoring import ScoringContext, ScoringData
 from tests.conftest import (
@@ -18,6 +19,7 @@ from tests.conftest import (
     make_draft_standing,
     make_draft_team,
     make_fixture,
+    make_player,
     make_team,
 )
 
@@ -83,10 +85,13 @@ def mock_entry_picks():
     }
 
 
-def _mock_scoring_data() -> ScoringData:
+def _mock_scoring_data(players: list[Any] | None = None) -> ScoringData:
     """Fixed ScoringData standing in for prepare_scoring_data's upstream fetches.
 
     Teams mirror the draft bootstrap fixture so matchup enrichment resolves.
+    *players* are the main-game ``Player`` models the draft elements join to;
+    the default empty list leaves every join unmatched, which is what the
+    tests that do not care about the join want.
     """
     teams = [
         make_team(id=1, short_name="ARS"),
@@ -137,14 +142,14 @@ def _mock_scoring_data() -> ScoringData:
         next_gw={"id": 26, "is_next": True},
         scoring_ctx=scoring_ctx,
         ratings_service=ratings_service,
-        players=[],
+        players=players or [],
         player_histories={},
         player_priors=None,
     )
 
 
 @contextmanager
-def _stub_upstream_fetches():
+def _stub_upstream_fetches(players: list[Any] | None = None):
     """Patch the two seams that reach past the draft client.
 
     Shared by every test that drives ``WaiverAgent.run`` end to end.
@@ -153,7 +158,7 @@ def _stub_upstream_fetches():
         patch(
             "fpl_cli.agents.action.waiver.prepare_scoring_data",
             new_callable=AsyncMock,
-            return_value=_mock_scoring_data(),
+            return_value=_mock_scoring_data(players),
         ),
         patch(
             "fpl_cli.agents.action.waiver.fetch_understat_lookup",
@@ -696,6 +701,118 @@ class TestWaiverAgentScoring:
         player_with_apps = {**player, "minutes": 900, "appearances": 10}
         score_with_apps = agent._calculate_waiver_score(player_with_apps, squad_by_position, next_gw_id=25)
         assert score_with_apps > score
+
+
+class TestWaiverAgentGkSignals:
+    """#207: draft keepers are scored with the GK signal block.
+
+    The calibrated waiver GK anchor budgets for saves/90, xGC quality and
+    clean-sheet rate. The draft bootstrap publishes none of them, so the
+    agent joins each draft element to its main-game ``Player`` on ``code``
+    and reads them from there. Without that join a keeper is scored on form
+    and ppg alone against an anchor that assumes all three, and the best
+    keeper in the pool cannot reach the top of the scale at any point in
+    the season.
+    """
+
+    def _draft_keeper(self, **overrides):
+        """The keeper as ``_calculate_waiver_score`` receives him: no GK stats."""
+        return {
+            "id": 5, "player_name": "Raya", "position": "GK", "team_short": "ARS",
+            "form": 6.0, "ppg": 5.0, "xGI_per_90": 0.0, "minutes": 1800,
+            "appearances": 20, "status": "a", **overrides,
+        }
+
+    def _main_keeper(self, **overrides):
+        fields = {
+            "id": 500, "code": 9001, "web_name": "Raya", "team_id": 1,
+            "position": PlayerPosition.GOALKEEPER,
+            "form": 6.0, "points_per_game": 5.0, "minutes": 1800,
+            "total_points": 100, "saves_per_90": 4.5,
+            "expected_goals_conceded": 15.0, "clean_sheets": 10,
+        }
+        return make_player(**{**fields, **overrides})
+
+    def test_joined_keeper_outscores_the_same_keeper_unjoined(self):
+        """The signals reach the score, not just the enrichment dict."""
+        agent = WaiverAgent()
+        squad = {"GK": [{"form": 5.0}], "DEF": [], "MID": [], "FWD": []}
+
+        unjoined = agent._calculate_waiver_score(
+            self._draft_keeper(), squad, next_gw_id=26,
+        )
+        agent._main_player_map = {5: self._main_keeper()}
+        joined = agent._calculate_waiver_score(
+            self._draft_keeper(), squad, next_gw_id=26,
+        )
+
+        assert joined > unjoined
+
+    def test_only_a_joined_keeper_claims_the_calendar_scaled_ceiling(self):
+        """The flag is per player: a missed join must keep the full anchor.
+
+        Scaling the denominator over a numerator with no signals inflates
+        that keeper ~30% at GW2 (PR #156 review), so the outfielder and the
+        keeper the join missed both stay on the unscaled ceiling.
+        """
+        from fpl_cli.services.scoring import calculate_waiver_score
+
+        agent = WaiverAgent()
+        agent._main_player_map = {5: self._main_keeper()}
+        squad = {"GK": [], "DEF": [], "MID": [], "FWD": []}
+
+        with patch(
+            "fpl_cli.agents.action.waiver.calculate_waiver_score",
+            side_effect=calculate_waiver_score,
+        ) as spy:
+            agent._calculate_waiver_score(self._draft_keeper(), squad, next_gw_id=2)
+            agent._calculate_waiver_score(
+                self._draft_keeper(id=6, player_name="Backup"), squad, next_gw_id=2,
+            )
+            # Same id, so the map still resolves: position is what gates it.
+            agent._calculate_waiver_score(
+                self._draft_keeper(position="MID"), squad, next_gw_id=2,
+            )
+
+        assert [c.kwargs["gk_signals_supplied"] for c in spy.call_args_list] == [
+            True, False, False,
+        ]
+
+    @pytest.mark.asyncio
+    async def test_run_joins_available_keepers_on_code_not_name(
+        self, mock_draft_bootstrap, mock_league_details,
+    ):
+        """The map is built in run() from the main players scoring data carries.
+
+        The two names deliberately disagree: a mid-season rename must not
+        drop the keeper the two APIs agree on in every other field (#168).
+        """
+        agent = WaiverAgent(config={"draft_league_id": 12345})
+        draft_keeper = make_draft_player(
+            id=5, web_name="Raya", team=1, element_type=1, code=9001,
+            form=6.0, minutes=1800,
+        )
+        # Only `code` can match these two: diacritic folding would rescue a
+        # near-miss spelling, so the names are made to disagree outright.
+        main_keeper = self._main_keeper(web_name="Martinez")
+
+        with _stub_upstream_fetches(players=[main_keeper]), \
+             patch.object(agent.client, "get_bootstrap_static", new_callable=AsyncMock) as mock_bootstrap, \
+             patch.object(agent.client, "get_available_players", new_callable=AsyncMock) as mock_available, \
+             patch.object(agent.client, "get_recent_releases", new_callable=AsyncMock) as mock_releases, \
+             patch.object(agent.client, "get_league_details", new_callable=AsyncMock) as mock_details, \
+             patch.object(agent.client, "get_waiver_order", new_callable=AsyncMock) as mock_order:
+
+            mock_bootstrap.return_value = mock_draft_bootstrap
+            mock_available.return_value = [draft_keeper]
+            mock_releases.return_value = []
+            mock_details.return_value = mock_league_details
+            mock_order.return_value = []
+
+            result = await agent.run()
+
+        assert result.status == AgentStatus.SUCCESS
+        assert agent._main_player_map == {5: main_keeper}
 
 
 class TestWaiverAgentReasons:

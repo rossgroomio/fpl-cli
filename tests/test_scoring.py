@@ -1042,20 +1042,31 @@ class TestThinWrappers:
 
     @staticmethod
     def _body_lines(func):
-        """Count non-blank, non-comment, non-docstring lines in function body (after signature)."""
+        """Non-blank, non-comment, non-docstring lines of a function body.
+
+        The docstring is located by AST and dropped whole, not by testing
+        each line for a leading triple quote: these guards exist to catch
+        shared logic being re-inlined, and counting a docstring's interior
+        lines as body tripped `test_waiver_has_not_regrown` on prose alone
+        when #207 documented a new argument.
+        """
+        import ast
         import inspect
-        source = inspect.getsource(func)
-        lines = source.splitlines()
-        # Skip until after the closing ')' of the signature
-        body_start = 0
-        for i, line in enumerate(lines):
-            if line.rstrip().endswith(":") and ("def " in lines[0] or i > 0):
-                body_start = i + 1
-                break
-        body = lines[body_start:]
+        import textwrap
+        source = textwrap.dedent(inspect.getsource(func))
+        body = ast.parse(source).body[0].body
+        if (
+            body
+            and isinstance(body[0], ast.Expr)
+            and isinstance(body[0].value, ast.Constant)
+            and isinstance(body[0].value.value, str)
+        ):
+            body = body[1:]
+        if not body:
+            return []
         return [
-            ln for ln in body
-            if ln.strip() and not ln.strip().startswith(('"""', '#'))
+            ln for ln in source.splitlines()[body[0].lineno - 1:]
+            if ln.strip() and not ln.strip().startswith("#")
         ]
 
     def test_target_is_thin(self):
@@ -4888,29 +4899,105 @@ class TestGkAttainableCeiling:
                 _value_weights_and_ceiling(pos)[1]
             )
 
-    def test_waiver_gk_ceiling_never_scales(self):
-        """The draft waiver numerator has no GK signals (EnrichedPlayer gap),
-        so its ceiling must stay on the full anchor: scaling only the
-        denominator inflates keepers ~30% at GW2 (PR #156 review). Identical
-        GK evaluations at GW2 and GW3 must score identically — a scaled
-        ceiling would differ between those calendar points while every
-        other input (mins factor 1.0, consistency phase 0) is constant.
+    def _draft_keeper(self, **overrides):
+        """A draft waiver keeper, elite on all three signals from GW1."""
+        fields = {
+            "id": 413, "web_name": "DraftGK", "team_id": 7,
+            "position": PlayerPosition.GOALKEEPER,
+            "form": 7.0, "points_per_game": 7.0, "minutes": 90,
+            "total_points": 7, "now_cost": 45,
+            "saves_per_90": 5.0, "expected_goals_conceded": 1.0,
+            "clean_sheets": 1,
+        }
+        return make_player(**{**fields, **overrides})
+
+    def test_waiver_gk_ceiling_scales_only_with_the_signal_block(self):
+        """#207: the waiver ceiling follows the numerator, per keeper.
+
+        A keeper the draft-to-main join resolved carries saves/xGC/CS-rate,
+        so his anchor is calendar-scaled like every other family and the
+        same evaluation reads higher at GW2 than at GW3 (the earlier date
+        has supplied less of the ramp). A keeper the join missed has no
+        signals, so his anchor stays full and the two gameweeks tie — every
+        other input (mins factor 1.0, consistency phase 0) is constant
+        across them. Scaling that second case would inflate him ~30% at
+        GW2 (PR #156 review).
         """
-        from fpl_cli.services.scoring import build_player_evaluation, calculate_waiver_score
-        gk = make_player(
-            id=413, web_name="DraftGK", team_id=7,
-            position=PlayerPosition.GOALKEEPER,
-            form=6.0, points_per_game=6.0, minutes=90, total_points=6,
-            now_cost=45,
+        from fpl_cli.services.scoring import (
+            build_player_evaluation,
+            calculate_waiver_score,
+            gk_signal_enrichment,
         )
-        evaluation, _ = build_player_evaluation(gk)
+        gk = self._draft_keeper()
+
+        def score(gw: int, *, supplied: bool) -> int:
+            enrichment = gk_signal_enrichment(gk) if supplied else None
+            evaluation, _ = build_player_evaluation(gk, enrichment=enrichment)
+            return calculate_waiver_score(
+                evaluation,
+                squad_by_position={},
+                next_gw_id=gw,
+                gk_signals_supplied=supplied,
+            )
+
+        assert score(2, supplied=True) > score(3, supplied=True)
+        assert score(2, supplied=False) == score(3, supplied=False)
+
+    def test_waiver_gk_ceiling_is_identity_from_gw6(self):
+        """The scaling expires with the calendar on the waiver family too."""
+        from fpl_cli.services.scoring import (
+            build_player_evaluation,
+            calculate_waiver_score,
+            gk_signal_enrichment,
+        )
+        gk = self._draft_keeper(minutes=1350, total_points=63, clean_sheets=6)
+        evaluation, _ = build_player_evaluation(gk, enrichment=gk_signal_enrichment(gk))
         scores = {
             gw: calculate_waiver_score(
-                evaluation, squad_by_position={}, next_gw_id=gw,
+                evaluation,
+                squad_by_position={},
+                next_gw_id=gw,
+                gk_signals_supplied=True,
             )
-            for gw in (2, 3)
+            for gw in (6, 20)
         }
-        assert scores[2] == scores[3]
+        assert scores[6] == scores[20]
+
+    def test_elite_draft_keeper_reaches_the_top_of_the_waiver_scale(self):
+        """#207's headline: with the block wired an elite keeper is not capped.
+
+        Before the signals reached this path a draft keeper was scored on
+        form and ppg alone against an anchor that budgets for all three GK
+        terms, so the best keeper in the pool could not read elite at any
+        point in the season.
+        """
+        from fpl_cli.services.scoring import (
+            build_player_evaluation,
+            calculate_waiver_score,
+            gk_signal_enrichment,
+        )
+        gk = self._draft_keeper(
+            form=8.0, points_per_game=7.0, minutes=1800, total_points=140,
+            saves_per_90=4.5, expected_goals_conceded=15.0, clean_sheets=10,
+        )
+        # The waiver ceiling budgets matchup headroom on top of the anchor,
+        # and `fpl waivers` enriches every candidate with it, so the top of
+        # the scale is only reachable with a fixture run to go with the form.
+        squad = {"GK": [{"form": 5.0}]}
+        signalled, _ = build_player_evaluation(
+            gk, enrichment=gk_signal_enrichment(gk), matchup_avg_3gw=8.5,
+        )
+        blind, _ = build_player_evaluation(gk, matchup_avg_3gw=8.5)
+        with_signals = calculate_waiver_score(
+            signalled, squad_by_position=squad, next_gw_id=20, gk_signals_supplied=True,
+        )
+        without = calculate_waiver_score(
+            blind, squad_by_position=squad, next_gw_id=20,
+        )
+        assert with_signals >= 85
+        # The cap #207 describes: form + ppg alone against the full anchor
+        # leave the best keeper in the pool reading mid-table.
+        assert without <= 60
 
 
 class TestEarlySeasonObservationOnly:
