@@ -54,6 +54,18 @@
 {If wildcard/freehit and current squad known:}
 > **Overlap with current squad:** {X}/15 players retained. {Brief note on what changed and why.}
 
+{If Phase B set a `data_caveat` (team ratings or fixture predictions carry warnings):}
+### Data Quality
+- {one bullet per fired signal, CLI message quoted verbatim}
+
+Fixture difficulty was weighted down accordingly: the pFDR figures above still render, but they
+rest on the ratings these warnings describe. Each message names the command that fixes it
+(`fpl ratings update`, `fpl init`) - quote it rather than summarising, since that is the only
+actionable part.
+
+{Omit this section entirely when nothing fired - an empty Data Quality heading reads as a clean
+bill of health that was never issued.}
+
 {If preview intel was used (Phase B3 gate not `none`):}
 ### Preview Intel Applied
 **Coverage:** {N}/20 teams ({usable_as}) | **Sources:** {source names}
@@ -87,6 +99,18 @@ clearer than one saying "none".}
 ### Tier 4: Bench / Sleepers (Rounds 12-15)
 | Rank | Player | Team | Pos | Last Season Pts | PPG | Fixture Run | Why |
 |------|--------|------|-----|-----------------|-----|-------------|-----|
+
+{If Phase B set a `data_caveat` (team ratings or fixture predictions carry warnings):}
+### Data Quality
+- {one bullet per fired signal, CLI message quoted verbatim}
+
+Fixture difficulty was weighted down accordingly: the pFDR figures above still render, but they
+rest on the ratings these warnings describe. Each message names the command that fixes it
+(`fpl ratings update`, `fpl init`) - quote it rather than summarising, since that is the only
+actionable part.
+
+{Omit this section entirely when nothing fired - an empty Data Quality heading reads as a clean
+bill of health that was never issued.}
 
 ### Positional Strategy
 - **GK:** {when to draft, target rounds, key names}

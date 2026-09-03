@@ -110,7 +110,22 @@ Issue all reads and CLI commands in a **single parallel tool-call block**:
 
 ### All Modes
 - `fpl status --format json` (if not already run in A1 -- this is where an explicit-mode run picks up `metadata.season`)
-- `fpl fdr --blanks --format json`
+- `fpl fdr --format json` -- the fixture-difficulty analysis: `data.fdr_by_team` and the positional ATK/DEF split every position agent is told to read, plus `data.ratings_warning`. Store as `pfdr`
+- `fpl fdr --blanks --format json` -- the confirmed and predicted blank/double-GW schedule. Store as `blanks_schedule`
+
+**Both, not either.** `--blanks` bypasses the fixture agent for a schedule-only payload: no `fdr_by_team`, no ATK/DEF columns, no `ratings_warning`. A build that issues only that call hands its position agents a "pFDR" block containing no pFDR, and never learns what the ratings under it were worth.
+
+Unlike gw-prep, the analysis call here does **not** take `--my-squad`: this skill is replacing the 15, so exposure of the outgoing squad is noise, and the season-start modes have no squad to resolve at all. The cost is that `data.predictions_stale` and `data.prediction_warnings`, which the command fills in only once a squad resolves, are absent from `pfdr` -- so `blanks_schedule`'s `metadata.warnings` is the prediction-quality channel for this skill. Do not "harmonise" the flag back in.
+
+**Read the rating-quality signals before any of this reaches a position agent.** Fixture difficulty is only as good as the team ratings underneath it, and the failure modes are invisible in the output -- ratings left over from last season, none at all, ratings still naming relegated clubs, ratings that separate no two teams, pre-season estimates standing in for results. Each renders a pFDR table that looks like ordinary analysis, which is exactly the risk when the whole squad is being picked off it.
+
+| Payload | Field | Fires when |
+|---|---|---|
+| `pfdr` | `metadata.custom_analysis` | `false` -- custom analysis is off, so this is raw 1-5 FPL API difficulty (`data.easy_fixture_runs` only): no ATK/DEF split, no team ratings, and so no `ratings_warning` to read. Remedy is `fpl init` |
+| `pfdr` | `data.ratings_warning` | non-null |
+| `blanks_schedule` | `metadata.warnings` | non-empty; `fixture_predictions_stale` is the code this command raises |
+
+Set `data_caveat` -- one `- ` bullet per signal that fired, empty when none did, each message **quoted verbatim** because it names its own remedy (`fpl ratings update`, `fpl init`) and a paraphrase drops it. It is inlined into every Phase C position prompt and the Phase D assembler prompt, and written to the output's Data Quality section in Phase E. A season-start build is the run most likely to fire one -- there are no current-season results to rate teams on yet -- and the one whose output is hardest to revisit later.
 
 ### Mid-season (Wildcard / Free Hit / Re-draft)
 <!-- Classic-only commands (captain, chips) - skip if format is "draft" -->
@@ -164,7 +179,7 @@ Issue all reads and CLI commands in a **single parallel tool-call block**:
 
 ### Draft (any mode)
 - `fpl waivers --format json` (available player pool)
-- Note: `fpl waivers` reflects current waiver wire availability. For pre-season drafts before the API has draft league data, fall back to `fpl fdr --blanks --format json` and player lookups for rankings.
+- Note: `fpl waivers` reflects current waiver wire availability. For pre-season drafts before the API has draft league data, fall back to `pfdr` (the `fpl fdr --format json` analysis above, which is where the fixture runs are) and player lookups for rankings.
 - For Re-draft: all players return to the pool; `fpl waivers` shows who was previously undrafted (informational only).
 
 Skip missing optional sources gracefully. Store all results for Phase B2.
@@ -282,8 +297,14 @@ Include all of this in the prompt field, populated with position-specific data:
    On Wildcard/Free Hit, owned players cost their sell price, not market price.
    Use sell_price for any owned player in your rankings, even if they aren't an allocator pick.
 
-   === fpl fdr --blanks ({ATK|DEF} column) ===
-   {pFDR data filtered to the relevant column for this position}
+   === fpl fdr ({ATK|DEF} column) ===
+   {`pfdr` data filtered to the relevant column for this position - the ATK/DEF split lives in
+   `data.fdr_by_team`, which only the non-`--blanks` call returns}
+
+   === Blank/double GW schedule ===
+   {`blanks_schedule` data - confirmed and predicted BGWs/DGWs across the horizon}
+
+   {data_caveat} (omit these lines entirely when `data_caveat` is empty)
 
    === fpl history (career arcs) ===
    {output from fpl history - season-start modes only}
@@ -313,7 +334,7 @@ Include all of this in the prompt field, populated with position-specific data:
 
 5. **Rules excerpt:** Include from `references/rules.md`:
    - Squad Constraints (position slot counts)
-   - pFDR (ATK vs DEF column usage)
+   - pFDR (ATK vs DEF column usage, and how a Data Quality caveat changes its weight)
    - Fixture Format
    - Value-for-Money section
    - Solver Integration section
@@ -398,8 +419,16 @@ Agent tool parameters:
    a different choice.
    Use effective_price (not price) for budget tables and price display.
 
-   === fpl fdr --blanks --format json (full) ===
-   {complete pFDR output with both ATK and DEF columns}
+   === fpl fdr --format json (full) ===
+   {complete `pfdr` output with both ATK and DEF columns}
+
+   === fpl fdr --blanks --format json ===
+   {complete `blanks_schedule` output - confirmed and predicted BGWs/DGWs}
+
+   {data_caveat} (omit these lines entirely when `data_caveat` is empty)
+   When it is present, the ratings behind every pFDR figure above are unreliable: keep the fixture
+   columns in the output, but do not let a fixture run alone decide a slot, and carry the caveat
+   into the Data Quality section of the template.
 
    === fpl stats: cross-positional leaders (sort={rank_form}, min-minutes={mins_form}) ===
    {cross-positional stats output - mid-season only}
@@ -484,6 +513,8 @@ budget: GBP{X}m
 ---
 ```
 
+**Write `data_caveat` (from Phase B) into the output's Data Quality section**, messages verbatim, and repeat the bullets in the confirmation to the user. Omit the section entirely when it is empty. This file outlives the run that made it -- gw-prep Phase A3 embeds a `gw{N}-squad-builder.md` Classic Squad block into its own recommendations days later, and a `season-start-squad.md` is read back for weeks -- so a warning that only reached the terminal is gone by the time anyone acts on the squad.
+
 Then normalise the written file, before confirming to the user:
 
 ```bash
@@ -494,3 +525,5 @@ Parse stdout as JSON and warn, never block; `.agents/skills/gw-prep/references/e
 
 Confirm:
 > Squad recommendation saved to `[YOUR_OUTPUT_DIR]/{season}/{filename}`
+
+Followed by each `data_caveat` bullet, verbatim, when there are any -- the terminal is where the remedy reaches someone who can run it.
