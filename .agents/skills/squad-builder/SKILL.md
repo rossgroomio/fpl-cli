@@ -125,16 +125,27 @@ Issue all reads and CLI commands in a **single parallel tool-call block**:
   ```
 
   `(N - 1) * 45` is half the minutes the season has made possible so far; from GW8/GW11 the caps bind and behaviour matches the old fixed thresholds. When a query still returns nothing, say so where you use it -- an empty list is a finding, not an absence of data.
-- `fpl stats -p MID -s expected_goal_involvements --min-minutes {mins_pos} -n 20 --available-only --format json`
-- `fpl stats -p FWD -s form --min-minutes {mins_pos} -n 15 --available-only --format json`
-- `fpl stats -p DEF -s total_points --min-minutes {mins_pos} -n 15 --available-only --format json`
-- `fpl stats -p GK -s points_per_game --min-minutes {mins_pos} -n 8 --available-only --format json`
+- **Early-season sort (`N <= 5`)** -- the floor decides who is in the list; the sort decides the order, and `expected_goal_involvements`, `form`, `total_points` and `points_per_game` over one or two matches order mostly on sample. Rank on `ep_next` instead -- FPL's own prior-informed projection for the coming gameweek, the same source Phase C step 7 already tells you to lean on before ~GW6. Substitute `{rank_*}` below:
+
+  | Placeholder | `N <= 5` | `N >= 6` |
+  |---|---|---|
+  | `{rank_mid}` | `ep_next` | `expected_goal_involvements` |
+  | `{rank_fwd}` | `ep_next` | `form` |
+  | `{rank_def}` | `ep_next` | `total_points` |
+  | `{rank_gk}` | `ep_next` | `points_per_game` |
+  | `{rank_form}` | `ep_next` | `form` |
+
+  Only the ordering changes: every record carries `form`, `expected_goal_involvements`, `total_points`, `points_per_game` and `ep_next` whatever the sort field is. The `quality_per_m`, cheapest and transfer-momentum queries keep their sorts: cheapest ranks on price and transfer momentum on this week's market, neither of which is a small-sample measure, and step 7 already governs how far to trust a quality score this early. **Carry the sort you used into every label that quotes these outputs** (Phase C step 4, Phase D step 4), so an agent reading `=== fpl stats: MID shortlist ===` knows what ordered it.
+- `fpl stats -p MID -s {rank_mid} --min-minutes {mins_pos} -n 20 --available-only --format json`
+- `fpl stats -p FWD -s {rank_fwd} --min-minutes {mins_pos} -n 15 --available-only --format json`
+- `fpl stats -p DEF -s {rank_def} --min-minutes {mins_pos} -n 15 --available-only --format json`
+- `fpl stats -p GK -s {rank_gk} --min-minutes {mins_pos} -n 8 --available-only --format json`
 - `fpl stats --value -p MID -s quality_per_m --min-minutes {mins_pos} -n 15 --available-only --format json` (underpriced mids by underlying performance per £m)
 - `fpl stats --value -p FWD -s quality_per_m --min-minutes {mins_pos} -n 15 --available-only --format json`
 - `fpl stats --value -p DEF -s quality_per_m --min-minutes {mins_pos} -n 15 --available-only --format json`
 - `fpl stats --value -p GK -s quality_per_m --min-minutes {mins_pos} -n 8 --available-only --format json`
 - `fpl stats -s now_cost -r --min-minutes {mins_pos} -n 15 --available-only --format json` (cheapest playing options)
-- `fpl stats -s form --min-minutes {mins_form} -n 20 --available-only --format json` (in-form across positions)
+- `fpl stats -s {rank_form} --min-minutes {mins_form} -n 20 --available-only --format json` (leaders across positions)
 - `fpl stats -s transfers_in_event -n 15 --format json` (transfer momentum)
 - `fpl price-history --sort price_slope -n 30 --format json` (season price trajectory - non-blocking, skip if command fails)
 - `fpl intel --format json` (season preview intel, if you keep any. Sections age out by design --
@@ -175,10 +186,10 @@ No sub-agent needed. The orchestrator already has all Phase B JSON. Extract cand
 
 | Position | Target candidates | Primary stats sources |
 |----------|------------------|-----------------------|
-| GK | 4-6 | GK ppg, GK quality_per_m |
-| DEF | 8-10 | DEF total_points, DEF quality_per_m, cheapest |
-| MID | 8-10 | MID xGI, MID quality_per_m, form, transfers_in |
-| FWD | 6-8 | FWD form, FWD quality_per_m, cheapest |
+| GK | 4-6 | GK shortlist (`{rank_gk}`), GK quality_per_m |
+| DEF | 8-10 | DEF shortlist (`{rank_def}`), DEF quality_per_m, cheapest |
+| MID | 8-10 | MID shortlist (`{rank_mid}`), MID quality_per_m, cross-positional leaders, transfers_in |
+| FWD | 6-8 | FWD shortlist (`{rank_fwd}`), FWD quality_per_m, cheapest |
 
 Each candidate entry: `{name, team, position, in_allocator_squad: bool}`.
 
@@ -229,12 +240,12 @@ Agent tool parameters (per agent):
 
 | Agent | Stats sources | pFDR column | Allocator picks |
 |-------|--------------|------------|-----------------|
-| GK | GK ppg, GK quality_per_m | DEF | GK entries from allocator |
-| DEF | DEF total_points, DEF quality_per_m | DEF | DEF entries from allocator |
-| MID | MID xGI, MID quality_per_m | ATK | MID entries from allocator |
-| FWD | FWD form, FWD quality_per_m | ATK | FWD entries from allocator |
+| GK | GK shortlist (`{rank_gk}`), GK quality_per_m | DEF | GK entries from allocator |
+| DEF | DEF shortlist (`{rank_def}`), DEF quality_per_m | DEF | DEF entries from allocator |
+| MID | MID shortlist (`{rank_mid}`), MID quality_per_m | ATK | MID entries from allocator |
+| FWD | FWD shortlist (`{rank_fwd}`), FWD quality_per_m | ATK | FWD entries from allocator |
 
-Cross-positional data (form, cheapest, transfers_in, price-history, captain) goes to Phase D assembler, not position agents.
+Cross-positional data (leaders, cheapest, transfers_in, price-history, captain) goes to Phase D assembler, not position agents.
 
 ### Per-agent prompt template
 
@@ -255,8 +266,8 @@ Include all of this in the prompt field, populated with position-specific data:
 
 4. **Position data:** Inline the position-specific Phase B outputs:
    ```
-   === fpl stats: {POSITION} shortlist ===
-   {this position's primary stat output}
+   === fpl stats: {POSITION} shortlist (sort={this position's rank placeholder}, min-minutes={mins_pos}) ===
+   {this position's primary stat output — empty means no available player cleared the floor at GW{N}, not that the query failed}
 
    === fpl stats: {POSITION} value score ===
    {this position's quality_per_m output}
@@ -317,7 +328,7 @@ Include all of this in the prompt field, populated with position-specific data:
    Run `fpl player "{name}" -f -H` **in parallel** for all candidates in your list.
    For season-start modes with no current-season data, also use `fpl history` data passed in context.
 
-7. **Scoring:** Score each candidate against the mode-specific criteria from rules. Use `quality_score` and `quality_per_m` when available (null for players without Understat data — don't penalise). **Both fields are elite-within-position: never rank or compare candidates across positions by `quality_score` or `quality_per_m`.** A GK showing 90 is "top of the GK pool", not "better than a MID showing 85" — every position is normalised against its own calibrated ceiling, MID and FWD included. Within a position the numbers are trustworthy **from ~GW6**: elite players in every position read 80+, so a MID at 55 genuinely is mid-tier among MIDs. Only compare within the position you are currently filling. **Before ~GW6 treat quality scores as provisional** — they measure only the opening gameweek(s), so a hot-starting role player can out-read a quiet-starting elite (the JSON carries an `early_season_small_sample` warning when this applies); lean on `ep_next`, price and prior-season pedigree for early wildcards and free hits instead.
+7. **Scoring:** Score each candidate against the mode-specific criteria from rules. Use `quality_score` and `quality_per_m` when available (null for players without Understat data — don't penalise). **Both fields are elite-within-position: never rank or compare candidates across positions by `quality_score` or `quality_per_m`.** A GK showing 90 is "top of the GK pool", not "better than a MID showing 85" — every position is normalised against its own calibrated ceiling, MID and FWD included. Within a position the numbers are trustworthy **from ~GW6**: elite players in every position read 80+, so a MID at 55 genuinely is mid-tier among MIDs. Only compare within the position you are currently filling. **Before ~GW6 treat quality scores as provisional** — they measure only the opening gameweek(s), so a hot-starting role player can out-read a quiet-starting elite (the JSON carries an `early_season_small_sample` warning when this applies); lean on `ep_next`, price and prior-season pedigree for early wildcards and free hits instead. The shortlist you were handed is already ordered on `ep_next` in that window -- its label carries the sort -- so read its ordering as a projection, not as observed output.
 
 8. **Return format:** Return a structured ranked list. Per candidate:
    ```
@@ -390,8 +401,8 @@ Agent tool parameters:
    === fpl fdr --blanks --format json (full) ===
    {complete pFDR output with both ATK and DEF columns}
 
-   === fpl stats: form (cross-positional) ===
-   {form stats output - mid-season only}
+   === fpl stats: cross-positional leaders (sort={rank_form}, min-minutes={mins_form}) ===
+   {cross-positional stats output - mid-season only}
 
    === fpl stats: cheapest playing options ===
    {cheapest stats output - mid-season only}
