@@ -21,13 +21,16 @@ and that the agent call still emits the fields they are told to read.
 
 import json
 import re
+from datetime import datetime, timedelta
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from click.testing import CliRunner
 
+from fpl_cli.agents.data.fixture import FixtureAgent
 from fpl_cli.cli.fdr import fdr_command
+from tests.conftest import make_agent, make_fixture, make_team
 
 REPO_ROOT = Path(__file__).parent.parent
 GW_PREP = REPO_ROOT / ".agents/skills/gw-prep"
@@ -159,10 +162,7 @@ def test_every_fdr_skill_template_has_somewhere_to_put_it(skill_dir: Path):
 
 def _agent_json(agent_data: dict, args: list[str]) -> dict:
     """Invoke the agent path of `fpl fdr --format json` over a stubbed agent."""
-    agent = MagicMock()
-    agent.__aenter__ = AsyncMock(return_value=agent)
-    agent.__aexit__ = AsyncMock(return_value=False)
-    agent.run = AsyncMock(return_value=MagicMock(success=True, data=agent_data))
+    agent = make_agent(agent_data)
 
     with (
         patch("fpl_cli.cli.fdr.is_custom_analysis_enabled", return_value=True),
@@ -206,3 +206,137 @@ def test_agent_envelope_reports_clean_ratings_as_null_not_absent():
     )
 
     assert parsed["data"]["ratings_warning"] is None
+
+
+# --------------------------------------------------------------------------
+# Grounding the skill tables against the real agent
+#
+# The checks above only prove the skills *mention* these field names. That
+# catches a skill that forgot one, but not a table that has drifted from the
+# code -- a renamed field, or a new quality signal the agent started emitting
+# that no skill was ever told to read. Both skills hand-maintain the same
+# table in prose, so nothing else ties it to reality (#214 review).
+#
+# These run the real FixtureAgent over stubbed client methods, the same way
+# `tests/test_agents_data.py` does, and pin the contract from the code side.
+# --------------------------------------------------------------------------
+
+# Fixture content: what consumers render. Growth here is ordinary.
+AGENT_CONTENT_KEYS = frozenset({
+    "current_gameweek",
+    "fdr_mode",
+    "fixtures",
+    "fixtures_by_gameweek",
+    "fdr_by_team",
+    "blank_gameweeks",
+    "double_gameweeks",
+    "easy_fixture_runs",
+    "team_form",
+})
+
+# Quality signals: what consumers must act on. Growth here is the thing this
+# module exists to notice.
+AGENT_QUALITY_KEYS = frozenset(f.removeprefix("data.") for f in QUALITY_FIELDS)
+
+# Only present once `--my-squad` resolves a squad.
+SQUAD_CONTEXT_KEYS = frozenset({"squad_exposure", "predictions_stale", "prediction_warnings"})
+
+
+async def _run_real_agent(context: dict | None = None):
+    """Run the real FixtureAgent over stubbed client reads.
+
+    Only the three client reads are stubbed; the ratings service is the real
+    one. `TeamRatingsService.ensure_fresh()` will try to refresh over the
+    network, pytest-socket blocks it, and the service swallows that
+    deliberately (`team_ratings.py`, "graceful degradation") and serves what
+    is on disk -- which under `_isolated_user_dirs` is nothing. That is the
+    state these tests want, and it cannot drift: the refresh has no way to
+    succeed in a hermetic suite.
+    """
+    teams = [
+        make_team(id=i, name=f"Team {i}", short_name=f"T{i:02d}", position=i)
+        for i in range(1, 5)
+    ]
+    kickoff = datetime.now() + timedelta(days=7)
+    fixtures = [
+        make_fixture(id=1, gameweek=25, home_team_id=1, away_team_id=2,
+                     home_difficulty=4, away_difficulty=4, finished=False,
+                     kickoff_time=kickoff),
+        make_fixture(id=2, gameweek=25, home_team_id=3, away_team_id=4,
+                     home_difficulty=3, away_difficulty=3, finished=False,
+                     kickoff_time=kickoff),
+    ]
+
+    agent = FixtureAgent()
+    with (
+        patch.object(agent.client, "get_next_gameweek", new_callable=AsyncMock,
+                     return_value={"id": 25}),
+        patch.object(agent.client, "get_fixtures", new_callable=AsyncMock,
+                     return_value=fixtures),
+        patch.object(agent.client, "get_teams", new_callable=AsyncMock,
+                     return_value=teams),
+    ):
+        result = await agent.run(context=context)
+
+    assert result.success, result.message
+    return result
+
+
+async def test_agent_emits_every_field_the_skill_tables_name():
+    """A rename in the agent leaves both tables pointing at nothing."""
+    result = await _run_real_agent({"squad": [{"team_id": 1, "element_type": 3, "web_name": "X"}]})
+
+    missing = sorted(AGENT_QUALITY_KEYS - set(result.data))
+    assert not missing, (
+        f"the skills are told to read {missing}, which FixtureAgent no longer emits."
+        " Update QUALITY_FIELDS here and the signal table in every SKILL.md that"
+        " quotes it."
+    )
+
+
+async def test_agent_grows_no_quality_signal_the_skills_never_learn_about():
+    """The failure mode of #135, generalised.
+
+    `ratings_warning` sat in the payload unread for as long as it existed
+    because nothing connected "the agent emits a warning" to "a consumer
+    renders it". A new signal would repeat that silently, so adding one has
+    to break this test.
+    """
+    result = await _run_real_agent({"squad": [{"team_id": 1, "element_type": 3, "web_name": "X"}]})
+
+    expected = AGENT_CONTENT_KEYS | AGENT_QUALITY_KEYS | SQUAD_CONTEXT_KEYS
+    unexpected = sorted(set(result.data) - expected)
+    assert not unexpected, (
+        f"FixtureAgent grew {unexpected}. If it is fixture content, add it to"
+        " AGENT_CONTENT_KEYS. If it reports on the quality of what the agent is"
+        " serving, it needs a row in the signal table of every skill that composes"
+        " `fpl fdr`, an entry in QUALITY_FIELDS, and a line in .agents/TOOLS.md --"
+        " a quality signal nobody reads is the bug this module guards."
+    )
+
+
+async def test_the_prediction_fields_need_a_squad_context():
+    """Why gw-prep passes `--my-squad` and squad-builder documents not doing so."""
+    plain = await _run_real_agent()
+
+    assert "ratings_warning" in plain.data, "the ratings verdict is unconditional"
+    for field in SQUAD_CONTEXT_KEYS:
+        assert field not in plain.data, f"{field} appeared without a squad context"
+
+
+async def test_the_ratings_warning_carries_its_own_remedy():
+    """The skills quote it verbatim, so the remedy has to be inside the string.
+
+    `_isolated_user_dirs` repoints the data dir at tmp_path, so there are no
+    ratings on disk -- the real no-ratings branch of `get_staleness_warning`,
+    not a stubbed message.
+    """
+    result = await _run_real_agent()
+
+    warning = result.data["ratings_warning"]
+    assert warning is not None
+    assert "fpl ratings update" in warning, (
+        "the skills paraphrase nothing and print no remedy of their own; if the"
+        " message stops naming the command, the user is told there is a problem"
+        " and not how to fix it"
+    )

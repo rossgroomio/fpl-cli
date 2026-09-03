@@ -7,7 +7,7 @@ from click.testing import CliRunner
 
 from fpl_cli.cli.preview import preview_command
 from fpl_cli.season import season_label
-from tests.conftest import make_draft_player, make_player
+from tests.conftest import make_agent, make_draft_player, make_player
 
 
 def _make_fpl_client(gw=25):
@@ -24,15 +24,7 @@ def _make_fpl_client(gw=25):
 
 def _make_agent(success=True, data=None):
     """Create a mock agent with context-manager support."""
-    agent = MagicMock()
-    agent.__aenter__ = AsyncMock(return_value=agent)
-    agent.__aexit__ = AsyncMock(return_value=False)
-    result = MagicMock()
-    result.success = success
-    result.data = data or {}
-    result.message = "" if success else "failed"
-    agent.run = AsyncMock(return_value=result)
-    return agent
+    return make_agent(data, success=success, message="" if success else "failed")
 
 
 def _run_preview(custom_analysis=True, fixture_data=None, stats_data=None):

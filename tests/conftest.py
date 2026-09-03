@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import ModuleType
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -586,6 +586,41 @@ def mock_fpl_client(mock_bootstrap_data, sample_fixtures):
 
     client._get = AsyncMock(side_effect=mock_get)
     return client
+
+
+# --- Agent factory ---
+
+def make_agent(
+    data: dict[str, Any] | None = None,
+    *,
+    success: bool = True,
+    message: str = "",
+) -> MagicMock:
+    """Async-context-manager stand-in for any `agents/base.py:Agent`.
+
+    Every CLI test that patches an agent needs the same shape: an object
+    usable with `async with`, whose `run()` awaits to a result carrying
+    `success` / `data` / `message`. It is the base class's contract rather
+    than any one agent's, which is why this is not FixtureAgent-specific --
+    the copy in `test_cli_preview.py` already stood in for the stats, price
+    and scout agents too.
+
+    Built here so the shape lives in one place: rebuilt per test file, a
+    change to how the CLI enters or awaits an agent has to be chased through
+    each copy, and the copies that get missed keep passing on a stale mock
+    while the real regression goes uncaught (#214 review).
+
+    The returned mock stays mutable in the ways the tests rely on:
+    `agent.run.return_value.data[key] = ...` to add a field, or
+    `agent.run = AsyncMock(...)` to replace the result outright.
+    """
+    agent = MagicMock()
+    agent.__aenter__ = AsyncMock(return_value=agent)
+    agent.__aexit__ = AsyncMock(return_value=False)
+    agent.run = AsyncMock(
+        return_value=MagicMock(success=success, data=data or {}, message=message)
+    )
+    return agent
 
 
 # --- League history ledger factory ---
