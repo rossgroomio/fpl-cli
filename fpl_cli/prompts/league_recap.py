@@ -30,6 +30,8 @@ Your audience is every member of this league. They want entertainment first, inf
 - NEVER give advice or recommendations. This is a recap, not a preview
 - NEVER speculate about future gameweeks
 - Stick to what happened this gameweek, with one exception: a historical claim (a streak, trend, or season-arc fact spanning more than this gameweek) is permitted only when it appears in the "## League History" section, stated using that section's own wording for counts, spans, and holds. A streak, trend, or season-arc fact not listed there is forbidden to mention, however obvious it might seem. Do NOT infer history from the Awards or GW Standings sections - they are compressed and can misrepresent what actually happened over time
+- Every League History entry is about ONE named manager only. NEVER combine two managers into a shared record, streak, or "club" - phrasing like "joined by X", "joins Y in that club", or "the two of them share" is forbidden unless a single League History entry explicitly names both managers together. Two managers who each had a one-off gameweek in a different week (e.g. one finished last in GW1, a different one finished last in GW2) do not form a joint record for either of them - each stays a separate, single-gameweek fact, and under the previous rule a single gameweek's worth of an event is not itself a reportable streak at all
+- A claim that a manager "topped the table", "was previously top", "led before this gameweek", or "fell from the top/first place" must match the "Previous gameweek's leader" statement at the top of the GW Standings section exactly - never infer the previous leader yourself from the size of a fall, the Prev column, or anything else. If that statement names no leader, make no such claim about anyone
 - A League History entry phrased as an observed count over a span (e.g. "3 in the last 11, with 8 not recorded") must be repeated that way, never simplified to "in a row" or "consecutive" unless the section itself already uses that phrasing
 - A League History season-count line (e.g. "4 gameweek wins this season") is optional colour in the Season Fines mould: use one when it sharpens something that happened this gameweek ("Bob's fourth gameweek win of the season"), or - when the section carries the season's full counts, at the halfway boundary and the finale - to ground a season retrospective. Take the count verbatim, repeat its "not judged" qualifier alongside it or leave the line out, and never derive or extrapolate a season total yourself from the weekly sections
 - If fines were triggered, make them a highlight
@@ -151,13 +153,45 @@ _UNRANKED = float("inf")
 
 
 def format_recap_standings_context(data: LeagueRecapData) -> str:
-    """Format standings with movement for the LLM prompt."""
+    """Format standings with movement for the LLM prompt.
+
+    Leads with an explicit "previous leader" fact (issue #189) so the model
+    never has to infer who topped the table last gameweek from the table's
+    Prev column or from the size of someone's fall -- the editorial wrongly
+    credited the manager who fell furthest with having previously led,
+    when neither their Prev rank nor anyone else's not-1 Prev rank supported
+    that. Stating the answer outright makes it checkable the same way the
+    Captains and Chips sections' explicit totals are.
+    """
     managers = data.get("managers", [])
     if not managers:
         return "No standings data."
 
     is_classic = data.get("fpl_format") == "classic"
-    lines = ["| Pos | Prev | Manager | GW Pts | Total |", "|-----|------|---------|--------|-------|"]
+    if any(m.get("previous_rank") is not None for m in managers):
+        leader = next((m for m in managers if m.get("previous_rank") == 1), None)
+        if leader is not None:
+            leader_line = (
+                f"Previous gameweek's leader (Prev rank 1): {leader['manager_name']}. This is the "
+                "only manager who may be described as having previously led or topped the table -- "
+                "never attribute a prior top spot to anyone else, including whoever fell furthest "
+                "this gameweek."
+            )
+        else:
+            leader_line = "Previous gameweek's leader could not be determined -- do not name one."
+    else:
+        leader_line = (
+            "No previous gameweek's standings exist for this league (season opener, or the first "
+            "gameweek captured) -- do not describe any manager as having previously led, topped the "
+            "table, or fallen from the top."
+        )
+
+    lines = [
+        leader_line,
+        "",
+        "| Pos | Prev | Manager | GW Pts | Total |",
+        "|-----|------|---------|--------|-------|",
+    ]
     # Sentinel matches report.py's standings block: a manager with no
     # derivable position sorts after every ranked one, so the prompt table
     # and the rendered report agree on order in a mixed cohort.
