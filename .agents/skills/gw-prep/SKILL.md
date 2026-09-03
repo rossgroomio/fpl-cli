@@ -614,6 +614,14 @@ Combine the outputs from whichever sub-agents were dispatched into a single reco
 
 The file should follow the structure defined in `references/output-template.md`, with both Classic and Draft sections populated.
 
+**Normalise the file, immediately after writing it and before Phase D1** -- otherwise a sub-agent section that arrived HTML-escaped lands in the report with its markdown broken, and the entities go on to confuse the table parsing in D1 and E:
+
+```bash
+python3 "${CLAUDE_SKILL_DIR}/scripts/normalise_entities.py" --file "[YOUR_OUTPUT_DIR]/{season}/gw{N}-recommendations.md"
+```
+
+Parse stdout as JSON and warn, never block. `references/entity-normalisation.md` carries the contract, the warning template and the failure handling -- read it rather than reproducing them here.
+
 Present a brief summary to the user:
 - GW number and deadline
 - Mode (transfer or squad-builder)

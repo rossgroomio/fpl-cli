@@ -12,11 +12,13 @@ import pytest
 from fpl_cli.utils.markdown import (
     HeadingMatcher,
     fence_flags,
+    find_entities,
     find_section,
     has_heading,
     leaf_body,
     parse_heading,
     section_body,
+    unescape_specials,
 )
 
 # -- Drift shapes the matcher must tolerate -----------------------------------
@@ -236,3 +238,87 @@ def test_leaf_body_returns_full_body_when_no_nested_heading():
 
 def test_leaf_body_returns_none_when_absent():
     assert leaf_body(["## B", "x"], "## A") is None
+
+
+# -- unescape_specials ----------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("escaped", "expected"),
+    [
+        # The two shapes seen in the report that prompted this (issue #185):
+        # a line-start blockquote marker and a mid-sentence comparison.
+        ("&gt; **Caveat:** low minutes", "> **Caveat:** low minutes"),
+        ("Hinshelwood (+80) &gt; Tavernier (+69)", "Hinshelwood (+80) > Tavernier (+69)"),
+        ("&lt;br&gt;", "<br>"),
+        ("Brighton &amp; Hove Albion", "Brighton & Hove Albion"),
+        ("&quot;nailed on&quot;", '"nailed on"'),
+        # Every spelling of the apostrophe an escaper emits.
+        ("O&#39;Riley", "O'Riley"),
+        ("O&#x27;Riley", "O'Riley"),
+        ("O&#X27;Riley", "O'Riley"),
+        ("O&apos;Riley", "O'Riley"),
+        ("O&#039;Riley", "O'Riley"),
+        ("&LT;&GT;&AMP;", "<>&"),
+    ],
+)
+def test_unescape_specials_recovers_html_special_characters(escaped, expected):
+    assert unescape_specials(escaped) == expected
+
+
+def test_unescape_specials_recovers_a_doubly_escaped_payload():
+    """Decoding runs to a fixed point, so one call is enough however many
+    times the payload was escaped on the way back."""
+    assert unescape_specials("&amp;gt; quote") == "> quote"
+    assert unescape_specials("&amp;amp;gt; quote") == "> quote"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Characters that survived the escaping intact must stay untouched.
+        "Δoutlook +80 → £8.5m, Gyökeres",
+        # Bare ampersands are not entity references.
+        "R&D; a&b; 90&",
+        # A numeric reference to anything but the five specials is left for
+        # find_entities to report rather than silently rewritten.
+        "&#916; &#x394; &nbsp; Gy&#246;keres",
+        # No trailing semicolon, so not a reference at all.
+        "&amp &gt &lt",
+    ],
+)
+def test_unescape_specials_leaves_everything_else_alone(text):
+    assert unescape_specials(text) == text
+
+
+def test_unescape_specials_is_idempotent():
+    once = unescape_specials("&gt; a &amp; b")
+    assert unescape_specials(once) == once
+
+
+# -- find_entities --------------------------------------------------------
+
+
+def test_find_entities_reports_line_numbers_and_entities():
+    text = "clean line\n&nbsp; and &#916;\nalso clean"
+    assert find_entities(text) == [(2, "&nbsp;"), (2, "&#916;")]
+
+
+def test_find_entities_ignores_bare_ampersands():
+    assert find_entities("Brighton & Hove; R&D; a&b") == []
+
+
+def test_find_entities_finds_nothing_in_a_normalised_report():
+    assert find_entities(unescape_specials("&gt; **Caveat:** Brighton &amp; Hove")) == []
+
+
+def test_unescape_specials_decodes_inside_fenced_blocks_too():
+    """The deliberate departure from the module's fence-aware section scanning:
+    transit escaping hits fenced regions too, so a fence-aware decoder would
+    leave the content inside them still broken."""
+    fenced = "before\n```\n&gt; escaped in a fence\n```\nafter"
+    assert unescape_specials(fenced) == "before\n```\n> escaped in a fence\n```\nafter"
+
+
+def test_find_entities_reports_inside_fenced_blocks_too():
+    assert find_entities("```\n&nbsp;\n```") == [(2, "&nbsp;")]

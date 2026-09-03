@@ -465,5 +465,13 @@ budget: GBP{X}m
 ---
 ```
 
+Then normalise the written file, before confirming to the user:
+
+```bash
+python3 "$FPL_CLI_DIR/.agents/skills/gw-prep/scripts/normalise_entities.py" --file "[YOUR_OUTPUT_DIR]/{season}/{filename}"
+```
+
+Parse stdout as JSON and warn, never block; `.agents/skills/gw-prep/references/entity-normalisation.md` carries the contract, the warning template and the failure handling. It matters most for a `gw{N}-squad-builder.md`, where escaped markdown propagates: gw-prep Phase A3 embeds this file's `## Classic Squad` block into its own recommendations.
+
 Confirm:
 > Squad recommendation saved to `[YOUR_OUTPUT_DIR]/{season}/{filename}`
