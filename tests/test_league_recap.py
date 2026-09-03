@@ -2298,6 +2298,43 @@ class TestPromptFormatting:
         assert "Bob" in text
         assert "|" in text  # markdown table
 
+    def test_standings_context_names_previous_leader(self):
+        """Issue #189: the previous leader is stated outright, so the model
+        never has to infer it from the Prev column or the size of a fall --
+        which is how the editorial wrongly credited the manager who fell
+        furthest with having previously topped the table."""
+        managers = [
+            _make_manager(name="Faller", entry_id=1, gw_points=20, overall_rank=16, previous_rank=5),
+            _make_manager(name="Leader", entry_id=2, gw_points=90, overall_rank=1, previous_rank=1),
+        ]
+        text = format_recap_standings_context(_make_recap_data(managers=managers))
+        assert "Previous gameweek's leader (Prev rank 1): Leader" in text
+        assert text.index("Previous gameweek's leader") < text.index("| Pos |")
+
+    def test_standings_context_names_both_previous_leaders_when_tied(self):
+        """`previous_rank` is competition ranking (`derive_point_in_time_positions`),
+        so two managers level on points genuinely share Prev rank 1. Naming
+        only one and telling the model to deny the other's claim would repeat
+        this PR's own bug (PR #216 review)."""
+        managers = [
+            _make_manager(name="Alice", entry_id=1, gw_points=50, overall_rank=2, previous_rank=1),
+            _make_manager(name="Bob", entry_id=2, gw_points=40, overall_rank=3, previous_rank=1),
+        ]
+        text = format_recap_standings_context(_make_recap_data(managers=managers))
+        assert "Previous gameweek's leaders (Prev rank 1, tied): Alice, Bob" in text
+        assert "never credit just one of them alone" in text
+
+    def test_standings_context_no_previous_leader_when_no_previous_gameweek(self):
+        """Season opener / first captured gameweek: no manager has a
+        previous_rank, so the section says so explicitly rather than letting
+        the model invent a "previously led" claim for anyone."""
+        managers = [
+            _make_manager(name="Alice", entry_id=1, previous_rank=None),
+            _make_manager(name="Bob", entry_id=2, previous_rank=None),
+        ]
+        text = format_recap_standings_context(_make_recap_data(managers=managers))
+        assert "No previous gameweek's standings exist" in text
+
     def test_standings_context_sorts_unranked_last_like_the_report(self):
         """A manager with no derivable position sorts after every ranked one
         in both the prompt table and the rendered standings block -- the two
