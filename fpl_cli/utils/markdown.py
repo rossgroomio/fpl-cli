@@ -32,6 +32,12 @@ guessed globally.
 Scanning is fence-aware throughout: a `#` line inside a fenced code block is
 code, not a heading, so it neither opens nor closes a section.
 
+The same module also carries entity normalisation, the other way markdown
+arrives damaged from an LLM return path: a payload escaped somewhere in transit
+loses its syntax, most visibly a `&gt;` blockquote marker that renders as
+literal text. `unescape_specials` recovers it and `find_entities` reports what
+it deliberately left alone.
+
 `HeadingMatcher` assumes a fixed target heading text. A caller that needs to
 locate a heading matching a pattern instead (e.g. one embedding a variable
 gameweek number) should match that heading itself with its own regex, then use
@@ -49,11 +55,13 @@ __all__ = [
     "HeadingMatcher",
     "as_matcher",
     "fence_flags",
+    "find_entities",
     "find_section",
     "has_heading",
     "leaf_body",
     "parse_heading",
     "section_body",
+    "unescape_specials",
 ]
 
 _FENCE_RE = re.compile(r"^(?:`{3,}|~{3,})")
@@ -290,3 +298,69 @@ def leaf_body(lines: Sequence[str], heading: str | HeadingMatcher) -> list[str] 
         if not flags[i] and parse_heading(line) is not None:
             return body[:i]
     return body
+
+
+# -- HTML entity normalisation -------------------------------------------------
+
+# The five HTML-special characters, in every escaped form a standard escaper
+# emits: the named references, plus decimal and hex numeric ones (Python's
+# html.escape produces &#x27; for the apostrophe, Go and ERB produce &#39;).
+_NAMED_SPECIALS = {"lt": "<", "gt": ">", "amp": "&", "quot": '"', "apos": "'"}
+_CODEPOINT_SPECIALS = {0x22: '"', 0x26: "&", 0x27: "'", 0x3C: "<", 0x3E: ">"}
+
+_SPECIAL_ENTITY_RE = re.compile(
+    r"&(?:(lt|gt|amp|quot|apos)|#(?:([0-9]{1,7})|[xX]([0-9A-Fa-f]{1,6})));",
+    re.IGNORECASE,
+)
+
+# Any surviving entity reference, named or numeric, for the residual scan.
+_ANY_ENTITY_RE = re.compile(
+    r"&(?:[A-Za-z][A-Za-z0-9]{1,30}|#[0-9]{1,7}|#[xX][0-9A-Fa-f]{1,6});"
+)
+
+
+def _resolve_special(match: re.Match[str]) -> str:
+    name, decimal, hexadecimal = match.groups()
+    if name is not None:
+        return _NAMED_SPECIALS[name.lower()]
+    codepoint = int(decimal) if decimal is not None else int(hexadecimal, 16)
+    # A numeric reference to anything else (&#916; for Δ) is left alone and
+    # picked up by `find_entities` instead -- decoding arbitrary codepoints is
+    # a wider licence than recovering markdown syntax needs.
+    return _CODEPOINT_SPECIALS.get(codepoint, match.group(0))
+
+
+def unescape_specials(text: str) -> str:
+    """Decode escaped `<`, `>`, `&`, `"` and `'` back to literal characters.
+
+    A payload that arrives HTML-escaped loses its markdown syntax: a blockquote
+    marker written `&gt;` renders as literal text instead of opening a quote
+    block. Reports assembled from LLM-authored prose have no legitimate use for
+    an entity reference, so recovering these five is safe -- but only these
+    five, so that a numeric reference to some other character survives to be
+    reported rather than silently rewritten.
+
+    Decoding repeats to a fixed point, recovering a doubly-escaped payload
+    (`&amp;gt;`) in one call. It terminates because every replacement is
+    strictly shorter than what it replaces.
+    """
+    while True:
+        decoded = _SPECIAL_ENTITY_RE.sub(_resolve_special, text)
+        if decoded == text:
+            return text
+        text = decoded
+
+
+def find_entities(text: str) -> list[tuple[int, str]]:
+    """Return `(line number, entity)` for every entity reference in `text`.
+
+    Line numbers are 1-based. Run after `unescape_specials` to surface escaping
+    it deliberately does not undo, so a payload mangled in a shape this module
+    does not recognise is visible at the point of writing rather than when
+    someone reads a broken report days later.
+    """
+    return [
+        (number, match.group(0))
+        for number, line in enumerate(text.split("\n"), start=1)
+        for match in _ANY_ENTITY_RE.finditer(line)
+    ]

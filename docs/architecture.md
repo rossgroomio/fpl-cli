@@ -597,7 +597,7 @@ fpl_cli/
 ├── constants.py                  # MIN_MINUTES_FOR_PER90
 └── utils/
     ├── gameweek.py                # is_opening_gameweek(gw) — shared GW1 check (transfers, waivers and league tables don't exist yet)
-    ├── markdown.py                # HeadingMatcher, find_section, section_body, leaf_body, fence_flags — fence-aware markdown section location tolerant of LLM heading drift; shared by the gw-prep validator scripts and fpl_cli.prompts.review
+    ├── markdown.py                # HeadingMatcher, find_section, section_body, leaf_body, fence_flags — fence-aware markdown section location tolerant of LLM heading drift; shared by the gw-prep validator scripts and fpl_cli.prompts.review. Also unescape_specials/find_entities — repair and reporting for markdown that arrived HTML-escaped
     ├── teams.py                  # describe_team_set_mismatch — diff a per-team config against the live team list (promotion/relegation drift)
     ├── text.py                   # strip_diacritics (name matching across sources)
     └── time.py                   # format_deadline/format_kickoff/format_generated_at — UK local (Europe/London, auto GMT↔BST). Canonical formatter for every user-facing timestamp.
@@ -648,7 +648,8 @@ Season previews follow the same season-staleness discipline but deliberately **n
     │       ├── starting_xi.py           # StartingXIAgent wrapper (name -> ID resolution)
     │       ├── transfer_eval.py         # TransferEvalAgent wrapper (name -> ID resolution)
     │       ├── extract_classic_squad.py # Classic Squad block extractor (Phase A3 embed + Phase E read-only validator)
-    │       └── validate_draft_waivers.py # Draft waiver cross-check against waiver pool + squad grid
+    │       ├── validate_draft_waivers.py # Draft waiver cross-check against waiver pool + squad grid
+    │       └── normalise_entities.py    # HTML-entity repair for assembled reports (shared by all three writing skills)
     ├── update-gw-prep/           # Second-pass addendum with supplementary data
     │   └── SKILL.md
     ├── preview-ingest/           # Season preview prose -> structured per-team intel files

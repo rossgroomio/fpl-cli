@@ -233,6 +233,21 @@ any existing content above the update section.
 If a previous `## GW Update` section exists, replace it (the latest update
 supersedes earlier ones).
 
+Then normalise the file, before Phase E reads it back:
+
+```bash
+python3 "$FPL_CLI_DIR/.agents/skills/gw-prep/scripts/normalise_entities.py" --file "[YOUR_OUTPUT_DIR]/{season}/gw{N}-recommendations.md"
+```
+
+The sub-agent's section is appended verbatim, so one that arrived HTML-escaped
+somewhere in the return path lands in the file with its markdown broken -- a
+`&gt;` blockquote marker renders as literal text instead of opening a quote
+block. gw-prep normalised the baseline when it wrote it; this covers the
+section appended since. The script rewrites the file in place and costs
+nothing when nothing was escaped. Parse stdout as JSON and warn, never block:
+on `ok: false`, name the residual entities and their lines in chat and carry
+on; on a missing script or non-zero exit, warn and carry on.
+
 ### Phase E — Verify and summarise
 
 Read back the final file and confirm:

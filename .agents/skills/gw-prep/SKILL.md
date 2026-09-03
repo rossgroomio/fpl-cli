@@ -611,6 +611,19 @@ Combine the outputs from whichever sub-agents were dispatched into a single reco
 
 The file should follow the structure defined in `references/output-template.md`, with both Classic and Draft sections populated.
 
+**Normalise the file, immediately after writing it and before Phase D1.** Sub-agent sections are concatenated verbatim, so one that arrived HTML-escaped somewhere in the return path lands in the report with its markdown broken -- a `&gt;` blockquote marker renders as literal text instead of opening a quote block, and the entities go on to confuse the table parsing in D1 and E. Run:
+
+```bash
+python3 "${CLAUDE_SKILL_DIR}/scripts/normalise_entities.py" --file "[YOUR_OUTPUT_DIR]/{season}/gw{N}-recommendations.md"
+```
+
+The script rewrites the file in place, decoding `<`, `>`, `&`, `"` and `'`, and costs nothing when nothing was escaped. Parse stdout as JSON: `{"ok": bool, "changed": bool, "unescaped": int, "residual": [{"line": int, "entity": str}]}`. Posture is warn, never block -- an entity is a cosmetic defect, not a rule violation:
+
+- `ok: true` -> silent continue, whether or not it changed anything.
+- `ok: false` -> the file holds entity references the script deliberately does not decode. Emit an in-chat warning and proceed:
+  > ⚠️ Phase D: `gw{N}-recommendations.md` still contains {N} HTML entit(y/ies) after normalisation -- line {line}: `{entity}`, ... Check those lines render as intended.
+- Script missing, or a non-zero exit -> emit a warning naming the failure and proceed. Fail-open for infrastructure errors, as in Phase D1.
+
 Present a brief summary to the user:
 - GW number and deadline
 - Mode (transfer or squad-builder)
