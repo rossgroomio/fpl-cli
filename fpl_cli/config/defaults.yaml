@@ -33,6 +33,8 @@ returnee_radar:
   stash_upgrade_margin: 5.0  # Quality points (0-100 scale) a returnee must beat the incumbent by
   enrich_stale_news_days: 7  # With --enrich, re-check a dated player whose FPL news is at least this old
   enrich_max_players: 8  # With --enrich, the most players one run will search for return intel
+  enrich_concurrency: 4  # With --enrich, the most searches in flight at once
+  enrich_query_spacing_seconds: 1.0  # With --enrich, the least time between two search starts (a per-minute quota counts starts, not searches in flight)
 
 llm:
   research:

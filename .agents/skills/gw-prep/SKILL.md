@@ -282,7 +282,10 @@ watchlist and why.
 `--enrich` searches the web for fresher return timing on the players FPL's own news field is silent
 or stale about, which is what supplies a date for the injured majority. It needs a Perplexity API
 key; without one the command skips enrichment, records why in `metadata.enrichment_note` and still
-returns the FPL-sourced watchlist -- so this step is never a reason to abort the run.
+returns the FPL-sourced watchlist -- so this step is never a reason to abort the run. If
+`metadata.enrichment_rate_limited` is true the provider rate-limited the run even after the command's
+own retries; the answers it did get are cached, so re-run the command once before settling for the
+partial payload.
 
 Store the payload as `returnee_radar` and inline it into both Phase C prompts as a labelled
 section. C1 renders it as an informational watchlist and is barred from naming its players in
