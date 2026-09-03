@@ -195,24 +195,59 @@ fpl player "{player_name}" --format json
 
 Run the five differentiated queries below in parallel. Each targets a distinct transfer-signal surface that downstream Phase C analysis depends on; a single generic `fpl stats` call sorts by total points and misses most of them.
 
-```bash
-# In-form players across positions (trending, minutes-filtered, available)
-fpl stats -s form --min-minutes 315 -n 15 --available-only --format json
+**Derive the minutes floor from `N` before issuing them.** After `N-1` completed gameweeks no player can have logged more than `(N - 1) * 90` minutes, so a fixed floor is arithmetically unreachable in August: it filters out every player and returns a well-formed envelope carrying `"data": []`, which is indistinguishable from "nobody qualifies". Scale the bar with the calendar instead:
 
-# Transfer momentum (who the market is chasing this week)
-fpl stats -s transfers_in_event -n 15 --format json
-
-# MID xGI leaders (attacking mids, hauls signal)
-fpl stats -p MID -s expected_goal_involvements --min-minutes 450 -n 15 --available-only --format json
-
-# FWD xGI leaders (strikers, hauls signal)
-fpl stats -p FWD -s expected_goal_involvements --min-minutes 450 -n 10 --available-only --format json
-
-# DEF clean-sheet leaders (defensive picks)
-fpl stats -p DEF -s clean_sheets --min-minutes 450 -n 10 --available-only --format json
+```
+mins_form = min(315, (N - 1) * 45)     # cap reached at GW8
+mins_pos  = min(450, (N - 1) * 45)     # cap reached at GW11
 ```
 
-Store each result under a distinct key (e.g. `stats_form`, `stats_transfer_momentum`, `stats_mid_xgi`, `stats_fwd_xgi`, `stats_def_clean_sheets`) and inline them into Phase C prompts as labelled sections.
+`(N - 1) * 45` is half the minutes the season has made possible so far. At `N == 1` both are `0` -- the CLI default, which filters nothing. Once the caps bind, behaviour is identical to a fixed threshold.
+
+**Before GW6 (`N <= 5`), rank on `ep_next`.** `form` and `expected_goal_involvements` over one or two matches are near-noise and `clean_sheets` is a 0/1 count, so ranking on them early sorts mostly on sample. `ep_next` is FPL's own prior-informed projection for the coming gameweek and is what `fpl stats -v` recommends in this same window. Nothing is lost by the swap: every record carries `form`, `expected_goal_involvements`, `clean_sheets` and `ep_next` whatever the sort, so only the ordering changes.
+
+| Placeholder | `N <= 5` | `N >= 6` |
+|---|---|---|
+| `{rank_form}` | `ep_next` | `form` |
+| `{rank_mid}` | `ep_next` | `expected_goal_involvements` |
+| `{rank_fwd}` | `ep_next` | `expected_goal_involvements` |
+| `{rank_def}` | `ep_next` | `clean_sheets` |
+
+```bash
+# Leaders across positions (minutes-filtered, available)
+fpl stats -s {rank_form} --min-minutes {mins_form} -n 15 --available-only --format json
+
+# Transfer momentum (who the market is chasing this week - valid from GW1, no floor)
+fpl stats -s transfers_in_event -n 15 --format json
+
+# MID leaders (attacking mids, hauls signal)
+fpl stats -p MID -s {rank_mid} --min-minutes {mins_pos} -n 15 --available-only --format json
+
+# FWD leaders (strikers, hauls signal)
+fpl stats -p FWD -s {rank_fwd} --min-minutes {mins_pos} -n 10 --available-only --format json
+
+# DEF leaders (defensive picks, clean-sheet signal)
+fpl stats -p DEF -s {rank_def} --min-minutes {mins_pos} -n 10 --available-only --format json
+```
+
+Store each result under a distinct key (`stats_form`, `stats_transfer_momentum`, `stats_mid_xgi`, `stats_fwd_xgi`, `stats_def_clean_sheets`) and inline them into Phase C prompts as labelled sections. **Label each block with the sort and floor it actually used**, not with the key name -- `=== fpl stats: MID leaders (sort=ep_next, min-minutes=45) ===` -- because pre-GW6 the sort is not the one the key implies.
+
+**An empty block must say why it is empty.** Phase C inlines these blocks verbatim, and a bare `"data": []` gives a sub-agent nothing to distinguish "no player clears the bar" from "the query was malformed", so it can reason from the gap or fill it from weaker sources. Annotate it in the label instead:
+
+```
+=== fpl stats: DEF leaders — EMPTY (sort=clean_sheets, min-minutes=450): no available player clears the floor at GW{N} ===
+```
+
+With the floor scaled to `N` this is now a real finding rather than an artefact of the arguments, which is exactly why it is worth stating.
+
+**Set `stats_caveat` for Phase C.** When `N <= 5`, it is the following line; when `N >= 6` it is empty and the line carrying it is omitted from every Phase C prompt.
+
+> **Early-season caveat:** these blocks are ranked on `ep_next` (FPL's projection), not on observed
+> output. The `form`, `expected_goal_involvements` and `clean_sheets` values inside each record come
+> from {N-1} match(es) and are near-noise -- a hot cameo out-reads a quiet elite. The minutes floor
+> is scaled to the gameweek ({mins_form}/{mins_pos} minutes), so these lists admit players a
+> full-season floor would exclude. Weight prior-season pedigree, role and fixtures above these
+> numbers, and do not present a one-match form figure as a trend.
 
 ### B9 -- Season Preview Intel
 
@@ -321,6 +356,7 @@ Branch on `squad_builder_result` (set in Phase A3; unset on transfer weeks):
 > - Price movements: {B5 output}
 > - Chip timing: {B6 output}
 > - Stats: {stats_form}, {stats_transfer_momentum}, {stats_mid_xgi}, {stats_fwd_xgi}, {stats_def_clean_sheets} (from B8)
+>   {stats_caveat} (from B8 - omit this line entirely when `stats_caveat` is empty)
 >
 > - Preview intel: {intel} (from B9 - omit this line entirely when `intel_gate` is `none`)
 >   Gate: {intel_gate}. Governs **minutes and role only**, never how good a player is. Attribute it
@@ -399,6 +435,7 @@ Proceed immediately (non-interactive).
 > - Price movements: {B5 output}
 > - Chip timing: {B6 output}
 > - Stats: {stats_form}, {stats_transfer_momentum}, {stats_mid_xgi}, {stats_fwd_xgi}, {stats_def_clean_sheets} (from B8)
+>   {stats_caveat} (from B8 - omit this line entirely when `stats_caveat` is empty)
 >
 > - Preview intel: {intel} (from B9 - omit this line entirely when `intel_gate` is `none`)
 >   Gate: {intel_gate}. Governs **minutes and role only**, never how good a player is. Attribute it
@@ -444,7 +481,8 @@ Proceed immediately (non-interactive).
 > - Squad: {B4 output}
 > - Price movements: {B5 output}
 > - Chip timing: {B6 output}
-> - Stats: {stats_form}, {stats_transfer_momentum}, {stats_mid_xgi}, {stats_fwd_xgi}, {stats_def_clean_sheets} (from B8)>
+> - Stats: {stats_form}, {stats_transfer_momentum}, {stats_mid_xgi}, {stats_fwd_xgi}, {stats_def_clean_sheets} (from B8)
+>   {stats_caveat} (from B8 - omit this line entirely when `stats_caveat` is empty)
 > - Returning soon: {returnee_radar} (from B10)
 >   **Informational only.** Render it as the Returning Soon section of the Classic output template,
 >   one row per entry in `data.entries`, quoting only fields present in that payload. The
@@ -489,6 +527,7 @@ Proceed immediately (non-interactive).
 > - Price movements: {B5 output}
 > - Chip timing: {B6 output}
 > - Stats: {stats_form}, {stats_transfer_momentum}, {stats_mid_xgi}, {stats_fwd_xgi}, {stats_def_clean_sheets} (from B8)
+>   {stats_caveat} (from B8 - omit this line entirely when `stats_caveat` is empty)
 >
 > - Preview intel: {intel} (from B9 - omit this line entirely when `intel_gate` is `none`)
 >   Gate: {intel_gate}. Governs **minutes and role only**, never how good a player is. Attribute it
@@ -534,6 +573,7 @@ Proceed immediately (non-interactive).
 > - Waivers: {B3 output}
 > - Squad: {B4 output}
 > - Stats: {stats_form}, {stats_transfer_momentum}, {stats_mid_xgi}, {stats_fwd_xgi}, {stats_def_clean_sheets} (from B8)
+>   {stats_caveat} (from B8 - omit this line entirely when `stats_caveat` is empty)
 >
 > - Preview intel: {intel} (from B9 - omit this line entirely when `intel_gate` is `none`)
 >   Gate: {intel_gate}. Governs **minutes and role only**, never how good a player is. Attribute it
