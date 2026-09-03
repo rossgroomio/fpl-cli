@@ -50,13 +50,13 @@ PLAYERSTATS_CSV = (
     "expected_goals,expected_assists,expected_goal_involvements,gw,"
     "transfers_in_event,transfers_out_event\n"
     # Salah GW5 (intermediate snapshot)
-    "100,13.2,0.7,120,1400,16,9,6,8.5,5.1,13.6,5,50000,20000\n"
+    "100,13.2,7,120,1400,16,9,6,8.5,5.1,13.6,5,50000,20000\n"
     # Salah GW10 (latest = season aggregate)
-    "100,13.5,1.0,265,2800,31,19,13,17.5,10.2,27.7,10,40000,30000\n"
+    "100,13.5,10,265,2800,31,19,13,17.5,10.2,27.7,10,40000,30000\n"
     # Haaland GW10
-    "200,15.2,0.7,220,2500,28,25,5,22.0,3.5,25.5,10,60000,20000\n"
+    "200,15.2,7,220,2500,28,25,5,22.0,3.5,25.5,10,60000,20000\n"
     # Keeper GW10
-    "300,4.5,0.0,80,900,10,0,0,0.0,0.0,0.0,10,1000,500\n"
+    "300,4.5,0,80,900,10,0,0,0.0,0.0,0.0,10,1000,500\n"
 )
 
 # Player not in players.csv
@@ -64,7 +64,7 @@ PLAYERSTATS_ORPHAN_CSV = (
     "id,now_cost,cost_change_start,total_points,minutes,starts,goals_scored,assists,"
     "expected_goals,expected_assists,expected_goal_involvements,gw,"
     "transfers_in_event,transfers_out_event\n"
-    "999,5.0,0.0,10,100,1,0,0,0.0,0.0,0.0,5,100,50\n"
+    "999,5.0,0,10,100,1,0,0,0.0,0.0,0.0,5,100,50\n"
 )
 
 # Per-GW player_gameweek_stats for trend tests
@@ -158,7 +158,7 @@ class TestSeasonAggregates:
 
     @respx.mock
     async def test_price_conversion(self, tmp_path):
-        """Pound prices converted to £0.1m integers."""
+        """now_cost is published in £m; cost_change_start is already in tenths."""
         respx.get(f"{BASE}/{CI_SEASON}/players.csv").mock(
             return_value=Response(200, text=PLAYERS_CSV)
         )
@@ -171,11 +171,33 @@ class TestSeasonAggregates:
         rows = data[client._season_label]
         salah = [r for r in rows if r.element_code == 80201][0]
         assert salah.end_cost == 135  # 13.5 * 10
-        assert salah.start_cost == 125  # 135 - (1.0 * 10)
+        assert salah.start_cost == 125  # 135 - 10
 
         haaland = [r for r in rows if r.element_code == 206325][0]
         assert haaland.end_cost == 152  # 15.2 * 10
-        assert haaland.start_cost == 145  # 152 - (0.7 * 10)
+        assert haaland.start_cost == 145  # 152 - 7
+
+    @respx.mock
+    async def test_price_change_is_not_scaled_like_the_price(self, tmp_path):
+        """A £0.3m drop is published as -3, not -0.3: scaling it too read as £3.0m."""
+        csv = (
+            "id,now_cost,cost_change_start,total_points,minutes,starts,goals_scored,"
+            "assists,expected_goals,expected_assists,expected_goal_involvements,gw,"
+            "transfers_in_event,transfers_out_event\n"
+            "100,5.7,-3,120,2700,30,2,5,1.5,3.8,5.3,38,100,50\n"
+        )
+        respx.get(f"{BASE}/{CI_SEASON}/players.csv").mock(
+            return_value=Response(200, text=PLAYERS_CSV)
+        )
+        respx.get(f"{BASE}/{CI_SEASON}/playerstats.csv").mock(
+            return_value=Response(200, text=csv)
+        )
+        async with CoreInsightsClient(_make_fetcher(tmp_path)) as client:
+            data = await client._fetch_season_data()
+
+        row = data[client._season_label][0]
+        assert row.end_cost == 57
+        assert row.start_cost == 60
 
     @respx.mock
     async def test_price_rounding_edge_case(self, tmp_path):
@@ -184,7 +206,7 @@ class TestSeasonAggregates:
             "id,now_cost,cost_change_start,total_points,minutes,starts,goals_scored,"
             "assists,expected_goals,expected_assists,expected_goal_involvements,gw,"
             "transfers_in_event,transfers_out_event\n"
-            "100,5.85,0.0,50,500,6,2,1,1.5,0.8,2.3,5,100,50\n"
+            "100,5.85,0,50,500,6,2,1,1.5,0.8,2.3,5,100,50\n"
         )
         respx.get(f"{BASE}/{CI_SEASON}/players.csv").mock(
             return_value=Response(200, text=PLAYERS_CSV)

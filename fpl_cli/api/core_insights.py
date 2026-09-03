@@ -419,8 +419,14 @@ class CoreInsightsClient:
                 continue
 
             try:
+                # Core-Insights publishes now_cost in £m (13.5) but keeps
+                # cost_change_start in the API's own tenths (-3 for a £0.3m
+                # drop): every gameweek of 2025-26 and 2026-27 carries whole
+                # numbers there and never a fraction. Scaling both turned
+                # that £0.3m drop into £3.0m and put start_cost out by £2.7m
+                # for every player whose price had moved.
                 now_cost = int(round(float(row["now_cost"]) * 10))
-                cost_change_start = int(round(float(row["cost_change_start"]) * 10))
+                cost_change_start = int(round(float(row["cost_change_start"])))
                 total_points = int(row["total_points"])
             except (ValueError, KeyError):
                 logger.debug("Skipping player %d: missing/malformed required field", pid)
