@@ -9,7 +9,7 @@ import copy
 import click
 from rich.table import Table
 
-from fpl_cli.cli._context import Format, console, get_format
+from fpl_cli.cli._context import Format, console, error_console, get_format
 from fpl_cli.cli._helpers import _fdr_style
 from fpl_cli.cli._json import (
     api_failure_boundary,
@@ -130,6 +130,8 @@ def transfer_eval_command(ctx: click.Context, out_player: str, in_players: str, 
         if output_format == "json":
             _emit_json_output(data, finances, sell_price, fmt)
         else:
+            for warning in data.get("warnings", []):
+                error_console.print(f"[yellow]{warning['message']}[/yellow]")
             _render_table(data, finances, sell_price, fmt)
 
     with api_failure_boundary("transfer-eval", output_format):
@@ -156,8 +158,14 @@ def _compute_budget(finances, sell_price: float | None, in_price: float) -> floa
 
 
 def _emit_json_output(data: dict, finances, sell_price: float | None, fmt) -> None:
-    """Emit JSON output with optional affordability fields."""
+    """Emit JSON output with optional affordability fields.
+
+    The early-season quality notice the analysis attaches travels in
+    ``metadata.warnings``, the same slot ``fpl stats --value`` uses, so a
+    consumer reads one place whichever command produced the score.
+    """
     output = copy.deepcopy(data)
+    warnings = output.pop("warnings", [])
     out = output["out_player"]
     in_players = output["in_players"]
 
@@ -169,7 +177,7 @@ def _emit_json_output(data: dict, finances, sell_price: float | None, fmt) -> No
             inp["affordable"] = itb >= 0 if itb is not None else None
 
     with json_output_mode() as stdout:
-        emit_json("transfer-eval", output, file=stdout)
+        emit_json("transfer-eval", output, metadata={"warnings": warnings}, file=stdout)
 
 
 def _render_table(data: dict, finances, sell_price: float | None, fmt) -> None:

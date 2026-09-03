@@ -103,17 +103,18 @@ class TestIsExcluded:
 # ---------------------------------------------------------------------------
 
 
-class TestScoreAllPlayersShrinkageHoldOut:
+class TestScoreAllPlayersPriorBlendHoldOut:
     """`fpl allocate` must not hoist unavailable players either (#122).
 
-    `score_all_players` calls `shrink_scores` directly rather than through
-    `apply_shrinkage`, to keep float precision for the solver. That made it easy
-    to miss when the hold-out was wired into the agent call sites, so it gets
-    its own coverage.
+    The value family replaced position-mean shrinkage with the prior blend
+    (#143), and the blend inherits the hold-out: a player known not to be
+    playing keeps their observed score rather than being handed last
+    season's standing. `score_all_players` reaches it through
+    `compute_quality_value`, so this pins that the allocator path honours it.
 
     The pool here is suspended rather than injured on purpose: `_is_excluded`
     already drops INJURED-at-0%, so a suspended player at 0% is the case that
-    reaches shrinkage while genuinely not playing (see
+    reaches the blend while genuinely not playing (see
     `TestIsExcluded.test_suspended_not_excluded`).
     """
 
@@ -142,15 +143,15 @@ class TestScoreAllPlayersShrinkageHoldOut:
             4: PlayerPrior(0.1, 0.3, "price"),
         }
 
-    def test_unavailable_player_is_not_shrunk_toward_the_position_mean(self):
+    def test_unavailable_player_is_not_blended_with_their_prior(self):
         sd = _make_scoring_data(self._pool(), player_priors=self._priors(), next_gw_id=3)
         by_id = {sp.player.id: sp.raw_quality for sp in score_all_players(sd)}
 
-        unshrunk = _make_scoring_data(self._pool(), player_priors=None, next_gw_id=3)
-        raw_by_id = {sp.player.id: sp.raw_quality for sp in score_all_players(unshrunk)}
+        unblended = _make_scoring_data(self._pool(), player_priors=None, next_gw_id=3)
+        raw_by_id = {sp.player.id: sp.raw_quality for sp in score_all_players(unblended)}
 
         assert by_id[4] == pytest.approx(raw_by_id[4])
-        assert by_id[3] != pytest.approx(raw_by_id[3])  # available players still shrink
+        assert by_id[3] != pytest.approx(raw_by_id[3])  # available players still blend
 
     def test_unavailable_player_ranks_below_a_weak_available_one(self):
         sd = _make_scoring_data(self._pool(), player_priors=self._priors(), next_gw_id=3)
@@ -158,7 +159,7 @@ class TestScoreAllPlayersShrinkageHoldOut:
         assert by_id[4] < by_id[3]
 
     def test_unavailable_player_stays_in_the_solver_pool(self):
-        """Held out of shrinkage, not dropped — `_is_excluded` still decides membership."""
+        """Held out of the blend, not dropped — `_is_excluded` still decides membership."""
         sd = _make_scoring_data(self._pool(), player_priors=self._priors(), next_gw_id=3)
         assert {sp.player.id for sp in score_all_players(sd)} == {1, 2, 3, 4}
 
@@ -284,36 +285,41 @@ class TestScoreAllPlayers:
         # Scores should differ when form_trajectory is applied
         assert result_with[0].raw_quality != result_without[0].raw_quality
 
-    def test_shrinkage_compresses_early_gw(self):
-        """Shrinkage compresses scores toward position mean in early GWs."""
-        from fpl_cli.services.player_prior import PlayerPrior
-
-        # Two players with very different scores
-        high = make_player(
+    def test_prior_blend_reorders_on_pedigree_early_and_expires(self):
+        """Before the cutoff the solver ranks on the prior-blended quality
+        (#143): a hot-starting role player sits below a quiet-starting elite
+        while the observation carries 30% of the score, and the observation
+        alone decides once the cutoff has passed.
+        """
+        hot_start = make_player(
             id=1, position=PlayerPosition.MIDFIELDER,
             minutes=450, form=8.0, points_per_game=7.0,
             expected_goals=5.0, expected_assists=3.0,
         )
-        low = make_player(
+        quiet_elite = make_player(
             id=2, position=PlayerPosition.MIDFIELDER,
             minutes=450, form=2.0, points_per_game=2.0,
             expected_goals=1.0, expected_assists=0.5,
         )
         priors = {
-            1: PlayerPrior(prior_strength=0.5, confidence=0.3, source="history"),
-            2: PlayerPrior(prior_strength=0.3, confidence=0.3, source="history"),
+            1: PlayerPrior(prior_strength=0.2, confidence=0.3, source="price"),
+            2: PlayerPrior(prior_strength=1.0, confidence=0.3, source="history"),
         }
-        sd = _make_scoring_data([high, low], player_priors=priors, next_gw_id=5)
-        result = score_all_players(sd)
+        early = {
+            sp.player.id: sp.raw_quality
+            for sp in score_all_players(
+                _make_scoring_data([hot_start, quiet_elite], player_priors=priors, next_gw_id=5)
+            )
+        }
+        late = {
+            sp.player.id: sp.raw_quality
+            for sp in score_all_players(
+                _make_scoring_data([hot_start, quiet_elite], player_priors=priors, next_gw_id=15)
+            )
+        }
 
-        # Without shrinkage (GW >= 10)
-        sd_late = _make_scoring_data([high, low], player_priors=priors, next_gw_id=15)
-        result_late = score_all_players(sd_late)
-
-        # Gap between high and low should be smaller with shrinkage
-        gap_shrunk = abs(result[0].raw_quality - result[1].raw_quality)
-        gap_unshrunk = abs(result_late[0].raw_quality - result_late[1].raw_quality)
-        assert gap_shrunk < gap_unshrunk
+        assert early[2] > early[1]
+        assert late[1] > late[2]
 
     def test_no_players_raises(self):
         """scoring_data with players=None raises ValueError."""
@@ -464,29 +470,28 @@ class TestScoreAllPlayersSgw:
         with pytest.raises(ValueError, match="scoring_data.players is required"):
             score_all_players_sgw(sd)
 
-    def test_no_shrinkage_applied(self):
-        """SGW scoring does not call shrink_scores (unlike score_all_players)."""
+    def test_priors_do_not_enter_single_gw_scoring(self):
+        """SGW scoring is one fixture's projection: no prior blend and no
+        shrinkage, unlike score_all_players.
+        """
         p = make_player(
             id=1, position=PlayerPosition.MIDFIELDER, team_id=1,
             minutes=1800, form=8.0, expected_goals=5.0, expected_assists=3.0,
         )
-        sd = _make_scoring_data([p], next_gw_id=5)
+        priors = {1: PlayerPrior(prior_strength=0.1, confidence=0.2, source="price")}
 
-        with (
-            patch(
-                "fpl_cli.services.squad_allocator.build_fixture_matchups",
-                return_value=[_make_sgw_matchup()],
-            ),
-            patch(
-                "fpl_cli.services.squad_allocator.shrink_scores",
-                wraps=None,
-                side_effect=AssertionError("shrink_scores should not be called"),
-            ),
+        with patch(
+            "fpl_cli.services.squad_allocator.build_fixture_matchups",
+            return_value=[_make_sgw_matchup()],
         ):
-            result = score_all_players_sgw(sd)
+            with_priors = score_all_players_sgw(
+                _make_scoring_data([p], next_gw_id=5, player_priors=priors)
+            )
+            without = score_all_players_sgw(_make_scoring_data([p], next_gw_id=5))
 
-        assert len(result) == 1
-        assert result[0].raw_quality > 0
+        assert len(with_priors) == 1
+        assert with_priors[0].raw_quality > 0
+        assert with_priors[0].raw_quality == pytest.approx(without[0].raw_quality)
 
     def test_form_trajectory_applied_when_history_present(self):
         """form_trajectory enrichment is computed when player_histories is provided."""

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -16,8 +16,11 @@ from fpl_cli.services.player_prior import (
     _extract_prev_season_pts_per_90,
     percentile_rank,
     _save_prior_cache,
+    early_season_quality_warning,
     generate_player_prior,
     load_cached_priors,
+    load_or_generate_player_priors,
+    observation_weight_range,
 )
 from tests.conftest import make_player
 
@@ -345,3 +348,115 @@ class TestPriorCache:
         loaded = load_cached_priors(3)
         assert loaded is not None
         assert loaded[1].reliability is None
+
+
+# ---------------------------------------------------------------------------
+# observation_weight_range
+# ---------------------------------------------------------------------------
+
+
+class TestObservationWeightRange:
+    """The band a blended quality score sits in, quoted by fpl stats --value."""
+
+    def test_gw2_band(self):
+        assert observation_weight_range(2) == pytest.approx((0.25, 0.5))
+
+    def test_gw5_band(self):
+        low, high = observation_weight_range(5)
+        assert low == pytest.approx(5 / 11)
+        assert high == pytest.approx(10 / 11)
+
+    def test_saturates_at_the_cutoff(self):
+        assert observation_weight_range(CUTOFF_GW) == (1.0, 1.0)
+
+
+# ---------------------------------------------------------------------------
+# load_or_generate_player_priors
+# ---------------------------------------------------------------------------
+
+
+def _provider(profiles=None, *, enter_error=None):
+    provider = MagicMock()
+    provider.get_all_player_histories = AsyncMock(return_value=profiles or {})
+    provider.__aenter__ = AsyncMock(
+        return_value=provider, side_effect=enter_error,
+    )
+    provider.__aexit__ = AsyncMock(return_value=False)
+    return provider
+
+
+class TestLoadOrGeneratePlayerPriors:
+    """The one entry point for a command that scores against a prior."""
+
+    async def test_returns_the_cache_when_current(self):
+        cached = {1: PlayerPrior(prior_strength=0.7, confidence=0.5, source="history")}
+        with (
+            patch("fpl_cli.services.player_prior.load_cached_priors", return_value=cached),
+            patch("fpl_cli.api.historical.make_historical_provider") as make_provider,
+        ):
+            result = await load_or_generate_player_priors([make_player(id=1)], 3)
+        assert result == cached
+        make_provider.assert_not_called()
+
+    @patch("fpl_cli.services.player_prior._previous_season_label", return_value="2024-25")
+    async def test_generates_and_caches_on_a_miss(self, _mock_season):
+        players = [make_player(id=1, code=100, position=PlayerPosition.MIDFIELDER, now_cost=80)]
+        profiles = {100: _make_profile(100, [_make_season(100, total_points=180, minutes=2700)])}
+        with patch(
+            "fpl_cli.api.historical.make_historical_provider",
+            return_value=_provider(profiles),
+        ):
+            result = await load_or_generate_player_priors(players, 3)
+
+        assert result is not None
+        assert result[1].source == "history"
+        reloaded = load_cached_priors(3)
+        assert reloaded is not None
+        assert reloaded[1] == result[1]
+
+    async def test_unreachable_history_degrades_to_none(self):
+        with patch(
+            "fpl_cli.api.historical.make_historical_provider",
+            return_value=_provider(enter_error=OSError("offline")),
+        ):
+            result = await load_or_generate_player_priors([make_player(id=1)], 3)
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# early_season_quality_warning
+# ---------------------------------------------------------------------------
+
+
+class TestEarlySeasonQualityWarning:
+    """One notice for every command that shows a quality_score (PR #208 review)."""
+
+    def test_blended_before_the_cutoff_is_prior_informed(self):
+        warning = early_season_quality_warning(2, blended=True)
+        assert warning is not None
+        assert warning["code"] == "early_season_prior_informed"
+        assert "25%-50%" in warning["message"]  # observation_weight_range(2)
+        assert f"GW{CUTOFF_GW}" in warning["message"]
+        assert "ep_next" in warning["message"]
+
+    def test_blended_notice_ends_at_the_cutoff(self):
+        assert early_season_quality_warning(CUTOFF_GW - 1, blended=True) is not None
+        assert early_season_quality_warning(CUTOFF_GW, blended=True) is None
+
+    def test_unblended_before_gw6_is_small_sample(self):
+        warning = early_season_quality_warning(2, blended=False)
+        assert warning is not None
+        assert warning["code"] == "early_season_small_sample"
+        assert "could not be loaded" in warning["message"]
+        assert "ep_next" in warning["message"]
+
+    def test_unblended_notice_ends_at_gw6(self):
+        from fpl_cli.services.scoring import MINS_FACTOR_START_GW
+        assert early_season_quality_warning(MINS_FACTOR_START_GW, blended=False) is not None
+        assert early_season_quality_warning(MINS_FACTOR_START_GW + 1, blended=False) is None
+
+    def test_the_two_notices_never_share_a_code(self):
+        blended = early_season_quality_warning(3, blended=True)
+        unblended = early_season_quality_warning(3, blended=False)
+        assert blended is not None and unblended is not None
+        assert blended["code"] != unblended["code"]

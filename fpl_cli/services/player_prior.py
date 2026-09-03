@@ -1,9 +1,22 @@
 """Player-level Bayesian prior for early-season confidence.
 
 Uses previous-season pts/90 from the historical datasets to determine
-per-player confidence. Scores are shrunk toward position means with shrinkage
-reduced for players with strong historical track records. A price-based
-confidence floor handles new signings with no PL history.
+per-player confidence in this season's data. Two consumers read it before
+``CUTOFF_GW``:
+
+- The value family (``quality_score``) blends the observed raw score with
+  the score the prior implies — a player's pts/90 percentile placed on the
+  calibrated elite scale — weighted by confidence
+  (``scoring.value_quality.blend_quality_with_prior``). Going into GW2 the
+  observation is one gameweek, so a quiet-starting elite keeps most of
+  their standing and a one-game wonder does not saturate the scale.
+- Every other family shrinks its scores toward the position mean, with
+  shrinkage reduced for players with strong track records
+  (``scoring.shrinkage``).
+
+A price-based prior handles new signings with no PL history: the
+within-position price percentile, halved, so it can never outrank a
+mid-table history.
 
 Cache design follows team_ratings_prior.py: YAML with metadata,
 atomic writes, season-change invalidation.
@@ -90,6 +103,71 @@ def _compute_confidence(gw: int, prior_strength: float) -> float:
     effective_gw = max(gw, 1)  # pre-season (GW 0) treated as GW 1
     base_confidence = effective_gw / (effective_gw + REGRESSION_CONSTANT)
     return min(1.0, base_confidence * (1 + prior_strength))
+
+
+def observation_weight_range(gw: int) -> tuple[float, float]:
+    """Least and most weight this season's observation can carry at *gw*.
+
+    The confidence curve spans ``prior_strength`` 0 (no history and the
+    cheapest price in the position) to 1 (top of last season's pts/90
+    percentile), so this is the band a blended quality score sits in — going
+    into GW2 the observation carries 25-50% of it, going into GW5 45-91%.
+    ``early_season_quality_warning`` quotes it so a reader knows how much of
+    the score is measurement and how much pedigree.
+    """
+    return _compute_confidence(gw, 0.0), _compute_confidence(gw, 1.0)
+
+
+def early_season_quality_warning(next_gw_id: int, *, blended: bool) -> dict[str, str] | None:
+    """The ``metadata.warnings`` entry to carry beside a quality_score produced at *next_gw_id*.
+
+    One helper for every command that shows the value family's quality score
+    (``fpl stats --value``, ``fpl player``, ``fpl transfer-eval``,
+    ``fpl allocate``), so a reader and an agent are told the same thing about
+    the same number whichever command produced it. *blended* is whether the
+    prior actually reached the score — the priors loaded — so the entry also
+    tells a successful blend from a degraded run: the loader swallows a
+    failed history fetch and returns None, and without this the same
+    command, player and gameweek could print 76 or 59 with identical
+    metadata. Returns None once there is nothing to caveat: from the prior
+    cutoff when blended, from GW6 when not.
+    """
+    from fpl_cli.services.scoring.constants import MINS_FACTOR_START_GW
+
+    if blended:
+        if next_gw_id >= CUTOFF_GW:
+            return None
+        low, high = observation_weight_range(next_gw_id)
+        return {
+            "code": "early_season_prior_informed",
+            "message": (
+                f"Early-season notice: until GW{CUTOFF_GW}, quality_score blends "
+                "this season's observation with last season's pts/90 pedigree "
+                "(price for players without PL history), so a quiet-starting "
+                "elite keeps most of their standing and one good game does not "
+                f"saturate the scale. Going into GW{next_gw_id} the observation "
+                f"carries {low:.0%}-{high:.0%} of the score depending on the "
+                "player's track record. Read quality_score as a prior-informed "
+                "estimate, not a measurement; ep_next is FPL's own projection "
+                "for the coming gameweek (fpl stats --sort ep_next)."
+            ),
+        }
+    if next_gw_id > MINS_FACTOR_START_GW:
+        return None
+    return {
+        "code": "early_season_small_sample",
+        "message": (
+            "Early-season notice: last season's history could not be loaded, "
+            "so quality scores are pure observation and small-sample dominated "
+            "before GW6 — form and ppg reflect only the opening gameweek(s) and "
+            "per-90 rates come from very few minutes, so hot starters saturate "
+            "the scale while elite players with a quiet start read low. GK "
+            "ceilings scale with the sample the calendar has made possible, "
+            "reaching full scale at GW6. Treat quality_score as provisional "
+            "until ~GW6-10; ep_next is FPL's own prior-informed projection for "
+            "the coming gameweek (fpl stats --sort ep_next)."
+        ),
+    }
 
 
 def generate_player_prior(
@@ -237,3 +315,34 @@ def load_cached_priors(current_gw: int) -> dict[int, PlayerPrior] | None:
             reliability=vals.get("reliability"),
         )
     return result
+
+
+async def load_or_generate_player_priors(
+    players: list[Player],
+    next_gw_id: int,
+) -> dict[int, PlayerPrior] | None:
+    """Priors for *next_gw_id*: the cache when current, else generated and cached.
+
+    The one entry point for every command that scores against a prior —
+    ``prepare_scoring_data`` for the agents, and ``fpl stats --value`` /
+    ``fpl player`` directly, since the value family blends the prior into
+    ``quality_score`` before ``CUTOFF_GW``. Returns None when the historical
+    datasets cannot be reached, so a caller degrades to pure-observation
+    scores and says so, rather than failing the command over a dataset the
+    score can do without.
+    """
+    try:
+        cached = load_cached_priors(next_gw_id)
+        if cached is not None:
+            return cached
+
+        from fpl_cli.api.historical import make_historical_provider
+
+        async with make_historical_provider() as historical:
+            profiles = await historical.get_all_player_histories()
+        priors = generate_player_prior(profiles, players, next_gw_id)
+        _save_prior_cache(priors, season_label(), next_gw_id)
+        return priors
+    except Exception:  # noqa: BLE001 — graceful degradation: historical datasets unavailable
+        logger.warning("Failed to generate player priors", exc_info=True)
+        return None

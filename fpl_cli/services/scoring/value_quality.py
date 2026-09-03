@@ -5,6 +5,10 @@ scoring family builds on. compute_quality_value is the VALUE-family
 pipeline shared by ``fpl player``, ``fpl stats --value``,
 ``fpl transfer-eval``, and the squad allocator;
 compute_rolling_pts_per_m is its recent-form value companion.
+blend_quality_with_prior is the family's early-season device: before
+``player_prior.CUTOFF_GW`` the observed raw score is blended with the score
+last season's pedigree implies, in place of the position-mean shrinkage the
+other families run.
 """
 
 from __future__ import annotations
@@ -13,6 +17,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Literal, overload
 
 from fpl_cli.services.scoring.constants import (
+    CALIBRATION_ELITE_TARGET,
     MINS_FACTOR_FULL_APPEARANCE,
     MINS_FACTOR_START_GW,
     POSITION_SCORE_MULTIPLIER,
@@ -23,8 +28,10 @@ from fpl_cli.services.scoring.constants import (
 )
 from fpl_cli.services.scoring.display import normalise_score
 from fpl_cli.services.scoring.evaluation import build_player_evaluation, build_scoring_enrichment
+from fpl_cli.services.scoring.shrinkage import is_known_unavailable
 
 if TYPE_CHECKING:
+    from fpl_cli.services.player_prior import PlayerPrior
     from fpl_cli.services.scoring.signals import ConsistencySignals
 
 
@@ -114,6 +121,74 @@ def calculate_mins_factor(
     return min(minutes / (appearances * MINS_FACTOR_FULL_APPEARANCE), 1.0)
 
 
+# ---------------------------------------------------------------------------
+# Early-season prior blend
+# ---------------------------------------------------------------------------
+
+
+def blend_quality_with_prior(
+    raw: float,
+    prior: PlayerPrior | None,
+    *,
+    ceiling: float,
+    next_gw_id: int,
+    known_unavailable: bool = False,
+) -> float:
+    """Blend an observed raw quality score with the score last season's pedigree implies.
+
+    Before ``player_prior.CUTOFF_GW`` the value family's raw score is one
+    observation of a handful of gameweeks: going into GW2, form and ppg are
+    the same single number and both caps saturate on one good game, so a
+    one-game wonder out-reads a quiet-starting elite (issue #143: Haaland 59
+    behind Emersonn 100). Ceilings cannot reorder that — they are monotonic
+    per-position scalers — so the prior enters the score itself::
+
+        prior_raw = prior_strength * ceiling * CALIBRATION_ELITE_TARGET
+        blended   = w * raw + (1 - w) * prior_raw     # w = prior.confidence
+
+    *ceiling* is the calibrated value anchor for the position at this
+    gameweek — the attainable one for a pre-GW6 keeper — so the prior-implied
+    score sits on the same scale as the observed one: a player at the top of
+    last season's pts/90 percentile is read as an elite of exactly the size
+    the calibration anchored, and a price-sourced prior (strength capped at
+    0.5) can never claim more than mid-pack. The weight is
+    ``PlayerPrior.confidence`` for every position — the same prior share for
+    the same track record at the same gameweek, so two players with identical
+    inputs land at the same point of their own scales whatever their position,
+    which ``fpl allocate`` relies on when it sums raw quality across positions.
+    It rises with the gameweek and the player's track record and reaches 1 by
+    the cutoff, so the blend self-extinguishes; backtested over 2025-26 GW1-7
+    snapshots it ranked rest-of-season points better than pure observation at
+    every snapshot for GK, DEF and FWD and was neutral for MID.
+
+    A keeper-specific discount on the weight (the GK calendar ramp, on the
+    grounds that a keeper's early signals are sample-ramped) was evaluated
+    and not shipped: the discounted share can only move onto the prior, so
+    the same prior and the same empty observation read 75 for a keeper and
+    43 for a forward going into GW2, and the within-position gain it bought
+    (+0.08 rank correlation on ~24 keepers a snapshot) sat inside the noise.
+    The backtest's finding that the prior alone out-ranks the blend for
+    keepers early on still stands; a better keeper prior is the route that
+    does not touch the weight.
+
+    Pure observation is returned when there is no prior, at or after the
+    cutoff, once the weight has saturated, and for a *known_unavailable*
+    player: their low score states a fact (ruled out, or no minutes once the
+    minutes factor is live), not a small sample, and a prior would hand them
+    a standing they cannot use this gameweek — the same hold-out
+    ``shrink_scores`` applies, for the same reason.
+    """
+    from fpl_cli.services.player_prior import CUTOFF_GW
+
+    if prior is None or known_unavailable or next_gw_id >= CUTOFF_GW:
+        return raw
+    weight = max(0.0, min(prior.confidence, 1.0))
+    if weight >= 1.0:
+        return raw
+    prior_raw = prior.prior_strength * ceiling * CALIBRATION_ELITE_TARGET
+    return weight * raw + (1.0 - weight) * prior_raw
+
+
 @overload
 def compute_quality_value(
     player: Any,
@@ -124,6 +199,7 @@ def compute_quality_value(
     gw_history: list[dict[str, Any]] | None = ...,
     raw: Literal[False] = ...,
     consistency_lookup: dict[int, ConsistencySignals] | None = ...,
+    prior: PlayerPrior | None = ...,
 ) -> tuple[int, float | None]: ...
 
 
@@ -137,6 +213,7 @@ def compute_quality_value(
     gw_history: list[dict[str, Any]] | None = ...,
     raw: Literal[True],
     consistency_lookup: dict[int, ConsistencySignals] | None = ...,
+    prior: PlayerPrior | None = ...,
 ) -> float: ...
 
 
@@ -149,6 +226,7 @@ def compute_quality_value(
     gw_history: list[dict[str, Any]] | None = None,
     raw: bool = False,
     consistency_lookup: dict[int, ConsistencySignals] | None = None,
+    prior: PlayerPrior | None = None,
 ) -> tuple[int, float | None] | float:
     """Compute quality_score and quality_per_m for a single player.
 
@@ -158,6 +236,11 @@ def compute_quality_value(
 
     When *raw* is True, returns the unrounded float quality score
     (for the ILP solver which needs full precision).
+
+    *prior* is the player's ``PlayerPrior``; before ``CUTOFF_GW`` the raw
+    score is blended with the score it implies (``blend_quality_with_prior``),
+    unless the player is known not to be playing. Without it the score is
+    pure observation — the caller should say so before GW6.
 
     Returns:
         Default: (quality_score 0-100, quality_per_m or None if price is 0)
@@ -170,12 +253,22 @@ def compute_quality_value(
 
     evaluation, _ = build_player_evaluation(player, enrichment=enrichment)
     q_dict = evaluation.as_quality_dict()
+    position = _as_position(player.position_name)
     weights, value_ceiling = _value_weights_and_ceiling(
-        player.position_name, next_gw_id=next_gw_id,
+        position, next_gw_id=next_gw_id,
     )
     mins_factor = calculate_mins_factor(player.minutes, player.appearances, next_gw_id)
     raw_score = calculate_player_quality_score(
-        q_dict, weights, mins_factor, position=_as_position(player.position_name),
+        q_dict, weights, mins_factor, position=position,
+    )
+    raw_score = blend_quality_with_prior(
+        raw_score, prior,
+        ceiling=value_ceiling, next_gw_id=next_gw_id,
+        known_unavailable=is_known_unavailable(
+            chance_of_playing=evaluation.chance_of_playing,
+            minutes=evaluation.minutes,
+            next_gw_id=next_gw_id,
+        ),
     )
     if raw:
         return raw_score

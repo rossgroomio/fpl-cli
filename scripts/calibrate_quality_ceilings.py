@@ -78,6 +78,7 @@ import httpx
 from fpl_cli.paths import user_cache_dir
 from fpl_cli.season import get_season_year, season_label
 from fpl_cli.services.scoring.constants import (
+    CALIBRATION_ELITE_TARGET,
     DIFFERENTIAL_QUALITY_WEIGHTS,
     GK_SAMPLE_RAMP_MINUTES,
     GK_XGC_QUALITY_ANCHOR,
@@ -111,8 +112,10 @@ POSITIONS: tuple[Position, ...] = ("GK", "DEF", "MID", "FWD")
 # Elite anchor: the top player of a (family, position, snapshot) pool should
 # normalise to ~ELITE_TARGET. The anchor is the median across snapshots of
 # top_raw / ELITE_TARGET — median so one freak half-season cannot deflate
-# everyone else for a whole calibration cycle.
-ELITE_TARGET = 0.92
+# everyone else for a whole calibration cycle. The value lives in
+# scoring.constants because the value family's prior blend reads the same
+# target to place a prior-implied score on the calibrated raw scale.
+ELITE_TARGET = CALIBRATION_ELITE_TARGET
 
 _POSITION_ALIASES = {"GK": "GK", "GKP": "GK", "DEF": "DEF", "MID": "MID", "FWD": "FWD"}
 

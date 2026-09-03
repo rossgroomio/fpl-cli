@@ -4914,16 +4914,15 @@ class TestGkAttainableCeiling:
 
 
 class TestEarlySeasonObservationOnly:
-    """Documents the #143 mechanism left deliberately unchanged (for now).
+    """Pure observation before GW6, when no prior reaches the value family.
 
-    Before GW6 the quality surface is pure observation: form and ppg are
-    the same single-observation number after GW1, both caps saturate on one
-    good game, per-90 rates come from ≤90 minutes, and no prior enters this
-    path. A one-game wonder therefore out-reads a quiet-opener elite — the
-    Emersonn-100 / Haaland-59 picture reproduced live on 2026-08-25. The
-    prior-blend that would re-order this is #143's proposed follow-up,
-    gated on the early-season backtest; if that lands, this test should be
-    rewritten to pin the blended behaviour instead.
+    The mechanism behind #143: form and ppg are the same single-observation
+    number after GW1, both caps saturate on one good game, and per-90 rates
+    come from ≤90 minutes, so without a prior a one-game wonder out-reads a
+    quiet-opener elite — the Emersonn-100 / Haaland-59 picture reproduced
+    live on 2026-08-25. This is what `fpl stats --value` falls back to when
+    last season's history cannot be loaded (and says so). With a prior the
+    blend in TestBlendQualityWithPrior reorders it.
     """
 
     def test_one_game_wonder_outreads_quiet_elite_fwd(self):
@@ -4949,6 +4948,256 @@ class TestEarlySeasonObservationOnly:
         assert wonder_score >= 95
         assert 40 <= elite_score <= 75
         assert wonder_score > elite_score
+
+
+class TestGkCalendarRamp:
+    """The calendar share of the 450-minute GK sample ramp, keyed to the date."""
+
+    def test_nothing_is_reachable_before_the_first_gameweek(self):
+        from fpl_cli.services.scoring import gk_calendar_ramp
+        assert gk_calendar_ramp(0) == 0.0
+        assert gk_calendar_ramp(1) == 0.0
+
+    def test_rises_one_full_match_per_completed_gameweek(self):
+        from fpl_cli.services.scoring import gk_calendar_ramp
+        assert gk_calendar_ramp(2) == pytest.approx(0.2)
+        assert gk_calendar_ramp(4) == pytest.approx(0.6)
+
+    def test_saturates_from_gw6(self):
+        from fpl_cli.services.scoring import gk_calendar_ramp
+        assert gk_calendar_ramp(6) == 1.0
+        assert gk_calendar_ramp(30) == 1.0
+
+    def test_is_the_ramp_the_gk_ceiling_scales_by(self):
+        """One number, two consumers: the anchor scaling and the blend discount
+        must move together, or a keeper's prior lands on a different scale
+        from their observation.
+        """
+        from fpl_cli.services.scoring import (
+            VALUE_QUALITY_WEIGHTS,
+            ceiling_attainability,
+            gk_calendar_ramp,
+            gk_ceiling_attainability,
+        )
+        from fpl_cli.services.scoring.constants import GK_SIGNAL_TERMS
+        assert gk_ceiling_attainability(3, VALUE_QUALITY_WEIGHTS) == pytest.approx(
+            ceiling_attainability(
+                VALUE_QUALITY_WEIGHTS.for_gk(), GK_SIGNAL_TERMS, ramp=gk_calendar_ramp(3),
+            )
+        )
+
+
+class TestBlendQualityWithPrior:
+    """The value family's early-season prior blend (#143).
+
+    Ceilings are monotonic per-position scalers and cannot reorder a pool,
+    so the only way a quiet-starting elite out-reads a one-game wonder going
+    into GW2 is for last season's pedigree to enter the score. Backtested
+    over 2025-26 GW1-7 snapshots (scripts/backtest_early_season_prior_blend.py)
+    before shipping: rest-of-season rank correlation improved at every
+    snapshot for GK, DEF and FWD and was neutral for MID.
+    """
+
+    CEILING = 20.0
+
+    @staticmethod
+    def _prior(strength: float, confidence: float) -> PlayerPrior:
+        return PlayerPrior(prior_strength=strength, confidence=confidence, source="history")
+
+    @staticmethod
+    def _fwd_pair():
+        wonder = make_player(
+            id=420, web_name="OneGameWonder", team_id=5,
+            position=PlayerPosition.FORWARD,
+            form=9.0, points_per_game=9.0, minutes=65, total_points=9,
+            now_cost=55, expected_goals=0.82, expected_assists=0.2,
+        )
+        quiet_elite = make_player(
+            id=421, web_name="QuietElite", team_id=6,
+            position=PlayerPosition.FORWARD,
+            form=2.0, points_per_game=2.0, minutes=90, total_points=2,
+            now_cost=140, expected_goals=0.74, expected_assists=0.15,
+        )
+        return wonder, quiet_elite
+
+    def test_no_prior_is_pure_observation(self):
+        from fpl_cli.services.scoring import blend_quality_with_prior
+        assert blend_quality_with_prior(
+            9.0, None, ceiling=self.CEILING, next_gw_id=2,
+        ) == 9.0
+
+    def test_at_the_cutoff_is_pure_observation(self):
+        from fpl_cli.services.player_prior import CUTOFF_GW
+        from fpl_cli.services.scoring import blend_quality_with_prior
+        assert blend_quality_with_prior(
+            9.0, self._prior(1.0, 0.2),
+            ceiling=self.CEILING, next_gw_id=CUTOFF_GW,
+        ) == 9.0
+
+    def test_saturated_confidence_is_pure_observation(self):
+        from fpl_cli.services.scoring import blend_quality_with_prior
+        assert blend_quality_with_prior(
+            9.0, self._prior(1.0, 1.0), ceiling=self.CEILING, next_gw_id=5,
+        ) == 9.0
+
+    def test_zero_confidence_is_the_prior_implied_score(self):
+        from fpl_cli.services.scoring import CALIBRATION_ELITE_TARGET, blend_quality_with_prior
+        blended = blend_quality_with_prior(
+            9.0, self._prior(0.75, 0.0), ceiling=self.CEILING, next_gw_id=2,
+        )
+        assert blended == pytest.approx(0.75 * self.CEILING * CALIBRATION_ELITE_TARGET)
+
+    def test_interpolates_on_confidence(self):
+        from fpl_cli.services.scoring import CALIBRATION_ELITE_TARGET, blend_quality_with_prior
+        blended = blend_quality_with_prior(
+            4.0, self._prior(1.0, 0.5), ceiling=self.CEILING, next_gw_id=2,
+        )
+        assert blended == pytest.approx(0.5 * 4.0 + 0.5 * self.CEILING * CALIBRATION_ELITE_TARGET)
+
+    def test_elite_prior_normalises_to_the_elite_target(self):
+        """A player at the top of last season's percentile is read as exactly
+        the elite the calibration anchored — never above it.
+        """
+        from fpl_cli.services.scoring import (
+            CALIBRATION_ELITE_TARGET,
+            blend_quality_with_prior,
+            normalise_score,
+        )
+        blended = blend_quality_with_prior(
+            0.0, self._prior(1.0, 0.0), ceiling=self.CEILING, next_gw_id=2,
+        )
+        assert normalise_score(blended, self.CEILING) == round(CALIBRATION_ELITE_TARGET * 100)
+
+    def test_price_prior_cannot_claim_more_than_mid_pack(self):
+        """Price-sourced strength is capped upstream, so pedigree alone gets a
+        no-history signing to 46 at most, however expensive.
+        """
+        from fpl_cli.services.player_prior import PRICE_CONFIDENCE_FACTOR
+        from fpl_cli.services.scoring import (
+            CALIBRATION_ELITE_TARGET,
+            blend_quality_with_prior,
+            normalise_score,
+        )
+        prior = PlayerPrior(
+            prior_strength=PRICE_CONFIDENCE_FACTOR, confidence=0.0, source="price",
+        )
+        blended = blend_quality_with_prior(
+            0.0, prior, ceiling=self.CEILING, next_gw_id=2,
+        )
+        assert normalise_score(blended, self.CEILING) == round(
+            PRICE_CONFIDENCE_FACTOR * CALIBRATION_ELITE_TARGET * 100
+        )
+
+    def test_known_unavailable_keeps_the_observed_score(self):
+        from fpl_cli.services.scoring import blend_quality_with_prior
+        assert blend_quality_with_prior(
+            1.0, self._prior(1.0, 0.2),
+            ceiling=self.CEILING, next_gw_id=2, known_unavailable=True,
+        ) == 1.0
+
+    def test_same_inputs_land_at_the_same_point_of_the_scale_for_every_position(self):
+        """The prior share is the stored confidence for every position (PR #208
+        review): a keeper-specific discount would move the discounted share
+        onto the prior and leave a keeper far closer to their pedigree than an
+        outfielder with identical inputs, which fpl allocate sums across.
+        """
+        from fpl_cli.services.scoring import blend_quality_with_prior
+        prior = self._prior(0.9, 0.45)
+        scores = {
+            position: blend_quality_with_prior(
+                4.0, prior, ceiling=self.CEILING, next_gw_id=2,
+            )
+            for position in ("GK", "DEF", "MID", "FWD")
+        }
+        assert len(set(scores.values())) == 1
+
+    def test_quiet_elite_outreads_one_game_wonder_with_priors(self):
+        """The #143 inversion, reordered: the same two forwards as
+        TestEarlySeasonObservationOnly, carrying the priors production gives them.
+        """
+        from fpl_cli.services.player_prior import _compute_confidence
+        from fpl_cli.services.scoring import compute_quality_value
+        wonder, quiet_elite = self._fwd_pair()
+        wonder_prior = PlayerPrior(0.2, _compute_confidence(2, 0.2), "price")
+        elite_prior = PlayerPrior(1.0, _compute_confidence(2, 1.0), "history")
+        wonder_score, _ = compute_quality_value(
+            wonder, us_match={}, next_gw_id=2, team_short="IPS", prior=wonder_prior,
+        )
+        elite_score, _ = compute_quality_value(
+            quiet_elite, us_match={}, next_gw_id=2, team_short="MCI", prior=elite_prior,
+        )
+        assert elite_score > wonder_score
+        assert 70 <= elite_score <= 85  # half a quiet observation, half a 92 pedigree
+        assert 35 <= wonder_score <= 55  # 30% of a saturated 100, 70% of a weak price prior
+
+    def test_blend_self_extinguishes_by_the_cutoff(self):
+        """At GW9 a top-percentile prior's confidence has saturated: the score
+        is the observation, with or without the prior.
+        """
+        from fpl_cli.services.player_prior import _compute_confidence
+        from fpl_cli.services.scoring import compute_quality_value
+        _, quiet_elite = self._fwd_pair()
+        prior = PlayerPrior(1.0, _compute_confidence(9, 1.0), "history")
+        with_prior, _ = compute_quality_value(
+            quiet_elite, us_match={}, next_gw_id=9, team_short="MCI", prior=prior,
+        )
+        without, _ = compute_quality_value(
+            quiet_elite, us_match={}, next_gw_id=9, team_short="MCI",
+        )
+        assert prior.confidence == 1.0
+        assert with_prior == without
+
+    def test_gk_prior_lands_on_the_attainable_ceiling(self):
+        """A pre-GW6 keeper's prior is placed on the calendar-scaled anchor, so
+        pedigree alone can never normalise above the elite target however
+        the ceiling scales — and the keeper takes exactly the prior share an
+        outfielder with the same track record would.
+        """
+        from fpl_cli.services.player_prior import _compute_confidence
+        from fpl_cli.services.scoring import CALIBRATION_ELITE_TARGET, compute_quality_value
+        keeper = make_player(
+            id=430, web_name="EliteGK", team_id=7, position=PlayerPosition.GOALKEEPER,
+            form=0.0, points_per_game=0.0, minutes=0, total_points=0, now_cost=55,
+            expected_goals=0.0, expected_assists=0.0, expected_goal_involvements=0.0,
+        )
+        prior = PlayerPrior(1.0, _compute_confidence(2, 1.0), "history")
+        score, _ = compute_quality_value(
+            keeper, us_match={}, next_gw_id=2, team_short="ARS", prior=prior,
+        )
+        assert prior.confidence == pytest.approx(0.5)
+        assert score == round((1 - prior.confidence) * CALIBRATION_ELITE_TARGET * 100)
+
+    def test_ruled_out_player_is_not_handed_last_seasons_standing(self):
+        from fpl_cli.services.player_prior import _compute_confidence
+        from fpl_cli.services.scoring import compute_quality_value
+        ruled_out = make_player(
+            id=431, web_name="RuledOut", team_id=6, position=PlayerPosition.FORWARD,
+            form=0.0, points_per_game=0.0, minutes=0, total_points=0, now_cost=140,
+            expected_goals=0.0, expected_assists=0.0, expected_goal_involvements=0.0,
+            chance_of_playing_next_round=0,
+        )
+        prior = PlayerPrior(1.0, _compute_confidence(2, 1.0), "history")
+        score, _ = compute_quality_value(
+            ruled_out, us_match={}, next_gw_id=2, team_short="MCI", prior=prior,
+        )
+        assert score == 0
+
+    def test_no_minutes_from_gw6_is_not_handed_last_seasons_standing(self):
+        from fpl_cli.services.player_prior import _compute_confidence
+        from fpl_cli.services.scoring import compute_quality_value
+        absent = make_player(
+            id=432, web_name="Absent", team_id=6, position=PlayerPosition.FORWARD,
+            form=0.0, points_per_game=0.0, minutes=0, total_points=0, now_cost=140,
+            expected_goals=0.0, expected_assists=0.0, expected_goal_involvements=0.0,
+        )
+        # Strength 0.6 keeps the confidence curve below saturation at GW7, so
+        # the blend would apply to an available player with this prior.
+        prior = PlayerPrior(0.6, _compute_confidence(7, 0.6), "history")
+        assert prior.confidence < 1.0
+        score, _ = compute_quality_value(
+            absent, us_match={}, next_gw_id=7, team_short="MCI", prior=prior,
+        )
+        assert score == 0
 
 
 class TestCalibrationDriftGuard:

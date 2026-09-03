@@ -280,27 +280,9 @@ async def prepare_scoring_data(
     player_priors: dict[int, PlayerPrior] | None = None
 
     if include_prior and players is not None:
-        try:
-            from fpl_cli.api.historical import make_historical_provider
-            from fpl_cli.services.player_prior import generate_player_prior, load_cached_priors
+        from fpl_cli.services.player_prior import load_or_generate_player_priors
 
-            cached = load_cached_priors(next_gw_id)
-            if cached is not None:
-                player_priors = cached
-            else:
-                from fpl_cli.season import season_label
-                from fpl_cli.services.player_prior import _save_prior_cache
-
-                async with make_historical_provider() as historical:
-                    profiles = await historical.get_all_player_histories()
-                player_priors = generate_player_prior(profiles, players, next_gw_id)
-                _save_prior_cache(player_priors, season_label(), next_gw_id)
-        except Exception:  # noqa: BLE001 — graceful degradation: vaastav unavailable
-            import logging
-
-            logging.getLogger(__name__).warning(
-                "Failed to generate player priors", exc_info=True,
-            )
+        player_priors = await load_or_generate_player_priors(players, next_gw_id)
 
     match_records: dict[int, list[MatchRecord]] | None = None
     adjusted_npxg_lookup: dict[int, float] | None = None

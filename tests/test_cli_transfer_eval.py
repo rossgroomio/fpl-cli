@@ -116,6 +116,42 @@ def _run_cmd(args, agent_result=None, fmt="classic", finances=None):
         return runner.invoke(main, ["transfer-eval"] + args)
 
 
+class TestTransferEvalEarlySeasonWarning:
+    """The analysis attaches the early-season quality notice; the command
+    carries it in ``metadata.warnings`` (JSON) and on stderr (table), the
+    same channels ``fpl stats --value`` uses (PR #208 review).
+    """
+
+    @staticmethod
+    def _result_with_warning():
+        from fpl_cli.services.player_prior import early_season_quality_warning
+        agent_result = _make_agent_result()
+        agent_result.data["warnings"] = [early_season_quality_warning(2, blended=True)]
+        return agent_result
+
+    def test_json_carries_the_notice_in_metadata(self):
+        result = _run_cmd(
+            ["--out", "Palmer", "--in", "Salah", "--format", "json"],
+            agent_result=self._result_with_warning(),
+        )
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert [w["code"] for w in payload["metadata"]["warnings"]] == [
+            "early_season_prior_informed",
+        ]
+        assert "warnings" not in payload["data"]
+
+    def test_json_metadata_warnings_is_empty_when_the_analysis_attached_none(self):
+        result = _run_cmd(["--out", "Palmer", "--in", "Salah", "--format", "json"])
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.output)["metadata"]["warnings"] == []
+
+    def test_table_prints_the_notice(self):
+        result = _run_cmd(["--out", "Palmer", "--in", "Salah"], agent_result=self._result_with_warning())
+        assert result.exit_code == 0, result.output
+        assert "Early-season notice" in result.output
+
+
 class TestTransferEvalTable:
     def test_table_output_includes_columns(self):
         result = _run_cmd(["--out", "Palmer", "--in", "Salah,Mbeumo"])

@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from fpl_cli.services.player_prior import PlayerPrior
     from fpl_cli.services.scoring import ConsistencySignals
 
 import click
@@ -22,7 +23,11 @@ from fpl_cli.cli._json import (
     json_output_mode,
     output_format_option,
 )
-from fpl_cli.services.scoring import MINS_FACTOR_START_GW
+from fpl_cli.services.player_prior import (
+    CUTOFF_GW,
+    early_season_quality_warning,
+    load_or_generate_player_priors,
+)
 
 # Valid sort fields for `fpl stats` command
 PLAYERS_SORT_FIELDS = [
@@ -195,7 +200,7 @@ def stats_command(
             rolling_map: dict[int, tuple[float | None, int | None]] = {}
             con_lookup: dict[int, ConsistencySignals] = {}
             value_active = False
-            _early_season_warning = False
+            _early_season_warning: dict[str, str] | None = None
 
             if value and filtered:
                 import httpx
@@ -214,17 +219,21 @@ def stats_command(
                     value_active = True
                     next_gw = await client.get_next_gameweek()
                     next_gw_id = next_gw["id"] if next_gw else 38
-                    _early_season_warning = next_gw_id <= MINS_FACTOR_START_GW
+
+                    # Before the prior cutoff the value family blends last
+                    # season's pedigree into quality_score, which needs the
+                    # priors — generated over the whole player pool, since a
+                    # prior is a within-position percentile. Unreachable
+                    # history degrades to pure observation, and the notice
+                    # below says which of the two the reader is looking at.
+                    priors: dict[int, PlayerPrior] | None = None
+                    if next_gw_id < CUTOFF_GW:
+                        priors = await load_or_generate_player_priors(all_players, next_gw_id)
+                    _early_season_warning = early_season_quality_warning(
+                        next_gw_id, blended=priors is not None,
+                    )
                     if _early_season_warning and output_format != "json":
-                        error_console.print(
-                            "[yellow]Early-season notice: quality scores are "
-                            "small-sample dominated before GW6 — form and ppg "
-                            "reflect only the opening gameweek(s), so hot "
-                            "starters saturate the scale while elite players "
-                            "with a quiet start read low. Scores mature as "
-                            "minutes accumulate (~GW6-10). For a "
-                            "prior-informed ranking, use --sort ep_next.[/yellow]"
-                        )
+                        error_console.print(f"[yellow]{_early_season_warning['message']}[/yellow]")
 
                     # Match filtered players to Understat
                     us_matches: dict[int, dict] = {}
@@ -264,6 +273,7 @@ def stats_command(
                             p, us_matches[p.id], next_gw_id,
                             team_short=t.short_name if t else "???",
                             gw_history=player_histories.get(p.id) or None,
+                            prior=priors.get(p.id) if priors else None,
                         )
                         quality_map[p.id] = q
                         value_map[p.id] = v
@@ -339,21 +349,7 @@ def stats_command(
 
             warnings: list[dict[str, str]] = []
             if _early_season_warning:
-                warnings.append({
-                    "code": "early_season_small_sample",
-                    "message": (
-                        "Quality scores are small-sample dominated before "
-                        "GW6: form and ppg reflect only the opening "
-                        "gameweek(s) and per-90 rates come from very few "
-                        "minutes, so hot starters saturate the scale while "
-                        "elite players with a quiet start read low. GK "
-                        "ceilings scale with the sample the calendar has "
-                        "made possible, reaching full scale at GW6. Treat "
-                        "quality_score as provisional until "
-                        "~GW6-10; ep_next offers a prior-informed "
-                        "alternative ranking."
-                    ),
-                })
+                warnings.append(_early_season_warning)
             if _cross_position_warning:
                 warnings.append({
                     "code": "cross_position_ranking_not_meaningful",
