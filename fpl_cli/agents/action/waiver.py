@@ -18,13 +18,13 @@ from fpl_cli.services.scoring import (
     ConsistencySignals,
     apply_adjusted_npxg,
     apply_consistency,
+    apply_gk_signals,
     apply_shrinkage,
     build_player_evaluation,
     calculate_waiver_score,
     compute_aggregate_matchup,
     compute_form_trajectory,
     compute_xgi_sustainability,
-    gk_signal_enrichment,
     prepare_scoring_data,
     unavailable_player_ids,
 )
@@ -381,7 +381,15 @@ class WaiverAgent(Agent):
         pid = int(player.get("id") or 0)
         apply_adjusted_npxg(enrichment, pid, self._adjusted_npxg_lookup)
         apply_consistency(enrichment, pid, self._consistency_lookup)
-        gk_signals_supplied = self._apply_gk_signals(enrichment, player, pid)
+        position = player.get("position")
+        gk_signals_supplied = apply_gk_signals(
+            enrichment, pid, self._main_player_map, position=position,
+        )
+        if position == "GK" and not gk_signals_supplied:
+            self.log_warning(
+                f"No main FPL match for draft keeper '{player.get('player_name')}' "
+                "— scoring without saves/xGC signals",
+            )
         evaluation, _ = build_player_evaluation(
             player,
             enrichment=enrichment,
@@ -395,34 +403,6 @@ class WaiverAgent(Agent):
             next_gw_id=next_gw_id,
             gk_signals_supplied=gk_signals_supplied,
         )
-
-    def _apply_gk_signals(
-        self, enrichment: dict[str, Any], player: EnrichedPlayer, pid: int,
-    ) -> bool:
-        """Merge a keeper's ramped GK signals from his main-game player.
-
-        The calibrated waiver GK anchor budgets for saves/90, xGC quality and
-        clean-sheet rate; scoring a keeper on form and ppg alone against it
-        caps the whole draft keeper pool below elite all season (#207). The
-        signals come off the joined main-game ``Player`` because the draft
-        bootstrap publishes neither saves nor expected goals conceded.
-
-        Returns whether the block was populated — the caller passes that on
-        so the ceiling is only calendar-scaled where the numerator has the
-        signals to justify it. False for every outfielder, and for a keeper
-        whose draft element found no main-game match.
-        """
-        if player.get("position") != "GK":
-            return False
-        main_player = self._main_player_map.get(pid)
-        if main_player is None:
-            self.log_warning(
-                f"No main FPL match for draft keeper '{player.get('player_name')}' "
-                "— scoring without saves/xGC signals",
-            )
-            return False
-        enrichment.update(gk_signal_enrichment(main_player))
-        return True
 
     def _generate_target_reasons(
         self,

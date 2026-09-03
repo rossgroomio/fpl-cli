@@ -4290,6 +4290,49 @@ class TestApplyConsistency:
         assert "cv_xgi_percentile" not in enrichment
 
 
+class TestApplyGkSignals:
+    """The shared GK-block merge behind targets, differentials and waivers.
+
+    Returns whether the block landed, because the calibrated GK anchor may
+    only be calendar-scaled for an evaluation that carries it (#207).
+    """
+
+    def _keeper(self):
+        return make_player(
+            id=42, web_name="Keeper", position=PlayerPosition.GOALKEEPER,
+            minutes=1800, total_points=100, points_per_game=5.0,
+            saves_per_90=4.5, expected_goals_conceded=15.0, clean_sheets=10,
+        )
+
+    def test_populates_the_block_and_reports_it(self):
+        from fpl_cli.services.scoring import apply_gk_signals
+        from fpl_cli.services.scoring.constants import GK_SIGNAL_TERMS
+        enrichment: dict = {}
+        assert apply_gk_signals(
+            enrichment, 42, {42: self._keeper()}, position="GK",
+        ) is True
+        assert set(GK_SIGNAL_TERMS) <= set(enrichment)
+
+    def test_outfielder_is_gated_out(self):
+        """A keeper's signals mean nothing on an outfielder, and a True here
+        would hand his ceiling a scaling the numerator has not earned."""
+        from fpl_cli.services.scoring import apply_gk_signals
+        enrichment: dict = {}
+        assert apply_gk_signals(
+            enrichment, 42, {42: self._keeper()}, position="MID",
+        ) is False
+        assert enrichment == {}
+
+    def test_a_lookup_miss_reports_false(self):
+        """The draft-to-main join can miss; the caller must hear about it."""
+        from fpl_cli.services.scoring import apply_gk_signals
+        enrichment: dict = {}
+        assert apply_gk_signals(enrichment, 42, {99: self._keeper()}, position="GK") is False
+        assert apply_gk_signals(enrichment, 42, None, position="GK") is False
+        assert apply_gk_signals(enrichment, 42, {}, position="GK") is False
+        assert enrichment == {}
+
+
 class TestPlayerEvaluationConsistencyFields:
     def test_neutral_defaults_when_no_enrichment(self):
         player = make_player(id=1)

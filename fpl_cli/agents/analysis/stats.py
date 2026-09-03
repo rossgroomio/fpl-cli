@@ -13,6 +13,7 @@ from fpl_cli.services.scoring import (
     ConsistencySignals,
     apply_adjusted_npxg,
     apply_consistency,
+    apply_gk_signals,
     apply_shrinkage,
     build_player_evaluation,
     calculate_differential_score,
@@ -20,7 +21,6 @@ from fpl_cli.services.scoring import (
     compute_aggregate_matchup,
     compute_form_trajectory,
     compute_xgi_sustainability,
-    gk_signal_enrichment,
     prepare_scoring_data,
     unavailable_player_ids,
 )
@@ -158,7 +158,9 @@ class StatsAgent(Agent):
             player_obj_map = {p.id: p for p in players}
             # Kept for GK signal enrichment in the scoring methods: the
             # calibrated GK anchors budget for the ramped GK block, so
-            # target/differential scoring must populate it (issue #143)
+            # target/differential scoring must populate it (issue #143).
+            # These are season aggregates even in windowed mode, matching
+            # the value family.
             self._player_obj_map = player_obj_map
             us_adapter = []
             for ps in player_stats:
@@ -668,7 +670,10 @@ class StatsAgent(Agent):
         pid = int(player.get("id") or 0)
         apply_adjusted_npxg(enrichment, pid, self._adjusted_npxg_lookup)
         apply_consistency(enrichment, pid, self._consistency_lookup)
-        self._apply_gk_signals(enrichment, player, pid)
+        apply_gk_signals(
+            enrichment, pid, getattr(self, "_player_obj_map", {}),
+            position=player.get("position"),
+        )
         evaluation, _ = build_player_evaluation(
             player,
             enrichment=enrichment or None,
@@ -778,7 +783,10 @@ class StatsAgent(Agent):
         pid = int(player.get("id") or 0)
         apply_adjusted_npxg(enrichment, pid, self._adjusted_npxg_lookup)
         apply_consistency(enrichment, pid, self._consistency_lookup)
-        self._apply_gk_signals(enrichment, player, pid)
+        apply_gk_signals(
+            enrichment, pid, getattr(self, "_player_obj_map", {}),
+            position=player.get("position"),
+        )
         evaluation, _ = build_player_evaluation(
             player,
             enrichment=enrichment or None,
@@ -789,22 +797,6 @@ class StatsAgent(Agent):
             evaluation,
             next_gw_id=self._next_gw_id,
         )
-
-    def _apply_gk_signals(
-        self, enrichment: dict[str, Any], player: PlayerStats, pid: int,
-    ) -> None:
-        """Merge ramped GK signals from the season-level player model.
-
-        The calibrated GK ceilings budget for saves/xGC-quality/CS-rate; an
-        enrichment without them scores keepers on form+ppg alone against a
-        ceiling that assumes the full block (issue #143). Season aggregates
-        are used even in windowed mode, matching the value family.
-        """
-        if player.get("position") != "GK":
-            return
-        obj = getattr(self, "_player_obj_map", {}).get(pid)
-        if obj is not None:
-            enrichment.update(gk_signal_enrichment(obj))
 
     def _get_consistency_percentile(self, player_id: int | None) -> float | None:
         """Get CV-xGI percentile for a player, or None if unavailable."""
