@@ -333,7 +333,8 @@ def league_recap_command(
             # Absent entirely (rather than empty) when capture couldn't build
             # a pack, so the template's `is defined` guards skip the section.
             if notes_pack is not None:
-                collected_data["league_history_phase_text"] = notes_pack.season_phase_entry.text
+                if NoteSurface.REPORT in notes_pack.season_phase_entry.surfaces:
+                    collected_data["league_history_phase_text"] = notes_pack.season_phase_entry.text
                 collected_data["league_history_streak_lines"] = [
                     entry.text for entry in notes_pack.entries if NoteSurface.REPORT in entry.surfaces
                 ]
