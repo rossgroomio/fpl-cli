@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import subprocess
 import sys
 from pathlib import Path
-from types import ModuleType
 
 import pytest
+
+from tests.conftest import load_gw_prep_script
 
 SCRIPT_PATH = (
     Path(__file__).parent.parent
@@ -18,26 +18,7 @@ SCRIPT_PATH = (
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "validate_draft_waivers"
 
 
-def _load_script() -> ModuleType:
-    """Load validate_draft_waivers.py as a module (it's not a package).
-
-    The scripts dir goes on sys.path while loading, matching a real
-    `python validate_draft_waivers.py` run (sys.path[0] is the script's own dir), so the
-    shared `_bootstrap` sibling module — the wrong-interpreter guard —
-    resolves.
-    """
-    sys.path.insert(0, str(SCRIPT_PATH.parent))
-    try:
-        spec = importlib.util.spec_from_file_location("validate_draft_waivers", SCRIPT_PATH)
-        assert spec is not None and spec.loader is not None
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-    finally:
-        sys.path.remove(str(SCRIPT_PATH.parent))
-    return mod
-
-
-_mod = _load_script()
+_mod = load_gw_prep_script("validate_draft_waivers.py")
 _run = _mod._run
 
 

@@ -2,39 +2,14 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
-import sys
 from pathlib import Path
-from types import ModuleType
 
 import pytest
 
+from tests.conftest import load_gw_prep_script
 
-def _load_script() -> ModuleType:
-    """Load extract_classic_squad.py as a module (it's not a package).
-
-    The scripts dir goes on sys.path while loading, matching a real
-    `python extract_classic_squad.py` run (sys.path[0] is the script's own dir), so the
-    shared `_bootstrap` sibling module — the wrong-interpreter guard —
-    resolves.
-    """
-    script_path = (
-        Path(__file__).parent.parent
-        / ".agents/skills/gw-prep/scripts/extract_classic_squad.py"
-    )
-    sys.path.insert(0, str(script_path.parent))
-    try:
-        spec = importlib.util.spec_from_file_location("extract_classic_squad", script_path)
-        assert spec is not None and spec.loader is not None
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-    finally:
-        sys.path.remove(str(script_path.parent))
-    return mod
-
-
-_mod = _load_script()
+_mod = load_gw_prep_script("extract_classic_squad.py")
 _run = _mod._run
 
 

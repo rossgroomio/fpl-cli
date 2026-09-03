@@ -31,13 +31,17 @@ def fail(messages: list[str]) -> NoReturn:
 
 
 def is_fpl_cli_missing(exc: ModuleNotFoundError) -> bool:
-    """True when fpl_cli itself is absent, rather than a dependency of it.
+    """True when the fpl_cli package itself is absent from this interpreter.
 
-    A missing dependency is a broken install, not the wrong interpreter, and
-    naming the interpreter would send the reader somewhere useless — so only
-    the former earns the envelope below; the rest keep their traceback.
+    Only the top-level miss earns the envelope below. Python names the first
+    component it could not find, so an absent package raises with
+    name="fpl_cli" while a corrupt install missing one file raises with
+    name="fpl_cli.paths" — that one is on the right interpreter, and telling
+    its reader to activate a venv would send them somewhere useless. A
+    missing dependency (name="pydantic") is the same kind of wrong. Both
+    keep their traceback, which says more than this guard could.
     """
-    return (exc.name or "").partition(".")[0] == "fpl_cli"
+    return exc.name == "fpl_cli"
 
 
 try:

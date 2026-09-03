@@ -9,52 +9,58 @@ envelope Phase A3/D1/E already parse instead of a traceback.
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import subprocess
 import sys
 import textwrap
 from pathlib import Path
-from types import ModuleType
 
 import pytest
 
+from tests.conftest import load_gw_prep_script
+
 SCRIPTS_DIR = Path(__file__).parent.parent / ".agents/skills/gw-prep/scripts"
 
-# Every script a phase of SKILL.md invokes directly.
-ENTRY_SCRIPTS = [
-    "bench_order.py",
-    "extract_classic_squad.py",
-    "normalise_entities.py",
-    "starting_xi.py",
-    "transfer_eval.py",
-    "validate_draft_waivers.py",
-]
+# Discovered, not hand-listed: a script added later is covered the day it
+# lands. Hand-maintaining this would let a 7th script ship without the guard
+# and without a failing test — the regression this suite exists to catch.
+# Underscore-prefixed modules are shared internals, not phase entry points.
+ENTRY_SCRIPTS = sorted(p.name for p in SCRIPTS_DIR.glob("*.py") if not p.name.startswith("_"))
+
+_mod = load_gw_prep_script("_bootstrap.py")
 
 
-def _load_bootstrap() -> ModuleType:
-    """Load _bootstrap.py as a module (it's not a package)."""
-    spec = importlib.util.spec_from_file_location("gw_prep_bootstrap", SCRIPTS_DIR / "_bootstrap.py")
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-_mod = _load_bootstrap()
+def test_the_inventory_was_actually_discovered():
+    """Guard the guard: an empty glob would make every test below vacuous."""
+    assert len(ENTRY_SCRIPTS) >= 6
 
 
 # ---- Which failures the guard claims ----------------------------------------
 
 
-@pytest.mark.parametrize("name", ["fpl_cli", "fpl_cli.paths", "fpl_cli.utils.markdown"])
-def test_missing_package_is_the_guards(name):
-    assert _mod.is_fpl_cli_missing(ModuleNotFoundError(f"No module named '{name}'", name=name))
+def test_absent_package_is_the_guards():
+    """Python names the first component it cannot find, so this is the whole set."""
+    assert _mod.is_fpl_cli_missing(ModuleNotFoundError("No module named 'fpl_cli'", name="fpl_cli"))
 
 
-@pytest.mark.parametrize("name", ["pydantic", "click", "fpl_clique", ""])
-def test_missing_dependency_is_not_the_guards(name):
-    """A broken install keeps its traceback — naming the interpreter would mislead."""
+@pytest.mark.parametrize(
+    "name",
+    [
+        "fpl_cli.paths",           # corrupt install, right interpreter
+        "fpl_cli.utils.markdown",  # ditto, deeper
+        "pydantic",                # missing dependency
+        "click",
+        "fpl_clique",              # merely shares a prefix
+        "",
+    ],
+)
+def test_everything_else_keeps_its_traceback(name):
+    """Only a wrong interpreter earns the envelope; the rest would misdiagnose.
+
+    A missing submodule of an importable fpl_cli is on the *correct*
+    interpreter, so telling its reader to activate a venv sends them
+    somewhere useless — the traceback names the actual missing file.
+    """
     assert not _mod.is_fpl_cli_missing(ModuleNotFoundError(f"No module named '{name}'", name=name))
 
 
@@ -95,21 +101,20 @@ def _run_without_fpl_cli(script: str) -> subprocess.CompletedProcess[str]:
 
 
 @pytest.mark.parametrize("script", ENTRY_SCRIPTS)
-def test_wrong_interpreter_emits_the_error_envelope(script):
+def test_wrong_interpreter_reports_itself(script):
+    """One interpreter start per script, then every assertion on that result.
+
+    The reader gets the package, the interpreter and the fix, not a stack.
+    """
     result = _run_without_fpl_cli(script)
 
     assert result.returncode == 1
-    data = json.loads(result.stdout)
-    assert data["error"] is True
     assert "ModuleNotFoundError" not in result.stderr
 
+    data = json.loads(result.stdout)
+    assert data["error"] is True
 
-@pytest.mark.parametrize("script", ENTRY_SCRIPTS)
-def test_wrong_interpreter_message_names_the_cause(script):
-    """The reader gets the package, the interpreter, and the fix, not a stack."""
-    messages = json.loads(_run_without_fpl_cli(script).stdout)["messages"]
-    joined = " ".join(messages)
-
+    joined = " ".join(data["messages"])
     assert "fpl_cli" in joined
     assert sys.executable in joined
     assert "venv" in joined

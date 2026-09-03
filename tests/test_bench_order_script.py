@@ -2,41 +2,16 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
-import sys
-from pathlib import Path
-from types import ModuleType
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from fpl_cli.agents.base import AgentResult, AgentStatus
 from fpl_cli.models.player import PlayerPosition
-from tests.conftest import make_player, make_team
+from tests.conftest import load_gw_prep_script, make_player, make_team
 
-
-def _load_script() -> ModuleType:
-    """Load bench_order.py as a module (it's not a package).
-
-    The scripts dir goes on sys.path while loading, matching a real
-    `python bench_order.py` run (sys.path[0] is the script's own dir), so
-    the shared `_bootstrap` sibling module resolves.
-    """
-    scripts_dir = Path(__file__).parent.parent / ".agents/skills/gw-prep/scripts"
-    script_path = scripts_dir / "bench_order.py"
-    sys.path.insert(0, str(scripts_dir))
-    try:
-        spec = importlib.util.spec_from_file_location("bench_order_script", script_path)
-        assert spec is not None and spec.loader is not None
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-    finally:
-        sys.path.remove(str(scripts_dir))
-    return mod
-
-
-_mod = _load_script()
+_mod = load_gw_prep_script("bench_order.py")
 _run = _mod._run
 
 # Name resolution itself is `resolve_players_or_report` in the package,
