@@ -354,8 +354,10 @@ fpl chips sync                             # Sync used chips from FPL API
 | FH | 3+ squad players in a blank GW | Possible |
 | BB | 8+ squad players in a double GW | Strong |
 | BB | 6+ squad players in a double GW | Possible |
-| TC | Best DGW candidate has avg FDR <= 3.0 | Strong |
-| TC | Best DGW candidate has avg FDR <= 4.0 | Possible |
+| TC | Best DGW candidate's double averages FDR <= 3.0 | Strong |
+| TC | Best DGW candidate's double averages FDR <= 4.0 | Possible |
+
+The TC figure is the mean general FDR of the candidate's own fixtures in that gameweek - the same venue-aware ATK/DEF mean `fpl fdr` and `fpl preview` show - so the candidate with the easiest double wins. The thresholds are more lenient than the `fpl fdr` colouring (2.5/3.0) because a double doubles the upside. A predicted double beyond the six-gameweek FDR window has no fixtures to score and produces no TC signal.
 
 Thresholds apply to the full 15-player squad (not just projected starters). Chips already used are excluded. Planned chips highlighted `[planned]` inline. Stored in `data/chip_plan.json`.
 

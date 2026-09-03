@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from click.testing import CliRunner
@@ -12,7 +12,6 @@ from click.testing import CliRunner
 from fpl_cli.cli import main
 from fpl_cli.cli.chips import _compute_chip_signals, chips_group
 from fpl_cli.models.chip_plan import ChipPlan, ChipType, PlannedChip, UsedChip
-from fpl_cli.services.team_ratings import TeamRating
 
 
 @pytest.fixture
@@ -361,56 +360,64 @@ def make_exposure(gw: int, gw_type: str, affected: int, players: list[str], sour
     }
 
 
-def make_ratings_service(rating_map: dict[str, float] | None = None) -> MagicMock:
-    """Create a mock TeamRatingsService.
+def make_fdr_by_team(
+    team_fixtures: dict[str, list[tuple[int, str, float]]] | None = None,
+) -> dict[str, dict]:
+    """Build a FixtureAgent-shaped ``fdr_by_team`` map.
 
-    rating_map: team_short -> desired avg_overall_fdr value. Missing teams return None.
-    The FDR value is inverted to a team rating (8 - fdr) so avg_overall_fdr returns
-    the target value.
+    team_fixtures: team_short -> [(gameweek, opponent_short, fdr)]. The ``fdr``
+    is that fixture's general FDR for the team - the venue-aware ATK/DEF mean
+    the agent records - so a double against weak opponents is a low number.
+    Teams absent from the map have no fixtures to score.
     """
-    rating_map = rating_map or {}
-    svc = MagicMock()
-
-    def _get_rating(short):
-        if short in rating_map:
-            fdr = rating_map[short]
-            # Invert FDR to team rating: avg_overall_fdr = 8 - avg_overall
-            r = int(round(8 - fdr))
-            return TeamRating(atk_home=r, atk_away=r, def_home=r, def_away=r)
-        return None
-
-    svc.get_rating.side_effect = _get_rating
-    return svc
+    team_fixtures = team_fixtures or {}
+    return {
+        short: {
+            "team_name": short,
+            "fixtures": [
+                {
+                    "gameweek": gw,
+                    "opponent": opponent,
+                    "is_home": True,
+                    "fdr": fdr,
+                    "fdr_atk": fdr,
+                    "fdr_def": fdr,
+                }
+                for gw, opponent, fdr in fixtures
+            ],
+        }
+        for short, fixtures in team_fixtures.items()
+    }
 
 
 class TestFHSignals:
     def test_fh_strong_at_5_affected(self):
         exposure = [make_exposure(28, "blank", 5, ["Salah", "Trent", "Arnold", "Nunez", "VVD"])]
-        signals = _compute_chip_signals(exposure, {"freehit"}, {}, {}, make_ratings_service())
+        signals = _compute_chip_signals(exposure, {"freehit"}, {}, {}, make_fdr_by_team())
         assert len(signals) == 1
         assert signals[0]["signal"] == "FH"
         assert signals[0]["strength"] == "strong"
 
     def test_fh_possible_at_4_affected(self):
         exposure = [make_exposure(28, "blank", 4, ["Salah", "Trent", "Arnold", "Nunez"])]
-        signals = _compute_chip_signals(exposure, {"freehit"}, {}, {}, make_ratings_service())
+        signals = _compute_chip_signals(exposure, {"freehit"}, {}, {}, make_fdr_by_team())
         assert len(signals) == 1
         assert signals[0]["strength"] == "possible"
 
     def test_fh_possible_at_3_affected(self):
         exposure = [make_exposure(28, "blank", 3, ["Salah", "Trent", "Arnold"])]
-        signals = _compute_chip_signals(exposure, {"freehit"}, {}, {}, make_ratings_service())
+        signals = _compute_chip_signals(exposure, {"freehit"}, {}, {}, make_fdr_by_team())
         assert len(signals) == 1
         assert signals[0]["strength"] == "possible"
 
     def test_fh_no_signal_at_2_affected(self):
         exposure = [make_exposure(28, "blank", 2, ["Salah", "Trent"])]
-        signals = _compute_chip_signals(exposure, {"freehit"}, {}, {}, make_ratings_service())
+        signals = _compute_chip_signals(exposure, {"freehit"}, {}, {}, make_fdr_by_team())
         assert signals == []
 
     def test_fh_suppressed_when_chip_used(self):
         exposure = [make_exposure(28, "blank", 6, ["a", "b", "c", "d", "e", "f"])]
-        signals = _compute_chip_signals(exposure, set(), {}, {}, make_ratings_service())
+        signals = _compute_chip_signals(exposure, set(), {}, {}, make_fdr_by_team())
         assert all(s["signal"] != "FH" for s in signals)
 
 
@@ -418,7 +425,7 @@ class TestBBSignals:
     def test_bb_strong_at_8_starters(self):
         players = [f"p{i}" for i in range(9)]
         exposure = [make_exposure(31, "double", 8, players)]
-        signals = _compute_chip_signals(exposure, {"bboost"}, {}, {}, make_ratings_service())
+        signals = _compute_chip_signals(exposure, {"bboost"}, {}, {}, make_fdr_by_team())
         bb = [s for s in signals if s["signal"] == "BB"]
         assert len(bb) == 1
         assert bb[0]["strength"] == "strong"
@@ -426,7 +433,7 @@ class TestBBSignals:
     def test_bb_possible_at_6_starters(self):
         players = [f"p{i}" for i in range(6)]
         exposure = [make_exposure(31, "double", 6, players)]
-        signals = _compute_chip_signals(exposure, {"bboost"}, {}, {}, make_ratings_service())
+        signals = _compute_chip_signals(exposure, {"bboost"}, {}, {}, make_fdr_by_team())
         bb = [s for s in signals if s["signal"] == "BB"]
         assert len(bb) == 1
         assert bb[0]["strength"] == "possible"
@@ -434,33 +441,75 @@ class TestBBSignals:
     def test_bb_no_signal_at_5_starters(self):
         players = [f"p{i}" for i in range(5)]
         exposure = [make_exposure(31, "double", 5, players)]
-        signals = _compute_chip_signals(exposure, {"bboost"}, {}, {}, make_ratings_service())
+        signals = _compute_chip_signals(exposure, {"bboost"}, {}, {}, make_fdr_by_team())
         assert all(s["signal"] != "BB" for s in signals)
 
 
 class TestTCSignals:
-    def test_tc_strong_when_best_fdr_leq_3(self):
+    def test_tc_strong_when_double_averages_leq_3(self):
         exposure = [make_exposure(31, "double", 7, ["Salah", "Diogo"])]
         name_to_tid = {"Salah": 14, "Diogo": 14}
         id_to_short = {14: "LIV"}
-        svc = make_ratings_service({"LIV": 2.0})
-        signals = _compute_chip_signals(exposure, {"3xc"}, name_to_tid, id_to_short, svc)
+        # Two soft opponents: mean 2.5
+        fdr = make_fdr_by_team({"LIV": [(31, "SOU", 2.0), (31, "BUR", 3.0)]})
+        signals = _compute_chip_signals(exposure, {"3xc"}, name_to_tid, id_to_short, fdr)
         tc = [s for s in signals if s["signal"] == "TC"]
         assert len(tc) == 1
         assert tc[0]["strength"] == "strong"
+        assert tc[0]["detail"] == "Salah (FDR 2.5)"
 
-    def test_tc_possible_when_best_fdr_leq_4(self):
+    def test_tc_possible_when_double_averages_leq_4(self):
         exposure = [make_exposure(31, "double", 7, ["Saka"])]
-        svc = make_ratings_service({"ARS": 3.5})
-        signals = _compute_chip_signals(exposure, {"3xc"}, {"Saka": 3}, {3: "ARS"}, svc)
+        fdr = make_fdr_by_team({"ARS": [(31, "CHE", 3.5), (31, "NEW", 4.5)]})
+        signals = _compute_chip_signals(exposure, {"3xc"}, {"Saka": 3}, {3: "ARS"}, fdr)
         tc = [s for s in signals if s["signal"] == "TC"]
         assert len(tc) == 1
         assert tc[0]["strength"] == "possible"
 
-    def test_tc_no_signal_when_fdr_above_4(self):
+    def test_tc_no_signal_when_double_averages_above_4(self):
         exposure = [make_exposure(31, "double", 7, ["Saka"])]
-        svc = make_ratings_service({"ARS": 5.0})
-        signals = _compute_chip_signals(exposure, {"3xc"}, {"Saka": 3}, {3: "ARS"}, svc)
+        fdr = make_fdr_by_team({"ARS": [(31, "MCI", 5.5), (31, "LIV", 5.0)]})
+        signals = _compute_chip_signals(exposure, {"3xc"}, {"Saka": 3}, {3: "ARS"}, fdr)
+        assert all(s["signal"] != "TC" for s in signals)
+
+    def test_tc_picks_easiest_double_not_weakest_club(self):
+        """The candidate at the stronger club wins when their double is easier.
+
+        Regression for #201: scoring each candidate on their own club's
+        inverted rating handed the signal to the weakest club in the league.
+        """
+        exposure = [make_exposure(31, "double", 7, ["Salah", "Wood"])]
+        name_to_tid = {"Salah": 14, "Wood": 16}
+        id_to_short = {14: "LIV", 16: "NFO"}
+        fdr = make_fdr_by_team({
+            "LIV": [(31, "SOU", 2.0), (31, "BUR", 2.4)],   # mean 2.2
+            "NFO": [(31, "MCI", 5.5), (31, "ARS", 5.5)],   # mean 5.5
+        })
+        signals = _compute_chip_signals(exposure, {"3xc"}, name_to_tid, id_to_short, fdr)
+        tc = [s for s in signals if s["signal"] == "TC"]
+        assert len(tc) == 1
+        assert tc[0]["detail"] == "Salah (FDR 2.2)"
+
+    def test_tc_scores_only_the_doubles_own_gameweek(self):
+        """An easy fixture in another GW must not grade this GW's double."""
+        exposure = [make_exposure(31, "double", 7, ["Saka"])]
+        fdr = make_fdr_by_team({
+            "ARS": [(30, "BUR", 1.5), (31, "MCI", 5.5), (31, "LIV", 5.0)],
+        })
+        signals = _compute_chip_signals(exposure, {"3xc"}, {"Saka": 3}, {3: "ARS"}, fdr)
+        assert all(s["signal"] != "TC" for s in signals)
+
+    def test_tc_skips_candidate_with_no_fixtures_in_gameweek(self):
+        """A predicted double beyond the FDR window is not scoreable."""
+        exposure = [make_exposure(35, "double", 7, ["Saka"], source="predicted")]
+        fdr = make_fdr_by_team({"ARS": [(31, "BUR", 1.5)]})
+        signals = _compute_chip_signals(exposure, {"3xc"}, {"Saka": 3}, {3: "ARS"}, fdr)
+        assert all(s["signal"] != "TC" for s in signals)
+
+    def test_tc_suppressed_when_chip_used(self):
+        exposure = [make_exposure(31, "double", 7, ["Saka"])]
+        fdr = make_fdr_by_team({"ARS": [(31, "BUR", 1.5), (31, "SOU", 1.5)]})
+        signals = _compute_chip_signals(exposure, {"bboost"}, {"Saka": 3}, {3: "ARS"}, fdr)
         assert all(s["signal"] != "TC" for s in signals)
 
 
@@ -573,5 +622,5 @@ class TestChipsTimingJsonFormat:
 
 class TestNoSignals:
     def test_empty_exposure_produces_no_signals(self):
-        signals = _compute_chip_signals([], {"freehit", "bboost", "3xc"}, {}, {}, make_ratings_service())
+        signals = _compute_chip_signals([], {"freehit", "bboost", "3xc"}, {}, {}, make_fdr_by_team())
         assert signals == []

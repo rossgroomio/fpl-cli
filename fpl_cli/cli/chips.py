@@ -23,7 +23,6 @@ from fpl_cli.season import TOTAL_GAMEWEEKS
 
 if TYPE_CHECKING:
     from fpl_cli.api.fpl import FPLClient
-    from fpl_cli.services.team_ratings import TeamRatingsService
 
 CHIP_NAMES = {
     "wildcard": "Wildcard",
@@ -237,12 +236,63 @@ def chips_sync() -> None:
 # -- Chip timing: uses FixtureAgent for exposure data --
 
 
+def _best_double_candidate(
+    players: list[str],
+    gw: int,
+    name_to_team_id: dict[str, int],
+    id_to_short: dict[int, str],
+    fdr_by_team: dict[str, dict],
+) -> tuple[str | None, float | None]:
+    """Pick the squad player whose double in ``gw`` is the easiest, and score it.
+
+    Each candidate is scored on the mean general FDR of their own team's
+    fixtures in that gameweek - the venue-aware ATK/DEF mean the fixture agent
+    records, the same figure `fpl fdr` and `fpl preview` show - so a candidate
+    facing two weak sides scores low. Grading the candidate's own club instead
+    inverts the signal: `avg_overall_fdr` is the difficulty of facing that
+    club, so a top club reads "hard" and the weakest club in the league reads
+    "easy" (#201).
+
+    A candidate whose team has no fixture in the gameweek is not scoreable and
+    is skipped - a predicted double can sit beyond the agent's FDR window.
+
+    Returns:
+        (player, mean FDR of their double), or (None, None) if none scoreable.
+    """
+    best_player: str | None = None
+    best_fdr: float | None = None
+
+    for player_name in players:
+        tid = name_to_team_id.get(player_name)
+        if not tid:
+            continue
+        short = id_to_short.get(tid)
+        if not short:
+            continue
+        team_fdr = fdr_by_team.get(short)
+        if not team_fdr:
+            continue
+        gw_fdrs = [
+            f["fdr"]
+            for f in team_fdr.get("fixtures", [])
+            if f.get("gameweek") == gw and f.get("fdr") is not None
+        ]
+        if not gw_fdrs:
+            continue
+        fdr = sum(gw_fdrs) / len(gw_fdrs)
+        if best_fdr is None or fdr < best_fdr:
+            best_fdr = fdr
+            best_player = player_name
+
+    return best_player, best_fdr
+
+
 def _compute_chip_signals(
     exposure: list[dict],
     unplayed: set[str],
     name_to_team_id: dict[str, int],
     id_to_short: dict[int, str],
-    ratings_service: TeamRatingsService,
+    fdr_by_team: dict[str, dict],
 ) -> list[dict]:
     """Compute FH/BB/TC signals from squad exposure data."""
     signals: list[dict] = []
@@ -279,26 +329,14 @@ def _compute_chip_signals(
                 })
 
         if gw_type == "double" and "3xc" in unplayed:
-            best_player: str | None = None
-            best_fdr: float | None = None
-
-            for player_name in affected_players:
-                tid = name_to_team_id.get(player_name)
-                if not tid:
-                    continue
-                short = id_to_short.get(tid)
-                if not short:
-                    continue
-                rating = ratings_service.get_rating(short)
-                if rating is None:
-                    continue
-                fdr = rating.avg_overall_fdr
-                if best_fdr is None or fdr < best_fdr:
-                    best_fdr = fdr
-                    best_player = player_name
+            best_player, best_fdr = _best_double_candidate(
+                affected_players, gw, name_to_team_id, id_to_short, fdr_by_team,
+            )
 
             if best_fdr is not None and best_player is not None:
-                # TC thresholds are more lenient than general FDR (DGW doubles the upside)
+                # Same 1-7 scale as `fpl fdr`, on the double's own fixtures.
+                # Thresholds are more lenient than that table's colouring
+                # (2.5/3.0) because a DGW doubles the upside.
                 if best_fdr <= 3.0:
                     tc_strength: str | None = "strong"
                 elif best_fdr <= 4.0:
@@ -362,7 +400,8 @@ async def _fetch_and_compute(
 
     exposure = result.data.get("squad_exposure", [])
     signals = _compute_chip_signals(
-        exposure, unplayed, name_to_team_id, id_to_short, agent.ratings_service,
+        exposure, unplayed, name_to_team_id, id_to_short,
+        result.data.get("fdr_by_team", {}),
     )
     return unplayed, planned_by_gw, signals
 
@@ -378,7 +417,8 @@ def chips_timing(output_format: str) -> None:
     Thresholds (full 15-player squad):
       FH: 5+ squad players in a blank = strong, 3+ = possible
       BB: 8+ squad players in a double = strong, 6+ = possible
-      TC: best DGW candidate with avg FDR <= 3.0 = strong, <= 4.0 = possible
+      TC: best DGW candidate's two fixtures average FDR <= 3.0 = strong,
+          <= 4.0 = possible
     """
     from fpl_cli.api.fpl import FPLClient
 
