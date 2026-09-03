@@ -194,6 +194,7 @@ _STREAK_SURFACES: frozenset[NoteSurface] = frozenset(
     {NoteSurface.CONSOLE, NoteSurface.REPORT, NoteSurface.PROMPT},
 )
 _REPORT_AND_PROMPT: frozenset[NoteSurface] = frozenset({NoteSurface.REPORT, NoteSurface.PROMPT})
+_PROMPT_ONLY: frozenset[NoteSurface] = frozenset({NoteSurface.PROMPT})
 
 
 @dataclass(frozen=True)
@@ -595,23 +596,56 @@ def _season_count_entries(
 # ---------------------------------------------------------------------------
 
 
-def _season_phase_text(phase: SeasonPhase, gameweek: int, total_gameweeks: int, chip_split_gw: int) -> str:
+def _season_phase_text(
+    phase: SeasonPhase,
+    gameweek: int,
+    total_gameweeks: int,
+    chip_split_gw: int,
+    fpl_format: LeagueFormat,
+) -> str:
+    """Draft has no chip mechanics, so `PRE_CHIP_BOUNDARY` and `MIDPOINT` --
+    the two phrasings that name the chip split -- fall back to the plain
+    halfway-point framing for a draft league rather than mentioning chips
+    that don't exist for it. `chip_split_gw` is also just `TOTAL_GAMEWEEKS
+    // 2` (see `derive_season_phase`), so the halfway-point framing is still
+    accurate, not merely chip-free.
+    """
     if phase is SeasonPhase.OPENER:
         return f"GW{gameweek} is the season opener."
     if phase is SeasonPhase.PRE_CHIP_BOUNDARY:
+        if fpl_format == "draft":
+            return f"GW{gameweek} is before the season's halfway point (GW{chip_split_gw})."
         return f"GW{gameweek} is before the GW{chip_split_gw} chip-availability boundary."
     if phase is SeasonPhase.MIDPOINT:
+        if fpl_format == "draft":
+            return (
+                f"GW{gameweek} is the season midpoint, past the GW{chip_split_gw} halfway "
+                "point and before the run-in."
+            )
         return f"GW{gameweek} is the season midpoint, past the GW{chip_split_gw} chip boundary and before the run-in."
     if phase is SeasonPhase.RUN_IN:
         return f"GW{gameweek} is in the run-in to the season finale (GW{total_gameweeks})."
     return f"GW{gameweek} is the season finale."
 
 
-def _season_phase_entry(phase: SeasonPhase, gameweek: int, total_gameweeks: int, chip_split_gw: int) -> NotesPackEntry:
+def _season_phase_entry(
+    phase: SeasonPhase,
+    gameweek: int,
+    total_gameweeks: int,
+    chip_split_gw: int,
+    fpl_format: LeagueFormat,
+) -> NotesPackEntry:
+    """Prompt-only (KTD8): this is scene-setting context for the editorial
+    writer, not a fact worth printing in the report body -- true for the
+    classic phrasing and meaningless for the draft one (issue #187). A
+    future phase whose note *is* worth showing the reader picks that up as
+    its own per-phase surface choice here, rather than this function going
+    back to a blanket `_REPORT_AND_PROMPT`.
+    """
     return NotesPackEntry(
         kind=NoteKind.SEASON_PHASE,
-        text=_season_phase_text(phase, gameweek, total_gameweeks, chip_split_gw),
-        surfaces=_REPORT_AND_PROMPT,
+        text=_season_phase_text(phase, gameweek, total_gameweeks, chip_split_gw, fpl_format),
+        surfaces=_PROMPT_ONLY,
     )
 
 
@@ -874,7 +908,7 @@ def build_notes_pack(
         gameweek=gameweek,
         phase=phase,
         league_start_gameweek=league_start_gameweek,
-        season_phase_entry=_season_phase_entry(phase, gameweek, total_gameweeks, chip_split_gw),
+        season_phase_entry=_season_phase_entry(phase, gameweek, total_gameweeks, chip_split_gw, store.fpl_format),
         entries=_streak_entries(
             gameweek=gameweek, cohort=cohort, projection=projection, rows_by_gameweek=rows_by_gameweek,
         ),

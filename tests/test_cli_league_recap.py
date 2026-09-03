@@ -2025,6 +2025,20 @@ class TestLeagueHistoryReportSection:
         assert "GW38 is the season finale." in content
 
 
+class TestSeasonPhaseTextIsPromptOnly:
+    """Issue #187: the season-phase marker (`_season_phase_entry`) is
+    scene-setting context for the editorial writer, not a fact worth
+    printing in the report body -- through the full command, not just the
+    `NotesPack` construction it's derived from."""
+
+    def test_the_saved_report_does_not_print_the_season_phase_note(self, tmp_path: Path):
+        result = _invoke_recap(_recap_data(), ["--save", "--output", str(tmp_path)])
+
+        assert result.exit_code == 0, result.output
+        content = (tmp_path / season_label() / "gw5-league-recap.md").read_text(encoding="utf-8")
+        assert "chip-availability boundary" not in content
+
+
 class TestFormatGatingInPack:
     def test_draft_pack_has_no_captain_blank_entry_classic_pack_has_no_waiver_entry(self):
         """Delegated entirely to U8/U9's format filtering -- confirmed here at

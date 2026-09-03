@@ -848,8 +848,10 @@ class TestFinaleReadsTheWholeSeason:
         pack = build_notes_pack(store, 5, total_gameweeks=5, chip_split_gw=3)
         assert pack.phase is SeasonPhase.FINALE
         assert "finale" in pack.season_phase_entry.text.lower()
+        # Prompt-only (issue #187): scene-setting context for the editorial
+        # writer, not a fact worth printing in the report body.
         assert NoteSurface.CONSOLE not in pack.season_phase_entry.surfaces
-        assert NoteSurface.REPORT in pack.season_phase_entry.surfaces
+        assert NoteSurface.REPORT not in pack.season_phase_entry.surfaces
         assert NoteSurface.PROMPT in pack.season_phase_entry.surfaces
 
 
@@ -878,6 +880,42 @@ class TestMidpointAndRunInPhases:
         assert pack.phase is SeasonPhase.RUN_IN
         assert "GW35 is in the run-in" in pack.season_phase_entry.text
         assert "GW38" in pack.season_phase_entry.text
+
+    def test_classic_pre_chip_boundary_text_names_the_chip_boundary(self):
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(2, [make_history_row(gameweek=2, manager_key=1, manager_name="Alice")])
+
+        pack = build_notes_pack(store, 2)
+
+        assert pack.phase is SeasonPhase.PRE_CHIP_BOUNDARY
+        assert "chip-availability boundary" in pack.season_phase_entry.text
+
+
+class TestDraftPhaseTextHasNoChipLanguage:
+    """Draft has no chips at all, so the two phrasings that name the chip
+    split (PRE_CHIP_BOUNDARY, MIDPOINT) must not mention chips for a draft
+    league, even on the prompt-only surface (issue #187)."""
+
+    def test_pre_chip_boundary_phase_drops_chip_language_for_draft(self):
+        store = LeagueHistoryStore("2026-27", "draft", 1)
+        store.append_rows(2, [make_history_row(gameweek=2, manager_key=1, manager_name="Alice")])
+
+        pack = build_notes_pack(store, 2)
+
+        assert pack.phase is SeasonPhase.PRE_CHIP_BOUNDARY
+        assert "chip" not in pack.season_phase_entry.text.lower()
+        assert "GW19" in pack.season_phase_entry.text
+
+    def test_midpoint_phase_drops_chip_language_for_draft(self):
+        store = LeagueHistoryStore("2026-27", "draft", 1)
+        store.append_rows(25, [make_history_row(gameweek=25, manager_key=1, manager_name="Alice")])
+
+        pack = build_notes_pack(store, 25, total_gameweeks=38, chip_split_gw=19)
+
+        assert pack.phase is SeasonPhase.MIDPOINT
+        assert "chip" not in pack.season_phase_entry.text.lower()
+        assert "GW25 is the season midpoint" in pack.season_phase_entry.text
+        assert "GW19" in pack.season_phase_entry.text
 
 
 class TestOpenerHasNoPriorHistory:
