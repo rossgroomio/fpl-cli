@@ -310,3 +310,15 @@ def test_find_entities_ignores_bare_ampersands():
 
 def test_find_entities_finds_nothing_in_a_normalised_report():
     assert find_entities(unescape_specials("&gt; **Caveat:** Brighton &amp; Hove")) == []
+
+
+def test_unescape_specials_decodes_inside_fenced_blocks_too():
+    """The deliberate departure from the module's fence-aware section scanning:
+    transit escaping hits fenced regions too, so a fence-aware decoder would
+    leave the content inside them still broken."""
+    fenced = "before\n```\n&gt; escaped in a fence\n```\nafter"
+    assert unescape_specials(fenced) == "before\n```\n> escaped in a fence\n```\nafter"
+
+
+def test_find_entities_reports_inside_fenced_blocks_too():
+    assert find_entities("```\n&nbsp;\n```") == [(2, "&nbsp;")]

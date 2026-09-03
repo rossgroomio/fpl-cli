@@ -29,14 +29,24 @@ Abbreviation/substitution drift (`#### XI` for `#### Starting XI`) can't be
 derived from the text, so it is opt-in per call site via `aliases` rather than
 guessed globally.
 
-Scanning is fence-aware throughout: a `#` line inside a fenced code block is
-code, not a heading, so it neither opens nor closes a section.
+Section scanning is fence-aware throughout: a `#` line inside a fenced code
+block is code, not a heading, so it neither opens nor closes a section.
 
 The same module also carries entity normalisation, the other way markdown
 arrives damaged from an LLM return path: a payload escaped somewhere in transit
 loses its syntax, most visibly a `&gt;` blockquote marker that renders as
 literal text. `unescape_specials` recovers it and `find_entities` reports what
 it deliberately left alone.
+
+Those two are the deliberate exception to the fence-awareness above, and it is
+not an oversight. Section scanning must respect fences because a fenced `#` is
+content that only *looks* like structure. Escaping is the reverse: it is
+applied to the whole payload in transit, fenced regions included, so a
+fence-aware decoder would leave exactly the content it skipped still broken.
+The cost is that a fence deliberately displaying an escaped entity as an
+example would be decoded too -- accepted, because a report of football
+recommendations has no such example to protect, whereas a mangled fence in an
+escaped payload is the failure being repaired.
 
 `HeadingMatcher` assumes a fixed target heading text. A caller that needs to
 locate a heading matching a pattern instead (e.g. one embedding a variable
@@ -343,6 +353,10 @@ def unescape_specials(text: str) -> str:
     Decoding repeats to a fixed point, recovering a doubly-escaped payload
     (`&amp;gt;`) in one call. It terminates because every replacement is
     strictly shorter than what it replaces.
+
+    Unlike the section scanning above, this is deliberately *not* fence-aware:
+    transit escaping hits fenced regions too, so skipping them would leave the
+    content inside still broken.
     """
     while True:
         decoded = _SPECIAL_ENTITY_RE.sub(_resolve_special, text)
@@ -358,6 +372,9 @@ def find_entities(text: str) -> list[tuple[int, str]]:
     it deliberately does not undo, so a payload mangled in a shape this module
     does not recognise is visible at the point of writing rather than when
     someone reads a broken report days later.
+
+    Not fence-aware, for the same reason `unescape_specials` isn't: a residual
+    entity inside a fence is worth reporting too.
     """
     return [
         (number, match.group(0))

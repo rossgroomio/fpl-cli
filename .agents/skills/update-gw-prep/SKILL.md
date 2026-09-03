@@ -239,14 +239,9 @@ Then normalise the file, before Phase E reads it back:
 python3 "$FPL_CLI_DIR/.agents/skills/gw-prep/scripts/normalise_entities.py" --file "[YOUR_OUTPUT_DIR]/{season}/gw{N}-recommendations.md"
 ```
 
-The sub-agent's section is appended verbatim, so one that arrived HTML-escaped
-somewhere in the return path lands in the file with its markdown broken -- a
-`&gt;` blockquote marker renders as literal text instead of opening a quote
-block. gw-prep normalised the baseline when it wrote it; this covers the
-section appended since. The script rewrites the file in place and costs
-nothing when nothing was escaped. Parse stdout as JSON and warn, never block:
-on `ok: false`, name the residual entities and their lines in chat and carry
-on; on a missing script or non-zero exit, warn and carry on.
+Parse stdout as JSON and warn, never block; `.agents/skills/gw-prep/references/entity-normalisation.md` carries the contract, the
+warning template and the failure handling. gw-prep normalised the baseline
+when it wrote it -- this covers the section appended since.
 
 ### Phase E — Verify and summarise
 

@@ -644,7 +644,8 @@ Season previews follow the same season-staleness discipline but deliberately **n
     │   ├── SKILL.md
     │   ├── references/
     │   │   ├── rules.md          # Transfer/waiver/selection rules
-    │   │   └── output-template.md
+    │   │   ├── output-template.md
+    │   │   └── entity-normalisation.md # Shared post-write HTML-entity step (gw-prep, squad-builder, update-gw-prep)
     │   └── scripts/
     │       ├── _bootstrap.py            # Shared startup (user-dir migration) for agent-importing scripts
     │       ├── bench_order.py           # BenchOrderAgent wrapper (name -> ID resolution)

@@ -12,7 +12,9 @@ point of writing.
 Emits JSON to stdout: {"ok": bool, "changed": bool, "unescaped": int,
 "residual": [{"line": int, "entity": str}]}. `ok` is false only when residual
 entities remain; the caller warns rather than blocking. Exit code is 0 unless
-the file cannot be read or written.
+the file cannot be read, decoded as UTF-8, or written -- and those exit 1 with
+{"error": true, "messages": [...]}, never a traceback, because every caller
+parses stdout to decide what to say.
 
 Requires fpl-cli venv to be activated before running.
 
@@ -57,6 +59,13 @@ def _run(file_path: str) -> None:
         return
     except OSError as exc:
         _fail(f"Could not read {file_path}: {exc}")
+        return
+    except UnicodeDecodeError as exc:
+        # Not an OSError, so it needs catching separately -- and it is exactly
+        # the kind of transit damage this script exists for, which makes a
+        # traceback the worst possible response: every caller parses stdout as
+        # JSON to decide whether to warn.
+        _fail(f"{file_path} is not valid UTF-8, so it cannot be normalised: {exc}")
         return
 
     normalised = unescape_specials(original)

@@ -132,6 +132,23 @@ def test_reports_residuals_without_rewriting_when_nothing_is_decodable(
 # -- Failure modes -------------------------------------------------------------
 
 
+def test_non_utf8_file_exits_1_with_a_json_error(tmp_path, capsys):
+    """UnicodeDecodeError is a ValueError, not an OSError, so it needs its own
+    handler -- and it is precisely the transit damage this script exists for,
+    which makes a traceback the worst answer: every caller parses stdout."""
+    report = tmp_path / "gw2-recommendations.md"
+    report.write_bytes(b"## Classic\n&gt; quote \x81 bad byte\n")
+
+    with pytest.raises(SystemExit) as exc:
+        _run(str(report))
+
+    assert exc.value.code == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["error"] is True
+    assert "not valid UTF-8" in payload["messages"][0]
+    assert report.read_bytes().endswith(b"\x81 bad byte\n"), "must not be rewritten"
+
+
 def test_missing_file_exits_1_with_a_json_error(tmp_path, capsys):
     with pytest.raises(SystemExit) as exc:
         _run(str(tmp_path / "absent.md"))
