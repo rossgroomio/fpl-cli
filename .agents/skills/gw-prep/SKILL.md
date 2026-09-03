@@ -25,6 +25,11 @@ Generate transfer/waiver recommendations and squad analysis for the upcoming FPL
 cd "$FPL_CLI_DIR" && source .venv/bin/activate
 ```
 
+<!-- ADAPT: Set your interpreter. `[YOUR_PYTHON]` below is the Python that has fpl-cli installed -- `python3` once the venv above is active, or an absolute path to that venv's binary (e.g. `$FPL_CLI_DIR/.venv/bin/python`) if you invoke the skill without activating it. -->
+**Every script under `scripts/` imports the `fpl_cli` package**, so each must run on the interpreter fpl-cli is installed on. Activate its venv first, or invoke that venv's Python directly. A standalone `fpl` on `PATH` (uv tool, pipx) puts the *command* there but not `fpl_cli` on the system interpreter's import path -- `fpl status` succeeds and `python3 scripts/transfer_eval.py` still dies with `ModuleNotFoundError: No module named 'fpl_cli'`. The script invocations below write this interpreter as `[YOUR_PYTHON]`; substitute it the same way you substitute `[YOUR_OUTPUT_DIR]`.
+
+Get it wrong and the scripts say so: each one exits 1 with `{"error": true, "messages": [...]}` on stdout naming the missing package, rather than a traceback.
+
 ## Execution Strategy
 
 **Claude Code:** Launch Phase C sub-agents in parallel (classic + draft simultaneously) using the `Agent tool parameters:` blocks shown in Phase C.
@@ -106,7 +111,7 @@ Locate a matching squad-builder output file and extract the Classic Squad block 
 5. Call the extraction helper:
 
    ```bash
-   python3 "${CLAUDE_SKILL_DIR}/scripts/extract_classic_squad.py" --file "[YOUR_OUTPUT_DIR]/{season}/gw{N}-squad-builder.md"
+   [YOUR_PYTHON] "${CLAUDE_SKILL_DIR}/scripts/extract_classic_squad.py" --file "[YOUR_OUTPUT_DIR]/{season}/gw{N}-squad-builder.md"
    ```
 
    Parse stdout as JSON regardless of exit code. If JSON parse fails, treat as extraction-failed with a generic error message.
@@ -159,6 +164,12 @@ If format is `"both"`, also run:
 ```bash
 fpl squad grid --draft --format json
 ```
+
+Each record carries `player` and `team`. Keep the pair together: the C2.5/C3/C4
+scripts below take player names, and a bare surname that two players share
+(Dean and Jordan Henderson) is rejected as ambiguous rather than resolved to
+whichever the API lists first. Pass `"{player} ({team})"` -- e.g.
+`"Henderson (CRY)"` -- for every name sourced from this output.
 
 ### B5 -- Price Movements
 
@@ -612,7 +623,7 @@ Proceed immediately (non-interactive).
 After each sub-agent identifies OUT candidates and an IN shortlist (from squad analysis, `fpl targets`, `fpl waivers`), run the transfer evaluation script for each OUT/shortlist pair:
 
 ```bash
-python3 "${CLAUDE_SKILL_DIR}/scripts/transfer_eval.py" --out "{out_player_name}" --in "{comma-separated IN candidate names}"
+[YOUR_PYTHON] "${CLAUDE_SKILL_DIR}/scripts/transfer_eval.py" --out "{out_player_name} ({club})" --in "{comma-separated IN candidates as 'Name (CLUB)'}"
 ```
 
 The script outputs JSON with Outlook (multi-GW quality) and This GW (lineup impact) deltas for each IN candidate vs the OUT player. Use these scores as the quantitative baseline for transfer/waiver recommendations. Sub-agents may override with qualitative reasons (press conference intel, newsletter signals, season preview intel from B9) using the same `⚡ Override: {reason}` pattern as starting XI overrides. Name the source in the reason.
@@ -624,10 +635,10 @@ If the script fails (exit 1), fall back to LLM-driven transfer reasoning and not
 Run the lineup engine for each active format's squad **before** bench ordering:
 
 ```bash
-python3 "${CLAUDE_SKILL_DIR}/scripts/starting_xi.py" --squad "{comma-separated 15 squad player names from squad grid}"
+[YOUR_PYTHON] "${CLAUDE_SKILL_DIR}/scripts/starting_xi.py" --squad "{comma-separated 15 squad players from squad grid, each as 'Name (CLUB)'}"
 ```
 
-<!-- ADAPT: Replace with your squad player names from the squad grid output -->
+<!-- ADAPT: Replace with your squad players from the squad grid output, each as 'Name (CLUB)' -->
 
 Use the script's recommended XI as the default lineup. Sub-agents may override specific picks with stated qualitative reasons (press conference intel, newsletter signals, rotation predictions, season preview intel from B9). Mark any overrides with `⚡ Override: {reason}` in the output, naming the source. If the script fails (exit 1), fall back to manual selection and note the failure.
 
@@ -638,7 +649,7 @@ Use the script's recommended XI as the default lineup. Sub-agents may override s
 Using the starting XI from C3 (or the sub-agent's overridden version), run the bench order script:
 
 ```bash
-python3 "${CLAUDE_SKILL_DIR}/scripts/bench_order.py" --starting "{comma-separated starter names}" --bench "{comma-separated bench names}"
+[YOUR_PYTHON] "${CLAUDE_SKILL_DIR}/scripts/bench_order.py" --starting "{comma-separated starters as 'Name (CLUB)'}" --bench "{comma-separated bench as 'Name (CLUB)'}"
 ```
 
 Incorporate the bench ordering output into the relevant sections of each sub-agent's recommendations.
@@ -653,6 +664,14 @@ Combine the outputs from whichever sub-agents were dispatched into a single reco
 **Output path:** `[YOUR_OUTPUT_DIR]/{season}/gw{N}-recommendations.md`
 
 The file should follow the structure defined in `references/output-template.md`, with both Classic and Draft sections populated.
+
+**Normalise the file, immediately after writing it and before Phase D1** -- otherwise a sub-agent section that arrived HTML-escaped lands in the report with its markdown broken, and the entities go on to confuse the table parsing in D1 and E:
+
+```bash
+[YOUR_PYTHON] "${CLAUDE_SKILL_DIR}/scripts/normalise_entities.py" --file "[YOUR_OUTPUT_DIR]/{season}/gw{N}-recommendations.md"
+```
+
+Parse stdout as JSON and warn, never block. `references/entity-normalisation.md` carries the contract, the warning template and the failure handling -- read it rather than reproducing them here.
 
 Present a brief summary to the user:
 - GW number and deadline
@@ -673,14 +692,14 @@ _Runs after Phase D file write, before Phase E. Not embed-gated._
 3. Run:
 
    ```bash
-   cd "$FPL_CLI_DIR" && source .venv/bin/activate && python "$FPL_CLI_DIR/.agents/skills/gw-prep/scripts/validate_draft_waivers.py" \
+   [YOUR_PYTHON] "${CLAUDE_SKILL_DIR}/scripts/validate_draft_waivers.py" \
      --recommendations-file "[YOUR_OUTPUT_DIR]/{season}/gw{N}-recommendations.md" \
      --waivers-json /tmp/gw-prep-waivers-{N}.json \
      --squad-grid-json /tmp/gw-prep-squad-grid-{N}.json
    ```
 
    Parse stdout as JSON: `{"ok": bool, "flags": [...], "warnings": [...]}`.
-   If the script cannot be found or exits non-zero unexpectedly, emit a warning and proceed to Phase E (fail-open for infrastructure errors, fail-closed only for confirmed rule violations).
+   If the script cannot be found or exits non-zero unexpectedly, emit a warning and proceed to Phase E (fail-open for infrastructure errors, fail-closed only for confirmed rule violations). A non-zero exit whose stdout parses as `{"error": true, ...}` is the script reporting its own startup failure — quote `messages[0]` verbatim in that warning; it names the cause (a wrong interpreter is the common one).
 
 4. **Managed block update:** locate the sentinel block in the recommendations file:
    ```
@@ -719,7 +738,7 @@ _Skip unless `squad_builder_result == "embed"`. Transfer and rederive runs do no
 1. Run:
 
    ```bash
-   python3 "${CLAUDE_SKILL_DIR}/scripts/extract_classic_squad.py" --from-recommendations --file "[YOUR_OUTPUT_DIR]/{season}/gw{N}-recommendations.md"
+   [YOUR_PYTHON] "${CLAUDE_SKILL_DIR}/scripts/extract_classic_squad.py" --from-recommendations --file "[YOUR_OUTPUT_DIR]/{season}/gw{N}-recommendations.md"
    ```
 
    Parse stdout as JSON regardless of exit code. If exit is non-zero → emit warning and proceed:

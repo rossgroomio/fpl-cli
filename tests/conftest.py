@@ -1,6 +1,10 @@
 """Shared fixtures and mock data for FPL Agents tests."""
 
+import importlib.util
+import sys
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from types import ModuleType
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -618,3 +622,25 @@ def make_history_row(
         manager_name=manager_name,
         **kwargs,
     )
+
+
+def load_gw_prep_script(filename: str) -> ModuleType:
+    """Load a gw-prep helper script as a module (they are not a package).
+
+    The scripts dir goes on sys.path for the load, matching a real
+    `python <script>` run where sys.path[0] is the script's own dir — which
+    is how each script's `_bootstrap` sibling, the wrong-interpreter guard,
+    resolves. Every script suite loads through here so a change to those
+    mechanics is one edit rather than six.
+    """
+    scripts_dir = Path(__file__).parent.parent / ".agents/skills/gw-prep/scripts"
+    script_path = scripts_dir / filename
+    sys.path.insert(0, str(scripts_dir))
+    try:
+        spec = importlib.util.spec_from_file_location(script_path.stem, script_path)
+        assert spec is not None and spec.loader is not None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+    finally:
+        sys.path.remove(str(scripts_dir))
+    return mod

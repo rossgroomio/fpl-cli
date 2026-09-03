@@ -5,7 +5,8 @@ Reads a gw{N}-squad-builder.md file, locates the '## Classic Squad' section,
 demotes all headings by one level (depth-aware), discards any following
 '## Draft Rankings' section, and emits JSON on stdout.
 
-Requires fpl-cli venv to be activated before running.
+Runs on the interpreter fpl-cli is installed on (activate its venv first,
+or invoke that venv's Python directly).
 
 Usage:
     python3 extract_classic_squad.py --file path/to/gw32-squad-builder.md
@@ -19,6 +20,11 @@ import json
 import re
 import sys
 from typing import Literal, TypedDict
+
+# Imported first and for its side effect: _bootstrap reaches for the fpl_cli
+# package on its own, turning a wrong interpreter into this script's JSON error
+# envelope instead of a ModuleNotFoundError traceback.
+import _bootstrap  # noqa: F401 — import guard, see module docstring
 
 from fpl_cli.utils.markdown import (
     HeadingMatcher,

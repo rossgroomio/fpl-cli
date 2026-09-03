@@ -7,9 +7,12 @@ section, parses the waiver table, and cross-checks each row against:
   - squad-grid JSON: drop position must match claim position (cross-position-claim)
 
 Emits JSON to stdout: {"ok": bool, "flags": [...], "warnings": [...]}
-Exit code is always 0; the orchestrator (Phase D1) interprets flag types for posture.
+Exit code is 0 whatever the validation finds; the orchestrator (Phase D1)
+interprets flag types for posture. The startup guard below is the one
+non-zero exit, and reports itself as {"error": true, "messages": [...]}.
 
-Requires fpl-cli venv to be activated before running.
+Runs on the interpreter fpl-cli is installed on (activate its venv first,
+or invoke that venv's Python directly).
 
 Usage:
     python3 validate_draft_waivers.py \\
@@ -26,6 +29,11 @@ import re
 import sys
 import unicodedata
 from typing import NotRequired, TypedDict, cast
+
+# Imported first and for its side effect: _bootstrap reaches for the fpl_cli
+# package on its own, turning a wrong interpreter into this script's JSON error
+# envelope instead of a ModuleNotFoundError traceback.
+import _bootstrap  # noqa: F401 — import guard, see module docstring
 
 from fpl_cli.utils.markdown import HeadingMatcher, find_section, leaf_body
 

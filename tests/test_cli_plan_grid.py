@@ -90,6 +90,36 @@ class TestPlanGrid:
         assert result.exit_code == 0, result.output
         assert "Mbeumo" in result.output
 
+    def test_watch_ambiguous_name_warns_and_continues(self):
+        """A shared surname must be reported, not resolved by element id (#180)."""
+        squad = _squad()
+        hendersons = [
+            make_player(id=98, web_name="Henderson", team_id=1, position=PlayerPosition.GOALKEEPER),
+            make_player(id=99, web_name="Henderson", team_id=2, position=PlayerPosition.MIDFIELDER),
+        ]
+        client, ratings = _make_mocks(squad=squad + hendersons)
+        result = _run(["-w", "Henderson", "-n", "1"], client, ratings)
+        assert result.exit_code == 0, result.output
+        # Rich hard-wraps to the terminal width; join the warning back up.
+        output = " ".join(result.output.split())
+        assert "matches 2 players" in output
+        assert "Henderson (ARS)" in output
+        assert "Henderson (CHE)" in output
+
+    def test_watch_team_disambiguator_selects_the_right_player(self):
+        squad = _squad()
+        hendersons = [
+            make_player(id=98, web_name="Henderson", team_id=1, position=PlayerPosition.GOALKEEPER),
+            make_player(id=99, web_name="Henderson", team_id=2, position=PlayerPosition.MIDFIELDER),
+        ]
+        client, ratings = _make_mocks(squad=squad + hendersons)
+        result = _run(["-w", "Henderson (CHE)", "-n", "1", "--format", "json"], client, ratings)
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        watch_row = payload["data"][-1]
+        assert watch_row["player"] == "Henderson"
+        assert watch_row["team"] == "CHE"
+
     def test_blank_gw_renders_as_dash(self):
         client, ratings = _make_mocks(fixtures=[])
         result = _run(["-n", "1"], client, ratings)

@@ -156,6 +156,117 @@ class Player(BaseModel):
         return 0
 
 
+class AmbiguousPlayerError(ValueError):
+    """A query matched several players *exactly*, with no way to pick between them.
+
+    Raised by :func:`resolve_player` instead of returning the head of the tie.
+    Two players can share a ``web_name`` -- Dean Henderson (CRY) and Jordan
+    Henderson (CHE) are both "Henderson" -- so taking the first match silently
+    resolved to whichever had the lower element id, and a lineup engine would
+    score a player the squad does not even own (issue #180).
+
+    Carries ``query`` and the tied ``matches`` so a caller can render its own
+    message; ``str(err)`` is already a user-facing one naming every candidate.
+    """
+
+    def __init__(
+        self,
+        query: str,
+        matches: list[Player],
+        teams: list[Team] | None = None,
+    ) -> None:
+        self.query = query
+        self.matches = matches
+        super().__init__(_ambiguity_message(query, matches, teams))
+
+
+def _ambiguity_message(
+    query: str,
+    matches: list[Player],
+    teams: list[Team] | None,
+) -> str:
+    """Name every tied candidate and show how to pick one.
+
+    The suggested handle has to actually break the tie. ``Name (TEAM)`` only
+    does that when every candidate is at a different club and all of those
+    clubs are known -- two players at the same club both answer to it, so
+    suggesting it would raise this very error again. Otherwise fall back to
+    the element id, which always separates them.
+    """
+    short_names = {t.id: t.short_name for t in teams} if teams else {}
+    clubs_separate = (
+        len({p.team_id for p in matches}) == len(matches)
+        and all(p.team_id in short_names for p in matches)
+    )
+    if clubs_separate:
+        labels = [f"{p.web_name} ({short_names[p.team_id]})" for p in matches]
+        hint = f"disambiguate with '{labels[0]}'"
+    else:
+        labels = [
+            f"{p.full_name} ({short_names[p.team_id]}) [id {p.id}]"
+            if p.team_id in short_names else f"{p.full_name} [id {p.id}]"
+            for p in matches
+        ]
+        hint = f"disambiguate by player ID, e.g. '{matches[0].id}'"
+    return f"'{query}' matches {len(matches)} players: {', '.join(labels)}; {hint}"
+
+
+def _resolve_matches(
+    query: str,
+    players: list[Player],
+    teams: list[Team] | None = None,
+) -> tuple[list[Player], bool]:
+    """Resolve *query* to candidates, and say whether they matched exactly.
+
+    The bool is the tier the matches came from: True for a complete-name (or
+    ID) match, False for the substring fallback. Callers need it to tell a
+    genuine tie apart from a fuzzy shortlist -- see :func:`resolve_player`.
+    """
+    raw = query.strip()
+    if not raw:
+        return [], False
+
+    # Numeric ID
+    if raw.isdigit():
+        pid = int(raw)
+        match = next((p for p in players if p.id == pid), None)
+        return ([match], True) if match else ([], False)
+
+    # Name (TEAM) disambiguation
+    team_filter: int | None = None
+    m = re.match(r"^(.+?)\s*\(([A-Za-z]{3})\)\s*$", raw)
+    if m and teams is not None:
+        raw = m.group(1).strip()
+        team_code = m.group(2).upper()
+        team_map = {t.short_name.upper(): t.id for t in teams}
+        team_filter = team_map.get(team_code)
+        if team_filter is None:
+            return [], False
+
+    candidates = (
+        players if team_filter is None
+        else [p for p in players if p.team_id == team_filter]
+    )
+
+    q = strip_diacritics(raw.lower())
+    if not q:
+        return [], False
+
+    exact = [
+        p for p in candidates
+        if q == strip_diacritics(p.web_name.lower())
+        or q == strip_diacritics(p.full_name.lower())
+    ]
+    if exact:
+        return exact, True
+
+    return [
+        p for p in candidates
+        if q in strip_diacritics(p.web_name.lower())
+        or q in strip_diacritics(p.full_name.lower())
+    ], False
+
+
 def resolve_players(
     query: str,
     players: list[Player],
@@ -172,49 +283,7 @@ def resolve_players(
     *teams* is a list of Team models (need ``.id`` and ``.short_name``);
     required only when using the ``(TEAM)`` disambiguator.
     """
-    raw = query.strip()
-    if not raw:
-        return []
-
-    # Numeric ID
-    if raw.isdigit():
-        pid = int(raw)
-        match = next((p for p in players if p.id == pid), None)
-        return [match] if match else []
-
-    # Name (TEAM) disambiguation
-    team_filter: int | None = None
-    m = re.match(r"^(.+?)\s*\(([A-Za-z]{3})\)\s*$", raw)
-    if m and teams is not None:
-        raw = m.group(1).strip()
-        team_code = m.group(2).upper()
-        team_map = {t.short_name.upper(): t.id for t in teams}
-        team_filter = team_map.get(team_code)
-        if team_filter is None:
-            return []
-
-    candidates = (
-        players if team_filter is None
-        else [p for p in players if p.team_id == team_filter]
-    )
-
-    q = strip_diacritics(raw.lower())
-    if not q:
-        return []
-
-    exact = [
-        p for p in candidates
-        if q == strip_diacritics(p.web_name.lower())
-        or q == strip_diacritics(p.full_name.lower())
-    ]
-    if exact:
-        return exact
-
-    return [
-        p for p in candidates
-        if q in strip_diacritics(p.web_name.lower())
-        or q in strip_diacritics(p.full_name.lower())
-    ]
+    return _resolve_matches(query, players, teams=teams)[0]
 
 
 def resolve_player(
@@ -222,9 +291,72 @@ def resolve_player(
     players: list[Player],
     teams: list[Team] | None = None,
 ) -> Player | None:
-    """Resolve a single player. Returns first match or None.
+    """Resolve a single player. Returns the best match, or None if there is none.
 
-    See :func:`resolve_players` for full resolution logic.
+    See :func:`resolve_players` for full resolution logic. Where that returns
+    every candidate, this one has to pick, so the two match tiers are not
+    equivalent here:
+
+    - Several *exact* matches is a real tie -- the caller named a player
+      completely and more than one answers to it. Raises
+      :class:`AmbiguousPlayerError` rather than guessing by element id.
+    - Several *substring* matches is a fuzzy shortlist, where first-wins stays
+      the documented behaviour ("Bru" -> De Bruyne).
     """
-    matches = resolve_players(query, players, teams=teams)
-    return matches[0] if matches else None
+    matches, exact = _resolve_matches(query, players, teams=teams)
+    if not matches:
+        return None
+    if exact and len(matches) > 1:
+        raise AmbiguousPlayerError(query, matches, teams)
+    return matches[0]
+
+
+def resolve_player_or_report(
+    name: str,
+    players: list[Player],
+    teams: list[Team] | None = None,
+    *,
+    label: str,
+    errors: list[str],
+) -> Player | None:
+    """Resolve one name, appending to *errors* and returning None on failure.
+
+    The reporting form of :func:`resolve_player`, for the commands and scripts
+    that take player names as user input: both ways of failing to land on one
+    player -- nothing matched, or several did -- become a message the caller
+    shows, rather than a None it has to describe and an exception it has to
+    catch. *label* names the role in that message ("bench", "squad", "OUT").
+
+    Pass *teams* wherever the caller has them: it is what makes the
+    ``Name (TEAM)`` disambiguator work, so someone holding one of two players
+    who share a surname can say which they mean.
+    """
+    try:
+        player = resolve_player(name, players, teams=teams)
+    except AmbiguousPlayerError as exc:
+        errors.append(f"Ambiguous {label} player: {exc}")
+        return None
+    if player is None:
+        errors.append(f"Could not resolve {label} player: '{name}'")
+    return player
+
+
+def resolve_players_or_report(
+    names: list[str],
+    players: list[Player],
+    teams: list[Team] | None = None,
+    *,
+    label: str,
+    errors: list[str],
+) -> list[Player]:
+    """Resolve every name, collecting failures into *errors*.
+
+    Resolves the whole list rather than stopping at the first failure, so a
+    caller who mistyped two names hears about both. See
+    :func:`resolve_player_or_report`.
+    """
+    resolved = [
+        resolve_player_or_report(name, players, teams, label=label, errors=errors)
+        for name in names
+    ]
+    return [p for p in resolved if p is not None]

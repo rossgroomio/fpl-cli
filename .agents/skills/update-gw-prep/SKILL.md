@@ -233,6 +233,16 @@ any existing content above the update section.
 If a previous `## GW Update` section exists, replace it (the latest update
 supersedes earlier ones).
 
+Then normalise the file, before Phase E reads it back:
+
+```bash
+python3 "$FPL_CLI_DIR/.agents/skills/gw-prep/scripts/normalise_entities.py" --file "[YOUR_OUTPUT_DIR]/{season}/gw{N}-recommendations.md"
+```
+
+Parse stdout as JSON and warn, never block; `.agents/skills/gw-prep/references/entity-normalisation.md` carries the contract, the
+warning template and the failure handling. gw-prep normalised the baseline
+when it wrote it -- this covers the section appended since.
+
 ### Phase E — Verify and summarise
 
 Read back the final file and confirm:
