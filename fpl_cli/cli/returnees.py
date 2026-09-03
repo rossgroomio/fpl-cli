@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from datetime import date
@@ -357,6 +357,9 @@ class _Enrichment:
     available: bool = False
     note: str | None = None
     count: int = 0
+    # Whether any player went unanswered because the provider rate-limited the
+    # run even after retrying -- the one failure a re-run is likely to clear.
+    rate_limited: bool = False
 
 
 async def _enrich(
@@ -402,25 +405,37 @@ async def _enrich(
     intel = load_enrichment_cache(gameweek=gameweek)
     pending = [entry for entry in shortlist if entry.player_id not in intel]
 
-    failures: list[str] = []
-    reason = ""
     try:
-        answers = await _gather_intel(
-            provider, pending, gameweeks=inputs["gameweeks"], gameweek=gameweek,
+        outcomes = await _gather_intel(
+            provider, pending, gameweeks=inputs["gameweeks"], gameweek=gameweek, config=config,
+        )
+        outcomes = await _retry_rate_limited(
+            provider, pending, outcomes,
+            gameweeks=inputs["gameweeks"], gameweek=gameweek, config=config,
         )
     finally:
         await provider.close()
 
-    for entry, (found, error) in zip(pending, answers, strict=True):
-        if found is None:
+    failures: list[str] = []
+    reason = ""
+    rate_limited = False
+    for entry, outcome in zip(pending, outcomes, strict=True):
+        if outcome.found is None:
             failures.append(entry.web_name)
-            reason = error or reason
+            # The last failure's message is the one reported, unless a rate
+            # limit has been seen, which then holds: when the failures are
+            # mixed it is the one the user can do something about.
+            if outcome.rate_limited or not rate_limited:
+                reason = outcome.error or reason
+            rate_limited = rate_limited or outcome.rate_limited
             continue
-        intel[entry.player_id] = found
+        intel[entry.player_id] = outcome.found
 
+    saved = False
     if len(failures) < len(pending):
         try:
             save_enrichment_cache(intel, gameweek=gameweek)
+            saved = True
         except OSError as exc:
             # The intel is already in hand; losing the write costs a repeat
             # query next run, not this run's output.
@@ -435,6 +450,15 @@ async def _enrich(
             f"Return intel could not be fetched for {len(failures)} player(s) "
             f"({', '.join(failures)}): {reason or 'the search failed'}"
         )
+        if rate_limited:
+            # Only promise a cache that was actually written: a run refused
+            # for every pending player has nothing to serve next time.
+            note += ". The search provider is rate-limiting this run; " + (
+                "the answers it did give are cached, so re-running with --enrich "
+                "in a minute fills in the rest."
+                if saved else
+                "re-running with --enrich in a minute tries again."
+            )
         error_console.print(f"[yellow]{note}[/yellow]")
     return _Enrichment(
         result=replace(result, entries=entries),
@@ -442,13 +466,32 @@ async def _enrich(
         available=True,
         note=note,
         count=sum(1 for entry in entries if entry.enrichment is not None),
+        rate_limited=rate_limited,
     )
 
 
-# At most this many enrichment queries are in flight at once. The queries are
-# independent and the provider holds one client with no rate limiter of its
-# own, so a small ceiling is what keeps a shortlist from arriving as a burst.
-_ENRICH_CONCURRENCY = 4
+@dataclass(frozen=True)
+class _IntelOutcome:
+    """One query's answer, or why there is none.
+
+    `rate_limited` marks the one failure worth a second pass: the provider
+    refused the query even after its own backoff, and `retry_after` is how
+    long it asked for, when it said.
+    """
+
+    found: EnrichedReturn | None = None
+    error: str | None = None
+    rate_limited: bool = False
+    retry_after: float | None = None
+
+
+# Before one more pass over a rate-limited subset, wait at least this long:
+# the provider layer's own backoff has just been spent, so a pass straight
+# after it would land in the same quota window...
+_RATE_LIMIT_PAUSE = 15.0
+# ...and never longer than this, whatever Retry-After asked for. A CLI run is
+# interactive; past this the subset is reported as rate-limited instead.
+_MAX_RATE_LIMIT_PAUSE = 60.0
 
 
 async def _gather_intel(
@@ -457,23 +500,91 @@ async def _gather_intel(
     *,
     gameweeks: list[dict[str, Any]],
     gameweek: int,
-) -> list[tuple[EnrichedReturn | None, str | None]]:
-    """Query every shortlisted player, a few at a time, in the order given.
+    config: RadarConfig,
+) -> list[_IntelOutcome]:
+    """Query every shortlisted player, paced, in the order given.
 
     Each query is a multi-second round trip that depends on nothing but its own
     player, so running them one after another spent the shortlist's latency
-    needlessly. Results come back positionally, so a failure still lines up
-    with the player it belongs to.
+    needlessly -- but a provider quota counts starts per minute, not queries in
+    flight, so a bare concurrency cap still let a shortlist arrive as a burst
+    (#184). Two knobs bound it: how many queries are in flight at once, and the
+    least time between two starts. Results come back positionally, so a
+    failure still lines up with the player it belongs to.
     """
-    limit = asyncio.Semaphore(_ENRICH_CONCURRENCY)
+    from fpl_cli.api.providers import QueryPacer
 
-    async def _one(entry: RadarEntry) -> tuple[EnrichedReturn | None, str | None]:
+    limit = asyncio.Semaphore(max(1, config.enrich_concurrency))
+    pacer = QueryPacer(config.enrich_query_spacing_seconds)
+
+    async def _one(entry: RadarEntry) -> _IntelOutcome:
+        # Slot first, then turn. The quota counts actual starts, so the
+        # spacing has to separate those: a turn taken before the slot could
+        # sit waiting for one and then start inside the next turn's spacing.
+        # The slot is also held through the provider's own 429 backoff on
+        # purpose -- a query waiting out a rate limit must not free a slot
+        # for another to walk into the same wall.
         async with limit:
+            await pacer.wait_turn()
             return await _query_intel(
                 provider, entry, gameweeks=gameweeks, gameweek=gameweek,
             )
 
     return list(await asyncio.gather(*(_one(entry) for entry in entries)))
+
+
+async def _retry_rate_limited(
+    provider: Any,
+    entries: Sequence[RadarEntry],
+    outcomes: Sequence[_IntelOutcome],
+    *,
+    gameweeks: list[dict[str, Any]],
+    gameweek: int,
+    config: RadarConfig,
+) -> list[_IntelOutcome]:
+    """One more pass over the entries the provider rate-limited, after a pause.
+
+    Each query has already retried its own 429s, but concurrent retries can
+    spend each other's attempts inside the same quota window. By the time the
+    whole shortlist has settled the window has usually moved on, so one pass
+    over just the refused subset is what turns a lost player into a few extra
+    seconds. Once only: a subset still refused after this is reported as
+    rate-limited rather than waited out further.
+    """
+    refused = [index for index, outcome in enumerate(outcomes) if outcome.rate_limited]
+    if not refused:
+        return list(outcomes)
+
+    pause = _rate_limit_pause(outcomes[index] for index in refused)
+    error_console.print(
+        f"[yellow]The search was rate-limited for {len(refused)} player(s); "
+        f"trying those again in {pause:.0f}s...[/yellow]"
+    )
+    await _pause(pause)
+    retried = await _gather_intel(
+        provider, [entries[index] for index in refused],
+        gameweeks=gameweeks, gameweek=gameweek, config=config,
+    )
+    merged = list(outcomes)
+    for index, outcome in zip(refused, retried, strict=True):
+        merged[index] = outcome
+    return merged
+
+
+def _rate_limit_pause(outcomes: Iterable[_IntelOutcome]) -> float:
+    """How long to wait before re-querying a rate-limited subset.
+
+    At least `_RATE_LIMIT_PAUSE`, longer when the provider asked for it, and
+    never past `_MAX_RATE_LIMIT_PAUSE`: a Retry-After beyond the cap is
+    reported, not waited out.
+    """
+    hints = [outcome.retry_after for outcome in outcomes if outcome.retry_after is not None]
+    return min(_MAX_RATE_LIMIT_PAUSE, max([_RATE_LIMIT_PAUSE, *hints]))
+
+
+async def _pause(seconds: float) -> None:
+    """The pause before the rate-limited re-query goes through here, so a test can make it free."""
+    await asyncio.sleep(seconds)
 
 
 async def _query_intel(
@@ -482,12 +593,15 @@ async def _query_intel(
     *,
     gameweeks: list[dict[str, Any]],
     gameweek: int,
-) -> tuple[EnrichedReturn | None, str | None]:
+) -> _IntelOutcome:
     """One player's enrichment query, and why it failed if it did.
 
     A failed query is a missing top-up, never a failed run: the deterministic
-    watchlist is already built and stands on its own (R7).
+    watchlist is already built and stands on its own (R7). A rate limit is
+    kept apart from every other failure because it is the one a caller can
+    expect to clear by waiting.
     """
+    from fpl_cli.api.providers import RateLimitError
     from fpl_cli.prompts.returnees import (
         RETURNEE_ENRICHMENT_SYSTEM_PROMPT,
         build_returnee_enrichment_prompt,
@@ -510,12 +624,15 @@ async def _query_intel(
         response = await provider.query(
             prompt=prompt, system_prompt=RETURNEE_ENRICHMENT_SYSTEM_PROMPT,
         )
+    except RateLimitError as exc:
+        logger.info("Return intel query rate-limited for %s: %s", entry.web_name, exc)
+        return _IntelOutcome(error=str(exc), rate_limited=True, retry_after=exc.retry_after)
     except Exception as exc:  # noqa: BLE001 — graceful degradation: enrichment is a top-up
         logger.info("Return intel query failed for %s: %s", entry.web_name, exc)
-        return None, str(exc)
-    return enrichment_from_response(
+        return _IntelOutcome(error=str(exc))
+    return _IntelOutcome(found=enrichment_from_response(
         response.content, citations=response.citations, gameweeks=gameweeks,
-    ), None
+    ))
 
 
 # ---------------------------------------------------------------------------
@@ -574,6 +691,10 @@ def assemble(
         "enrichment_available": enrichment.available,
         "enrichment_note": enrichment.note,
         "enrichment_count": enrichment.count,
+        # True when a player went unanswered because the provider rate-limited
+        # the run even after retrying, as distinct from having no answer: a
+        # consumer deciding whether to re-run reads this, not the prose.
+        "enrichment_rate_limited": enrichment.rate_limited,
     }
     return data, metadata
 

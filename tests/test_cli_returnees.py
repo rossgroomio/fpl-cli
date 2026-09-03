@@ -11,8 +11,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from click.testing import CliRunner
 
-from fpl_cli.api.providers import LLMResponse, ProviderError, ProviderNotConfiguredError, TokenUsage
+from fpl_cli.api.providers import (
+    LLMResponse,
+    ProviderError,
+    ProviderNotConfiguredError,
+    RateLimitError,
+    TokenUsage,
+)
 from fpl_cli.cli import main
+from fpl_cli.cli import returnees as returnees_cli
 from fpl_cli.models.player import PlayerPosition, PlayerStatus
 from fpl_cli.season import season_label
 from fpl_cli.services import returnee_radar
@@ -28,6 +35,26 @@ NOW = datetime(2026, 8, 25, 12, 0, tzinfo=timezone.utc)
 NEXT_GW = 3
 
 _FIRST_DEADLINE = datetime(2026, 8, 14, 17, 30, tzinfo=timezone.utc)
+
+
+@pytest.fixture(autouse=True)
+def recorded_pauses(monkeypatch):
+    """Record every wait the enrichment pass makes instead of sleeping it.
+
+    Query pacing (the provider package's seam) and the rate-limit re-query
+    (the command's own) both wait for real; through these seams they cost the
+    suite no wall-clock and a test can still read what would have been waited.
+    """
+    from fpl_cli.api.providers import _http as provider_http
+
+    pauses: list[float] = []
+
+    async def _record(seconds: float) -> None:
+        pauses.append(seconds)
+
+    monkeypatch.setattr(returnees_cli, "_pause", _record)
+    monkeypatch.setattr(provider_http, "_sleep", _record)
+    return pauses
 
 
 def _deadline(gw: int) -> datetime:
@@ -57,6 +84,18 @@ def _pinned_run_radar(players: Any, **kwargs: Any) -> Any:
     kwargs["now"] = NOW
     kwargs["season_year"] = SEASON_YEAR
     return _REAL_RUN_RADAR(players, **kwargs)
+
+
+_REAL_ENRICHMENT_FROM_RESPONSE = returnee_radar.enrichment_from_response
+
+
+def _pinned_enrichment_from_response(content: str, **kwargs: Any) -> Any:
+    """The enrichment parser reads the clock too: a stated date is dropped
+    unless it beats the deadline that has already passed. Pinned like
+    `run_radar`, or every dated expectation here lapses as the calendar
+    catches up with the fixture's deadlines."""
+    kwargs.setdefault("now", NOW)
+    return _REAL_ENRICHMENT_FROM_RESPONSE(content, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -190,6 +229,10 @@ def _run(args: list[str] | None = None, *, scoring_data: Any = None,
         stack.enter_context(patch(
             "fpl_cli.services.returnee_radar.run_radar", new=_pinned_run_radar,
         ))
+        stack.enter_context(patch(
+            "fpl_cli.services.returnee_radar.enrichment_from_response",
+            new=_pinned_enrichment_from_response,
+        ))
         return runner.invoke(
             main, ["returnees"] + (args or []), env={"COLUMNS": "220"},
         )
@@ -208,7 +251,9 @@ def _stub_provider(by_name: dict[str, Any] | None = None, default: Any = None) -
     Keying on the name rather than on call order keeps each expectation
     attached to the player it is about. An answer that is an exception is
     raised instead of returned, so a provider failure runs through the same
-    seam as a successful one.
+    seam as a successful one. An answer that is a list is handed out in order
+    with the last one repeating, so a provider that refuses once and then
+    answers can be scripted.
     """
     answers = by_name or {}
 
@@ -217,6 +262,8 @@ def _stub_provider(by_name: dict[str, Any] | None = None, default: Any = None) -
             (value for name, value in answers.items() if name in prompt),
             default if default is not None else _intel(),
         )
+        if isinstance(answer, list):
+            answer = answer.pop(0) if len(answer) > 1 else answer[0]
         if isinstance(answer, Exception):
             raise answer
         return answer
@@ -818,6 +865,239 @@ class TestEnrichmentFailure:
              provider_factory=_provider_factory(working))
 
         assert working.query.await_count == 2
+
+
+class TestEnrichmentPacing:
+    """A provider quota counts starts per minute, so the shortlist is paced, not burst (#184)."""
+
+    @staticmethod
+    def _tracking_provider() -> tuple[Any, dict[str, int]]:
+        import asyncio
+
+        counts = {"in_flight": 0, "peak": 0}
+
+        async def _slow(prompt: str = "", **kwargs: Any) -> Any:
+            counts["in_flight"] += 1
+            counts["peak"] = max(counts["peak"], counts["in_flight"])
+            await asyncio.sleep(0)
+            counts["in_flight"] -= 1
+            return _intel()
+
+        provider = _stub_provider()
+        provider.query = AsyncMock(side_effect=_slow)
+        return provider, counts
+
+    def test_in_flight_queries_are_capped_by_the_configured_concurrency(self):
+        provider, counts = self._tracking_provider()
+
+        _run(["--enrich"], scoring_data=_enrichment_scoring_data(),
+             provider_factory=_provider_factory(provider),
+             settings={"returnee_radar": {"enrich_concurrency": 1}})
+
+        assert provider.query.await_count == 2
+        assert counts["peak"] == 1
+
+    def test_query_starts_are_spaced_by_the_configured_interval(self, recorded_pauses):
+        provider = _stub_provider()
+
+        _run(["--enrich"], scoring_data=_enrichment_scoring_data(),
+             provider_factory=_provider_factory(provider),
+             settings={"returnee_radar": {"enrich_query_spacing_seconds": 2.5}})
+
+        # Two shortlisted players: the first starts at once, the second waits its spacing.
+        assert provider.query.await_count == 2
+        assert len(recorded_pauses) == 1
+        assert recorded_pauses[0] == pytest.approx(2.5, abs=0.2)
+
+    def test_the_shipped_defaults_space_the_starts_at_all(self, recorded_pauses):
+        _run(["--enrich"], scoring_data=_enrichment_scoring_data(),
+             provider_factory=_provider_factory(_stub_provider()))
+
+        assert len(recorded_pauses) == 1
+        assert recorded_pauses[0] > 0
+
+    def test_zero_spacing_never_waits(self, recorded_pauses):
+        _run(["--enrich"], scoring_data=_enrichment_scoring_data(),
+             provider_factory=_provider_factory(_stub_provider()),
+             settings={"returnee_radar": {"enrich_query_spacing_seconds": 0}})
+
+        assert recorded_pauses == []
+
+
+def _refused(retry_after: float | None = None) -> RateLimitError:
+    """What the provider layer raises once its own 429 backoff is spent."""
+    return RateLimitError(
+        "Perplexity returned HTTP 429: Request rate limit exceeded "
+        "(still rate-limited after 4 attempt(s))",
+        retry_after=retry_after,
+    )
+
+
+class TestEnrichmentRateLimit:
+    """A rate limit is the one failure worth a second pass, and worth naming (#184)."""
+
+    def test_a_rate_limited_player_is_queried_once_more_after_a_pause(self, recorded_pauses):
+        provider = _stub_provider({"Sidelined": [_refused(), _intel(
+            _deadline(4).date().isoformat(), citations=["https://example.invalid/presser"],
+        )]})
+
+        payload = _json_run(["--enrich"], scoring_data=_enrichment_scoring_data(),
+                            provider_factory=_provider_factory(provider))
+
+        metadata = payload["metadata"]
+        assert _entries_by_name(payload)["Sidelined"]["enrichment"] is not None
+        assert metadata["enrichment_count"] == 2
+        assert metadata["enrichment_note"] is None
+        assert metadata["enrichment_rate_limited"] is False
+        assert returnees_cli._RATE_LIMIT_PAUSE in recorded_pauses
+
+    def test_only_the_refused_subset_is_queried_again(self):
+        provider = _stub_provider({"Sidelined": [_refused(), _intel()]})
+
+        _run(["--enrich"], scoring_data=_enrichment_scoring_data(),
+             provider_factory=_provider_factory(provider))
+
+        prompts = _prompts(provider)
+        assert sum("Sidelined" in prompt for prompt in prompts) == 2
+        assert sum("Stalenews" in prompt for prompt in prompts) == 1
+
+    def test_the_second_pass_is_announced_on_stderr_and_keeps_stdout_parseable(self):
+        provider = _stub_provider({"Sidelined": [_refused(), _intel()]})
+
+        result = _run(["--enrich", "--format", "json"], scoring_data=_enrichment_scoring_data(),
+                      provider_factory=_provider_factory(provider))
+
+        assert result.exit_code == 0, result.output
+        assert "rate-limited for 1 player(s)" in result.stderr
+        assert json.loads(result.stdout)["metadata"]["enrichment_count"] == 2
+
+    def test_the_pause_honours_the_providers_retry_after(self, recorded_pauses):
+        provider = _stub_provider({"Sidelined": [_refused(retry_after=40.0), _intel()]})
+
+        _run(["--enrich"], scoring_data=_enrichment_scoring_data(),
+             provider_factory=_provider_factory(provider))
+
+        assert 40.0 in recorded_pauses
+
+    def test_the_pause_is_capped_however_long_retry_after_asked_for(self, recorded_pauses):
+        provider = _stub_provider({"Sidelined": [_refused(retry_after=600.0), _intel()]})
+
+        _run(["--enrich"], scoring_data=_enrichment_scoring_data(),
+             provider_factory=_provider_factory(provider))
+
+        assert returnees_cli._MAX_RATE_LIMIT_PAUSE in recorded_pauses
+        assert 600.0 not in recorded_pauses
+
+    def test_a_player_still_refused_is_reported_as_rate_limited_not_unanswered(self):
+        provider = _stub_provider({"Sidelined": _refused()})
+
+        payload = _json_run(["--enrich"], scoring_data=_enrichment_scoring_data(),
+                            provider_factory=_provider_factory(provider))
+
+        metadata = payload["metadata"]
+        assert _entries_by_name(payload)["Sidelined"]["enrichment"] is None
+        assert metadata["enrichment_available"] is True
+        assert metadata["enrichment_count"] == 1
+        assert metadata["enrichment_rate_limited"] is True
+        note = metadata["enrichment_note"]
+        assert "1 player(s) (Sidelined)" in note
+        assert "HTTP 429" in note
+        assert "rate-limiting this run" in note
+        assert "re-running with --enrich" in note
+
+    def test_the_second_pass_happens_only_once(self):
+        provider = _stub_provider({"Sidelined": _refused()})
+
+        _run(["--enrich"], scoring_data=_enrichment_scoring_data(),
+             provider_factory=_provider_factory(provider))
+
+        assert sum("Sidelined" in prompt for prompt in _prompts(provider)) == 2
+
+    def test_the_rate_limit_is_the_reason_reported_when_failures_are_mixed(self):
+        provider = _stub_provider({
+            "Sidelined": _refused(),
+            "Stalenews": ProviderError("Perplexity request timed out"),
+        })
+
+        payload = _json_run(["--enrich"], scoring_data=_enrichment_scoring_data(),
+                            provider_factory=_provider_factory(provider))
+
+        metadata = payload["metadata"]
+        assert metadata["enrichment_rate_limited"] is True
+        assert "2 player(s)" in metadata["enrichment_note"]
+        assert "HTTP 429" in metadata["enrichment_note"]
+        assert "timed out" not in metadata["enrichment_note"]
+
+    def test_the_last_ordinary_failure_is_the_reason_reported_as_before(self):
+        """Two ordinary failures with different messages: the later-shortlisted
+        player's message is the one reported, as it was before rate limits
+        were told apart. Sidelined sorts before Stalenews on a tied quality."""
+        provider = _stub_provider({
+            "Sidelined": ProviderError("Perplexity request timed out"),
+            "Stalenews": ProviderError("Perplexity returned invalid JSON: boom"),
+        })
+
+        payload = _json_run(["--enrich"], scoring_data=_enrichment_scoring_data(),
+                            provider_factory=_provider_factory(provider))
+
+        metadata = payload["metadata"]
+        assert metadata["enrichment_rate_limited"] is False
+        assert "2 player(s)" in metadata["enrichment_note"]
+        assert "invalid JSON" in metadata["enrichment_note"]
+        assert "timed out" not in metadata["enrichment_note"]
+
+    def test_a_run_that_cached_nothing_does_not_claim_it_did(self):
+        provider = _stub_provider(default=_refused())
+
+        payload = _json_run(["--enrich"], scoring_data=_enrichment_scoring_data(),
+                            provider_factory=_provider_factory(provider),
+                            settings={"returnee_radar": {"enrich_max_players": 1}})
+
+        metadata = payload["metadata"]
+        assert metadata["enrichment_count"] == 0
+        assert metadata["enrichment_rate_limited"] is True
+        assert "tries again" in metadata["enrichment_note"]
+        assert "are cached" not in metadata["enrichment_note"]
+
+    def test_an_ordinary_failure_is_neither_retried_nor_called_rate_limited(self, recorded_pauses):
+        provider = _stub_provider({"Sidelined": ProviderError("Perplexity request timed out")})
+
+        payload = _json_run(["--enrich"], scoring_data=_enrichment_scoring_data(),
+                            provider_factory=_provider_factory(provider))
+
+        metadata = payload["metadata"]
+        assert metadata["enrichment_rate_limited"] is False
+        assert "timed out" in metadata["enrichment_note"]
+        assert "rate-limiting" not in metadata["enrichment_note"]
+        assert provider.query.await_count == 2
+        assert all(pause < returnees_cli._RATE_LIMIT_PAUSE for pause in recorded_pauses)
+
+    def test_a_refused_player_is_re_queried_next_run_while_the_answered_one_is_served_from_cache(self):
+        refusing = _stub_provider({"Sidelined": _refused()})
+        _run(["--enrich"], scoring_data=_enrichment_scoring_data(),
+             provider_factory=_provider_factory(refusing))
+
+        working = _stub_provider()
+        _run(["--enrich"], scoring_data=_enrichment_scoring_data(),
+             provider_factory=_provider_factory(working))
+
+        assert [("Sidelined" in prompt) for prompt in _prompts(working)] == [True]
+
+    def test_the_second_pass_answer_is_cached_like_any_other(self):
+        first = _stub_provider({"Sidelined": [_refused(), _intel()]})
+        _run(["--enrich"], scoring_data=_enrichment_scoring_data(),
+             provider_factory=_provider_factory(first))
+
+        second = _stub_provider()
+        _run(["--enrich"], scoring_data=_enrichment_scoring_data(),
+             provider_factory=_provider_factory(second))
+
+        assert second.query.await_count == 0
+
+    def test_metadata_reports_no_rate_limit_without_the_flag(self):
+        payload = _json_run(scoring_data=_enrichment_scoring_data())
+
+        assert payload["metadata"]["enrichment_rate_limited"] is False
 
 
 class TestEnrichmentTable:
