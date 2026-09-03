@@ -184,8 +184,16 @@ BenchOrderAgent recommended order:
 
 ## Notes
 
+### Data quality
+
+- {one bullet per B1 quality signal that fired, CLI message quoted verbatim}
+
 Any additional context, caveats, or follow-up actions.
 ```
+
+The **Data quality** sub-section carries `data_caveat` from gw-prep Phase B1 -- the team-ratings and fixture-prediction warnings that `fpl fdr` returned alongside the difficulty analysis. Omit the whole sub-section, heading included, when nothing fired: an empty heading reads as a clean bill of health that was never issued. Quote each message verbatim rather than summarising it; the CLI text names the command that fixes the problem (`fpl ratings update`, `fpl init`) and that is the only actionable part.
+
+Every recommendation in this file that leans on fixture difficulty rests on those ratings, so this belongs with the recommendations rather than only in the terminal scrollback the run scrolled past.
 
 ---
 

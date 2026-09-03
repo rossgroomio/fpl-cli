@@ -133,13 +133,43 @@ Run all applicable commands below. Every command uses `--format json`. Skip comm
 
 **Reference preload (every run):** before issuing the CLI commands, read the full contents of `${CLAUDE_SKILL_DIR}/references/rules.md` and `${CLAUDE_SKILL_DIR}/references/output-template.md` into memory. These are inlined verbatim into each Phase C prompt as `{rules_content}` and `{output_template_content}` — sub-agents cannot reach the skill directory on their own, so the orchestrator must pass the text through. If either file is missing, abort with an error naming the expected path.
 
-### B1 -- Fixture Difficulty
+### B1 -- Fixture Difficulty and Rating Quality
+
+Two commands, because `--blanks` is a schedule-only path: it returns the confirmed and predicted BGW/DGW lists and nothing else -- no `fdr_by_team`, no positional ATK/DEF split, no `ratings_warning`. The pFDR analysis `references/rules.md` asks Phase C sub-agents to perform, and the rating-quality verdict below, both live in the first call.
 
 ```bash
+fpl fdr --my-squad --format json
 fpl fdr --blanks --format json
 ```
 
-Returns fixture difficulty runs (pFDR, positional ATK/DEF ratings, upcoming fixtures) plus BGW/DGW predictions with confidence levels. `--blanks` surfaces the confirmed + predicted blank/double-GW schedule inline.
+If format is `"both"`, also run:
+
+```bash
+fpl fdr --my-squad --draft --format json
+```
+
+Store the analysis as `pfdr`, the schedule as `blanks_schedule` and the draft variant as `pfdr_draft`. Inline them under the pFDR lines of every Phase C prompt.
+
+`--my-squad` earns three fields the plain call omits: `data.squad_exposure` (which of your own players blank or double inside the window) and the two prediction-quality fields below, all of which the command fills in only once a squad resolves. It auto-selects the draft squad in draft-only mode and the classic squad under `"both"`, which is why the draft variant above is a separate run. Where no entry ID is configured, or no squad has been submitted yet, the command says so on stderr and returns the fixture analysis without those three fields; that is a normal state, not a failure, so carry on with what came back.
+
+**Read the quality signals before handing the payload to anyone.** Fixture difficulty is only as good as the team ratings underneath it, and the ways those go wrong are mostly invisible in the output: ratings left over from last season, no ratings at all, ratings that still name relegated clubs, ratings that fail to separate any two teams, pre-season estimates standing in for results. Every one of them yields a pFDR table that looks like ordinary analysis. `fpl fdr` detects all of them and hands the verdict over in the payload -- unread, each run silently accepts whatever rating quality it happened to get.
+
+| Payload | Field | Fires when |
+|---|---|---|
+| `pfdr` | `metadata.custom_analysis` | `false` -- custom analysis is off, so this is raw 1-5 FPL API difficulty (`data.easy_fixture_runs` only): no ATK/DEF split, no team ratings, and therefore no `ratings_warning` to read. Remedy is `fpl init` |
+| `pfdr` | `data.ratings_warning` | non-null |
+| `pfdr` | `data.predictions_stale` | `true` |
+| `pfdr` | `data.prediction_warnings` | non-empty (one entry per prediction file skipped as unreadable, malformed or empty -- a broken user override falling back silently) |
+| `blanks_schedule` | `metadata.warnings` | non-empty; `fixture_predictions_stale` is the code this command raises |
+
+**Set `data_caveat` for Phase C** -- one `- ` bullet per signal that fired, empty when none did. **Quote each message verbatim.** They already name their own remedy (`fpl ratings update`, `fpl init`); a paraphrase drops it, and the remedy is the only part the user can act on.
+
+> **Data quality:** the fixture ratings behind this run carry warnings:
+> {one `- ` bullet per fired signal, message quoted verbatim}
+> Weight fixture-difficulty reasoning down accordingly. With a ratings warning live, treat pFDR as
+> indicative rather than decisive and lead on form, minutes and preview intel instead.
+
+`data_caveat` goes into every Phase C prompt and into the report's `## Notes` section in Phase D, so a reader can see why the recommendations leaned away from fixtures.
 
 ### B2 -- Captain Candidates (classic only - skip if format is "draft")
 
@@ -350,7 +380,9 @@ Branch on `squad_builder_result` (set in Phase A3; unset on transfer weeks):
 > **Data (JSON):**
 > - Status: {A1 output}
 > - Chips: {A1.5 output}
-> - pFDR: {B1 output}
+> - pFDR: {pfdr} (from B1 - fixture-difficulty analysis; add {pfdr_draft} on `both` runs)
+> - Blank/double schedule: {blanks_schedule} (from B1)
+>   {data_caveat} (from B1 - omit these lines entirely when `data_caveat` is empty)
 > - Captain candidates: {B2 output}
 > - Squad: {B4 output}
 > - Price movements: {B5 output}
@@ -429,7 +461,9 @@ Proceed immediately (non-interactive).
 > **Data (JSON):**
 > - Status: {A1 output}
 > - Chips: {A1.5 output}
-> - pFDR: {B1 output}
+> - pFDR: {pfdr} (from B1 - fixture-difficulty analysis; add {pfdr_draft} on `both` runs)
+> - Blank/double schedule: {blanks_schedule} (from B1)
+>   {data_caveat} (from B1 - omit these lines entirely when `data_caveat` is empty)
 > - Captain candidates: {B2 output}
 > - Squad: {B4 output}
 > - Price movements: {B5 output}
@@ -476,7 +510,9 @@ Proceed immediately (non-interactive).
 > **Data (JSON):**
 > - Status: {A1 output}
 > - Chips: {A1.5 output}
-> - pFDR: {B1 output}
+> - pFDR: {pfdr} (from B1 - fixture-difficulty analysis; add {pfdr_draft} on `both` runs)
+> - Blank/double schedule: {blanks_schedule} (from B1)
+>   {data_caveat} (from B1 - omit these lines entirely when `data_caveat` is empty)
 > - Captain candidates: {B2 output}
 > - Squad: {B4 output}
 > - Price movements: {B5 output}
@@ -521,7 +557,9 @@ Proceed immediately (non-interactive).
 > **Data (JSON):**
 > - Status: {A1 output}
 > - Chips: {A1.5 output}
-> - pFDR: {B1 output}
+> - pFDR: {pfdr} (from B1 - fixture-difficulty analysis; add {pfdr_draft} on `both` runs)
+> - Blank/double schedule: {blanks_schedule} (from B1)
+>   {data_caveat} (from B1 - omit these lines entirely when `data_caveat` is empty)
 > - Captain candidates: {B2 output}
 > - Squad: {B4 output}
 > - Price movements: {B5 output}
@@ -564,7 +602,9 @@ Proceed immediately (non-interactive).
 >
 > **Data (JSON):**
 > - Status: {A1 output}
-> - pFDR: {B1 output}
+> - pFDR: {pfdr} (from B1 - fixture-difficulty analysis; add {pfdr_draft} on `both` runs)
+> - Blank/double schedule: {blanks_schedule} (from B1)
+>   {data_caveat} (from B1 - omit these lines entirely when `data_caveat` is empty)
 >
 > **WAIVER POOL IS AUTHORITATIVE:** `fpl waivers` output is the only source for available players. All other data (stats, form tables, squad context) is for analysis only. Never recommend a claim not present in the waivers output — Phase D1 will flag pool misses as a warning. Cross-position recommendations (e.g. dropping a MID to claim a DEF) are structurally illegal and will be blocked by Phase D1.
 >
@@ -665,6 +705,8 @@ Combine the outputs from whichever sub-agents were dispatched into a single reco
 
 The file should follow the structure defined in `references/output-template.md`, with both Classic and Draft sections populated.
 
+**Write `data_caveat` (from B1) into the `## Notes` section**, above any other note. It is one section for the whole file rather than one per format -- the team ratings and fixture predictions it describes are shared by both -- so the orchestrator writes it here rather than either sub-agent. Omit the whole block when `data_caveat` is empty, which is the ordinary case; an empty Data quality heading reads as a clean bill of health that was never issued.
+
 **Normalise the file, immediately after writing it and before Phase D1** -- otherwise a sub-agent section that arrived HTML-escaped lands in the report with its markdown broken, and the entities go on to confuse the table parsing in D1 and E:
 
 ```bash
@@ -677,6 +719,7 @@ Present a brief summary to the user:
 - GW number and deadline
 - Mode (transfer or squad-builder)
 - Key highlights (top captain pick, priority transfer/waiver, chip timing note)
+- Data quality: each `data_caveat` bullet, verbatim, or nothing at all when it is empty. This is the one place the remedy reaches someone who can run it -- a warning that only lands in the file is read after the deadline, if at all
 - Output file path
 
 ---
