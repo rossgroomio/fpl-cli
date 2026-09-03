@@ -396,6 +396,13 @@ class RadarConfig:
     # bounded by anything the user typed.
     enrich_stale_news_days: int = 7
     enrich_max_players: int = 8
+    # How the shortlist reaches the provider. `enrich_concurrency` caps the
+    # queries in flight at once; `enrich_query_spacing_seconds` is the least
+    # time between two query starts, which is what a per-minute quota actually
+    # measures -- an in-flight cap alone still lets a shortlist arrive as a
+    # burst (#184). Lower either on a lower provider tier.
+    enrich_concurrency: int = 4
+    enrich_query_spacing_seconds: float = 1.0
 
 
 def radar_config_from_settings(settings: Mapping[str, Any] | None) -> RadarConfig:
@@ -435,6 +442,14 @@ def radar_config_from_settings(settings: Mapping[str, Any] | None) -> RadarConfi
         enrich_max_players=_setting_int(
             block, "enrich_max_players", defaults.enrich_max_players,
         ),
+        # Clamped rather than rejected, like every other knob: a zero cap
+        # would stall the pass and a negative spacing means none.
+        enrich_concurrency=max(1, _setting_int(
+            block, "enrich_concurrency", defaults.enrich_concurrency,
+        )),
+        enrich_query_spacing_seconds=max(0.0, _setting_float(
+            block, "enrich_query_spacing_seconds", defaults.enrich_query_spacing_seconds,
+        )),
     )
 
 

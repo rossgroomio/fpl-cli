@@ -209,9 +209,11 @@ Each entry reports which branch judged it (`quality.basis`: `prior`, `season-qua
 
 **`--enrich`** is opt-in and bounded. It shortlists the entries FPL is silent or stale about (`enrich_stale_news_days`, capped at `enrich_max_players`), queries the research LLM provider for each, and shows what comes back **beside** the FPL news, never over it: where both state a date, both are carried. It needs a Perplexity API key (see [LLM Providers](#llm-providers)) and skips with a note on stderr when none is configured. Answers are cached per season and gameweek in the cache directory. Intel that came back without a source citation is marked as such and is not enough on its own to justify an irreversible move.
 
+**Pacing and rate limits.** The shortlist is paced rather than burst: at most `enrich_concurrency` searches are in flight at once and two searches start no closer together than `enrich_query_spacing_seconds`, because a provider quota counts starts per minute, not searches in flight. A search the provider rate-limits (HTTP 429) is retried with backoff inside the provider itself, honouring `Retry-After` (see [LLM Providers](#llm-providers)); whatever is still refused once the whole shortlist has settled is tried once more after a pause of at least 15 seconds, or the provider's own `Retry-After` up to a minute. A player still unanswered after that is reported as rate-limited rather than as having no answer — `metadata.enrichment_rate_limited` is true and the stderr note says so — and is not cached, so re-running `--enrich` a minute later queries only the gaps. Both pacing knobs are worth lowering on a lower provider tier.
+
 **Week-over-week changes.** Each run stores the watchlist it produced in `returnee_snapshot.json` in the data directory (see [Directories](#directories)) and the next run diffs against it, marking who is newly flagged, whose chance moved, whose return date was set, moved or missed, and who left the list. The snapshot is rewritten only when the gameweek changes, so a second run inside one gameweek still diffs against last week rather than against itself. A file from a previous season is discarded rather than read — player IDs are reshuffled at the season boundary. The first run has no history to compare against and says so.
 
-JSON `metadata` carries `window`, `escalation_window`, `stash_upgrade_margin`, `transitions_available`, `quality_bar_available`, `quality_bar_applied`, and the `enrichment_*` fields (`requested`, `available`, `note`, `count`); `data` is `{entries, departures}`.
+JSON `metadata` carries `window`, `escalation_window`, `stash_upgrade_margin`, `transitions_available`, `quality_bar_available`, `quality_bar_applied`, and the `enrichment_*` fields (`requested`, `available`, `note`, `count`, `rate_limited`); `data` is `{entries, departures}`.
 
 ## Fixture & Strategic Planning
 
@@ -1083,6 +1085,8 @@ returnee_radar:                  # `fpl returnees` - see Injury Returnees above
                                  # (published as metadata.stash_upgrade_margin)
   enrich_stale_news_days: 7      # --enrich re-checks a dated player whose news is older
   enrich_max_players: 8          # Most players one --enrich run will search for
+  enrich_concurrency: 4          # Most --enrich searches in flight at once
+  enrich_query_spacing_seconds: 1.0  # Least time between two --enrich search starts
 
 llm:
   research:
@@ -1118,6 +1122,8 @@ export FPL_SYNTHESIS_PROVIDER=openai
 export FPL_SYNTHESIS_MODEL=llama3
 export FPL_SYNTHESIS_BASE_URL=http://localhost:11434/v1
 ```
+
+**Rate limits.** Every provider retries an HTTP 429 before reporting it: three retries with exponential backoff and jitter (roughly 1-2s, 2-4s, then 4-8s), or the server's `Retry-After` when it sends one, within a 30-second budget for the whole wait. Each retry is announced on stderr with the wait, so a rate-limited request is never a silent hang. A `Retry-After` the budget cannot cover is not waited out: the request fails at once as rate-limited, distinct from every other error and carrying the server's hint, so a command that batches queries (`fpl returnees --enrich`) can retry that subset later rather than lose it, and a command that makes one query degrades within seconds rather than a minute. Any other error status is reported at once.
 
 ### Fine Rule Types
 
