@@ -59,6 +59,18 @@ def _pinned_run_radar(players: Any, **kwargs: Any) -> Any:
     return _REAL_RUN_RADAR(players, **kwargs)
 
 
+_REAL_ENRICHMENT_FROM_RESPONSE = returnee_radar.enrichment_from_response
+
+
+def _pinned_enrichment_from_response(content: str, **kwargs: Any) -> Any:
+    """The enrichment parser reads the clock too: a stated date is dropped
+    unless it beats the deadline that has already passed. Pinned like
+    `run_radar`, or every dated expectation here lapses as the calendar
+    catches up with the fixture's deadlines."""
+    kwargs.setdefault("now", NOW)
+    return _REAL_ENRICHMENT_FROM_RESPONSE(content, **kwargs)
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -189,6 +201,10 @@ def _run(args: list[str] | None = None, *, scoring_data: Any = None,
         ))
         stack.enter_context(patch(
             "fpl_cli.services.returnee_radar.run_radar", new=_pinned_run_radar,
+        ))
+        stack.enter_context(patch(
+            "fpl_cli.services.returnee_radar.enrichment_from_response",
+            new=_pinned_enrichment_from_response,
         ))
         return runner.invoke(
             main, ["returnees"] + (args or []), env={"COLUMNS": "220"},
