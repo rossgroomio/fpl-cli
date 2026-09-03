@@ -14,7 +14,8 @@ from __future__ import annotations
 import dataclasses
 import functools
 import hashlib
-from math import inf
+from collections.abc import Collection
+from math import inf, isfinite
 from typing import Literal, cast
 
 # ---------------------------------------------------------------------------
@@ -480,6 +481,70 @@ _FAMILY_QUALITY_WEIGHTS: dict[str, QualityWeights] = {
 _FULL_MATCH_MINUTES = 90
 
 
+def _quality_term_caps(weights: QualityWeights) -> dict[str, float]:
+    """Cap per scoring term for one weight variant, keyed by term name.
+
+    ``npxg``/``xg_chain`` and ``xgi_fallback`` are two routes to the same
+    attacking signal — ``calculate_player_quality_score`` takes one or the
+    other, never both — so they collapse into a single ``attacking`` term
+    worth whichever route caps higher. Summing all three would invent
+    headroom no player can reach and understate every attainability ratio
+    derived from it.
+    """
+    return {
+        "attacking": max(weights.npxg.cap + weights.xg_chain.cap, weights.xgi_fallback.cap),
+        "penalty_xg": weights.penalty_xg.cap,
+        "form": weights.form.cap,
+        "ppg": weights.ppg.cap,
+        "dc_per_90": weights.dc_per_90.cap,
+        "gk_saves_per_90": weights.gk_saves_per_90.cap,
+        "gk_xgc_quality": weights.gk_xgc_quality.cap,
+        "gk_cs_rate": weights.gk_cs_rate.cap,
+    }
+
+
+# The three signals `gk_signal_enrichment` supplies, and the only terms the
+# GK weight variant activates beyond form and ppg.
+GK_SIGNAL_TERMS: tuple[str, ...] = ("gk_saves_per_90", "gk_xgc_quality", "gk_cs_rate")
+
+
+def ceiling_attainability(
+    weights: QualityWeights, missing: Collection[str], *, ramp: float = 0.0
+) -> float:
+    """Fraction of a calibrated ceiling reachable when *missing* terms cannot be supplied.
+
+    The ceilings in ``QUALITY_CEILINGS`` were calibrated against live snapshots
+    where every term a position's weight variant activates had a value. Divide
+    a raw score by the full ceiling when the input could never populate some of
+    those terms and the whole population is capped below the top of the scale,
+    however good it is — issue #143 for a keeper whose signals are still
+    sample-ramped, issue #132 for a completed season whose source never
+    recorded defensive contribution or the GK block. Scaling the ceiling by the
+    share of its budgeted headroom the input can actually reach makes the score
+    mean "how good is this, on the signals we have" and keeps positions
+    comparable.
+
+    *missing* names terms from ``_quality_term_caps``; an unknown name raises
+    KeyError rather than being silently ignored. A term the variant zeroes
+    contributes nothing either way, so a caller may pass the full set of terms
+    its input lacks and let the variant decide which of them mattered.
+
+    *ramp* is how much of a missing term the input does supply: 0.0 (the
+    default) for a term that is structurally absent, and a fraction for one
+    that is merely attenuated, as the GK sample ramp attenuates all three GK
+    signals early in a season. The position multiplier cancels in the ratio,
+    and the result never reaches 0 — form and ppg are always supplied — so it
+    is always safe as a ``normalise_score`` denominator.
+    """
+    caps = _quality_term_caps(weights)
+    total = sum(caps.values())
+    if not isfinite(total) or total <= 0:
+        return 1.0
+    shortfall = sum(caps[name] for name in missing) * (1.0 - ramp)
+    reachable = total - shortfall
+    return reachable / total if reachable > 0 else 1.0
+
+
 def gk_ceiling_attainability(next_gw_id: int, weights: QualityWeights) -> float:
     """Fraction of the calibrated GK anchor attainable by this point of the season.
 
@@ -504,20 +569,16 @@ def gk_ceiling_attainability(next_gw_id: int, weights: QualityWeights) -> float:
     a list normalised against the same ceiling, so display order can never
     invert raw order within the position.
 
-    The ramped/unramped split is approximated from the weight caps: an elite
-    keeper saturates the GK-signal caps at full sample (the premise the
-    calibration validated), so at ramp r those contributions scale ~linearly
-    with r while form/ppg do not. The position multiplier cancels in the
-    ratio.
+    The ramped/unramped split is approximated from the weight caps by
+    ``ceiling_attainability``: an elite keeper saturates the GK-signal caps at
+    full sample (the premise the calibration validated), so at ramp r those
+    contributions scale ~linearly with r while form/ppg do not.
     """
     calendar_minutes = max(next_gw_id - 1, 0) * _FULL_MATCH_MINUTES
     ramp = min(calendar_minutes / GK_SAMPLE_RAMP_MINUTES, 1.0)
     if ramp >= 1.0:
         return 1.0
-    gk = weights.for_gk()
-    ramped_caps = gk.gk_saves_per_90.cap + gk.gk_xgc_quality.cap + gk.gk_cs_rate.cap
-    fixed_caps = gk.form.cap + gk.ppg.cap
-    return (fixed_caps + ramp * ramped_caps) / (fixed_caps + ramped_caps)
+    return ceiling_attainability(weights.for_gk(), GK_SIGNAL_TERMS, ramp=ramp)
 
 
 def _ownership_ceiling_for(

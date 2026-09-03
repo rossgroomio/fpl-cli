@@ -70,6 +70,7 @@ from fpl_cli.services.scoring.constants import (
     _as_position,
     _position_from_element_type,
     _value_weights_and_ceiling,
+    ceiling_attainability,
     gk_ceiling_attainability,
     scoring_weights_fingerprint,
 )
@@ -91,6 +92,7 @@ from fpl_cli.services.scoring.evaluation import (
     build_player_evaluation,
     build_scoring_enrichment,
     gk_signal_enrichment,
+    gk_xgc_quality,
 )
 from fpl_cli.services.scoring.ownership import (
     calculate_differential_score,
@@ -194,6 +196,7 @@ __all__ = [
     "_as_position",
     "_position_from_element_type",
     "_value_weights_and_ceiling",
+    "ceiling_attainability",
     "gk_ceiling_attainability",
     "scoring_weights_fingerprint",
     # signals
@@ -222,6 +225,7 @@ __all__ = [
     "build_player_evaluation",
     "build_scoring_enrichment",
     "gk_signal_enrichment",
+    "gk_xgc_quality",
     # display
     "normalise_score",
     "pick_display_ceiling",

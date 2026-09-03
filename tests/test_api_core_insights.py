@@ -286,6 +286,62 @@ class TestSeasonAggregates:
         assert keeper.position == "GK"
 
     @respx.mock
+    async def test_defensive_and_gk_rates_are_parsed(self, tmp_path):
+        """The four per-90 rates the DEF and GK quality ceilings budget for (#132)."""
+        stats = (
+            "id,now_cost,cost_change_start,total_points,minutes,starts,gw,"
+            "defensive_contribution_per_90,saves_per_90,clean_sheets_per_90,"
+            "expected_goals_conceded_per_90\n"
+            "100,13.5,10,265,2800,31,38,5.2,0.0,0.41,1.05\n"
+            "300,4.5,0,150,3420,38,38,0.11,3.42,0.45,0.95\n"
+        )
+        _mock_season_files(CI_SEASON, PLAYERS_CSV, stats)
+        async with CoreInsightsClient(_make_fetcher(tmp_path)) as client:
+            data = await client._fetch_season_data()
+
+        keeper = [r for r in data[client._season_label] if r.element_code == 500000][0]
+        assert keeper.saves_per_90 == 3.42
+        assert keeper.clean_sheets_per_90 == 0.45
+        assert keeper.expected_goals_conceded_per_90 == 0.95
+        assert keeper.defensive_contribution_per_90 == 0.11
+
+    @respx.mock
+    async def test_absent_rate_columns_stay_none(self, tmp_path):
+        """A season published before the columns existed says nothing, not zero.
+
+        Zero is a measured value the scoring path reads as "bad at this";
+        None tells the returnee radar to shrink the ceiling instead (#132).
+        """
+        _mock_season_files(CI_SEASON, PLAYERS_CSV, PLAYERSTATS_CSV)
+        async with CoreInsightsClient(_make_fetcher(tmp_path)) as client:
+            data = await client._fetch_season_data()
+
+        keeper = [r for r in data[client._season_label] if r.element_code == 500000][0]
+        assert keeper.defensive_contribution_per_90 is None
+        assert keeper.saves_per_90 is None
+        assert keeper.clean_sheets_per_90 is None
+        assert keeper.expected_goals_conceded_per_90 is None
+
+    @respx.mock
+    async def test_blank_and_non_numeric_rates_stay_none(self, tmp_path):
+        """A present-but-empty cell is no more a zero than a missing column."""
+        stats = (
+            "id,now_cost,cost_change_start,total_points,minutes,starts,gw,"
+            "defensive_contribution_per_90,saves_per_90,clean_sheets_per_90,"
+            "expected_goals_conceded_per_90\n"
+            "300,4.5,0,150,3420,38,38,,n/a,0.45,0.95\n"
+        )
+        _mock_season_files(CI_SEASON, PLAYERS_CSV, stats)
+        async with CoreInsightsClient(_make_fetcher(tmp_path)) as client:
+            data = await client._fetch_season_data()
+
+        keeper = [r for r in data[client._season_label] if r.element_code == 500000][0]
+        assert keeper.defensive_contribution_per_90 is None
+        assert keeper.saves_per_90 is None
+        # The rows that did parse are unaffected.
+        assert keeper.clean_sheets_per_90 == 0.45
+
+    @respx.mock
     async def test_orphan_player_skipped(self, tmp_path):
         """Player in playerstats but not in players.csv is skipped."""
         respx.get(f"{BASE}/{CI_SEASON}/players.csv").mock(

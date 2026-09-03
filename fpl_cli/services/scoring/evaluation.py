@@ -31,6 +31,17 @@ if TYPE_CHECKING:
     from fpl_cli.services.scoring.signals import ConsistencySignals
 
 
+def gk_xgc_quality(xgc_per_90: float) -> float:
+    """How far a keeper's xGC/90 sits below the league anchor, floored at zero.
+
+    The single home of the conversion: ``gk_signal_enrichment`` derives the
+    rate from a live season's running totals and the returnee radar reads a
+    completed season's published rate, and the two must land on the same scale
+    or the calibrated GK ceiling means something different on each path.
+    """
+    return max(0.0, GK_XGC_QUALITY_ANCHOR - xgc_per_90)
+
+
 def gk_signal_enrichment(player: Any) -> dict[str, float]:
     """Ramped GK signals (saves/90, xGC quality, CS rate) from season aggregates.
 
@@ -47,9 +58,7 @@ def gk_signal_enrichment(player: Any) -> dict[str, float]:
     signals: dict[str, float] = {"gk_saves_per_90": player.saves_per_90 * sample_ramp}
     if player.minutes > 0:
         xgc_per_90 = (player.expected_goals_conceded / player.minutes) * 90
-        signals["gk_xgc_quality"] = (
-            max(0.0, GK_XGC_QUALITY_ANCHOR - xgc_per_90) * sample_ramp
-        )
+        signals["gk_xgc_quality"] = gk_xgc_quality(xgc_per_90) * sample_ramp
     else:
         signals["gk_xgc_quality"] = 0.0
     signals["gk_cs_rate"] = (player.clean_sheets / max(player.appearances, 1)) * sample_ramp

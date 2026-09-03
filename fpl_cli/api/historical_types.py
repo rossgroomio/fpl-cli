@@ -26,6 +26,16 @@ class SeasonHistory:
     position: str
     web_name: str
     team_id: int  # FPL club code (bootstrap teams[].code): stable across seasons and sources
+    # Defensive and goalkeeping rates, already per 90 minutes at source. Only
+    # Core-Insights publishes them; vaastav's archive has no equivalent columns
+    # and leaves them None, as does any season predating the column upstream
+    # (defensive contribution is a 2025-26 scoring introduction). None means
+    # "this source cannot say" and must not collapse to 0.0 — a measured zero
+    # scores a player as bad at something that was never recorded (#132).
+    defensive_contribution_per_90: float | None = None
+    saves_per_90: float | None = None
+    clean_sheets_per_90: float | None = None
+    expected_goals_conceded_per_90: float | None = None
 
 
 @dataclass

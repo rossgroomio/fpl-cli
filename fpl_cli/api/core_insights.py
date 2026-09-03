@@ -102,6 +102,26 @@ def season_dir(season: str) -> str:
     return core_insights_season(season_start_year(season))
 
 
+def _optional_float(row: Mapping[str, str], column: str) -> float | None:
+    """One per-90 column as a float, or None when the row cannot supply it.
+
+    A column absent from the header (a season published before the stat
+    existed upstream) and a blank cell are both "no signal", and stay None:
+    the scoring path reads 0.0 as a measured zero and would score the player
+    as bad at something that was never recorded (#132). The other optional
+    columns above default to 0 instead — for a count, absent and zero really
+    do mean the same thing.
+    """
+    raw = row.get(column)
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        logger.debug("Non-numeric %s in playerstats.csv: %r", column, raw)
+        return None
+
+
 def make_core_insights_fetcher(ttl: timedelta = DEFAULT_TTL) -> DatasetFetcher:
     """Create a DatasetFetcher configured for the FPL-Core-Insights GitHub dataset."""
     from fpl_cli.paths import user_cache_dir
@@ -534,6 +554,14 @@ class CoreInsightsClient:
                 position=player.position,
                 web_name=player.web_name,
                 team_id=player.team_code,
+                defensive_contribution_per_90=_optional_float(
+                    row, "defensive_contribution_per_90"
+                ),
+                saves_per_90=_optional_float(row, "saves_per_90"),
+                clean_sheets_per_90=_optional_float(row, "clean_sheets_per_90"),
+                expected_goals_conceded_per_90=_optional_float(
+                    row, "expected_goals_conceded_per_90"
+                ),
             ))
 
         if rows_read and not histories:
