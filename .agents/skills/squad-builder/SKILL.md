@@ -117,16 +117,25 @@ Issue all reads and CLI commands in a **single parallel tool-call block**:
 - `fpl chips --format json` (Classic only)
 - `fpl captain --global --format json` (Classic only. **`--global` is required** - squad-builder is rebuilding the 15, so squad-only captain analysis is incoherent. Global ranks all eligible players for the GW.)
 - `fpl allocate --sell-prices /tmp/sell-prices.json --horizon {derived_horizon} --format json` (Classic only. `--sell-prices` provides accurate sell-price budgeting - budget auto-computed from sell values + bank. Horizon from A1b derivation. Free Hit: add `--bench-discount 0.01` to minimise bench spend. Non-Free-Hit: add `--bench-boost-gw {bb_gw}` when BB is planned and falls within horizon. Add `--free-transfers {N}` when FT count is available from sell-prices. Provides the mathematically optimal starting squad for the sub-agent to review and adjust)
-- `fpl stats -p MID -s expected_goal_involvements --min-minutes 450 -n 20 --available-only --format json`
-- `fpl stats -p FWD -s form --min-minutes 450 -n 15 --available-only --format json`
-- `fpl stats -p DEF -s total_points --min-minutes 450 -n 15 --available-only --format json`
-- `fpl stats -p GK -s points_per_game --min-minutes 450 -n 8 --available-only --format json`
-- `fpl stats --value -p MID -s quality_per_m --min-minutes 450 -n 15 --available-only --format json` (underpriced mids by underlying performance per £m)
-- `fpl stats --value -p FWD -s quality_per_m --min-minutes 450 -n 15 --available-only --format json`
-- `fpl stats --value -p DEF -s quality_per_m --min-minutes 450 -n 15 --available-only --format json`
-- `fpl stats --value -p GK -s quality_per_m --min-minutes 450 -n 8 --available-only --format json`
-- `fpl stats -s now_cost -r --min-minutes 450 -n 15 --available-only --format json` (cheapest playing options)
-- `fpl stats -s form --min-minutes 315 -n 20 --available-only --format json` (in-form across positions)
+- **Minutes floor** -- an early wildcard or free hit is a mid-season run at a gameweek where no player has 450 minutes yet: after `N-1` completed gameweeks the ceiling is `(N - 1) * 90`, so a fixed floor filters out everybody and every query below comes back with `"data": []`. Compute the floor from the current GW (`N`, Phase A1) and substitute it:
+
+  ```
+  mins_pos  = min(450, (N - 1) * 45)     # cap reached at GW11
+  mins_form = min(315, (N - 1) * 45)     # cap reached at GW8
+  ```
+
+  `(N - 1) * 45` is half the minutes the season has made possible so far; from GW8/GW11 the caps bind and behaviour matches the old fixed thresholds. When a query still returns nothing, say so where you use it -- an empty list is a finding, not an absence of data.
+- `fpl stats -p MID -s expected_goal_involvements --min-minutes {mins_pos} -n 20 --available-only --format json`
+- `fpl stats -p FWD -s form --min-minutes {mins_pos} -n 15 --available-only --format json`
+- `fpl stats -p DEF -s total_points --min-minutes {mins_pos} -n 15 --available-only --format json`
+- `fpl stats -p GK -s points_per_game --min-minutes {mins_pos} -n 8 --available-only --format json`
+- `fpl stats --value -p MID -s quality_per_m --min-minutes {mins_pos} -n 15 --available-only --format json` (underpriced mids by underlying performance per £m)
+- `fpl stats --value -p FWD -s quality_per_m --min-minutes {mins_pos} -n 15 --available-only --format json`
+- `fpl stats --value -p DEF -s quality_per_m --min-minutes {mins_pos} -n 15 --available-only --format json`
+- `fpl stats --value -p GK -s quality_per_m --min-minutes {mins_pos} -n 8 --available-only --format json`
+- `fpl stats -s now_cost -r --min-minutes {mins_pos} -n 15 --available-only --format json` (cheapest playing options)
+- `fpl stats -s form --min-minutes {mins_form} -n 20 --available-only --format json` (in-form across positions)
+- `fpl stats -s ep_next --min-minutes {mins_form} -n 20 --available-only --format json` (**pre-GW6 only** -- prior-informed projection; ranking on form or quality that early sorts mostly on sample, per Phase C step 7)
 - `fpl stats -s transfers_in_event -n 15 --format json` (transfer momentum)
 - `fpl price-history --sort price_slope -n 30 --format json` (season price trajectory - non-blocking, skip if command fails)
 - `fpl intel --format json` (season preview intel, if you keep any. Sections age out by design --
