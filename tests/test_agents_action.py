@@ -12,7 +12,7 @@ from fpl_cli.agents.action.waiver import WaiverAgent
 from fpl_cli.agents.base import AgentStatus
 from fpl_cli.models.player import PlayerPosition
 from fpl_cli.services.player_prior import PlayerPrior
-from fpl_cli.services.scoring import ScoringContext, ScoringData
+from fpl_cli.services.scoring import ConsistencySignals, ScoringContext, ScoringData
 from tests.conftest import (
     make_draft_league_entry,
     make_draft_player,
@@ -85,13 +85,25 @@ def mock_entry_picks():
     }
 
 
-def _mock_scoring_data(players: list[Any] | None = None) -> ScoringData:
+def _mock_scoring_data(
+    players: list[Any] | None = None,
+    *,
+    player_histories: dict[int, list[dict[str, Any]]] | None = None,
+    player_priors: dict[int, PlayerPrior] | None = None,
+    adjusted_npxg_lookup: dict[int, float] | None = None,
+    consistency_lookup: dict[int, Any] | None = None,
+) -> ScoringData:
     """Fixed ScoringData standing in for prepare_scoring_data's upstream fetches.
 
     Teams mirror the draft bootstrap fixture so matchup enrichment resolves.
     *players* are the main-game ``Player`` models the draft elements join to;
     the default empty list leaves every join unmatched, which is what the
     tests that do not care about the join want.
+
+    The four lookups default to what prepare_scoring_data returns when its
+    upstream data is empty. Pass them keyed by **main** element id, as the
+    real bundle carries them — the agent is what translates them into the
+    draft id space (#209).
     """
     teams = [
         make_team(id=1, short_name="ARS"),
@@ -143,22 +155,25 @@ def _mock_scoring_data(players: list[Any] | None = None) -> ScoringData:
         scoring_ctx=scoring_ctx,
         ratings_service=ratings_service,
         players=players or [],
-        player_histories={},
-        player_priors=None,
+        player_histories=player_histories if player_histories is not None else {},
+        player_priors=player_priors,
+        adjusted_npxg_lookup=adjusted_npxg_lookup,
+        consistency_lookup=consistency_lookup,
     )
 
 
 @contextmanager
-def _stub_upstream_fetches(players: list[Any] | None = None):
+def _stub_upstream_fetches(players: list[Any] | None = None, **lookups: Any):
     """Patch the two seams that reach past the draft client.
 
     Shared by every test that drives ``WaiverAgent.run`` end to end.
+    *lookups* are forwarded to ``_mock_scoring_data``.
     """
     with (
         patch(
             "fpl_cli.agents.action.waiver.prepare_scoring_data",
             new_callable=AsyncMock,
-            return_value=_mock_scoring_data(players),
+            return_value=_mock_scoring_data(players, **lookups),
         ),
         patch(
             "fpl_cli.agents.action.waiver.fetch_understat_lookup",
@@ -813,6 +828,170 @@ class TestWaiverAgentGkSignals:
 
         assert result.status == AgentStatus.SUCCESS
         assert agent._main_player_map == {5: main_keeper}
+
+
+class TestWaiverAgentIdSpace:
+    """#209: the pool is scored in the draft id space, the lookups arrive in the main one.
+
+    Every id-keyed lookup ``prepare_scoring_data`` returns is keyed by the
+    main game's element id; the dicts ``WaiverAgent`` scores carry the draft
+    element id. The spaces agree for most of the pool and diverge at the tail,
+    where each bootstrap has appended new registrations in its own order — so
+    reading a lookup with a draft id does not merely miss, it lands on a
+    *different* main player and scores the target on a stranger's season.
+    """
+
+    DRAFT_ID = 5
+    MAIN_ID = 500
+    CODE = 9001
+
+    def _draft_element(self):
+        return make_draft_player(
+            id=self.DRAFT_ID, web_name="Semenyo", team=1, element_type=3,
+            code=self.CODE, form=6.0, minutes=1800,
+        )
+
+    def _main_player(self):
+        return make_player(
+            id=self.MAIN_ID, code=self.CODE, web_name="Semenyo", team_id=1,
+            position=PlayerPosition.MIDFIELDER, form=6.0, points_per_game=5.0,
+            minutes=1800, total_points=100,
+        )
+
+    def _id_sharer(self):
+        """The main-game player who happens to hold the draft element's id."""
+        return make_player(
+            id=self.DRAFT_ID, code=7777, web_name="Somebody Else", team_id=5,
+            position=PlayerPosition.MIDFIELDER, form=1.0, points_per_game=1.0,
+            minutes=200, total_points=10,
+        )
+
+    @staticmethod
+    def _history(points: list[int]) -> list[dict[str, Any]]:
+        """A qualifying GW history ending at the mocked next gameweek."""
+        return [
+            {"round": 26 - len(points) + i, "minutes": 90, "total_points": pts}
+            for i, pts in enumerate(points)
+        ]
+
+    async def _run(self, mock_draft_bootstrap, mock_league_details, **lookups):
+        agent = WaiverAgent(config={"draft_league_id": 12345})
+        players = [self._main_player(), self._id_sharer()]
+
+        with _stub_upstream_fetches(players=players, **lookups), \
+             patch.object(agent.client, "get_bootstrap_static", new_callable=AsyncMock) as mock_bootstrap, \
+             patch.object(agent.client, "get_available_players", new_callable=AsyncMock) as mock_available, \
+             patch.object(agent.client, "get_recent_releases", new_callable=AsyncMock) as mock_releases, \
+             patch.object(agent.client, "get_league_details", new_callable=AsyncMock) as mock_details, \
+             patch.object(agent.client, "get_waiver_order", new_callable=AsyncMock) as mock_order:
+
+            mock_bootstrap.return_value = mock_draft_bootstrap
+            mock_available.return_value = [self._draft_element()]
+            mock_releases.return_value = []
+            mock_details.return_value = mock_league_details
+            mock_order.return_value = []
+
+            result = await agent.run()
+
+        assert result.status == AgentStatus.SUCCESS
+        return agent, result
+
+    @pytest.mark.asyncio
+    async def test_run_translates_every_lookup_into_the_draft_id_space(
+        self, mock_draft_bootstrap, mock_league_details,
+    ):
+        """All four land on the draft id, carrying the matched main player's values."""
+        history = self._history([2, 4, 6, 8, 10])
+        prior = PlayerPrior(0.7, 0.9, "history")
+        signals = ConsistencySignals(cv_xgi_percentile=0.8)
+
+        agent, _ = await self._run(
+            mock_draft_bootstrap, mock_league_details,
+            player_histories={self.MAIN_ID: history},
+            player_priors={self.MAIN_ID: prior},
+            adjusted_npxg_lookup={self.MAIN_ID: 0.55},
+            consistency_lookup={self.MAIN_ID: signals},
+        )
+
+        assert agent._player_histories == {self.DRAFT_ID: history}
+        assert agent._player_priors == {self.DRAFT_ID: prior}
+        assert agent._adjusted_npxg_lookup == {self.DRAFT_ID: 0.55}
+        assert agent._consistency_lookup == {self.DRAFT_ID: signals}
+
+    @pytest.mark.asyncio
+    async def test_unmatched_draft_element_keeps_missing(
+        self, mock_draft_bootstrap, mock_league_details,
+    ):
+        """No main-game counterpart is a genuine miss, not a fallback to the id."""
+        agent, _ = await self._run(
+            mock_draft_bootstrap, mock_league_details,
+            player_histories={self.MAIN_ID: self._history([2, 4, 6, 8, 10])},
+            adjusted_npxg_lookup={self.DRAFT_ID: 0.55},
+        )
+
+        # The join covers draft id 5 only, and nothing in the pool matches the
+        # main player holding id 5, so his npxG row has nowhere to land.
+        assert agent._adjusted_npxg_lookup == {}
+
+    @pytest.mark.asyncio
+    async def test_score_reads_the_targets_own_history_not_the_id_sharers(
+        self, mock_draft_bootstrap, mock_league_details,
+    ):
+        """The bug's signature: a strong row parked on the draft id must not count.
+
+        Three runs over the same pool. The first is production's shape — the
+        target's own row at the main id, and an unrelated main player's much
+        better row at the draft id. It has to score exactly like the run where
+        that second row does not exist, and strictly below the run where the
+        rising row really is the target's.
+        """
+        flat = self._history([2, 2, 2, 2, 2])
+        rising = self._history([2, 6, 10, 14, 18])
+
+        async def top_score(**lookups) -> int:
+            _, result = await self._run(
+                mock_draft_bootstrap, mock_league_details, **lookups,
+            )
+            return result.data["top_targets"][0]["waiver_score"]
+
+        with_id_sharer = await top_score(
+            player_histories={self.MAIN_ID: flat, self.DRAFT_ID: rising},
+        )
+        own_row_only = await top_score(player_histories={self.MAIN_ID: flat})
+        own_row_rising = await top_score(player_histories={self.MAIN_ID: rising})
+
+        assert with_id_sharer == own_row_only
+        assert own_row_only < own_row_rising
+
+    @pytest.mark.asyncio
+    async def test_reliability_and_consistency_reach_the_recommendation(
+        self, mock_draft_bootstrap, mock_league_details,
+    ):
+        """The two lookup fields ``fpl waivers`` prints were read with the wrong id."""
+        _, result = await self._run(
+            mock_draft_bootstrap, mock_league_details,
+            player_priors={self.MAIN_ID: PlayerPrior(0.4, 0.65, "history", reliability=0.72)},
+            consistency_lookup={self.MAIN_ID: ConsistencySignals(cv_xgi_percentile=0.82)},
+        )
+
+        target = result.data["recommendations"][0]["target"]
+        assert target["reliability"] == 0.72
+        assert target["cv_xgi_percentile"] == 0.82
+
+    @pytest.mark.asyncio
+    async def test_a_prior_on_the_id_sharer_is_not_borrowed(
+        self, mock_draft_bootstrap, mock_league_details,
+    ):
+        """Same fields, prior keyed as the mis-read would have found it."""
+        _, result = await self._run(
+            mock_draft_bootstrap, mock_league_details,
+            player_priors={self.DRAFT_ID: PlayerPrior(0.4, 0.65, "history", reliability=0.72)},
+            consistency_lookup={self.DRAFT_ID: ConsistencySignals(cv_xgi_percentile=0.82)},
+        )
+
+        target = result.data["recommendations"][0]["target"]
+        assert target["reliability"] is None
+        assert target["cv_xgi_percentile"] is None
 
 
 class TestWaiverAgentReasons:
