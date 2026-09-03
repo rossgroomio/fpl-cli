@@ -69,13 +69,16 @@ class RetryPolicy:
     `max_attempts` counts the first request, so the default is three retries.
     The delays are sized for a per-minute quota tripped by a small burst: the
     first retry lands after a second or two, the last after roughly ten, and
-    a Retry-After overrides the lot. Anything the provider still refuses
-    after that is reported rather than waited out -- a CLI run is interactive.
+    a Retry-After overrides the lot. `max_total_delay` bounds the whole wait
+    across every retry, not each one: a CLI run is interactive, so a provider
+    asking for longer than that -- a quota that is exhausted rather than
+    momentarily tripped -- is reported at once, with its hint carried for the
+    caller, instead of being waited out.
     """
 
     max_attempts: int = 4
     base_delay: float = 2.0
-    max_delay: float = 30.0
+    max_total_delay: float = 30.0
 
     def delay(
         self,
@@ -86,15 +89,16 @@ class RetryPolicy:
     ) -> float:
         """Seconds to wait before retry number `retry` (0-based).
 
-        A Retry-After is honoured as given, capped at `max_delay`, plus up to
-        a second of jitter. Without one the wait doubles per retry from
-        `base_delay` up to `max_delay`, with the upper half jittered ("equal
-        jitter"): the floor keeps a retry from landing inside the window that
-        just refused it, the jitter spreads a burst out.
+        A Retry-After is honoured as given, plus up to a second of jitter.
+        Without one the wait doubles per retry from `base_delay`, with the
+        upper half jittered ("equal jitter"): the floor keeps a retry from
+        landing inside the window that just refused it, the jitter spreads a
+        burst out. Whether the wait fits the budget is `post_with_retry`'s
+        call, not this one's.
         """
         if retry_after is not None:
-            return min(retry_after, self.max_delay) + rng(0.0, _RETRY_AFTER_JITTER)
-        ceiling = min(self.max_delay, self.base_delay * (2 ** max(0, retry)))
+            return retry_after + rng(0.0, _RETRY_AFTER_JITTER)
+        ceiling = self.base_delay * (2 ** max(0, retry))
         return ceiling / 2 + rng(0.0, ceiling / 2)
 
 
@@ -133,12 +137,17 @@ async def post_with_retry(
 ) -> httpx.Response:
     """POST, retrying only a 429, and return the first response that is not one.
 
-    Raises `RateLimitError` once the policy's attempts are spent, carrying the
-    last Retry-After the server sent. Any other status comes back as-is: the
-    caller's `raise_for_status` decides what it means.
+    Raises `RateLimitError` once the policy's attempts are spent or the next
+    wait would take the total past its budget, carrying the last Retry-After
+    the server sent. Each retry is announced at WARNING so the wait is never
+    a silent hang: the CLI configures no logging, and WARNING is what reaches
+    stderr regardless. Any other status comes back as-is: the caller's
+    `raise_for_status` decides what it means.
     """
     retry_policy = policy or RetryPolicy()
     attempts = max(1, retry_policy.max_attempts)
+    budget = retry_policy.max_total_delay
+    waited = 0.0
     attempt = 0
     while True:
         attempt += 1
@@ -153,11 +162,18 @@ async def post_with_retry(
                 retry_after=retry_after,
             )
         delay = retry_policy.delay(attempt - 1, retry_after)
-        logger.info(
+        if waited + delay > budget:
+            raise RateLimitError(
+                f"{label} returned HTTP 429{error_detail(response)} "
+                f"(a further {delay:.0f}s wait would pass the {budget:.0f}s retry budget)",
+                retry_after=retry_after,
+            )
+        logger.warning(
             "%s rate-limited the request (HTTP 429); retrying in %.1fs (%d attempt(s) left)",
             label, delay, attempts - attempt,
         )
         await _sleep(delay)
+        waited += delay
 
 
 async def post_json_with_retry(

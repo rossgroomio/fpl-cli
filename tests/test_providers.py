@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
 from unittest.mock import AsyncMock, MagicMock, PropertyMock
@@ -452,7 +453,7 @@ class TestRetryPolicy:
         assert RetryPolicy().max_attempts == 4
 
     def test_backoff_doubles_between_a_floor_and_a_ceiling(self):
-        policy = RetryPolicy(base_delay=2.0, max_delay=30.0)
+        policy = RetryPolicy(base_delay=2.0)
         # Equal jitter: the ceiling doubles per retry, the wait lands in its upper half.
         assert policy.delay(0, None, rng=_low) == 1.0
         assert policy.delay(0, None, rng=_high) == 2.0
@@ -461,26 +462,31 @@ class TestRetryPolicy:
         assert policy.delay(2, None, rng=_low) == 4.0
         assert policy.delay(2, None, rng=_high) == 8.0
 
-    def test_backoff_is_capped_at_max_delay(self):
-        policy = RetryPolicy(base_delay=2.0, max_delay=5.0)
-        assert policy.delay(2, None, rng=_high) == 5.0
-        assert policy.delay(2, None, rng=_low) == 2.5
-        assert policy.delay(10, None, rng=_high) == 5.0
+    def test_the_default_backoff_fits_inside_the_default_budget(self):
+        """Three retries at the top of their jitter still sum under the budget,
+        so without a Retry-After the budget never cuts the attempts short."""
+        policy = RetryPolicy()
+        worst = sum(policy.delay(retry, None, rng=_high) for retry in range(policy.max_attempts - 1))
+        assert worst == 14.0
+        assert worst < policy.max_total_delay
 
     def test_retry_after_overrides_the_backoff_with_up_to_a_second_of_jitter(self):
-        policy = RetryPolicy(max_delay=30.0)
+        policy = RetryPolicy()
         assert policy.delay(0, 12.0, rng=_low) == 12.0
         assert policy.delay(0, 12.0, rng=_high) == 13.0
         # ...even on a retry whose computed backoff would be shorter or longer.
         assert policy.delay(2, 0.0, rng=_low) == 0.0
 
-    def test_retry_after_is_capped_at_max_delay_too(self):
-        assert RetryPolicy(max_delay=30.0).delay(0, 600.0, rng=_low) == 30.0
+    def test_retry_after_is_not_capped_by_the_delay_itself(self):
+        """The budget is post_with_retry's decision, so a long Retry-After is
+        reported as asked rather than quietly shortened into a wait that would
+        land inside the same window."""
+        assert RetryPolicy().delay(0, 600.0, rng=_low) == 600.0
 
     def test_live_jitter_stays_within_the_bounds(self):
         policy = RetryPolicy()
         for retry in range(4):
-            ceiling = min(policy.max_delay, policy.base_delay * 2 ** retry)
+            ceiling = policy.base_delay * 2 ** retry
             for _ in range(25):
                 assert ceiling / 2 <= policy.delay(retry, None) <= ceiling
 
@@ -552,7 +558,9 @@ class TestRateLimitBackoff:
     async def test_a_persistent_429_is_a_rate_limit_error_once_the_attempts_are_spent(
         self, provider, backoff_waits,
     ):
-        provider._http.post = AsyncMock(return_value=_rate_limited(retry_after="30"))
+        # A short Retry-After every time: three such waits fit the budget, so
+        # it is the attempt count that ends the retries here.
+        provider._http.post = AsyncMock(return_value=_rate_limited(retry_after="5"))
 
         with pytest.raises(RateLimitError, match="HTTP 429: Request rate limit exceeded") as excinfo:
             await provider.query("test")
@@ -560,7 +568,7 @@ class TestRateLimitBackoff:
         attempts = RetryPolicy().max_attempts
         assert provider._http.post.await_count == attempts
         assert len(backoff_waits) == attempts - 1
-        assert excinfo.value.retry_after == 30.0
+        assert excinfo.value.retry_after == 5.0
         assert "after 4 attempt(s)" in str(excinfo.value)
         # Still a ProviderError, so every existing handler keeps degrading gracefully.
         assert isinstance(excinfo.value, ProviderError)
@@ -572,6 +580,48 @@ class TestRateLimitBackoff:
             await provider.query("test")
 
         assert excinfo.value.retry_after is None
+
+    async def test_a_retry_after_past_the_budget_gives_up_at_once(self, provider, backoff_waits):
+        """A provider asking for longer than the budget is exhausted, not tripped:
+        the caller gets the hint straight away instead of a minute's hang."""
+        provider._http.post = AsyncMock(return_value=_rate_limited(retry_after="45"))
+
+        # The reported wait carries up to a second of jitter on top of the 45s asked for.
+        with pytest.raises(RateLimitError, match=r"a further 4[56]s wait would pass the 30s retry budget") as excinfo:
+            await provider.query("test")
+
+        assert provider._http.post.await_count == 1
+        assert backoff_waits == []
+        assert excinfo.value.retry_after == 45.0
+
+    async def test_the_total_wait_never_passes_the_budget(self, provider, backoff_waits):
+        """Retry-After 20 fits once; a second would take the total past 30."""
+        provider._http.post = AsyncMock(return_value=_rate_limited(retry_after="20"))
+
+        with pytest.raises(RateLimitError, match="retry budget"):
+            await provider.query("test")
+
+        assert provider._http.post.await_count == 2
+        assert len(backoff_waits) == 1
+        assert sum(backoff_waits) <= RetryPolicy().max_total_delay
+
+    async def test_each_retry_is_announced_as_a_warning(self, provider, cls, caplog):
+        """The CLI configures no logging, so WARNING is what reaches stderr:
+        a rate-limited wait must never look like a hang."""
+        provider._http.post = AsyncMock(side_effect=[
+            _rate_limited(retry_after="3"), _make_httpx_response(_OK_BODIES[cls]),
+        ])
+
+        with caplog.at_level("WARNING", logger="fpl_cli.api.providers._http"):
+            await provider.query("test")
+
+        warnings = [record for record in caplog.records if record.levelname == "WARNING"]
+        assert len(warnings) == 1
+        message = warnings[0].getMessage()
+        assert "rate-limited" in message
+        # Retry-After 3 plus up to a second of jitter, printed to one decimal.
+        assert re.search(r"retrying in [34]\.\ds", message), message
+        assert "3 attempt(s) left" in message
 
     async def test_other_http_errors_are_not_retried(self, provider, backoff_waits):
         provider._http.post = AsyncMock(return_value=_http_error_response(503, "overloaded"))

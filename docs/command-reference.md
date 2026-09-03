@@ -1118,7 +1118,7 @@ export FPL_SYNTHESIS_MODEL=llama3
 export FPL_SYNTHESIS_BASE_URL=http://localhost:11434/v1
 ```
 
-**Rate limits.** Every provider retries an HTTP 429 before reporting it: three retries with exponential backoff and jitter (roughly 1-2s, 2-4s, then 4-8s), or the server's `Retry-After` when it sends one, capped at 30 seconds. A request still refused after that fails as rate-limited, distinct from every other error, so a command that batches queries (`fpl returnees --enrich`) can retry that subset later rather than lose it. Any other error status is reported at once.
+**Rate limits.** Every provider retries an HTTP 429 before reporting it: three retries with exponential backoff and jitter (roughly 1-2s, 2-4s, then 4-8s), or the server's `Retry-After` when it sends one, within a 30-second budget for the whole wait. Each retry is announced on stderr with the wait, so a rate-limited request is never a silent hang. A `Retry-After` the budget cannot cover is not waited out: the request fails at once as rate-limited, distinct from every other error and carrying the server's hint, so a command that batches queries (`fpl returnees --enrich`) can retry that subset later rather than lose it, and a command that makes one query degrades within seconds rather than a minute. Any other error status is reported at once.
 
 ### Fine Rule Types
 
