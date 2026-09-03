@@ -200,6 +200,16 @@ class TestMergeSeasonHistories:
         assert "vaastav returned 2024-25 more than once for 1 player(s)" in caplog.text
         assert "upstream format may have changed" in caplog.text
 
+    def test_repeat_count_is_players_not_rows(self, caplog):
+        # One player tripled is one player's worth of drift, not two rows'.
+        vaastav = {100: _make_profile(100, [_make_season(100, "2024-25")] * 3)}
+
+        with caplog.at_level(logging.WARNING):
+            merged = merge_season_histories([("vaastav", vaastav)])
+
+        assert len(merged[100]) == 1
+        assert "vaastav returned 2024-25 more than once for 1 player(s)" in caplog.text
+
     def test_overlap_is_announced_once_per_season_not_per_player(self, caplog):
         ci = {code: _make_profile(code, [_make_season(code, "2025-26")]) for code in (1, 2, 3)}
         vaastav = {code: _make_profile(code, [_make_season(code, "2025-26")]) for code in (1, 2, 3)}

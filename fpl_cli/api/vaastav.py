@@ -35,7 +35,7 @@ DEFAULT_TTL = timedelta(hours=4)
 # so the declared contract cannot drift from what the parsers consume.
 # Optional columns read via `row.get(...)` are deliberately not listed.
 PLAYERS_RAW_REQUIRED_COLUMNS: frozenset[str] = frozenset({
-    "code", "web_name", "element_type", "now_cost", "cost_change_start",
+    "code", "web_name", "element_type", "team_code", "now_cost", "cost_change_start",
     "total_points", "minutes", "starts", "goals_scored", "assists",
 })
 MERGED_GW_REQUIRED_COLUMNS: frozenset[str] = frozenset({
@@ -71,9 +71,12 @@ class VaastavClient:
     BASE_URL = BASE_URL
     MIN_MINUTES = 450
 
-    # Session-level cache: shared across all instances within a single CLI run.
-    # Mirrors TeamRatingsService._refreshed_this_session pattern.
-    _session_profiles: ClassVar[dict[int, PlayerProfile] | None] = None
+    # Session-level cache, shared across all instances within a single CLI run
+    # (mirrors TeamRatingsService._refreshed_this_session) and keyed by the
+    # season window: the default window is not the one make_historical_provider
+    # hands in, so the key is what stops a client built elsewhere answering
+    # for the provider with the wrong seasons.
+    _session_profiles: ClassVar[dict[tuple[str, ...], dict[int, PlayerProfile]]] = {}
 
     # Historical seasons are effectively immutable after the season ends.
     HISTORICAL_TTL = timedelta(days=30)
@@ -173,7 +176,7 @@ class VaastavClient:
                 # profile's seasons agree on what team_id means whichever
                 # source served them. `team` is the season-local id, which
                 # means nothing outside that season's own bootstrap.
-                team_id=int(row.get("team_code", 0) or 0),
+                team_id=int(row["team_code"]),
             ))
 
         return histories
@@ -241,11 +244,13 @@ class VaastavClient:
         """Get historical profiles for all players.
 
         Results are cached at the class level for the duration of the
-        process (session-level caching), so multiple agents in a single
-        CLI run share the same data without re-fetching from GitHub.
+        process (session-level caching, per season window), so multiple
+        agents in a single CLI run share the same data without re-fetching
+        from GitHub.
         """
-        if VaastavClient._session_profiles is not None:
-            return VaastavClient._session_profiles
+        cached = VaastavClient._session_profiles.get(self.seasons)
+        if cached is not None:
+            return cached
 
         all_data = await self._fetch_season_data()
         by_code: dict[int, list[SeasonHistory]] = {}
@@ -258,7 +263,7 @@ class VaastavClient:
             code: self._build_profile(code, seasons)
             for code, seasons in by_code.items()
         }
-        VaastavClient._session_profiles = profiles
+        VaastavClient._session_profiles[self.seasons] = profiles
         return profiles
 
     # --- Gameweek-level trend data (current season) ---

@@ -402,6 +402,8 @@ fpl history                  # All players (compact, for squad-builder)
 fpl history --format json
 ```
 
+In `--format json`, each entry in `seasons` carries `team` as the FPL club code (`teams[].code` in the bootstrap), which is stable across seasons and the same whichever dataset served the season. It is not that season's 1-20 team id, so resolve it through the bootstrap's `code` field rather than `id`.
+
 **Signals:**
 - **pts_per_90 trend** - Points per 90 minutes across seasons (improving/declining)
 - **cost trajectory** - Price movement across seasons

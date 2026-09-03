@@ -18,9 +18,9 @@ from fpl_cli.api.vaastav import BASE_URL, VaastavClient
 @pytest.fixture(autouse=True)
 def _reset_vaastav_session_cache():
     """Clear session-level cache between tests."""
-    VaastavClient._session_profiles = None
+    VaastavClient._session_profiles = {}
     yield
-    VaastavClient._session_profiles = None
+    VaastavClient._session_profiles = {}
 
 
 def _make_fetcher(tmp_path: Path) -> DatasetFetcher:
@@ -90,13 +90,13 @@ class TestVaastavClientParsing:
     async def test_position_mapping(self, tmp_path):
         """element_type integers map to position strings."""
         csv = (
-            "code,web_name,element_type,team,total_points,minutes,starts,"
+            "code,web_name,element_type,team,team_code,total_points,minutes,starts,"
             "goals_scored,assists,expected_goals,expected_assists,"
             "expected_goal_involvements,now_cost,cost_change_start\n"
-            "1,GK,1,1,100,1800,20,0,0,0,0,0,45,0\n"
-            "2,DEF,2,1,80,1600,18,2,1,1.5,0.8,2.3,50,0\n"
-            "3,MID,3,1,120,2000,22,5,8,4.0,7.0,11.0,70,0\n"
-            "4,FWD,4,1,150,2200,24,15,3,13.0,2.5,15.5,90,0\n"
+            "1,GK,1,1,3,100,1800,20,0,0,0,0,0,45,0\n"
+            "2,DEF,2,1,3,80,1600,18,2,1,1.5,0.8,2.3,50,0\n"
+            "3,MID,3,1,3,120,2000,22,5,8,4.0,7.0,11.0,70,0\n"
+            "4,FWD,4,1,3,150,2200,24,15,3,13.0,2.5,15.5,90,0\n"
         )
         respx.get(f"{BASE}/2024-25/players_raw.csv").mock(
             return_value=Response(200, text=csv)
@@ -192,10 +192,10 @@ class TestSignalComputation:
     async def test_reliability_includes_injury_shortened_season(self, tmp_path):
         """Low-minute season counts toward reliability (not MIN_MINUTES filtered)."""
         low_minutes_csv = (
-            "code,web_name,element_type,team,total_points,minutes,starts,"
+            "code,web_name,element_type,team,team_code,total_points,minutes,starts,"
             "goals_scored,assists,expected_goals,expected_assists,"
             "expected_goal_involvements,now_cost,cost_change_start\n"
-            "80201,Salah,3,14,20,300,4,1,0,0.8,0.2,1.0,130,0\n"
+            "80201,Salah,3,11,14,20,300,4,1,0,0.8,0.2,1.0,130,0\n"
         )
         respx.get(f"{BASE}/2023-24/players_raw.csv").mock(
             return_value=Response(200, text=low_minutes_csv)
@@ -217,10 +217,10 @@ class TestSignalComputation:
     async def test_season_below_450_minutes_excluded_from_trend(self, tmp_path):
         """Seasons with <450 minutes are excluded from signal computation."""
         low_minutes_csv = (
-            "code,web_name,element_type,team,total_points,minutes,starts,"
+            "code,web_name,element_type,team,team_code,total_points,minutes,starts,"
             "goals_scored,assists,expected_goals,expected_assists,"
             "expected_goal_involvements,now_cost,cost_change_start\n"
-            "80201,Salah,3,14,20,300,4,1,0,0.8,0.2,1.0,130,0\n"
+            "80201,Salah,3,11,14,20,300,4,1,0,0.8,0.2,1.0,130,0\n"
         )
         respx.get(f"{BASE}/2023-24/players_raw.csv").mock(
             return_value=Response(200, text=low_minutes_csv)
@@ -239,10 +239,10 @@ class TestSignalComputation:
     async def test_xgi_trend_none_with_insufficient_data(self, tmp_path):
         """xgi_per_90_trend is None when <2 seasons have xG data."""
         no_xg_csv = (
-            "code,web_name,element_type,team,total_points,minutes,starts,"
+            "code,web_name,element_type,team,team_code,total_points,minutes,starts,"
             "goals_scored,assists,expected_goals,expected_assists,"
             "expected_goal_involvements,now_cost,cost_change_start\n"
-            "80201,Salah,3,14,200,2500,28,10,8,0,0,0,120,0\n"
+            "80201,Salah,3,11,14,200,2500,28,10,8,0,0,0,120,0\n"
         )
         respx.get(f"{BASE}/2023-24/players_raw.csv").mock(
             return_value=Response(200, text=no_xg_csv)
@@ -280,6 +280,27 @@ class TestSignalComputation:
         assert 206325 in profiles  # Haaland
         assert profiles[80201].web_name == "Salah"
         assert profiles[206325].current_position == "FWD"
+
+    @respx.mock
+    async def test_session_cache_is_keyed_by_the_season_window(self, tmp_path):
+        # A client on one window running first must not answer for a client
+        # on another with the seasons it happened to load.
+        respx.get(f"{BASE}/2023-24/players_raw.csv").mock(
+            return_value=Response(200, text=SAMPLE_CSV_SEASON2)
+        )
+        respx.get(f"{BASE}/2024-25/players_raw.csv").mock(
+            return_value=Response(200, text=SAMPLE_CSV)
+        )
+        async with VaastavClient(_make_fetcher(tmp_path), seasons=("2024-25",)) as one:
+            one_profiles = await one.get_all_player_histories()
+        async with VaastavClient(
+            _make_fetcher(tmp_path), seasons=("2023-24", "2024-25")
+        ) as two:
+            two_profiles = await two.get_all_player_histories()
+
+        assert [s.season for s in one_profiles[80201].seasons] == ["2024-25"]
+        assert [s.season for s in two_profiles[80201].seasons] == ["2023-24", "2024-25"]
+        assert await two.get_all_player_histories() is two_profiles
 
 
 # --- Gameweek-level trend data ---
@@ -590,6 +611,22 @@ class TestContractTripwires:
         assert data["2024-25"] == []
         assert "players_raw.csv" in caplog.text
         assert "now_cost" in caplog.text
+
+    @respx.mock
+    async def test_players_raw_missing_team_code_warns_and_degrades(self, tmp_path, caplog):
+        # team_code is what makes team_id mean the club code across both
+        # sources, so its loss must be as loud as any other column's rather
+        # than every season quietly reading team_id=0.
+        drifted = SAMPLE_CSV.replace("team_code", "club_code")
+        respx.get(f"{BASE}/2024-25/players_raw.csv").mock(
+            return_value=Response(200, text=drifted)
+        )
+        with caplog.at_level(logging.WARNING):
+            async with VaastavClient(_make_fetcher(tmp_path), seasons=("2024-25",)) as client:
+                data = await client._fetch_season_data()
+
+        assert data["2024-25"] == []
+        assert "team_code" in caplog.text
 
     @respx.mock
     async def test_merged_gw_missing_column_warns_and_degrades(self, tmp_path, caplog):

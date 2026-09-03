@@ -72,7 +72,9 @@ def merge_season_histories(
     """
     by_code: dict[int, list[SeasonHistory]] = {}
     kept_by: dict[tuple[int, str], str] = {}
-    dropped: dict[tuple[str, str, str], int] = {}
+    # Players affected per (season, winner, loser), not rows: the count says
+    # how widespread a repeat is, and a player tripled must read as one.
+    dropped: dict[tuple[str, str, str], set[int]] = {}
     for source, profiles in ranked_sources:
         for code, profile in profiles.items():
             for row in profile.seasons:
@@ -82,10 +84,10 @@ def merge_season_histories(
                     kept_by[key] = source
                     by_code.setdefault(code, []).append(row)
                     continue
-                pair = (row.season, winner, source)
-                dropped[pair] = dropped.get(pair, 0) + 1
+                dropped.setdefault((row.season, winner, source), set()).add(code)
 
-    for (season, winner, loser), players in sorted(dropped.items()):
+    for (season, winner, loser), codes in sorted(dropped.items()):
+        players = len(codes)
         if winner == loser:
             logger.warning(
                 "%s returned %s more than once for %d player(s) — the upstream "

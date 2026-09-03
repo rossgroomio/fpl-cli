@@ -186,7 +186,9 @@ $ fpl league-fines --format json
 
 Failures come back on the same stream: `{"command", "error"}` on stdout with exit code 1.
 Parse stdout either way, and read the message from `error` rather than from stderr — see
-[JSON Output](docs/command-reference.md#json-output).
+[JSON Output](docs/command-reference.md#json-output). Where a payload names a club by number
+(`team` in each season of `fpl history` and `fpl player --history`), it is the FPL club code
+that stays fixed across seasons, not a season's 1-20 team id.
 
 ## Configuration
 

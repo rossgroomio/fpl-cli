@@ -31,9 +31,9 @@ BASE = BASE_URL
 
 @pytest.fixture(autouse=True)
 def _reset_core_insights_session_cache():
-    CoreInsightsClient._session_profiles = None
+    CoreInsightsClient._session_profiles = {}
     yield
-    CoreInsightsClient._session_profiles = None
+    CoreInsightsClient._session_profiles = {}
 
 
 def _make_fetcher(tmp_path: Path) -> DatasetFetcher:
@@ -431,6 +431,23 @@ class TestMultiSeason:
         # Each season's team_id is that season's club.
         assert [s.team_id for s in profiles[206325].seasons] == [43, 13]
         assert len(profiles[80201].pts_per_90) == 2
+
+    @respx.mock
+    async def test_session_cache_is_keyed_by_the_season_window(self, tmp_path):
+        # A default single-season client (the match-stats call site) running
+        # first must not hand its profiles to the provider's two-season one.
+        _mock_season_files(CI_SEASON, PLAYERS_CSV, PLAYERSTATS_CSV)
+        _mock_season_files(PREVIOUS_DIR, PLAYERS_PREV_CSV, PLAYERSTATS_PREV_CSV)
+        async with CoreInsightsClient(_make_fetcher(tmp_path)) as single:
+            single_profiles = await single.get_all_player_histories()
+        async with CoreInsightsClient(
+            _make_fetcher(tmp_path), seasons=(PREVIOUS_SEASON, CURRENT_SEASON)
+        ) as both:
+            both_profiles = await both.get_all_player_histories()
+
+        assert [s.season for s in single_profiles[80201].seasons] == [CURRENT_SEASON]
+        assert [s.season for s in both_profiles[80201].seasons] == [PREVIOUS_SEASON, CURRENT_SEASON]
+        assert await both.get_all_player_histories() is both_profiles
 
     @respx.mock
     async def test_current_gw_comes_from_the_season_in_progress(self, tmp_path):

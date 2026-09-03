@@ -277,7 +277,13 @@ class CoreInsightsClient:
     MIN_MINUTES = 450
     HISTORICAL_TTL = timedelta(days=30)
 
-    _session_profiles: ClassVar[dict[int, PlayerProfile] | None] = None
+    # Session-level cache keyed by the season window. Two construction sites
+    # hold different windows -- the provider's two seasons, the default
+    # single season elsewhere -- and whichever ran first must not answer for
+    # the other, or the provider would silently lose last season from every
+    # prior. Keying makes that correct by construction rather than by no
+    # other call site ever asking for profiles.
+    _session_profiles: ClassVar[dict[tuple[str, ...], dict[int, PlayerProfile]]] = {}
 
     def __init__(
         self,
@@ -585,10 +591,11 @@ class CoreInsightsClient:
     async def get_all_player_histories(self) -> dict[int, PlayerProfile]:
         """Get historical profiles for all players across the configured seasons.
 
-        Results are cached at the class level for the session.
+        Results are cached at the class level for the session, per window.
         """
-        if CoreInsightsClient._session_profiles is not None:
-            return CoreInsightsClient._session_profiles
+        cached = CoreInsightsClient._session_profiles.get(self.seasons)
+        if cached is not None:
+            return cached
 
         all_data = await self._fetch_season_data()
         by_code: dict[int, list[SeasonHistory]] = {}
@@ -600,7 +607,7 @@ class CoreInsightsClient:
             code: self._build_profile(code, seasons)
             for code, seasons in by_code.items()
         }
-        CoreInsightsClient._session_profiles = profiles
+        CoreInsightsClient._session_profiles[self.seasons] = profiles
         return profiles
 
     async def get_player_history(self, element_code: int) -> PlayerProfile | None:
