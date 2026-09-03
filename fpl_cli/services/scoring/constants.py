@@ -630,6 +630,39 @@ def gk_ceiling_attainability(next_gw_id: int, weights: QualityWeights) -> float:
     return ceiling_attainability(weights.for_gk(), GK_SIGNAL_TERMS, ramp=ramp)
 
 
+def _ownership_anchor_for(
+    family: Literal["target", "differential", "waiver"],
+    position: Position,
+    *,
+    next_gw_id: int | None = None,
+) -> float:
+    """The calibrated quality anchor inside an ownership ceiling, without the bonus headroom.
+
+    ``_ownership_ceiling_for`` normalises against this plus
+    ``_OWNERSHIP_HEADROOM``; the anchor alone is the scale the *quality
+    baseline* lives on, which is what the early-season prior blend needs
+    (#206). ``blend_quality_with_prior`` runs inside
+    ``ownership._calculate_quality_based_raw`` before the matchup, ownership,
+    position-need and consistency terms are added, so a prior-implied score
+    built on the full ceiling would be credited headroom the observation it
+    replaces cannot reach.
+
+    Raises KeyError on an unknown family (as before) and on an unknown
+    position (previously the silent base-ceiling fallback).
+
+    *next_gw_id* carries the same GK contract as ``_ownership_ceiling_for``:
+    supplied for a keeper, the anchor is scaled by
+    ``gk_ceiling_attainability``. Numerator and denominator must agree about
+    it, so the blend anchor is taken with the same argument the ceiling was.
+    """
+    if family not in _OWNERSHIP_HEADROOM:
+        raise KeyError(family)
+    anchor = QUALITY_CEILINGS[(family, position)]
+    if position == "GK" and next_gw_id is not None:
+        anchor *= gk_ceiling_attainability(next_gw_id, _FAMILY_QUALITY_WEIGHTS[family])
+    return anchor
+
+
 def _ownership_ceiling_for(
     family: Literal["target", "differential", "waiver"],
     position: Position,
@@ -657,12 +690,10 @@ def _ownership_ceiling_for(
     consistency) never scales. Omitted (None) keeps the full ceiling — the
     pre-#143 behaviour.
     """
-    if family not in _OWNERSHIP_HEADROOM:
-        raise KeyError(family)
-    anchor = QUALITY_CEILINGS[(family, position)]
-    if position == "GK" and next_gw_id is not None:
-        anchor *= gk_ceiling_attainability(next_gw_id, _FAMILY_QUALITY_WEIGHTS[family])
-    return anchor + _OWNERSHIP_HEADROOM[family]
+    return (
+        _ownership_anchor_for(family, position, next_gw_id=next_gw_id)
+        + _OWNERSHIP_HEADROOM[family]
+    )
 
 
 def _value_weights_and_ceiling(

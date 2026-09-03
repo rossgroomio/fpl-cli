@@ -4,15 +4,18 @@ Uses previous-season pts/90 from the historical datasets to determine
 per-player confidence in this season's data. Two consumers read it before
 ``CUTOFF_GW``:
 
-- The value family (``quality_score``) blends the observed raw score with
-  the score the prior implies — a player's pts/90 percentile placed on the
-  calibrated elite scale — weighted by confidence
+- The value family (``quality_score``) and the ownership family (target,
+  differential, waiver) blend the observed raw score with the score the prior
+  implies — a player's pts/90 percentile placed on the calibrated elite scale
+  — weighted by confidence
   (``scoring.value_quality.blend_quality_with_prior``). Going into GW2 the
   observation is one gameweek, so a quiet-starting elite keeps most of
-  their standing and a one-game wonder does not saturate the scale.
-- Every other family shrinks its scores toward the position mean, with
-  shrinkage reduced for players with strong track records
-  (``scoring.shrinkage``).
+  their standing and a one-game wonder does not saturate the scale. The
+  ownership family blends its quality baseline only, before the matchup,
+  ownership, position-need and consistency terms the prior does not model.
+- The single-GW family (captain, bench, lineup, starting XI) shrinks its
+  scores toward the position mean instead, with shrinkage reduced for players
+  with strong track records (``scoring.shrinkage``).
 
 A price-based prior handles new signings with no PL history: the
 within-position price percentile, halved, so it can never outrank a

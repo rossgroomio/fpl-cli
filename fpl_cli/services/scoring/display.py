@@ -24,14 +24,16 @@ def normalise_score(raw: float, ceiling: float) -> int:
 
     The waiver list orders on a normalised score, as do the target and
     differential lists (StatsAgent sorts both on the normalised value), so
-    those are the places the clamp can tie players together. Below GW10
-    ``apply_shrinkage`` runs on ``waiver_score`` between scoring and sorting
-    and separates most of them again — a clamped 0 from a merely weak player is
-    pulled toward the position mean like any other low-confidence score.
+    those are the places the clamp can tie players together. Below GW10 the
+    ownership family's prior blend keeps most of them apart before they get
+    here: it lifts the quality baseline toward last season's pedigree while
+    the score is still a raw float, so a merely weak player rarely reaches the
+    clamp at all (#206 — the blend runs inside the score, unlike the
+    position-mean shrinkage it replaced, which adjusted this value afterwards).
 
-    Two clamped players who are both known not to be playing do stay tied:
-    shrinkage holds them out precisely so their 0 survives, and from GW10 it
-    does not run at all. That tie is intended. Their relative order then falls
+    Two clamped players who are both known not to be playing do stay tied: the
+    blend holds them out precisely so their 0 survives, and from GW10 it does
+    not run at all. That tie is intended. Their relative order then falls
     to the sort being stable, which is a wash — nothing distinguishes two
     players who are equally unavailable, and both sit below anyone who is not.
     """

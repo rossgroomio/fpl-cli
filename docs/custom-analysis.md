@@ -152,16 +152,19 @@ Used for **multi-GW decisions**: who to buy, hold, or pick up on waivers.
 All three ownership scores route through `_calculate_quality_based_score()` / `_calculate_quality_based_raw()`:
 
 1. **Quality baseline** via `calculate_player_quality_score()` with the relevant weight set
-2. **Underperformance regression bonus** for players outperforming xG
-3. **3-GW matchup** (scalar average, weight 0.75 via `_matchup_bonus`)
-4. **Availability penalty** (-3pt when status flagged < 75%) -- **waiver only in practice**, see below
-5. All three include `penalty_xG` via `StatWeight`
+2. **[Early-season prior blend](#early-season-confidence-gw1-10)** of that baseline (GW1-9), against the family's calibrated anchor
+3. **Underperformance regression bonus** for players outperforming xG
+4. **3-GW matchup** (scalar average, weight 0.75 via `_matchup_bonus`)
+5. **Availability penalty** (-3pt when status flagged < 75%) -- **waiver only in practice**, see below
+6. All three include `penalty_xG` via `StatWeight`
+
+Step 2 sits where it does deliberately: everything below it is a statement about the player's fixtures, ownership or squad fit, which a previous-season prior says nothing about.
 
 The availability penalty is in the shared flow but only reaches waiver scoring. It is gated on `status != "a"`, and the `PlayerStats` record behind `fpl stats --targets` / `--differentials` carries no `status` field, so the gate never opens there. That is deliberate rather than an oversight: those two lists are discovery surfaces answering a 3-6 GW question, while `chance_of_playing` is a next-round flag, and `fpl stats --available-only` already gives users an explicit lever for "only players I can field this week". Plumbing `status` into `PlayerStats` would silently switch the penalty on for both commands; `tests/test_stats.py::TestStatsAgentAvailabilityIsNotScored` fails if that happens.
 
 A minutes factor adjusts per-90 quality components and the fixture component.
 
-Scores normalised to 0-100, then subject to [early-season shrinkage](#early-season-confidence-gw1-10) before ranking.
+Scores normalised to 0-100 and ranked on that value. Before GW10 the baseline carries the [prior blend](#early-season-confidence-gw1-10); there is no separate shrinkage pass afterwards.
 
 ### Target Score
 
@@ -193,7 +196,7 @@ Selects the mathematically optimal 15-player squad using an ILP (Integer Linear 
 
 The solver picks one squad that maximises expected points across the entire horizon - it does not optimise each gameweek independently. This means the per-player baseline score needs to estimate a player's *true underlying level*, which fixture coefficients then scale up or down per gameweek.
 
-**Horizon >= 2** (default, wildcard, season-start): Uses multi-GW quality weights (`VALUE_QUALITY_WEIGHTS`) with form (1.3x), PPG (0.8x), npxG/xGI, xGChain, penalty xG, dc_per_90. Subject to early-season shrinkage. PPG and xGChain are included because they're predictive over multi-week windows; form is weighted lower than single-GW to avoid anchoring the entire horizon to a hot streak that mean-reverts.
+**Horizon >= 2** (default, wildcard, season-start): Uses multi-GW quality weights (`VALUE_QUALITY_WEIGHTS`) with form (1.3x), PPG (0.8x), npxG/xGI, xGChain, penalty xG, dc_per_90. Subject to the early-season prior blend. PPG and xGChain are included because they're predictive over multi-week windows; form is weighted lower than single-GW to avoid anchoring the entire horizon to a hot streak that mean-reverts.
 
 **Horizon = 1** (Free Hit, single-GW decisions): Uses single-GW scoring (`GW_SELECTION_WEIGHTS`) - form (1.5x), npxG/xGI, penalty xG, per-fixture matchup scores. PPG and xGChain are dropped (not predictive for a single game). No shrinkage applied - single-GW decisions want the strongest current signal. Matchup scoring is baked into the player score, so fixture coefficients are the raw scores directly.
 
@@ -261,37 +264,48 @@ confidence = min(1.0, (gw / (gw + 6)) × (1 + prior_strength))
 
 Players with strong track records converge to current-season data faster; new signings with no PL history use a price-based prior (within-position price percentile × 0.5, so it can never outrank a mid-table history). Beyond GW10, confidence = 1.0 and scores are unmodified.
 
-### Value family: prior blend
+### Value and ownership families: prior blend
 
-`quality_score` (`fpl stats --value`, `fpl player`, `fpl transfer-eval`, and `fpl allocate` at horizon >= 2, where the solver ranks on it) blends the observed raw score with the score the prior implies:
+`quality_score` (`fpl stats --value`, `fpl player`, `fpl transfer-eval`, and `fpl allocate` at horizon >= 2, where the solver ranks on it) and the ownership scores (`fpl targets`, `fpl differentials`, `fpl waivers`, and transfer-eval's Outlook column) blend the observed raw score with the score the prior implies:
 
 ```
-prior_raw = prior_strength × value_ceiling × 0.92      # the elite target the ceilings were calibrated to
+prior_raw = prior_strength × anchor × 0.92      # the elite target the ceilings were calibrated to
 w         = confidence
 blended   = w × observed_raw + (1 − w) × prior_raw
 ```
 
-Going into GW2 the observed score is one gameweek -- form and ppg are the same single observation and both caps saturate on one good game -- so without the prior a one-game wonder out-reads a quiet-starting elite (issue #143: Haaland 59 behind Emersonn 100). Ceilings cannot reorder that, being monotonic per-position scalers, so the prior enters the score itself. `prior_raw` sits on the position's calibrated value ceiling at that gameweek (the calendar-attainable one for a pre-GW6 keeper), so a player at the top of last season's percentile is read as exactly the elite the calibration anchored (92) and a price-sourced prior can never claim more than mid-pack (46). The weight is the same for every position. A keeper-specific discount (the GK calendar ramp, on the grounds that a keeper's early signals are sample-ramped) was evaluated and not shipped: the discounted share can only move onto the prior, so the same pedigree and the same empty observation read 75 for a keeper and 43 for a forward going into GW2, and `fpl allocate` sums raw quality across positions; the within-position gain it bought (+0.08 rank correlation on ~24 keepers a snapshot) sat inside the noise. The backtest's finding that the prior alone out-ranks the blend for keepers at several early snapshots stands, and a better keeper prior is the route that leaves the weight alone.
+Going into GW2 the observed score is one gameweek -- form and ppg are the same single observation and both caps saturate on one good game -- so without the prior a one-game wonder out-reads a quiet-starting elite (issue #143: Haaland 59 behind Emersonn 100). Ceilings cannot reorder that, being monotonic per-position scalers, so the prior enters the score itself. `anchor` is the calibrated elite raw score the family measures against for that position at that gameweek (the calendar-attainable one for a pre-GW6 keeper), so a player at the top of last season's percentile is read as exactly the elite the calibration anchored and a price-sourced prior can never claim more than mid-pack -- 92 and 46 on the value scale, which has no bonus terms. The weight is the same for every position. A keeper-specific discount (the GK calendar ramp, on the grounds that a keeper's early signals are sample-ramped) was evaluated and not shipped: the discounted share can only move onto the prior, so the same pedigree and the same empty observation read 75 for a keeper and 43 for a forward going into GW2, and `fpl allocate` sums raw quality across positions; the within-position gain it bought (+0.08 rank correlation on ~24 keepers a snapshot) sat inside the noise. The backtest's finding that the prior alone out-ranks the blend for keepers at several early snapshots stands, and a better keeper prior is the route that leaves the weight alone.
 
-Backtested before shipping (`scripts/backtest_early_season_prior_blend.py`: 2025-26 GW1-7 snapshots, 2024-25 priors, Spearman rank correlation with rest-of-season points, blended minus unblended): GK +0.13, FWD +0.17, DEF +0.07 (better at every snapshot), MID +0.01 (neutral). The blend is a no-op by GW8 for players with a strong history and by GW10 for everyone. The script scores the blend through the production function, so re-running it after a change to the blend, the confidence curve or the anchors measures what ships.
+**Where the ownership family differs.** Its scores are the quality baseline plus a 3-GW matchup bonus, an ownership bonus (differentials), a position-need and team-stacking adjustment (waivers) and a consistency bonus. The blend runs on the baseline alone, before any of those are added, and `anchor` is correspondingly the family's ceiling *without* their headroom. A prior is a statement about the player -- last season's pts/90, or price for a player with no PL history -- and models none of the fixtures in front of them, how many managers own them, or which slot of your squad is thin, so blending it into those terms would credit a pedigree for a fixture run it never played. Everything above the baseline stays pure observation.
 
-The blend replaces position-mean shrinkage for the value family -- the two are never stacked.
+Backtested before shipping (`scripts/backtest_early_season_prior_blend.py`: 2025-26 GW1-7 snapshots, 2024-25 priors, Spearman rank correlation with rest-of-season points, blended minus the incumbent):
 
-### Other families: position-mean shrinkage
+| family | incumbent | GK | DEF | MID | FWD |
+|---|---|---|---|---|---|
+| value | pure observation | +0.13 | +0.07 | +0.01 | +0.17 |
+| target | shrinkage | +0.16 | +0.08 | +0.01 | +0.23 |
+| differential | shrinkage | +0.16 | +0.08 | +0.01 | +0.23 |
+| waiver | shrinkage | +0.14 | +0.08 | +0.02 | +0.22 |
 
-The ownership (target / differential / waiver) and single-GW (captain / bench / lineup) families shrink normalised scores toward the position mean, with shrinkage strength determined by the same confidence:
+Better at every snapshot for GK, DEF and FWD; MID is neutral throughout, as it was for the value family. On a six-gameweek rather than a rest-of-season outcome the ownership picture is the same for GK (+0.13) and FWD (+0.16) and mildly negative for DEF (-0.03) and MID (-0.04) -- these are multi-gameweek outlook scores, so rest-of-season is the outcome they are read on, but the shorter horizon is where a strong-pedigree player who is genuinely out of form costs you. The blend is a no-op by GW8 for players with a strong history and by GW10 for everyone. The script scores the blend through the production function and the shrinkage baseline through `shrink_scores`, so re-running it after a change to either, to the confidence curve or to the anchors measures what ships.
+
+The blend replaces position-mean shrinkage for both families -- the two are never stacked.
+
+### Single-GW family: position-mean shrinkage
+
+The single-GW family (captain / bench / lineup / starting XI) shrinks normalised scores toward the position mean, with shrinkage strength determined by the same confidence:
 
 ```
 adjusted_score = position_mean + confidence × (score - position_mean)
 ```
 
-Those families carry matchup, ownership and position-need terms the prior does not model, and the blend was backtested for the value family only, so they keep the empirical-Bayes device.
+Shrinkage compresses gaps rather than reordering them: it only swaps two players when their confidences differ enough to overcome the gap between their scores, which is far too weak to move a one-game wonder off the top of a list. That is exactly why the two multi-gameweek families moved to the blend. It survives here because a single-gameweek score is a projection of one match, where a pedigree from a different season is a weaker claim than it is over a whole rest-of-season horizon, and because bench and lineup order on raw scores -- for those two, shrinkage changes only the displayed number.
 
 Both are the player-level analogue of the team-level early-season blending in [Team Ratings](#early-season-blending-gw1-11).
 
 ### Who is left out
 
-Both devices treat a low score as a small sample, so they only make sense for players whose score could plausibly be higher. Two groups are held out entirely -- excluded from the position mean as well as from the adjustment, and returned with their observed score by the blend:
+Both devices treat a low score as a small sample, so they only make sense for players whose score could plausibly be higher. Two groups are held out entirely -- excluded from the position mean as well as from the adjustment by shrinkage, and returned with their observed score by the blend:
 
 - **Ruled out of the next gameweek** (`chance_of_playing` is 0). This is FPL's own hard flag, not one of the 25/50/75 doubts, which stay in.
 - **No minutes at all from GW6 onward**, once the minutes factor is live. Before GW6 the factor is disabled and nobody has played much, so zero minutes says nothing.
@@ -499,7 +513,7 @@ flowchart TB
     style TF fill:#f1f8e9,stroke:#33691e
 ```
 
-**scoring** - Central scoring engine, a package under `fpl_cli/services/scoring/` with its public API re-exported from the package root (`constants` holds weights and ceilings, `signals` the form/consistency/npxG signals, `evaluation` the enrichment and evaluation types, `value_quality` / `ownership` / `single_gw` the scoring families, `display` the 0-100 normalisation, `shrinkage` the early-season adjustment, `data_prep` the shared fetching). `prepare_scoring_data()` fetches teams, fixtures, next GW, creates TeamRatingsService, builds a `ScoringContext`, and returns everything in a `ScoringData` frozen dataclass. Optional flags control additional fetching: `include_players`, `include_understat`, `include_history`, `include_prior` (Bayesian player priors) and `include_match_data` (Core-Insights consistency signals and fixture-adjusted npxG). `include_understat` and `include_prior` raise `ValueError` without `include_players`.
+**scoring** - Central scoring engine, a package under `fpl_cli/services/scoring/` with its public API re-exported from the package root (`constants` holds weights and ceilings, `signals` the form/consistency/npxG signals, `evaluation` the enrichment and evaluation types, `value_quality` / `ownership` / `single_gw` the scoring families, `display` the 0-100 normalisation, `shrinkage` the single-GW family's early-season adjustment and the hold-out helpers every family shares, `data_prep` the shared fetching). `prepare_scoring_data()` fetches teams, fixtures, next GW, creates TeamRatingsService, builds a `ScoringContext`, and returns everything in a `ScoringData` frozen dataclass. Optional flags control additional fetching: `include_players`, `include_understat`, `include_history`, `include_prior` (Bayesian player priors) and `include_match_data` (Core-Insights consistency signals and fixture-adjusted npxG). `include_understat` and `include_prior` raise `ValueError` without `include_players`.
 
 - **Form trajectory.** `include_history` batch-fetches per-GW player history via `get_player_detail()` for all players with minutes > 0. `compute_form_trajectory()` calculates a median-filtered slope of recent GW points, returning a multiplier (0.8-1.2).
 - **Scoring context.** `ScoringContext` (frozen dataclass) holds pre-fetched data: team map, fixture map, ratings service, optional team form/understat. Built internally by `build_scoring_context()`.
@@ -507,7 +521,7 @@ flowchart TB
 
 `BenchOrderAgent` is enriched with Understat data (npxG, xGChain, penalty_xG) where available.
 
-**Early-season shrinkage.** Both families' normalised scores are subject to confidence shrinkage via `shrink_scores()` (GW1-10). Per-player confidence is derived from prior-season pts/90 (from the historical datasets) via `player_prior.py`. `prepare_scoring_data(include_prior=True)` fetches priors into `ScoringData.player_priors`; each agent calls `apply_shrinkage()` between scoring and ranking, passing the hold-out set that `unavailable_player_ids()` builds from live player data. See [Who is left out](#who-is-left-out).
+**Early-season prior (GW1-10).** Per-player confidence is derived from prior-season pts/90 (from the historical datasets) via `player_prior.py`, and `prepare_scoring_data(include_prior=True)` fetches priors into `ScoringData.player_priors`. The value and ownership families blend the prior into the quality baseline inside the score (`blend_quality_with_prior()`), so the agent passes the player's `PlayerPrior` to the scoring call and ranks on what comes back. The single-GW family still shrinks normalised scores toward the position mean via `shrink_scores()`, called through `apply_shrinkage()` between scoring and ranking with the hold-out set `unavailable_player_ids()` builds from live player data. See [Who is left out](#who-is-left-out).
 
 **player_prior** - Bayesian early-season confidence. See [Early-Season Confidence](#early-season-confidence-gw1-10).
 

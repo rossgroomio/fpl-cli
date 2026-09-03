@@ -10,6 +10,7 @@ from fpl_cli.models.player import PlayerPosition, PlayerStatus
 from fpl_cli.services.player_prior import PlayerPrior
 from fpl_cli.services.scoring import (
     ATTACKING_POSITIONS,
+    CALIBRATION_ELITE_TARGET,
     DEF_DIFFERENTIAL_CEILING,
     DEF_TARGET_CEILING,
     DEF_WAIVER_CEILING,
@@ -23,6 +24,7 @@ from fpl_cli.services.scoring import (
     GK_VALUE_CEILING,
     GK_WAIVER_CEILING,
     NEUTRAL_SIGNALS,
+    QUALITY_CEILINGS,
     TARGET_CEILING,
     TARGET_QUALITY_WEIGHTS,
     VALID_FORMATIONS,
@@ -72,7 +74,11 @@ from fpl_cli.services.scoring import (
     shrink_scores,
     unavailable_player_ids,
 )
-from fpl_cli.services.scoring.constants import _consistency_phase, _ownership_ceiling_for
+from fpl_cli.services.scoring.constants import (
+    _consistency_phase,
+    _ownership_anchor_for,
+    _ownership_ceiling_for,
+)
 from fpl_cli.services.scoring.ownership import _matchup_bonus
 from fpl_cli.services.scoring.signals import (
     _WINDOW_LOOKBACK_GWS,
@@ -5328,6 +5334,242 @@ class TestBlendQualityWithPrior:
             absent, us_match={}, next_gw_id=7, team_short="MCI", prior=prior,
         )
         assert score == 0
+
+
+class TestOwnershipFamilyPriorBlend:
+    """The ownership families' early-season prior blend (#206).
+
+    #143 shipped the blend for the value family only, so `fpl targets`,
+    `fpl differentials` and `fpl waivers` still scored pure observation
+    before GW10 and inverted exactly where the value family no longer did.
+    Position-mean shrinkage could not fix that: it compresses gaps toward
+    the mean and only reorders two players when their confidences differ,
+    which is far too weak to move a one-game wonder off the top. The blend
+    replaces it here, on the quality baseline and before the bonus terms.
+
+    Backtested over the same 2025-26 GW1-7 snapshots as #143
+    (scripts/backtest_early_season_prior_blend.py --family ...): against the
+    shrinkage it replaces, rest-of-season rank correlation improved for every
+    position of all three families.
+    """
+
+    @staticmethod
+    def _prior(strength: float, next_gw_id: int, source: str = "history") -> PlayerPrior:
+        from fpl_cli.services.player_prior import _compute_confidence
+        return PlayerPrior(
+            prior_strength=strength,
+            confidence=_compute_confidence(next_gw_id, strength),
+            source=source,
+        )
+
+    @staticmethod
+    def _fwd(*, form: float, ppg: float, xgi: float, minutes: int, **extra):
+        """A forward carrying one gameweek of observation and nothing else."""
+        return build_player_evaluation(
+            {
+                "position": "FWD", "xGI_per_90": xgi, "form": form, "ppg": ppg,
+                "GI_minus_xGI": 0.0, "minutes": minutes,
+                "appearances": 1 if minutes else 0, "status": "a",
+                **extra,
+            },
+        )[0]
+
+    def _pair(self):
+        """The #143 shape: one good game against a quiet opener with pedigree."""
+        wonder = self._fwd(form=9.0, ppg=9.0, xgi=1.4, minutes=65)
+        quiet_elite = self._fwd(form=2.0, ppg=2.0, xgi=0.9, minutes=90)
+        return wonder, quiet_elite
+
+    # --- the inversion, per family ---
+
+    def test_target_scores_invert_without_priors(self):
+        """The defect: going into GW2 the one-game wonder tops the target list."""
+        wonder, quiet_elite = self._pair()
+        assert calculate_target_score(wonder, next_gw_id=2) > calculate_target_score(
+            quiet_elite, next_gw_id=2,
+        )
+
+    def test_target_reorders_the_quiet_elite_above_the_wonder(self):
+        wonder, quiet_elite = self._pair()
+        assert calculate_target_score(
+            quiet_elite, next_gw_id=2, prior=self._prior(1.0, 2),
+        ) > calculate_target_score(
+            wonder, next_gw_id=2, prior=self._prior(0.2, 2, source="price"),
+        )
+
+    def test_differential_reorders_the_quiet_elite_above_the_wonder(self):
+        wonder, quiet_elite = self._pair()
+        scored = {
+            "elite": calculate_differential_score(
+                quiet_elite, semi_differential_threshold=15.0, next_gw_id=2,
+                prior=self._prior(1.0, 2),
+            ),
+            "wonder": calculate_differential_score(
+                wonder, semi_differential_threshold=15.0, next_gw_id=2,
+                prior=self._prior(0.2, 2, source="price"),
+            ),
+        }
+        assert scored["elite"] > scored["wonder"]
+
+    def test_waiver_reorders_the_quiet_elite_above_the_wonder(self):
+        wonder, quiet_elite = self._pair()
+        assert calculate_waiver_score(
+            quiet_elite, squad_by_position={}, next_gw_id=2, prior=self._prior(1.0, 2),
+        ) > calculate_waiver_score(
+            wonder, squad_by_position={}, next_gw_id=2,
+            prior=self._prior(0.2, 2, source="price"),
+        )
+
+    def test_shrinkage_cannot_reorder_the_same_pair(self):
+        """Why the blend, and not the device these families already had.
+
+        Shrinkage pulls both scores toward the position mean by their own
+        confidences. The wonder's price-sourced prior shrinks it further than
+        the elite's, which is the only reordering force it has — and on this
+        pair it is nowhere near enough.
+        """
+        wonder, quiet_elite = self._pair()
+        scored = [
+            {"id": 1, "position": "FWD",
+             "target_score": calculate_target_score(wonder, next_gw_id=2)},
+            {"id": 2, "position": "FWD",
+             "target_score": calculate_target_score(quiet_elite, next_gw_id=2)},
+        ]
+        apply_shrinkage(
+            scored, "target_score",
+            {1: self._prior(0.2, 2, source="price"), 2: self._prior(1.0, 2)},
+            2, unavailable_ids=(),
+        )
+        assert scored[0]["target_score"] > scored[1]["target_score"]
+
+    # --- the blend sits on the baseline, not the whole ceiling ---
+
+    def test_pedigree_alone_lands_on_the_anchor_not_the_bonus_headroom(self):
+        """The blend runs before matchup / ownership / need / consistency, so a
+        prior-implied elite is read against the anchor those terms sit on top
+        of. Against the whole ceiling it would read the calibrated elite target
+        (92) and leave no room for the bonuses it never earned.
+        """
+        empty = self._fwd(form=0.0, ppg=0.0, xgi=0.0, minutes=0)
+        anchor = _ownership_anchor_for("target", "FWD", next_gw_id=2)
+        score = calculate_target_score(
+            empty, next_gw_id=2, prior=PlayerPrior(1.0, 0.0, "history"),
+        )
+        assert score == round(
+            anchor * CALIBRATION_ELITE_TARGET / FWD_TARGET_CEILING * 100
+        )
+        assert score < round(CALIBRATION_ELITE_TARGET * 100)
+
+    def test_price_sourced_pedigree_cannot_claim_more_than_mid_pack(self):
+        from fpl_cli.services.player_prior import PRICE_CONFIDENCE_FACTOR
+        empty = self._fwd(form=0.0, ppg=0.0, xgi=0.0, minutes=0)
+        elite = calculate_target_score(
+            empty, next_gw_id=2, prior=PlayerPrior(1.0, 0.0, "history"),
+        )
+        signing = calculate_target_score(
+            empty, next_gw_id=2, prior=PlayerPrior(PRICE_CONFIDENCE_FACTOR, 0.0, "price"),
+        )
+        assert signing == round(elite * PRICE_CONFIDENCE_FACTOR)
+
+    def test_bonus_terms_stay_pure_observation(self):
+        """A prior that fully replaces the baseline replaces nothing else: two
+        players with identical pedigree and different fixtures still separate.
+        """
+        prior = PlayerPrior(0.9, 0.0, "history")
+        hot = build_player_evaluation(
+            {"position": "FWD", "xGI_per_90": 1.4, "form": 9.0, "ppg": 9.0,
+             "GI_minus_xGI": 0.0, "minutes": 90, "appearances": 1, "status": "a"},
+            matchup_avg_3gw=0.0,
+        )[0]
+        cold = build_player_evaluation(
+            {"position": "FWD", "xGI_per_90": 0.0, "form": 0.0, "ppg": 0.0,
+             "GI_minus_xGI": 0.0, "minutes": 90, "appearances": 1, "status": "a"},
+            matchup_avg_3gw=0.0,
+        )[0]
+        good_fixtures = build_player_evaluation(
+            {"position": "FWD", "xGI_per_90": 0.0, "form": 0.0, "ppg": 0.0,
+             "GI_minus_xGI": 0.0, "minutes": 90, "appearances": 1, "status": "a"},
+            matchup_avg_3gw=8.0,
+        )[0]
+
+        assert calculate_target_score(hot, next_gw_id=2, prior=prior) == (
+            calculate_target_score(cold, next_gw_id=2, prior=prior)
+        )
+        assert calculate_target_score(good_fixtures, next_gw_id=2, prior=prior) > (
+            calculate_target_score(cold, next_gw_id=2, prior=prior)
+        )
+
+    # --- hold-out and self-extinction ---
+
+    def test_ruled_out_player_is_not_handed_last_seasons_standing(self):
+        """The #122 hold-out, now inside the blend rather than beside it."""
+        ruled_out = self._fwd(
+            form=0.0, ppg=0.0, xgi=0.0, minutes=0,
+            status="i", chance_of_playing=0,
+        )
+        assert calculate_target_score(
+            ruled_out, next_gw_id=2, prior=PlayerPrior(1.0, 0.0, "history"),
+        ) == calculate_target_score(ruled_out, next_gw_id=2)
+
+    def test_no_minutes_from_gw6_is_not_handed_last_seasons_standing(self):
+        absent = self._fwd(form=0.0, ppg=0.0, xgi=0.0, minutes=0)
+        prior = self._prior(0.6, 7)
+        assert prior.confidence < 1.0
+        assert calculate_target_score(absent, next_gw_id=7, prior=prior) == (
+            calculate_target_score(absent, next_gw_id=7)
+        )
+
+    def test_blend_self_extinguishes_at_the_cutoff(self):
+        from fpl_cli.services.player_prior import CUTOFF_GW
+        _, quiet_elite = self._pair()
+        assert calculate_target_score(
+            quiet_elite, next_gw_id=CUTOFF_GW, prior=PlayerPrior(1.0, 0.4, "history"),
+        ) == calculate_target_score(quiet_elite, next_gw_id=CUTOFF_GW)
+
+    # --- keepers: the blend anchor tracks the ceiling, per player ---
+
+    def test_pre_gw6_keeper_pedigree_lands_on_the_calendar_attainable_anchor(self):
+        """Numerator and denominator must agree about the GK ramp, or the
+        prior is read on a different scale from the observation it replaces.
+        """
+        from fpl_cli.services.scoring import gk_ceiling_attainability
+        keeper = build_player_evaluation(
+            {"position": "GK", "xGI_per_90": 0.0, "form": 0.0, "ppg": 0.0,
+             "GI_minus_xGI": 0.0, "minutes": 0, "appearances": 0, "status": "a"},
+        )[0]
+        full_anchor = QUALITY_CEILINGS[("target", "GK")]
+        anchor = full_anchor * gk_ceiling_attainability(2, TARGET_QUALITY_WEIGHTS)
+        headroom = GK_TARGET_CEILING - full_anchor
+        score = calculate_target_score(
+            keeper, next_gw_id=2, prior=PlayerPrior(1.0, 0.0, "history"),
+        )
+        assert score == round(
+            anchor * CALIBRATION_ELITE_TARGET / (anchor + headroom) * 100
+        )
+
+    def test_waiver_keeper_without_gk_signals_keeps_the_full_anchor(self):
+        """The per-player #207 flag decides the ceiling, so it has to decide
+        the blend anchor with it — a draft keeper whose main-game join missed
+        is normalised against the full anchor at both ends.
+        """
+        keeper = build_player_evaluation(
+            {"position": "GK", "xGI_per_90": 0.0, "form": 0.0, "ppg": 0.0,
+             "GI_minus_xGI": 0.0, "minutes": 0, "appearances": 0, "status": "a"},
+        )[0]
+        prior = PlayerPrior(1.0, 0.0, "history")
+        full_anchor = QUALITY_CEILINGS[("waiver", "GK")]
+        headroom = GK_WAIVER_CEILING - full_anchor
+        unsupplied = calculate_waiver_score(
+            keeper, squad_by_position={}, next_gw_id=2, prior=prior,
+        )
+        supplied = calculate_waiver_score(
+            keeper, squad_by_position={}, next_gw_id=2, prior=prior,
+            gk_signals_supplied=True,
+        )
+        assert unsupplied == round(
+            full_anchor * CALIBRATION_ELITE_TARGET / (full_anchor + headroom) * 100
+        )
+        assert supplied != unsupplied
 
 
 class TestCalibrationDriftGuard:

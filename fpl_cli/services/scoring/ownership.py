@@ -3,11 +3,18 @@
 Multi-gameweek acquisition scores built on the shared quality baseline
 plus the scalar 3-GW matchup bonus, ownership / position-need
 adjustments, and the consistency bonus.
+
+Before ``player_prior.CUTOFF_GW`` the quality baseline carries the same
+early-season prior blend the value family runs (``blend_quality_with_prior``),
+anchored on the family's own calibrated anchor rather than the value one, and
+in place of the position-mean shrinkage these families used to stack on top
+of their normalised scores (#206). The bonus terms stay pure observation —
+the prior models a player's pedigree, not the fixtures in front of them.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from fpl_cli.services.scoring.constants import (
     _MATCHUP_MAX,
@@ -20,12 +27,19 @@ from fpl_cli.services.scoring.constants import (
     WAIVER_QUALITY_WEIGHTS,
     QualityWeights,
     _consistency_phase,
+    _ownership_anchor_for,
     _ownership_ceiling_for,
 )
 from fpl_cli.services.scoring.display import normalise_score
-from fpl_cli.services.scoring.value_quality import calculate_mins_factor, calculate_player_quality_score
+from fpl_cli.services.scoring.shrinkage import is_known_unavailable
+from fpl_cli.services.scoring.value_quality import (
+    blend_quality_with_prior,
+    calculate_mins_factor,
+    calculate_player_quality_score,
+)
 
 if TYPE_CHECKING:
+    from fpl_cli.services.player_prior import PlayerPrior
     from fpl_cli.services.scoring.evaluation import PlayerEvaluation
 
 
@@ -53,15 +67,43 @@ def _calculate_quality_based_raw(
     *,
     weights: QualityWeights,
     next_gw_id: int,
+    anchor: float,
+    prior: PlayerPrior | None = None,
     ownership_config: dict[str, float] | None = None,
     mins_factor_override: float | None = None,
     differential: bool = False,
 ) -> float:
     """Raw ownership-family score before normalisation.
 
-    Computes: quality baseline + ownership bonus + matchup bonus +
-    consistency bonus + availability penalty. Returns un-normalised float
-    so callers can add formula-specific adjustments before normalising.
+    Computes: quality baseline (prior-blended before the cutoff) + ownership
+    bonus + matchup bonus + consistency bonus + availability penalty. Returns
+    un-normalised float so callers can add formula-specific adjustments before
+    normalising.
+
+    *anchor* is the family's calibrated quality anchor for this position at
+    this gameweek — ``_ownership_anchor_for``, i.e. the ceiling the caller
+    normalises against minus its bonus headroom. Only the blend reads it.
+
+    *prior*: before ``player_prior.CUTOFF_GW`` the quality baseline is blended
+    with the score last season's pedigree implies, exactly as the value family
+    does (``blend_quality_with_prior``) and in place of the position-mean
+    shrinkage these families used to apply after normalisation (#206). Going
+    into GW2 form and ppg are one observation of one match and both caps
+    saturate on a single good game, so a one-game wonder out-ranks a
+    quiet-starting elite. Shrinkage compresses that gap rather than closing
+    it: it swaps two players only when their confidences differ enough to
+    overcome the distance between their scores, which is nowhere near enough
+    to move a saturated one-game score off the top of a list.
+
+    The blend sits between the baseline and the bonuses on purpose. The prior
+    is a statement about the player — last season's pts/90 percentile, or
+    price for a player without PL history — and models none of what the bonus
+    terms measure: the fixtures in front of them, how many managers own them,
+    which slot of your squad is thin, or how volatile their returns have been.
+    Blending those in would credit a pedigree for a fixture run it never
+    played. That also fixes the scale the prior is read on: the anchor is what
+    an elite *baseline* reaches, so a top-percentile prior is read as exactly
+    that elite and the bonus headroom stays reachable on top.
 
     *mins_factor_override*: when set, replaces the standard
     ``calculate_mins_factor`` result for both quality score and matchup
@@ -90,6 +132,19 @@ def _calculate_quality_based_raw(
         effective_weights,
         mins_factor,
         position=evaluation.position,
+    )
+
+    # Early-season prior blend, on the baseline only and before every bonus.
+    # Holds out players known not to be playing for the same reason shrinkage
+    # did (#122): their low score is an observed fact, not a small sample.
+    score = blend_quality_with_prior(
+        score, prior,
+        ceiling=anchor, next_gw_id=next_gw_id,
+        known_unavailable=is_known_unavailable(
+            chance_of_playing=evaluation.chance_of_playing,
+            minutes=evaluation.minutes,
+            next_gw_id=next_gw_id,
+        ),
     )
 
     # Ownership bonus (differential only)
@@ -121,24 +176,34 @@ def _calculate_quality_based_raw(
 def _calculate_quality_based_score(
     evaluation: PlayerEvaluation,
     *,
+    family: Literal["target", "differential"],
     weights: QualityWeights,
-    ceiling: float,
     next_gw_id: int,
+    prior: PlayerPrior | None = None,
     ownership_config: dict[str, float] | None = None,
     differential: bool = False,
 ) -> int:
-    """Shared scoring logic for target, differential, and (via raw) waiver.
+    """Shared scoring logic for target and differential.
 
-    Thin wrapper: delegates to ``_calculate_quality_based_raw`` then normalises.
+    Thin wrapper: delegates to ``_calculate_quality_based_raw`` then
+    normalises. The blend anchor and the normalisation ceiling are the same
+    quantity plus the family's bonus headroom, taken with the same arguments,
+    so they cannot describe different scales. Waiver keeps its own flow — it
+    adds position-need and team-stacking terms to the raw score and decides
+    the GK scaling per player.
     """
     raw = _calculate_quality_based_raw(
         evaluation,
         weights=weights,
         next_gw_id=next_gw_id,
+        anchor=_ownership_anchor_for(family, evaluation.position, next_gw_id=next_gw_id),
+        prior=prior,
         ownership_config=ownership_config,
         differential=differential,
     )
-    return normalise_score(raw, ceiling)
+    return normalise_score(
+        raw, _ownership_ceiling_for(family, evaluation.position, next_gw_id=next_gw_id),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -150,14 +215,20 @@ def calculate_target_score(
     evaluation: PlayerEvaluation,
     *,
     next_gw_id: int,
+    prior: PlayerPrior | None = None,
 ) -> int:
-    """Calculate a target score (pure performance, no ownership bias)."""
-    ceiling = _ownership_ceiling_for("target", evaluation.position, next_gw_id=next_gw_id)
+    """Calculate a target score (pure performance, no ownership bias).
+
+    *prior* carries the early-season blend into the quality baseline before
+    ``player_prior.CUTOFF_GW``; without it the score is pure observation and
+    small-sample dominated going into GW2 (#206).
+    """
     return _calculate_quality_based_score(
         evaluation,
+        family="target",
         weights=TARGET_QUALITY_WEIGHTS,
-        ceiling=ceiling,
         next_gw_id=next_gw_id,
+        prior=prior,
     )
 
 
@@ -166,14 +237,20 @@ def calculate_differential_score(
     *,
     semi_differential_threshold: float,
     next_gw_id: int,
+    prior: PlayerPrior | None = None,
 ) -> int:
-    """Calculate a differential score for a player."""
-    ceiling = _ownership_ceiling_for("differential", evaluation.position, next_gw_id=next_gw_id)
+    """Calculate a differential score for a player.
+
+    *prior* carries the early-season blend into the quality baseline, as for
+    ``calculate_target_score``. The ownership bonus stays pure observation:
+    how many managers own a player is measured, not estimated.
+    """
     return _calculate_quality_based_score(
         evaluation,
+        family="differential",
         weights=DIFFERENTIAL_QUALITY_WEIGHTS,
-        ceiling=ceiling,
         next_gw_id=next_gw_id,
+        prior=prior,
         ownership_config={
             "threshold": semi_differential_threshold,
             "divisor": 3,
@@ -189,6 +266,7 @@ def calculate_waiver_score(
     team_counts: dict[str, int] | None = None,
     next_gw_id: int,
     gk_signals_supplied: bool = False,
+    prior: PlayerPrior | None = None,
 ) -> int:
     """Calculate a waiver priority score for a player.
 
@@ -200,6 +278,11 @@ def calculate_waiver_score(
 
     Position-need and team-stacking adjustments are waiver-specific
     and applied to the raw score before normalisation.
+
+    *prior* carries the early-season blend into the quality baseline, as for
+    ``calculate_target_score``. It reaches this family through a draft-keyed
+    prior map (#209), and the blend anchor follows *gk_signals_supplied* for
+    the same reason the ceiling does — see below.
 
     *gk_signals_supplied* says whether this evaluation carries the GK signal
     block, which decides whether the GK anchor is calendar-scaled. The draft
@@ -222,10 +305,21 @@ def calculate_waiver_score(
     else:
         combined_mins_factor = 0.0
 
+    # The GK anchor is calendar-scaled only for a keeper whose signals this
+    # evaluation actually carries; without them the full anchor stands, or a
+    # scaled denominator over a signal-less numerator inflates him (#207). The
+    # blend anchor below takes the same gameweek, so the prior-implied
+    # baseline and the observed one it replaces always sit on one scale.
+    gk_scaling_gw = next_gw_id if gk_signals_supplied else None
+
     score = _calculate_quality_based_raw(
         evaluation,
         weights=WAIVER_QUALITY_WEIGHTS,
         next_gw_id=next_gw_id,
+        anchor=_ownership_anchor_for(
+            "waiver", evaluation.position, next_gw_id=gk_scaling_gw,
+        ),
+        prior=prior,
         mins_factor_override=combined_mins_factor,
     )
 
@@ -247,12 +341,7 @@ def calculate_waiver_score(
         elif current_count == 2:
             score -= 2
 
-    # The GK anchor is calendar-scaled only for a keeper whose signals this
-    # evaluation actually carries; without them the full anchor stands, or a
-    # scaled denominator over a signal-less numerator inflates him (#207).
-    waiver_ceiling = _ownership_ceiling_for(
-        "waiver",
-        evaluation.position,
-        next_gw_id=next_gw_id if gk_signals_supplied else None,
+    return normalise_score(
+        score,
+        _ownership_ceiling_for("waiver", evaluation.position, next_gw_id=gk_scaling_gw),
     )
-    return normalise_score(score, waiver_ceiling)

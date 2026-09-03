@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fpl_cli.agents.base import Agent, AgentResult, AgentStatus
 from fpl_cli.agents.common import fetch_understat_lookup
@@ -14,7 +14,6 @@ from fpl_cli.services.scoring import (
     apply_adjusted_npxg,
     apply_consistency,
     apply_gk_signals,
-    apply_shrinkage,
     build_player_evaluation,
     calculate_differential_score,
     calculate_target_score,
@@ -22,8 +21,10 @@ from fpl_cli.services.scoring import (
     compute_form_trajectory,
     compute_xgi_sustainability,
     prepare_scoring_data,
-    unavailable_player_ids,
 )
+
+if TYPE_CHECKING:
+    from fpl_cli.services.player_prior import PlayerPrior
 
 RECOGNISED_VIEWS: frozenset[str] = frozenset({
     "underperformers",
@@ -600,7 +601,7 @@ class StatsAgent(Agent):
 
             # Calculate differential score
             # Higher score = better differential pick
-            score = self._calculate_differential_score(p)
+            score = self._calculate_differential_score(p, _priors.get(p["id"]) if _priors else None)
 
             # Determine differential tier
             if ownership < self.differential_threshold:
@@ -633,13 +634,9 @@ class StatsAgent(Agent):
                 "cv_xgi_percentile": self._get_consistency_percentile(p["id"]),
             })
 
-        # Apply early-season shrinkage, holding out players who are known not
-        # to be playing (their low score is a fact, not a small sample)
-        apply_shrinkage(
-            differentials, "differential_score",
-            getattr(self, "_player_priors", None), self._next_gw_id,
-            unavailable_ids=unavailable_player_ids(players, self._next_gw_id),
-        )
+        # No position-mean shrinkage here: the early-season prior is blended
+        # into the quality baseline inside the score itself (#206), which can
+        # reorder the pool as shrinkage cannot, and the two are never stacked.
 
         # Sort by differential score
         differentials.sort(key=lambda x: x["differential_score"], reverse=True)
@@ -661,8 +658,15 @@ class StatsAgent(Agent):
             },
         }
 
-    def _calculate_differential_score(self, player: PlayerStats) -> int:
-        """Calculate a differential score via the player scoring engine."""
+    def _calculate_differential_score(
+        self, player: PlayerStats, prior: PlayerPrior | None = None,
+    ) -> int:
+        """Calculate a differential score via the player scoring engine.
+
+        *prior* carries the early-season blend into the score's quality
+        baseline, in place of the position-mean shrinkage this view used to
+        apply after ranking (#206).
+        """
         enrichment = self._prior_enrichment(player.get("id")) or {}
         npxg = player.get("npxG_per_90")
         if npxg is not None:
@@ -684,6 +688,7 @@ class StatsAgent(Agent):
             evaluation,
             semi_differential_threshold=self.semi_differential_threshold,
             next_gw_id=self._next_gw_id,
+            prior=prior,
         )
 
     def _find_targets(
@@ -708,7 +713,7 @@ class StatsAgent(Agent):
                 continue
 
             # Calculate target score (no ownership penalty)
-            score = self._calculate_target_score(p)
+            score = self._calculate_target_score(p, _priors.get(p["id"]) if _priors else None)
 
             # Determine ownership tier
             if ownership >= 30:
@@ -743,13 +748,9 @@ class StatsAgent(Agent):
                 "cv_xgi_percentile": self._get_consistency_percentile(p["id"]),
             })
 
-        # Apply early-season shrinkage, holding out players who are known not
-        # to be playing (their low score is a fact, not a small sample)
-        apply_shrinkage(
-            targets, "target_score",
-            getattr(self, "_player_priors", None), self._next_gw_id,
-            unavailable_ids=unavailable_player_ids(players, self._next_gw_id),
-        )
+        # No position-mean shrinkage here: the early-season prior is blended
+        # into the quality baseline inside the score itself (#206), which can
+        # reorder the pool as shrinkage cannot, and the two are never stacked.
 
         # Sort by target score
         targets.sort(key=lambda x: x["target_score"], reverse=True)
@@ -774,8 +775,15 @@ class StatsAgent(Agent):
             "by_position": by_position,
         }
 
-    def _calculate_target_score(self, player: PlayerStats) -> int:
-        """Calculate a target score via the player scoring engine."""
+    def _calculate_target_score(
+        self, player: PlayerStats, prior: PlayerPrior | None = None,
+    ) -> int:
+        """Calculate a target score via the player scoring engine.
+
+        *prior* carries the early-season blend into the score's quality
+        baseline, in place of the position-mean shrinkage this view used to
+        apply after ranking (#206).
+        """
         enrichment = self._prior_enrichment(player.get("id")) or {}
         npxg = player.get("npxG_per_90")
         if npxg is not None:
@@ -796,6 +804,7 @@ class StatsAgent(Agent):
         return calculate_target_score(
             evaluation,
             next_gw_id=self._next_gw_id,
+            prior=prior,
         )
 
     def _get_consistency_percentile(self, player_id: int | None) -> float | None:

@@ -245,3 +245,95 @@ class TestStatsAgentReliability:
         result = agent._find_differentials(players)
 
         assert result["all"][0]["reliability"] == pytest.approx(0.70)
+
+
+class TestStatsAgentEarlySeasonPriorBlend:
+    """Target and differential ranking carries the prior blend (#206).
+
+    Going into GW2 form and ppg are one observation of one match and both
+    caps saturate on a single good game, so the ranked lists put a one-game
+    wonder above a quiet-starting elite. The position-mean shrinkage these
+    views used to run afterwards could not fix that — it compresses gaps
+    rather than reordering them — so the prior now enters the quality
+    baseline inside the score, and the shrinkage pass is gone.
+    """
+
+    @staticmethod
+    def _fwd(player_id: int, *, form: float, ppg: float, xgi: float, minutes: int) -> dict:
+        return {
+            "id": player_id, "player_name": f"Player{player_id}", "team_short": "TST",
+            "position": "FWD", "price": 80, "ownership": 8.0,
+            "minutes": minutes, "goals": 0, "assists": 0, "GI": 0,
+            "xG": 0.0, "xA": 0.0, "xGI": 0.0,
+            "xG_per_90": 0.0, "xA_per_90": 0.0, "xGI_per_90": xgi,
+            "goals_minus_xG": 0.0, "assists_minus_xA": 0.0, "GI_minus_xGI": 0.0,
+            "form": form, "total_points": 0, "ppg": ppg, "dc_per_90": 0.0,
+            "npxG_per_90": None, "xGChain_per_90": None, "xGBuildup_per_90": None,
+            "penalty_xG": None, "penalty_xG_per_90": None,
+            "matchup_score": 5.0, "next_opponent": "CHE",
+        }
+
+    def _pool(self) -> list[dict]:
+        return [
+            self._fwd(1, form=9.0, ppg=9.0, xgi=1.4, minutes=65),   # one-game wonder
+            self._fwd(2, form=2.0, ppg=2.0, xgi=0.9, minutes=90),   # quiet elite
+        ]
+
+    @staticmethod
+    def _priors() -> dict:
+        from fpl_cli.services.player_prior import PlayerPrior, _compute_confidence
+        return {
+            1: PlayerPrior(0.2, _compute_confidence(2, 0.2), "price"),
+            2: PlayerPrior(1.0, _compute_confidence(2, 1.0), "history"),
+        }
+
+    def _agent(self, priors: dict | None) -> StatsAgent:
+        agent = StatsAgent(config={
+            "gameweeks": 0,
+            "differential_threshold": 5.0,
+            "semi_differential_threshold": 15.0,
+        })
+        agent._player_priors = priors
+        agent._next_gw_id = 2
+        return agent
+
+    def test_targets_invert_without_priors(self):
+        """The defect: pure observation puts the wonder on top."""
+        result = self._agent(None)._find_targets(self._pool())
+        assert [p["id"] for p in result["all"]] == [1, 2]
+
+    def test_targets_rank_the_quiet_elite_first_with_priors(self):
+        result = self._agent(self._priors())._find_targets(self._pool())
+        assert [p["id"] for p in result["all"]] == [2, 1]
+
+    def test_differentials_rank_the_quiet_elite_first_with_priors(self):
+        result = self._agent(self._priors())._find_differentials(self._pool())
+        assert [p["id"] for p in result["all"]] == [2, 1]
+
+    def test_scores_are_the_blend_alone_not_blend_plus_shrinkage(self):
+        """The two devices are never stacked: the ranked score is exactly the
+        score the formula returned, with nothing pulled toward a mean after.
+        """
+        agent = self._agent(self._priors())
+        priors = self._priors()
+        pool = self._pool()
+        ranked = agent._find_targets(pool)
+        for entry in ranked["all"]:
+            player = next(p for p in pool if p["id"] == entry["id"])
+            assert entry["target_score"] == agent._calculate_target_score(
+                player, priors[entry["id"]],
+            )
+
+    def test_ruled_out_player_is_not_handed_last_seasons_standing(self):
+        """The #122 hold-out survives the move inside the blend."""
+        from fpl_cli.services.player_prior import PlayerPrior
+        pool = self._pool()
+        ruled_out = self._fwd(3, form=0.0, ppg=0.0, xgi=0.0, minutes=0)
+        ruled_out["chance_of_playing"] = 0
+        ruled_out["status"] = "i"
+        pool.append(ruled_out)
+
+        agent = self._agent({**self._priors(), 3: PlayerPrior(1.0, 0.0, "history")})
+        result = agent._find_targets(pool)
+
+        assert [p["id"] for p in result["all"]][-1] == 3
