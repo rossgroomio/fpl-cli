@@ -306,6 +306,32 @@ Squad Exposure:
 - Handles Free Hit chip reversion (uses GW before FH for actual squad)
 - Primary use: timing Free Hit blanks and Bench Boost doubles
 
+### Gameweek Fixtures
+
+The fixture list for one gameweek with an FDR beside each side.
+
+```bash
+fpl fixtures                         # Next gameweek
+fpl fixtures -g 32                   # A specific gameweek
+fpl fixtures -m opponent             # Opponent-rating-only mode
+fpl fixtures --format json           # JSON envelope (metadata: {gameweek, fdr_mode, warnings})
+```
+
+The FDR is the same general figure `fpl fdr` and `fpl preview` show — the mean of the
+fixture's ATK and DEF [positional FDRs](custom-analysis.md#position-specific-fdr), scored
+at the venue and in the selected [mode](#fdr-modes--m), on the 1-7 scale. It read the
+opponent's venue-blind average rating until #202, so the same match carried two different
+numbers under the same header depending on which command printed it.
+
+A fixture involving a club the ratings do not cover scores the neutral 4.0, not the FPL
+API's `home_difficulty` — that would sit on a 1-5 scale inside a 1-7 column. When the
+ratings cannot support difficulty at all (missing, last season's, or flat), table mode
+prints the stderr notice `fpl fdr` prints and JSON mode adds a `team_ratings_unusable`
+entry to `metadata.warnings`, so a table of flat 4.0s is not read as analysis.
+
+Unlike `fpl fdr` and `fpl preview`, this command is data-only: the `custom_analysis`
+toggle does not switch it back to raw FPL API difficulty.
+
 ### Team Ratings
 
 4-axis team strength ratings on a 1-7 scale derived from actual match results. The data source behind FDR, captain picks, squad grid, and other fixture-aware commands.

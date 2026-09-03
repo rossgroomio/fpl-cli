@@ -307,15 +307,16 @@ class FixtureAgent(Agent):
 
                 # General FDR is the ATK/DEF mean, so it sits on the same model
                 # and venue as the two columns shown beside it and the "overall"
-                # ranking agrees with them (#186). The old opponent-only,
-                # venue-blind avg_overall_fdr ranked the league's weakest side
-                # above its strongest because it could not see either team.
+                # ranking agrees with them (#186). The opponent-only,
+                # venue-blind avg_overall_fdr it replaced ranked the league's
+                # weakest side above its strongest because it could see neither
+                # team; `fpl fixtures` read the same figure until #202.
                 # No API-difficulty fallback for unrated clubs: that put their
                 # fixtures on the API's 1-5 scale inside a 1-7 ranking, so they
                 # floated up the easiest-runs table. They score the same
                 # neutral 4.0 the positional columns already give them.
-                home_fdr = self.general_fdr(home_pos_fdr)
-                away_fdr = self.general_fdr(away_pos_fdr)
+                home_fdr = self.general_fdr(home_team.short_name, away_team.short_name, is_home=True)
+                away_fdr = self.general_fdr(away_team.short_name, home_team.short_name, is_home=False)
 
                 fdr_by_team[f.home_team_id].append({
                     "gameweek": f.gameweek,
@@ -471,26 +472,37 @@ class FixtureAgent(Agent):
             result["home_fdr_def"] = home_pos_fdr["DEF"]
             result["away_fdr_atk"] = away_pos_fdr["ATK"]
             result["away_fdr_def"] = away_pos_fdr["DEF"]
-            result["home_fdr"] = self.general_fdr(home_pos_fdr)
-            result["away_fdr"] = self.general_fdr(away_pos_fdr)
+            result["home_fdr"] = self.general_fdr(home.short_name, away.short_name, is_home=True)
+            result["away_fdr"] = self.general_fdr(away.short_name, home.short_name, is_home=False)
 
         return result
 
-    @staticmethod
-    def general_fdr(positional_fdr: dict[str, float]) -> float:
+    def general_fdr(
+        self,
+        team_short: str,
+        opponent_short: str,
+        is_home: bool,
+        mode: str | None = None,
+    ) -> float:
         """General FDR for one fixture: the mean of its ATK and DEF positional FDRs.
 
-        Keeps the general figure on the same model, and at the same venue, as
-        the two positional ones it is shown beside. In difference mode that
-        blends the team's own strength with the opponent's; in opponent mode
-        it is the opponent's strength at the venue. A fixture involving an
-        unrated club scores the ratings service's neutral 4.0 on all three,
-        keeping every figure on one 1-7 scale.
+        Thin wrapper over ``TeamRatingsService.get_fixture_fdr``, which owns
+        the definition so `fpl fixtures` scores a fixture the same way this
+        agent does rather than keeping a second copy of it (#202).
 
         Args:
-            positional_fdr: ``get_fixture_fdr_by_position`` output for the fixture
+            team_short: Short name of the team whose fixture this is
+            opponent_short: Opponent team short name
+            is_home: Whether the team is at home
+            mode: "difference" or "opponent" (defaults to self.fdr_mode)
         """
-        return round((positional_fdr["ATK"] + positional_fdr["DEF"]) / 2, 2)
+        resolved_mode: str = mode or self.fdr_mode
+        return self.ratings_service.get_fixture_fdr(
+            team=team_short,
+            opponent=opponent_short,
+            venue="home" if is_home else "away",
+            mode=resolved_mode,
+        )
 
     def get_positional_fdr(
         self,

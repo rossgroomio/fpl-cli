@@ -35,9 +35,9 @@ def _make_ratings_service(ratings: dict[str, TeamRating]) -> TeamRatingsService:
 
 
 # Ratings fixtures: strong team vs weak team
-STRONG_TEAM = TeamRating(atk_home=1, atk_away=2, def_home=1, def_away=2)  # avg_overall=1.5, fdr=6.5
-WEAK_TEAM = TeamRating(atk_home=6, atk_away=7, def_home=6, def_away=7)    # avg_overall=6.5, fdr=1.5
-MID_TEAM = TeamRating(atk_home=4, atk_away=4, def_home=4, def_away=4)     # avg_overall=4.0, fdr=4.0
+STRONG_TEAM = TeamRating(atk_home=1, atk_away=2, def_home=1, def_away=2)  # avg_overall=1.5
+WEAK_TEAM = TeamRating(atk_home=6, atk_away=7, def_home=6, def_away=7)    # avg_overall=6.5
+MID_TEAM = TeamRating(atk_home=4, atk_away=4, def_home=4, def_away=4)     # avg_overall=4.0
 
 
 # ---------------------------------------------------------------------------
@@ -346,7 +346,7 @@ class TestFDRRangeValidation:
         self.svc = _make_ratings_service(self.ratings)
 
     def test_positional_fdr_in_range(self):
-        """Both positional FDR and avg_overall_fdr produce values in 1.0-7.0 range."""
+        """Positional FDR produces values in the 1.0-7.0 range."""
         positions = ["FWD", "MID", "DEF", "GK"]
         teams = ["LIV", "SHU", "BHA"]
         venues = ["home", "away"]
@@ -365,11 +365,19 @@ class TestFDRRangeValidation:
                             f"{pos} {team} vs {opp} ({venue})"
                         )
 
-    def test_avg_overall_fdr_in_range(self):
-        """avg_overall_fdr is also in 1.0-7.0 range."""
-        for name, rating in self.ratings.items():
-            fdr = rating.avg_overall_fdr
-            assert 1.0 <= fdr <= 7.0, f"avg_overall_fdr out of range for {name}: {fdr}"
+    def test_general_fixture_fdr_in_range(self):
+        """The general FDR, the ATK/DEF mean, is in the same 1.0-7.0 range."""
+        teams = ["LIV", "SHU", "BHA"]
+
+        for team in teams:
+            for opp in teams:
+                if team == opp:
+                    continue
+                for venue in ["home", "away"]:
+                    fdr = self.svc.get_fixture_fdr(team, opp, venue, mode="difference")
+                    assert 1.0 <= fdr <= 7.0, (
+                        f"General FDR out of range: {fdr} for {team} vs {opp} ({venue})"
+                    )
 
     def test_fwd_semantic_ordering(self):
         """FWD vs weak defence should get lower (easier) FDR than vs strong defence."""

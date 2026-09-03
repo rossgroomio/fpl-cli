@@ -990,6 +990,41 @@ class TestFixtureAgentPositionalFDR:
         assert fdr["DEF"] == 7.0
 
 
+    def test_general_fdr_delegates_to_the_ratings_service(self, agent, temp_ratings_config):
+        """One definition of the general FDR, so `fpl fixtures` cannot drift (#202)."""
+        from fpl_cli.services.team_ratings import TeamRatingsService
+
+        service = TeamRatingsService(config_path=temp_ratings_config)
+        agent.ratings_service = service
+
+        assert agent.general_fdr("ARS", "MCI", is_home=True) == service.get_fixture_fdr(
+            "ARS", "MCI", "home", mode="difference"
+        )
+
+    def test_general_fdr_is_the_atk_def_mean(self, agent, temp_ratings_config):
+        """Still the mean of the pair shown beside it, at the same venue and mode."""
+        from fpl_cli.services.team_ratings import TeamRatingsService
+
+        agent.ratings_service = TeamRatingsService(config_path=temp_ratings_config)
+
+        pos = agent.get_fixture_fdr_by_position("ARS", "MCI", is_home=True, mode="opponent")
+
+        assert agent.general_fdr("ARS", "MCI", is_home=True, mode="opponent") == (
+            pos["ATK"] + pos["DEF"]
+        ) / 2
+
+    def test_general_fdr_uses_the_agent_mode(self, temp_ratings_config):
+        """No explicit mode falls back to the agent's, like every other FDR call."""
+        from fpl_cli.services.team_ratings import TeamRatingsService
+
+        agent = FixtureAgent(config={"fdr_mode": "opponent"})
+        agent.ratings_service = TeamRatingsService(config_path=temp_ratings_config)
+
+        assert agent.general_fdr("ARS", "MCI", is_home=True) == agent.general_fdr(
+            "ARS", "MCI", is_home=True, mode="opponent"
+        )
+
+
 class TestStatsAgent:
     """Tests for StatsAgent."""
 

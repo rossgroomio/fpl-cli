@@ -256,11 +256,11 @@ def _best_double_candidate(
 
     Each candidate is scored on the fixture agent's ``fdr_by_gameweek`` for
     their own team - the mean general FDR of that team's fixtures in the
-    gameweek, on the venue-aware ATK/DEF model `fpl fdr` and `fpl preview`
-    show - so a candidate facing two weak sides scores low. Grading the
-    candidate's own club instead inverts the signal: `avg_overall_fdr` is the
-    difficulty of facing that club, so a top club reads "hard" and the weakest
-    club in the league reads "easy" (#201).
+    gameweek, on the venue-aware ATK/DEF model every FDR surface shows - so
+    a candidate facing two weak sides scores low. Grading the candidate's own
+    club instead inverts the signal: the venue-blind `avg_overall_fdr` (since
+    removed) was the difficulty of facing that club, so a top club read "hard"
+    and the weakest club in the league read "easy" (#201).
 
     Two candidates are not scoreable, and are skipped rather than graded on a
     number that does not mean what it says:

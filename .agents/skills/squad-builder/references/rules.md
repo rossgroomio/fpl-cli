@@ -8,7 +8,7 @@
 - **ATK column:** Use for FWD and MID (based on opponent's defensive strength)
 - **DEF column:** Use for DEF and GK (based on opponent's offensive strength)
 Use the correct column everywhere fixture difficulty is referenced.
-Label as **pFDR** (not FDR) in all output - this is position-aware and blends team strength with opponent weakness, so values differ from the general FDR shown by `fpl fixtures`.
+Label as **pFDR** (not FDR) in all output - this is position-aware, so values differ from the general FDR shown by `fpl fixtures` and `fpl fdr`, which is the mean of the attacking and defensive figures.
 
 ## Fixture Format
 `OPP (H/A)` - UPPERCASE = easy (pFDR 1-2), lowercase = hard (pFDR 4+), Title Case = neutral.

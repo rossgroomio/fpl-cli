@@ -9,7 +9,7 @@ import click
 from rich.panel import Panel
 from rich.table import Table
 
-from fpl_cli.cli._context import console
+from fpl_cli.cli._context import console, error_console
 from fpl_cli.cli._helpers import _fdr_style
 from fpl_cli.cli._json import (
     api_failure_boundary,
@@ -22,13 +22,15 @@ from fpl_cli.cli._json import (
 
 @click.command("fixtures")
 @click.option("--gameweek", "-g", type=int, help="Gameweek number (default: next)")
+@click.option("--mode", "-m", type=click.Choice(["difference", "opponent"]), default="difference",
+              help="FDR mode: 'difference' (team vs opponent) or 'opponent' (opponent rating only)")
 @output_format_option
-def fixtures_command(gameweek: int | None, output_format: str):
+def fixtures_command(gameweek: int | None, mode: str, output_format: str):
     """Show fixtures for a gameweek."""
 
     async def _run():
         from fpl_cli.api.fpl import FPLClient
-        from fpl_cli.services.team_ratings import TeamRatingsService
+        from fpl_cli.services.team_ratings import TeamRatingsService, fdr_scale_footer
         from fpl_cli.utils.time import format_kickoff
 
         async with FPLClient() as client:
@@ -53,10 +55,8 @@ def fixtures_command(gameweek: int | None, output_format: str):
                         home_name = home_team.short_name if home_team else "???"
                         away_name = away_team.short_name if away_team else "???"
 
-                        away_rating = ratings_service.get_rating(away_name)
-                        home_fdr = away_rating.avg_overall_fdr if away_rating else fixture.home_difficulty
-                        home_rating = ratings_service.get_rating(home_name)
-                        away_fdr = home_rating.avg_overall_fdr if home_rating else fixture.away_difficulty
+                        home_fdr = ratings_service.get_fixture_fdr(home_name, away_name, "home", mode=mode)
+                        away_fdr = ratings_service.get_fixture_fdr(away_name, home_name, "away", mode=mode)
 
                         fixtures_list.append({
                             "home": home_name,
@@ -69,7 +69,23 @@ def fixtures_command(gameweek: int | None, output_format: str):
                             "away_score": fixture.away_score,
                         })
 
-                    emit_json("fixtures", fixtures_list, metadata={"gameweek": gw_num})
+                    # `warnings` is always present, empty or not, matching `fdr`
+                    # and `stats`: a consumer indexes it rather than checking
+                    # for the key first. Without it a table of flat 4.0s reads
+                    # as analysis rather than as "nothing to rate these on".
+                    warnings: list[dict[str, str]] = []
+                    ratings_warning = ratings_service.get_staleness_warning()
+                    if ratings_warning:
+                        warnings.append({
+                            "code": "team_ratings_unusable",
+                            "message": ratings_warning,
+                        })
+
+                    emit_json("fixtures", fixtures_list, metadata={
+                        "gameweek": gw_num,
+                        "fdr_mode": mode,
+                        "warnings": warnings,
+                    })
                 except Exception as e:  # noqa: BLE001 — display resilience
                     emit_json_error("fixtures", str(e))
                 return
@@ -81,6 +97,13 @@ def fixtures_command(gameweek: int | None, output_format: str):
                 teams = {t.id: t for t in await client.get_teams()}
                 ratings_service = TeamRatingsService()
                 await ratings_service.ensure_fresh(client)
+
+                # Same rating-quality note `fpl fdr` and `fpl preview` print:
+                # with no usable ratings every FDR below is the neutral 4.0,
+                # and a flat table needs saying so.
+                ratings_warning = ratings_service.get_staleness_warning()
+                if ratings_warning:
+                    error_console.print(f"[yellow]{ratings_warning}[/yellow]\n")
 
                 table = Table(show_header=True, header_style="bold")
                 table.add_column("Home")
@@ -97,11 +120,10 @@ def fixtures_command(gameweek: int | None, output_format: str):
                     home_name = home_team.short_name if home_team else "???"
                     away_name = away_team.short_name if away_team else "???"
 
-                    # Team ratings FDR, fallback to FPL API
-                    away_rating = ratings_service.get_rating(away_name)
-                    home_fdr = away_rating.avg_overall_fdr if away_rating else fixture.home_difficulty
-                    home_rating = ratings_service.get_rating(home_name)
-                    away_fdr = home_rating.avg_overall_fdr if home_rating else fixture.away_difficulty
+                    # The general FDR the fixture agent scores, so this table and
+                    # the preview's Gameweek Fixtures table agree on a match (#202)
+                    home_fdr = ratings_service.get_fixture_fdr(home_name, away_name, "home", mode=mode)
+                    away_fdr = ratings_service.get_fixture_fdr(away_name, home_name, "away", mode=mode)
 
                     home_fdr_style = _fdr_style(home_fdr)
                     away_fdr_style = _fdr_style(away_fdr)
@@ -113,20 +135,17 @@ def fixtures_command(gameweek: int | None, output_format: str):
                     else:
                         score = "vs"
 
-                    # Format FDR with 1 decimal for floats
-                    home_fdr_str = f"{home_fdr:.1f}" if isinstance(home_fdr, float) else str(home_fdr)
-                    away_fdr_str = f"{away_fdr:.1f}" if isinstance(away_fdr, float) else str(away_fdr)
-
                     table.add_row(
                         home_name,
-                        f"[{home_fdr_style}]{home_fdr_str}[/{home_fdr_style}]",
+                        f"[{home_fdr_style}]{home_fdr:.1f}[/{home_fdr_style}]",
                         score,
-                        f"[{away_fdr_style}]{away_fdr_str}[/{away_fdr_style}]",
+                        f"[{away_fdr_style}]{away_fdr:.1f}[/{away_fdr_style}]",
                         away_name,
                         kickoff,
                     )
 
                 console.print(table)
+                console.print(f"[dim]{fdr_scale_footer(mode)}[/dim]")
 
             except Exception as e:  # noqa: BLE001 — display resilience
                 # Reports and exits 1. Printing and falling off the end left

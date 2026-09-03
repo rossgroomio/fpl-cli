@@ -64,6 +64,21 @@ def fdr_columns_footer(mode: str) -> str:
     )
 
 
+def fdr_scale_footer(mode: str) -> str:
+    """Footer for a table showing the general FDR alone, without the ATK/DEF pair.
+
+    The `fdr_columns_footer` sentence describes columns `fpl fixtures` does not
+    show, but the figure is the same one, so the reading it needs is the same
+    minus the column glossary: which mode, and what an unrated club scores.
+    """
+    gloss = FDR_MODE_GLOSS.get(mode, mode)
+    return (
+        f"FDR scale: 1 (easiest) - 7 (hardest), in {mode} mode ({gloss}); "
+        "each figure is the mean of the attacking and defensive difficulty of the "
+        "fixture for that team. Fixtures involving an unrated club score a neutral 4.0."
+    )
+
+
 @dataclass
 class TeamRating:
     """4-axis rating for a single team."""
@@ -87,11 +102,6 @@ class TeamRating:
     def avg_overall(self) -> float:
         """Overall average rating (1=best, 7=worst)."""
         return (self.atk_home + self.atk_away + self.def_home + self.def_away) / 4
-
-    @property
-    def avg_overall_fdr(self) -> float:
-        """Overall FDR (1=easy, 7=hard). Inverts avg_overall for fixture difficulty."""
-        return 8 - self.avg_overall
 
 
 @dataclass
@@ -588,6 +598,43 @@ class TeamRatingsService:
                 team_def = team_rating.def_home if venue == "home" else team_rating.def_away
                 return (opp_fdr + team_def) / 2
             return float(opp_fdr)
+
+    def get_fixture_fdr(
+        self,
+        team: str,
+        opponent: str,
+        venue: str,
+        mode: str = "difference",
+    ) -> float:
+        """General FDR for one fixture: the mean of its ATK and DEF positional FDRs.
+
+        The one definition of the general figure, so a fixture is scored once
+        in the codebase and every surface showing an FDR for it -- `fpl fdr`,
+        `fpl preview`, `fpl fixtures` -- prints the same number (#202). It is
+        venue-aware and, in difference mode, blends the team's own strength
+        with the opponent's, exactly like the positional pair it averages.
+
+        It replaced `TeamRating.avg_overall_fdr`, the opponent's mean across
+        all four axes: that had no input from the team whose fixture it was
+        and no venue, so it answered "how strong is the opponent" where the
+        column asks "how hard is this fixture" (#186).
+
+        An unrated club scores the neutral 4.0 `get_positional_fdr` returns,
+        not the FPL API's `home_difficulty`/`away_difficulty`: that fallback
+        put one club on a 1-5 scale inside a 1-7 column.
+
+        Args:
+            team: Short name of the team whose fixture this is (e.g. "LIV")
+            opponent: Opponent team short name (e.g. "ARS")
+            venue: "home" or "away", from *team*'s point of view
+            mode: "difference" (default) or "opponent"
+
+        Returns:
+            FDR value (1-7 scale, lower = easier fixture)
+        """
+        atk_fdr = self.get_positional_fdr("FWD", team, opponent, venue, mode)
+        def_fdr = self.get_positional_fdr("DEF", team, opponent, venue, mode)
+        return round((atk_fdr + def_fdr) / 2, 2)
 
     @property
     def metadata(self) -> RatingsMetadata | None:
