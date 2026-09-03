@@ -18,10 +18,10 @@ import json
 import sys
 
 from _bootstrap import bootstrap_user_dirs
+from _resolve import resolve_all, resolve_one
 
 from fpl_cli.agents.analysis.transfer_eval import TransferEvalAgent
 from fpl_cli.api.fpl import FPLClient
-from fpl_cli.models.player import AmbiguousPlayerError, resolve_player
 
 
 async def _run(out_name: str, in_names: list[str]) -> None:
@@ -30,26 +30,8 @@ async def _run(out_name: str, in_names: list[str]) -> None:
         all_teams = await client.get_teams()
 
     errors: list[str] = []
-
-    try:
-        out_player = resolve_player(out_name, all_players, teams=all_teams)
-        if out_player is None:
-            errors.append(f"Could not resolve OUT player: '{out_name}'")
-    except AmbiguousPlayerError as e:
-        out_player = None
-        errors.append(f"Ambiguous OUT player: {e}")
-
-    in_players = []
-    for name in in_names:
-        try:
-            player = resolve_player(name, all_players, teams=all_teams)
-        except AmbiguousPlayerError as e:
-            errors.append(f"Ambiguous IN player: {e}")
-            continue
-        if player is None:
-            errors.append(f"Could not resolve IN player: '{name}'")
-        else:
-            in_players.append(player)
+    out_player = resolve_one(out_name, all_players, all_teams, label="OUT", errors=errors)
+    in_players = resolve_all(in_names, all_players, all_teams, label="IN", errors=errors)
 
     if errors:
         json.dump({"error": True, "messages": errors}, sys.stdout, indent=2)

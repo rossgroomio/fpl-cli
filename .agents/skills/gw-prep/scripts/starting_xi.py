@@ -18,10 +18,10 @@ import json
 import sys
 
 from _bootstrap import bootstrap_user_dirs
+from _resolve import resolve_all
 
 from fpl_cli.agents.analysis.starting_xi import StartingXIAgent
 from fpl_cli.api.fpl import FPLClient
-from fpl_cli.models.player import AmbiguousPlayerError, resolve_player
 
 
 async def _run(squad_names: list[str]) -> None:
@@ -30,17 +30,7 @@ async def _run(squad_names: list[str]) -> None:
         all_teams = await client.get_teams()
 
     errors: list[str] = []
-    squad_ids: list[int] = []
-    for name in squad_names:
-        try:
-            player = resolve_player(name, all_players, teams=all_teams)
-        except AmbiguousPlayerError as e:
-            errors.append(f"Ambiguous squad player: {e}")
-            continue
-        if player is None:
-            errors.append(f"Could not resolve squad player: '{name}'")
-        else:
-            squad_ids.append(player.id)
+    squad = resolve_all(squad_names, all_players, all_teams, label="squad", errors=errors)
 
     if errors:
         json.dump({"error": True, "messages": errors}, sys.stdout, indent=2)
@@ -48,7 +38,7 @@ async def _run(squad_names: list[str]) -> None:
 
     async with StartingXIAgent() as agent:
         result = await agent.run(context={
-            "squad": squad_ids,
+            "squad": [p.id for p in squad],
         })
 
     if not result.success:

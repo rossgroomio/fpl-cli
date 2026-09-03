@@ -18,33 +18,10 @@ import json
 import sys
 
 from _bootstrap import bootstrap_user_dirs
+from _resolve import resolve_all
 
 from fpl_cli.agents.analysis.bench_order import BenchOrderAgent
 from fpl_cli.api.fpl import FPLClient
-from fpl_cli.models.player import AmbiguousPlayerError, Player, resolve_player
-from fpl_cli.models.team import Team
-
-
-def _resolve_ids(
-    names: list[str],
-    all_players: list[Player],
-    all_teams: list[Team],
-    label: str,
-    errors: list[str],
-) -> list[int]:
-    """Resolve *names* to element ids, collecting failures into *errors*."""
-    ids: list[int] = []
-    for name in names:
-        try:
-            player = resolve_player(name, all_players, teams=all_teams)
-        except AmbiguousPlayerError as e:
-            errors.append(f"Ambiguous {label} player: {e}")
-            continue
-        if player is None:
-            errors.append(f"Could not resolve {label} player: '{name}'")
-        else:
-            ids.append(player.id)
-    return ids
 
 
 async def _run(starting_names: list[str], bench_names: list[str]) -> None:
@@ -53,8 +30,10 @@ async def _run(starting_names: list[str], bench_names: list[str]) -> None:
         all_teams = await client.get_teams()
 
     errors: list[str] = []
-    starting_ids = _resolve_ids(starting_names, all_players, all_teams, "starting", errors)
-    bench_ids = _resolve_ids(bench_names, all_players, all_teams, "bench", errors)
+    starting = resolve_all(
+        starting_names, all_players, all_teams, label="starting", errors=errors,
+    )
+    bench = resolve_all(bench_names, all_players, all_teams, label="bench", errors=errors)
 
     if errors:
         json.dump({"error": True, "messages": errors}, sys.stdout, indent=2)
@@ -62,8 +41,8 @@ async def _run(starting_names: list[str], bench_names: list[str]) -> None:
 
     async with BenchOrderAgent() as agent:
         result = await agent.run(context={
-            "starting_xi": starting_ids,
-            "bench": bench_ids,
+            "starting_xi": [p.id for p in starting],
+            "bench": [p.id for p in bench],
         })
 
     if not result.success:

@@ -647,9 +647,10 @@ Season previews follow the same season-staleness discipline but deliberately **n
     │   │   └── output-template.md
     │   └── scripts/
     │       ├── _bootstrap.py            # Shared startup (user-dir migration) for agent-importing scripts
-    │       ├── bench_order.py           # BenchOrderAgent wrapper (name -> ID resolution)
-    │       ├── starting_xi.py           # StartingXIAgent wrapper (name -> ID resolution)
-    │       ├── transfer_eval.py         # TransferEvalAgent wrapper (name -> ID resolution)
+    │       ├── _resolve.py              # Shared name -> Player resolution + error collection for the three wrappers below
+    │       ├── bench_order.py           # BenchOrderAgent wrapper
+    │       ├── starting_xi.py           # StartingXIAgent wrapper
+    │       ├── transfer_eval.py         # TransferEvalAgent wrapper
     │       ├── extract_classic_squad.py # Classic Squad block extractor (Phase A3 embed + Phase E read-only validator)
     │       └── validate_draft_waivers.py # Draft waiver cross-check against waiver pool + squad grid
     ├── update-gw-prep/           # Second-pass addendum with supplementary data

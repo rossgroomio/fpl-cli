@@ -37,47 +37,11 @@ def _load_script() -> ModuleType:
 
 
 _mod = _load_script()
-resolve_player = _mod.resolve_player
 _run = _mod._run
 
-
-# -- resolve_player tests --
-
-@pytest.fixture
-def players():
-    return [
-        make_player(id=10, web_name="Salah", first_name="Mohamed", second_name="Salah"),
-        make_player(id=20, web_name="Saka", first_name="Bukayo", second_name="Saka"),
-        make_player(id=30, web_name="Haaland", first_name="Erling", second_name="Haaland"),
-        make_player(id=40, web_name="Martinez", first_name="Emiliano", second_name="Martinez"),
-    ]
-
-
-def test_resolve_exact_web_name(players):
-    assert resolve_player("Salah", players).id == 10
-
-
-def test_resolve_exact_full_name(players):
-    assert resolve_player("Mohamed Salah", players).id == 10
-
-
-def test_resolve_case_insensitive(players):
-    assert resolve_player("salah", players).id == 10
-    assert resolve_player("SAKA", players).id == 20
-
-
-def test_resolve_substring_match(players):
-    assert resolve_player("Mohamed", players).id == 10
-    assert resolve_player("Bukayo", players).id == 20
-
-
-def test_resolve_unresolvable(players):
-    assert resolve_player("Nonexistent", players) is None
-
-
-def test_resolve_prefers_exact_over_substring(players):
-    # "Saka" should match web_name exactly, not substring of something else
-    assert resolve_player("Saka", players).id == 20
+# Name resolution itself lives in `_resolve.py`, shared with the other two
+# scripts, and is covered by tests/test_gw_prep_resolve.py; the library
+# function under it by tests/test_player_resolution.py.
 
 
 # -- _run integration tests --
@@ -117,7 +81,7 @@ def mock_teams():
     ]
 
 
-async def test_run_happy_path(mock_players, capsys):
+async def test_run_happy_path(mock_players, mock_teams, capsys):
     expected_data = {"bench_order": [5, 2], "reasoning": "test"}
 
     mock_client = AsyncMock()
@@ -148,7 +112,7 @@ async def test_run_happy_path(mock_players, capsys):
     assert call_ctx["bench"] == [5, 2]
 
 
-async def test_run_unresolvable_player(mock_players, capsys):
+async def test_run_unresolvable_player(mock_players, mock_teams, capsys):
     mock_client = AsyncMock()
     mock_client.get_players = AsyncMock(return_value=mock_players)
     mock_client.get_teams = AsyncMock(return_value=mock_teams)
@@ -167,7 +131,7 @@ async def test_run_unresolvable_player(mock_players, capsys):
     assert any("NonexistentPlayer" in msg for msg in output["messages"])
 
 
-async def test_run_agent_failure(mock_players, capsys):
+async def test_run_agent_failure(mock_players, mock_teams, capsys):
     mock_client = AsyncMock()
     mock_client.get_players = AsyncMock(return_value=mock_players)
     mock_client.get_teams = AsyncMock(return_value=mock_teams)
@@ -194,7 +158,7 @@ async def test_run_agent_failure(mock_players, capsys):
     assert "Something went wrong" in output["messages"]
 
 
-async def test_run_unresolvable_bench_player(mock_players, capsys):
+async def test_run_unresolvable_bench_player(mock_players, mock_teams, capsys):
     mock_client = AsyncMock()
     mock_client.get_players = AsyncMock(return_value=mock_players)
     mock_client.get_teams = AsyncMock(return_value=mock_teams)
@@ -213,7 +177,7 @@ async def test_run_unresolvable_bench_player(mock_players, capsys):
     assert any("NonexistentBench" in msg for msg in output["messages"])
 
 
-async def test_run_agent_failure_empty_errors(mock_players, capsys):
+async def test_run_agent_failure_empty_errors(mock_players, mock_teams, capsys):
     mock_client = AsyncMock()
     mock_client.get_players = AsyncMock(return_value=mock_players)
     mock_client.get_teams = AsyncMock(return_value=mock_teams)

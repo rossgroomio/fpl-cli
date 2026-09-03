@@ -185,19 +185,28 @@ def _ambiguity_message(
     matches: list[Player],
     teams: list[Team] | None,
 ) -> str:
-    """Name every tied candidate and show how to pick one."""
+    """Name every tied candidate and show how to pick one.
+
+    The suggested handle has to actually break the tie. ``Name (TEAM)`` only
+    does that when every candidate is at a different club and all of those
+    clubs are known -- two players at the same club both answer to it, so
+    suggesting it would raise this very error again. Otherwise fall back to
+    the element id, which always separates them.
+    """
     short_names = {t.id: t.short_name for t in teams} if teams else {}
-    labels = [
-        f"{p.web_name} ({short_names[p.team_id]})" if p.team_id in short_names
-        else f"{p.full_name} [id {p.id}]"
-        for p in matches
-    ]
-    if matches[0].team_id in short_names:
+    clubs_separate = (
+        len({p.team_id for p in matches}) == len(matches)
+        and all(p.team_id in short_names for p in matches)
+    )
+    if clubs_separate:
+        labels = [f"{p.web_name} ({short_names[p.team_id]})" for p in matches]
         hint = f"disambiguate with '{labels[0]}'"
     else:
-        # No club to hand back -- either *teams* was not supplied, leaving the
-        # ``(TEAM)`` disambiguator inert, or it does not cover this player's
-        # club. Either way the element id is the handle that still works.
+        labels = [
+            f"{p.full_name} ({short_names[p.team_id]}) [id {p.id}]"
+            if p.team_id in short_names else f"{p.full_name} [id {p.id}]"
+            for p in matches
+        ]
         hint = f"disambiguate by player ID, e.g. '{matches[0].id}'"
     return f"'{query}' matches {len(matches)} players: {', '.join(labels)}; {hint}"
 

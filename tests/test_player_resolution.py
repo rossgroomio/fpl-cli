@@ -181,6 +181,34 @@ class TestResolvePlayerAmbiguity:
         ]
         assert resolve_player("Smit", players).id == 10
 
+    def test_same_club_tie_offers_ids_not_a_club_that_cannot_separate(self):
+        """Both at ARS: `Name (ARS)` would raise this same error again."""
+        players = [
+            make_player(id=100, web_name="Smith", first_name="Adam",
+                        second_name="Smith", team_id=1),
+            make_player(id=200, web_name="Smith", first_name="Ben",
+                        second_name="Smith", team_id=1),
+        ]
+        with pytest.raises(AmbiguousPlayerError) as exc:
+            resolve_player("Smith", players, teams=_teams())
+        msg = str(exc.value)
+        assert "disambiguate by player ID, e.g. '100'" in msg
+        assert "disambiguate with" not in msg
+        # The club still appears as context, just not as the suggested handle.
+        assert "Adam Smith (ARS) [id 100]" in msg
+        assert "Ben Smith (ARS) [id 200]" in msg
+
+    def test_partially_separating_clubs_also_offer_ids(self):
+        """Two of three share a club, so no single `Name (TEAM)` picks one out."""
+        players = _hendersons() + [
+            make_player(id=300, web_name="Henderson", first_name="Sam",
+                        second_name="Henderson", team_id=4),
+        ]
+        teams = _teams() + [make_team(id=7, name="Crystal Palace", short_name="CRY")]
+        with pytest.raises(AmbiguousPlayerError) as exc:
+            resolve_player("Henderson", players, teams=teams)
+        assert "disambiguate by player ID" in str(exc.value)
+
     def test_resolve_players_returns_both_without_raising(self):
         assert [p.id for p in resolve_players("Henderson", _hendersons())] == [100, 200]
 
