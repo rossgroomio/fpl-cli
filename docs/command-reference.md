@@ -490,8 +490,16 @@ fpl squad                              # Squad health (both formats)
 fpl squad --format json                # JSON envelope (metadata: {gameweek, format})
 fpl squad grid                         # Fixture difficulty grid (next 6 GWs)
 fpl squad grid -n 8 -w Mbeumo          # 8-GW grid with watch list player
+fpl squad grid -w "Henderson (CRY)"    # Club picks one of two players of that name
 fpl squad grid --format json
 ```
+
+A `--watch` name that does not land on one player is skipped rather than
+fatal — both when nothing matches it and when two players answer to it
+exactly (Dean and Jordan Henderson are both `Henderson`). The reason is
+warned on stderr, naming both candidates in the ambiguous case, and the grid
+still renders for the rest. Add the club (`Henderson (CRY)`) or use the
+player ID to choose.
 
 ### Sell Prices & Transfer Affordability
 
