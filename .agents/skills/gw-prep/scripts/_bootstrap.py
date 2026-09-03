@@ -1,11 +1,51 @@
-"""Shared startup for gw-prep scripts that import fpl-cli agents directly."""
+"""Shared startup for gw-prep scripts that import the fpl-cli package.
+
+Importing this module is itself the interpreter guard. Every script here
+needs `fpl_cli` importable, and a standalone `fpl` on PATH (uv tool, pipx)
+provides the command without putting the package on the system
+interpreter's import path — so `fpl status` works and `python3
+transfer_eval.py` does not. Reaching for the package here, first and alone,
+turns that mistake into the same JSON error envelope the callers already
+parse rather than a traceback from halfway down a script's import list.
+"""
 
 from __future__ import annotations
 
 import json
 import sys
+from typing import NoReturn
 
-from fpl_cli.paths import UserDirError, ensure_legacy_migration, load_env_files
+_WRONG_INTERPRETER = (
+    "Cannot import the 'fpl_cli' package on this interpreter ({executable}). "
+    "These scripts run inside fpl-cli's own environment: activate its venv "
+    "('source .venv/bin/activate') or invoke that venv's Python directly. A "
+    "standalone 'fpl' on PATH (uv tool, pipx) provides the command but not the "
+    "importable package."
+)
+
+
+def fail(messages: list[str]) -> NoReturn:
+    """Emit the error envelope callers parse from stdout, then exit 1."""
+    json.dump({"error": True, "messages": messages}, sys.stdout, indent=2)
+    sys.exit(1)
+
+
+def is_fpl_cli_missing(exc: ModuleNotFoundError) -> bool:
+    """True when fpl_cli itself is absent, rather than a dependency of it.
+
+    A missing dependency is a broken install, not the wrong interpreter, and
+    naming the interpreter would send the reader somewhere useless — so only
+    the former earns the envelope below; the rest keep their traceback.
+    """
+    return (exc.name or "").partition(".")[0] == "fpl_cli"
+
+
+try:
+    from fpl_cli.paths import UserDirError, ensure_legacy_migration, load_env_files
+except ModuleNotFoundError as exc:
+    if not is_fpl_cli_missing(exc):
+        raise
+    fail([_WRONG_INTERPRETER.format(executable=sys.executable), f"Import failed: {exc}"])
 
 
 def bootstrap_user_dirs() -> None:
@@ -21,5 +61,4 @@ def bootstrap_user_dirs() -> None:
         load_env_files()
         ensure_legacy_migration()
     except UserDirError as exc:
-        json.dump({"error": True, "messages": [str(exc)]}, sys.stdout, indent=2)
-        sys.exit(1)
+        fail([str(exc)])

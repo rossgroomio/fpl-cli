@@ -643,7 +643,7 @@ Season previews follow the same season-staleness discipline but deliberately **n
     │   │   ├── rules.md          # Transfer/waiver/selection rules
     │   │   └── output-template.md
     │   └── scripts/
-    │       ├── _bootstrap.py            # Shared startup (user-dir migration) for agent-importing scripts
+    │       ├── _bootstrap.py            # Shared startup: wrong-interpreter guard (imported by every script here, turns a missing fpl_cli into the JSON error envelope) + user-dir migration for agent-importing scripts
     │       ├── bench_order.py           # BenchOrderAgent wrapper (name -> ID resolution)
     │       ├── starting_xi.py           # StartingXIAgent wrapper (name -> ID resolution)
     │       ├── transfer_eval.py         # TransferEvalAgent wrapper (name -> ID resolution)

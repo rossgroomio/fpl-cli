@@ -2,7 +2,8 @@
 """Bench order analysis script for gw-prep sub-agents.
 
 Resolves player names, runs BenchOrderAgent, outputs JSON.
-Requires fpl-cli venv to be activated before running.
+Runs on the interpreter fpl-cli is installed on (activate its venv first,
+or invoke that venv's Python directly).
 
 Usage:
     python bench_order.py --starting "Salah,Saka,..." --bench "Mbeumo,Munoz,..."

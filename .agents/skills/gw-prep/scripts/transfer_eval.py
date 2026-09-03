@@ -2,7 +2,8 @@
 """Transfer evaluation script for gw-prep sub-agents.
 
 Resolves player names, runs TransferEvalAgent, outputs JSON.
-Requires fpl-cli venv to be activated before running.
+Runs on the interpreter fpl-cli is installed on (activate its venv first,
+or invoke that venv's Python directly).
 
 Usage:
     python transfer_eval.py --out "Palmer" --in "Salah,Mbeumo,Diaz"

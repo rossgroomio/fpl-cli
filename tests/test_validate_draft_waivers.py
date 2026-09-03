@@ -21,14 +21,19 @@ FIXTURE_DIR = Path(__file__).parent / "fixtures" / "validate_draft_waivers"
 def _load_script() -> ModuleType:
     """Load validate_draft_waivers.py as a module (it's not a package).
 
-    Its only import beyond the stdlib is `fpl_cli.utils.markdown`, resolved
-    through the installed fpl-cli package, so no sys.path manipulation is
-    needed to load it standalone.
+    The scripts dir goes on sys.path while loading, matching a real
+    `python validate_draft_waivers.py` run (sys.path[0] is the script's own dir), so the
+    shared `_bootstrap` sibling module — the wrong-interpreter guard —
+    resolves.
     """
-    spec = importlib.util.spec_from_file_location("validate_draft_waivers", SCRIPT_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    sys.path.insert(0, str(SCRIPT_PATH.parent))
+    try:
+        spec = importlib.util.spec_from_file_location("validate_draft_waivers", SCRIPT_PATH)
+        assert spec is not None and spec.loader is not None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+    finally:
+        sys.path.remove(str(SCRIPT_PATH.parent))
     return mod
 
 
