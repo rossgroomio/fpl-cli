@@ -9,6 +9,7 @@ from rich.table import Table
 
 from fpl_cli.cli._context import console, error_console
 from fpl_cli.models.player import BLANK_POINTS_THRESHOLD, POSITION_MAP
+from fpl_cli.services.fixture_predictions import had_fixture
 
 if TYPE_CHECKING:
     from fpl_cli.models.fixture import Fixture
@@ -30,8 +31,17 @@ async def _review_global_stats(
     client, gw, player_map, teams, live_stats,
     *,
     bgw_team_ids: frozenset[int] = frozenset(),
+    players_with_fixture: frozenset[int] | None = None,
 ):
-    """Fetch global GW stats: top scorers, dream team, blankers. Returns dict."""
+    """Fetch global GW stats: top scorers, dream team, blankers. Returns dict.
+
+    `bgw_team_ids` is the set of clubs with no fixture this gameweek, which
+    keeps a player who never kicked a ball off the Blankers list.
+    `players_with_fixture` answers the same question from the gameweek's own
+    live data and takes precedence where it can, so reviewing a past gameweek
+    does not read the blank off a club the player has since moved to
+    (issue #174); `resolve_players_with_fixture` builds it.
+    """
     global_data: GlobalReviewData = {}
     try:
         console.print("\n[bold]## Global[/bold]")
@@ -125,7 +135,15 @@ async def _review_global_stats(
             for elem_id, stats in live_stats.items():
                 gw_pts = stats.get("total_points", 0)
                 player = player_map.get(elem_id)
-                if player and gw_pts <= BLANK_POINTS_THRESHOLD and player.team_id not in bgw_team_ids:
+                if (
+                    player
+                    and gw_pts <= BLANK_POINTS_THRESHOLD
+                    and had_fixture(
+                        player.id, player.team_id,
+                        players_with_fixture=players_with_fixture,
+                        bgw_team_ids=bgw_team_ids,
+                    )
+                ):
                     ownership = player.selected_by_percent
                     if ownership > 5.0:
                         team = teams.get(player.team_id)

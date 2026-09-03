@@ -25,6 +25,7 @@ from fpl_cli.services.fixture_predictions import (
     FixturePredictionsService,
     find_blank_gameweeks,
     find_double_gameweeks,
+    resolve_players_with_fixture,
 )
 from fpl_cli.utils.time import format_deadline
 
@@ -170,6 +171,13 @@ def review_command(
             double_gws = find_double_gameweeks(fixtures_by_gw, teams_list, gw, gw)
             bgw_team_ids = frozenset(t["team_id"] for t in blank_gws.get(gw, []))
             dgw_team_ids = frozenset(t["team_id"] for t in double_gws.get(gw, []))
+            # `find_blank_gameweeks` answers from the club a player is at now,
+            # which is a different club from the one whose fixtures he was on
+            # once `-g` reaches back past a transfer (issue #174). This reads
+            # the same fact off the gameweek's own live data and takes
+            # precedence wherever it can answer; `bgw_team_ids` stays the
+            # fallback for the gameweeks and players it cannot.
+            players_with_fixture = resolve_players_with_fixture(live_data, raw_fixtures)
 
             # Classic section
             if show_classic:
@@ -177,6 +185,7 @@ def review_command(
                 classic_team = await _review_classic_team(
                     client, entry_id, gw, player_map, teams, gw_data, live_stats,
                     bgw_team_ids=bgw_team_ids, dgw_team_ids=dgw_team_ids,
+                    players_with_fixture=players_with_fixture,
                 )
                 classic_transfers_data = await _review_classic_transfers(
                     client, entry_id, gw, player_map, teams, live_stats
@@ -198,6 +207,7 @@ def review_command(
             global_data = await _review_global_stats(
                 client, gw, player_map, teams, live_stats,
                 bgw_team_ids=bgw_team_ids,
+                players_with_fixture=players_with_fixture,
             )
             # BGW/DGW team names for prompt formatting (derived at point of use)
             global_data["bgw_team_names"] = {teams[tid].short_name for tid in bgw_team_ids if tid in teams}
@@ -214,6 +224,7 @@ def review_command(
                     client, draft_league_id, draft_entry_id, gw, api_current_gw_id,
                     players, player_map, teams, live_stats,
                     bgw_team_ids=bgw_team_ids, dgw_team_ids=dgw_team_ids,
+                    players_with_fixture=players_with_fixture,
                 )
             else:
                 # Must match return shape of _review_draft

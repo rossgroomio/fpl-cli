@@ -599,6 +599,14 @@ fpl review --dry-run              # Build prompts without calling LLMs
 
 **LLM summary** (`--summarise`): Community narrative via research provider, personal analysis via synthesis provider.
 
+**Blank gameweeks:** a zero from a player whose club had no fixture is marked `[BGW]` rather than
+read as a choice that failed, and such a player is kept off the Blankers list entirely. Which
+clubs those were is read off the gameweek being reviewed rather than off the clubs as they stand
+today, so `-g` on an earlier gameweek judges a player transferred since on the fixture he
+actually had at the time. A gameweek still in play cannot answer — FPL writes those marks per
+fixture as it finishes — and there the current clubs answer instead, which for the gameweek just
+gone are the same thing.
+
 ### League Recap
 
 Entertainment-first post-gameweek report for the whole league.

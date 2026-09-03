@@ -15,6 +15,7 @@ from fpl_cli.cli._helpers import (
     _slice_with_ties,
 )
 from fpl_cli.models.player import POSITION_MAP
+from fpl_cli.services.fixture_predictions import had_fixture
 
 
 def _format_review_draft_player(p: dict) -> str:
@@ -26,8 +27,18 @@ async def _review_draft(
     client, draft_league_id, draft_entry_id, gw, api_current_gw_id,
     players, player_map, teams, live_stats,
     *, bgw_team_ids: frozenset[int] = frozenset(), dgw_team_ids: frozenset[int] = frozenset(),
+    players_with_fixture: frozenset[int] | None = None,
 ):
-    """Fetch and display draft league data. Returns dict with draft data."""
+    """Fetch and display draft league data. Returns dict with draft data.
+
+    `bgw_team_ids` is the set of clubs with no fixture this gameweek, and the
+    `bgw` flag it sets is what excuses a zero. `players_with_fixture` answers
+    the same question from the gameweek's own live data and takes precedence
+    where it can, so reviewing a past gameweek does not excuse a real zero on
+    the strength of a club the player only joined later (issue #174). It is
+    keyed on main-game ids, so a draft player the main game never matched
+    falls back to the club as before.
+    """
     from fpl_cli.api.fpl_draft import FPLDraftClient, match_draft_to_main
 
     draft_league_data = None
@@ -138,7 +149,11 @@ async def _review_draft(
                                     "red_cards": red_cards,
                                     "auto_sub_in": draft_elem_id in draft_auto_sub_in_ids,
                                     "auto_sub_out": draft_elem_id in draft_auto_sub_out_ids,
-                                    "bgw": player_team_id in bgw_team_ids,
+                                    "bgw": not had_fixture(
+                                        main_elem_id, player_team_id,
+                                        players_with_fixture=players_with_fixture,
+                                        bgw_team_ids=bgw_team_ids,
+                                    ),
                                     "dgw": player_team_id in dgw_team_ids,
                                 })
 
