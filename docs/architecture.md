@@ -580,7 +580,7 @@ fpl_cli/
 │   ├── league_history_fines.py   # Season fine tally (build_season_fines_tally): per-manager, per-rule counts folded straight off the ledger, plus honest coverage qualifiers. No cache, no re-ruling
 │   └── league_history_notes.py   # Notes pack (build_notes_pack) + derive_season_phase() + is_season_milestone(): per-manager streak factoids in observed-count phrasing, season-count factoids (surfaced per each condition's own CountSurfacePolicy — who fired it this gameweek plus qualifying ride-alongs; full set at the two milestones), season-phase marker, coverage/"since GW X" statements. Counters projection + a bounded trailing window of rows; full season only at the finale
 ├── models/
-│   ├── player.py                 # Player, PlayerStatus, PlayerPosition, POSITION_MAP, BLANK_POINTS_THRESHOLD
+│   ├── player.py                 # Player, PlayerStatus, PlayerPosition, POSITION_MAP, BLANK_POINTS_THRESHOLD, name resolution (`resolve_players` / `resolve_player`, `AmbiguousPlayerError`, and the `_or_report` pair every name-taking command and script shares)
 │   ├── team.py                   # Team
 │   ├── fixture.py                # Fixture
 │   ├── chip_plan.py              # ChipPlan, ChipType, PlannedChip, UsedChip
@@ -648,9 +648,9 @@ Season previews follow the same season-staleness discipline but deliberately **n
     │   │   └── entity-normalisation.md # Shared post-write HTML-entity step (gw-prep, squad-builder, update-gw-prep)
     │   └── scripts/
     │       ├── _bootstrap.py            # Shared startup (user-dir migration) for agent-importing scripts
-    │       ├── bench_order.py           # BenchOrderAgent wrapper (name -> ID resolution)
-    │       ├── starting_xi.py           # StartingXIAgent wrapper (name -> ID resolution)
-    │       ├── transfer_eval.py         # TransferEvalAgent wrapper (name -> ID resolution)
+    │       ├── bench_order.py           # BenchOrderAgent wrapper
+    │       ├── starting_xi.py           # StartingXIAgent wrapper
+    │       ├── transfer_eval.py         # TransferEvalAgent wrapper
     │       ├── extract_classic_squad.py # Classic Squad block extractor (Phase A3 embed + Phase E read-only validator)
     │       ├── validate_draft_waivers.py # Draft waiver cross-check against waiver pool + squad grid
     │       └── normalise_entities.py    # HTML-entity repair for assembled reports (shared by all three writing skills)
@@ -690,5 +690,6 @@ User settings deep-merged over committed defaults via `platformdirs`. `.env` loa
 - **Agent-friendly.** `--format json` on key commands with a consistent envelope. See [Agent Tools & Skills](../.agents/TOOLS.md).
 - **LLM features are opt-in.** Core analysis works without any API keys. LLM providers add narrative and research capabilities.
 - **The returnee radar is deliberately absent from [custom-analysis.md](custom-analysis.md).** That document covers the scoring formulas and the early-season shrinkage they share, and the radar has neither: it runs no shrinkage, so it needs no hold-out set for players known not to be playing, and it scores nothing for the ownership family, so the -3 availability penalty never applies — a flagged player is the radar's entire population, not a discount applied within it. The one existing formula it reuses, the VALUE quality score, it reuses unchanged. Its methodology is documented under [Injury Returnees](command-reference.md#injury-returnees) instead. The omission is the decision, not a gap.
+- **A tie in name resolution is an error, not a coin toss.** `resolve_player` (`models/player.py`) picks one player, so its two match tiers cannot mean the same thing. Several *substring* matches is a fuzzy shortlist and first-wins stays the contract ("Bru" -> De Bruyne). Several *exact* matches is a genuine tie — Dean and Jordan Henderson are both `Henderson` — and there taking the head silently resolved to the lower element id, so `bench_order.py` scored a player the squad did not own (issue #180). It now raises `AmbiguousPlayerError`, naming every candidate and the `Name (TEAM)` form that picks one. `resolve_players` (plural) is unaffected: returning the tie *is* its answer. Same reasoning as `season_previews.resolve_name`, which reports ambiguity rather than guessing. `resolve_player_or_report` / `resolve_players_or_report` wrap that for the commands and gw-prep scripts taking names as user input, turning both ways of missing a single player -- nothing matched, several did -- into one labelled message the caller shows. They live in the package, not beside the scripts, because the dependency runs one way: the skill's scripts import `fpl_cli`, never the reverse.
 - **Deterministic memory before LLM memory.** `league-recap` records every run to an append-only ledger and computes streaks, trends, season phase and the season fine tally from it in Python. The model is handed those as vetted facts through anchored prompt sections and is never asked to remember, infer, or re-derive history — the one conduit per fact is what makes an editorial's historical claims checkable against the store. The fines section makes the rule explicit: season totals may only be quoted from it, never summed by the model out of the current gameweek's fines. It is handed over every week as optional colour while the *printed* table waits for a season milestone -- a table every week is wallpaper, but a sentence every week is what makes a recap read as though it remembers.
 
