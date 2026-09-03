@@ -41,6 +41,12 @@ Written pre-season and again in the gap after GW1 kicks off but before its
 results can rate anyone.
 """
 
+FDR_MODE_GLOSS: dict[str, str] = {
+    "difference": "opponent strength at the venue, blended with the team's own",
+    "opponent": "opponent strength at the venue only",
+}
+"""One-line reading of each ``get_positional_fdr`` mode, for the footers of FDR tables."""
+
 
 @dataclass
 class TeamRating:

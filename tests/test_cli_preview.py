@@ -104,6 +104,41 @@ class TestPreviewCustomAnalysisToggle:
         assert "ATK" in result.output
         assert "DEF" in result.output
 
+    def test_toggle_on_footer_names_fdr_mode(self):
+        """The easy-fixtures footer says which mode all three columns share (#186)."""
+        result = _run_preview(custom_analysis=True)
+        assert result.exit_code == 0, result.output
+        flat = " ".join(result.output.split())
+        # No mode in the (mocked) result: described as the agent default
+        assert "All three columns use difference mode" in flat
+        assert "FDR is the mean of ATK and DEF" in flat
+
+    def test_toggle_on_footer_follows_result_mode(self):
+        result = _run_preview(custom_analysis=True, fixture_data={
+            "fdr_mode": "opponent",
+            "easy_fixture_runs": {
+                "overall": [
+                    {
+                        "short_name": "ARS",
+                        "average_fdr": 2.1,
+                        "average_fdr_atk": 1.9,
+                        "average_fdr_def": 2.3,
+                        "fixtures_summary": "bou(H), MCI(A), new(H)",
+                    },
+                ],
+            },
+            "team_form": [],
+        })
+        assert result.exit_code == 0, result.output
+        flat = " ".join(result.output.split())
+        assert "All three columns use opponent mode (opponent strength at the venue only)" in flat
+
+    def test_toggle_off_no_fdr_footer(self):
+        """With ATK/DEF hidden there is no column relationship to explain."""
+        result = _run_preview(custom_analysis=False)
+        assert result.exit_code == 0, result.output
+        assert "FDR scale" not in result.output
+
     def test_toggle_off_no_value_picks(self):
         """When toggle off, Value Picks section absent from performance stats."""
         result = _run_preview(custom_analysis=False)

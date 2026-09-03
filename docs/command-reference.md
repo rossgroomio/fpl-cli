@@ -281,7 +281,7 @@ unaffected either way.
 
 #### Position Filters (`-p`)
 
-- `all` (default): General FDR plus ATK and DEF columns.
+- `all` (default): FDR plus ATK and DEF columns. FDR is the mean of ATK and DEF in the selected mode, so the three columns read on one model and the "Teams with Easiest Fixture Runs" ranking agrees with them.
 - `atk`: Sort by best fixtures for FWD/MID (opponent's defensive weakness).
 - `def`: Sort by best fixtures for DEF/GK (opponent's offensive threat).
 
@@ -578,6 +578,8 @@ fpl preview --dry-run        # Build scout prompts without calling LLMs
 ```
 
 **Sections:** fixture analysis with FDR, team form (all 20 PL teams, last 6 matches), classic squad with injury status and price changes, draft squad, top xGI/90 performers.
+
+**Teams with Easy Fixtures:** ranked on FDR, the mean of the ATK and DEF columns in difference mode, so the ordering matches the columns beside it and `fpl fdr`. The footer names the mode. Per-fixture FDR in the Gameweek Fixtures table is the same figure.
 
 **Scout analysis** (`--scout`): Uses the research provider (LLM) to generate FPL expert-style BUY/SELL recommendations from web and social sources. Generates two versions: referenced (with citations) and clean (for LLM use).
 

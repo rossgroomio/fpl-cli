@@ -14,6 +14,32 @@ from fpl_cli.services.team_form import calculate_team_form
 from tests.conftest import make_fixture, make_player, make_team
 
 
+def _write_ratings(tmp_path, ratings: dict[str, dict[str, int]]):
+    """Write a team_ratings.yaml with the given per-team axes and return its path."""
+    import yaml
+
+    path = tmp_path / "team_ratings.yaml"
+    path.write_text(yaml.safe_dump({
+        "metadata": {
+            "last_updated": datetime.now().strftime("%Y-%m-%d"),
+            "source": "test",
+            "staleness_threshold_days": 30,
+        },
+        "ratings": ratings,
+    }), encoding="utf-8")
+    return path
+
+
+# Elite side with tough-looking opponents vs weak side with soft-looking ones:
+# the shape that made #186 rank the league's worst team above its best.
+_ISSUE_186_RATINGS = {
+    "ARS": {"atk_home": 1, "atk_away": 1, "def_home": 1, "def_away": 1},  # elite
+    "MCI": {"atk_home": 2, "atk_away": 2, "def_home": 2, "def_away": 2},  # strong
+    "LIV": {"atk_home": 6, "atk_away": 6, "def_home": 6, "def_away": 6},  # weak
+    "CHE": {"atk_home": 4, "atk_away": 4, "def_home": 4, "def_away": 4},  # mid
+}
+
+
 class TestFixtureAgent:
     """Tests for FixtureAgent."""
 
@@ -164,9 +190,27 @@ class TestFixtureAgent:
 
             assert result.status == AgentStatus.SUCCESS
             assert result.data["current_gameweek"] == 25
+            assert result.data["fdr_mode"] == "difference"
             assert "fixtures" in result.data
             assert "fdr_by_team" in result.data
             assert "team_form" in result.data
+
+    @pytest.mark.asyncio
+    async def test_run_reports_configured_fdr_mode(self, mock_teams, mock_fixtures):
+        """The mode every FDR figure was scored in travels with the result."""
+        agent = FixtureAgent(config={"fdr_mode": "opponent"})
+        with patch.object(agent.client, "get_next_gameweek", new_callable=AsyncMock) as mock_next_gw, \
+             patch.object(agent.client, "get_fixtures", new_callable=AsyncMock) as mock_get_fixtures, \
+             patch.object(agent.client, "get_teams", new_callable=AsyncMock) as mock_get_teams:
+
+            mock_next_gw.return_value = {"id": 25}
+            mock_get_fixtures.return_value = mock_fixtures
+            mock_get_teams.return_value = mock_teams
+
+            result = await agent.run()
+
+            assert result.status == AgentStatus.SUCCESS
+            assert result.data["fdr_mode"] == "opponent"
 
     @pytest.mark.asyncio
     async def test_run_no_next_gameweek(self, agent):
@@ -257,6 +301,102 @@ class TestFixtureAgent:
         assert "average_fdr" in fdr["ARS"]
         assert "fixtures" in fdr["ARS"]
 
+    def test_analyze_fdr_general_is_mean_of_atk_and_def(self, agent, mock_teams, tmp_path):
+        """The general FDR is the ATK/DEF mean per fixture, so a row reads on one model."""
+        from fpl_cli.services.team_ratings import TeamRatingsService
+
+        agent.ratings_service = TeamRatingsService(config_path=_write_ratings(tmp_path, _ISSUE_186_RATINGS))
+        team_map = {t.id: t for t in mock_teams}
+        fixtures = [
+            make_fixture(id=1, gameweek=25, home_team_id=1, away_team_id=2),  # ARS v MCI
+            make_fixture(id=2, gameweek=25, home_team_id=3, away_team_id=4),  # LIV v CHE
+        ]
+
+        fdr = agent._analyze_fdr(fixtures, team_map, 25, 25)
+
+        # ARS (elite) at home to MCI (strong), difference mode:
+        # ATK = ((8 - MCI def_away 2) + ARS atk_home 1) / 2 = 3.5, DEF likewise
+        assert fdr["ARS"]["average_fdr_atk"] == 3.5
+        assert fdr["ARS"]["average_fdr_def"] == 3.5
+        assert fdr["ARS"]["average_fdr"] == 3.5
+        assert fdr["ARS"]["fixtures"][0]["fdr"] == 3.5
+        # LIV (weak) at home to CHE (mid): ATK = ((8 - 4) + 6) / 2 = 5.0, DEF likewise
+        assert fdr["LIV"]["average_fdr"] == 5.0
+        for team in fdr.values():
+            assert team["average_fdr"] == round(
+                (team["average_fdr_atk"] + team["average_fdr_def"]) / 2, 2
+            )
+
+    def test_easy_runs_rank_on_the_same_model_as_atk_and_def(self, agent, mock_teams, tmp_path):
+        """Regression for #186: the overall ranking agrees with the ATK/DEF columns.
+
+        The opponent-only, venue-blind FDR ranked LIV (weak, soft opponent) above
+        ARS (elite, strong opponent) because it could not see either team's own
+        strength. Scored in difference mode like ATK/DEF, ARS ranks above LIV.
+        """
+        from fpl_cli.services.team_ratings import TeamRatingsService
+
+        agent.ratings_service = TeamRatingsService(config_path=_write_ratings(tmp_path, _ISSUE_186_RATINGS))
+        team_map = {t.id: t for t in mock_teams}
+        fixtures = [
+            make_fixture(id=1, gameweek=25, home_team_id=1, away_team_id=2),  # ARS v MCI
+            make_fixture(id=2, gameweek=25, home_team_id=3, away_team_id=4),  # LIV v CHE
+        ]
+
+        easy_runs = agent._find_easy_runs(agent._analyze_fdr(fixtures, team_map, 25, 25), team_map)
+
+        overall = [t["short_name"] for t in easy_runs["overall"]]
+        # CHE 3.0 (mid, away to weak LIV), ARS 3.5, MCI 4.5, LIV 5.0
+        assert overall == ["CHE", "ARS", "MCI", "LIV"]
+        assert overall.index("ARS") < overall.index("LIV")
+        # Same order the ATK and DEF lists give, since all three share a model
+        assert [t["short_name"] for t in easy_runs["for_attackers"]] == overall
+        assert [t["short_name"] for t in easy_runs["for_defenders"]] == overall
+
+    def test_analyze_fdr_general_follows_opponent_mode_at_the_venue(self, mock_teams, tmp_path):
+        """In opponent mode the general FDR is the opponent's strength at the venue.
+
+        The old avg_overall_fdr averaged all four of the opponent's axes, so a
+        side that is far weaker away than at home rated the same at both venues.
+        """
+        from fpl_cli.services.team_ratings import TeamRatingsService
+
+        agent = FixtureAgent(config={"fdr_mode": "opponent"})
+        agent.ratings_service = TeamRatingsService(config_path=_write_ratings(tmp_path, {
+            "ARS": {"atk_home": 2, "atk_away": 2, "def_home": 2, "def_away": 2},
+            "MCI": {"atk_home": 1, "atk_away": 3, "def_home": 2, "def_away": 4},
+        }))
+        team_map = {t.id: t for t in mock_teams}
+        fixtures = [make_fixture(id=1, gameweek=25, home_team_id=1, away_team_id=2)]  # ARS v MCI
+
+        fdr = agent._analyze_fdr(fixtures, team_map, 25, 25)
+
+        # ARS at home faces MCI's away axes: ATK = 8 - def_away 4 = 4.0, DEF = 8 - atk_away 3 = 5.0
+        assert fdr["ARS"]["average_fdr_atk"] == 4.0
+        assert fdr["ARS"]["average_fdr_def"] == 5.0
+        assert fdr["ARS"]["average_fdr"] == 4.5  # venue-blind avg_overall_fdr would say 5.5
+
+    def test_analyze_fdr_unrated_side_falls_back_to_api_difficulty(self, agent, mock_teams, tmp_path):
+        """With either side unrated, positional FDR is a neutral 4.0 and carries no signal.
+
+        The general FDR falls back to the FPL API's difficulty there rather than
+        rank every such fixture run as identical.
+        """
+        from fpl_cli.services.team_ratings import TeamRatingsService
+
+        agent.ratings_service = TeamRatingsService(config_path=_write_ratings(tmp_path, {
+            "ARS": {"atk_home": 1, "atk_away": 1, "def_home": 1, "def_away": 1},
+        }))
+        team_map = {t.id: t for t in mock_teams}
+        fixtures = [make_fixture(id=1, gameweek=25, home_team_id=1, away_team_id=2,
+                                 home_difficulty=2, away_difficulty=5)]  # ARS v MCI, MCI unrated
+
+        fdr = agent._analyze_fdr(fixtures, team_map, 25, 25)
+
+        assert fdr["ARS"]["fixtures"][0]["fdr_atk"] == 4.0
+        assert fdr["ARS"]["average_fdr"] == 2.0
+        assert fdr["MCI"]["average_fdr"] == 5.0
+
     def test_find_easy_runs(self, agent, mock_teams):
         """Test finding teams with easy fixture runs."""
         team_map = {t.id: t for t in mock_teams}
@@ -281,25 +421,14 @@ class TestFixtureAgent:
         assert easy_runs["for_attackers"][0]["short_name"] == "ARS"
         assert easy_runs["for_defenders"][0]["short_name"] == "ARS"
 
-    def test_fixture_to_dict(self, agent, mock_teams):
-        """Test fixture to dict conversion."""
-        from unittest.mock import MagicMock
+    def test_fixture_to_dict(self, agent, mock_teams, tmp_path):
+        """Per-fixture FDR is the general FDR: the ATK/DEF mean in the agent's mode."""
+        from fpl_cli.services.team_ratings import TeamRatingsService
 
-        from fpl_cli.services.team_ratings import TeamRating
-
-        # Mock ratings_service so this test is independent of the local ratings file.
-        # ARS rated (2,1,1,1) -> avg_overall=1.25 -> away_fdr=6.75
-        # MCI rated (2,3,2,2) -> avg_overall=2.25 -> home_fdr=5.75
-        mock_svc = MagicMock()
-        def _get_rating(short):
-            if short == "ARS":
-                return TeamRating(atk_home=2, atk_away=1, def_home=1, def_away=1)
-            if short == "MCI":
-                return TeamRating(atk_home=2, atk_away=3, def_home=2, def_away=2)
-            return None
-        mock_svc.get_rating.side_effect = _get_rating
-        agent.ratings_service = mock_svc
-
+        agent.ratings_service = TeamRatingsService(config_path=_write_ratings(tmp_path, {
+            "ARS": {"atk_home": 2, "atk_away": 1, "def_home": 1, "def_away": 1},
+            "MCI": {"atk_home": 2, "atk_away": 3, "def_home": 2, "def_away": 2},
+        }))
         team_map = {t.id: t for t in mock_teams}
         fixture = make_fixture(
             id=1, gameweek=22, home_team_id=1, away_team_id=2,
@@ -312,39 +441,60 @@ class TestFixtureAgent:
         assert fixture_dict["gameweek"] == 22
         assert fixture_dict["home_team"] == "ARS"
         assert fixture_dict["away_team"] == "MCI"
-        assert fixture_dict["home_fdr"] == 5.75
-        assert fixture_dict["away_fdr"] == 6.75
+        # ARS home: ATK = ((8 - MCI def_away 2) + ARS atk_home 2) / 2 = 4.0
+        #           DEF = ((8 - MCI atk_away 3) + ARS def_home 1) / 2 = 3.0
+        assert fixture_dict["home_fdr_atk"] == 4.0
+        assert fixture_dict["home_fdr_def"] == 3.0
+        assert fixture_dict["home_fdr"] == 3.5
+        # MCI away: ATK = ((8 - ARS def_home 1) + MCI atk_away 3) / 2 = 5.0
+        #           DEF = ((8 - ARS atk_home 2) + MCI def_away 2) / 2 = 4.0
+        assert fixture_dict["away_fdr_atk"] == 5.0
+        assert fixture_dict["away_fdr_def"] == 4.0
+        assert fixture_dict["away_fdr"] == 4.5
 
-    def test_fixture_to_dict_fdr_uses_opponent_rating(self, mock_teams):
-        """FDR for home team is derived from away team's rating, and vice versa."""
-        from unittest.mock import MagicMock
+    def test_fixture_to_dict_matches_fdr_by_team(self, agent, mock_teams, tmp_path):
+        """One fixture reads identically in the fixtures list and in fdr_by_team."""
+        from fpl_cli.services.team_ratings import TeamRatingsService
 
-        from fpl_cli.services.team_ratings import TeamRating
+        agent.ratings_service = TeamRatingsService(config_path=_write_ratings(tmp_path, _ISSUE_186_RATINGS))
+        team_map = {t.id: t for t in mock_teams}
+        fixture = make_fixture(id=1, gameweek=25, home_team_id=1, away_team_id=2)  # ARS v MCI
 
-        agent = FixtureAgent()
-        mock_svc = MagicMock()
+        fixture_dict = agent._fixture_to_dict(fixture, team_map)
+        by_team = agent._analyze_fdr([fixture], team_map, 25, 25)
 
-        # Strong away team (low rating) = hard fixture for home
-        # Weak home team (high rating) = easy fixture for away
-        def _get_rating(short):
-            if short == "MCI":
-                return TeamRating(atk_home=1, atk_away=1, def_home=1, def_away=1)  # avg=1.0
-            if short == "ARS":
-                return TeamRating(atk_home=6, atk_away=6, def_home=6, def_away=6)  # avg=6.0
-            return None
+        assert fixture_dict["home_fdr"] == by_team["ARS"]["fixtures"][0]["fdr"]
+        assert fixture_dict["away_fdr"] == by_team["MCI"]["fixtures"][0]["fdr"]
 
-        mock_svc.get_rating.side_effect = _get_rating
-        agent.ratings_service = mock_svc
+    def test_fixture_to_dict_unrated_side_falls_back_to_api_difficulty(self, agent, mock_teams, tmp_path):
+        """API difficulty stands in for the general FDR when either side is unrated."""
+        from fpl_cli.services.team_ratings import TeamRatingsService
 
+        agent.ratings_service = TeamRatingsService(config_path=_write_ratings(tmp_path, {
+            "ARS": {"atk_home": 1, "atk_away": 1, "def_home": 1, "def_away": 1},
+        }))
         team_map = {t.id: t for t in mock_teams}
         fixture = make_fixture(id=1, gameweek=22, home_team_id=1, away_team_id=2,
-                               home_difficulty=3, away_difficulty=4)
+                               home_difficulty=3, away_difficulty=4)  # MCI unrated
+
         result = agent._fixture_to_dict(fixture, team_map)
 
-        # Home FDR = opponent (MCI) avg_overall_fdr = 8 - 1.0 = 7.0 (very hard)
-        assert result["home_fdr"] == 7.0
-        # Away FDR = opponent (ARS) avg_overall_fdr = 8 - 6.0 = 2.0 (easy)
-        assert result["away_fdr"] == 2.0
+        assert result["home_fdr"] == 3
+        assert result["away_fdr"] == 4
+        assert result["home_fdr_atk"] == 4.0  # neutral positional FDR still reported
+
+    def test_fixture_to_dict_unknown_team(self, agent, mock_teams):
+        """A team missing from the team map gets API difficulty and no positional FDR."""
+        team_map = {t.id: t for t in mock_teams}
+        fixture = make_fixture(id=1, gameweek=22, home_team_id=1, away_team_id=99,
+                               home_difficulty=3, away_difficulty=4)
+
+        result = agent._fixture_to_dict(fixture, team_map)
+
+        assert result["away_team"] == "???"
+        assert result["home_fdr"] == 3
+        assert result["away_fdr"] == 4
+        assert "home_fdr_atk" not in result
 
 
 class TestFixtureAgentSquadExposure:

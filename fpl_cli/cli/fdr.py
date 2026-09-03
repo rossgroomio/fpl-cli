@@ -525,7 +525,7 @@ def fdr_command(
         console.print(table)
 
         if position == "all":
-            console.print("[dim]FDR / ATK / DEF all on 1-7 scale (1 = easiest)[/dim]")
+            console.print("[dim]FDR / ATK / DEF all on 1-7 scale (1 = easiest); FDR is the mean of ATK and DEF[/dim]")
 
         # Show blank/double gameweeks (confirmed + predicted, filtered to current GW+)
         pred_service = FixturePredictionsService()
