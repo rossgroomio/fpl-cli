@@ -2,35 +2,21 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import subprocess
 import sys
 from pathlib import Path
-from types import ModuleType
 
 import pytest
+
+from tests.conftest import load_gw_prep_script
 
 SCRIPT_PATH = (
     Path(__file__).parent.parent / ".agents/skills/gw-prep/scripts/normalise_entities.py"
 )
 
 
-def _load_script() -> ModuleType:
-    """Load normalise_entities.py as a module (it's not a package).
-
-    Its only import beyond the stdlib is `fpl_cli.utils.markdown`, resolved
-    through the installed fpl-cli package, so no sys.path manipulation is
-    needed to load it standalone.
-    """
-    spec = importlib.util.spec_from_file_location("normalise_entities", SCRIPT_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-_mod = _load_script()
+_mod = load_gw_prep_script("normalise_entities.py")
 _run = _mod._run
 
 

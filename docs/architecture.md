@@ -647,7 +647,7 @@ Season previews follow the same season-staleness discipline but deliberately **n
     │   │   ├── output-template.md
     │   │   └── entity-normalisation.md # Shared post-write HTML-entity step (gw-prep, squad-builder, update-gw-prep)
     │   └── scripts/
-    │       ├── _bootstrap.py            # Shared startup (user-dir migration) for agent-importing scripts
+    │       ├── _bootstrap.py            # Shared startup: wrong-interpreter guard (imported by every script here, turns a missing fpl_cli into the JSON error envelope) + user-dir migration for agent-importing scripts
     │       ├── bench_order.py           # BenchOrderAgent wrapper
     │       ├── starting_xi.py           # StartingXIAgent wrapper
     │       ├── transfer_eval.py         # TransferEvalAgent wrapper

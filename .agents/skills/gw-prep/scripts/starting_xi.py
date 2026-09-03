@@ -2,7 +2,8 @@
 """Starting XI analysis script for gw-prep sub-agents.
 
 Resolves player names, runs StartingXIAgent, outputs JSON.
-Requires fpl-cli venv to be activated before running.
+Runs on the interpreter fpl-cli is installed on (activate its venv first,
+or invoke that venv's Python directly).
 
 Usage:
     python starting_xi.py --squad "Salah,Saka,Palmer,...,Munoz"

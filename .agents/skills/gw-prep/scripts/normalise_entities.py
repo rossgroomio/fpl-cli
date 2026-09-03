@@ -12,11 +12,12 @@ point of writing.
 Emits JSON to stdout: {"ok": bool, "changed": bool, "unescaped": int,
 "residual": [{"line": int, "entity": str}]}. `ok` is false only when residual
 entities remain; the caller warns rather than blocking. Exit code is 0 unless
-the file cannot be read, decoded as UTF-8, or written -- and those exit 1 with
-{"error": true, "messages": [...]}, never a traceback, because every caller
-parses stdout to decide what to say.
+the startup guard fires, or the file cannot be read, decoded as UTF-8, or
+written -- and those exit 1 with {"error": true, "messages": [...]}, never a
+traceback, because every caller parses stdout to decide what to say.
 
-Requires fpl-cli venv to be activated before running.
+Runs on the interpreter fpl-cli is installed on (activate its venv first,
+or invoke that venv's Python directly).
 
 Usage:
     python3 normalise_entities.py --file path/to/gw34-recommendations.md
@@ -29,6 +30,11 @@ import json
 import sys
 from pathlib import Path
 from typing import TypedDict
+
+# Imported first and for its side effect: _bootstrap reaches for the fpl_cli
+# package on its own, turning a wrong interpreter into this script's JSON error
+# envelope instead of a ModuleNotFoundError traceback.
+import _bootstrap  # noqa: F401 — import guard, see module docstring
 
 from fpl_cli.utils.markdown import find_entities, unescape_specials
 

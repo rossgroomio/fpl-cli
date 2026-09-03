@@ -2,41 +2,16 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
-import sys
-from pathlib import Path
-from types import ModuleType
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from fpl_cli.agents.base import AgentResult, AgentStatus
 from fpl_cli.models.player import PlayerPosition
-from tests.conftest import make_player, make_team
+from tests.conftest import load_gw_prep_script, make_player, make_team
 
-
-def _load_script() -> ModuleType:
-    """Load transfer_eval.py as a module (it's not a package).
-
-    The scripts dir goes on sys.path while loading, matching a real
-    `python transfer_eval.py` run (sys.path[0] is the script's own dir), so
-    the shared `_bootstrap` sibling module resolves.
-    """
-    scripts_dir = Path(__file__).parent.parent / ".agents/skills/gw-prep/scripts"
-    script_path = scripts_dir / "transfer_eval.py"
-    sys.path.insert(0, str(scripts_dir))
-    try:
-        spec = importlib.util.spec_from_file_location("transfer_eval_script", script_path)
-        assert spec is not None and spec.loader is not None
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-    finally:
-        sys.path.remove(str(scripts_dir))
-    return mod
-
-
-_mod = _load_script()
+_mod = load_gw_prep_script("transfer_eval.py")
 _run = _mod._run
 
 

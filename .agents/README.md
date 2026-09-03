@@ -14,6 +14,7 @@ Skills are showcase examples - they work out of the box but are designed to be c
 
 - `<!-- ADAPT: ... -->` comments mark sections you'll want to change for your setup
 - Output paths use `[YOUR_OUTPUT_DIR]` placeholders - replace with your preferred location
+- Script invocations use a `[YOUR_PYTHON]` placeholder - replace with the interpreter fpl-cli is installed on. Helper scripts import the `fpl_cli` package, which a standalone `fpl` on `PATH` (uv tool, pipx) does not provide; get it wrong and they exit 1 with a JSON error envelope naming the cause
 - Supplementary data sources (newsletters, external reports) are noted but not required
 - All CLI data gathering uses `--format json` for structured output
 
