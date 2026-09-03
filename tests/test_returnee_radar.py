@@ -411,6 +411,29 @@ def test_radar_config_defaults_match_the_shipped_settings():
     assert config.price_watchlist_percentile == 0.80
     assert config.price_stash_percentile == 0.90
     assert config.stash_upgrade_margin == 5.0
+    assert config.enrich_stale_news_days == 7
+    assert config.enrich_max_players == 8
+    assert config.enrich_concurrency == 4
+    assert config.enrich_query_spacing_seconds == 1.0
+
+
+def test_radar_config_reads_the_enrichment_pacing_knobs():
+    config = radar_config_from_settings({"returnee_radar": {
+        "enrich_concurrency": 2, "enrich_query_spacing_seconds": 3,
+    }})
+
+    assert config.enrich_concurrency == 2
+    assert config.enrich_query_spacing_seconds == 3.0
+
+
+def test_radar_config_clamps_the_pacing_knobs_to_something_usable():
+    """A zero cap would stall the pass and a negative spacing means none."""
+    config = radar_config_from_settings({"returnee_radar": {
+        "enrich_concurrency": 0, "enrich_query_spacing_seconds": -3,
+    }})
+
+    assert config.enrich_concurrency == 1
+    assert config.enrich_query_spacing_seconds == 0.0
 
 
 def test_radar_config_applies_user_overrides_key_by_key():

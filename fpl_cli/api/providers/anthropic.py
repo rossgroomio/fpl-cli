@@ -8,25 +8,11 @@ from typing import Any, ClassVar, Self
 
 import httpx
 
+from ._http import RetryPolicy, error_detail, post_with_retry
 from ._models import LLMResponse, ProviderError, TokenUsage
 
 _BASE_URL = "https://api.anthropic.com/v1"
-_MAX_ERROR_DETAIL = 200
-
-
-def _error_detail(response: httpx.Response) -> str:
-    """Extract a short, auth-safe excerpt from an error response."""
-    try:
-        body = response.json()
-        msg = str(body.get("error", {}).get("message") or "")
-    except json.JSONDecodeError:
-        try:
-            msg = (response.text or "")[:_MAX_ERROR_DETAIL]
-        except Exception:  # noqa: BLE001 — fallback-of-fallback
-            return ""
-    if not msg:
-        return ""
-    return f": {msg[:_MAX_ERROR_DETAIL]}"
+_PROVIDER_LABEL = "Anthropic"
 
 
 class AnthropicProvider:
@@ -36,6 +22,9 @@ class AnthropicProvider:
     DEFAULT_TIMEOUT: ClassVar[float] = 60.0
     API_KEY_ENV_VAR: ClassVar[str] = "ANTHROPIC_API_KEY"
     KEY_SETUP_URL: ClassVar[str] = "https://console.anthropic.com/"
+    # A 429 is retried with backoff before it becomes a ProviderError; every
+    # other status is terminal. Shared with OpenAICompatProvider via `_http`.
+    RETRY_POLICY: ClassVar[RetryPolicy] = RetryPolicy()
 
     def __init__(
         self,
@@ -89,20 +78,23 @@ class AnthropicProvider:
         }
 
         try:
-            response = await self._ensure_http().post("/messages", json=payload, headers=headers)
+            response = await post_with_retry(
+                self._ensure_http(), "/messages", json=payload, headers=headers,
+                label=_PROVIDER_LABEL, policy=self.RETRY_POLICY,
+            )
             response.raise_for_status()
         except httpx.HTTPStatusError as e:
-            detail = _error_detail(e.response)
+            detail = error_detail(e.response)
             raise ProviderError(
-                f"Anthropic returned HTTP {e.response.status_code}{detail}"
+                f"{_PROVIDER_LABEL} returned HTTP {e.response.status_code}{detail}"
             ) from None
         except httpx.TimeoutException:
-            raise ProviderError("Anthropic request timed out") from None
+            raise ProviderError(f"{_PROVIDER_LABEL} request timed out") from None
 
         try:
             data = response.json()
         except json.JSONDecodeError as e:
-            raise ProviderError(f"Anthropic returned invalid JSON: {e}") from None
+            raise ProviderError(f"{_PROVIDER_LABEL} returned invalid JSON: {e}") from None
 
         content = ""
         for block in data.get("content", []):

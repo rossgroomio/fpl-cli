@@ -431,6 +431,8 @@ classDiagram
 
 All providers share the `LLMResponse` contract. `OpenAICompatProvider` supports OpenAI, Groq, Together, Ollama via configurable `base_url`. Provider selection configured in settings.
 
+Both HTTP providers post through `_http.post_with_retry`, which retries an HTTP 429 with `RetryPolicy` (exponential backoff with jitter, `Retry-After` honoured) and raises `RateLimitError` — a `ProviderError` subclass carrying the server's `retry_after` — once the attempts are spent. Every other status is the provider's own to turn into a `ProviderError`, so the retry line sits in one place: the same 429-is-transient distinction `DatasetFetcher` draws for the historical datasets. `fpl returnees --enrich` reads the typed error to re-query only the rate-limited subset of its shortlist once, and to report a still-refused player as rate-limited rather than unanswered.
+
 ## API Clients
 
 | Client | External Source | Purpose |
@@ -548,7 +550,8 @@ fpl_cli/
 │   ├── historical.py             # HistoricalDataProvider (composition: vaastav + Core-Insights)
 │   ├── football_data.py          # FootballDataClient (standings, match results)
 │   └── providers/                # LLM provider abstraction
-│       ├── _models.py            # LLMResponse, TokenUsage, ProviderError
+│       ├── _models.py            # LLMResponse, TokenUsage, ProviderError, RateLimitError
+│       ├── _http.py              # Shared 429 backoff (RetryPolicy, post_with_retry) and auth-safe error excerpts
 │       ├── anthropic.py          # AnthropicProvider
 │       ├── openai_compat.py      # OpenAICompatProvider (OpenAI, Groq, Together, Ollama)
 │       └── perplexity.py         # PerplexityProvider (extends OpenAICompat)

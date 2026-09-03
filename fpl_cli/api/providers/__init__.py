@@ -12,6 +12,7 @@ from ._models import (
     LLMResponse,
     ProviderError,
     ProviderNotConfiguredError,
+    RateLimitError,
     TokenUsage,
     UnknownProviderError,
 )
@@ -146,6 +147,7 @@ __all__ = [
     "PerplexityProvider",
     "ProviderError",
     "ProviderNotConfiguredError",
+    "RateLimitError",
     "TokenUsage",
     "UnknownProviderError",
     "get_llm_provider",
