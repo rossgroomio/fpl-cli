@@ -306,7 +306,9 @@ A club needs a result at only one venue to be rated. Where it has none at the ot
 
 In `fpl fdr` and `fpl preview` (everything the fixture agent produces, including the per-fixture `home_fdr`/`away_fdr` in `fpl fdr --format json`), the general FDR shown beside them is the mean of the two, in the same mode and at the same venue. It replaced the opponent's venue-blind average rating there, which ranked the league's weakest side above its strongest whenever the strong side's run held big names (#186). A fixture involving an unrated club scores the neutral 4.0 on all three columns rather than falling back to the FPL API's 1-5 difficulty, which would put that club on a second scale inside the same ranking.
 
-`fpl fixtures` and `fpl chips timing` still read the opponent's venue-blind `avg_overall_fdr` directly, so their FDR for a match differs from the preview's Gameweek Fixtures table.
+`fpl chips timing` grades a Triple Captain candidate's double on the same general FDR, averaged across that candidate's fixtures in the gameweek. It previously read the candidate's *own* club's `avg_overall_fdr`, which is the difficulty of facing that club - the inverse of the intent, so the signal fired for the weakest teams and never for the strongest (#201). It is the one FDR surface that does **not** grade an unrated club at the neutral 4.0: a placeholder clears its "possible" threshold, so an unrated candidate is skipped rather than recommended off a number that carries no fixture read.
+
+`fpl fixtures` still reads the opponent's venue-blind `avg_overall_fdr` directly, so its FDR for a match differs from the preview's Gameweek Fixtures table.
 
 ### Early-Season Blending (GW1-11)
 

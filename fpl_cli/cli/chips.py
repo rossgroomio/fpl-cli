@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import click
 from rich.panel import Panel
@@ -23,7 +23,6 @@ from fpl_cli.season import TOTAL_GAMEWEEKS
 
 if TYPE_CHECKING:
     from fpl_cli.api.fpl import FPLClient
-    from fpl_cli.services.team_ratings import TeamRatingsService
 
 CHIP_NAMES = {
     "wildcard": "Wildcard",
@@ -237,12 +236,77 @@ def chips_sync() -> None:
 # -- Chip timing: uses FixtureAgent for exposure data --
 
 
+class _DoubleCandidate(NamedTuple):
+    """A Triple Captain candidate's double, scored on its own fixtures."""
+
+    player: str
+    fdr: float
+    fixture_count: int
+
+
+def _best_double_candidate(
+    players: list[str],
+    gw: int,
+    name_to_team_id: dict[str, int],
+    id_to_short: dict[int, str],
+    fdr_by_team: dict[str, dict[str, Any]],
+    rated_teams: set[str],
+) -> _DoubleCandidate | None:
+    """Pick the squad player whose double in ``gw`` is the easiest, and score it.
+
+    Each candidate is scored on the fixture agent's ``fdr_by_gameweek`` for
+    their own team - the mean general FDR of that team's fixtures in the
+    gameweek, on the venue-aware ATK/DEF model `fpl fdr` and `fpl preview`
+    show - so a candidate facing two weak sides scores low. Grading the
+    candidate's own club instead inverts the signal: `avg_overall_fdr` is the
+    difficulty of facing that club, so a top club reads "hard" and the weakest
+    club in the league reads "easy" (#201).
+
+    Two candidates are not scoreable, and are skipped rather than graded on a
+    number that does not mean what it says:
+
+    - No fixture in the gameweek. A predicted double can sit beyond the
+      agent's FDR window, leaving nothing to average.
+    - An unrated club. Every FDR for one scores the ratings service's neutral
+      4.0, which clears the "possible" threshold on a placeholder rather than
+      a fixture read. Relevant at the season rollover, when a ratings file can
+      pass every date check while knowing nothing about the promoted clubs
+      (see `TeamRatingsService.check_team_set`).
+
+    ``fixture_count`` reports how many fixtures the score was averaged over, so
+    a caller can say when a double was graded on less than the full pair.
+
+    Returns:
+        The easiest scoreable candidate, or None if there is no such candidate.
+    """
+    scored: list[_DoubleCandidate] = []
+
+    for player_name in players:
+        tid = name_to_team_id.get(player_name)
+        if not tid:
+            continue
+        short = id_to_short.get(tid)
+        if not short or short not in rated_teams:
+            continue
+        gw_fdr = fdr_by_team.get(short, {}).get("fdr_by_gameweek", {}).get(gw)
+        if not gw_fdr:
+            continue
+        scored.append(
+            _DoubleCandidate(player_name, gw_fdr["fdr"], gw_fdr["fixture_count"]),
+        )
+
+    if not scored:
+        return None
+    return min(scored, key=lambda c: c.fdr)
+
+
 def _compute_chip_signals(
     exposure: list[dict],
     unplayed: set[str],
     name_to_team_id: dict[str, int],
     id_to_short: dict[int, str],
-    ratings_service: TeamRatingsService,
+    fdr_by_team: dict[str, dict[str, Any]],
+    rated_teams: set[str],
 ) -> list[dict]:
     """Compute FH/BB/TC signals from squad exposure data."""
     signals: list[dict] = []
@@ -279,38 +343,36 @@ def _compute_chip_signals(
                 })
 
         if gw_type == "double" and "3xc" in unplayed:
-            best_player: str | None = None
-            best_fdr: float | None = None
+            best = _best_double_candidate(
+                affected_players, gw, name_to_team_id, id_to_short,
+                fdr_by_team, rated_teams,
+            )
 
-            for player_name in affected_players:
-                tid = name_to_team_id.get(player_name)
-                if not tid:
-                    continue
-                short = id_to_short.get(tid)
-                if not short:
-                    continue
-                rating = ratings_service.get_rating(short)
-                if rating is None:
-                    continue
-                fdr = rating.avg_overall_fdr
-                if best_fdr is None or fdr < best_fdr:
-                    best_fdr = fdr
-                    best_player = player_name
-
-            if best_fdr is not None and best_player is not None:
-                # TC thresholds are more lenient than general FDR (DGW doubles the upside)
-                if best_fdr <= 3.0:
+            if best is not None:
+                # Same 1-7 scale as `fpl fdr`, on the double's own fixtures.
+                # Thresholds are more lenient than that table's colouring
+                # (2.5/3.0) because a DGW doubles the upside.
+                if best.fdr <= 3.0:
                     tc_strength: str | None = "strong"
-                elif best_fdr <= 4.0:
+                elif best.fdr <= 4.0:
                     tc_strength = "possible"
                 else:
                     tc_strength = None
 
                 if tc_strength:
+                    # A predicted double is only scoreable on the leg the
+                    # fixtures API already lists, so say when the figure covers
+                    # one fixture rather than the pair - an unscheduled second
+                    # leg against a title contender is invisible to the mean.
+                    partial = (
+                        "" if best.fixture_count >= 2
+                        else f", {best.fixture_count} of 2 scheduled"
+                    )
                     signals.append({
                         "gw": gw, "signal": "TC", "strength": tc_strength, "source": source,
                         "players": affected_players,
-                        "detail": f"{best_player} (FDR {best_fdr:.1f})",
+                        "detail": f"{best.player} (FDR {best.fdr:.1f}{partial})",
+                        "fixtures_scored": best.fixture_count,
                     })
 
     return signals
@@ -356,13 +418,21 @@ async def _fetch_and_compute(
 
     async with FixtureAgent(config={}, client=client) as agent:
         result = await agent.run(context={"squad": squad})
+        # Coverage check only - which clubs the ratings file actually knows.
+        # The FDR itself comes from the agent, which scores an unrated club's
+        # fixture at a neutral 4.0 that would clear the TC threshold on its own.
+        rated_teams = {
+            short for short in id_to_short.values()
+            if agent.ratings_service.get_rating(short) is not None
+        }
 
     if not result.success:
         return unplayed, planned_by_gw, None
 
     exposure = result.data.get("squad_exposure", [])
     signals = _compute_chip_signals(
-        exposure, unplayed, name_to_team_id, id_to_short, agent.ratings_service,
+        exposure, unplayed, name_to_team_id, id_to_short,
+        result.data.get("fdr_by_team", {}), rated_teams,
     )
     return unplayed, planned_by_gw, signals
 
@@ -378,7 +448,8 @@ def chips_timing(output_format: str) -> None:
     Thresholds (full 15-player squad):
       FH: 5+ squad players in a blank = strong, 3+ = possible
       BB: 8+ squad players in a double = strong, 6+ = possible
-      TC: best DGW candidate with avg FDR <= 3.0 = strong, <= 4.0 = possible
+      TC: best DGW candidate's two fixtures average FDR <= 3.0 = strong,
+          <= 4.0 = possible
     """
     from fpl_cli.api.fpl import FPLClient
 
