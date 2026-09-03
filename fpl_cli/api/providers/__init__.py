@@ -8,6 +8,7 @@ import re
 from typing import Any
 from urllib.parse import urlparse
 
+from ._http import QueryPacer, RetryPolicy
 from ._models import (
     LLMResponse,
     ProviderError,
@@ -147,7 +148,9 @@ __all__ = [
     "PerplexityProvider",
     "ProviderError",
     "ProviderNotConfiguredError",
+    "QueryPacer",
     "RateLimitError",
+    "RetryPolicy",
     "TokenUsage",
     "UnknownProviderError",
     "get_llm_provider",

@@ -23,7 +23,7 @@ from typing import Any
 
 import httpx
 
-from ._models import RateLimitError
+from ._models import ProviderError, RateLimitError
 
 logger = logging.getLogger(__name__)
 
@@ -35,11 +35,24 @@ _RETRY_AFTER_JITTER = 1.0
 
 
 def error_detail(response: httpx.Response) -> str:
-    """Extract a short, auth-safe excerpt from an error response."""
+    """Extract a short, auth-safe excerpt from an error response.
+
+    Reads `{"error": {"message": ...}}` (or `{"error": "..."}`) when the body
+    has that shape and falls back to the raw text otherwise. It runs on an
+    error path, so no body shape -- a bare array, a string, no JSON at all --
+    may make it raise.
+    """
     try:
         body = response.json()
-        msg = str(body.get("error", {}).get("message") or "")
     except json.JSONDecodeError:
+        body = None
+    if isinstance(body, dict):
+        error = body.get("error")
+        if isinstance(error, dict):
+            msg = str(error.get("message") or "")
+        else:
+            msg = error if isinstance(error, str) else ""
+    else:
         try:
             msg = (response.text or "")[:_MAX_ERROR_DETAIL]
         except Exception:  # noqa: BLE001 — fallback-of-fallback
@@ -113,7 +126,7 @@ async def post_with_retry(
     http: httpx.AsyncClient,
     path: str,
     *,
-    json: dict[str, Any],
+    payload: dict[str, Any],
     headers: dict[str, str],
     label: str,
     policy: RetryPolicy | None = None,
@@ -129,7 +142,7 @@ async def post_with_retry(
     attempt = 0
     while True:
         attempt += 1
-        response = await http.post(path, json=json, headers=headers)
+        response = await http.post(path, json=payload, headers=headers)
         if response.status_code != 429:
             return response
         retry_after = retry_after_seconds(response)
@@ -147,6 +160,66 @@ async def post_with_retry(
         await _sleep(delay)
 
 
+async def post_json_with_retry(
+    http: httpx.AsyncClient,
+    path: str,
+    *,
+    payload: dict[str, Any],
+    headers: dict[str, str],
+    label: str,
+    policy: RetryPolicy | None = None,
+) -> Any:
+    """POST with 429 backoff and turn every other failure into a ProviderError.
+
+    The one place the providers' error handling lives, so a change to it
+    reaches every provider at once: an error status becomes a sanitised
+    ProviderError carrying the label and an auth-safe excerpt, a timeout says
+    so, and a body that is not JSON is reported rather than parsed. Returns
+    the decoded body for the provider to read.
+    """
+    try:
+        response = await post_with_retry(
+            http, path, payload=payload, headers=headers, label=label, policy=policy,
+        )
+        response.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        raise ProviderError(
+            f"{label} returned HTTP {e.response.status_code}{error_detail(e.response)}"
+        ) from None
+    except httpx.TimeoutException:
+        raise ProviderError(f"{label} request timed out") from None
+
+    try:
+        return response.json()
+    except json.JSONDecodeError as e:
+        raise ProviderError(f"{label} returned invalid JSON: {e}") from None
+
+
+class QueryPacer:
+    """Keeps request starts at least `spacing` seconds apart.
+
+    An in-flight cap bounds a burst; this bounds the rate, which is what a
+    per-minute quota measures. Together they are a token bucket whose depth is
+    the cap. Reserving the next slot needs no lock: nothing in it awaits, so
+    under asyncio's cooperative scheduling nothing can interleave between
+    reading the last slot and writing the next.
+    """
+
+    def __init__(self, spacing: float) -> None:
+        self.spacing = max(0.0, spacing)
+        self._next_start: float | None = None
+
+    async def wait_turn(self) -> None:
+        """Return once this caller may start."""
+        if self.spacing <= 0:
+            return
+        now = asyncio.get_running_loop().time()
+        start = now if self._next_start is None else max(now, self._next_start)
+        self._next_start = start + self.spacing
+        if start > now:
+            await _sleep(start - now)
+
+
 async def _sleep(seconds: float) -> None:
-    """Every backoff wait goes through here, so a test can make a retry free."""
+    """Every wait in this module goes through here, so a test can make it free."""
     await asyncio.sleep(seconds)

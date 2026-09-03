@@ -41,16 +41,19 @@ _FIRST_DEADLINE = datetime(2026, 8, 14, 17, 30, tzinfo=timezone.utc)
 def recorded_pauses(monkeypatch):
     """Record every wait the enrichment pass makes instead of sleeping it.
 
-    Query pacing and the rate-limit re-query both wait for real; through this
-    seam they cost the suite no wall-clock and a test can still read what
-    would have been waited.
+    Query pacing (the provider package's seam) and the rate-limit re-query
+    (the command's own) both wait for real; through these seams they cost the
+    suite no wall-clock and a test can still read what would have been waited.
     """
+    from fpl_cli.api.providers import _http as provider_http
+
     pauses: list[float] = []
 
     async def _record(seconds: float) -> None:
         pauses.append(seconds)
 
     monkeypatch.setattr(returnees_cli, "_pause", _record)
+    monkeypatch.setattr(provider_http, "_sleep", _record)
     return pauses
 
 
@@ -1024,6 +1027,37 @@ class TestEnrichmentRateLimit:
         assert "2 player(s)" in metadata["enrichment_note"]
         assert "HTTP 429" in metadata["enrichment_note"]
         assert "timed out" not in metadata["enrichment_note"]
+
+    def test_the_last_ordinary_failure_is_the_reason_reported_as_before(self):
+        """Two ordinary failures with different messages: the later-shortlisted
+        player's message is the one reported, as it was before rate limits
+        were told apart. Sidelined sorts before Stalenews on a tied quality."""
+        provider = _stub_provider({
+            "Sidelined": ProviderError("Perplexity request timed out"),
+            "Stalenews": ProviderError("Perplexity returned invalid JSON: boom"),
+        })
+
+        payload = _json_run(["--enrich"], scoring_data=_enrichment_scoring_data(),
+                            provider_factory=_provider_factory(provider))
+
+        metadata = payload["metadata"]
+        assert metadata["enrichment_rate_limited"] is False
+        assert "2 player(s)" in metadata["enrichment_note"]
+        assert "invalid JSON" in metadata["enrichment_note"]
+        assert "timed out" not in metadata["enrichment_note"]
+
+    def test_a_run_that_cached_nothing_does_not_claim_it_did(self):
+        provider = _stub_provider(default=_refused())
+
+        payload = _json_run(["--enrich"], scoring_data=_enrichment_scoring_data(),
+                            provider_factory=_provider_factory(provider),
+                            settings={"returnee_radar": {"enrich_max_players": 1}})
+
+        metadata = payload["metadata"]
+        assert metadata["enrichment_count"] == 0
+        assert metadata["enrichment_rate_limited"] is True
+        assert "tries again" in metadata["enrichment_note"]
+        assert "are cached" not in metadata["enrichment_note"]
 
     def test_an_ordinary_failure_is_neither_retried_nor_called_rate_limited(self, recorded_pauses):
         provider = _stub_provider({"Sidelined": ProviderError("Perplexity request timed out")})

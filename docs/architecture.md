@@ -431,7 +431,7 @@ classDiagram
 
 All providers share the `LLMResponse` contract. `OpenAICompatProvider` supports OpenAI, Groq, Together, Ollama via configurable `base_url`. Provider selection configured in settings.
 
-Both HTTP providers post through `_http.post_with_retry`, which retries an HTTP 429 with `RetryPolicy` (exponential backoff with jitter, `Retry-After` honoured) and raises `RateLimitError` — a `ProviderError` subclass carrying the server's `retry_after` — once the attempts are spent. Every other status is the provider's own to turn into a `ProviderError`, so the retry line sits in one place: the same 429-is-transient distinction `DatasetFetcher` draws for the historical datasets. `fpl returnees --enrich` reads the typed error to re-query only the rate-limited subset of its shortlist once, and to report a still-refused player as rate-limited rather than unanswered.
+Both HTTP providers post through `_http.post_json_with_retry`, the one place their error handling lives: it retries an HTTP 429 with `RetryPolicy` (exponential backoff with jitter, `Retry-After` honoured) and raises `RateLimitError` — a `ProviderError` subclass carrying the server's `retry_after` — once the attempts are spent, and turns every other error status, a timeout, or a non-JSON body into a sanitised `ProviderError`. That is the same 429-is-transient distinction `DatasetFetcher` draws for the historical datasets. The module also holds `QueryPacer`, which keeps request starts a configured interval apart for a caller that fires several queries at once; `fpl returnees --enrich` pairs it with an in-flight cap, reads the typed error to re-query only the rate-limited subset of its shortlist once, and reports a still-refused player as rate-limited rather than unanswered.
 
 ## API Clients
 
@@ -551,7 +551,7 @@ fpl_cli/
 │   ├── football_data.py          # FootballDataClient (standings, match results)
 │   └── providers/                # LLM provider abstraction
 │       ├── _models.py            # LLMResponse, TokenUsage, ProviderError, RateLimitError
-│       ├── _http.py              # Shared 429 backoff (RetryPolicy, post_with_retry) and auth-safe error excerpts
+│       ├── _http.py              # Shared HTTP plumbing: 429 backoff (RetryPolicy, post_with_retry), the providers' one error path (post_json_with_retry), QueryPacer for batching callers
 │       ├── anthropic.py          # AnthropicProvider
 │       ├── openai_compat.py      # OpenAICompatProvider (OpenAI, Groq, Together, Ollama)
 │       └── perplexity.py         # PerplexityProvider (extends OpenAICompat)

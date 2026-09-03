@@ -50,7 +50,12 @@ from fpl_cli.api.providers import (  # noqa: E402 — placed after module-level 
     get_llm_provider,
 )
 from fpl_cli.api.providers import _http as provider_http  # noqa: E402
-from fpl_cli.api.providers._http import RetryPolicy, error_detail, retry_after_seconds  # noqa: E402
+from fpl_cli.api.providers._http import (  # noqa: E402
+    QueryPacer,
+    RetryPolicy,
+    error_detail,
+    retry_after_seconds,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -354,6 +359,46 @@ class TestErrorDetail:
         resp.json.side_effect = json.JSONDecodeError("bad", "", 0)
         type(resp).text = PropertyMock(side_effect=RuntimeError("broken"))
         assert error_detail(resp) == ""
+
+    def test_a_non_dict_json_body_falls_back_to_the_text(self):
+        resp = MagicMock()
+        resp.json.return_value = ["not", "an", "object"]
+        type(resp).text = PropertyMock(return_value='["not", "an", "object"]')
+        assert error_detail(resp) == ': ["not", "an", "object"]'
+
+    def test_a_string_error_is_used_as_is(self):
+        resp = MagicMock()
+        resp.json.return_value = {"error": "plain string error"}
+        assert error_detail(resp) == ": plain string error"
+
+    def test_an_object_without_an_error_message_is_empty(self):
+        resp = MagicMock()
+        resp.json.return_value = {"detail": "something else"}
+        assert error_detail(resp) == ""
+
+
+class TestQueryPacer:
+    async def test_starts_are_spaced_by_the_interval(self, backoff_waits):
+        pacer = QueryPacer(2.5)
+
+        for _ in range(3):
+            await pacer.wait_turn()
+
+        # The first turn is immediate; each later one waits for its slot.
+        assert len(backoff_waits) == 2
+        assert backoff_waits[0] == pytest.approx(2.5, abs=0.2)
+        assert backoff_waits[1] == pytest.approx(5.0, abs=0.2)
+
+    async def test_zero_spacing_never_waits(self, backoff_waits):
+        pacer = QueryPacer(0)
+
+        for _ in range(3):
+            await pacer.wait_turn()
+
+        assert backoff_waits == []
+
+    def test_negative_spacing_is_clamped_to_none(self):
+        assert QueryPacer(-3).spacing == 0.0
 
 
 def _with_retry_after(value):

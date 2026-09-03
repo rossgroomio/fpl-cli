@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import json
 import os
 from typing import Any, ClassVar, Self
 
 import httpx
 
-from ._http import RetryPolicy, error_detail, post_with_retry
+from ._http import RetryPolicy, post_json_with_retry
 from ._models import LLMResponse, ProviderError, TokenUsage
 
 _DEFAULT_BASE_URL = "https://api.openai.com/v1"
@@ -103,25 +102,10 @@ class OpenAICompatProvider:
             "Content-Type": "application/json",
         }
 
-        try:
-            response = await post_with_retry(
-                self._ensure_http(), "/chat/completions", json=payload, headers=headers,
-                label=self._PROVIDER_LABEL, policy=self.RETRY_POLICY,
-            )
-            response.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            detail = error_detail(e.response)
-            raise ProviderError(
-                f"{self._PROVIDER_LABEL} returned HTTP {e.response.status_code}{detail}"
-            ) from None
-        except httpx.TimeoutException:
-            raise ProviderError(f"{self._PROVIDER_LABEL} request timed out") from None
-
-        try:
-            data = response.json()
-        except json.JSONDecodeError as e:
-            raise ProviderError(f"{self._PROVIDER_LABEL} returned invalid JSON: {e}") from None
-
+        data = await post_json_with_retry(
+            self._ensure_http(), "/chat/completions", payload=payload, headers=headers,
+            label=self._PROVIDER_LABEL, policy=self.RETRY_POLICY,
+        )
         return self._parse_response(data)
 
     def post_process(self, content: str) -> str:

@@ -422,17 +422,20 @@ async def _enrich(
     for entry, outcome in zip(pending, outcomes, strict=True):
         if outcome.found is None:
             failures.append(entry.web_name)
-            # When the failures are mixed, the rate limit is the reason worth
-            # reporting: it is the one the user can do something about.
-            if outcome.rate_limited or not reason:
+            # The last failure's message is the one reported, unless a rate
+            # limit has been seen, which then holds: when the failures are
+            # mixed it is the one the user can do something about.
+            if outcome.rate_limited or not rate_limited:
                 reason = outcome.error or reason
             rate_limited = rate_limited or outcome.rate_limited
             continue
         intel[entry.player_id] = outcome.found
 
+    saved = False
     if len(failures) < len(pending):
         try:
             save_enrichment_cache(intel, gameweek=gameweek)
+            saved = True
         except OSError as exc:
             # The intel is already in hand; losing the write costs a repeat
             # query next run, not this run's output.
@@ -448,10 +451,13 @@ async def _enrich(
             f"({', '.join(failures)}): {reason or 'the search failed'}"
         )
         if rate_limited:
-            note += (
-                ". The search provider is rate-limiting this run; the answers it "
-                "did give are cached, so re-running with --enrich in a minute "
-                "fills in the rest."
+            # Only promise a cache that was actually written: a run refused
+            # for every pending player has nothing to serve next time.
+            note += ". The search provider is rate-limiting this run; " + (
+                "the answers it did give are cached, so re-running with --enrich "
+                "in a minute fills in the rest."
+                if saved else
+                "re-running with --enrich in a minute tries again."
             )
         error_console.print(f"[yellow]{note}[/yellow]")
     return _Enrichment(
@@ -506,13 +512,18 @@ async def _gather_intel(
     least time between two starts. Results come back positionally, so a
     failure still lines up with the player it belongs to.
     """
+    from fpl_cli.api.providers import QueryPacer
+
     limit = asyncio.Semaphore(max(1, config.enrich_concurrency))
-    pacer = _QueryPacer(config.enrich_query_spacing_seconds)
+    pacer = QueryPacer(config.enrich_query_spacing_seconds)
 
     async def _one(entry: RadarEntry) -> _IntelOutcome:
-        # The slot is held through the provider's own 429 backoff on purpose:
-        # a query waiting out a rate limit must not free a slot for another
-        # to walk into the same wall.
+        # Slot first, then turn. The quota counts actual starts, so the
+        # spacing has to separate those: a turn taken before the slot could
+        # sit waiting for one and then start inside the next turn's spacing.
+        # The slot is also held through the provider's own 429 backoff on
+        # purpose -- a query waiting out a rate limit must not free a slot
+        # for another to walk into the same wall.
         async with limit:
             await pacer.wait_turn()
             return await _query_intel(
@@ -520,31 +531,6 @@ async def _gather_intel(
             )
 
     return list(await asyncio.gather(*(_one(entry) for entry in entries)))
-
-
-class _QueryPacer:
-    """Keeps query starts at least `spacing` seconds apart.
-
-    The in-flight cap bounds the burst; this bounds the rate. Together they
-    are a token bucket whose depth is the cap. A start reserves the next slot
-    under the lock and waits for it outside, so the queue keeps moving while
-    one query sits out its spacing.
-    """
-
-    def __init__(self, spacing: float) -> None:
-        self._spacing = max(0.0, spacing)
-        self._next_start: float | None = None
-        self._lock = asyncio.Lock()
-
-    async def wait_turn(self) -> None:
-        if self._spacing <= 0:
-            return
-        async with self._lock:
-            now = asyncio.get_running_loop().time()
-            start = now if self._next_start is None else max(now, self._next_start)
-            self._next_start = start + self._spacing
-        if start > now:
-            await _pause(start - now)
 
 
 async def _retry_rate_limited(
@@ -597,7 +583,7 @@ def _rate_limit_pause(outcomes: Iterable[_IntelOutcome]) -> float:
 
 
 async def _pause(seconds: float) -> None:
-    """Every wait the enrichment pass makes goes through here, so a test can make it free."""
+    """The pause before the rate-limited re-query goes through here, so a test can make it free."""
     await asyncio.sleep(seconds)
 
 
