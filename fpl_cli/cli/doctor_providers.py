@@ -38,7 +38,7 @@ import httpx
 from fpl_cli.api.contract import missing_columns
 from fpl_cli.cli.doctor import CheckResult, CheckStatus
 from fpl_cli.paths import UserDirError
-from fpl_cli.season import TOTAL_GAMEWEEKS, get_season_year, season_label_range
+from fpl_cli.season import TOTAL_GAMEWEEKS
 from fpl_cli.utils.teams import describe_team_set_mismatch
 
 if TYPE_CHECKING:
@@ -243,11 +243,12 @@ async def _vaastav_season_check(fetcher: DatasetFetcher, season: str) -> CheckRe
 
 
 async def _vaastav_checks() -> list[CheckResult]:
+    from fpl_cli.api.historical import historical_season_windows
     from fpl_cli.api.vaastav import make_vaastav_fetcher
 
-    # The same trailing-window allocation make_historical_provider uses:
-    # vaastav serves the three completed seasons, Core-Insights the current.
-    seasons = season_label_range(get_season_year() - 1, count=3)
+    # The allocation make_historical_provider reads from, so the probe cannot
+    # drift from the seasons the runtime actually fetches (#101).
+    seasons = historical_season_windows().vaastav
     fetcher = make_vaastav_fetcher()
     try:
         results = await asyncio.gather(*(_vaastav_season_check(fetcher, s) for s in seasons))
@@ -257,12 +258,27 @@ async def _vaastav_checks() -> list[CheckResult]:
 
 
 # ---------------------------------------------------------------------------
-# Core-Insights GitHub dataset (current season)
+# Core-Insights GitHub dataset (last season and the season in progress)
 # ---------------------------------------------------------------------------
 
 
+def _ci_missing_reason(season: str, *, current: bool) -> str:
+    """What a 404 on a season's root files costs, and why it might happen.
+
+    Core-Insights is the sole source for both seasons it serves. The season
+    in progress may simply not have its directory yet at rollover; a
+    completed season has no such excuse.
+    """
+    if current:
+        return (
+            "the sole current-season source; the season directory may not exist "
+            "yet or may have moved"
+        )
+    return f"the sole source for {season} player history; the season directory may have moved"
+
+
 async def _ci_fetch_text(
-    fetcher: DatasetFetcher, name: str, path: str, filename: str
+    fetcher: DatasetFetcher, name: str, path: str, filename: str, *, missing: str
 ) -> tuple[str | None, CheckResult | None]:
     """Fetch one Core-Insights file, or the CheckResult explaining why not."""
     try:
@@ -270,10 +286,7 @@ async def _ci_fetch_text(
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code == 404:
             return None, CheckResult(
-                name,
-                CheckStatus.BROKEN,
-                f"{filename} is missing upstream — the sole current-season source; "
-                "the season directory may not exist yet or may have moved",
+                name, CheckStatus.BROKEN, f"{filename} is missing upstream — {missing}"
             )
         return None, CheckResult(name, CheckStatus.UNCHECKED, _unreachable(exc))
     except httpx.HTTPError as exc:
@@ -288,8 +301,9 @@ async def _ci_file_check(
     required: frozenset[str],
     *,
     row_floor: int,
+    missing: str,
 ) -> CheckResult:
-    text, failure = await _ci_fetch_text(fetcher, name, path, filename)
+    text, failure = await _ci_fetch_text(fetcher, name, path, filename, missing=missing)
     if failure is not None:
         return failure
     assert text is not None  # narrowed by failure is None
@@ -297,7 +311,7 @@ async def _ci_file_check(
 
 
 async def _ci_players_check(
-    fetcher: DatasetFetcher, season: str
+    fetcher: DatasetFetcher, season: str, *, missing: str
 ) -> tuple[CheckResult, dict[int, PlayerLookup]]:
     """players.csv: shape, volume, and the identity join every parse below needs.
 
@@ -307,11 +321,15 @@ async def _ci_players_check(
     and the per-GW probe would otherwise report that as the per-GW files
     breaking. The lookup it returns is what those probes join against.
     """
-    from fpl_cli.api.core_insights import PLAYERS_CSV_REQUIRED_COLUMNS, parse_player_lookup
+    from fpl_cli.api.core_insights import (
+        PLAYERS_CSV_REQUIRED_COLUMNS,
+        parse_player_lookup,
+        season_dir,
+    )
 
-    name = "Core-Insights players.csv"
+    name = f"Core-Insights {season} players.csv"
     text, failure = await _ci_fetch_text(
-        fetcher, name, f"{season}/players.csv", "players.csv"
+        fetcher, name, f"{season_dir(season)}/players.csv", "players.csv", missing=missing
     )
     if failure is not None:
         return failure, {}
@@ -627,25 +645,38 @@ async def _core_insights_checks(
     from fpl_cli.api.core_insights import (
         PLAYERSTATS_REQUIRED_COLUMNS,
         make_core_insights_fetcher,
+        season_dir,
     )
-    from fpl_cli.season import core_insights_season
+    from fpl_cli.api.historical import historical_season_windows
 
-    season = core_insights_season()
+    # The allocation make_historical_provider reads from (#101): the root
+    # files of every season it serves, the per-GW files only for the season
+    # in progress, the one season the runtime reads them for.
+    seasons = historical_season_windows().core_insights
+    current = seasons[-1]
     fetcher = make_core_insights_fetcher()
     results: list[CheckResult] = []
+    lookup: dict[int, PlayerLookup] = {}
     try:
-        players_result, lookup = await _ci_players_check(fetcher, season)
-        results.append(players_result)
-        results.append(
-            await _ci_file_check(
-                fetcher,
-                "Core-Insights playerstats.csv",
-                f"{season}/playerstats.csv",
-                "playerstats.csv",
-                PLAYERSTATS_REQUIRED_COLUMNS,
-                row_floor=CSV_ROW_FLOOR,
+        for season in seasons:
+            missing = _ci_missing_reason(season, current=season == current)
+            players_result, season_lookup = await _ci_players_check(
+                fetcher, season, missing=missing
             )
-        )
+            results.append(players_result)
+            results.append(
+                await _ci_file_check(
+                    fetcher,
+                    f"Core-Insights {season} playerstats.csv",
+                    f"{season_dir(season)}/playerstats.csv",
+                    "playerstats.csv",
+                    PLAYERSTATS_REQUIRED_COLUMNS,
+                    row_floor=CSV_ROW_FLOOR,
+                    missing=missing,
+                )
+            )
+            if season == current:
+                lookup = season_lookup
         if latest_finished_gw is None:
             results.append(
                 CheckResult(
@@ -660,7 +691,7 @@ async def _core_insights_checks(
             )
         else:
             results.append(
-                await _ci_gw_check(fetcher, season, latest_finished_gw, lookup)
+                await _ci_gw_check(fetcher, season_dir(current), latest_finished_gw, lookup)
             )
     finally:
         await fetcher.close()

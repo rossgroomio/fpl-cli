@@ -25,7 +25,7 @@ class SeasonHistory:
     end_cost: int
     position: str
     web_name: str
-    team_id: int
+    team_id: int  # FPL club code (bootstrap teams[].code): stable across seasons and sources
 
 
 @dataclass

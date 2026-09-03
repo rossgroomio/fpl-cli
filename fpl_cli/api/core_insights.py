@@ -1,7 +1,9 @@
-"""FPL-Core-Insights dataset client for historical player data (2025-26+).
+"""FPL-Core-Insights dataset client for historical player data.
 
-Provides season aggregates and GW-level trend data for the current season,
-sourced from olbauday/FPL-Core-Insights which updates 3x daily.
+Provides season aggregates for the seasons the dataset publishes -- the one
+in progress and the one before it -- and GW-level trend and match data for
+the current season, sourced from olbauday/FPL-Core-Insights which updates
+3x daily.
 """
 from __future__ import annotations
 
@@ -27,7 +29,7 @@ from fpl_cli.api.historical_types import (
     compute_reliability,
     compute_trend,
 )
-from fpl_cli.season import core_insights_season, get_season_year, season_label
+from fpl_cli.season import core_insights_season, season_label, season_start_year
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +91,15 @@ _POSITION_MAP = {
     "Midfielder": "MID",
     "Forward": "FWD",
 }
+
+
+def season_dir(season: str) -> str:
+    """The dataset directory for a season label: ``"2025-26"`` -> ``"2025-2026"``.
+
+    Every path the client and the ``fpl doctor --providers`` probe build
+    starts with this segment, so both derive it here.
+    """
+    return core_insights_season(season_start_year(season))
 
 
 def make_core_insights_fetcher(ttl: timedelta = DEFAULT_TTL) -> DatasetFetcher:
@@ -253,23 +264,43 @@ def parse_gw_stat_rows(
 
 
 class CoreInsightsClient:
-    """Client for olbauday/FPL-Core-Insights GitHub dataset (2025-26+).
+    """Client for the olbauday/FPL-Core-Insights GitHub dataset.
 
-    Provides season aggregates and GW-level trend profiles for the current
-    season. Uses DatasetFetcher for disk-cached HTTP with ETag/TTL.
+    Serves season aggregates for every configured season and, for the newest
+    of them (the season in progress), the per-gameweek trend and match-level
+    data. Core-Insights publishes exactly two seasons -- the one in progress
+    and the one before it -- so the default window is the current season
+    alone and `make_historical_provider` widens it to both (#101). Uses
+    DatasetFetcher for disk-cached HTTP with ETag/TTL.
     """
 
     MIN_MINUTES = 450
     HISTORICAL_TTL = timedelta(days=30)
 
-    _session_profiles: ClassVar[dict[int, PlayerProfile] | None] = None
+    # Session-level cache keyed by the season window. Two construction sites
+    # hold different windows -- the provider's two seasons, the default
+    # single season elsewhere -- and whichever ran first must not answer for
+    # the other, or the provider would silently lose last season from every
+    # prior. Keying makes that correct by construction rather than by no
+    # other call site ever asking for profiles.
+    _session_profiles: ClassVar[dict[tuple[str, ...], dict[int, PlayerProfile]]] = {}
 
-    def __init__(self, fetcher: DatasetFetcher) -> None:
+    def __init__(
+        self,
+        fetcher: DatasetFetcher,
+        seasons: tuple[str, ...] | None = None,
+    ) -> None:
+        """
+        Args:
+            fetcher: Disk-caching fetcher rooted at the dataset's base URL.
+            seasons: Hyphenated season labels, oldest first, the last being
+                the season in progress. Defaults to the current season alone.
+        """
         self.fetcher = fetcher
-        self._season_year = get_season_year()
-        self._season_label = season_label(self._season_year)
-        self._ci_season = core_insights_season(self._season_year)
-        self._player_lookup: dict[int, PlayerLookup] | None = None
+        self.seasons = seasons if seasons is not None else (season_label(),)
+        self._season_label = self.seasons[-1]
+        self._ci_season = season_dir(self._season_label)
+        self._player_lookups: dict[str, dict[int, PlayerLookup]] = {}
         self._season_data: dict[str, list[SeasonHistory]] | None = None
         self._gw_rows: dict[int, dict[int, _GwRow]] | None = None
         self._match_records: dict[int, list[MatchRecord]] | None = None
@@ -284,27 +315,49 @@ class CoreInsightsClient:
     async def __aexit__(self, *exc):
         await self.close()
 
+    def _is_historical(self, season: str) -> bool:
+        """A season is complete once it is not the newest configured one."""
+        return season != self._season_label
+
+    def _season_ttl(self, season: str) -> timedelta | None:
+        """A completed season's files are effectively immutable; otherwise the fetcher default."""
+        return self.HISTORICAL_TTL if self._is_historical(season) else None
+
+    def _describe(self, season: str) -> str:
+        """How a warning names the season: the one in progress is 'current-season'."""
+        return season if self._is_historical(season) else "current-season"
+
     # --- Player lookup (players.csv join) ---
 
-    async def _fetch_player_lookup(self) -> dict[int, PlayerLookup]:
-        """Fetch players.csv and build {player_id: PlayerLookup} mapping."""
-        if self._player_lookup is not None:
-            return self._player_lookup
+    async def _fetch_player_lookup(self, season: str | None = None) -> dict[int, PlayerLookup]:
+        """Fetch a season's players.csv and build {player_id: PlayerLookup}.
 
-        text = await self.fetcher.get(f"{self._ci_season}/players.csv")
-        degraded = "current-season player histories are unavailable"
+        player_id is season-local, so a join reads the lookup of the season
+        the joined file belongs to. Defaults to the season in progress, which
+        every per-gameweek file joins against.
+        """
+        label = season or self._season_label
+        cached = self._player_lookups.get(label)
+        if cached is not None:
+            return cached
+
+        text = await self.fetcher.get(
+            f"{season_dir(label)}/players.csv", ttl=self._season_ttl(label)
+        )
+        source = f"Core-Insights {label} players.csv"
+        degraded = f"{self._describe(label)} player histories are unavailable"
         lookup: dict[int, PlayerLookup] = {}
         if header_covers(
-            "Core-Insights players.csv",
+            source,
             csv.DictReader(io.StringIO(text)).fieldnames,
             PLAYERS_CSV_REQUIRED_COLUMNS,
             degraded=degraded,
         ):
             lookup, row_count = parse_player_lookup(text)
             if row_count and not lookup:
-                warn_all_rows_skipped("Core-Insights players.csv", row_count, degraded=degraded)
+                warn_all_rows_skipped(source, row_count, degraded=degraded)
 
-        self._player_lookup = lookup
+        self._player_lookups[label] = lookup
         return lookup
 
     # --- Match-level data ---
@@ -373,26 +426,55 @@ class CoreInsightsClient:
     # --- Season aggregates ---
 
     async def _fetch_season_data(self) -> dict[str, list[SeasonHistory]]:
-        """Fetch playerstats.csv for the current season, return as SeasonHistory list.
+        """Season aggregates for every configured season, keyed by label.
 
-        Uses the root-level playerstats.csv (full columns including minutes/goals).
-        Filters to max GW per player to get final cumulative stats.
+        Each season's root-level playerstats.csv (full columns, one cumulative
+        row per player per gameweek) is reduced to the max-GW row per player
+        -- a completed season's final figures, the current season's latest --
+        and joined onto that season's players.csv. Returns cached data on
+        subsequent calls.
         """
         if self._season_data is not None:
             return self._season_data
 
-        lookup, text = await asyncio.gather(
-            self._fetch_player_lookup(),
-            self.fetcher.get(f"{self._ci_season}/playerstats.csv"),
-        )
+        results = await asyncio.gather(*(self._fetch_one_season(s) for s in self.seasons))
+        self._season_data = dict(results)
+        return self._season_data
 
-        degraded = "current-season aggregates are unavailable"
+    async def _fetch_one_season(self, season: str) -> tuple[str, list[SeasonHistory]]:
+        """One season's aggregates, or an empty season when it is not published.
+
+        A 404 degrades to an empty season with a warning, as vaastav's does,
+        so a directory that does not exist yet at rollover cannot take the
+        other seasons down with it. Any other failure propagates.
+        """
+        try:
+            lookup, text = await asyncio.gather(
+                self._fetch_player_lookup(season),
+                self.fetcher.get(
+                    f"{season_dir(season)}/playerstats.csv", ttl=self._season_ttl(season)
+                ),
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                logger.warning("Core-Insights data not available for season %s", season)
+                return season, []
+            raise
+
+        histories, latest_gw = self._parse_playerstats(text, season, lookup)
+        if latest_gw and not self._is_historical(season):
+            self._current_gw = latest_gw
+        return season, histories
+
+    def _parse_playerstats(
+        self, text: str, season: str, lookup: Mapping[int, PlayerLookup]
+    ) -> tuple[list[SeasonHistory], int]:
+        """Parse one season's playerstats.csv into histories plus its latest gameweek."""
+        source = f"Core-Insights {season} playerstats.csv"
+        degraded = f"{self._describe(season)} aggregates are unavailable"
         reader = csv.DictReader(io.StringIO(text))
         stats_header_ok = header_covers(
-            "Core-Insights playerstats.csv",
-            reader.fieldnames,
-            PLAYERSTATS_REQUIRED_COLUMNS,
-            degraded=degraded,
+            source, reader.fieldnames, PLAYERSTATS_REQUIRED_COLUMNS, degraded=degraded
         )
 
         # Collect all rows, keep only the max-GW row per player.
@@ -415,12 +497,20 @@ class CoreInsightsClient:
         for pid, row in best_row.items():
             player = lookup.get(pid)
             if player is None:
-                logger.debug("Player %d in playerstats but not in players.csv, skipping", pid)
+                logger.debug(
+                    "Player %d in %s playerstats but not in players.csv, skipping", pid, season
+                )
                 continue
 
             try:
+                # Core-Insights publishes now_cost in £m (13.5) but keeps
+                # cost_change_start in the API's own tenths (-3 for a £0.3m
+                # drop): every gameweek of 2025-26 and 2026-27 carries whole
+                # numbers there and never a fraction. Scaling both turned
+                # that £0.3m drop into £3.0m and put start_cost out by £2.7m
+                # for every player whose price had moved.
                 now_cost = int(round(float(row["now_cost"]) * 10))
-                cost_change_start = int(round(float(row["cost_change_start"]) * 10))
+                cost_change_start = int(round(float(row["cost_change_start"])))
                 total_points = int(row["total_points"])
             except (ValueError, KeyError):
                 logger.debug("Skipping player %d: missing/malformed required field", pid)
@@ -428,7 +518,7 @@ class CoreInsightsClient:
 
             histories.append(SeasonHistory(
                 element_code=player.player_code,
-                season=self._season_label,
+                season=season,
                 total_points=total_points,
                 minutes=int(row.get("minutes", 0) or 0),
                 starts=int(row.get("starts", 0) or 0),
@@ -449,13 +539,9 @@ class CoreInsightsClient:
         if rows_read and not histories:
             # Covers both value drift (rows read, none survived) and an empty
             # player lookup leaving every row unmatched.
-            warn_all_rows_skipped("Core-Insights playerstats.csv", rows_read, degraded=degraded)
+            warn_all_rows_skipped(source, rows_read, degraded=degraded)
 
-        if best_gw:
-            self._current_gw = max(best_gw.values())
-        result = {self._season_label: histories}
-        self._season_data = result
-        return result
+        return histories, max(best_gw.values(), default=0)
 
     def _per_90(self, stat: float, minutes: int) -> float:
         if minutes == 0:
@@ -503,12 +589,13 @@ class CoreInsightsClient:
         )
 
     async def get_all_player_histories(self) -> dict[int, PlayerProfile]:
-        """Get historical profiles for all players in the current season.
+        """Get historical profiles for all players across the configured seasons.
 
-        Results are cached at the class level for the session.
+        Results are cached at the class level for the session, per window.
         """
-        if CoreInsightsClient._session_profiles is not None:
-            return CoreInsightsClient._session_profiles
+        cached = CoreInsightsClient._session_profiles.get(self.seasons)
+        if cached is not None:
+            return cached
 
         all_data = await self._fetch_season_data()
         by_code: dict[int, list[SeasonHistory]] = {}
@@ -520,7 +607,7 @@ class CoreInsightsClient:
             code: self._build_profile(code, seasons)
             for code, seasons in by_code.items()
         }
-        CoreInsightsClient._session_profiles = profiles
+        CoreInsightsClient._session_profiles[self.seasons] = profiles
         return profiles
 
     async def get_player_history(self, element_code: int) -> PlayerProfile | None:

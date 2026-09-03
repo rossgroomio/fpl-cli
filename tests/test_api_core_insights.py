@@ -6,25 +6,34 @@ from datetime import timedelta
 from pathlib import Path
 from unittest.mock import patch
 
+import httpx
 import pytest
 import respx
 from httpx import Response
 
-from fpl_cli.api.core_insights import BASE_URL, CoreInsightsClient, make_core_insights_fetcher
+from fpl_cli.api.core_insights import (
+    BASE_URL,
+    CoreInsightsClient,
+    make_core_insights_fetcher,
+    season_dir,
+)
 from fpl_cli.api.dataset_fetcher import DatasetFetcher
-from fpl_cli.season import core_insights_season
+from fpl_cli.season import core_insights_season, get_season_year, season_label
 
-# Derived from the same helper the client uses, so mocked URLs follow the
+# Derived from the same helpers the client uses, so mocked URLs follow the
 # season rollover instead of pinning the season these tests were written in.
 CI_SEASON = core_insights_season()
+CURRENT_SEASON = season_label()
+PREVIOUS_SEASON = season_label(get_season_year() - 1)
+PREVIOUS_DIR = season_dir(PREVIOUS_SEASON)
 BASE = BASE_URL
 
 
 @pytest.fixture(autouse=True)
 def _reset_core_insights_session_cache():
-    CoreInsightsClient._session_profiles = None
+    CoreInsightsClient._session_profiles = {}
     yield
-    CoreInsightsClient._session_profiles = None
+    CoreInsightsClient._session_profiles = {}
 
 
 def _make_fetcher(tmp_path: Path) -> DatasetFetcher:
@@ -50,13 +59,32 @@ PLAYERSTATS_CSV = (
     "expected_goals,expected_assists,expected_goal_involvements,gw,"
     "transfers_in_event,transfers_out_event\n"
     # Salah GW5 (intermediate snapshot)
-    "100,13.2,0.7,120,1400,16,9,6,8.5,5.1,13.6,5,50000,20000\n"
+    "100,13.2,7,120,1400,16,9,6,8.5,5.1,13.6,5,50000,20000\n"
     # Salah GW10 (latest = season aggregate)
-    "100,13.5,1.0,265,2800,31,19,13,17.5,10.2,27.7,10,40000,30000\n"
+    "100,13.5,10,265,2800,31,19,13,17.5,10.2,27.7,10,40000,30000\n"
     # Haaland GW10
-    "200,15.2,0.7,220,2500,28,25,5,22.0,3.5,25.5,10,60000,20000\n"
+    "200,15.2,7,220,2500,28,25,5,22.0,3.5,25.5,10,60000,20000\n"
     # Keeper GW10
-    "300,4.5,0.0,80,900,10,0,0,0.0,0.0,0.0,10,1000,500\n"
+    "300,4.5,0,80,900,10,0,0,0.0,0.0,0.0,10,1000,500\n"
+)
+
+# Last season's players.csv: player_id is season-local, so Salah and Haaland
+# carry different ids from the current season's file above, and Haaland a
+# different club.
+PLAYERS_PREV_CSV = (
+    "player_code,player_id,first_name,second_name,web_name,team_code,position\n"
+    "80201,7,Mohamed,Salah,Salah,14,Midfielder\n"
+    "206325,8,Erling,Haaland,Haaland,43,Forward\n"
+)
+
+# A completed season: a mid-season snapshot and the final GW38 row per player.
+PLAYERSTATS_PREV_CSV = (
+    "id,now_cost,cost_change_start,total_points,minutes,starts,goals_scored,assists,"
+    "expected_goals,expected_assists,expected_goal_involvements,gw,"
+    "transfers_in_event,transfers_out_event\n"
+    "7,12.9,-1,150,1700,19,10,7,9.0,6.0,15.0,20,1000,2000\n"
+    "7,12.5,-5,230,3200,36,18,12,16.0,10.5,26.5,38,1000,2000\n"
+    "8,14.5,0,200,2900,33,22,4,20.0,3.0,23.0,38,500,500\n"
 )
 
 # Player not in players.csv
@@ -64,7 +92,7 @@ PLAYERSTATS_ORPHAN_CSV = (
     "id,now_cost,cost_change_start,total_points,minutes,starts,goals_scored,assists,"
     "expected_goals,expected_assists,expected_goal_involvements,gw,"
     "transfers_in_event,transfers_out_event\n"
-    "999,5.0,0.0,10,100,1,0,0,0.0,0.0,0.0,5,100,50\n"
+    "999,5.0,0,10,100,1,0,0,0.0,0.0,0.0,5,100,50\n"
 )
 
 # Per-GW player_gameweek_stats for trend tests
@@ -128,6 +156,18 @@ def _mock_gw_routes(gw_csvs: dict[int, str]):
             respx.get(url).mock(return_value=Response(404))
 
 
+def _mock_season_files(
+    directory: str, players: str | Response, stats: str | Response
+) -> None:
+    """Mock one season's root files; a Response stands in for an upstream failure."""
+    respx.get(f"{BASE}/{directory}/players.csv").mock(
+        return_value=players if isinstance(players, Response) else Response(200, text=players)
+    )
+    respx.get(f"{BASE}/{directory}/playerstats.csv").mock(
+        return_value=stats if isinstance(stats, Response) else Response(200, text=stats)
+    )
+
+
 # --- Season aggregate tests ---
 
 class TestSeasonAggregates:
@@ -158,7 +198,7 @@ class TestSeasonAggregates:
 
     @respx.mock
     async def test_price_conversion(self, tmp_path):
-        """Pound prices converted to £0.1m integers."""
+        """now_cost is published in £m; cost_change_start is already in tenths."""
         respx.get(f"{BASE}/{CI_SEASON}/players.csv").mock(
             return_value=Response(200, text=PLAYERS_CSV)
         )
@@ -171,11 +211,33 @@ class TestSeasonAggregates:
         rows = data[client._season_label]
         salah = [r for r in rows if r.element_code == 80201][0]
         assert salah.end_cost == 135  # 13.5 * 10
-        assert salah.start_cost == 125  # 135 - (1.0 * 10)
+        assert salah.start_cost == 125  # 135 - 10
 
         haaland = [r for r in rows if r.element_code == 206325][0]
         assert haaland.end_cost == 152  # 15.2 * 10
-        assert haaland.start_cost == 145  # 152 - (0.7 * 10)
+        assert haaland.start_cost == 145  # 152 - 7
+
+    @respx.mock
+    async def test_price_change_is_not_scaled_like_the_price(self, tmp_path):
+        """A £0.3m drop is published as -3, not -0.3: scaling it too read as £3.0m."""
+        csv = (
+            "id,now_cost,cost_change_start,total_points,minutes,starts,goals_scored,"
+            "assists,expected_goals,expected_assists,expected_goal_involvements,gw,"
+            "transfers_in_event,transfers_out_event\n"
+            "100,5.7,-3,120,2700,30,2,5,1.5,3.8,5.3,38,100,50\n"
+        )
+        respx.get(f"{BASE}/{CI_SEASON}/players.csv").mock(
+            return_value=Response(200, text=PLAYERS_CSV)
+        )
+        respx.get(f"{BASE}/{CI_SEASON}/playerstats.csv").mock(
+            return_value=Response(200, text=csv)
+        )
+        async with CoreInsightsClient(_make_fetcher(tmp_path)) as client:
+            data = await client._fetch_season_data()
+
+        row = data[client._season_label][0]
+        assert row.end_cost == 57
+        assert row.start_cost == 60
 
     @respx.mock
     async def test_price_rounding_edge_case(self, tmp_path):
@@ -184,7 +246,7 @@ class TestSeasonAggregates:
             "id,now_cost,cost_change_start,total_points,minutes,starts,goals_scored,"
             "assists,expected_goals,expected_assists,expected_goal_involvements,gw,"
             "transfers_in_event,transfers_out_event\n"
-            "100,5.85,0.0,50,500,6,2,1,1.5,0.8,2.3,5,100,50\n"
+            "100,5.85,0,50,500,6,2,1,1.5,0.8,2.3,5,100,50\n"
         )
         respx.get(f"{BASE}/{CI_SEASON}/players.csv").mock(
             return_value=Response(200, text=PLAYERS_CSV)
@@ -336,6 +398,139 @@ class TestSeasonAggregates:
         async with CoreInsightsClient(_make_fetcher(tmp_path)) as client:
             result = await client.get_player_history(99999)
         assert result is None
+
+
+class TestMultiSeason:
+    """#101: last season served by Core-Insights alongside the one in progress."""
+
+    def test_default_window_is_the_current_season_alone(self, tmp_path):
+        client = CoreInsightsClient(_make_fetcher(tmp_path))
+        assert client.seasons == (CURRENT_SEASON,)
+        assert client._ci_season == CI_SEASON
+
+    def test_season_dir_is_the_dataset_directory_form(self):
+        assert season_dir("2025-26") == "2025-2026"
+        with pytest.raises(ValueError):
+            season_dir("2025-2026")
+
+    @respx.mock
+    async def test_profiles_span_both_seasons_joined_on_each_seasons_own_ids(self, tmp_path):
+        _mock_season_files(CI_SEASON, PLAYERS_CSV, PLAYERSTATS_CSV)
+        _mock_season_files(PREVIOUS_DIR, PLAYERS_PREV_CSV, PLAYERSTATS_PREV_CSV)
+        async with CoreInsightsClient(
+            _make_fetcher(tmp_path), seasons=(PREVIOUS_SEASON, CURRENT_SEASON)
+        ) as client:
+            profiles = await client.get_all_player_histories()
+
+        previous, current = profiles[80201].seasons
+        assert (previous.season, current.season) == (PREVIOUS_SEASON, CURRENT_SEASON)
+        # The GW38 row, joined through last season's own ids (7, not 100).
+        assert (previous.total_points, previous.minutes, previous.starts) == (230, 3200, 36)
+        assert (previous.end_cost, previous.start_cost) == (125, 130)
+        assert current.total_points == 265
+        # Each season's team_id is that season's club.
+        assert [s.team_id for s in profiles[206325].seasons] == [43, 13]
+        assert len(profiles[80201].pts_per_90) == 2
+
+    @respx.mock
+    async def test_session_cache_is_keyed_by_the_season_window(self, tmp_path):
+        # A default single-season client (the match-stats call site) running
+        # first must not hand its profiles to the provider's two-season one.
+        _mock_season_files(CI_SEASON, PLAYERS_CSV, PLAYERSTATS_CSV)
+        _mock_season_files(PREVIOUS_DIR, PLAYERS_PREV_CSV, PLAYERSTATS_PREV_CSV)
+        async with CoreInsightsClient(_make_fetcher(tmp_path)) as single:
+            single_profiles = await single.get_all_player_histories()
+        async with CoreInsightsClient(
+            _make_fetcher(tmp_path), seasons=(PREVIOUS_SEASON, CURRENT_SEASON)
+        ) as both:
+            both_profiles = await both.get_all_player_histories()
+
+        assert [s.season for s in single_profiles[80201].seasons] == [CURRENT_SEASON]
+        assert [s.season for s in both_profiles[80201].seasons] == [PREVIOUS_SEASON, CURRENT_SEASON]
+        assert await both.get_all_player_histories() is both_profiles
+
+    @respx.mock
+    async def test_current_gw_comes_from_the_season_in_progress(self, tmp_path):
+        _mock_season_files(CI_SEASON, PLAYERS_CSV, PLAYERSTATS_CSV)
+        _mock_season_files(PREVIOUS_DIR, PLAYERS_PREV_CSV, PLAYERSTATS_PREV_CSV)
+        async with CoreInsightsClient(
+            _make_fetcher(tmp_path), seasons=(PREVIOUS_SEASON, CURRENT_SEASON)
+        ) as client:
+            await client._fetch_season_data()
+
+        # Not the 38 the completed season reaches: reliability's denominator
+        # and the pre-GW10 exclusion both key off the season in progress.
+        assert client._current_gw == 10
+
+    @respx.mock
+    async def test_completed_season_files_use_the_historical_ttl(self, tmp_path):
+        _mock_season_files(CI_SEASON, PLAYERS_CSV, PLAYERSTATS_CSV)
+        _mock_season_files(PREVIOUS_DIR, PLAYERS_PREV_CSV, PLAYERSTATS_PREV_CSV)
+        fetcher = _make_fetcher(tmp_path)
+        with patch.object(fetcher, "get", wraps=fetcher.get) as spy:
+            async with CoreInsightsClient(
+                fetcher, seasons=(PREVIOUS_SEASON, CURRENT_SEASON)
+            ) as client:
+                await client._fetch_season_data()
+
+        ttls = {call.args[0]: call.kwargs.get("ttl") for call in spy.call_args_list}
+        assert ttls[f"{PREVIOUS_DIR}/players.csv"] == CoreInsightsClient.HISTORICAL_TTL
+        assert ttls[f"{PREVIOUS_DIR}/playerstats.csv"] == CoreInsightsClient.HISTORICAL_TTL
+        assert ttls[f"{CI_SEASON}/players.csv"] is None
+        assert ttls[f"{CI_SEASON}/playerstats.csv"] is None
+
+    @respx.mock
+    async def test_unpublished_season_degrades_to_a_warning(self, tmp_path, caplog):
+        _mock_season_files(CI_SEASON, PLAYERS_CSV, PLAYERSTATS_CSV)
+        _mock_season_files(PREVIOUS_DIR, Response(404), Response(404))
+        with caplog.at_level(logging.WARNING):
+            async with CoreInsightsClient(
+                _make_fetcher(tmp_path), seasons=(PREVIOUS_SEASON, CURRENT_SEASON)
+            ) as client:
+                data = await client._fetch_season_data()
+
+        assert data[PREVIOUS_SEASON] == []
+        assert len(data[CURRENT_SEASON]) == 3
+        assert f"not available for season {PREVIOUS_SEASON}" in caplog.text
+
+    @respx.mock
+    async def test_unpublished_current_season_keeps_the_completed_one(self, tmp_path, caplog):
+        # The rollover case: the new directory does not exist yet, which
+        # used to fail every profile rather than just the empty season.
+        _mock_season_files(CI_SEASON, Response(404), Response(404))
+        _mock_season_files(PREVIOUS_DIR, PLAYERS_PREV_CSV, PLAYERSTATS_PREV_CSV)
+        with caplog.at_level(logging.WARNING):
+            async with CoreInsightsClient(
+                _make_fetcher(tmp_path), seasons=(PREVIOUS_SEASON, CURRENT_SEASON)
+            ) as client:
+                profiles = await client.get_all_player_histories()
+
+        assert [s.season for s in profiles[80201].seasons] == [PREVIOUS_SEASON]
+        assert f"not available for season {CURRENT_SEASON}" in caplog.text
+
+    @respx.mock
+    async def test_other_upstream_failures_still_propagate(self, tmp_path):
+        _mock_season_files(CI_SEASON, PLAYERS_CSV, PLAYERSTATS_CSV)
+        _mock_season_files(PREVIOUS_DIR, PLAYERS_PREV_CSV, Response(500))
+        with pytest.raises(httpx.HTTPStatusError):
+            async with CoreInsightsClient(
+                _make_fetcher(tmp_path), seasons=(PREVIOUS_SEASON, CURRENT_SEASON)
+            ) as client:
+                await client._fetch_season_data()
+
+    @respx.mock
+    async def test_per_gameweek_files_are_read_for_the_season_in_progress_only(self, tmp_path):
+        _mock_gw_routes({1: GW1_CSV, 2: GW2_CSV})
+        _mock_season_files(CI_SEASON, PLAYERS_CSV, PLAYERSTATS_CSV)
+        async with CoreInsightsClient(
+            _make_fetcher(tmp_path), seasons=(PREVIOUS_SEASON, CURRENT_SEASON)
+        ) as client:
+            trends = await client.get_gw_trends()
+
+        assert trends[100].gw_count == 2
+        assert not any(
+            call.request.url.path.startswith(f"/{PREVIOUS_DIR}/") for call in respx.calls
+        )
 
 
 # --- GW trend tests ---

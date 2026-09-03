@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
               help="FDR mode (use with --fixtures): 'difference' or 'opponent'")
 @click.option("--detail", "-d", is_flag=True, help="Show GW-by-GW match performance")
 @click.option("--understat", "-u", is_flag=True, help="Show Understat shot analysis and situation profile")
-@click.option("--history", "-H", is_flag=True, help="Show historical career arc from vaastav dataset")
+@click.option("--history", "-H", is_flag=True, help="Show historical career arc across recent seasons")
 @output_format_option
 @click.pass_context
 def player_command(

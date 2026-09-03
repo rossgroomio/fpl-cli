@@ -394,7 +394,7 @@ Filter by position (`-p`), team (`-t`), minimum minutes (`--min-minutes`). Sort 
 
 ### Historical Data
 
-Career-arc analysis from the [vaastav/Fantasy-Premier-League](https://github.com/vaastav/Fantasy-Premier-League) (2022-25) and [Core-Insights/Fantasy-Premier-League](https://github.com/Core-Insights/Fantasy-Premier-League) (2025-26+) datasets.
+Career-arc analysis across a four-season window ending at the season in progress. The newest two seasons come from the [olbauday/FPL-Core-Insights](https://github.com/olbauday/FPL-Core-Insights) dataset (all it publishes, refreshed several times a day), the two before them from [vaastav/Fantasy-Premier-League](https://github.com/vaastav/Fantasy-Premier-League). The window rolls forward each July.
 
 ```bash
 fpl player Salah --history   # Individual career arc
@@ -402,10 +402,12 @@ fpl history                  # All players (compact, for squad-builder)
 fpl history --format json
 ```
 
+In `--format json`, each entry in `seasons` carries `team` as the FPL club code (`teams[].code` in the bootstrap), which is stable across seasons and the same whichever dataset served the season. It is not that season's 1-20 team id, so resolve it through the bootstrap's `code` field rather than `id`.
+
 **Signals:**
 - **pts_per_90 trend** - Points per 90 minutes across seasons (improving/declining)
 - **cost trajectory** - Price movement across seasons
-- **xGI per 90 trend** - Expected goal involvement trend (from 2022-23)
+- **xGI per 90 trend** - Expected goal involvement trend across the window
 - **minutes per start** - Durability proxy (injury/rotation risk)
 
 ### Price History
@@ -1015,8 +1017,8 @@ Each finding is classified as **broken** (wrong answers now — fix it today), *
 
 - **FPL API** — bootstrap has 20 teams / a sane player count / 38 gameweeks, and every stat field the tool reads is present in the raw data (a missing one would silently read as 0)
 - **Draft API** — bootstrap resolves with 20 teams and a sane player count
-- **vaastav dataset** — each historical season's `players_raw.csv` exists upstream, covers the columns the parser reads, and clears a row-count floor
-- **Core-Insights dataset** — same for `players.csv` and `playerstats.csv` (the sole current-season source), plus the per-gameweek files at the latest finished gameweek. `players.csv` must also parse into the player lookup every other file joins on, and the per-gameweek files are run through the parsers the scoring commands use rather than a header check: the columns can all be present over values nothing survives (Elo published blank at the start of a season empties the match join), so the probe asserts the parse yields records and names the signals a zero costs. A file missing or parsing to nothing only for the newest gameweek is a publishing lag or a backfill in progress (stale); the same problem two gameweeks running is a layout or format change (broken)
+- **vaastav dataset** — for each season it serves (the two oldest of the four-season window), `players_raw.csv` exists upstream, covers the columns the parser reads, and clears a row-count floor
+- **Core-Insights dataset** — same for `players.csv` and `playerstats.csv` in each season it serves (last season and the one in progress; it is the sole source for both), plus the current season's per-gameweek files at the latest finished gameweek. `players.csv` must also parse into the player lookup every other file joins on, and the per-gameweek files are run through the parsers the scoring commands use rather than a header check: the columns can all be present over values nothing survives (Elo published blank at the start of a season empties the match join), so the probe asserts the parse yields records and names the signals a zero costs. A file missing or parsing to nothing only for the newest gameweek is a publishing lag or a backfill in progress (stale); the same problem two gameweeks running is a layout or format change (broken)
 - **Understat** — league data is non-empty, and every current club's name resolves to a team in Understat's own data (an unresolved club silently loses xG enrichment); early in the season an unresolved name is reported as stale, since Understat only lists a club once it has ingested a match for it
 - **football-data.org** — configured, standings has 20 rows, and every served TLA maps onto a live FPL short name (a failed join here doesn't produce a missing rating — it silently re-rates the club as promoted)
 

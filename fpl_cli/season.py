@@ -110,6 +110,23 @@ def is_season_label(name: str) -> bool:
     return season_label(int(year)) == name
 
 
+def season_start_year(label: str) -> int:
+    """Start year of a hyphenated season label: ``"2025-26"`` -> 2025.
+
+    The inverse of `season_label`, for callers handed a label (a source
+    window, a partition directory) that need the year to build another
+    source's identifier from. Anything that is not a season label -- the
+    Core-Insights ``2025-2026`` form included -- is a ValueError rather than
+    a guessed year.
+
+    >>> season_start_year("2025-26")
+    2025
+    """
+    if not is_season_label(label):
+        raise ValueError(f"not a season label: {label!r}")
+    return int(label[:4])
+
+
 def season_partition(base: Path, season: str | None = None) -> Path:
     """Return `base` partitioned by season, e.g. `01_Reports/2026-27`.
 

@@ -274,7 +274,7 @@ Without this, an injured or non-playing player is handed most of the position me
 ### Player Prior
 
 `generate_player_prior()` computes per-player:
-- **prior_strength**: Percentile rank of pts/90 within position (from vaastav historical data)
+- **prior_strength**: Percentile rank of pts/90 within position (from last season's history)
 - **confidence**: Shrinkage control derived from prior_strength
 
 Price-based fallback for players without PL history.
@@ -480,7 +480,7 @@ flowchart TB
 
 `BenchOrderAgent` is enriched with Understat data (npxG, xGChain, penalty_xG) where available.
 
-**Early-season shrinkage.** Both families' normalised scores are subject to confidence shrinkage via `shrink_scores()` (GW1-10). Per-player confidence is derived from prior-season pts/90 (vaastav data) via `player_prior.py`. `prepare_scoring_data(include_prior=True)` fetches priors into `ScoringData.player_priors`; each agent calls `apply_shrinkage()` between scoring and ranking, passing the hold-out set that `unavailable_player_ids()` builds from live player data. See [Who is left out](#who-is-left-out).
+**Early-season shrinkage.** Both families' normalised scores are subject to confidence shrinkage via `shrink_scores()` (GW1-10). Per-player confidence is derived from prior-season pts/90 (from the historical datasets) via `player_prior.py`. `prepare_scoring_data(include_prior=True)` fetches priors into `ScoringData.player_priors`; each agent calls `apply_shrinkage()` between scoring and ranking, passing the hold-out set that `unavailable_player_ids()` builds from live player data. See [Who is left out](#who-is-left-out).
 
 **player_prior** - Bayesian early-season confidence. See [Early-Season Confidence](#early-season-confidence-gw1-10).
 
