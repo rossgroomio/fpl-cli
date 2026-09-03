@@ -369,6 +369,17 @@ def _theoretical_quality_cap(weights: QualityWeights, position: Position) -> flo
 # signal saturation that only DEF exhibits, so elite MID/FWD/GK landed ~60
 # where elite DEFs landed ~89). Values are post-position-multiplier raw
 # quality; ownership families add bonus headroom programmatically below.
+#
+# The elite target the generated block was calibrated to: the top player of
+# a (family, position, snapshot) pool normalises to ~this share of the scale
+# (anchor = top_raw / target). It is also the scale of the value family's
+# prior-implied raw score (`blend_quality_with_prior`): a player at the top
+# of last season's pts/90 percentile is read as an elite of exactly this
+# size, so the blend lives on the raw scale the calibration measured and
+# re-scales itself on recalibration. Changing it is a recalibration by
+# definition — re-run the script with --write; the block's header records
+# the value it was built against.
+CALIBRATION_ELITE_TARGET = 0.92
 # --- BEGIN calibrated quality ceilings (generated) ---
 # Calibrated by scripts/calibrate_quality_ceilings.py against 2025-26
 # (snapshots GW10, GW15, GW19, GW24, GW29, GW34, GW38; pool 300+ minutes;
@@ -520,6 +531,24 @@ _FULL_MATCH_MINUTES = 90
 GK_SIGNAL_TERMS: tuple[str, ...] = ("gk_saves_per_90", "gk_xgc_quality", "gk_cs_rate")
 
 
+def gk_calendar_ramp(next_gw_id: int) -> float:
+    """Share of the GK sample ramp the league calendar has made reachable before *next_gw_id*.
+
+    ``gk_signal_enrichment`` scales every GK signal by
+    ``min(minutes / GK_SAMPLE_RAMP_MINUTES, 1)``. The most sample the calendar
+    can have supplied an ever-present keeper is ``(next_gw_id - 1) * 90``
+    minutes, so this is the ramp such a keeper sits at — 0 before GW1, 1 from
+    GW6 — keyed to the date, never to a player's own minutes. Two consumers
+    read the same number: ``gk_ceiling_attainability`` scales the GK anchors
+    by it, and the value family's prior blend discounts a keeper's
+    early-season confidence by it (``prior_blend_weight``), so the signal
+    share the calendar has suppressed is neither read as a low score nor
+    trusted as a full observation.
+    """
+    calendar_minutes = max(next_gw_id - 1, 0) * _FULL_MATCH_MINUTES
+    return min(calendar_minutes / GK_SAMPLE_RAMP_MINUTES, 1.0)
+
+
 def ceiling_attainability(
     weights: QualityWeights, missing: Collection[str], *, ramp: float = 0.0
 ) -> float:
@@ -598,8 +627,7 @@ def gk_ceiling_attainability(next_gw_id: int, weights: QualityWeights) -> float:
     full sample (the premise the calibration validated), so at ramp r those
     contributions scale ~linearly with r while form/ppg do not.
     """
-    calendar_minutes = max(next_gw_id - 1, 0) * _FULL_MATCH_MINUTES
-    ramp = min(calendar_minutes / GK_SAMPLE_RAMP_MINUTES, 1.0)
+    ramp = gk_calendar_ramp(next_gw_id)
     if ramp >= 1.0:
         return 1.0
     return ceiling_attainability(weights.for_gk(), GK_SIGNAL_TERMS, ramp=ramp)

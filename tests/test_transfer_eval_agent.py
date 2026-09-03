@@ -516,6 +516,83 @@ class TestTransferEvalAgent:
 
         assert agent_quality == expected_quality
 
+    async def test_quality_score_is_prior_informed_before_the_cutoff(self):
+        """Same blend as compute_quality_value, so fpl transfer-eval agrees
+        with fpl player at GW2 (#143). The fixture's out-player is a hot
+        starter (observed 91), so a mid-table pedigree is the visible case:
+        the blend pulls the score toward what last season implies.
+        """
+        from fpl_cli.services.player_prior import PlayerPrior, _compute_confidence
+
+        _, scoring_data = _build_players_and_data()
+        understat = {
+            10: {"npxG_per_90": 0.35, "xGChain_per_90": 0.55, "penalty_xG_per_90": 0.05},
+        }
+        early = dataclasses.replace(scoring_data, next_gw_id=2, understat_lookup=understat)
+        prior = PlayerPrior(0.3, _compute_confidence(2, 0.3), "history")
+        with_prior = dataclasses.replace(early, player_priors={10: prior})
+
+        async def _quality(data: ScoringData) -> int:
+            with patch(
+                "fpl_cli.agents.analysis.transfer_eval.prepare_scoring_data",
+                new_callable=AsyncMock,
+                return_value=data,
+            ):
+                async with TransferEvalAgent() as agent:
+                    result = await agent.run({"out_player_id": 10, "in_player_ids": [20]})
+            assert result.status == AgentStatus.SUCCESS
+            return result.data["out_player"]["quality_score"]
+
+        observed = await _quality(early)
+        blended = await _quality(with_prior)
+        weight = prior.confidence  # MID: no keeper discount
+        assert blended < observed
+        assert blended == pytest.approx(
+            weight * observed + (1 - weight) * 0.3 * 92, abs=1,
+        )
+
+    async def test_ruled_out_player_keeps_the_observed_quality_score(self):
+        """The blend's hold-out reaches this path too: a player at 0% is not
+        handed last season's standing for a gameweek they will not play.
+        """
+        from fpl_cli.services.player_prior import PlayerPrior, _compute_confidence
+
+        players, scoring_data = _build_players_and_data()
+        palmer = players[0]
+        ruled_out = make_player(
+            id=palmer.id, web_name=palmer.web_name, first_name=palmer.first_name,
+            second_name=palmer.second_name, team_id=palmer.team_id,
+            position=palmer.position, form=palmer.form, minutes=palmer.minutes,
+            now_cost=palmer.now_cost, goals_scored=palmer.goals_scored,
+            assists=palmer.assists, expected_goals=float(palmer.expected_goals),
+            expected_assists=float(palmer.expected_assists),
+            status=PlayerStatus.INJURED, chance_of_playing_next_round=0,
+        )
+        understat = {
+            10: {"npxG_per_90": 0.35, "xGChain_per_90": 0.55, "penalty_xG_per_90": 0.05},
+        }
+        base = dataclasses.replace(
+            scoring_data, next_gw_id=2, understat_lookup=understat,
+            players=[ruled_out, *players[1:]],
+        )
+        with_prior = dataclasses.replace(
+            base,
+            player_priors={10: PlayerPrior(1.0, _compute_confidence(2, 1.0), "history")},
+        )
+
+        async def _quality(data: ScoringData) -> int:
+            with patch(
+                "fpl_cli.agents.analysis.transfer_eval.prepare_scoring_data",
+                new_callable=AsyncMock,
+                return_value=data,
+            ):
+                async with TransferEvalAgent() as agent:
+                    result = await agent.run({"out_player_id": 10, "in_player_ids": [20]})
+            assert result.status == AgentStatus.SUCCESS
+            return result.data["out_player"]["quality_score"]
+
+        assert await _quality(with_prior) == await _quality(base)
+
     async def test_reliability_threaded_through_player_priors(self, standard_data):
         """reliability field from PlayerPrior appears in agent output dict."""
         from fpl_cli.services.player_prior import PlayerPrior

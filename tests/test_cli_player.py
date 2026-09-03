@@ -67,6 +67,9 @@ def _no_third_party_fetches():
             new_callable=AsyncMock,
             return_value=None,
         ),
+        # The pre-GW10 quality blend loads player priors; an empty cache hit
+        # keeps the historical datasets off the network.
+        patch("fpl_cli.services.player_prior.load_cached_priors", return_value={}),
     ):
         yield
 
@@ -802,6 +805,36 @@ class TestPlayerQualityValueScores:
         info = json.loads(result.output)["data"][0]["info"]
         assert info["ep_next"] is None
         assert info["ep_this"] is None
+
+    def test_quality_score_is_prior_informed_before_the_cutoff(self):
+        """Same blend as fpl stats --value: at GW2 the score moves with the
+        player's prior, and the priors are loaded over the whole pool (#143).
+        """
+        from fpl_cli.services.player_prior import PlayerPrior, _compute_confidence
+
+        def _score(priors):
+            client, fixture_agent, ratings_svc = _make_mocks()
+            client.get_next_gameweek = AsyncMock(return_value={"id": 2})
+            client.get_player_detail = AsyncMock(return_value={"history": []})
+            loader = AsyncMock(return_value=priors)
+            with patch("fpl_cli.cli.player.load_or_generate_player_priors", loader):
+                result = _run_with_us_match([], client, fixture_agent, ratings_svc, json_mode=True)
+            assert result.exit_code == 0, result.output
+            loader.assert_awaited_once()
+            return json.loads(result.output)["data"][0]["info"]["quality_score"]
+
+        observed = _score(None)
+        elite = _score({1: PlayerPrior(1.0, _compute_confidence(2, 1.0), "history")})
+        assert elite != observed
+
+    def test_priors_are_not_loaded_from_the_cutoff(self):
+        client, fixture_agent, ratings_svc = _make_mocks()  # next GW 30
+        client.get_player_detail = AsyncMock(return_value={"history": []})
+        loader = AsyncMock(return_value=None)
+        with patch("fpl_cli.cli.player.load_or_generate_player_priors", loader):
+            result = _run_with_us_match([], client, fixture_agent, ratings_svc, json_mode=True)
+        assert result.exit_code == 0, result.output
+        loader.assert_not_awaited()
 
     def test_gk_uses_without_xgi_weights(self):
         """GK quality_score should differ from MID due to without_xgi path."""

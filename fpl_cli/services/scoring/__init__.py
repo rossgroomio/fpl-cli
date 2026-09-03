@@ -21,6 +21,7 @@ Module map:
 from fpl_cli.services.scoring.constants import (
     ATTACKING_POSITIONS,
     BENCH_CEILING,
+    CALIBRATION_ELITE_TARGET,
     CALIBRATION_FINGERPRINT,
     CAPTAIN_CEILING_SGW,
     CONSISTENCY_CV_DIFF,
@@ -71,6 +72,7 @@ from fpl_cli.services.scoring.constants import (
     _position_from_element_type,
     _value_weights_and_ceiling,
     ceiling_attainability,
+    gk_calendar_ramp,
     gk_ceiling_attainability,
     scoring_weights_fingerprint,
 )
@@ -134,16 +136,19 @@ from fpl_cli.services.scoring.single_gw import (
     select_starting_xi,
 )
 from fpl_cli.services.scoring.value_quality import (
+    blend_quality_with_prior,
     calculate_mins_factor,
     calculate_player_quality_score,
     compute_quality_value,
     compute_rolling_pts_per_m,
+    prior_blend_weight,
 )
 
 __all__ = [
     # constants
     "ATTACKING_POSITIONS",
     "BENCH_CEILING",
+    "CALIBRATION_ELITE_TARGET",
     "CALIBRATION_FINGERPRINT",
     "CAPTAIN_CEILING_SGW",
     "CONSISTENCY_CV_DIFF",
@@ -197,6 +202,7 @@ __all__ = [
     "_position_from_element_type",
     "_value_weights_and_ceiling",
     "ceiling_attainability",
+    "gk_calendar_ramp",
     "gk_ceiling_attainability",
     "scoring_weights_fingerprint",
     # signals
@@ -230,10 +236,12 @@ __all__ = [
     "normalise_score",
     "pick_display_ceiling",
     # value_quality
+    "blend_quality_with_prior",
     "calculate_mins_factor",
     "calculate_player_quality_score",
     "compute_quality_value",
     "compute_rolling_pts_per_m",
+    "prior_blend_weight",
     # shrinkage
     "apply_shrinkage",
     "is_known_unavailable",

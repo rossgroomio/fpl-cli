@@ -6,7 +6,6 @@ import dataclasses
 from typing import TYPE_CHECKING
 
 from fpl_cli.models.player import PlayerStatus
-from fpl_cli.services.player_prior import CUTOFF_GW
 from fpl_cli.services.scoring import (
     GW_SELECTION_WEIGHTS,
     VALID_FORMATIONS,
@@ -19,8 +18,6 @@ from fpl_cli.services.scoring import (
     calculate_single_gw_core,
     compute_quality_value,
     per_90_rates,
-    shrink_scores,
-    unavailable_player_ids,
 )
 
 if TYPE_CHECKING:
@@ -64,12 +61,13 @@ def score_all_players(
 ) -> list[ScoredPlayer]:
     """Score all eligible PL players via the existing scoring chain.
 
-    Uses compute_quality_value(raw=True) for float precision, then
-    applies early-season shrinkage via shrink_scores() (avoids the
-    rounding in apply_shrinkage()). Players known not to be playing are
-    held out of that shrinkage, same as every other scoring family —
-    they stay in the solver pool, they just stop being hoisted toward
-    the position mean while they are unavailable.
+    Uses compute_quality_value(raw=True) for float precision, passing each
+    player's prior through so the value family's early-season blend runs
+    inside the score (``blend_quality_with_prior``) — the position-mean
+    shrinkage the other families apply is not stacked on top of it. Players
+    known not to be playing are held out of that blend by
+    ``compute_quality_value`` itself: they stay in the solver pool, they just
+    stop being handed last season's standing while they are unavailable.
     """
     if scoring_data.players is None:
         msg = "scoring_data.players is required (pass include_players=True)"
@@ -77,9 +75,10 @@ def score_all_players(
 
     understat_lookup = scoring_data.understat_lookup or {}
     player_histories = scoring_data.player_histories or {}
+    player_priors = scoring_data.player_priors or {}
     next_gw_id = scoring_data.next_gw_id
 
-    scored: list[tuple[Player, float, Position, bool]] = []
+    scored: list[ScoredPlayer] = []
     for player in scoring_data.players:
         if _is_excluded(player):
             continue
@@ -97,36 +96,21 @@ def score_all_players(
             team_short=team_short,
             gw_history=gw_history,
             raw=True,
+            prior=player_priors.get(player.id),
         )
 
         suspended_gw1 = (
             player.status == PlayerStatus.SUSPENDED
             and player.chance_of_playing_next_round == 0
         )
-        scored.append((player, raw_quality, position, suspended_gw1))
-
-    # Apply early-season shrinkage (float-preserving), holding out players who
-    # are known not to be playing — their score is a fact, not a small sample
-    shrinkage_input: list[tuple[int, float, Position]] = [(p.id, raw_q, pos) for p, raw_q, pos, _ in scored]
-    shrunk = shrink_scores(
-        shrinkage_input,
-        scoring_data.player_priors,
-        next_gw_id,
-        CUTOFF_GW,
-        unavailable_ids=unavailable_player_ids(
-            (player for player, _, _, _ in scored), next_gw_id,
-        ),
-    )
-
-    return [
-        ScoredPlayer(
+        scored.append(ScoredPlayer(
             player=player,
-            raw_quality=adj_score,
+            raw_quality=raw_quality,
             position=position,
             suspended_gw1=suspended_gw1,
-        )
-        for (player, _, position, suspended_gw1), (_, adj_score, _) in zip(scored, shrunk)
-    ]
+        ))
+
+    return scored
 
 
 def score_all_players_sgw(

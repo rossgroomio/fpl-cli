@@ -20,6 +20,7 @@ from fpl_cli.cli._json import (
     output_format_option,
 )
 from fpl_cli.models.player import resolve_players
+from fpl_cli.services.player_prior import CUTOFF_GW, load_or_generate_player_priors
 from fpl_cli.services.scoring import (
     ConsistencySignals,
     build_npxg_lookup_from_records,
@@ -35,6 +36,7 @@ if TYPE_CHECKING:
     from fpl_cli.api.vaastav import PlayerProfile
     from fpl_cli.models.player import Player
     from fpl_cli.models.team import Team
+    from fpl_cli.services.player_prior import PlayerPrior
 
 logger = logging.getLogger(__name__)
 
@@ -244,6 +246,15 @@ def player_command(
                             if p.id in lookup:
                                 adjusted_npxg_scores[p.id] = lookup[p.id]
 
+                    # Before the prior cutoff quality_score blends last
+                    # season's pedigree in (same as fpl stats --value); the
+                    # priors are percentiles over the whole pool, hence
+                    # `players` rather than `display`. Unreachable history
+                    # degrades to the pure-observation score.
+                    priors: dict[int, PlayerPrior] | None = None
+                    if next_gw_id < CUTOFF_GW:
+                        priors = await load_or_generate_player_priors(players, next_gw_id)
+
                     for p in display:
                         us_match = us_matches.get(p.id)
                         team_obj = teams.get(p.team_id)
@@ -254,6 +265,7 @@ def player_command(
                                 p, us_match, next_gw_id,
                                 team_short=team_obj.short_name if team_obj else "???",
                                 gw_history=gw_hist or None,
+                                prior=priors.get(p.id) if priors else None,
                             )
                             quality_scores[p.id] = q
                             quality_per_m_scores[p.id] = v

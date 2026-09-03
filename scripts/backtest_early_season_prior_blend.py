@@ -1,26 +1,32 @@
 #!/usr/bin/env python3
 """Backtest: does prior-blending fix early-season quality-score ranking?
 
-Issue #143's open design question. Going into GW2 the value-family quality
-score is pure observation of one gameweek — form and ppg are the same single
-number, their caps saturate on one good game — so one-game wonders out-read
-quiet-starting elites (Emersonn 100 / Haaland 59, live 2026-08-25). The
-proposed fix blends the observed raw score with a prior-implied raw score
-under the production confidence curve:
+Issue #143's design question, answered and shipped. Going into GW2 the
+value-family quality score was pure observation of one gameweek — form and
+ppg are the same single number, their caps saturate on one good game — so
+one-game wonders out-read quiet-starting elites (Emersonn 100 / Haaland 59,
+live 2026-08-25). The fix blends the observed raw score with a prior-implied
+raw score under the production confidence curve:
 
-    blended = conf * observed_raw + (1 - conf) * prior_strength * anchor * 0.92
-    conf    = _compute_confidence(next_gw, prior_strength)   # production curve
+    prior_raw = prior_strength * ceiling * CALIBRATION_ELITE_TARGET
+    blended   = w * observed_raw + (1 - w) * prior_raw
+    w         = prior_blend_weight(prior, position, next_gw)
 
 where ``prior_strength`` is the player's previous-season pts/90 percentile
 within position (price percentile * 0.5 for players without qualifying
 history) — exactly the quantities ``fpl_cli.services.player_prior`` computes
-in production — and ``anchor`` is the position's calibrated value-family
-ceiling, so the prior-implied score lives on the same raw scale the
-calibration measured and re-scales itself on recalibration.
+in production — ``ceiling`` is the position's calibrated value-family
+anchor at that gameweek (the calendar-attainable one for a pre-GW6 keeper),
+so the prior-implied score lives on the same raw scale the calibration
+measured, and ``w`` is the production confidence curve, discounted for
+keepers by the GK calendar ramp before GW6.
 
-This script measures whether that blend actually ranks better, before any of
-it ships (the fpl-data-scientist skill's protocol: walk-forward replay,
-rank metrics over RMSE, position-stratified, zero-minute players filtered).
+This script measures whether that blend ranks better than pure observation
+(the fpl-data-scientist skill's protocol: walk-forward replay, rank metrics
+over RMSE, position-stratified, zero-minute players filtered). It scores the
+blend through ``blend_quality_with_prior`` itself, so re-running it after a
+change to the blend, the confidence curve, or the anchors measures what
+actually ships.
 
 Protocol
 --------
@@ -75,15 +81,18 @@ import calibrate_quality_ceilings as calib  # noqa: E402
 from fpl_cli.services.player_prior import (  # noqa: E402
     MIN_MINUTES,
     PRICE_CONFIDENCE_FACTOR,
+    PlayerPrior,
     # The production confidence curve itself: reimplementing it here would
-    # let the backtest drift from what shipping the blend would actually do.
+    # let the backtest drift from what the shipped blend actually does.
     _compute_confidence,
     percentile_rank,
 )
 from fpl_cli.services.scoring import (  # noqa: E402
-    QUALITY_CEILINGS,
+    CALIBRATION_ELITE_TARGET,
     VALUE_QUALITY_WEIGHTS,
     Position,
+    _value_weights_and_ceiling,
+    blend_quality_with_prior,
     calculate_player_quality_score,
 )
 
@@ -297,12 +306,18 @@ def score_pool(
             position=player.position,
         )
         strength = strengths.get(player.element, 0.0)
-        conf = _compute_confidence(next_gw_id, strength)
-        prior_implied = (
-            strength * QUALITY_CEILINGS[("value", player.position)] * calib.ELITE_TARGET
+        prior = PlayerPrior(
+            prior_strength=strength,
+            confidence=_compute_confidence(next_gw_id, strength),
+            source="history",
         )
+        _, ceiling = _value_weights_and_ceiling(player.position, next_gw_id=next_gw_id)
+        prior_implied = strength * ceiling * CALIBRATION_ELITE_TARGET
         pool[player.position].append({
-            "blended": conf * raw + (1 - conf) * prior_implied,
+            "blended": blend_quality_with_prior(
+                raw, prior,
+                position=player.position, ceiling=ceiling, next_gw_id=next_gw_id,
+            ),
             "unblended": raw,
             "prior_only": prior_implied,
             "ppg": float(quality["ppg"]),

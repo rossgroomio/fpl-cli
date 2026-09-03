@@ -14,6 +14,7 @@ from fpl_cli.services.scoring import (
     apply_adjusted_npxg,
     apply_consistency,
     apply_shrinkage,
+    blend_quality_with_prior,
     build_fixture_matchups,
     build_player_evaluation,
     calculate_lineup_score,
@@ -24,6 +25,7 @@ from fpl_cli.services.scoring import (
     compute_rolling_pts_per_m,
     compute_xgi_sustainability,
     gk_signal_enrichment,
+    is_known_unavailable,
     normalise_score,
     prepare_scoring_data,
     unavailable_player_ids,
@@ -237,11 +239,10 @@ class TransferEvalAgent(Agent):
                 enrichment["xgi_divergence"] = divergence
 
         reliability: float | None = None
-        if player_priors:
-            prior = player_priors.get(player.id)
-            if prior:
-                enrichment["prior_confidence"] = prior.confidence
-                reliability = prior.reliability
+        prior = player_priors.get(player.id) if player_priors else None
+        if prior:
+            enrichment["prior_confidence"] = prior.confidence
+            reliability = prior.reliability
 
         evaluation, identity = build_player_evaluation(
             player,
@@ -249,17 +250,29 @@ class TransferEvalAgent(Agent):
             fixture_matchups=fixture_matchups,
         )
 
-        # Quality score (value dimension): gated on Understat match
+        # Quality score (value dimension): gated on Understat match. Same
+        # early-season prior blend as compute_quality_value, so the number
+        # agrees with fpl player / fpl stats --value at every gameweek.
         quality_score: int | None = None
         quality_per_m: float | None = None
         if has_understat:
             q_dict = evaluation.as_quality_dict()
+            position = _as_position(player.position_name)
             te_weights, te_ceiling = _value_weights_and_ceiling(
-                _as_position(player.position_name), next_gw_id=next_gw_id,
+                position, next_gw_id=next_gw_id,
             )
             mins_factor = calculate_mins_factor(player.minutes, player.appearances, next_gw_id)
             raw = calculate_player_quality_score(
-                q_dict, te_weights, mins_factor, position=_as_position(player.position_name),
+                q_dict, te_weights, mins_factor, position=position,
+            )
+            raw = blend_quality_with_prior(
+                raw, prior,
+                position=position, ceiling=te_ceiling, next_gw_id=next_gw_id,
+                known_unavailable=is_known_unavailable(
+                    chance_of_playing=evaluation.chance_of_playing,
+                    minutes=evaluation.minutes,
+                    next_gw_id=next_gw_id,
+                ),
             )
             quality_score = normalise_score(raw, te_ceiling)
             if identity.price > 0:

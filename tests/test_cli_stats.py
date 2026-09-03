@@ -744,68 +744,124 @@ class TestStatsValueCrossPositionWarning:
 
 
 class TestStatsValueEarlySeasonWarning:
-    """Pre-GW6 quality scores are small-sample dominated (issue #143).
+    """Before GW10 quality scores are prior-informed, and the command says so (issue #143).
 
-    Going into GW2 the whole quality surface reflects one gameweek: form
-    and ppg are the same single observation, per-90 rates come from ≤90
-    minutes, and the minutes factor is disabled. Elite players with a quiet
-    opener read low while one-game wonders saturate the scale. Surface that
-    in both channels, same pattern as the cross-position warning.
+    Going into GW2 the whole observed surface reflects one gameweek, so the
+    value family blends last season's pts/90 pedigree into quality_score
+    until the prior cutoff. Surface that in both channels, same pattern as
+    the cross-position warning — and when last season's history cannot be
+    loaded, fall back to the pure-observation notice so a reader never
+    mistakes a small-sample score for a prior-informed one.
     """
 
-    def _invoke(self, args, next_gw_id=2):
+    @staticmethod
+    def _priors():
+        from fpl_cli.services.player_prior import PlayerPrior, _compute_confidence
+        return {
+            1: PlayerPrior(1.0, _compute_confidence(2, 1.0), "history"),
+            2: PlayerPrior(0.9, _compute_confidence(2, 0.9), "history"),
+            3: PlayerPrior(0.3, _compute_confidence(2, 0.3), "price"),
+        }
+
+    def _invoke(self, args, next_gw_id=2, priors="default"):
+        """Run `fpl stats` with the prior loader stubbed; returns (result, loader)."""
         client = _make_value_client(_sample_players(), _sample_teams())
         client.get_next_gameweek = AsyncMock(return_value={"id": next_gw_id})
         mock_understat = MagicMock()
         mock_understat.get_league_players = AsyncMock(return_value=[{"id": 100}])
         mock_understat.__aenter__ = AsyncMock(return_value=mock_understat)
         mock_understat.__aexit__ = AsyncMock(return_value=False)
+        loader = AsyncMock(return_value=self._priors() if priors == "default" else priors)
         runner = CliRunner()
         with (
             patch("fpl_cli.api.fpl.FPLClient", return_value=client),
             patch("fpl_cli.api.understat.UnderstatClient", return_value=mock_understat),
             patch("fpl_cli.api.understat.match_fpl_to_understat", return_value=_make_us_match()),
             patch("fpl_cli.cli.stats.is_custom_analysis_enabled", return_value=True),
+            patch("fpl_cli.cli.stats.load_or_generate_player_priors", loader),
         ):
-            return runner.invoke(main, ["stats", *args])
+            result = runner.invoke(main, ["stats", *args])
+        return result, loader
 
-    def test_table_mode_emits_stderr_notice_at_gw2(self):
-        result = self._invoke(["--value", "-p", "MID"])
+    @staticmethod
+    def _codes(result):
+        return [w["code"] for w in json.loads(result.output)["metadata"]["warnings"]]
+
+    def test_table_mode_emits_prior_informed_notice_at_gw2(self):
+        result, _ = self._invoke(["--value", "-p", "MID"])
         assert result.exit_code == 0, result.output
         assert "Early-season notice" in result.output
+        assert "25%-50%" in result.output  # observation_weight_range(2)
         assert "ep_next" in result.output
 
-    def test_json_mode_has_metadata_warning_at_gw2(self):
-        result = self._invoke(["--value", "-p", "MID", "--format", "json"])
+    def test_json_mode_has_prior_informed_warning_at_gw2(self):
+        result, loader = self._invoke(["--value", "-p", "MID", "--format", "json"])
         assert result.exit_code == 0, result.output
-        assert "Early-season notice" not in result.output
-        data = json.loads(result.output)
-        warnings = data["metadata"]["warnings"]
-        assert len(warnings) == 1
-        assert warnings[0]["code"] == "early_season_small_sample"
+        warnings = json.loads(result.output)["metadata"]["warnings"]
+        assert [w["code"] for w in warnings] == ["early_season_prior_informed"]
+        assert "GW10" in warnings[0]["message"]
+        assert "25%-50%" in warnings[0]["message"]
         assert "ep_next" in warnings[0]["message"]
+        loader.assert_awaited_once()
 
-    def test_no_warning_from_gw6(self):
-        result = self._invoke(["--value", "-p", "MID", "--format", "json"], next_gw_id=6)
-        assert result.exit_code == 0, result.output
-        data = json.loads(result.output)
-        assert data["metadata"]["warnings"] == []
-        table = self._invoke(["--value", "-p", "MID"], next_gw_id=6)
+    def test_keeper_clause_is_dropped_once_their_ramp_saturates(self):
+        gw5, _ = self._invoke(["--value", "-p", "MID", "--format", "json"], next_gw_id=5)
+        assert "keepers" in json.loads(gw5.output)["metadata"]["warnings"][0]["message"]
+        gw6, _ = self._invoke(["--value", "-p", "MID", "--format", "json"], next_gw_id=6)
+        assert "keepers" not in json.loads(gw6.output)["metadata"]["warnings"][0]["message"]
+
+    def test_notice_runs_to_the_prior_cutoff(self):
+        gw9, _ = self._invoke(["--value", "-p", "MID", "--format", "json"], next_gw_id=9)
+        assert self._codes(gw9) == ["early_season_prior_informed"]
+        gw10, loader = self._invoke(["--value", "-p", "MID", "--format", "json"], next_gw_id=10)
+        assert self._codes(gw10) == []
+        loader.assert_not_awaited()  # nothing to blend from the cutoff, so no history fetch
+        table, _ = self._invoke(["--value", "-p", "MID"], next_gw_id=10)
         assert "Early-season notice" not in table.output
+
+    def test_falls_back_to_small_sample_notice_without_priors(self):
+        """History unreachable: pure observation, and the notice says which it is."""
+        result, _ = self._invoke(["--value", "-p", "MID", "--format", "json"], priors=None)
+        assert result.exit_code == 0, result.output
+        warnings = json.loads(result.output)["metadata"]["warnings"]
+        assert [w["code"] for w in warnings] == ["early_season_small_sample"]
+        assert "could not be loaded" in warnings[0]["message"]
+        assert "ep_next" in warnings[0]["message"]
+        table, _ = self._invoke(["--value", "-p", "MID"], priors=None)
+        assert "Early-season notice" in table.output
+        assert "could not be loaded" in table.output
+
+    def test_small_sample_fallback_ends_at_gw6(self):
+        result, _ = self._invoke(
+            ["--value", "-p", "MID", "--format", "json"], next_gw_id=6, priors=None,
+        )
+        assert self._codes(result) == []
+        table, _ = self._invoke(["--value", "-p", "MID"], next_gw_id=6, priors=None)
+        assert "Early-season notice" not in table.output
+
+    def test_prior_changes_the_score(self):
+        """The notice is not decoration: the same player scores differently
+        with pedigree blended in.
+        """
+        blended, _ = self._invoke(["--value", "-p", "MID", "--format", "json"])
+        observed, _ = self._invoke(["--value", "-p", "MID", "--format", "json"], priors=None)
+        blended_q = json.loads(blended.output)["data"][0]["quality_score"]
+        observed_q = json.loads(observed.output)["data"][0]["quality_score"]
+        assert blended_q is not None and observed_q is not None
+        assert blended_q != observed_q
 
     def test_warning_gated_on_value_flag(self):
         """Without --value there are no quality scores to caveat."""
-        result = self._invoke(["-p", "MID", "--format", "json"])
+        result, loader = self._invoke(["-p", "MID", "--format", "json"])
         assert result.exit_code == 0, result.output
-        data = json.loads(result.output)
-        assert data["metadata"]["warnings"] == []
+        assert self._codes(result) == []
+        loader.assert_not_awaited()
 
     def test_coexists_with_cross_position_warning(self):
-        result = self._invoke(["--value", "--format", "json"])
+        result, _ = self._invoke(["--value", "--format", "json"])
         assert result.exit_code == 0, result.output
-        codes = [w["code"] for w in json.loads(result.output)["metadata"]["warnings"]]
-        assert codes == [
-            "early_season_small_sample",
+        assert self._codes(result) == [
+            "early_season_prior_informed",
             "cross_position_ranking_not_meaningful",
         ]
 
