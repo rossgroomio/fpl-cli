@@ -1,11 +1,16 @@
 """Tests for HistoricalDataProvider composition layer."""
 from __future__ import annotations
 
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from fpl_cli.api.historical import HistoricalDataProvider, make_historical_provider
+from fpl_cli.api.historical import (
+    HistoricalDataProvider,
+    make_historical_provider,
+    merge_season_histories,
+)
 from fpl_cli.api.historical_types import GwTrendProfile, PlayerProfile, SeasonHistory, compute_reliability
 
 
@@ -143,6 +148,70 @@ class TestComputeReliability:
         assert result == pytest.approx(5 / 38, rel=1e-4)
 
 
+class TestMergeSeasonHistories:
+    """#101: one row per (player, season), with provenance decided by rank."""
+
+    def test_disjoint_sources_keep_every_row(self, caplog):
+        vaastav = {100: _make_profile(100, [_make_season(100, "2023-24"), _make_season(100, "2024-25")])}
+        ci = {100: _make_profile(100, [_make_season(100, "2025-26")]), 200: _make_profile(200, [_make_season(200, "2025-26")])}
+
+        with caplog.at_level(logging.WARNING):
+            merged = merge_season_histories([("Core-Insights", ci), ("vaastav", vaastav)])
+
+        assert sorted(s.season for s in merged[100]) == ["2023-24", "2024-25", "2025-26"]
+        assert [s.season for s in merged[200]] == ["2025-26"]
+        assert caplog.text == ""
+
+    def test_overlapping_season_is_taken_from_the_higher_ranked_source(self, caplog):
+        # The bare-extend merge kept both rows here, and neither consumer
+        # noticed: the season counted twice in every per-season mean and
+        # took two of the reliability window's three slots.
+        ci = {100: _make_profile(100, [_make_season(100, "2025-26", pts=180)])}
+        vaastav = {100: _make_profile(100, [_make_season(100, "2024-25", pts=150), _make_season(100, "2025-26", pts=175)])}
+
+        with caplog.at_level(logging.WARNING):
+            merged = merge_season_histories([("Core-Insights", ci), ("vaastav", vaastav)])
+
+        assert [(s.season, s.total_points) for s in merged[100]] == [("2025-26", 180), ("2024-25", 150)]
+        assert "Core-Insights and vaastav both returned 2025-26 for 1 player(s)" in caplog.text
+        assert "the Core-Insights rows were kept" in caplog.text
+        assert "meant to be disjoint" in caplog.text
+
+    def test_rank_order_decides_which_source_wins(self):
+        ci = {100: _make_profile(100, [_make_season(100, "2025-26", pts=180)])}
+        vaastav = {100: _make_profile(100, [_make_season(100, "2025-26", pts=175)])}
+
+        merged = merge_season_histories([("vaastav", vaastav), ("Core-Insights", ci)])
+
+        assert [s.total_points for s in merged[100]] == [175]
+
+    def test_source_repeating_a_season_keeps_the_first_row(self, caplog):
+        # A duplicate `code` row upstream -- the #97 failure class -- must
+        # not double a season either, and must say so.
+        vaastav = {100: _make_profile(100, [_make_season(100, "2024-25", pts=150), _make_season(100, "2024-25", pts=20)])}
+
+        with caplog.at_level(logging.WARNING):
+            merged = merge_season_histories([("Core-Insights", {}), ("vaastav", vaastav)])
+
+        assert [(s.season, s.total_points) for s in merged[100]] == [("2024-25", 150)]
+        assert "vaastav returned 2024-25 more than once for 1 player(s)" in caplog.text
+        assert "upstream format may have changed" in caplog.text
+
+    def test_overlap_is_announced_once_per_season_not_per_player(self, caplog):
+        ci = {code: _make_profile(code, [_make_season(code, "2025-26")]) for code in (1, 2, 3)}
+        vaastav = {code: _make_profile(code, [_make_season(code, "2025-26")]) for code in (1, 2, 3)}
+
+        with caplog.at_level(logging.WARNING):
+            merge_season_histories([("Core-Insights", ci), ("vaastav", vaastav)])
+
+        overlap_warnings = [r for r in caplog.records if "both returned" in r.getMessage()]
+        assert len(overlap_warnings) == 1
+        assert "for 3 player(s)" in overlap_warnings[0].getMessage()
+
+    def test_empty_sources_merge_to_nothing(self):
+        assert merge_season_histories([("Core-Insights", {}), ("vaastav", {})]) == {}
+
+
 class TestMergedHistories:
     async def test_4_season_merge(self):
         """Profiles from both sources merged into single profile per player."""
@@ -200,6 +269,20 @@ class TestMergedHistories:
 
         season_labels = [s.season for s in profiles[100].seasons]
         assert sorted(season_labels) == ["2024-25", "2025-26"]
+
+    async def test_season_both_sources_return_is_served_once_by_core_insights(self):
+        """#101: overlapping windows must yield one row, and Core-Insights' row."""
+        vaastav, ci = _mock_clients(
+            vaastav_profiles={100: _make_profile(100, [
+                _make_season(100, "2024-25", pts=150), _make_season(100, "2025-26", pts=175),
+            ])},
+            ci_profiles={100: _make_profile(100, [_make_season(100, "2025-26", pts=180)])},
+        )
+        provider = HistoricalDataProvider(vaastav, ci)
+        profiles = await provider.get_all_player_histories()
+
+        seasons = sorted((s.season, s.total_points) for s in profiles[100].seasons)
+        assert seasons == [("2024-25", 150), ("2025-26", 180)]
 
     async def test_session_cache(self):
         """Second call returns cached data."""

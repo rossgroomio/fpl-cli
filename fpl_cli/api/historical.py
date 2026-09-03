@@ -10,6 +10,7 @@ Season allocation:
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping, Sequence
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, ClassVar
 
@@ -20,6 +21,54 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
 logger = logging.getLogger(__name__)
+
+
+def merge_season_histories(
+    ranked_sources: Sequence[tuple[str, Mapping[int, PlayerProfile]]],
+) -> dict[int, list[SeasonHistory]]:
+    """Collect one SeasonHistory per (player, season) across ranked sources.
+
+    Sources are read in order and the first row seen for an
+    ``(element_code, season)`` pair wins. A season two sources both return
+    is therefore taken from the higher-ranked one on purpose, rather than
+    both rows surviving into the profile -- where every per-season mean
+    would count that season twice and the reliability window would spend
+    two of its three slots on it, with nothing raised (#101).
+
+    Neither kind of repeat is expected: the source windows are allocated to
+    be disjoint, and each source publishes one row per player per season.
+    So each is announced once per season and source pair, the way #97 names
+    provider drift, instead of being absorbed silently.
+    """
+    by_code: dict[int, list[SeasonHistory]] = {}
+    kept_by: dict[tuple[int, str], str] = {}
+    dropped: dict[tuple[str, str, str], int] = {}
+    for source, profiles in ranked_sources:
+        for code, profile in profiles.items():
+            for row in profile.seasons:
+                key = (code, row.season)
+                winner = kept_by.get(key)
+                if winner is None:
+                    kept_by[key] = source
+                    by_code.setdefault(code, []).append(row)
+                    continue
+                pair = (row.season, winner, source)
+                dropped[pair] = dropped.get(pair, 0) + 1
+
+    for (season, winner, loser), players in sorted(dropped.items()):
+        if winner == loser:
+            logger.warning(
+                "%s returned %s more than once for %d player(s) — the upstream "
+                "format may have changed; the first row was kept",
+                winner, season, players,
+            )
+        else:
+            logger.warning(
+                "%s and %s both returned %s for %d player(s); the %s rows were "
+                "kept — the historical source windows are meant to be disjoint",
+                winner, loser, season, players, winner,
+            )
+    return by_code
 
 
 class HistoricalDataProvider:
@@ -48,11 +97,13 @@ class HistoricalDataProvider:
         vaastav_profiles = await self._vaastav.get_all_player_histories()
         ci_profiles = await self._core_insights.get_all_player_histories()
 
-        # Merge by element_code: combine season lists from both sources.
-        by_code: dict[int, list[SeasonHistory]] = {}
-        for profiles in (vaastav_profiles, ci_profiles):
-            for code, profile in profiles.items():
-                by_code.setdefault(code, []).extend(profile.seasons)
+        # One row per (player, season), Core-Insights outranking vaastav: it
+        # is the sole current-season source and refreshes 3x daily, where
+        # vaastav is a volunteer archive that can lag a just-finished season.
+        by_code = merge_season_histories([
+            ("Core-Insights", ci_profiles),
+            ("vaastav", vaastav_profiles),
+        ])
 
         merged = {
             code: self._build_profile(code, seasons)
