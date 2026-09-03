@@ -324,25 +324,41 @@ def _entry_tier(
     return weakest_tier(tiers)
 
 
-def _streak_text(manager_name: str, label: str, length: int, held_count: int, window: GameweekWindow) -> str:
-    """Render a run as an observed count over its true span. A run with any
-    held gameweek is never rendered as consecutive (R14, R20): a length-3
-    run holding 8 is "3 in the last 11", not "3 in a row". "In a row" also
-    requires `window.span_length == length`, not `held_count == 0` alone: a
-    manager wholly *absent* (not merely unknown) from one gameweek inside an
-    otherwise-continuous run also leaves `held_count` at 0 (`_fold_gameweek`
-    skips a wholly-absent manager without counting a hold), but widens
-    `window` past `length` (`_streak_entries` anchors `end_gameweek` on the
-    pack's own target gameweek, not on `start + length + held - 1`) -- so
-    without this second check a real gap would still be claimed as
-    consecutive. That case falls through to the same observed-count
-    phrasing as any other held run, since it is the same situation: the
-    window is wider than the count."""
+def _streak_text(
+    manager_name: str,
+    count_label_one: str,
+    count_label_many: str,
+    length: int,
+    held_count: int,
+    window: GameweekWindow,
+) -> str:
+    """Render a run as an observed count over its true span. Built on the
+    condition's `count_label_one`/`count_label_many` (issue #188), not its
+    `label`: `label` is a run *name* ("Weeks on top"), and a template of
+    "{label} of {length}" reads as a preposition swallowing the count
+    ("Weeks on top of 2" parses as *on top of 2 managers*) for any label
+    ending in a preposition-attracting word. Leading with the count instead
+    ("2 gameweeks on top of the league") also lets the number appear once
+    rather than twice.
+
+    A run with any held gameweek is never rendered as consecutive (R14,
+    R20): a length-3 run holding 8 is "3 in the last 11", not "3 in a row".
+    "In a row" also requires `window.span_length == length`, not
+    `held_count == 0` alone: a manager wholly *absent* (not merely unknown)
+    from one gameweek inside an otherwise-continuous run also leaves
+    `held_count` at 0 (`_fold_gameweek` skips a wholly-absent manager
+    without counting a hold), but widens `window` past `length`
+    (`_streak_entries` anchors `end_gameweek` on the pack's own target
+    gameweek, not on `start + length + held - 1`) -- so without this second
+    check a real gap would still be claimed as consecutive. That case falls
+    through to the same observed-count phrasing as any other held run,
+    since it is the same situation: the window is wider than the count."""
     span = f"GW{window.start_gameweek}-GW{window.end_gameweek}"
+    count_label = count_label_one if length == 1 else count_label_many
     if held_count == 0 and window.span_length == length:
-        return f"{manager_name}: {label} of {length}, {length} in a row ({span})."
+        return f"{manager_name}: {length} {count_label} in a row ({span})."
     return (
-        f"{manager_name}: {label} of {length} in the last {window.span_length} ({span}), "
+        f"{manager_name}: {length} {count_label} in the last {window.span_length} ({span}), "
         f"with {held_count} not recorded."
     )
 
@@ -384,7 +400,14 @@ def _streak_entries(
             surfaces = _STREAK_SURFACES if view.is_reportable else frozenset()
             entries.append(NotesPackEntry(
                 kind=NoteKind.STREAK,
-                text=_streak_text(manager_row.manager_name, view.label, view.length, view.held_in_run, window),
+                text=_streak_text(
+                    manager_row.manager_name,
+                    view.count_label_one,
+                    view.count_label_many,
+                    view.length,
+                    view.held_in_run,
+                    window,
+                ),
                 surfaces=surfaces,
                 tier=_entry_tier(window, manager_key, rows_by_gameweek),
                 window=window,

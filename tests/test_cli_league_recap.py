@@ -1740,7 +1740,7 @@ def _stdout(capsys: pytest.CaptureFixture[str]) -> str:
 
 
 def _streak_entry(
-    text: str = "Alice: Weeks on top of 3, 3 in a row (GW1-GW3).",
+    text: str = "Alice: 3 gameweeks on top of the league in a row (GW1-GW3).",
     *,
     surfaces: frozenset[NoteSurface] = frozenset({NoteSurface.CONSOLE, NoteSurface.REPORT, NoteSurface.PROMPT}),
     excess: int = 1,
@@ -1953,7 +1953,7 @@ class TestLeagueHistoryReportSection:
         agent = ReportAgent(config={"output_dir": str(tmp_path)})
         data = dict(_recap_data(managers=[_manager(name="Alice", overall_rank=1, previous_rank=1)]))
         data["league_history_phase_text"] = "GW20 is the season midpoint."
-        data["league_history_streak_lines"] = ["Alice: Weeks on top of 3, 3 in a row (GW1-GW3)."]
+        data["league_history_streak_lines"] = ["Alice: 3 gameweeks on top of the league in a row (GW1-GW3)."]
         data["league_history_coverage_lines"] = ["Recorded history is complete from its start (GW1) through GW20."]
 
         result = await agent.run(context={"report_type": "league-recap", "gameweek": 20, "data": data})
@@ -1961,7 +1961,7 @@ class TestLeagueHistoryReportSection:
         content = Path(result.data["report_path"]).read_text(encoding="utf-8")
         assert "# League History" in content
         assert "## Streaks" in content
-        assert "Alice: Weeks on top of 3, 3 in a row (GW1-GW3)." in content
+        assert "Alice: 3 gameweeks on top of the league in a row (GW1-GW3)." in content
         assert "Recorded history is complete from its start (GW1) through GW20." in content
         assert "GW20 is the season midpoint." in content
 
@@ -2092,7 +2092,7 @@ class TestEndToEndStreakThroughTheFullCommand:
         assert result.exit_code == 0, result.output
         assert "Streaks:" in result.output
         assert "Alice" in result.output
-        assert "Weeks on top" in result.output or "weeks_on_top" in result.output.lower()
+        assert "gameweeks on top of the league" in result.output
 
     def test_a_single_gameweek_run_shows_no_streak_yet(self):
         """The same manager's first-ever captured gameweek: nothing to
@@ -2596,7 +2596,7 @@ class TestEndToEndPromptThroughTheFullCommand:
 
         assert "## League History" in user_prompt
         assert "Alice" in user_prompt
-        assert "Weeks on top" in user_prompt
+        assert "gameweeks on top of the league" in user_prompt
         assert "Season phase:" in user_prompt
         assert "Stick to what happened this gameweek, with one exception" in system_prompt
         assert "season phase" in system_prompt.lower()

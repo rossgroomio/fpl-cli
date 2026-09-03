@@ -232,7 +232,7 @@ class TestStreakEntries:
         # a continuous run over a span that actually has a gap in it.
         assert "in a row" not in entry.text
         assert entry.text == (
-            "Alice: Captain blank run of 3 in the last 4 (GW1-GW4), with 0 not recorded."
+            "Alice: 3 captain blanks in the last 4 (GW1-GW4), with 0 not recorded."
         )
 
     def test_multiple_managers_and_conditions_fold_independently(self):
