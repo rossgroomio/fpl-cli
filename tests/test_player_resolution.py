@@ -1,6 +1,13 @@
 """Tests for resolve_player() in fpl_cli/models/player.py."""
 
-from fpl_cli.models.player import resolve_player
+import pytest
+
+from fpl_cli.models.player import (
+    AmbiguousPlayerError,
+    PlayerPosition,
+    resolve_player,
+    resolve_players,
+)
 from tests.conftest import make_player, make_team
 
 
@@ -115,3 +122,67 @@ class TestResolvePlayerWithTeam:
     def test_team_syntax_ignored_without_teams_param(self):
         # Without teams, "(LIV)" is treated as part of the name and won't match
         assert resolve_player("Salah (LIV)", _players()) is None
+
+
+def _hendersons():
+    """Two players sharing a web_name - the collision from issue #180."""
+    return [
+        make_player(id=100, web_name="Henderson", first_name="Dean",
+                    second_name="Henderson", team_id=7,
+                    position=PlayerPosition.GOALKEEPER),
+        make_player(id=200, web_name="Henderson", first_name="Jordan",
+                    second_name="Henderson", team_id=4,
+                    position=PlayerPosition.MIDFIELDER),
+    ]
+
+
+class TestResolvePlayerAmbiguity:
+    def test_two_exact_matches_raise(self):
+        with pytest.raises(AmbiguousPlayerError) as exc:
+            resolve_player("Henderson", _hendersons())
+        assert exc.value.query == "Henderson"
+        assert [p.id for p in exc.value.matches] == [100, 200]
+
+    def test_message_names_both_clubs_when_teams_given(self):
+        teams = _teams() + [make_team(id=7, name="Crystal Palace", short_name="CRY")]
+        with pytest.raises(AmbiguousPlayerError) as exc:
+            resolve_player("Henderson", _hendersons(), teams=teams)
+        msg = str(exc.value)
+        assert "matches 2 players" in msg
+        assert "Henderson (CRY)" in msg
+        assert "Henderson (CHE)" in msg
+        assert "disambiguate with 'Henderson (CRY)'" in msg
+
+    def test_message_falls_back_to_ids_without_teams(self):
+        """Without *teams* the (TEAM) disambiguator is inert, so offer IDs."""
+        with pytest.raises(AmbiguousPlayerError) as exc:
+            resolve_player("Henderson", _hendersons())
+        msg = str(exc.value)
+        assert "Dean Henderson [id 100]" in msg
+        assert "Jordan Henderson [id 200]" in msg
+        assert "disambiguate by player ID, e.g. '100'" in msg
+
+    def test_team_disambiguator_resolves_the_tie(self):
+        teams = _teams() + [make_team(id=7, name="Crystal Palace", short_name="CRY")]
+        assert resolve_player("Henderson (CRY)", _hendersons(), teams=teams).id == 100
+        assert resolve_player("Henderson (CHE)", _hendersons(), teams=teams).id == 200
+
+    def test_player_id_resolves_the_tie(self):
+        assert resolve_player("200", _hendersons()).id == 200
+
+    def test_full_name_resolves_the_tie(self):
+        assert resolve_player("Dean Henderson", _hendersons()).id == 100
+
+    def test_substring_ties_still_return_first(self):
+        """Substring is a fuzzy shortlist, not a tie - first-wins is the contract."""
+        players = [
+            make_player(id=10, web_name="Smith", first_name="Adam", second_name="Smith"),
+            make_player(id=11, web_name="Smithson", first_name="Bob", second_name="Smithson"),
+        ]
+        assert resolve_player("Smit", players).id == 10
+
+    def test_resolve_players_returns_both_without_raising(self):
+        assert [p.id for p in resolve_players("Henderson", _hendersons())] == [100, 200]
+
+    def test_ambiguous_error_is_a_value_error(self):
+        assert issubclass(AmbiguousPlayerError, ValueError)

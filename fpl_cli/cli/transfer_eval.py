@@ -46,7 +46,7 @@ def transfer_eval_command(ctx: click.Context, out_player: str, in_players: str, 
     """
     from fpl_cli.agents.analysis.transfer_eval import TransferEvalAgent
     from fpl_cli.api.fpl import FPLClient
-    from fpl_cli.models.player import resolve_player
+    from fpl_cli.models.player import AmbiguousPlayerError, resolve_player
     from fpl_cli.scraper.fpl_prices import load_cache
 
     fmt = get_format(ctx)
@@ -58,9 +58,13 @@ def transfer_eval_command(ctx: click.Context, out_player: str, in_players: str, 
             all_teams = await client.get_teams()
 
         # Resolve player names to IDs
-        out_resolved = resolve_player(out_player, all_players, teams=all_teams)
-        if out_resolved is None:
+        try:
+            out_resolved = resolve_player(out_player, all_players, teams=all_teams)
             msg = f"Could not resolve OUT player: '{out_player}'"
+        except AmbiguousPlayerError as e:
+            out_resolved, msg = None, f"Ambiguous OUT player: {e}"
+
+        if out_resolved is None:
             if output_format == "json":
                 with json_output_mode() as stdout:
                     emit_json_error("transfer-eval", msg, file=stdout)
@@ -71,7 +75,11 @@ def transfer_eval_command(ctx: click.Context, out_player: str, in_players: str, 
         in_resolved = []
         errors = []
         for name in in_names:
-            p = resolve_player(name, all_players, teams=all_teams)
+            try:
+                p = resolve_player(name, all_players, teams=all_teams)
+            except AmbiguousPlayerError as e:
+                errors.append(f"Ambiguous IN player: {e}")
+                continue
             if p is None:
                 errors.append(f"Could not resolve IN player: '{name}'")
             else:

@@ -160,6 +160,12 @@ If format is `"both"`, also run:
 fpl squad grid --draft --format json
 ```
 
+Each record carries `player` and `team`. Keep the pair together: the C2.5/C3/C4
+scripts below take player names, and a bare surname that two players share
+(Dean and Jordan Henderson) is rejected as ambiguous rather than resolved to
+whichever the API lists first. Pass `"{player} ({team})"` -- e.g.
+`"Henderson (CRY)"` -- for every name sourced from this output.
+
 ### B5 -- Price Movements
 
 ```bash
@@ -569,7 +575,7 @@ Proceed immediately (non-interactive).
 After each sub-agent identifies OUT candidates and an IN shortlist (from squad analysis, `fpl targets`, `fpl waivers`), run the transfer evaluation script for each OUT/shortlist pair:
 
 ```bash
-python3 "${CLAUDE_SKILL_DIR}/scripts/transfer_eval.py" --out "{out_player_name}" --in "{comma-separated IN candidate names}"
+python3 "${CLAUDE_SKILL_DIR}/scripts/transfer_eval.py" --out "{out_player_name} ({club})" --in "{comma-separated IN candidates as 'Name (CLUB)'}"
 ```
 
 The script outputs JSON with Outlook (multi-GW quality) and This GW (lineup impact) deltas for each IN candidate vs the OUT player. Use these scores as the quantitative baseline for transfer/waiver recommendations. Sub-agents may override with qualitative reasons (press conference intel, newsletter signals, season preview intel from B9) using the same `⚡ Override: {reason}` pattern as starting XI overrides. Name the source in the reason.
@@ -581,10 +587,10 @@ If the script fails (exit 1), fall back to LLM-driven transfer reasoning and not
 Run the lineup engine for each active format's squad **before** bench ordering:
 
 ```bash
-python3 "${CLAUDE_SKILL_DIR}/scripts/starting_xi.py" --squad "{comma-separated 15 squad player names from squad grid}"
+python3 "${CLAUDE_SKILL_DIR}/scripts/starting_xi.py" --squad "{comma-separated 15 squad players from squad grid, each as 'Name (CLUB)'}"
 ```
 
-<!-- ADAPT: Replace with your squad player names from the squad grid output -->
+<!-- ADAPT: Replace with your squad players from the squad grid output, each as 'Name (CLUB)' -->
 
 Use the script's recommended XI as the default lineup. Sub-agents may override specific picks with stated qualitative reasons (press conference intel, newsletter signals, rotation predictions, season preview intel from B9). Mark any overrides with `⚡ Override: {reason}` in the output, naming the source. If the script fails (exit 1), fall back to manual selection and note the failure.
 
@@ -595,7 +601,7 @@ Use the script's recommended XI as the default lineup. Sub-agents may override s
 Using the starting XI from C3 (or the sub-agent's overridden version), run the bench order script:
 
 ```bash
-python3 "${CLAUDE_SKILL_DIR}/scripts/bench_order.py" --starting "{comma-separated starter names}" --bench "{comma-separated bench names}"
+python3 "${CLAUDE_SKILL_DIR}/scripts/bench_order.py" --starting "{comma-separated starters as 'Name (CLUB)'}" --bench "{comma-separated bench as 'Name (CLUB)'}"
 ```
 
 Incorporate the bench ordering output into the relevant sections of each sub-agent's recommendations.

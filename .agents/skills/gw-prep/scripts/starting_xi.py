@@ -6,6 +6,8 @@ Requires fpl-cli venv to be activated before running.
 
 Usage:
     python starting_xi.py --squad "Salah,Saka,Palmer,...,Munoz"
+
+Names may carry a club to disambiguate shared surnames, e.g. "Henderson (CRY)".
 """
 
 from __future__ import annotations
@@ -19,17 +21,22 @@ from _bootstrap import bootstrap_user_dirs
 
 from fpl_cli.agents.analysis.starting_xi import StartingXIAgent
 from fpl_cli.api.fpl import FPLClient
-from fpl_cli.models.player import resolve_player
+from fpl_cli.models.player import AmbiguousPlayerError, resolve_player
 
 
 async def _run(squad_names: list[str]) -> None:
     async with FPLClient() as client:
         all_players = await client.get_players()
+        all_teams = await client.get_teams()
 
-    errors = []
-    squad_ids = []
+    errors: list[str] = []
+    squad_ids: list[int] = []
     for name in squad_names:
-        player = resolve_player(name, all_players)
+        try:
+            player = resolve_player(name, all_players, teams=all_teams)
+        except AmbiguousPlayerError as e:
+            errors.append(f"Ambiguous squad player: {e}")
+            continue
         if player is None:
             errors.append(f"Could not resolve squad player: '{name}'")
         else:
@@ -59,7 +66,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Starting XI analysis")
     parser.add_argument(
         "--squad", required=True,
-        help="Comma-separated squad player names (exactly 15)",
+        help="Comma-separated squad player names, exactly 15 ('Name (TEAM)' to disambiguate)",
     )
     args = parser.parse_args()
 

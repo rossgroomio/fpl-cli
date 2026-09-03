@@ -123,14 +123,19 @@ Compare an OUT player against IN candidates on two scoring horizons.
 
 ```bash
 fpl transfer-eval --out Palmer --in "Salah,Mbeumo,Diaz"
+fpl transfer-eval --out "Henderson (CRY)" --in "Sels,Petrovic"   # shared surname
 fpl transfer-eval --out Palmer --in Salah --format json
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--out` | *(required)* | Player to transfer out |
-| `--in` | *(required)* | Comma-separated IN candidates |
+| `--out` | *(required)* | Player to transfer out (name, player ID, or `Name (TEAM)`) |
+| `--in` | *(required)* | Comma-separated IN candidates (name, player ID, or `Name (TEAM)`) |
 | `--format` | `table` | `table` or `json` |
+
+A name two players answer to exactly — Dean and Jordan Henderson are both
+`Henderson` — is an error naming both, not a silent pick of whichever the API
+lists first. Add the club (`Henderson (CRY)`) or use the player ID to choose.
 
 Output columns:
 - **Outlook** - multi-GW quality delta (target score 0-100). Higher = better long-term hold.
