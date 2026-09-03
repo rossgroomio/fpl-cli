@@ -2584,7 +2584,7 @@ class TestPromptFormatting:
 
 
 def _history_entry(
-    text: str = "Alice: Captain blank run of 3, 3 in a row (GW4-GW6).",
+    text: str = "Alice: 3 captain blanks in a row (GW4-GW6).",
     *,
     kind: NoteKind = NoteKind.STREAK,
     surfaces: frozenset[NoteSurface] = frozenset({NoteSurface.CONSOLE, NoteSurface.REPORT, NoteSurface.PROMPT}),
@@ -2661,7 +2661,7 @@ class TestFormatRecapLeagueHistoryContext:
         bound exactly N bullets before any coverage-labeled text; a
         coverage caveat must not read as an uncounted (N+1)th streak."""
         streak_entries = [
-            _history_entry(text="Alice: Captain blank run of 3, 3 in a row (GW4-GW6)."),
+            _history_entry(text="Alice: 3 captain blanks in a row (GW4-GW6)."),
             _history_entry(text="Bob: Hit run of 2 (GW5-GW6)."),
         ]
         coverage_entries = [
@@ -2688,7 +2688,7 @@ class TestFormatRecapLeagueHistoryContext:
         count_index = lines.index("Total League History streak entries: 2")
         streak_bullet_lines = lines[count_index + 1 : count_index + 3]
         assert streak_bullet_lines == [
-            "- Alice: Captain blank run of 3, 3 in a row (GW4-GW6).",
+            "- Alice: 3 captain blanks in a row (GW4-GW6).",
             "- Bob: Hit run of 2 (GW5-GW6).",
         ]
 
