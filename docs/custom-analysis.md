@@ -302,6 +302,11 @@ A club needs a result at only one venue to be rated. Where it has none at the ot
 
 - FWD/MID fixtures scored by opponent's **defensive** rating (attacking opportunity).
 - DEF/GK fixtures scored by opponent's **attacking** rating (clean sheet likelihood).
+- Both use the opponent's rating **at the venue**; `difference` mode (the default) then averages in the team's own rating on the matching axis, `opponent` mode does not.
+
+In `fpl fdr` and `fpl preview` (everything the fixture agent produces, including the per-fixture `home_fdr`/`away_fdr` in `fpl fdr --format json`), the general FDR shown beside them is the mean of the two, in the same mode and at the same venue. It replaced the opponent's venue-blind average rating there, which ranked the league's weakest side above its strongest whenever the strong side's run held big names (#186). A fixture involving an unrated club scores the neutral 4.0 on all three columns rather than falling back to the FPL API's 1-5 difficulty, which would put that club on a second scale inside the same ranking.
+
+`fpl fixtures` and `fpl chips timing` still read the opponent's venue-blind `avg_overall_fdr` directly, so their FDR for a match differs from the preview's Gameweek Fixtures table.
 
 ### Early-Season Blending (GW1-11)
 

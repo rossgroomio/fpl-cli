@@ -389,3 +389,62 @@ class TestFixtureColumn:
     def test_fixture_header_in_inline(self):
         output = self.agent._generate_preview_inline(29, _preview_data())
         assert "| Fixture |" in output
+
+
+# ---------------------------------------------------------------------------
+# Group 5: Teams with Easy Fixtures footer (#186)
+# ---------------------------------------------------------------------------
+
+def _easy_fixtures_data(fdr_mode: str | None = None) -> dict:
+    data = _preview_data()
+    fixtures: dict = {
+        "easy_fixture_runs": {
+            "overall": [
+                {
+                    "short_name": "LIV",
+                    "average_fdr": 2.5,
+                    "average_fdr_atk": 2.0,
+                    "average_fdr_def": 3.0,
+                    "fixtures_summary": "ars BOU",
+                }
+            ]
+        }
+    }
+    if fdr_mode:
+        fixtures["fdr_mode"] = fdr_mode
+    data["fixtures"] = fixtures
+    return data
+
+
+def _footer_line(output: str) -> str:
+    lines = [line for line in output.splitlines() if line.startswith("*FDR scale")]
+    assert len(lines) == 1, output
+    return lines[0]
+
+
+class TestEasyFixturesFooter:
+    def setup_method(self):
+        self.agent = ReportAgent()
+
+    def test_template_footer_names_mode_and_column_relationship(self):
+        output = self.agent._generate_preview_report(29, _easy_fixtures_data("opponent"))
+        footer = _footer_line(output)
+        assert "All three columns use opponent mode (opponent strength at the venue only)" in footer
+        assert "FDR is the mean of ATK and DEF" in footer
+        assert "1 (easiest) - 7 (hardest)" in footer
+
+    def test_template_footer_defaults_to_difference_mode(self):
+        """A result without the mode (older data) is described as the agent default."""
+        output = self.agent._generate_preview_report(29, _easy_fixtures_data())
+        footer = _footer_line(output)
+        assert "difference mode (opponent strength at the venue, blended with the team's own)" in footer
+
+    def test_inline_footer_matches_template(self):
+        data = _easy_fixtures_data("difference")
+        template_footer = _footer_line(self.agent._generate_preview_report(29, data))
+        inline_footer = _footer_line(self.agent._generate_preview_inline(29, data))
+        assert inline_footer == template_footer
+
+    def test_no_footer_without_easy_fixtures(self):
+        output = self.agent._generate_preview_report(29, _preview_data())
+        assert "*FDR scale" not in output
