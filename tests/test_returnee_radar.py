@@ -518,7 +518,16 @@ def _season(
     expected_goals: float = 14.0,
     expected_assists: float = 9.0,
     position: str = "MID",
+    defensive_contribution_per_90: float | None = None,
+    saves_per_90: float | None = None,
+    clean_sheets_per_90: float | None = None,
+    expected_goals_conceded_per_90: float | None = None,
 ) -> SeasonHistory:
+    """A completed season. The four per-90 rates default to None (vaastav-era).
+
+    Core-Insights publishes them; anything older leaves them unset, so the
+    default is the harder case for the DEF/GK quality bar (#132).
+    """
     return SeasonHistory(
         element_code=code,
         season=season,
@@ -535,6 +544,10 @@ def _season(
         position=position,
         web_name="Flagged",
         team_id=1,
+        defensive_contribution_per_90=defensive_contribution_per_90,
+        saves_per_90=saves_per_90,
+        clean_sheets_per_90=clean_sheets_per_90,
+        expected_goals_conceded_per_90=expected_goals_conceded_per_90,
     )
 
 
@@ -747,6 +760,128 @@ def test_empty_understat_season_still_scores_from_fpl_stats_alone():
     assert [e.player_id for e in result.entries] == [1]
     assert result.entries[0].quality.quality_score is not None
     assert result.entries[0].quality.quality_score > 0
+
+
+# ---------------------------------------------------------------------------
+# Quality bar: every position can clear it (issue #132)
+# ---------------------------------------------------------------------------
+
+# An outstanding season for a defender or a keeper: 30 starts, 2,700 minutes,
+# 175 points. Before #132 this scored 76 for a DEF and 56 for a GK against
+# their calibrated VALUE ceilings, so neither could ever clear the 0.80
+# watchlist bar however good the season was -- the ceilings budget for
+# defensive contribution and the GK signal block, and no historical season
+# carried either. The suite only covered an attacking player, which is how
+# that got through.
+_ELITE = {"minutes": 2700, "starts": 30, "total_points": 175}
+# The rates Core-Insights publishes for a season like that.
+_ELITE_DC = {"defensive_contribution_per_90": 6.0}
+_ELITE_GK_RATES = {
+    "saves_per_90": 3.5,
+    "clean_sheets_per_90": 0.45,
+    "expected_goals_conceded_per_90": 0.95,
+}
+
+
+# Comparing two season scores needs both to survive the bar, so those runs
+# lower it -- the bar itself is what the parametrized test above asserts.
+_ANY_QUALITY = RadarConfig(price_watchlist_percentile=0.1)
+
+
+def _rear_guard_quality(
+    code: int,
+    fpl_position: PlayerPosition,
+    *,
+    config: RadarConfig | None = None,
+    **season_kwargs: Any,
+) -> Any:
+    position = "GK" if fpl_position is PlayerPosition.GOALKEEPER else "DEF"
+    player = _flagged(code=code, position=fpl_position)
+    season = _season(code, position=position, **season_kwargs)
+
+    kwargs: dict[str, Any] = {"profiles": {code: _profile(code, season)}}
+    if config is not None:
+        kwargs["config"] = config
+    return _radar([player], {1: _prior(0.45, source="price")}, **kwargs)
+
+
+def _rear_guard_score(code: int, fpl_position: PlayerPosition, **season_kwargs: Any) -> int:
+    result = _rear_guard_quality(
+        code, fpl_position, config=_ANY_QUALITY, **season_kwargs,
+    )
+    return result.entries[0].quality.quality_score
+
+
+@pytest.mark.parametrize(
+    ("fpl_position", "rates"),
+    [
+        (PlayerPosition.DEFENDER, {}),
+        (PlayerPosition.DEFENDER, _ELITE_DC),
+        (PlayerPosition.GOALKEEPER, {}),
+        (PlayerPosition.GOALKEEPER, {**_ELITE_DC, **_ELITE_GK_RATES}),
+    ],
+    ids=["def-no-rates", "def-published-rates", "gk-no-rates", "gk-published-rates"],
+)
+def test_an_elite_defensive_season_clears_the_watchlist_bar(
+    fpl_position: PlayerPosition, rates: dict[str, float],
+):
+    result = _rear_guard_quality(4260, fpl_position, **_ELITE, **rates)
+
+    assert [e.player_id for e in result.entries] == [1]
+    quality = result.entries[0].quality
+    assert quality.basis == QUALITY_BASIS_SEASON
+    assert quality.score >= RadarConfig().price_watchlist_percentile
+
+
+@pytest.mark.parametrize(
+    "fpl_position", [PlayerPosition.DEFENDER, PlayerPosition.GOALKEEPER],
+)
+def test_a_weak_defensive_season_still_misses_the_watchlist_bar(fpl_position: PlayerPosition):
+    # The other half of #132: shrinking the ceiling to reachable headroom must
+    # rescue an elite season, not lift the whole position over the bar.
+    result = _rear_guard_quality(4261, fpl_position, minutes=2700, starts=30, total_points=75)
+
+    assert result.entries == []
+
+
+def test_published_defensive_contribution_reaches_a_defenders_season_score():
+    # A mid-tier season, so neither run clamps at the ceiling and the two
+    # scores can actually be compared.
+    modest = {"minutes": 2000, "starts": 25, "total_points": 95}
+    published = _rear_guard_score(
+        4262, PlayerPosition.DEFENDER, **modest, **_ELITE_DC,
+    )
+    measured_zero = _rear_guard_score(
+        4263, PlayerPosition.DEFENDER, **modest, defensive_contribution_per_90=0.0,
+    )
+
+    assert published > measured_zero
+
+
+def test_published_gk_rates_reach_a_keepers_season_score():
+    modest = {"minutes": 2000, "starts": 25, "total_points": 95}
+    published = _rear_guard_score(
+        4264, PlayerPosition.GOALKEEPER, **modest, **_ELITE_DC, **_ELITE_GK_RATES,
+    )
+    poor = _rear_guard_score(
+        4265, PlayerPosition.GOALKEEPER, **modest, **_ELITE_DC,
+        saves_per_90=0.4, clean_sheets_per_90=0.0, expected_goals_conceded_per_90=2.5,
+    )
+
+    assert published > poor
+
+
+def test_an_unpublished_rate_shrinks_the_ceiling_rather_than_scoring_as_zero():
+    # A source that never recorded defensive contribution must not be read as
+    # a defender who never made one: None shrinks the ceiling to the headroom
+    # the row can reach, where 0.0 is a measured zero and costs the term.
+    modest = {"minutes": 2000, "starts": 25, "total_points": 95}
+    unpublished = _rear_guard_score(4266, PlayerPosition.DEFENDER, **modest)
+    measured_zero = _rear_guard_score(
+        4267, PlayerPosition.DEFENDER, **modest, defensive_contribution_per_90=0.0,
+    )
+
+    assert unpublished > measured_zero
 
 
 # ---------------------------------------------------------------------------

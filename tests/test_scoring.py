@@ -4644,6 +4644,106 @@ class TestCeilingValidationBands:
         assert score < self._score(self._elite_gk())
 
 
+class TestCeilingAttainability:
+    """The general form behind #143 and #132: reachable share of a ceiling.
+
+    ``ceiling_attainability`` answers "what fraction of this ceiling's
+    budgeted headroom can the input in hand actually reach", so a score
+    normalised against it means "elite among what we can see". Two callers:
+    ``gk_ceiling_attainability`` (a term the sample ramp attenuates) and the
+    returnee radar (a term the historical source never recorded).
+    """
+
+    def test_nothing_missing_is_the_identity(self):
+        from fpl_cli.services.scoring import VALUE_QUALITY_WEIGHTS, ceiling_attainability
+        for weights in (
+            VALUE_QUALITY_WEIGHTS,
+            VALUE_QUALITY_WEIGHTS.without_xgi(),
+            VALUE_QUALITY_WEIGHTS.for_gk(),
+        ):
+            assert ceiling_attainability(weights, ()) == 1.0
+
+    def test_a_missing_term_costs_its_cap_share(self):
+        from fpl_cli.services.scoring import VALUE_QUALITY_WEIGHTS, ceiling_attainability
+        deff = VALUE_QUALITY_WEIGHTS.without_xgi()
+        total = deff.form.cap + deff.ppg.cap + deff.dc_per_90.cap
+        assert ceiling_attainability(deff, ("dc_per_90",)) == pytest.approx(
+            (total - deff.dc_per_90.cap) / total
+        )
+
+    def test_a_term_the_variant_zeroes_costs_nothing(self):
+        """Callers pass everything their input lacks; the variant decides."""
+        from fpl_cli.services.scoring import VALUE_QUALITY_WEIGHTS, ceiling_attainability
+        deff = VALUE_QUALITY_WEIGHTS.without_xgi()
+        assert ceiling_attainability(
+            deff, ("dc_per_90", "gk_saves_per_90", "gk_xgc_quality", "gk_cs_rate"),
+        ) == ceiling_attainability(deff, ("dc_per_90",))
+
+    def test_a_partly_supplied_term_scales_between_the_two(self):
+        from fpl_cli.services.scoring import VALUE_QUALITY_WEIGHTS, ceiling_attainability
+        gk = VALUE_QUALITY_WEIGHTS.for_gk()
+        absent = ceiling_attainability(gk, ("gk_cs_rate",))
+        half = ceiling_attainability(gk, ("gk_cs_rate",), ramp=0.5)
+        assert absent < half < 1.0
+
+    def test_an_unknown_term_raises(self):
+        """Silently ignoring a typo would leave the ceiling quietly unscaled."""
+        from fpl_cli.services.scoring import VALUE_QUALITY_WEIGHTS, ceiling_attainability
+        with pytest.raises(KeyError):
+            ceiling_attainability(VALUE_QUALITY_WEIGHTS, ("gk_saves",))
+
+    def test_the_two_attacking_routes_are_never_summed(self):
+        """npxG(+xGChain) and the xGI fallback are alternatives, not additive.
+
+        Counting both would invent headroom no player can reach and
+        understate every fraction derived from the base variant.
+        """
+        from fpl_cli.services.scoring import VALUE_QUALITY_WEIGHTS
+        from fpl_cli.services.scoring.constants import _quality_term_caps
+        base = VALUE_QUALITY_WEIGHTS
+        assert _quality_term_caps(base)["attacking"] == max(
+            base.npxg.cap + base.xg_chain.cap, base.xgi_fallback.cap,
+        )
+
+    def test_an_uncapped_term_raises_rather_than_silently_not_scaling(self):
+        """PR #205 review: a silent 1.0 would make a caller's fix look inert.
+
+        Neither current caller can reach this — the GK path always passes
+        `for_gk()` and the radar the VALUE variants — but the base waiver
+        variant leaves npxg uncapped, and there is no share of unbounded
+        headroom to take.
+        """
+        from fpl_cli.services.scoring import WAIVER_QUALITY_WEIGHTS, ceiling_attainability
+        with pytest.raises(ValueError, match="uncapped"):
+            ceiling_attainability(WAIVER_QUALITY_WEIGHTS, ("dc_per_90",))
+        # The variants the real callers pass all cap every term they weight.
+        assert ceiling_attainability(WAIVER_QUALITY_WEIGHTS.for_gk(), ()) == 1.0
+        assert ceiling_attainability(WAIVER_QUALITY_WEIGHTS.without_xgi(), ()) == 1.0
+
+    def test_every_weight_term_is_accounted_for(self):
+        """A new StatWeight field must join the caps table or silently vanish.
+
+        An unlisted term is headroom the ratio never counts, which drifts
+        every attainability-scaled ceiling — and, since `_theoretical_quality_cap`
+        reads the same table, the calibration bracket too — the day a weight
+        is added.
+        """
+        import dataclasses
+
+        from fpl_cli.services.scoring import VALUE_QUALITY_WEIGHTS, StatWeight
+        from fpl_cli.services.scoring.constants import _quality_term_caps
+        fields = {
+            f.name for f in dataclasses.fields(VALUE_QUALITY_WEIGHTS)
+            if f.type == "StatWeight" or isinstance(
+                getattr(VALUE_QUALITY_WEIGHTS, f.name), StatWeight
+            )
+        }
+        # The three attacking routes collapse into one entry; the rest map 1:1.
+        folded = {"npxg", "xg_chain", "xgi_fallback"}
+        keys = set(_quality_term_caps(VALUE_QUALITY_WEIGHTS))
+        assert fields - folded | {"attacking"} == keys
+
+
 class TestGkAttainableCeiling:
     """Issue #143: GK scores normalise against the attainable ceiling.
 
@@ -4682,6 +4782,19 @@ class TestGkAttainableCeiling:
         ramp = 90 / GK_SAMPLE_RAMP_MINUTES  # going into GW2 the calendar has supplied one match
         expected = (fixed + ramp * ramped) / (fixed + ramped)
         assert gk_ceiling_attainability(2, VALUE_QUALITY_WEIGHTS) == pytest.approx(expected)
+
+    def test_gk_signal_terms_name_exactly_the_ramped_signals(self):
+        """PR #205 review: the tuple is hand-written; the ramp is not.
+
+        `gk_ceiling_attainability` treats these terms as the ramped share and
+        everything else as always attainable. A GK signal added to
+        `gk_signal_enrichment` — which ramps whatever it returns — but not to
+        this tuple would be counted as fixed headroom, silently
+        under-discounting every early-season keeper.
+        """
+        from fpl_cli.services.scoring import gk_signal_enrichment
+        from fpl_cli.services.scoring.constants import GK_SIGNAL_TERMS
+        assert set(GK_SIGNAL_TERMS) == set(gk_signal_enrichment(self._gw1_elite_keeper()))
 
     def test_fraction_is_identity_from_gw6(self):
         from fpl_cli.services.scoring import VALUE_QUALITY_WEIGHTS, gk_ceiling_attainability

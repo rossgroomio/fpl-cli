@@ -133,9 +133,18 @@ from fpl_cli.models.player import POSITION_MAP
 from fpl_cli.paths import user_data_file
 from fpl_cli.season import TOTAL_GAMEWEEKS, get_season_year, season_label
 from fpl_cli.services.player_prior import MIN_MINUTES, PlayerPrior, percentile_rank
-from fpl_cli.services.scoring.constants import Position, _as_position, _value_weights_and_ceiling
+from fpl_cli.services.scoring.constants import (
+    Position,
+    _as_position,
+    _value_weights_and_ceiling,
+    ceiling_attainability,
+)
 from fpl_cli.services.scoring.display import normalise_score
-from fpl_cli.services.scoring.evaluation import build_player_evaluation, read_player_field
+from fpl_cli.services.scoring.evaluation import (
+    build_player_evaluation,
+    gk_xgc_quality,
+    read_player_field,
+)
 from fpl_cli.services.scoring.value_quality import (
     calculate_mins_factor,
     calculate_player_quality_score,
@@ -1473,6 +1482,10 @@ def _season_quality(
     The reference gameweek is `TOTAL_GAMEWEEKS`: the season is complete, so the
     minutes factor should be fully active regardless of how far into the
     current season the radar happens to run.
+
+    Defensive contribution and the GK signal block come from the season row
+    when its source published them, and otherwise shrink the ceiling to the
+    headroom the row can reach — see `_historical_defensive_signals` (#132).
     """
     minutes, appearances = season.minutes, season.starts
     if minutes <= 0 or appearances <= 0:
@@ -1492,6 +1505,9 @@ def _season_quality(
         "price": season.end_cost / 10,
     }
 
+    signals, missing = _historical_defensive_signals(season, position)
+    data.update(signals)
+
     match = _understat_match(player, position=position, season=season,
                              understat_seasons=understat_seasons, team_name=team_name)
     if match:
@@ -1504,11 +1520,72 @@ def _season_quality(
 
     evaluation, _ = build_player_evaluation(data)
     weights, ceiling = _value_weights_and_ceiling(position)
+    if missing:
+        ceiling *= ceiling_attainability(weights, missing)
     mins_factor = calculate_mins_factor(minutes, appearances, TOTAL_GAMEWEEKS)
     raw = calculate_player_quality_score(
         evaluation.as_quality_dict(), weights, mins_factor, position=position,
     )
     return normalise_score(raw, ceiling)
+
+
+def _historical_defensive_signals(
+    season: SeasonHistory, position: Position,
+) -> tuple[dict[str, float], set[str]]:
+    """The DC/GK signals a past season supplies, and the weight terms it cannot.
+
+    These four terms are the whole of what the DEF and GK weight variants
+    activate beyond form and ppg, and until #132 no historical season could
+    supply any of them: every one was read as 0 and the two positions were
+    scored against ceilings they structurally could not reach. Scored over the
+    real 2025-26 season, the best defender in the league read 77 and the best
+    keeper 45, both under the 0.80 watchlist bar — no defender and no keeper
+    could ever reach the list, however good their last healthy season.
+
+    Core-Insights publishes all four pre-computed per 90 on the same season row
+    the aggregates already come from, so a season inside its window scores
+    against its real ceiling. Outside that window — vaastav's older seasons, or
+    a season predating defensive contribution upstream — the missing terms
+    shrink the ceiling instead, which is what the returned set is for. The
+    result then reads "how good was this season, on the signals we have", the
+    same mechanism #143 gave sample-ramped keepers.
+
+    No sample ramp: `_last_healthy_season` only returns seasons at or above
+    `MIN_MINUTES`, which is exactly `GK_SAMPLE_RAMP_MINUTES`, so every season
+    reaching here would ramp at 1.0 anyway.
+    """
+    signals: dict[str, float] = {}
+    missing: set[str] = set()
+
+    if season.defensive_contribution_per_90 is None:
+        missing.add("dc_per_90")
+    else:
+        signals["dc_per_90"] = season.defensive_contribution_per_90
+
+    if position != "GK":
+        # dc_per_90 is the only one of the four any other variant weights, so
+        # the GK block would only ever add zero-cap terms to `missing`.
+        return signals, missing
+
+    if season.saves_per_90 is None:
+        missing.add("gk_saves_per_90")
+    else:
+        signals["gk_saves_per_90"] = season.saves_per_90
+
+    if season.clean_sheets_per_90 is None:
+        missing.add("gk_cs_rate")
+    else:
+        # The live path divides clean sheets by appearances; over a whole
+        # season a keeper's minutes are ~90 per start, so the published
+        # per-90 rate is the same quantity without needing the raw counts.
+        signals["gk_cs_rate"] = season.clean_sheets_per_90
+
+    if season.expected_goals_conceded_per_90 is None:
+        missing.add("gk_xgc_quality")
+    else:
+        signals["gk_xgc_quality"] = gk_xgc_quality(season.expected_goals_conceded_per_90)
+
+    return signals, missing
 
 
 def _understat_match(

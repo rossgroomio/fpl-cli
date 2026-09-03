@@ -13,6 +13,7 @@ import io
 import logging
 from collections.abc import Mapping
 from datetime import timedelta
+from math import isfinite
 from typing import ClassVar, TypedDict
 
 import httpx
@@ -100,6 +101,36 @@ def season_dir(season: str) -> str:
     starts with this segment, so both derive it here.
     """
     return core_insights_season(season_start_year(season))
+
+
+def _optional_float(row: Mapping[str, str], column: str) -> float | None:
+    """One per-90 column as a float, or None when the row cannot supply it.
+
+    A column absent from the header (a season published before the stat
+    existed upstream) and a blank cell are both "no signal", and stay None:
+    the scoring path reads 0.0 as a measured zero and would score the player
+    as bad at something that was never recorded (#132). The other optional
+    columns above default to 0 instead — for a count, absent and zero really
+    do mean the same thing.
+    """
+    raw = row.get(column)
+    if not raw:
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.debug("Non-numeric %s in playerstats.csv: %r", column, raw)
+        return None
+    if not isfinite(value):
+        # `float()` parses "nan" and "inf" without raising, and every one of
+        # these columns is a count-over-minutes division upstream, which is
+        # exactly how a zero-minute row serialises. Neither is a measurement:
+        # NaN reaches `normalise_score`, whose `round()` raises and takes the
+        # whole command down for every player; inf saturates its weight cap
+        # and credits the maximum for a signal nobody recorded.
+        logger.debug("Non-finite %s in playerstats.csv: %r", column, raw)
+        return None
+    return value
 
 
 def make_core_insights_fetcher(ttl: timedelta = DEFAULT_TTL) -> DatasetFetcher:
@@ -534,6 +565,14 @@ class CoreInsightsClient:
                 position=player.position,
                 web_name=player.web_name,
                 team_id=player.team_code,
+                defensive_contribution_per_90=_optional_float(
+                    row, "defensive_contribution_per_90"
+                ),
+                saves_per_90=_optional_float(row, "saves_per_90"),
+                clean_sheets_per_90=_optional_float(row, "clean_sheets_per_90"),
+                expected_goals_conceded_per_90=_optional_float(
+                    row, "expected_goals_conceded_per_90"
+                ),
             ))
 
         if rows_read and not histories:
