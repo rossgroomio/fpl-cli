@@ -162,6 +162,12 @@ def format_recap_standings_context(data: LeagueRecapData) -> str:
     when neither their Prev rank nor anyone else's not-1 Prev rank supported
     that. Stating the answer outright makes it checkable the same way the
     Captains and Chips sections' explicit totals are.
+
+    `previous_rank` is competition ranking, not ordinal (see
+    `derive_point_in_time_positions`): two or more managers level on points
+    genuinely share rank 1, since nothing in the ledger records the API's
+    own tie-break. All of them are named, jointly, rather than picking one
+    arbitrarily and telling the model to deny the others' equally valid claim.
     """
     managers = data.get("managers", [])
     if not managers:
@@ -169,13 +175,21 @@ def format_recap_standings_context(data: LeagueRecapData) -> str:
 
     is_classic = data.get("fpl_format") == "classic"
     if any(m.get("previous_rank") is not None for m in managers):
-        leader = next((m for m in managers if m.get("previous_rank") == 1), None)
-        if leader is not None:
+        leaders = [m for m in managers if m.get("previous_rank") == 1]
+        if len(leaders) == 1:
             leader_line = (
-                f"Previous gameweek's leader (Prev rank 1): {leader['manager_name']}. This is the "
-                "only manager who may be described as having previously led or topped the table -- "
+                f"Previous gameweek's leader (Prev rank 1): {leaders[0]['manager_name']}. This is "
+                "the only manager who may be described as having previously led or topped the "
+                "table -- never attribute a prior top spot to anyone else, including whoever fell "
+                "furthest this gameweek."
+            )
+        elif leaders:
+            names = ", ".join(m["manager_name"] for m in leaders)
+            leader_line = (
+                f"Previous gameweek's leaders (Prev rank 1, tied): {names}. These are the only "
+                "managers who may be described as having previously led or topped the table -- "
                 "never attribute a prior top spot to anyone else, including whoever fell furthest "
-                "this gameweek."
+                "this gameweek, and never credit just one of them alone with sole leadership."
             )
         else:
             leader_line = "Previous gameweek's leader could not be determined -- do not name one."

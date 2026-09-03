@@ -2311,6 +2311,19 @@ class TestPromptFormatting:
         assert "Previous gameweek's leader (Prev rank 1): Leader" in text
         assert text.index("Previous gameweek's leader") < text.index("| Pos |")
 
+    def test_standings_context_names_both_previous_leaders_when_tied(self):
+        """`previous_rank` is competition ranking (`derive_point_in_time_positions`),
+        so two managers level on points genuinely share Prev rank 1. Naming
+        only one and telling the model to deny the other's claim would repeat
+        this PR's own bug (PR #216 review)."""
+        managers = [
+            _make_manager(name="Alice", entry_id=1, gw_points=50, overall_rank=2, previous_rank=1),
+            _make_manager(name="Bob", entry_id=2, gw_points=40, overall_rank=3, previous_rank=1),
+        ]
+        text = format_recap_standings_context(_make_recap_data(managers=managers))
+        assert "Previous gameweek's leaders (Prev rank 1, tied): Alice, Bob" in text
+        assert "never credit just one of them alone" in text
+
     def test_standings_context_no_previous_leader_when_no_previous_gameweek(self):
         """Season opener / first captured gameweek: no manager has a
         previous_rank, so the section says so explicitly rather than letting
