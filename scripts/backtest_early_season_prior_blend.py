@@ -9,17 +9,20 @@ live 2026-08-25). The fix blends the observed raw score with a prior-implied
 raw score under the production confidence curve:
 
     prior_raw = prior_strength * ceiling * CALIBRATION_ELITE_TARGET
-    blended   = w * observed_raw + (1 - w) * prior_raw
-    w         = prior_blend_weight(prior, position, next_gw)
+    blended   = conf * observed_raw + (1 - conf) * prior_raw
+    conf      = _compute_confidence(next_gw, prior_strength)   # production curve
 
 where ``prior_strength`` is the player's previous-season pts/90 percentile
 within position (price percentile * 0.5 for players without qualifying
 history) — exactly the quantities ``fpl_cli.services.player_prior`` computes
-in production — ``ceiling`` is the position's calibrated value-family
+in production — and ``ceiling`` is the position's calibrated value-family
 anchor at that gameweek (the calendar-attainable one for a pre-GW6 keeper),
 so the prior-implied score lives on the same raw scale the calibration
-measured, and ``w`` is the production confidence curve, discounted for
-keepers by the GK calendar ramp before GW6.
+measured. The prior alone out-ranks the blend for keepers on rest-of-season
+points at several early snapshots; a keeper-specific confidence discount was
+evaluated for that and not shipped (it shifts the discounted share onto the
+prior, unevenly against outfielders on the allocator's shared objective), so
+the keeper improvement left on the table is a better keeper prior.
 
 This script measures whether that blend ranks better than pure observation
 (the fpl-data-scientist skill's protocol: walk-forward replay, rank metrics
@@ -315,8 +318,7 @@ def score_pool(
         prior_implied = strength * ceiling * CALIBRATION_ELITE_TARGET
         pool[player.position].append({
             "blended": blend_quality_with_prior(
-                raw, prior,
-                position=player.position, ceiling=ceiling, next_gw_id=next_gw_id,
+                raw, prior, ceiling=ceiling, next_gw_id=next_gw_id,
             ),
             "unblended": raw,
             "prior_only": prior_implied,

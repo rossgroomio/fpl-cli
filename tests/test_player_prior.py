@@ -16,6 +16,7 @@ from fpl_cli.services.player_prior import (
     _extract_prev_season_pts_per_90,
     percentile_rank,
     _save_prior_cache,
+    early_season_quality_warning,
     generate_player_prior,
     load_cached_priors,
     load_or_generate_player_priors,
@@ -420,3 +421,42 @@ class TestLoadOrGeneratePlayerPriors:
         ):
             result = await load_or_generate_player_priors([make_player(id=1)], 3)
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# early_season_quality_warning
+# ---------------------------------------------------------------------------
+
+
+class TestEarlySeasonQualityWarning:
+    """One notice for every command that shows a quality_score (PR #208 review)."""
+
+    def test_blended_before_the_cutoff_is_prior_informed(self):
+        warning = early_season_quality_warning(2, blended=True)
+        assert warning is not None
+        assert warning["code"] == "early_season_prior_informed"
+        assert "25%-50%" in warning["message"]  # observation_weight_range(2)
+        assert f"GW{CUTOFF_GW}" in warning["message"]
+        assert "ep_next" in warning["message"]
+
+    def test_blended_notice_ends_at_the_cutoff(self):
+        assert early_season_quality_warning(CUTOFF_GW - 1, blended=True) is not None
+        assert early_season_quality_warning(CUTOFF_GW, blended=True) is None
+
+    def test_unblended_before_gw6_is_small_sample(self):
+        warning = early_season_quality_warning(2, blended=False)
+        assert warning is not None
+        assert warning["code"] == "early_season_small_sample"
+        assert "could not be loaded" in warning["message"]
+        assert "ep_next" in warning["message"]
+
+    def test_unblended_notice_ends_at_gw6(self):
+        from fpl_cli.services.scoring import MINS_FACTOR_START_GW
+        assert early_season_quality_warning(MINS_FACTOR_START_GW, blended=False) is not None
+        assert early_season_quality_warning(MINS_FACTOR_START_GW + 1, blended=False) is None
+
+    def test_the_two_notices_never_share_a_code(self):
+        blended = early_season_quality_warning(3, blended=True)
+        unblended = early_season_quality_warning(3, blended=False)
+        assert blended is not None and unblended is not None
+        assert blended["code"] != unblended["code"]

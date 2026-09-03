@@ -5023,7 +5023,7 @@ class TestBlendQualityWithPrior:
     def test_no_prior_is_pure_observation(self):
         from fpl_cli.services.scoring import blend_quality_with_prior
         assert blend_quality_with_prior(
-            9.0, None, position="MID", ceiling=self.CEILING, next_gw_id=2,
+            9.0, None, ceiling=self.CEILING, next_gw_id=2,
         ) == 9.0
 
     def test_at_the_cutoff_is_pure_observation(self):
@@ -5031,26 +5031,26 @@ class TestBlendQualityWithPrior:
         from fpl_cli.services.scoring import blend_quality_with_prior
         assert blend_quality_with_prior(
             9.0, self._prior(1.0, 0.2),
-            position="MID", ceiling=self.CEILING, next_gw_id=CUTOFF_GW,
+            ceiling=self.CEILING, next_gw_id=CUTOFF_GW,
         ) == 9.0
 
     def test_saturated_confidence_is_pure_observation(self):
         from fpl_cli.services.scoring import blend_quality_with_prior
         assert blend_quality_with_prior(
-            9.0, self._prior(1.0, 1.0), position="MID", ceiling=self.CEILING, next_gw_id=5,
+            9.0, self._prior(1.0, 1.0), ceiling=self.CEILING, next_gw_id=5,
         ) == 9.0
 
     def test_zero_confidence_is_the_prior_implied_score(self):
         from fpl_cli.services.scoring import CALIBRATION_ELITE_TARGET, blend_quality_with_prior
         blended = blend_quality_with_prior(
-            9.0, self._prior(0.75, 0.0), position="MID", ceiling=self.CEILING, next_gw_id=2,
+            9.0, self._prior(0.75, 0.0), ceiling=self.CEILING, next_gw_id=2,
         )
         assert blended == pytest.approx(0.75 * self.CEILING * CALIBRATION_ELITE_TARGET)
 
     def test_interpolates_on_confidence(self):
         from fpl_cli.services.scoring import CALIBRATION_ELITE_TARGET, blend_quality_with_prior
         blended = blend_quality_with_prior(
-            4.0, self._prior(1.0, 0.5), position="MID", ceiling=self.CEILING, next_gw_id=2,
+            4.0, self._prior(1.0, 0.5), ceiling=self.CEILING, next_gw_id=2,
         )
         assert blended == pytest.approx(0.5 * 4.0 + 0.5 * self.CEILING * CALIBRATION_ELITE_TARGET)
 
@@ -5064,7 +5064,7 @@ class TestBlendQualityWithPrior:
             normalise_score,
         )
         blended = blend_quality_with_prior(
-            0.0, self._prior(1.0, 0.0), position="FWD", ceiling=self.CEILING, next_gw_id=2,
+            0.0, self._prior(1.0, 0.0), ceiling=self.CEILING, next_gw_id=2,
         )
         assert normalise_score(blended, self.CEILING) == round(CALIBRATION_ELITE_TARGET * 100)
 
@@ -5082,7 +5082,7 @@ class TestBlendQualityWithPrior:
             prior_strength=PRICE_CONFIDENCE_FACTOR, confidence=0.0, source="price",
         )
         blended = blend_quality_with_prior(
-            0.0, prior, position="FWD", ceiling=self.CEILING, next_gw_id=2,
+            0.0, prior, ceiling=self.CEILING, next_gw_id=2,
         )
         assert normalise_score(blended, self.CEILING) == round(
             PRICE_CONFIDENCE_FACTOR * CALIBRATION_ELITE_TARGET * 100
@@ -5092,21 +5092,24 @@ class TestBlendQualityWithPrior:
         from fpl_cli.services.scoring import blend_quality_with_prior
         assert blend_quality_with_prior(
             1.0, self._prior(1.0, 0.2),
-            position="MID", ceiling=self.CEILING, next_gw_id=2, known_unavailable=True,
+            ceiling=self.CEILING, next_gw_id=2, known_unavailable=True,
         ) == 1.0
 
-    def test_outfield_weight_is_the_stored_confidence(self):
-        from fpl_cli.services.scoring import prior_blend_weight
-        prior = self._prior(0.5, 0.45)
-        for position in ("DEF", "MID", "FWD"):
-            assert prior_blend_weight(prior, position, 2) == 0.45
-
-    def test_gk_weight_is_discounted_by_the_calendar_ramp_before_gw6(self):
-        from fpl_cli.services.scoring import prior_blend_weight
-        prior = self._prior(1.0, 0.5)
-        assert prior_blend_weight(prior, "GK", 2) == pytest.approx(0.5 * 0.2)
-        assert prior_blend_weight(prior, "GK", 4) == pytest.approx(0.5 * 0.6)
-        assert prior_blend_weight(prior, "GK", 6) == pytest.approx(0.5)
+    def test_same_inputs_land_at_the_same_point_of_the_scale_for_every_position(self):
+        """The prior share is the stored confidence for every position (PR #208
+        review): a keeper-specific discount would move the discounted share
+        onto the prior and leave a keeper far closer to their pedigree than an
+        outfielder with identical inputs, which fpl allocate sums across.
+        """
+        from fpl_cli.services.scoring import blend_quality_with_prior
+        prior = self._prior(0.9, 0.45)
+        scores = {
+            position: blend_quality_with_prior(
+                4.0, prior, ceiling=self.CEILING, next_gw_id=2,
+            )
+            for position in ("GK", "DEF", "MID", "FWD")
+        }
+        assert len(set(scores.values())) == 1
 
     def test_quiet_elite_outreads_one_game_wonder_with_priors(self):
         """The #143 inversion, reordered: the same two forwards as
@@ -5147,15 +5150,11 @@ class TestBlendQualityWithPrior:
     def test_gk_prior_lands_on_the_attainable_ceiling(self):
         """A pre-GW6 keeper's prior is placed on the calendar-scaled anchor, so
         pedigree alone can never normalise above the elite target however
-        the ceiling scales — and the ramp discount leaves an elite keeper
-        mostly on their prior going into GW2.
+        the ceiling scales — and the keeper takes exactly the prior share an
+        outfielder with the same track record would.
         """
         from fpl_cli.services.player_prior import _compute_confidence
-        from fpl_cli.services.scoring import (
-            CALIBRATION_ELITE_TARGET,
-            compute_quality_value,
-            prior_blend_weight,
-        )
+        from fpl_cli.services.scoring import CALIBRATION_ELITE_TARGET, compute_quality_value
         keeper = make_player(
             id=430, web_name="EliteGK", team_id=7, position=PlayerPosition.GOALKEEPER,
             form=0.0, points_per_game=0.0, minutes=0, total_points=0, now_cost=55,
@@ -5165,9 +5164,8 @@ class TestBlendQualityWithPrior:
         score, _ = compute_quality_value(
             keeper, us_match={}, next_gw_id=2, team_short="ARS", prior=prior,
         )
-        weight = prior_blend_weight(prior, "GK", 2)
-        assert weight == pytest.approx(0.1)
-        assert score == round((1 - weight) * CALIBRATION_ELITE_TARGET * 100)
+        assert prior.confidence == pytest.approx(0.5)
+        assert score == round((1 - prior.confidence) * CALIBRATION_ELITE_TARGET * 100)
 
     def test_ruled_out_player_is_not_handed_last_seasons_standing(self):
         from fpl_cli.services.player_prior import _compute_confidence

@@ -827,6 +827,58 @@ class TestPlayerQualityValueScores:
         elite = _score({1: PlayerPrior(1.0, _compute_confidence(2, 1.0), "history")})
         assert elite != observed
 
+    def test_json_metadata_says_the_score_is_prior_informed(self):
+        """PR #208 review: the blend must announce itself in the same slot
+        fpl stats --value uses, keyed on whether the priors actually loaded.
+        """
+        from fpl_cli.services.player_prior import PlayerPrior, _compute_confidence
+
+        def _warnings(priors, next_gw_id=2):
+            client, fixture_agent, ratings_svc = _make_mocks()
+            client.get_next_gameweek = AsyncMock(return_value={"id": next_gw_id})
+            client.get_player_detail = AsyncMock(return_value={"history": []})
+            with patch(
+                "fpl_cli.cli.player.load_or_generate_player_priors",
+                AsyncMock(return_value=priors),
+            ):
+                result = _run_with_us_match([], client, fixture_agent, ratings_svc, json_mode=True)
+            assert result.exit_code == 0, result.output
+            return json.loads(result.output)["metadata"]["warnings"]
+
+        blended = _warnings({1: PlayerPrior(1.0, _compute_confidence(2, 1.0), "history")})
+        assert [w["code"] for w in blended] == ["early_season_prior_informed"]
+        assert "25%-50%" in blended[0]["message"]
+
+        degraded = _warnings(None)
+        assert [w["code"] for w in degraded] == ["early_season_small_sample"]
+
+        assert _warnings(None, next_gw_id=30) == []
+
+    def test_table_mode_prints_the_early_season_notice(self):
+        from fpl_cli.services.player_prior import PlayerPrior, _compute_confidence
+
+        client, fixture_agent, ratings_svc = _make_mocks()
+        client.get_next_gameweek = AsyncMock(return_value={"id": 2})
+        client.get_player_detail = AsyncMock(return_value={"history": []})
+        priors = {1: PlayerPrior(1.0, _compute_confidence(2, 1.0), "history")}
+        with patch(
+            "fpl_cli.cli.player.load_or_generate_player_priors",
+            AsyncMock(return_value=priors),
+        ):
+            result = _run_with_us_match([], client, fixture_agent, ratings_svc)
+        assert result.exit_code == 0, result.output
+        assert "Early-season notice" in result.output
+        assert "Quality:" in result.output
+
+    def test_no_notice_without_a_quality_score(self):
+        """Nothing to caveat when no Understat match produced a score."""
+        client, fixture_agent, ratings_svc = _make_mocks()
+        client.get_next_gameweek = AsyncMock(return_value={"id": 2})
+        result = _run_json([], client, fixture_agent, ratings_svc,
+                           settings={"fpl": {}, "custom_analysis": True})
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.output)["metadata"]["warnings"] == []
+
     def test_priors_are_not_loaded_from_the_cutoff(self):
         client, fixture_agent, ratings_svc = _make_mocks()  # next GW 30
         client.get_player_detail = AsyncMock(return_value={"history": []})

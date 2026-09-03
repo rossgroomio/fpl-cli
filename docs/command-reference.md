@@ -151,7 +151,7 @@ Output columns:
 
 OUT player shows absolute scores. IN candidates show deltas for Outlook/This GW only (+15, -3); Quality and Value show absolute values for all players (no delta - value is a per-player efficiency metric). Sorted by Outlook delta descending.
 
-Both scores use [early-season shrinkage](custom-analysis.md#early-season-confidence-gw1-10). Outlook uses the [ownership scoring family](custom-analysis.md#ownership-scoring). This GW uses [single-GW scoring](custom-analysis.md#single-gw-scoring).
+Both scores use [early-season shrinkage](custom-analysis.md#early-season-confidence-gw1-10). Outlook uses the [ownership scoring family](custom-analysis.md#ownership-scoring). This GW uses [single-GW scoring](custom-analysis.md#single-gw-scoring). Quality carries the value family's [prior blend](custom-analysis.md#early-season-confidence-gw1-10) instead, matching `fpl player` and `fpl stats --value`; before GW10 JSON `metadata.warnings` carries the same early-season notice as those commands (`early_season_prior_informed`, or `early_season_small_sample` when last season's history could not be loaded), and table mode prints it to stderr.
 
 **Draft note:** Outlook rankings may differ from `fpl waivers` output due to different weighting emphasis - target score uses more xG, less form than waiver score.
 
@@ -247,7 +247,7 @@ fpl allocate --format json          # JSON output for scripting / skill integrat
 
 Scores ~500 eligible players, adjusts for fixture difficulty over the planning horizon, then solves for the budget-constrained optimum across all 7 valid formations. See [Squad Allocator](custom-analysis.md#squad-allocator) for scoring methodology, fixture coefficients, and solver detail.
 
-**JSON output fields (horizon >= 2):** `id`, `web_name`, `team`, `position`, `price`, `quality_score` (0-100), `raw_quality` (float), `role` (starter/bench), `captain_gws`. Metadata includes `formation`, `budget_used`, `budget_remaining`, `captain_schedule`, `solver_status`.
+**JSON output fields (horizon >= 2):** `id`, `web_name`, `team`, `position`, `price`, `quality_score` (0-100), `raw_quality` (float), `role` (starter/bench), `captain_gws`. Metadata includes `formation`, `budget_used`, `budget_remaining`, `captain_schedule`, `solver_status`, and `warnings` — the early-season quality notice before GW10 (`early_season_prior_informed`, or `early_season_small_sample` when last season's history could not be loaded and the solver ranked on pure observation), empty otherwise and at horizon 1; table mode prints it to stderr.
 
 **JSON output fields (horizon 1):** Same as above but the score field is `single_gw_score` (0-100) instead of `quality_score`.
 
@@ -469,7 +469,7 @@ When a player has an Understat match, `fpl player` computes and displays two add
 | **rolling_pts_per_m** | Points per £m over the last N qualifying fixtures (configurable via `--window`). Captures recent form-adjusted value. |
 | **adj. npxG/90** | Fixture-adjusted non-penalty xG per 90: npxG normalised by opponent Elo over a rolling window. Shown alongside raw when the adjustment changes the value. See [Fixture-Adjusted npxG](custom-analysis.md#fixture-adjusted-npxg). |
 
-`quality_score` and `quality_per_m` are `null` when no Understat match exists. In JSON output (`--format json`), they appear under `info.quality_score` and `info.quality_per_m`. In the Rich panel, they appear as `Quality: 85 | Value: 11.3/£m`.
+`quality_score` and `quality_per_m` are `null` when no Understat match exists. In JSON output (`--format json`), they appear under `info.quality_score` and `info.quality_per_m`. In the Rich panel, they appear as `Quality: 85 | Value: 11.3/£m`. Before GW10 `quality_score` is the value family's prior-informed estimate, and the command says so the same way `fpl stats --value` does: `metadata.warnings` carries `early_season_prior_informed` when last season's pedigree was blended in, or `early_season_small_sample` (before GW6) when it could not be loaded and the score is pure observation; table mode prints the notice to stderr. See [Early-Season Confidence](custom-analysis.md#early-season-confidence-gw1-10).
 
 #### FPL Predicted Points
 

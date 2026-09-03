@@ -804,12 +804,6 @@ class TestStatsValueEarlySeasonWarning:
         assert "ep_next" in warnings[0]["message"]
         loader.assert_awaited_once()
 
-    def test_keeper_clause_is_dropped_once_their_ramp_saturates(self):
-        gw5, _ = self._invoke(["--value", "-p", "MID", "--format", "json"], next_gw_id=5)
-        assert "keepers" in json.loads(gw5.output)["metadata"]["warnings"][0]["message"]
-        gw6, _ = self._invoke(["--value", "-p", "MID", "--format", "json"], next_gw_id=6)
-        assert "keepers" not in json.loads(gw6.output)["metadata"]["warnings"][0]["message"]
-
     def test_notice_runs_to_the_prior_cutoff(self):
         gw9, _ = self._invoke(["--value", "-p", "MID", "--format", "json"], next_gw_id=9)
         assert self._codes(gw9) == ["early_season_prior_informed"]

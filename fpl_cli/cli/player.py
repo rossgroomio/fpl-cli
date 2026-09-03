@@ -20,7 +20,11 @@ from fpl_cli.cli._json import (
     output_format_option,
 )
 from fpl_cli.models.player import resolve_players
-from fpl_cli.services.player_prior import CUTOFF_GW, load_or_generate_player_priors
+from fpl_cli.services.player_prior import (
+    CUTOFF_GW,
+    early_season_quality_warning,
+    load_or_generate_player_priors,
+)
 from fpl_cli.services.scoring import (
     ConsistencySignals,
     build_npxg_lookup_from_records,
@@ -238,6 +242,8 @@ def player_command(
                 custom_on = is_custom_analysis_enabled(settings)
                 rolling_window = int(settings.get("rolling_window", 5))
                 consistency_lookup: dict[int, ConsistencySignals] = {}
+                priors: dict[int, PlayerPrior] | None = None
+                quality_warning: dict[str, str] | None = None
                 if custom_on:
                     match_data = await fetch_match_records(next_gw_id)
                     if match_data:
@@ -251,7 +257,6 @@ def player_command(
                     # priors are percentiles over the whole pool, hence
                     # `players` rather than `display`. Unreachable history
                     # degrades to the pure-observation score.
-                    priors: dict[int, PlayerPrior] | None = None
                     if next_gw_id < CUTOFF_GW:
                         priors = await load_or_generate_player_priors(players, next_gw_id)
 
@@ -291,6 +296,15 @@ def player_command(
                         consistency_lookup = build_consistency_lookup(
                             match_data, hist_map, pos_map,
                             next_gw_id, median_elo,
+                        )
+
+                    # Say which score the reader is looking at — the blend, or
+                    # pure observation because the priors could not be loaded —
+                    # in the same slot fpl stats --value uses, so an agent
+                    # reading either command checks one place.
+                    if quality_scores:
+                        quality_warning = early_season_quality_warning(
+                            next_gw_id, blended=priors is not None,
                         )
 
                 # JSON output mode
@@ -420,8 +434,12 @@ def player_command(
                         emit_json("player", players_data, metadata={
                             "query": name,
                             "matches": len(display),
+                            "warnings": [quality_warning] if quality_warning else [],
                         }, file=stdout)
                     return
+
+                if quality_warning:
+                    error_console.print(f"[yellow]{quality_warning['message']}[/yellow]")
 
                 # Render each player
                 for p in display:

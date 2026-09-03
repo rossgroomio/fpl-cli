@@ -10,7 +10,7 @@ import click
 from rich.panel import Panel
 from rich.table import Table
 
-from fpl_cli.cli._context import console
+from fpl_cli.cli._context import console, error_console
 from fpl_cli.cli._json import (
     api_failure_boundary,
     emit_failure,
@@ -19,6 +19,7 @@ from fpl_cli.cli._json import (
     json_output_mode,
     output_format_option,
 )
+from fpl_cli.services.player_prior import early_season_quality_warning
 from fpl_cli.services.scoring import normalise_score, pick_display_ceiling
 
 if TYPE_CHECKING:
@@ -176,11 +177,25 @@ def allocate_command(
                 console.print(Panel(msg, title="Allocation Failed", border_style="red"))
                 raise SystemExit(1)
 
+        # At horizon >= 2 the solver ranks on the value family's quality
+        # score, which blends last season's pedigree in before GW10 — or is
+        # pure observation when the priors could not be loaded. Say which,
+        # the same way fpl stats --value does. Horizon 1 is a single-GW
+        # projection with no prior in it.
+        quality_warning = (
+            early_season_quality_warning(
+                start_gw, blended=scoring_data.player_priors is not None,
+            )
+            if horizon >= 2
+            else None
+        )
+
         _emit_result(
             result, scoring_data, scored_players,
             budget, horizon, start_gw, is_json,
             bench_discount=bd, bench_boost_gw=bench_boost_gw,
             free_transfers=free_transfers,
+            warnings=[quality_warning] if quality_warning else [],
         )
 
     with api_failure_boundary("allocate", output_format):
@@ -199,8 +214,13 @@ def _emit_result(
     bench_discount: dict[str, float] | None = None,
     bench_boost_gw: int | None = None,
     free_transfers: int = 1,
+    warnings: list[dict[str, str]] | None = None,
 ) -> None:
-    """Format and output the solver result."""
+    """Format and output the solver result.
+
+    *warnings* travel in JSON ``metadata.warnings`` and print to stderr in
+    table mode — the same channels ``fpl stats --value`` uses for them.
+    """
     player_lookup = {sp.player.id: sp for sp in result.selected_players}
     team_map = scoring_data.team_map
 
@@ -263,12 +283,15 @@ def _emit_result(
             "bench_discount": bench_discount,
             "bench_boost_gw": bench_boost_gw,
             "free_transfers": free_transfers,
+            "warnings": warnings or [],
         }
         if result.owned_ids:
             metadata["total_savings"] = round(sum(result.player_savings.values()), 1)
         with json_output_mode() as stdout:
             emit_json("allocate", players_data, metadata=metadata, file=stdout)
     else:
+        for warning in warnings or []:
+            error_console.print(f"[yellow]{warning['message']}[/yellow]")
         _render_table(
             result, players_data, budget, horizon, start_gw, len(scored_players),
             bench_boost_gw=bench_boost_gw, free_transfers=free_transfers,

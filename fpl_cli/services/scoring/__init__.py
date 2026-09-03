@@ -141,7 +141,6 @@ from fpl_cli.services.scoring.value_quality import (
     calculate_player_quality_score,
     compute_quality_value,
     compute_rolling_pts_per_m,
-    prior_blend_weight,
 )
 
 __all__ = [
@@ -241,7 +240,6 @@ __all__ = [
     "calculate_player_quality_score",
     "compute_quality_value",
     "compute_rolling_pts_per_m",
-    "prior_blend_weight",
     # shrinkage
     "apply_shrinkage",
     "is_known_unavailable",

@@ -200,6 +200,46 @@ class TestAllocateCommand:
         for p in data["data"]:
             assert isinstance(p["raw_quality"], float)
 
+    def test_early_season_notice_in_metadata_before_the_cutoff(self):
+        """At horizon >= 2 the solver ranks on the prior-blended quality score,
+        and the command says so in metadata.warnings, keyed on whether the
+        priors actually loaded (PR #208 review).
+        """
+        blended = _make_scoring_data(next_gw_id=3)
+        blended.player_priors = {}
+        result = _run_allocate(_make_squad_result(), ["--format", "json"], scoring_data=blended)
+        assert result.exit_code == 0, result.output
+        warnings = json.loads(result.output)["metadata"]["warnings"]
+        assert [w["code"] for w in warnings] == ["early_season_prior_informed"]
+
+        degraded = _make_scoring_data(next_gw_id=3)
+        degraded.player_priors = None
+        result = _run_allocate(_make_squad_result(), ["--format", "json"], scoring_data=degraded)
+        assert result.exit_code == 0, result.output
+        warnings = json.loads(result.output)["metadata"]["warnings"]
+        assert [w["code"] for w in warnings] == ["early_season_small_sample"]
+
+    def test_no_early_season_notice_mid_season_or_at_horizon_1(self):
+        mid_season = _make_scoring_data(next_gw_id=20)
+        mid_season.player_priors = {}
+        result = _run_allocate(_make_squad_result(), ["--format", "json"], scoring_data=mid_season)
+        assert json.loads(result.output)["metadata"]["warnings"] == []
+
+        early = _make_scoring_data(next_gw_id=3)
+        early.player_priors = {}
+        result = _run_allocate(
+            _make_squad_result(), ["--horizon", "1", "--format", "json"], scoring_data=early,
+        )
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.output)["metadata"]["warnings"] == []
+
+    def test_table_mode_prints_the_early_season_notice(self):
+        early = _make_scoring_data(next_gw_id=3)
+        early.player_priors = {}
+        result = _run_allocate(_make_squad_result(), [], scoring_data=early)
+        assert result.exit_code == 0, result.output
+        assert "Early-season notice" in result.output
+
     def test_bench_discount_passes_through(self):
         """--bench-discount builds uniform dict and passes to solve_squad."""
         cli_result, mocks = _run_allocate(

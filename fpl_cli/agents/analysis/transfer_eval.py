@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any, TypedDict
 
 from fpl_cli.agents.base import Agent, AgentResult, AgentStatus
 from fpl_cli.api.fpl import FPLClient
+from fpl_cli.services.player_prior import early_season_quality_warning
 from fpl_cli.services.scoring import (
     ConsistencySignals,
     ScoringContext,
@@ -170,6 +171,20 @@ class TransferEvalAgent(Agent):
 
             in_players_data.sort(key=lambda x: x["outlook_delta"], reverse=True)
 
+            # quality_score carries the value family's early-season prior
+            # blend; say so beside it, and whether the blend actually ran
+            # (priors loaded) or the score is pure observation.
+            warnings: list[dict[str, str]] = []
+            if any(
+                entry["quality_score"] is not None
+                for entry in (out_player_data, *in_players_data)
+            ):
+                warning = early_season_quality_warning(
+                    next_gw_id, blended=data.player_priors is not None,
+                )
+                if warning is not None:
+                    warnings.append(warning)
+
             self.log_success("Transfer evaluation complete")
 
             return self._create_result(
@@ -178,6 +193,7 @@ class TransferEvalAgent(Agent):
                     "out_player": out_player_data,
                     "in_players": in_players_data,
                     "sorted_by": "outlook_delta",
+                    "warnings": warnings,
                 },
                 message="Transfer evaluation complete",
             )
@@ -267,7 +283,7 @@ class TransferEvalAgent(Agent):
             )
             raw = blend_quality_with_prior(
                 raw, prior,
-                position=position, ceiling=te_ceiling, next_gw_id=next_gw_id,
+                ceiling=te_ceiling, next_gw_id=next_gw_id,
                 known_unavailable=is_known_unavailable(
                     chance_of_playing=evaluation.chance_of_playing,
                     minutes=evaluation.minutes,

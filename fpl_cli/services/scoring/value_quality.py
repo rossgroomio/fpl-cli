@@ -25,7 +25,6 @@ from fpl_cli.services.scoring.constants import (
     QualityWeights,
     _as_position,
     _value_weights_and_ceiling,
-    gk_calendar_ramp,
 )
 from fpl_cli.services.scoring.display import normalise_score
 from fpl_cli.services.scoring.evaluation import build_player_evaluation, build_scoring_enrichment
@@ -127,37 +126,10 @@ def calculate_mins_factor(
 # ---------------------------------------------------------------------------
 
 
-def prior_blend_weight(prior: PlayerPrior, position: Position, next_gw_id: int) -> float:
-    """Share of a blended quality score that this season's observation carries.
-
-    ``PlayerPrior.confidence`` is the production confidence curve — the
-    gameweek and last season's pts/90 percentile. Keepers discount it by the
-    calendar share of the GK sample ramp: enrichment scales their three
-    signals by ``minutes / 450``, so a keeper's early observation is a
-    down-scaled reading rather than a full one. The backtest behind #143
-    (``scripts/backtest_early_season_prior_blend.py``) found the undiscounted
-    curve trusting GW2-5 keeper observation too much — the prior alone
-    out-ranked the blend on rest-of-season points at four of five snapshots —
-    and this discount recovering most of that without costing the next-6
-    ranking. It expires at GW6 with the ramp, where the standard curve
-    already beats the prior alone.
-
-    Applied to the blend only. The stored confidence is untouched, so the
-    position-mean shrinkage the other families run keeps its behaviour: a
-    zero GK confidence at GW1 would collapse every keeper to the position
-    mean there, losing the matchup ordering that is the only GW1 signal.
-    """
-    weight = prior.confidence
-    if position == "GK":
-        weight *= gk_calendar_ramp(next_gw_id)
-    return max(0.0, min(weight, 1.0))
-
-
 def blend_quality_with_prior(
     raw: float,
     prior: PlayerPrior | None,
     *,
-    position: Position,
     ceiling: float,
     next_gw_id: int,
     known_unavailable: bool = False,
@@ -172,18 +144,32 @@ def blend_quality_with_prior(
     per-position scalers — so the prior enters the score itself::
 
         prior_raw = prior_strength * ceiling * CALIBRATION_ELITE_TARGET
-        blended   = w * raw + (1 - w) * prior_raw     # w = prior_blend_weight
+        blended   = w * raw + (1 - w) * prior_raw     # w = prior.confidence
 
     *ceiling* is the calibrated value anchor for the position at this
     gameweek — the attainable one for a pre-GW6 keeper — so the prior-implied
     score sits on the same scale as the observed one: a player at the top of
     last season's pts/90 percentile is read as an elite of exactly the size
     the calibration anchored, and a price-sourced prior (strength capped at
-    0.5) can never claim more than mid-pack. The weight rises with the
-    gameweek and the player's track record and reaches 1 by the cutoff, so
-    the blend self-extinguishes; backtested over 2025-26 GW1-7 snapshots it
-    ranked rest-of-season points better than pure observation at every
-    snapshot for GK, DEF and FWD and was neutral for MID.
+    0.5) can never claim more than mid-pack. The weight is
+    ``PlayerPrior.confidence`` for every position — the same prior share for
+    the same track record at the same gameweek, so two players with identical
+    inputs land at the same point of their own scales whatever their position,
+    which ``fpl allocate`` relies on when it sums raw quality across positions.
+    It rises with the gameweek and the player's track record and reaches 1 by
+    the cutoff, so the blend self-extinguishes; backtested over 2025-26 GW1-7
+    snapshots it ranked rest-of-season points better than pure observation at
+    every snapshot for GK, DEF and FWD and was neutral for MID.
+
+    A keeper-specific discount on the weight (the GK calendar ramp, on the
+    grounds that a keeper's early signals are sample-ramped) was evaluated
+    and not shipped: the discounted share can only move onto the prior, so
+    the same prior and the same empty observation read 75 for a keeper and
+    43 for a forward going into GW2, and the within-position gain it bought
+    (+0.08 rank correlation on ~24 keepers a snapshot) sat inside the noise.
+    The backtest's finding that the prior alone out-ranks the blend for
+    keepers early on still stands; a better keeper prior is the route that
+    does not touch the weight.
 
     Pure observation is returned when there is no prior, at or after the
     cutoff, once the weight has saturated, and for a *known_unavailable*
@@ -196,7 +182,7 @@ def blend_quality_with_prior(
 
     if prior is None or known_unavailable or next_gw_id >= CUTOFF_GW:
         return raw
-    weight = prior_blend_weight(prior, position, next_gw_id)
+    weight = max(0.0, min(prior.confidence, 1.0))
     if weight >= 1.0:
         return raw
     prior_raw = prior.prior_strength * ceiling * CALIBRATION_ELITE_TARGET
@@ -277,7 +263,7 @@ def compute_quality_value(
     )
     raw_score = blend_quality_with_prior(
         raw_score, prior,
-        position=position, ceiling=value_ceiling, next_gw_id=next_gw_id,
+        ceiling=value_ceiling, next_gw_id=next_gw_id,
         known_unavailable=is_known_unavailable(
             chance_of_playing=evaluation.chance_of_playing,
             minutes=evaluation.minutes,

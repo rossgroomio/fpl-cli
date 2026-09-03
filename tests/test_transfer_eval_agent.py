@@ -551,6 +551,41 @@ class TestTransferEvalAgent:
             weight * observed + (1 - weight) * 0.3 * 92, abs=1,
         )
 
+    async def test_result_carries_the_early_season_quality_notice(self):
+        """The agent knows whether the priors loaded; the command does not, so
+        the notice travels in the result (PR #208 review).
+        """
+        from fpl_cli.services.player_prior import PlayerPrior, _compute_confidence
+
+        _, scoring_data = _build_players_and_data()
+        understat = {
+            10: {"npxG_per_90": 0.35, "xGChain_per_90": 0.55, "penalty_xG_per_90": 0.05},
+        }
+
+        async def _warnings(data: ScoringData) -> list[dict[str, str]]:
+            with patch(
+                "fpl_cli.agents.analysis.transfer_eval.prepare_scoring_data",
+                new_callable=AsyncMock,
+                return_value=data,
+            ):
+                async with TransferEvalAgent() as agent:
+                    result = await agent.run({"out_player_id": 10, "in_player_ids": [20]})
+            assert result.status == AgentStatus.SUCCESS
+            return result.data["warnings"]
+
+        early = dataclasses.replace(scoring_data, next_gw_id=2, understat_lookup=understat)
+        blended = dataclasses.replace(
+            early,
+            player_priors={10: PlayerPrior(0.5, _compute_confidence(2, 0.5), "history")},
+        )
+        assert [w["code"] for w in await _warnings(blended)] == ["early_season_prior_informed"]
+        assert [w["code"] for w in await _warnings(early)] == ["early_season_small_sample"]
+
+        # Nothing to caveat: no Understat, so no quality score at all
+        assert await _warnings(dataclasses.replace(scoring_data, next_gw_id=2)) == []
+        # Nothing to caveat: mid-season
+        assert await _warnings(dataclasses.replace(scoring_data, understat_lookup=understat)) == []
+
     async def test_ruled_out_player_keeps_the_observed_quality_score(self):
         """The blend's hold-out reaches this path too: a player at 0% is not
         handed last season's standing for a gameweek they will not play.

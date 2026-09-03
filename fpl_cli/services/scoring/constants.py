@@ -538,12 +538,9 @@ def gk_calendar_ramp(next_gw_id: int) -> float:
     ``min(minutes / GK_SAMPLE_RAMP_MINUTES, 1)``. The most sample the calendar
     can have supplied an ever-present keeper is ``(next_gw_id - 1) * 90``
     minutes, so this is the ramp such a keeper sits at — 0 before GW1, 1 from
-    GW6 — keyed to the date, never to a player's own minutes. Two consumers
-    read the same number: ``gk_ceiling_attainability`` scales the GK anchors
-    by it, and the value family's prior blend discounts a keeper's
-    early-season confidence by it (``prior_blend_weight``), so the signal
-    share the calendar has suppressed is neither read as a low score nor
-    trusted as a full observation.
+    GW6 — keyed to the date, never to a player's own minutes.
+    ``gk_ceiling_attainability`` scales the GK anchors by it, so the signal
+    share the calendar has suppressed is not read as a low score.
     """
     calendar_minutes = max(next_gw_id - 1, 0) * _FULL_MATCH_MINUTES
     return min(calendar_minutes / GK_SAMPLE_RAMP_MINUTES, 1.0)
