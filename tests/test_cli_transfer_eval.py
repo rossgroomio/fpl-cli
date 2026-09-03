@@ -72,6 +72,11 @@ _PLAYERS = [
     make_player(id=60, web_name="João Pedro", first_name="João Pedro",
                 second_name="Junqueira de Jesus",
                 team_id=4, position=PlayerPosition.FORWARD, now_cost=78),
+    # Shared surname across two clubs - the issue #180 collision.
+    make_player(id=70, web_name="Henderson", first_name="Dean", second_name="Henderson",
+                team_id=7, position=PlayerPosition.GOALKEEPER, now_cost=50),
+    make_player(id=80, web_name="Henderson", first_name="Jordan", second_name="Henderson",
+                team_id=4, position=PlayerPosition.MIDFIELDER, now_cost=50),
 ]
 
 _TEAMS = [
@@ -79,6 +84,7 @@ _TEAMS = [
     make_team(id=3, name="Liverpool", short_name="LIV"),
     make_team(id=4, name="Chelsea", short_name="CHE"),
     make_team(id=5, name="Manchester City", short_name="MCI"),
+    make_team(id=7, name="Crystal Palace", short_name="CRY"),
 ]
 
 
@@ -368,3 +374,38 @@ class TestTransferEvalReliability:
         data = json.loads(result.output)
         assert data["data"]["out_player"]["reliability"] == pytest.approx(0.85)
         assert data["data"]["in_players"][0]["reliability"] == pytest.approx(0.92)
+
+
+class TestTransferEvalAmbiguousNames:
+    """A shared surname must be reported, never resolved by element id (#180)."""
+
+    @staticmethod
+    def _unwrapped(output: str) -> str:
+        """Rich hard-wraps to the terminal width; join the message back up."""
+        return " ".join(output.split())
+
+    def test_ambiguous_out_player_exits_with_both_candidates(self):
+        result = _run_cmd(["--out", "Henderson", "--in", "Salah"])
+        assert result.exit_code == 1
+        output = self._unwrapped(result.output)
+        assert "Ambiguous OUT player" in output
+        assert "Henderson (CRY)" in output
+        assert "Henderson (CHE)" in output
+
+    def test_ambiguous_in_player_exits_with_both_candidates(self):
+        result = _run_cmd(["--out", "Palmer", "--in", "Henderson"])
+        assert result.exit_code == 1
+        assert "Ambiguous IN player" in self._unwrapped(result.output)
+
+    def test_ambiguous_out_player_json_envelope(self):
+        result = _run_cmd(["--out", "Henderson", "--in", "Salah", "--format", "json"])
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout)
+        assert payload["command"] == "transfer-eval"
+        assert "Ambiguous OUT player" in payload["error"]
+        assert "Henderson (CRY)" in payload["error"]
+        assert "Henderson (CHE)" in payload["error"]
+
+    def test_team_disambiguator_resolves_the_tie(self):
+        result = _run_cmd(["--out", "Henderson (CHE)", "--in", "Salah"])
+        assert result.exit_code == 0, result.output

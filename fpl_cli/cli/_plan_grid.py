@@ -17,7 +17,7 @@ from fpl_cli.cli._json import (
     json_output_mode,
     output_format_option,
 )
-from fpl_cli.models.player import resolve_player
+from fpl_cli.models.player import AmbiguousPlayerError, resolve_player
 
 # The envelope name predates the `squad grid` spelling and is what JSON
 # consumers already key on -- kept so a failure envelope matches its success one.
@@ -104,7 +104,11 @@ def grid_command(gws: int, watch: tuple[str, ...], mode: str, is_draft: bool, ou
 
             watch_players = []
             for name in watch:
-                match = resolve_player(name, players, teams=teams)
+                try:
+                    match = resolve_player(name, players, teams=teams)
+                except AmbiguousPlayerError as e:
+                    error_console.print(f"[yellow]Watch: {e}[/yellow]")
+                    continue
                 if match:
                     watch_players.append(match)
                 else:

@@ -25,6 +25,7 @@ SCRIPTS_DIR = Path(__file__).parent.parent / ".agents/skills/gw-prep/scripts"
 ENTRY_SCRIPTS = [
     "bench_order.py",
     "extract_classic_squad.py",
+    "normalise_entities.py",
     "starting_xi.py",
     "transfer_eval.py",
     "validate_draft_waivers.py",

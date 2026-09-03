@@ -7,6 +7,8 @@ or invoke that venv's Python directly).
 
 Usage:
     python transfer_eval.py --out "Palmer" --in "Salah,Mbeumo,Diaz"
+
+Names may carry a club to disambiguate shared surnames, e.g. "Henderson (CRY)".
 """
 
 from __future__ import annotations
@@ -20,7 +22,7 @@ from _bootstrap import bootstrap_user_dirs
 
 from fpl_cli.agents.analysis.transfer_eval import TransferEvalAgent
 from fpl_cli.api.fpl import FPLClient
-from fpl_cli.models.player import resolve_player
+from fpl_cli.models.player import resolve_player_or_report, resolve_players_or_report
 
 
 async def _run(out_name: str, in_names: list[str]) -> None:
@@ -28,19 +30,13 @@ async def _run(out_name: str, in_names: list[str]) -> None:
         all_players = await client.get_players()
         all_teams = await client.get_teams()
 
-    errors = []
-
-    out_player = resolve_player(out_name, all_players, teams=all_teams)
-    if out_player is None:
-        errors.append(f"Could not resolve OUT player: '{out_name}'")
-
-    in_players = []
-    for name in in_names:
-        player = resolve_player(name, all_players, teams=all_teams)
-        if player is None:
-            errors.append(f"Could not resolve IN player: '{name}'")
-        else:
-            in_players.append(player)
+    errors: list[str] = []
+    out_player = resolve_player_or_report(
+        out_name, all_players, all_teams, label="OUT", errors=errors,
+    )
+    in_players = resolve_players_or_report(
+        in_names, all_players, all_teams, label="IN", errors=errors,
+    )
 
     if errors:
         json.dump({"error": True, "messages": errors}, sys.stdout, indent=2)
@@ -85,11 +81,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Transfer evaluation")
     parser.add_argument(
         "--out", required=True,
-        help="Player name to transfer out",
+        help="Player name to transfer out ('Name (TEAM)' to disambiguate)",
     )
     parser.add_argument(
         "--in", dest="in_players", required=True,
-        help="Comma-separated player names to evaluate as replacements",
+        help="Comma-separated replacement candidates ('Name (TEAM)' to disambiguate)",
     )
     args = parser.parse_args()
 
