@@ -75,13 +75,14 @@ def _standard_teams_and_fixtures(*, finished=False, kickoff_time=None):
     return teams, fixtures
 
 
-def _run_fixtures(runner, tmp_path, *args, ratings=None):
+def _run_fixtures(runner, tmp_path, *args, ratings=None, custom_analysis=True):
     """Invoke `fpl fixtures` against the temp ratings, returning the click result."""
     teams, fixtures = _standard_teams_and_fixtures()
     client = _mock_fpl_client(teams, fixtures)
     service = _ratings_service(tmp_path, ratings=ratings)
 
     with (
+        patch("fpl_cli.cli.fixtures.is_custom_analysis_enabled", return_value=custom_analysis),
         patch("fpl_cli.api.fpl.FPLClient", return_value=client),
         patch("fpl_cli.services.team_ratings.TeamRatingsService", return_value=service),
     ):
@@ -187,6 +188,7 @@ class TestFixturesJsonFormat:
         mock_svc = _ratings_service(tmp_path)
 
         with (
+            patch("fpl_cli.cli.fixtures.is_custom_analysis_enabled", return_value=True),
             patch("fpl_cli.api.fpl.FPLClient", return_value=client),
             patch("fpl_cli.services.team_ratings.TeamRatingsService", return_value=mock_svc),
         ):
@@ -206,6 +208,7 @@ class TestFixturesJsonFormat:
         mock_svc = _ratings_service(tmp_path)
 
         with (
+            patch("fpl_cli.cli.fixtures.is_custom_analysis_enabled", return_value=True),
             patch("fpl_cli.api.fpl.FPLClient", return_value=client),
             patch("fpl_cli.services.team_ratings.TeamRatingsService", return_value=mock_svc),
         ):
@@ -225,6 +228,7 @@ class TestFixturesJsonFormat:
         mock_svc = _ratings_service(tmp_path)
 
         with (
+            patch("fpl_cli.cli.fixtures.is_custom_analysis_enabled", return_value=True),
             patch("fpl_cli.api.fpl.FPLClient", return_value=client),
             patch("fpl_cli.services.team_ratings.TeamRatingsService", return_value=mock_svc),
         ):
@@ -242,6 +246,7 @@ class TestFixturesJsonFormat:
         mock_svc = _ratings_service(tmp_path)
 
         with (
+            patch("fpl_cli.cli.fixtures.is_custom_analysis_enabled", return_value=True),
             patch("fpl_cli.api.fpl.FPLClient", return_value=client),
             patch("fpl_cli.services.team_ratings.TeamRatingsService", return_value=mock_svc),
         ):
@@ -265,6 +270,7 @@ class TestFixturesJsonFormat:
         mock_svc.ensure_fresh = AsyncMock()
 
         with (
+            patch("fpl_cli.cli.fixtures.is_custom_analysis_enabled", return_value=True),
             patch("fpl_cli.api.fpl.FPLClient", return_value=client),
             patch("fpl_cli.services.team_ratings.TeamRatingsService", return_value=mock_svc),
         ):
@@ -276,3 +282,77 @@ class TestFixturesJsonFormat:
         assert error_payload["command"] == "fixtures"
         assert "API down" in error_payload["error"]
         assert "{" not in result.stderr
+
+
+class TestFixturesCustomAnalysisGate:
+    """With custom analysis off, the canonical FPL API difficulty, as in `fpl fdr`."""
+
+    def test_falls_back_to_api_difficulty(self, runner, tmp_path):
+        """The 1-5 figures the API ships, not the 1-7 team-ratings FDR."""
+        result = _run_fixtures(runner, tmp_path, "--format", "json", custom_analysis=False)
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        fixture_dict = payload["data"][0]
+        # make_fixture built this one with home_difficulty=2, away_difficulty=4
+        assert fixture_dict["home_fdr"] == 2
+        assert fixture_dict["away_fdr"] == 4
+        assert payload["metadata"]["custom_analysis"] is False
+        assert payload["metadata"]["fdr_scale"] == "fpl_api_1_5"
+
+    def test_metadata_names_the_scale_when_custom_is_on(self, runner, tmp_path):
+        """A consumer reads the scale off the envelope, never off the numbers."""
+        payload = json.loads(_run_fixtures(runner, tmp_path, "--format", "json").output)
+
+        assert payload["metadata"]["custom_analysis"] is True
+        assert payload["metadata"]["fdr_scale"] == "team_ratings_1_7"
+
+    def test_no_ratings_work_when_opted_out(self, runner, tmp_path):
+        """An opted-out user should not be refreshing Bayesian ratings at all."""
+        teams, fixtures = _standard_teams_and_fixtures()
+        client = _mock_fpl_client(teams, fixtures)
+        service = _ratings_service(tmp_path)
+
+        with (
+            patch("fpl_cli.cli.fixtures.is_custom_analysis_enabled", return_value=False),
+            patch("fpl_cli.api.fpl.FPLClient", return_value=client),
+            patch("fpl_cli.services.team_ratings.TeamRatingsService", return_value=service),
+        ):
+            result = runner.invoke(main, ["fixtures", "-g", "32"])
+
+        assert result.exit_code == 0
+        service.ensure_fresh.assert_not_called()
+
+    def test_table_names_the_api_scale(self, runner, tmp_path):
+        """The panel and footer say which scale the column is on."""
+        result = _run_fixtures(runner, tmp_path, custom_analysis=False)
+
+        assert "FPL API Ratings" in result.output
+        assert "1 (easiest) - 5 (hardest)" in result.output
+
+    def test_mode_flag_reports_that_it_does_not_apply(self, runner, tmp_path):
+        """`-m` against the API scale would otherwise be silently inert."""
+        result = _run_fixtures(runner, tmp_path, "-m", "opponent", custom_analysis=False)
+
+        assert result.exit_code == 0
+        assert "--mode applies to the team-ratings FDR" in result.stderr
+
+    def test_no_mode_note_when_the_flag_was_not_typed(self, runner, tmp_path):
+        """The default never triggers the note - only an explicit flag does."""
+        result = _run_fixtures(runner, tmp_path, custom_analysis=False)
+
+        assert "--mode applies" not in result.stderr
+
+    def test_no_ratings_warning_on_the_api_path(self, runner, tmp_path):
+        """The ratings note is about ratings; the API path does not use them."""
+        result = _run_fixtures(runner, tmp_path, "--format", "json", ratings={}, custom_analysis=False)
+
+        assert json.loads(result.output)["metadata"]["warnings"] == []
+
+    def test_mode_is_null_in_metadata_when_it_does_not_apply(self, runner, tmp_path):
+        """`fdr_mode` describes a figure that is not there, so it is null."""
+        payload = json.loads(
+            _run_fixtures(runner, tmp_path, "--format", "json", custom_analysis=False).output
+        )
+
+        assert payload["metadata"]["fdr_mode"] is None

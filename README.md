@@ -127,7 +127,7 @@ $ fpl preview --save --scout       # Full analysis + BUY/SELL research via LLM
 $ fpl fdr --blanks                 # Confirmed + predicted blank/double GWs
 $ fpl chips timing                 # Rule-based Free Hit / Bench Boost / Triple Captain signals
 $ fpl fixtures                     # Next GW fixtures, same FDR as `fpl fdr`
-$ fpl fixtures -m opponent         # ...scored on the opponent's rating alone
+$ fpl fixtures -m opponent         # ...on the opponent's rating alone (custom analysis)
 ```
 
 ### Season Preview Intel

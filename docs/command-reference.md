@@ -43,7 +43,7 @@ Commands are independently classified by the `custom_analysis` toggle:
 | Category | Commands | When opted out |
 |---|---|---|
 | **Pure-experimental** | `captain`, `targets`, `differentials`, `waivers`, `allocate`, `transfer-eval`, `ratings` | Hidden from `--help`; invoking one names the toggle |
-| **Mixed** | `stats`, `xg`, `fdr`, `preview` | Experimental columns/sections stripped |
+| **Mixed** | `stats`, `xg`, `fdr`, `fixtures`, `preview` | Experimental columns/sections stripped |
 | **Data-only** | Everything else | No change |
 
 Both filters (format and experimental) are independent and must both pass.
@@ -329,8 +329,14 @@ ratings cannot support difficulty at all (missing, last season's, or flat), tabl
 prints the stderr notice `fpl fdr` prints and JSON mode adds a `team_ratings_unusable`
 entry to `metadata.warnings`, so a table of flat 4.0s is not read as analysis.
 
-Unlike `fpl fdr` and `fpl preview`, this command is data-only: the `custom_analysis`
-toggle does not switch it back to raw FPL API difficulty.
+**Without custom analysis:** the raw FPL API difficulty (1-5), styled and labelled as in
+`fpl fdr`. `-m` has nothing to apply to on that scale, so passing it explicitly prints a
+stderr note rather than changing the table. `--format json` names the scale either way:
+`metadata.fdr_scale` is `team_ratings_1_7` or `fpl_api_1_5`, alongside `custom_analysis`
+and an `fdr_mode` that is `null` when it does not apply. The command was ungated until
+#202, which meant the default configuration showed a 1-7 ratings FDR here and a 1-5 API
+one in the preview's fixtures table — the same two-numbers-one-match split, one scale
+further apart.
 
 ### Team Ratings
 

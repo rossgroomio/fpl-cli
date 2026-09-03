@@ -24,7 +24,7 @@ from fpl_cli.cli._context import (
     load_settings,
     warn_prediction_problems,
 )
-from fpl_cli.cli._helpers import _fdr_style
+from fpl_cli.cli._helpers import _api_fdr_style, _fdr_style
 from fpl_cli.cli._json import (
     api_failure_boundary,
     emit_failure,
@@ -328,13 +328,7 @@ def fdr_command(
 
             for row in fdr_rows[:12]:
                 fdr_val = row["average_fdr"]
-                # Style for 1-5 scale
-                if fdr_val <= 2.5:
-                    style = "green"
-                elif fdr_val <= 3.0:
-                    style = "yellow"
-                else:
-                    style = "white"
+                style = _api_fdr_style(fdr_val)
                 table.add_row(
                     row["short_name"],
                     f"[{style}]{fdr_val:.2f}[/{style}]",
