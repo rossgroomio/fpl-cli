@@ -65,6 +65,37 @@ def gk_signal_enrichment(player: Any) -> dict[str, float]:
     return signals
 
 
+def apply_gk_signals(
+    enrichment: dict[str, Any],
+    player_id: int,
+    lookup: Mapping[int, Any] | None,
+    *,
+    position: str | None,
+) -> bool:
+    """Merge a keeper's ramped GK signal block into *enrichment*, if it is reachable.
+
+    Same shape as ``apply_adjusted_npxg`` / ``apply_consistency``: an
+    enrichment dict, the id to look up, and a lookup that may not hold it.
+    *position* gates it — the block only means anything for a keeper. Lives
+    here rather than beside those two in ``signals.py`` because
+    ``evaluation`` already imports ``signals``, so the reverse import would
+    be a cycle.
+
+    Returns whether the block was populated, which is what a caller hands to
+    the calibrated GK ceiling: the anchor budgets for these three signals, so
+    it may only be calendar-scaled for an evaluation that carries them —
+    scaling a signal-less numerator's denominator inflates keepers instead
+    (#207). False for an outfielder, and for a keeper the lookup misses.
+    """
+    if position != "GK":
+        return False
+    player = lookup.get(player_id) if lookup else None
+    if player is None:
+        return False
+    enrichment.update(gk_signal_enrichment(player))
+    return True
+
+
 def build_scoring_enrichment(
     player: Any,
     us_match: dict[str, Any],

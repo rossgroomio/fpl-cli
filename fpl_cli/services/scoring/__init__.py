@@ -91,6 +91,7 @@ from fpl_cli.services.scoring.evaluation import (
     FixtureMatchup,
     PlayerEvaluation,
     PlayerIdentity,
+    apply_gk_signals,
     build_player_evaluation,
     build_scoring_enrichment,
     gk_signal_enrichment,
@@ -229,6 +230,7 @@ __all__ = [
     "PlayerIdentity",
     "build_player_evaluation",
     "build_scoring_enrichment",
+    "apply_gk_signals",
     "gk_signal_enrichment",
     "gk_xgc_quality",
     # display

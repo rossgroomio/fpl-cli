@@ -646,11 +646,16 @@ def _ownership_ceiling_for(
     *next_gw_id*: when supplied for a GK, the anchor share of the ceiling is
     scaled by ``gk_ceiling_attainability`` so pre-GW6 keepers are normalised
     against what the calendar has let their ramped signals reach. Pass it
-    only from paths whose evaluations carry the GK signal block — a scaled
+    only for an evaluation that carries the GK signal block — a scaled
     denominator over a signal-less numerator inflates keepers instead
-    (PR #156 review: transfer-eval +44%, draft waiver +30% at GW2). The
-    bonus headroom (matchup, ownership, position need, consistency) never
-    scales. Omitted (None) keeps the full ceiling — the pre-#143 behaviour.
+    (PR #156 review: transfer-eval +44%, draft waiver +30% at GW2). Every
+    keeper-scoring path now populates the block, so the caveat is about the
+    one input that can still arrive without it: the draft waiver path reads
+    saves and xGC off the main-game ``Player`` it joins each draft element
+    to, and passes the gameweek per keeper, only for a join that resolved
+    (#207). The bonus headroom (matchup, ownership, position need,
+    consistency) never scales. Omitted (None) keeps the full ceiling — the
+    pre-#143 behaviour.
     """
     if family not in _OWNERSHIP_HEADROOM:
         raise KeyError(family)

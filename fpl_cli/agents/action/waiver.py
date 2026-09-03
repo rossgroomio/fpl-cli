@@ -11,12 +11,14 @@ from fpl_cli.agents.common import (
     fetch_understat_lookup,
 )
 from fpl_cli.api.fpl import FPLClient
-from fpl_cli.api.fpl_draft import FPLDraftClient
+from fpl_cli.api.fpl_draft import FPLDraftClient, match_draft_to_main
+from fpl_cli.models.player import Player
 from fpl_cli.models.types import EnrichedPlayer, WaiverPoolEntry, WaiverTarget
 from fpl_cli.services.scoring import (
     ConsistencySignals,
     apply_adjusted_npxg,
     apply_consistency,
+    apply_gk_signals,
     apply_shrinkage,
     build_player_evaluation,
     calculate_waiver_score,
@@ -47,6 +49,7 @@ class WaiverAgent(Agent):
         self.fpl_client = FPLClient()
         self._adjusted_npxg_lookup: dict[int, float] | None = None
         self._consistency_lookup: dict[int, ConsistencySignals] | None = None
+        self._main_player_map: dict[int, Player] = {}
         self.league_id = config.get("draft_league_id") if config else None
         self.entry_id = config.get("draft_entry_id") if config else None
 
@@ -185,6 +188,12 @@ class WaiverAgent(Agent):
             self._adjusted_npxg_lookup = data.adjusted_npxg_lookup
             self._consistency_lookup = data.consistency_lookup
             scoring_ctx = data.scoring_ctx
+
+            # The draft bootstrap carries neither saves nor expected goals
+            # conceded, so a keeper's three scoring signals only exist on the
+            # main game's player. Joined on `code`, never on (web_name,
+            # team_id) — a mid-season rename breaks the name join (#168).
+            self._main_player_map = match_draft_to_main(available, data.players or [])
 
             # Enrich available players with matchup and FDR
             matchup_cache: dict[tuple[int, str], float] = {}
@@ -372,6 +381,15 @@ class WaiverAgent(Agent):
         pid = int(player.get("id") or 0)
         apply_adjusted_npxg(enrichment, pid, self._adjusted_npxg_lookup)
         apply_consistency(enrichment, pid, self._consistency_lookup)
+        position = player.get("position")
+        gk_signals_supplied = apply_gk_signals(
+            enrichment, pid, self._main_player_map, position=position,
+        )
+        if position == "GK" and not gk_signals_supplied:
+            self.log_warning(
+                f"No main FPL match for draft keeper '{player.get('player_name')}' "
+                "— scoring without saves/xGC signals",
+            )
         evaluation, _ = build_player_evaluation(
             player,
             enrichment=enrichment,
@@ -383,6 +401,7 @@ class WaiverAgent(Agent):
             squad_by_position=squad_by_position,
             team_counts=team_counts,
             next_gw_id=next_gw_id,
+            gk_signals_supplied=gk_signals_supplied,
         )
 
     def _generate_target_reasons(
