@@ -376,6 +376,38 @@ class TestFixtureAgent:
         assert fdr["ARS"]["average_fdr_def"] == 5.0
         assert fdr["ARS"]["average_fdr"] == 4.5  # venue-blind avg_overall_fdr would say 5.5
 
+    def test_analyze_fdr_records_per_gameweek_mean_and_fixture_count(self, mock_teams, tmp_path):
+        """``fdr_by_gameweek`` is the mean within a gameweek, not the sum.
+
+        ``average_fdr`` deliberately sums within a gameweek before averaging
+        across them, so a DGW team ranks better over a run. Asking how hard one
+        gameweek is wants the mean of its fixtures instead, and the count it
+        was taken over so a caller can spot a gameweek scored on fewer
+        fixtures than a double should have.
+        """
+        from fpl_cli.services.team_ratings import TeamRatingsService
+
+        agent = FixtureAgent(config={"fdr_mode": "opponent"})
+        agent.ratings_service = TeamRatingsService(config_path=_write_ratings(tmp_path, {
+            "ARS": {"atk_home": 2, "atk_away": 2, "def_home": 2, "def_away": 2},
+            "MCI": {"atk_home": 1, "atk_away": 1, "def_home": 1, "def_away": 1},
+            "LIV": {"atk_home": 6, "atk_away": 6, "def_home": 6, "def_away": 6},
+        }))
+        team_map = {t.id: t for t in mock_teams}
+        fixtures = [
+            make_fixture(id=1, gameweek=25, home_team_id=1, away_team_id=2),  # ARS v MCI
+            make_fixture(id=2, gameweek=25, home_team_id=3, away_team_id=1),  # LIV v ARS
+            make_fixture(id=3, gameweek=26, home_team_id=1, away_team_id=3),  # ARS v LIV
+        ]
+
+        by_gw = agent._analyze_fdr(fixtures, team_map, 25, 26)["ARS"]["fdr_by_gameweek"]
+
+        # ARS doubles in GW25: hard v MCI (7.0), easy at LIV (2.0) -> mean 4.5
+        assert by_gw[25] == {"fdr": 4.5, "fixture_count": 2}
+        assert by_gw[26] == {"fdr": 2.0, "fixture_count": 1}
+        # The season-long average sums within the GW, so it reads higher
+        assert agent._analyze_fdr(fixtures, team_map, 25, 26)["ARS"]["average_fdr"] == 5.5
+
     def test_analyze_fdr_unrated_side_scores_neutral_on_every_column(self, agent, mock_teams, tmp_path):
         """A fixture involving an unrated club is the neutral 4.0 on FDR, ATK and DEF alike.
 

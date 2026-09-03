@@ -368,11 +368,18 @@ def make_fdr_by_team(
     team_fixtures: team_short -> [(gameweek, opponent_short, fdr)]. The ``fdr``
     is that fixture's general FDR for the team - the venue-aware ATK/DEF mean
     the agent records - so a double against weak opponents is a low number.
-    Teams absent from the map have no fixtures to score.
+    ``fdr_by_gameweek`` is derived here the way the agent derives it, so these
+    tests exercise the real shape. Teams absent from the map have no fixtures.
     """
     team_fixtures = team_fixtures or {}
-    return {
-        short: {
+    result: dict[str, dict] = {}
+
+    for short, fixtures in team_fixtures.items():
+        by_gw: dict[int, list[float]] = {}
+        for gw, _opponent, fdr in fixtures:
+            by_gw.setdefault(gw, []).append(fdr)
+
+        result[short] = {
             "team_name": short,
             "fixtures": [
                 {
@@ -385,39 +392,48 @@ def make_fdr_by_team(
                 }
                 for gw, opponent, fdr in fixtures
             ],
+            "fdr_by_gameweek": {
+                gw: {"fdr": round(sum(v) / len(v), 2), "fixture_count": len(v)}
+                for gw, v in by_gw.items()
+            },
         }
-        for short, fixtures in team_fixtures.items()
-    }
+
+    return result
+
+
+def rated(*teams: str) -> set[str]:
+    """The clubs the ratings file knows about, for the TC coverage check."""
+    return set(teams)
 
 
 class TestFHSignals:
     def test_fh_strong_at_5_affected(self):
         exposure = [make_exposure(28, "blank", 5, ["Salah", "Trent", "Arnold", "Nunez", "VVD"])]
-        signals = _compute_chip_signals(exposure, {"freehit"}, {}, {}, make_fdr_by_team())
+        signals = _compute_chip_signals(exposure, {"freehit"}, {}, {}, make_fdr_by_team(), set())
         assert len(signals) == 1
         assert signals[0]["signal"] == "FH"
         assert signals[0]["strength"] == "strong"
 
     def test_fh_possible_at_4_affected(self):
         exposure = [make_exposure(28, "blank", 4, ["Salah", "Trent", "Arnold", "Nunez"])]
-        signals = _compute_chip_signals(exposure, {"freehit"}, {}, {}, make_fdr_by_team())
+        signals = _compute_chip_signals(exposure, {"freehit"}, {}, {}, make_fdr_by_team(), set())
         assert len(signals) == 1
         assert signals[0]["strength"] == "possible"
 
     def test_fh_possible_at_3_affected(self):
         exposure = [make_exposure(28, "blank", 3, ["Salah", "Trent", "Arnold"])]
-        signals = _compute_chip_signals(exposure, {"freehit"}, {}, {}, make_fdr_by_team())
+        signals = _compute_chip_signals(exposure, {"freehit"}, {}, {}, make_fdr_by_team(), set())
         assert len(signals) == 1
         assert signals[0]["strength"] == "possible"
 
     def test_fh_no_signal_at_2_affected(self):
         exposure = [make_exposure(28, "blank", 2, ["Salah", "Trent"])]
-        signals = _compute_chip_signals(exposure, {"freehit"}, {}, {}, make_fdr_by_team())
+        signals = _compute_chip_signals(exposure, {"freehit"}, {}, {}, make_fdr_by_team(), set())
         assert signals == []
 
     def test_fh_suppressed_when_chip_used(self):
         exposure = [make_exposure(28, "blank", 6, ["a", "b", "c", "d", "e", "f"])]
-        signals = _compute_chip_signals(exposure, set(), {}, {}, make_fdr_by_team())
+        signals = _compute_chip_signals(exposure, set(), {}, {}, make_fdr_by_team(), set())
         assert all(s["signal"] != "FH" for s in signals)
 
 
@@ -425,7 +441,7 @@ class TestBBSignals:
     def test_bb_strong_at_8_starters(self):
         players = [f"p{i}" for i in range(9)]
         exposure = [make_exposure(31, "double", 8, players)]
-        signals = _compute_chip_signals(exposure, {"bboost"}, {}, {}, make_fdr_by_team())
+        signals = _compute_chip_signals(exposure, {"bboost"}, {}, {}, make_fdr_by_team(), set())
         bb = [s for s in signals if s["signal"] == "BB"]
         assert len(bb) == 1
         assert bb[0]["strength"] == "strong"
@@ -433,7 +449,7 @@ class TestBBSignals:
     def test_bb_possible_at_6_starters(self):
         players = [f"p{i}" for i in range(6)]
         exposure = [make_exposure(31, "double", 6, players)]
-        signals = _compute_chip_signals(exposure, {"bboost"}, {}, {}, make_fdr_by_team())
+        signals = _compute_chip_signals(exposure, {"bboost"}, {}, {}, make_fdr_by_team(), set())
         bb = [s for s in signals if s["signal"] == "BB"]
         assert len(bb) == 1
         assert bb[0]["strength"] == "possible"
@@ -441,7 +457,7 @@ class TestBBSignals:
     def test_bb_no_signal_at_5_starters(self):
         players = [f"p{i}" for i in range(5)]
         exposure = [make_exposure(31, "double", 5, players)]
-        signals = _compute_chip_signals(exposure, {"bboost"}, {}, {}, make_fdr_by_team())
+        signals = _compute_chip_signals(exposure, {"bboost"}, {}, {}, make_fdr_by_team(), set())
         assert all(s["signal"] != "BB" for s in signals)
 
 
@@ -452,16 +468,21 @@ class TestTCSignals:
         id_to_short = {14: "LIV"}
         # Two soft opponents: mean 2.5
         fdr = make_fdr_by_team({"LIV": [(31, "SOU", 2.0), (31, "BUR", 3.0)]})
-        signals = _compute_chip_signals(exposure, {"3xc"}, name_to_tid, id_to_short, fdr)
+        signals = _compute_chip_signals(
+            exposure, {"3xc"}, name_to_tid, id_to_short, fdr, rated("LIV"),
+        )
         tc = [s for s in signals if s["signal"] == "TC"]
         assert len(tc) == 1
         assert tc[0]["strength"] == "strong"
         assert tc[0]["detail"] == "Salah (FDR 2.5)"
+        assert tc[0]["fixtures_scored"] == 2
 
     def test_tc_possible_when_double_averages_leq_4(self):
         exposure = [make_exposure(31, "double", 7, ["Saka"])]
         fdr = make_fdr_by_team({"ARS": [(31, "CHE", 3.5), (31, "NEW", 4.5)]})
-        signals = _compute_chip_signals(exposure, {"3xc"}, {"Saka": 3}, {3: "ARS"}, fdr)
+        signals = _compute_chip_signals(
+            exposure, {"3xc"}, {"Saka": 3}, {3: "ARS"}, fdr, rated("ARS"),
+        )
         tc = [s for s in signals if s["signal"] == "TC"]
         assert len(tc) == 1
         assert tc[0]["strength"] == "possible"
@@ -469,7 +490,9 @@ class TestTCSignals:
     def test_tc_no_signal_when_double_averages_above_4(self):
         exposure = [make_exposure(31, "double", 7, ["Saka"])]
         fdr = make_fdr_by_team({"ARS": [(31, "MCI", 5.5), (31, "LIV", 5.0)]})
-        signals = _compute_chip_signals(exposure, {"3xc"}, {"Saka": 3}, {3: "ARS"}, fdr)
+        signals = _compute_chip_signals(
+            exposure, {"3xc"}, {"Saka": 3}, {3: "ARS"}, fdr, rated("ARS"),
+        )
         assert all(s["signal"] != "TC" for s in signals)
 
     def test_tc_picks_easiest_double_not_weakest_club(self):
@@ -485,7 +508,9 @@ class TestTCSignals:
             "LIV": [(31, "SOU", 2.0), (31, "BUR", 2.4)],   # mean 2.2
             "NFO": [(31, "MCI", 5.5), (31, "ARS", 5.5)],   # mean 5.5
         })
-        signals = _compute_chip_signals(exposure, {"3xc"}, name_to_tid, id_to_short, fdr)
+        signals = _compute_chip_signals(
+            exposure, {"3xc"}, name_to_tid, id_to_short, fdr, rated("LIV", "NFO"),
+        )
         tc = [s for s in signals if s["signal"] == "TC"]
         assert len(tc) == 1
         assert tc[0]["detail"] == "Salah (FDR 2.2)"
@@ -496,20 +521,72 @@ class TestTCSignals:
         fdr = make_fdr_by_team({
             "ARS": [(30, "BUR", 1.5), (31, "MCI", 5.5), (31, "LIV", 5.0)],
         })
-        signals = _compute_chip_signals(exposure, {"3xc"}, {"Saka": 3}, {3: "ARS"}, fdr)
+        signals = _compute_chip_signals(
+            exposure, {"3xc"}, {"Saka": 3}, {3: "ARS"}, fdr, rated("ARS"),
+        )
         assert all(s["signal"] != "TC" for s in signals)
 
     def test_tc_skips_candidate_with_no_fixtures_in_gameweek(self):
         """A predicted double beyond the FDR window is not scoreable."""
         exposure = [make_exposure(35, "double", 7, ["Saka"], source="predicted")]
         fdr = make_fdr_by_team({"ARS": [(31, "BUR", 1.5)]})
-        signals = _compute_chip_signals(exposure, {"3xc"}, {"Saka": 3}, {3: "ARS"}, fdr)
+        signals = _compute_chip_signals(
+            exposure, {"3xc"}, {"Saka": 3}, {3: "ARS"}, fdr, rated("ARS"),
+        )
         assert all(s["signal"] != "TC" for s in signals)
+
+    def test_tc_skips_candidate_whose_team_has_no_fdr_entry(self):
+        """A team absent from fdr_by_team altogether has nothing to score."""
+        exposure = [make_exposure(31, "double", 7, ["Saka"])]
+        signals = _compute_chip_signals(
+            exposure, {"3xc"}, {"Saka": 3}, {3: "ARS"}, make_fdr_by_team(), rated("ARS"),
+        )
+        assert all(s["signal"] != "TC" for s in signals)
+
+    def test_tc_skips_unrated_club_rather_than_grading_the_neutral_4(self):
+        """An unrated club scores a placeholder 4.0, which would clear <= 4.0.
+
+        At the season rollover a ratings file can pass every date check while
+        knowing nothing about the promoted clubs, and every fixture involving
+        one is scored at the ratings service's neutral 4.0. Grading that would
+        fire "possible" off a placeholder rather than a fixture read.
+        """
+        exposure = [make_exposure(31, "double", 7, ["Wood"])]
+        fdr = make_fdr_by_team({"NFO": [(31, "BUR", 4.0), (31, "SOU", 4.0)]})
+        signals = _compute_chip_signals(
+            exposure, {"3xc"}, {"Wood": 16}, {16: "NFO"}, fdr, rated(),
+        )
+        assert all(s["signal"] != "TC" for s in signals)
+
+        # The same double fires once the club is rated.
+        signals = _compute_chip_signals(
+            exposure, {"3xc"}, {"Wood": 16}, {16: "NFO"}, fdr, rated("NFO"),
+        )
+        assert [s["strength"] for s in signals if s["signal"] == "TC"] == ["possible"]
+
+    def test_tc_flags_a_double_scored_on_one_scheduled_fixture(self):
+        """A predicted double is only scoreable on the leg already scheduled.
+
+        The other leg has no fixture to average, so the figure is one match,
+        not the pair - the detail has to say so rather than present it as the
+        double's mean.
+        """
+        exposure = [make_exposure(31, "double", 7, ["Saka"], source="predicted")]
+        fdr = make_fdr_by_team({"ARS": [(31, "BUR", 2.0)]})
+        signals = _compute_chip_signals(
+            exposure, {"3xc"}, {"Saka": 3}, {3: "ARS"}, fdr, rated("ARS"),
+        )
+        tc = [s for s in signals if s["signal"] == "TC"]
+        assert len(tc) == 1
+        assert tc[0]["detail"] == "Saka (FDR 2.0, 1 of 2 scheduled)"
+        assert tc[0]["fixtures_scored"] == 1
 
     def test_tc_suppressed_when_chip_used(self):
         exposure = [make_exposure(31, "double", 7, ["Saka"])]
         fdr = make_fdr_by_team({"ARS": [(31, "BUR", 1.5), (31, "SOU", 1.5)]})
-        signals = _compute_chip_signals(exposure, {"bboost"}, {"Saka": 3}, {3: "ARS"}, fdr)
+        signals = _compute_chip_signals(
+            exposure, {"bboost"}, {"Saka": 3}, {3: "ARS"}, fdr, rated("ARS"),
+        )
         assert all(s["signal"] != "TC" for s in signals)
 
 
@@ -622,5 +699,5 @@ class TestChipsTimingJsonFormat:
 
 class TestNoSignals:
     def test_empty_exposure_produces_no_signals(self):
-        signals = _compute_chip_signals([], {"freehit", "bboost", "3xc"}, {}, {}, make_fdr_by_team())
+        signals = _compute_chip_signals([], {"freehit", "bboost", "3xc"}, {}, {}, make_fdr_by_team(), set())
         assert signals == []

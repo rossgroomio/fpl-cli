@@ -357,7 +357,11 @@ fpl chips sync                             # Sync used chips from FPL API
 | TC | Best DGW candidate's double averages FDR <= 3.0 | Strong |
 | TC | Best DGW candidate's double averages FDR <= 4.0 | Possible |
 
-The TC figure is the mean general FDR of the candidate's own fixtures in that gameweek - the same venue-aware ATK/DEF mean `fpl fdr` and `fpl preview` show - so the candidate with the easiest double wins. The thresholds are more lenient than the `fpl fdr` colouring (2.5/3.0) because a double doubles the upside. A predicted double beyond the six-gameweek FDR window has no fixtures to score and produces no TC signal.
+The TC figure is the mean general FDR of the candidate's own fixtures in that gameweek - the same venue-aware ATK/DEF mean `fpl fdr` and `fpl preview` show - so the candidate with the easiest double wins. The thresholds are more lenient than the `fpl fdr` colouring (2.5/3.0) because a double doubles the upside.
+
+Two candidates are skipped rather than graded on a figure that doesn't mean what it says. A club with no fixture in the gameweek has nothing to average - a predicted double can sit beyond the six-gameweek FDR window. And a club the ratings file doesn't know scores the neutral 4.0 on every fixture, which would clear the "possible" threshold on a placeholder; that is the season-rollover case where a ratings file passes its date checks while knowing nothing about the promoted clubs. If no candidate is scoreable there is no TC signal.
+
+A predicted double is only scoreable on the leg the fixtures API already lists, so its figure covers one match rather than the pair. The detail says so (`Salah (FDR 2.0, 1 of 2 scheduled)`), and `--format json` carries the count as `fixtures_scored`.
 
 Thresholds apply to the full 15-player squad (not just projected starters). Chips already used are excluded. Planned chips highlighted `[planned]` inline. Stored in `data/chip_plan.json`.
 

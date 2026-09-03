@@ -279,6 +279,9 @@ class FixtureAgent(Agent):
         - fdr_atk: For attackers (FWD/MID) based on opponent's defensive weakness
         - fdr_def: For defenders (DEF/GK) based on opponent's offensive threat
         - fdr: General FDR, the mean of fdr_atk and fdr_def
+
+        Each team also carries ``fdr_by_gameweek``: the mean general FDR of its
+        fixtures in each gameweek, with the count they were averaged over.
         """
         fdr_by_team: dict[int, list[dict[str, Any]]] = defaultdict(list)
 
@@ -343,11 +346,14 @@ class FixtureAgent(Agent):
             if not team:
                 continue
 
-            gw_fdr: dict[int, dict[str, float]] = defaultdict(lambda: {"fdr": 0.0, "fdr_atk": 0.0, "fdr_def": 0.0})
+            gw_fdr: dict[int, dict[str, float]] = defaultdict(
+                lambda: {"fdr": 0.0, "fdr_atk": 0.0, "fdr_def": 0.0, "count": 0.0}
+            )
             for f in fixtures_list:
                 gw_fdr[f["gameweek"]]["fdr"] += f["fdr"]
                 gw_fdr[f["gameweek"]]["fdr_atk"] += f["fdr_atk"]
                 gw_fdr[f["gameweek"]]["fdr_def"] += f["fdr_def"]
+                gw_fdr[f["gameweek"]]["count"] += 1
             n_gws = len(gw_fdr) or 1
             avg_fdr = sum(v["fdr"] for v in gw_fdr.values()) / n_gws
             avg_fdr_atk = sum(v["fdr_atk"] for v in gw_fdr.values()) / n_gws
@@ -361,6 +367,23 @@ class FixtureAgent(Agent):
                 "average_fdr": round(avg_fdr, 2),
                 "average_fdr_atk": round(avg_fdr_atk, 2),
                 "average_fdr_def": round(avg_fdr_def, 2),
+                # Per-gameweek breakdown, kept rather than discarded so a caller
+                # asking "how hard is this team's gameweek?" (a DGW Triple
+                # Captain candidate, say) reads it from the module that owns the
+                # shape instead of re-deriving the mean from `fixtures`. Note
+                # `fdr` here is the MEAN across the gameweek's fixtures, where
+                # `average_fdr` above sums within a gameweek before averaging
+                # across them - that deliberately rewards a DGW team over the
+                # season-long run, which is the wrong lens for one gameweek.
+                # `fixture_count` lets a caller see a gameweek scored on fewer
+                # fixtures than it expects.
+                "fdr_by_gameweek": {
+                    gw: {
+                        "fdr": round(v["fdr"] / v["count"], 2),
+                        "fixture_count": int(v["count"]),
+                    }
+                    for gw, v in sorted(gw_fdr.items())
+                },
                 "fixture_count": len(fixtures_list),
             }
 
