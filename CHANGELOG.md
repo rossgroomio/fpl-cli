@@ -1,6 +1,33 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [2.4.0] - 2026-09-04
+
+### Bug Fixes
+
+- retry rate-limited return-intel searches instead of dropping them (#195)
+- stop HTML entities breaking markdown in generated reports (#198)
+- refuse to guess which player a shared surname means (#197)
+- tell gw-prep adopters which Python its helper scripts need (#196)
+- rank easy fixture runs on the same FDR model as the ATK/DEF columns (#199)
+- return real stats in early-season gw-prep and squad-builder runs (#194)
+- score Triple Captain doubles on their opponents, not their own club (#203)
+- surface returning keepers and defenders on the injury watchlist (#205)
+- rank draft waiver keepers on saves and defensive quality (#210)
+- stop printing the season-phase note in league-recap reports (#211)
+- score draft waiver targets on their own history, not a stranger's (#212)
+- warn when gameweek prep and squad builds run on stale team ratings (#214)
+- stop league-recap editorial inventing league-history claims (#216)
+- stop league-recap streak lines misreading run counts as rankings (#217)
+- mark blanks and doubles by the club a player had that gameweek (#213)
+- score `fpl fixtures` on the same FDR as `fpl preview` (#215)
+
+### Features
+
+- source last season's player history from Core-Insights (#204)
+- blend last season's pedigree into early-season quality scores (#208)
+- blend last season's pedigree into ownership-family scores (#218)
+
 ## [2.3.2] - 2026-08-26
 
 ### Bug Fixes
