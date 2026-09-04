@@ -94,12 +94,33 @@ class TestNoRestatedPolicyInProse:
 # worked example of the failure mode it's warning about (see gw-prep/SKILL.md's
 # `[YOUR_PYTHON]` explainer).
 BASH_BLOCK = re.compile(r"```bash\n(.*?)```", re.DOTALL)
-SCRIPT_PATH = re.compile(r"scripts/[\w-]+\.py")
+# The quoted script-path argument itself, e.g. "...scripts/normalise_entities.py".
+# Matched separately from the interpreter token so a $FPL_CLI_DIR-built *interpreter*
+# path (gw-prep/SKILL.md's own suggested `[YOUR_PYTHON]` substitution, e.g.
+# `$FPL_CLI_DIR/.venv/bin/python`) isn't confused with a $FPL_CLI_DIR-built *script*
+# path (the actual #221 bug).
+SCRIPT_PATH_ARG = re.compile(r'"([^"]*scripts/[\w-]+\.py)"')
+# A bare `python3` interpreter, anchored to the start of the line so a resolved,
+# fully-qualified interpreter path like `/opt/venv/bin/python3` -- a legitimate
+# `[YOUR_PYTHON]` substitution -- doesn't match on the "python3" substring alone.
+BARE_PYTHON3_INTERPRETER = re.compile(r"^\s*python3\b")
+
+
+def _script_invocation_lines(doc: Path) -> list[tuple[int, str]]:
+    """(line number, line text) for every bash-fenced line invoking a scripts/*.py file."""
+    text = doc.read_text(encoding="utf-8")
+    lines = []
+    for block in BASH_BLOCK.finditer(text):
+        block_start_line = text[: block.start()].count("\n") + 1
+        for offset, line in enumerate(block.group(1).splitlines()):
+            if SCRIPT_PATH_ARG.search(line):
+                lines.append((block_start_line + 1 + offset, line))
+    return lines
 
 
 class TestScriptInvocationConvention:
-    """scripts/*.py invocations must use `[YOUR_PYTHON]`, never a bare `python3`
-    or a path built from `$FPL_CLI_DIR`.
+    """scripts/*.py invocations must use `[YOUR_PYTHON]`, never a bare `python3`,
+    and must never build the script's own path from `$FPL_CLI_DIR`.
 
     #196 introduced `[YOUR_PYTHON]` (plus `${CLAUDE_SKILL_DIR}` / a resolved
     skills-dir placeholder) because a standalone `fpl` install (uv tool, pipx)
@@ -108,22 +129,34 @@ class TestScriptInvocationConvention:
     install shape. #221 found three call sites the original sweep missed.
     """
 
+    def test_the_scan_actually_finds_script_invocations(self):
+        # Guard the guard: if the ```bash fence syntax changes (```sh, ```shell)
+        # or every invocation moves to a doc outside PROSE_DOCS, the check below
+        # passes vacuously on every doc and a bare `python3` could walk back in
+        # unnoticed. Assert the corpus isn't empty so that failure is loud.
+        total = sum(len(_script_invocation_lines(doc)) for doc in PROSE_DOCS)
+        assert total > 0, (
+            "no scripts/*.py invocation found inside a ```bash fence across any"
+            " PROSE_DOCS doc -- either the fence syntax changed, the invocations"
+            " moved to a doc outside PROSE_DOCS, or SCRIPT_PATH_ARG no longer"
+            " matches; test_script_invocations_use_your_python_convention below"
+            " is scanning nothing"
+        )
+
     @pytest.mark.parametrize("doc", PROSE_DOCS, ids=lambda p: str(p.relative_to(REPO_ROOT)))
     def test_script_invocations_use_your_python_convention(self, doc: Path):
-        text = doc.read_text(encoding="utf-8")
         offences = []
-        for block in BASH_BLOCK.finditer(text):
-            block_start_line = text[: block.start()].count("\n") + 1
-            for offset, line in enumerate(block.group(1).splitlines()):
-                if not SCRIPT_PATH.search(line):
-                    continue
-                if "python3" in line or "$FPL_CLI_DIR" in line:
-                    line_no = block_start_line + 1 + offset
-                    offences.append(f"line {line_no}: {line.strip()!r}")
+        for line_no, line in _script_invocation_lines(doc):
+            path_match = SCRIPT_PATH_ARG.search(line)
+            assert path_match is not None
+            if path_match.group(1).startswith("$FPL_CLI_DIR"):
+                offences.append(f"line {line_no}: script path built from $FPL_CLI_DIR: {line.strip()!r}")
+            if BARE_PYTHON3_INTERPRETER.match(line):
+                offences.append(f"line {line_no}: bare python3 interpreter: {line.strip()!r}")
         assert not offences, (
             f"{doc.relative_to(REPO_ROOT)} invokes a scripts/*.py script with a bare"
-            f" `python3` interpreter or a `$FPL_CLI_DIR`-built path; use `[YOUR_PYTHON]`"
-            f" (see gw-prep/SKILL.md's Environment section) together with"
-            f" `${{CLAUDE_SKILL_DIR}}` (within gw-prep) or `[YOUR_SKILLS_DIR]` (cross-skill)"
-            f" instead:\n" + "\n".join(offences)
+            f" `python3` interpreter or a `$FPL_CLI_DIR`-built script path; use"
+            f" `[YOUR_PYTHON]` (see gw-prep/SKILL.md's Environment section) together"
+            f" with `${{CLAUDE_SKILL_DIR}}` (within gw-prep) or `[YOUR_SKILLS_DIR]`"
+            f" (cross-skill) instead:\n" + "\n".join(offences)
         )
