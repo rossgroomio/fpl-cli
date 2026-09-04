@@ -44,8 +44,14 @@ def waivers_command(output_format: str):
                 if not result.success:
                     emit_json_error("waivers", result.message, file=stdout)
                     return
-                emit_json("waivers", result.data, metadata={
+                # The early-season notice travels in metadata.warnings, the
+                # same slot every other prior-blended score uses, so a
+                # consumer reads one place whichever command produced it.
+                payload = dict(result.data)
+                warnings = payload.pop("warnings", [])
+                emit_json("waivers", payload, metadata={
                     "format": "draft",
+                    "warnings": warnings,
                 }, file=stdout)
             return
 
@@ -59,6 +65,8 @@ def waivers_command(output_format: str):
             handle_agent_failure(result)
 
         data = result.data
+        for warning in data.get("warnings", []):
+            error_console.print(f"[yellow]{warning['message']}[/yellow]")
         console.print(Panel.fit("[bold blue]Draft Waiver Recommendations[/bold blue]"))
 
         # Waiver position

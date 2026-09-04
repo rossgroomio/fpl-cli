@@ -455,6 +455,44 @@ class TestEarlySeasonQualityWarning:
         assert early_season_quality_warning(MINS_FACTOR_START_GW, blended=False) is not None
         assert early_season_quality_warning(MINS_FACTOR_START_GW + 1, blended=False) is None
 
+    def test_names_the_score_the_caller_actually_shows(self):
+        """A notice pointing at quality_score on a page that only has
+        target_score sends the reader looking for a column that is not there.
+        """
+        blended = early_season_quality_warning(
+            2, blended=True, score_names=("target_score",),
+        )
+        assert blended is not None
+        assert "target_score" in blended["message"]
+        assert "quality_score" not in blended["message"]
+
+        unblended = early_season_quality_warning(
+            2, blended=False, score_names=("waiver_score",),
+        )
+        assert unblended is not None
+        assert "waiver_score is pure observation" in unblended["message"]
+
+    def test_two_score_names_read_as_a_plural_sentence(self):
+        """fpl transfer-eval shows one blended score from each family."""
+        warning = early_season_quality_warning(
+            2, blended=True, score_names=("quality_score", "target_score"),
+        )
+        assert warning is not None
+        assert "quality_score and target_score blend this season's" in warning["message"]
+        assert "as prior-informed estimates, not measurements" in warning["message"]
+
+    def test_the_codes_do_not_vary_with_the_score_named(self):
+        """One rule for a consumer keying on the code: the condition and the
+        device are the same whichever family's score is on the page.
+        """
+        for names in (("quality_score",), ("waiver_score",), ("quality_score", "target_score")):
+            assert early_season_quality_warning(
+                2, blended=True, score_names=names,
+            )["code"] == "early_season_prior_informed"
+            assert early_season_quality_warning(
+                2, blended=False, score_names=names,
+            )["code"] == "early_season_small_sample"
+
     def test_the_two_notices_never_share_a_code(self):
         blended = early_season_quality_warning(3, blended=True)
         unblended = early_season_quality_warning(3, blended=False)

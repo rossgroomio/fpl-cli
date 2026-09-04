@@ -9,6 +9,7 @@ from fpl_cli.agents.common import fetch_understat_lookup
 from fpl_cli.api.fpl import FPLClient
 from fpl_cli.models.types import PlayerStats
 from fpl_cli.services.matchup import calculate_matchup_score
+from fpl_cli.services.player_prior import early_season_quality_warning
 from fpl_cli.services.scoring import (
     ConsistencySignals,
     apply_adjusted_npxg,
@@ -294,6 +295,27 @@ class StatsAgent(Agent):
                 data["differentials"] = self._find_differentials(player_stats)
             if "targets" in self.views:
                 data["targets"] = self._find_targets(player_stats)
+
+            # The two ownership views carry the early-season prior blend, so
+            # say so beside them and say whether the blend actually ran — the
+            # prior loader swallows a failed history fetch and returns None,
+            # and without this the same command and gameweek could rank a
+            # player 76th or 12th with identical metadata. The other views
+            # score no prior-blended field, so they get no notice.
+            blended_scores = tuple(
+                score for view, score in (
+                    ("targets", "target_score"),
+                    ("differentials", "differential_score"),
+                )
+                if view in self.views
+            )
+            if blended_scores:
+                warning = early_season_quality_warning(
+                    self._next_gw_id,
+                    blended=self._player_priors is not None,
+                    score_names=blended_scores,
+                )
+                data["warnings"] = [warning] if warning is not None else []
 
             self.log_success(f"Analyzed {len(player_stats)} players ({window_label})")
 

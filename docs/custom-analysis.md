@@ -291,6 +291,8 @@ Better at every snapshot for GK, DEF and FWD; MID is neutral throughout, as it w
 
 The blend replaces position-mean shrinkage for both families -- the two are never stacked.
 
+**Every command that shows a blended score says so.** While the blend is live, JSON `metadata.warnings` carries an `early_season_prior_informed` entry and table mode prints the same prose to stderr; when last season's history could not be loaded the scores are pure observation and the notice says that instead (`early_season_small_sample`, before GW6 only). The codes do not vary by family -- the condition and the device are the same, so a consumer keying on the code needs one rule -- but the message names the fields that command actually shows: `quality_score` for the value surfaces, `target_score` / `differential_score` / `waiver_score` for the ownership ones, and both for `fpl transfer-eval`. `lineup_score` and the captain / bench / XI scores are never named, because they are not blended. On the draft waiver path the degraded case covers a second cause: a draft element that found no main-game counterpart takes no prior either, so an all-missed join reads as pure observation rather than as a blend that silently reached nobody.
+
 ### Single-GW family: position-mean shrinkage
 
 The single-GW family (captain / bench / lineup / starting XI) shrinks normalised scores toward the position mean, with shrinkage strength determined by the same confidence:

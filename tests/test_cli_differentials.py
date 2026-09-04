@@ -156,3 +156,45 @@ class TestDifferentialsReliabilityRendering:
         result = _run_differentials()
         assert result.exit_code == 0
         assert "Avail" in result.output
+
+
+_NOTICE = {
+    "code": "early_season_prior_informed",
+    "message": "Early-season notice: until GW10, differential_score blends ...",
+}
+
+
+def _with_notice():
+    stats_result = _make_stats_result()
+    stats_result.data = {**stats_result.data, "warnings": [_NOTICE]}
+    return stats_result
+
+
+class TestDifferentialsEarlySeasonNotice:
+    """Before GW10 differential_score is prior-informed, and says so (#206).
+
+    Only the agent knows whether the priors actually loaded, so it decides
+    the notice and the command routes it to its reader's channel.
+    """
+
+    def test_json_moves_the_notice_into_metadata_warnings(self):
+        result = _run_differentials(["--format", "json"], stats_result=_with_notice())
+        data = json.loads(result.output)
+        assert data["metadata"]["warnings"] == [_NOTICE]
+
+    def test_json_keeps_the_gameweek_alongside_it(self):
+        """The notice is added to metadata, not substituted for what was there."""
+        result = _run_differentials(["--format", "json"], stats_result=_with_notice())
+        assert "gameweek" in json.loads(result.output)["metadata"]
+
+    def test_json_does_not_leave_the_notice_in_data(self):
+        result = _run_differentials(["--format", "json"], stats_result=_with_notice())
+        assert "warnings" not in json.loads(result.output)["data"]
+
+    def test_table_mode_prints_the_notice_to_stderr(self):
+        result = _run_differentials(stats_result=_with_notice())
+        assert "Early-season notice" in result.stderr
+        assert "Early-season notice" not in result.stdout
+
+    def test_no_notice_after_the_cutoff(self):
+        assert "Early-season notice" not in _run_differentials().stderr

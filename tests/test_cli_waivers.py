@@ -162,3 +162,46 @@ class TestWaiversReliabilityRendering:
         result = _run_waivers(agent_result=agent_result)
         assert result.exit_code == 0
         assert "Avail" in result.output
+
+
+_NOTICE = {
+    "code": "early_season_prior_informed",
+    "message": "Early-season notice: until GW10, waiver_score blends ...",
+}
+
+
+def _with_notice():
+    agent_result = _make_agent_result()
+    agent_result.data = {**agent_result.data, "warnings": [_NOTICE]}
+    return agent_result
+
+
+class TestWaiversEarlySeasonNotice:
+    """Before GW10 waiver_score is prior-informed, and says so (#206).
+
+    On the draft path the prior can go missing two ways — the history fetch
+    failed, or the draft element found no main-game counterpart to join to —
+    so the agent decides the notice and the command routes it.
+    """
+
+    def test_json_moves_the_notice_into_metadata_warnings(self):
+        result = _run_waivers(["--format", "json"], agent_result=_with_notice())
+        data = json.loads(result.output)
+        assert data["metadata"]["warnings"] == [_NOTICE]
+
+    def test_json_keeps_the_format_alongside_it(self):
+        """The notice is added to metadata, not substituted for what was there."""
+        result = _run_waivers(["--format", "json"], agent_result=_with_notice())
+        assert json.loads(result.output)["metadata"]["format"] == "draft"
+
+    def test_json_does_not_leave_the_notice_in_data(self):
+        result = _run_waivers(["--format", "json"], agent_result=_with_notice())
+        assert "warnings" not in json.loads(result.output)["data"]
+
+    def test_table_mode_prints_the_notice_to_stderr(self):
+        result = _run_waivers(agent_result=_with_notice())
+        assert "Early-season notice" in result.stderr
+        assert "Early-season notice" not in result.stdout
+
+    def test_no_notice_after_the_cutoff(self):
+        assert "Early-season notice" not in _run_waivers().stderr

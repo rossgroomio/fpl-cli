@@ -170,19 +170,24 @@ class TransferEvalAgent(Agent):
 
             in_players_data.sort(key=lambda x: x["outlook_delta"], reverse=True)
 
-            # quality_score carries the value family's early-season prior
-            # blend; say so beside it, and whether the blend actually ran
-            # (priors loaded) or the score is pure observation.
-            warnings: list[dict[str, str]] = []
+            # Both prior-blended columns get named: quality_score from the
+            # value family and the outlook target_score from the ownership
+            # one, which agrees with fpl targets. quality_score is gated on an
+            # Understat match, so it is named only when it is actually shown.
+            # lineup_score is deliberately absent — the single-GW family still
+            # shrinks toward the position mean rather than blending.
+            shown_scores = ["target_score"]
             if any(
                 entry["quality_score"] is not None
                 for entry in (out_player_data, *in_players_data)
             ):
-                warning = early_season_quality_warning(
-                    next_gw_id, blended=data.player_priors is not None,
-                )
-                if warning is not None:
-                    warnings.append(warning)
+                shown_scores.insert(0, "quality_score")
+            warning = early_season_quality_warning(
+                next_gw_id,
+                blended=data.player_priors is not None,
+                score_names=tuple(shown_scores),
+            )
+            warnings: list[dict[str, str]] = [warning] if warning is not None else []
 
             self.log_success("Transfer evaluation complete")
 

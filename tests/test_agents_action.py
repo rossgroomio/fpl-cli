@@ -92,6 +92,7 @@ def _mock_scoring_data(
     player_priors: dict[int, PlayerPrior] | None = None,
     adjusted_npxg_lookup: dict[int, float] | None = None,
     consistency_lookup: dict[int, Any] | None = None,
+    next_gw_id: int = 26,
 ) -> ScoringData:
     """Fixed ScoringData standing in for prepare_scoring_data's upstream fetches.
 
@@ -104,6 +105,10 @@ def _mock_scoring_data(
     upstream data is empty. Pass them keyed by **main** element id, as the
     real bundle carries them — the agent is what translates them into the
     draft id space (#209).
+
+    *next_gw_id* defaults to a mid-season gameweek, where no early-season
+    device is live; pass an early one to exercise the prior blend and the
+    notice that goes with it.
     """
     teams = [
         make_team(id=1, short_name="ARS"),
@@ -142,7 +147,7 @@ def _mock_scoring_data(
             7: [{"fixture": fixtures[2], "is_home": False}],
         },
         ratings_service=ratings_service,
-        next_gw_id=26,
+        next_gw_id=next_gw_id,
     )
 
     return ScoringData(
@@ -150,8 +155,8 @@ def _mock_scoring_data(
         team_map=team_map,
         all_fixtures=fixtures,
         next_gw_fixtures=fixtures,
-        next_gw_id=26,
-        next_gw={"id": 26, "is_next": True},
+        next_gw_id=next_gw_id,
+        next_gw={"id": next_gw_id, "is_next": True},
         scoring_ctx=scoring_ctx,
         ratings_service=ratings_service,
         players=players or [],
@@ -1046,6 +1051,64 @@ class TestWaiverAgentIdSpace:
         target = result.data["recommendations"][0]["target"]
         assert target["reliability"] is None
         assert target["cv_xgi_percentile"] is None
+
+    # --- the early-season notice, which the same join decides (#206) ---
+
+    @pytest.mark.asyncio
+    async def test_early_season_notice_says_the_blend_ran(
+        self, mock_draft_bootstrap, mock_league_details,
+    ):
+        _, result = await self._run(
+            mock_draft_bootstrap, mock_league_details,
+            next_gw_id=3,
+            player_priors={self.MAIN_ID: PlayerPrior(0.7, 0.5, "history")},
+        )
+        assert [w["code"] for w in result.data["warnings"]] == [
+            "early_season_prior_informed"
+        ]
+        assert "waiver_score" in result.data["warnings"][0]["message"]
+
+    @pytest.mark.asyncio
+    async def test_notice_reports_pure_observation_when_no_prior_survives_the_join(
+        self, mock_draft_bootstrap, mock_league_details,
+    ):
+        """The draft-specific degradation: priors loaded, but keyed to main
+        elements this pool has no counterpart for, so the re-key empties them
+        and nobody was blended. Reading "prior-informed" off a non-None map
+        would tell a reader the opposite of what the numbers are.
+        """
+        _, result = await self._run(
+            mock_draft_bootstrap, mock_league_details,
+            next_gw_id=3,
+            player_priors={self.MAIN_ID + 900: PlayerPrior(0.7, 0.5, "history")},
+        )
+        assert [w["code"] for w in result.data["warnings"]] == [
+            "early_season_small_sample"
+        ]
+
+    @pytest.mark.asyncio
+    async def test_notice_reports_pure_observation_when_priors_never_loaded(
+        self, mock_draft_bootstrap, mock_league_details,
+    ):
+        _, result = await self._run(
+            mock_draft_bootstrap, mock_league_details, next_gw_id=3,
+        )
+        assert [w["code"] for w in result.data["warnings"]] == [
+            "early_season_small_sample"
+        ]
+
+    @pytest.mark.asyncio
+    async def test_no_notice_once_the_blend_has_extinguished(
+        self, mock_draft_bootstrap, mock_league_details,
+    ):
+        """Mid-season there is nothing to caveat, and the slot stays present
+        and empty rather than disappearing on consumers.
+        """
+        _, result = await self._run(
+            mock_draft_bootstrap, mock_league_details,
+            player_priors={self.MAIN_ID: PlayerPrior(0.7, 1.0, "history")},
+        )
+        assert result.data["warnings"] == []
 
 
 class TestWaiverAgentReasons:

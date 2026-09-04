@@ -28,6 +28,7 @@ atomic writes, season-change invalidation.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -121,38 +122,61 @@ def observation_weight_range(gw: int) -> tuple[float, float]:
     return _compute_confidence(gw, 0.0), _compute_confidence(gw, 1.0)
 
 
-def early_season_quality_warning(next_gw_id: int, *, blended: bool) -> dict[str, str] | None:
-    """The ``metadata.warnings`` entry to carry beside a quality_score produced at *next_gw_id*.
+def early_season_quality_warning(
+    next_gw_id: int,
+    *,
+    blended: bool,
+    score_names: Sequence[str] = ("quality_score",),
+) -> dict[str, str] | None:
+    """The ``metadata.warnings`` entry to carry beside a prior-blended score produced at *next_gw_id*.
 
-    One helper for every command that shows the value family's quality score
-    (``fpl stats --value``, ``fpl player``, ``fpl transfer-eval``,
-    ``fpl allocate``), so a reader and an agent are told the same thing about
-    the same number whichever command produced it. *blended* is whether the
-    prior actually reached the score — the priors loaded — so the entry also
-    tells a successful blend from a degraded run: the loader swallows a
-    failed history fetch and returns None, and without this the same
-    command, player and gameweek could print 76 or 59 with identical
-    metadata. Returns None once there is nothing to caveat: from the prior
-    cutoff when blended, from GW6 when not.
+    One helper for every command that shows a score the early-season prior
+    blend reaches — the value family's ``quality_score`` (``fpl stats
+    --value``, ``fpl player``, ``fpl allocate``) and the ownership family's
+    ``target_score`` / ``differential_score`` / ``waiver_score`` (``fpl
+    targets``, ``fpl differentials``, ``fpl waivers``), with ``fpl
+    transfer-eval`` showing one of each — so a reader and an agent are told
+    the same thing about the same kind of number whichever command produced
+    it. Both codes are shared across all of them: the condition and the device
+    are the same, so a consumer keying on the code needs one rule.
+
+    *score_names* names the fields this caller actually shows, so the notice
+    points at them rather than at a field the output does not contain. Its
+    single-GW siblings (``lineup_score`` and the captain / bench / XI scores)
+    are **not** blended — they still shrink toward the position mean — so a
+    caller showing one of those does not name it here.
+
+    *blended* is whether the prior actually reached the score — the priors
+    loaded — so the entry also tells a successful blend from a degraded run:
+    the loader swallows a failed history fetch and returns None, and without
+    this the same command, player and gameweek could print 76 or 59 with
+    identical metadata. Returns None once there is nothing to caveat: from the
+    prior cutoff when blended, from GW6 when not.
     """
     from fpl_cli.services.scoring.constants import MINS_FACTOR_START_GW
+
+    subject = " and ".join(score_names)
+    plural = len(score_names) > 1
 
     if blended:
         if next_gw_id >= CUTOFF_GW:
             return None
         low, high = observation_weight_range(next_gw_id)
+        reading = "prior-informed estimates" if plural else "a prior-informed estimate"
         return {
             "code": "early_season_prior_informed",
             "message": (
-                f"Early-season notice: until GW{CUTOFF_GW}, quality_score blends "
+                f"Early-season notice: until GW{CUTOFF_GW}, {subject} "
+                f"{'blend' if plural else 'blends'} "
                 "this season's observation with last season's pts/90 pedigree "
                 "(price for players without PL history), so a quiet-starting "
                 "elite keeps most of their standing and one good game does not "
                 f"saturate the scale. Going into GW{next_gw_id} the observation "
                 f"carries {low:.0%}-{high:.0%} of the score depending on the "
-                "player's track record. Read quality_score as a prior-informed "
-                "estimate, not a measurement; ep_next is FPL's own projection "
-                "for the coming gameweek (fpl stats --sort ep_next)."
+                f"player's track record. Read {subject} as {reading}, "
+                f"not {'measurements' if plural else 'a measurement'}; ep_next "
+                "is FPL's own projection for the coming gameweek "
+                "(fpl stats --sort ep_next)."
             ),
         }
     if next_gw_id > MINS_FACTOR_START_GW:
@@ -161,12 +185,13 @@ def early_season_quality_warning(next_gw_id: int, *, blended: bool) -> dict[str,
         "code": "early_season_small_sample",
         "message": (
             "Early-season notice: last season's history could not be loaded, "
-            "so quality scores are pure observation and small-sample dominated "
+            f"so {subject} {'are' if plural else 'is'} pure observation and "
+            "small-sample dominated "
             "before GW6 — form and ppg reflect only the opening gameweek(s) and "
             "per-90 rates come from very few minutes, so hot starters saturate "
             "the scale while elite players with a quiet start read low. GK "
-            "ceilings scale with the sample the calendar has made possible, "
-            "reaching full scale at GW6. Treat quality_score as provisional "
+            f"ceilings scale with the sample the calendar has made possible, "
+            f"reaching full scale at GW6. Treat {subject} as provisional "
             "until ~GW6-10; ep_next is FPL's own prior-informed projection for "
             "the coming gameweek (fpl stats --sort ep_next)."
         ),

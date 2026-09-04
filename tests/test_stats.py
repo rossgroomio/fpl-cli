@@ -337,3 +337,136 @@ class TestStatsAgentEarlySeasonPriorBlend:
         result = agent._find_targets(pool)
 
         assert [p["id"] for p in result["all"]][-1] == 3
+
+
+def _scoring_data(*, next_gw_id: int, player_priors, players):
+    """A minimal real ScoringData for driving StatsAgent.run().
+
+    ``team_fixture_map`` is empty on purpose: matchup enrichment then
+    short-circuits to a neutral score, which keeps the harness to the seams
+    these tests are actually about.
+    """
+    from unittest.mock import MagicMock
+
+    from fpl_cli.services.scoring import ScoringContext, ScoringData
+
+    teams = [make_team(id=1, short_name="ARS")]
+    team_map = {t.id: t for t in teams}
+    ratings_service = MagicMock()
+    return ScoringData(
+        teams=teams,
+        team_map=team_map,
+        all_fixtures=[],
+        next_gw_fixtures=[],
+        next_gw_id=next_gw_id,
+        next_gw={"id": next_gw_id, "is_next": True},
+        scoring_ctx=ScoringContext(
+            team_map=team_map,
+            team_fixture_map={},
+            ratings_service=ratings_service,
+            next_gw_id=next_gw_id,
+        ),
+        ratings_service=ratings_service,
+        players=players,
+        player_histories={},
+        player_priors=player_priors,
+        adjusted_npxg_lookup=None,
+        consistency_lookup=None,
+    )
+
+
+async def _run_stats(views: set[str], *, next_gw_id: int = 2, player_priors=None):
+    """Drive ``StatsAgent.run`` over one qualifying player with every seam stubbed."""
+    from unittest.mock import AsyncMock, patch
+
+    players = [
+        make_player(
+            id=1, web_name="Salah", team_id=1, position=PlayerPosition.MIDFIELDER,
+            form=6.0, points_per_game=5.0, minutes=900, total_points=90,
+            expected_goals=5.0, expected_assists=3.0,
+        ),
+    ]
+    agent = StatsAgent(config={"gameweeks": 0, "min_minutes": 0, "views": views})
+    with (
+        patch.object(agent.client, "get_players", new_callable=AsyncMock, return_value=players),
+        patch.object(
+            agent.client, "get_teams", new_callable=AsyncMock,
+            return_value=[make_team(id=1, short_name="ARS")],
+        ),
+        patch.object(
+            agent.client, "get_current_gameweek", new_callable=AsyncMock,
+            return_value={"id": max(next_gw_id - 1, 1)},
+        ),
+        patch(
+            "fpl_cli.agents.analysis.stats.fetch_understat_lookup",
+            new_callable=AsyncMock, return_value={},
+        ),
+        patch(
+            "fpl_cli.agents.analysis.stats.prepare_scoring_data",
+            new_callable=AsyncMock,
+            return_value=_scoring_data(
+                next_gw_id=next_gw_id, player_priors=player_priors, players=players,
+            ),
+        ),
+    ):
+        return await agent.run()
+
+
+class TestStatsAgentEarlySeasonNotice:
+    """The ownership views say whether their scores are prior-informed (#206).
+
+    Only the agent knows whether the priors loaded — the loader swallows a
+    failed history fetch and returns None — so the notice is decided here and
+    carried in the result for the command to route to its reader's channel.
+    """
+
+    @staticmethod
+    def _prior_map():
+        from fpl_cli.services.player_prior import PlayerPrior
+
+        return {1: PlayerPrior(0.5, 0.6, "history")}
+
+    async def test_targets_notice_names_only_the_target_score(self):
+        result = await _run_stats({"targets"}, player_priors=self._prior_map())
+        warnings = result.data["warnings"]
+        assert [w["code"] for w in warnings] == ["early_season_prior_informed"]
+        assert "target_score" in warnings[0]["message"]
+        assert "differential_score" not in warnings[0]["message"]
+
+    async def test_differentials_notice_names_only_the_differential_score(self):
+        result = await _run_stats({"differentials"}, player_priors=self._prior_map())
+        message = result.data["warnings"][0]["message"]
+        assert "differential_score" in message
+        assert "target_score" not in message
+
+    async def test_both_views_name_both_scores(self):
+        result = await _run_stats(
+            {"targets", "differentials"}, player_priors=self._prior_map(),
+        )
+        message = result.data["warnings"][0]["message"]
+        assert "target_score and differential_score" in message
+
+    async def test_degraded_priors_report_pure_observation(self):
+        """The loader returns None on a failed history fetch, and the same
+        command and gameweek would otherwise print a pedigree-informed ranking
+        and a raw one with identical metadata.
+        """
+        result = await _run_stats({"targets"}, player_priors=None)
+        assert [w["code"] for w in result.data["warnings"]] == [
+            "early_season_small_sample"
+        ]
+
+    async def test_no_notice_once_the_blend_has_extinguished(self):
+        from fpl_cli.services.player_prior import CUTOFF_GW
+
+        result = await _run_stats(
+            {"targets"}, next_gw_id=CUTOFF_GW, player_priors=self._prior_map(),
+        )
+        assert result.data["warnings"] == []
+
+    async def test_views_that_score_no_blended_field_get_no_slot(self):
+        """value_picks and the xG views carry no prior-blended score, so a
+        notice there would caveat a number that does not exist.
+        """
+        result = await _run_stats({"value_picks"}, player_priors=self._prior_map())
+        assert "warnings" not in result.data

@@ -9,7 +9,7 @@ import click
 from rich.panel import Panel
 from rich.table import Table
 
-from fpl_cli.cli._context import console, handle_agent_failure
+from fpl_cli.cli._context import console, error_console, handle_agent_failure
 from fpl_cli.cli._json import emit_json, emit_json_error, json_output_mode, output_format_option
 
 
@@ -33,7 +33,14 @@ def targets_command(min_own: float, min_minutes: int, output_format: str):
                 if not result.success:
                     emit_json_error("targets", result.message, file=stdout)
                     return
-                emit_json("targets", result.data, metadata={}, file=stdout)
+                # The early-season notice travels in metadata.warnings, the
+                # same slot every other prior-blended score uses, so a
+                # consumer reads one place whichever command produced it.
+                payload = dict(result.data)
+                warnings = payload.pop("warnings", [])
+                emit_json(
+                    "targets", payload, metadata={"warnings": warnings}, file=stdout,
+                )
             return
 
         async with StatsAgent(config={
@@ -47,6 +54,8 @@ def targets_command(min_own: float, min_minutes: int, output_format: str):
             handle_agent_failure(result)
 
         data = result.data
+        for warning in data.get("warnings", []):
+            error_console.print(f"[yellow]{warning['message']}[/yellow]")
         targets = data.get("targets", {})
         window_label = data.get("window_label", "whole season")
 

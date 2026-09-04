@@ -15,6 +15,7 @@ from fpl_cli.api.fpl import FPLClient
 from fpl_cli.api.fpl_draft import FPLDraftClient, match_draft_to_main
 from fpl_cli.models.player import Player
 from fpl_cli.models.types import EnrichedPlayer, WaiverPoolEntry, WaiverTarget
+from fpl_cli.services.player_prior import early_season_quality_warning
 from fpl_cli.services.scoring import (
     ConsistencySignals,
     apply_adjusted_npxg,
@@ -244,9 +245,22 @@ class WaiverAgent(Agent):
 
             self.log_success(f"Found {len(waiver_targets)} potential waiver targets")
 
+            # waiver_score carries the early-season prior blend; say so beside
+            # it, and say whether the blend actually ran. On this path the
+            # prior can go missing two ways — the history fetch failed, or the
+            # draft element found no main-game counterpart to join to — and
+            # the notice is what tells a ranked list built on pedigree from
+            # one built on three gameweeks of observation.
+            warning = early_season_quality_warning(
+                next_gw_id,
+                blended=bool(self._player_priors),
+                score_names=("waiver_score",),
+            )
+
             return self._create_result(
                 AgentStatus.SUCCESS,
                 data={
+                    "warnings": [warning] if warning is not None else [],
                     "league_id": league_id,
                     "entry_id": entry_id,
                     "waiver_position": our_waiver_position,
