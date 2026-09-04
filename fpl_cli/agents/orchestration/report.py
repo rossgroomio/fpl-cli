@@ -14,6 +14,7 @@ from fpl_cli.agents.base import Agent, AgentResult, AgentStatus
 from fpl_cli.cli._league_recap_types import RecapManagerEntry
 from fpl_cli.paths import TEMPLATE_DIR
 from fpl_cli.services.team_ratings import fdr_columns_footer
+from fpl_cli.utils.text import ordinal_suffix
 from fpl_cli.utils.time import format_generated_at
 
 
@@ -624,11 +625,7 @@ class ReportAgent(Agent):
 
 
 def _ordinal(n: int) -> str:
-    if 10 <= n % 100 <= 20:
-        suffix = "th"
-    else:
-        suffix = {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
-    return f"{n}{suffix}"
+    return f"{n}{ordinal_suffix(n)}"
 
 
 # R10: a position or total that could not be derived is named by these two

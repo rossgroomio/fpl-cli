@@ -3438,6 +3438,12 @@ class TestRecapPlayerClubs:
         assert "Aston Villa" not in text
 
 
+# Every gameweek of the span ruled `last-place`, which is what lets an
+# ordinal be asserted at all: a hole anywhere earlier could hide a fine the
+# tally never counted.
+_ALL_TEN = list(range(1, 11))
+
+
 class TestFinePlacement:
     """This gameweek's fine, placed in the fined manager's season (issue #233).
 
@@ -3478,12 +3484,14 @@ class TestFinePlacement:
             ManagerFineTally(
                 manager_key=1, manager_name="Bob",
                 counts={"last-place": 1}, fined_gameweeks=[10],
+                ruled_gameweeks_by_rule={"last-place": _ALL_TEN},
             ),
             # The other manager's own single fine, in a different gameweek --
             # the pair of 1s the editorial merged into one running count.
             ManagerFineTally(
                 manager_key=2, manager_name="Ada",
                 counts={"last-place": 1}, fined_gameweeks=[9],
+                ruled_gameweeks_by_rule={"last-place": _ALL_TEN},
             ),
         )
 
@@ -3498,6 +3506,7 @@ class TestFinePlacement:
         tally = self._tally(ManagerFineTally(
             manager_key=1, manager_name="Bob",
             counts={"last-place": 3}, fined_gameweeks=[2, 6, 10],
+            ruled_gameweeks_by_rule={"last-place": _ALL_TEN},
         ))
 
         text = format_recap_fines_context(data, tally)
@@ -3513,6 +3522,7 @@ class TestFinePlacement:
         tally = self._tally(ManagerFineTally(
             manager_key=1, manager_name="Bob",
             counts={"last-place": 2, "red-card": 1}, fined_gameweeks=[4, 10],
+            ruled_gameweeks_by_rule={"last-place": _ALL_TEN, "red-card": _ALL_TEN},
         ))
 
         text = format_recap_fines_context(data, tally)
@@ -3550,6 +3560,7 @@ class TestFinePlacement:
         tally = self._tally(ManagerFineTally(
             manager_key=7, manager_name="Bob",
             counts={"last-place": 1}, fined_gameweeks=[10],
+            ruled_gameweeks_by_rule={"last-place": _ALL_TEN},
         ))
 
         text = format_recap_fines_context(data, tally)
@@ -3565,10 +3576,12 @@ class TestFinePlacement:
             ManagerFineTally(
                 manager_key=1, manager_name="Bob",
                 counts={"last-place": 1}, fined_gameweeks=[10],
+                ruled_gameweeks_by_rule={"last-place": _ALL_TEN},
             ),
             ManagerFineTally(
                 manager_key=2, manager_name="Bob",
                 counts={"last-place": 4}, fined_gameweeks=[1, 2, 3, 10],
+                ruled_gameweeks_by_rule={"last-place": _ALL_TEN},
             ),
         )
 
@@ -3585,6 +3598,64 @@ class TestFinePlacement:
         text = format_recap_season_fines_context(tally)
 
         assert "- Bob: 2 (2 last-place; fined in GW3, GW10)" in text
+
+    def test_a_gap_in_the_span_forbids_the_ordinal_instead_of_asserting_it(self):
+        """GW3 was never captured. If Bob was fined there, the tally never
+        counted it, so "their first of the season" would be false -- exactly
+        the claim this section exists to prevent, arrived at from the other
+        direction."""
+        data = _make_recap_data(fines=[self._fine("Bob")])
+        tally = self._tally(ManagerFineTally(
+            manager_key=1, manager_name="Bob",
+            counts={"last-place": 1}, fined_gameweeks=[10],
+            ruled_gameweeks_by_rule={"last-place": [1, 2, 4, 5, 6, 7, 8, 9, 10]},
+        ))
+
+        text = format_recap_fines_context(data, tally)
+
+        assert "the ledger records 1 last-place fine against Bob" in text
+        assert "GW3 never ruled last-place against Bob" in text
+        assert "Do not number this fine." in text
+        assert "first of the season" not in text
+
+    def test_a_rule_its_own_gameweek_could_not_rule_is_a_gap_of_its_own(self):
+        """The coarse backfill tier carries no squad, so it rules `last-place`
+        and structurally cannot rule `red-card`. A span fully ruled for one is
+        therefore not proof for the other, which `ruled_gameweeks` alone
+        cannot tell them apart on."""
+        data = _make_recap_data(fines=[
+            self._fine("Bob"), self._fine("Bob", rule="red-card"),
+        ])
+        tally = self._tally(ManagerFineTally(
+            manager_key=1, manager_name="Bob",
+            counts={"last-place": 1, "red-card": 1}, fined_gameweeks=[10],
+            ruled_gameweeks=_ALL_TEN,
+            ruled_gameweeks_by_rule={
+                "last-place": _ALL_TEN, "red-card": [4, 5, 6, 7, 8, 9, 10],
+            },
+        ))
+
+        text = format_recap_fines_context(data, tally)
+
+        assert "this gameweek's last-place fine is Bob's first of the season" in text
+        assert "GW1-3 never ruled red-card against Bob" in text
+
+    def test_a_ledger_starting_after_the_league_did_cannot_assert_a_first(self):
+        """A league that adopted the tool mid-season has no recorded GW1-4.
+        The tally cannot tell that from a clean one, so it says so rather than
+        reading silence as innocence."""
+        data = _make_recap_data(fines=[self._fine("Bob")])
+        tally = self._tally(ManagerFineTally(
+            manager_key=1, manager_name="Bob",
+            counts={"last-place": 1}, fined_gameweeks=[10],
+            first_recorded_gameweek=5,
+            ruled_gameweeks_by_rule={"last-place": [5, 6, 7, 8, 9, 10]},
+        ))
+
+        text = format_recap_fines_context(data, tally)
+
+        assert "GW1-4 never ruled last-place against Bob" in text
+        assert "Do not number this fine." in text
 
     def test_the_system_prompt_forbids_an_unsupported_repeat(self):
         system, _ = get_recap_synthesis_prompt(

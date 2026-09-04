@@ -2630,8 +2630,10 @@ class TestEndToEndPromptThroughTheFullCommand:
         assert "## Season Fines" in user_prompt
         assert f"Bob: 1 (1 last-place; fined in GW{CHIP_SPLIT_GW})" in user_prompt
         assert "NEVER add up fines yourself" in system_prompt
-        # The ordinal the model kept inventing, stated for it (issue #233).
-        assert "is Bob's first of the season" in user_prompt
+        # This fixture's ledger holds only the gameweek under recap, so the
+        # ordinal the model kept inventing cannot be asserted -- and the
+        # section refuses it outright rather than guessing (issue #233).
+        assert "Do not number this fine." in user_prompt
 
     def test_an_ordinary_gameweek_still_hands_the_model_season_totals(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
@@ -2652,7 +2654,8 @@ class TestEndToEndPromptThroughTheFullCommand:
 
         assert "## Season Fines" in user_prompt
         assert "Bob: 1 (1 last-place; fined in GW5)" in user_prompt
-        assert "is Bob's first of the season" in user_prompt
+        assert "the ledger records 1 last-place fine against Bob" in user_prompt
+        assert "Do not number this fine." in user_prompt
         # ...and it is offered, never demanded.
         assert "optional colour, not a required beat" in system_prompt
 

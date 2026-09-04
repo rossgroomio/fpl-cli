@@ -3,13 +3,10 @@
 from __future__ import annotations
 
 from fpl_cli.cli._league_recap_types import LeagueRecapData
-from fpl_cli.services.league_history_fines import (
-    ManagerFineTally,
-    SeasonFinesTally,
-    format_fine_breakdown,
-)
+from fpl_cli.services.league_history_fines import SeasonFinesTally, format_fine_breakdown
 from fpl_cli.services.league_history_notes import NotesPack, NoteSurface
 from fpl_cli.utils.gameweek import format_gameweek_list, is_opening_gameweek
+from fpl_cli.utils.text import ordinal_suffix
 
 # =============================================================================
 # SYNTHESIS PROMPT (Stage 2: League-wide editorial)
@@ -443,8 +440,7 @@ def _ordinal(n: int) -> str:
     """"first", "second", ... then "11th", "21st", "22nd"."""
     if 1 <= n <= len(_ORDINAL_WORDS):
         return _ORDINAL_WORDS[n - 1]
-    suffix = "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
-    return f"{n}{suffix}"
+    return f"{n}{ordinal_suffix(n)}"
 
 
 def _season_fine_placements(
@@ -452,13 +448,23 @@ def _season_fine_placements(
 ) -> list[str]:
     """One sentence per fine, placing it in that manager's season (issue #233).
 
-    Only stated where the ledger can prove it: the tally must already hold a
-    fine against that manager in this very gameweek, which it does whenever
-    the recap's own capture reached them and the store took the row. A store
-    failure that cost the tally, a manager the capture missed, or a fine
-    ruled outside the ledger leaves that fine unplaced rather than counted
-    from a tally that is missing it -- an ordinal derived from an incomplete
-    total is exactly the wrong claim this section exists to prevent.
+    Only stated where the ledger can prove it, on two counts.
+
+    The tally must already hold a fine against that manager in this very
+    gameweek, which it does whenever the recap's own capture reached them and
+    the store took the row. A store failure that cost the tally, a manager
+    the capture missed, or a fine ruled outside the ledger leaves that fine
+    unplaced rather than counted from a total that is missing it.
+
+    And the ordinal itself is only an ordinal where every earlier gameweek
+    actually ruled that rule against them. A gameweek nobody captured, one
+    that could not be read, one recorded before fine rulings were, or one at
+    the coarse tier that structurally could not rule `red-card` all leave a
+    real fine unrecorded -- so a total of 1 built over a span with a hole in
+    it does not make this fine their first. Where the span holds one, the
+    line names it and forbids the ordinal outright instead of asserting a
+    number the ledger cannot stand behind. Either way the model is left
+    unable to write "second" off its own arithmetic, which is the point.
 
     Matched on `manager_key`, with a display-name fallback only when the name
     is unique in the tally: two managers sharing a name is the whole reason
@@ -471,9 +477,6 @@ def _season_fine_placements(
         return []
 
     by_key = {manager.manager_key: manager for manager in tally.managers}
-    names: dict[str, list[ManagerFineTally]] = {}
-    for manager in tally.managers:
-        names.setdefault(manager.manager_name, []).append(manager)
 
     lines: list[str] = []
     seen: set[tuple[int, str]] = set()
@@ -481,8 +484,8 @@ def _season_fine_placements(
         key = fine.get("manager_key")
         manager = by_key.get(key) if key is not None else None
         if manager is None:
-            candidates = names.get(fine["manager_name"], [])
-            manager = candidates[0] if len(candidates) == 1 else None
+            named = [m for m in tally.managers if m.manager_name == fine["manager_name"]]
+            manager = named[0] if len(named) == 1 else None
         if manager is None:
             continue
         rule_type = fine["rule_type"]
@@ -497,7 +500,16 @@ def _season_fine_placements(
             continue
         seen.add((manager.manager_key, rule_type))
         name = manager.manager_name
-        if count == 1:
+        blind = tally.unruled_gameweeks_for(manager, rule_type, before=gameweek)
+        if blind:
+            plural = "" if count == 1 else "s"
+            lines.append(
+                f"- {name}: the ledger records {count} {rule_type} fine{plural} against "
+                f"{name} this season, this one included, but {format_gameweek_list(blind)} "
+                f"never ruled {rule_type} against {name}, so an earlier one is not ruled "
+                f"out. Do not number this fine.",
+            )
+        elif count == 1:
             lines.append(
                 f"- {name}: this gameweek's {rule_type} fine is {name}'s first of the "
                 f"season. No earlier gameweek carries a {rule_type} fine against {name}.",
@@ -573,13 +585,15 @@ def format_recap_season_fines_context(tally: SeasonFinesTally | None) -> str:
     fined = tally.fined_managers
     if fined:
         for manager in fined:
-            # Same helper the console block uses, so the wording the model is
-            # given and the wording the user reads cannot drift apart.
-            # The fined gameweeks travel with the total (issue #233). A
-            # bare "1" beside another manager's bare "1" is what the
-            # editorial read as one manager's running count; naming the
-            # gameweek makes the total checkable against the section above
-            # it, and leaves "second" with nowhere to come from.
+            # The breakdown itself is the console block's helper, so the
+            # counts the model is given and the counts the user reads cannot
+            # drift apart -- but the line as a whole is deliberately not the
+            # console's any more. The fined gameweeks travel with the total
+            # here only (issue #233): a bare "1" beside another manager's
+            # bare "1" is what the editorial read as one manager's running
+            # count, and naming the gameweeks leaves "second" with nowhere
+            # to come from. The console shows a human the same table a
+            # sentence later, and needs no such scaffolding.
             fined_in = format_gameweek_list(manager.fined_gameweeks)
             provenance = f"; fined in {fined_in}" if fined_in else ""
             lines.append(

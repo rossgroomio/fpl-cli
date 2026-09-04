@@ -1,4 +1,4 @@
-"""Text utilities for cross-source name comparison."""
+"""Text utilities: cross-source name comparison, and number wording."""
 
 import unicodedata
 
@@ -24,3 +24,19 @@ def strip_diacritics(text: str) -> str:
     return "".join(
         c for c in unicodedata.normalize("NFD", text) if unicodedata.category(c) != "Mn"
     )
+
+
+_ORDINAL_SUFFIXES = {1: "st", 2: "nd", 3: "rd"}
+
+
+def ordinal_suffix(n: int) -> str:
+    """The "st"/"nd"/"rd"/"th" for a number, minus the number itself.
+
+    Only the suffix, because that is the only part every caller agrees on:
+    the status line prints a grouped overall rank ("45,170th"), the recap
+    report a bare league position ("3rd"), and the recap prompt spells the
+    small numbers out in words. Three copies of the 11-12-13 exception were
+    already in the tree, which is one rule in three places waiting to
+    disagree.
+    """
+    return "th" if 11 <= n % 100 <= 13 else _ORDINAL_SUFFIXES.get(n % 10, "th")
