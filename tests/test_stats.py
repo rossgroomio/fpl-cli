@@ -517,6 +517,35 @@ class TestStatsAgentEarlySeasonNotice:
         assert result.data["warnings"] == []
 
 
+class TestStatsAgentUnderstatJoinWarning:
+    """`fpl xg`, `fpl targets` and `fpl differentials` all enrich here (#229).
+
+    A club no Understat row carries loses its whole squad's npxG, and the
+    tripwire that catches it is a stderr log line — invisible to the JSON
+    consumer these three commands are written for. The agent is the only place
+    the three share, so the notice is picked up here and routed to
+    `metadata.warnings` by each command.
+    """
+
+    async def test_a_club_that_joined_nothing_reaches_the_result(self):
+        from fpl_cli.api.understat import match_fpl_to_understat
+
+        # What the enrichment does when a club's mapped name names no row.
+        match_fpl_to_understat(
+            "Some Player", "Coventry City",
+            [{"name": "Saka", "team": "Arsenal", "position": "M S", "minutes": 900}],
+        )
+
+        result = await _run_stats({"value_picks"})
+        codes = [w["code"] for w in result.data["warnings"]]
+        assert codes == ["understat_team_unmatched"]
+        assert "Coventry City" in result.data["warnings"][0]["message"]
+
+    async def test_no_notice_when_every_club_joined(self):
+        result = await _run_stats({"value_picks"})
+        assert result.data["warnings"] == []
+
+
 class TestStatsAgentMinutesFloor:
     """The minutes floor scales to the gameweeks played (#227).
 

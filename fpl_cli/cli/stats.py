@@ -379,6 +379,14 @@ def stats_command(
                     ),
                 })
 
+            # A club no Understat row carries loses npxG, xGChain and every
+            # score built on them. The tripwire that spots it is a log line on
+            # stderr, which a `--format json` consumer parsing stdout never
+            # sees (#229).
+            from fpl_cli.api.understat import understat_join_warnings
+
+            warnings.extend(understat_join_warnings())
+
             metadata = {"gameweek": None, "format": str(fmt) if fmt else None,
                         "custom_analysis": custom_on,
                         "filters": {"position": position, "sort": sort_field,

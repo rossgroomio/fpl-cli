@@ -330,6 +330,34 @@ def split_team_titles(team_title: str) -> list[str]:
     return [part.strip() for part in team_title.split(",")]
 
 
+def _carries_club(team_title: Any, fpl_team_mapped: str) -> bool:
+    """Whether one Understat row belongs to an FPL club's mapped name.
+
+    A player who moved mid-season carries every club they have turned out for,
+    comma-joined ("Arsenal,Crystal Palace"), so a title that is not an outright
+    match still has to be checked component-wise (#94). Equality short-circuits
+    that split for the overwhelming majority of rows, which matters on an
+    O(players x candidates) scan.
+    """
+    if not isinstance(team_title, str):
+        return False
+    return team_title == fpl_team_mapped or fpl_team_mapped in split_team_titles(team_title)
+
+
+def understat_club_rows(
+    fpl_team: str, understat_players: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """The rows Understat carries for an FPL club, through the matcher's gate.
+
+    Public so a health check can ask the question the enrichment itself asks --
+    does this club's mapped name name any row in the list the scorer scans? --
+    by calling the gate rather than reimplementing it alongside and drifting
+    from it (#229).
+    """
+    fpl_team_mapped = TEAM_NAME_MAP.get(fpl_team, fpl_team)
+    return [p for p in understat_players if _carries_club(p.get("team"), fpl_team_mapped)]
+
+
 # Name-match tiers, in confidence order. Only the top two are trusted without a
 # club agreeing: a prefix match is safe once the title already names the FPL
 # club, but across all 20 it would let "B. Silva" land on any Silva in the
@@ -352,7 +380,97 @@ _CROSS_CLUB_MIN_MINUTES_RATIO = 0.5
 
 # FPL teams already reported as matching no Understat players, so the join-drop
 # warning below fires once per team per process rather than once per player.
-_unmatched_team_warned: set[str] = set()
+# Keyed on ``(fpl_team, season_label)``: a club can be legitimately absent from
+# a past season's pool and still be a real map gap in the live one, so the two
+# must not silence each other (#229).
+_unmatched_team_warned: set[tuple[str, str | None]] = set()
+
+# Warning code the join-drop tripwire travels under in a JSON envelope's
+# ``metadata.warnings``.
+UNDERSTAT_TEAM_UNMATCHED = "understat_team_unmatched"
+
+
+def _report_unmatched_team(
+    fpl_team: str, fpl_team_mapped: str, season_label: str | None
+) -> None:
+    """Announce a club no Understat row carries, once per club per pool.
+
+    The join-drop tripwire (#97): a team name the map doesn't resolve fails
+    every one of its players identically -- 20 teams in, 19 join -- and
+    per-player it would just look like a string-similarity miss. #94 was
+    exactly this shape.
+
+    A *past* season's pool is the exception. The caller matches a player's
+    current club against the season they are being scored on, so the three
+    clubs promoted since are absent from it every year by definition, and
+    nothing here can tell that apart from a map gap. Announcing it as one sent
+    `fpl returnees` warning about TEAM_NAME_MAP on three healthy clubs while
+    `fpl doctor --providers`, which probes the live pool, stayed correctly
+    green (#229). Those stay a debug line and never reach `metadata.warnings`.
+    """
+    key = (fpl_team, season_label)
+    if key in _unmatched_team_warned:
+        return
+    _unmatched_team_warned.add(key)
+    if season_label is not None:
+        logger.debug(
+            "Understat's %s data carries no players for team %r (mapped from FPL team %r) "
+            "— expected for a club that was not in that season's Premier League",
+            season_label,
+            fpl_team_mapped,
+            fpl_team,
+        )
+        return
+    logger.warning(
+        "No Understat players carry team %r (mapped from FPL team %r) — "
+        "TEAM_NAME_MAP may need updating; this club's players lose xG enrichment",
+        fpl_team_mapped,
+        fpl_team,
+    )
+
+
+def unmatched_understat_teams() -> list[str]:
+    """FPL clubs this process found no live Understat rows for.
+
+    The season in progress only: a club missing from a past season's pool is
+    the promoted-club case `_report_unmatched_team` deliberately stays quiet
+    about, and reporting it would be a false alarm.
+    """
+    return sorted(team for team, season in _unmatched_team_warned if season is None)
+
+
+def understat_join_warnings() -> list[dict[str, str]]:
+    """The live join-drop tripwires as `metadata.warnings` entries, one per club.
+
+    The log line reaches a human reading stderr; a `--format json` consumer
+    parses stdout and would otherwise lose the one signal saying a whole club's
+    xG enrichment is missing (#229).
+    """
+    return [
+        {
+            "code": UNDERSTAT_TEAM_UNMATCHED,
+            "message": (
+                f"Understat carries no players for {team} (mapped to "
+                f"{TEAM_NAME_MAP.get(team, team)!r}), so every one of that club's "
+                "players is missing npxG, xGChain and the quality and value scores "
+                "built on them. TEAM_NAME_MAP in fpl_cli/api/understat.py may need "
+                "updating."
+            ),
+        }
+        for team in unmatched_understat_teams()
+    ]
+
+
+def reset_understat_join_warnings() -> None:
+    """Forget every join-drop tripwire recorded so far.
+
+    The record is process-global so the warning fires once rather than once per
+    player, which makes this the hook that scopes it to a run instead. The CLI
+    group calls it before dispatching, so one command's unresolved clubs cannot
+    surface in the next command's `metadata.warnings`; anything driving the
+    agents directly, in a process that outlives one pass, owns the same call.
+    """
+    _unmatched_team_warned.clear()
 
 
 def _minutes_ratio(fpl_minutes: int | None, player: dict[str, Any]) -> float | None:
@@ -499,6 +617,7 @@ def match_fpl_to_understat(
     understat_players: list[dict[str, Any]],
     fpl_position: str | None = None,
     fpl_minutes: int | None = None,
+    season_label: str | None = None,
 ) -> dict[str, Any] | None:
     """Match an FPL player to their Understat data using multi-signal scoring.
 
@@ -508,6 +627,11 @@ def match_fpl_to_understat(
     in ``_match_across_clubs`` (#234) — but only when the club itself resolved,
     so a club no Understat row carries keeps failing as a block. Returns None
     when neither pass is confident.
+
+    *season_label* names the season ``understat_players`` covers when that is
+    not the one in progress; leaving it None says the pool is the live one. It
+    only steers the join-drop tripwire — see ``_report_unmatched_team`` for why
+    an absent club means something different in a past season's pool.
     """
     fpl_name_norm = _normalise(fpl_name)
     fpl_words = fpl_name_norm.split()
@@ -518,17 +642,12 @@ def match_fpl_to_understat(
     team_seen = False
 
     for player in understat_players:
-        # A player who moved mid-season carries every club they have turned
-        # out for, comma-joined ("Arsenal,Crystal Palace"), so a title that is
-        # not an outright match still has to be checked component-wise (#94).
-        # Equality short-circuits that split for the overwhelming majority of
-        # rows, which matters on an O(players x candidates) scan. Season
-        # totals stay cumulative across both clubs, which is what the minutes
-        # bonus wants — FPL's minutes are cumulative too.
-        team_title = player.get("team")
-        if not isinstance(team_title, str):
-            continue
-        if team_title != fpl_team_mapped and fpl_team_mapped not in split_team_titles(team_title):
+        # The same gate `understat_club_rows` (and so `fpl doctor`) applies, so
+        # the health check and the enrichment can never disagree about which
+        # clubs resolve. Season totals stay cumulative across both clubs of a
+        # mid-season move, which is what the minutes bonus wants — FPL's
+        # minutes are cumulative too.
+        if not _carries_club(player.get("team"), fpl_team_mapped):
             continue
         team_seen = True
 
@@ -544,18 +663,8 @@ def match_fpl_to_understat(
             best_score = score
             best_match = player
 
-    if not team_seen and understat_players and fpl_team not in _unmatched_team_warned:
-        # The join-drop tripwire (#97): a team name the map doesn't resolve
-        # fails every one of its players identically — 20 teams in, 19 join —
-        # and per-player it would just look like a string-similarity miss.
-        # #94 was exactly this shape.
-        _unmatched_team_warned.add(fpl_team)
-        logger.warning(
-            "No Understat players carry team %r (mapped from FPL team %r) — "
-            "TEAM_NAME_MAP may need updating; this club's players lose xG enrichment",
-            fpl_team_mapped,
-            fpl_team,
-        )
+    if not team_seen and understat_players:
+        _report_unmatched_team(fpl_team, fpl_team_mapped, season_label)
 
     if best_match is not None:
         return best_match

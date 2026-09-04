@@ -391,6 +391,58 @@ class TestPlayerDetail:
         assert "No such option" in result.output or "no such option" in result.output
 
 
+class TestPlayerUnderstatJoinWarning:
+    """A club Understat carries no rows for has to reach the JSON envelope (#229).
+
+    The tripwire is a stderr log line; a `--format json` consumer parses
+    stdout, so without the `metadata.warnings` entry it has no way to know
+    this player's npxG and quality score are missing for a whole-club reason
+    rather than a per-player one.
+    """
+
+    @staticmethod
+    def _run_json(understat_players):
+        client, fixture_agent, ratings_svc = _make_mocks()
+        mock_understat = MagicMock()
+        mock_understat.get_league_players = AsyncMock(return_value=understat_players)
+        mock_understat.get_player = AsyncMock(return_value=None)
+        mock_understat.__aenter__ = AsyncMock(return_value=mock_understat)
+        mock_understat.__aexit__ = AsyncMock(return_value=False)
+        runner = CliRunner()
+        # No `match_fpl_to_understat` patch: the miss has to come from the
+        # payload, so the real gate is what decides.
+        with (
+            patch("fpl_cli.cli.player.get_settings", return_value={"fpl": {}}),
+            patch("fpl_cli.api.fpl.FPLClient", return_value=client),
+            patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=fixture_agent),
+            patch("fpl_cli.services.team_ratings.TeamRatingsService", return_value=ratings_svc),
+            patch("fpl_cli.api.understat.UnderstatClient", return_value=mock_understat),
+        ):
+            return runner.invoke(main, ["player", "Salah", "--format", "json"])
+
+    def test_club_with_no_rows_warns_in_json_metadata(self):
+        result = self._run_json(
+            [{"name": "Saka", "team": "Arsenal", "position": "M S", "minutes": 900}],
+        )
+        assert result.exit_code == 0, result.output
+        warnings = json.loads(result.output)["metadata"]["warnings"]
+        unmatched = [w for w in warnings if w["code"] == "understat_team_unmatched"]
+        assert len(unmatched) == 1
+        assert "Liverpool" in unmatched[0]["message"]
+
+    def test_resolved_club_adds_no_join_warning(self):
+        result = self._run_json(
+            [{
+                "id": 100, "name": "Salah", "team": "Liverpool",
+                "position": "M S", "minutes": 900, "games": 10,
+                "npxG": 5.0, "xGChain": 8.0, "xGBuildup": 2.0,
+            }],
+        )
+        assert result.exit_code == 0, result.output
+        warnings = json.loads(result.output)["metadata"]["warnings"]
+        assert [w for w in warnings if w["code"] == "understat_team_unmatched"] == []
+
+
 class TestPlayerUnderstat:
     def _run_with_understat(self, args, client, fixture_agent, ratings_svc,
                             understat_player_data=None):

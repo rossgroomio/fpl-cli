@@ -8,9 +8,13 @@ import pytest
 
 from fpl_cli.api.understat import (
     TEAM_NAME_MAP,
+    UNDERSTAT_TEAM_UNMATCHED,
     UnderstatClient,
     match_fpl_to_understat,
     split_team_titles,
+    understat_club_rows,
+    understat_join_warnings,
+    unmatched_understat_teams,
 )
 from fpl_cli.season import understat_season
 
@@ -1003,6 +1007,102 @@ class TestContractTripwires:
 
         assert match is None
         assert "TEAM_NAME_MAP" not in caplog.text
+
+
+# --- TestUnderstatClubRows ---
+
+class TestUnderstatClubRows:
+    """The club gate the matcher and `fpl doctor --providers` share (#229)."""
+
+    def test_maps_the_fpl_name_before_gating(self):
+        players = [{"name": "Someone", "team": "Coventry"}]
+        assert understat_club_rows("Coventry City", players) == players
+
+    def test_unmapped_name_passes_through(self):
+        # A club absent from TEAM_NAME_MAP still joins when both sources
+        # already spell it the same way.
+        players = [{"name": "Someone", "team": "Arsenal"}]
+        assert understat_club_rows("Arsenal", players) == players
+
+    def test_comma_joined_title_counts_for_both_clubs(self):
+        players = [{"name": "Eberechi Eze", "team": "Arsenal,Crystal Palace"}]
+        assert understat_club_rows("Arsenal", players) == players
+        assert understat_club_rows("Crystal Palace", players) == players
+
+    def test_club_with_no_rows_is_empty(self):
+        players = [{"name": "Someone", "team": "Arsenal"}]
+        assert understat_club_rows("Coventry City", players) == []
+
+    def test_non_string_title_is_skipped(self):
+        # The payload is undocumented; one malformed row must not raise.
+        assert understat_club_rows("Arsenal", [{"name": "Someone", "team": None}]) == []
+
+    def test_agrees_with_the_matcher_on_a_club_that_misses(self, caplog):
+        # The point of sharing the gate: the probe's verdict and the runtime's
+        # tripwire cannot disagree about the same club and the same payload.
+        players = [{"name": "Saka", "team": "Arsenal", "position": "M S", "minutes": 900}]
+        with caplog.at_level(logging.WARNING):
+            match = match_fpl_to_understat("Some Player", "Coventry City", players)
+
+        assert understat_club_rows("Coventry City", players) == []
+        assert match is None
+        assert unmatched_understat_teams() == ["Coventry City"]
+
+
+# --- TestUnderstatJoinWarnings ---
+
+class TestUnderstatJoinWarnings:
+    """The tripwire has to reach `metadata.warnings`, not only stderr (#229)."""
+
+    def test_historical_pool_does_not_warn(self, caplog):
+        # A club promoted this season carries no rows in a past season's pool
+        # because it was not in that league -- not because TEAM_NAME_MAP is
+        # wrong. Warning about it is the false alarm #229 reported.
+        players = [{"name": "Saka", "team": "Arsenal", "position": "M S", "minutes": 900}]
+        with caplog.at_level(logging.WARNING):
+            match = match_fpl_to_understat(
+                "Some Player", "Coventry City", players, season_label="2024-25",
+            )
+
+        assert match is None
+        assert "TEAM_NAME_MAP" not in caplog.text
+        assert unmatched_understat_teams() == []
+        assert understat_join_warnings() == []
+
+    def test_live_pool_still_warns_after_the_same_club_missed_a_past_one(self, caplog):
+        # Deduping on the club alone would let a past season's silent miss
+        # swallow the live gap that actually matters.
+        players = [{"name": "Saka", "team": "Arsenal", "position": "M S", "minutes": 900}]
+        with caplog.at_level(logging.WARNING):
+            match_fpl_to_understat(
+                "Some Player", "Coventry City", players, season_label="2024-25",
+            )
+            match_fpl_to_understat("Some Player", "Coventry City", players)
+
+        assert caplog.text.count("No Understat players carry team") == 1
+        assert unmatched_understat_teams() == ["Coventry City"]
+
+    def test_warning_entry_names_the_club_and_the_mapped_title(self):
+        players = [{"name": "Saka", "team": "Arsenal", "position": "M S", "minutes": 900}]
+        match_fpl_to_understat("Some Player", "Coventry City", players)
+
+        warnings = understat_join_warnings()
+        assert [w["code"] for w in warnings] == [UNDERSTAT_TEAM_UNMATCHED]
+        assert "Coventry City" in warnings[0]["message"]
+        assert "'Coventry'" in warnings[0]["message"]
+
+    def test_one_entry_per_unmatched_club(self):
+        players = [{"name": "Saka", "team": "Arsenal", "position": "M S", "minutes": 900}]
+        match_fpl_to_understat("Some Player", "Coventry City", players)
+        match_fpl_to_understat("Other Player", "Hull City", players)
+
+        assert unmatched_understat_teams() == ["Coventry City", "Hull City"]
+        assert len(understat_join_warnings()) == 2
+
+    def test_resolved_club_reports_nothing(self):
+        players = [{"name": "Saka", "team": "Arsenal", "position": "M S", "minutes": 900}]
+        assert match_fpl_to_understat("Saka", "Arsenal", players) is not None
+        assert understat_join_warnings() == []
 
 
 # --- TestSplitTeamTitles ---

@@ -5,6 +5,7 @@ from __future__ import annotations
 import click
 
 from fpl_cli import __version__
+from fpl_cli.api.understat import reset_understat_join_warnings
 
 # Load environment variables: user config dir first, local .env fills gaps only
 from fpl_cli.cli._context import CLIContext, FormatAwareGroup, load_settings, resolve_format
@@ -46,6 +47,12 @@ load_env_files()
 @click.pass_context
 def main(ctx: click.Context) -> None:
     """fpl-cli - Fantasy Premier League analysis for classic and draft formats."""
+    # The Understat join-drop record is process-global, so that a club nothing
+    # carries warns once rather than once per player. One command per process
+    # makes that the same thing as per-run -- but a host invoking two commands
+    # in one process would otherwise see the first run's clubs in the second
+    # run's `metadata.warnings`, long after the payload moved on (#229 review).
+    reset_understat_join_warnings()
     if ctx.invoked_subcommand == "doctor":
         # Doctor diagnoses unusable FPL_CLI_* overrides, so it must start even
         # when resolving a directory would fail -- migration and settings both

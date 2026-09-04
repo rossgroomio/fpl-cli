@@ -540,6 +540,71 @@ class TestStatsValueNullScores:
         assert record["quality_score"] is None
         assert record["quality_per_m"] is None
 
+    def test_club_with_no_understat_rows_warns_in_json_metadata(self):
+        # The join-drop tripwire is a stderr log line, so a consumer parsing
+        # stdout learned nothing about a club that had lost its xG enrichment
+        # entirely (#229). Runs the real matcher: the miss has to come from the
+        # payload, not from a patched return value.
+        client = _make_value_client(_sample_players(), _sample_teams())
+        mock_understat = MagicMock()
+        mock_understat.get_league_players = AsyncMock(return_value=[
+            {"name": "Mohamed Salah", "team": "Liverpool", "position": "M S", "minutes": 2000},
+        ])
+        mock_understat.__aenter__ = AsyncMock(return_value=mock_understat)
+        mock_understat.__aexit__ = AsyncMock(return_value=False)
+        runner = CliRunner()
+        with (
+            patch("fpl_cli.api.fpl.FPLClient", return_value=client),
+            patch("fpl_cli.api.understat.UnderstatClient", return_value=mock_understat),
+            patch("fpl_cli.cli.stats.is_custom_analysis_enabled", return_value=True),
+        ):
+            result = runner.invoke(main, ["stats", "--value", "--format", "json"])
+
+        assert result.exit_code == 0, result.output
+        warnings = json.loads(result.output)["metadata"]["warnings"]
+        unmatched = [w for w in warnings if w["code"] == "understat_team_unmatched"]
+        assert len(unmatched) == 1
+        assert "Manchester City" in unmatched[0]["message"]
+
+    def test_fully_resolved_clubs_add_no_join_warning(self):
+        client = _make_value_client(_sample_players()[:1], _sample_teams())
+        mock_understat = MagicMock()
+        mock_understat.get_league_players = AsyncMock(return_value=[
+            {"name": "Salah", "team": "Liverpool", "position": "M S", "minutes": 2000},
+        ])
+        mock_understat.__aenter__ = AsyncMock(return_value=mock_understat)
+        mock_understat.__aexit__ = AsyncMock(return_value=False)
+        runner = CliRunner()
+        with (
+            patch("fpl_cli.api.fpl.FPLClient", return_value=client),
+            patch("fpl_cli.api.understat.UnderstatClient", return_value=mock_understat),
+            patch("fpl_cli.cli.stats.is_custom_analysis_enabled", return_value=True),
+        ):
+            result = runner.invoke(main, ["stats", "--value", "--format", "json"])
+
+        assert result.exit_code == 0, result.output
+        warnings = json.loads(result.output)["metadata"]["warnings"]
+        assert [w for w in warnings if w["code"] == "understat_team_unmatched"] == []
+
+    def test_an_earlier_run_in_this_process_does_not_leak_its_clubs(self):
+        # The join-drop record is process-global (warn once per club, not once
+        # per player), so the CLI group resets it per run — otherwise a host
+        # invoking two commands in one process reads the first run's clubs in
+        # the second's envelope, long after that payload is gone (#229 review).
+        from fpl_cli.api.understat import match_fpl_to_understat
+
+        match_fpl_to_understat(
+            "Some Player", "Coventry City",
+            [{"name": "Saka", "team": "Arsenal", "position": "M S", "minutes": 900}],
+        )
+
+        client = _make_client(_sample_players(), _sample_teams())
+        result = _run(["--format", "json"], client=client)
+
+        assert result.exit_code == 0, result.output
+        warnings = json.loads(result.output)["metadata"]["warnings"]
+        assert [w for w in warnings if w["code"] == "understat_team_unmatched"] == []
+
     def test_null_scored_players_sort_to_bottom(self):
         """When sorting by quality_per_m, null-scored players appear last."""
         # Create one matched and one unmatched player

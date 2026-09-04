@@ -1724,6 +1724,10 @@ def _understat_match(
     match whose minutes corroborate, or nothing. The snapshot cannot narrow
     this: `SnapshotRecord` stores no club, and it is discarded at a season
     boundary anyway, so it knows nothing about the club held in a past season.
+
+    The season label goes with it so the join-drop tripwire knows this pool is
+    a past one, where a club promoted since carries no rows for the ordinary
+    reason that it was not in the league (#229).
     """
     if not understat_seasons:
         return None
@@ -1735,6 +1739,7 @@ def _understat_match(
         return match_fpl_to_understat(
             web_name, team_name, list(pool),
             fpl_position=position, fpl_minutes=season.minutes,
+            season_label=season.season,
         )
     except (KeyError, TypeError, ValueError):
         # The Understat payload is undocumented and injected from outside; a

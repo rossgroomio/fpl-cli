@@ -439,10 +439,17 @@ def player_command(
 
                             players_data.append(player_dict)
 
+                        # The Understat join-drop tripwire is a stderr log
+                        # line; a consumer parsing stdout only learns a club
+                        # lost its xG enrichment from here (#229).
+                        from fpl_cli.api.understat import understat_join_warnings
+
+                        warnings = [quality_warning] if quality_warning else []
+                        warnings.extend(understat_join_warnings())
                         emit_json("player", players_data, metadata={
                             "query": name,
                             "matches": len(display),
-                            "warnings": [quality_warning] if quality_warning else [],
+                            "warnings": warnings,
                         }, file=stdout)
                     return
 

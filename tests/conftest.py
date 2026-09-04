@@ -105,6 +105,22 @@ def _isolated_user_dirs(tmp_path, monkeypatch):
     _context._warned_missing_settings.clear()
 
 
+@pytest.fixture(autouse=True)
+def _reset_understat_join_warnings():
+    """A clean Understat join-drop record per test.
+
+    The tripwire's "warn once per club, not once per player" record is
+    process-global, so without this a club one test drops leaks into the next
+    test's `metadata.warnings` -- or, worse, suppresses the warning a test is
+    asserting on, depending on collection order.
+    """
+    from fpl_cli.api.understat import reset_understat_join_warnings
+
+    reset_understat_join_warnings()
+    yield
+    reset_understat_join_warnings()
+
+
 # --- Draft-Specific Factories ---
 
 def make_draft_player(

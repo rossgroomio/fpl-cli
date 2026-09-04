@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 from fpl_cli.agents.base import Agent, AgentResult, AgentStatus
 from fpl_cli.agents.common import fetch_understat_lookup
 from fpl_cli.api.fpl import FPLClient, finished_gameweek_ids
+from fpl_cli.api.understat import understat_join_warnings
 from fpl_cli.models.types import PlayerStats
 from fpl_cli.services.matchup import calculate_matchup_score
 from fpl_cli.services.player_prior import early_season_quality_warning
@@ -456,6 +457,11 @@ class StatsAgent(Agent):
             # reader is; the scaled floor is a caveat and belongs here.
             if floor_scaled:
                 warnings.append(self._minutes_floor_warning(min_minutes, gameweeks_played))
+            # A club no Understat row carries loses npxG, xGChain and every
+            # score built on them. The tripwire that spots it is a log line on
+            # stderr, which a `--format json` consumer parsing stdout never
+            # sees (#229) -- and this agent backs three of those commands.
+            warnings.extend(understat_join_warnings())
             data["warnings"] = warnings
 
             self.log_success(f"Analyzed {len(player_stats)} players ({window_label})")

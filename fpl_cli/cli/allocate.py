@@ -190,12 +190,20 @@ def allocate_command(
             else None
         )
 
+        # The scoring pipeline enriches with Understat, so a club nothing
+        # carries silently costs the solver its quality score. Carry that
+        # tripwire into the envelope rather than leaving it on stderr (#229).
+        from fpl_cli.api.understat import understat_join_warnings
+
+        warnings = [quality_warning] if quality_warning else []
+        warnings.extend(understat_join_warnings())
+
         _emit_result(
             result, scoring_data, scored_players,
             budget, horizon, start_gw, is_json,
             bench_discount=bd, bench_boost_gw=bench_boost_gw,
             free_transfers=free_transfers,
-            warnings=[quality_warning] if quality_warning else [],
+            warnings=warnings,
         )
 
     with api_failure_boundary("allocate", output_format):
