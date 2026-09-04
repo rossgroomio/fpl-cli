@@ -85,7 +85,10 @@
 {% endif %}
 
 {% if stats %}
-## Performance Stats (Last 6 GWs)
+## Performance Stats ({{ stats.window_label | default("Last 6 GWs", true) }})
+{% if stats.empty_reason %}
+{{ stats.empty_reason.message }}
+{% endif %}
 {% if stats.top_xgi_per_90 %}
 ### Top xGI per 90
 | Player | Team | xG | xA | xGI/90 | Goals | Assists |

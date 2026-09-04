@@ -183,3 +183,107 @@ class TestXgCustomAnalysisToggle:
         assert result.exit_code == 0, result.output
         data = json.loads(result.output)
         assert data["metadata"]["custom_analysis"] is False
+
+
+class TestXgWindowAndFloorReporting:
+    """`fpl xg` says which window and minutes floor it actually applied (#227).
+
+    The floor is derived from the gameweeks played, so before GW6 it is not the
+    one `--last-n` implies; a reader who cannot see it cannot tell a scaled bar
+    from the default one, and an empty result reads the same either way.
+    """
+
+    @staticmethod
+    def _early_season_result(*, empty: bool):
+        data = _make_agent_result().data
+        data |= {
+            "window_label": "last 2 GWs (window of 6 clamped to gameweeks played)",
+            "gameweeks": 2,
+            "gameweeks_played": 2,
+            "min_minutes": 90,
+            "empty_reason": None,
+            "warnings": [{"code": "early_season_minutes_floor", "message": "Floor scaled to 90."}],
+        }
+        if empty:
+            data |= {
+                "top_xgi_per_90": [], "underperformers": [], "value_picks": [],
+                "qualified_players": 0,
+                "empty_reason": {
+                    "code": "below_minutes_floor",
+                    "message": "No player clears the 90-minute floor.",
+                },
+            }
+        return _make_agent_result(data=data)
+
+    def test_json_metadata_reports_the_applied_window_and_floor(self):
+        result = _run_xg(["--format", "json"], agent_result=self._early_season_result(empty=False))
+        metadata = json.loads(result.output)["metadata"]
+        assert metadata["window"] == 6  # what --last-n asked for
+        assert metadata["gameweeks_played"] == 2
+        assert metadata["min_minutes"] == 90
+        assert "clamped" in metadata["window_label"]
+
+    def test_json_warnings_live_in_metadata_not_data(self):
+        result = _run_xg(["--format", "json"], agent_result=self._early_season_result(empty=False))
+        payload = json.loads(result.output)
+        assert [w["code"] for w in payload["metadata"]["warnings"]] == ["early_season_minutes_floor"]
+        assert "warnings" not in payload["data"]
+
+    def test_json_empty_result_carries_its_reason(self):
+        result = _run_xg(["--format", "json"], agent_result=self._early_season_result(empty=True))
+        data = json.loads(result.output)["data"]
+        assert data["empty_reason"]["code"] == "below_minutes_floor"
+
+    def test_table_header_names_the_applied_floor(self):
+        result = _run_xg(agent_result=self._early_season_result(empty=False))
+        assert result.exit_code == 0, result.output
+        assert "90+ mins" in result.output
+
+    def test_table_empty_result_explains_itself(self):
+        result = _run_xg(agent_result=self._early_season_result(empty=True))
+        assert result.exit_code == 0, result.output
+        assert "No players to analyse" in result.output
+        assert "No player clears the 90-minute floor." in result.output
+        # The three empty tables are replaced by the explanation, not preceded by it.
+        assert "Top xGI per 90" not in result.output
+
+    def test_table_prints_the_scaled_floor_notice(self):
+        result = _run_xg(agent_result=self._early_season_result(empty=False))
+        assert "Floor scaled to 90." in result.output
+
+
+class TestXgHeaderBeforeAnyGameweek:
+    """Pre-season the panel must not name a floor there is no football behind."""
+
+    @staticmethod
+    def _pre_season_result():
+        data = _make_agent_result().data
+        data |= {
+            "top_xgi_per_90": [], "underperformers": [], "value_picks": [],
+            "window_label": "no gameweek played yet",
+            "gameweeks": 0,
+            "gameweeks_played": 0,
+            "min_minutes": 1,
+            "qualified_players": 0,
+            "empty_reason": {
+                "code": "no_minutes_played",
+                "message": "No player has recorded any minutes yet.",
+            },
+        }
+        return _make_agent_result(data=data)
+
+    def test_header_omits_the_floor_when_nothing_has_been_played(self):
+        result = _run_xg(agent_result=self._pre_season_result())
+        assert result.exit_code == 0, result.output
+        assert "no gameweek played yet" in result.output
+        # "no gameweek played yet, 1+ mins" contradicts itself.
+        assert "1+ mins" not in result.output
+        assert "No player has recorded any minutes yet." in result.output
+
+    def test_an_explicit_zero_floor_still_renders(self):
+        """`is not None`, not truthiness: 0 is a floor, not the absence of one."""
+        data = _make_agent_result().data
+        data |= {"window_label": "whole season", "gameweeks_played": 3, "min_minutes": 0}
+        result = _run_xg(agent_result=_make_agent_result(data=data))
+        assert result.exit_code == 0, result.output
+        assert "0+ mins" in result.output

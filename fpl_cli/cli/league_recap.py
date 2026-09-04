@@ -67,7 +67,7 @@ def league_recap_command(
 ) -> None:
     """Recap a completed gameweek for the whole league - awards, standings, and banter."""
     from fpl_cli.agents.orchestration.report import ReportAgent
-    from fpl_cli.api.fpl import FPLClient
+    from fpl_cli.api.fpl import FPLClient, finished_gameweek_ids
     from fpl_cli.cli._fines_config import parse_fines_config
     from fpl_cli.cli._league_recap_data import (
         RecapReconciliationError,
@@ -184,7 +184,7 @@ def league_recap_command(
             # gw is "live" when it's the most recently finished gameweek --
             # only then do current standings describe the same point in time
             # as the collected data, so only then can the two be reconciled.
-            finished_gws = [g["id"] for g in gameweeks if g.get("finished")]
+            finished_gws = finished_gameweek_ids(gameweeks)
             is_live_gw = bool(finished_gws) and gw == max(finished_gws)
 
             # Collect format-specific data

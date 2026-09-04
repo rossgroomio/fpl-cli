@@ -67,6 +67,13 @@ def targets_command(min_own: float, min_minutes: int, output_format: str):
         else:
             console.print(Panel.fit(f"[bold blue]Transfer Targets[/bold blue] ({window_label})"))
 
+        # Nothing cleared the minutes floor: say which of the floor and the data
+        # caused it rather than printing bare headings (issue #227).
+        empty_reason = data.get("empty_reason")
+        if empty_reason:
+            console.print(f"\n[yellow]No players to analyse.[/yellow] {empty_reason['message']}")
+            return
+
         # Top performers table
         if all_targets:
             console.print("\n[bold]Top Performers:[/bold]")

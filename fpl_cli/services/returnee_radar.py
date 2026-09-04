@@ -96,7 +96,7 @@ Week-over-week deltas
 The actionable trigger is not "this player is injured" but "this player's
 availability improved since last week", and that needs memory. Each run stores
 the watchlist it produced in one season-stamped JSON file in the data dir, and
-the next run diffs against it. The store follows `player_prior.yaml`: read it,
+diffs against the last watchlist stored in an earlier gameweek. The store follows `player_prior.yaml`: read it,
 compare the season label, discard and rebuild when it does not match -- which
 is what makes keying records on season-local player id safe, since a snapshot
 never survives the id reshuffle at a season boundary. Anything unreadable, of
@@ -104,9 +104,13 @@ the wrong shape or from another season is a first run, not an error.
 
 Two rules keep the delta worth reading:
 
-* The snapshot is rewritten only when the stored gameweek differs from the
-  current one. Writing every run would make the second run in a gameweek diff
-  against the first and report nothing changed.
+* The file holds two slots: the *baseline* every run in the current gameweek
+  diffs against, and the current gameweek's own state, refreshed by every run
+  and promoted to baseline only once a run arrives in a later gameweek. One
+  slot made the delta a one-shot claimed by whichever run of the gameweek
+  happened to be first (#225): that run overwrote last week's baseline with
+  its own view, leaving every later run in the gameweek diffing against
+  itself and reporting nothing changed.
 * A player who has left the watchlist is resolved against their live status
   before anything is said about them. Only status `a` is a return; a player
   the window or the quality bar excluded is reported as dropped off the list,
@@ -563,10 +567,15 @@ class RadarResult:
     # Previously tracked players who are no longer entries, and whether each
     # is back or merely filtered out. Empty unless the run diffed a snapshot.
     departures: list[RadarDeparture] = field(default_factory=list)
-    # False on a first run, a corrupt snapshot or a season change: there is
-    # nothing to diff against, so an absent transition means "not known", not
-    # "nothing changed" (R6).
+    # False on a first run, a corrupt snapshot, a season change, or a store
+    # holding nothing older than this gameweek: there is nothing to diff
+    # against, so an absent transition means "not known", not "nothing
+    # changed" (R6).
     transitions_available: bool = False
+    # The gameweek whose stored state this run diffed against, None when there
+    # was none. Carried so a consumer can say what "changed" is measured from
+    # rather than assuming it is the gameweek before this one.
+    baseline_gameweek: int | None = None
     # Player id to the filter that dropped them (`EXCLUDED_BY_WINDOW` /
     # `EXCLUDED_BY_QUALITY` / `EXCLUDED_UNKNOWN`). Carried because a player
     # who left the watchlist is indistinguishable from one who returned
@@ -871,7 +880,7 @@ def save_enrichment_cache(
             for player_id, found in sorted(intel.items())
         },
     }
-    # Raw UTF-8 rather than escapes, for the same reason `save_snapshot`
+    # Raw UTF-8 rather than escapes, for the same reason `save_store`
     # below writes it: these files get read by a person when an answer looks
     # wrong, and a name is easier to recognise spelled the way it is spelled.
     atomic_write_text(
@@ -951,7 +960,7 @@ class SnapshotRecord:
 
 @dataclass(frozen=True)
 class RadarSnapshot:
-    """The stored watchlist state, stamped with the season and gameweek.
+    """One gameweek's stored watchlist state, stamped with the season.
 
     The season stamp is what makes keying records on season-local player id
     safe: a snapshot never survives the id reshuffle at a season boundary.
@@ -962,14 +971,77 @@ class RadarSnapshot:
     players: dict[int, SnapshotRecord] = field(default_factory=dict)
 
 
-def load_snapshot(*, season: str | None = None) -> RadarSnapshot | None:
-    """Load the stored snapshot, or None when there is nothing usable.
+@dataclass(frozen=True)
+class SnapshotStore:
+    """Both stored states: the diff baseline, and this gameweek's own state.
 
-    None covers all four ways a run can have no history to diff against: no
-    file yet, an unreadable or truncated one, a payload whose shape does not
-    match, and one stamped with a different season. Each is a first run, not
-    an error -- the radar's deltas are a convenience layered over output that
-    stands on its own.
+    Storing one state made the week-over-week signal a one-shot (#225). The
+    first run of gameweek N diffed correctly and then replaced gameweek N-1's
+    state with its own, so every later run that gameweek -- including the
+    `--enrich` run gw-prep makes -- diffed against itself and reported
+    nothing changed. Keeping the current gameweek in its own slot lets every
+    run in gameweek N diff against the last state stored before N.
+    """
+
+    season: str
+    baseline: RadarSnapshot | None = None
+    current: RadarSnapshot | None = None
+
+    def baseline_for(self, gameweek: int) -> RadarSnapshot | None:
+        """The most recent stored state from a gameweek earlier than this one.
+
+        `current` once the gameweek has moved past it, `baseline` while it has
+        not, and None when neither predates this run -- a store holding only
+        this gameweek's state has nothing to say about the week before it, and
+        saying so is the honest answer rather than diffing against itself.
+        """
+        for slot in (self.current, self.baseline):
+            if slot is not None and slot.gameweek < gameweek:
+                return slot
+        return None
+
+    def advanced_to(self, snapshot: RadarSnapshot) -> SnapshotStore | None:
+        """This store with `snapshot` as the current gameweek's state.
+
+        The state it displaces is promoted to baseline only when it belongs to
+        an earlier gameweek. A rerun inside one gameweek therefore refreshes
+        `current` and leaves the baseline alone, which is what keeps every run
+        of that gameweek reporting the same transitions.
+
+        None when `snapshot` predates a state either slot already holds:
+        storing it would overwrite a later gameweek's state and could leave
+        the file inverted, with a baseline newer than the current slot. The
+        gameweek only moves forward in practice, so this guards a hand-edited
+        or half-written file rather than an ordinary run -- and refusing here
+        rather than at the call site is what keeps the ordering an invariant
+        of the store: a caller cannot store an out-of-order run by forgetting
+        to ask first, because `save_store` does not accept the None.
+        """
+        stored = [slot.gameweek for slot in (self.baseline, self.current) if slot is not None]
+        if any(snapshot.gameweek < gameweek for gameweek in stored):
+            return None
+        displaced = self.current
+        promote = displaced is not None and displaced.gameweek < snapshot.gameweek
+        return SnapshotStore(
+            season=snapshot.season,
+            baseline=displaced if promote else self.baseline,
+            current=snapshot,
+        )
+
+
+def load_store(*, season: str | None = None) -> SnapshotStore | None:
+    """Load the stored states, or None when there is nothing usable.
+
+    None covers all four ways a run can have no history at all: no file yet,
+    an unreadable or truncated one, a payload whose shape does not match, and
+    one stamped with a different season. Each is a first run, not an error --
+    the radar's deltas are a convenience layered over output that stands on
+    its own.
+
+    A file in the pre-#225 single-slot shape loads as the `current` slot: it
+    holds the last state a run stored, and the gameweek before it was never
+    kept. So the first run under the new shape has a baseline again from the
+    next gameweek, without discarding what is there.
     """
     expected = season or season_label()
     try:
@@ -982,16 +1054,37 @@ def load_snapshot(*, season: str | None = None) -> RadarSnapshot | None:
 
     if not isinstance(raw, Mapping):
         return None
-    meta, players = raw.get("metadata"), raw.get("players")
-    if not isinstance(meta, Mapping) or not isinstance(players, Mapping):
+    meta = raw.get("metadata")
+    if not isinstance(meta, Mapping):
         return None
     if meta.get("season") != expected:
         logger.info(
             "Returnee snapshot stale (season %s != %s)", meta.get("season"), expected,
         )
         return None
-    gameweek = meta.get("gameweek")
+
+    if "current" in raw or "baseline" in raw:
+        baseline = _slot_from_payload(raw.get("baseline"), season=expected)
+        current = _slot_from_payload(raw.get("current"), season=expected)
+    else:
+        baseline = None
+        current = _slot_from_payload(
+            {"gameweek": meta.get("gameweek"), "players": raw.get("players")},
+            season=expected,
+        )
+    if baseline is None and current is None:
+        return None
+    return SnapshotStore(season=expected, baseline=baseline, current=current)
+
+
+def _slot_from_payload(payload: Any, *, season: str) -> RadarSnapshot | None:
+    """One stored state, or None when the slot is absent or malformed."""
+    if not isinstance(payload, Mapping):
+        return None
+    gameweek, players = payload.get("gameweek"), payload.get("players")
     if not isinstance(gameweek, int) or isinstance(gameweek, bool):
+        return None
+    if not isinstance(players, Mapping):
         return None
 
     records: dict[int, SnapshotRecord] = {}
@@ -1006,13 +1099,36 @@ def load_snapshot(*, season: str | None = None) -> RadarSnapshot | None:
             lapsed=bool(value.get("lapsed", False)),
             web_name=str(value.get("web_name", "") or ""),
         )
-    return RadarSnapshot(season=expected, gameweek=gameweek, players=records)
+    return RadarSnapshot(season=season, gameweek=gameweek, players=records)
 
 
-def save_snapshot(snapshot: RadarSnapshot) -> None:
-    """Write the snapshot atomically, so an interrupted run cannot poison the next diff."""
+def save_store(store: SnapshotStore) -> None:
+    """Write both slots atomically, so an interrupted run cannot poison the next diff."""
     payload: dict[str, Any] = {
-        "metadata": {"season": snapshot.season, "gameweek": snapshot.gameweek},
+        "metadata": {
+            "season": store.season,
+            # The gameweek `current` describes, mirrored into the metadata
+            # because `fpl doctor` and anyone opening the file read that first.
+            "gameweek": store.current.gameweek if store.current else None,
+        },
+        "baseline": _slot_payload(store.baseline),
+        "current": _slot_payload(store.current),
+    }
+    # `ensure_ascii=False`: player names keep their accents rather than
+    # becoming `\u00e9` escapes. The snapshot is a file a person reads and
+    # diffs week to week, and the league-history ledger beside it already
+    # writes raw UTF-8 -- two generated files should not disagree on it.
+    atomic_write_text(
+        snapshot_path(), json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+    )
+
+
+def _slot_payload(snapshot: RadarSnapshot | None) -> dict[str, Any] | None:
+    """One stored state as plain JSON, or null for an empty slot."""
+    if snapshot is None:
+        return None
+    return {
+        "gameweek": snapshot.gameweek,
         "players": {
             str(player_id): {
                 "status": record.status,
@@ -1024,19 +1140,12 @@ def save_snapshot(snapshot: RadarSnapshot) -> None:
             for player_id, record in sorted(snapshot.players.items())
         },
     }
-    # `ensure_ascii=False`: player names keep their accents rather than
-    # becoming `\u00e9` escapes. The snapshot is a file a person reads and
-    # diffs week to week, and the league-history ledger beside it already
-    # writes raw UTF-8 -- two generated files should not disagree on it.
-    atomic_write_text(
-        snapshot_path(), json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
-    )
 
 
 def snapshot_from_entries(
     entries: Sequence[RadarEntry], *, gameweek: int, season: str | None = None,
 ) -> RadarSnapshot:
-    """Capture the current watchlist as the state next week will diff against.
+    """Capture the current watchlist as the state a later gameweek diffs against.
 
     Only the entries are stored: a player the quality bar or the window has
     always excluded is not tracked, so they can never be reported as having
@@ -1252,10 +1361,10 @@ def run_radar(
             next ordinary run report everyone it re-excluded as having
             dropped off the list.
 
-    The snapshot is rewritten only when the stored gameweek differs from this
-    one, so a second run inside a gameweek diffs against the same state as the
-    first and reports the same transitions. The alternative -- writing every
-    run -- empties the delta that is the point of storing anything.
+    Every run in a gameweek diffs against the last state stored *before* it
+    and refreshes the store's current slot, so a second run inside a gameweek
+    reports the same transitions as the first rather than diffing against what
+    the first just wrote (#225).
     """
     result = build_radar(
         players,
@@ -1276,18 +1385,26 @@ def run_radar(
         return result
 
     season = season_label(season_year)
-    snapshot = load_snapshot(season=season)
+    store = load_store(season=season) or SnapshotStore(season=season)
+    baseline = store.baseline_for(next_gw_id)
     entries, departures = diff_transitions(
         result.entries,
-        snapshot=snapshot,
+        snapshot=baseline,
         players=players,
         exclusions=result.exclusions,
     )
-    if persist and (snapshot is None or snapshot.gameweek != next_gw_id):
+    # None when this run is older than a stored state, which `advanced_to`
+    # refuses rather than invert the store over.
+    updated = (
+        store.advanced_to(
+            snapshot_from_entries(result.entries, gameweek=next_gw_id, season=season),
+        )
+        if persist
+        else None
+    )
+    if updated is not None:
         try:
-            save_snapshot(
-                snapshot_from_entries(result.entries, gameweek=next_gw_id, season=season),
-            )
+            save_store(updated)
         except OSError as exc:
             # The watchlist stands on its own; losing the write costs next
             # week's deltas, not this week's output.
@@ -1297,7 +1414,8 @@ def run_radar(
         result,
         entries=entries,
         departures=departures,
-        transitions_available=snapshot is not None,
+        transitions_available=baseline is not None,
+        baseline_gameweek=baseline.gameweek if baseline is not None else None,
     )
 
 

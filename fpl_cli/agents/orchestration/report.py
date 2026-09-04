@@ -306,9 +306,15 @@ class ReportAgent(Agent):
         # Performance Stats
         if data.get("stats"):
             stats_data = data["stats"]
+            # Window comes from the analysis rather than being asserted here:
+            # before GW9 it is clamped to the gameweeks played (issue #227).
+            stats_window = stats_data.get("window_label") or "Last 6 GWs"
             lines.extend([
-                "## Performance Stats (Last 6 GWs)",
+                f"## Performance Stats ({stats_window})",
             ])
+            stats_empty = stats_data.get("empty_reason")
+            if stats_empty:
+                lines.extend([stats_empty["message"], ""])
 
             if stats_data.get("top_xgi_per_90"):
                 lines.extend([
