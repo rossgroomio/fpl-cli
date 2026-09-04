@@ -34,6 +34,20 @@ class PlayerSellPrice:
         return self.sell_price - self.purchase_price
 
 
+_POSITION_ORDER = {"GKP": 0, "GK": 0, "DEF": 1, "MID": 2, "FWD": 3}
+
+
+def ordered_squad(squad: list[PlayerSellPrice]) -> list[PlayerSellPrice]:
+    """Squad in stable diff order: position (GK/DEF/MID/FWD), then element_id.
+
+    Pick-slot order shifts every entry after a bench change, so both
+    ``TeamFinances.to_dict`` and the sell-prices JSON command sort through
+    this helper instead -- a fresh ``--refresh`` run and a later cached run
+    must report the same order for the same squad.
+    """
+    return sorted(squad, key=lambda p: (_POSITION_ORDER.get(p.position, 9), p.element_id or 0))
+
+
 @dataclass
 class TeamFinances:
     """Team financial state from FPL transfers page."""
@@ -75,14 +89,10 @@ class TeamFinances:
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON serialization.
 
-        ``squad`` is emitted in a stable order (position, then element_id)
+        ``squad`` is emitted in stable diff order (see ``ordered_squad``)
         rather than pick-slot order, so moving a player between the XI and
         bench doesn't reshuffle unrelated entries in the diff.
         """
-        pos_order = {"GKP": 0, "GK": 0, "DEF": 1, "MID": 2, "FWD": 3}
-        ordered_squad = sorted(
-            self.squad, key=lambda p: (pos_order.get(p.position, 9), p.element_id or 0)
-        )
         return {
             "bank": self.bank,
             "free_transfers": self.free_transfers,
@@ -94,7 +104,7 @@ class TeamFinances:
                     "purchase_price": p.purchase_price,
                     "element_id": p.element_id,
                 }
-                for p in ordered_squad
+                for p in ordered_squad(self.squad)
             ],
             "total_value": self.total_value,
             "scraped_at": self.scraped_at,
