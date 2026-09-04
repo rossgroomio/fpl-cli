@@ -52,6 +52,11 @@ found, and whether this range claims to fix it.]
    findings to the user; anything filed upstream takes the house issue
    style — Summary / Repro / Cause / Impact / Suggested fix / Test gap —
    and the anonymity rule from the top of the plan]
+## Coverage
+| PR | Change | Tests |
+| --- | --- | --- |
+| #NNN | [subject] | X1, X4 |
+| #NNN | [subject] | — not tested: [one-line reason] |
 ## Results log
 | ID | Result | Notes |
 | --- | --- | --- |
@@ -59,6 +64,18 @@ found, and whether this range claims to fix it.]
 | P2 |  |  |
 [one empty row per test ID]
 ```
+
+## The coverage map
+
+Build it from the Step 2 inventory, one row per in-range PR, before you
+call the plan done. Writing it from memory of the tests you just drafted
+defeats it — the whole point is to surface the change you researched
+carefully and then lost while grouping tests by surface.
+
+An em-dash in the Tests column is a legitimate answer for something
+genuinely not worth a test (a pure refactor with no behaviour change, a
+fix whose only surface is covered by another test), but it needs the
+one-line reason next to it. An unexplained blank is a gap.
 
 ## Writing a test
 

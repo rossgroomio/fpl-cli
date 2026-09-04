@@ -178,12 +178,28 @@ code path runs tells you nothing about whether the bug is gone.
 the source. Commands, files on disk, exit codes, stdout vs stderr — never
 internal functions.
 
-**It says when it can't run.** Season state gates a lot: replay tests need
-two completed gameweeks, ratings tests need finished fixtures, week-over-
-week snapshot tests need a prior week. Write the test anyway, mark it
-BLOCKED with the condition that unblocks it, and the next plan picks it up
-via Step 3. A test that silently can't run is worse than one marked
-BLOCKED, because it looks like coverage.
+**It builds a fixture before it gives up.** When live data can't reach a
+code path, a scratch fixture often can: point `FPL_CLI_DATA_DIR` at a
+throwaway copy of the store and doctor a row to the shape the bug needed,
+or feed the matching function inputs that disagree. This reaches repair
+and migration paths that a healthy live store never exercises, and it
+costs the runner a `cp -r` they throw away afterwards. Reach for it before
+reaching for BLOCKED — and keep it off the real store, which for the
+ledger is irreplaceable.
+
+**It mines the environment for fixtures it already has.** The vault's own
+data is full of them. Players in captured ledger rows who have since
+changed club are a ready-made test that a re-run doesn't restamp recorded
+history — verify what each row *should* say from that gameweek's live
+data, tabulate it, and any drift is an unambiguous FAIL. Look for this
+before inventing setup.
+
+**It says when it genuinely can't run.** Some things no fixture reaches:
+a blank gameweek that hasn't happened, a week-over-week comparison with no
+prior week. Write the test anyway, mark it BLOCKED with the condition that
+unblocks it, and the next plan picks it up via Step 3. A test that
+silently can't run is worse than one marked BLOCKED, because it looks like
+coverage.
 
 **It covers degradation.** Missing config, corrupt store, provider down,
 bad gameweek number. Make corruption tests reversible and say how to
@@ -230,13 +246,24 @@ preflight and the cost/safety notes. Write the plan to:
 /home/user/fpl-workspace/docs/test-plans/v<from>-to-<to>.md
 ```
 
-Trim a trailing `.0` from each version (`v2.2.0` → `v2.2`), matching
-`v2.0-to-v2.2.md`. If that filename exists, keep the patch level on
-whichever end disambiguates.
+Name it for the range's ends. Trim a trailing `.0` only when the two ends
+differ in major.minor — `v2.2.0`→`v2.4.0` becomes `v2.2-to-v2.4.md`,
+matching `v2.0-to-v2.2.md`. When both ends sit in the same minor, keep
+full patch versions on both, or the name reads as a range it isn't
+(`v2.3.0`→`v2.3.2` is `v2.3.0-to-v2.3.2.md`, never `v2.3-to-v2.3.2.md`).
 
 Pre-seed the Results log with one empty row per test ID. It is the runner's
 worksheet and the next plan's Step 3 input, so every ID needs a row waiting
 for it.
+
+Then add a **coverage map**: every in-range PR number against the test IDs
+that exercise it. Write it by walking the Step 2 inventory, not by
+summarising what you already wrote — the point is to catch the change you
+researched and then lost track of while grouping. A PR with no test ID
+next to it is either a gap to fill or a deliberate omission to justify in
+one line, and either way the runner can see it. This is cheap to produce
+and the only mechanism that makes coverage auditable from the artifact
+itself.
 
 Vault convention: no blank lines before or after headings.
 
