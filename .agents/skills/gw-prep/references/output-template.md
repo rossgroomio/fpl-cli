@@ -84,7 +84,7 @@ _Informational only. Omit the section when the radar payload has no entries._
 |--------|------|-----|---------|-----------------|--------|--------|
 | | | | | | | |
 
-One row per entry in the `fpl returnees` payload (`data.entries`). Quality = `quality.basis` plus whether it clears the stash bar (`quality.meets_stash`). Expected Return = `expected_return`, or `return_gameweek` where only a gameweek is known, or `Unknown`. Chance = `chance_of_playing`. Change = `transition` since the previous run, blank when nothing moved.
+One row per entry in the `fpl returnees` payload (`data.entries`). Quality = `quality.basis` plus whether it clears the stash bar (`quality.meets_stash`). Expected Return = `expected_return`, or `return_gameweek` where only a gameweek is known, or `Unknown`. Chance = `chance_of_playing`. Change = `transition` since the previous gameweek, blank when nothing moved — or, when `metadata.transitions_available` is false, because nothing was stored to compare against.
 
 Every number here comes from the radar payload inlined into the sub-agent prompt, so the Momentum Alerts grounding rule is satisfied by citing it — but nothing beyond those fields may be asserted. No transfer recommendation above may name a tracked returnee (see the injury/suspension rule in `references/rules.md`).
 

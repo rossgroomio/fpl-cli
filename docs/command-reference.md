@@ -212,9 +212,9 @@ Each entry reports which branch judged it (`quality.basis`: `prior`, `season-qua
 
 **Pacing and rate limits.** The shortlist is paced rather than burst: at most `enrich_concurrency` searches are in flight at once and two searches start no closer together than `enrich_query_spacing_seconds`, because a provider quota counts starts per minute, not searches in flight. A search the provider rate-limits (HTTP 429) is retried with backoff inside the provider itself, honouring `Retry-After` (see [LLM Providers](#llm-providers)); whatever is still refused once the whole shortlist has settled is tried once more after a pause of at least 15 seconds, or the provider's own `Retry-After` up to a minute. A player still unanswered after that is reported as rate-limited rather than as having no answer — `metadata.enrichment_rate_limited` is true and the stderr note says so — and is not cached, so re-running `--enrich` a minute later queries only the gaps. Both pacing knobs are worth lowering on a lower provider tier.
 
-**Week-over-week changes.** Each run stores the watchlist it produced in `returnee_snapshot.json` in the data directory (see [Directories](#directories)) and the next run diffs against it, marking who is newly flagged, whose chance moved, whose return date was set, moved or missed, and who left the list. The snapshot is rewritten only when the gameweek changes, so a second run inside one gameweek still diffs against last week rather than against itself. A file from a previous season is discarded rather than read — player IDs are reshuffled at the season boundary. The first run has no history to compare against and says so.
+**Week-over-week changes.** Each run stores the watchlist it produced in `returnee_snapshot.json` in the data directory (see [Directories](#directories)) and diffs against the last watchlist stored in an *earlier* gameweek, marking who is newly flagged, whose chance moved, whose return date was set, moved or missed, and who left the list. The file keeps two states for that: the baseline every run in this gameweek compares against, and this gameweek's own state, which becomes the baseline once the gameweek rolls over. So every run in a gameweek reports the same changes — the second run of the week, including the one `--enrich` makes, sees what the first one saw rather than diffing against what it just stored. `metadata.transitions_baseline_gameweek` names the gameweek being compared against. A file from a previous season is discarded rather than read — player IDs are reshuffled at the season boundary. With nothing stored from an earlier gameweek there is nothing to compare against, and the run says so instead of reporting no changes.
 
-JSON `metadata` carries `window`, `escalation_window`, `stash_upgrade_margin`, `transitions_available`, `quality_bar_available`, `quality_bar_applied`, and the `enrichment_*` fields (`requested`, `available`, `note`, `count`, `rate_limited`); `data` is `{entries, departures}`.
+JSON `metadata` carries `window`, `escalation_window`, `stash_upgrade_margin`, `transitions_available`, `transitions_baseline_gameweek`, `quality_bar_available`, `quality_bar_applied`, and the `enrichment_*` fields (`requested`, `available`, `note`, `count`, `rate_limited`); `data` is `{entries, departures}`.
 
 ## Fixture & Strategic Planning
 
@@ -474,6 +474,27 @@ fpl price-history --format json
 Sort by: `price_change` (default), `price_slope`, `price_acceleration`, `transfer_momentum`, `price_current`. Descending by default. Use `-r` for ascending. Filter by position (`-p`) or team (`-t`). Limit results with `-l` (default: 30).
 
 When historical data is stale (>3 GWs behind), trend/accel/momentum columns are hidden and the command falls back to live API price change only.
+
+### Underlying Stats (xG)
+
+```bash
+fpl xg                      # xG/xA over the last 6 gameweeks
+fpl xg -n 10                # Widen the window to 10 gameweeks
+fpl xg --all                # Whole season instead of a recent window
+fpl xg --format json        # Machine-readable envelope
+```
+
+Ranks players on underlying output - xGI per 90, and over/underperformers against it - plus value picks at low ownership when custom analysis is on.
+
+#### Minutes floor
+
+A player has to clear a minutes bar to be analysed at all, and that bar is 60 minutes per gameweek in the window (450 for `--all`). Neither is reachable early in the season: after `N` finished gameweeks nobody can have played more than `N x 90` minutes, so the default 360-minute floor is arithmetically impossible until four gameweeks have finished. At GW3 it admitted nobody, and the command returned an empty analysis that read exactly like "no player is worth showing".
+
+The floor applied is `min(60 x window, 45 x gameweeks played)` - half the minutes the calendar has allowed - and the window itself is clamped to the gameweeks played. At GW3 that analyses the two gameweeks played against a 90-minute bar instead of six against 360. The configured bar binds again once the season catches up: from GW9 for the default six-gameweek window (360 / 45 = 8 finished gameweeks) and from GW11 for `--all` (450 / 45 = 10), after which behaviour is identical to a fixed threshold.
+
+The panel header names the floor that was applied, `metadata` carries `window_label`, `gameweeks_played` and `min_minutes`, and `metadata.warnings` carries an `early_season_minutes_floor` notice while the bar is scaled. `fpl targets --min-minutes` and `fpl differentials --min-minutes` are untouched: a floor the reader asked for explicitly is applied as asked.
+
+When nothing qualifies, `data.empty_reason` says which of the floor and the data caused it - `below_minutes_floor` (players have played, none clears the bar) or `no_minutes_played` (nothing has been played yet) - and table mode prints that sentence instead of three empty tables. `fpl targets` and `fpl differentials` carry and render the same field, and `fpl preview`'s Performance Stats section names the analysed window and prints the reason when it is empty.
 
 ### Understat Metrics
 
@@ -1063,7 +1084,7 @@ Rolling a setup into a new season silently invalidates IDs and per-team files: a
 - `previews/` — optional season preview intel: a file for a club not in the current league is flagged (it loads and inflates the coverage gate), and files the loader skipped (previous season, malformed) are surfaced with `fpl intel` as the follow-up
 - `team_finances.json` — `scraped_at` falls within the current season
 - `player_prior.yaml` — season label matches (auto-invalidated otherwise)
-- `returnee_snapshot.json` — the returnee radar's week-over-week snapshot: season label matches (a previous season's is discarded and rebuilt on the next `fpl returnees` run)
+- `returnee_snapshot.json` — the returnee radar's week-over-week snapshot: season label matches (a previous season's is discarded and rebuilt on the next `fpl returnees` run), and reports the gameweek it currently holds
 
 **Environment** — which directory each of config/data/cache resolved to and whether an `FPL_CLI_*` override is in effect, plus whether `settings.yaml` exists.
 

@@ -52,7 +52,13 @@ def differentials_command(threshold: float, min_minutes: int, output_format: str
                     emit_json_error("differentials", result.message, file=stdout)
                     return
 
-                combined: dict = {"differentials": result.data.get("differentials", {})}
+                combined: dict = {
+                    "differentials": result.data.get("differentials", {}),
+                    # Rebuilt from scratch, so this has to be carried across
+                    # explicitly or the command is the one StatsAgent surface
+                    # that cannot say why it came back empty (issue #227).
+                    "empty_reason": result.data.get("empty_reason"),
+                }
 
                 try:
                     from fpl_cli.agents.analysis.captain import CaptainAgent
@@ -93,6 +99,13 @@ def differentials_command(threshold: float, min_minutes: int, output_format: str
         differentials = data.get("differentials", {})
 
         console.print(Panel.fit(f"[bold blue]Differential Picks (<{threshold}% owned)[/bold blue]"))
+
+        # Nothing cleared the minutes floor: say which of the floor and the data
+        # caused it rather than printing bare headings (issue #227).
+        empty_reason = data.get("empty_reason")
+        if empty_reason:
+            console.print(f"\n[yellow]No players to analyse.[/yellow] {empty_reason['message']}")
+            return
 
         # Elite differentials
         elite = differentials.get("elite", [])

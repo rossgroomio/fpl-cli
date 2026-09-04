@@ -586,7 +586,14 @@ def preview_command(ctx: click.Context, save: bool, output: str | None, scout: b
 
         # Performance Stats
         if data.get("stats"):
-            console.print("[bold]Performance Stats (Last 6 GWs):[/bold]")
+            # The window is whatever the analysis could actually cover, which
+            # early in the season is not the six gameweeks this used to claim
+            # (issue #227); an empty section says why rather than just being bare.
+            stats_window = data["stats"].get("window_label") or "Last 6 GWs"
+            console.print(f"[bold]Performance Stats ({stats_window}):[/bold]")
+            stats_empty = data["stats"].get("empty_reason")
+            if stats_empty:
+                console.print(f"[yellow]{stats_empty['message']}[/yellow]")
 
             # Top xGI per 90
             if data["stats"].get("top_xgi_per_90"):
