@@ -59,6 +59,37 @@ def fixtures_command(ctx: click.Context, gameweek: int | None, mode: str, output
         from fpl_cli.services.team_ratings import TeamRatingsService, fdr_scale_footer
         from fpl_cli.utils.time import format_kickoff
 
+        async def _resolve_ratings(client) -> TeamRatingsService | None:
+            """The ratings service, or None when custom analysis is off.
+
+            None is the signal to fall back to API difficulty, so the opted-out
+            path never constructs a service or refreshes ratings at all.
+            """
+            if not custom_on:
+                return None
+            service = TeamRatingsService()
+            await service.ensure_fresh(client)
+            return service
+
+        def _fixture_fdr(fixture, home_name, away_name, service) -> tuple[float, float]:
+            """(home, away) FDR for one fixture, on whichever scale is in play."""
+            if service is None:
+                return fixture.home_difficulty, fixture.away_difficulty
+            return (
+                service.get_fixture_fdr(home_name, away_name, "home", mode=mode),
+                service.get_fixture_fdr(away_name, home_name, "away", mode=mode),
+            )
+
+        def _ratings_warnings(service) -> list[dict[str, str]]:
+            """Coded `metadata.warnings` entries; empty when ratings are not in play.
+
+            Always a list, so a consumer indexes it rather than checking for the
+            key first, matching `fdr` and `stats`. Without it a table of flat
+            4.0s reads as analysis rather than as "nothing to rate these on".
+            """
+            warning = service.get_staleness_warning() if service is not None else None
+            return [{"code": "team_ratings_unusable", "message": warning}] if warning else []
+
         async with FPLClient() as client:
             # Default to next gameweek if not specified
             if gameweek is None:
@@ -72,10 +103,7 @@ def fixtures_command(ctx: click.Context, gameweek: int | None, mode: str, output
                     fixtures_data = await client.get_fixtures(gameweek=gw_num)
                     teams = {t.id: t for t in await client.get_teams()}
 
-                    ratings_service = None
-                    if custom_on:
-                        ratings_service = TeamRatingsService()
-                        await ratings_service.ensure_fresh(client)
+                    ratings_service = await _resolve_ratings(client)
 
                     fixtures_list = []
                     for fixture in fixtures_data:
@@ -84,12 +112,7 @@ def fixtures_command(ctx: click.Context, gameweek: int | None, mode: str, output
                         home_name = home_team.short_name if home_team else "???"
                         away_name = away_team.short_name if away_team else "???"
 
-                        if ratings_service is not None:
-                            home_fdr = ratings_service.get_fixture_fdr(home_name, away_name, "home", mode=mode)
-                            away_fdr = ratings_service.get_fixture_fdr(away_name, home_name, "away", mode=mode)
-                        else:
-                            home_fdr = fixture.home_difficulty
-                            away_fdr = fixture.away_difficulty
+                        home_fdr, away_fdr = _fixture_fdr(fixture, home_name, away_name, ratings_service)
 
                         fixtures_list.append({
                             "home": home_name,
@@ -102,20 +125,6 @@ def fixtures_command(ctx: click.Context, gameweek: int | None, mode: str, output
                             "away_score": fixture.away_score,
                         })
 
-                    # `warnings` is always present, empty or not, matching `fdr`
-                    # and `stats`: a consumer indexes it rather than checking
-                    # for the key first. Without it a table of flat 4.0s reads
-                    # as analysis rather than as "nothing to rate these on".
-                    warnings: list[dict[str, str]] = []
-                    ratings_warning = (
-                        ratings_service.get_staleness_warning() if ratings_service is not None else None
-                    )
-                    if ratings_warning:
-                        warnings.append({
-                            "code": "team_ratings_unusable",
-                            "message": ratings_warning,
-                        })
-
                     emit_json("fixtures", fixtures_list, metadata={
                         "gameweek": gw_num,
                         "custom_analysis": custom_on,
@@ -123,7 +132,7 @@ def fixtures_command(ctx: click.Context, gameweek: int | None, mode: str, output
                         # has to infer it from the numbers it happened to get
                         "fdr_scale": "team_ratings_1_7" if custom_on else "fpl_api_1_5",
                         "fdr_mode": mode if custom_on else None,
-                        "warnings": warnings,
+                        "warnings": _ratings_warnings(ratings_service),
                     })
                 except Exception as e:  # noqa: BLE001 — display resilience
                     emit_json_error("fixtures", str(e))
@@ -138,17 +147,13 @@ def fixtures_command(ctx: click.Context, gameweek: int | None, mode: str, output
                 fixtures_data = await client.get_fixtures(gameweek=gw_num)
                 teams = {t.id: t for t in await client.get_teams()}
 
-                ratings_service = None
-                if custom_on:
-                    ratings_service = TeamRatingsService()
-                    await ratings_service.ensure_fresh(client)
+                ratings_service = await _resolve_ratings(client)
 
-                    # Same rating-quality note `fpl fdr` and `fpl preview` print:
-                    # with no usable ratings every FDR below is the neutral 4.0,
-                    # and a flat table needs saying so.
-                    ratings_warning = ratings_service.get_staleness_warning()
-                    if ratings_warning:
-                        error_console.print(f"[yellow]{ratings_warning}[/yellow]\n")
+                # Same rating-quality note `fpl fdr` and `fpl preview` print:
+                # with no usable ratings every FDR below is the neutral 4.0,
+                # and a flat table needs saying so.
+                for warning in _ratings_warnings(ratings_service):
+                    error_console.print(f"[yellow]{warning['message']}[/yellow]\n")
 
                 table = Table(show_header=True, header_style="bold")
                 table.add_column("Home")
@@ -165,22 +170,16 @@ def fixtures_command(ctx: click.Context, gameweek: int | None, mode: str, output
                     home_name = home_team.short_name if home_team else "???"
                     away_name = away_team.short_name if away_team else "???"
 
+                    # The general FDR the fixture agent scores, so this table and
+                    # the preview's Gameweek Fixtures table agree on a match (#202)
+                    home_fdr, away_fdr = _fixture_fdr(fixture, home_name, away_name, ratings_service)
+
                     if ratings_service is not None:
-                        # The general FDR the fixture agent scores, so this table
-                        # and the preview's Gameweek Fixtures table agree (#202)
-                        home_fdr = ratings_service.get_fixture_fdr(home_name, away_name, "home", mode=mode)
-                        away_fdr = ratings_service.get_fixture_fdr(away_name, home_name, "away", mode=mode)
-                        home_fdr_str = f"{home_fdr:.1f}"
-                        away_fdr_str = f"{away_fdr:.1f}"
-                        home_fdr_style = _fdr_style(home_fdr)
-                        away_fdr_style = _fdr_style(away_fdr)
+                        home_fdr_str, away_fdr_str = f"{home_fdr:.1f}", f"{away_fdr:.1f}"
+                        home_fdr_style, away_fdr_style = _fdr_style(home_fdr), _fdr_style(away_fdr)
                     else:
-                        home_fdr = fixture.home_difficulty
-                        away_fdr = fixture.away_difficulty
-                        home_fdr_str = str(home_fdr)
-                        away_fdr_str = str(away_fdr)
-                        home_fdr_style = _api_fdr_style(home_fdr)
-                        away_fdr_style = _api_fdr_style(away_fdr)
+                        home_fdr_str, away_fdr_str = str(home_fdr), str(away_fdr)
+                        home_fdr_style, away_fdr_style = _api_fdr_style(home_fdr), _api_fdr_style(away_fdr)
 
                     kickoff = format_kickoff(fixture.kickoff_time) if fixture.kickoff_time else "TBC"
 

@@ -48,6 +48,13 @@ FDR_MODE_GLOSS: dict[str, str] = {
 """One-line reading of each ``get_positional_fdr`` mode, for the footers of FDR tables."""
 
 
+_FDR_SCALE = "FDR scale: 1 (easiest) - 7 (hardest)"
+"""Opening clause of every FDR footer. One copy, so no renderer can state a different scale."""
+
+_FDR_UNRATED_NOTE = "Fixtures involving an unrated club score a neutral 4.0."
+"""Closing clause of every FDR footer, true on the general figure and both positional ones."""
+
+
 def fdr_columns_footer(mode: str) -> str:
     """Footer for a table showing FDR beside ATK and DEF, all scored in ``mode``.
 
@@ -58,9 +65,9 @@ def fdr_columns_footer(mode: str) -> str:
     """
     gloss = FDR_MODE_GLOSS.get(mode, mode)
     return (
-        f"FDR scale: 1 (easiest) - 7 (hardest). All three columns use {mode} mode ({gloss}); "
+        f"{_FDR_SCALE}. All three columns use {mode} mode ({gloss}); "
         "FDR is the mean of ATK and DEF. ATK = for attackers, DEF = for defenders/GKs. "
-        "Fixtures involving an unrated club score a neutral 4.0."
+        f"{_FDR_UNRATED_NOTE}"
     )
 
 
@@ -73,10 +80,26 @@ def fdr_scale_footer(mode: str) -> str:
     """
     gloss = FDR_MODE_GLOSS.get(mode, mode)
     return (
-        f"FDR scale: 1 (easiest) - 7 (hardest), in {mode} mode ({gloss}); "
+        f"{_FDR_SCALE}, in {mode} mode ({gloss}); "
         "each figure is the mean of the attacking and defensive difficulty of the "
-        "fixture for that team. Fixtures involving an unrated club score a neutral 4.0."
+        f"fixture for that team. {_FDR_UNRATED_NOTE}"
     )
+
+
+def general_fdr(positional_fdr: dict[str, float]) -> float:
+    """General FDR for one fixture: the mean of its ATK and DEF positional FDRs.
+
+    Takes the pair rather than the fixture so a caller that has already scored
+    the positional columns derives the general figure from the very numbers it
+    is about to display, instead of re-deriving them. Those two routes round in
+    different orders -- `get_positional_fdr_pair` rounds each column to 1dp,
+    this rounds their mean to 2 -- and a re-derivation from unrounded values
+    lands elsewhere the moment a rating axis is not a whole number, which the
+    primary `team_ratings.yaml` load path does not enforce. The FDR column
+    would then disagree with the ATK/DEF pair beside it, which is the split
+    #202 exists to close.
+    """
+    return round((positional_fdr["ATK"] + positional_fdr["DEF"]) / 2, 2)
 
 
 @dataclass
@@ -599,6 +622,33 @@ class TeamRatingsService:
                 return (opp_fdr + team_def) / 2
             return float(opp_fdr)
 
+    def get_positional_fdr_pair(
+        self,
+        team: str,
+        opponent: str,
+        venue: str,
+        mode: str = "difference",
+    ) -> dict[str, float]:
+        """ATK (FWD/MID) and DEF (DEF/GK) FDR for one fixture, each rounded to 1dp.
+
+        The single rounding boundary for a fixture's difficulty: every FDR a
+        user sees is built from this pair, so the general figure beside the two
+        columns is the mean of exactly the numbers printed, whatever the
+        underlying axes are.
+
+        Args:
+            team: Short name of the team whose fixture this is (e.g. "LIV")
+            opponent: Opponent team short name (e.g. "ARS")
+            venue: "home" or "away", from *team*'s point of view
+            mode: "difference" (default) or "opponent"
+        """
+        return {
+            # ATK: for FWD/MID, off the opponent's defensive weakness
+            "ATK": round(self.get_positional_fdr("FWD", team, opponent, venue, mode), 1),
+            # DEF: for DEF/GK, off the opponent's attacking threat
+            "DEF": round(self.get_positional_fdr("DEF", team, opponent, venue, mode), 1),
+        }
+
     def get_fixture_fdr(
         self,
         team: str,
@@ -623,6 +673,10 @@ class TeamRatingsService:
         not the FPL API's `home_difficulty`/`away_difficulty`: that fallback
         put one club on a 1-5 scale inside a 1-7 column.
 
+        For a caller that already holds the positional pair, `general_fdr()`
+        takes it directly -- this is that call with the pair fetched first, so
+        the two cannot disagree.
+
         Args:
             team: Short name of the team whose fixture this is (e.g. "LIV")
             opponent: Opponent team short name (e.g. "ARS")
@@ -632,9 +686,7 @@ class TeamRatingsService:
         Returns:
             FDR value (1-7 scale, lower = easier fixture)
         """
-        atk_fdr = self.get_positional_fdr("FWD", team, opponent, venue, mode)
-        def_fdr = self.get_positional_fdr("DEF", team, opponent, venue, mode)
-        return round((atk_fdr + def_fdr) / 2, 2)
+        return general_fdr(self.get_positional_fdr_pair(team, opponent, venue, mode))
 
     @property
     def metadata(self) -> RatingsMetadata | None:

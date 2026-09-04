@@ -102,8 +102,10 @@ class TestFixturesCommandFDR:
 
         assert result.exit_code == 0
         fixture_dict = json.loads(result.output)["data"][0]
-        assert fixture_dict["home_fdr"] == agent.general_fdr("CHE", "MCI", is_home=True)
-        assert fixture_dict["away_fdr"] == agent.general_fdr("MCI", "CHE", is_home=False)
+        home_pair = agent.get_fixture_fdr_by_position("CHE", "MCI", is_home=True)
+        away_pair = agent.get_fixture_fdr_by_position("MCI", "CHE", is_home=False)
+        assert fixture_dict["home_fdr"] == agent.general_fdr(home_pair)
+        assert fixture_dict["away_fdr"] == agent.general_fdr(away_pair)
 
     def test_fdr_is_venue_aware_and_sees_both_teams(self, runner, tmp_path):
         """CHE at home to MCI: ATK and DEF both (8 - 2 + 3) / 2 = 4.5, so FDR 4.5.

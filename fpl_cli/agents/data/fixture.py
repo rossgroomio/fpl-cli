@@ -22,6 +22,7 @@ from fpl_cli.services.matchup import POSITION_WEIGHTS as _SERVICE_POSITION_WEIGH
 from fpl_cli.services.matchup import calculate_matchup_score as _service_calculate_matchup_score
 from fpl_cli.services.team_form import calculate_team_form
 from fpl_cli.services.team_ratings import TeamRatingsService
+from fpl_cli.services.team_ratings import general_fdr as _general_fdr
 
 
 class FixtureAgent(Agent):
@@ -315,8 +316,8 @@ class FixtureAgent(Agent):
                 # fixtures on the API's 1-5 scale inside a 1-7 ranking, so they
                 # floated up the easiest-runs table. They score the same
                 # neutral 4.0 the positional columns already give them.
-                home_fdr = self.general_fdr(home_team.short_name, away_team.short_name, is_home=True)
-                away_fdr = self.general_fdr(away_team.short_name, home_team.short_name, is_home=False)
+                home_fdr = self.general_fdr(home_pos_fdr)
+                away_fdr = self.general_fdr(away_pos_fdr)
 
                 fdr_by_team[f.home_team_id].append({
                     "gameweek": f.gameweek,
@@ -472,37 +473,23 @@ class FixtureAgent(Agent):
             result["home_fdr_def"] = home_pos_fdr["DEF"]
             result["away_fdr_atk"] = away_pos_fdr["ATK"]
             result["away_fdr_def"] = away_pos_fdr["DEF"]
-            result["home_fdr"] = self.general_fdr(home.short_name, away.short_name, is_home=True)
-            result["away_fdr"] = self.general_fdr(away.short_name, home.short_name, is_home=False)
+            result["home_fdr"] = self.general_fdr(home_pos_fdr)
+            result["away_fdr"] = self.general_fdr(away_pos_fdr)
 
         return result
 
-    def general_fdr(
-        self,
-        team_short: str,
-        opponent_short: str,
-        is_home: bool,
-        mode: str | None = None,
-    ) -> float:
-        """General FDR for one fixture: the mean of its ATK and DEF positional FDRs.
+    @staticmethod
+    def general_fdr(positional_fdr: dict[str, float]) -> float:
+        """General FDR for a fixture, from the ATK/DEF pair already scored for it.
 
-        Thin wrapper over ``TeamRatingsService.get_fixture_fdr``, which owns
-        the definition so `fpl fixtures` scores a fixture the same way this
-        agent does rather than keeping a second copy of it (#202).
+        The service owns the definition -- `fpl fixtures` reaches the same
+        number through `get_fixture_fdr()`, which is this call with the pair
+        fetched first -- so a fixture is scored one way in the codebase (#202).
 
         Args:
-            team_short: Short name of the team whose fixture this is
-            opponent_short: Opponent team short name
-            is_home: Whether the team is at home
-            mode: "difference" or "opponent" (defaults to self.fdr_mode)
+            positional_fdr: ``get_fixture_fdr_by_position`` output for the fixture
         """
-        resolved_mode: str = mode or self.fdr_mode
-        return self.ratings_service.get_fixture_fdr(
-            team=team_short,
-            opponent=opponent_short,
-            venue="home" if is_home else "away",
-            mode=resolved_mode,
-        )
+        return _general_fdr(positional_fdr)
 
     def get_positional_fdr(
         self,
@@ -553,27 +540,12 @@ class FixtureAgent(Agent):
             Dict with keys "ATK" (FWD/MID) and "DEF" (DEF/GK)
         """
         resolved_mode: str = mode or self.fdr_mode
-        venue = "home" if is_home else "away"
-
-        # ATK FDR (for FWD/MID) - based on opponent's defensive weakness
-        atk_fdr = self.ratings_service.get_positional_fdr(
-            position="FWD",
+        return self.ratings_service.get_positional_fdr_pair(
             team=team_short,
             opponent=opponent_short,
-            venue=venue,
+            venue="home" if is_home else "away",
             mode=resolved_mode,
         )
-
-        # DEF FDR (for DEF/GK) - based on opponent's offensive threat
-        def_fdr = self.ratings_service.get_positional_fdr(
-            position="DEF",
-            team=team_short,
-            opponent=opponent_short,
-            venue=venue,
-            mode=resolved_mode,
-        )
-
-        return {"ATK": round(atk_fdr, 1), "DEF": round(def_fdr, 1)}
 
     # Position-specific weights for matchup scoring (delegated to service)
     POSITION_WEIGHTS = _SERVICE_POSITION_WEIGHTS

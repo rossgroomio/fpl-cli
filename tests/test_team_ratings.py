@@ -12,6 +12,7 @@ from fpl_cli.services.team_ratings import (
     TeamRating,
     TeamRatingsCalculator,
     TeamRatingsService,
+    general_fdr,
 )
 
 
@@ -479,6 +480,48 @@ class TestGeneralFixtureFDR:
         """An unrated club scores 4.0 on the 1-7 scale, not an API 1-5 difficulty."""
         assert service.get_fixture_fdr("LIV", "XXX", "home") == 4.0
         assert service.get_fixture_fdr("XXX", "LIV", "away") == 4.0
+
+    def test_is_the_mean_of_the_rounded_pair_that_gets_displayed(self, service):
+        """Not of the unrounded positional values behind them."""
+        pair = service.get_positional_fdr_pair("LIV", "SHU", "home")
+
+        assert service.get_fixture_fdr("LIV", "SHU", "home") == general_fdr(pair)
+
+    def test_agrees_with_the_displayed_pair_on_fractional_axes(self, tmp_path):
+        """`_load_ratings` does not enforce int axes the way `_apply_overrides` does.
+
+        A hand-edited `team_ratings.yaml` can therefore carry `atk_home: 2.1`.
+        Rounding each column to 1dp and rounding the mean of the unrounded
+        values land on different numbers there, so the general FDR has to come
+        from the rounded pair or the column disagrees with the pair beside it.
+        """
+        config = tmp_path / "fractional.yaml"
+        with open(config, "w", encoding="utf-8") as f:
+            yaml.dump({
+                "metadata": {
+                    "last_updated": datetime.now().strftime("%Y-%m-%d"),
+                    "source": "test",
+                    "staleness_threshold_days": 30,
+                },
+                "ratings": {
+                    "CHE": {"atk_home": 2.1, "atk_away": 4, "def_home": 3, "def_away": 4},
+                    "MCI": {"atk_home": 1, "atk_away": 2, "def_home": 1, "def_away": 2},
+                },
+            }, f)
+        service = TeamRatingsService(config_path=config)
+
+        pair = service.get_positional_fdr_pair("CHE", "MCI", "home")
+
+        assert pair == {"ATK": 4.0, "DEF": 4.5}
+        # 4.25, the mean of what is printed - not 4.28, the mean of (4.05, 4.5)
+        assert service.get_fixture_fdr("CHE", "MCI", "home") == 4.25
+
+    def test_pair_rounds_each_column_to_one_decimal(self, service):
+        """The pair is the rounding boundary; every FDR shown is built from it."""
+        pair = service.get_positional_fdr_pair("AVL", "LIV", "away")
+
+        assert pair == {k: round(v, 1) for k, v in pair.items()}
+        assert set(pair) == {"ATK", "DEF"}
 
 
 class TestSaveRatings:
