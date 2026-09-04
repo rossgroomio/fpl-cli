@@ -42,6 +42,7 @@ For a complete inventory of CLI commands, analysis agents, and skills with JSON 
 - Primary API client: `self.client` in `__init__` (FPLClient for classic agents, FPLDraftClient for draft agents)
 - Secondary clients: qualified name (e.g. `self.fpl_client` on a draft agent)
 - LLM access is not a client attribute: resolve it per role with `get_llm_provider(role, settings)` from `fpl_cli.api.providers` (see `ScoutAgent.research_provider`)
+- Progress logging: `self.log()` / `log_success()` / `log_warning()` / `log_error()` write to stderr by construction (`agents/base.py`). Agent prose must never reach stdout — that is the stream `--format json` consumers and the gw-prep scripts parse
 - Position map: import `POSITION_MAP` from `fpl_cli/models/player.py`, never redefine locally
 - Understat enrichment: import `match_fpl_to_understat` from `fpl_cli/api/understat`
 - Draft-to-main player matching: import `match_draft_to_main` from `fpl_cli/api/fpl_draft`, never join on `(web_name, team_id)` — `code` is the stable key and a mid-season rename breaks the name join

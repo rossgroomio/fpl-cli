@@ -240,8 +240,34 @@ class TestAgentLogging:
     def test_log_method(self, agent, capsys):
         """Test basic log method."""
         agent.log("Test message")
-        # Note: Rich console output goes to stdout
-        # We're mainly testing that it doesn't raise
+        assert "Test message" in capsys.readouterr().err
+
+    def test_log_goes_to_stderr_not_stdout(self, agent, capsys):
+        """Agent prose must never touch the stream a consumer parses (#226).
+
+        Every direct consumer of an agent reads stdout -- the `--format json`
+        commands, the gw-prep helper scripts vendored into user vaults -- so a
+        progress line printed there lands ahead of the JSON and breaks the
+        parse at byte 0. Enforcing it on the base class is what makes it true
+        for all 60-odd call sites at once, rather than each new one having to
+        remember to redirect.
+        """
+        agent.log("Test message")
+
+        captured = capsys.readouterr()
+        assert captured.out == "", (
+            f"agent progress reached stdout: {captured.out!r}"
+        )
+        assert "Test message" in captured.err
+
+    @pytest.mark.parametrize("helper", ["log_success", "log_warning", "log_error"])
+    def test_log_helpers_go_to_stderr(self, agent, capsys, helper):
+        """The styled wrappers route through `log`, so they inherit the rule."""
+        getattr(agent, helper)("Helper message")
+
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "Helper message" in captured.err
 
     def test_log_with_style(self, agent):
         """Test log with style parameter."""

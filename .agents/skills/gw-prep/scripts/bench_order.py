@@ -15,13 +15,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import sys
 
-from _bootstrap import bootstrap_user_dirs
+from _bootstrap import bootstrap_user_dirs, emit
 
 from fpl_cli.agents.analysis.bench_order import BenchOrderAgent
 from fpl_cli.api.fpl import FPLClient
+from fpl_cli.cli._json import json_output_mode
 from fpl_cli.models.player import resolve_players_or_report
 
 
@@ -39,23 +39,24 @@ async def _run(starting_names: list[str], bench_names: list[str]) -> None:
     )
 
     if errors:
-        json.dump({"error": True, "messages": errors}, sys.stdout, indent=2)
+        emit({"error": True, "messages": errors})
         sys.exit(1)
 
-    async with BenchOrderAgent() as agent:
-        result = await agent.run(context={
-            "starting_xi": [p.id for p in starting],
-            "bench": [p.id for p in bench],
-        })
+    # The agent logs its progress while it works. `json_output_mode()` sends
+    # that to stderr and hands back the real stdout for the payload, so the
+    # caller parses JSON from byte 0 rather than stripping prose first (#226).
+    with json_output_mode() as stdout:
+        async with BenchOrderAgent() as agent:
+            result = await agent.run(context={
+                "starting_xi": [p.id for p in starting],
+                "bench": [p.id for p in bench],
+            })
 
-    if not result.success:
-        json.dump({
-            "error": True,
-            "messages": result.errors or [result.message],
-        }, sys.stdout, indent=2)
-        sys.exit(1)
+        if not result.success:
+            emit({"error": True, "messages": result.errors or [result.message]}, stdout)
+            sys.exit(1)
 
-    json.dump(result.data, sys.stdout, indent=2)
+        emit(result.data, stdout)
 
 
 def main() -> None:

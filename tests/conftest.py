@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from fpl_cli.agents.base import Agent, AgentResult, AgentStatus
 from fpl_cli.models.fixture import Fixture
 from fpl_cli.models.player import Player, PlayerPosition, PlayerStatus
 from fpl_cli.models.team import Team
@@ -589,6 +590,60 @@ def mock_fpl_client(mock_bootstrap_data, sample_fixtures):
 
 
 # --- Agent factory ---
+
+class LoggingAgent(Agent):
+    """A real agent that logs its progress the way every shipped one does.
+
+    `make_agent()` below is a MagicMock, so it prints nothing. That is why a
+    suite full of it could not see #226: the prose that broke a consumer's
+    parse came from `Agent.log`, which a mock never reaches. Any test
+    asserting on which stream a consumer reads needs an agent that logs.
+    """
+
+    name = "LoggingTestAgent"
+
+    def __init__(
+        self,
+        data: dict[str, Any] | None = None,
+        *,
+        success: bool = True,
+        message: str = "",
+    ):
+        super().__init__()
+        self._data = data or {}
+        self._success = success
+        self._message = message
+        self.last_context: dict[str, Any] | None = None
+
+    async def run(self, context: dict[str, Any] | None = None) -> AgentResult:
+        self.last_context = context
+        self.log("Working...")
+        if not self._success:
+            self.log_error(self._message or "Agent failed")
+            return self._create_result(
+                AgentStatus.FAILED,
+                message=self._message or "Agent failed",
+                errors=[self._message] if self._message else [],
+            )
+        self.log_success("Done")
+        return self._create_result(AgentStatus.SUCCESS, data=self._data)
+
+
+def make_logging_agent(
+    data: dict[str, Any] | None = None,
+    *,
+    success: bool = True,
+    message: str = "",
+) -> LoggingAgent:
+    """`make_agent()`'s counterpart for tests about output streams.
+
+    Patch it in where the mock would go: it is a real `Agent`, so `async
+    with` and `run()` behave the same, and the two progress lines land
+    wherever the code under test lets them.
+    """
+    return LoggingAgent(data, success=success, message=message)
+
+
 
 def make_agent(
     data: dict[str, Any] | None = None,
