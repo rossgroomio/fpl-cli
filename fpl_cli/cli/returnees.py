@@ -187,10 +187,13 @@ async def _load_profiles() -> dict[int, PlayerProfile] | None:
     try:
         async with make_historical_provider() as historical:
             return await historical.get_all_player_histories()
-    except Exception:  # noqa: BLE001 — graceful degradation: history is an enrichment
+    except Exception as exc:  # noqa: BLE001 — graceful degradation: history is an enrichment
+        # No traceback: fpl-cli configures no logging handlers, so a WARNING
+        # with exc_info reaches logging's lastResort handler and dumps it raw
+        # into stderr, including under `--format json` (issue #237/#239 review).
         logger.warning(
-            "Historical profiles unavailable; the quality bar falls back to price",
-            exc_info=True,
+            "Historical profiles unavailable; the quality bar falls back to price: %s",
+            exc,
         )
         return None
 

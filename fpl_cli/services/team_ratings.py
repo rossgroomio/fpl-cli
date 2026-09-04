@@ -321,8 +321,12 @@ class TeamRatingsService:
         if not TeamRatingsService._refreshed_this_session:
             try:
                 await self._refresh(client)
-            except Exception:  # noqa: BLE001 — graceful degradation
-                logger.warning("Auto-refresh failed, using stale ratings", exc_info=True)
+            except Exception as exc:  # noqa: BLE001 — graceful degradation
+                # No traceback: fpl-cli configures no logging handlers, so a
+                # WARNING with exc_info would reach logging's lastResort
+                # handler and dump it raw into JSON-mode stderr, alongside
+                # the command's own clean error envelope (issue #237).
+                logger.warning("Auto-refresh failed, using stale ratings: %s", exc)
 
         try:
             teams = await client.get_teams()

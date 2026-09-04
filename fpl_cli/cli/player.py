@@ -329,6 +329,7 @@ def player_command(
                                 "price": round(float(p.price), 1),
                                 "form": float(p.form),
                                 "total_points": p.total_points,
+                                "minutes": p.minutes,
                                 "points_per_game": float(p.points_per_game),
                                 "ep_next": p.ep_next,
                                 "ep_this": p.ep_this,

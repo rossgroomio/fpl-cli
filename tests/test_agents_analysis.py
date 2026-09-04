@@ -3,6 +3,7 @@
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 
 from fpl_cli.agents.analysis.captain import CaptainAgent
@@ -174,6 +175,28 @@ class TestCaptainAgent:
 
             assert result.status == AgentStatus.FAILED
             assert "API Error" in result.errors[0]
+
+    @pytest.mark.asyncio
+    async def test_run_handles_unreachable_api(self, agent):
+        """An unreachable API gets the same wording the direct-api commands
+        (status, fixtures, stats) give via `api_failure_boundary`, so a JSON
+        consumer of `captain` does not lose the transport detail that only
+        `log_error`'s stderr line carried before (issue #237).
+        """
+        with patch.object(agent.client, "get_players", new_callable=AsyncMock) as mock_get_players, \
+             patch.object(agent.client, "get_teams", new_callable=AsyncMock) as mock_get_teams, \
+             patch.object(agent.client, "get_next_gameweek", new_callable=AsyncMock) as mock_next_gw, \
+             patch.object(agent.client, "get_fixtures", new_callable=AsyncMock) as mock_get_fixtures:
+
+            mock_get_players.side_effect = httpx.ConnectError("All connection attempts failed")
+            mock_get_teams.return_value = []
+            mock_next_gw.return_value = {"id": 25, "deadline_time": "2024-02-10T11:00:00Z"}
+            mock_get_fixtures.return_value = []
+
+            result = await agent.run()
+
+            assert result.status == AgentStatus.FAILED
+            assert result.message == "Could not reach the FPL API: All connection attempts failed"
 
     @pytest.mark.asyncio
     async def test_run_no_next_gameweek(self, agent, mock_players, mock_teams):

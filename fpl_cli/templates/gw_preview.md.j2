@@ -9,7 +9,7 @@
 | Home | FDR |    | FDR | Away | Kickoff |
 |------|-----|----|-----|------|---------|
 {% for f in gw_fixtures %}
-| {{ f.home_team }} | {{ f.home_fdr }} | vs | {{ f.away_fdr }} | {{ f.away_team }} | {{ f.kickoff }} |
+| {{ f.home_team }} | {{ "%.1f"|format(f.home_fdr) if f.home_fdr is float else f.home_fdr }} | vs | {{ "%.1f"|format(f.away_fdr) if f.away_fdr is float else f.away_fdr }} | {{ f.away_team }} | {{ f.kickoff }} |
 {% endfor %}
 
 {% if fixtures and fixtures.easy_fixture_runs %}
