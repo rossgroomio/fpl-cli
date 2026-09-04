@@ -1218,6 +1218,25 @@ def test_a_single_slot_file_from_before_the_two_slot_store_loads_as_the_current_
     assert loaded.current == _snapshot(gameweek=4, **{"7": _record(chance=25)})
 
 
+def test_a_file_holding_only_a_baseline_loads_with_an_empty_current_slot():
+    """Not a shape `save_store` writes, but a readable one: it must load as
+    what it says rather than being silently treated as a first run."""
+    returnee_radar.snapshot_path().write_text(
+        json.dumps({
+            "metadata": {"season": "2026-27", "gameweek": None},
+            "baseline": {"gameweek": 5, "players": {}},
+            "current": None,
+        }),
+        encoding="utf-8",
+    )
+
+    loaded = returnee_radar.load_store(season="2026-27")
+
+    assert loaded is not None
+    assert loaded.current is None
+    assert loaded.baseline is not None and loaded.baseline.gameweek == 5
+
+
 def test_a_single_slot_file_from_a_previous_season_is_still_discarded():
     _write_legacy_snapshot(_snapshot(season="2025-26", gameweek=4, **{"7": _record()}))
 
@@ -1313,8 +1332,39 @@ def test_advancing_inside_one_gameweek_refreshes_current_and_keeps_the_baseline(
 
     advanced = store.advanced_to(_snapshot(gameweek=5, **{"7": _record(chance=50)}))
 
+    assert advanced is not None
     assert advanced.baseline is store.baseline
+    assert advanced.current is not None
     assert advanced.current.players[7].chance_of_playing == 50
+
+
+def test_advancing_to_an_earlier_gameweek_is_refused():
+    store = _store(
+        baseline=_snapshot(gameweek=4, **{"7": _record(chance=0)}),
+        current=_snapshot(gameweek=5, **{"7": _record(chance=25)}),
+    )
+
+    assert store.advanced_to(_snapshot(gameweek=4, **{"7": _record(chance=50)})) is None
+
+
+def test_advancing_is_refused_against_a_newer_baseline_with_an_empty_current_slot():
+    """A hand-edited file can hold a baseline with no current state. Accepting
+    an older run there would leave the store inverted -- a baseline newer than
+    the current slot -- which nothing downstream, `fpl doctor` included, checks
+    for."""
+    store = _store(baseline=_snapshot(gameweek=5, **{"7": _record(chance=0)}))
+
+    assert store.advanced_to(_snapshot(gameweek=4, **{"7": _record(chance=25)})) is None
+
+
+def test_advancing_past_a_baseline_with_an_empty_current_slot_is_allowed():
+    store = _store(baseline=_snapshot(gameweek=5, **{"7": _record(chance=0)}))
+
+    advanced = store.advanced_to(_snapshot(gameweek=6, **{"7": _record(chance=25)}))
+
+    assert advanced is not None
+    assert advanced.baseline is store.baseline
+    assert advanced.current is not None and advanced.current.gameweek == 6
 
 
 # ---------------------------------------------------------------------------
@@ -1663,6 +1713,27 @@ def test_a_run_older_than_the_stored_gameweek_leaves_the_store_alone():
 
     _run([_tracked(chance=50)], {1: _prior(0.9)}, next_gw_id=2)
 
+    assert returnee_radar.snapshot_path().read_text(encoding="utf-8") == before
+
+
+def test_a_stale_run_against_a_baseline_only_store_leaves_the_file_alone():
+    """The `current`-is-None path past the ordering check: a run older than the
+    stored baseline must not become the current slot, or the file ends up with
+    a baseline newer than its current state."""
+    returnee_radar.snapshot_path().write_text(
+        json.dumps({
+            "metadata": {"season": "2026-27", "gameweek": None},
+            "baseline": {"gameweek": 5, "players": {}},
+            "current": None,
+        }),
+        encoding="utf-8",
+    )
+    before = returnee_radar.snapshot_path().read_text(encoding="utf-8")
+
+    result = _run([_tracked(chance=25)], {1: _prior(0.9)}, next_gw_id=4)
+
+    assert [e.transition for e in result.entries] == [None]
+    assert result.transitions_available is False
     assert returnee_radar.snapshot_path().read_text(encoding="utf-8") == before
 
 

@@ -1000,14 +1000,26 @@ class SnapshotStore:
                 return slot
         return None
 
-    def advanced_to(self, snapshot: RadarSnapshot) -> SnapshotStore:
+    def advanced_to(self, snapshot: RadarSnapshot) -> SnapshotStore | None:
         """This store with `snapshot` as the current gameweek's state.
 
         The state it displaces is promoted to baseline only when it belongs to
         an earlier gameweek. A rerun inside one gameweek therefore refreshes
         `current` and leaves the baseline alone, which is what keeps every run
         of that gameweek reporting the same transitions.
+
+        None when `snapshot` predates a state either slot already holds:
+        storing it would overwrite a later gameweek's state and could leave
+        the file inverted, with a baseline newer than the current slot. The
+        gameweek only moves forward in practice, so this guards a hand-edited
+        or half-written file rather than an ordinary run -- and refusing here
+        rather than at the call site is what keeps the ordering an invariant
+        of the store: a caller cannot store an out-of-order run by forgetting
+        to ask first, because `save_store` does not accept the None.
         """
+        stored = [slot.gameweek for slot in (self.baseline, self.current) if slot is not None]
+        if any(snapshot.gameweek < gameweek for gameweek in stored):
+            return None
         displaced = self.current
         promote = displaced is not None and displaced.gameweek < snapshot.gameweek
         return SnapshotStore(
@@ -1381,16 +1393,18 @@ def run_radar(
         players=players,
         exclusions=result.exclusions,
     )
-    # A run older than what is stored is not written: it would overwrite a
-    # later gameweek's state and take the baseline down with it.
-    stale = store.current is not None and next_gw_id < store.current.gameweek
-    if persist and not stale:
+    # None when this run is older than a stored state, which `advanced_to`
+    # refuses rather than invert the store over.
+    updated = (
+        store.advanced_to(
+            snapshot_from_entries(result.entries, gameweek=next_gw_id, season=season),
+        )
+        if persist
+        else None
+    )
+    if updated is not None:
         try:
-            save_store(
-                store.advanced_to(
-                    snapshot_from_entries(result.entries, gameweek=next_gw_id, season=season),
-                ),
-            )
+            save_store(updated)
         except OSError as exc:
             # The watchlist stands on its own; losing the write costs next
             # week's deltas, not this week's output.
