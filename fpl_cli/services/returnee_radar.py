@@ -1599,9 +1599,13 @@ def _understat_match(
     """Find this player in the injected Understat season, or None.
 
     A missing or empty season degrades to the FPL-only path. Matching uses the
-    player's *current* club: the season's `team_id` is the FPL club code and
-    no team map reaches here to resolve it to a name, so a player who has
-    since moved simply fails to match and loses the xG sharpening.
+    player's *current* club against a *historical* season's rows, so "has moved
+    since" is the common case here rather than the rare one: their row carries
+    the club they played that season at, and the gate rejects it. Such a player
+    joins only on the name-only fallback (#234) — an unambiguous full-name
+    match whose minutes corroborate, or nothing. The snapshot cannot narrow
+    this: `SnapshotRecord` stores no club, and it is discarded at a season
+    boundary anyway, so it knows nothing about the club held in a past season.
     """
     if not understat_seasons:
         return None
