@@ -115,6 +115,16 @@ This loop is real: most of v2.3.0 exists because the v2.0→v2.2 run found
 those bugs. A plan that doesn't close its predecessor's loop lets fixes ship
 unverified.
 
+Carry the *substance* across, not a pointer to it. A runner who has to open
+the previous plan to understand a test has been handed two documents to
+execute instead of one, and mid-run is the worst moment to go looking. So
+state what the old test found and what changed, inline, in the new test.
+
+Plans all live together in `docs/test-plans/`, so where provenance is
+genuinely useful — tracing a claim, or flagging that this plan contradicts
+its predecessor — name the file (`v2.0-to-v2.2.md`) and let co-location do
+the rest. No paths, no links.
+
 ### The vault's open issues
 
 The Results log records what a run found. The vault's issue tracker records

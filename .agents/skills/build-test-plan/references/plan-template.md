@@ -7,6 +7,7 @@ convention is no blank line before or after a heading.
 
 ```markdown
 # fpl-cli v<from> → v<to> test plan
+**Status:** not yet run.
 [Opening paragraph: what this covers, and the release-boundary caveat —
 whether unreleased commits on main are docs-only (so testing the released
 fplkit covers the whole range) or whether code sits untested beyond the
@@ -44,11 +45,15 @@ did]. Reference: [the docs section the expectations come from].
 [Only if Step 3 found anything. Each item: the original test ID, what it
 found, and whether this range claims to fix it.]
 ## Wrap-up
-1. [commit generated state worth keeping]
-2. [fill the Results log, summarise counts, separate fpl-cli bugs from
+1. [replace the Status line under the title with the run's date, version
+   and PASS/FAIL/BLOCKED counts]
+2. [commit generated state worth keeping]
+3. [fill the Results log, summarise counts, separate fpl-cli bugs from
    environment issues, and record anything noticed outside the test
    matrix as a post-plan finding]
-3. [do not fix fpl-cli from the vault — its source isn't there. Report
+4. [close the carried workspace issues whose items passed; comment the new
+   blocking condition on the ones still deferred]
+5. [do not fix fpl-cli from the vault — its source isn't there. Report
    findings to the user; anything filed upstream takes the house issue
    style — Summary / Repro / Cause / Impact / Suggested fix / Test gap —
    and the anonymity rule from the top of the plan]
@@ -64,6 +69,37 @@ found, and whether this range claims to fix it.]
 | P2 |  |  |
 [one empty row per test ID]
 ```
+
+## Closing the document out
+
+The plan is not just instructions — it is the run's record, and the next
+plan's Step 3 reads it rather than the session transcript that produced it.
+So the wrap-up has to say how to leave it, or a finished run leaves behind
+a half-filled table nobody can date.
+
+Give the plan a `**Status:** not yet run.` line under the title, and have
+the wrap-up replace it on completion:
+
+```markdown
+**Status:** run <date> against fplkit <version> — 38 PASS, 4 FAIL,
+3 BLOCKED. [one clause on anything that changes how to read the results,
+e.g. "Part 4 deferred to a later session".]
+```
+
+That line is what a future reader — and the next plan — sees first. Without
+it, telling a plan that was run clean from one that was never started means
+parsing the whole table.
+
+The wrap-up should also have the runner:
+
+- Record post-plan findings in the document, below the table. Things
+  noticed in real output that no test asked about are consistently the
+  sharpest bugs a run produces, and they are lost if they stay in chat.
+- Close the carried workspace issues whose items now pass, and comment on
+  the ones still deferred with the new blocking condition — otherwise the
+  same work queues twice and the next plan carries it forward again.
+- Commit the filled plan alongside the generated artifacts, so the record
+  and the evidence land together.
 
 ## The coverage map
 
