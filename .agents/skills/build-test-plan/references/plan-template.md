@@ -98,6 +98,17 @@ The wrap-up should also have the runner:
 - Close the carried workspace issues whose items now pass, and comment on
   the ones still deferred with the new blocking condition — otherwise the
   same work queues twice and the next plan carries it forward again.
+- Raise **one** issue in the vault for work this run deferred, when the
+  document alone will not surface it again. The plan is the record and the
+  next plan's carry-forward reads it, so most BLOCKED rows need nothing
+  more. An issue earns its place when the unblocking condition is
+  time-distant or event-gated (nobody opens a merged plan document nine
+  months later), or when the item belongs to a range no plan covers and so
+  has nowhere else to live. One issue holding many items, grown by
+  comment, is the shape that works — a dozen issues for a dozen BLOCKED
+  rows is noise. Give it the `testing` label, state the condition that
+  unblocks each item, and record the data state at the time of testing:
+  a later session cannot reconstruct why something was unreachable.
 - Commit the filled plan alongside the generated artifacts, so the record
   and the evidence land together.
 
