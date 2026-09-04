@@ -51,8 +51,8 @@ def test_fdr_my_squad_draft_builds_context(mock_fixture_agent):
     mock_fixture_agent.run = AsyncMock(side_effect=capture_run)
 
     with (
-        patch("fpl_cli.cli.fdr.is_custom_analysis_enabled", return_value=True),
-        patch("fpl_cli.cli.fdr.load_settings", return_value={"fpl": {"draft_entry_id": 999}}),
+        patch("fpl_cli.cli.fdr.custom_analysis_enabled", return_value=True),
+        patch("fpl_cli.cli.fdr.get_settings", return_value={"fpl": {"draft_entry_id": 999}}),
         patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=draft_client),
         patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=mock_fixture_agent),
         patch("fpl_cli.services.team_ratings.TeamRatingsService") as mock_ratings,
@@ -85,8 +85,8 @@ def test_fdr_surfaces_ratings_warning_from_agent(mock_fixture_agent):
     )
 
     with (
-        patch("fpl_cli.cli.fdr.is_custom_analysis_enabled", return_value=True),
-        patch("fpl_cli.cli.fdr.load_settings", return_value={"fpl": {}}),
+        patch("fpl_cli.cli.fdr.custom_analysis_enabled", return_value=True),
+        patch("fpl_cli.cli.fdr.get_settings", return_value={"fpl": {}}),
         patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=mock_fixture_agent),
     ):
         runner = CliRunner()
@@ -99,8 +99,8 @@ def test_fdr_surfaces_ratings_warning_from_agent(mock_fixture_agent):
 def test_fdr_silent_when_agent_reports_no_ratings_warning(mock_fixture_agent):
     """Usable ratings print nothing, so a clean run stays clean."""
     with (
-        patch("fpl_cli.cli.fdr.is_custom_analysis_enabled", return_value=True),
-        patch("fpl_cli.cli.fdr.load_settings", return_value={"fpl": {}}),
+        patch("fpl_cli.cli.fdr.custom_analysis_enabled", return_value=True),
+        patch("fpl_cli.cli.fdr.get_settings", return_value={"fpl": {}}),
         patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=mock_fixture_agent),
     ):
         runner = CliRunner()
@@ -123,8 +123,8 @@ def test_fdr_my_squad_draft_missing_entry_id(mock_fixture_agent):
     mock_fixture_agent.run = AsyncMock(side_effect=capture_run)
 
     with (
-        patch("fpl_cli.cli.fdr.is_custom_analysis_enabled", return_value=True),
-        patch("fpl_cli.cli.fdr.load_settings", return_value={"fpl": {}}),
+        patch("fpl_cli.cli.fdr.custom_analysis_enabled", return_value=True),
+        patch("fpl_cli.cli.fdr.get_settings", return_value={"fpl": {}}),
         patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=mock_fixture_agent),
         patch("fpl_cli.services.team_ratings.TeamRatingsService") as mock_ratings,
         patch("fpl_cli.services.fixture_predictions.FixturePredictionsService") as mock_preds,
@@ -158,7 +158,7 @@ class TestFdrJsonOutput:
         ))
 
         with (
-            patch("fpl_cli.cli.fdr.is_custom_analysis_enabled", return_value=True),
+            patch("fpl_cli.cli.fdr.custom_analysis_enabled", return_value=True),
             patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=mock_fixture_agent),
         ):
             runner = CliRunner()
@@ -183,7 +183,7 @@ class TestFdrJsonOutput:
         ))
 
         with (
-            patch("fpl_cli.cli.fdr.is_custom_analysis_enabled", return_value=True),
+            patch("fpl_cli.cli.fdr.custom_analysis_enabled", return_value=True),
             patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=mock_fixture_agent),
         ):
             runner = CliRunner()
@@ -201,7 +201,7 @@ class TestFdrJsonOutput:
         ))
 
         with (
-            patch("fpl_cli.cli.fdr.is_custom_analysis_enabled", return_value=True),
+            patch("fpl_cli.cli.fdr.custom_analysis_enabled", return_value=True),
             patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=mock_fixture_agent),
         ):
             runner = CliRunner()
@@ -215,7 +215,7 @@ class TestFdrJsonOutput:
     def test_table_output_unchanged(self, mock_fixture_agent):
         """Default table output is not affected by JSON support."""
         with (
-            patch("fpl_cli.cli.fdr.is_custom_analysis_enabled", return_value=True),
+            patch("fpl_cli.cli.fdr.custom_analysis_enabled", return_value=True),
             patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=mock_fixture_agent),
             patch("fpl_cli.services.team_ratings.TeamRatingsService") as mock_ratings,
             patch("fpl_cli.services.fixture_predictions.FixturePredictionsService") as mock_preds,
@@ -234,7 +234,7 @@ class TestFdrJsonOutput:
         """The all-positions table says which mode its FDR/ATK/DEF columns share (#186)."""
         mock_fixture_agent.run.return_value.data["fdr_mode"] = "opponent"
         with (
-            patch("fpl_cli.cli.fdr.is_custom_analysis_enabled", return_value=True),
+            patch("fpl_cli.cli.fdr.custom_analysis_enabled", return_value=True),
             patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=mock_fixture_agent),
             patch("fpl_cli.services.team_ratings.TeamRatingsService") as mock_ratings,
             patch("fpl_cli.services.fixture_predictions.FixturePredictionsService") as mock_preds,
@@ -259,7 +259,7 @@ class TestFdrJsonOutput:
         ))
 
         with (
-            patch("fpl_cli.cli.fdr.is_custom_analysis_enabled", return_value=True),
+            patch("fpl_cli.cli.fdr.custom_analysis_enabled", return_value=True),
             patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=mock_fixture_agent),
         ):
             runner = CliRunner()
@@ -309,7 +309,7 @@ class TestFdrCustomAnalysisToggle:
         """When toggle off, default path shows raw FPL API FDR without ATK/DEF columns."""
         client = _make_fpl_client_for_raw_fdr()
         with (
-            patch("fpl_cli.cli.fdr.is_custom_analysis_enabled", return_value=False),
+            patch("fpl_cli.cli.fdr.custom_analysis_enabled", return_value=False),
             patch("fpl_cli.api.fpl.FPLClient", return_value=client),
             patch("fpl_cli.services.fixture_predictions.FixturePredictionsService") as mock_preds,
         ):
@@ -330,7 +330,7 @@ class TestFdrCustomAnalysisToggle:
         """When toggle off, --blanks works normally (data-only path)."""
         client = _make_fpl_client_for_raw_fdr()
         with (
-            patch("fpl_cli.cli.fdr.is_custom_analysis_enabled", return_value=False),
+            patch("fpl_cli.cli.fdr.custom_analysis_enabled", return_value=False),
             patch("fpl_cli.api.fpl.FPLClient", return_value=client),
             patch("fpl_cli.services.fixture_predictions.FixturePredictionsService") as mock_preds,
         ):
@@ -347,7 +347,7 @@ class TestFdrCustomAnalysisToggle:
 
     def test_toggle_off_position_atk_shows_error(self):
         """When toggle off, --position atk shows custom analysis required message."""
-        with patch("fpl_cli.cli.fdr.is_custom_analysis_enabled", return_value=False):
+        with patch("fpl_cli.cli.fdr.custom_analysis_enabled", return_value=False):
             runner = CliRunner()
             result = runner.invoke(fdr_command, ["--position", "atk"])
 
@@ -357,7 +357,7 @@ class TestFdrCustomAnalysisToggle:
 
     def test_toggle_off_position_def_shows_error(self):
         """When toggle off, --position def shows custom analysis required message."""
-        with patch("fpl_cli.cli.fdr.is_custom_analysis_enabled", return_value=False):
+        with patch("fpl_cli.cli.fdr.custom_analysis_enabled", return_value=False):
             runner = CliRunner()
             result = runner.invoke(fdr_command, ["--position", "def"])
 
@@ -367,7 +367,7 @@ class TestFdrCustomAnalysisToggle:
     def test_toggle_on_full_output(self, mock_fixture_agent):
         """When toggle on, full Bayesian output (no regression)."""
         with (
-            patch("fpl_cli.cli.fdr.is_custom_analysis_enabled", return_value=True),
+            patch("fpl_cli.cli.fdr.custom_analysis_enabled", return_value=True),
             patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=mock_fixture_agent),
             patch("fpl_cli.services.team_ratings.TeamRatingsService") as mock_ratings,
             patch("fpl_cli.services.fixture_predictions.FixturePredictionsService") as mock_preds,
@@ -386,7 +386,7 @@ class TestFdrCustomAnalysisToggle:
         """When toggle off, JSON output has raw FDR values."""
         client = _make_fpl_client_for_raw_fdr()
         with (
-            patch("fpl_cli.cli.fdr.is_custom_analysis_enabled", return_value=False),
+            patch("fpl_cli.cli.fdr.custom_analysis_enabled", return_value=False),
             patch("fpl_cli.api.fpl.FPLClient", return_value=client),
             patch("fpl_cli.services.fixture_predictions.FixturePredictionsService") as mock_preds,
         ):
@@ -410,7 +410,7 @@ class TestFdrJsonStdoutPurity:
     def _blanks(self, args, *, is_stale=False, custom_on=False):
         client = _make_fpl_client_for_raw_fdr()
         with (
-            patch("fpl_cli.cli.fdr.is_custom_analysis_enabled", return_value=custom_on),
+            patch("fpl_cli.cli.fdr.custom_analysis_enabled", return_value=custom_on),
             patch("fpl_cli.api.fpl.FPLClient", return_value=client),
             # Patched where fdr binds it, not where it is defined: the name is
             # imported at module scope, so the source module is the wrong target.
@@ -456,7 +456,7 @@ class TestFdrJsonStdoutPurity:
 
     def test_position_gate_reports_an_error_envelope(self):
         """The usage error used to print prose to the stdout being parsed."""
-        with patch("fpl_cli.cli.fdr.is_custom_analysis_enabled", return_value=False):
+        with patch("fpl_cli.cli.fdr.custom_analysis_enabled", return_value=False):
             result = CliRunner().invoke(fdr_command, ["--position", "atk", "--format", "json"])
 
         assert result.exit_code == 1
@@ -472,7 +472,7 @@ class TestFdrJsonStdoutPurity:
         client = _make_fpl_client_for_raw_fdr()
         client.get_next_gameweek = AsyncMock(side_effect=httpx.ConnectError("refused"))
         with (
-            patch("fpl_cli.cli.fdr.is_custom_analysis_enabled", return_value=False),
+            patch("fpl_cli.cli.fdr.custom_analysis_enabled", return_value=False),
             patch("fpl_cli.api.fpl.FPLClient", return_value=client),
         ):
             result = CliRunner().invoke(fdr_command, ["--format", "json"])

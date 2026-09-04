@@ -61,13 +61,21 @@ line-length = 120
 target-version = "py311"
 
 [tool.ruff.lint]
-select = ["BLE001", "E", "F", "I", "N", "W"]
+select = ["BLE001", "E", "F", "I", "N", "TID251", "W"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+# A command that imports CLIContext is about to unwrap ctx.obj by hand, which
+# is how the same isinstance dance ended up written out six times across five commands (#219).
+"fpl_cli.cli._context.CLIContext".msg = "Read the Click context through get_format()/get_settings()/custom_analysis_enabled() instead of unwrapping ctx.obj."
 
 [tool.ruff.lint.per-file-ignores]
 # Prompts are long strings - line length doesn't apply
 "fpl_cli/prompts/*.py" = ["E501"]
-# Test files tolerate long lines (fixture dicts, patch chains) and terse loop vars
-"tests/**/*.py" = ["E501", "E741"]
+# The entry point is what puts CLIContext on the context in the first place
+"fpl_cli/cli/__init__.py" = ["TID251"]
+# Test files tolerate long lines (fixture dicts, patch chains) and terse loop
+# vars, and construct CLIContext to stand in for the group callback
+"tests/**/*.py" = ["E501", "E741", "TID251"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

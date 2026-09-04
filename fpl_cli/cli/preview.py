@@ -16,8 +16,8 @@ from fpl_cli.cli._context import (
     console,
     error_console,
     get_format,
+    get_settings,
     is_custom_analysis_enabled,
-    load_settings,
     resolve_output_dir,
     resolve_research_dir,
 )
@@ -65,12 +65,12 @@ def preview_command(ctx: click.Context, save: bool, output: str | None, scout: b
         from fpl_cli.api.providers import ProviderError, get_llm_provider
 
         try:
-            get_llm_provider("research", load_settings())
+            get_llm_provider("research", get_settings(ctx))
         except ProviderError as e:
             console.print(f"[red]Error:[/red] {e}")
             return
 
-    settings = load_settings()
+    settings = get_settings(ctx)
     entry_id = settings.get("fpl", {}).get("classic_entry_id")
     draft_league_id = settings.get("fpl", {}).get("draft_league_id")
     draft_entry_id = settings.get("fpl", {}).get("draft_entry_id")

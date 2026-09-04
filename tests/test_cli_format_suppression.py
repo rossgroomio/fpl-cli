@@ -122,7 +122,7 @@ class TestStatusFormatSuppression:
         from fpl_cli.cli.status import status_command
 
         with (
-            patch("fpl_cli.cli.status.load_settings", return_value={
+            patch("fpl_cli.cli.status.get_settings", return_value={
                 "fpl": {"draft_league_id": 999},
             }),
             patch("fpl_cli.api.fpl.FPLClient", return_value=self._mock_fpl_client()),
@@ -183,8 +183,8 @@ class TestFdrFormatAwareSquad:
         fixture_agent.run = AsyncMock(side_effect=capture_run)
 
         with (
-            patch("fpl_cli.cli.fdr.is_custom_analysis_enabled", return_value=True),
-            patch("fpl_cli.cli.fdr.load_settings", return_value={"fpl": {"draft_entry_id": 999}}),
+            patch("fpl_cli.cli.fdr.custom_analysis_enabled", return_value=True),
+            patch("fpl_cli.cli.fdr.get_settings", return_value={"fpl": {"draft_entry_id": 999}}),
             patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=draft_client),
             patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=fixture_agent),
             patch("fpl_cli.services.team_ratings.TeamRatingsService") as mock_ratings,
@@ -267,7 +267,7 @@ class TestPlayerFormatSuppression:
         client.get_next_gameweek = AsyncMock(return_value={"id": 30})
 
         with (
-            patch("fpl_cli.cli.player.load_settings", return_value={"fpl": {}}),
+            patch("fpl_cli.cli.player.get_settings", return_value={"fpl": {}}),
             patch("fpl_cli.api.fpl.FPLClient", return_value=client),
             patch("fpl_cli.api.understat.UnderstatClient") as mock_understat,
         ):
@@ -302,7 +302,7 @@ class TestPlayerFormatSuppression:
         client.get_next_gameweek = AsyncMock(return_value={"id": 30})
 
         with (
-            patch("fpl_cli.cli.player.load_settings", return_value={"fpl": {}}),
+            patch("fpl_cli.cli.player.get_settings", return_value={"fpl": {}}),
             patch("fpl_cli.api.fpl.FPLClient", return_value=client),
             patch("fpl_cli.api.understat.UnderstatClient") as mock_understat,
         ):

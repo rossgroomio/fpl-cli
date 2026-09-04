@@ -9,7 +9,7 @@ import click
 from rich.panel import Panel
 from rich.table import Table
 
-from fpl_cli.cli._context import CLIContext, console, handle_agent_failure, is_custom_analysis_enabled
+from fpl_cli.cli._context import console, custom_analysis_enabled, handle_agent_failure
 from fpl_cli.cli._json import emit_json, emit_json_error, json_output_mode, output_format_option
 
 
@@ -26,8 +26,7 @@ def xg_command(ctx: click.Context, last_n: int, all_season: bool, output_format:
     gw_config = None if all_season else last_n
 
     # Gate experimental views behind custom_analysis toggle
-    settings = ctx.obj.settings if isinstance(ctx.obj, CLIContext) else {}
-    custom_on = is_custom_analysis_enabled(settings)
+    custom_on = custom_analysis_enabled(ctx)
 
     if custom_on:
         table_views = {"underperformers", "value_picks", "top_xgi_per_90"}

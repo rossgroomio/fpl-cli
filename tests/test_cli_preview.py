@@ -66,7 +66,7 @@ def _run_preview(custom_analysis=True, fixture_data=None, stats_data=None):
     runner = CliRunner()
     with (
         patch("fpl_cli.cli.preview.is_custom_analysis_enabled", return_value=custom_analysis),
-        patch("fpl_cli.cli.preview.load_settings", return_value=settings),
+        patch("fpl_cli.cli.preview.get_settings", return_value=settings),
         patch("fpl_cli.api.fpl.FPLClient", return_value=fpl_client),
         patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=fixture_agent),
         patch("fpl_cli.agents.analysis.stats.StatsAgent", return_value=stats_agent),
@@ -209,7 +209,7 @@ class TestPreviewCustomAnalysisToggle:
         runner = CliRunner()
         with (
             patch("fpl_cli.cli.preview.is_custom_analysis_enabled", return_value=False),
-            patch("fpl_cli.cli.preview.load_settings", return_value=settings),
+            patch("fpl_cli.cli.preview.get_settings", return_value=settings),
             patch("fpl_cli.api.fpl.FPLClient", return_value=fpl_client),
             patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=fixture_agent),
             patch("fpl_cli.agents.analysis.stats.StatsAgent", return_value=stats_agent),
@@ -243,7 +243,7 @@ def _run_scout_preview(tmp_path):
     runner = CliRunner()
     with (
         patch("fpl_cli.cli.preview.is_custom_analysis_enabled", return_value=True),
-        patch("fpl_cli.cli.preview.load_settings", return_value=settings),
+        patch("fpl_cli.cli.preview.get_settings", return_value=settings),
         patch("fpl_cli.api.fpl.FPLClient", return_value=fpl_client),
         patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=fixture_agent),
         patch("fpl_cli.agents.analysis.stats.StatsAgent", return_value=stats_agent),
@@ -315,7 +315,7 @@ class TestPreviewDraftSquadMatching:
         runner = CliRunner()
         with (
             patch("fpl_cli.cli.preview.is_custom_analysis_enabled", return_value=True),
-            patch("fpl_cli.cli.preview.load_settings", return_value=settings),
+            patch("fpl_cli.cli.preview.get_settings", return_value=settings),
             patch("fpl_cli.api.fpl.FPLClient", return_value=fpl_client),
             patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=self._draft_client(draft_elements)),
             patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=_make_agent(data={})),
