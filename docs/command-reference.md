@@ -494,7 +494,7 @@ The floor applied is `min(60 x window, 45 x gameweeks played)` - half the minute
 
 The panel header names the floor that was applied, `metadata` carries `window_label`, `gameweeks_played` and `min_minutes`, and `metadata.warnings` carries an `early_season_minutes_floor` notice while the bar is scaled. `fpl targets --min-minutes` and `fpl differentials --min-minutes` are untouched: a floor the reader asked for explicitly is applied as asked.
 
-When nothing qualifies, `data.empty_reason` says which of the floor and the data caused it - `below_minutes_floor` (players have played, none clears the bar) or `no_minutes_played` (nothing has been played yet) - and table mode prints that sentence instead of three empty tables.
+When nothing qualifies, `data.empty_reason` says which of the floor and the data caused it - `below_minutes_floor` (players have played, none clears the bar) or `no_minutes_played` (nothing has been played yet) - and table mode prints that sentence instead of three empty tables. `fpl targets` and `fpl differentials` carry and render the same field, and `fpl preview`'s Performance Stats section names the analysed window and prints the reason when it is empty.
 
 ### Understat Metrics
 

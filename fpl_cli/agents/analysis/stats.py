@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 from fpl_cli.agents.base import Agent, AgentResult, AgentStatus
 from fpl_cli.agents.common import fetch_understat_lookup
-from fpl_cli.api.fpl import FPLClient
+from fpl_cli.api.fpl import FPLClient, finished_gameweek_ids
 from fpl_cli.models.types import PlayerStats
 from fpl_cli.services.matchup import calculate_matchup_score
 from fpl_cli.services.player_prior import early_season_quality_warning
@@ -28,8 +28,9 @@ if TYPE_CHECKING:
     from fpl_cli.services.player_prior import PlayerPrior
 
 # Minutes per finished gameweek the scaled floor asks for: half of the 90 the
-# calendar has made possible. Same derivation the gw-prep and squad-builder
-# skills use for `fpl stats --min-minutes` (issue #194).
+# calendar has made possible. The gw-prep and squad-builder skills scale their
+# `fpl stats --min-minutes` floor by the same 45 (issue #194); keep the three in
+# step if it ever moves, since markdown cannot import this constant.
 MINUTES_PER_FINISHED_GW = 45
 
 RECOGNISED_VIEWS: frozenset[str] = frozenset({
@@ -110,11 +111,18 @@ class StatsAgent(Agent):
         more. Left alone it filtered out every player in August and the agent
         answered "nobody qualifies" when it meant "the bar is impossible"
         (issue #227). Scale it instead to 45 minutes per finished gameweek --
-        half of what the calendar has allowed, the same derivation the gw-prep
-        and squad-builder skills use for `fpl stats --min-minutes` (issue #194)
-        -- and let the configured value bind again once the season catches up,
-        after 8 finished gameweeks for the default window and 10 for a
-        whole-season run.
+        half of what the calendar has allowed -- and let the configured value
+        bind again once the season catches up, after 8 finished gameweeks for
+        the default window and 10 for a whole-season run.
+
+        The gw-prep and squad-builder skills scale their `fpl stats
+        --min-minutes` floor by the same 45 (issue #194), but off ``(N - 1)``
+        for the upcoming gameweek ``N`` rather than off finished gameweeks. The
+        two agree whenever the season has run to schedule and diverge when a
+        postponement leaves a gameweek unfinished while later ones complete --
+        deliberately, and only downwards: this floor asks for minutes that were
+        actually playable, so it admits more players than the skills' bar, never
+        fewer.
 
         A floor the caller asked for explicitly (`fpl targets --min-minutes`,
         `fpl differentials --min-minutes`) is honoured as asked: it is a filter
@@ -207,7 +215,7 @@ class StatsAgent(Agent):
 
             # Clamp the window and its minutes floor to the gameweeks played, so
             # neither asks for more football than the calendar has produced.
-            gameweeks_played = sum(1 for gw in await self.client.get_gameweeks() if gw.get("finished"))
+            gameweeks_played = len(finished_gameweek_ids(await self.client.get_gameweeks()))
             window, min_minutes = self._clamp_to_season(gameweeks_played)
             window_label = self._window_label(window, gameweeks_played)
             floor_scaled = min_minutes < self.min_minutes
@@ -224,8 +232,14 @@ class StatsAgent(Agent):
                 end_gw = current_gw_id
                 self.log(f"Analyzing GW{start_gw}-{end_gw} ({self.gameweeks} gameweeks)")
 
-                # First pass: filter to players with any significant minutes this season
-                candidates = [p for p in players if p.minutes >= 90]
+                # First pass: filter to players with any significant minutes this
+                # season. Season minutes are never below windowed minutes, so a
+                # prefilter above the floor decides the result rather than merely
+                # bounding the history fetch: at a scaled floor under 90 it would
+                # drop players the floor admits and reproduce #227 one filter
+                # earlier. It only moves while the floor is that low.
+                prefilter_minutes = min(90, min_minutes)
+                candidates = [p for p in players if p.minutes >= prefilter_minutes]
                 self.log(f"Fetching history for {len(candidates)} players...")
 
                 # Fetch history for candidates in batches

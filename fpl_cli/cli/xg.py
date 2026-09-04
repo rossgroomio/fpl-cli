@@ -81,8 +81,14 @@ def xg_command(ctx: click.Context, last_n: int, all_season: bool, output_format:
         data = result.data
         print_result_warnings(data)
         window_label = data.get("window_label", "whole season")
+        # The floor is worth naming only once there is football behind it: at
+        # zero finished gameweeks it reads "no gameweek played yet, 1+ mins",
+        # which contradicts itself. `is not None` rather than truthiness, so an
+        # explicit floor of 0 would render as "0+ mins" rather than vanish.
         min_minutes = data.get("min_minutes")
-        header = f"{window_label}, {min_minutes}+ mins" if min_minutes else window_label
+        header = window_label
+        if min_minutes is not None and data.get("gameweeks_played"):
+            header = f"{window_label}, {min_minutes}+ mins"
         console.print(Panel.fit(f"[bold blue]Underlying Stats Analysis[/bold blue] ({header})"))
 
         # Nothing qualified: say which of the floor and the data caused it,

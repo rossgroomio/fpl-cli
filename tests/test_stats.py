@@ -382,6 +382,7 @@ async def _run_stats(
     player_priors=None,
     players=None,
     config=None,
+    histories=None,
 ):
     """Drive ``StatsAgent.run`` over one qualifying player with every seam stubbed."""
     from unittest.mock import AsyncMock, patch
@@ -407,6 +408,8 @@ async def _run_stats(
         pytest-socket's block be swallowed by the gather's return_exceptions
         and hides the dependency behind an empty window.
         """
+        if histories is not None:
+            return {"history": histories.get(player_id, [])}
         player = next((p for p in players if p.id == player_id), None)
         per_gw = (player.minutes // len(finished)) if player and finished else 0
         return {
@@ -645,3 +648,106 @@ class TestStatsAgentMinutesFloor:
         # who has not played is never "qualified".
         assert result.data["min_minutes"] == 1
         assert result.data["window_label"] == "no gameweek played yet"
+
+
+class TestStatsAgentWindowPrefilter:
+    """The history prefilter cannot sit above the floor it feeds (#243 review).
+
+    The windowed path first narrows to players with enough *season* minutes to
+    be worth a history fetch. Season minutes are never below windowed minutes,
+    so a prefilter above the applied floor stops bounding the fetch and starts
+    deciding the result -- dropping players the floor admits and reproducing
+    #227 one filter earlier.
+    """
+
+    async def test_a_scaled_floor_below_90_admits_a_short_season(self):
+        players = [
+            make_player(
+                id=1, web_name="Cameo", team_id=1, position=PlayerPosition.MIDFIELDER,
+                minutes=60, form=3.0, points_per_game=3.0, total_points=10,
+                expected_goals=1.0, expected_assists=1.0,
+            ),
+        ]
+        result = await _run_stats(
+            {"top_xgi_per_90"},
+            next_gw_id=3,  # current GW2, one finished -> floor scales to 45
+            players=players,
+            config={"gameweeks": 1},
+            histories={1: [{
+                "round": 2, "minutes": 60, "goals_scored": 0, "assists": 0,
+                "expected_goals": "0.3", "expected_assists": "0.2", "total_points": 3,
+            }]},
+        )
+
+        assert result.data["min_minutes"] == 45
+        # 60 season minutes is under the old fixed 90 prefilter, over the floor.
+        assert result.data["qualified_players"] == 1
+
+    async def test_the_prefilter_still_holds_at_90_once_the_floor_is_higher(self):
+        """Mid-season the floor is well above 90, so the prefilter does not move."""
+        players = [
+            make_player(
+                id=1, web_name="Regular", team_id=1, position=PlayerPosition.MIDFIELDER,
+                minutes=700, form=6.0, points_per_game=5.0, total_points=80,
+                expected_goals=5.0, expected_assists=3.0,
+            ),
+            make_player(
+                id=2, web_name="Fringe", team_id=1, position=PlayerPosition.MIDFIELDER,
+                minutes=80, form=1.0, points_per_game=1.0, total_points=5,
+                expected_goals=0.2, expected_assists=0.1,
+            ),
+        ]
+        result = await _run_stats(
+            {"top_xgi_per_90"},
+            next_gw_id=10,  # current GW9, eight finished -> floor binds at 360
+            players=players,
+            config={},
+        )
+
+        assert result.data["min_minutes"] == 360
+        assert result.data["qualified_players"] == 1
+
+
+class TestFinishedGameweekIds:
+    """One predicate for "which gameweeks have finished" (#243 review).
+
+    Three call sites reduce it differently -- the count (`fpl xg`'s minutes
+    floor), the maximum (`fpl ratings update --use-xg`'s sample size, league
+    recap's live-gameweek test) -- and a postponement separates the two.
+    """
+
+    def test_returns_only_finished_ids_in_order(self):
+        from fpl_cli.api.fpl import finished_gameweek_ids
+
+        gameweeks = [
+            {"id": 3, "finished": True},
+            {"id": 1, "finished": True},
+            {"id": 4, "finished": False},
+            {"id": 2, "finished": True},
+        ]
+        assert finished_gameweek_ids(gameweeks) == [1, 2, 3]
+
+    def test_a_postponed_gameweek_lowers_the_count_but_not_the_maximum(self):
+        from fpl_cli.api.fpl import finished_gameweek_ids
+
+        # GW2 postponed and still unfinished while GW3 and GW4 completed.
+        gameweeks = [
+            {"id": 1, "finished": True},
+            {"id": 2, "finished": False},
+            {"id": 3, "finished": True},
+            {"id": 4, "finished": True},
+        ]
+        ids = finished_gameweek_ids(gameweeks)
+        assert len(ids) == 3   # football actually played
+        assert max(ids) == 4   # how far the season has got
+
+    def test_a_season_that_has_not_started_is_empty(self):
+        from fpl_cli.api.fpl import finished_gameweek_ids
+
+        assert finished_gameweek_ids([{"id": 1, "finished": False}]) == []
+        assert finished_gameweek_ids([]) == []
+
+    def test_a_missing_finished_key_is_not_finished(self):
+        from fpl_cli.api.fpl import finished_gameweek_ids
+
+        assert finished_gameweek_ids([{"id": 1}, {"id": 2, "finished": True}]) == [2]

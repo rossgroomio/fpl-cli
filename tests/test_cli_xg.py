@@ -250,3 +250,40 @@ class TestXgWindowAndFloorReporting:
     def test_table_prints_the_scaled_floor_notice(self):
         result = _run_xg(agent_result=self._early_season_result(empty=False))
         assert "Floor scaled to 90." in result.output
+
+
+class TestXgHeaderBeforeAnyGameweek:
+    """Pre-season the panel must not name a floor there is no football behind."""
+
+    @staticmethod
+    def _pre_season_result():
+        data = _make_agent_result().data
+        data |= {
+            "top_xgi_per_90": [], "underperformers": [], "value_picks": [],
+            "window_label": "no gameweek played yet",
+            "gameweeks": 0,
+            "gameweeks_played": 0,
+            "min_minutes": 1,
+            "qualified_players": 0,
+            "empty_reason": {
+                "code": "no_minutes_played",
+                "message": "No player has recorded any minutes yet.",
+            },
+        }
+        return _make_agent_result(data=data)
+
+    def test_header_omits_the_floor_when_nothing_has_been_played(self):
+        result = _run_xg(agent_result=self._pre_season_result())
+        assert result.exit_code == 0, result.output
+        assert "no gameweek played yet" in result.output
+        # "no gameweek played yet, 1+ mins" contradicts itself.
+        assert "1+ mins" not in result.output
+        assert "No player has recorded any minutes yet." in result.output
+
+    def test_an_explicit_zero_floor_still_renders(self):
+        """`is not None`, not truthiness: 0 is a floor, not the absence of one."""
+        data = _make_agent_result().data
+        data |= {"window_label": "whole season", "gameweeks_played": 3, "min_minutes": 0}
+        result = _run_xg(agent_result=_make_agent_result(data=data))
+        assert result.exit_code == 0, result.output
+        assert "0+ mins" in result.output
