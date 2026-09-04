@@ -22,6 +22,7 @@ from fpl_cli.cli.chips import CHIP_NAMES
 from fpl_cli.models.chip_plan import ChipPlan, ChipType, UsedChip
 from fpl_cli.models.player import Player, PlayerStatus
 from fpl_cli.season import season_label
+from fpl_cli.utils.text import ordinal_suffix
 from fpl_cli.utils.time import format_deadline
 
 if TYPE_CHECKING:
@@ -29,8 +30,6 @@ if TYPE_CHECKING:
     from fpl_cli.api.fpl_draft import FPLDraftClient
 
 logger = logging.getLogger(__name__)
-
-_ORDINAL_SUFFIXES = {1: "st", 2: "nd", 3: "rd"}
 
 
 def _countdown(deadline_str: str) -> str:
@@ -61,8 +60,7 @@ def _ordinal(n: int | str) -> str:
     """Convert number to ordinal string (1st, 2nd, 3rd, 45,170th)."""
     if isinstance(n, str):
         return n
-    suffix = "th" if 11 <= n % 100 <= 13 else _ORDINAL_SUFFIXES.get(n % 10, "th")
-    return f"{n:,}{suffix}"
+    return f"{n:,}{ordinal_suffix(n)}"
 
 
 def _gw_rank(standings: list[dict[str, Any]], user_event_total: int) -> int:

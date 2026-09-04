@@ -90,6 +90,12 @@ class ManagerFineTally:
     counts: dict[str, int] = field(default_factory=dict)
     fined_gameweeks: list[int] = field(default_factory=list)
     ruled_gameweeks: list[int] = field(default_factory=list)
+    # Which gameweeks ruled *each* rule against them, where
+    # `ruled_gameweeks` only says that something was. A gameweek recorded at
+    # the coarse tier rules `last-place` and not `red-card`, so the two
+    # answer different questions and only this one can settle "has this rule
+    # ever produced a fine against them before" (issue #233).
+    ruled_gameweeks_by_rule: dict[str, list[int]] = field(default_factory=dict)
     unruled_gameweeks: list[int] = field(default_factory=list)
     # Earliest and latest gameweek in the span holding any row for them,
     # unknown-status ones included -- presence of a row at all, exactly as
@@ -138,6 +144,30 @@ class SeasonFinesTally:
     def fined_managers(self) -> list[ManagerFineTally]:
         """Only the managers who actually picked up a fine, in table order."""
         return [manager for manager in self.managers if manager.total]
+
+    def unruled_gameweeks_for(
+        self, manager: ManagerFineTally, rule_type: str, *, before: int,
+    ) -> list[int]:
+        """Gameweeks before `before` where `rule_type` was never ruled against
+        this manager, so a fine of that type there is neither recorded nor
+        ruled out (issue #233).
+
+        The one question a claim like "their first last-place fine of the
+        season" rests on, and the reason it is asked per rule rather than
+        read off `ruled_gameweeks`: a coarse-tier gameweek rules `last-place`
+        and structurally cannot rule `red-card`, so it is proof for one and a
+        blind spot for the other. Everything else that can hide a ruling --
+        a gameweek never captured, unreadable, reaching nobody, predating
+        fine recording, or falling before this manager has a row at all --
+        is absent from their per-rule set for free, so it lands here without
+        needing to be enumerated a second time.
+
+        Counts from the partition's own `start_gameweek`, so a league whose
+        ledger begins mid-season names every gameweek before that rather than
+        treating a missing history as a clean one.
+        """
+        ruled = set(manager.ruled_gameweeks_by_rule.get(rule_type, ()))
+        return [gw for gw in range(self.start_gameweek, before) if gw not in ruled]
 
     @property
     def is_reportable(self) -> bool:
@@ -190,6 +220,7 @@ class _Accumulator:
     counts: dict[str, int] = field(default_factory=dict)
     fined_gameweeks: set[int] = field(default_factory=set)
     ruled_gameweeks: set[int] = field(default_factory=set)
+    ruled_gameweeks_by_rule: dict[str, set[int]] = field(default_factory=dict)
     first_recorded_gameweek: int | None = None
     last_recorded_gameweek: int | None = None
 
@@ -459,6 +490,10 @@ def build_season_fines_tally(
             row_rules = _ruled_rule_types(row)
             if row_rules:
                 accumulator.ruled_gameweeks.add(gameweek)
+                for rule_type in row_rules:
+                    accumulator.ruled_gameweeks_by_rule.setdefault(
+                        rule_type, set(),
+                    ).add(gameweek)
                 ruled_here.update(row_rules)
             if row.capture_status is CaptureStatus.OK:
                 reached_anyone = True
@@ -518,6 +553,12 @@ def build_season_fines_tally(
             counts=dict(sorted(accumulator.counts.items())),
             fined_gameweeks=sorted(accumulator.fined_gameweeks),
             ruled_gameweeks=sorted(accumulator.ruled_gameweeks),
+            ruled_gameweeks_by_rule={
+                rule_type: sorted(gameweeks)
+                for rule_type, gameweeks in sorted(
+                    accumulator.ruled_gameweeks_by_rule.items(),
+                )
+            },
             unruled_gameweeks=sorted(personal_span - accumulator.ruled_gameweeks),
             first_recorded_gameweek=first,
             last_recorded_gameweek=last,

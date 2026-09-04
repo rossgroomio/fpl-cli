@@ -743,7 +743,7 @@ async def _recap_llm_summarise(
     captains_text = format_recap_captains_context(collected_data, player_clubs)
     player_clubs_text = format_recap_player_clubs_context(player_clubs)
     chips_text = format_recap_chips_context(collected_data)
-    fines_text = format_recap_fines_context(collected_data)
+    fines_text = format_recap_fines_context(collected_data, fines_tally)
     league_history_text = format_recap_league_history_context(notes_pack)
     season_fines_text = format_recap_season_fines_context(fines_tally)
 

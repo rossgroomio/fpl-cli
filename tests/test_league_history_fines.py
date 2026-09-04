@@ -145,6 +145,77 @@ class TestFineCounts:
 # ---------------------------------------------------------------------------
 
 
+class TestPerRuleCoverage:
+    """`unruled_gameweeks_for`, the proof behind a "their first of the season"
+    claim in the recap prompt (issue #233)."""
+
+    def test_a_rule_ruled_every_gameweek_of_the_span_leaves_no_blind_spot(self):
+        store = _store()
+        for gameweek in (1, 2, 3):
+            store.append_rows(gameweek, [make_history_row(
+                gameweek=gameweek, manager_key=1, manager_name="Alice",
+                fine_rules_evaluated=ALL_RULES,
+            )])
+
+        tally = _tally_for(store, 3, league_start_gameweek=1, rule_types=ALL_RULES)
+
+        alice = _by_name(tally, "Alice")
+        assert alice.ruled_gameweeks_by_rule["red-card"] == [1, 2, 3]
+        assert tally.unruled_gameweeks_for(alice, "red-card", before=3) == []
+
+    def test_a_coarse_gameweek_is_a_blind_spot_for_the_rule_it_could_not_rule(self):
+        """The distinction `ruled_gameweeks` cannot draw: GW2 ruled something,
+        so it counts as ruled, but it carried no squad and so can neither
+        record nor rule out a `red-card` fine."""
+        store = _store()
+        store.append_rows(1, [make_history_row(
+            gameweek=1, manager_key=1, manager_name="Alice",
+            fine_rules_evaluated=ALL_RULES,
+        )])
+        store.append_rows(2, [make_history_row(
+            gameweek=2, manager_key=1, manager_name="Alice",
+            tier=FidelityTier.COARSE, fine_rules_evaluated=COHORT_RULES,
+        )])
+        store.append_rows(3, [make_history_row(
+            gameweek=3, manager_key=1, manager_name="Alice",
+            fine_rules_evaluated=ALL_RULES, fines=[_fine(1, "red-card")],
+        )])
+
+        tally = _tally_for(store, 3, league_start_gameweek=1, rule_types=ALL_RULES)
+
+        alice = _by_name(tally, "Alice")
+        assert alice.is_fully_ruled, "every gameweek ruled *something* against her"
+        assert tally.unruled_gameweeks_for(alice, "last-place", before=3) == []
+        assert tally.unruled_gameweeks_for(alice, "red-card", before=3) == [2]
+
+    def test_a_gameweek_nobody_captured_is_a_blind_spot_for_every_rule(self):
+        store = _store()
+        for gameweek in (1, 3):
+            store.append_rows(gameweek, [make_history_row(
+                gameweek=gameweek, manager_key=1, manager_name="Alice",
+                fine_rules_evaluated=ALL_RULES,
+            )])
+
+        tally = _tally_for(store, 3, league_start_gameweek=1, rule_types=ALL_RULES)
+
+        alice = _by_name(tally, "Alice")
+        assert tally.unruled_gameweeks_for(alice, "last-place", before=3) == [2]
+
+    def test_the_span_before_the_ledger_begins_counts_as_unruled(self):
+        """A league that adopted the tool at GW3 has no GW1-2 to have been
+        clean in, so the two are named rather than read as innocence."""
+        store = _store()
+        store.append_rows(3, [make_history_row(
+            gameweek=3, manager_key=1, manager_name="Alice",
+            fine_rules_evaluated=ALL_RULES,
+        )])
+
+        tally = _tally_for(store, 3, league_start_gameweek=1, rule_types=ALL_RULES)
+
+        alice = _by_name(tally, "Alice")
+        assert tally.unruled_gameweeks_for(alice, "last-place", before=3) == [1, 2]
+
+
 class TestCoverageQualifiers:
     def test_a_fully_ruled_span_says_so_rather_than_saying_nothing(self):
         store = _store()
