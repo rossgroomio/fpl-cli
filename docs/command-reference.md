@@ -845,8 +845,9 @@ has no manager-history endpoint at all, so a draft gameweek that was never captu
 only be rebuilt with `--backfill-detail`, and only while the season is live.
 
 When a gameweek is missing, coarse, unreadable, or holds a manager whose data could not
-be fetched, the run says so on stderr and names the remedy. A fully captured season
-stays quiet.
+be fetched, the run says so on stderr and names the remedy — for an unreadable gameweek
+that is the file's own path and the `mv` that retires it, said once however many parts of
+the run read that file. A fully captured season stays quiet.
 
 Ephemeral environments (Claude Code on the web, CI, containers) must point
 `FPL_CLI_DATA_DIR` at a persistent workspace or the ledger dies with the container. The
@@ -888,8 +889,8 @@ it shares the channel: `synthesis_provider_unavailable`.
 | Code | Raised when |
 |---|---|
 | `league_history_league_id_missing` | No league id is configured for this format, so the gameweek was not recorded at all |
-| `league_history_store_unreadable` | The gameweek's file could not be read or written; it is left untouched and the recap still renders from live data |
-| `league_history_coverage` | One line per coverage gap: gameweeks missing, held at the coarse tier, holding unknown managers, or unreadable |
+| `league_history_store_unreadable` | The gameweek's file could not be read or written; it is left untouched and the recap still renders from live data. One warning per affected gameweek, and the message names the file and the `mv` that retires it |
+| `league_history_coverage` | One line per coverage gap: gameweeks missing, held at the coarse tier, or holding unknown managers. An unreadable gameweek is not a gap — it is reported as `league_history_store_unreadable`, and `--backfill-detail` skips it rather than writing to a file it cannot parse |
 | `league_history_unmatched_players` | A draft squad player could not be matched to a main-game player, so their recorded points are zero rather than a real score |
 | `league_history_transfer_detail_short` | Fewer transfers were captured than the manager's recorded count, so the stored list is incomplete rather than empty |
 | `league_history_standings_truncated` | The standings response covered only part of the league, so the gameweek is recorded for that subset only |

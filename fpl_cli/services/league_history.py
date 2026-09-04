@@ -88,6 +88,11 @@ class GameweekCoverage:
     tier_counts: dict[FidelityTier, int] = field(default_factory=dict)
     unknown_count: int = 0
     unknown_manager_keys: list[int] = field(default_factory=list)
+    # Why the gameweek is unreadable, verbatim from `_unreadable()`: the file
+    # path and the `mv` remedy. Carried on the entry rather than left in the
+    # log so a caller reporting the gap can hand the user something actionable
+    # (issue #224). None whenever `readable` is True.
+    error: str | None = None
 
     @property
     def manager_count(self) -> int:
@@ -126,6 +131,14 @@ class LeagueHistoryStore:
         # call. Never persisted and never shared across instances, so this
         # adds no cross-process staleness risk of its own.
         self._resolved_gameweek_cache: dict[int, dict[int, LeagueHistoryRow]] = {}
+        # Gameweeks whose unreadability this store has already logged in full.
+        # One corrupt file is read by every consumer of a single recap -- the
+        # coverage pass, the counters rebuild, the notes pack, the
+        # earliest-row scan, the fines tally -- and each used to log the whole
+        # path-and-remedy message, so one truncated line printed five times
+        # (issue #224). Scoped per store, which is per run: a later run still
+        # reports it.
+        self._unreadable_logged: set[int] = set()
 
     # -- paths ---------------------------------------------------------------
 
@@ -182,20 +195,53 @@ class LeagueHistoryStore:
             self._resolved_gameweek_cache[gameweek] = resolve_rows(self.load_gameweek(gameweek))
         return self._resolved_gameweek_cache[gameweek]
 
+    def log_unreadable(
+        self, gameweek: int, exc: LeagueHistoryError, *, context: str, surfaced: bool = False,
+    ) -> None:
+        """Log one unreadable gameweek once per run, whoever reads it next.
+
+        Every consumer of a recap reads the same gameweek off the same store,
+        and each has its own consequence to state ("treated as uncaptured",
+        "left out of the totals"). The *remedy* is identical for all of them,
+        so only the first reader logs it at warning level; the rest keep their
+        context at debug, where the trail survives without printing the same
+        `mv` command five times (issue #224). Keyed by gameweek, which is one
+        file in this partition.
+
+        `surfaced` is for a reader that hands the reason back to its caller
+        instead of swallowing it -- `coverage()` does, on the entry's `error`.
+        It claims the slot without logging loudly, so the caller's own report
+        is the run's single copy rather than one of a near-identical pair.
+        """
+        message = "GW%s unreadable %s for %s/%s-%s: %s"
+        args = (gameweek, context, self.season, self.fpl_format, self.league_id, exc)
+        already_logged = gameweek in self._unreadable_logged
+        self._unreadable_logged.add(gameweek)
+        if surfaced or already_logged:
+            logger.debug(message, *args)
+        else:
+            logger.warning(message, *args)
+
     def coverage(self) -> list[GameweekCoverage]:
         """Per-gameweek tier and status counts, ascending by gameweek.
 
         Failure is scoped to the gameweek: an unreadable file is reported as
         such rather than failing the whole partition, so one corrupt gameweek
-        never hides the rest of a season.
+        never hides the rest of a season. The entry carries why, so the caller
+        reporting it can name the file and the remedy rather than leaving both
+        in the log (issue #224).
         """
         out: list[GameweekCoverage] = []
         for gameweek in self.captured_gameweeks():
             try:
                 resolved = self.resolved_gameweek(gameweek)
             except LeagueHistoryError as exc:
-                logger.warning("Gameweek %s is unreadable and is skipped: %s", gameweek, exc)
-                out.append(GameweekCoverage(gameweek=gameweek, readable=False))
+                self.log_unreadable(
+                    gameweek, exc, context="and is skipped", surfaced=True,
+                )
+                out.append(
+                    GameweekCoverage(gameweek=gameweek, readable=False, error=str(exc)),
+                )
                 continue
             tier_counts: dict[FidelityTier, int] = {}
             unknown_keys: list[int] = []

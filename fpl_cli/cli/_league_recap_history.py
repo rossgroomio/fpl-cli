@@ -1262,12 +1262,26 @@ def _report_coverage(
 
     Silent on a fully detailed season: a report the user cannot act on is
     noise, not visibility.
+
+    An unreadable gameweek is reported under `league_history_store_unreadable`
+    rather than as a coverage gap, and never as an uncaptured one: its file
+    holds rows this run simply could not parse, so the remedy is the `mv` the
+    store's own message names, not the `--backfill-detail` a gap would invite
+    -- and backfill refuses to touch it anyway (`_gaps`, issue #224).
     """
     by_gameweek = {c.gameweek: c for c in coverage}
     coarse = [gw for gw in targets if (c := by_gameweek.get(gw)) and c.lowest_tier is FidelityTier.COARSE]
-    unreadable = [gw for gw in targets if (c := by_gameweek.get(gw)) and not c.readable]
+    # Every unreadable gameweek, not just the targeted ones: a file that will
+    # not parse is a store problem whatever window the coverage report spans,
+    # and this is the only place it is surfaced -- `coverage()` hands the
+    # reason back here rather than logging it (issue #224).
+    unreadable = [c.gameweek for c in coverage if not c.readable]
     unknown = [gw for gw in targets if (c := by_gameweek.get(gw)) and c.readable and c.unknown_count]
-    uncaptured = [gw for gw in targets if gw not in by_gameweek or by_gameweek[gw].manager_count == 0]
+    uncaptured = [
+        gw for gw in targets
+        if gw not in by_gameweek
+        or (by_gameweek[gw].readable and by_gameweek[gw].manager_count == 0)
+    ]
 
     lines: list[str] = []
     if coarse:
@@ -1296,14 +1310,21 @@ def _report_coverage(
             f"be fetched. They are recorded as unknown -- no streak is extended or broken "
             f"across them -- and every later run re-attempts them.",
         )
-    if unreadable:
-        lines.append(
-            f"League history: {format_gameweek_list(unreadable)} could not be read and is skipped. "
-            f"Move the file aside to recapture it; the rest of the season is unaffected.",
-        )
 
     for line in lines:
         _warn(warnings, HISTORY_WARNING_COVERAGE, line)
+
+    # One warning per unreadable gameweek, not one line for the set: each
+    # carries its own file path and `mv` remedy, straight from the store.
+    for gameweek in unreadable:
+        detail = by_gameweek[gameweek].error
+        _warn(
+            warnings, HISTORY_WARNING_STORE_UNREADABLE,
+            f"League history: GW{gameweek} could not be read and is skipped. " + (
+                detail if detail
+                else "Move the file aside to recapture it; the rest of the season is unaffected."
+            ),
+        )
 
 
 # ---------------------------------------------------------------------------

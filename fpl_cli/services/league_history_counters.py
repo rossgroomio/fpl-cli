@@ -718,10 +718,9 @@ def rebuild_counters_through(
             # week, so the *next* captured gameweek correctly finds no
             # previous_row to compare against rather than reaching further
             # back and mislabelling a multi-week gap as one week.
-            logger.warning(
-                "GW%s unreadable while rebuilding league history counters for %s/%s-%s; "
-                "treated as uncaptured: %s",
-                gameweek, store.season, store.fpl_format, store.league_id, exc,
+            store.log_unreadable(
+                gameweek, exc,
+                context="while rebuilding league history counters; treated as uncaptured",
             )
             resolved = {}
         runs = _fold_gameweek(runs, gameweek, resolved, previous_rows, store.fpl_format)
@@ -769,16 +768,20 @@ def compute_counters_through(
         return existing
 
     if existing is not None and existing.computed_through_gameweek == through_gameweek - 1:
+        # Tracked because either read can be the one that fails, and the log
+        # dedupes per gameweek file: attributing GW-1's corruption to GW would
+        # report the same file twice under two numbers (issue #224).
+        reading = through_gameweek
         try:
             resolved = store.resolved_gameweek(through_gameweek)
+            reading = through_gameweek - 1
             previous_resolved = (
                 store.resolved_gameweek(through_gameweek - 1) if through_gameweek > 1 else {}
             )
         except LeagueHistoryError as exc:
-            logger.warning(
-                "Could not advance league history counters for %s/%s-%s to GW%s incrementally; "
-                "rebuilding instead: %s",
-                store.season, store.fpl_format, store.league_id, through_gameweek, exc,
+            store.log_unreadable(
+                reading, exc,
+                context="while advancing league history counters incrementally; rebuilding instead",
             )
         else:
             runs = _fold_gameweek(

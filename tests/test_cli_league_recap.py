@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,8 @@ from fpl_cli.cli._league_recap_history import (
     _pair_squads,
     HISTORY_WARNING_BACKFILL_MANAGER_UNREACHABLE,
     HISTORY_WARNING_BACKFILL_REPLAY_FAILED,
+    DETAIL_FLAG,
+    HISTORY_WARNING_COVERAGE,
     HISTORY_WARNING_IDENTITY_CARRIED,
     HISTORY_WARNING_STANDINGS_TRUNCATED,
     HISTORY_WARNING_STORE_UNREADABLE,
@@ -1583,6 +1586,64 @@ class TestCoverageReport:
 
         assert "GW1" in _stderr(capsys)
 
+    async def test_an_unreadable_gameweek_is_a_store_problem_not_a_coverage_gap(self, capsys):
+        """Issue #224: the read path used to report a corrupt file as two
+        `league_history_coverage` lines -- one of them the "no recorded rows,
+        re-run with --backfill-detail" hint, for a file that holds rows and
+        that `_gaps` refuses to hand backfill anyway -- while the documented
+        `league_history_store_unreadable` came only from the write path, and
+        the path and `mv` remedy reached no machine-readable surface at all."""
+        data = _recap_data(
+            gameweek=2,
+            managers=[_manager(name="Alice", entry_id=1)],
+            cohort=_cohort((1, "Alice", 1, 60, 300)),
+        )
+        await capture_recap_history(data, season=SEASON, finished_gameweeks=[1, 2])
+        path = _store().gameweek_file(1)
+        path.write_text("not json{{{\n", encoding="utf-8")
+        capsys.readouterr()
+
+        result = await capture_recap_history(data, season=SEASON, finished_gameweeks=[1, 2])
+
+        unreadable = [w for w in result.warnings if w["code"] == HISTORY_WARNING_STORE_UNREADABLE]
+        assert len(unreadable) == 1
+        assert "GW1" in unreadable[0]["message"]
+        assert str(path) in unreadable[0]["message"]
+        assert f"mv '{path}'" in unreadable[0]["message"]
+        # No coverage line at all: GW1 is not a gap, and GW2 is fully detailed.
+        assert [w for w in result.warnings if w["code"] == HISTORY_WARNING_COVERAGE] == []
+        assert DETAIL_FLAG not in _stderr(capsys)
+
+    async def test_an_unreadable_gameweek_is_reported_once_not_once_per_reader(
+        self, capsys, caplog,
+    ):
+        """Issue #224: every consumer of one recap reads the same gameweek --
+        the coverage pass, the counters rebuild, the notes pack, the
+        earliest-row scan, the fines tally -- and each logged the whole
+        path-and-`mv` message, so one truncated line printed five times."""
+        data = _recap_data(
+            gameweek=2,
+            managers=[_manager(name="Alice", entry_id=1)],
+            cohort=_cohort((1, "Alice", 1, 60, 300)),
+        )
+        await capture_recap_history(data, season=SEASON, finished_gameweeks=[1, 2])
+        _store().gameweek_file(1).write_text("not json{{{\n", encoding="utf-8")
+        capsys.readouterr()
+
+        with caplog.at_level(logging.DEBUG, logger="fpl_cli.services.league_history"):
+            await capture_recap_history(data, season=SEASON, finished_gameweeks=[1, 2])
+
+        # Counted on a single word: rich soft-wraps the long path mid-message,
+        # and `_stderr` rejoins the lines without the space it wrapped on, so
+        # a multi-word phrase is not reliably countable. "aside" appears once
+        # per copy of the remedy.
+        assert _stderr(capsys).count("aside") == 1
+        # The readers that swallow the reason still leave their own context
+        # behind, one level down -- deduped, not dropped.
+        trail = [r for r in caplog.records if "Move the file aside" in r.getMessage()]
+        assert len(trail) > 1
+        assert [r for r in trail if r.levelno > logging.DEBUG] == []
+
 
 class TestGaps:
     """_gaps() classification that targets U7's backfill (missing/incomplete/coarse)."""
@@ -2254,6 +2315,43 @@ class TestLeagueRecapJsonEnvelope:
         assert len(payload["data"]) == 1
         codes = [w["code"] for w in payload["metadata"]["warnings"]]
         assert HISTORY_WARNING_STORE_UNREADABLE in codes
+
+    def test_an_unreadable_prior_gameweek_reaches_metadata_warnings_with_its_remedy(self):
+        """Issue #224: a consumer scripting on the documented
+        `league_history_store_unreadable` never saw it for a gameweek that
+        failed to *read*, and the two `league_history_coverage` lines it got
+        instead named neither the file nor anything it could act on."""
+        path = _store().gameweek_file(1)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("not json{{{\n", encoding="utf-8")
+        client = _fpl_client()
+        client.get_gameweeks = AsyncMock(return_value=[
+            {"id": 1, "finished": True}, {"id": 5, "finished": True},
+        ])
+
+        result = _invoke_recap(
+            _recap_data(managers=[_manager(name="Alice", entry_id=1)]),
+            ["--format", "json"],
+            client=client,
+        )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        matching = [
+            w for w in payload["metadata"]["warnings"]
+            if w["code"] == HISTORY_WARNING_STORE_UNREADABLE
+        ]
+        assert len(matching) == 1
+        assert str(path) in matching[0]["message"]
+        assert f"mv '{path}'" in matching[0]["message"]
+        assert [c["readable"] for c in payload["metadata"]["coverage"] if c["gameweek"] == 1] == [False]
+        # The gameweek holds rows that simply would not parse, so the gap
+        # hint that would send the user at `--backfill-detail` is wrong: it
+        # skips an unreadable gameweek rather than repairing one.
+        assert not [
+            w for w in payload["metadata"]["warnings"]
+            if w["code"] == HISTORY_WARNING_COVERAGE and DETAIL_FLAG in w["message"]
+        ]
 
     def test_a_backfill_manager_fetch_failure_reaches_metadata_warnings(self):
         """Finding #10: `_coarse_backfill`'s manager-history-fetch-failure
