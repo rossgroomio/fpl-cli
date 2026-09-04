@@ -73,7 +73,16 @@ class TeamFinances:
         return msgs
 
     def to_dict(self) -> dict:
-        """Convert to dictionary for JSON serialization."""
+        """Convert to dictionary for JSON serialization.
+
+        ``squad`` is emitted in a stable order (position, then element_id)
+        rather than pick-slot order, so moving a player between the XI and
+        bench doesn't reshuffle unrelated entries in the diff.
+        """
+        pos_order = {"GKP": 0, "GK": 0, "DEF": 1, "MID": 2, "FWD": 3}
+        ordered_squad = sorted(
+            self.squad, key=lambda p: (pos_order.get(p.position, 9), p.element_id or 0)
+        )
         return {
             "bank": self.bank,
             "free_transfers": self.free_transfers,
@@ -85,7 +94,7 @@ class TeamFinances:
                     "purchase_price": p.purchase_price,
                     "element_id": p.element_id,
                 }
-                for p in self.squad
+                for p in ordered_squad
             ],
             "total_value": self.total_value,
             "scraped_at": self.scraped_at,
@@ -121,11 +130,17 @@ def cache_file() -> Path:
 
 
 def save_cache(finances: TeamFinances) -> None:
-    """Save finances to cache file."""
+    """Save finances to cache file.
+
+    ``ensure_ascii=False`` keeps accented player names readable in the diff
+    instead of becoming ``\\u00XX`` escapes, matching the other generated
+    data files (see ``services/returnee_radar.py``).
+    """
     path = cache_file()
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(finances.to_dict(), f, indent=2)
+        json.dump(finances.to_dict(), f, indent=2, ensure_ascii=False)
+        f.write("\n")
 
 
 def load_cache() -> TeamFinances | None:

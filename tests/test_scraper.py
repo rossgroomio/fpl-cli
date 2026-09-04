@@ -699,3 +699,48 @@ class TestFPLPriceScraperCache:
             save_cache(finances)
         assert cache_path.parent.exists()
         assert cache_path.exists()
+
+    def test_cache_file_is_not_ascii_escaped_and_ends_with_newline(self, tmp_path):
+        """Accented names stay readable in the diff, and the file ends cleanly."""
+        finances = TeamFinances(
+            bank=1.0,
+            free_transfers=1,
+            squad=[PlayerSellPrice(name="Núñez", sell_price=7.0, position="FWD", element_id=1)],
+            total_value=100.0,
+            scraped_at=datetime.now().isoformat(),
+        )
+        cache_path = tmp_path / "team_finances.json"
+        with patch("fpl_cli.scraper.fpl_prices.cache_file", return_value=cache_path):
+            save_cache(finances)
+        text = cache_path.read_text(encoding="utf-8")
+        assert "Núñez" in text
+        assert "\\u00" not in text
+        assert text.endswith("\n")
+
+
+class TestTeamFinancesStableSquadOrder:
+    """to_dict() must not reorder the squad on every pick-slot shuffle."""
+
+    def test_to_dict_orders_by_position_then_element_id(self):
+        squad = [
+            PlayerSellPrice(name="Haaland", sell_price=14.8, position="FWD", element_id=355),
+            PlayerSellPrice(name="Raya", sell_price=5.8, position="GKP", element_id=1),
+            PlayerSellPrice(name="Salah", sell_price=13.2, position="MID", element_id=253),
+            PlayerSellPrice(name="Saliba", sell_price=6.0, position="DEF", element_id=99),
+        ]
+        finances = TeamFinances(bank=0.0, free_transfers=1, squad=squad, total_value=39.8)
+        ordered_names = [p["name"] for p in finances.to_dict()["squad"]]
+        assert ordered_names == ["Raya", "Saliba", "Salah", "Haaland"]
+
+    def test_to_dict_order_is_independent_of_pick_slot_order(self):
+        """Benching a player (reordering the input squad) doesn't reshuffle the output."""
+        squad_before = [
+            PlayerSellPrice(name="Raya", sell_price=5.8, position="GKP", element_id=1),
+            PlayerSellPrice(name="Saliba", sell_price=6.0, position="DEF", element_id=99),
+            PlayerSellPrice(name="Salah", sell_price=13.2, position="MID", element_id=253),
+        ]
+        squad_after = [squad_before[1], squad_before[2], squad_before[0]]  # reshuffled
+
+        before = TeamFinances(bank=0.0, free_transfers=1, squad=squad_before, total_value=25.0).to_dict()
+        after = TeamFinances(bank=0.0, free_transfers=1, squad=squad_after, total_value=25.0).to_dict()
+        assert before["squad"] == after["squad"]
