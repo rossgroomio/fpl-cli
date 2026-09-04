@@ -25,6 +25,7 @@ from fpl_cli.services.fixture_predictions import (
     FixturePredictionsService,
     find_blank_gameweeks,
     find_double_gameweeks,
+    resolve_players_with_double,
     resolve_players_with_fixture,
 )
 from fpl_cli.utils.time import format_deadline
@@ -171,13 +172,14 @@ def review_command(
             double_gws = find_double_gameweeks(fixtures_by_gw, teams_list, gw, gw)
             bgw_team_ids = frozenset(t["team_id"] for t in blank_gws.get(gw, []))
             dgw_team_ids = frozenset(t["team_id"] for t in double_gws.get(gw, []))
-            # `find_blank_gameweeks` answers from the club a player is at now,
+            # Both `find_*_gameweeks` answer from the club a player is at now,
             # which is a different club from the one whose fixtures he was on
-            # once `-g` reaches back past a transfer (issue #174). This reads
-            # the same fact off the gameweek's own live data and takes
-            # precedence wherever it can answer; `bgw_team_ids` stays the
-            # fallback for the gameweeks and players it cannot.
+            # once the gameweek under review predates a transfer (issue #174).
+            # These read the same facts off the gameweek's own live data and
+            # take precedence wherever they can answer; the team-id sets stay
+            # the fallback for the gameweeks and players they cannot.
             players_with_fixture = resolve_players_with_fixture(live_data, raw_fixtures)
+            players_with_double = resolve_players_with_double(live_data, raw_fixtures)
 
             # Classic section
             if show_classic:
@@ -186,6 +188,7 @@ def review_command(
                     client, entry_id, gw, player_map, teams, gw_data, live_stats,
                     bgw_team_ids=bgw_team_ids, dgw_team_ids=dgw_team_ids,
                     players_with_fixture=players_with_fixture,
+                    players_with_double=players_with_double,
                 )
                 classic_transfers_data = await _review_classic_transfers(
                     client, entry_id, gw, player_map, teams, live_stats
@@ -225,6 +228,7 @@ def review_command(
                     players, player_map, teams, live_stats,
                     bgw_team_ids=bgw_team_ids, dgw_team_ids=dgw_team_ids,
                     players_with_fixture=players_with_fixture,
+                    players_with_double=players_with_double,
                 )
             else:
                 # Must match return shape of _review_draft

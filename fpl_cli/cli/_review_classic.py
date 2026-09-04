@@ -17,7 +17,7 @@ from fpl_cli.cli._helpers import (
     _net_transfer_ids,
     _slice_with_ties,
 )
-from fpl_cli.services.fixture_predictions import had_fixture
+from fpl_cli.services.fixture_predictions import is_blank_gameweek, is_double_gameweek
 from fpl_cli.utils.gameweek import is_opening_gameweek
 
 logger = logging.getLogger(__name__)
@@ -32,15 +32,17 @@ async def _review_classic_team(
     client, entry_id, gw, player_map, teams, gw_data, live_stats,
     *, bgw_team_ids: frozenset[int] = frozenset(), dgw_team_ids: frozenset[int] = frozenset(),
     players_with_fixture: frozenset[int] | None = None,
+    players_with_double: frozenset[int] | None = None,
 ):
     """Fetch and display user's classic team performance. Returns dict with team data.
 
-    `bgw_team_ids` is the set of clubs with no fixture this gameweek, and the
-    `bgw` flag it sets is what excuses a zero. `players_with_fixture` answers
-    the same question from the gameweek's own live data and takes precedence
-    where it can, so reviewing a past gameweek does not excuse a real zero on
-    the strength of a club the player only joined later (issue #174);
-    `resolve_players_with_fixture` builds it.
+    The team-id sets say which clubs blanked and doubled this gameweek; the
+    `bgw` flag one of them sets is what excuses a zero. The two player sets
+    answer the same questions from the gameweek's own live data and take
+    precedence where they can, so reviewing a past gameweek does not excuse a
+    real zero -- or award a double -- on the strength of a club the player
+    only joined later (issue #174). `resolve_players_with_fixture` and
+    `resolve_players_with_double` build them.
     """
     my_entry_summary = None
     my_picks_data = []
@@ -106,12 +108,16 @@ async def _review_classic_team(
                         "red_cards": red_cards,
                         "auto_sub_in": player.id in auto_sub_in_ids,
                         "auto_sub_out": player.id in auto_sub_out_ids,
-                        "bgw": not had_fixture(
+                        "bgw": is_blank_gameweek(
                             player.id, player.team_id,
                             players_with_fixture=players_with_fixture,
                             bgw_team_ids=bgw_team_ids,
                         ),
-                        "dgw": player.team_id in dgw_team_ids,
+                        "dgw": is_double_gameweek(
+                            player.id, player.team_id,
+                            players_with_double=players_with_double,
+                            dgw_team_ids=dgw_team_ids,
+                        ),
                         "is_bench": squad_slot > 11,
                     })
 

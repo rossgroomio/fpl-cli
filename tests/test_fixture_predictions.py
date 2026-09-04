@@ -17,6 +17,9 @@ from fpl_cli.services.fixture_predictions import (
     FixturePredictionsService,
     build_prediction_lookup,
     had_fixture,
+    is_blank_gameweek,
+    is_double_gameweek,
+    resolve_players_with_double,
     resolve_players_with_fixture,
 )
 from tests.conftest import make_fixture
@@ -579,3 +582,85 @@ class TestHadFixture:
         assert had_fixture(
             None, 2, players_with_fixture=frozenset({5}), bgw_team_ids=frozenset({2}),
         ) is False
+
+
+class TestIsBlankGameweek:
+    """`had_fixture` the other way up, so a `bgw` field is not assigned a
+    negation. Same answers, inverted."""
+
+    def test_it_is_had_fixture_inverted(self):
+        for player_id, team_id, with_fixture, bgws in [
+            (5, 2, frozenset({5}), frozenset({2})),
+            (5, 1, frozenset(), frozenset()),
+            (5, 2, None, frozenset({2})),
+            (None, 2, frozenset({5}), frozenset({2})),
+        ]:
+            assert is_blank_gameweek(
+                player_id, team_id,
+                players_with_fixture=with_fixture, bgw_team_ids=bgws,
+            ) is not had_fixture(
+                player_id, team_id,
+                players_with_fixture=with_fixture, bgw_team_ids=bgws,
+            )
+
+
+class TestResolvePlayersWithDouble:
+    """The double twin, off the same `explain` list: one entry per club
+    fixture, so counting them tells a double from a single."""
+
+    _LIVE = {"elements": [
+        {"id": 1, "stats": {}, "explain": [{"fixture": 7, "stats": []}, {"fixture": 8, "stats": []}]},
+        {"id": 2, "stats": {}, "explain": [{"fixture": 7, "stats": []}]},
+        {"id": 3, "stats": {}, "explain": []},
+    ]}
+    _FIXTURES = [  # noqa: RUF012 — plain test data, not a mutable default
+        make_fixture(id=7, finished=True, started=True),
+        make_fixture(id=8, finished=True, started=True),
+    ]
+
+    def test_two_entries_is_a_double_and_one_is_not(self):
+        assert resolve_players_with_double(self._LIVE, self._FIXTURES) == frozenset({1})
+
+    def test_a_gameweek_still_in_play_declines_to_answer(self):
+        fixtures = [*self._FIXTURES, make_fixture(id=9, finished=False)]
+        assert resolve_players_with_double(self._LIVE, fixtures) is None
+
+    def test_no_fixtures_at_all_declines_to_answer(self):
+        assert resolve_players_with_double(self._LIVE, []) is None
+
+    def test_a_payload_whose_explains_have_not_populated_declines_too(self):
+        live = {"elements": [{"id": 1, "stats": {}, "explain": []}]}
+        assert resolve_players_with_double(live, self._FIXTURES) is None
+
+    def test_an_ordinary_week_answers_empty_rather_than_declining(self):
+        """The one place this parts company with the blank case: nobody
+        doubling is the ordinary week and a real answer, where nobody having
+        a fixture at all would be a payload that has not arrived."""
+        live = {"elements": [{"id": 2, "stats": {}, "explain": [{"fixture": 7, "stats": []}]}]}
+        assert resolve_players_with_double(live, self._FIXTURES) == frozenset()
+
+
+class TestIsDoubleGameweek:
+    def test_the_gameweeks_answer_beats_the_club_the_player_is_at_today(self):
+        # Club 2 doubled; the gameweek says he played once, being elsewhere then.
+        assert is_double_gameweek(
+            5, 2, players_with_double=frozenset(), dgw_team_ids=frozenset({2}),
+        ) is False
+
+    def test_the_gameweek_also_awards_a_double_his_current_club_did_not_have(self):
+        assert is_double_gameweek(
+            5, 1, players_with_double=frozenset({5}), dgw_team_ids=frozenset(),
+        ) is True
+
+    def test_without_an_answer_the_club_decides(self):
+        assert is_double_gameweek(
+            5, 2, players_with_double=None, dgw_team_ids=frozenset({2}),
+        ) is True
+        assert is_double_gameweek(
+            5, 1, players_with_double=None, dgw_team_ids=frozenset({2}),
+        ) is False
+
+    def test_a_player_with_no_main_game_id_falls_back_to_his_club(self):
+        assert is_double_gameweek(
+            None, 2, players_with_double=frozenset(), dgw_team_ids=frozenset({2}),
+        ) is True

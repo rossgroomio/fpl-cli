@@ -1106,27 +1106,28 @@ class TestReviewDraftPlayerMatching:
 
 
 # ---------------------------------------------------------------------------
-# TestReviewStaleClubBlanks
+# TestReviewStaleClubFlags
 # ---------------------------------------------------------------------------
 
-class TestReviewStaleClubBlanks:
+class TestReviewStaleClubFlags:
     """#174: `-g` reviews a finished gameweek, but the club a player is at
     today is the only one the bootstrap knows. Reach back past a transfer and
-    that club's fixture list was never his, so which players blanked has to be
-    read off the gameweek's own live data instead.
+    that club's fixture list was never his, so which players blanked -- and
+    which doubled -- has to be read off the gameweek's own live data instead.
 
-    In every case here GW15 blanked club 3 and played club 19. `mover` is at
-    the blanking club today and played for the other one that gameweek;
-    `leaver` is the mirror image.
+    In every case here GW15 blanked club 3 and gave club 19 a double. `mover`
+    is at the blanking club today and played both of the other one's fixtures
+    that gameweek; `leaver` is the mirror image.
     """
 
     TEAMS = {
         3: make_team(id=3, short_name="BLA", name="Blanked FC"),
         19: make_team(id=19, short_name="MCI", name="Man City"),
     }
-    # Only `mover` has an `explain` entry in GW15's live payload, because only
-    # his club of the day took the pitch.
+    # Only `mover` has `explain` entries in GW15's live payload, because only
+    # his club of the day took the pitch -- twice, so he doubled as well.
     WITH_FIXTURE = frozenset({401})
+    WITH_DOUBLE = frozenset({401})
 
     @staticmethod
     def _players():
@@ -1178,7 +1179,7 @@ class TestReviewStaleClubBlanks:
         return await _review_classic_team(
             client, 1, 15, {p.id: p for p in self._players()}, self.TEAMS,
             {"id": 15}, self.LIVE_STATS,
-            bgw_team_ids=frozenset({3}), **kwargs,
+            bgw_team_ids=frozenset({3}), dgw_team_ids=frozenset({19}), **kwargs,
         )
 
     async def test_classic_bgw_flag_follows_the_gameweeks_own_record(self):
@@ -1194,6 +1195,22 @@ class TestReviewStaleClubBlanks:
         data = await self._classic_team(players_with_fixture=None)
         assert {p["name"]: p["bgw"] for p in data["my_picks_data"]} == {
             "Mover": True, "Leaver": False,
+        }
+
+    async def test_classic_dgw_flag_follows_the_gameweeks_own_record(self):
+        """The twin flag, and wrong in both directions for the same reason:
+        `[DGW]` is a suffix on the prompt line claiming he played twice."""
+        data = await self._classic_team(
+            players_with_fixture=self.WITH_FIXTURE, players_with_double=self.WITH_DOUBLE,
+        )
+        assert {p["name"]: p["dgw"] for p in data["my_picks_data"]} == {
+            "Mover": True, "Leaver": False,
+        }
+
+    async def test_classic_dgw_flag_falls_back_to_the_club(self):
+        data = await self._classic_team(players_with_fixture=None, players_with_double=None)
+        assert {p["name"]: p["dgw"] for p in data["my_picks_data"]} == {
+            "Mover": False, "Leaver": True,
         }
 
     @staticmethod
@@ -1228,7 +1245,7 @@ class TestReviewStaleClubBlanks:
                 MagicMock(), 1, 1, gw=15, api_current_gw_id=15,
                 players=self._players(), player_map={p.id: p for p in self._players()},
                 teams=self.TEAMS, live_stats=self.LIVE_STATS,
-                bgw_team_ids=frozenset({3}), **kwargs,
+                bgw_team_ids=frozenset({3}), dgw_team_ids=frozenset({19}), **kwargs,
             )
 
     async def test_draft_bgw_flag_follows_the_gameweeks_own_record(self):
@@ -1251,6 +1268,20 @@ class TestReviewStaleClubBlanks:
             "Mover": True, "Leaver": False, "Mystery": True,
         }
 
+    async def test_draft_dgw_flag_follows_the_gameweeks_own_record(self):
+        data = await self._draft(
+            players_with_fixture=self.WITH_FIXTURE, players_with_double=self.WITH_DOUBLE,
+        )
+        assert {p["name"]: p["dgw"] for p in data["draft_squad_points_data"]} == {
+            "Mover": True, "Leaver": False, "Mystery": False,
+        }
+
+    async def test_draft_dgw_flag_falls_back_to_the_club(self):
+        data = await self._draft(players_with_fixture=None, players_with_double=None)
+        assert {p["name"]: p["dgw"] for p in data["draft_squad_points_data"]} == {
+            "Mover": False, "Leaver": True, "Mystery": False,
+        }
+
 
 class TestReviewThreadsTheGameweeksFixtureSet:
     """The fix is only worth anything if the command builds the set and hands
@@ -1262,10 +1293,11 @@ class TestReviewThreadsTheGameweeksFixtureSet:
         from fpl_cli.cli import review as review_module
         from tests.conftest import make_fixture
 
-        # Club 3 blanked GW15; only club 19's players have an `explain`, which
-        # is what `resolve_players_with_fixture` reads.
+        # Club 3 blanked GW15 and club 19 doubled, so only club 19's players
+        # have `explain` entries -- two of them, which is what the pair of
+        # `resolve_players_with_*` calls read.
         live_data = {"elements": [
-            {"id": 401, "stats": {"total_points": 0}, "explain": [{"fixture": 7}]},
+            {"id": 401, "stats": {"total_points": 0}, "explain": [{"fixture": 7}, {"fixture": 8}]},
             {"id": 402, "stats": {"total_points": 0}, "explain": []},
         ]}
         client = MagicMock()
@@ -1283,14 +1315,15 @@ class TestReviewThreadsTheGameweeksFixtureSet:
         client.get_gameweek_live = AsyncMock(return_value=live_data)
         client.get_fixtures = AsyncMock(return_value=[
             make_fixture(id=7, gameweek=15, home_team_id=19, away_team_id=1, finished=True, started=True),
+            make_fixture(id=8, gameweek=15, home_team_id=2, away_team_id=19, finished=True, started=True),
         ])
         monkeypatch.setattr("fpl_cli.api.fpl.FPLClient", MagicMock(return_value=client))
 
         seen: dict[str, object] = {}
 
         def _spy(key, result):
-            async def _call(*args, players_with_fixture=None, **kwargs):
-                seen[key] = players_with_fixture
+            async def _call(*args, players_with_fixture=None, players_with_double=None, **kwargs):
+                seen[key] = (players_with_fixture, players_with_double)
                 return result
             return _call
 
@@ -1310,9 +1343,10 @@ class TestReviewThreadsTheGameweeksFixtureSet:
         result = CliRunner().invoke(review_module.review_command, ["--gameweek", "15"])
 
         assert result.exit_code == 0, result.output
-        # 401's club took the pitch that gameweek; 402's did not.
+        # 401's club took the pitch twice that gameweek; 402's not at all.
+        # Global stats reads blanks only, so it is handed no double set.
         assert seen == {
-            "classic": frozenset({401}),
-            "global": frozenset({401}),
-            "draft": frozenset({401}),
+            "classic": (frozenset({401}), frozenset({401})),
+            "global": (frozenset({401}), None),
+            "draft": (frozenset({401}), frozenset({401})),
         }
