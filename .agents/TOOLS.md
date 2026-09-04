@@ -92,6 +92,7 @@ Skills write their own outputs (`gw{N}-recommendations.md`, `gw{N}-squad-builder
 | release-notes | `skills/release-notes/` | Draft release notes and suggest the next semver (read-only preview; never tags or publishes) | Full: Claude Code, Codex, Cursor, Copilot |
 | release | `skills/release/` | Cut a release end-to-end: preflight, notes via release-notes, approval gate, publish GitHub release (tag drives PyPI publish + changelog automation) | Full: Claude Code (local), Codex, Cursor, Copilot. Partial: Claude Code web (publish step handed to user) |
 | create-pr | `skills/create-pr/` | Open a PR for the current branch: conventional-commit title (the changelog line) + why-first prose body in the fpl-cli PR description style | Full: Claude Code, Codex, Cursor, Copilot |
+| build-test-plan | `skills/build-test-plan/` | Build a runnable test plan for the user-facing changes shipped between two releases, written for a live-data session in the fpl-workspace vault (deep per-change research, carries forward the previous plan's BLOCKED/FAIL items) | Full: Claude Code (parallel research sub-agents). Partial: Codex, Cursor, Copilot |
 
 ## Analysis Agents
 
