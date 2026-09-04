@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
@@ -1077,30 +1078,86 @@ def _snapshot(gameweek: int = 1, season: str = "2026-27", **players: Any) -> Any
     )
 
 
+def _store(current: Any = None, baseline: Any = None, season: str = "2026-27") -> Any:
+    return returnee_radar.SnapshotStore(season=season, baseline=baseline, current=current)
+
+
+def _write_legacy_snapshot(snapshot: Any) -> None:
+    """The pre-#225 single-slot file, as a released version wrote it."""
+    returnee_radar.snapshot_path().write_text(
+        json.dumps({
+            "metadata": {"season": snapshot.season, "gameweek": snapshot.gameweek},
+            "players": {
+                str(pid): {
+                    "status": record.status,
+                    "chance": record.chance_of_playing,
+                    "return_date": (
+                        record.return_date.isoformat() if record.return_date else None
+                    ),
+                    "lapsed": record.lapsed,
+                    "web_name": record.web_name,
+                }
+                for pid, record in snapshot.players.items()
+            },
+        }),
+        encoding="utf-8",
+    )
+
+
 def test_snapshot_path_lands_in_the_isolated_data_dir(tmp_path):
     path = returnee_radar.snapshot_path()
 
     assert path == tmp_path / "user-data" / returnee_radar.SNAPSHOT_FILENAME
 
 
-def test_saved_snapshot_round_trips_through_load(tmp_path):
-    snapshot = _snapshot(
-        gameweek=4,
-        **{"7": _record(status="d", chance=25, return_date=date(2026, 10, 5), web_name="Rider")},
+def test_saved_store_round_trips_through_load(tmp_path):
+    store = _store(
+        baseline=_snapshot(gameweek=3, **{"7": _record(chance=0)}),
+        current=_snapshot(
+            gameweek=4,
+            **{"7": _record(
+                status="d", chance=25, return_date=date(2026, 10, 5), web_name="Rider",
+            )},
+        ),
     )
 
-    returnee_radar.save_snapshot(snapshot)
-    loaded = returnee_radar.load_snapshot(season="2026-27")
+    returnee_radar.save_store(store)
+    loaded = returnee_radar.load_store(season="2026-27")
 
     assert (tmp_path / "user-data" / returnee_radar.SNAPSHOT_FILENAME).is_file()
-    assert loaded == snapshot
+    assert loaded == store
+
+
+def test_a_store_with_no_baseline_yet_round_trips_as_a_null_slot():
+    returnee_radar.save_store(_store(current=_snapshot(gameweek=1, **{"7": _record()})))
+
+    loaded = returnee_radar.load_store(season="2026-27")
+
+    assert loaded is not None
+    assert loaded.baseline is None
+    assert loaded.current is not None and loaded.current.gameweek == 1
+
+
+def test_the_metadata_gameweek_mirrors_the_current_slot_for_doctor_and_readers():
+    """`fpl doctor` reads `metadata.gameweek`, and so does anyone opening the
+    file, so the current slot's gameweek stays visible at the top."""
+    returnee_radar.save_store(
+        _store(
+            baseline=_snapshot(gameweek=4, **{"7": _record()}),
+            current=_snapshot(gameweek=5, **{"7": _record()}),
+        ),
+    )
+
+    payload = json.loads(returnee_radar.snapshot_path().read_text(encoding="utf-8"))
+
+    assert payload["metadata"] == {"season": "2026-27", "gameweek": 5}
 
 
 def test_snapshot_writes_accented_names_as_utf8_not_escapes(tmp_path):
     """Issue #147: the snapshot is a file a person reads and diffs week to
     week, so an accented name stays legible rather than becoming a run of
     `\\u00e9` escapes -- matching the league-history ledger beside it."""
-    returnee_radar.save_snapshot(_snapshot(**{"7": _record(web_name="Ekitiké")}))
+    returnee_radar.save_store(_store(current=_snapshot(**{"7": _record(web_name="Ekitiké")})))
 
     text = (tmp_path / "user-data" / returnee_radar.SNAPSHOT_FILENAME).read_text(
         encoding="utf-8",
@@ -1110,34 +1167,61 @@ def test_snapshot_writes_accented_names_as_utf8_not_escapes(tmp_path):
 
 
 def test_snapshot_keeps_the_return_date_of_a_lapsed_signal(tmp_path):
-    snapshot = _snapshot(**{"7": _record(return_date=date(2026, 9, 5), lapsed=True)})
+    current = _snapshot(**{"7": _record(return_date=date(2026, 9, 5), lapsed=True)})
 
-    returnee_radar.save_snapshot(snapshot)
-    loaded = returnee_radar.load_snapshot(season="2026-27")
+    returnee_radar.save_store(_store(current=current))
+    loaded = returnee_radar.load_store(season="2026-27")
 
-    assert loaded is not None
-    assert loaded.players[7].return_date == date(2026, 9, 5)
-    assert loaded.players[7].lapsed is True
+    assert loaded is not None and loaded.current is not None
+    assert loaded.current.players[7].return_date == date(2026, 9, 5)
+    assert loaded.current.players[7].lapsed is True
 
 
 def test_missing_snapshot_file_loads_as_none():
-    assert returnee_radar.load_snapshot(season="2026-27") is None
+    assert returnee_radar.load_store(season="2026-27") is None
 
 
 def test_snapshot_from_a_previous_season_is_discarded():
-    returnee_radar.save_snapshot(_snapshot(season="2025-26", **{"7": _record()}))
+    returnee_radar.save_store(
+        _store(season="2025-26", current=_snapshot(season="2025-26", **{"7": _record()})),
+    )
 
-    assert returnee_radar.load_snapshot(season="2026-27") is None
+    assert returnee_radar.load_store(season="2026-27") is None
 
 
 def test_snapshot_defaults_to_the_current_season_label():
-    returnee_radar.save_snapshot(
-        returnee_radar.RadarSnapshot(season=season_label(), gameweek=2, players={7: _record()}),
+    returnee_radar.save_store(
+        returnee_radar.SnapshotStore(
+            season=season_label(),
+            current=returnee_radar.RadarSnapshot(
+                season=season_label(), gameweek=2, players={7: _record()},
+            ),
+        ),
     )
 
-    loaded = returnee_radar.load_snapshot()
+    loaded = returnee_radar.load_store()
 
-    assert loaded is not None and loaded.gameweek == 2
+    assert loaded is not None and loaded.current is not None
+    assert loaded.current.gameweek == 2
+
+
+def test_a_single_slot_file_from_before_the_two_slot_store_loads_as_the_current_state():
+    """#225 shipped the second slot. The state a released version stored is
+    the last one it wrote, so it lands in `current` and becomes a baseline
+    from the next gameweek rather than being thrown away."""
+    _write_legacy_snapshot(_snapshot(gameweek=4, **{"7": _record(chance=25)}))
+
+    loaded = returnee_radar.load_store(season="2026-27")
+
+    assert loaded is not None
+    assert loaded.baseline is None
+    assert loaded.current == _snapshot(gameweek=4, **{"7": _record(chance=25)})
+
+
+def test_a_single_slot_file_from_a_previous_season_is_still_discarded():
+    _write_legacy_snapshot(_snapshot(season="2025-26", gameweek=4, **{"7": _record()}))
+
+    assert returnee_radar.load_store(season="2026-27") is None
 
 
 @pytest.mark.parametrize(
@@ -1147,31 +1231,90 @@ def test_snapshot_defaults_to_the_current_season_label():
         "not json at all",
         "[]",
         '{"metadata": {"season": "2026-27"}}',  # no players block
+        '{"metadata": {"season": "2026-27"}, "current": {"players": {}}}',  # slot, no gameweek
+        '{"metadata": {"season": "2026-27"}, "current": null, "baseline": null}',  # empty slots
     ],
 )
 def test_corrupt_snapshot_file_loads_as_none_without_raising(text: str):
     returnee_radar.snapshot_path().write_text(text, encoding="utf-8")
 
-    assert returnee_radar.load_snapshot(season="2026-27") is None
+    assert returnee_radar.load_store(season="2026-27") is None
 
 
 def test_interrupted_write_leaves_the_previous_snapshot_readable(monkeypatch):
     import os as os_module
 
-    returnee_radar.save_snapshot(_snapshot(gameweek=1, **{"7": _record(chance=25)}))
+    returnee_radar.save_store(_store(current=_snapshot(gameweek=1, **{"7": _record(chance=25)})))
 
     def _boom(src: Any, dst: Any) -> None:
         raise OSError("interrupted")
 
     monkeypatch.setattr(os_module, "replace", _boom)
     with pytest.raises(OSError):
-        returnee_radar.save_snapshot(_snapshot(gameweek=2, **{"7": _record(chance=75)}))
+        returnee_radar.save_store(
+            _store(current=_snapshot(gameweek=2, **{"7": _record(chance=75)})),
+        )
     monkeypatch.undo()
 
-    loaded = returnee_radar.load_snapshot(season="2026-27")
-    assert loaded is not None
-    assert loaded.gameweek == 1
-    assert loaded.players[7].chance_of_playing == 25
+    loaded = returnee_radar.load_store(season="2026-27")
+    assert loaded is not None and loaded.current is not None
+    assert loaded.current.gameweek == 1
+    assert loaded.current.players[7].chance_of_playing == 25
+
+
+# ---------------------------------------------------------------------------
+# Which stored state a run diffs against
+# ---------------------------------------------------------------------------
+
+
+def test_the_baseline_slot_is_used_while_the_gameweek_has_not_moved_on():
+    store = _store(
+        baseline=_snapshot(gameweek=4, **{"7": _record(chance=0)}),
+        current=_snapshot(gameweek=5, **{"7": _record(chance=25)}),
+    )
+
+    assert store.baseline_for(5) is store.baseline
+
+
+def test_the_current_slot_becomes_the_baseline_once_the_gameweek_moves_on():
+    store = _store(
+        baseline=_snapshot(gameweek=4, **{"7": _record(chance=0)}),
+        current=_snapshot(gameweek=5, **{"7": _record(chance=25)}),
+    )
+
+    assert store.baseline_for(6) is store.current
+
+
+def test_a_store_holding_only_this_gameweek_has_nothing_to_diff_against():
+    """The #225 bug in one assertion: a run must not diff against a state
+    stored during its own gameweek."""
+    store = _store(current=_snapshot(gameweek=5, **{"7": _record()}))
+
+    assert store.baseline_for(5) is None
+
+
+def test_advancing_to_a_later_gameweek_promotes_the_current_slot():
+    store = _store(
+        baseline=_snapshot(gameweek=4, **{"7": _record(chance=0)}),
+        current=_snapshot(gameweek=5, **{"7": _record(chance=25)}),
+    )
+
+    advanced = store.advanced_to(_snapshot(gameweek=6, **{"7": _record(chance=50)}))
+
+    assert advanced.baseline is store.current
+    assert advanced.current.players[7].chance_of_playing == 50
+
+
+def test_advancing_inside_one_gameweek_refreshes_current_and_keeps_the_baseline():
+    store = _store(
+        baseline=_snapshot(gameweek=4, **{"7": _record(chance=0)}),
+        current=_snapshot(gameweek=5, **{"7": _record(chance=25)}),
+    )
+
+    advanced = store.advanced_to(_snapshot(gameweek=5, **{"7": _record(chance=50)}))
+
+    assert advanced.baseline is store.baseline
+    assert advanced.current.players[7].chance_of_playing == 50
 
 
 # ---------------------------------------------------------------------------
@@ -1435,52 +1578,114 @@ def test_first_run_reports_no_transitions_and_writes_a_snapshot(tmp_path):
     assert [e.transition for e in result.entries] == [None]
     assert result.departures == []
     assert result.transitions_available is False
-    stored = returnee_radar.load_snapshot(season="2026-27")
-    assert stored is not None
-    assert stored.gameweek == NEXT_GW
-    assert stored.players[1].chance_of_playing == 0
+    assert result.baseline_gameweek is None
+    stored = returnee_radar.load_store(season="2026-27")
+    assert stored is not None and stored.current is not None
+    assert stored.baseline is None
+    assert stored.current.gameweek == NEXT_GW
+    assert stored.current.players[1].chance_of_playing == 0
     assert (tmp_path / "user-data" / returnee_radar.SNAPSHOT_FILENAME).is_file()
 
 
-def test_second_run_marks_the_chance_improvement_against_the_stored_run():
-    _run([_tracked(chance=0)], {1: _prior(0.9)})
-
-    result = _run([_tracked(chance=25)], {1: _prior(0.9)})
-
-    assert [e.transition for e in result.entries] == [returnee_radar.TRANSITION_CHANCE_IMPROVED]
-    assert result.transitions_available is True
-
-
-def test_two_runs_in_one_gameweek_report_the_same_delta_and_write_once():
-    _run([_tracked(chance=0)], {1: _prior(0.9)})
-
-    second = _run([_tracked(chance=25)], {1: _prior(0.9)})
-    written = returnee_radar.snapshot_path().read_text(encoding="utf-8")
-    third = _run([_tracked(chance=25)], {1: _prior(0.9)})
-
-    assert [e.transition for e in third.entries] == [e.transition for e in second.entries]
-    assert returnee_radar.snapshot_path().read_text(encoding="utf-8") == written
-    # Still the first run's state: a per-run write would have emptied the delta.
-    stored = returnee_radar.load_snapshot(season="2026-27")
-    assert stored is not None and stored.players[1].chance_of_playing == 0
-
-
-def test_a_later_gameweek_rewrites_the_snapshot_after_diffing_the_previous_one():
+def test_a_run_in_the_next_gameweek_marks_the_chance_improvement():
     _run([_tracked(chance=0)], {1: _prior(0.9)})
 
     result = _run([_tracked(chance=25)], {1: _prior(0.9)}, next_gw_id=2)
 
     assert [e.transition for e in result.entries] == [returnee_radar.TRANSITION_CHANCE_IMPROVED]
-    stored = returnee_radar.load_snapshot(season="2026-27")
+    assert result.transitions_available is True
+    assert result.baseline_gameweek == NEXT_GW
+
+
+def test_a_second_run_in_one_gameweek_reports_the_same_transitions_as_the_first():
+    """#225: the week-over-week signal is not a one-shot handed to whichever
+    run of the gameweek happens to be first. The second run here sees exactly
+    the state the first one stored, so a run that diffed against it would
+    report nothing changed."""
+    _run([_tracked(chance=0)], {1: _prior(0.9)})
+
+    first = _run([_tracked(chance=25)], {1: _prior(0.9)}, next_gw_id=2)
+    second = _run([_tracked(chance=25)], {1: _prior(0.9)}, next_gw_id=2)
+
+    assert [e.transition for e in first.entries] == [returnee_radar.TRANSITION_CHANCE_IMPROVED]
+    assert [e.transition for e in second.entries] == [e.transition for e in first.entries]
+    assert second.transitions_available is True
+    assert second.baseline_gameweek == NEXT_GW
+
+
+def test_a_first_ever_run_repeated_in_one_gameweek_still_has_nothing_to_diff():
+    """The honest half of #225: with nothing stored from an earlier gameweek,
+    a repeat run reports transitions unavailable rather than diffing against
+    what its predecessor wrote minutes earlier."""
+    _run([_tracked(chance=0)], {1: _prior(0.9)})
+
+    result = _run([_tracked(chance=25)], {1: _prior(0.9)})
+
+    assert [e.transition for e in result.entries] == [None]
+    assert result.transitions_available is False
+    assert result.baseline_gameweek is None
+
+
+def test_a_rerun_in_one_gameweek_refreshes_the_current_slot_and_keeps_the_baseline():
+    _run([_tracked(chance=0)], {1: _prior(0.9)})
+
+    _run([_tracked(chance=25)], {1: _prior(0.9)}, next_gw_id=2)
+    _run([_tracked(chance=50)], {1: _prior(0.9)}, next_gw_id=2)
+
+    stored = returnee_radar.load_store(season="2026-27")
     assert stored is not None
-    assert stored.gameweek == 2
-    assert stored.players[1].chance_of_playing == 25
+    assert stored.baseline is not None and stored.baseline.gameweek == NEXT_GW
+    assert stored.baseline.players[1].chance_of_playing == 0
+    assert stored.current is not None and stored.current.gameweek == 2
+    # The last run of the gameweek is what the next gameweek diffs against.
+    assert stored.current.players[1].chance_of_playing == 50
+
+
+def test_a_later_gameweek_promotes_the_stored_state_after_diffing_it():
+    _run([_tracked(chance=0)], {1: _prior(0.9)})
+
+    result = _run([_tracked(chance=25)], {1: _prior(0.9)}, next_gw_id=2)
+
+    assert [e.transition for e in result.entries] == [returnee_radar.TRANSITION_CHANCE_IMPROVED]
+    stored = returnee_radar.load_store(season="2026-27")
+    assert stored is not None
+    assert stored.baseline is not None and stored.baseline.gameweek == NEXT_GW
+    assert stored.current is not None and stored.current.gameweek == 2
+    assert stored.current.players[1].chance_of_playing == 25
+
+
+def test_a_run_older_than_the_stored_gameweek_leaves_the_store_alone():
+    """`next_gw_id` only moves forward in practice, but writing a stale run
+    would overwrite a later gameweek's state and take the baseline with it."""
+    _run([_tracked(chance=0)], {1: _prior(0.9)})
+    _run([_tracked(chance=25)], {1: _prior(0.9)}, next_gw_id=3)
+    before = returnee_radar.snapshot_path().read_text(encoding="utf-8")
+
+    _run([_tracked(chance=50)], {1: _prior(0.9)}, next_gw_id=2)
+
+    assert returnee_radar.snapshot_path().read_text(encoding="utf-8") == before
+
+
+def test_a_single_slot_file_from_before_the_two_slot_store_is_diffed_next_gameweek():
+    _write_legacy_snapshot(
+        returnee_radar.RadarSnapshot(
+            season="2026-27", gameweek=NEXT_GW, players={1: _record(chance=0)},
+        ),
+    )
+
+    result = _run([_tracked(chance=25)], {1: _prior(0.9)}, next_gw_id=2)
+
+    assert [e.transition for e in result.entries] == [returnee_radar.TRANSITION_CHANCE_IMPROVED]
+    assert result.baseline_gameweek == NEXT_GW
 
 
 def test_a_snapshot_from_last_season_resets_the_run_to_first_run_behaviour():
-    returnee_radar.save_snapshot(
-        returnee_radar.RadarSnapshot(
-            season="2025-26", gameweek=NEXT_GW, players={1: _record(chance=0)},
+    returnee_radar.save_store(
+        returnee_radar.SnapshotStore(
+            season="2025-26",
+            current=returnee_radar.RadarSnapshot(
+                season="2025-26", gameweek=NEXT_GW, players={1: _record(chance=0)},
+            ),
         ),
     )
 
@@ -1488,8 +1693,9 @@ def test_a_snapshot_from_last_season_resets_the_run_to_first_run_behaviour():
 
     assert [e.transition for e in result.entries] == [None]
     assert result.transitions_available is False
-    stored = returnee_radar.load_snapshot(season="2026-27")
+    stored = returnee_radar.load_store(season="2026-27")
     assert stored is not None and stored.season == "2026-27"
+    assert stored.baseline is None
 
 
 def test_a_corrupt_snapshot_resets_the_run_to_first_run_behaviour():
@@ -1499,13 +1705,15 @@ def test_a_corrupt_snapshot_resets_the_run_to_first_run_behaviour():
 
     assert [e.transition for e in result.entries] == [None]
     assert result.transitions_available is False
-    assert returnee_radar.load_snapshot(season="2026-27") is not None
+    assert returnee_radar.load_store(season="2026-27") is not None
 
 
 def test_a_tracked_player_who_became_available_is_reported_as_a_return():
     _run([_tracked(pid=1)], {1: _prior(0.9)})
 
-    result = _run([_tracked(pid=1, status=PlayerStatus.AVAILABLE)], {1: _prior(0.9)})
+    result = _run(
+        [_tracked(pid=1, status=PlayerStatus.AVAILABLE)], {1: _prior(0.9)}, next_gw_id=2,
+    )
 
     assert result.entries == []
     assert [(d.player_id, d.transition) for d in result.departures] == [
@@ -1516,7 +1724,9 @@ def test_a_tracked_player_who_became_available_is_reported_as_a_return():
 def test_a_still_flagged_player_pushed_out_by_the_window_is_not_reported_as_a_return():
     _run([_tracked(pid=1)], {1: _prior(0.9)})
 
-    result = _run([_tracked(pid=1, news=_news_returning_in_gw(9))], {1: _prior(0.9)})
+    result = _run(
+        [_tracked(pid=1, news=_news_returning_in_gw(9))], {1: _prior(0.9)}, next_gw_id=2,
+    )
 
     assert result.entries == []
     assert [(d.transition, d.reason) for d in result.departures] == [
@@ -1527,7 +1737,7 @@ def test_a_still_flagged_player_pushed_out_by_the_window_is_not_reported_as_a_re
 def test_a_still_flagged_player_dropped_by_the_quality_bar_names_that_filter():
     _run([_tracked(pid=1)], {1: _prior(0.9)})
 
-    result = _run([_tracked(pid=1)], {1: _prior(0.5)})
+    result = _run([_tracked(pid=1)], {1: _prior(0.5)}, next_gw_id=2)
 
     assert result.entries == []
     assert [(d.transition, d.reason) for d in result.departures] == [
@@ -1581,10 +1791,10 @@ def test_run_radar_without_a_stored_gameweek_still_returns_the_ordered_watchlist
 
 
 def test_a_failed_snapshot_write_still_returns_the_watchlist(monkeypatch):
-    def _boom(snapshot: Any) -> None:
+    def _boom(store: Any) -> None:
         raise OSError("read-only data dir")
 
-    monkeypatch.setattr(returnee_radar, "save_snapshot", _boom)
+    monkeypatch.setattr(returnee_radar, "save_store", _boom)
 
     result = _run([_tracked(chance=0)], {1: _prior(0.9)})
 
@@ -1595,7 +1805,7 @@ def test_a_failed_snapshot_write_still_returns_the_watchlist(monkeypatch):
 def test_radar_departure_is_frozen():
     _run([_tracked(pid=1)], {1: _prior(0.9)})
     departure = _run(
-        [_tracked(pid=1, status=PlayerStatus.AVAILABLE)], {1: _prior(0.9)},
+        [_tracked(pid=1, status=PlayerStatus.AVAILABLE)], {1: _prior(0.9)}, next_gw_id=2,
     ).departures[0]
 
     with pytest.raises(AttributeError):

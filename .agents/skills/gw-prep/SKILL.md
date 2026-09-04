@@ -317,8 +317,9 @@ Flagged players -- injured, suspended, unavailable, doubtful -- whose expected r
 `metadata.window` gameweeks and who clear the radar's quality bar. Each entry in `data.entries`
 carries the return estimate and where it came from (`expected_return`, `return_gameweek`,
 `return_source`, `escalation_basis`), a quality verdict (`quality.passed`, `quality.meets_stash`)
-and what moved since the previous run (`transition`). `data.departures` says who left the
-watchlist and why.
+and what moved since the previous gameweek (`transition`, measured against the gameweek in
+`metadata.transitions_baseline_gameweek`). `data.departures` says who left the watchlist and
+why.
 
 `--enrich` searches the web for fresher return timing on the players FPL's own news field is silent
 or stale about, which is what supplies a date for the injured majority. It needs a Perplexity API

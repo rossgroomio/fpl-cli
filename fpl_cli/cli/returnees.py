@@ -688,6 +688,10 @@ def assemble(
         # cannot -- the gate is refusable only if the number is actually known.
         "stash_upgrade_margin": stash_upgrade_margin,
         "transitions_available": result.transitions_available,
+        # The gameweek the Change column is measured against, null when
+        # nothing older than this gameweek is stored. Published so a
+        # consumer states what moved since, rather than assuming last week.
+        "transitions_baseline_gameweek": result.baseline_gameweek,
         "quality_bar_available": quality_bar_available,
         "quality_bar_applied": quality_bar_applied,
         "enrichment_requested": enrichment.requested,
@@ -835,8 +839,8 @@ def render_table(data: dict[str, Any], metadata: dict[str, Any]) -> None:
             )
     if not metadata["transitions_available"]:
         console.print(
-            "[dim]No stored watchlist to compare against — this is the first run, "
-            "so week-over-week changes appear from the next one.[/dim]",
+            "[dim]No watchlist stored from an earlier gameweek to compare against, "
+            "so week-over-week changes appear from the next gameweek.[/dim]",
         )
     _render_departures(data["departures"])
 

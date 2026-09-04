@@ -333,6 +333,25 @@ def _names(payload: dict[str, Any]) -> list[str]:
     return [entry["web_name"] for entry in payload["data"]["entries"]]
 
 
+def _transitions(payload: dict[str, Any]) -> dict[str, Any]:
+    return {entry["web_name"]: entry["transition"] for entry in payload["data"]["entries"]}
+
+
+def _seed_store(gameweek: int, players: dict[int, Any] | None = None) -> None:
+    """Store a watchlist as an earlier gameweek's state, the way a run in that
+    gameweek would have left it."""
+    returnee_radar.save_store(returnee_radar.SnapshotStore(
+        season=season_label(SEASON_YEAR),
+        current=returnee_radar.RadarSnapshot(
+            season=season_label(SEASON_YEAR),
+            gameweek=gameweek,
+            players=players or {5: returnee_radar.SnapshotRecord(
+                status="i", web_name="Fitasafiddle",
+            )},
+        ),
+    ))
+
+
 # ---------------------------------------------------------------------------
 # _load_profiles logging (issue #237/#239 review)
 # ---------------------------------------------------------------------------
@@ -393,11 +412,7 @@ class TestTableOutput:
         assert "Unknown" in result.output
 
     def test_departures_are_reported_when_a_tracked_player_is_fit_again(self):
-        returnee_radar.save_snapshot(returnee_radar.RadarSnapshot(
-            season=season_label(SEASON_YEAR),
-            gameweek=NEXT_GW - 1,
-            players={5: returnee_radar.SnapshotRecord(status="i", web_name="Fitasafiddle")},
-        ))
+        _seed_store(NEXT_GW - 1)
 
         result = _run()
 
@@ -497,19 +512,53 @@ class TestFlags:
 
 
 class TestDeltas:
-    def test_first_run_reports_deltas_unavailable_second_run_reports_them_present(self):
+    def test_first_run_reports_deltas_unavailable(self):
+        payload = _json_run()
+
+        assert payload["metadata"]["transitions_available"] is False
+        assert payload["metadata"]["transitions_baseline_gameweek"] is None
+
+    def test_an_earlier_gameweek_in_the_store_turns_deltas_on(self):
+        _seed_store(NEXT_GW - 1)
+
+        payload = _json_run()
+
+        assert payload["metadata"]["transitions_available"] is True
+        assert payload["metadata"]["transitions_baseline_gameweek"] == NEXT_GW - 1
+
+    def test_a_repeat_run_in_one_gameweek_reports_the_same_transitions(self):
+        """#225: the second run of a gameweek -- gw-prep's `--enrich` pass is
+        one -- diffs against the previous gameweek, not against what the first
+        run stored moments earlier."""
+        _seed_store(NEXT_GW - 1)
+
         first = _json_run()
         second = _json_run()
 
-        assert first["metadata"]["transitions_available"] is False
+        assert set(_transitions(first).values()) != {None}
+        assert _transitions(second) == _transitions(first)
+        assert second["data"]["departures"] == first["data"]["departures"]
         assert second["metadata"]["transitions_available"] is True
 
-    def test_table_notes_the_first_run_has_nothing_to_diff(self):
-        first = _run()
-        second = _run()
+    def test_a_repeat_run_with_nothing_stored_earlier_does_not_invent_deltas(self):
+        _json_run()
 
-        assert "first" in first.output.lower()
-        assert "first" not in second.output.lower()
+        second = _json_run()
+
+        assert second["metadata"]["transitions_available"] is False
+        assert set(_transitions(second).values()) == {None}
+
+    def test_table_notes_when_there_is_nothing_earlier_to_diff_against(self):
+        result = _run()
+
+        assert "earlier gameweek" in result.output.lower()
+
+    def test_table_drops_the_note_once_an_earlier_gameweek_is_stored(self):
+        _seed_store(NEXT_GW - 1)
+
+        result = _run()
+
+        assert "earlier gameweek" not in result.output.lower()
 
 
 # ---------------------------------------------------------------------------
