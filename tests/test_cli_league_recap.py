@@ -402,13 +402,19 @@ class TestCaptureRecapHistory:
 
     async def test_a_second_run_over_the_same_gameweek_leaves_the_file_byte_identical(self):
         data = _recap_data()
-        await capture_recap_history(data, season=SEASON)
+        first = await capture_recap_history(data, season=SEASON)
         before = _store().gameweek_file(5).read_bytes()
+        first_captured_at = {r.manager_key: r.captured_at for r in first.rows}
 
         result = await capture_recap_history(data, season=SEASON)
 
         assert result.written == []
         assert _store().gameweek_file(5).read_bytes() == before
+        # Nothing was written this run, so the rows handed back (the JSON
+        # payload's source) must carry the gameweek's original capture time,
+        # not this call's fresh one -- a re-read must not be mislabelled as a
+        # new capture (issue #237).
+        assert {r.manager_key: r.captured_at for r in result.rows} == first_captured_at
 
     async def test_ae4_a_corrupt_store_warns_once_and_keeps_the_rows(self, capsys):
         path = _store().gameweek_file(5)

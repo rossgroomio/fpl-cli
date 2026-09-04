@@ -392,6 +392,55 @@ class TestFixtureColumn:
 
 
 # ---------------------------------------------------------------------------
+# Group 4b: Gameweek Fixtures FDR rounding matches `fpl fixtures` (#237)
+# ---------------------------------------------------------------------------
+
+def _custom_fdr_preview_data() -> dict:
+    """Preview data with the custom-analysis team-ratings FDR (a float)."""
+    data = _preview_data()
+    data["gw_fixtures"] = [
+        {
+            "home_team": "LIV",
+            "home_fdr": 3.75,
+            "away_fdr": 4.25,
+            "away_team": "ARS",
+            "kickoff": "Sat 15:00",
+        }
+    ]
+    return data
+
+
+class TestGameweekFixturesFdrRounding:
+    """The saved report must round a float FDR to 1dp like `fpl fixtures`
+    does, not print the raw team-ratings figure (issue #237)."""
+
+    def setup_method(self):
+        self.agent = ReportAgent()
+
+    def test_template_rounds_float_fdr_to_one_decimal(self):
+        output = self.agent._generate_preview_report(29, _custom_fdr_preview_data())
+        assert "3.8" in output
+        assert "4.2" in output
+        assert "3.75" not in output
+        assert "4.25" not in output
+
+    def test_inline_rounds_float_fdr_to_one_decimal(self):
+        output = self.agent._generate_preview_inline(29, _custom_fdr_preview_data())
+        assert "3.8" in output
+        assert "4.2" in output
+        assert "3.75" not in output
+        assert "4.25" not in output
+
+    def test_template_leaves_raw_api_int_fdr_unformatted(self):
+        output = self.agent._generate_preview_report(29, _preview_data())
+        assert "| LIV | 2 | vs | 4 | ARS |" in output
+
+    def test_inline_leaves_raw_api_int_fdr_unformatted(self):
+        output = self.agent._generate_preview_inline(29, _preview_data())
+        assert "| LIV | 2 | vs | 4 | ARS |" in output
+
+
+# ---------------------------------------------------------------------------
 # Group 5: Teams with Easy Fixtures footer (#186)
 # ---------------------------------------------------------------------------
 

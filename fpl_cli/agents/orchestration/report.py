@@ -172,8 +172,15 @@ class ReportAgent(Agent):
                 "|------|-----|----|-----|------|---------|",
             ])
             for f in data["gw_fixtures"]:
+                # Same 1-decimal rounding cli/preview.py's console table
+                # applies: the team-ratings FDR is a float like 3.75, and
+                # printing it raw here disagreed with `fpl fixtures`' 3.8
+                # for the same match even though #215 already put them on
+                # the same scale (issue #237).
+                home_fdr_str = f"{f['home_fdr']:.1f}" if isinstance(f["home_fdr"], float) else str(f["home_fdr"])
+                away_fdr_str = f"{f['away_fdr']:.1f}" if isinstance(f["away_fdr"], float) else str(f["away_fdr"])
                 lines.append(
-                    f"| {f['home_team']} | {f['home_fdr']} | vs | {f['away_fdr']} | {f['away_team']} | {f['kickoff']} |"
+                    f"| {f['home_team']} | {home_fdr_str} | vs | {away_fdr_str} | {f['away_team']} | {f['kickoff']} |"
                 )
             lines.append("")
 

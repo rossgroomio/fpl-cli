@@ -198,6 +198,30 @@ class CaptainAgent(Agent):
                 message=f"Top captain pick: {top_picks[0]['player_name'] if top_picks else 'None'}",
             )
 
+        except httpx.HTTPStatusError as e:
+            # Reached, not unreachable: name the status and path, matching
+            # `api_failure_boundary`'s wording for the direct-api commands
+            # (#159 review) -- an agent-backed command must not read as a
+            # generic failure when the API answered with an error (#237).
+            message = f"The FPL API returned {e.response.status_code} for {e.request.url.path}"
+            self.log_error(message)
+            return self._create_result(
+                AgentStatus.FAILED,
+                message=message,
+                errors=[str(e)],
+            )
+        except httpx.HTTPError as e:
+            # Same wording `api_failure_boundary` gives the direct-api
+            # commands (status, fixtures, stats): a JSON consumer of a
+            # via-agent command must not lose the transport detail an
+            # unreachable API left on stderr (#237).
+            message = f"Could not reach the FPL API: {e}"
+            self.log_error(message)
+            return self._create_result(
+                AgentStatus.FAILED,
+                message=message,
+                errors=[str(e)],
+            )
         except Exception as e:  # noqa: BLE001 — agent top-level handler
             self.log_error(f"Failed to analyze captains: {e}")
             return self._create_result(

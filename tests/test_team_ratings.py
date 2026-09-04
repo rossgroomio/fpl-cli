@@ -1,5 +1,6 @@
 """Tests for team ratings service and calculator."""
 
+import logging
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
@@ -1137,6 +1138,16 @@ class TestGw1FinishedUpdateCLI:
         assert "No completed fixtures" not in result.output
         mock_save.assert_called_once()
 
+    def test_progress_header_names_the_window_it_used(self):
+        """The header must name the same window as the "Based on" summary
+        below it, not a bare min_gw that reads like a single gameweek
+        (issue #237).
+        """
+        result, _ = self._run(["ratings", "update"])
+
+        assert "Calculating ratings from GW1-1 fixtures..." in result.output
+        assert "Based on GW1-1 (2 fixtures)" in result.output
+
 
 class TestCalculateFromXG:
     """Tests for TeamRatingsCalculator.calculate_from_xg()."""
@@ -2257,6 +2268,23 @@ class TestEnsureFresh:
         # Stale data still accessible
         assert service.get_rating("ARS") is not None
         assert service.get_rating("ARS").atk_home == 1
+
+    async def test_ensure_fresh_failure_logs_no_traceback(self, service, mock_client, caplog):
+        """The auto-refresh failure warning must carry no exc_info.
+
+        fpl-cli configures no logging handlers, so a WARNING with exc_info
+        reaches logging's lastResort handler and dumps a raw traceback into
+        stderr -- including under `--format json`, where it lands alongside
+        the command's own clean error envelope (issue #237).
+        """
+        mock_client.get_next_gameweek.side_effect = Exception("API down")
+
+        with caplog.at_level(logging.WARNING):
+            await service.ensure_fresh(mock_client)
+
+        records = [r for r in caplog.records if "Auto-refresh failed" in r.message]
+        assert len(records) == 1
+        assert records[0].exc_info is None
 
     async def test_ensure_fresh_retries_after_failed_prior_seed(self, tmp_path, mock_client):
         """A failed seed_from_prior (no prior available) must not block retry.
