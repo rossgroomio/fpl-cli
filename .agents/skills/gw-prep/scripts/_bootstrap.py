@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 import sys
-from typing import NoReturn
+from typing import IO, Any, NoReturn
 
 _WRONG_INTERPRETER = (
     "Cannot import the 'fpl_cli' package on this interpreter ({executable}). "
@@ -25,9 +25,27 @@ _WRONG_INTERPRETER = (
 
 
 def fail(messages: list[str]) -> NoReturn:
-    """Emit the error envelope callers parse from stdout, then exit 1."""
-    json.dump({"error": True, "messages": messages}, sys.stdout, indent=2)
+    """Emit the error envelope callers parse from stdout, then exit 1.
+
+    Startup only -- a wrong interpreter, a bad `FPL_CLI_*` override -- so it
+    always runs before a script has entered `json_output_mode()` and the
+    default stream is the right one.
+    """
+    emit({"error": True, "messages": messages})
     sys.exit(1)
+
+
+def emit(payload: dict[str, Any], stream: IO[str] | None = None) -> None:
+    """Write a payload to the stream the caller parses.
+
+    *stream* is the real stdout handle `json_output_mode()` yields, and the
+    scripts run their agents inside that context so agent progress lines land
+    on stderr rather than ahead of this JSON (#226). Inside it `sys.stdout`
+    *is* stderr, so a payload written there would vanish from the stream the
+    caller reads -- hence the explicit handle. Outside it, before any agent
+    exists, the default is right.
+    """
+    json.dump(payload, stream if stream is not None else sys.stdout, indent=2)
 
 
 def is_fpl_cli_missing(exc: ModuleNotFoundError) -> bool:

@@ -13,11 +13,17 @@ registered, and drives every one of them down a failure path -- the FPL API
 unreachable, no entry IDs configured -- because that is the side the bugs
 were on. Prose printed before the envelope, or an early `return` that skips
 it, breaks a consumer here rather than in someone's script.
+
+`TestSuccessPathsThatRunAnAgent` at the bottom covers the other side, and
+the gw-prep helper scripts alongside the commands: the scripts are vendored
+into user vaults and parsed by an LLM orchestrator, so they owe a consumer
+the same clean stdout a command does (#226).
 """
 
 from __future__ import annotations
 
 import json
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import click
 import httpx
@@ -26,6 +32,13 @@ import yaml
 from click.testing import CliRunner
 
 from fpl_cli.cli import main
+from fpl_cli.models.player import PlayerPosition
+from tests.conftest import (
+    load_gw_prep_script,
+    make_logging_agent,
+    make_player,
+    make_team,
+)
 
 # Whatever a command needs before click will hand control to its body --
 # required arguments and required options alike. Without them click exits 2
@@ -317,3 +330,112 @@ def test_a_status_error_is_not_reported_as_an_outage(capsys):
     envelope = json.loads(capsys.readouterr().out)
     assert "returned 404" in envelope["error"]
     assert "Could not reach" not in envelope["error"]
+
+
+# Two players in one position, so the same pair serves every script: the
+# transfer-eval surfaces reject an IN candidate that does not match OUT.
+_SQUAD = [
+    make_player(id=1, web_name="Salah", first_name="Mohamed", second_name="Salah",
+                team_id=1, position=PlayerPosition.MIDFIELDER),
+    make_player(id=2, web_name="Saka", first_name="Bukayo", second_name="Saka",
+                team_id=1, position=PlayerPosition.MIDFIELDER),
+]
+_CLUBS = [make_team(id=1, name="Arsenal", short_name="ARS")]
+
+
+def _stub_client():
+    client = MagicMock()
+    client.get_players = AsyncMock(return_value=_SQUAD)
+    client.get_teams = AsyncMock(return_value=_CLUBS)
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=False)
+    return client
+
+
+# Each entry names a helper script, the agent attribute to swap on it, and
+# how its `_run` is called -- the three signatures differ.
+AGENT_SCRIPTS = [
+    pytest.param("bench_order.py", "BenchOrderAgent",
+                 lambda run: run(["Salah"], ["Saka"]), id="bench_order.py"),
+    pytest.param("starting_xi.py", "StartingXIAgent",
+                 lambda run: run(["Salah", "Saka"]), id="starting_xi.py"),
+    pytest.param("transfer_eval.py", "TransferEvalAgent",
+                 lambda run: run("Salah", ["Saka"]), id="transfer_eval.py"),
+]
+
+
+class TestSuccessPathsThatRunAnAgent:
+    """The half of the contract the tree walk above cannot reach (#226).
+
+    Those tests drive every command down an outage, which is where #140,
+    #141 and #144 lived. #226 was on the other side: the agent ran, logged
+    two progress lines to stdout, and only then was the envelope printed --
+    so `json.loads(stdout)` failed on success and passed on failure.
+
+    There is no generic version of this. A success path needs data, and the
+    data each command wants differs, so these are the surfaces that run an
+    agent and are read by a machine: the one command that had the bug, and
+    the three vendored scripts that had it too. The invariant behind all of
+    them -- that `Agent.log` cannot reach stdout at all -- is enforced once
+    in `tests/test_agents_base.py`.
+
+    `make_logging_agent()` rather than `make_agent()` throughout: a MagicMock
+    agent prints nothing, which is exactly why the existing suites for these
+    four surfaces all passed while the bug shipped.
+    """
+
+    @pytest.fixture
+    def custom_analysis(self, tmp_path):
+        """`transfer-eval` is gated, so without this it exits 2 at the gate."""
+        (tmp_path / "user-config" / "settings.yaml").write_text(
+            yaml.safe_dump({"custom_analysis": True}), encoding="utf-8",
+        )
+
+    def test_transfer_eval_envelope_is_not_preceded_by_agent_prose(self, custom_analysis):
+        agent = make_logging_agent({
+            "out_player": {"price": 10.0},
+            "in_players": [{"price": 8.0}],
+        })
+
+        with patch("fpl_cli.api.fpl.FPLClient", return_value=_stub_client()), \
+             patch("fpl_cli.agents.analysis.transfer_eval.TransferEvalAgent",
+                   return_value=agent), \
+             patch("fpl_cli.scraper.fpl_prices.load_cache", return_value=None):
+            result = CliRunner().invoke(
+                main,
+                ["transfer-eval", "--out", "Salah", "--in", "Saka", "--format", "json"],
+            )
+
+        assert result.exit_code == 0, result.output
+        envelope = json.loads(result.stdout)
+        assert envelope["command"] == "transfer-eval"
+        assert envelope["data"]["in_players"] == [{"price": 8.0}]
+        assert "LoggingTestAgent" in result.stderr, (
+            "the agent's progress lines went missing rather than moving to stderr"
+        )
+
+    @pytest.mark.parametrize("filename,agent_attr,invoke", AGENT_SCRIPTS)
+    async def test_helper_script_stdout_is_json_from_byte_zero(
+        self, filename, agent_attr, invoke, capsys,
+    ):
+        """gw-prep's SKILL.md tells its reader to parse stdout as JSON.
+
+        The scripts run in a user's vault against an orchestrator that will
+        not always be lenient about leading prose, and they have no `--format`
+        flag to gate on -- JSON is the only thing they emit.
+        """
+        script = load_gw_prep_script(filename)
+        payload = {"result": "ok"}
+
+        with patch.object(script, "FPLClient", return_value=_stub_client()), \
+             patch.object(script, agent_attr, return_value=make_logging_agent(payload)):
+            await invoke(script._run)
+
+        captured = capsys.readouterr()
+        assert captured.out.startswith("{"), (
+            f"{filename} put {captured.out[:80]!r} ahead of its JSON"
+        )
+        assert json.loads(captured.out) == payload
+        assert "LoggingTestAgent" in captured.err, (
+            "the agent's progress lines went missing rather than moving to stderr"
+        )
