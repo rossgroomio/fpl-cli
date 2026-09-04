@@ -19,11 +19,21 @@ assembly.
 ## Invocation
 
 ```bash
-python3 "$FPL_CLI_DIR/.agents/skills/gw-prep/scripts/normalise_entities.py" --file "{path to the file just written}"
+[YOUR_PYTHON] "[YOUR_SKILLS_DIR]/gw-prep/scripts/normalise_entities.py" --file "{path to the file just written}"
 ```
 
-Within gw-prep itself, `"${CLAUDE_SKILL_DIR}/scripts/normalise_entities.py"` is
-equivalent and matches the surrounding phases.
+`[YOUR_PYTHON]` is the interpreter with `fpl_cli` importable -- see gw-prep's
+`[YOUR_PYTHON]` note under Environment; a bare `python3` fails on a standalone
+`fpl` install (uv tool, pipx), which puts the command on `PATH` but not
+`fpl_cli` on the system interpreter's import path. `[YOUR_SKILLS_DIR]` is the
+directory containing gw-prep, squad-builder and update-gw-prep as siblings --
+the script always lives under gw-prep's `scripts/`, regardless of which skill
+is calling it.
+
+Within gw-prep itself, `"${CLAUDE_SKILL_DIR}/scripts/normalise_entities.py"`
+is equivalent and matches the surrounding phases -- but `${CLAUDE_SKILL_DIR}`
+resolves to the *calling* skill's own directory, so squad-builder and
+update-gw-prep cannot use it to reach gw-prep's `scripts/`.
 
 The script rewrites the file in place, decoding `<`, `>`, `&`, `"` and `'`, and
 costs nothing when nothing was escaped. Decoding is deliberately narrower than
