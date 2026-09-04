@@ -57,10 +57,10 @@ def _mock_agent(result):
 
 
 def _patch_settings(settings):
-    """Patch load_settings at both import sites (main callback + squad command)."""
+    """Inject settings at both seams: the group's loader and the command's accessor."""
     return (
         patch("fpl_cli.cli.load_settings", return_value=settings),
-        patch("fpl_cli.cli.squad.load_settings", return_value=settings),
+        patch("fpl_cli.cli.squad.get_settings", return_value=settings),
     )
 
 

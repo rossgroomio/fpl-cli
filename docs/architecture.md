@@ -367,10 +367,10 @@ Commands are independently classified by the `custom_analysis` toggle:
 | Category | Commands | When opted out |
 |---|---|---|
 | **Pure-experimental** | `captain`, `targets`, `differentials`, `waivers`, `allocate`, `transfer-eval`, `ratings` | Unregistered from CLI |
-| **Mixed** | `stats`, `xg`, `fdr`, `preview` | Experimental columns/sections stripped |
+| **Mixed** | `stats`, `xg`, `fdr`, `fixtures`, `player`, `preview` | Experimental columns/sections stripped |
 | **Data-only** | Everything else | No change |
 
-`FormatAwareGroup.list_commands()` and `get_command()` filter out the `EXPERIMENTAL` frozenset when `custom_analysis` is off. Mixed commands check `is_custom_analysis_enabled()` within their `_run()` to gate experimental columns/sections. Both filters (format and experimental) are independent and must both pass.
+`FormatAwareGroup.list_commands()` and `get_command()` filter out the `EXPERIMENTAL` frozenset when `custom_analysis` is off. Mixed commands ask the same question through `_context.py`: `custom_analysis_enabled(ctx)` when the toggle is all they need from the settings (`fdr`, `fixtures`, `xg`), or `is_custom_analysis_enabled(settings)` on the dict `get_settings(ctx)` already gave them when they read other keys too (`stats` needs `rolling_window`, `player` and `preview` the configured entry IDs). Resolving settings at the call site instead is banned by a lint rule — see [Config Resolution](#config-resolution). Both filters (format and experimental) are independent and must both pass.
 
 ## Services Layer
 
@@ -520,7 +520,7 @@ erDiagram
 fpl_cli/
 ├── cli/                          # Click commands & groups
 │   ├── __init__.py               # main() entry point, command registration
-│   ├── _context.py               # Format enum, CLIContext, FormatAwareGroup (format + experimental gating), settings loader
+│   ├── _context.py               # Format enum, CLIContext, FormatAwareGroup (format + experimental gating), settings loader, ctx accessors (get_format/get_settings/custom_analysis_enabled)
 │   ├── _helpers.py               # Shared display utilities
 │   ├── _json.py                  # JSON output serialisation
 │   ├── _banner.py                # Startup banner
@@ -680,6 +680,8 @@ flowchart LR
 ```
 
 User settings deep-merged over committed defaults via `platformdirs`. `.env` loaded from user config dir first, local `.env` fills gaps (via `python-dotenv`). Format auto-detected from which entry IDs are configured (classic, draft, or both).
+
+The merge runs once per invocation, in `main()`, and the result rides on the Click context as `CLIContext`. Every command reads it with `get_settings(ctx)` and `get_format(ctx)` rather than unwrapping `ctx.obj` or calling `load_settings()` again — five commands had copied the same `isinstance(ctx.obj, CLIContext)` line and ten more re-loaded the settings from scratch before this was one helper (#219). A `TID251` rule bans the `CLIContext` and `load_settings` imports across `fpl_cli/cli/` to keep it that way. `load_settings()` stays the loader for callers with no context: `main()` itself, the agents, and `fpl doctor`, which is handed an empty `CLIContext` on purpose so each of its checks can re-read the settings as it goes. A helper called too deep to hold a context takes what it needs as an argument instead — `transfer_eval.py` passes `rolling_window` into its renderer rather than re-reading the settings there.
 
 ## Design Decisions
 

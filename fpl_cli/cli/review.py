@@ -13,7 +13,7 @@ from fpl_cli.cli._context import (
     console,
     error_console,
     get_format,
-    load_settings,
+    get_settings,
     resolve_output_dir,
     warn_prediction_problems,
 )
@@ -115,7 +115,7 @@ def review_command(
     show_classic = fmt != Format.DRAFT
     show_draft = fmt != Format.CLASSIC
 
-    settings = load_settings()
+    settings = get_settings(ctx)
 
     research_provider = None
     synthesis_provider = None

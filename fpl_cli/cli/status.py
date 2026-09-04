@@ -13,7 +13,13 @@ import click
 import httpx
 from rich.panel import Panel
 
-from fpl_cli.cli._context import Format, console, get_format, is_custom_analysis_enabled, load_settings
+from fpl_cli.cli._context import (
+    Format,
+    console,
+    get_format,
+    get_settings,
+    is_custom_analysis_enabled,
+)
 from fpl_cli.cli._fines import FinesLeagueData, FinesTeamPlayer, evaluate_fines
 from fpl_cli.cli._fines_config import FinesConfig, parse_fines_config
 from fpl_cli.cli._helpers import _entry_league_meta
@@ -178,7 +184,7 @@ def status_command(ctx: click.Context, output_format: str) -> None:
     async def _run() -> None:
         from fpl_cli.api.fpl import FPLClient as _FPLClient
 
-        settings = load_settings()
+        settings = get_settings(ctx)
         fpl_cfg = settings.get("fpl", {})
         entry_id = fpl_cfg.get("classic_entry_id")
         draft_entry_id = fpl_cfg.get("draft_entry_id")

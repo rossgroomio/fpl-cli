@@ -14,7 +14,14 @@ from rich.markup import escape as rich_escape
 from rich.panel import Panel
 
 from fpl_cli.api.providers import ProviderError
-from fpl_cli.cli._context import Format, console, error_console, get_format, load_settings, resolve_output_dir
+from fpl_cli.cli._context import (
+    Format,
+    console,
+    error_console,
+    get_format,
+    get_settings,
+    resolve_output_dir,
+)
 from fpl_cli.cli._json import (
     api_failure_boundary,
     emit_json,
@@ -79,7 +86,7 @@ def league_recap_command(
     from fpl_cli.cli._league_recap_history import capture_recap_history
     from fpl_cli.cli.review import _review_resolve_gw
 
-    settings = load_settings()
+    settings = get_settings(ctx)
     fmt = get_format(ctx)
 
     # Auto-select in single-format mode; respect --draft flag in BOTH mode

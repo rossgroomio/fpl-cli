@@ -49,7 +49,7 @@ def _run(client, settings=None, draft_client=None, mock_draft_squad=None):
     runner = CliRunner()
     with ExitStack() as stack:
         stack.enter_context(patch("fpl_cli.cli.load_settings", return_value=settings))
-        stack.enter_context(patch("fpl_cli.cli.status.load_settings", return_value=settings))
+        stack.enter_context(patch("fpl_cli.cli.status.get_settings", return_value=settings))
         stack.enter_context(patch("fpl_cli.api.fpl.FPLClient", return_value=client))
         if draft_client is not None:
             stack.enter_context(patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=draft_client))
@@ -681,7 +681,7 @@ def _run_json(client, settings=None, draft_client=None, mock_draft_squad=None):
     runner = CliRunner()
     with ExitStack() as stack:
         stack.enter_context(patch("fpl_cli.cli.load_settings", return_value=settings))
-        stack.enter_context(patch("fpl_cli.cli.status.load_settings", return_value=settings))
+        stack.enter_context(patch("fpl_cli.cli.status.get_settings", return_value=settings))
         stack.enter_context(patch("fpl_cli.api.fpl.FPLClient", return_value=client))
         if draft_client is not None:
             stack.enter_context(patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=draft_client))

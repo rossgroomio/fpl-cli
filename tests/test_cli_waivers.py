@@ -60,7 +60,7 @@ def _run_waivers(args=None, agent_result=None, has_league_id=True):
     settings = {"fpl": {"draft_league_id": 123, "draft_entry_id": 456}, "custom_analysis": True} if has_league_id else {"fpl": {}, "custom_analysis": True}
 
     with patch("fpl_cli.agents.action.waiver.WaiverAgent", return_value=mock_agent), \
-         patch("fpl_cli.cli.waivers.load_settings", return_value=settings), \
+         patch("fpl_cli.cli.waivers.get_settings", return_value=settings), \
          patch("fpl_cli.cli._context.load_settings", return_value=settings):
         return runner.invoke(main, ["waivers"] + (args or []))
 

@@ -165,8 +165,8 @@ def _agent_json(agent_data: dict, args: list[str]) -> dict:
     agent = make_agent(agent_data)
 
     with (
-        patch("fpl_cli.cli.fdr.is_custom_analysis_enabled", return_value=True),
-        patch("fpl_cli.cli.fdr.load_settings", return_value={"fpl": {}}),
+        patch("fpl_cli.cli.fdr.custom_analysis_enabled", return_value=True),
+        patch("fpl_cli.cli.fdr.get_settings", return_value={"fpl": {}}),
         patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=agent),
     ):
         result = CliRunner().invoke(fdr_command, args)

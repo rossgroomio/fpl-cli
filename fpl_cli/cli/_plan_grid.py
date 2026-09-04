@@ -8,7 +8,7 @@ import click
 import httpx
 from rich.table import Table
 
-from fpl_cli.cli._context import console, error_console, load_settings
+from fpl_cli.cli._context import console, error_console, get_settings
 from fpl_cli.cli._helpers import _fdr_style, require_entry_id
 from fpl_cli.cli._json import (
     api_failure_boundary,
@@ -31,13 +31,16 @@ COMMAND = "plan-grid"
               help="FDR mode: 'difference' (team vs opponent) or 'opponent' (opponent rating only)")
 @click.option("--draft", "is_draft", is_flag=True, default=False, help="Use draft squad instead of classic")
 @output_format_option
-def grid_command(gws: int, watch: tuple[str, ...], mode: str, is_draft: bool, output_format: str):
+@click.pass_context
+def grid_command(
+    ctx: click.Context, gws: int, watch: tuple[str, ...], mode: str, is_draft: bool, output_format: str,
+):
     """Show squad fixture difficulty grid.
 
     Displays each player's positional FDR colour-coded across upcoming GWs.
     GK/DEF see opponent offensive ratings; MID/FWD see opponent defensive ratings.
     """
-    settings = load_settings()
+    settings = get_settings(ctx)
     draft_entry_id: int | None = None
     entry_id: int | None = None
 

@@ -283,7 +283,7 @@ class TestChipsSync:
 
         with patch.object(ChipPlan, "load", return_value=plan), \
              patch.object(ChipPlan, "save"), \
-             patch("fpl_cli.cli.chips.load_settings", return_value={"fpl": {"classic_entry_id": 123}}), \
+             patch("fpl_cli.cli.chips.get_settings", return_value={"fpl": {"classic_entry_id": 123}}), \
              patch("fpl_cli.api.fpl.FPLClient") as mock_fpl_cls:
             mock_fpl_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
             mock_fpl_cls.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -306,7 +306,7 @@ class TestChipsSync:
 
         with patch.object(ChipPlan, "load", return_value=plan), \
              patch.object(ChipPlan, "save"), \
-             patch("fpl_cli.cli.chips.load_settings", return_value={"fpl": {"classic_entry_id": 123}}), \
+             patch("fpl_cli.cli.chips.get_settings", return_value={"fpl": {"classic_entry_id": 123}}), \
              patch("fpl_cli.api.fpl.FPLClient") as mock_fpl_cls:
             mock_fpl_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
             mock_fpl_cls.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -329,7 +329,7 @@ class TestChipsSync:
 
         with patch.object(ChipPlan, "load", return_value=plan), \
              patch.object(ChipPlan, "save"), \
-             patch("fpl_cli.cli.chips.load_settings", return_value={"fpl": {"classic_entry_id": 123}}), \
+             patch("fpl_cli.cli.chips.get_settings", return_value={"fpl": {"classic_entry_id": 123}}), \
              patch("fpl_cli.api.fpl.FPLClient") as mock_fpl_cls:
             mock_fpl_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
             mock_fpl_cls.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -340,7 +340,7 @@ class TestChipsSync:
         assert len(plan.chips) == 1
 
     def test_sync_no_entry_id(self, runner: CliRunner):
-        with patch("fpl_cli.cli.chips.load_settings", return_value={"fpl": {}}):
+        with patch("fpl_cli.cli.chips.get_settings", return_value={"fpl": {}}):
             result = runner.invoke(chips_group, ["sync"])
         assert result.exit_code == 0
         assert "classic_entry_id not configured" in result.output
@@ -619,7 +619,7 @@ class TestChipsTimingJsonFormat:
         mock_client.get_next_gameweek.return_value = {"id": 30}
 
         with patch.object(ChipPlan, "load", return_value=plan), \
-             patch("fpl_cli.cli.chips.load_settings", return_value={"fpl": {"classic_entry_id": 123}}), \
+             patch("fpl_cli.cli.chips.get_settings", return_value={"fpl": {"classic_entry_id": 123}}), \
              patch("fpl_cli.api.fpl.FPLClient") as mock_fpl_cls, \
              patch("fpl_cli.cli.chips._fetch_and_compute", _mock_fetch_and_compute(
                  unplayed={"freehit", "bboost"}, signals=signals,
@@ -643,7 +643,7 @@ class TestChipsTimingJsonFormat:
         mock_client.get_next_gameweek.return_value = {"id": 30}
 
         with patch.object(ChipPlan, "load", return_value=plan), \
-             patch("fpl_cli.cli.chips.load_settings", return_value={"fpl": {"classic_entry_id": 123}}), \
+             patch("fpl_cli.cli.chips.get_settings", return_value={"fpl": {"classic_entry_id": 123}}), \
              patch("fpl_cli.api.fpl.FPLClient") as mock_fpl_cls, \
              patch("fpl_cli.cli.chips._fetch_and_compute", _mock_fetch_and_compute()):
             mock_fpl_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
@@ -655,7 +655,7 @@ class TestChipsTimingJsonFormat:
         assert data["data"] == []
 
     def test_json_error_no_entry_id(self, runner: CliRunner):
-        with patch("fpl_cli.cli.chips.load_settings", return_value={"fpl": {}}):
+        with patch("fpl_cli.cli.chips.get_settings", return_value={"fpl": {}}):
             result = runner.invoke(main, ["chips", "timing", "--format", "json"])
         assert result.exit_code == 1
         # #141: the error envelope rides stdout, same as the success envelope.
@@ -670,7 +670,7 @@ class TestChipsTimingJsonFormat:
         mock_client.get_next_gameweek.return_value = {"id": 30}
 
         with patch.object(ChipPlan, "load", return_value=plan), \
-             patch("fpl_cli.cli.chips.load_settings", return_value={"fpl": {"classic_entry_id": 123}}), \
+             patch("fpl_cli.cli.chips.get_settings", return_value={"fpl": {"classic_entry_id": 123}}), \
              patch("fpl_cli.api.fpl.FPLClient") as mock_fpl_cls, \
              patch("fpl_cli.cli.chips._fetch_and_compute", _mock_fetch_and_compute(signals=None)):
             mock_fpl_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
@@ -686,7 +686,7 @@ class TestChipsTimingJsonFormat:
         mock_client.get_next_gameweek.return_value = {"id": 30}
 
         with patch.object(ChipPlan, "load", return_value=plan), \
-             patch("fpl_cli.cli.chips.load_settings", return_value={"fpl": {"classic_entry_id": 123}}), \
+             patch("fpl_cli.cli.chips.get_settings", return_value={"fpl": {"classic_entry_id": 123}}), \
              patch("fpl_cli.api.fpl.FPLClient") as mock_fpl_cls, \
              patch("fpl_cli.cli.chips._fetch_and_compute", _mock_fetch_and_compute(signals=None)):
             mock_fpl_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)

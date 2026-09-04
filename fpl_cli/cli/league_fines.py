@@ -11,7 +11,7 @@ from rich.markup import escape as rich_escape
 from rich.panel import Panel
 from rich.table import Table
 
-from fpl_cli.cli._context import Format, console, error_console, get_format, load_settings
+from fpl_cli.cli._context import Format, console, error_console, get_format, get_settings
 from fpl_cli.cli._json import emit_failure, emit_json, json_output_mode, output_format_option
 from fpl_cli.season import is_season_label, season_label
 
@@ -60,7 +60,7 @@ def league_fines_command(
     from fpl_cli.services.league_history import LeagueHistoryStore
     from fpl_cli.services.league_history_fines import build_season_fines_tally
 
-    settings = load_settings()
+    settings = get_settings(ctx)
     fmt = get_format(ctx)
     if fmt == Format.DRAFT:
         is_draft = True
