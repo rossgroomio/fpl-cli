@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Literal
 
 from fpl_cli.services.scoring.constants import (
     _MATCHUP_MAX,
+    _OWNERSHIP_HEADROOM,
     ATTACKING_POSITIONS,
     CONSISTENCY_CV_DIFF,
     CONSISTENCY_CV_TARGET,
@@ -28,7 +29,6 @@ from fpl_cli.services.scoring.constants import (
     QualityWeights,
     _consistency_phase,
     _ownership_anchor_for,
-    _ownership_ceiling_for,
 )
 from fpl_cli.services.scoring.display import normalise_score
 from fpl_cli.services.scoring.shrinkage import is_known_unavailable
@@ -186,24 +186,24 @@ def _calculate_quality_based_score(
     """Shared scoring logic for target and differential.
 
     Thin wrapper: delegates to ``_calculate_quality_based_raw`` then
-    normalises. The blend anchor and the normalisation ceiling are the same
-    quantity plus the family's bonus headroom, taken with the same arguments,
-    so they cannot describe different scales. Waiver keeps its own flow — it
-    adds position-need and team-stacking terms to the raw score and decides
-    the GK scaling per player.
+    normalises. The anchor is resolved once and the ceiling derived from it
+    (the definition ``_ownership_ceiling_for`` states), so the blend and the
+    normalisation cannot describe different scales and an early-season keeper
+    does not pay for the attainability ratio twice. Waiver keeps its own flow
+    — it adds position-need and team-stacking terms to the raw score and
+    decides the GK scaling per player.
     """
+    anchor = _ownership_anchor_for(family, evaluation.position, next_gw_id=next_gw_id)
     raw = _calculate_quality_based_raw(
         evaluation,
         weights=weights,
         next_gw_id=next_gw_id,
-        anchor=_ownership_anchor_for(family, evaluation.position, next_gw_id=next_gw_id),
+        anchor=anchor,
         prior=prior,
         ownership_config=ownership_config,
         differential=differential,
     )
-    return normalise_score(
-        raw, _ownership_ceiling_for(family, evaluation.position, next_gw_id=next_gw_id),
-    )
+    return normalise_score(raw, anchor + _OWNERSHIP_HEADROOM[family])
 
 
 # ---------------------------------------------------------------------------
@@ -307,18 +307,21 @@ def calculate_waiver_score(
 
     # The GK anchor is calendar-scaled only for a keeper whose signals this
     # evaluation actually carries; without them the full anchor stands, or a
-    # scaled denominator over a signal-less numerator inflates him (#207). The
-    # blend anchor below takes the same gameweek, so the prior-implied
-    # baseline and the observed one it replaces always sit on one scale.
-    gk_scaling_gw = next_gw_id if gk_signals_supplied else None
+    # scaled denominator over a signal-less numerator inflates him (#207).
+    # Resolved once and shared by the blend and the normalisation below, so
+    # the prior-implied baseline and the observed one it replaces always sit
+    # on one scale.
+    anchor = _ownership_anchor_for(
+        "waiver",
+        evaluation.position,
+        next_gw_id=next_gw_id if gk_signals_supplied else None,
+    )
 
     score = _calculate_quality_based_raw(
         evaluation,
         weights=WAIVER_QUALITY_WEIGHTS,
         next_gw_id=next_gw_id,
-        anchor=_ownership_anchor_for(
-            "waiver", evaluation.position, next_gw_id=gk_scaling_gw,
-        ),
+        anchor=anchor,
         prior=prior,
         mins_factor_override=combined_mins_factor,
     )
@@ -341,7 +344,4 @@ def calculate_waiver_score(
         elif current_count == 2:
             score -= 2
 
-    return normalise_score(
-        score,
-        _ownership_ceiling_for("waiver", evaluation.position, next_gw_id=gk_scaling_gw),
-    )
+    return normalise_score(score, anchor + _OWNERSHIP_HEADROOM["waiver"])

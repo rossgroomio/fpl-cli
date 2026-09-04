@@ -10,7 +10,7 @@ import click
 from rich.panel import Panel
 from rich.table import Table
 
-from fpl_cli.cli._context import console, error_console, handle_agent_failure
+from fpl_cli.cli._context import console, handle_agent_failure, print_result_warnings
 from fpl_cli.cli._json import (
     api_failure_boundary,
     emit_json,
@@ -64,9 +64,8 @@ def differentials_command(threshold: float, min_minutes: int, output_format: str
                 except Exception:  # noqa: BLE001 — CaptainAgent failure is graceful
                     logger.debug("CaptainAgent failed in differentials JSON", exc_info=True)
 
-                # The early-season notice travels in metadata.warnings, the
-                # same slot every other prior-blended score uses, so a
-                # consumer reads one place whichever command produced it.
+                # `combined` is rebuilt from scratch rather than passed
+                # through, so the notice is read across rather than split off.
                 emit_json(
                     "differentials", combined,
                     metadata={
@@ -90,8 +89,7 @@ def differentials_command(threshold: float, min_minutes: int, output_format: str
             handle_agent_failure(result)
 
         data = result.data
-        for warning in data.get("warnings", []):
-            error_console.print(f"[yellow]{warning['message']}[/yellow]")
+        print_result_warnings(data)
         differentials = data.get("differentials", {})
 
         console.print(Panel.fit(f"[bold blue]Differential Picks (<{threshold}% owned)[/bold blue]"))

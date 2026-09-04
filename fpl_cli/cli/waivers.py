@@ -9,7 +9,14 @@ import click
 from rich.panel import Panel
 from rich.table import Table
 
-from fpl_cli.cli._context import console, error_console, handle_agent_failure, load_settings
+from fpl_cli.cli._context import (
+    console,
+    error_console,
+    handle_agent_failure,
+    load_settings,
+    print_result_warnings,
+    split_result_warnings,
+)
 from fpl_cli.cli._json import emit_json, emit_json_error, json_output_mode, output_format_option
 
 
@@ -44,11 +51,7 @@ def waivers_command(output_format: str):
                 if not result.success:
                     emit_json_error("waivers", result.message, file=stdout)
                     return
-                # The early-season notice travels in metadata.warnings, the
-                # same slot every other prior-blended score uses, so a
-                # consumer reads one place whichever command produced it.
-                payload = dict(result.data)
-                warnings = payload.pop("warnings", [])
+                payload, warnings = split_result_warnings(result.data)
                 emit_json("waivers", payload, metadata={
                     "format": "draft",
                     "warnings": warnings,
@@ -65,8 +68,7 @@ def waivers_command(output_format: str):
             handle_agent_failure(result)
 
         data = result.data
-        for warning in data.get("warnings", []):
-            error_console.print(f"[yellow]{warning['message']}[/yellow]")
+        print_result_warnings(data)
         console.print(Panel.fit("[bold blue]Draft Waiver Recommendations[/bold blue]"))
 
         # Waiver position

@@ -16,6 +16,8 @@ from fpl_cli.paths import SHIPPED_CONFIG_DIR, UserDirError, user_config_dir
 from fpl_cli.season import is_season_label, season_label, season_partition
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from fpl_cli.agents.base import AgentResult
     from fpl_cli.services.fixture_predictions import FixturePredictionsService
 
@@ -35,6 +37,42 @@ def warn_prediction_problems(pred_service: FixturePredictionsService) -> None:
 
     for warning in pred_service.load_warnings:
         error_console.print(f"[yellow]{rich_escape(warning)}[/yellow]")
+
+
+def print_result_warnings(data: Mapping[str, Any]) -> None:
+    """Print the warnings an agent attached to its result, for table mode.
+
+    The prior-blended commands (`fpl targets`, `fpl differentials`,
+    `fpl waivers`, `fpl transfer-eval`) all carry the early-season notice the
+    same way: the agent decides it, because only the agent knows whether the
+    priors loaded, and the command routes it to whichever channel its reader
+    is on. Centralising the table-mode half keeps those paths behaviourally
+    identical, the same argument `handle_agent_failure` makes below — four
+    copies of the loop is four places to forget the markup escape.
+
+    Escaped, because a warning is prose assembled from data (player names,
+    file paths) and a stray `[` would otherwise be read as Rich markup and
+    swallow the rest of the line.
+    """
+    from rich.markup import escape as rich_escape
+
+    for warning in data.get("warnings", []):
+        error_console.print(f"[yellow]{rich_escape(warning['message'])}[/yellow]")
+
+
+def split_result_warnings(
+    data: Mapping[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, str]]]:
+    """Split an agent's result data into the JSON payload and its warnings.
+
+    The JSON counterpart to `print_result_warnings`: a warning belongs in the
+    envelope's `metadata.warnings`, never in `data`, so a consumer reads one
+    place whichever command produced the score. Returning both halves keeps
+    that invariant in one named place rather than in each command's `pop`.
+    """
+    payload = dict(data)
+    warnings = payload.pop("warnings", [])
+    return payload, warnings
 
 
 def handle_agent_failure(result: AgentResult) -> None:

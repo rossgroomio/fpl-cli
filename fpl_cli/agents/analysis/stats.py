@@ -621,9 +621,14 @@ class StatsAgent(Agent):
             if ownership >= self.semi_differential_threshold:
                 continue
 
+            # One read, two uses: the score blends this prior in and the row
+            # displays its reliability, so reading it twice is two chances for
+            # a later filter on one to desync it from the other.
+            _prior = _priors.get(p["id"]) if _priors else None
+
             # Calculate differential score
             # Higher score = better differential pick
-            score = self._calculate_differential_score(p, _priors.get(p["id"]) if _priors else None)
+            score = self._calculate_differential_score(p, _prior)
 
             # Determine differential tier
             if ownership < self.differential_threshold:
@@ -631,7 +636,6 @@ class StatsAgent(Agent):
             else:
                 tier = "value"  # Semi-differentials 5-15%
 
-            _prior = _priors.get(p["id"]) if _priors else None
             differentials.append({
                 "id": p["id"],
                 "player_name": p["player_name"],
@@ -734,8 +738,11 @@ class StatsAgent(Agent):
             if ownership < min_ownership:
                 continue
 
+            # One read, two uses — see _find_differentials.
+            _prior = _priors.get(p["id"]) if _priors else None
+
             # Calculate target score (no ownership penalty)
-            score = self._calculate_target_score(p, _priors.get(p["id"]) if _priors else None)
+            score = self._calculate_target_score(p, _prior)
 
             # Determine ownership tier
             if ownership >= 30:
@@ -745,7 +752,6 @@ class StatsAgent(Agent):
             else:
                 tier = "differential"
 
-            _prior = _priors.get(p["id"]) if _priors else None
             targets.append({
                 "id": p["id"],
                 "player_name": p["player_name"],

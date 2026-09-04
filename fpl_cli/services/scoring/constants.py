@@ -647,13 +647,23 @@ def _ownership_anchor_for(
     built on the full ceiling would be credited headroom the observation it
     replaces cannot reach.
 
-    Raises KeyError on an unknown family (as before) and on an unknown
-    position (previously the silent base-ceiling fallback).
+    Raises KeyError on an unknown family and on an unknown position. Both
+    checks live here and nowhere else — ``_ownership_ceiling_for`` delegates —
+    so this docstring is the one place either is stated.
 
-    *next_gw_id* carries the same GK contract as ``_ownership_ceiling_for``:
-    supplied for a keeper, the anchor is scaled by
-    ``gk_ceiling_attainability``. Numerator and denominator must agree about
-    it, so the blend anchor is taken with the same argument the ceiling was.
+    *next_gw_id*: supplied for a keeper, the anchor is scaled by
+    ``gk_ceiling_attainability``, so a pre-GW6 keeper is measured against what
+    the calendar has let their ramped signals reach. Numerator and denominator
+    must agree about it, so a caller blending against this anchor takes it with
+    the same argument it normalises with. Pass it only for an evaluation that
+    carries the GK signal block — a scaled denominator over a signal-less
+    numerator inflates keepers instead (PR #156 review: transfer-eval +44%,
+    draft waiver +30% at GW2). Every keeper-scoring path now populates the
+    block, so the caveat is about the one input that can still arrive without
+    it: the draft waiver path reads saves and xGC off the main-game ``Player``
+    it joins each draft element to, and passes the gameweek per keeper, only
+    for a join that resolved (#207). Omitted (None) keeps the full anchor —
+    the pre-#143 behaviour.
     """
     if family not in _OWNERSHIP_HEADROOM:
         raise KeyError(family)
@@ -671,24 +681,17 @@ def _ownership_ceiling_for(
 ) -> float:
     """Calibrated ceiling for an ownership family — total over all four positions.
 
-    MID and FWD no longer fall back to a shared base ceiling: every
-    (family, position) pair carries its own calibrated anchor. Raises
-    KeyError on an unknown family (as before) and on an unknown position
-    (previously the silent base-ceiling fallback).
+    ``_ownership_anchor_for`` plus the family's bonus headroom, which never
+    scales; every argument, and the KeyErrors, are that function's, so see it
+    rather than restating them here. MID and FWD no longer fall back to a
+    shared base ceiling: every (family, position) pair carries its own
+    calibrated anchor.
 
-    *next_gw_id*: when supplied for a GK, the anchor share of the ceiling is
-    scaled by ``gk_ceiling_attainability`` so pre-GW6 keepers are normalised
-    against what the calendar has let their ramped signals reach. Pass it
-    only for an evaluation that carries the GK signal block — a scaled
-    denominator over a signal-less numerator inflates keepers instead
-    (PR #156 review: transfer-eval +44%, draft waiver +30% at GW2). Every
-    keeper-scoring path now populates the block, so the caveat is about the
-    one input that can still arrive without it: the draft waiver path reads
-    saves and xGC off the main-game ``Player`` it joins each draft element
-    to, and passes the gameweek per keeper, only for a join that resolved
-    (#207). The bonus headroom (matchup, ownership, position need,
-    consistency) never scales. Omitted (None) keeps the full ceiling — the
-    pre-#143 behaviour.
+    A caller that also needs the bare anchor — the ownership family blends its
+    prior against one — should take the anchor and add
+    ``_OWNERSHIP_HEADROOM[family]`` rather than calling both, which computes
+    the same anchor (and, for an early-season keeper, the same attainability
+    ratio) twice per player.
     """
     return (
         _ownership_anchor_for(family, position, next_gw_id=next_gw_id)
