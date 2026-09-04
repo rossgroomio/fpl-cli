@@ -248,29 +248,31 @@ class TestStoreFailsClosed:
         exc = LeagueHistoryError("League history file gw05.ndjson is unreadable")
 
         with caplog.at_level(logging.DEBUG, logger="fpl_cli.services.league_history"):
-            store.log_unreadable(5, exc, context="while tallying fines")
-            store.log_unreadable(5, exc, context="while building the notes pack")
-            store.log_unreadable(6, exc, context="while tallying fines")
+            store.log_unreadable(5, exc, context="left out of the fines totals")
+            store.log_unreadable(5, exc, context="treated as uncaptured while building the notes pack")
+            store.log_unreadable(6, exc, context="left out of the fines totals")
 
         levels = [r.levelno for r in caplog.records]
         assert levels == [logging.WARNING, logging.DEBUG, logging.WARNING]
         # Deduped, not dropped: the second reader's own context survives.
         assert "while building the notes pack" in caplog.records[1].getMessage()
 
-    def test_a_reader_that_hands_the_reason_back_claims_the_slot_quietly(self, caplog):
-        """`coverage()` returns the reason on the entry, so its caller reports
-        it. Logging it loudly as well would put a near-identical paragraph
-        beside the one the user is already being shown (issue #224)."""
+    def test_a_caller_that_reports_unreadable_gameweeks_itself_silences_the_log(self, caplog):
+        """A caller showing the user the whole message itself would otherwise
+        get a near-identical paragraph logged beside it. The flag lives on the
+        store, so no reader ordering can bring the duplicate back (issue #224
+        review)."""
         import logging
 
         from fpl_cli.services.league_history import LeagueHistoryError, LeagueHistoryStore
 
         store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.unreadable_reported_by_caller = True
         exc = LeagueHistoryError("League history file gw05.ndjson is unreadable")
 
         with caplog.at_level(logging.DEBUG, logger="fpl_cli.services.league_history"):
-            store.log_unreadable(5, exc, context="and is skipped", surfaced=True)
-            store.log_unreadable(5, exc, context="while tallying fines")
+            store.log_unreadable(5, exc, context="left out of the fines totals")
+            store.log_unreadable(6, exc, context="skipped")
 
         assert [r.levelno for r in caplog.records] == [logging.DEBUG, logging.DEBUG]
 

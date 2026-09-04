@@ -446,9 +446,7 @@ def build_season_fines_tally(
         try:
             resolved = store.resolved_gameweek(gameweek)
         except LeagueHistoryError as exc:
-            store.log_unreadable(
-                gameweek, exc, context="while tallying fines; left out of the totals",
-            )
+            store.log_unreadable(gameweek, exc, context="left out of the fines totals")
             coverage.unreadable.append(gameweek)
             continue
         if not resolved:

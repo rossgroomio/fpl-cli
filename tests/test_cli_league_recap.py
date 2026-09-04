@@ -1614,13 +1614,42 @@ class TestCoverageReport:
         assert [w for w in result.warnings if w["code"] == HISTORY_WARNING_COVERAGE] == []
         assert DETAIL_FLAG not in _stderr(capsys)
 
+    async def test_an_unreadable_gameweek_outside_the_target_window_is_still_reported(self):
+        """A file that will not parse is a store problem whatever window the
+        coverage report spans, and `coverage()` no longer logs it -- so a
+        gameweek the window excludes (a league whose start moved later, say)
+        would otherwise be reported nowhere at all (issue #224 review)."""
+        data = _recap_data(
+            gameweek=3,
+            managers=[_manager(name="Alice", entry_id=1)],
+            cohort=_cohort((1, "Alice", 1, 60, 300)),
+            league_start_event=3,
+        )
+        await capture_recap_history(data, season=SEASON, finished_gameweeks=[1, 2, 3])
+        path = _store().gameweek_file(1)
+        path.write_text("not json{{{\n", encoding="utf-8")
+
+        result = await capture_recap_history(data, season=SEASON, finished_gameweeks=[1, 2, 3])
+
+        unreadable = [w for w in result.warnings if w["code"] == HISTORY_WARNING_STORE_UNREADABLE]
+        assert len(unreadable) == 1
+        assert "GW1" in unreadable[0]["message"]
+        assert str(path) in unreadable[0]["message"]
+        # The window still scopes the coverage report itself: GW1 and GW2 are
+        # before the league started, so neither is a gap to fill.
+        assert [w for w in result.warnings if w["code"] == HISTORY_WARNING_COVERAGE] == []
+
     async def test_an_unreadable_gameweek_is_reported_once_not_once_per_reader(
         self, capsys, caplog,
     ):
         """Issue #224: every consumer of one recap reads the same gameweek --
         the coverage pass, the counters rebuild, the notes pack, the
         earliest-row scan, the fines tally -- and each logged the whole
-        path-and-`mv` message, so one truncated line printed five times."""
+        path-and-`mv` message, so one truncated line printed five times.
+
+        Also pins the flag `capture_recap_history` sets on the store: the
+        capture reports every unreadable gameweek itself, so *no* reader may
+        log one loudly, whatever order they run in."""
         data = _recap_data(
             gameweek=2,
             managers=[_manager(name="Alice", entry_id=1)],

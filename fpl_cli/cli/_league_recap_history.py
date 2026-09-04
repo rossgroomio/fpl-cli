@@ -1316,14 +1316,16 @@ def _report_coverage(
 
     # One warning per unreadable gameweek, not one line for the set: each
     # carries its own file path and `mv` remedy, straight from the store.
+    # `coverage()` always sets `error` alongside `readable=False`, so the
+    # fallback is only reached by an entry built by hand without one -- the
+    # dataclass allows it, and a warning naming no remedy still beats none.
     for gameweek in unreadable:
-        detail = by_gameweek[gameweek].error
+        detail = by_gameweek[gameweek].error or (
+            "Move the file aside to recapture it; the rest of the season is unaffected."
+        )
         _warn(
             warnings, HISTORY_WARNING_STORE_UNREADABLE,
-            f"League history: GW{gameweek} could not be read and is skipped. " + (
-                detail if detail
-                else "Move the file aside to recapture it; the rest of the season is unaffected."
-            ),
+            f"League history: GW{gameweek} could not be read and is skipped. {detail}",
         )
 
 
@@ -1412,6 +1414,13 @@ async def capture_recap_history(
 
     fpl_format: LeagueFormat = "draft" if data["fpl_format"] == "draft" else "classic"
     store = LeagueHistoryStore(season, fpl_format, league_id)
+    # `_report_coverage` below shows the user the store's own unreadable
+    # message in full, as a `league_history_store_unreadable` warning, for
+    # every gameweek `coverage()` could not read. Claimed here rather than
+    # left to whichever reader happens to touch the file first, so no
+    # reordering of the readers below can put a near-identical log line
+    # beside that warning again (issue #224).
+    store.unreadable_reported_by_caller = True
     is_first_season_capture = not store.partition_exists()
     first_capture_store_path = store.partition_dir() if is_first_season_capture else None
 

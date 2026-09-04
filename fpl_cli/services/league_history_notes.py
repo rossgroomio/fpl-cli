@@ -819,7 +819,7 @@ def _earliest_gameweeks_for_managers(
         except LeagueHistoryError as exc:
             store.log_unreadable(
                 gameweek, exc,
-                context="while scanning for managers' earliest captured gameweek; skipped",
+                context="skipped while scanning for managers' earliest captured gameweek",
             )
             continue
         hit = remaining & resolved.keys()
@@ -915,8 +915,7 @@ def build_notes_pack(
             rows_by_gameweek[gw] = store.resolved_gameweek(gw)
         except LeagueHistoryError as exc:
             store.log_unreadable(
-                gw, exc,
-                context="while building the league history notes pack; treated as uncaptured",
+                gw, exc, context="treated as uncaptured while building the notes pack",
             )
             rows_by_gameweek[gw] = {}
 

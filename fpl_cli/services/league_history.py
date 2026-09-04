@@ -139,6 +139,16 @@ class LeagueHistoryStore:
         # (issue #224). Scoped per store, which is per run: a later run still
         # reports it.
         self._unreadable_logged: set[int] = set()
+        # Set by a caller that reports every unreadable gameweek itself, in
+        # full, on a surface of its own -- `capture_recap_history` does, via
+        # `_report_coverage`'s `league_history_store_unreadable` warning. The
+        # store then keeps its own logging quiet whatever order its readers
+        # run in, rather than printing a near-identical paragraph beside the
+        # caller's report. A caller that only *names* the gameweek (`fpl
+        # league-fines` names it as a table qualifier, without the path or the
+        # remedy) leaves this alone: there the log is the only place the
+        # remedy appears.
+        self.unreadable_reported_by_caller = False
 
     # -- paths ---------------------------------------------------------------
 
@@ -195,29 +205,27 @@ class LeagueHistoryStore:
             self._resolved_gameweek_cache[gameweek] = resolve_rows(self.load_gameweek(gameweek))
         return self._resolved_gameweek_cache[gameweek]
 
-    def log_unreadable(
-        self, gameweek: int, exc: LeagueHistoryError, *, context: str, surfaced: bool = False,
-    ) -> None:
+    def log_unreadable(self, gameweek: int, exc: LeagueHistoryError, *, context: str) -> None:
         """Log one unreadable gameweek once per run, whoever reads it next.
 
         Every consumer of a recap reads the same gameweek off the same store,
         and each has its own consequence to state ("treated as uncaptured",
-        "left out of the totals"). The *remedy* is identical for all of them,
-        so only the first reader logs it at warning level; the rest keep their
-        context at debug, where the trail survives without printing the same
-        `mv` command five times (issue #224). Keyed by gameweek, which is one
-        file in this partition.
+        "left out of the fines totals"). The *remedy* is identical for all of
+        them, so only the first reader logs it at warning level; the rest keep
+        their context at debug, where the trail survives without printing the
+        same `mv` command five times (issue #224). Keyed by gameweek, which is
+        one file in this partition.
 
-        `surfaced` is for a reader that hands the reason back to its caller
-        instead of swallowing it -- `coverage()` does, on the entry's `error`.
-        It claims the slot without logging loudly, so the caller's own report
-        is the run's single copy rather than one of a near-identical pair.
+        `unreadable_reported_by_caller` drops even that first line to debug,
+        for a caller already showing the user the whole message itself. Set on
+        the store rather than inferred from which reader happens to run first,
+        so reordering a caller's readers cannot bring the duplicate back.
         """
-        message = "GW%s unreadable %s for %s/%s-%s: %s"
-        args = (gameweek, context, self.season, self.fpl_format, self.league_id, exc)
+        message = "GW%s in %s/%s-%s could not be read, %s: %s"
+        args = (gameweek, self.season, self.fpl_format, self.league_id, context, exc)
         already_logged = gameweek in self._unreadable_logged
         self._unreadable_logged.add(gameweek)
-        if surfaced or already_logged:
+        if self.unreadable_reported_by_caller or already_logged:
             logger.debug(message, *args)
         else:
             logger.warning(message, *args)
@@ -236,9 +244,7 @@ class LeagueHistoryStore:
             try:
                 resolved = self.resolved_gameweek(gameweek)
             except LeagueHistoryError as exc:
-                self.log_unreadable(
-                    gameweek, exc, context="and is skipped", surfaced=True,
-                )
+                self.log_unreadable(gameweek, exc, context="skipped")
                 out.append(
                     GameweekCoverage(gameweek=gameweek, readable=False, error=str(exc)),
                 )
