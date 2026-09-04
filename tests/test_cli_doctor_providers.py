@@ -57,11 +57,16 @@ def _element(pid: int, drop: tuple[str, ...] = ()) -> dict:
     return element
 
 
-def _bootstrap(finished_gws: int = 5, drop_player_key: tuple[str, ...] = ()) -> dict:
+def _bootstrap(
+    finished_gws: int = 5,
+    drop_player_key: tuple[str, ...] = (),
+    team_names: list[str] | None = None,
+) -> dict:
+    names = team_names if team_names is not None else [f"Team {i:02d}" for i in range(1, 21)]
     return {
         "teams": [
-            {"id": i, "name": f"Team {i:02d}", "short_name": f"T{i:02d}", "code": i}
-            for i in range(1, 21)
+            {"id": i, "name": name, "short_name": f"T{i:02d}", "code": i}
+            for i, name in enumerate(names, start=1)
         ],
         "events": [{"id": i, "finished": i <= finished_gws} for i in range(1, 39)],
         "elements": [_element(i, drop=drop_player_key) for i in range(1, 401)],
@@ -124,6 +129,7 @@ def _register_routes(
     vaastav_overrides: dict[str, Response] | None = None,
     ci_overrides: dict[tuple[str, str], Response] | None = None,
     understat_teams: list[str] | None = None,
+    bootstrap_team_names: list[str] | None = None,
     gw_missing: tuple[int, ...] = (),
     gw_texts: dict[tuple[int, str], str] | None = None,
     gw_404: frozenset[tuple[int, str]] = frozenset(),
@@ -131,7 +137,11 @@ def _register_routes(
     players_text: str | None = None,
     fd_tlas: list[str] | None = None,
 ) -> None:
-    bootstrap = _bootstrap(finished_gws=finished_gws, drop_player_key=drop_player_key)
+    bootstrap = _bootstrap(
+        finished_gws=finished_gws,
+        drop_player_key=drop_player_key,
+        team_names=bootstrap_team_names,
+    )
     fpl_route = respx.get(FPL_BOOTSTRAP_URL)
     if fpl_error is not None:
         fpl_route.mock(side_effect=fpl_error)
@@ -330,6 +340,43 @@ class TestShapeDrift:
         flat = _flat(result)
         assert "19 players across 20 teams" in flat
         assert "resolve to an Understat team" in flat
+        assert "TEAM_NAME_MAP" not in flat
+
+    @respx.mock
+    def test_understat_mapped_club_with_no_rows_is_broken(self, monkeypatch):
+        # The gap #229 opened: TEAM_NAME_MAP has an entry for the club, so a
+        # probe that only checked the map's keys would pass it — but no row in
+        # the list the scorer scans carries the mapped title, which is exactly
+        # what costs that club's players their xG enrichment.
+        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
+        clubs = ["Coventry City"] + [f"Team {i:02d}" for i in range(2, 21)]
+        _register_routes(
+            finished_gws=5,
+            bootstrap_team_names=clubs,
+            understat_teams=[f"Team {i:02d}" for i in range(2, 21)],
+        )
+        result = _run()
+        assert result.exit_code == 1
+        flat = _flat(result)
+        assert "Coventry City" in flat
+        assert "TEAM_NAME_MAP" in flat
+
+    @respx.mock
+    def test_understat_mapped_club_resolves_through_its_understat_name(self, monkeypatch):
+        # And the other half: the club's rows carry Understat's name for it,
+        # not FPL's, so the probe must resolve it through the map rather than
+        # reading the mismatch as a miss.
+        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
+        clubs = ["Coventry City"] + [f"Team {i:02d}" for i in range(2, 21)]
+        _register_routes(
+            finished_gws=5,
+            bootstrap_team_names=clubs,
+            understat_teams=["Coventry"] + [f"Team {i:02d}" for i in range(2, 21)],
+        )
+        result = _run()
+        assert result.exit_code == 0
+        flat = _flat(result)
+        assert "all 20 clubs resolve to an Understat team" in flat
         assert "TEAM_NAME_MAP" not in flat
 
     @respx.mock

@@ -705,10 +705,13 @@ async def _core_insights_checks(
 
 
 def _understat_team_titles(players: list[dict[str, Any]]) -> set[str]:
-    """Distinct team names in Understat's own data.
+    """Distinct team names in Understat's own data, for the coverage summary.
 
     A player who moved clubs mid-season carries a comma-joined title
-    ("Chelsea,Fulham"), so titles are split before collecting.
+    ("Chelsea,Fulham"), so titles are split before collecting. Descriptive
+    only: whether an FPL club resolves is `understat_club_rows`'s answer, not
+    this set's — the probe asking it here in its own words is how a probe and
+    the runtime start disagreeing (#229).
     """
     from fpl_cli.api.understat import split_team_titles
 
@@ -721,7 +724,7 @@ def _understat_team_titles(players: list[dict[str, Any]]) -> set[str]:
 async def _understat_checks(
     team_names: list[str] | None, finished_gws: int, *, bootstrap_available: bool
 ) -> list[CheckResult]:
-    from fpl_cli.api.understat import TEAM_NAME_MAP, UnderstatClient
+    from fpl_cli.api.understat import UnderstatClient, understat_club_rows
 
     league_name = "Understat league data"
     map_name = "Understat team map"
@@ -794,11 +797,13 @@ async def _understat_checks(
         )
         return results
 
-    # End-to-end join check: each FPL club's name, mapped through
-    # TEAM_NAME_MAP (or passed through unchanged), must name a team Understat
-    # itself serves. Key coverage alone proves nothing — an unmapped club
-    # whose names agree still joins, and a mapped club can still miss.
-    unresolved = sorted(t for t in team_names if TEAM_NAME_MAP.get(t, t) not in titles)
+    # End-to-end join check, run through the enrichment's own club gate: each
+    # FPL club must name at least one row in the very list the scoring commands
+    # scan. Key coverage alone proves nothing — an unmapped club whose names
+    # agree still joins, and a mapped club can still miss — and a set of titles
+    # collected here rather than asked of the matcher is a second copy of the
+    # gate, free to drift from the one that decides (#229).
+    unresolved = sorted(t for t in team_names if not understat_club_rows(t, players))
     if not unresolved:
         results.append(
             CheckResult(

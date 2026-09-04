@@ -543,7 +543,7 @@ fpl_cli/
 │   ├── dataset_fetcher.py         # DatasetFetcher (disk cache with ETag/TTL for GitHub CSVs)
 │   ├── fpl.py                    # FPLClient (main API, caches bootstrap-static)
 │   ├── fpl_draft.py              # FPLDraftClient + match_draft_to_main()
-│   ├── understat.py              # UnderstatClient + match_fpl_to_understat()
+│   ├── understat.py              # UnderstatClient + match_fpl_to_understat(), understat_club_rows() (the club gate the matcher and `fpl doctor --providers` share), understat_join_warnings()
 │   ├── historical_types.py       # Shared dataclasses (SeasonHistory — incl. the four optional per-90 DEF/GK rates only Core-Insights publishes, PlayerProfile, GwTrendProfile) + compute_trend/compute_acceleration/compute_reliability
 │   ├── vaastav.py                # VaastavClient (the two oldest seasons of the window via DatasetFetcher)
 │   ├── core_insights.py          # CoreInsightsClient (last season + the season in progress via DatasetFetcher)

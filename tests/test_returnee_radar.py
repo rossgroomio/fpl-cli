@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
@@ -829,6 +830,35 @@ def test_understat_declines_when_the_current_club_is_absent_from_that_season():
     )
 
     assert result.entries[0].quality.quality_score == fpl_only.entries[0].quality.quality_score
+
+
+def test_absent_club_in_a_past_season_is_not_reported_as_a_map_gap(caplog):
+    """The false alarm #229 reported.
+
+    The radar matches a player's *current* club against the season being
+    scored, so the three clubs promoted since carry no rows in it every year by
+    definition. Warning that TEAM_NAME_MAP needs updating had `fpl returnees`
+    contradicting a correctly green `fpl doctor --providers` all season.
+    """
+    from fpl_cli.api.understat import understat_join_warnings
+
+    player = _flagged(code=4249, web_name="Mover")
+    profiles = {4249: _profile(4249, _season(4249, minutes=1600, starts=20))}
+    understat = {
+        LAST_SEASON: [
+            {"name": "Someone Else", "team": "Old Town", "position": "M", "minutes": 1600},
+        ],
+    }
+
+    with caplog.at_level(logging.WARNING):
+        _radar(
+            [player], {1: _prior(0.45, source="price")},
+            profiles=profiles, understat_seasons=understat,
+            config=RadarConfig(price_watchlist_percentile=0.1),
+        )
+
+    assert "TEAM_NAME_MAP" not in caplog.text
+    assert understat_join_warnings() == []
 
 
 def test_empty_understat_season_still_scores_from_fpl_stats_alone():
