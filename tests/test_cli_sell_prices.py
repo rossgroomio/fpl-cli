@@ -11,7 +11,7 @@ from fpl_cli.cli import main
 from fpl_cli.cli._context import CLIContext, Format
 from fpl_cli.cli.sell_prices import sell_prices_command
 from fpl_cli.cli.squad import squad_group
-from fpl_cli.scraper.fpl_prices import PlayerSellPrice, TeamFinances
+from fpl_cli.scraper.fpl_prices import PlayerSellPrice, TeamFinances, ordered_squad
 
 
 def _make_finances(
@@ -324,3 +324,30 @@ class TestJsonFailurePaths:
         envelope = json.loads(result.stdout)
         assert len(envelope["data"]) == 15
         assert "warnings" not in envelope["metadata"]
+
+
+class TestJsonSquadOrder:
+    """A --refresh run and a later cached run must agree on squad order, or
+    a consumer diffing successive JSON runs sees a spurious reshuffle on the
+    first cached run after a refresh (#244 review)."""
+
+    def test_refresh_json_order_matches_ordered_squad(self):
+        squad = [
+            PlayerSellPrice(name="Haaland", sell_price=14.5, position="FWD", element_id=355),
+            PlayerSellPrice(name="Raya", sell_price=5.8, position="GKP", element_id=1),
+            PlayerSellPrice(name="Salah", sell_price=13.0, position="MID", element_id=253),
+        ] * 4  # 12 players clears the <11 suspect heuristic without changing composition
+        finances = TeamFinances(bank=1.0, free_transfers=1, squad=squad, total_value=100.0)
+        assert not finances.is_suspect
+
+        with patch("fpl_cli.scraper.fpl_prices.FPLPriceScraper") as mock_scraper_cls, \
+             patch("fpl_cli.scraper.fpl_prices.save_cache"), \
+             patch("fpl_cli.scraper.fpl_prices.load_cache", return_value=None):
+            mock_scraper_cls.return_value.scrape = AsyncMock(return_value=finances)
+            result = CliRunner().invoke(sell_prices_command, ["--refresh", "--format", "json"])
+
+        assert result.exit_code == 0, result.stderr
+        live_order = [p["name"] for p in json.loads(result.stdout)["data"]]
+        assert live_order == [p.name for p in ordered_squad(finances.squad)]
+        # Position order (GK, DEF, MID, FWD), not the pick-slot order the squad was built in.
+        assert live_order == ["Raya"] * 4 + ["Salah"] * 4 + ["Haaland"] * 4
