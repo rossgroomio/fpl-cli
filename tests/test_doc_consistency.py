@@ -87,3 +87,43 @@ class TestNoRestatedPolicyInProse:
             f" threshold; reference metadata.decay_schedule / metadata.sections_live /"
             f" metadata.coverage from the fpl intel payload instead:\n" + "\n".join(offences)
         )
+
+
+# A bash-fenced code block, captured so the check below only looks at actual
+# invocations -- not at prose that mentions `python3 scripts/foo.py` as a
+# worked example of the failure mode it's warning about (see gw-prep/SKILL.md's
+# `[YOUR_PYTHON]` explainer).
+BASH_BLOCK = re.compile(r"```bash\n(.*?)```", re.DOTALL)
+SCRIPT_PATH = re.compile(r"scripts/[\w-]+\.py")
+
+
+class TestScriptInvocationConvention:
+    """scripts/*.py invocations must use `[YOUR_PYTHON]`, never a bare `python3`
+    or a path built from `$FPL_CLI_DIR`.
+
+    #196 introduced `[YOUR_PYTHON]` (plus `${CLAUDE_SKILL_DIR}` / a resolved
+    skills-dir placeholder) because a standalone `fpl` install (uv tool, pipx)
+    puts the *command* on `PATH` but not `fpl_cli` on the system interpreter's
+    import path, and leaves `$FPL_CLI_DIR` unset -- both forms fail for that
+    install shape. #221 found three call sites the original sweep missed.
+    """
+
+    @pytest.mark.parametrize("doc", PROSE_DOCS, ids=lambda p: str(p.relative_to(REPO_ROOT)))
+    def test_script_invocations_use_your_python_convention(self, doc: Path):
+        text = doc.read_text(encoding="utf-8")
+        offences = []
+        for block in BASH_BLOCK.finditer(text):
+            block_start_line = text[: block.start()].count("\n") + 1
+            for offset, line in enumerate(block.group(1).splitlines()):
+                if not SCRIPT_PATH.search(line):
+                    continue
+                if "python3" in line or "$FPL_CLI_DIR" in line:
+                    line_no = block_start_line + 1 + offset
+                    offences.append(f"line {line_no}: {line.strip()!r}")
+        assert not offences, (
+            f"{doc.relative_to(REPO_ROOT)} invokes a scripts/*.py script with a bare"
+            f" `python3` interpreter or a `$FPL_CLI_DIR`-built path; use `[YOUR_PYTHON]`"
+            f" (see gw-prep/SKILL.md's Environment section) together with"
+            f" `${{CLAUDE_SKILL_DIR}}` (within gw-prep) or `[YOUR_SKILLS_DIR]` (cross-skill)"
+            f" instead:\n" + "\n".join(offences)
+        )

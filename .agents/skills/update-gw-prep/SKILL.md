@@ -235,8 +235,9 @@ supersedes earlier ones).
 
 Then normalise the file, before Phase E reads it back:
 
+<!-- ADAPT: `[YOUR_PYTHON]` is the interpreter with `fpl_cli` importable (see gw-prep's `[YOUR_PYTHON]` note under Environment). `[YOUR_SKILLS_DIR]` is the directory containing gw-prep, squad-builder and update-gw-prep as siblings -- the script lives under gw-prep's `scripts/` regardless of which skill calls it. -->
 ```bash
-python3 "$FPL_CLI_DIR/.agents/skills/gw-prep/scripts/normalise_entities.py" --file "[YOUR_OUTPUT_DIR]/{season}/gw{N}-recommendations.md"
+[YOUR_PYTHON] "[YOUR_SKILLS_DIR]/gw-prep/scripts/normalise_entities.py" --file "[YOUR_OUTPUT_DIR]/{season}/gw{N}-recommendations.md"
 ```
 
 Parse stdout as JSON and warn, never block; `.agents/skills/gw-prep/references/entity-normalisation.md` carries the contract, the
