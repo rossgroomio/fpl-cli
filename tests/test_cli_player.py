@@ -412,7 +412,7 @@ class TestPlayerUnderstatJoinWarning:
         # No `match_fpl_to_understat` patch: the miss has to come from the
         # payload, so the real gate is what decides.
         with (
-            patch("fpl_cli.cli.player.load_settings", return_value={"fpl": {}}),
+            patch("fpl_cli.cli.player.get_settings", return_value={"fpl": {}}),
             patch("fpl_cli.api.fpl.FPLClient", return_value=client),
             patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=fixture_agent),
             patch("fpl_cli.services.team_ratings.TeamRatingsService", return_value=ratings_svc),
