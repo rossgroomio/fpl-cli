@@ -141,8 +141,14 @@ def _write_preview(team: str, published: str | None = None) -> None:
 
 
 def _write_snapshot(season: str, gameweek: int = 5) -> None:
+    """The two-slot file `fpl returnees` writes: the gameweek the check reports
+    is the current slot's, mirrored into the metadata."""
     (_data_dir() / SNAPSHOT_FILENAME).write_text(
-        json.dumps({"metadata": {"season": season, "gameweek": gameweek}, "players": {}}),
+        json.dumps({
+            "metadata": {"season": season, "gameweek": gameweek},
+            "baseline": {"gameweek": gameweek - 1, "players": {}},
+            "current": {"gameweek": gameweek, "players": {}},
+        }),
         encoding="utf-8",
     )
 
