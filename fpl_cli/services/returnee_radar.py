@@ -1601,7 +1601,8 @@ def _understat_match(
     A missing or empty season degrades to the FPL-only path. Matching uses the
     player's *current* club: the season's `team_id` is the FPL club code and
     no team map reaches here to resolve it to a name, so a player who has
-    since moved simply fails to match and loses the xG sharpening.
+    since moved reaches the club gate under the wrong club and only joins on
+    the name-only fallback (#234) — an unambiguous full-name match, or nothing.
     """
     if not understat_seasons:
         return None

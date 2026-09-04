@@ -505,13 +505,14 @@ class TestMatchFPLToUnderstat:
         assert result is not None
         assert result["name"] == "Erling Haaland"
 
-    def test_match_wrong_team(self, mock_understat_players):
-        """Test no match when team doesn't match."""
+    def test_match_wrong_team_falls_back_to_name(self, mock_understat_players):
+        """A club that matches nothing falls through to the name-only pass (#234)."""
         result = match_fpl_to_understat(
-            "Salah", "Man City", mock_understat_players  # Wrong team
+            "Salah", "Man City", mock_understat_players  # Club Understat disagrees with
         )
 
-        assert result is None
+        assert result is not None
+        assert result["name"] == "Mohamed Salah"
 
     def test_match_not_found(self, mock_understat_players):
         """Test no match when player not in list."""
@@ -650,7 +651,11 @@ class TestMatchFPLToUnderstat:
         assert result["id"] == 1
 
     def test_match_comma_title_does_not_match_unrelated_team(self):
-        """Splitting must not turn the gate into a substring match."""
+        """Splitting must not turn the gate into a substring match.
+
+        An unrelated club now falls through to the name-only pass (#234), so
+        the gate is shown at the prefix tier, which that pass refuses.
+        """
         players = [
             {
                 "id": 1,
@@ -661,7 +666,89 @@ class TestMatchFPLToUnderstat:
             },
         ]
         result = match_fpl_to_understat(
-            "Eze", "Liverpool", players, fpl_position="MID", fpl_minutes=1928
+            "E.Eze", "Liverpool", players, fpl_position="MID", fpl_minutes=1928
+        )
+        assert result is None
+
+        # The same abbreviated name resolves once a title names the club.
+        assert match_fpl_to_understat(
+            "E.Eze", "Arsenal", players, fpl_position="MID", fpl_minutes=1928
+        ) is not None
+
+    def test_match_mover_before_first_appearance_for_new_club(self):
+        """A deadline-day mover carries only his old club's title (#234).
+
+        Understat lists the clubs a player has actually appeared for, so until
+        he features for the new one there is no comma-joined title for #151 to
+        split — the FPL club is in neither component.
+        """
+        players = [
+            {
+                "id": 4242,
+                "name": "Marc Guiu",
+                "team": "Chelsea",
+                "position": "F S",
+                "minutes": 25,
+            },
+        ]
+        result = match_fpl_to_understat(
+            "Guiu", "Sunderland", players, fpl_position="FWD", fpl_minutes=25
+        )
+        assert result is not None
+        assert result["id"] == 4242
+
+    def test_cross_club_fallback_rejects_prefix_only_names(self):
+        """Without a club to agree, an abbreviated name is not enough."""
+        players = [
+            {"id": 1, "name": "Bernardo Silva", "team": "Manchester City", "position": "M", "minutes": 1600},
+        ]
+        result = match_fpl_to_understat(
+            "B. Silva", "Fulham", players, fpl_position="MID", fpl_minutes=1600
+        )
+        assert result is None
+
+    def test_cross_club_fallback_refuses_ambiguous_namesakes(self):
+        """Two equally-scoring namesakes elsewhere are declined, not guessed at."""
+        players = [
+            {"id": 1, "name": "Thiago Silva", "team": "Chelsea", "position": "D", "minutes": 900},
+            {"id": 2, "name": "Bernardo Silva", "team": "Manchester City", "position": "D", "minutes": 900},
+        ]
+        result = match_fpl_to_understat(
+            "Silva", "Fulham", players, fpl_position="DEF", fpl_minutes=900
+        )
+        assert result is None
+
+    def test_cross_club_fallback_separates_namesakes_on_minutes(self):
+        """The minutes bonus picks the mover out of a pair of namesakes."""
+        players = [
+            {"id": 1, "name": "Bernardo Silva", "team": "Manchester City", "position": "M", "minutes": 1600},
+            {"id": 2, "name": "Fabio Silva", "team": "Everton", "position": "M", "minutes": 30},
+        ]
+        result = match_fpl_to_understat(
+            "Silva", "Fulham", players, fpl_position="MID", fpl_minutes=28
+        )
+        assert result is not None
+        assert result["id"] == 2
+
+    def test_club_match_wins_over_cross_club_namesake(self):
+        """The gated pass runs first, so a club-mate beats an exact namesake."""
+        players = [
+            {"id": 1, "name": "Joao Silva", "team": "Fulham", "position": "M", "minutes": 400},
+            {"id": 2, "name": "Silva", "team": "Everton", "position": "M", "minutes": 400},
+        ]
+        result = match_fpl_to_understat(
+            "Silva", "Fulham", players, fpl_position="MID", fpl_minutes=400
+        )
+        assert result is not None
+        assert result["id"] == 1
+
+    def test_cross_club_fallback_still_needs_a_name_match(self):
+        """Dropping the club gate does not lower the name bar."""
+        players = [
+            {"id": 1, "name": "Anderson", "team": "Everton", "position": "M", "minutes": 1000},
+        ]
+        result = match_fpl_to_understat(
+            "Son", "Spurs", players, fpl_position="MID", fpl_minutes=1000
         )
         assert result is None
 
@@ -792,6 +879,25 @@ class TestContractTripwires:
 
         assert match is not None
         assert "TEAM_NAME_MAP may need updating" not in caplog.text
+
+    def test_cross_club_fallback_does_not_suppress_team_map_warning(self, caplog):
+        # The name-only fallback (#234) matches across every club, so it must
+        # not feed `team_seen` — a club the map fails to resolve would then
+        # look healthy for exactly the players whose names happen to match.
+        from fpl_cli.api import understat
+
+        understat._unmatched_team_warned.clear()
+        players = [
+            {"name": "Marc Guiu", "team": "Chelsea", "position": "F S", "minutes": 25},
+        ]
+        with caplog.at_level(logging.WARNING):
+            match = match_fpl_to_understat(
+                "Marc Guiu", "Faketown", players, fpl_position="FWD", fpl_minutes=25
+            )
+
+        assert match is not None
+        assert "TEAM_NAME_MAP may need updating" in caplog.text
+        understat._unmatched_team_warned.clear()
 
     def test_empty_understat_list_does_not_warn_per_team(self, caplog):
         # No Understat data at all is the league-level tripwire's job; the
