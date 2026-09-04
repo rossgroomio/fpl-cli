@@ -18,6 +18,11 @@ produces. Which parts can slip to a later session.]
 - [never hardcode season or gameweek — read them from the preflight]
 - [PASS / FAIL / BLOCKED per test into the Results log; a FAIL doesn't
   stop the run unless it makes later tests meaningless]
+- [write each row to the file as the test finishes, not in a batch at the
+  end — a long run gets its context compacted and anything still only in
+  the session's head is gone]
+- [on resuming in a later session, read the Results log first and skip
+  rows already filled; it is the run's only durable state]
 - [stderr capture convention, and which stream the error envelope uses]
 - [cost awareness: which flags spend LLM calls, scraper runs or FPL
   requests]
