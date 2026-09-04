@@ -214,7 +214,7 @@ def _run(args: list[str] | None = None, *, scoring_data: Any = None,
         ))
         if settings is not None:
             stack.enter_context(patch(
-                "fpl_cli.cli.returnees.load_settings", return_value=settings,
+                "fpl_cli.cli.returnees.get_settings", return_value=settings,
             ))
         stack.enter_context(patch("fpl_cli.api.fpl.FPLClient", return_value=_make_client()))
         stack.enter_context(patch("fpl_cli.services.scoring.prepare_scoring_data", new=prepare))

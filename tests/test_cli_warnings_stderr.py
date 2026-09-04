@@ -113,7 +113,7 @@ class TestWarningsOnStderr:
 
         mock_error = MagicMock()
         monkeypatch.setattr(chips_mod, "error_console", mock_error)
-        monkeypatch.setattr(chips_mod, "load_settings", lambda: {})
+        monkeypatch.setattr(chips_mod, "get_settings", lambda _ctx: {})
 
         runner = CliRunner()
         runner.invoke(main, ["chips", "timing"])

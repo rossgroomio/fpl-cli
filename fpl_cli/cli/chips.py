@@ -10,7 +10,7 @@ import click
 from rich.panel import Panel
 from rich.table import Table
 
-from fpl_cli.cli._context import console, error_console, load_settings
+from fpl_cli.cli._context import console, error_console, get_settings
 from fpl_cli.cli._json import (
     api_failure_boundary,
     emit_json,
@@ -166,7 +166,8 @@ def chips_remove(gw: int) -> None:
 
 
 @chips_group.command("sync")
-def chips_sync() -> None:
+@click.pass_context
+def chips_sync(ctx: click.Context) -> None:
     """Sync chip usage from FPL API.
 
     Fetches your chip usage history and updates the plan so available
@@ -174,7 +175,7 @@ def chips_sync() -> None:
     """
     from fpl_cli.api.fpl import FPLClient
 
-    settings = load_settings()
+    settings = get_settings(ctx)
     entry_id = settings.get("fpl", {}).get("classic_entry_id")
 
     if not entry_id:
@@ -439,7 +440,8 @@ async def _fetch_and_compute(
 
 @chips_group.command("timing")
 @output_format_option
-def chips_timing(output_format: str) -> None:
+@click.pass_context
+def chips_timing(ctx: click.Context, output_format: str) -> None:
     """Recommend chip timing based on blank/double GW exposure.
 
     Shows FH/BB/TC signals using your squad's exposure to upcoming
@@ -456,7 +458,7 @@ def chips_timing(output_format: str) -> None:
     async def _run() -> None:
         plan = ChipPlan.load()
 
-        settings = load_settings()
+        settings = get_settings(ctx)
         entry_id = settings.get("fpl", {}).get("classic_entry_id")
         if not entry_id:
             if output_format == "json":

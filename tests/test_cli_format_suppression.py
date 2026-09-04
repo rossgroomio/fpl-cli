@@ -49,7 +49,7 @@ class TestLeagueFormatSuppression:
         from fpl_cli.cli.league import league_command
 
         with (
-            patch("fpl_cli.cli.league.load_settings", return_value=self._settings_both()),
+            patch("fpl_cli.cli.league.get_settings", return_value=self._settings_both()),
             patch("fpl_cli.api.fpl.FPLClient", return_value=self._mock_fpl_client()),
             patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=self._mock_draft_client()),
         ):
@@ -67,7 +67,7 @@ class TestLeagueFormatSuppression:
         from fpl_cli.cli.league import league_command
 
         with (
-            patch("fpl_cli.cli.league.load_settings", return_value=self._settings_both()),
+            patch("fpl_cli.cli.league.get_settings", return_value=self._settings_both()),
             patch("fpl_cli.api.fpl.FPLClient", return_value=self._mock_fpl_client()),
             patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=self._mock_draft_client()),
         ):
@@ -86,7 +86,7 @@ class TestLeagueFormatSuppression:
         from fpl_cli.cli.league import league_command
 
         with (
-            patch("fpl_cli.cli.league.load_settings", return_value=self._settings_both()),
+            patch("fpl_cli.cli.league.get_settings", return_value=self._settings_both()),
             patch("fpl_cli.api.fpl.FPLClient", return_value=self._mock_fpl_client()),
             patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=self._mock_draft_client()),
         ):

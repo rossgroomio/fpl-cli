@@ -9,7 +9,7 @@ import click
 from rich.panel import Panel
 from rich.table import Table
 
-from fpl_cli.cli._context import console, handle_agent_failure, load_settings
+from fpl_cli.cli._context import console, get_settings, handle_agent_failure
 from fpl_cli.cli._helpers import FDR_EASY, FDR_MEDIUM
 from fpl_cli.cli._json import emit_json, emit_json_error, json_output_mode, output_format_option
 
@@ -17,7 +17,8 @@ from fpl_cli.cli._json import emit_json, emit_json_error, json_output_mode, outp
 @click.command("captain")
 @click.option("--global", "-g", "global_mode", is_flag=True, help="Show global captain picks instead of your squad")
 @output_format_option
-def captain_command(global_mode: bool, output_format: str):
+@click.pass_context
+def captain_command(ctx: click.Context, global_mode: bool, output_format: str):
     """Analyze and rank captain options for next gameweek.
 
     \b
@@ -27,7 +28,7 @@ def captain_command(global_mode: bool, output_format: str):
     """
     from fpl_cli.agents.analysis.captain import CaptainAgent
 
-    settings = load_settings()
+    settings = get_settings(ctx)
     entry_id = settings.get("fpl", {}).get("classic_entry_id") if not global_mode else None
 
     async def _run():

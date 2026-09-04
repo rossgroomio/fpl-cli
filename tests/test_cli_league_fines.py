@@ -37,7 +37,7 @@ def _fine(manager_key: int, rule_type: str = "last-place") -> LedgerFine:
 
 def _invoke(args: list[str] | None = None, *, settings: dict[str, Any] | None = None):
     with (
-        patch("fpl_cli.cli.league_fines.load_settings", return_value=settings or _SETTINGS),
+        patch("fpl_cli.cli.league_fines.get_settings", return_value=settings or _SETTINGS),
         patch("fpl_cli.cli.league_fines.season_label", return_value=SEASON),
     ):
         return CliRunner().invoke(league_fines_command, args or [])

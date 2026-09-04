@@ -64,15 +64,23 @@ target-version = "py311"
 select = ["BLE001", "E", "F", "I", "N", "TID251", "W"]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
-# A command that imports CLIContext is about to unwrap ctx.obj by hand, which
-# is how the same isinstance dance ended up written out six times across five commands (#219).
+# Both halves of #219: main() merges the settings once and puts them on the
+# Click context, and a command reaching around that is how the same isinstance
+# dance ended up written out six times across five commands while ten more
+# re-loaded the settings from scratch.
 "fpl_cli.cli._context.CLIContext".msg = "Read the Click context through get_format()/get_settings()/custom_analysis_enabled() instead of unwrapping ctx.obj."
+"fpl_cli.cli._context.load_settings".msg = "Use get_settings(ctx) — main() already merged the settings onto the context. load_settings() is for callers with no context."
 
 [tool.ruff.lint.per-file-ignores]
 # Prompts are long strings - line length doesn't apply
 "fpl_cli/prompts/*.py" = ["E501"]
-# The entry point is what puts CLIContext on the context in the first place
+# The entry point is what puts CLIContext and the settings on the context
 "fpl_cli/cli/__init__.py" = ["TID251"]
+# `fpl doctor` runs on an empty CLIContext on purpose so each check can re-read
+# the settings itself as it goes (see main())
+"fpl_cli/cli/doctor.py" = ["TID251"]
+# Agents and services have no Click context to read
+"fpl_cli/agents/**/*.py" = ["TID251"]
 # Test files tolerate long lines (fixture dicts, patch chains) and terse loop
 # vars, and construct CLIContext to stand in for the group callback
 "tests/**/*.py" = ["E501", "E741", "TID251"]

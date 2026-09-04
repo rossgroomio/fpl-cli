@@ -12,8 +12,8 @@ from rich.table import Table
 from fpl_cli.cli._context import (
     console,
     error_console,
+    get_settings,
     handle_agent_failure,
-    load_settings,
     print_result_warnings,
     split_result_warnings,
 )
@@ -22,11 +22,12 @@ from fpl_cli.cli._json import emit_json, emit_json_error, json_output_mode, outp
 
 @click.command("waivers")
 @output_format_option
-def waivers_command(output_format: str):
+@click.pass_context
+def waivers_command(ctx: click.Context, output_format: str):
     """Show waiver recommendations for your draft league."""
     from fpl_cli.agents.action.waiver import WaiverAgent
 
-    settings = load_settings()
+    settings = get_settings(ctx)
     league_id = settings.get("fpl", {}).get("draft_league_id")
     entry_id = settings.get("fpl", {}).get("draft_entry_id")
 

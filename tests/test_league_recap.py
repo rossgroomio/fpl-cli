@@ -2244,7 +2244,7 @@ class TestLeagueRecapCommandStopCondition:
         client.get_gameweeks = AsyncMock(return_value=[{"id": 5, "finished": True}])
 
         with (
-            patch("fpl_cli.cli.league_recap.load_settings", return_value={"fpl": {"classic_league_id": 1}}),
+            patch("fpl_cli.cli.league_recap.get_settings", return_value={"fpl": {"classic_league_id": 1}}),
             patch("fpl_cli.api.fpl.FPLClient", return_value=client),
             patch("fpl_cli.cli.review._review_resolve_gw", AsyncMock(return_value={"gw": 5})),
             patch(
