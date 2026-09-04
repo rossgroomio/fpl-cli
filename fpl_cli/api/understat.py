@@ -330,16 +330,47 @@ def split_team_titles(team_title: str) -> list[str]:
     return [part.strip() for part in team_title.split(",")]
 
 
-# Name-match tiers. Only the top two are trusted without a club agreeing:
-# a prefix match is safe once the title already names the FPL club, but
-# across all 20 it would let "B. Silva" land on any Silva in the league.
+# Name-match tiers, in confidence order. Only the top two are trusted without a
+# club agreeing: a prefix match is safe once the title already names the FPL
+# club, but across all 20 it would let "B. Silva" land on any Silva in the
+# league. Tiers are compared *before* the position and minutes bonuses rather
+# than summed with them, so a bonus can only break a tie inside a tier — an
+# exact-name match with no bonuses outranks a looser one carrying both.
 _NAME_EXACT = 10
 _NAME_ALL_WORDS = 8
 _NAME_PREFIX = 7
 
+# The lowest tier the club-gated pass will admit. It is every tier there is
+# today, and deliberately named rather than left implicit: a future
+# lower-confidence tier has to raise this floor to opt itself out.
+_NAME_TIER_FLOOR = _NAME_PREFIX
+
+# How closely the two sources must agree on minutes before a club-blind match
+# is allowed to stand. Both count the same league's minutes, so a real match
+# agrees closely and a namesake at another club usually does not.
+_CROSS_CLUB_MIN_MINUTES_RATIO = 0.5
+
 # FPL teams already reported as matching no Understat players, so the join-drop
 # warning below fires once per team per process rather than once per player.
 _unmatched_team_warned: set[str] = set()
+
+
+def _minutes_ratio(fpl_minutes: int | None, player: dict[str, Any]) -> float | None:
+    """How closely FPL and Understat agree on minutes, or None if either is unknown.
+
+    Two zeroes agree perfectly rather than counting as unknown: a player
+    neither source has seen play is not a mismatch, and that is exactly the
+    profile of the signing ``_match_across_clubs`` exists for.
+    """
+    us_minutes = player.get("minutes")
+    if fpl_minutes is None or isinstance(us_minutes, bool):
+        return None
+    if not isinstance(us_minutes, (int, float)):
+        return None
+    high = max(fpl_minutes, us_minutes)
+    if high <= 0:
+        return 1.0
+    return min(fpl_minutes, us_minutes) / high
 
 
 def _score_candidate(
@@ -348,50 +379,59 @@ def _score_candidate(
     fpl_words: list[str],
     fpl_position: str | None,
     fpl_minutes: int | None,
-    min_name_score: int,
-) -> int:
-    """Score one Understat candidate on name, position and minutes.
+    min_name_tier: int,
+) -> tuple[int, int]:
+    """Score one Understat candidate as ``(name_tier, bonus)``.
 
-    Returns 0 when the name does not reach ``min_name_score``, which both
-    callers read as "not a candidate at all".
+    The pair is ordered lexicographically by both callers, which keeps the
+    position and minutes bonuses as tiebreakers *within* a name tier instead of
+    letting them promote a looser name match above a stronger one.
+
+    A tier of 0 means "not a candidate": no viable name match, or one below
+    ``min_name_tier``. Every field is read defensively — the fallback pass
+    scores rows belonging to clubs the caller never asked about, so one
+    malformed row in an undocumented payload must not take out the lookup.
     """
-    understat_name = _normalise(player["name"])
+    understat_name = _normalise(str(player.get("name") or ""))
+    if not understat_name:
+        return 0, 0
     us_words = understat_name.split()
 
     # Word-overlap name scoring
     if fpl_name_norm == understat_name:
-        score = _NAME_EXACT
+        tier = _NAME_EXACT
     elif fpl_words and all(w in us_words for w in fpl_words):
-        score = _NAME_ALL_WORDS
+        tier = _NAME_ALL_WORDS
     elif fpl_words and all(
         any(uw.startswith(fw) for uw in us_words) for fw in fpl_words
     ):
-        score = _NAME_PREFIX
+        tier = _NAME_PREFIX
     else:
-        return 0
+        return 0, 0
 
-    if score < min_name_score:
-        return 0
+    if tier < min_name_tier:
+        return 0, 0
+
+    bonus = 0
 
     # Position bonus
-    if fpl_position and player.get("position"):
+    position = player.get("position")
+    if fpl_position and isinstance(position, str):
         understat_positions = {
-            POSITION_MAP.get(tok)
-            for tok in player["position"].split()
-            if tok in POSITION_MAP
+            POSITION_MAP.get(tok) for tok in position.split() if tok in POSITION_MAP
         }
         if fpl_position in understat_positions:
-            score += 2
+            bonus += 2
 
     # Minutes proximity bonus
-    if fpl_minutes and player.get("minutes"):
-        ratio = min(fpl_minutes, player["minutes"]) / max(fpl_minutes, player["minutes"], 1)
+    ratio = _minutes_ratio(fpl_minutes, player)
+    if ratio is not None:
         if ratio >= 0.8:
-            score += 2
+            bonus += 2
         elif ratio >= 0.5:
-            score += 1
+            bonus += 1
 
-    return score
+    return tier, bonus
 
 
 def _match_across_clubs(
@@ -404,32 +444,38 @@ def _match_across_clubs(
     """Match on name alone, for a player the club gate rejected outright (#234).
 
     An Understat ``team_title`` names only the clubs a player has actually
-    turned out for, so a deadline-day mover who has not yet featured for his
-    new club carries his old club alone while FPL already lists him at the new
+    turned out for, so a deadline-day mover who has not yet featured for their
+    new club carries the old club alone while FPL already lists them at the new
     one. #151's comma-joined title never forms, every candidate fails the gate,
-    and he reads as having no Understat data at all through exactly the weeks
-    people are deciding whether to buy him.
+    and they read as having no Understat data at all through exactly the weeks
+    people are deciding whether to buy.
 
     Dropping the gate re-opens the homonym risk it existed to close, so this
-    pass is deliberately narrow: only a full-name match counts (exact, or every
-    FPL word present in the Understat name — no prefix tier), the minutes
-    bonus separates a mover from a namesake elsewhere, and a top score two
-    candidates share is refused rather than guessed at.
+    pass is deliberately narrow. Only a full-name match counts (exact, or every
+    FPL word present — no prefix tier). Minutes must corroborate where both
+    sources report them, since a namesake at another club rarely has a season
+    the same length. A top pair two candidates share is refused rather than
+    guessed at. The caller adds the last condition: it only reaches here for a
+    club Understat *does* carry players for, so an unresolved club still fails
+    as a block rather than 20 players each guessing across the league.
     """
     best_match: dict[str, Any] | None = None
-    best_score = 0
+    best_score = (0, 0)
     ambiguous = False
 
     for player in understat_players:
+        ratio = _minutes_ratio(fpl_minutes, player)
+        if ratio is not None and ratio < _CROSS_CLUB_MIN_MINUTES_RATIO:
+            continue
         score = _score_candidate(
             player,
             fpl_name_norm,
             fpl_words,
             fpl_position,
             fpl_minutes,
-            min_name_score=_NAME_ALL_WORDS,
+            min_name_tier=_NAME_ALL_WORDS,
         )
-        if score == 0:
+        if score[0] == 0:
             continue
         if score > best_score:
             best_score, best_match, ambiguous = score, player, False
@@ -457,17 +503,18 @@ def match_fpl_to_understat(
     """Match an FPL player to their Understat data using multi-signal scoring.
 
     Scores candidates carrying the player's FPL club on name match quality,
-    position and minutes played, and returns the highest-confidence match above
-    threshold. A player whose FPL club appears in no Understat title at all
-    falls through to the name-only pass in ``_match_across_clubs`` (#234).
-    Returns None when neither pass is confident.
+    position and minutes played, and returns the most confident. A player whose
+    own club carries no name match at all falls through to the name-only pass
+    in ``_match_across_clubs`` (#234) — but only when the club itself resolved,
+    so a club no Understat row carries keeps failing as a block. Returns None
+    when neither pass is confident.
     """
     fpl_name_norm = _normalise(fpl_name)
     fpl_words = fpl_name_norm.split()
     fpl_team_mapped = TEAM_NAME_MAP.get(fpl_team, fpl_team)
 
     best_match = None
-    best_score = 0
+    best_score = (0, 0)
     team_seen = False
 
     for player in understat_players:
@@ -478,7 +525,9 @@ def match_fpl_to_understat(
         # rows, which matters on an O(players x candidates) scan. Season
         # totals stay cumulative across both clubs, which is what the minutes
         # bonus wants — FPL's minutes are cumulative too.
-        team_title = player["team"]
+        team_title = player.get("team")
+        if not isinstance(team_title, str):
+            continue
         if team_title != fpl_team_mapped and fpl_team_mapped not in split_team_titles(team_title):
             continue
         team_seen = True
@@ -489,7 +538,7 @@ def match_fpl_to_understat(
             fpl_words,
             fpl_position,
             fpl_minutes,
-            min_name_score=_NAME_PREFIX,
+            min_name_tier=_NAME_TIER_FLOOR,
         )
         if score > best_score:
             best_score = score
@@ -499,9 +548,7 @@ def match_fpl_to_understat(
         # The join-drop tripwire (#97): a team name the map doesn't resolve
         # fails every one of its players identically — 20 teams in, 19 join —
         # and per-player it would just look like a string-similarity miss.
-        # #94 was exactly this shape. Only this gated pass feeds `team_seen`:
-        # the fallback below matches names across every club, so letting it
-        # set the flag would silence a genuine TEAM_NAME_MAP miss.
+        # #94 was exactly this shape.
         _unmatched_team_warned.add(fpl_team)
         logger.warning(
             "No Understat players carry team %r (mapped from FPL team %r) — "
@@ -510,11 +557,19 @@ def match_fpl_to_understat(
             fpl_team,
         )
 
-    if best_score >= 5:
+    if best_match is not None:
         return best_match
 
-    # No candidate carried the FPL club, so the name scoring never ran on
-    # anyone. He may simply have moved and not yet played for his new club.
+    if not team_seen:
+        # Nothing carries this club, so every one of its players fails here
+        # identically — a TEAM_NAME_MAP gap or a roster Understat has yet to
+        # ingest, not a transfer. Sending 20 players off to guess across the
+        # league would turn one legible warning into 20 silent strangers'
+        # rows, so the whole club fails together as it did before #234.
+        return None
+
+    # The club resolved but carries no name match, which is what a player who
+    # has moved and not yet played for the new club looks like.
     return _match_across_clubs(
         fpl_name_norm, fpl_words, understat_players, fpl_position, fpl_minutes
     )
