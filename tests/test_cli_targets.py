@@ -69,10 +69,14 @@ class TestTargetsJsonFormat:
         assert "targets" in data["data"]
         assert data["data"]["targets"]["all"][0]["player_name"] == "Salah"
 
-    def test_json_metadata_is_empty(self):
+    def test_json_metadata_carries_only_the_warnings_slot(self):
+        """metadata.warnings is where every prior-blended score's early-season
+        notice lives, so a consumer reads one place whichever command
+        produced the score (#206).
+        """
         result = _run_targets(["--format", "json"])
         data = json.loads(result.output)
-        assert data["metadata"] == {}
+        assert data["metadata"] == {"warnings": []}
 
     def test_json_agent_failure_exits_nonzero(self):
         agent_result = _make_agent_result(success=False, message="API timeout")
@@ -105,3 +109,46 @@ class TestTargetsReliabilityRendering:
         result = _run_targets()
         assert result.exit_code == 0
         assert "Avail" in result.output
+
+
+_NOTICE = {
+    "code": "early_season_prior_informed",
+    "message": "Early-season notice: until GW10, target_score blends ...",
+}
+
+
+def _with_notice():
+    agent_result = _make_agent_result()
+    agent_result.data = {**agent_result.data, "warnings": [_NOTICE]}
+    return agent_result
+
+
+class TestTargetsEarlySeasonNotice:
+    """Before GW10 target_score is prior-informed, and says so (#206).
+
+    The agent decides whether the blend actually ran — only it knows whether
+    the priors loaded — so the notice travels in the result and the command
+    routes it to whichever channel its reader is on.
+    """
+
+    def test_json_moves_the_notice_into_metadata_warnings(self):
+        result = _run_targets(["--format", "json"], agent_result=_with_notice())
+        data = json.loads(result.output)
+        assert data["metadata"]["warnings"] == [_NOTICE]
+
+    def test_json_does_not_leave_the_notice_in_data(self):
+        """One home for it, or a consumer has to check two places."""
+        result = _run_targets(["--format", "json"], agent_result=_with_notice())
+        data = json.loads(result.output)
+        assert "warnings" not in data["data"]
+
+    def test_table_mode_prints_the_notice_to_stderr(self):
+        """Prose to stderr, so a shell pipeline reading the table is unaffected."""
+        result = _run_targets(agent_result=_with_notice())
+        assert "Early-season notice" in result.stderr
+        assert "Early-season notice" not in result.stdout
+
+    def test_no_notice_after_the_cutoff(self):
+        """The agent returns an empty list mid-season; nothing is printed."""
+        result = _run_targets()
+        assert "Early-season notice" not in result.stderr

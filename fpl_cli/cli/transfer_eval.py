@@ -9,7 +9,12 @@ import copy
 import click
 from rich.table import Table
 
-from fpl_cli.cli._context import Format, console, error_console, get_format
+from fpl_cli.cli._context import (
+    Format,
+    console,
+    get_format,
+    print_result_warnings,
+)
 from fpl_cli.cli._helpers import _fdr_style
 from fpl_cli.cli._json import (
     api_failure_boundary,
@@ -130,8 +135,7 @@ def transfer_eval_command(ctx: click.Context, out_player: str, in_players: str, 
         if output_format == "json":
             _emit_json_output(data, finances, sell_price, fmt)
         else:
-            for warning in data.get("warnings", []):
-                error_console.print(f"[yellow]{warning['message']}[/yellow]")
+            print_result_warnings(data)
             _render_table(data, finances, sell_price, fmt)
 
     with api_failure_boundary("transfer-eval", output_format):

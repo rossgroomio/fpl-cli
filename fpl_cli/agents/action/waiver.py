@@ -15,19 +15,18 @@ from fpl_cli.api.fpl import FPLClient
 from fpl_cli.api.fpl_draft import FPLDraftClient, match_draft_to_main
 from fpl_cli.models.player import Player
 from fpl_cli.models.types import EnrichedPlayer, WaiverPoolEntry, WaiverTarget
+from fpl_cli.services.player_prior import early_season_quality_warning
 from fpl_cli.services.scoring import (
     ConsistencySignals,
     apply_adjusted_npxg,
     apply_consistency,
     apply_gk_signals,
-    apply_shrinkage,
     build_player_evaluation,
     calculate_waiver_score,
     compute_aggregate_matchup,
     compute_form_trajectory,
     compute_xgi_sustainability,
     prepare_scoring_data,
-    unavailable_player_ids,
 )
 
 
@@ -246,9 +245,22 @@ class WaiverAgent(Agent):
 
             self.log_success(f"Found {len(waiver_targets)} potential waiver targets")
 
+            # waiver_score carries the early-season prior blend; say so beside
+            # it, and say whether the blend actually ran. On this path the
+            # prior can go missing two ways — the history fetch failed, or the
+            # draft element found no main-game counterpart to join to — and
+            # the notice is what tells a ranked list built on pedigree from
+            # one built on three gameweeks of observation.
+            warning = early_season_quality_warning(
+                next_gw_id,
+                blended=bool(self._player_priors),
+                score_names=("waiver_score",),
+            )
+
             return self._create_result(
                 AgentStatus.SUCCESS,
                 data={
+                    "warnings": [warning] if warning is not None else [],
                     "league_id": league_id,
                     "entry_id": entry_id,
                     "waiver_position": our_waiver_position,
@@ -359,12 +371,11 @@ class WaiverAgent(Agent):
                 "reasons": reasons,
             })
 
-        # Apply early-season shrinkage, holding out players who are known not
-        # to be playing (their low score is a fact, not a small sample) — #122
-        apply_shrinkage(
-            scored_players, "waiver_score", self._player_priors, next_gw_id,
-            unavailable_ids=unavailable_player_ids(available, next_gw_id),
-        )
+        # No position-mean shrinkage here: the early-season prior is blended
+        # into the quality baseline inside the score itself (#206), which can
+        # reorder the pool as shrinkage cannot, and the two are never stacked.
+        # The #122 hold-out for players known not to be playing lives inside
+        # the blend, so it still applies.
 
         # Sort by waiver score
         scored_players.sort(key=lambda p: p["waiver_score"], reverse=True)
@@ -377,7 +388,13 @@ class WaiverAgent(Agent):
         team_counts: dict[str, int] | None = None,
         next_gw_id: int = 38,
     ) -> int:
-        """Calculate a waiver priority score via the player scoring engine."""
+        """Calculate a waiver priority score via the player scoring engine.
+
+        The player's prior carries the early-season blend into the score's
+        quality baseline, in place of the position-mean shrinkage this ranking
+        used to apply afterwards (#206). Both read ``self._player_priors``,
+        which ``run()`` re-keys into draft element ids (#209).
+        """
         enrichment: dict[str, Any] = {}
         histories = getattr(self, "_player_histories", {})
         history = histories.get(player.get("id", 0), [])
@@ -387,10 +404,9 @@ class WaiverAgent(Agent):
             enrichment["xgi_sustainability"] = sustainability
             enrichment["xgi_divergence"] = divergence
         priors = getattr(self, "_player_priors", None)
-        if priors:
-            prior = priors.get(player.get("id", 0))
-            if prior:
-                enrichment["prior_confidence"] = prior.confidence
+        prior = priors.get(player.get("id", 0)) if priors else None
+        if prior:
+            enrichment["prior_confidence"] = prior.confidence
         if "npxG_per_90" not in enrichment:
             npxg = player.get("npxG_per_90")
             if npxg is not None:
@@ -419,6 +435,7 @@ class WaiverAgent(Agent):
             team_counts=team_counts,
             next_gw_id=next_gw_id,
             gk_signals_supplied=gk_signals_supplied,
+            prior=prior,
         )
 
     def _generate_target_reasons(

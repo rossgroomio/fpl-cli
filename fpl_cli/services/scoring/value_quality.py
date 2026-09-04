@@ -5,10 +5,11 @@ scoring family builds on. compute_quality_value is the VALUE-family
 pipeline shared by ``fpl player``, ``fpl stats --value``,
 ``fpl transfer-eval``, and the squad allocator;
 compute_rolling_pts_per_m is its recent-form value companion.
-blend_quality_with_prior is the family's early-season device: before
-``player_prior.CUTOFF_GW`` the observed raw score is blended with the score
-last season's pedigree implies, in place of the position-mean shrinkage the
-other families run.
+blend_quality_with_prior is the early-season device the value and ownership
+families share: before ``player_prior.CUTOFF_GW`` the observed raw quality is
+blended with the score last season's pedigree implies, in place of the
+position-mean shrinkage those families used to run. It lives here beside the
+baseline it adjusts; ``ownership`` imports it and supplies its own anchor.
 """
 
 from __future__ import annotations
@@ -136,30 +137,40 @@ def blend_quality_with_prior(
 ) -> float:
     """Blend an observed raw quality score with the score last season's pedigree implies.
 
-    Before ``player_prior.CUTOFF_GW`` the value family's raw score is one
-    observation of a handful of gameweeks: going into GW2, form and ppg are
-    the same single number and both caps saturate on one good game, so a
-    one-game wonder out-reads a quiet-starting elite (issue #143: Haaland 59
-    behind Emersonn 100). Ceilings cannot reorder that — they are monotonic
+    Before ``player_prior.CUTOFF_GW`` a raw quality score is one observation
+    of a handful of gameweeks: going into GW2, form and ppg are the same
+    single number and both caps saturate on one good game, so a one-game
+    wonder out-reads a quiet-starting elite (issue #143: Haaland 59 behind
+    Emersonn 100). Ceilings cannot reorder that — they are monotonic
     per-position scalers — so the prior enters the score itself::
 
         prior_raw = prior_strength * ceiling * CALIBRATION_ELITE_TARGET
         blended   = w * raw + (1 - w) * prior_raw     # w = prior.confidence
 
-    *ceiling* is the calibrated value anchor for the position at this
-    gameweek — the attainable one for a pre-GW6 keeper — so the prior-implied
-    score sits on the same scale as the observed one: a player at the top of
-    last season's pts/90 percentile is read as an elite of exactly the size
-    the calibration anchored, and a price-sourced prior (strength capped at
-    0.5) can never claim more than mid-pack. The weight is
-    ``PlayerPrior.confidence`` for every position — the same prior share for
-    the same track record at the same gameweek, so two players with identical
-    inputs land at the same point of their own scales whatever their position,
-    which ``fpl allocate`` relies on when it sums raw quality across positions.
-    It rises with the gameweek and the player's track record and reaches 1 by
-    the cutoff, so the blend self-extinguishes; backtested over 2025-26 GW1-7
-    snapshots it ranked rest-of-season points better than pure observation at
-    every snapshot for GK, DEF and FWD and was neutral for MID.
+    *ceiling* is the calibrated anchor the caller's family measures an elite
+    baseline against, for this position at this gameweek — the attainable one
+    for a pre-GW6 keeper. The value family passes its whole ceiling
+    (``_value_weights_and_ceiling``); the ownership family passes
+    ``_ownership_anchor_for``, its ceiling *without* the matchup / ownership /
+    position-need / consistency headroom, because it blends the baseline
+    before adding those terms and a prior models none of them. Either way the
+    prior-implied score sits on the same scale as the observed one it
+    replaces: a player at the top of last season's pts/90 percentile is read
+    as an elite of exactly the size the calibration anchored, and a
+    price-sourced prior (strength capped at 0.5) can never claim more than
+    mid-pack. The weight is ``PlayerPrior.confidence`` for every position —
+    the same prior share for the same track record at the same gameweek, so
+    two players with identical inputs land at the same point of their own
+    scales whatever their position, which ``fpl allocate`` relies on when it
+    sums raw quality across positions. It rises with the gameweek and the
+    player's track record and reaches 1 by the cutoff, so the blend
+    self-extinguishes; backtested over 2025-26 GW1-7 snapshots it ranked
+    rest-of-season points better than pure observation at every snapshot for
+    GK, DEF and FWD and was neutral for MID (value family), and better than
+    the position-mean shrinkage it replaced at every position of the target,
+    differential and waiver families — GK +0.15, FWD +0.22, DEF +0.08, MID
+    +0.01 mean Spearman, against -0.03 (DEF) and -0.04 (MID) on the
+    six-gameweek horizon those families are not primarily read on (#206).
 
     A keeper-specific discount on the weight (the GK calendar ramp, on the
     grounds that a keeper's early signals are sample-ramped) was evaluated

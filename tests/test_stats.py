@@ -245,3 +245,228 @@ class TestStatsAgentReliability:
         result = agent._find_differentials(players)
 
         assert result["all"][0]["reliability"] == pytest.approx(0.70)
+
+
+class TestStatsAgentEarlySeasonPriorBlend:
+    """Target and differential ranking carries the prior blend (#206).
+
+    Going into GW2 form and ppg are one observation of one match and both
+    caps saturate on a single good game, so the ranked lists put a one-game
+    wonder above a quiet-starting elite. The position-mean shrinkage these
+    views used to run afterwards could not fix that — it compresses gaps
+    rather than reordering them — so the prior now enters the quality
+    baseline inside the score, and the shrinkage pass is gone.
+    """
+
+    @staticmethod
+    def _fwd(player_id: int, *, form: float, ppg: float, xgi: float, minutes: int) -> dict:
+        return {
+            "id": player_id, "player_name": f"Player{player_id}", "team_short": "TST",
+            "position": "FWD", "price": 80, "ownership": 8.0,
+            "minutes": minutes, "goals": 0, "assists": 0, "GI": 0,
+            "xG": 0.0, "xA": 0.0, "xGI": 0.0,
+            "xG_per_90": 0.0, "xA_per_90": 0.0, "xGI_per_90": xgi,
+            "goals_minus_xG": 0.0, "assists_minus_xA": 0.0, "GI_minus_xGI": 0.0,
+            "form": form, "total_points": 0, "ppg": ppg, "dc_per_90": 0.0,
+            "npxG_per_90": None, "xGChain_per_90": None, "xGBuildup_per_90": None,
+            "penalty_xG": None, "penalty_xG_per_90": None,
+            "matchup_score": 5.0, "next_opponent": "CHE",
+        }
+
+    def _pool(self) -> list[dict]:
+        return [
+            self._fwd(1, form=9.0, ppg=9.0, xgi=1.4, minutes=65),   # one-game wonder
+            self._fwd(2, form=2.0, ppg=2.0, xgi=0.9, minutes=90),   # quiet elite
+        ]
+
+    @staticmethod
+    def _priors() -> dict:
+        from fpl_cli.services.player_prior import PlayerPrior, _compute_confidence
+        return {
+            1: PlayerPrior(0.2, _compute_confidence(2, 0.2), "price"),
+            2: PlayerPrior(1.0, _compute_confidence(2, 1.0), "history"),
+        }
+
+    def _agent(self, priors: dict | None) -> StatsAgent:
+        agent = StatsAgent(config={
+            "gameweeks": 0,
+            "differential_threshold": 5.0,
+            "semi_differential_threshold": 15.0,
+        })
+        agent._player_priors = priors
+        agent._next_gw_id = 2
+        return agent
+
+    def test_targets_invert_without_priors(self):
+        """The defect: pure observation puts the wonder on top."""
+        result = self._agent(None)._find_targets(self._pool())
+        assert [p["id"] for p in result["all"]] == [1, 2]
+
+    def test_targets_rank_the_quiet_elite_first_with_priors(self):
+        result = self._agent(self._priors())._find_targets(self._pool())
+        assert [p["id"] for p in result["all"]] == [2, 1]
+
+    def test_differentials_rank_the_quiet_elite_first_with_priors(self):
+        result = self._agent(self._priors())._find_differentials(self._pool())
+        assert [p["id"] for p in result["all"]] == [2, 1]
+
+    def test_scores_are_the_blend_alone_not_blend_plus_shrinkage(self):
+        """The two devices are never stacked: the ranked score is exactly the
+        score the formula returned, with nothing pulled toward a mean after.
+        """
+        agent = self._agent(self._priors())
+        priors = self._priors()
+        pool = self._pool()
+        ranked = agent._find_targets(pool)
+        for entry in ranked["all"]:
+            player = next(p for p in pool if p["id"] == entry["id"])
+            assert entry["target_score"] == agent._calculate_target_score(
+                player, priors[entry["id"]],
+            )
+
+    def test_ruled_out_player_is_not_handed_last_seasons_standing(self):
+        """The #122 hold-out survives the move inside the blend."""
+        from fpl_cli.services.player_prior import PlayerPrior
+        pool = self._pool()
+        ruled_out = self._fwd(3, form=0.0, ppg=0.0, xgi=0.0, minutes=0)
+        ruled_out["chance_of_playing"] = 0
+        ruled_out["status"] = "i"
+        pool.append(ruled_out)
+
+        agent = self._agent({**self._priors(), 3: PlayerPrior(1.0, 0.0, "history")})
+        result = agent._find_targets(pool)
+
+        assert [p["id"] for p in result["all"]][-1] == 3
+
+
+def _scoring_data(*, next_gw_id: int, player_priors, players):
+    """A minimal real ScoringData for driving StatsAgent.run().
+
+    ``team_fixture_map`` is empty on purpose: matchup enrichment then
+    short-circuits to a neutral score, which keeps the harness to the seams
+    these tests are actually about.
+    """
+    from unittest.mock import MagicMock
+
+    from fpl_cli.services.scoring import ScoringContext, ScoringData
+
+    teams = [make_team(id=1, short_name="ARS")]
+    team_map = {t.id: t for t in teams}
+    ratings_service = MagicMock()
+    return ScoringData(
+        teams=teams,
+        team_map=team_map,
+        all_fixtures=[],
+        next_gw_fixtures=[],
+        next_gw_id=next_gw_id,
+        next_gw={"id": next_gw_id, "is_next": True},
+        scoring_ctx=ScoringContext(
+            team_map=team_map,
+            team_fixture_map={},
+            ratings_service=ratings_service,
+            next_gw_id=next_gw_id,
+        ),
+        ratings_service=ratings_service,
+        players=players,
+        player_histories={},
+        player_priors=player_priors,
+        adjusted_npxg_lookup=None,
+        consistency_lookup=None,
+    )
+
+
+async def _run_stats(views: set[str], *, next_gw_id: int = 2, player_priors=None):
+    """Drive ``StatsAgent.run`` over one qualifying player with every seam stubbed."""
+    from unittest.mock import AsyncMock, patch
+
+    players = [
+        make_player(
+            id=1, web_name="Salah", team_id=1, position=PlayerPosition.MIDFIELDER,
+            form=6.0, points_per_game=5.0, minutes=900, total_points=90,
+            expected_goals=5.0, expected_assists=3.0,
+        ),
+    ]
+    agent = StatsAgent(config={"gameweeks": 0, "min_minutes": 0, "views": views})
+    with (
+        patch.object(agent.client, "get_players", new_callable=AsyncMock, return_value=players),
+        patch.object(
+            agent.client, "get_teams", new_callable=AsyncMock,
+            return_value=[make_team(id=1, short_name="ARS")],
+        ),
+        patch.object(
+            agent.client, "get_current_gameweek", new_callable=AsyncMock,
+            return_value={"id": max(next_gw_id - 1, 1)},
+        ),
+        patch(
+            "fpl_cli.agents.analysis.stats.fetch_understat_lookup",
+            new_callable=AsyncMock, return_value={},
+        ),
+        patch(
+            "fpl_cli.agents.analysis.stats.prepare_scoring_data",
+            new_callable=AsyncMock,
+            return_value=_scoring_data(
+                next_gw_id=next_gw_id, player_priors=player_priors, players=players,
+            ),
+        ),
+    ):
+        return await agent.run()
+
+
+class TestStatsAgentEarlySeasonNotice:
+    """The ownership views say whether their scores are prior-informed (#206).
+
+    Only the agent knows whether the priors loaded — the loader swallows a
+    failed history fetch and returns None — so the notice is decided here and
+    carried in the result for the command to route to its reader's channel.
+    """
+
+    @staticmethod
+    def _prior_map():
+        from fpl_cli.services.player_prior import PlayerPrior
+
+        return {1: PlayerPrior(0.5, 0.6, "history")}
+
+    async def test_targets_notice_names_only_the_target_score(self):
+        result = await _run_stats({"targets"}, player_priors=self._prior_map())
+        warnings = result.data["warnings"]
+        assert [w["code"] for w in warnings] == ["early_season_prior_informed"]
+        assert "target_score" in warnings[0]["message"]
+        assert "differential_score" not in warnings[0]["message"]
+
+    async def test_differentials_notice_names_only_the_differential_score(self):
+        result = await _run_stats({"differentials"}, player_priors=self._prior_map())
+        message = result.data["warnings"][0]["message"]
+        assert "differential_score" in message
+        assert "target_score" not in message
+
+    async def test_both_views_name_both_scores(self):
+        result = await _run_stats(
+            {"targets", "differentials"}, player_priors=self._prior_map(),
+        )
+        message = result.data["warnings"][0]["message"]
+        assert "target_score and differential_score" in message
+
+    async def test_degraded_priors_report_pure_observation(self):
+        """The loader returns None on a failed history fetch, and the same
+        command and gameweek would otherwise print a pedigree-informed ranking
+        and a raw one with identical metadata.
+        """
+        result = await _run_stats({"targets"}, player_priors=None)
+        assert [w["code"] for w in result.data["warnings"]] == [
+            "early_season_small_sample"
+        ]
+
+    async def test_no_notice_once_the_blend_has_extinguished(self):
+        from fpl_cli.services.player_prior import CUTOFF_GW
+
+        result = await _run_stats(
+            {"targets"}, next_gw_id=CUTOFF_GW, player_priors=self._prior_map(),
+        )
+        assert result.data["warnings"] == []
+
+    async def test_views_that_score_no_blended_field_get_no_slot(self):
+        """value_picks and the xG views carry no prior-blended score, so a
+        notice there would caveat a number that does not exist.
+        """
+        result = await _run_stats({"value_picks"}, player_priors=self._prior_map())
+        assert "warnings" not in result.data

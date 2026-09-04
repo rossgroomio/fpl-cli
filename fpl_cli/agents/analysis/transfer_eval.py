@@ -136,18 +136,17 @@ class TransferEvalAgent(Agent):
                 target_scored.append(target_entry)
                 lineup_scored.append(lineup_entry)
 
-            # Apply shrinkage to both score types, holding out players who are
-            # known not to be playing (a fact about them, not a small sample)
-            held_out = unavailable_player_ids(
-                (player_map[pid] for pid in all_ids), next_gw_id,
-            )
-            apply_shrinkage(
-                target_scored, "target_score", data.player_priors, next_gw_id,
-                unavailable_ids=held_out,
-            )
+            # Shrinkage for the single-GW lineup score only, holding out
+            # players who are known not to be playing (a fact about them, not
+            # a small sample). The outlook (target) score carries the
+            # ownership family's early-season prior blend inside the score
+            # instead, with the same hold-out (#206) — the two are never
+            # stacked.
             apply_shrinkage(
                 lineup_scored, "lineup_score", data.player_priors, next_gw_id,
-                unavailable_ids=held_out,
+                unavailable_ids=unavailable_player_ids(
+                    (player_map[pid] for pid in all_ids), next_gw_id,
+                ),
             )
 
             # Build result dicts
@@ -171,19 +170,24 @@ class TransferEvalAgent(Agent):
 
             in_players_data.sort(key=lambda x: x["outlook_delta"], reverse=True)
 
-            # quality_score carries the value family's early-season prior
-            # blend; say so beside it, and whether the blend actually ran
-            # (priors loaded) or the score is pure observation.
-            warnings: list[dict[str, str]] = []
+            # Both prior-blended columns get named: quality_score from the
+            # value family and the outlook target_score from the ownership
+            # one, which agrees with fpl targets. quality_score is gated on an
+            # Understat match, so it is named only when it is actually shown.
+            # lineup_score is deliberately absent — the single-GW family still
+            # shrinks toward the position mean rather than blending.
+            shown_scores = ["target_score"]
             if any(
                 entry["quality_score"] is not None
                 for entry in (out_player_data, *in_players_data)
             ):
-                warning = early_season_quality_warning(
-                    next_gw_id, blended=data.player_priors is not None,
-                )
-                if warning is not None:
-                    warnings.append(warning)
+                shown_scores.insert(0, "quality_score")
+            warning = early_season_quality_warning(
+                next_gw_id,
+                blended=data.player_priors is not None,
+                score_names=tuple(shown_scores),
+            )
+            warnings: list[dict[str, str]] = [warning] if warning is not None else []
 
             self.log_success("Transfer evaluation complete")
 
@@ -294,8 +298,9 @@ class TransferEvalAgent(Agent):
             if identity.price > 0:
                 quality_per_m = round(quality_score / identity.price, 1)
 
-        # Target score (outlook): returns int
-        target = calculate_target_score(evaluation, next_gw_id=next_gw_id)
+        # Target score (outlook): returns int. Same early-season prior blend
+        # as fpl targets, so the two surfaces agree about a player at GW2.
+        target = calculate_target_score(evaluation, next_gw_id=next_gw_id, prior=prior)
         target_entry = {
             "id": identity.id,
             "position": identity.position_name,

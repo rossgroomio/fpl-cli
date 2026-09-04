@@ -2,7 +2,10 @@
 
 Confidence-weighted shrinkage from Bayesian player priors: low-confidence
 early-season scores are pulled toward their position mean until the prior
-cutoff gameweek.
+cutoff gameweek. The single-GW family (captain, bench, lineup, starting XI)
+is what is left running it — the value family took the prior blend in #143
+and the ownership family in #206, and the two devices are never stacked. The
+hold-out helpers below serve both.
 
 Shrinkage is an empirical-Bayes device for *noisy estimates*. ``adjusted =
 mean + conf * (score - mean)`` is the posterior mean under a normal-normal

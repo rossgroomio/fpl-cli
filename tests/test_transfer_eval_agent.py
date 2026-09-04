@@ -581,8 +581,18 @@ class TestTransferEvalAgent:
         assert [w["code"] for w in await _warnings(blended)] == ["early_season_prior_informed"]
         assert [w["code"] for w in await _warnings(early)] == ["early_season_small_sample"]
 
-        # Nothing to caveat: no Understat, so no quality score at all
-        assert await _warnings(dataclasses.replace(scoring_data, next_gw_id=2)) == []
+        # Both blended columns are named, so a reader knows which numbers on
+        # the page are pedigree-informed and which (lineup_score) are not.
+        assert "quality_score and target_score" in (await _warnings(blended))[0]["message"]
+
+        # No Understat means no quality_score — but the outlook target_score
+        # is always shown and always blended (#206), so the notice still
+        # applies and names only the column that is actually there.
+        no_understat = await _warnings(dataclasses.replace(scoring_data, next_gw_id=2))
+        assert [w["code"] for w in no_understat] == ["early_season_small_sample"]
+        assert "target_score" in no_understat[0]["message"]
+        assert "quality_score" not in no_understat[0]["message"]
+
         # Nothing to caveat: mid-season
         assert await _warnings(dataclasses.replace(scoring_data, understat_lookup=understat)) == []
 

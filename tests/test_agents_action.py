@@ -92,6 +92,7 @@ def _mock_scoring_data(
     player_priors: dict[int, PlayerPrior] | None = None,
     adjusted_npxg_lookup: dict[int, float] | None = None,
     consistency_lookup: dict[int, Any] | None = None,
+    next_gw_id: int = 26,
 ) -> ScoringData:
     """Fixed ScoringData standing in for prepare_scoring_data's upstream fetches.
 
@@ -104,6 +105,10 @@ def _mock_scoring_data(
     upstream data is empty. Pass them keyed by **main** element id, as the
     real bundle carries them — the agent is what translates them into the
     draft id space (#209).
+
+    *next_gw_id* defaults to a mid-season gameweek, where no early-season
+    device is live; pass an early one to exercise the prior blend and the
+    notice that goes with it.
     """
     teams = [
         make_team(id=1, short_name="ARS"),
@@ -142,7 +147,7 @@ def _mock_scoring_data(
             7: [{"fixture": fixtures[2], "is_home": False}],
         },
         ratings_service=ratings_service,
-        next_gw_id=26,
+        next_gw_id=next_gw_id,
     )
 
     return ScoringData(
@@ -150,8 +155,8 @@ def _mock_scoring_data(
         team_map=team_map,
         all_fixtures=fixtures,
         next_gw_fixtures=fixtures,
-        next_gw_id=26,
-        next_gw={"id": 26, "is_next": True},
+        next_gw_id=next_gw_id,
+        next_gw={"id": next_gw_id, "is_next": True},
         scoring_ctx=scoring_ctx,
         ratings_service=ratings_service,
         players=players or [],
@@ -542,8 +547,16 @@ class TestWaiverAgentPool:
         assert result.data["pool"] == []
 
 
-class TestWaiverAgentShrinkage:
-    """Regression tests for #122: shrinkage must not hoist unavailable players."""
+class TestWaiverAgentEarlySeasonPrior:
+    """The early-season prior on the waiver list: #122's hold-out, #206's blend.
+
+    The prior used to reach this ranking as position-mean shrinkage applied
+    after scoring; it now enters the quality baseline inside the score
+    (``blend_quality_with_prior``), which can reorder the pool as shrinkage
+    could not. The #122 hold-out moved with it — a player known not to be
+    playing keeps their observed score either way — so these stay the
+    regression tests for both.
+    """
 
     @staticmethod
     def _pool() -> list[dict]:
@@ -568,7 +581,7 @@ class TestWaiverAgentShrinkage:
 
     @staticmethod
     def _priors() -> dict[int, PlayerPrior]:
-        """Low confidence for the injured player — the shrinkage that caused #122."""
+        """Low confidence for the injured player — the adjustment that caused #122."""
         return {
             1: PlayerPrior(0.9, 1.0, "history"),
             2: PlayerPrior(0.8, 1.0, "history"),
@@ -585,45 +598,91 @@ class TestWaiverAgentShrinkage:
         )
 
     def test_injured_player_ranks_below_weak_available_one(self):
-        """Early season, where shrinkage is live, is where #122 bit."""
+        """Early season, where the prior is live, is where #122 bit."""
         ranked = self._rank(next_gw_id=3)
         order = [p["id"] for p in ranked]
         assert order.index(4) > order.index(3)
 
-    def test_injured_player_score_is_untouched_by_shrinkage(self):
-        """Held out means the ranked score is exactly the score that was computed."""
+    def test_injured_player_score_is_the_observation_alone(self):
+        """Held out means the ranked score is the pure-observation score."""
         agent = WaiverAgent()
-        agent._player_priors = self._priors()
         squad_by_position = {"GK": [], "DEF": [], "MID": [], "FWD": []}
         pool = self._pool()
         injured_in = next(p for p in pool if p["id"] == 4)
 
-        raw = agent._calculate_waiver_score(injured_in, squad_by_position, next_gw_id=3)
+        agent._player_priors = None
+        unblended = agent._calculate_waiver_score(
+            injured_in, squad_by_position, next_gw_id=3,
+        )
+        agent._player_priors = self._priors()
         ranked = agent._rank_waiver_targets(pool, [], squad_by_position, next_gw_id=3)
         injured_out = next(p for p in ranked if p["id"] == 4)
 
-        assert injured_out["waiver_score"] == raw
+        assert injured_out["waiver_score"] == unblended
 
-    def test_ordering_unchanged_after_the_shrinkage_cutoff(self):
-        """From GW10 shrinkage is skipped entirely, so the hold-out is a no-op."""
+    def test_ordering_unchanged_after_the_prior_cutoff(self):
+        """From GW10 the blend is skipped entirely, so the hold-out is a no-op."""
         ranked = self._rank(next_gw_id=12)
         order = [p["id"] for p in ranked]
         assert order.index(4) > order.index(3)
 
-    def test_available_players_still_shrink(self):
-        """The fix removes the unavailable player, not shrinkage itself."""
+    def test_available_players_still_take_the_prior(self):
+        """The hold-out removes the unavailable player, not the prior itself."""
         agent = WaiverAgent()
         agent._player_priors = self._priors()
         squad_by_position = {"GK": [], "DEF": [], "MID": [], "FWD": []}
         pool = [p for p in self._pool() if p["id"] != 4]
 
-        early = agent._rank_waiver_targets(pool, [], squad_by_position, next_gw_id=3)
-        agent._player_priors = {pid: PlayerPrior(0.0, 1.0, "history") for pid in (1, 2, 3)}
-        unshrunk = agent._rank_waiver_targets(pool, [], squad_by_position, next_gw_id=3)
+        blended = agent._rank_waiver_targets(pool, [], squad_by_position, next_gw_id=3)
+        agent._player_priors = None
+        observed = agent._rank_waiver_targets(pool, [], squad_by_position, next_gw_id=3)
 
-        fringe_shrunk = next(p["waiver_score"] for p in early if p["id"] == 3)
-        fringe_raw = next(p["waiver_score"] for p in unshrunk if p["id"] == 3)
-        assert fringe_shrunk > fringe_raw
+        fringe_blended = next(p["waiver_score"] for p in blended if p["id"] == 3)
+        fringe_observed = next(p["waiver_score"] for p in observed if p["id"] == 3)
+        assert fringe_blended > fringe_observed
+
+    def test_scores_are_the_blend_alone_not_blend_plus_shrinkage(self):
+        """The two devices are never stacked: the ranked score is exactly the
+        score the formula returned, with nothing pulled toward a mean after.
+        """
+        agent = WaiverAgent()
+        agent._player_priors = self._priors()
+        squad_by_position = {"GK": [], "DEF": [], "MID": [], "FWD": []}
+        pool = self._pool()
+        ranked = agent._rank_waiver_targets(pool, [], squad_by_position, next_gw_id=3)
+
+        for entry in ranked:
+            player = next(p for p in pool if p["id"] == entry["id"])
+            assert entry["waiver_score"] == agent._calculate_waiver_score(
+                player, squad_by_position, next_gw_id=3,
+            )
+
+    def test_quiet_elite_outranks_a_one_game_wonder(self):
+        """The #206 inversion on the waiver list, which shrinkage left standing."""
+        from fpl_cli.services.player_prior import _compute_confidence
+        base = {
+            "position": "MID", "status": "a", "team_short": "ARS",
+            "xGI_per_90": 0.3, "appearances": 1,
+        }
+        pool = [
+            {**base, "id": 10, "player_name": "Wonder", "form": 9.0, "ppg": 9.0,
+             "minutes": 65, "xGI_per_90": 1.4},
+            {**base, "id": 11, "player_name": "QuietElite", "form": 2.0, "ppg": 2.0,
+             "minutes": 90, "xGI_per_90": 0.9},
+        ]
+        agent = WaiverAgent()
+        squad_by_position = {"GK": [], "DEF": [], "MID": [], "FWD": []}
+
+        agent._player_priors = None
+        observed = agent._rank_waiver_targets(pool, [], squad_by_position, next_gw_id=2)
+        assert [p["id"] for p in observed] == [10, 11]
+
+        agent._player_priors = {
+            10: PlayerPrior(0.2, _compute_confidence(2, 0.2), "price"),
+            11: PlayerPrior(1.0, _compute_confidence(2, 1.0), "history"),
+        }
+        blended = agent._rank_waiver_targets(pool, [], squad_by_position, next_gw_id=2)
+        assert [p["id"] for p in blended] == [11, 10]
 
 
 class TestWaiverAgentScoring:
@@ -992,6 +1051,64 @@ class TestWaiverAgentIdSpace:
         target = result.data["recommendations"][0]["target"]
         assert target["reliability"] is None
         assert target["cv_xgi_percentile"] is None
+
+    # --- the early-season notice, which the same join decides (#206) ---
+
+    @pytest.mark.asyncio
+    async def test_early_season_notice_says_the_blend_ran(
+        self, mock_draft_bootstrap, mock_league_details,
+    ):
+        _, result = await self._run(
+            mock_draft_bootstrap, mock_league_details,
+            next_gw_id=3,
+            player_priors={self.MAIN_ID: PlayerPrior(0.7, 0.5, "history")},
+        )
+        assert [w["code"] for w in result.data["warnings"]] == [
+            "early_season_prior_informed"
+        ]
+        assert "waiver_score" in result.data["warnings"][0]["message"]
+
+    @pytest.mark.asyncio
+    async def test_notice_reports_pure_observation_when_no_prior_survives_the_join(
+        self, mock_draft_bootstrap, mock_league_details,
+    ):
+        """The draft-specific degradation: priors loaded, but keyed to main
+        elements this pool has no counterpart for, so the re-key empties them
+        and nobody was blended. Reading "prior-informed" off a non-None map
+        would tell a reader the opposite of what the numbers are.
+        """
+        _, result = await self._run(
+            mock_draft_bootstrap, mock_league_details,
+            next_gw_id=3,
+            player_priors={self.MAIN_ID + 900: PlayerPrior(0.7, 0.5, "history")},
+        )
+        assert [w["code"] for w in result.data["warnings"]] == [
+            "early_season_small_sample"
+        ]
+
+    @pytest.mark.asyncio
+    async def test_notice_reports_pure_observation_when_priors_never_loaded(
+        self, mock_draft_bootstrap, mock_league_details,
+    ):
+        _, result = await self._run(
+            mock_draft_bootstrap, mock_league_details, next_gw_id=3,
+        )
+        assert [w["code"] for w in result.data["warnings"]] == [
+            "early_season_small_sample"
+        ]
+
+    @pytest.mark.asyncio
+    async def test_no_notice_once_the_blend_has_extinguished(
+        self, mock_draft_bootstrap, mock_league_details,
+    ):
+        """Mid-season there is nothing to caveat, and the slot stays present
+        and empty rather than disappearing on consumers.
+        """
+        _, result = await self._run(
+            mock_draft_bootstrap, mock_league_details,
+            player_priors={self.MAIN_ID: PlayerPrior(0.7, 1.0, "history")},
+        )
+        assert result.data["warnings"] == []
 
 
 class TestWaiverAgentReasons:
