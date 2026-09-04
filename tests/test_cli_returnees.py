@@ -334,6 +334,35 @@ def _names(payload: dict[str, Any]) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# _load_profiles logging (issue #237/#239 review)
+# ---------------------------------------------------------------------------
+
+
+class TestLoadProfilesLogging:
+    """A historical-provider failure degrades to the price-percentile path,
+    and must log it without a traceback: fpl-cli configures no logging
+    handlers, so a WARNING with exc_info reaches logging's lastResort
+    handler and dumps it raw into stderr, including under `--format json`.
+    """
+
+    @pytest.mark.asyncio
+    async def test_failure_returns_none_and_logs_no_traceback(self, caplog):
+        import logging
+
+        with patch(
+            "fpl_cli.api.historical.make_historical_provider",
+            side_effect=RuntimeError("historical provider unavailable"),
+        ):
+            with caplog.at_level(logging.WARNING):
+                result = await returnees_cli._load_profiles()
+
+        assert result is None
+        records = [r for r in caplog.records if "Historical profiles unavailable" in r.message]
+        assert len(records) == 1
+        assert records[0].exc_info is None
+
+
+# ---------------------------------------------------------------------------
 # Table output
 # ---------------------------------------------------------------------------
 

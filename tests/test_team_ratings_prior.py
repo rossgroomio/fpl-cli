@@ -13,6 +13,8 @@ from fpl_cli.services.team_ratings_prior import (
     PRIOR_CACHE_VERSION,
     PRIOR_SOURCE_UNDERSTAT,
     REGRESSION_CONSTANT,
+    _prior_from_football_data,
+    _prior_from_understat,
     blend_with_prior,
     generate_prior,
 )
@@ -1046,3 +1048,49 @@ class TestMissingPerformanceRecordWarnings:
             await generate_prior(client)
 
         assert "COV" in caplog.text
+
+
+class TestPriorSourceFailureLogging:
+    """Each source's failure warning must carry no traceback: fpl-cli
+    configures no logging handlers, so a WARNING with exc_info reaches
+    logging's lastResort handler and dumps it raw into stderr, including
+    under `--format json` (issue #237/#239 review).
+    """
+
+    async def test_understat_source_failure_logs_no_traceback(self, caplog):
+        import logging
+
+        client = AsyncMock()
+        with (
+            patch(
+                "fpl_cli.services.team_ratings.TeamRatingsCalculator.calculate_from_xg",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("Understat unreachable"),
+            ),
+            caplog.at_level(logging.WARNING),
+        ):
+            result = await _prior_from_understat(client, "2024-25")
+
+        assert result is None
+        records = [r for r in caplog.records if "Failed to generate prior from Understat" in r.message]
+        assert len(records) == 1
+        assert records[0].exc_info is None
+
+    async def test_football_data_source_failure_logs_no_traceback(self, caplog):
+        import logging
+
+        with (
+            patch(
+                "fpl_cli.api.football_data.FootballDataClient",
+                side_effect=RuntimeError("football-data.org unreachable"),
+            ),
+            caplog.at_level(logging.WARNING),
+        ):
+            result = await _prior_from_football_data(2024)
+
+        assert result is None
+        records = [
+            r for r in caplog.records if "Failed to generate prior from football-data.org" in r.message
+        ]
+        assert len(records) == 1
+        assert records[0].exc_info is None

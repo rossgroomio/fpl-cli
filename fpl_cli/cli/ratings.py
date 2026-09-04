@@ -189,10 +189,13 @@ def ratings_update(since_gw: int | None, dry_run: bool, use_xg: bool):
                 try:
                     teams = await client.get_teams()
                     team_set_drift = service.check_team_set(t.short_name for t in teams)
-                except Exception:  # noqa: BLE001 — a drift check must not break the command
+                except Exception as exc:  # noqa: BLE001 — a drift check must not break the command
+                    # No traceback: fpl-cli configures no logging handlers, so
+                    # a WARNING with exc_info reaches logging's lastResort
+                    # handler and dumps it raw into stderr (issue #237/#239 review).
                     logger.warning(
-                        "Team-set drift check failed - keeping existing ratings without it",
-                        exc_info=True,
+                        "Team-set drift check failed - keeping existing ratings without it: %s",
+                        exc,
                     )
                 if current_ratings and not team_set_drift:
                     console.print(

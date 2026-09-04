@@ -471,10 +471,14 @@ async def fetch_match_records(
             all_match_records = await ci_client.get_match_stats(current_gw)
 
         return all_match_records or None
-    except Exception:  # noqa: BLE001 — graceful degradation: CI match data unavailable
+    except Exception as exc:  # noqa: BLE001 — graceful degradation: CI match data unavailable
         import logging
 
+        # No traceback: fpl-cli configures no logging handlers, so a WARNING
+        # with exc_info reaches logging's lastResort handler and dumps it raw
+        # into stderr, including under `--format json` on `captain`, `player`
+        # and `stats` (issue #237/#239 review).
         logging.getLogger(__name__).warning(
-            "Failed to fetch match records", exc_info=True,
+            "Failed to fetch match records: %s", exc,
         )
         return None

@@ -6,6 +6,11 @@ Validates positional FDR numeric range compatibility with existing thresholds.
 
 from __future__ import annotations
 
+import logging
+from unittest.mock import AsyncMock, patch
+
+import pytest
+
 from fpl_cli.models.player import PlayerPosition
 from fpl_cli.services.scoring import (
     FDR_EASY,
@@ -16,6 +21,7 @@ from fpl_cli.services.scoring import (
     calculate_captain_score,
     calculate_target_score,
     calculate_waiver_score,
+    fetch_match_records,
 )
 from fpl_cli.services.team_ratings import TeamRating, TeamRatingsService
 from tests.conftest import make_player
@@ -423,3 +429,27 @@ class TestFDRRangeValidation:
         assert any(f > FDR_MEDIUM for f in all_fdrs), (
             f"No FDR > {FDR_MEDIUM} (hard) found: {all_fdrs}"
         )
+
+
+class TestFetchMatchRecordsLogging:
+    """fetch_match_records degrades gracefully on a Core-Insights failure, and
+    must log it without a traceback: fpl-cli configures no logging handlers,
+    so a WARNING with exc_info reaches logging's lastResort handler and dumps
+    it raw into stderr -- including under `--format json` on `captain`,
+    `player` and `stats`, which all reach this path (issue #237/#239 review).
+    """
+
+    @pytest.mark.asyncio
+    async def test_failure_returns_none_and_logs_no_traceback(self, caplog):
+        with patch(
+            "fpl_cli.api.core_insights.CoreInsightsClient.__aenter__",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("Core-Insights unreachable"),
+        ):
+            with caplog.at_level(logging.WARNING):
+                result = await fetch_match_records(current_gw=10)
+
+        assert result is None
+        records = [r for r in caplog.records if "Failed to fetch match records" in r.message]
+        assert len(records) == 1
+        assert records[0].exc_info is None

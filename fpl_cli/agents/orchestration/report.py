@@ -201,8 +201,12 @@ class ReportAgent(Agent):
                 fdr = team["average_fdr"]
                 fdr_atk = team.get("average_fdr_atk", fdr)
                 fdr_def = team.get("average_fdr_def", fdr)
+                # 1dp, matching templates/gw_preview.md.j2's `%.1f` for the
+                # same table -- the inline path is only a fallback for a
+                # missing template file, but it must still describe the same
+                # figures the same way (issue #237/#239 review).
                 lines.append(
-                    f"| {team['short_name']} | {fdr:.2f} | {fdr_atk:.2f} | {fdr_def:.2f} | {team['fixtures_summary']} |"
+                    f"| {team['short_name']} | {fdr:.1f} | {fdr_atk:.1f} | {fdr_def:.1f} | {team['fixtures_summary']} |"
                 )
             fdr_mode = data["fixtures"].get("fdr_mode", "difference")
             lines.append(f"*{fdr_columns_footer(fdr_mode)}*")

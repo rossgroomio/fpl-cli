@@ -497,3 +497,42 @@ class TestEasyFixturesFooter:
     def test_no_footer_without_easy_fixtures(self):
         output = self.agent._generate_preview_report(29, _preview_data())
         assert "*FDR scale" not in output
+
+
+class TestEasyFixturesFdrRounding:
+    """The inline fallback must round Teams with Easy Fixtures FDR the same
+    way the template does -- both are `%.1f` (issue #237/#239 review), not
+    the inline path's former `.2f`."""
+
+    def setup_method(self):
+        self.agent = ReportAgent()
+
+    @staticmethod
+    def _data() -> dict:
+        data = _preview_data()
+        data["fixtures"] = {
+            "easy_fixture_runs": {
+                "overall": [
+                    {
+                        "short_name": "LIV",
+                        "average_fdr": 3.75,
+                        "average_fdr_atk": 4.25,
+                        "average_fdr_def": 2.35,
+                        "fixtures_summary": "ars BOU",
+                    }
+                ]
+            }
+        }
+        return data
+
+    def test_template_and_inline_round_to_the_same_one_decimal(self):
+        template_output = self.agent._generate_preview_report(29, self._data())
+        inline_output = self.agent._generate_preview_inline(29, self._data())
+
+        for output in (template_output, inline_output):
+            assert "3.8" in output
+            assert "4.2" in output
+            assert "2.4" in output
+            assert "3.75" not in output
+            assert "4.25" not in output
+            assert "2.35" not in output

@@ -431,6 +431,24 @@ class TestCaptureRecapHistory:
         assert str(path) in err
         assert path.read_bytes() == before
 
+    async def test_an_empty_cohort_over_a_corrupt_store_still_never_raises(self, capsys):
+        """R4: a corrupt gameweek file must never escape as a raised error.
+
+        `append_rows` short-circuits on an empty `rows` without ever parsing
+        the file, so an empty cohort used to skip the existing corrupt-store
+        guard entirely and reach the unconditional `resolved_gameweek` re-stamp
+        call added for issue #237 -- which raises `LeagueHistoryError` on the
+        same corrupt file, uncaught (issue #239 review).
+        """
+        path = _store().gameweek_file(5)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("not json{{{\n", encoding="utf-8")
+
+        data = _recap_data(managers=[], cohort=[])
+        result = await capture_recap_history(data, season=SEASON)
+
+        assert result.rows == []
+
     async def test_the_store_path_is_announced_only_when_a_season_is_first_created(self, capsys):
         await capture_recap_history(_recap_data(), season=SEASON)
         first = _stderr(capsys)

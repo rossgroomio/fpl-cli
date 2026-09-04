@@ -371,6 +371,9 @@ async def load_or_generate_player_priors(
         priors = generate_player_prior(profiles, players, next_gw_id)
         _save_prior_cache(priors, season_label(), next_gw_id)
         return priors
-    except Exception:  # noqa: BLE001 — graceful degradation: historical datasets unavailable
-        logger.warning("Failed to generate player priors", exc_info=True)
+    except Exception as exc:  # noqa: BLE001 — graceful degradation: historical datasets unavailable
+        # No traceback: fpl-cli configures no logging handlers, so a WARNING
+        # with exc_info reaches logging's lastResort handler and dumps it raw
+        # into stderr, including under `--format json` (issue #237/#239 review).
+        logger.warning("Failed to generate player priors: %s", exc)
         return None
