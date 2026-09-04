@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 from fpl_cli.cli._league_recap_types import LeagueRecapData
-from fpl_cli.services.league_history_fines import SeasonFinesTally, format_fine_breakdown
+from fpl_cli.services.league_history_fines import (
+    ManagerFineTally,
+    SeasonFinesTally,
+    format_fine_breakdown,
+    format_fine_ordinal,
+)
 from fpl_cli.services.league_history_notes import NotesPack, NoteSurface
-from fpl_cli.utils.gameweek import is_opening_gameweek
+from fpl_cli.utils.gameweek import format_gameweek_list, is_opening_gameweek
 
 # =============================================================================
 # SYNTHESIS PROMPT (Stage 2: League-wide editorial)
@@ -37,6 +42,7 @@ Your audience is every member of this league. They want entertainment first, inf
 - If fines were triggered, make them a highlight
 - The "## Season Fines" section is optional colour, not a required beat. Use it when a season total sharpens what already happened this gameweek ("Bob's fourth last-place of the season"), and leave it out entirely when it adds nothing - do not open or close on the season table, do not list it out, and never pad the recap with it. A gameweek where nobody was fined rarely needs it at all
 - When you do use it, take its numbers verbatim and only from that section. NEVER add up fines yourself from the "## Fines" section, which covers this gameweek alone, and never present a total the Season Fines section qualifies as incomplete as though it were final - repeat its qualification alongside it or leave the number out
+- NEVER describe a manager's fine, last place, or any other event as their "second" (or any higher ordinal), "another", "again", "twice", "both", "back-to-back", "two weeks running" or "in a row" unless a "## Season Fines" or "## League History" line says so about that named manager in those words, or gives them an ordinal above 1. Two things in that section are NOT a manager's running count: the league-wide "N fine(s) recorded in total", which sums every manager, and another manager's total sitting beside theirs. A manager whose own total reads 1 has been fined exactly once, this gameweek included, and an earlier fine belongs to whoever the section names against it. Where "## Season Fines" spells out this gameweek's fines in season context, that ordinal is the answer - use it verbatim rather than working one out
 - The biggest bench haul is always funny - lean into it
 - If a manager played a chip, that's a big narrative hook. A chip that flopped deserves mockery; a chip that paid off deserves grudging respect. When referencing chip users, treat the "Chips Played" section as the source of truth — it includes an explicit total count; use that number verbatim. Do NOT count tags in the standings table. Do not name a subset as "the X wildcards" — either name all users of that chip or none.
 - When referencing captain choices, treat the "## Captains" section as the source of truth. It lists every manager grouped by their intended captain pick, with an explicit total count. Use those counts verbatim. NEVER name a captain "outlier", "dissenter", or "the manager(s) who picked Y" unless they appear under that captain in the section. If you describe N managers as picking the modal captain, it must match the section's group size for that player. Do NOT infer captain choices from the awards or standings — they are compressed and miss managers whose pick was neither the best nor the worst.
@@ -434,6 +440,76 @@ def format_recap_fines_context(data: LeagueRecapData) -> str:
     return "\n".join(f"- {f['manager_name']}: {f['message']}" for f in fines)
 
 
+def _this_week_fine_lines(manager: ManagerFineTally, gameweek: int) -> list[str]:
+    """One manager's fines *this* gameweek, placed in their own season.
+
+    Written as finished sentences carrying the ordinal already worked out,
+    in the style `NotesPackEntry.text` uses, because the arithmetic is the
+    part that goes wrong: handed "1" beside another manager's "1" and a
+    league total of "2", the editorial has twice reported this week's loser
+    as picking up their second fine of the season when it was their first
+    and the earlier one belonged to somebody else (issue #233).
+
+    The ordinal counts *gameweeks* the rule was ruled against them in, not
+    rulings, because the claim it guards -- "their second last-place finish"
+    -- is about weeks. A manager fined the same rule twice inside one
+    gameweek would make the two differ, so the all-rules line states the
+    ruling count separately rather than folding it in.
+    """
+    name = manager.manager_name
+    lines: list[str] = []
+    for rule_type, gameweeks in sorted(manager.fined_gameweeks_by_rule.items()):
+        if gameweek not in gameweeks:
+            continue
+        earlier = [gw for gw in gameweeks if gw < gameweek]
+        ordinal = format_fine_ordinal(len(earlier) + 1)
+        line = (
+            f"- {name}: this GW{gameweek} '{rule_type}' fine is their {ordinal} "
+            f"'{rule_type}' fine of the season."
+        )
+        if earlier:
+            line += f" Their earlier ones were in {format_gameweek_list(earlier)}."
+        else:
+            # Scoped to the rule, not to fines in general: a manager fined a
+            # different rule earlier in the season has been fined before, and
+            # a blanket "no earlier fine" here would be the mirror image of
+            # the error this block exists to stop.
+            line += (
+                f" {name} has no earlier '{rule_type}' fine, so do not call it a second "
+                f'\'{rule_type}\', "another", "again", "twice", "back-to-back" or "in a row" '
+                f"-- an earlier '{rule_type}' fine against a different manager is that "
+                f"manager's, never {name}'s."
+            )
+        if manager.total > manager.counts.get(rule_type, 0):
+            line += (
+                f" Across all rules {name} has {manager.total} fine(s) this season, in "
+                f"{format_gameweek_list(manager.fined_gameweeks)}."
+            )
+        lines.append(line)
+    return lines
+
+
+def _format_this_week_in_season_context(tally: SeasonFinesTally) -> list[str]:
+    """The derived block that turns the season table into sentences.
+
+    Nothing here is new data -- it is the same tally, read for the one
+    question the table cannot answer at a glance and the editorial keeps
+    answering wrong: is this week's fine that manager's first, or another
+    one? Empty on a gameweek where nobody was fined, which is most of them.
+    """
+    gameweek = tally.through_gameweek
+    entries: list[str] = []
+    for manager in tally.fined_managers:
+        entries.extend(_this_week_fine_lines(manager, gameweek))
+    if not entries:
+        return []
+    return [
+        f"GW{gameweek}'s own fines, placed in the season (these ordinals are already worked out "
+        f"-- use them verbatim and never count fines yourself):",
+        *entries,
+    ]
+
+
 def format_recap_season_fines_context(tally: SeasonFinesTally | None) -> str:
     """Format the season-long fine tally for the LLM prompt (issue #136).
 
@@ -459,16 +535,19 @@ def format_recap_season_fines_context(tally: SeasonFinesTally | None) -> str:
 
     lines = [
         f"Season fine totals, GW{tally.start_gameweek} through GW{tally.through_gameweek} "
-        f"({tally.total_fines} fine(s) recorded in total):",
+        f"({tally.total_fines} fine(s) recorded in total across the whole league -- this is a "
+        f"league-wide sum, never any one manager's count):",
     ]
     fined = tally.fined_managers
     if fined:
         for manager in fined:
             # Same helper the console block uses, so the wording the model is
-            # given and the wording the user reads cannot drift apart.
+            # given and the wording the user reads cannot drift apart -- with
+            # the gameweeks appended, which the console reader can already
+            # see in the table beside it (issue #233).
             lines.append(
                 f"- {manager.manager_name}: {manager.total} "
-                f"({format_fine_breakdown(manager)})",
+                f"({format_fine_breakdown(manager, with_gameweeks=True)})",
             )
     else:
         lines.append("- Nobody has been fined this season.")
@@ -476,6 +555,11 @@ def format_recap_season_fines_context(tally: SeasonFinesTally | None) -> str:
     unfined = [manager.manager_name for manager in tally.managers if not manager.total]
     if unfined and fined:
         lines.append(f"Not fined so far: {', '.join(unfined)}")
+
+    this_week = _format_this_week_in_season_context(tally)
+    if this_week:
+        lines.append("")
+        lines.extend(this_week)
 
     if tally.qualifiers:
         lines.append("")

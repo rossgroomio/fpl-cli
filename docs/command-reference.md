@@ -917,8 +917,9 @@ since left the league keeps the fines already ruled against them.
 
 **JSON:** `--format json` emits one entry per recorded manager, fined or not, each with
 `counts` (one key per rule type, zero included), `total`, `fined_gameweeks`,
-`ruled_gameweeks`, `unruled_gameweeks`, `first_recorded_gameweek`, `last_recorded_gameweek`
-and `is_fully_ruled`. `metadata` carries `season`, `fpl_format`, `league_id`, `gameweek`
+`fined_gameweeks_by_rule` (which gameweeks each rule was ruled in, keyed the same way
+`counts` is), `ruled_gameweeks`, `unruled_gameweeks`, `first_recorded_gameweek`,
+`last_recorded_gameweek` and `is_fully_ruled`. `metadata` carries `season`, `fpl_format`, `league_id`, `gameweek`
 (the through point), `start_gameweek`, `rule_types`, `total_fines` and `qualifiers` — the
 same sentences printed beneath the table. Exits 1 with the shared `{"command", "error"}`
 envelope when no league id is configured for the format, or the season label is malformed.

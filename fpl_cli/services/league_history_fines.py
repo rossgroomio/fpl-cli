@@ -83,12 +83,20 @@ class ManagerFineTally:
     own recorded span where no rule was ruled against them at all, so a zero
     total reads as "clean across the gameweeks that were ruled" rather than
     "clean all season".
+
+    `fined_gameweeks_by_rule` is the provenance field (issue #233): *which*
+    gameweeks each rule type was ruled against them in, not just how many.
+    A total on its own supports "2 last-place fines" but not "last place in
+    GW1 and GW2", and a reader handed only the total -- the recap editorial
+    especially -- has been observed inventing the gameweeks to go with it.
+    Keyed the same way `counts` is, so the two are read together.
     """
 
     manager_key: int
     manager_name: str
     counts: dict[str, int] = field(default_factory=dict)
     fined_gameweeks: list[int] = field(default_factory=list)
+    fined_gameweeks_by_rule: dict[str, list[int]] = field(default_factory=dict)
     ruled_gameweeks: list[int] = field(default_factory=list)
     unruled_gameweeks: list[int] = field(default_factory=list)
     # Earliest and latest gameweek in the span holding any row for them,
@@ -189,6 +197,7 @@ class _Accumulator:
     manager_name: str
     counts: dict[str, int] = field(default_factory=dict)
     fined_gameweeks: set[int] = field(default_factory=set)
+    fined_gameweeks_by_rule: dict[str, set[int]] = field(default_factory=dict)
     ruled_gameweeks: set[int] = field(default_factory=set)
     first_recorded_gameweek: int | None = None
     last_recorded_gameweek: int | None = None
@@ -221,16 +230,42 @@ class _SpanCoverage:
 # ---------------------------------------------------------------------------
 
 
-def format_fine_breakdown(manager: ManagerFineTally) -> str:
+def format_fine_breakdown(manager: ManagerFineTally, *, with_gameweeks: bool = False) -> str:
     """One manager's counts as "2 last-place, 1 red-card".
 
     Shared by every surface that spells a manager's fines out -- the console
     highlights, the recap prompt -- so the human-facing wording and the
     wording the editorial is given can never drift apart.
+
+    `with_gameweeks` appends each rule's provenance -- "2 last-place in
+    GW1-2, 1 red-card in GW5" -- and is the one deliberate divergence
+    between those surfaces (issue #233). A console reader has the table in
+    front of them and can see which weeks a total came from; the editorial has only
+    the sentence it is handed, and given a bare total it has been observed
+    supplying gameweeks of its own. Off by default so the console and report
+    wording is unchanged.
     """
-    return ", ".join(
-        f"{count} {rule_type}" for rule_type, count in sorted(manager.counts.items())
-    )
+    parts: list[str] = []
+    for rule_type, count in sorted(manager.counts.items()):
+        part = f"{count} {rule_type}"
+        gameweeks = manager.fined_gameweeks_by_rule.get(rule_type) if with_gameweeks else None
+        if gameweeks:
+            part += f" in {format_gameweek_list(gameweeks)}"
+        parts.append(part)
+    return ", ".join(parts)
+
+
+def format_fine_ordinal(count: int) -> str:
+    """"1st", "2nd", "3rd", "4th" -- the ordinal a recap would reach for.
+
+    Small enough to inline, but it exists so the prompt states the ordinal
+    rather than handing the model a number to convert, which is exactly the
+    arithmetic issue #233 is about.
+    """
+    if count % 100 in (11, 12, 13):
+        return f"{count}th"
+    suffix = {1: "st", 2: "nd", 3: "rd"}.get(count % 10, "th")
+    return f"{count}{suffix}"
 
 
 def serialize_manager_fine_tally(
@@ -249,6 +284,9 @@ def serialize_manager_fine_tally(
         "total": manager.total,
         "counts": {rule: manager.counts.get(rule, 0) for rule in rule_types},
         "fined_gameweeks": manager.fined_gameweeks,
+        "fined_gameweeks_by_rule": {
+            rule: manager.fined_gameweeks_by_rule.get(rule, []) for rule in rule_types
+        },
         "ruled_gameweeks": manager.ruled_gameweeks,
         "unruled_gameweeks": manager.unruled_gameweeks,
         "first_recorded_gameweek": manager.first_recorded_gameweek,
@@ -455,6 +493,7 @@ def build_season_fines_tally(
                     continue
                 accumulator.counts[fine.rule_type] = accumulator.counts.get(fine.rule_type, 0) + 1
                 accumulator.fined_gameweeks.add(gameweek)
+                accumulator.fined_gameweeks_by_rule.setdefault(fine.rule_type, set()).add(gameweek)
 
             row_rules = _ruled_rule_types(row)
             if row_rules:
@@ -517,6 +556,10 @@ def build_season_fines_tally(
             manager_name=accumulator.manager_name,
             counts=dict(sorted(accumulator.counts.items())),
             fined_gameweeks=sorted(accumulator.fined_gameweeks),
+            fined_gameweeks_by_rule={
+                rule_type: sorted(gameweeks)
+                for rule_type, gameweeks in sorted(accumulator.fined_gameweeks_by_rule.items())
+            },
             ruled_gameweeks=sorted(accumulator.ruled_gameweeks),
             unruled_gameweeks=sorted(personal_span - accumulator.ruled_gameweeks),
             first_recorded_gameweek=first,

@@ -2525,7 +2525,9 @@ class TestSeasonFinesSurfaces:
         text = format_recap_season_fines_context(tally)
 
         assert f"Season fine totals, GW{CHIP_SPLIT_GW} through GW{CHIP_SPLIT_GW}" in text
-        assert "- Bob: 1 (1 last-place)" in text
+        # The prompt spells out *which* gameweek each fine came from; the
+        # console table beside it still reads "1 (1 last-place)" (issue #233).
+        assert f"- Bob: 1 (1 last-place in GW{CHIP_SPLIT_GW})" in text
         assert "Not fined so far: Alice" in text
         assert "Coverage:" in text
 
@@ -2567,6 +2569,105 @@ class TestSeasonFinesSurfaces:
 
         content = Path(result.data["report_path"]).read_text(encoding="utf-8")
         assert "# Season Fines" not in content
+
+
+class TestThisWeeksFineInSeasonContext:
+    """Issue #233: the editorial kept awarding this week's loser a second
+    last-place finish that belonged to somebody else.
+
+    The prompt was correct every time -- two managers on 1 each, a league
+    total of 2 -- and the model still merged them. So the tally now states
+    the arithmetic as a sentence rather than leaving it to be worked out,
+    and these tests hold that sentence in place.
+    """
+
+    def _loser_is(self, name: str, gameweek: int) -> LeagueRecapData:
+        """One gameweek where `name` finishes bottom of a two-manager league."""
+        others = {"Alice": ("Bob", 2), "Bob": ("Alice", 1)}
+        winner, winner_id = others[name]
+        loser_id = 1 if name == "Alice" else 2
+        return _recap_data(
+            gameweek=gameweek,
+            managers=[
+                _manager(name=winner, entry_id=winner_id, gross_points=60),
+                _manager(name=name, entry_id=loser_id, gross_points=10, gw_rank=2, overall_rank=2),
+            ],
+            cohort=_cohort(
+                (winner_id, winner, winner_id, 60, 300),
+                (loser_id, name, loser_id, 10, 200),
+            ),
+        )
+
+    def _prompt_text(self, *losers_by_gameweek: tuple[str, int]) -> str:
+        from fpl_cli.prompts.league_recap import format_recap_season_fines_context
+        from fpl_cli.services.league_history_fines import build_season_fines_tally
+
+        for name, gameweek in losers_by_gameweek:
+            result = _invoke_recap(
+                self._loser_is(name, gameweek), client=_fpl_client(gameweek),
+                settings=_LAST_PLACE_ONLY, gw=gameweek,
+            )
+            assert result.exit_code == 0, result.output
+        through = losers_by_gameweek[-1][1]
+        return format_recap_season_fines_context(
+            build_season_fines_tally(_store(), through, rule_types=["last-place"]),
+        )
+
+    def test_the_weeks_first_fine_is_stated_as_a_first_not_left_to_be_counted(self):
+        """The exact shape that misfired: Bob fined in GW1, Alice in GW2,
+        both showing a total of 1 beside a league total of 2."""
+        text = self._prompt_text(("Bob", 1), ("Alice", 2))
+
+        assert "- Alice: this GW2 'last-place' fine is their 1st 'last-place' fine" in text
+        assert "Alice has no earlier 'last-place' fine" in text
+        # And the fact the model was reaching for instead is named as Bob's.
+        assert "- Bob: 1 (1 last-place in GW1)" in text
+        assert "- Alice: 1 (1 last-place in GW2)" in text
+
+    def test_the_league_total_says_outright_that_it_is_not_one_managers_count(self):
+        """The suspected misreading: "2 fine(s) recorded in total" beside two
+        managers on 1 each, taken as somebody's running tally."""
+        text = self._prompt_text(("Bob", 1), ("Alice", 2))
+
+        assert "2 fine(s) recorded in total across the whole league" in text
+        assert "never any one manager's count" in text
+
+    def test_only_the_manager_fined_this_gameweek_gets_a_context_line(self):
+        text = self._prompt_text(("Bob", 1), ("Alice", 2))
+
+        context = text.split("GW2's own fines")[1]
+        assert "- Alice: this GW2" in context
+        assert "- Bob: this GW2" not in context
+
+    def test_a_genuine_second_is_stated_as_a_second_with_its_earlier_gameweek(self):
+        text = self._prompt_text(("Bob", 1), ("Bob", 2))
+
+        assert "- Bob: this GW2 'last-place' fine is their 2nd 'last-place' fine" in text
+        assert "Their earlier ones were in GW1." in text
+        assert "no earlier 'last-place' fine" not in text
+
+    def test_a_gameweek_with_no_fines_gets_no_context_block(self):
+        """Most gameweeks. The section still carries the season totals."""
+        text = self._prompt_text(("Bob", 1), ("Bob", 2))
+        # GW3 rules nobody: a two-manager league where neither finishes last
+        # is not constructible, so read the same tally one gameweek on.
+        from fpl_cli.prompts.league_recap import format_recap_season_fines_context
+        from fpl_cli.services.league_history_fines import build_season_fines_tally
+
+        later = format_recap_season_fines_context(
+            build_season_fines_tally(_store(), 3, rule_types=["last-place"]),
+        )
+
+        assert "own fines, placed in the season" in text
+        assert "own fines, placed in the season" not in later
+        assert "Bob: 2 (2 last-place in GW1-2)" in later
+
+    def test_the_system_prompt_forbids_an_unsupported_second(self):
+        from fpl_cli.prompts.league_recap import RECAP_SYNTHESIS_SYSTEM_PROMPT
+
+        assert '"another", "again", "twice", "both", "back-to-back"' in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        assert "sums every manager" in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        assert "fined exactly once, this gameweek included" in RECAP_SYNTHESIS_SYSTEM_PROMPT
 
 
 class TestEndToEndPromptThroughTheFullCommand:
@@ -2628,7 +2729,7 @@ class TestEndToEndPromptThroughTheFullCommand:
         user_prompt = (tmp_path / "data" / "debug" / "recap_prompt.txt").read_text(encoding="utf-8")
 
         assert "## Season Fines" in user_prompt
-        assert "Bob: 1 (1 last-place)" in user_prompt
+        assert f"Bob: 1 (1 last-place in GW{CHIP_SPLIT_GW})" in user_prompt
         assert "NEVER add up fines yourself" in system_prompt
 
     def test_an_ordinary_gameweek_still_hands_the_model_season_totals(
@@ -2649,7 +2750,7 @@ class TestEndToEndPromptThroughTheFullCommand:
         user_prompt = (tmp_path / "data" / "debug" / "recap_prompt.txt").read_text(encoding="utf-8")
 
         assert "## Season Fines" in user_prompt
-        assert "Bob: 1 (1 last-place)" in user_prompt
+        assert "Bob: 1 (1 last-place in GW5)" in user_prompt
         # ...and it is offered, never demanded.
         assert "optional colour, not a required beat" in system_prompt
 

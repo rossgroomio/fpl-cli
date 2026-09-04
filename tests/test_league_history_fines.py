@@ -76,6 +76,32 @@ class TestFineCounts:
         assert alice.total == 2
         assert alice.fined_gameweeks == [1]
 
+    def test_each_rule_records_the_gameweeks_it_was_ruled_in(self):
+        """Provenance, not just a count (issue #233): a total of 2 supports
+        "2 last-place fines" and nothing about which weeks they landed in,
+        and a reader handed only the total invents the weeks to go with it."""
+        store = _store()
+        for gw in (1, 2, 4):
+            store.append_rows(gw, [make_history_row(
+                gameweek=gw, manager_key=1, manager_name="Alice",
+                fine_rules_evaluated=ALL_RULES,
+                fines=[_fine(1, "last-place")] if gw in (1, 4) else [_fine(1, "red-card")],
+            )])
+
+        alice = _by_name(_tally_for(store, 4, rule_types=ALL_RULES), "Alice")
+
+        assert alice.fined_gameweeks_by_rule == {"last-place": [1, 4], "red-card": [2]}
+        assert alice.fined_gameweeks == [1, 2, 4]
+
+    def test_a_manager_with_no_fines_has_no_rule_provenance(self):
+        store = _store()
+        store.append_rows(1, [make_history_row(
+            gameweek=1, manager_key=1, manager_name="Alice",
+            fine_rules_evaluated=ALL_RULES, fines=[],
+        )])
+
+        assert _by_name(_tally_for(store, 1, rule_types=ALL_RULES), "Alice").fined_gameweeks_by_rule == {}
+
     def test_a_rename_keeps_one_tally_under_the_current_name(self):
         """`LedgerFine` keys on `manager_key` precisely so a mid-season rename
         cannot split someone's tally in two."""
