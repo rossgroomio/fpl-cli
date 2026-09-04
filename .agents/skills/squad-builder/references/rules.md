@@ -8,7 +8,7 @@
 - **ATK column:** Use for FWD and MID (based on opponent's defensive strength)
 - **DEF column:** Use for DEF and GK (based on opponent's offensive strength)
 Use the correct column everywhere fixture difficulty is referenced.
-Label as **pFDR** (not FDR) in all output - this is position-aware and blends team strength with opponent weakness, so values differ from the general FDR shown by `fpl fixtures`.
+Label as **pFDR** (not FDR) in all output - this is position-aware, so values differ from the general FDR shown by `fpl fixtures` and `fpl fdr`, which is the mean of the attacking and defensive figures.
 
 **When the prompt carries a Data Quality caveat, pFDR is indicative, not decisive.** The caveat means the team ratings under every number here are stale, absent, describing last season's league, or unable to separate any two clubs - the columns still render, they just are not measuring what they claim. Keep quoting pFDR in fixture runs and rationales, but do not let a fixture run alone win a squad slot over a better player; lead on underlying stats, minutes and preview intel, and say in the Why column that fixtures were discounted. A season-start build will usually carry this caveat - there are no current-season results to rate teams on yet - so treat pre-season fixture difficulty as a tiebreak rather than a driver. With no caveat present, weight pFDR normally.
 

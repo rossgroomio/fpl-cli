@@ -990,6 +990,73 @@ class TestFixtureAgentPositionalFDR:
         assert fdr["DEF"] == 7.0
 
 
+    def test_general_fdr_is_the_mean_of_the_displayed_pair(self, agent, temp_ratings_config):
+        """The FDR column is the mean of the ATK/DEF figures printed beside it."""
+        from fpl_cli.services.team_ratings import TeamRatingsService
+
+        agent.ratings_service = TeamRatingsService(config_path=temp_ratings_config)
+
+        pos = agent.get_fixture_fdr_by_position("ARS", "MCI", is_home=True, mode="opponent")
+
+        assert agent.general_fdr(pos) == (pos["ATK"] + pos["DEF"]) / 2
+
+    def test_general_fdr_agrees_with_the_service(self, agent, temp_ratings_config):
+        """`fpl fixtures` reaches the same number without holding the pair (#202)."""
+        from fpl_cli.services.team_ratings import TeamRatingsService
+
+        service = TeamRatingsService(config_path=temp_ratings_config)
+        agent.ratings_service = service
+
+        pair = agent.get_fixture_fdr_by_position("ARS", "MCI", is_home=True)
+
+        assert agent.general_fdr(pair) == service.get_fixture_fdr("ARS", "MCI", "home")
+
+    def test_general_fdr_agrees_with_the_service_on_fractional_axes(self, agent, tmp_path):
+        """Rounding order must not split the two routes apart.
+
+        `_load_ratings` does not enforce `TeamRating`'s int annotations the way
+        `_apply_overrides` does, so a hand-edited `team_ratings.yaml` can carry
+        a fractional axis. Averaging unrounded positional FDRs then rounding
+        the mean lands on a different number than the mean of the 1dp figures
+        actually displayed - the FDR column disagreeing with the pair beside
+        it, which is the split #202 exists to close.
+        """
+        import yaml
+
+        from fpl_cli.services.team_ratings import TeamRatingsService
+
+        config_path = tmp_path / "fractional_ratings.yaml"
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.dump({
+                "metadata": {
+                    "last_updated": datetime.now().strftime("%Y-%m-%d"),
+                    "source": "test",
+                    "staleness_threshold_days": 30,
+                },
+                "ratings": {
+                    "CHE": {"atk_home": 2.1, "atk_away": 4, "def_home": 3, "def_away": 4},
+                    "MCI": {"atk_home": 1, "atk_away": 2, "def_home": 1, "def_away": 2},
+                },
+            }, f)
+        service = TeamRatingsService(config_path=config_path)
+        agent.ratings_service = service
+
+        pair = agent.get_fixture_fdr_by_position("CHE", "MCI", is_home=True)
+
+        assert agent.general_fdr(pair) == service.get_fixture_fdr("CHE", "MCI", "home")
+
+    def test_positional_pair_uses_the_agent_mode(self, temp_ratings_config):
+        """No explicit mode falls back to the agent's, like every other FDR call."""
+        from fpl_cli.services.team_ratings import TeamRatingsService
+
+        agent = FixtureAgent(config={"fdr_mode": "opponent"})
+        agent.ratings_service = TeamRatingsService(config_path=temp_ratings_config)
+
+        assert agent.get_fixture_fdr_by_position(
+            "ARS", "MCI", is_home=True
+        ) == agent.get_fixture_fdr_by_position("ARS", "MCI", is_home=True, mode="opponent")
+
+
 class TestStatsAgent:
     """Tests for StatsAgent."""
 

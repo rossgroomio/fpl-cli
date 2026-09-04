@@ -60,6 +60,12 @@ FDR_EASY = 2.5
 FDR_MEDIUM = 3.5
 FDR_HARD = 4.5
 
+# Thresholds for the FPL API's own 1-5 difficulty, which every command falls
+# back to when custom analysis is off. Deliberately not the 1-7 ones above: a
+# 5 there is mid-table, here it is the hardest fixture there is.
+API_FDR_EASY = 2.5
+API_FDR_MEDIUM = 3.0
+
 _PICKS_CONCURRENCY = 10
 
 
@@ -124,6 +130,20 @@ def _fdr_style(fdr: int | float) -> str:
         return "orange1"
     else:
         return "red"
+
+
+def _api_fdr_style(fdr: int | float) -> str:
+    """Get Rich style for an FPL API difficulty on its own 1-5 scale.
+
+    Shared by the custom-analysis-off paths of `fpl fdr` and `fpl fixtures` so
+    the two cannot drift on where "easy" stops, the way their FDR figures did
+    (#202).
+    """
+    if fdr <= API_FDR_EASY:
+        return "green"
+    elif fdr <= API_FDR_MEDIUM:
+        return "yellow"
+    return "white"
 
 
 # Formatting rules for the dynamic sort column
