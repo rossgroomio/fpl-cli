@@ -107,7 +107,6 @@ def player_command(
                     # consumer could not tell a typo from a working lookup (#159 review).
                     emit_failure(
                         "player", f"No players found matching '{name}'", output_format,
-                        stream=error_console,
                     )
 
                 display = matches[:5]

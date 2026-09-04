@@ -156,7 +156,7 @@ def allocate_command(
                     with json_output_mode() as stdout:
                         emit_json_error("allocate", msg, file=stdout)
                 else:
-                    console.print(Panel(msg, title="Allocation Failed", border_style="red"))
+                    error_console.print(Panel(msg, title="Allocation Failed", border_style="red"))
                     raise SystemExit(1)
             bb_gw_idx = bench_boost_gw - start_gw
 
@@ -174,7 +174,7 @@ def allocate_command(
                 with json_output_mode() as stdout:
                     emit_json_error("allocate", msg, file=stdout)
             else:
-                console.print(Panel(msg, title="Allocation Failed", border_style="red"))
+                error_console.print(Panel(msg, title="Allocation Failed", border_style="red"))
                 raise SystemExit(1)
 
         # At horizon >= 2 the solver ranks on the value family's quality

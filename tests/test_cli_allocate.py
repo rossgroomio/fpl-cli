@@ -169,7 +169,7 @@ class TestAllocateCommand:
         assert result.exit_code == 1
 
     def test_infeasible_table_error(self):
-        """Infeasible result in table mode exits with code 1."""
+        """Infeasible result in table mode exits 1, reporting on stderr (#162)."""
         infeasible = SquadResult(
             selected_players=[], starter_ids=set(),
             budget_used=0.0, budget_remaining=50.0,
@@ -178,6 +178,8 @@ class TestAllocateCommand:
         )
         result = _run_allocate(infeasible)
         assert result.exit_code == 1
+        assert "Infeasible" in result.stderr
+        assert result.stdout == ""
 
     def test_table_output_renders(self):
         """Table output renders without error."""

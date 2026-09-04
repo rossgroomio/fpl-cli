@@ -12,6 +12,7 @@ from rich.table import Table
 from fpl_cli.cli._context import (
     Format,
     console,
+    error_console,
     get_format,
     get_settings,
     print_result_warnings,
@@ -80,7 +81,7 @@ def transfer_eval_command(ctx: click.Context, out_player: str, in_players: str, 
             if output_format == "json":
                 emit_json_error("transfer-eval", msg)
             else:
-                console.print(f"[red]{msg}[/red]")
+                error_console.print(f"[red]{msg}[/red]")
             raise SystemExit(1)
 
         in_resolved = resolve_players_or_report(
@@ -93,7 +94,7 @@ def transfer_eval_command(ctx: click.Context, out_player: str, in_players: str, 
                 emit_json_error("transfer-eval", msg)
             else:
                 for e in errors:
-                    console.print(f"[red]{e}[/red]")
+                    error_console.print(f"[red]{e}[/red]")
             raise SystemExit(1)
 
         # Validate position match
@@ -110,7 +111,7 @@ def transfer_eval_command(ctx: click.Context, out_player: str, in_players: str, 
             if output_format == "json":
                 emit_json_error("transfer-eval", msg)
             else:
-                console.print(f"[red]{msg}[/red]")
+                error_console.print(f"[red]{msg}[/red]")
             raise SystemExit(1)
 
         # Run agent
@@ -124,7 +125,7 @@ def transfer_eval_command(ctx: click.Context, out_player: str, in_players: str, 
             if output_format == "json":
                 emit_json_error("transfer-eval", result.message)
             else:
-                console.print(f"[red]Agent failed: {result.message}[/red]")
+                error_console.print(f"[red]Agent failed: {result.message}[/red]")
             raise SystemExit(1)
 
         data = result.data

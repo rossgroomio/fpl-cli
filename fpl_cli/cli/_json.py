@@ -12,10 +12,9 @@ from typing import IO, Any, Callable, Generator, NoReturn, TypeVar
 
 import click
 import httpx
-from rich.console import Console
 from rich.markup import escape as rich_escape
 
-from fpl_cli.cli._context import console
+from fpl_cli.cli._context import error_console
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -107,7 +106,6 @@ def emit_failure(
     output_format: str,
     *,
     cause: BaseException | None = None,
-    stream: Console | None = None,
 ) -> NoReturn:
     """Report *message* on the channel the caller parses, then exit 1.
 
@@ -116,16 +114,16 @@ def emit_failure(
     would sit ahead of an envelope that never arrives and break the parse at
     byte 0 (#140).
 
-    *stream* picks which console the table-mode prose goes to, and exists only
-    because the repo is not consistent about it: `intel` and `stats` have
-    always put these messages on stdout, `player` and `sell-prices` on stderr.
-    Defaulting to `console` and letting the two stderr callers say so keeps
-    this helper from silently moving anyone's output between streams.
-    Unifying them is worth doing, but it is a change of its own.
+    Table-mode prose goes to stderr, every command alike (#162). It used to
+    follow whichever stream each call site happened to pick, so `2>/dev/null`
+    silenced the reason for exiting on some commands and `> out.txt` captured
+    it on others -- a split no user could have predicted, because nothing
+    described it. stdout carries the output a command was asked for; the
+    explanation for producing none of it does not belong there.
     """
     if output_format == "json":
         emit_json_error(command, message, cause=cause)
-    (stream or console).print(f"[red]{rich_escape(message)}[/red]")
+    error_console.print(f"[red]{rich_escape(message)}[/red]")
     raise SystemExit(1) from cause
 
 

@@ -365,7 +365,7 @@ def init_command(force: bool) -> None:
     try:
         teams = asyncio.run(_run())
     except Exception as exc:  # noqa: BLE001 -- report the failure rather than a stack trace
-        console.print(f"[red]Could not fetch teams from the FPL API: {exc}[/red]")
+        error_console.print(f"[red]Could not fetch teams from the FPL API: {exc}[/red]")
         raise SystemExit(1) from exc
 
     target = previews_dir()
@@ -525,7 +525,7 @@ def schema_command() -> None:
     try:
         content = path.read_text(encoding="utf-8")
     except OSError as exc:
-        console.print(f"[red]Could not read the schema reference at {path}: {exc}[/red]")
+        error_console.print(f"[red]Could not read the schema reference at {path}: {exc}[/red]")
         raise SystemExit(1) from exc
     console.print(f"[dim]# Schema reference: {path}[/dim]")
     print(content)

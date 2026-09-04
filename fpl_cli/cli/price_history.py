@@ -63,7 +63,7 @@ def price_history_command(
                     with json_output_mode() as stdout:
                         emit_json_error("price-history", "Failed to fetch price history data", file=stdout)
                     return
-                console.print(f"[red]Failed to fetch price history: {e}[/red]")
+                error_console.print(f"[red]Failed to fetch price history: {e}[/red]")
                 raise SystemExit(1)
 
             current_gw = current_gw_data["id"] if current_gw_data else 0
