@@ -41,8 +41,12 @@ found, and whether this range claims to fix it.]
 ## Wrap-up
 1. [commit generated state worth keeping]
 2. [fill the Results log, summarise counts, separate fpl-cli bugs from
-   environment issues]
-3. [do not fix fpl-cli from the vault — its source isn't there]
+   environment issues, and record anything noticed outside the test
+   matrix as a post-plan finding]
+3. [do not fix fpl-cli from the vault — its source isn't there. Report
+   findings to the user; anything filed upstream takes the house issue
+   style — Summary / Repro / Cause / Impact / Suggested fix / Test gap —
+   and the anonymity rule from the top of the plan]
 ## Results log
 | ID | Result | Notes |
 | --- | --- | --- |

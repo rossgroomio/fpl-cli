@@ -195,6 +195,12 @@ stdout and stderr more than once. Where a test asserts on output, say which
 stream, and have the runner capture stderr separately
 (`2>/tmp/<id>-err.txt`).
 
+**It earns its place.** Plan length tracks the range. Two releases and
+twenty user-facing changes justify something like the reference plan's
+~35 tests across four parts; a patch-only range with four fixes wants six
+or seven. Padding a small range with smoke tests of untouched commands
+buys no coverage and teaches the runner to skim.
+
 ## Step 5 — Order the parts
 
 Group tests into parts by surface, then order the parts by **what the user
