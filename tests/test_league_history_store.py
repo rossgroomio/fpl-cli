@@ -210,6 +210,72 @@ class TestStoreFailsClosed:
         assert coverage[5].readable is False
         assert coverage[6].readable is True
 
+    def test_an_unreadable_coverage_entry_carries_the_path_and_the_remedy(self):
+        """Issue #224: a caller reporting the gap used to have nothing but the
+        gameweek number, leaving the file and the `mv` that retires it in the
+        log where no `--format json` consumer could reach them."""
+        from fpl_cli.services.league_history import LeagueHistoryStore
+
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(5, [make_history_row(gameweek=5, gross_points=50)])
+        path = store.gameweek_file(5)
+        path.write_text("not json{{{\n", encoding="utf-8")
+
+        entry = store.coverage()[0]
+
+        assert entry.readable is False
+        assert entry.error is not None
+        assert str(path) in entry.error
+        assert f"mv '{path}'" in entry.error
+
+    def test_a_readable_coverage_entry_carries_no_error(self):
+        from fpl_cli.services.league_history import LeagueHistoryStore
+
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(5, [make_history_row(gameweek=5, gross_points=50)])
+
+        assert store.coverage()[0].error is None
+
+    def test_the_same_unreadable_gameweek_is_only_warned_about_once(self, caplog):
+        """Issue #224: five readers of one recap each logged the whole
+        path-and-`mv` message for the same file. The later ones keep their
+        context at debug rather than repeating the remedy."""
+        import logging
+
+        from fpl_cli.services.league_history import LeagueHistoryError, LeagueHistoryStore
+
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        exc = LeagueHistoryError("League history file gw05.ndjson is unreadable")
+
+        with caplog.at_level(logging.DEBUG, logger="fpl_cli.services.league_history"):
+            store.log_unreadable(5, exc, context="left out of the fines totals")
+            store.log_unreadable(5, exc, context="treated as uncaptured while building the notes pack")
+            store.log_unreadable(6, exc, context="left out of the fines totals")
+
+        levels = [r.levelno for r in caplog.records]
+        assert levels == [logging.WARNING, logging.DEBUG, logging.WARNING]
+        # Deduped, not dropped: the second reader's own context survives.
+        assert "while building the notes pack" in caplog.records[1].getMessage()
+
+    def test_a_caller_that_reports_unreadable_gameweeks_itself_silences_the_log(self, caplog):
+        """A caller showing the user the whole message itself would otherwise
+        get a near-identical paragraph logged beside it. The flag lives on the
+        store, so no reader ordering can bring the duplicate back (issue #224
+        review)."""
+        import logging
+
+        from fpl_cli.services.league_history import LeagueHistoryError, LeagueHistoryStore
+
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.unreadable_reported_by_caller = True
+        exc = LeagueHistoryError("League history file gw05.ndjson is unreadable")
+
+        with caplog.at_level(logging.DEBUG, logger="fpl_cli.services.league_history"):
+            store.log_unreadable(5, exc, context="left out of the fines totals")
+            store.log_unreadable(6, exc, context="skipped")
+
+        assert [r.levelno for r in caplog.records] == [logging.DEBUG, logging.DEBUG]
+
     def test_a_write_onto_a_corrupt_gameweek_refuses_rather_than_overwriting(self):
         from fpl_cli.services.league_history import LeagueHistoryError, LeagueHistoryStore
 

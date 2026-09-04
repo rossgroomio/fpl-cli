@@ -718,10 +718,9 @@ def rebuild_counters_through(
             # week, so the *next* captured gameweek correctly finds no
             # previous_row to compare against rather than reaching further
             # back and mislabelling a multi-week gap as one week.
-            logger.warning(
-                "GW%s unreadable while rebuilding league history counters for %s/%s-%s; "
-                "treated as uncaptured: %s",
-                gameweek, store.season, store.fpl_format, store.league_id, exc,
+            store.log_unreadable(
+                gameweek, exc,
+                context="treated as uncaptured while rebuilding the counters projection",
             )
             resolved = {}
         runs = _fold_gameweek(runs, gameweek, resolved, previous_rows, store.fpl_format)
@@ -769,18 +768,23 @@ def compute_counters_through(
         return existing
 
     if existing is not None and existing.computed_through_gameweek == through_gameweek - 1:
-        try:
-            resolved = store.resolved_gameweek(through_gameweek)
-            previous_resolved = (
-                store.resolved_gameweek(through_gameweek - 1) if through_gameweek > 1 else {}
-            )
-        except LeagueHistoryError as exc:
-            logger.warning(
-                "Could not advance league history counters for %s/%s-%s to GW%s incrementally; "
-                "rebuilding instead: %s",
-                store.season, store.fpl_format, store.league_id, through_gameweek, exc,
-            )
-        else:
+        # Read one gameweek at a time so each failure is attributed to the
+        # file that actually failed: the log dedupes per gameweek, and
+        # blaming GW-1's corruption on GW would report one file under two
+        # numbers (issue #224).
+        def _read(gameweek: int) -> dict[int, LeagueHistoryRow] | None:
+            try:
+                return store.resolved_gameweek(gameweek)
+            except LeagueHistoryError as exc:
+                store.log_unreadable(
+                    gameweek, exc,
+                    context="rebuilding the counters projection rather than advancing it",
+                )
+                return None
+
+        resolved = _read(through_gameweek)
+        previous_resolved = _read(through_gameweek - 1) if through_gameweek > 1 else {}
+        if resolved is not None and previous_resolved is not None:
             runs = _fold_gameweek(
                 existing.runs, through_gameweek, resolved, previous_resolved, store.fpl_format,
             )

@@ -48,7 +48,6 @@ is dropped for anyone outside the live cohort.
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -63,8 +62,6 @@ from fpl_cli.utils.gameweek import format_gameweek_list
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
-
-logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -449,10 +446,7 @@ def build_season_fines_tally(
         try:
             resolved = store.resolved_gameweek(gameweek)
         except LeagueHistoryError as exc:
-            logger.warning(
-                "GW%s unreadable while tallying fines for %s/%s-%s; left out of the totals: %s",
-                gameweek, store.season, store.fpl_format, store.league_id, exc,
-            )
+            store.log_unreadable(gameweek, exc, context="left out of the fines totals")
             coverage.unreadable.append(gameweek)
             continue
         if not resolved:
