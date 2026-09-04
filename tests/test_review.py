@@ -54,6 +54,14 @@ class TestReviewPrompts:
         assert "pre-computed" in _build_system_prompt(has_fines=True)
         assert "formation-valid" in _build_system_prompt(has_fines=True)
 
+    def test_synthesis_system_prompt_bench_comparison_framing_rule(self):
+        """Rule forbidding mixed aggregate/individual bench-vs-starter comparisons (#192)."""
+        prompt = _build_system_prompt(has_fines=True)
+        assert "combined to be outscored" in prompt
+        assert "not a combined or summed total" in prompt
+        assert "never both in the same sentence" in prompt
+        assert "never both in the same clause" in prompt
+
     def test_synthesis_system_prompt_no_fines(self):
         """Test system prompt without fines omits fine-specific content."""
         prompt = _build_system_prompt(has_fines=False)
