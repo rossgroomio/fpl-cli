@@ -12,7 +12,9 @@ from fpl_cli.cli._context import (
     CLIContext,
     Format,
     FormatAwareGroup,
+    custom_analysis_enabled,
     experimental_gate_message,
+    get_settings,
     is_custom_analysis_enabled,
 )
 from fpl_cli.paths import user_config_dir
@@ -30,6 +32,95 @@ class TestIsCustomAnalysisEnabled:
 
     def test_returns_false_for_none_value(self):
         assert is_custom_analysis_enabled({"custom_analysis": None}) is False
+
+
+class TestGetSettings:
+    """The accessor a command with a Click context reads its settings through (#219)."""
+
+    def test_returns_the_settings_the_group_resolved(self):
+        settings = {"custom_analysis": True, "rolling_window": 7}
+        ctx = click.Context(click.Command("stats"), obj=CLIContext(format=Format.BOTH, settings=settings))
+        assert get_settings(ctx) is settings
+
+    def test_returns_the_empty_dict_doctor_and_init_are_given(self):
+        """`main()` hands those two an empty settings dict on purpose."""
+        ctx = click.Context(click.Command("doctor"), obj=CLIContext(format=None, settings={}))
+        assert get_settings(ctx) == {}
+
+    def test_loads_settings_when_the_context_has_none(self):
+        """A command invoked without the group still gets the shipped defaults.
+
+        Falling back to `{}` would strip `rolling_window` and the thresholds
+        along with the user's overrides, which is not the same thing at all.
+        """
+        ctx = click.Context(click.Command("stats"), obj=None)
+        with patch("fpl_cli.cli._context.load_settings", return_value={"rolling_window": 9}) as loader:
+            assert get_settings(ctx) == {"rolling_window": 9}
+        loader.assert_called_once_with()
+
+    def test_falls_back_for_an_unexpected_context_object(self):
+        ctx = click.Context(click.Command("stats"), obj={"not": "a CLIContext"})
+        with patch("fpl_cli.cli._context.load_settings", return_value={"custom_analysis": True}):
+            assert get_settings(ctx) == {"custom_analysis": True}
+
+
+class TestCustomAnalysisEnabled:
+    """The ctx-level gate `fpl fdr`, `fpl fixtures` and `fpl xg` share (#219)."""
+
+    @pytest.mark.parametrize("configured,expected", [(True, True), (False, False)])
+    def test_reads_the_toggle_off_the_context(self, configured, expected):
+        ctx = click.Context(
+            click.Command("fixtures"),
+            obj=CLIContext(format=Format.BOTH, settings={"custom_analysis": configured}),
+        )
+        assert custom_analysis_enabled(ctx) is expected
+
+    def test_defaults_to_off_when_the_context_carries_no_toggle(self):
+        ctx = click.Context(click.Command("fixtures"), obj=CLIContext(format=Format.BOTH, settings={}))
+        assert custom_analysis_enabled(ctx) is False
+
+    def test_loads_settings_when_the_context_has_none(self):
+        ctx = click.Context(click.Command("fixtures"), obj=None)
+        with patch("fpl_cli.cli._context.load_settings", return_value={"custom_analysis": True}):
+            assert custom_analysis_enabled(ctx) is True
+
+
+class TestGateFollowsTheGroupSettings:
+    """The gate reads what `main()` resolved, with no per-command loading (#219).
+
+    These invoke through the group with only `fpl_cli.cli.load_settings`
+    patched -- the seam the group itself uses, and no per-command patch -- so a
+    command that went back to resolving its own settings would fail here. Both
+    answer the gate before touching the network.
+    """
+
+    @pytest.mark.parametrize("argv,refusal", [
+        (["fdr", "--position", "atk"], "requires custom analysis"),
+        (["stats", "--value", "--sort", "quality_per_m"], "requires custom analysis"),
+    ])
+    def test_command_is_refused_when_the_group_says_custom_analysis_is_off(self, argv, refusal):
+        from fpl_cli.cli import main as cli_main
+
+        runner = CliRunner()
+        with patch("fpl_cli.cli.load_settings", return_value={"custom_analysis": False}):
+            result = runner.invoke(cli_main, argv)
+
+        assert result.exit_code == 1
+        assert refusal in result.output
+
+    @pytest.mark.parametrize("argv,refusal", [
+        (["fdr", "--position", "atk"], "requires custom analysis"),
+        (["stats", "--value", "--sort", "quality_per_m"], "requires custom analysis"),
+    ])
+    def test_command_is_allowed_past_the_gate_when_the_group_says_it_is_on(self, argv, refusal):
+        """Past the gate the run dies on the blocked network, which is fine here."""
+        from fpl_cli.cli import main as cli_main
+
+        runner = CliRunner()
+        with patch("fpl_cli.cli.load_settings", return_value={"custom_analysis": True}):
+            result = runner.invoke(cli_main, argv)
+
+        assert refusal not in result.output
 
 
 class TestExperimentalFrozenset:

@@ -11,10 +11,9 @@ from rich.panel import Panel
 from rich.table import Table
 
 from fpl_cli.cli._context import (
-    CLIContext,
     console,
+    custom_analysis_enabled,
     error_console,
-    is_custom_analysis_enabled,
 )
 from fpl_cli.cli._helpers import _api_fdr_style, _fdr_style
 from fpl_cli.cli._json import (
@@ -42,8 +41,7 @@ def fixtures_command(ctx: click.Context, gameweek: int | None, mode: str, output
     # Same gate as `fpl fdr` and `fpl preview`: with custom analysis off, the
     # canonical FPL API difficulty rather than the Bayesian team ratings, so
     # one match reads the same whichever command prints it (#202).
-    settings = ctx.obj.settings if isinstance(ctx.obj, CLIContext) else {}
-    custom_on = is_custom_analysis_enabled(settings)
+    custom_on = custom_analysis_enabled(ctx)
 
     # --mode only means something against the team ratings. Saying so beats
     # accepting the flag and quietly printing the same table either way; it is

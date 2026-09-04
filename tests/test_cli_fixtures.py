@@ -82,7 +82,7 @@ def _run_fixtures(runner, tmp_path, *args, ratings=None, custom_analysis=True):
     service = _ratings_service(tmp_path, ratings=ratings)
 
     with (
-        patch("fpl_cli.cli.fixtures.is_custom_analysis_enabled", return_value=custom_analysis),
+        patch("fpl_cli.cli.fixtures.custom_analysis_enabled", return_value=custom_analysis),
         patch("fpl_cli.api.fpl.FPLClient", return_value=client),
         patch("fpl_cli.services.team_ratings.TeamRatingsService", return_value=service),
     ):
@@ -190,7 +190,7 @@ class TestFixturesJsonFormat:
         mock_svc = _ratings_service(tmp_path)
 
         with (
-            patch("fpl_cli.cli.fixtures.is_custom_analysis_enabled", return_value=True),
+            patch("fpl_cli.cli.fixtures.custom_analysis_enabled", return_value=True),
             patch("fpl_cli.api.fpl.FPLClient", return_value=client),
             patch("fpl_cli.services.team_ratings.TeamRatingsService", return_value=mock_svc),
         ):
@@ -210,7 +210,7 @@ class TestFixturesJsonFormat:
         mock_svc = _ratings_service(tmp_path)
 
         with (
-            patch("fpl_cli.cli.fixtures.is_custom_analysis_enabled", return_value=True),
+            patch("fpl_cli.cli.fixtures.custom_analysis_enabled", return_value=True),
             patch("fpl_cli.api.fpl.FPLClient", return_value=client),
             patch("fpl_cli.services.team_ratings.TeamRatingsService", return_value=mock_svc),
         ):
@@ -230,7 +230,7 @@ class TestFixturesJsonFormat:
         mock_svc = _ratings_service(tmp_path)
 
         with (
-            patch("fpl_cli.cli.fixtures.is_custom_analysis_enabled", return_value=True),
+            patch("fpl_cli.cli.fixtures.custom_analysis_enabled", return_value=True),
             patch("fpl_cli.api.fpl.FPLClient", return_value=client),
             patch("fpl_cli.services.team_ratings.TeamRatingsService", return_value=mock_svc),
         ):
@@ -248,7 +248,7 @@ class TestFixturesJsonFormat:
         mock_svc = _ratings_service(tmp_path)
 
         with (
-            patch("fpl_cli.cli.fixtures.is_custom_analysis_enabled", return_value=True),
+            patch("fpl_cli.cli.fixtures.custom_analysis_enabled", return_value=True),
             patch("fpl_cli.api.fpl.FPLClient", return_value=client),
             patch("fpl_cli.services.team_ratings.TeamRatingsService", return_value=mock_svc),
         ):
@@ -272,7 +272,7 @@ class TestFixturesJsonFormat:
         mock_svc.ensure_fresh = AsyncMock()
 
         with (
-            patch("fpl_cli.cli.fixtures.is_custom_analysis_enabled", return_value=True),
+            patch("fpl_cli.cli.fixtures.custom_analysis_enabled", return_value=True),
             patch("fpl_cli.api.fpl.FPLClient", return_value=client),
             patch("fpl_cli.services.team_ratings.TeamRatingsService", return_value=mock_svc),
         ):
@@ -316,7 +316,7 @@ class TestFixturesCustomAnalysisGate:
         service = _ratings_service(tmp_path)
 
         with (
-            patch("fpl_cli.cli.fixtures.is_custom_analysis_enabled", return_value=False),
+            patch("fpl_cli.cli.fixtures.custom_analysis_enabled", return_value=False),
             patch("fpl_cli.api.fpl.FPLClient", return_value=client),
             patch("fpl_cli.services.team_ratings.TeamRatingsService", return_value=service),
         ):

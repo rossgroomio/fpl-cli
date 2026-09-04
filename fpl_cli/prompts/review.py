@@ -229,6 +229,7 @@ _HARD_CONSTRAINTS_BASE_NEVER = """\
 - Attribute DGW or BGW status to any team not listed in the `<gw_fixtures>` block. That block is authoritative - if the community narrative implies a team played twice or blanked, ignore it unless the team is explicitly in the DGW/BGW list. Every team not listed played ONCE. Never write "in a DGW", "from a double gameweek", "blanked in their DGW" etc. for a single-gameweek team
 - State or imply a club for any player other than the club printed beside their name in the supplied data. Squad lines read `- Name (Club, POS): N pts` - that club is the only authority on who they play for. Players change clubs in the transfer windows and your training data lags behind, so a player you "know" at one club may have moved. This applies to grouping too: only put players together as a club's contingent ("the Brighton pair") when every one of them carries that club label in the data. If you want to name a player who has no club label anywhere in the data, name them without a club rather than guessing one
 - Make a blanket scored-or-blanked claim - "everyone scored", "nobody blanked", "the whole bench delivered", "all 15 contributed" - without checking every points total it covers. One player on 0 makes it false. Under Bench Boost the bench totals are part of the claim, since all 15 count. Either name what the data actually shows or drop the sweeping line
+- Mix an aggregate framing and a per-player framing in the same clause when comparing several players' points to one player's total (e.g. "X, Y and Z combined to be outscored by him individually" - "combined" and "individually" claim two different, contradictory sums). Pick one: either sum the group's points yourself and compare that single total ("X, Y and Z combined for N, fewer than his M"), or compare each on its own ("X, Y and Z each scored fewer than his M individually") - verify the arithmetic actually supports whichever framing you choose before writing it, and never both in the same sentence
 - Use the word "league" to refer to the global FPL game. In this prompt, "league" ALWAYS means the user's mini-league (Classic or Draft) by name. The "Global FPL top score" and "Global FPL average" are community-wide stats across all FPL managers worldwide - refer to them as "the global top score", "the overall average", or "the best manager in the game". NEVER write "the highest in the league", "the top score in the league", or any phrasing that implies these global stats came from the user's mini-league\""""
 
 _HARD_CONSTRAINTS_FINE_NEVER = """\
@@ -275,7 +276,7 @@ In the player data:
 - `[BENCH]` = bench player who stayed on bench
 - In the Verdict sections, ONLY discuss players who actually contributed to the score (starters who played + auto-sub-ins). NEVER cite a [BENCH] player as a contributor - bench players belong in the Selection analysis only
 - Analyse auto-sub outcomes: did they help or hurt? Were bench order decisions good?
-- `Bench vs Starters (formation-valid swaps):` = pre-computed analysis of bench players who outscored starters where the swap maintains a valid formation. Swaps tagged [formation change] require a different formation. If present, always reference these in your Selection assessment
+- `Bench vs Starters (formation-valid swaps):` = pre-computed analysis of bench players who outscored starters where the swap maintains a valid formation. Each line lists one bench player against every starter they individually outscored - it is not a combined or summed total. Swaps tagged [formation change] require a different formation. If present, always reference these in your Selection assessment
 </context>"""
 
 _TONE_BASE = """\
@@ -334,12 +335,12 @@ _OUTPUT_FORMAT_TAIL = """\
 ## Classic Verdict
 [2-3 sentences: How did your Classic team perform? Only reference players who actually scored points for you (starters + auto-subs, NOT bench players). Disappointments, captain choice assessment. Reference the community narrative where your players featured.]
 
-**Selection:** [Note any selection mistakes - did benched players outscore starters? Was the captain the right call? If 2+ players from the same team collectively hauled or blanked, note the exposure outcome. If selections were good, acknowledge briefly.]
+**Selection:** [Note any selection mistakes - did benched players outscore starters? Was the captain the right call? If 2+ players from the same team collectively hauled or blanked, note the exposure outcome. If a bench player from the Bench vs Starters data outscored more than one starter, say so as either an aggregate ("combined for N, more than his M") or a per-player claim ("each scored fewer than his M individually") - never both in the same clause - and check the arithmetic before writing it. If selections were good, acknowledge briefly.]
 
 ## Draft Verdict
 [2-3 sentences: How did your Draft team perform? Only reference players who actually scored points for you (starters + auto-subs, NOT bench players). Poor performers.]
 
-**Selection:** [Note any selection mistakes - did benched players outscore starters? If 2+ players from the same team collectively hauled or blanked, note the exposure outcome. If selections were good, acknowledge briefly.]
+**Selection:** [Note any selection mistakes - did benched players outscore starters? If 2+ players from the same team collectively hauled or blanked, note the exposure outcome. If a bench player from the Bench vs Starters data outscored more than one starter, say so as either an aggregate ("combined for N, more than his M") or a per-player claim ("each scored fewer than his M individually") - never both in the same clause - and check the arithmetic before writing it. If selections were good, acknowledge briefly.]
 
 ## Next Week
 [1-2 sentences: What does this GW suggest for upcoming decisions? If suggesting players to move on from, specify whether this applies to Classic, Draft, or both.]

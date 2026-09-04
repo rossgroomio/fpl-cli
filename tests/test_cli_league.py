@@ -37,7 +37,7 @@ class TestLeaguePositionSize:
         client = self._mock_fpl_client(rank_count=347, entry_rank=42)
         with (
             patch(
-                "fpl_cli.cli.league.load_settings",
+                "fpl_cli.cli.league.get_settings",
                 return_value={"fpl": {"classic_entry_id": 1, "classic_league_id": 100}},
             ),
             patch("fpl_cli.api.fpl.FPLClient", return_value=client),
@@ -55,7 +55,7 @@ class TestLeaguePositionSize:
         client = self._mock_fpl_client()
         with (
             patch(
-                "fpl_cli.cli.league.load_settings",
+                "fpl_cli.cli.league.get_settings",
                 return_value={"fpl": {"classic_entry_id": 1, "classic_league_id": 100}},
             ),
             patch("fpl_cli.api.fpl.FPLClient", return_value=client),

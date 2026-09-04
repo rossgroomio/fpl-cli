@@ -61,7 +61,7 @@ def _make_mocks(squad=None, teams=None, fixtures=None):
 def _run(args, client, ratings):
     runner = CliRunner()
     with (
-        patch("fpl_cli.cli._plan_grid.load_settings", return_value={"fpl": {"classic_entry_id": 123}}),
+        patch("fpl_cli.cli._plan_grid.get_settings", return_value={"fpl": {"classic_entry_id": 123}}),
         patch("fpl_cli.api.fpl.FPLClient", return_value=client),
         patch("fpl_cli.services.team_ratings.TeamRatingsService", return_value=ratings),
     ):
@@ -191,7 +191,7 @@ def _make_draft_mocks(squad=None, teams=None, fixtures=None, draft_elements=None
 def _run_draft(args, client, draft_client, ratings):
     runner = CliRunner()
     with (
-        patch("fpl_cli.cli._plan_grid.load_settings", return_value={"fpl": {"draft_entry_id": 456}}),
+        patch("fpl_cli.cli._plan_grid.get_settings", return_value={"fpl": {"draft_entry_id": 456}}),
         patch("fpl_cli.api.fpl.FPLClient", return_value=client),
         patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=draft_client),
         patch("fpl_cli.services.team_ratings.TeamRatingsService", return_value=ratings),
@@ -215,7 +215,7 @@ class TestPlanGridDraft:
     def test_draft_missing_config_errors(self):
         runner = CliRunner()
         with (
-            patch("fpl_cli.cli._plan_grid.load_settings", return_value={"fpl": {}}),
+            patch("fpl_cli.cli._plan_grid.get_settings", return_value={"fpl": {}}),
         ):
             result = runner.invoke(main, ["squad", "grid", "--draft"])
             assert result.exit_code == 1
@@ -311,7 +311,7 @@ class TestPlanGridJson:
         client, draft_client, ratings = _make_draft_mocks()
         runner = CliRunner()
         with (
-            patch("fpl_cli.cli._plan_grid.load_settings", return_value={"fpl": {"draft_entry_id": 456}}),
+            patch("fpl_cli.cli._plan_grid.get_settings", return_value={"fpl": {"draft_entry_id": 456}}),
             patch("fpl_cli.api.fpl.FPLClient", return_value=client),
             patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=draft_client),
             patch("fpl_cli.services.team_ratings.TeamRatingsService", return_value=ratings),

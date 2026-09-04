@@ -85,9 +85,9 @@ class TestWarningsOnStderr:
 
         mock_error = MagicMock()
         monkeypatch.setattr(fdr_mod, "error_console", mock_error)
-        monkeypatch.setattr(fdr_mod, "load_settings", lambda: {})
+        monkeypatch.setattr(fdr_mod, "get_settings", lambda _ctx: {})
         # custom_on=False routes to raw FPL API path (early return) before my_squad check
-        monkeypatch.setattr(fdr_mod, "is_custom_analysis_enabled", lambda _: True)
+        monkeypatch.setattr(fdr_mod, "custom_analysis_enabled", lambda _ctx: True)
 
         mock_result = MagicMock()
         mock_result.success = False
@@ -113,7 +113,7 @@ class TestWarningsOnStderr:
 
         mock_error = MagicMock()
         monkeypatch.setattr(chips_mod, "error_console", mock_error)
-        monkeypatch.setattr(chips_mod, "load_settings", lambda: {})
+        monkeypatch.setattr(chips_mod, "get_settings", lambda _ctx: {})
 
         runner = CliRunner()
         runner.invoke(main, ["chips", "timing"])

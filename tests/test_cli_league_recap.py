@@ -657,7 +657,7 @@ def _invoke_recap(
     )
     with (
         patch(
-            "fpl_cli.cli.league_recap.load_settings",
+            "fpl_cli.cli.league_recap.get_settings",
             return_value=settings or {"fpl": {"classic_league_id": 42}},
         ),
         patch("fpl_cli.api.fpl.FPLClient", return_value=client),
@@ -2141,7 +2141,7 @@ def _invoke_recap_unresolved_gameweek(args: list[str] | None = None):
     no collector is ever reached."""
     client = _fpl_client()
     with (
-        patch("fpl_cli.cli.league_recap.load_settings", return_value={"fpl": {"classic_league_id": 42}}),
+        patch("fpl_cli.cli.league_recap.get_settings", return_value={"fpl": {"classic_league_id": 42}}),
         patch("fpl_cli.api.fpl.FPLClient", return_value=client),
         patch("fpl_cli.cli.review._review_resolve_gw", AsyncMock(return_value=None)),
     ):

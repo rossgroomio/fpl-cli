@@ -14,7 +14,14 @@ if TYPE_CHECKING:
 import click
 from rich.table import Table
 
-from fpl_cli.cli._context import CLIContext, Format, console, error_console, is_custom_analysis_enabled
+from fpl_cli.cli._context import (
+    Format,
+    console,
+    error_console,
+    get_format,
+    get_settings,
+    is_custom_analysis_enabled,
+)
 from fpl_cli.cli._helpers import _format_sort_value, _validate_team_filter
 from fpl_cli.cli._json import (
     api_failure_boundary,
@@ -88,7 +95,7 @@ def stats_command(
     from fpl_cli.models.player import Player, PlayerPosition, PlayerStatus
 
     # Resolve rolling window from CLI flag or config
-    settings = ctx.obj.settings if isinstance(ctx.obj, CLIContext) else {}
+    settings = get_settings(ctx)
     rolling_window = window if window is not None else int(settings.get("rolling_window", 5))
 
     # Gate --value behind custom_analysis toggle
@@ -138,7 +145,7 @@ def stats_command(
             "Re-run with --position GK|DEF|MID|FWD for a reliable ranking.[/yellow]"
         )
 
-    fmt = ctx.obj.format if isinstance(ctx.obj, CLIContext) else None
+    fmt = get_format(ctx)
     show_draft = fmt in (Format.DRAFT, Format.BOTH)
 
     position_map = {"GK": PlayerPosition.GOALKEEPER, "DEF": PlayerPosition.DEFENDER,
@@ -156,8 +163,6 @@ def stats_command(
             main_to_draft_id: dict[int, int] = {}
 
             if show_draft:
-                from fpl_cli.cli._context import load_settings
-                settings = load_settings()
                 draft_league_id = settings.get("fpl", {}).get("draft_league_id")
                 if not draft_league_id:
                     error_console.print("[yellow]No draft_league_id configured in settings.yaml[/yellow]")

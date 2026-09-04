@@ -1,4 +1,4 @@
-"""Shared CLI infrastructure: console, config paths, settings loader, format resolution."""
+"""Shared CLI infrastructure: console, config paths, settings loader, context accessors."""
 
 from __future__ import annotations
 
@@ -177,6 +177,28 @@ def get_format(ctx: click.Context) -> Format | None:
     return ctx.obj.format if isinstance(ctx.obj, CLIContext) else None
 
 
+def get_settings(ctx: click.Context) -> dict[str, Any]:
+    """Merged settings for a command, from the Click context or loaded on demand.
+
+    The settings counterpart to `get_format(ctx)`, and how a command holding a
+    context should read them. `main()` merges defaults and user overrides once
+    per invocation and puts the result on the context; unwrapping `ctx.obj` at
+    the call site instead had the same isinstance dance written out six times
+    across five commands, and reaching past it for `load_settings()` was a
+    second shape for the same question in four more (#219).
+
+    Falls back to loading rather than to `{}` because a command invoked
+    without the group -- programmatically, or in a test -- still has defaults:
+    `{}` is not "no user overrides", it is "no `rolling_window`, no
+    thresholds, no llm roles" either. `_is_experimental_hidden` and
+    `format_commands` below already load for that reason; this makes it the
+    rule rather than the exception.
+    """
+    if isinstance(ctx.obj, CLIContext):
+        return ctx.obj.settings
+    return load_settings()
+
+
 def _warn_if_stale_season_dir(base: Path) -> None:
     """Warn when a report directory is named for a season that has passed.
 
@@ -252,8 +274,27 @@ EXPERIMENTAL: frozenset[str] = frozenset({
 
 
 def is_custom_analysis_enabled(settings: dict[str, Any]) -> bool:
-    """Check whether custom analysis features are enabled in settings."""
+    """Whether custom analysis features are enabled in the given settings.
+
+    Ask this when the settings are already in hand -- `fpl stats` also needs
+    `rolling_window`, `fpl player` and `fpl preview` the configured entry IDs
+    -- so the gate answers for the same dict the rest of the command reads.
+    `custom_analysis_enabled(ctx)` below is the one-liner for a command whose
+    only interest in the settings is this question.
+    """
     return bool(settings.get("custom_analysis", False))
+
+
+def custom_analysis_enabled(ctx: click.Context) -> bool:
+    """Whether custom analysis is switched on, for a command holding a context.
+
+    The gate `fpl fdr`, `fpl fixtures` and `fpl xg` share: they want the
+    toggle and nothing else from the settings, and each was resolving them
+    itself to ask (#219). Deliberately not used where a command already holds
+    its settings -- re-resolving them there is a second answer that can
+    disagree with the dict the command is otherwise reading.
+    """
+    return is_custom_analysis_enabled(get_settings(ctx))
 
 
 def experimental_gate_message(cmd_name: str) -> str:
@@ -289,11 +330,7 @@ class FormatAwareGroup(click.Group):
 
     def _is_experimental_hidden(self, ctx: click.Context) -> bool:
         """Return True when experimental commands should be suppressed."""
-        if isinstance(ctx.obj, CLIContext):
-            settings = ctx.obj.settings
-        else:
-            settings = load_settings()
-        return not is_custom_analysis_enabled(settings)
+        return not custom_analysis_enabled(ctx)
 
     def list_commands(self, ctx: click.Context) -> list[str]:
         commands = super().list_commands(ctx)

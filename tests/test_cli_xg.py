@@ -62,7 +62,7 @@ def _run_xg(args=None, agent_result=None, custom_analysis=True):
 
     with (
         patch("fpl_cli.agents.analysis.stats.StatsAgent", return_value=mock_agent),
-        patch("fpl_cli.cli.xg.is_custom_analysis_enabled", return_value=custom_analysis),
+        patch("fpl_cli.cli.xg.custom_analysis_enabled", return_value=custom_analysis),
     ):
         return runner.invoke(main, ["xg"] + (args or []))
 
@@ -127,7 +127,7 @@ class TestXgCustomAnalysisToggle:
 
         with (
             patch("fpl_cli.agents.analysis.stats.StatsAgent", return_value=mock_agent) as mock_cls,
-            patch("fpl_cli.cli.xg.is_custom_analysis_enabled", return_value=False),
+            patch("fpl_cli.cli.xg.custom_analysis_enabled", return_value=False),
         ):
             result = runner.invoke(main, ["xg"])
 
@@ -156,7 +156,7 @@ class TestXgCustomAnalysisToggle:
 
         with (
             patch("fpl_cli.agents.analysis.stats.StatsAgent", return_value=mock_agent) as mock_cls,
-            patch("fpl_cli.cli.xg.is_custom_analysis_enabled", return_value=False),
+            patch("fpl_cli.cli.xg.custom_analysis_enabled", return_value=False),
         ):
             result = runner.invoke(main, ["xg", "--format", "json"])
 

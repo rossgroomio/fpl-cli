@@ -15,7 +15,7 @@ import click
 from rich.panel import Panel
 from rich.table import Table
 
-from fpl_cli.cli._context import console, error_console, load_settings
+from fpl_cli.cli._context import console, error_console, get_settings
 from fpl_cli.cli._json import emit_json, emit_json_error, output_format_option
 
 if TYPE_CHECKING:
@@ -74,8 +74,9 @@ _UNKNOWN_RETURN = "Unknown"
               help="Search the web for fresher return news where FPL says nothing or "
                    "says it a while ago (needs a Perplexity API key)")
 @output_format_option
+@click.pass_context
 def returnees_command(
-    window: int | None, show_all: bool, enrich: bool, output_format: str,
+    ctx: click.Context, window: int | None, show_all: bool, enrich: bool, output_format: str,
 ) -> None:
     """Track injured and suspended players who are due back soon.
 
@@ -91,7 +92,7 @@ def returnees_command(
 
     async def _run() -> None:
         is_json = output_format == "json"
-        settings = load_settings()
+        settings = get_settings(ctx)
 
         try:
             inputs = await _fetch_inputs(quiet=is_json)

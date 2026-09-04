@@ -77,7 +77,7 @@ def _no_third_party_fetches():
 def _run(args, client, fixture_agent, ratings_svc, settings=None):
     runner = CliRunner()
     with (
-        patch("fpl_cli.cli.player.load_settings", return_value=settings or {"fpl": {}}),
+        patch("fpl_cli.cli.player.get_settings", return_value=settings or {"fpl": {}}),
         patch("fpl_cli.api.fpl.FPLClient", return_value=client),
         patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=fixture_agent),
         patch("fpl_cli.services.team_ratings.TeamRatingsService", return_value=ratings_svc),
@@ -141,7 +141,7 @@ class TestPlayerHistory:
 
         runner = CliRunner()
         with (
-            patch("fpl_cli.cli.player.load_settings", return_value={"fpl": {}}),
+            patch("fpl_cli.cli.player.get_settings", return_value={"fpl": {}}),
             patch("fpl_cli.api.fpl.FPLClient", return_value=client),
             patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=fixture_agent),
             patch("fpl_cli.services.team_ratings.TeamRatingsService", return_value=ratings_svc),
@@ -168,7 +168,7 @@ class TestPlayerHistory:
 
         runner = CliRunner()
         with (
-            patch("fpl_cli.cli.player.load_settings", return_value={"fpl": {}}),
+            patch("fpl_cli.cli.player.get_settings", return_value={"fpl": {}}),
             patch("fpl_cli.api.fpl.FPLClient", return_value=client),
             patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=fixture_agent),
             patch("fpl_cli.services.team_ratings.TeamRatingsService", return_value=ratings_svc),
@@ -458,7 +458,7 @@ class TestPlayerUnderstat:
         mock_understat.__aexit__ = AsyncMock(return_value=False)
 
         with (
-            patch("fpl_cli.cli.player.load_settings", return_value={"fpl": {}}),
+            patch("fpl_cli.cli.player.get_settings", return_value={"fpl": {}}),
             patch("fpl_cli.api.fpl.FPLClient", return_value=client),
             patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=fixture_agent),
             patch("fpl_cli.services.team_ratings.TeamRatingsService", return_value=ratings_svc),
@@ -529,7 +529,7 @@ class TestPlayerUnderstat:
         mock_understat.__aexit__ = AsyncMock(return_value=False)
 
         with (
-            patch("fpl_cli.cli.player.load_settings", return_value={"fpl": {}}),
+            patch("fpl_cli.cli.player.get_settings", return_value={"fpl": {}}),
             patch("fpl_cli.api.fpl.FPLClient", return_value=client),
             patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=fixture_agent),
             patch("fpl_cli.services.team_ratings.TeamRatingsService", return_value=ratings_svc),
@@ -549,7 +549,7 @@ def _run_json(args, client, fixture_agent, ratings_svc, settings=None):
     """Run the player command with --format json and return parsed JSON."""
     runner = CliRunner()
     with (
-        patch("fpl_cli.cli.player.load_settings", return_value=settings or {"fpl": {}}),
+        patch("fpl_cli.cli.player.get_settings", return_value=settings or {"fpl": {}}),
         patch("fpl_cli.api.fpl.FPLClient", return_value=client),
         patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=fixture_agent),
         patch("fpl_cli.services.team_ratings.TeamRatingsService", return_value=ratings_svc),
@@ -653,7 +653,7 @@ class TestPlayerJsonOutput:
 
         runner = CliRunner()
         with (
-            patch("fpl_cli.cli.player.load_settings", return_value={"fpl": {}}),
+            patch("fpl_cli.cli.player.get_settings", return_value={"fpl": {}}),
             patch("fpl_cli.api.fpl.FPLClient", return_value=client),
             patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=fixture_agent),
             patch("fpl_cli.services.team_ratings.TeamRatingsService", return_value=ratings_svc),
@@ -757,7 +757,7 @@ def _run_with_us_match(args, client, fixture_agent, ratings_svc, us_match=None, 
     cmd_args += args
 
     with (
-        patch("fpl_cli.cli.player.load_settings", return_value={"fpl": {}, "custom_analysis": True}),
+        patch("fpl_cli.cli.player.get_settings", return_value={"fpl": {}, "custom_analysis": True}),
         patch("fpl_cli.api.fpl.FPLClient", return_value=client),
         patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=fixture_agent),
         patch("fpl_cli.services.team_ratings.TeamRatingsService", return_value=ratings_svc),
@@ -1198,7 +1198,7 @@ def _run_with_adjusted_npxg(args, client, fixture_agent, ratings_svc, npxg_looku
     mock_records = {"_sentinel": []} if npxg_lookup else None
 
     with (
-        patch("fpl_cli.cli.player.load_settings", return_value=_CUSTOM_SETTINGS),
+        patch("fpl_cli.cli.player.get_settings", return_value=_CUSTOM_SETTINGS),
         patch("fpl_cli.api.fpl.FPLClient", return_value=client),
         patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=fixture_agent),
         patch("fpl_cli.services.team_ratings.TeamRatingsService", return_value=ratings_svc),
@@ -1281,7 +1281,7 @@ class TestUnderstatFetchDeferral:
         mock_understat = _make_empty_understat()
         runner = CliRunner()
         with (
-            patch("fpl_cli.cli.player.load_settings", return_value={"fpl": {}}),
+            patch("fpl_cli.cli.player.get_settings", return_value={"fpl": {}}),
             patch("fpl_cli.api.fpl.FPLClient", return_value=client),
             patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=fixture_agent),
             patch("fpl_cli.services.team_ratings.TeamRatingsService", return_value=ratings_svc),
@@ -1336,7 +1336,7 @@ class TestDraftFetchDeferral:
         runner = CliRunner()
         with (
             patch("fpl_cli.cli.resolve_format", return_value=Format.DRAFT),
-            patch("fpl_cli.cli.player.load_settings",
+            patch("fpl_cli.cli.player.get_settings",
                   return_value={"fpl": {"draft_league_id": 12345}}),
             patch("fpl_cli.api.fpl.FPLClient", return_value=client),
             patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=draft_client),

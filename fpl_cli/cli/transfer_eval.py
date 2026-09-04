@@ -13,6 +13,7 @@ from fpl_cli.cli._context import (
     Format,
     console,
     get_format,
+    get_settings,
     print_result_warnings,
 )
 from fpl_cli.cli._helpers import _fdr_style
@@ -58,6 +59,10 @@ def transfer_eval_command(ctx: click.Context, out_player: str, in_players: str, 
     from fpl_cli.scraper.fpl_prices import load_cache
 
     fmt = get_format(ctx)
+    # Resolved here rather than inside the renderer: the settings live on the
+    # context, and reaching back for a second load from a helper with no ctx
+    # was the last call site doing that (#219).
+    rolling_window = int(get_settings(ctx).get("rolling_window", 5))
     in_names = [n.strip() for n in in_players.split(",") if n.strip()]
 
     async def _run():
@@ -132,7 +137,7 @@ def transfer_eval_command(ctx: click.Context, out_player: str, in_players: str, 
             _emit_json_output(data, finances, sell_price, fmt)
         else:
             print_result_warnings(data)
-            _render_table(data, finances, sell_price, fmt)
+            _render_table(data, finances, sell_price, fmt, rolling_window)
 
     with api_failure_boundary("transfer-eval", output_format):
         if output_format == "json":
@@ -190,7 +195,9 @@ def _emit_json_output(data: dict, finances, sell_price: float | None, fmt) -> No
     emit_json("transfer-eval", output, metadata={"warnings": warnings})
 
 
-def _render_table(data: dict, finances, sell_price: float | None, fmt) -> None:
+def _render_table(
+    data: dict, finances, sell_price: float | None, fmt, rolling_window: int,
+) -> None:
     """Render Rich table with format-aware columns."""
     show_price = fmt != Format.DRAFT
     has_budget = show_price and finances is not None and sell_price is not None
@@ -223,9 +230,6 @@ def _render_table(data: dict, finances, sell_price: float | None, fmt) -> None:
     if has_budget:
         table.add_column("ITB", justify="right")
 
-    from fpl_cli.cli._context import load_settings as _load_settings
-    _rolling_window = int(_load_settings().get("rolling_window", 5))
-
     out = data["out_player"]
     fixtures_str = _format_fixtures(out["fixture_matchups"])
     status_str = _format_status(out["status"], out["chance_of_playing"])
@@ -243,7 +247,7 @@ def _render_table(data: dict, finances, sell_price: float | None, fmt) -> None:
     ]
     if show_price:
         out_row.append(_format_value(out.get("quality_per_m")))
-        out_row.append(_format_rolling(out, _rolling_window))
+        out_row.append(_format_rolling(out, rolling_window))
         out_row.append(f"£{out['price']:.1f}m")
     if has_budget:
         out_row.append("-")
@@ -272,7 +276,7 @@ def _render_table(data: dict, finances, sell_price: float | None, fmt) -> None:
         ]
         if show_price:
             row.append(_format_value(inp.get("quality_per_m")))
-            row.append(_format_rolling(inp, _rolling_window))
+            row.append(_format_rolling(inp, rolling_window))
             row.append(f"£{inp['price']:.1f}m")
         if has_budget:
             budget = _compute_budget(finances, sell_price, inp["price"])

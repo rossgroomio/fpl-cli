@@ -11,7 +11,14 @@ import click
 import httpx
 from rich.panel import Panel
 
-from fpl_cli.cli._context import Format, console, error_console, get_format, is_custom_analysis_enabled, load_settings
+from fpl_cli.cli._context import (
+    Format,
+    console,
+    error_console,
+    get_format,
+    get_settings,
+    is_custom_analysis_enabled,
+)
 from fpl_cli.cli._helpers import _fdr_style
 from fpl_cli.cli._json import (
     emit_failure,
@@ -79,7 +86,7 @@ def player_command(
 
     async def _run():
         async with FPLClient() as client:
-            settings = load_settings()
+            settings = get_settings(ctx)
             draft_league_id = settings.get("fpl", {}).get("draft_league_id")
 
             try:

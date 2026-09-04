@@ -14,14 +14,13 @@ from rich.panel import Panel
 from rich.table import Table
 
 from fpl_cli.cli._context import (
-    CLIContext,
     Format,
     console,
+    custom_analysis_enabled,
     error_console,
     get_format,
+    get_settings,
     handle_agent_failure,
-    is_custom_analysis_enabled,
-    load_settings,
     warn_prediction_problems,
 )
 from fpl_cli.cli._helpers import _api_fdr_style, _fdr_style
@@ -151,8 +150,7 @@ def fdr_command(
         raise click.UsageError("--blanks cannot be combined with --position")
 
     # Gate custom analysis features
-    settings = ctx.obj.settings if isinstance(ctx.obj, CLIContext) else {}
-    custom_on = is_custom_analysis_enabled(settings)
+    custom_on = custom_analysis_enabled(ctx)
 
     # Position-specific FDR requires Bayesian ratings (custom analysis)
     if not custom_on and position != "all" and not blanks:
@@ -366,7 +364,7 @@ def fdr_command(
 
         context: dict | None = None
         if my_squad:
-            settings = load_settings()
+            settings = get_settings(ctx)
             if use_draft:
                 entry_id = settings.get("fpl", {}).get("draft_entry_id")
                 if not entry_id:

@@ -10,13 +10,12 @@ import httpx
 from rich.panel import Panel
 
 from fpl_cli.cli._context import (
-    CLIContext,
     Format,
     console,
     error_console,
     get_format,
+    get_settings,
     handle_agent_failure,
-    load_settings,
 )
 from fpl_cli.cli._helpers import require_entry_id
 from fpl_cli.cli._json import (
@@ -44,7 +43,7 @@ def squad_group(ctx: click.Context, is_draft: bool, output_format: str) -> None:
     from fpl_cli.agents.analysis.squad_analyzer import SquadAnalyzerAgent
     from fpl_cli.agents.common import get_draft_squad_players
 
-    settings = load_settings()
+    settings = get_settings(ctx)
     fmt = get_format(ctx)
 
     # Auto-select in single-format mode; respect --draft flag in BOTH mode
@@ -158,7 +157,7 @@ def grid_subcommand(
     ctx: click.Context, gws: int, watch: tuple[str, ...], mode: str, is_draft: bool, output_format: str,
 ) -> None:
     """Show squad fixture difficulty grid."""
-    fmt = ctx.obj.format if isinstance(ctx.obj, CLIContext) else None
+    fmt = get_format(ctx)
 
     if fmt == Format.DRAFT:
         is_draft = True
