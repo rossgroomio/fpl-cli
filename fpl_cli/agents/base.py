@@ -10,7 +10,14 @@ from typing import Any
 
 from rich.console import Console
 
-console = Console()
+# Agent log lines are prose, not data. Every consumer that parses an agent's
+# output parses stdout -- the `--format json` commands, the gw-prep helper
+# scripts vendored into user vaults -- so a progress line printed there sits
+# ahead of the JSON and breaks the parse at byte 0 (#226). Sending them to
+# stderr, where the rest of the tool's human-readable output already goes,
+# makes that impossible rather than something each new call site has to
+# remember. A terminal user sees no difference.
+console = Console(stderr=True)
 
 
 class AgentStatus(Enum):
@@ -84,7 +91,9 @@ class Agent(ABC):
         pass
 
     def log(self, message: str, style: str = "") -> None:
-        """Log a message to the console.
+        """Log a progress message to stderr.
+
+        Never stdout: see the module-level `console` for why.
 
         Args:
             message: Message to log.

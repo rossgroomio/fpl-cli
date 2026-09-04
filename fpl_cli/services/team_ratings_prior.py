@@ -383,8 +383,11 @@ async def _prior_from_understat(
         _, performances = await calculator.calculate_from_xg(season=prev_season)
         return performances if len(performances) >= 10 else None
 
-    except Exception:  # noqa: BLE001 — graceful degradation
-        logger.warning("Failed to generate prior from Understat", exc_info=True)
+    except Exception as exc:  # noqa: BLE001 — graceful degradation
+        # No traceback: fpl-cli configures no logging handlers, so a WARNING
+        # with exc_info reaches logging's lastResort handler and dumps it raw
+        # into stderr, including under `--format json` (issue #237/#239 review).
+        logger.warning("Failed to generate prior from Understat: %s", exc)
         return None
 
 
@@ -403,8 +406,9 @@ async def _prior_from_football_data(prev_season: int) -> dict[str, TeamPerforman
 
         return _matches_to_performances(matches)
 
-    except Exception:  # noqa: BLE001 — graceful degradation
-        logger.warning("Failed to generate prior from football-data.org", exc_info=True)
+    except Exception as exc:  # noqa: BLE001 — graceful degradation
+        # No traceback: see the Understat prior's identical except above.
+        logger.warning("Failed to generate prior from football-data.org: %s", exc)
         return None
 
 
@@ -627,8 +631,9 @@ async def _championship_performances(
 
         return _rescale_to_pl(championship, pl_performances, covered, pool_reliability) or None
 
-    except Exception:  # noqa: BLE001 — graceful degradation
-        logger.warning("Failed to fetch Championship data for promoted teams", exc_info=True)
+    except Exception as exc:  # noqa: BLE001 — graceful degradation
+        # No traceback: see the Understat prior's identical except above.
+        logger.warning("Failed to fetch Championship data for promoted teams: %s", exc)
         return None
 
 

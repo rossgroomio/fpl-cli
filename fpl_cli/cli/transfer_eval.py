@@ -73,8 +73,7 @@ def transfer_eval_command(ctx: click.Context, out_player: str, in_players: str, 
         if out_resolved is None:
             msg = errors[0]
             if output_format == "json":
-                with json_output_mode() as stdout:
-                    emit_json_error("transfer-eval", msg, file=stdout)
+                emit_json_error("transfer-eval", msg)
             else:
                 console.print(f"[red]{msg}[/red]")
             raise SystemExit(1)
@@ -86,8 +85,7 @@ def transfer_eval_command(ctx: click.Context, out_player: str, in_players: str, 
         if errors:
             msg = "; ".join(errors)
             if output_format == "json":
-                with json_output_mode() as stdout:
-                    emit_json_error("transfer-eval", msg, file=stdout)
+                emit_json_error("transfer-eval", msg)
             else:
                 for e in errors:
                     console.print(f"[red]{e}[/red]")
@@ -105,8 +103,7 @@ def transfer_eval_command(ctx: click.Context, out_player: str, in_players: str, 
                 f"but {names} {'is' if len(mismatched) == 1 else 'are'} {positions}"
             )
             if output_format == "json":
-                with json_output_mode() as stdout:
-                    emit_json_error("transfer-eval", msg, file=stdout)
+                emit_json_error("transfer-eval", msg)
             else:
                 console.print(f"[red]{msg}[/red]")
             raise SystemExit(1)
@@ -120,8 +117,7 @@ def transfer_eval_command(ctx: click.Context, out_player: str, in_players: str, 
 
         if not result.success:
             if output_format == "json":
-                with json_output_mode() as stdout:
-                    emit_json_error("transfer-eval", result.message, file=stdout)
+                emit_json_error("transfer-eval", result.message)
             else:
                 console.print(f"[red]Agent failed: {result.message}[/red]")
             raise SystemExit(1)
@@ -139,7 +135,15 @@ def transfer_eval_command(ctx: click.Context, out_player: str, in_players: str, 
             _render_table(data, finances, sell_price, fmt)
 
     with api_failure_boundary("transfer-eval", output_format):
-        asyncio.run(_run())
+        if output_format == "json":
+            # The whole run, not just the emit: the agent logs its progress
+            # while it works, and anything printed before the envelope breaks
+            # a consumer's parse at byte 0 (#226). `emit_json`/`emit_json_error`
+            # reach the real stdout from inside here without being handed it.
+            with json_output_mode():
+                asyncio.run(_run())
+        else:
+            asyncio.run(_run())
 
 
 def _find_sell_price(finances, out_name: str) -> float | None:
@@ -167,6 +171,9 @@ def _emit_json_output(data: dict, finances, sell_price: float | None, fmt) -> No
     The early-season quality notice the analysis attaches travels in
     ``metadata.warnings``, the same slot ``fpl stats --value`` uses, so a
     consumer reads one place whichever command produced the score.
+
+    Called from inside the command's `json_output_mode()` block, which is
+    what routes the envelope to the real stdout while prose goes to stderr.
     """
     output = copy.deepcopy(data)
     warnings = output.pop("warnings", [])
@@ -180,8 +187,7 @@ def _emit_json_output(data: dict, finances, sell_price: float | None, fmt) -> No
             inp["itb"] = itb
             inp["affordable"] = itb >= 0 if itb is not None else None
 
-    with json_output_mode() as stdout:
-        emit_json("transfer-eval", output, metadata={"warnings": warnings}, file=stdout)
+    emit_json("transfer-eval", output, metadata={"warnings": warnings})
 
 
 def _render_table(data: dict, finances, sell_price: float | None, fmt) -> None:

@@ -534,6 +534,7 @@ class TestPlayerJsonOutput:
         assert "price" in info
         assert "form" in info
         assert "total_points" in info
+        assert info["minutes"] == 900
 
     def test_json_no_optional_sections_without_flags(self):
         client, fixture_agent, ratings_svc = _make_mocks()

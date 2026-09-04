@@ -1436,6 +1436,29 @@ async def capture_recap_history(
             first_capture_store_path=first_capture_store_path,
         )
 
+    # `append_rows` skips a row whose content is unchanged from the resolved
+    # current one (captured_at excluded from that comparison), so `rows` can
+    # still carry this run's fresh timestamp on a manager nothing was written
+    # for. Re-stamp every row from the store's post-write resolution so a
+    # consumer of `CaptureResult.rows` (the JSON payload included) sees the
+    # gameweek's actual capture time, not a re-read mislabelled as fresh
+    # (issue #237).
+    #
+    # Gated on `rows` being non-empty: `append_rows` above short-circuits
+    # without ever parsing the file when there is nothing to append, so an
+    # empty cohort paired with a corrupt gameweek file never reaches the
+    # `LeagueHistoryError` guard on that call. Calling `resolved_gameweek`
+    # unconditionally here would make this the first parse attempt for that
+    # case, raising past this function's "never raises for a store problem"
+    # guarantee (R4) for a re-stamp that an empty `rows` has nothing to use
+    # anyway.
+    if rows:
+        resolved_after_write = store.resolved_gameweek(data["gameweek"])
+        for row in rows:
+            winner = resolved_after_write.get(row.manager_key)
+            if winner is not None:
+                row.captured_at = winner.captured_at
+
     if is_first_season_capture:
         # The one moment a container-local data directory is still cheap to
         # notice: after the season is under way, everything written into an

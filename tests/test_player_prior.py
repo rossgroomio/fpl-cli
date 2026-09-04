@@ -422,6 +422,23 @@ class TestLoadOrGeneratePlayerPriors:
             result = await load_or_generate_player_priors([make_player(id=1)], 3)
         assert result is None
 
+    async def test_unreachable_history_logs_no_traceback(self, caplog):
+        """fpl-cli configures no logging handlers, so a WARNING with exc_info
+        reaches logging's lastResort handler and dumps it raw into stderr,
+        including under `--format json` (issue #237/#239 review)."""
+        import logging
+
+        with patch(
+            "fpl_cli.api.historical.make_historical_provider",
+            return_value=_provider(enter_error=OSError("offline")),
+        ):
+            with caplog.at_level(logging.WARNING):
+                await load_or_generate_player_priors([make_player(id=1)], 3)
+
+        records = [r for r in caplog.records if "Failed to generate player priors" in r.message]
+        assert len(records) == 1
+        assert records[0].exc_info is None
+
 
 # ---------------------------------------------------------------------------
 # early_season_quality_warning

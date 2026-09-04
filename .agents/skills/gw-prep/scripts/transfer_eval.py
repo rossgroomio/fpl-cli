@@ -15,13 +15,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import sys
 
-from _bootstrap import bootstrap_user_dirs
+from _bootstrap import bootstrap_user_dirs, emit
 
 from fpl_cli.agents.analysis.transfer_eval import TransferEvalAgent
 from fpl_cli.api.fpl import FPLClient
+from fpl_cli.cli._json import json_output_mode
 from fpl_cli.models.player import resolve_player_or_report, resolve_players_or_report
 
 
@@ -39,7 +39,7 @@ async def _run(out_name: str, in_names: list[str]) -> None:
     )
 
     if errors:
-        json.dump({"error": True, "messages": errors}, sys.stdout, indent=2)
+        emit({"error": True, "messages": errors})
         sys.exit(1)
 
     assert out_player is not None  # guaranteed by error check above
@@ -49,31 +49,32 @@ async def _run(out_name: str, in_names: list[str]) -> None:
     if mismatched:
         names = ", ".join(p.web_name for p in mismatched)
         positions = ", ".join(sorted({p.position_name for p in mismatched}))
-        json.dump({
+        emit({
             "error": True,
             "messages": [
                 f"Position mismatch: {out_player.web_name} is {out_player.position_name} "
                 f"but {names} {'is' if len(mismatched) == 1 else 'are'} {positions}"
             ],
-        }, sys.stdout, indent=2)
+        })
         sys.exit(1)
 
     in_ids = [p.id for p in in_players]
 
-    async with TransferEvalAgent() as agent:
-        result = await agent.run(context={
-            "out_player_id": out_player.id,
-            "in_player_ids": in_ids,
-        })
+    # The agent logs its progress while it works. `json_output_mode()` sends
+    # that to stderr and hands back the real stdout for the payload, so the
+    # caller parses JSON from byte 0 rather than stripping prose first (#226).
+    with json_output_mode() as stdout:
+        async with TransferEvalAgent() as agent:
+            result = await agent.run(context={
+                "out_player_id": out_player.id,
+                "in_player_ids": in_ids,
+            })
 
-    if not result.success:
-        json.dump({
-            "error": True,
-            "messages": result.errors or [result.message],
-        }, sys.stdout, indent=2)
-        sys.exit(1)
+        if not result.success:
+            emit({"error": True, "messages": result.errors or [result.message]}, stdout)
+            sys.exit(1)
 
-    json.dump(result.data, sys.stdout, indent=2)
+        emit(result.data, stdout)
 
 
 def main() -> None:
@@ -91,10 +92,7 @@ def main() -> None:
 
     in_names = [n.strip() for n in args.in_players.split(",") if n.strip()]
     if not in_names:
-        json.dump({
-            "error": True,
-            "messages": ["No IN players provided"],
-        }, sys.stdout, indent=2)
+        emit({"error": True, "messages": ["No IN players provided"]})
         sys.exit(1)
 
     asyncio.run(_run(args.out, in_names))

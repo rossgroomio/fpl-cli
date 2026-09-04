@@ -148,13 +148,15 @@ def ratings_update(since_gw: int | None, dry_run: bool, use_xg: bool):
             else:
                 min_gw = since_gw or 1
                 method = "recent_form" if since_gw else "full_season"
-                console.print(f"[bold]Calculating ratings from GW{min_gw} fixtures...[/bold]\n")
-                ratings, performances = await calculator.calculate_from_fixtures(min_gw=min_gw)
-                source = "calculated"
-                # Determine GW range for display
+                # Determine GW range up front so the progress header names the
+                # same window as the "Based on" summary below, instead of a
+                # bare min_gw that reads like the whole window is one GW.
                 fixtures = await client.get_fixtures()
                 completed = [f for f in fixtures if f.finished and f.gameweek and f.gameweek >= min_gw]
                 max_gw = max((f.gameweek for f in completed if f.gameweek), default=min_gw) if completed else min_gw
+                console.print(f"[bold]Calculating ratings from GW{min_gw}-{max_gw} fixtures...[/bold]\n")
+                ratings, performances = await calculator.calculate_from_fixtures(min_gw=min_gw)
+                source = "calculated"
                 summary = f"GW{min_gw}-{max_gw} ({len(completed)} fixtures)"
                 based_on_gws = (min_gw, max_gw)
                 # Gameweeks of current-season evidence, not the absolute GW
@@ -187,10 +189,13 @@ def ratings_update(since_gw: int | None, dry_run: bool, use_xg: bool):
                 try:
                     teams = await client.get_teams()
                     team_set_drift = service.check_team_set(t.short_name for t in teams)
-                except Exception:  # noqa: BLE001 — a drift check must not break the command
+                except Exception as exc:  # noqa: BLE001 — a drift check must not break the command
+                    # No traceback: fpl-cli configures no logging handlers, so
+                    # a WARNING with exc_info reaches logging's lastResort
+                    # handler and dumps it raw into stderr (issue #237/#239 review).
                     logger.warning(
-                        "Team-set drift check failed - keeping existing ratings without it",
-                        exc_info=True,
+                        "Team-set drift check failed - keeping existing ratings without it: %s",
+                        exc,
                     )
                 if current_ratings and not team_set_drift:
                     console.print(

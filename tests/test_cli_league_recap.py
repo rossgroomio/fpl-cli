@@ -402,13 +402,19 @@ class TestCaptureRecapHistory:
 
     async def test_a_second_run_over_the_same_gameweek_leaves_the_file_byte_identical(self):
         data = _recap_data()
-        await capture_recap_history(data, season=SEASON)
+        first = await capture_recap_history(data, season=SEASON)
         before = _store().gameweek_file(5).read_bytes()
+        first_captured_at = {r.manager_key: r.captured_at for r in first.rows}
 
         result = await capture_recap_history(data, season=SEASON)
 
         assert result.written == []
         assert _store().gameweek_file(5).read_bytes() == before
+        # Nothing was written this run, so the rows handed back (the JSON
+        # payload's source) must carry the gameweek's original capture time,
+        # not this call's fresh one -- a re-read must not be mislabelled as a
+        # new capture (issue #237).
+        assert {r.manager_key: r.captured_at for r in result.rows} == first_captured_at
 
     async def test_ae4_a_corrupt_store_warns_once_and_keeps_the_rows(self, capsys):
         path = _store().gameweek_file(5)
@@ -424,6 +430,24 @@ class TestCaptureRecapHistory:
         err = _stderr(capsys)
         assert str(path) in err
         assert path.read_bytes() == before
+
+    async def test_an_empty_cohort_over_a_corrupt_store_still_never_raises(self, capsys):
+        """R4: a corrupt gameweek file must never escape as a raised error.
+
+        `append_rows` short-circuits on an empty `rows` without ever parsing
+        the file, so an empty cohort used to skip the existing corrupt-store
+        guard entirely and reach the unconditional `resolved_gameweek` re-stamp
+        call added for issue #237 -- which raises `LeagueHistoryError` on the
+        same corrupt file, uncaught (issue #239 review).
+        """
+        path = _store().gameweek_file(5)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("not json{{{\n", encoding="utf-8")
+
+        data = _recap_data(managers=[], cohort=[])
+        result = await capture_recap_history(data, season=SEASON)
+
+        assert result.rows == []
 
     async def test_the_store_path_is_announced_only_when_a_season_is_first_created(self, capsys):
         await capture_recap_history(_recap_data(), season=SEASON)
