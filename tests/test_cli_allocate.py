@@ -57,11 +57,19 @@ def _make_scoring_data(next_gw_id=20):
     return sd
 
 
-def _run_allocate(squad_result, args=None, scoring_data=None, *, return_mocks=False):
+def _run_allocate(
+    squad_result, args=None, scoring_data=None, *, return_mocks=False, during_scoring=None,
+):
     """Run fpl allocate with mocked service layer.
 
     When *return_mocks* is True, returns ``(result, mocks_dict)`` so callers
     can inspect call arguments on the solve_squad mock etc.
+
+    *during_scoring* runs inside the stubbed `prepare_scoring_data`, where the
+    real one does its Understat enrichment. A test that needs a side effect of
+    that enrichment has to produce it there rather than before `invoke`: the
+    CLI group resets the join-drop record on entry, so anything staged outside
+    the run is gone by the time the command reads it.
     """
     if scoring_data is None:
         scoring_data = _make_scoring_data()
@@ -79,9 +87,14 @@ def _run_allocate(squad_result, args=None, scoring_data=None, *, return_mocks=Fa
         stack.enter_context(patch("fpl_cli.cli.load_settings", return_value=settings))
         stack.enter_context(patch("fpl_cli.cli._context.load_settings", return_value=settings))
         stack.enter_context(patch("fpl_cli.api.fpl.FPLClient", return_value=mock_fpl))
+        async def _prepare_scoring_data(*_args, **_kwargs):
+            if during_scoring is not None:
+                during_scoring()
+            return scoring_data
+
         stack.enter_context(patch(
             "fpl_cli.services.scoring.prepare_scoring_data",
-            new=AsyncMock(return_value=scoring_data),
+            new=AsyncMock(side_effect=_prepare_scoring_data),
         ))
         mock_score = stack.enter_context(patch(
             "fpl_cli.services.squad_allocator.score_all_players",
@@ -218,6 +231,44 @@ class TestAllocateCommand:
         assert result.exit_code == 0, result.output
         warnings = json.loads(result.output)["metadata"]["warnings"]
         assert [w["code"] for w in warnings] == ["early_season_small_sample"]
+
+    def test_understat_join_warning_reaches_metadata_at_every_horizon(self):
+        """A club Understat carries no rows for costs the solver that club's
+        whole squad its quality score, so the notice cannot be tied to the
+        early-season branch the way the prior notice is (#229).
+
+        Recorded the way the scoring pipeline records it — the real gate over a
+        payload that names another club — from inside the stubbed
+        `prepare_scoring_data`, which is where the enrichment this harness
+        skips would otherwise run.
+        """
+        from fpl_cli.api.understat import match_fpl_to_understat
+
+        def _enrich():
+            match_fpl_to_understat(
+                "Some Player", "Coventry City",
+                [{"name": "Saka", "team": "Arsenal", "position": "M S", "minutes": 900}],
+            )
+
+        mid_season = _make_scoring_data(next_gw_id=20)
+        mid_season.player_priors = {}
+        result = _run_allocate(
+            _make_squad_result(), ["--horizon", "1", "--format", "json"],
+            scoring_data=mid_season, during_scoring=_enrich,
+        )
+        assert result.exit_code == 0, result.output
+        warnings = json.loads(result.output)["metadata"]["warnings"]
+        assert [w["code"] for w in warnings] == ["understat_team_unmatched"]
+        assert "Coventry City" in warnings[0]["message"]
+
+    def test_no_understat_join_warning_when_every_club_resolved(self):
+        mid_season = _make_scoring_data(next_gw_id=20)
+        mid_season.player_priors = {}
+        result = _run_allocate(
+            _make_squad_result(), ["--format", "json"], scoring_data=mid_season,
+        )
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.output)["metadata"]["warnings"] == []
 
     def test_no_early_season_notice_mid_season_or_at_horizon_1(self):
         mid_season = _make_scoring_data(next_gw_id=20)

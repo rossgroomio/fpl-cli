@@ -465,8 +465,10 @@ def reset_understat_join_warnings() -> None:
     """Forget every join-drop tripwire recorded so far.
 
     The record is process-global so the warning fires once rather than once per
-    player, which leaves a test (or any host running several commands in one
-    process) needing a way back to a clean slate.
+    player, which makes this the hook that scopes it to a run instead. The CLI
+    group calls it before dispatching, so one command's unresolved clubs cannot
+    surface in the next command's `metadata.warnings`; anything driving the
+    agents directly, in a process that outlives one pass, owns the same call.
     """
     _unmatched_team_warned.clear()
 

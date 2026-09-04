@@ -586,6 +586,25 @@ class TestStatsValueNullScores:
         warnings = json.loads(result.output)["metadata"]["warnings"]
         assert [w for w in warnings if w["code"] == "understat_team_unmatched"] == []
 
+    def test_an_earlier_run_in_this_process_does_not_leak_its_clubs(self):
+        # The join-drop record is process-global (warn once per club, not once
+        # per player), so the CLI group resets it per run — otherwise a host
+        # invoking two commands in one process reads the first run's clubs in
+        # the second's envelope, long after that payload is gone (#229 review).
+        from fpl_cli.api.understat import match_fpl_to_understat
+
+        match_fpl_to_understat(
+            "Some Player", "Coventry City",
+            [{"name": "Saka", "team": "Arsenal", "position": "M S", "minutes": 900}],
+        )
+
+        client = _make_client(_sample_players(), _sample_teams())
+        result = _run(["--format", "json"], client=client)
+
+        assert result.exit_code == 0, result.output
+        warnings = json.loads(result.output)["metadata"]["warnings"]
+        assert [w for w in warnings if w["code"] == "understat_team_unmatched"] == []
+
     def test_null_scored_players_sort_to_bottom(self):
         """When sorting by quality_per_m, null-scored players appear last."""
         # Create one matched and one unmatched player
