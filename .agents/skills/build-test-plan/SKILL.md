@@ -89,10 +89,12 @@ Keep `feat:`, `fix:`, `refactor:`, `perf:`. Drop `chore:`/`docs:`/`ci:`/
 mislabelled `chore:` is invisible to the changelog *and* to this plan, and
 that is exactly the change nobody thinks to test.
 
-## Step 3 — Carry forward the last plan's unfinished business
+## Step 3 — Carry forward the unfinished business
 
-Read the previous plan's Results log. It is the highest-value input to the
-new plan and the easiest to skip.
+Two sources feed this, and a plan that reads only the first will miss work
+the user has already specified.
+
+### The previous plan's Results log
 
 Three kinds of thing carry forward:
 
@@ -112,6 +114,40 @@ Three kinds of thing carry forward:
 This loop is real: most of v2.3.0 exists because the v2.0→v2.2 run found
 those bugs. A plan that doesn't close its predecessor's loop lets fixes ship
 unverified.
+
+### The vault's open issues
+
+The Results log records what a run found. The vault's issue tracker records
+what the user decided to do about it, which is not the same set — and it is
+where deferred testing work actually queues:
+
+```
+mcp__github__issue_read / list_issues on rossgroomio/fpl-workspace,
+state OPEN — the `testing` label first, then the rest
+```
+
+**Read the comments, not just the body.** A deferred-items issue grows by
+comment as later sessions hit the same wall, and the comments carry the
+best material in the whole tracker: fully-specified tests with the exact
+invocation and expected values, the data state at the time of testing, and
+the condition that would unblock each one. Fold those in close to as
+written — they are better specified than anything drafted fresh, and the
+person who wrote them was looking at real output.
+
+Two things to notice while you're there:
+
+- **Tests with no home.** Work deferred from a version that never got its
+  own plan has nowhere to be logged, and the issue usually says so. The
+  plan you are writing is that home if its range covers the change.
+- **Environment blockers.** An open issue about the vault's own setup — a
+  broken helper script, a wrong interpreter, a missing key — is not a
+  change under test, but it will make a test fail confusingly and get
+  misattributed to fpl-cli. Surface those in the preflight.
+
+Cite the issue number against each carried test (`carried from
+workspace#34`), and have the wrap-up tell the runner to close those items
+as they are recorded. An issue that stays open after its tests pass is how
+the same work gets queued twice.
 
 ## Step 4 — Research each change
 
