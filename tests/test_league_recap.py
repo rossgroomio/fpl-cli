@@ -36,6 +36,7 @@ from fpl_cli.cli._league_recap_data import (
 from fpl_cli.cli._league_recap_types import (
     RecapAwards,
     RecapDraftTransaction,
+    RecapFineResult,
     RecapManagerEntry,
     RecapManagerPlayer,
     RecapTransfer,
@@ -48,9 +49,11 @@ from fpl_cli.prompts.league_recap import (
     format_recap_fines_context,
     format_recap_league_history_context,
     format_recap_player_clubs_context,
+    format_recap_season_fines_context,
     format_recap_standings_context,
     get_recap_synthesis_prompt,
 )
+from fpl_cli.services.league_history_fines import ManagerFineTally, SeasonFinesTally
 from fpl_cli.services.league_history_notes import (
     GameweekWindow,
     NoteKind,
@@ -3433,3 +3436,161 @@ class TestRecapPlayerClubs:
         text = format_recap_captains_context(data, collect_player_clubs(data))
         assert "- **Martínez** (×1):" in text
         assert "Aston Villa" not in text
+
+
+class TestFinePlacement:
+    """This gameweek's fine, placed in the fined manager's season (issue #233).
+
+    Two of three generated editorials called the week's loser's first
+    last-place finish their second, having read a Season Fines section that
+    listed a 1 against each of two different managers and a league-wide total
+    of 2. The prompt now states the ordinal outright, so the model is handed
+    the sentence rather than the sum.
+    """
+
+    @staticmethod
+    def _tally(*managers: ManagerFineTally, through: int = 10) -> SeasonFinesTally:
+        return SeasonFinesTally(
+            season="2025-26",
+            fpl_format="classic",
+            league_id=1,
+            through_gameweek=through,
+            start_gameweek=1,
+            rule_types=["last-place"],
+            managers=list(managers),
+            qualifiers=["Every gameweek from GW1 through GW10 was ruled."],
+        )
+
+    @staticmethod
+    def _fine(name: str, key: int | None = 1, rule: str = "last-place") -> RecapFineResult:
+        fine = RecapFineResult(
+            manager_name=name, rule_type=rule, message=f"{name} finished last",
+        )
+        if key is not None:
+            fine["manager_key"] = key
+        return fine
+
+    def test_a_managers_only_fine_is_called_their_first(self):
+        """The exact failure: one fine this week, one all season, and the
+        editorial reached for "twice in a row" anyway."""
+        data = _make_recap_data(fines=[self._fine("Bob")])
+        tally = self._tally(
+            ManagerFineTally(
+                manager_key=1, manager_name="Bob",
+                counts={"last-place": 1}, fined_gameweeks=[10],
+            ),
+            # The other manager's own single fine, in a different gameweek --
+            # the pair of 1s the editorial merged into one running count.
+            ManagerFineTally(
+                manager_key=2, manager_name="Ada",
+                counts={"last-place": 1}, fined_gameweeks=[9],
+            ),
+        )
+
+        text = format_recap_fines_context(data, tally)
+
+        assert "this gameweek's last-place fine is Bob's first of the season" in text
+        assert "No earlier gameweek carries a last-place fine against Bob" in text
+        assert "Ada" not in text, "only managers fined this gameweek are placed"
+
+    def test_a_repeat_offender_is_counted_including_this_one(self):
+        data = _make_recap_data(fines=[self._fine("Bob")])
+        tally = self._tally(ManagerFineTally(
+            manager_key=1, manager_name="Bob",
+            counts={"last-place": 3}, fined_gameweeks=[2, 6, 10],
+        ))
+
+        text = format_recap_fines_context(data, tally)
+
+        assert "is Bob's third of the season, this one included" in text
+
+    def test_each_rule_type_is_placed_against_its_own_count(self):
+        """A week carrying two fines against one manager places each against
+        its own rule's count, never against their combined total."""
+        data = _make_recap_data(fines=[
+            self._fine("Bob"), self._fine("Bob", rule="red-card"),
+        ])
+        tally = self._tally(ManagerFineTally(
+            manager_key=1, manager_name="Bob",
+            counts={"last-place": 2, "red-card": 1}, fined_gameweeks=[4, 10],
+        ))
+
+        text = format_recap_fines_context(data, tally)
+
+        assert "this gameweek's last-place fine is Bob's second of the season" in text
+        assert "this gameweek's red-card fine is Bob's first of the season" in text
+
+    def test_nothing_is_placed_without_a_tally(self):
+        """A store failure costs the tally, not the recap (R4) -- and an
+        unplaced fine is the honest outcome, since the ordinal would have to
+        be guessed."""
+        data = _make_recap_data(fines=[self._fine("Bob")])
+
+        text = format_recap_fines_context(data, None)
+
+        assert "Bob finished last" in text
+        assert "of the season" not in text
+
+    def test_nothing_is_placed_when_the_tally_missed_this_gameweek(self):
+        """The tally is a fold over written rows. If this gameweek's row never
+        landed, its total excludes the fine being placed, and an ordinal read
+        off it would be one short."""
+        data = _make_recap_data(fines=[self._fine("Bob")])
+        tally = self._tally(ManagerFineTally(
+            manager_key=1, manager_name="Bob",
+            counts={"last-place": 1}, fined_gameweeks=[4],
+        ))
+
+        text = format_recap_fines_context(data, tally)
+
+        assert "of the season" not in text
+
+    def test_a_keyless_fine_falls_back_to_a_unique_name(self):
+        data = _make_recap_data(fines=[self._fine("Bob", key=None)])
+        tally = self._tally(ManagerFineTally(
+            manager_key=7, manager_name="Bob",
+            counts={"last-place": 1}, fined_gameweeks=[10],
+        ))
+
+        text = format_recap_fines_context(data, tally)
+
+        assert "is Bob's first of the season" in text
+
+    def test_a_keyless_fine_is_left_unplaced_when_the_name_is_shared(self):
+        """Two managers can share a display name, which is why rulings are
+        keyed. Placing the fine against the wrong one is worse than not
+        placing it."""
+        data = _make_recap_data(fines=[self._fine("Bob", key=None)])
+        tally = self._tally(
+            ManagerFineTally(
+                manager_key=1, manager_name="Bob",
+                counts={"last-place": 1}, fined_gameweeks=[10],
+            ),
+            ManagerFineTally(
+                manager_key=2, manager_name="Bob",
+                counts={"last-place": 4}, fined_gameweeks=[1, 2, 3, 10],
+            ),
+        )
+
+        text = format_recap_fines_context(data, tally)
+
+        assert "of the season" not in text
+
+    def test_the_season_fines_section_names_each_managers_fined_gameweeks(self):
+        tally = self._tally(ManagerFineTally(
+            manager_key=1, manager_name="Bob",
+            counts={"last-place": 2}, fined_gameweeks=[3, 10],
+        ))
+
+        text = format_recap_season_fines_context(tally)
+
+        assert "- Bob: 2 (2 last-place; fined in GW3, GW10)" in text
+
+    def test_the_system_prompt_forbids_an_unsupported_repeat(self):
+        system, _ = get_recap_synthesis_prompt(
+            gw=10, league_name="Test", fpl_format="classic",
+            awards_text="x", standings_text="| t |", fines_text="Bob fined",
+        )
+
+        assert '"second"' in system
+        assert "Two managers each on 1 are two separate first offences" in system

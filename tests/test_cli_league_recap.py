@@ -2525,7 +2525,7 @@ class TestSeasonFinesSurfaces:
         text = format_recap_season_fines_context(tally)
 
         assert f"Season fine totals, GW{CHIP_SPLIT_GW} through GW{CHIP_SPLIT_GW}" in text
-        assert "- Bob: 1 (1 last-place)" in text
+        assert f"- Bob: 1 (1 last-place; fined in GW{CHIP_SPLIT_GW})" in text
         assert "Not fined so far: Alice" in text
         assert "Coverage:" in text
 
@@ -2628,8 +2628,10 @@ class TestEndToEndPromptThroughTheFullCommand:
         user_prompt = (tmp_path / "data" / "debug" / "recap_prompt.txt").read_text(encoding="utf-8")
 
         assert "## Season Fines" in user_prompt
-        assert "Bob: 1 (1 last-place)" in user_prompt
+        assert f"Bob: 1 (1 last-place; fined in GW{CHIP_SPLIT_GW})" in user_prompt
         assert "NEVER add up fines yourself" in system_prompt
+        # The ordinal the model kept inventing, stated for it (issue #233).
+        assert "is Bob's first of the season" in user_prompt
 
     def test_an_ordinary_gameweek_still_hands_the_model_season_totals(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
@@ -2649,7 +2651,8 @@ class TestEndToEndPromptThroughTheFullCommand:
         user_prompt = (tmp_path / "data" / "debug" / "recap_prompt.txt").read_text(encoding="utf-8")
 
         assert "## Season Fines" in user_prompt
-        assert "Bob: 1 (1 last-place)" in user_prompt
+        assert "Bob: 1 (1 last-place; fined in GW5)" in user_prompt
+        assert "is Bob's first of the season" in user_prompt
         # ...and it is offered, never demanded.
         assert "optional colour, not a required beat" in system_prompt
 

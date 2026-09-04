@@ -699,7 +699,11 @@ things: with `--summarise`, the narrative gets the season totals every week and 
 into a paragraph where it sharpens what happened ("Bob's fourth last-place of the season"),
 taking the numbers verbatim and repeating any qualification the tally carries. It is offered
 as optional colour, never a required beat, so a gameweek the total adds nothing to simply
-goes unmentioned. `--format json` is ungated too — `metadata.season_fines` is emitted every
+goes unmentioned. Each total names the gameweeks behind it (`Bob: 2 (2 last-place; fined in
+GW3, GW10)`), and this gameweek's own fines are handed over with their place in the season
+already worked out — "this gameweek's last-place fine is Bob's first of the season" — so the
+narrative never has to count fines itself to say whether one is a repeat. `--format json` is
+ungated too — `metadata.season_fines` is emitted every
 week, so a scripted consumer never sees it appear and disappear on a calendar it cannot see.
 
 **LLM editorial** (`--summarise`): Newsletter-style narrative via synthesis provider. Names names, calls out decisions. The editorial is an add-on: if the synthesis provider has no usable API key the recap still renders, still saves its report and still captures the ledger, with the reason on stderr and a `synthesis_provider_unavailable` warning in JSON. `synthesis_summary` is `null` on such a run — the warning is what distinguishes it from a run that never asked for an editorial.
