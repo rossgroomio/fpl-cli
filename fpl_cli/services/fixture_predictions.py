@@ -382,6 +382,25 @@ def had_fixture(
     return team_id not in bgw_team_ids
 
 
+def is_blank_gameweek(
+    player_id: int | None,
+    team_id: int | None,
+    *,
+    players_with_fixture: frozenset[int] | None,
+    bgw_team_ids: frozenset[int],
+) -> bool:
+    """Whether this player's club had no fixture in the gameweek being read.
+
+    `had_fixture` read the other way up, so a caller populating a `bgw` field
+    says what it means instead of negating a positive at the assignment.
+    """
+    return not had_fixture(
+        player_id, team_id,
+        players_with_fixture=players_with_fixture,
+        bgw_team_ids=bgw_team_ids,
+    )
+
+
 def find_double_gameweeks(
     fixtures_by_gw: dict[int, list[Fixture]],
     teams: list[Team],
@@ -428,6 +447,54 @@ def find_double_gameweeks(
             double_gws[gw] = teams_with_doubles
 
     return double_gws
+
+
+def resolve_players_with_double(
+    live_data: dict[str, Any], fixtures: Sequence[Fixture],
+) -> frozenset[int] | None:
+    """Players whose club played twice, as the gameweek itself recorded it.
+
+    The double twin of `resolve_players_with_fixture`, off the same signal:
+    the live endpoint writes one `explain` entry per club fixture, so two
+    entries is a club that played twice. `find_double_gameweeks` answers from
+    the club a player is at *now*, which is wrong for a gameweek he was
+    somewhere else for, exactly as the blank case is (issue #174).
+
+    None on the same terms -- an unstarted or part-played gameweek has not
+    written every entry yet, and neither has a payload whose `explain`s have
+    not populated. An *empty* answer is a real one here, though, where the
+    blank case has to decline: a gameweek in which nobody doubled is the
+    ordinary week, while one in which nobody had a fixture at all is a
+    payload that has not arrived.
+    """
+    if not fixtures or not all(f.finished for f in fixtures):
+        return None
+    elements = live_data.get("elements") or []
+    if not any(e.get("explain") for e in elements):
+        return None
+    return frozenset(
+        player_id
+        for e in elements
+        if len(e.get("explain") or ()) > 1 and (player_id := e.get("id")) is not None
+    )
+
+
+def is_double_gameweek(
+    player_id: int | None,
+    team_id: int | None,
+    *,
+    players_with_double: frozenset[int] | None,
+    dgw_team_ids: frozenset[int],
+) -> bool:
+    """Whether this player's club played twice in the gameweek being read.
+
+    Mirrors `had_fixture`: prefers `resolve_players_with_double`'s
+    point-in-time answer and falls back to the club whenever the gameweek
+    declined to give one, or the player has no main-game id to look up.
+    """
+    if players_with_double is not None and player_id is not None:
+        return player_id in players_with_double
+    return team_id in dgw_team_ids
 
 
 # -- Prediction lookup for matchup scoring --

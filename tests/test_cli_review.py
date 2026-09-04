@@ -1103,3 +1103,250 @@ class TestReviewDraftPlayerMatching:
         )
 
         assert data["draft_squad_points_data"][0]["points"] == 0
+
+
+# ---------------------------------------------------------------------------
+# TestReviewStaleClubFlags
+# ---------------------------------------------------------------------------
+
+class TestReviewStaleClubFlags:
+    """#174: `-g` reviews a finished gameweek, but the club a player is at
+    today is the only one the bootstrap knows. Reach back past a transfer and
+    that club's fixture list was never his, so which players blanked -- and
+    which doubled -- has to be read off the gameweek's own live data instead.
+
+    In every case here GW15 blanked club 3 and gave club 19 a double. `mover`
+    is at the blanking club today and played both of the other one's fixtures
+    that gameweek; `leaver` is the mirror image.
+    """
+
+    TEAMS = {
+        3: make_team(id=3, short_name="BLA", name="Blanked FC"),
+        19: make_team(id=19, short_name="MCI", name="Man City"),
+    }
+    # Only `mover` has `explain` entries in GW15's live payload, because only
+    # his club of the day took the pitch -- twice, so he doubled as well.
+    WITH_FIXTURE = frozenset({401})
+    WITH_DOUBLE = frozenset({401})
+
+    @staticmethod
+    def _players():
+        return [
+            make_player(id=401, code=1401, web_name="Mover", team_id=3, selected_by_percent=20.0),
+            make_player(id=402, code=1402, web_name="Leaver", team_id=19, selected_by_percent=30.0),
+        ]
+
+    LIVE_STATS = {  # noqa: RUF012 — plain test data, not a mutable default
+        401: {"total_points": 0, "minutes": 0},
+        402: {"total_points": 0, "minutes": 0},
+    }
+
+    async def _global_stats(self, **kwargs):
+        from fpl_cli.cli._review_analysis import _review_global_stats
+
+        client = MagicMock()
+        client.get_dream_team = AsyncMock(return_value={"team": []})
+        return await _review_global_stats(
+            client, 15, {p.id: p for p in self._players()}, self.TEAMS, self.LIVE_STATS,
+            bgw_team_ids=frozenset({3}), **kwargs,
+        )
+
+    async def test_blankers_are_read_off_the_gameweek_not_todays_club(self):
+        """The real zero is the one whose club played that week, whatever
+        shirt he wears now."""
+        data = await self._global_stats(players_with_fixture=self.WITH_FIXTURE)
+        assert [b["name"] for b in data["blankers"]] == ["Mover"]
+
+    async def test_blankers_fall_back_to_the_club_when_the_gameweek_cannot_answer(self):
+        """A gameweek still in play gives no answer, and the club decides as
+        it always did."""
+        data = await self._global_stats(players_with_fixture=None)
+        assert [b["name"] for b in data["blankers"]] == ["Leaver"]
+
+    async def _classic_team(self, **kwargs):
+        from fpl_cli.cli._review_classic import _review_classic_team
+
+        client = MagicMock()
+        client.get_manager_picks = AsyncMock(return_value={
+            "entry_history": {"points": 0},
+            "active_chip": None,
+            "automatic_subs": [],
+            "picks": [
+                {"element": 401, "position": 1, "multiplier": 1},
+                {"element": 402, "position": 2, "multiplier": 1},
+            ],
+        })
+        return await _review_classic_team(
+            client, 1, 15, {p.id: p for p in self._players()}, self.TEAMS,
+            {"id": 15}, self.LIVE_STATS,
+            bgw_team_ids=frozenset({3}), dgw_team_ids=frozenset({19}), **kwargs,
+        )
+
+    async def test_classic_bgw_flag_follows_the_gameweeks_own_record(self):
+        """`_format_review_review_player` lets `bgw` override every other
+        annotation, so excusing the wrong zero is what reaches the user and
+        the prompt."""
+        data = await self._classic_team(players_with_fixture=self.WITH_FIXTURE)
+        assert {p["name"]: p["bgw"] for p in data["my_picks_data"]} == {
+            "Mover": False, "Leaver": True,
+        }
+
+    async def test_classic_bgw_flag_falls_back_to_the_club(self):
+        data = await self._classic_team(players_with_fixture=None)
+        assert {p["name"]: p["bgw"] for p in data["my_picks_data"]} == {
+            "Mover": True, "Leaver": False,
+        }
+
+    async def test_classic_dgw_flag_follows_the_gameweeks_own_record(self):
+        """The twin flag, and wrong in both directions for the same reason:
+        `[DGW]` is a suffix on the prompt line claiming he played twice."""
+        data = await self._classic_team(
+            players_with_fixture=self.WITH_FIXTURE, players_with_double=self.WITH_DOUBLE,
+        )
+        assert {p["name"]: p["dgw"] for p in data["my_picks_data"]} == {
+            "Mover": True, "Leaver": False,
+        }
+
+    async def test_classic_dgw_flag_falls_back_to_the_club(self):
+        data = await self._classic_team(players_with_fixture=None, players_with_double=None)
+        assert {p["name"]: p["dgw"] for p in data["my_picks_data"]} == {
+            "Mover": False, "Leaver": True,
+        }
+
+    @staticmethod
+    def _draft_client(draft_elements, picks):
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        client.get_league_details = AsyncMock(return_value={
+            "league": {"name": "Draft League"},
+            "standings": [{"league_entry": 10, "event_total": 0, "total": 0, "rank": 1}],
+            "league_entries": [
+                {"id": 10, "entry_id": 1, "player_first_name": "A", "player_last_name": "B"},
+            ],
+        })
+        client.get_bootstrap_static = AsyncMock(return_value={"elements": draft_elements})
+        client.get_entry_picks = AsyncMock(return_value={"picks": picks, "subs": []})
+        client.get_league_transactions = AsyncMock(return_value={"transactions": []})
+        return client
+
+    async def _draft(self, **kwargs):
+        draft_elements = [
+            make_draft_player(id=401, code=1401, web_name="Mover", team=3, element_type=3),
+            make_draft_player(id=402, code=1402, web_name="Leaver", team=19, element_type=3),
+            # No code and no name the main game knows, so nothing to look up
+            # in the gameweek's live data.
+            make_draft_player(id=901, code=999999, web_name="Mystery", team=3, element_type=3),
+        ]
+        picks = [{"element": e["id"], "position": i} for i, e in enumerate(draft_elements, start=1)]
+        client = self._draft_client(draft_elements, picks)
+        with patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=client):
+            return await _review_draft(
+                MagicMock(), 1, 1, gw=15, api_current_gw_id=15,
+                players=self._players(), player_map={p.id: p for p in self._players()},
+                teams=self.TEAMS, live_stats=self.LIVE_STATS,
+                bgw_team_ids=frozenset({3}), dgw_team_ids=frozenset({19}), **kwargs,
+            )
+
+    async def test_draft_bgw_flag_follows_the_gameweeks_own_record(self):
+        data = await self._draft(players_with_fixture=self.WITH_FIXTURE)
+        assert {p["name"]: p["bgw"] for p in data["draft_squad_points_data"]} == {
+            "Mover": False, "Leaver": True, "Mystery": True,
+        }
+
+    async def test_an_unmatched_draft_player_still_reads_his_club(self):
+        """`Mystery` has no main-game id, so the gameweek has nothing to say
+        about him and his club answers -- in both directions."""
+        data = await self._draft(players_with_fixture=frozenset({401, 402, 901}))
+        flags = {p["name"]: p["bgw"] for p in data["draft_squad_points_data"]}
+        assert flags["Mystery"] is True  # club 3 blanked; the 901 above is a draft id
+        assert flags["Mover"] is False
+
+    async def test_draft_bgw_flag_falls_back_to_the_club(self):
+        data = await self._draft(players_with_fixture=None)
+        assert {p["name"]: p["bgw"] for p in data["draft_squad_points_data"]} == {
+            "Mover": True, "Leaver": False, "Mystery": True,
+        }
+
+    async def test_draft_dgw_flag_follows_the_gameweeks_own_record(self):
+        data = await self._draft(
+            players_with_fixture=self.WITH_FIXTURE, players_with_double=self.WITH_DOUBLE,
+        )
+        assert {p["name"]: p["dgw"] for p in data["draft_squad_points_data"]} == {
+            "Mover": True, "Leaver": False, "Mystery": False,
+        }
+
+    async def test_draft_dgw_flag_falls_back_to_the_club(self):
+        data = await self._draft(players_with_fixture=None, players_with_double=None)
+        assert {p["name"]: p["dgw"] for p in data["draft_squad_points_data"]} == {
+            "Mover": False, "Leaver": True, "Mystery": False,
+        }
+
+
+class TestReviewThreadsTheGameweeksFixtureSet:
+    """The fix is only worth anything if the command builds the set and hands
+    it to all three sites, so pin the wiring rather than trusting the call."""
+
+    def test_every_section_receives_the_resolved_set(self, monkeypatch):
+        from click.testing import CliRunner
+
+        from fpl_cli.cli import review as review_module
+        from tests.conftest import make_fixture
+
+        # Club 3 blanked GW15 and club 19 doubled, so only club 19's players
+        # have `explain` entries -- two of them, which is what the pair of
+        # `resolve_players_with_*` calls read.
+        live_data = {"elements": [
+            {"id": 401, "stats": {"total_points": 0}, "explain": [{"fixture": 7}, {"fixture": 8}]},
+            {"id": 402, "stats": {"total_points": 0}, "explain": []},
+        ]}
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        client.get_gameweeks = AsyncMock(return_value=[{"id": 15, "finished": True}])
+        client.get_current_gameweek = AsyncMock(return_value={"id": 20, "finished": False})
+        client.get_players = AsyncMock(return_value=[
+            make_player(id=401, team_id=19), make_player(id=402, team_id=3),
+        ])
+        client.get_teams = AsyncMock(return_value=[
+            make_team(id=3, short_name="BLA", name="Blanked FC"),
+            make_team(id=19, short_name="MCI", name="Man City"),
+        ])
+        client.get_gameweek_live = AsyncMock(return_value=live_data)
+        client.get_fixtures = AsyncMock(return_value=[
+            make_fixture(id=7, gameweek=15, home_team_id=19, away_team_id=1, finished=True, started=True),
+            make_fixture(id=8, gameweek=15, home_team_id=2, away_team_id=19, finished=True, started=True),
+        ])
+        monkeypatch.setattr("fpl_cli.api.fpl.FPLClient", MagicMock(return_value=client))
+
+        seen: dict[str, object] = {}
+
+        def _spy(key, result):
+            async def _call(*args, players_with_fixture=None, players_with_double=None, **kwargs):
+                seen[key] = (players_with_fixture, players_with_double)
+                return result
+            return _call
+
+        monkeypatch.setattr(review_module, "_review_classic_team", _spy("classic", {
+            "my_entry_summary": None, "active_chip": None,
+            "team_points_data": [], "my_picks_data": [],
+        }))
+        monkeypatch.setattr(review_module, "_review_global_stats", _spy("global", {}))
+        monkeypatch.setattr(review_module, "_review_draft", _spy("draft", {
+            "draft_squad_points_data": [], "draft_transactions_data": [],
+            "draft_league_data": None, "draft_automatic_subs": [],
+            "draft_player_map": {},
+        }))
+        monkeypatch.setattr(review_module, "_review_fixtures", AsyncMock(return_value=[]))
+        monkeypatch.setattr(review_module, "_review_league_table", AsyncMock(return_value=[]))
+
+        result = CliRunner().invoke(review_module.review_command, ["--gameweek", "15"])
+
+        assert result.exit_code == 0, result.output
+        # 401's club took the pitch twice that gameweek; 402's not at all.
+        # Global stats reads blanks only, so it is handed no double set.
+        assert seen == {
+            "classic": (frozenset({401}), frozenset({401})),
+            "global": (frozenset({401}), None),
+            "draft": (frozenset({401}), frozenset({401})),
+        }

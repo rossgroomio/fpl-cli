@@ -22,6 +22,7 @@ from fpl_cli.services.matchup import POSITION_WEIGHTS as _SERVICE_POSITION_WEIGH
 from fpl_cli.services.matchup import calculate_matchup_score as _service_calculate_matchup_score
 from fpl_cli.services.team_form import calculate_team_form
 from fpl_cli.services.team_ratings import TeamRatingsService
+from fpl_cli.services.team_ratings import general_fdr as _general_fdr
 
 
 class FixtureAgent(Agent):
@@ -307,9 +308,10 @@ class FixtureAgent(Agent):
 
                 # General FDR is the ATK/DEF mean, so it sits on the same model
                 # and venue as the two columns shown beside it and the "overall"
-                # ranking agrees with them (#186). The old opponent-only,
-                # venue-blind avg_overall_fdr ranked the league's weakest side
-                # above its strongest because it could not see either team.
+                # ranking agrees with them (#186). The opponent-only,
+                # venue-blind avg_overall_fdr it replaced ranked the league's
+                # weakest side above its strongest because it could see neither
+                # team; `fpl fixtures` read the same figure until #202.
                 # No API-difficulty fallback for unrated clubs: that put their
                 # fixtures on the API's 1-5 scale inside a 1-7 ranking, so they
                 # floated up the easiest-runs table. They score the same
@@ -478,19 +480,16 @@ class FixtureAgent(Agent):
 
     @staticmethod
     def general_fdr(positional_fdr: dict[str, float]) -> float:
-        """General FDR for one fixture: the mean of its ATK and DEF positional FDRs.
+        """General FDR for a fixture, from the ATK/DEF pair already scored for it.
 
-        Keeps the general figure on the same model, and at the same venue, as
-        the two positional ones it is shown beside. In difference mode that
-        blends the team's own strength with the opponent's; in opponent mode
-        it is the opponent's strength at the venue. A fixture involving an
-        unrated club scores the ratings service's neutral 4.0 on all three,
-        keeping every figure on one 1-7 scale.
+        The service owns the definition -- `fpl fixtures` reaches the same
+        number through `get_fixture_fdr()`, which is this call with the pair
+        fetched first -- so a fixture is scored one way in the codebase (#202).
 
         Args:
             positional_fdr: ``get_fixture_fdr_by_position`` output for the fixture
         """
-        return round((positional_fdr["ATK"] + positional_fdr["DEF"]) / 2, 2)
+        return _general_fdr(positional_fdr)
 
     def get_positional_fdr(
         self,
@@ -541,27 +540,12 @@ class FixtureAgent(Agent):
             Dict with keys "ATK" (FWD/MID) and "DEF" (DEF/GK)
         """
         resolved_mode: str = mode or self.fdr_mode
-        venue = "home" if is_home else "away"
-
-        # ATK FDR (for FWD/MID) - based on opponent's defensive weakness
-        atk_fdr = self.ratings_service.get_positional_fdr(
-            position="FWD",
+        return self.ratings_service.get_positional_fdr_pair(
             team=team_short,
             opponent=opponent_short,
-            venue=venue,
+            venue="home" if is_home else "away",
             mode=resolved_mode,
         )
-
-        # DEF FDR (for DEF/GK) - based on opponent's offensive threat
-        def_fdr = self.ratings_service.get_positional_fdr(
-            position="DEF",
-            team=team_short,
-            opponent=opponent_short,
-            venue=venue,
-            mode=resolved_mode,
-        )
-
-        return {"ATK": round(atk_fdr, 1), "DEF": round(def_fdr, 1)}
 
     # Position-specific weights for matchup scoring (delegated to service)
     POSITION_WEIGHTS = _SERVICE_POSITION_WEIGHTS

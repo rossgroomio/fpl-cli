@@ -43,7 +43,7 @@ Commands are independently classified by the `custom_analysis` toggle:
 | Category | Commands | When opted out |
 |---|---|---|
 | **Pure-experimental** | `captain`, `targets`, `differentials`, `waivers`, `allocate`, `transfer-eval`, `ratings` | Hidden from `--help`; invoking one names the toggle |
-| **Mixed** | `stats`, `xg`, `fdr`, `preview` | Experimental columns/sections stripped |
+| **Mixed** | `stats`, `xg`, `fdr`, `fixtures`, `preview` | Experimental columns/sections stripped |
 | **Data-only** | Everything else | No change |
 
 Both filters (format and experimental) are independent and must both pass.
@@ -305,6 +305,38 @@ Squad Exposure:
 - Blanks shown in red/yellow; doubles in green/cyan
 - Handles Free Hit chip reversion (uses GW before FH for actual squad)
 - Primary use: timing Free Hit blanks and Bench Boost doubles
+
+### Gameweek Fixtures
+
+The fixture list for one gameweek with an FDR beside each side.
+
+```bash
+fpl fixtures                         # Next gameweek
+fpl fixtures -g 32                   # A specific gameweek
+fpl fixtures -m opponent             # Opponent-rating-only mode
+fpl fixtures --format json           # JSON envelope (metadata: {gameweek, fdr_mode, warnings})
+```
+
+The FDR is the same general figure `fpl fdr` and `fpl preview` show — the mean of the
+fixture's ATK and DEF [positional FDRs](custom-analysis.md#position-specific-fdr), scored
+at the venue and in the selected [mode](#fdr-modes--m), on the 1-7 scale. It read the
+opponent's venue-blind average rating until #202, so the same match carried two different
+numbers under the same header depending on which command printed it.
+
+A fixture involving a club the ratings do not cover scores the neutral 4.0, not the FPL
+API's `home_difficulty` — that would sit on a 1-5 scale inside a 1-7 column. When the
+ratings cannot support difficulty at all (missing, last season's, or flat), table mode
+prints the stderr notice `fpl fdr` prints and JSON mode adds a `team_ratings_unusable`
+entry to `metadata.warnings`, so a table of flat 4.0s is not read as analysis.
+
+**Without custom analysis:** the raw FPL API difficulty (1-5), styled and labelled as in
+`fpl fdr`. `-m` has nothing to apply to on that scale, so passing it explicitly prints a
+stderr note rather than changing the table. `--format json` names the scale either way:
+`metadata.fdr_scale` is `team_ratings_1_7` or `fpl_api_1_5`, alongside `custom_analysis`
+and an `fdr_mode` that is `null` when it does not apply. The command was ungated until
+#202, which meant the default configuration showed a 1-7 ratings FDR here and a 1-5 API
+one in the preview's fixtures table — the same two-numbers-one-match split, one scale
+further apart.
 
 ### Team Ratings
 
@@ -624,6 +656,15 @@ fpl review --dry-run              # Build prompts without calling LLMs
 **Results:** all fixtures with scores, goal scorers, assists, and bonus points.
 
 **LLM summary** (`--summarise`): Community narrative via research provider, personal analysis via synthesis provider.
+
+**Blanks and doubles:** a zero from a player whose club had no fixture is marked `[BGW]` rather
+than read as a choice that failed, and such a player is kept off the Blankers list entirely; a
+player whose club played twice is marked `[DGW]`. Which clubs those were is read off the
+gameweek being reviewed rather than off the clubs as they stand today, so reviewing an earlier
+gameweek judges a player transferred since on the fixtures he actually had at the time. FPL
+writes those marks per fixture as it finishes, so a gameweek with a fixture still to complete
+cannot answer; there the current clubs answer instead, which can differ from that gameweek's
+clubs once a transfer has happened in between.
 
 ### League Recap
 

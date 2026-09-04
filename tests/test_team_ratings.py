@@ -12,6 +12,7 @@ from fpl_cli.services.team_ratings import (
     TeamRating,
     TeamRatingsCalculator,
     TeamRatingsService,
+    general_fdr,
 )
 
 
@@ -49,28 +50,6 @@ class TestTeamRating:
         rating = TeamRating(atk_home=1, atk_away=2, def_home=3, def_away=4)
 
         assert rating.avg_overall == 2.5  # (1 + 2 + 3 + 4) / 4
-
-    def test_avg_overall_fdr(self):
-        """Test overall FDR inverts avg_overall for fixture difficulty."""
-        # Man City-like: strong team (low rating) = hard fixture (high FDR)
-        strong = TeamRating(atk_home=2, atk_away=3, def_home=2, def_away=2)
-        assert strong.avg_overall == 2.25
-        assert strong.avg_overall_fdr == 5.75
-
-        # Weak team: high rating = easy fixture (low FDR)
-        weak = TeamRating(atk_home=4, atk_away=6, def_home=7, def_away=7)
-        assert weak.avg_overall == 6.0
-        assert weak.avg_overall_fdr == 2.0
-
-        # Mid-table: symmetric at 4.0
-        mid = TeamRating(atk_home=4, atk_away=4, def_home=4, def_away=4)
-        assert mid.avg_overall_fdr == 4.0
-
-    def test_avg_overall_fdr_semantic_ordering(self):
-        """FDR vs strong team must be higher than FDR vs weak team."""
-        strong = TeamRating(atk_home=1, atk_away=1, def_home=1, def_away=1)
-        weak = TeamRating(atk_home=7, atk_away=7, def_home=7, def_away=7)
-        assert strong.avg_overall_fdr > weak.avg_overall_fdr
 
 
 class TestTeamPerformance:
@@ -432,6 +411,117 @@ class TestPositionalFDR:
         fdr_vs_strong = service.get_positional_fdr("FWD", "AVL", "LIV", "home", mode="difference")
 
         assert fdr_vs_weak < fdr_vs_strong
+
+
+class TestGeneralFixtureFDR:
+    """Tests for ``get_fixture_fdr``, the one definition of the general FDR."""
+
+    @pytest.fixture
+    def service(self, tmp_path):
+        config = tmp_path / "team_ratings.yaml"
+        with open(config, "w", encoding="utf-8") as f:
+            yaml.dump({
+                "metadata": {
+                    "last_updated": datetime.now().strftime("%Y-%m-%d"),
+                    "source": "test",
+                    "staleness_threshold_days": 30,
+                },
+                "ratings": {
+                    "LIV": {"atk_home": 1, "atk_away": 2, "def_home": 1, "def_away": 2},
+                    "SHU": {"atk_home": 6, "atk_away": 7, "def_home": 6, "def_away": 7},
+                    "AVL": {"atk_home": 4, "atk_away": 4, "def_home": 4, "def_away": 4},
+                },
+            }, f)
+        return TeamRatingsService(config_path=config)
+
+    def test_is_the_mean_of_the_positional_pair(self, service):
+        """The general figure is exactly the ATK/DEF mean, at the same venue and mode."""
+        atk = service.get_positional_fdr("FWD", "LIV", "SHU", "home", mode="difference")
+        deff = service.get_positional_fdr("DEF", "LIV", "SHU", "home", mode="difference")
+
+        assert service.get_fixture_fdr("LIV", "SHU", "home", mode="difference") == (atk + deff) / 2
+
+    def test_venue_aware(self, service):
+        """Hosting a side and visiting it are different fixtures, unlike avg_overall_fdr."""
+        at_home = service.get_fixture_fdr("AVL", "LIV", "home")
+        away = service.get_fixture_fdr("AVL", "LIV", "away")
+
+        assert at_home != away
+        assert at_home < away  # the same opponent is easier at home
+
+    def test_sees_both_teams_in_difference_mode(self, service):
+        """A strong side's fixture is easier than a weak side's against the same opponent."""
+        strong_side = service.get_fixture_fdr("LIV", "AVL", "home", mode="difference")
+        weak_side = service.get_fixture_fdr("SHU", "AVL", "home", mode="difference")
+
+        assert strong_side < weak_side
+
+    def test_opponent_mode_ignores_the_team(self, service):
+        """In opponent mode the two sides above score the same fixture identically."""
+        strong_side = service.get_fixture_fdr("LIV", "AVL", "home", mode="opponent")
+        weak_side = service.get_fixture_fdr("SHU", "AVL", "home", mode="opponent")
+
+        assert strong_side == weak_side
+
+    def test_defaults_to_difference_mode(self, service):
+        """The default matches the fixture agent's default, so surfaces cannot drift."""
+        assert service.get_fixture_fdr("LIV", "SHU", "home") == service.get_fixture_fdr(
+            "LIV", "SHU", "home", mode="difference"
+        )
+
+    def test_harder_against_a_stronger_opponent(self, service):
+        """Semantic ordering: facing Liverpool is harder than facing Sheffield."""
+        vs_weak = service.get_fixture_fdr("AVL", "SHU", "home")
+        vs_strong = service.get_fixture_fdr("AVL", "LIV", "home")
+
+        assert vs_weak < vs_strong
+
+    def test_unrated_club_scores_the_neutral_four(self, service):
+        """An unrated club scores 4.0 on the 1-7 scale, not an API 1-5 difficulty."""
+        assert service.get_fixture_fdr("LIV", "XXX", "home") == 4.0
+        assert service.get_fixture_fdr("XXX", "LIV", "away") == 4.0
+
+    def test_is_the_mean_of_the_rounded_pair_that_gets_displayed(self, service):
+        """Not of the unrounded positional values behind them."""
+        pair = service.get_positional_fdr_pair("LIV", "SHU", "home")
+
+        assert service.get_fixture_fdr("LIV", "SHU", "home") == general_fdr(pair)
+
+    def test_agrees_with_the_displayed_pair_on_fractional_axes(self, tmp_path):
+        """`_load_ratings` does not enforce int axes the way `_apply_overrides` does.
+
+        A hand-edited `team_ratings.yaml` can therefore carry `atk_home: 2.1`.
+        Rounding each column to 1dp and rounding the mean of the unrounded
+        values land on different numbers there, so the general FDR has to come
+        from the rounded pair or the column disagrees with the pair beside it.
+        """
+        config = tmp_path / "fractional.yaml"
+        with open(config, "w", encoding="utf-8") as f:
+            yaml.dump({
+                "metadata": {
+                    "last_updated": datetime.now().strftime("%Y-%m-%d"),
+                    "source": "test",
+                    "staleness_threshold_days": 30,
+                },
+                "ratings": {
+                    "CHE": {"atk_home": 2.1, "atk_away": 4, "def_home": 3, "def_away": 4},
+                    "MCI": {"atk_home": 1, "atk_away": 2, "def_home": 1, "def_away": 2},
+                },
+            }, f)
+        service = TeamRatingsService(config_path=config)
+
+        pair = service.get_positional_fdr_pair("CHE", "MCI", "home")
+
+        assert pair == {"ATK": 4.0, "DEF": 4.5}
+        # 4.25, the mean of what is printed - not 4.28, the mean of (4.05, 4.5)
+        assert service.get_fixture_fdr("CHE", "MCI", "home") == 4.25
+
+    def test_pair_rounds_each_column_to_one_decimal(self, service):
+        """The pair is the rounding boundary; every FDR shown is built from it."""
+        pair = service.get_positional_fdr_pair("AVL", "LIV", "away")
+
+        assert pair == {k: round(v, 1) for k, v in pair.items()}
+        assert set(pair) == {"ATK", "DEF"}
 
 
 class TestSaveRatings:
