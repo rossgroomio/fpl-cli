@@ -1283,6 +1283,60 @@ class TestReviewStaleClubFlags:
         }
 
 
+class TestReviewGlobalStatsTopPerformer:
+    """The Dream Team's top_player must reach global_data so the research prompt
+    can require it as the Standout Performers floor (issue #190)."""
+
+    @staticmethod
+    def _players():
+        return [
+            make_player(id=1, web_name="B.Fernandes", team_id=1),
+            make_player(id=2, web_name="Cherki", team_id=13),
+        ]
+
+    TEAMS = {  # noqa: RUF012 — plain test data, not a mutable default
+        1: make_team(id=1, short_name="MUN"),
+        13: make_team(id=13, short_name="MCI"),
+    }
+    LIVE_STATS = {  # noqa: RUF012 — plain test data, not a mutable default
+        1: {"total_points": 23},
+        2: {"total_points": 14},
+    }
+
+    async def _global_stats(self, dream_team_data):
+        from fpl_cli.cli._review_analysis import _review_global_stats
+
+        client = MagicMock()
+        client.get_dream_team = AsyncMock(return_value=dream_team_data)
+        return await _review_global_stats(
+            client, 2, {p.id: p for p in self._players()}, self.TEAMS, self.LIVE_STATS,
+        )
+
+    async def test_top_performer_captured_from_dream_team_api(self):
+        data = await self._global_stats({
+            "team": [
+                {"element": 2, "points": 14},
+                {"element": 1, "points": 23},
+            ],
+            "top_player": {"id": 1, "points": 23},
+        })
+        assert data["top_performer"] == {"name": "B.Fernandes", "team": "MUN", "points": 23}
+
+    async def test_no_top_performer_key_when_api_omits_it(self):
+        data = await self._global_stats({
+            "team": [{"element": 2, "points": 14}],
+        })
+        assert "top_performer" not in data
+
+    async def test_no_top_performer_when_top_player_not_in_dream_team_response(self):
+        """A top_player id absent from player_map (e.g. bootstrap lag) must not crash."""
+        data = await self._global_stats({
+            "team": [{"element": 2, "points": 14}],
+            "top_player": {"id": 999, "points": 30},
+        })
+        assert "top_performer" not in data
+
+
 class TestReviewThreadsTheGameweeksFixtureSet:
     """The fix is only worth anything if the command builds the set and hands
     it to all three sites, so pin the wiring rather than trusting the call."""

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from fpl_cli.utils.gameweek import is_opening_gameweek
 from fpl_cli.utils.markdown import fence_flags, parse_heading
@@ -107,7 +107,7 @@ This query runs in the 24-48h after the gameweek finished.
 ## Standout Performers
 | Player | Club | Pts | Why They Hauled | Source |
 |--------|------|-----|-----------------|--------|
-[3-5 players drawn EXCLUSIVELY from the Dream Team list above. Do not include any player not on that list. Use actual points from GW data.]
+[3-5 players drawn EXCLUSIVELY from the Dream Team list above. Do not include any player not on that list. Use actual points from GW data. The Top Performer named in gw_results (the Dream Team's designated highest scorer) MUST be the first row - they cannot be omitted or buried below lower-scoring names.]
 
 ## Disappointments
 | Player | Club | Pts | What Went Wrong | Concern Level |
@@ -143,6 +143,7 @@ def get_review_research_prompt(
     dgw_teams: str = "",
     predicted_dgw_teams: str = "",
     team_glossary: str = "",
+    top_performer: str = "",
 ) -> str:
     """Generate the research user prompt for a specific gameweek review.
 
@@ -156,6 +157,10 @@ def get_review_research_prompt(
         dgw_teams: Comma-separated short names of teams with a double gameweek (e.g. "EVE, BHA").
         predicted_dgw_teams: Formatted string of predicted future DGWs (e.g. "GW32: EVE, BHA (high confidence)").
         team_glossary: Comma-separated 3-letter-code to full-name mapping (e.g. "ARS = Arsenal, LEE = Leeds United") so the LLM never renders codes as surnames.
+        top_performer: "{name} ({team}) - {points} pts" for the Dream Team's official
+            `top_player` (see `_review_global_stats`). Stated as a floor on Standout
+            Performers so the writer can't drop the week's actual best player while
+            picking freely from the rest of the Dream Team (issue #190).
 
     Returns:
         Formatted user prompt string.
@@ -189,15 +194,27 @@ def get_review_research_prompt(
         if dream_team:
             gw_results_parts.append(f"\n## GW{gameweek} Dream Team (Official Top Performers)")
             gw_results_parts.append(dream_team)
+            if top_performer:
+                gw_results_parts.append(
+                    f"\n**Top Performer:** {top_performer} - the API's designated highest scorer"
+                    f" this gameweek. This player MUST lead the Standout Performers table below."
+                )
         if blankers:
             gw_results_parts.append(f"\n## GW{gameweek} Disappointments (High-Ownership Blankers)")
             gw_results_parts.append(blankers)
-        gw_results_parts.append("""
-IMPORTANT:
-- Your "Standout Performers" section MUST ONLY include players from the Dream Team list above. Do not add any player not on that list.
-- Your "Disappointments" section MUST ONLY include players from the Blankers list above. Do not add any player not on that list.
-- Do not highlight players based on general form or transfer trends - use the actual GW data provided.
-</gw_results>""")
+        important_lines = ['IMPORTANT:', '- Your "Standout Performers" section MUST ONLY include players from the Dream Team list above. Do not add any player not on that list.']
+        if top_performer:
+            important_lines.append(
+                "- The Top Performer named above MUST be the first row of Standout Performers"
+                " - do not omit them or bury them below lower-scoring names."
+            )
+        important_lines.append(
+            '- Your "Disappointments" section MUST ONLY include players from the Blankers list above. Do not add any player not on that list.'
+        )
+        important_lines.append(
+            "- Do not highlight players based on general form or transfer trends - use the actual GW data provided."
+        )
+        gw_results_parts.append("\n" + "\n".join(important_lines) + "\n</gw_results>")
         gw_results = "\n".join(gw_results_parts)
 
     return REVIEW_RESEARCH_USER_PROMPT_TEMPLATE.format(
@@ -734,6 +751,80 @@ def validate_research_teams(
         corrected_lines.append(line)
 
     return "\n".join(corrected_lines), corrections
+
+
+_STANDOUT_HEADER = "| Player | Club | Pts | Why They Hauled |"
+
+
+def ensure_top_performer_first(
+    text: str,
+    top_performer: dict[str, Any] | None,
+) -> tuple[str, list[str]]:
+    """Guarantee the Dream Team's designated top scorer leads Standout Performers.
+
+    The prompt only sets a ceiling on this table (Dream Team members only) -
+    nothing requires the gameweek's actual best player to appear at all, so the
+    writer is free to pick four mid-table names and drop the one player the
+    section exists to showcase (issue #190). Move their row to the top if the
+    writer buried it further down, or synthesise one if they dropped it
+    entirely. Run this after `validate_research_teams` so it operates on
+    already name/team-corrected rows.
+
+    Args:
+        text: Research provider response text.
+        top_performer: {"name", "team", "points"} for the Dream Team's
+            `top_player` (see `_review_global_stats`), or None/empty when no
+            dream team data was available for this gameweek.
+
+    Returns:
+        A tuple of (corrected_text, corrections_log).
+    """
+    if not top_performer or not top_performer.get("name"):
+        return text, []
+
+    name = top_performer["name"]
+    normalised_target = strip_diacritics(name).lower()
+
+    lines = text.split("\n")
+    header_idx: int | None = None
+    for i, line in enumerate(lines):
+        if _STANDOUT_HEADER in line:
+            header_idx = i
+            break
+    if header_idx is None:
+        return text, []
+
+    row_start = header_idx + 2  # skip the header line and its separator row
+    row_end = row_start
+    while row_end < len(lines) and lines[row_end].strip().startswith("|"):
+        row_end += 1
+    rows = lines[row_start:row_end]
+
+    matched_idx: int | None = None
+    for i, row in enumerate(rows):
+        match = _ROW_RE.match(row)
+        if not match:
+            continue
+        plain_player = re.sub(r"\*+", "", match.group(1)).strip()
+        if strip_diacritics(plain_player).lower() == normalised_target:
+            matched_idx = i
+            break
+
+    if matched_idx == 0:
+        return text, []
+
+    if matched_idx is not None:
+        rows.insert(0, rows.pop(matched_idx))
+        corrections = [f"{name}: moved to first row (Dream Team's designated top performer)"]
+    else:
+        club = top_performer.get("team", "???")
+        pts = top_performer.get("points", "?")
+        new_row = f"| {name} | {club} | {pts} | Dream Team's designated top performer this gameweek | Official stats |"
+        rows.insert(0, new_row)
+        corrections = [f"{name}: added as first row (Dream Team's top performer was missing)"]
+
+    new_lines = lines[:row_start] + rows + lines[row_end:]
+    return "\n".join(new_lines), corrections
 
 
 _NARRATIVE_HEADER_RE = re.compile(

@@ -21,6 +21,7 @@ class GlobalReviewData(TypedDict, total=False):
 
     summary: dict[str, Any]
     dream_team: list[dict[str, Any]]
+    top_performer: dict[str, Any]
     blankers: list[dict[str, Any]]
     bgw_team_names: set[str]
     dgw_team_names: set[str]
@@ -95,18 +96,21 @@ async def _review_global_stats(
                 dt_table.add_column("Pts", justify="right")
 
                 dream_team_list = []
+                dream_team_by_id: dict[int, dict[str, Any]] = {}
                 for dt_player in dream_team_players:
                     player = player_map.get(dt_player.get("element"))
                     if player:
                         team = teams.get(player.team_id)
                         team_abbr = team.short_name if team else "???"
                         pts = dt_player.get("points", 0)
-                        dream_team_list.append({
+                        entry = {
                             "name": player.web_name,
                             "team": team_abbr,
                             "position": player.position_name,
                             "points": pts,
-                        })
+                        }
+                        dream_team_list.append(entry)
+                        dream_team_by_id[player.id] = entry
                         dt_table.add_row(player.web_name, team_abbr, player.position_name, str(pts))
 
                 console.print(dt_table)
@@ -120,6 +124,13 @@ async def _review_global_stats(
                             f"\n[bold green]Star Player:[/bold green]"
                             f" {top_p.web_name} ({top_player.get('points', 0)} pts)"
                         )
+                        top_entry = dream_team_by_id.get(top_p.id)
+                        if top_entry:
+                            global_data["top_performer"] = {
+                                "name": top_entry["name"],
+                                "team": top_entry["team"],
+                                "points": top_player.get("points", top_entry["points"]),
+                            }
 
                 global_data["dream_team"] = dream_team_list
             else:
