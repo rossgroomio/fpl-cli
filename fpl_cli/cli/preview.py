@@ -60,17 +60,18 @@ def preview_command(ctx: click.Context, save: bool, output: str | None, scout: b
     show_classic = fmt != Format.DRAFT
     show_draft = fmt != Format.CLASSIC
 
+    settings = get_settings(ctx)
+
     # Early check for research provider if --scout is used (not needed for dry-run)
     if scout and not dry_run:
         from fpl_cli.api.providers import ProviderError, get_llm_provider
 
         try:
-            get_llm_provider("research", get_settings(ctx))
+            get_llm_provider("research", settings)
         except ProviderError as e:
             console.print(f"[red]Error:[/red] {e}")
             return
 
-    settings = get_settings(ctx)
     entry_id = settings.get("fpl", {}).get("classic_entry_id")
     draft_league_id = settings.get("fpl", {}).get("draft_league_id")
     draft_entry_id = settings.get("fpl", {}).get("draft_entry_id")
