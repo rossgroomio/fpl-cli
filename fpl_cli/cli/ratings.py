@@ -96,7 +96,7 @@ def ratings_update(since_gw: int | None, dry_run: bool, use_xg: bool):
     By default, uses full season actual goals. Use --since-gw N for recent form,
     or --use-xg for expected goals (less noise, full season only).
     """
-    from fpl_cli.api.fpl import FPLClient
+    from fpl_cli.api.fpl import FPLClient, finished_gameweek_ids
     from fpl_cli.services.team_ratings import TeamRatingsCalculator, TeamRatingsService
 
     if use_xg and since_gw:
@@ -131,10 +131,7 @@ def ratings_update(since_gw: int | None, dry_run: bool, use_xg: bool):
                 # many gameweeks have completed. Reads from the bootstrap-static
                 # cache (already warmed by calculate_from_xg's get_teams() call)
                 # rather than a fresh fixtures/ request.
-                gameweeks = await client.get_gameweeks()
-                sample_gws = max(
-                    (gw["id"] for gw in gameweeks if gw.get("finished")), default=0
-                )
+                sample_gws = max(finished_gameweek_ids(await client.get_gameweeks()), default=0)
                 # Full-season window, so the sample is the season to date.
                 season_gws = sample_gws
                 # Stamped like the fixtures path. Without it the xG file saved

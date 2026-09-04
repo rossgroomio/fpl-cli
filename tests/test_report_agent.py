@@ -536,3 +536,62 @@ class TestEasyFixturesFdrRounding:
             assert "3.75" not in output
             assert "4.25" not in output
             assert "2.35" not in output
+
+
+# ---------------------------------------------------------------------------
+# Performance Stats window and empty reason (#227)
+# ---------------------------------------------------------------------------
+
+class TestPreviewPerformanceStatsWindow:
+    """The stats heading reports the window analysed, not a hardcoded six.
+
+    Before GW9 the analysis window is clamped to the gameweeks played, so a
+    fixed "(Last 6 GWs)" heading described football that had not happened; and
+    an empty section printed bare, exactly the silence #227 was about.
+    """
+
+    agent = ReportAgent()
+
+    @staticmethod
+    def _data_with_stats(**stats) -> dict:
+        data = _preview_data()
+        data["stats"] = {
+            "top_xgi_per_90": [], "underperformers": [], "value_picks": [],
+            **stats,
+        }
+        return data
+
+    def test_template_heading_carries_the_clamped_window(self):
+        output = self.agent._generate_preview_report(3, self._data_with_stats(
+            window_label="last 2 GWs (window of 6 clamped to gameweeks played)",
+        ))
+        assert "last 2 GWs (window of 6 clamped to gameweeks played)" in output
+        assert "Last 6 GWs" not in output
+
+    def test_template_renders_the_empty_reason(self):
+        output = self.agent._generate_preview_report(3, self._data_with_stats(
+            window_label="whole season",
+            empty_reason={"code": "no_minutes_played", "message": "Nothing played yet."},
+        ))
+        assert "Nothing played yet." in output
+
+    def test_inline_fallback_heading_carries_the_clamped_window(self):
+        """The fallback used when the template file is missing says the same."""
+        output = self.agent._generate_preview_inline(3, self._data_with_stats(
+            window_label="last 2 GWs (window of 6 clamped to gameweeks played)",
+        ))
+        assert "last 2 GWs (window of 6 clamped to gameweeks played)" in output
+        assert "Last 6 GWs" not in output
+
+    def test_inline_fallback_renders_the_empty_reason(self):
+        output = self.agent._generate_preview_inline(3, self._data_with_stats(
+            window_label="whole season",
+            empty_reason={"code": "no_minutes_played", "message": "Nothing played yet."},
+        ))
+        assert "Nothing played yet." in output
+
+    def test_a_payload_without_a_window_label_keeps_the_old_heading(self):
+        """Degrades rather than printing "None" if stats ever arrive unlabelled."""
+        for render in (self.agent._generate_preview_report, self.agent._generate_preview_inline):
+            output = render(3, self._data_with_stats())
+            assert "Performance Stats (Last 6 GWs)" in output

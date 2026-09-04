@@ -110,6 +110,8 @@ $ fpl returnees                           # Injured and suspended players due ba
 $ fpl returnees --enrich                  # Add searched return timing where FPL says nothing
 ```
 
+`fpl xg` scales its minutes floor to the gameweeks played, so an early-season run analyses the football that has actually happened rather than filtering everyone out against a bar the calendar has not allowed yet; it names the window and floor it used, and says which of the two caused an empty result. See [Underlying Stats](docs/command-reference.md#underlying-stats-xg).
+
 `fpl returnees` reads the availability news attached to each player, works out who is due back inside the next few gameweeks, and keeps the list short by filtering on past performance — the players worth claiming in draft before they are fit again, and worth planning around in classic. FPL states a return date for only a small minority of flagged players, so `--enrich` searches the web for fresher timing on the ones it is quiet or stale about and shows what it finds alongside the FPL news rather than in place of it. Each run remembers what it showed, so the next one can say whose outlook moved.
 
 ### Before the Deadline

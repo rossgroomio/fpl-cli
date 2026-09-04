@@ -353,3 +353,40 @@ class TestPreviewDraftSquadMatching:
         assert result.exit_code == 0
         assert "Mystery" in result.output
         assert "25%" not in result.output
+
+
+class TestPreviewStatsWindow:
+    """`fpl preview`'s console view reports the window the analysis used (#227).
+
+    It runs StatsAgent on the same defaults `fpl xg` does, so its stats section
+    was empty for the same reason -- and its heading claimed six gameweeks
+    whatever was actually analysed.
+    """
+
+    def test_console_heading_carries_the_clamped_window(self):
+        result = _run_preview(stats_data={
+            "top_xgi_per_90": [], "underperformers": [], "value_picks": [],
+            "window_label": "last 2 GWs (window of 6 clamped to gameweeks played)",
+        })
+        assert result.exit_code == 0, result.output
+        assert "clamped to gameweeks played" in result.output
+        assert "Last 6 GWs" not in result.output
+
+    def test_console_explains_an_empty_stats_section(self):
+        result = _run_preview(stats_data={
+            "top_xgi_per_90": [], "underperformers": [], "value_picks": [],
+            "window_label": "whole season",
+            "empty_reason": {
+                "code": "no_minutes_played",
+                "message": "No player has recorded any minutes yet.",
+            },
+        })
+        assert result.exit_code == 0, result.output
+        assert "No player has recorded any minutes yet." in result.output
+
+    def test_an_unlabelled_payload_keeps_the_old_heading(self):
+        result = _run_preview(stats_data={
+            "top_xgi_per_90": [], "underperformers": [], "value_picks": [],
+        })
+        assert result.exit_code == 0, result.output
+        assert "Performance Stats (Last 6 GWs)" in result.output
