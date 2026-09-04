@@ -198,3 +198,39 @@ class TestDifferentialsEarlySeasonNotice:
 
     def test_no_notice_after_the_cutoff(self):
         assert "Early-season notice" not in _run_differentials().stderr
+
+
+class TestDifferentialsEmptyResult:
+    """An empty analysis says which of the floor and the data caused it (#227)."""
+
+    @staticmethod
+    def _empty_result():
+        return _make_stats_result(data={
+            "differentials": {"elite": [], "by_position": {}},
+            "window_label": "whole season",
+            "gameweeks_played": 0,
+            "min_minutes": 60,
+            "qualified_players": 0,
+            "empty_reason": {
+                "code": "no_minutes_played",
+                "message": "No player has recorded any minutes in whole season.",
+            },
+        })
+
+    def test_table_mode_explains_the_empty_analysis(self):
+        result = _run_differentials(stats_result=self._empty_result())
+        assert result.exit_code == 0, result.output
+        assert "No players to analyse" in result.output
+        assert "No player has recorded any minutes" in result.output
+
+    def test_json_payload_carries_the_reason(self):
+        """The JSON payload is rebuilt from scratch, so this has to be carried across."""
+        result = _run_differentials(["--format", "json"], stats_result=self._empty_result())
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)["data"]
+        assert data["empty_reason"]["code"] == "no_minutes_played"
+
+    def test_a_normal_run_carries_a_null_reason(self):
+        result = _run_differentials(["--format", "json"])
+        data = json.loads(result.output)["data"]
+        assert data["empty_reason"] is None

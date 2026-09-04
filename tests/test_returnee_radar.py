@@ -749,6 +749,89 @@ def test_understat_npxg_reaches_the_season_score():
     assert matched.entries[0].quality.quality_score > unmatched.entries[0].quality.quality_score
 
 
+def test_understat_matches_a_player_who_moved_since_that_season():
+    """The historical pool is scored against the player's *current* club.
+
+    That makes "has moved since" the common case here, not the rare one it is
+    for a live single-season lookup: a returnee's last healthy season is often
+    at a club they have since left, so their row carries the old club and the
+    club gate rejects it. The name-only fallback (#234) is what keeps the xG
+    sharpening, and it is reached because another row carries the current club.
+    """
+    player = _flagged(code=4248, web_name="Mover")
+    modest = _season(
+        4248, minutes=1600, starts=20, total_points=80,
+        expected_goals=4.0, expected_assists=3.0,
+    )
+    profiles = {4248: _profile(4248, modest)}
+    understat = {
+        LAST_SEASON: [
+            {
+                "name": "Mover",
+                "team": "Old Town",  # the club they played that season at
+                "position": "F M S",
+                "minutes": 1600,
+                "npxG_per_90": 0.6,
+                "xGChain_per_90": 1.1,
+                "penalty_xG_per_90": 0.1,
+                "xGI_per_90": 0.8,
+            },
+            {"name": "Someone Else", "team": "Test FC", "position": "D", "minutes": 1500},
+        ],
+    }
+    config = RadarConfig(price_watchlist_percentile=0.1)
+
+    matched = _radar(
+        [player], {1: _prior(0.45, source="price")},
+        profiles=profiles, understat_seasons=understat, config=config,
+    )
+    unmatched = _radar(
+        [player], {1: _prior(0.45, source="price")}, profiles=profiles, config=config,
+    )
+
+    assert matched.entries[0].quality.quality_score > unmatched.entries[0].quality.quality_score
+
+
+def test_understat_declines_when_the_current_club_is_absent_from_that_season():
+    """A club no row in that season carries fails as a block, not player by player.
+
+    A promoted club has no rows in an older season at all, which is the
+    historical shape of a TEAM_NAME_MAP gap: every one of its players would
+    otherwise scan the whole league by name and risk wearing a stranger's xG.
+    """
+    player = _flagged(code=4249, web_name="Mover")
+    modest = _season(
+        4249, minutes=1600, starts=20, total_points=80,
+        expected_goals=4.0, expected_assists=3.0,
+    )
+    profiles = {4249: _profile(4249, modest)}
+    understat = {
+        LAST_SEASON: [
+            {
+                "name": "Mover",
+                "team": "Old Town",
+                "position": "F M S",
+                "minutes": 1600,
+                "npxG_per_90": 0.6,
+                "xGChain_per_90": 1.1,
+                "penalty_xG_per_90": 0.1,
+                "xGI_per_90": 0.8,
+            },
+        ],
+    }
+    config = RadarConfig(price_watchlist_percentile=0.1)
+
+    result = _radar(
+        [player], {1: _prior(0.45, source="price")},
+        profiles=profiles, understat_seasons=understat, config=config,
+    )
+    fpl_only = _radar(
+        [player], {1: _prior(0.45, source="price")}, profiles=profiles, config=config,
+    )
+
+    assert result.entries[0].quality.quality_score == fpl_only.entries[0].quality.quality_score
+
+
 def test_empty_understat_season_still_scores_from_fpl_stats_alone():
     player = _flagged(code=4247)
     profiles = {4247: _profile(4247, _season(4247))}

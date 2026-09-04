@@ -13,6 +13,22 @@ from fpl_cli.models.team import Team
 BASE_URL = "https://fantasy.premierleague.com/api"
 
 
+def finished_gameweek_ids(gameweeks: list[dict[str, Any]]) -> list[int]:
+    """The ids of every finished gameweek in a `get_gameweeks()` payload, in order.
+
+    Callers want different reductions of this and the difference matters:
+    `len()` is how much football has been played, `max()` is how far the season
+    has got, and a postponement separates the two -- a gameweek left unfinished
+    while later ones complete lowers the count without lowering the maximum.
+    Returning the ids keeps that choice at the call site while the predicate
+    that decides "finished" lives in one place.
+
+    Takes the payload rather than the client, so a caller that already holds
+    the gameweek list does not fetch it twice.
+    """
+    return sorted(gw["id"] for gw in gameweeks if gw.get("finished"))
+
+
 class FPLClient:
     """Client for the official FPL API.
 

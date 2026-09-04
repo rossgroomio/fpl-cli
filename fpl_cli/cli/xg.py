@@ -9,7 +9,14 @@ import click
 from rich.panel import Panel
 from rich.table import Table
 
-from fpl_cli.cli._context import CLIContext, console, handle_agent_failure, is_custom_analysis_enabled
+from fpl_cli.cli._context import (
+    CLIContext,
+    console,
+    handle_agent_failure,
+    is_custom_analysis_enabled,
+    print_result_warnings,
+    split_result_warnings,
+)
 from fpl_cli.cli._json import emit_json, emit_json_error, json_output_mode, output_format_option
 
 
@@ -47,9 +54,18 @@ def xg_command(ctx: click.Context, last_n: int, all_season: bool, output_format:
                 if not result.success:
                     emit_json_error("xg", result.message, file=stdout)
                     return
-                emit_json("xg", result.data, metadata={
+                payload, warnings = split_result_warnings(result.data)
+                emit_json("xg", payload, metadata={
                     "window": gw_config if gw_config is not None else "all",
+                    # What the run actually applied, which early in the season
+                    # is not what --last-n asked for: the floor is clamped to
+                    # the gameweeks played so the analysis is not empty by
+                    # arithmetic (issue #227).
+                    "window_label": payload.get("window_label"),
+                    "gameweeks_played": payload.get("gameweeks_played"),
+                    "min_minutes": payload.get("min_minutes"),
                     "custom_analysis": custom_on,
+                    "warnings": warnings,
                 }, file=stdout)
             return
 
@@ -63,8 +79,24 @@ def xg_command(ctx: click.Context, last_n: int, all_season: bool, output_format:
             handle_agent_failure(result)
 
         data = result.data
+        print_result_warnings(data)
         window_label = data.get("window_label", "whole season")
-        console.print(Panel.fit(f"[bold blue]Underlying Stats Analysis[/bold blue] ({window_label})"))
+        # The floor is worth naming only once there is football behind it: at
+        # zero finished gameweeks it reads "no gameweek played yet, 1+ mins",
+        # which contradicts itself. `is not None` rather than truthiness, so an
+        # explicit floor of 0 would render as "0+ mins" rather than vanish.
+        min_minutes = data.get("min_minutes")
+        header = window_label
+        if min_minutes is not None and data.get("gameweeks_played"):
+            header = f"{window_label}, {min_minutes}+ mins"
+        console.print(Panel.fit(f"[bold blue]Underlying Stats Analysis[/bold blue] ({header})"))
+
+        # Nothing qualified: say which of the floor and the data caused it,
+        # rather than printing three empty tables (issue #227).
+        empty_reason = data.get("empty_reason")
+        if empty_reason:
+            console.print(f"\n[yellow]No players to analyse.[/yellow] {empty_reason['message']}")
+            return
 
         # Top xGI per 90
         console.print("\n[bold]Top xGI per 90 (xG + xA):[/bold]")

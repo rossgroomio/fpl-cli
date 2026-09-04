@@ -20,7 +20,7 @@ from fpl_cli.cli._json import (
     json_output_mode,
     output_format_option,
 )
-from fpl_cli.scraper.fpl_prices import TeamFinances
+from fpl_cli.scraper.fpl_prices import TeamFinances, ordered_squad
 
 COMMAND = "sell-prices"
 
@@ -230,7 +230,7 @@ def _emit_json_finances(finances: TeamFinances) -> None:
             "position": p.position,
             "sell_price": p.sell_price,
         }
-        for p in finances.squad
+        for p in ordered_squad(finances.squad)
     ]
     sell_total = sum(p.sell_price for p in finances.squad)
     emit_json(COMMAND, squad_data, metadata={

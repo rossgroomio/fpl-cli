@@ -21,6 +21,8 @@ compatibility:
 **Environment:** All `fpl` commands require:
 `cd "$FPL_CLI_DIR" && source .venv/bin/activate`
 
+<!-- ADAPT: Phase E below calls gw-prep's `normalise_entities.py` and needs two substitutions. `[YOUR_PYTHON]` is the interpreter with `fpl_cli` importable -- `python3` once the venv above is active, or an absolute path to that venv's binary (e.g. `$FPL_CLI_DIR/.venv/bin/python`) if invoked without activating it; same substitution as gw-prep/SKILL.md's `[YOUR_PYTHON]` note. `[YOUR_SKILLS_DIR]` is the directory containing gw-prep, squad-builder and update-gw-prep as siblings (e.g. `$FPL_CLI_DIR/.agents/skills` in a checkout, or wherever the three skills are installed side by side) -- the parent of this skill's own `${CLAUDE_SKILL_DIR}`, which cannot reach a sibling skill's `scripts/` directly. -->
+
 Build-from-scratch squad optimisation. Five modes, one pipeline.
 
 ## Execution Strategy
@@ -517,8 +519,9 @@ budget: GBP{X}m
 
 Then normalise the written file, before confirming to the user:
 
+<!-- ADAPT: `[YOUR_PYTHON]` is the interpreter with `fpl_cli` importable (see gw-prep's `[YOUR_PYTHON]` note under Environment). `[YOUR_SKILLS_DIR]` is the directory containing gw-prep, squad-builder and update-gw-prep as siblings -- the script lives under gw-prep's `scripts/` regardless of which skill calls it. -->
 ```bash
-python3 "$FPL_CLI_DIR/.agents/skills/gw-prep/scripts/normalise_entities.py" --file "[YOUR_OUTPUT_DIR]/{season}/{filename}"
+[YOUR_PYTHON] "[YOUR_SKILLS_DIR]/gw-prep/scripts/normalise_entities.py" --file "[YOUR_OUTPUT_DIR]/{season}/{filename}"
 ```
 
 Parse stdout as JSON and warn, never block; `.agents/skills/gw-prep/references/entity-normalisation.md` carries the contract, the warning template and the failure handling. It matters most for a `gw{N}-squad-builder.md`, where escaped markdown propagates: gw-prep Phase A3 embeds this file's `## Classic Squad` block into its own recommendations.

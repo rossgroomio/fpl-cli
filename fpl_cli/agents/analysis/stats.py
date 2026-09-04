@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 from fpl_cli.agents.base import Agent, AgentResult, AgentStatus
 from fpl_cli.agents.common import fetch_understat_lookup
-from fpl_cli.api.fpl import FPLClient
+from fpl_cli.api.fpl import FPLClient, finished_gameweek_ids
 from fpl_cli.models.types import PlayerStats
 from fpl_cli.services.matchup import calculate_matchup_score
 from fpl_cli.services.player_prior import early_season_quality_warning
@@ -26,6 +26,12 @@ from fpl_cli.services.scoring import (
 
 if TYPE_CHECKING:
     from fpl_cli.services.player_prior import PlayerPrior
+
+# Minutes per finished gameweek the scaled floor asks for: half of the 90 the
+# calendar has made possible. The gw-prep and squad-builder skills scale their
+# `fpl stats --min-minutes` floor by the same 45 (issue #194); keep the three in
+# step if it ever moves, since markdown cannot import this constant.
+MINUTES_PER_FINISHED_GW = 45
 
 RECOGNISED_VIEWS: frozenset[str] = frozenset({
     "underperformers",
@@ -57,11 +63,17 @@ class StatsAgent(Agent):
         # Gameweek window (0 or None = whole season)
         self.gameweeks = config.get("gameweeks", 6) if config else 6
 
-        # Minimum minutes scales with gameweek window (60 min/GW)
-        if self.gameweeks and self.gameweeks > 0:
-            self.min_minutes = config.get("min_minutes", 60 * self.gameweeks) if config else 60 * self.gameweeks
+        # Minimum minutes scales with gameweek window (60 min/GW). This is the
+        # bar a full window implies, not necessarily the one applied: run()
+        # clamps it to the gameweeks actually played (see _clamp_to_season).
+        configured_minutes = config.get("min_minutes") if config else None
+        self._min_minutes_explicit = configured_minutes is not None
+        if configured_minutes is not None:
+            self.min_minutes = configured_minutes
+        elif self.gameweeks and self.gameweeks > 0:
+            self.min_minutes = 60 * self.gameweeks
         else:
-            self.min_minutes = config.get("min_minutes", 450) if config else 450
+            self.min_minutes = 450
 
         # Differential thresholds (configurable)
         self.differential_threshold = config.get("differential_threshold", 5.0) if config else 5.0  # < 5% owned
@@ -88,6 +100,94 @@ class StatsAgent(Agent):
     async def close(self) -> None:
         await self.client.close()
 
+    def _clamp_to_season(self, gameweeks_played: int) -> tuple[int | None, int]:
+        """Clamp the analysis window and its minutes floor to the gameweeks played.
+
+        ``min_minutes`` is the bar a *full* window implies -- 60 minutes per
+        gameweek in the window, or 450 across a whole season -- and after ``N``
+        finished gameweeks nobody can have played more than ``N * 90`` minutes,
+        so the default 360 is arithmetically impossible until four gameweeks
+        have finished and out of reach for all but ever-presents for several
+        more. Left alone it filtered out every player in August and the agent
+        answered "nobody qualifies" when it meant "the bar is impossible"
+        (issue #227). Scale it instead to 45 minutes per finished gameweek --
+        half of what the calendar has allowed -- and let the configured value
+        bind again once the season catches up, after 8 finished gameweeks for
+        the default window and 10 for a whole-season run.
+
+        The gw-prep and squad-builder skills scale their `fpl stats
+        --min-minutes` floor by the same 45 (issue #194), but off ``(N - 1)``
+        for the upcoming gameweek ``N`` rather than off finished gameweeks. The
+        two agree whenever the season has run to schedule and diverge when a
+        postponement leaves a gameweek unfinished while later ones complete --
+        deliberately, and only downwards: this floor asks for minutes that were
+        actually playable, so it admits more players than the skills' bar, never
+        fewer.
+
+        A floor the caller asked for explicitly (`fpl targets --min-minutes`,
+        `fpl differentials --min-minutes`) is honoured as asked: it is a filter
+        the reader chose, not a default they inherited.
+
+        Returns the window in gameweeks (None for a whole-season run) and the
+        floor to apply.
+        """
+        window = min(self.gameweeks, gameweeks_played) if self.gameweeks and self.gameweeks > 0 else None
+        if self._min_minutes_explicit:
+            return window, self.min_minutes
+        # Never zero: a floor of nothing qualifies players who have not kicked a
+        # ball, which is a different kind of empty answer, not a better one.
+        return window, max(1, min(self.min_minutes, MINUTES_PER_FINISHED_GW * gameweeks_played))
+
+    def _window_label(self, window: int | None, gameweeks_played: int) -> str:
+        """Describe the window actually analysed, saying so when it was clamped."""
+        if window is None:
+            return "whole season"
+        if window == 0:
+            return "no gameweek played yet"
+        if self.gameweeks and window < self.gameweeks:
+            return f"last {window} GWs (window of {self.gameweeks} clamped to gameweeks played)"
+        return f"last {window} GWs"
+
+    def _explain_empty(
+        self, *, min_minutes: int, best_minutes: int, gameweeks_played: int, window_label: str,
+    ) -> dict[str, str]:
+        """Say whether the minutes floor or the absence of data emptied the result.
+
+        An empty analysis with no explanation reads the same either way, and a
+        JSON consumer cannot tell "no player clears a sensible bar" from "the
+        bar was impossible" (issue #227).
+        """
+        if best_minutes <= 0:
+            return {
+                "code": "no_minutes_played",
+                "message": (
+                    f"No player has recorded any minutes in {window_label} "
+                    f"({gameweeks_played} gameweek(s) finished), so there is nothing to analyse yet."
+                ),
+            }
+        return {
+            "code": "below_minutes_floor",
+            "message": (
+                f"No player clears the {min_minutes}-minute floor in {window_label}: the most "
+                f"anyone has played is {best_minutes} minutes across {gameweeks_played} finished "
+                "gameweek(s). Lower the minimum minutes to widen the pool."
+            ),
+        }
+
+    def _minutes_floor_warning(self, min_minutes: int, gameweeks_played: int) -> dict[str, str]:
+        """The notice to carry when the floor was scaled down to fit the calendar."""
+        return {
+            "code": "early_season_minutes_floor",
+            "message": (
+                f"Early-season notice: {gameweeks_played} gameweek(s) have finished, so at most "
+                f"{gameweeks_played * 90} minutes have been possible and the "
+                f"{self.min_minutes}-minute floor this window implies would leave little or "
+                f"nothing to analyse. The floor applied was {min_minutes} minutes "
+                f"({MINUTES_PER_FINISHED_GW} per finished gameweek), so these lists admit players "
+                "a full-window floor would exclude and the per-90 rates come from a small sample."
+            ),
+        }
+
     async def run(self, context: dict[str, Any] | None = None) -> AgentResult:
         """Fetch and analyze underlying statistics.
 
@@ -113,7 +213,17 @@ class StatsAgent(Agent):
             current_gw = await self.client.get_current_gameweek()
             current_gw_id = current_gw["id"] if current_gw else 1
 
-            # Use gameweek window or whole season
+            # Clamp the window and its minutes floor to the gameweeks played, so
+            # neither asks for more football than the calendar has produced.
+            gameweeks_played = len(finished_gameweek_ids(await self.client.get_gameweeks()))
+            window, min_minutes = self._clamp_to_season(gameweeks_played)
+            window_label = self._window_label(window, gameweeks_played)
+            floor_scaled = min_minutes < self.min_minutes
+
+            # Use gameweek window or whole season. The windowed path costs a
+            # history fetch per player, and it buys nothing while fewer
+            # gameweeks have been played than the window spans: the season to
+            # date *is* the clamped window, and the bootstrap already carries it.
             use_window = self.gameweeks and self.gameweeks > 0 and current_gw_id > self.gameweeks
 
             if use_window:
@@ -122,8 +232,14 @@ class StatsAgent(Agent):
                 end_gw = current_gw_id
                 self.log(f"Analyzing GW{start_gw}-{end_gw} ({self.gameweeks} gameweeks)")
 
-                # First pass: filter to players with any significant minutes this season
-                candidates = [p for p in players if p.minutes >= 90]
+                # First pass: filter to players with any significant minutes this
+                # season. Season minutes are never below windowed minutes, so a
+                # prefilter above the floor decides the result rather than merely
+                # bounding the history fetch: at a scaled floor under 90 it would
+                # drop players the floor admits and reproduce #227 one filter
+                # earlier. It only moves while the floor is that low.
+                prefilter_minutes = min(90, min_minutes)
+                candidates = [p for p in players if p.minutes >= prefilter_minutes]
                 self.log(f"Fetching history for {len(candidates)} players...")
 
                 # Fetch history for candidates in batches
@@ -142,18 +258,23 @@ class StatsAgent(Agent):
 
                 # Calculate windowed stats for each player
                 player_stats = []
+                best_minutes = 0
                 for p in candidates:
                     history = player_histories.get(p.id, [])
                     windowed = self._calculate_windowed_stats(p, history, start_gw, end_gw, team_map)
-                    if windowed and windowed["minutes"] >= self.min_minutes:
+                    if not windowed:
+                        continue
+                    best_minutes = max(best_minutes, windowed["minutes"])
+                    if windowed["minutes"] >= min_minutes:
                         player_stats.append(windowed)
 
-                self.log(f"Found {len(player_stats)} players with {self.min_minutes}+ minutes in window")
+                self.log(f"Found {len(player_stats)} players with {min_minutes}+ minutes in window")
             else:
                 # Whole season: use cumulative stats from bootstrap
                 self.log("Using whole season cumulative stats")
-                qualified_players = [p for p in players if p.minutes >= self.min_minutes]
-                self.log(f"Found {len(qualified_players)} players with {self.min_minutes}+ minutes")
+                best_minutes = max((p.minutes for p in players), default=0)
+                qualified_players = [p for p in players if p.minutes >= min_minutes]
+                self.log(f"Found {len(qualified_players)} players with {min_minutes}+ minutes")
                 player_stats = [self._calculate_player_stats(p, team_map) for p in qualified_players]
 
             # Enrich with Understat data
@@ -276,12 +397,24 @@ class StatsAgent(Agent):
                     ps["xgi_divergence"] = divergence
 
             # Analyze the data (only compute requested views)
+            empty_reason = None if player_stats else self._explain_empty(
+                min_minutes=min_minutes,
+                best_minutes=best_minutes,
+                gameweeks_played=gameweeks_played,
+                window_label=window_label,
+            )
             data: dict[str, Any] = {
                 "total_players": len(players),
                 "qualified_players": len(player_stats),
                 "players": player_stats,
-                "gameweeks": self.gameweeks if use_window else None,
+                # The window actually analysed, not the one requested: before
+                # the season has run long enough, the whole-season branch is
+                # itself the clamped window (None still means whole season).
+                "gameweeks": window,
+                "gameweeks_played": gameweeks_played,
+                "min_minutes": min_minutes,
                 "window_label": window_label,
+                "empty_reason": empty_reason,
             }
             if "underperformers" in self.views:
                 data["underperformers"] = self._find_underperformers(player_stats)
@@ -309,13 +442,21 @@ class StatsAgent(Agent):
                 )
                 if view in self.views
             )
+            warnings: list[dict[str, str]] = []
             if blended_scores:
                 warning = early_season_quality_warning(
                     self._next_gw_id,
                     blended=self._player_priors is not None,
                     score_names=blended_scores,
                 )
-                data["warnings"] = [warning] if warning is not None else []
+                if warning is not None:
+                    warnings.append(warning)
+            # `empty_reason` describes the result rather than caveating a score,
+            # so it stays in the payload and each command renders it where its
+            # reader is; the scaled floor is a caveat and belongs here.
+            if floor_scaled:
+                warnings.append(self._minutes_floor_warning(min_minutes, gameweeks_played))
+            data["warnings"] = warnings
 
             self.log_success(f"Analyzed {len(player_stats)} players ({window_label})")
 
