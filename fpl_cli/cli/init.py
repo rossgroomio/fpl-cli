@@ -13,7 +13,13 @@ from dotenv import dotenv_values, set_key
 from rich.table import Table
 
 from fpl_cli.cli._banner import show_banner
-from fpl_cli.cli._context import _user_config_dir, console, resolve_format
+from fpl_cli.cli._context import (
+    _user_config_dir,
+    console,
+    fpl_config,
+    resolve_format,
+    settings_block,
+)
 from fpl_cli.utils.files import atomic_write_text
 
 
@@ -215,7 +221,7 @@ def _mask_key(key: str) -> str:
 
 def _tier_fpl_ids(data: dict[str, Any], fmt: str) -> None:
     """Tier 1 (Required): Collect FPL entry and league IDs."""
-    existing_fpl = data.get("fpl", {}) or {}
+    existing_fpl = fpl_config(data)
 
     fpl_section: dict[str, int] = {}
     if fmt in ("classic", "both"):
@@ -241,18 +247,22 @@ def _tier_fpl_ids(data: dict[str, Any], fmt: str) -> None:
                 "Draft league ID", type=int, default=league_default
             )
 
-    # Merge into data, preserving CommentedMap
-    data.setdefault("fpl", {})
+    # Merge into data, preserving CommentedMap. `setdefault` is not enough: a
+    # settings.yaml whose `fpl:` key is present but empty holds None, the
+    # default never fires, and every line below died on it (#228) -- which is
+    # exactly the file `fpl init` exists to repair.
+    fpl_block = fpl_config(data)
 
     # Format downgrade: remove IDs for deselected format
     if fmt == "classic":
-        data["fpl"].pop("draft_entry_id", None)
-        data["fpl"].pop("draft_league_id", None)
+        fpl_block.pop("draft_entry_id", None)
+        fpl_block.pop("draft_league_id", None)
     elif fmt == "draft":
-        data["fpl"].pop("classic_entry_id", None)
-        data["fpl"].pop("classic_league_id", None)
+        fpl_block.pop("classic_entry_id", None)
+        fpl_block.pop("classic_league_id", None)
 
-    data["fpl"].update(fpl_section)
+    fpl_block.update(fpl_section)
+    data["fpl"] = fpl_block
 
 
 def _tier_custom_analysis(data: dict[str, Any]) -> None:
@@ -280,8 +290,8 @@ def _tier_custom_analysis(data: dict[str, Any]) -> None:
 
 def _tier_ai_features(data: dict[str, Any]) -> None:
     """Tier 3 (Optional): Configure LLM providers for AI-powered commands."""
-    existing_llm = data.get("llm", {}) or {}
-    configured = bool(data.get("llm"))
+    existing_llm = settings_block(data, "llm")
+    configured = bool(existing_llm)
 
     if configured:
         prompt = "AI Features (configured) - Reconfigure?"
@@ -292,8 +302,10 @@ def _tier_ai_features(data: dict[str, Any]) -> None:
         return
 
     llm_section = _prompt_llm_config(existing_llm)
-    data.setdefault("llm", {})
-    data["llm"].update(llm_section)
+    # `setdefault` is not enough on a present-but-empty `llm:` -- the same
+    # trap `_tier_fpl_ids` hits, in the file init exists to repair (#259 review).
+    existing_llm.update(llm_section)
+    data["llm"] = existing_llm
 
 
 def _tier_league_table() -> None:
@@ -399,7 +411,7 @@ _TIER_UNLOCKS = {
 
 def _detect_fpl_ids_status(data: dict[str, Any]) -> StatusDisplay:
     """Detect FPL IDs status from in-memory data."""
-    fpl = data.get("fpl", {})
+    fpl = fpl_config(data)
     has_classic = bool(fpl.get("classic_entry_id"))
     has_draft = bool(fpl.get("draft_league_id"))
     if has_classic and has_draft:

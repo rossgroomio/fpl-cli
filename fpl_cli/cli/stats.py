@@ -18,6 +18,7 @@ from fpl_cli.cli._context import (
     Format,
     console,
     error_console,
+    fpl_config,
     get_format,
     get_settings,
     is_custom_analysis_enabled,
@@ -163,7 +164,7 @@ def stats_command(
             main_to_draft_id: dict[int, int] = {}
 
             if show_draft:
-                draft_league_id = settings.get("fpl", {}).get("draft_league_id")
+                draft_league_id = fpl_config(settings).get("draft_league_id")
                 if not draft_league_id:
                     error_console.print("[yellow]No draft_league_id configured in settings.yaml[/yellow]")
                 else:

@@ -16,6 +16,7 @@ from rich.panel import Panel
 from fpl_cli.cli._context import (
     Format,
     console,
+    fpl_config,
     get_format,
     get_settings,
     is_custom_analysis_enabled,
@@ -191,7 +192,7 @@ def status_command(ctx: click.Context, output_format: str) -> None:
         from fpl_cli.api.fpl import FPLClient as _FPLClient
 
         settings = get_settings(ctx)
-        fpl_cfg = settings.get("fpl", {})
+        fpl_cfg = fpl_config(settings)
         entry_id = fpl_cfg.get("classic_entry_id")
         draft_entry_id = fpl_cfg.get("draft_entry_id")
         draft_league_id = fpl_cfg.get("draft_league_id")

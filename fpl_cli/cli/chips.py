@@ -10,7 +10,7 @@ import click
 from rich.panel import Panel
 from rich.table import Table
 
-from fpl_cli.cli._context import console, error_console, get_settings
+from fpl_cli.cli._context import console, error_console, fpl_config, get_settings
 from fpl_cli.cli._json import (
     api_failure_boundary,
     emit_json,
@@ -176,7 +176,7 @@ def chips_sync(ctx: click.Context) -> None:
     from fpl_cli.api.fpl import FPLClient
 
     settings = get_settings(ctx)
-    entry_id = settings.get("fpl", {}).get("classic_entry_id")
+    entry_id = fpl_config(settings).get("classic_entry_id")
 
     if not entry_id:
         console.print("[red]Error: classic_entry_id not configured in settings.yaml[/red]")
@@ -459,7 +459,7 @@ def chips_timing(ctx: click.Context, output_format: str) -> None:
         plan = ChipPlan.load()
 
         settings = get_settings(ctx)
-        entry_id = settings.get("fpl", {}).get("classic_entry_id")
+        entry_id = fpl_config(settings).get("classic_entry_id")
         if not entry_id:
             if output_format == "json":
                 emit_json_error("chips-timing", "classic_entry_id not configured")

@@ -154,12 +154,31 @@ def _load_yaml_file(path: Path) -> dict[str, Any]:
 
 
 def _deep_merge(base: dict, override: dict) -> None:
-    """Recursively merge override into base, mutating base."""
+    """Recursively merge override into base, mutating base.
+
+    A `None` override for a key the defaults carry as a mapping means "no
+    override", not "wipe it". YAML parses a present-but-empty block -- `llm:`
+    with every line beneath it commented out, which is how someone disables a
+    section without deleting their notes -- as `None`, and taking that
+    literally replaced the shipped defaults outright. The next
+    `settings.get("llm", {}).get(role)` then raised
+    `'NoneType' object has no attribute 'get'`: the same crash #228 reported
+    for `fpl:`, reached through a different block (#259 review).
+
+    Deciding it here fixes every shipped block at once -- `llm`, `thresholds`,
+    `data_sources`, `returnee_radar` -- rather than one defensive accessor per
+    block per read site. It cannot help a block the defaults do not carry, so
+    `fpl:` and `reports:` still read through `settings_block()`, which
+    `USER_ONLY_BLOCKS` in `tests/test_cli_fpl_block.py` pins.
+    """
     for key, value in override.items():
-        if key in base and isinstance(base[key], dict) and isinstance(value, dict):
-            _deep_merge(base[key], value)
-        else:
-            base[key] = value
+        if key in base and isinstance(base[key], dict):
+            if value is None:
+                continue
+            if isinstance(value, dict):
+                _deep_merge(base[key], value)
+                continue
+        base[key] = value
 
 
 class Format(StrEnum):
@@ -174,6 +193,36 @@ class CLIContext:
     settings: dict[str, Any]
 
 
+def settings_block(settings: Mapping[str, Any], key: str) -> dict[str, Any]:
+    """One `key:` block of *settings*, as a dict whatever the file holds.
+
+    `settings.get(key, {})` is not the same question: a settings.yaml whose
+    key is present but empty -- every line under it commented out, which is
+    how someone strips their real IDs before sharing a config -- parses to
+    `None`, and the default never fires. Every reader then died on
+    `'NoneType' object has no attribute 'get'` (#228).
+
+    For a block the shipped defaults carry, `_deep_merge` settles this at
+    load: the null override is ignored and the defaults survive. This is for
+    the blocks they do not carry -- `fpl:` and `reports:` -- where there is
+    nothing to preserve and `None` reaches the reader intact. Takes a settings
+    dict rather than a Click context, so agents and `fpl doctor` can call it.
+    """
+    return settings.get(key) or {}
+
+
+def fpl_config(settings: Mapping[str, Any]) -> dict[str, Any]:
+    """The `fpl:` block of *settings*, as a dict whatever the file holds.
+
+    The named spelling of `settings_block(settings, "fpl")`, because this is
+    the block two dozen call sites read -- `resolve_format` first, in the
+    group callback, so an empty one crashed `fpl squad`, `fpl captain` and
+    `fpl status --format json` alike before any of them reached their own
+    "ID is not set" message (#228).
+    """
+    return settings_block(settings, "fpl")
+
+
 def resolve_format(settings: dict[str, Any]) -> Format | None:
     """Infer FPL format from configured IDs. FPL_FORMAT env var overrides."""
     env_override = os.environ.get("FPL_FORMAT")
@@ -183,7 +232,7 @@ def resolve_format(settings: dict[str, Any]) -> Format | None:
         except ValueError:
             click.echo(f"Warning: ignoring unrecognised FPL_FORMAT={env_override!r}", err=True)
 
-    fpl = settings.get("fpl", {})
+    fpl = fpl_config(settings)
     has_classic = bool(fpl.get("classic_entry_id"))
     has_draft = bool(fpl.get("draft_league_id"))
     if has_classic and has_draft:
@@ -252,7 +301,7 @@ def resolve_output_dir(settings: dict[str, Any], output: str | None = None) -> P
     if output:
         base = Path(output).expanduser()
     else:
-        raw = settings.get("reports", {}).get("output_dir")
+        raw = settings_block(settings, "reports").get("output_dir")
         base = Path(raw).expanduser() if raw else _user_config_dir() / "output"
     _warn_if_stale_season_dir(base)
     return season_partition(base)
@@ -268,7 +317,7 @@ def resolve_research_dir(settings: dict[str, Any], source: str) -> Path:
     writer adding `injury-news/` gets the partition by construction instead of
     having to remember to wrap the result in `season_partition()`.
     """
-    raw = settings.get("reports", {}).get("research_dir")
+    raw = settings_block(settings, "reports").get("research_dir")
     root = Path(raw).expanduser() if raw else _user_config_dir() / "research"
     return season_partition(root / source)
 

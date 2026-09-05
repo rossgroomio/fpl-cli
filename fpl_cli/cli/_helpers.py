@@ -8,6 +8,8 @@ from collections import Counter
 from collections.abc import Callable
 from typing import Any
 
+from fpl_cli.cli._context import fpl_config
+
 logger = logging.getLogger(__name__)
 
 
@@ -335,6 +337,7 @@ def _format_pts_display(p: dict, points_key: str = "points") -> str:
 
 def require_entry_id(
     settings: dict[str, Any], *, is_draft: bool, command: str, output_format: str,
+    alternative: str | None = None,
 ) -> int:
     """Return the configured entry ID for the active format, or report and exit 1.
 
@@ -344,17 +347,24 @@ def require_entry_id(
     review). *command* and *output_format* are required for the same reason
     they are on `_validate_team_filter`: the caller's format decides whether
     this comes back as prose or as the error envelope.
+
+    *alternative* names the flag that produces useful output without the ID,
+    for a command that has one -- `fpl captain --global` ranks the league's
+    top options for anyone. It is appended rather than baked in because most
+    callers have no such escape hatch: without the ID there is no squad to
+    analyse, and offering one that does not exist is worse than offering none.
     """
     from fpl_cli.cli._json import emit_failure
 
     key = "draft_entry_id" if is_draft else "classic_entry_id"
-    entry_id = settings.get("fpl", {}).get(key)
+    entry_id = fpl_config(settings).get(key)
     if not entry_id:
         hint = "" if is_draft else (
             " Find it in your FPL URL:"
             " fantasy.premierleague.com/entry/ENTRY_ID/event/..."
         )
-        emit_failure(command, f"{key} is not set in settings.yaml.{hint}", output_format)
+        suffix = f" {alternative}" if alternative else ""
+        emit_failure(command, f"{key} is not set in settings.yaml.{hint}{suffix}", output_format)
     return entry_id
 
 

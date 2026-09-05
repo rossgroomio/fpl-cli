@@ -7,7 +7,7 @@ from typing import Any
 import httpx
 
 from fpl_cli.agents.base import Agent, AgentResult, AgentStatus
-from fpl_cli.agents.common import get_actual_squad_picks
+from fpl_cli.agents.common import SquadPicksUnavailableError, get_own_squad_picks
 from fpl_cli.api.fpl import FPLClient
 from fpl_cli.models.player import Player
 from fpl_cli.models.types import CaptainCandidate
@@ -93,39 +93,65 @@ class CaptainAgent(Agent):
         player_map: dict[int, Player],
         all_players: list[Player],
         next_gw: dict[str, Any] | None,
-    ) -> tuple[list[Player], bool]:
-        my_squad_mode = False
+    ) -> tuple[list[Player], bool, dict[str, str] | None]:
+        """The players to score, whether they are the caller's squad, and any caveat."""
+        def global_top() -> list[Player]:
+            """Top players by form/xG -- what `--global` asks for, and the only
+            list available to a caller who named no squad."""
+            return sorted(all_players, key=_candidate_sort_key, reverse=True)[:30]
+
         if context and context.get("picks"):
-            candidates = [player_map[pid] for pid in context["picks"] if pid in player_map]
-            my_squad_mode = True
-        elif context and context.get("entry_id"):
-            # Fetch user's current squad
-            entry_id = context["entry_id"]
-            self.log(f"Fetching squad for entry {entry_id}...")
-            try:
-                # Get picks from latest completed gameweek, checking for Free Hit chip
-                last_gw = next_gw["id"] - 1 if next_gw else None
-                if last_gw and last_gw > 0:
-                    picks_data, last_gw = await get_actual_squad_picks(
-                        self.client, entry_id, last_gw, log=self.log
-                    )
+            return [player_map[pid] for pid in context["picks"] if pid in player_map], True, None
+        if not (context and context.get("entry_id")):
+            return global_top(), False, None
 
-                    pick_ids = [p["element"] for p in picks_data.get("picks", [])]
-                    candidates = [player_map[pid] for pid in pick_ids if pid in player_map]
-                    my_squad_mode = True
-                    self.log(f"Found {len(candidates)} players in your squad from GW{last_gw}")
-                else:
-                    # Fallback to global if no previous gameweek
-                    candidates = sorted(all_players, key=_candidate_sort_key, reverse=True)[:30]
-            except httpx.HTTPError as e:
-                self.log_error(f"Could not fetch team picks: {e}")
-                # Fallback to global
-                candidates = sorted(all_players, key=_candidate_sort_key, reverse=True)[:30]
-        else:
-            # Default: analyze top players by form/xG (global mode)
-            candidates = sorted(all_players, key=_candidate_sort_key, reverse=True)[:30]
+        entry_id = context["entry_id"]
+        # Two different reasons there is no gameweek to read a squad from, and
+        # they must not share a message: `get_next_gameweek` returns None once
+        # the season is over as well as before a new bootstrap lands, so
+        # collapsing both into the pre-season wording told a manager "no
+        # gameweek has been played yet" after all 38 of them had (#259
+        # review). Either way the global list is all there is -- but it is not
+        # what was asked for, and saying nothing is how it read as "your
+        # options" (#228).
+        if next_gw is None:
+            return global_top(), False, {
+                "code": "captain_no_next_gameweek",
+                "message": (
+                    "There is no next gameweek to captain for -- the season has "
+                    "finished, or the next one is not published yet -- so these are "
+                    "the top captain options across the game, not a ranking of "
+                    "your squad."
+                ),
+            }
 
-        return candidates, my_squad_mode
+        # Picks come from the latest completed gameweek (get_actual_squad_picks
+        # falls back past a Free Hit).
+        last_gw = next_gw["id"] - 1
+        if last_gw <= 0:
+            return global_top(), False, {
+                "code": "captain_global_fallback",
+                "message": (
+                    "No gameweek has been played yet, so there is no squad to rank: "
+                    "these are the top captain options across the game, not yours."
+                ),
+            }
+
+        self.log(f"Fetching squad for entry {entry_id}...")
+        # Deliberately unguarded. A failed picks fetch used to log to stderr
+        # and hand back the global top 30 with SUCCESS, so an entry ID that
+        # does not exist produced a plausible ranking and exit 0 for a
+        # `--format json` consumer, who had only `my_squad_mode` to tell the
+        # two apart (#228). `run` turns both a diagnosed 404 and any other
+        # HTTP error into a FAILED result, which is the answer to "whose
+        # squad is this?".
+        picks_data, last_gw = await get_own_squad_picks(
+            self.client, entry_id, last_gw, log=self.log
+        )
+        pick_ids = [p["element"] for p in picks_data.get("picks", [])]
+        candidates = [player_map[pid] for pid in pick_ids if pid in player_map]
+        self.log(f"Found {len(candidates)} players in your squad from GW{last_gw}")
+        return candidates, True, None
 
     async def run(self, context: dict[str, Any] | None = None) -> AgentResult:
         """Analyze and rank captain options.
@@ -143,7 +169,7 @@ class CaptainAgent(Agent):
             player_map, all_players, next_gw, understat_by_id, scoring_context = (
                 await self._fetch_captain_data()
             )
-            candidates, my_squad_mode = await self._resolve_candidates(
+            candidates, my_squad_mode, fallback_warning = await self._resolve_candidates(
                 context, player_map, all_players, next_gw,
             )
 
@@ -187,6 +213,7 @@ class CaptainAgent(Agent):
             return self._create_result(
                 AgentStatus.SUCCESS,
                 data={
+                    "warnings": [fallback_warning] if fallback_warning else [],
                     "gameweek": next_gw["id"] if next_gw else None,
                     "deadline": next_gw.get("deadline_time") if next_gw else None,
                     "top_picks": top_picks,
@@ -198,6 +225,18 @@ class CaptainAgent(Agent):
                 message=f"Top captain pick: {top_picks[0]['player_name'] if top_picks else 'None'}",
             )
 
+        except SquadPicksUnavailableError as e:
+            # Already diagnosed by `get_own_squad_picks`: a wrong entry ID and
+            # a squad not yet picked both 404 on the picks endpoint, and this
+            # says which. `fpl squad` shows the same sentence for the same
+            # config, rather than each command wording it its own way (#228).
+            message = str(e)
+            self.log_error(message)
+            return self._create_result(
+                AgentStatus.FAILED,
+                message=message,
+                errors=[message],
+            )
         except httpx.HTTPStatusError as e:
             # Reached, not unreachable: name the status and path, matching
             # `api_failure_boundary`'s wording for the direct-api commands

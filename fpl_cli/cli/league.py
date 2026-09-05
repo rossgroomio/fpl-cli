@@ -11,7 +11,7 @@ from rich.markup import escape as rich_escape
 from rich.panel import Panel
 from rich.table import Table
 
-from fpl_cli.cli._context import Format, console, error_console, get_format, get_settings
+from fpl_cli.cli._context import Format, console, error_console, fpl_config, get_format, get_settings
 from fpl_cli.cli._helpers import _entry_league_meta, _fetch_standings_with_costs
 
 logger = logging.getLogger(__name__)
@@ -29,10 +29,11 @@ def league_command(ctx: click.Context):
 
     fmt = get_format(ctx)
     settings = get_settings(ctx)
-    entry_id = settings.get("fpl", {}).get("classic_entry_id")
-    classic_league_id = settings.get("fpl", {}).get("classic_league_id")
-    draft_league_id = settings.get("fpl", {}).get("draft_league_id")
-    draft_entry_id = settings.get("fpl", {}).get("draft_entry_id")
+    fpl_cfg = fpl_config(settings)
+    entry_id = fpl_cfg.get("classic_entry_id")
+    classic_league_id = fpl_cfg.get("classic_league_id")
+    draft_league_id = fpl_cfg.get("draft_league_id")
+    draft_entry_id = fpl_cfg.get("draft_entry_id")
 
     show_classic = fmt != Format.DRAFT
     show_draft = fmt != Format.CLASSIC

@@ -198,6 +198,136 @@ class TestCaptainAgent:
             assert result.status == AgentStatus.FAILED
             assert result.message == "Could not reach the FPL API: All connection attempts failed"
 
+    async def _run_with_picks_404(self, agent, mock_players, mock_teams, mock_fixtures, *, entry_exists):
+        """Run the agent against a picks endpoint that 404s, with `entry/<id>/`
+        answering either way."""
+        request = httpx.Request(
+            "GET", "https://fantasy.premierleague.com/api/entry/999999999/event/24/picks/"
+        )
+        not_found = httpx.HTTPStatusError(
+            "Not Found", request=request, response=httpx.Response(404, request=request)
+        )
+        with patch.object(agent.client, "get_players", new_callable=AsyncMock) as mock_get_players, \
+             patch.object(agent.client, "get_teams", new_callable=AsyncMock) as mock_get_teams, \
+             patch.object(agent.client, "get_next_gameweek", new_callable=AsyncMock) as mock_next_gw, \
+             patch.object(agent.client, "get_fixtures", new_callable=AsyncMock) as mock_get_fixtures, \
+             patch.object(agent.client, "get_manager_picks", new_callable=AsyncMock) as mock_picks, \
+             patch.object(agent.client, "get_manager_entry", new_callable=AsyncMock) as mock_entry:
+
+            mock_get_players.return_value = mock_players
+            mock_get_teams.return_value = mock_teams
+            mock_next_gw.return_value = {"id": 25, "deadline_time": "2024-02-10T11:00:00Z"}
+            mock_get_fixtures.return_value = mock_fixtures
+            mock_picks.side_effect = not_found
+            if entry_exists:
+                mock_entry.return_value = {"id": 999999999, "name": "Team"}
+            else:
+                mock_entry.side_effect = not_found
+
+            return await agent.run(context={"entry_id": 999999999})
+
+    @pytest.mark.asyncio
+    async def test_picks_failure_fails_instead_of_ranking_strangers(
+        self, agent, mock_players, mock_teams, mock_fixtures
+    ):
+        """A 404 on the picks endpoint used to log to stderr and return the
+        global top 30 with SUCCESS, so a nonexistent entry ID produced a
+        plausible ranking and exit 0 (#228)."""
+        result = await self._run_with_picks_404(
+            agent, mock_players, mock_teams, mock_fixtures, entry_exists=False,
+        )
+
+        assert result.status == AgentStatus.FAILED
+        assert "top_picks" not in result.data
+
+    @pytest.mark.asyncio
+    async def test_wrong_entry_id_is_worded_as_fpl_squad_words_it(
+        self, agent, mock_players, mock_teams, mock_fixtures
+    ):
+        """One diagnosis, shared: the same broken config must not read as a
+        calendar problem in `fpl squad` and an API problem here (#228)."""
+        result = await self._run_with_picks_404(
+            agent, mock_players, mock_teams, mock_fixtures, entry_exists=False,
+        )
+
+        assert "No FPL entry 999999999 exists" in result.message
+        assert "reissued" in result.message
+
+    @pytest.mark.asyncio
+    async def test_live_entry_with_no_picks_reads_as_no_squad_yet(
+        self, agent, mock_players, mock_teams, mock_fixtures
+    ):
+        result = await self._run_with_picks_404(
+            agent, mock_players, mock_teams, mock_fixtures, entry_exists=True,
+        )
+
+        assert result.status == AgentStatus.FAILED
+        assert "No squad submitted for GW24 yet" in result.message
+
+    @pytest.mark.asyncio
+    async def test_pre_first_deadline_global_fallback_is_flagged(
+        self, agent, mock_players, mock_teams, mock_fixtures
+    ):
+        """Before GW1 there is no squad to read, so the global list is all there
+        is -- and the caveat is what stops it reading as the caller's own."""
+        with patch.object(agent.client, "get_players", new_callable=AsyncMock) as mock_get_players, \
+             patch.object(agent.client, "get_teams", new_callable=AsyncMock) as mock_get_teams, \
+             patch.object(agent.client, "get_next_gameweek", new_callable=AsyncMock) as mock_next_gw, \
+             patch.object(agent.client, "get_fixtures", new_callable=AsyncMock) as mock_get_fixtures:
+
+            mock_get_players.return_value = mock_players
+            mock_get_teams.return_value = mock_teams
+            mock_next_gw.return_value = {"id": 1, "deadline_time": "2024-08-16T17:30:00Z"}
+            mock_get_fixtures.return_value = mock_fixtures
+
+            result = await agent.run(context={"entry_id": 123})
+
+        assert result.status == AgentStatus.SUCCESS
+        assert result.data["my_squad_mode"] is False
+        assert result.data["warnings"][0]["code"] == "captain_global_fallback"
+
+    @pytest.mark.asyncio
+    async def test_finished_season_is_not_called_pre_season(
+        self, agent, mock_players, mock_teams, mock_fixtures
+    ):
+        """`get_next_gameweek` returns None after GW38 as well as before a new
+        bootstrap lands, so the pre-season wording told a manager "no gameweek
+        has been played yet" after all 38 had (#259 review)."""
+        with patch.object(agent.client, "get_players", new_callable=AsyncMock) as mock_get_players, \
+             patch.object(agent.client, "get_teams", new_callable=AsyncMock) as mock_get_teams, \
+             patch.object(agent.client, "get_next_gameweek", new_callable=AsyncMock) as mock_next_gw, \
+             patch.object(agent.client, "get_fixtures", new_callable=AsyncMock) as mock_get_fixtures:
+
+            mock_get_players.return_value = mock_players
+            mock_get_teams.return_value = mock_teams
+            mock_next_gw.return_value = None
+            mock_get_fixtures.return_value = mock_fixtures
+
+            result = await agent.run(context={"entry_id": 123})
+
+        assert result.data["my_squad_mode"] is False
+        warning = result.data["warnings"][0]
+        assert warning["code"] == "captain_no_next_gameweek"
+        assert "No gameweek has been played yet" not in warning["message"]
+
+    @pytest.mark.asyncio
+    async def test_global_mode_carries_no_fallback_warning(
+        self, agent, mock_players, mock_teams, mock_fixtures
+    ):
+        with patch.object(agent.client, "get_players", new_callable=AsyncMock) as mock_get_players, \
+             patch.object(agent.client, "get_teams", new_callable=AsyncMock) as mock_get_teams, \
+             patch.object(agent.client, "get_next_gameweek", new_callable=AsyncMock) as mock_next_gw, \
+             patch.object(agent.client, "get_fixtures", new_callable=AsyncMock) as mock_get_fixtures:
+
+            mock_get_players.return_value = mock_players
+            mock_get_teams.return_value = mock_teams
+            mock_next_gw.return_value = {"id": 25, "deadline_time": "2024-02-10T11:00:00Z"}
+            mock_get_fixtures.return_value = mock_fixtures
+
+            result = await agent.run()
+
+        assert result.data["warnings"] == []
+
     @pytest.mark.asyncio
     async def test_run_no_next_gameweek(self, agent, mock_players, mock_teams):
         """Test handling when no next gameweek."""

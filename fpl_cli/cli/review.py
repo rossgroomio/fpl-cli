@@ -12,6 +12,7 @@ from fpl_cli.cli._context import (
     Format,
     console,
     error_console,
+    fpl_config,
     get_format,
     get_settings,
     resolve_output_dir,
@@ -133,10 +134,11 @@ def review_command(
             except ProviderError as e:
                 console.print(f"[red]Error: {e}[/red]")
                 return
-    entry_id = settings.get("fpl", {}).get("classic_entry_id")
-    classic_league_id = settings.get("fpl", {}).get("classic_league_id")
-    draft_league_id = settings.get("fpl", {}).get("draft_league_id")
-    draft_entry_id = settings.get("fpl", {}).get("draft_entry_id")
+    fpl_cfg = fpl_config(settings)
+    entry_id = fpl_cfg.get("classic_entry_id")
+    classic_league_id = fpl_cfg.get("classic_league_id")
+    draft_league_id = fpl_cfg.get("draft_league_id")
+    draft_entry_id = fpl_cfg.get("draft_entry_id")
 
     async def _review():
         from contextlib import AsyncExitStack

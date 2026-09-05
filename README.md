@@ -118,6 +118,7 @@ $ fpl returnees --enrich                  # Add searched return timing where FPL
 
 ```console
 $ fpl squad                        # Squad health: form, injuries, recommendations
+$ fpl squad --classic              # Pin the format when a script must not guess
 $ fpl squad grid -n 8 -w Mbeumo    # 8-GW fixture difficulty grid with a watchlist player
 $ fpl fdr --my-squad               # Your squad's blank/double GW exposure
 $ fpl preview --save --scout       # Full analysis + BUY/SELL research via LLM
@@ -157,6 +158,7 @@ Off by default. Enable via `fpl init` or `custom_analysis: true` in settings.yam
 
 ```console
 $ fpl captain                      # Ranked captain picks (0-100 matchup scoring)
+$ fpl captain --global             # ...across the game rather than your squad
 $ fpl targets --min-own 30         # Transfer targets, template tier
 $ fpl differentials -t 3           # Ultra-differentials (<3% owned)
 $ fpl waivers                      # Free-agent waiver picks with drop suggestions (draft)

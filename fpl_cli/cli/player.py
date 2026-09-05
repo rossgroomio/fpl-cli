@@ -15,6 +15,7 @@ from fpl_cli.cli._context import (
     Format,
     console,
     error_console,
+    fpl_config,
     get_format,
     get_settings,
     is_custom_analysis_enabled,
@@ -87,7 +88,7 @@ def player_command(
     async def _run():
         async with FPLClient() as client:
             settings = get_settings(ctx)
-            draft_league_id = settings.get("fpl", {}).get("draft_league_id")
+            draft_league_id = fpl_config(settings).get("draft_league_id")
 
             try:
                 players = await client.get_players()

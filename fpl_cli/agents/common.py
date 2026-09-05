@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
@@ -253,3 +254,91 @@ async def get_actual_squad_picks(
         picks_data = await client.get_manager_picks(entry_id, gameweek)
 
     return picks_data, gameweek
+
+
+class SquadPicksUnavailableError(Exception):
+    """The picks endpoint 404'd, carrying the diagnosis rather than the status.
+
+    Raised by `get_own_squad_picks` with a message a caller can show as-is:
+    which of the two causes it was has already been established, so the
+    command reporting it neither re-checks nor re-words.
+    """
+
+
+# Before the first deadline the picks endpoint legitimately 404s until a squad
+# has been submitted -- expected, not exceptional.
+NO_SQUAD_YET = "No squad submitted for GW{gameweek} yet."
+
+
+def _requested_gameweek(exc: httpx.HTTPStatusError, fallback: int) -> int:
+    """The gameweek the failed request actually asked for.
+
+    `get_actual_squad_picks` steps back one gameweek on a detected Free Hit
+    and fetches again, so the 404 that reaches us is not always for the
+    gameweek the caller named. A manager who joined at GW10 and played Free
+    Hit there gets GW10 fetched fine and GW9 404ing, and reporting "no squad
+    submitted for GW10" names the one request that worked (#259 review).
+
+    Read off the URL our own client built, so the message names the gameweek
+    that was actually missing; the caller's argument stands in if the path
+    ever stops carrying it.
+    """
+    match = re.search(r"/event/(\d+)/", exc.request.url.path)
+    return int(match.group(1)) if match else fallback
+
+
+async def diagnose_missing_picks(client: FPLClient, entry_id: int, gameweek: int) -> str:
+    """Why the picks endpoint 404'd: no squad yet, or no such entry.
+
+    Both read as a 404 on `entry/<id>/event/<gw>/picks/`. `entry/<id>/`
+    separates them: it answers for an entry that exists whether or not the
+    squad has been picked. Only a 404 there condemns the ID -- an outage or a
+    rate limit proves nothing, so anything else keeps the pre-deadline wording
+    rather than accusing a correct ID.
+    """
+    try:
+        await client.get_manager_entry(entry_id)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            return (
+                f"No FPL entry {entry_id} exists. Classic entry IDs are reissued each "
+                "season -- update classic_entry_id in settings.yaml (or run 'fpl init'), "
+                "and 'fpl doctor' will check it for you."
+            )
+    except Exception:  # noqa: BLE001 — the probe may only refine the message
+        # The caller already has a correct report; this request exists solely
+        # to sharpen it. Letting anything it raises escape would trade that
+        # report for a worse one -- and it is a second network call, so it has
+        # its own ways to fail that have nothing to do with the entry ID.
+        pass
+    return NO_SQUAD_YET.format(gameweek=gameweek)
+
+
+async def get_own_squad_picks(
+    client: FPLClient,
+    entry_id: int,
+    gameweek: int,
+    log: Callable[[str], None] | None = None,
+) -> tuple[dict[str, Any], int]:
+    """`get_actual_squad_picks` for the configured entry, diagnosing a 404.
+
+    Every command that reads *your* classic squad meets the same two causes
+    behind the same status -- the squad is not picked yet, or the entry ID is
+    wrong, which is the likelier one given classic entry IDs are reissued
+    every season. Answering that here rather than at each call site is what
+    stops the two from wording it differently: `fpl squad` used to report both
+    as "No squad submitted", while `fpl captain` reported the raw status and
+    path, so the same broken config read as a calendar problem in one command
+    and as an API problem in the next (#228).
+
+    Raises `SquadPicksUnavailableError` with the diagnosis on a 404. Any other
+    status still raises `httpx.HTTPStatusError` for the caller's own handling.
+    """
+    try:
+        return await get_actual_squad_picks(client, entry_id, gameweek, log=log)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code != 404:
+            raise
+        raise SquadPicksUnavailableError(
+            await diagnose_missing_picks(client, entry_id, _requested_gameweek(exc, gameweek))
+        ) from exc
