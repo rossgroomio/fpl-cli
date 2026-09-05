@@ -49,6 +49,13 @@ from fpl_cli.services.league_history_notes import (
 # excess-over-minimum, so a rare streak is not buried under common ones (R12).
 _CONSOLE_STREAK_LIMIT = 5
 
+# A collection warning rather than a capture one -- it describes which source
+# the gameweek's figures came from, not the ledger write -- so it lives beside
+# the command rather than with the `league_history_*` codes in
+# `_league_recap_history.py`, the same way `synthesis_provider_unavailable`
+# does. Stable for scripts, like every other code on that channel.
+RECAP_WARNING_STANDINGS_MOVED_ON = "league_standings_moved_on"
+
 logger = logging.getLogger(__name__)
 
 
@@ -190,11 +197,42 @@ def league_recap_command(
                 except (ValueError, AttributeError):
                     next_deadline = raw
 
-            # gw is "live" when it's the most recently finished gameweek --
-            # only then do current standings describe the same point in time
-            # as the collected data, so only then can the two be reconciled.
+            # gw is "live" only while the league standings still describe it.
+            # Being the most recently finished gameweek is not enough: the
+            # standings' `event_total` and `total` track whatever gameweek the
+            # API calls current, so the next deadline moves them on to that one
+            # while `max(finished_gws)` still points here -- and every use of
+            # `is_live_gw` (the reconciliation, the standings fallbacks, the
+            # numbers written to an unreachable manager's ledger row) then
+            # reads one gameweek's standings as another's, which is how a
+            # recap of the just-finished gameweek came to fail on a
+            # reconciliation between two different gameweeks (issue #262).
+            # Both halves have to hold, which is the same question `review`
+            # asks before it shows a league table for a gameweek
+            # (`_review_classic_league`'s `is_historical_review`).
             finished_gws = finished_gameweek_ids(gameweeks)
-            is_live_gw = bool(finished_gws) and gw == max(finished_gws)
+            current_gw_id = next((g["id"] for g in gameweeks if g.get("is_current")), None)
+            is_live_gw = (
+                bool(finished_gws) and gw == max(finished_gws) and gw == current_gw_id
+            )
+            # Said out loud only where the user asked for the latest gameweek
+            # and the season moved past it -- an explicitly older `-g` is a
+            # replay by intent and needs no explaining. Without this the
+            # degradation is silent, and for draft it is visible (cumulative
+            # totals and positions fall back to the ledger, or go unavailable).
+            standings_moved_on = (
+                bool(finished_gws)
+                and gw == max(finished_gws)
+                and current_gw_id is not None
+                and gw != current_gw_id
+            )
+            if standings_moved_on:
+                error_console.print(
+                    f"[yellow]Gameweek {current_gw_id} has started, so the league table now"
+                    f" describes it rather than GW{gw}. Recapping GW{gw} from each manager's"
+                    " own gameweek history instead -- run the recap before the next deadline"
+                    " for the fullest capture.[/yellow]"
+                )
 
             # Collect format-specific data
             try:
@@ -480,6 +518,17 @@ def league_recap_command(
                                     " normally."
                                 ),
                             }] if synthesis_unavailable else []
+                        ) + (
+                            [{
+                                "code": RECAP_WARNING_STANDINGS_MOVED_ON,
+                                "message": (
+                                    f"Gameweek {current_gw_id} has started, so the league"
+                                    f" table describes it rather than GW{gw}. GW{gw} was"
+                                    " recapped from each manager's own gameweek history;"
+                                    " figures that only the live table can supply are"
+                                    " derived or left unavailable."
+                                ),
+                            }] if standings_moved_on else []
                         ),
                         # Only set on this partition's very first capture --
                         # the one moment a container-local data directory is

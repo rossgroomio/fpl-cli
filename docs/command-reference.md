@@ -750,6 +750,19 @@ fpl league-recap --backfill-detail  # Rebuild earlier gameweeks in full detail
 fpl league-recap --format json     # JSON envelope for scripting/agents
 ```
 
+**When to run it:** any time after the gameweek has finished, but the fullest capture is the
+window between its last whistle and the next deadline. Only in that window does the league
+table still describe the gameweek being recapped, so only there can the recap cross-check
+its own headline numbers against the table and fill a manager it could not fetch from the
+table's row. Once the next gameweek's deadline passes the table describes *that* gameweek,
+and the recap takes the same replay path an explicitly older `-g` takes: every figure comes
+from each manager's own gameweek history, positions and cumulative totals are derived
+rather than read off the table (for draft, summed from the ledger), and a manager whose
+fetch fails is recorded unknown rather than filled in. The run says so on stderr and raises
+a `league_standings_moved_on` warning under `--format json`. The gameweek is recorded
+either way — an in-progress gameweek is never recappable, so the recap of the one before it
+has to keep working while the next one plays.
+
 **Awards:** GW winner/loser, biggest bench haul, best/worst captain, transfer/waiver genius and disaster.
 
 **Standings movement:** position changes derived from point differentials, per-manager highlights. Both tables — this gameweek's and the one before it — are ranked the same way, so managers level on points share a place on each and no arrow is reported for a tie nobody left.
@@ -933,8 +946,8 @@ notes pack — an unreadable store, or no league id configured for the format.
 
 Every capture problem is reported on stderr as prose and, under `--format json`, in
 `metadata.warnings` as a `{"code", "message"}` pair. The prose is rewritable; the codes
-are stable, so scripts should key on those. One non-capture code shares the list, since
-it shares the channel: `synthesis_provider_unavailable`.
+are stable, so scripts should key on those. Two non-capture codes share the list, since
+they share the channel: `synthesis_provider_unavailable` and `league_standings_moved_on`.
 
 | Code | Raised when |
 |---|---|
@@ -949,6 +962,7 @@ it shares the channel: `synthesis_provider_unavailable`.
 | `league_history_backfill_write_failed` | A backfilled gameweek could not be written; the rest of the backfill continues |
 | `league_history_identity_carried` | A finished gameweek kept the name, club or position it already had recorded for one or more players rather than the ones today's bootstrap gives them, or restored a player reference this capture had lost. Raised by a re-capture of a finished gameweek as well as by a replay; any one of the four on its own raises it |
 | `synthesis_provider_unavailable` | `--summarise` was asked for but the synthesis provider had no usable key; everything else in the recap, the capture included, ran normally |
+| `league_standings_moved_on` | The recapped gameweek is the most recently finished one, but a later gameweek has started, so the league table no longer describes it. The gameweek is recapped and recorded from each manager's own gameweek history instead — see [When to run it](#league-recap) |
 
 None of these change the exit code — `league-recap` exits 0 whenever the recap itself
 rendered, and a skipped editorial (`synthesis_provider_unavailable`) is no exception.

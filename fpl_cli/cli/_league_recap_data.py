@@ -159,10 +159,13 @@ async def collect_classic_recap_data(
 ) -> LeagueRecapData:
     """Fetch all managers' picks and compute league-wide recap data.
 
-    `is_live_gw` marks whether `gw` is the most recently finished gameweek
-    (a live capture) rather than an earlier one being replayed. It gates the
-    headline-numbers reconciliation, which only holds for a live capture --
-    see RecapReconciliationError.
+    `is_live_gw` marks whether the league standings still describe `gw` (a
+    live capture) rather than a later gameweek the season has moved on to (a
+    replay). Being the most recently finished gameweek is not enough: the
+    standings follow whatever gameweek the API calls current, so they move on
+    at the next deadline while the recapped gameweek stays put (issue #262).
+    It gates the headline-numbers reconciliation, which only holds for a live
+    capture -- see RecapReconciliationError.
 
     `bgw_team_ids` is the set of clubs with no fixture this gameweek, so a
     recorded squad can tell a player who blanked apart from one who never
@@ -286,9 +289,9 @@ async def _fetch_all_manager_data(
     cross-manager context (and, for a league that started after GW1, a
     baseline offset) a per-manager fetch does not have.
 
-    `is_live_gw` marks `gw` as the most recently finished gameweek, which
-    gates the reconciliation against the standings row -- see
-    RecapReconciliationError.
+    `is_live_gw` marks the standings as still describing `gw` rather than a
+    later gameweek the season has moved on to, which gates the reconciliation
+    against the standings row -- see RecapReconciliationError.
     """
     sem = asyncio.Semaphore(_PICKS_CONCURRENCY)
 
