@@ -9,8 +9,14 @@ import click
 from rich.panel import Panel
 from rich.table import Table
 
-from fpl_cli.cli._context import console, get_settings, handle_agent_failure
-from fpl_cli.cli._helpers import FDR_EASY, FDR_MEDIUM
+from fpl_cli.cli._context import (
+    console,
+    get_settings,
+    handle_agent_failure,
+    print_result_warnings,
+    split_result_warnings,
+)
+from fpl_cli.cli._helpers import FDR_EASY, FDR_MEDIUM, require_entry_id
 from fpl_cli.cli._json import emit_json, emit_json_error, json_output_mode, output_format_option
 
 
@@ -29,7 +35,14 @@ def captain_command(ctx: click.Context, global_mode: bool, output_format: str):
     from fpl_cli.agents.analysis.captain import CaptainAgent
 
     settings = get_settings(ctx)
-    entry_id = settings.get("fpl", {}).get("classic_entry_id") if not global_mode else None
+    # An absent classic_entry_id used to leave `entry_id` None, which is the
+    # global path -- so `fpl captain` answered with the league's top 30 and
+    # exit 0, and only the table mode's dim tip said the squad was never
+    # consulted (#228). `--global` is how you ask for that list on purpose.
+    entry_id = None if global_mode else require_entry_id(
+        settings, is_draft=False, command="captain", output_format=output_format,
+        alternative="Or pass --global to rank the top captain options across the game.",
+    )
 
     async def _run():
         if output_format == "json":
@@ -40,8 +53,14 @@ def captain_command(ctx: click.Context, global_mode: bool, output_format: str):
                 if not result.success:
                     emit_json_error("captain", result.message, file=stdout)
                     return
-                emit_json("captain", result.data, metadata={
-                    "gameweek": result.data.get("gameweek"),
+                payload, warnings = split_result_warnings(result.data)
+                emit_json("captain", payload, metadata={
+                    "gameweek": payload.get("gameweek"),
+                    # Which list this is. Asking for your squad and getting the
+                    # global one back is the failure #228 describes, and a
+                    # consumer should not have to dig through `data` to notice.
+                    "my_squad_mode": payload.get("my_squad_mode", False),
+                    "warnings": warnings,
                 }, file=stdout)
             return
 
@@ -53,6 +72,7 @@ def captain_command(ctx: click.Context, global_mode: bool, output_format: str):
             handle_agent_failure(result)
 
         data = result.data
+        print_result_warnings(data)
         mode_label = "Your Squad" if data.get("my_squad_mode") else "Global Top Players"
         console.print(Panel.fit(f"[bold blue]Captain Picks - GW{data['gameweek']}[/bold blue] ({mode_label})"))
 
@@ -113,11 +133,5 @@ def captain_command(ctx: click.Context, global_mode: bool, output_format: str):
             console.print("Reasons:")
             for reason in top["reasons"]:
                 console.print(f"  - {reason}")
-
-        # Hint if showing global but team_id not configured
-        if not data.get("my_squad_mode") and not global_mode:
-            console.print(
-                "\n[dim]Tip: Set classic_entry_id in config/settings.yaml to analyze your squad's captain options[/dim]"
-            )
 
     asyncio.run(_run())

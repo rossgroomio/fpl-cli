@@ -106,6 +106,14 @@ fpl captain --global   # All players (top 30 by form/xG)
 fpl captain --format json
 ```
 
+Your squad is the default, so `classic_entry_id` is required without
+`--global`: an absent one is an error naming the flag, not a global list
+returned as though it were your options. `metadata.my_squad_mode` says which
+list a JSON payload holds. Before the first deadline there is no squad to
+rank, so the global list is all there is and
+`metadata.warnings` carries `captain_global_fallback` to say so (stderr in
+table mode). An entry ID that does not resolve is a failure, not a fallback.
+
 Output columns: Score, Atk, Def, Form±, Pos±.
 
 Score combines position-weighted matchup quality, recent form (with trajectory adjustment), xGI per 90, and a consistency tiebreaker (CV-xGI percentile, phased in GW6-10). DGW players are scored across both fixtures. See [Captain Score](custom-analysis.md#captain-score) for the full formula, [Matchup Scoring](custom-analysis.md#matchup-scoring) for column definitions.
@@ -563,11 +571,27 @@ Analyse squad health and fixture outlook.
 ```bash
 fpl squad                              # Squad health (both formats)
 fpl squad --format json                # JSON envelope (metadata: {gameweek, format})
+fpl squad --classic                    # Pin the format instead of inferring it
 fpl squad grid                         # Fixture difficulty grid (next 6 GWs)
 fpl squad grid -n 8 -w Mbeumo          # 8-GW grid with watch list player
 fpl squad grid -w "Henderson (CRY)"    # Club picks one of two players of that name
 fpl squad grid --format json
 ```
+
+**`--classic` / `--draft`**: which squad to read. With neither, the format is
+inferred from the configured IDs — a draft-only config gives the draft squad,
+which is what an unadorned `fpl squad` should do for a draft-only manager, and
+what a config that has lost its `classic_entry_id` also looks like. A script
+or skill that means one format should say so: `fpl squad --classic` reports
+the missing `classic_entry_id` as an error rather than answering with another
+league's roster. The two flags are mutually exclusive, and both apply to
+`fpl squad grid` as well. Table mode names the format in the heading
+(`Squad Analysis (Draft)`); JSON carries it in `metadata.format`.
+
+An entry ID that no longer resolves is reported as such rather than as
+"no squad submitted yet" — classic entry IDs are reissued each season, so a
+404 on the picks endpoint is checked against `entry/<id>/` before it is
+blamed on the calendar. Run `fpl doctor` to check the configured IDs.
 
 A `--watch` name that does not land on one player is skipped rather than
 fatal — both when nothing matches it and when two players answer to it

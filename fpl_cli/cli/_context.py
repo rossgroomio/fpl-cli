@@ -154,6 +154,25 @@ class CLIContext:
     settings: dict[str, Any]
 
 
+def fpl_config(settings: Mapping[str, Any]) -> dict[str, Any]:
+    """The `fpl:` block of *settings*, as a dict whatever the file holds.
+
+    `settings.get("fpl", {})` is not the same question: a settings.yaml whose
+    `fpl:` key is present but empty -- every ID commented out, which is how
+    someone strips their real IDs before sharing a config -- parses to `None`,
+    and the default never fires. Every reader then died on
+    `'NoneType' object has no attribute 'get'`, `resolve_format` first, so
+    `fpl squad`, `fpl captain` and `fpl status --format json` alike crashed in
+    the group callback with an empty stdout and no envelope (#228).
+
+    Reading the block through here instead makes an empty one behave like an
+    absent one, so each command reaches its own "ID is not set" message. Not
+    named `get_fpl` -- this takes a settings dict, not a Click context, so
+    agents and `fpl doctor` can call it too.
+    """
+    return settings.get("fpl") or {}
+
+
 def resolve_format(settings: dict[str, Any]) -> Format | None:
     """Infer FPL format from configured IDs. FPL_FORMAT env var overrides."""
     env_override = os.environ.get("FPL_FORMAT")
@@ -163,7 +182,7 @@ def resolve_format(settings: dict[str, Any]) -> Format | None:
         except ValueError:
             click.echo(f"Warning: ignoring unrecognised FPL_FORMAT={env_override!r}", err=True)
 
-    fpl = settings.get("fpl", {})
+    fpl = fpl_config(settings)
     has_classic = bool(fpl.get("classic_entry_id"))
     has_draft = bool(fpl.get("draft_league_id"))
     if has_classic and has_draft:

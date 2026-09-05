@@ -12,6 +12,7 @@ from rich.table import Table
 from fpl_cli.cli._context import (
     console,
     error_console,
+    fpl_config,
     get_settings,
     handle_agent_failure,
     print_result_warnings,
@@ -28,8 +29,9 @@ def waivers_command(ctx: click.Context, output_format: str):
     from fpl_cli.agents.action.waiver import WaiverAgent
 
     settings = get_settings(ctx)
-    league_id = settings.get("fpl", {}).get("draft_league_id")
-    entry_id = settings.get("fpl", {}).get("draft_entry_id")
+    fpl_cfg = fpl_config(settings)
+    league_id = fpl_cfg.get("draft_league_id")
+    entry_id = fpl_cfg.get("draft_entry_id")
 
     if not league_id:
         if output_format == "json":

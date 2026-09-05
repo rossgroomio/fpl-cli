@@ -28,7 +28,7 @@ import yaml
 from rich.markup import escape as rich_escape
 from rich.panel import Panel
 
-from fpl_cli.cli._context import console, load_settings
+from fpl_cli.cli._context import console, fpl_config, load_settings
 from fpl_cli.cli._json import emit_json, output_format_option
 from fpl_cli.paths import (
     SHIPPED_CONFIG_DIR,
@@ -664,7 +664,7 @@ def doctor_command(providers_only: bool, output_format: str) -> None:
             # The unusable config dir is itself the finding, reported by the
             # directories section -- keep going and check what needs no settings.
             settings = None
-        fpl_cfg = (settings or {}).get("fpl", {})
+        fpl_cfg = fpl_config(settings or {})
         classic_entry_id = fpl_cfg.get("classic_entry_id")
         classic_league_id = fpl_cfg.get("classic_league_id")
         draft_league_id = fpl_cfg.get("draft_league_id")

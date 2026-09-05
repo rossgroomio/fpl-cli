@@ -199,6 +199,76 @@ class TestCaptainAgent:
             assert result.message == "Could not reach the FPL API: All connection attempts failed"
 
     @pytest.mark.asyncio
+    async def test_picks_failure_fails_instead_of_ranking_strangers(
+        self, agent, mock_players, mock_teams, mock_fixtures
+    ):
+        """A 404 on the picks endpoint used to log to stderr and return the
+        global top 30 with SUCCESS, so a nonexistent entry ID produced a
+        plausible ranking and exit 0 (#228)."""
+        request = httpx.Request(
+            "GET", "https://fantasy.premierleague.com/api/entry/999999999/event/24/picks/"
+        )
+        with patch.object(agent.client, "get_players", new_callable=AsyncMock) as mock_get_players, \
+             patch.object(agent.client, "get_teams", new_callable=AsyncMock) as mock_get_teams, \
+             patch.object(agent.client, "get_next_gameweek", new_callable=AsyncMock) as mock_next_gw, \
+             patch.object(agent.client, "get_fixtures", new_callable=AsyncMock) as mock_get_fixtures, \
+             patch.object(agent.client, "get_manager_picks", new_callable=AsyncMock) as mock_picks:
+
+            mock_get_players.return_value = mock_players
+            mock_get_teams.return_value = mock_teams
+            mock_next_gw.return_value = {"id": 25, "deadline_time": "2024-02-10T11:00:00Z"}
+            mock_get_fixtures.return_value = mock_fixtures
+            mock_picks.side_effect = httpx.HTTPStatusError(
+                "Not Found", request=request, response=httpx.Response(404, request=request)
+            )
+
+            result = await agent.run(context={"entry_id": 999999999})
+
+        assert result.status == AgentStatus.FAILED
+        assert "404" in result.message
+        assert "top_picks" not in result.data
+
+    @pytest.mark.asyncio
+    async def test_pre_first_deadline_global_fallback_is_flagged(
+        self, agent, mock_players, mock_teams, mock_fixtures
+    ):
+        """Before GW1 there is no squad to read, so the global list is all there
+        is -- and the caveat is what stops it reading as the caller's own."""
+        with patch.object(agent.client, "get_players", new_callable=AsyncMock) as mock_get_players, \
+             patch.object(agent.client, "get_teams", new_callable=AsyncMock) as mock_get_teams, \
+             patch.object(agent.client, "get_next_gameweek", new_callable=AsyncMock) as mock_next_gw, \
+             patch.object(agent.client, "get_fixtures", new_callable=AsyncMock) as mock_get_fixtures:
+
+            mock_get_players.return_value = mock_players
+            mock_get_teams.return_value = mock_teams
+            mock_next_gw.return_value = {"id": 1, "deadline_time": "2024-08-16T17:30:00Z"}
+            mock_get_fixtures.return_value = mock_fixtures
+
+            result = await agent.run(context={"entry_id": 123})
+
+        assert result.status == AgentStatus.SUCCESS
+        assert result.data["my_squad_mode"] is False
+        assert result.data["warnings"][0]["code"] == "captain_global_fallback"
+
+    @pytest.mark.asyncio
+    async def test_global_mode_carries_no_fallback_warning(
+        self, agent, mock_players, mock_teams, mock_fixtures
+    ):
+        with patch.object(agent.client, "get_players", new_callable=AsyncMock) as mock_get_players, \
+             patch.object(agent.client, "get_teams", new_callable=AsyncMock) as mock_get_teams, \
+             patch.object(agent.client, "get_next_gameweek", new_callable=AsyncMock) as mock_next_gw, \
+             patch.object(agent.client, "get_fixtures", new_callable=AsyncMock) as mock_get_fixtures:
+
+            mock_get_players.return_value = mock_players
+            mock_get_teams.return_value = mock_teams
+            mock_next_gw.return_value = {"id": 25, "deadline_time": "2024-02-10T11:00:00Z"}
+            mock_get_fixtures.return_value = mock_fixtures
+
+            result = await agent.run()
+
+        assert result.data["warnings"] == []
+
+    @pytest.mark.asyncio
     async def test_run_no_next_gameweek(self, agent, mock_players, mock_teams):
         """Test handling when no next gameweek."""
         with patch.object(agent.client, "get_players", new_callable=AsyncMock) as mock_get_players, \

@@ -15,6 +15,7 @@ from fpl_cli.cli._context import (
     Format,
     console,
     error_console,
+    fpl_config,
     get_format,
     get_settings,
     is_custom_analysis_enabled,
@@ -72,9 +73,10 @@ def preview_command(ctx: click.Context, save: bool, output: str | None, scout: b
             console.print(f"[red]Error:[/red] {e}")
             return
 
-    entry_id = settings.get("fpl", {}).get("classic_entry_id")
-    draft_league_id = settings.get("fpl", {}).get("draft_league_id")
-    draft_entry_id = settings.get("fpl", {}).get("draft_entry_id")
+    fpl_cfg = fpl_config(settings)
+    entry_id = fpl_cfg.get("classic_entry_id")
+    draft_league_id = fpl_cfg.get("draft_league_id")
+    draft_entry_id = fpl_cfg.get("draft_entry_id")
 
     async def _preview():
         console.print(Panel.fit("[bold blue]Pre-Gameweek Preview[/bold blue]"))

@@ -11,7 +11,7 @@ from rich.markup import escape as rich_escape
 from rich.panel import Panel
 from rich.table import Table
 
-from fpl_cli.cli._context import Format, console, get_format, get_settings
+from fpl_cli.cli._context import Format, console, fpl_config, get_format, get_settings
 from fpl_cli.cli._json import emit_failure, emit_json, json_output_mode, output_format_option
 from fpl_cli.season import is_season_label, season_label
 
@@ -84,7 +84,7 @@ def league_fines_command(
             )
 
         key = "draft_league_id" if is_draft else "classic_league_id"
-        league_id = settings.get("fpl", {}).get(key)
+        league_id = fpl_config(settings).get(key)
         if not league_id:
             emit_failure(
                 "league-fines",

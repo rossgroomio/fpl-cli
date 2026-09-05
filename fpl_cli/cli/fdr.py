@@ -18,6 +18,7 @@ from fpl_cli.cli._context import (
     console,
     custom_analysis_enabled,
     error_console,
+    fpl_config,
     get_format,
     get_settings,
     handle_agent_failure,
@@ -366,7 +367,7 @@ def fdr_command(
         if my_squad:
             settings = get_settings(ctx)
             if use_draft:
-                entry_id = settings.get("fpl", {}).get("draft_entry_id")
+                entry_id = fpl_config(settings).get("draft_entry_id")
                 if not entry_id:
                     error_console.print("[yellow]draft_entry_id not configured[/yellow]")
                 else:
@@ -392,7 +393,7 @@ def fdr_command(
                         ]
                         context = {"squad": squad}
             else:
-                entry_id = settings.get("fpl", {}).get("classic_entry_id")
+                entry_id = fpl_config(settings).get("classic_entry_id")
                 if not entry_id:
                     error_console.print("[yellow]classic_entry_id not configured - cannot show squad exposure[/yellow]")
                 else:

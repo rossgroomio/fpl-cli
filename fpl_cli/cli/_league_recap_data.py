@@ -8,6 +8,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
+from fpl_cli.cli._context import fpl_config
 from fpl_cli.cli._fines import (
     FineResult,
     FinesLeagueData,
@@ -173,7 +174,10 @@ async def collect_classic_recap_data(
 
     Returns a LeagueRecapData dict ready for template rendering.
     """
-    classic_league_id = settings.get("fpl", {}).get("classic_league_id")
+    # `Any`, deliberately: the recap has never guarded a missing league id --
+    # an unconfigured one 404s through `api_failure_boundary` -- and typing it
+    # `int | None` here would only move that failure, not fix it.
+    classic_league_id: Any = fpl_config(settings).get("classic_league_id")
     use_net_points = settings.get("use_net_points", False)
 
     standings_response = await client.get_classic_league_standings(classic_league_id)
@@ -1447,7 +1451,7 @@ async def collect_draft_recap_data(
     from fpl_cli.api.fpl_draft import FPLDraftClient, match_draft_to_main
     from fpl_cli.models.player import POSITION_MAP
 
-    draft_league_id = settings.get("fpl", {}).get("draft_league_id")
+    draft_league_id: Any = fpl_config(settings).get("draft_league_id")
 
     async with FPLDraftClient() as draft_client:
         league_details = await draft_client.get_league_details(draft_league_id)

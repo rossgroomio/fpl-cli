@@ -20,21 +20,91 @@ from fpl_cli.cli._context import (
 from fpl_cli.cli._helpers import require_entry_id
 from fpl_cli.cli._json import (
     api_failure_boundary,
+    emit_failure,
     emit_json,
     emit_json_error,
     json_output_mode,
     output_format_option,
 )
+from fpl_cli.cli._plan_grid import COMMAND as GRID_COMMAND
 from fpl_cli.cli._plan_grid import grid_command
 from fpl_cli.cli.sell_prices import sell_prices_command
+
+# Pre-season / before the first deadline, the picks endpoint legitimately 404s
+# until a squad has been submitted -- expected, not exceptional.
+_NO_SQUAD_YET = "No squad submitted for GW{gameweek} yet."
+
+
+async def _missing_classic_squad_reason(client, entry_id: int, gameweek: int) -> str:
+    """Why the classic picks endpoint 404'd: no squad yet, or no such entry.
+
+    Both read as a 404 on `entry/<id>/event/<gw>/picks/`, and reporting the
+    pre-deadline explanation for either sent someone whose `classic_entry_id`
+    is simply wrong looking at the calendar (#228) -- the likeliest cause,
+    given classic entry IDs are reissued every season. `entry/<id>/` separates
+    them: it answers for an entry that exists whether or not the squad has
+    been picked.
+
+    Only a 404 there condemns the ID. An outage or a rate limit proves
+    nothing, so anything else keeps the pre-deadline wording rather than
+    accusing a correct ID.
+    """
+    try:
+        await client.get_manager_entry(entry_id)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            return (
+                f"No FPL entry {entry_id} exists. Classic entry IDs are reissued each "
+                "season -- update classic_entry_id in settings.yaml (or run 'fpl init'), "
+                "and 'fpl doctor' will check it for you."
+            )
+    except httpx.HTTPError:
+        pass
+    return _NO_SQUAD_YET.format(gameweek=gameweek)
+
+
+def _resolve_is_draft(
+    fmt: Format | None,
+    *,
+    is_draft: bool,
+    is_classic: bool,
+    command: str,
+    output_format: str,
+) -> bool:
+    """Whether to read the draft squad, an explicit flag beating the configured format.
+
+    `--draft` on its own gave no way to say "I meant classic". With only the
+    draft IDs configured -- which is also what a config that lost its
+    `classic_entry_id` looks like -- the format resolved to DRAFT, and `fpl
+    squad --format json` answered with a different league's roster and exit 0.
+    A consumer only found out by reading `metadata.format`, if it thought to
+    (#228). `--classic` pins the request, so the absent ID comes back as the
+    error envelope `require_entry_id` already produces.
+
+    Neither flag still auto-selects in single-format mode: that is what lets a
+    draft-only manager run `fpl squad` unadorned, and why both flags are
+    documented as needed only when both formats are configured.
+    """
+    if is_draft and is_classic:
+        emit_failure(
+            command,
+            "--draft and --classic are mutually exclusive: pass one, or neither to "
+            "use the format your settings.yaml configures.",
+            output_format,
+        )
+    if is_draft or is_classic:
+        return is_draft
+    return fmt == Format.DRAFT
 
 
 @click.group("squad", invoke_without_command=True, subcommand_metavar="[COMMAND] [ARGS]...")
 @click.option("--draft", "is_draft", is_flag=True, default=False,
               help="Use draft squad (only needed when both formats are configured)")
+@click.option("--classic", "is_classic", is_flag=True, default=False,
+              help="Use classic squad (only needed when both formats are configured)")
 @click.pass_context
 @output_format_option
-def squad_group(ctx: click.Context, is_draft: bool, output_format: str) -> None:
+def squad_group(ctx: click.Context, is_draft: bool, is_classic: bool, output_format: str) -> None:
     """Analyze your FPL squad health and fixtures."""
     if ctx.invoked_subcommand is not None:
         return
@@ -46,11 +116,11 @@ def squad_group(ctx: click.Context, is_draft: bool, output_format: str) -> None:
     settings = get_settings(ctx)
     fmt = get_format(ctx)
 
-    # Auto-select in single-format mode; respect --draft flag in BOTH mode
-    if fmt == Format.DRAFT:
-        is_draft = True
-    elif fmt == Format.CLASSIC:
-        is_draft = False
+    # Auto-select in single-format mode; respect --draft/--classic otherwise
+    is_draft = _resolve_is_draft(
+        fmt, is_draft=is_draft, is_classic=is_classic,
+        command="squad", output_format=output_format,
+    )
 
     # A missing entry ID is a failure, not a quiet no-op: it used to print a
     # hint and return 0, so a script saw success and an empty stdout (#144).
@@ -65,10 +135,7 @@ def squad_group(ctx: click.Context, is_draft: bool, output_format: str) -> None:
             settings, is_draft=False, command="squad", output_format=output_format,
         )
 
-    def _report_no_squad(gameweek: int) -> None:
-        # Pre-season / before the first deadline, the picks endpoint legitimately
-        # 404s until a squad has been submitted -- this is expected, not exceptional.
-        message = f"No squad submitted for GW{gameweek} yet."
+    def _report_no_squad(message: str) -> None:
         if output_format == "json":
             with json_output_mode() as stdout:
                 emit_json_error("squad", message, file=stdout)
@@ -98,7 +165,7 @@ def squad_group(ctx: click.Context, is_draft: bool, output_format: str) -> None:
                     except httpx.HTTPStatusError as exc:
                         if exc.response.status_code != 404:
                             raise
-                        _report_no_squad(gw)
+                        _report_no_squad(_NO_SQUAD_YET.format(gameweek=gw))
                         return
                 picks = [p.id for p in squad_players]
                 context: dict = {"picks": picks, "format": "draft"}
@@ -111,7 +178,7 @@ def squad_group(ctx: click.Context, is_draft: bool, output_format: str) -> None:
                 except httpx.HTTPStatusError as exc:
                     if exc.response.status_code != 404:
                         raise
-                    _report_no_squad(target_gw)
+                    _report_no_squad(await _missing_classic_squad_reason(client, entry_id, target_gw))
                     return
                 picks = [p["element"] for p in picks_data.get("picks", [])]
                 context = {"picks": picks, "format": "classic"}
@@ -151,25 +218,32 @@ squad_group.add_command(sell_prices_command)
               help="FDR mode: 'difference' (team vs opponent) or 'opponent' (opponent rating only)")
 @click.option("--draft", "is_draft", is_flag=True, default=False,
               help="Use draft squad (only needed when both formats are configured)")
+@click.option("--classic", "is_classic", is_flag=True, default=False,
+              help="Use classic squad (only needed when both formats are configured)")
 @output_format_option
 @click.pass_context
 def grid_subcommand(
-    ctx: click.Context, gws: int, watch: tuple[str, ...], mode: str, is_draft: bool, output_format: str,
+    ctx: click.Context, gws: int, watch: tuple[str, ...], mode: str,
+    is_draft: bool, is_classic: bool, output_format: str,
 ) -> None:
     """Show squad fixture difficulty grid."""
-    fmt = get_format(ctx)
-
-    if fmt == Format.DRAFT:
-        is_draft = True
-    elif fmt == Format.CLASSIC:
-        is_draft = False
+    is_draft = _resolve_is_draft(
+        get_format(ctx), is_draft=is_draft, is_classic=is_classic,
+        command=GRID_COMMAND, output_format=output_format,
+    )
 
     ctx.invoke(grid_command, gws=gws, watch=watch, mode=mode, is_draft=is_draft, output_format=output_format)
 
 
 def _render(data: dict, is_draft: bool) -> None:
     """Render squad analysis to the console."""
-    console.print(Panel.fit("[bold blue]Squad Analysis[/bold blue]"))
+    # Name the format in the heading. `metadata.format` already told a JSON
+    # consumer which roster it got; the table said nothing, so a single-format
+    # auto-selection was invisible to the one reader who cannot query for it
+    # (#228). The absent Team Value / Bank rows are a hint, not an answer.
+    console.print(
+        Panel.fit(f"[bold blue]Squad Analysis[/bold blue] ({'Draft' if is_draft else 'Classic'})")
+    )
 
     overview = data["squad_overview"]
     console.print("\n[bold]Squad Overview:[/bold]")

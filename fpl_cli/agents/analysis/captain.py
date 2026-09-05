@@ -93,39 +93,50 @@ class CaptainAgent(Agent):
         player_map: dict[int, Player],
         all_players: list[Player],
         next_gw: dict[str, Any] | None,
-    ) -> tuple[list[Player], bool]:
-        my_squad_mode = False
+    ) -> tuple[list[Player], bool, dict[str, str] | None]:
+        """The players to score, whether they are the caller's squad, and any caveat."""
+        def global_top() -> list[Player]:
+            """Top players by form/xG -- what `--global` asks for, and the only
+            list available to a caller who named no squad."""
+            return sorted(all_players, key=_candidate_sort_key, reverse=True)[:30]
+
         if context and context.get("picks"):
-            candidates = [player_map[pid] for pid in context["picks"] if pid in player_map]
-            my_squad_mode = True
-        elif context and context.get("entry_id"):
-            # Fetch user's current squad
-            entry_id = context["entry_id"]
-            self.log(f"Fetching squad for entry {entry_id}...")
-            try:
-                # Get picks from latest completed gameweek, checking for Free Hit chip
-                last_gw = next_gw["id"] - 1 if next_gw else None
-                if last_gw and last_gw > 0:
-                    picks_data, last_gw = await get_actual_squad_picks(
-                        self.client, entry_id, last_gw, log=self.log
-                    )
+            return [player_map[pid] for pid in context["picks"] if pid in player_map], True, None
+        if not (context and context.get("entry_id")):
+            return global_top(), False, None
 
-                    pick_ids = [p["element"] for p in picks_data.get("picks", [])]
-                    candidates = [player_map[pid] for pid in pick_ids if pid in player_map]
-                    my_squad_mode = True
-                    self.log(f"Found {len(candidates)} players in your squad from GW{last_gw}")
-                else:
-                    # Fallback to global if no previous gameweek
-                    candidates = sorted(all_players, key=_candidate_sort_key, reverse=True)[:30]
-            except httpx.HTTPError as e:
-                self.log_error(f"Could not fetch team picks: {e}")
-                # Fallback to global
-                candidates = sorted(all_players, key=_candidate_sort_key, reverse=True)[:30]
-        else:
-            # Default: analyze top players by form/xG (global mode)
-            candidates = sorted(all_players, key=_candidate_sort_key, reverse=True)[:30]
+        entry_id = context["entry_id"]
+        # Picks come from the latest completed gameweek (get_actual_squad_picks
+        # falls back past a Free Hit).
+        last_gw = next_gw["id"] - 1 if next_gw else None
+        if not last_gw or last_gw <= 0:
+            # Before the first deadline there is no squad to read, so the
+            # global list is all there is -- but it is not what was asked for,
+            # and nothing said so, which is how it read as "your options"
+            # (#228).
+            return global_top(), False, {
+                "code": "captain_global_fallback",
+                "message": (
+                    "No gameweek has been played yet, so there is no squad to rank: "
+                    "these are the top captain options across the game, not yours."
+                ),
+            }
 
-        return candidates, my_squad_mode
+        self.log(f"Fetching squad for entry {entry_id}...")
+        # Deliberately unguarded. A failed picks fetch used to log to stderr
+        # and hand back the global top 30 with SUCCESS, so an entry ID that
+        # does not exist produced a plausible ranking and exit 0 for a
+        # `--format json` consumer, who had only `my_squad_mode` to tell the
+        # two apart (#228). `run` turns an HTTP error into a FAILED result
+        # naming the status and the path, which is the answer to "whose
+        # squad is this?".
+        picks_data, last_gw = await get_actual_squad_picks(
+            self.client, entry_id, last_gw, log=self.log
+        )
+        pick_ids = [p["element"] for p in picks_data.get("picks", [])]
+        candidates = [player_map[pid] for pid in pick_ids if pid in player_map]
+        self.log(f"Found {len(candidates)} players in your squad from GW{last_gw}")
+        return candidates, True, None
 
     async def run(self, context: dict[str, Any] | None = None) -> AgentResult:
         """Analyze and rank captain options.
@@ -143,7 +154,7 @@ class CaptainAgent(Agent):
             player_map, all_players, next_gw, understat_by_id, scoring_context = (
                 await self._fetch_captain_data()
             )
-            candidates, my_squad_mode = await self._resolve_candidates(
+            candidates, my_squad_mode, fallback_warning = await self._resolve_candidates(
                 context, player_map, all_players, next_gw,
             )
 
@@ -187,6 +198,7 @@ class CaptainAgent(Agent):
             return self._create_result(
                 AgentStatus.SUCCESS,
                 data={
+                    "warnings": [fallback_warning] if fallback_warning else [],
                     "gameweek": next_gw["id"] if next_gw else None,
                     "deadline": next_gw.get("deadline_time") if next_gw else None,
                     "top_picks": top_picks,

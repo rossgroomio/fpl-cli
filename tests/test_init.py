@@ -65,6 +65,17 @@ class TestTierFplIds:
         assert data["fpl"]["classic_league_id"] == 789012
         assert "draft_entry_id" not in data["fpl"]
 
+    def test_null_fpl_block_is_repaired_not_a_crash(self, monkeypatch):
+        """`fpl:` present but empty parses to None -- the file init exists to fix (#228)."""
+        responses = iter([123456, 789012])
+        monkeypatch.setattr("click.prompt", lambda *_a, **_kw: next(responses))
+
+        data: dict = {"fpl": None}
+        _tier_fpl_ids(data, "classic")
+
+        assert data["fpl"]["classic_entry_id"] == 123456
+        assert data["fpl"]["classic_league_id"] == 789012
+
     def test_format_downgrade_removes_draft_ids(self, monkeypatch):
         """Switching from both to classic removes draft IDs."""
         responses = iter([111, 222])

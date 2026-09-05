@@ -520,7 +520,7 @@ erDiagram
 fpl_cli/
 ├── cli/                          # Click commands & groups
 │   ├── __init__.py               # main() entry point, command registration
-│   ├── _context.py               # Format enum, CLIContext, FormatAwareGroup (format + experimental gating), settings loader, ctx accessors (get_format/get_settings/custom_analysis_enabled)
+│   ├── _context.py               # Format enum, CLIContext, FormatAwareGroup (format + experimental gating), settings loader, ctx accessors (get_format/get_settings/custom_analysis_enabled/fpl_config)
 │   ├── _helpers.py               # Shared display utilities
 │   ├── _json.py                  # JSON output serialisation
 │   ├── _banner.py                # Startup banner
@@ -682,6 +682,8 @@ flowchart LR
 User settings deep-merged over committed defaults via `platformdirs`. `.env` loaded from user config dir first, local `.env` fills gaps (via `python-dotenv`). Format auto-detected from which entry IDs are configured (classic, draft, or both).
 
 The merge runs once per invocation, in `main()`, and the result rides on the Click context as `CLIContext`. Every command reads it with `get_settings(ctx)` and `get_format(ctx)` rather than unwrapping `ctx.obj` or calling `load_settings()` again — five commands had copied the same `isinstance(ctx.obj, CLIContext)` line and ten more re-loaded the settings from scratch before this was one helper (#219). A `TID251` rule bans the `CLIContext` and `load_settings` imports across `fpl_cli/cli/` to keep it that way. `load_settings()` stays the loader for callers with no context: `main()` itself, the agents, and `fpl doctor`, which is handed an empty `CLIContext` on purpose so each of its checks can re-read the settings as it goes. A helper called too deep to hold a context takes what it needs as an argument instead — `transfer_eval.py` passes `rolling_window` into its renderer rather than re-reading the settings there.
+
+The `fpl:` block inside those settings is read through one helper, `fpl_config(settings)`. A settings.yaml whose `fpl:` key is present but empty — every ID commented out — parses to `None`, so `settings.get("fpl", {})` returns `None` rather than the default, and each of the twenty-odd readers died on `'NoneType' object has no attribute 'get'`. `resolve_format` got there first, in the group callback, so the crash reached every command alike with an empty stdout and no envelope for a `--format json` consumer to read (#228). Ruff has no rule that can spot `.get("fpl", {})` and a banned-import rule cannot help when the offending code imports nothing, so the guard is an AST test (`tests/test_cli_fpl_block.py`) in the manner of `tests/test_paths.py`: no module in `fpl_cli/` may read the raw key.
 
 ## Design Decisions
 
