@@ -642,6 +642,15 @@ class TestCenterWindowWithTies:
         assert len(tied) == 2
         assert omitted == len(items) - len(window)
 
+    def test_massive_tie_run_is_capped_not_unbounded(self):
+        # Every entry shares one score (e.g. a GW1 tie spanning much of the
+        # league). Without a cap, the tie-extension loops would keep growing
+        # start/end until they consumed the whole list.
+        items = self._items([5] * 100)
+        window, omitted = _center_window_with_ties(items, 50, 7, "total")
+        assert len(window) == 7 * 3  # capped at a generous multiple of target_size
+        assert omitted == len(items) - len(window)
+
 
 class TestLeagueContextUserMasking:
     """Verify the user row is rendered as 'You' in LLM-facing league context strings."""
@@ -675,6 +684,20 @@ class TestLeagueContextUserMasking:
         })
         assert "5. You: 1,180 pts" in ctx["classic_rivals"]
         assert "Manager" not in ctx["classic_rivals"]
+
+    def test_classic_nearby_rivals_keeps_user_past_a_five_item_cutoff(self):
+        # `nearby_rivals` is a window centred on the user (#149), not a
+        # sorted-desc top-N -- the user can legitimately sit at the tail of a
+        # 7-entry window (e.g. when they're the lowest scorer in their own
+        # +/-25pt band). A `[:5]` re-slice from the front would drop them.
+        ctx = self._context(classic={
+            "nearby_rivals": [
+                {"rank": r, "manager_name": f"Manager{r}", "total": 1000 - r, "is_user": False}
+                for r in range(1, 7)
+            ] + [{"rank": 7, "manager_name": "Manager", "total": 993, "is_user": True}],
+        })
+        assert "7. You: 993 pts" in ctx["classic_rivals"]
+        assert ctx["classic_rivals"].count("\n") == 6  # all 7 rows present, none dropped
 
 
 class TestAutoSubFormatting:

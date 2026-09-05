@@ -408,7 +408,6 @@ async def _review_classic_league(
         user_total = 0
         user_gw_pts = 0
         total_entries = len(standings)
-        nearby: list = []
         nearby_window: list = []
         nearby_omitted = 0
         user_entry = next((e for e in standings if e.get("entry") == entry_id), None)
@@ -447,7 +446,7 @@ async def _review_classic_league(
                     if is_user:
                         console.print(f"  {rank}. [bold cyan]You[/bold cyan] - {total:,} pts")
                     else:
-                        diff_str = f"+{diff}" if diff > 0 else str(diff)
+                        diff_str = f"+{diff}" if diff > 0 else str(diff) if diff < 0 else "-"
                         diff_style = "red" if diff > 0 else "green"
                         console.print(f"  {rank}. {name} - {total:,} pts ([{diff_style}]{diff_str}[/{diff_style}])")
                 if nearby_omitted:

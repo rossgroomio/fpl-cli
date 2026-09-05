@@ -925,6 +925,27 @@ class TestReviewClassicLeagueNearbyRivals:
         rivals_section = out.split("Nearby Rivals")[1].split("Best GW Performers")[0]
         assert "Manager4" in rivals_section and "Manager5" in rivals_section
 
+    async def test_rival_tied_with_user_shows_dash_not_zero(self, capsys):
+        # A rival on the exact same total as the user is a diff of 0, which
+        # must render like the sibling report/template renderers ("-"), not
+        # the literal digit "0". The centred window pulls in a same-total
+        # rival more often than the old top-slice did, so this now surfaces
+        # more (report.py's _generate_review_inline and gw_review.md.j2
+        # both already special-case zero this way).
+        standings = self._standings([1000, 1000])
+        client = AsyncMock()
+        client.get_classic_league_standings = AsyncMock(return_value={
+            "league": {"name": "Tied League"},
+            "standings": {"results": standings},
+        })
+
+        await _review_classic_league(client, 999, 1, 5, 5)
+
+        out = capsys.readouterr().out
+        rivals_section = out.split("Nearby Rivals")[1].split("Best GW Performers")[0]
+        assert "(0)" not in rivals_section
+        assert "(-)" in rivals_section
+
 
 class TestClassicPositionFields:
 

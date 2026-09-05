@@ -426,8 +426,12 @@ def _format_league_context(
     """Format league context for the synthesis prompt."""
     classic_rivals_str = ""
     if classic_league_data and classic_league_data.get("nearby_rivals"):
+        # `nearby_rivals` is already a window centred on the user
+        # (`_center_window_with_ties`, #149) -- re-slicing from the front
+        # here would drop the user's own row whenever they land in the back
+        # half of that window.
         lines = []
-        for r in classic_league_data["nearby_rivals"][:5]:
+        for r in classic_league_data["nearby_rivals"]:
             name = "You" if r.get("is_user") else r.get("manager_name", "Unknown")
             lines.append(f"- {r.get('rank', '?')}. {name}: {r.get('total', 0):,} pts")
         classic_rivals_str = "\n".join(lines)

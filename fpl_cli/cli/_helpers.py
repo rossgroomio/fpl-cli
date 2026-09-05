@@ -135,9 +135,11 @@ def _center_window_with_ties(
     that has room rather than clipping to a lopsided result. It is then
     extended past either boundary so a group tied on *score_key* is never
     split -- which entry of a tie survives an arbitrary input order is not a
-    meaningful cut point. The second return value is how many items were
-    left out, so callers can render an explicit truncation note instead of a
-    silent cap.
+    meaningful cut point -- up to a generous cap, beyond which a single
+    oversized tied group (e.g. much of the league sharing a GW1 score) would
+    otherwise grow the window without bound. The second return value is how
+    many items were left out, so callers can render an explicit truncation
+    note instead of a silent cap.
     """
     n = len(items)
     if n <= target_size:
@@ -152,11 +154,11 @@ def _center_window_with_ties(
     if end > n:
         start -= end - n
         end = n
-        start = max(start, 0)
 
-    while start > 0 and items[start][score_key] == items[start - 1][score_key]:
+    max_size = target_size * 3
+    while start > 0 and items[start][score_key] == items[start - 1][score_key] and end - start < max_size:
         start -= 1
-    while end < n and items[end][score_key] == items[end - 1][score_key]:
+    while end < n and items[end][score_key] == items[end - 1][score_key] and end - start < max_size:
         end += 1
 
     return items[start:end], n - (end - start)
