@@ -608,13 +608,17 @@ def get_review_synthesis_prompt(
     return system_prompt, "\n".join(user_parts)
 
 
-_TABLE_HEADERS = {
-    "| Player | Club | Pts | Why They Hauled |",
-    "| Player | Club | Pts | What Went Wrong |",
-}
+_STANDOUT_HEADER = "| Player | Club | Pts | Why They Hauled |"
+_DISAPPOINTMENTS_HEADER = "| Player | Club | Pts | What Went Wrong |"
+
+_TABLE_HEADERS = {_STANDOUT_HEADER, _DISAPPOINTMENTS_HEADER}
 
 _ROW_RE = re.compile(r"^\|([^|]+)\|([^|]+)\|")
 _TEAM_CODE_SHAPE_RE = re.compile(r"^[A-Z]{2,4}$")
+# A markdown separator row carries only dashes, colons and pipes - table
+# structure rather than a player. LLM output sometimes omits it entirely, so
+# it has to be detected rather than assumed at a fixed offset.
+_SEPARATOR_ROW_RE = re.compile(r"^\s*\|[-:|\s]*$")
 
 
 def validate_research_teams(
@@ -753,9 +757,6 @@ def validate_research_teams(
     return "\n".join(corrected_lines), corrections
 
 
-_STANDOUT_HEADER = "| Player | Club | Pts | Why They Hauled |"
-
-
 def ensure_top_performer_first(
     text: str,
     top_performer: dict[str, Any] | None,
@@ -794,15 +795,23 @@ def ensure_top_performer_first(
     if header_idx is None:
         return text, []
 
-    row_start = header_idx + 2  # skip the header line and its separator row
-    row_end = row_start
-    while row_end < len(lines) and lines[row_end].strip().startswith("|"):
-        row_end += 1
-    rows = lines[row_start:row_end]
+    body_start = header_idx + 1
+    body_end = body_start
+    while body_end < len(lines) and lines[body_end].strip().startswith("|"):
+        body_end += 1
+
+    # The separator row is structure, not a player, so it stays pinned under
+    # the header - but detect it rather than assuming a fixed offset. An LLM
+    # that omits it would otherwise cost us the first real row: the target
+    # would be missed there and duplicated back in below.
+    row_start = body_start
+    if row_start < body_end and _SEPARATOR_ROW_RE.match(lines[row_start]):
+        row_start += 1
+    rows = lines[row_start:body_end]
 
     matched_idx: int | None = None
     for i, row in enumerate(rows):
-        match = _ROW_RE.match(row)
+        match = _ROW_RE.match(row.strip())
         if not match:
             continue
         plain_player = re.sub(r"\*+", "", match.group(1)).strip()
@@ -823,7 +832,7 @@ def ensure_top_performer_first(
         rows.insert(0, new_row)
         corrections = [f"{name}: added as first row (Dream Team's top performer was missing)"]
 
-    new_lines = lines[:row_start] + rows + lines[row_end:]
+    new_lines = lines[:row_start] + rows + lines[body_end:]
     return "\n".join(new_lines), corrections
 
 

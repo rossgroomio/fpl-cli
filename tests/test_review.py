@@ -2219,6 +2219,72 @@ class TestEnsureTopPerformerFirst:
         assert result == table
         assert corrections == []
 
+    def test_missing_separator_row_still_moves_buried_target(self):
+        """An LLM that skips the separator must not cost us the first data row -
+        assuming a fixed offset would hide the buried target behind it."""
+        text = (
+            "| Player | Club | Pts | Why They Hauled | Source |\n"
+            "| Cherki | MCI | 14 | Brace | Source |\n"
+            "| B.Fernandes | MUN | 23 | Hat-trick | Source |"
+        )
+        top_performer = {"name": "B.Fernandes", "team": "MUN", "points": 23}
+        result, corrections = ensure_top_performer_first(text, top_performer)
+        lines = result.split("\n")
+        assert "B.Fernandes" in lines[1]
+        assert "Cherki" in lines[2]
+        assert any("moved to first row" in c for c in corrections)
+
+    def test_missing_separator_row_does_not_duplicate_leading_target(self):
+        text = (
+            "| Player | Club | Pts | Why They Hauled | Source |\n"
+            "| B.Fernandes | MUN | 23 | Hat-trick | Source |\n"
+            "| Cherki | MCI | 14 | Brace | Source |"
+        )
+        top_performer = {"name": "B.Fernandes", "team": "MUN", "points": 23}
+        result, corrections = ensure_top_performer_first(text, top_performer)
+        assert result == text
+        assert corrections == []
+        assert result.count("B.Fernandes") == 1
+
+    def test_indented_row_is_matched_not_duplicated(self):
+        """Row-boundary detection tolerates leading whitespace, so name matching
+        must too - otherwise an indented row gets a synthesised duplicate."""
+        text = (
+            "| Player | Club | Pts | Why They Hauled | Source |\n"
+            "|--------|------|-----|-----------------|--------|\n"
+            "  | B.Fernandes | MUN | 23 | Hat-trick | Source |\n"
+            "| Cherki | MCI | 14 | Brace | Source |"
+        )
+        top_performer = {"name": "B.Fernandes", "team": "MUN", "points": 23}
+        result, corrections = ensure_top_performer_first(text, top_performer)
+        assert result == text
+        assert corrections == []
+        assert result.count("B.Fernandes") == 1
+
+    def test_indented_buried_row_is_moved_not_duplicated(self):
+        text = (
+            "| Player | Club | Pts | Why They Hauled | Source |\n"
+            "|--------|------|-----|-----------------|--------|\n"
+            "| Cherki | MCI | 14 | Brace | Source |\n"
+            "  | B.Fernandes | MUN | 23 | Hat-trick | Source |"
+        )
+        top_performer = {"name": "B.Fernandes", "team": "MUN", "points": 23}
+        result, corrections = ensure_top_performer_first(text, top_performer)
+        lines = result.split("\n")
+        assert "B.Fernandes" in lines[2]
+        assert "Cherki" in lines[3]
+        assert result.count("B.Fernandes") == 1
+        assert any("moved to first row" in c for c in corrections)
+
+    def test_separator_row_stays_under_the_header(self):
+        table = self._table([
+            ("Cherki", "MCI", "14", "Brace"),
+            ("B.Fernandes", "MUN", "23", "Hat-trick"),
+        ])
+        top_performer = {"name": "B.Fernandes", "team": "MUN", "points": 23}
+        result, _ = ensure_top_performer_first(table, top_performer)
+        assert result.split("\n")[1].startswith("|---")
+
 
 class TestValidateResearchProse:
     """Tests for validate_research_prose."""
