@@ -175,8 +175,9 @@ def early_season_quality_warning(
                 f"carries {low:.0%}-{high:.0%} of the score depending on the "
                 f"player's track record. Read {subject} as {reading}, "
                 f"not {'measurements' if plural else 'a measurement'}; ep_next "
-                "is FPL's own projection for the coming gameweek "
-                "(fpl stats --sort ep_next)."
+                "(fpl stats --sort ep_next) is FPL's own projection for the "
+                "coming gameweek, but in the opening gameweeks it tracks form "
+                "almost exactly, so before ~GW6 it is not a second opinion."
             ),
         }
     if next_gw_id > MINS_FACTOR_START_GW:
@@ -192,8 +193,9 @@ def early_season_quality_warning(
             "the scale while elite players with a quiet start read low. GK "
             f"ceilings scale with the sample the calendar has made possible, "
             f"reaching full scale at GW6. Treat {subject} as provisional "
-            "until ~GW6-10; ep_next is FPL's own prior-informed projection for "
-            "the coming gameweek (fpl stats --sort ep_next)."
+            "until ~GW6-10 and weigh last season's pedigree, role and "
+            "fixtures above the numbers; ep_next is no escape this early, "
+            "since it tracks form and carries the same small sample."
         ),
     }
 

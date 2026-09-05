@@ -234,7 +234,7 @@ mins_pos  = min(450, (N - 1) * 45)     # cap reached at GW11
 
 `(N - 1) * 45` is half the minutes the season has made possible so far. At `N == 1` both are `0` -- the CLI default, which filters nothing. Once the caps bind, behaviour is identical to a fixed threshold.
 
-**Before GW6 (`N <= 5`), rank on `ep_next`.** `form` and `expected_goal_involvements` over one or two matches are near-noise and `clean_sheets` is a 0/1 count, so ranking on them early sorts mostly on sample. `ep_next` is FPL's own prior-informed projection for the coming gameweek and is what `fpl stats -v` recommends in this same window. Nothing is lost by the swap: every record carries `form`, `expected_goal_involvements`, `clean_sheets` and `ep_next` whatever the sort, so only the ordering changes.
+**Before GW6 (`N <= 5`), rank on `ep_next`.** `form` and `expected_goal_involvements` over one or two matches are near-noise and `clean_sheets` is a 0/1 count, so ranking on them early sorts mostly on sample. `ep_next` is FPL's own projection for the coming gameweek, and the swap is worth making because it scales by chance of playing -- `--available-only` keeps doubtful players, and this demotes them rather than leaving them at raw form -- and because it reorders on fixtures once FPL's fixture factor moves off 1.0. **It is not a second opinion this early.** In the opening gameweeks `ep_next` tracks `form` almost exactly: at GW4 every row of all four positional shortlists had `ep_next == form`, in the order a `form` sort gives. So rank on it for the availability scaling, not because it knows something `form` does not, and never describe the resulting order to a sub-agent as a projection rather than observed output. For an ordering that genuinely carries last season's pedigree that early, `fpl stats -v -s quality_score` is the field the CLI blends. Nothing is lost by the swap: every record carries `form`, `expected_goal_involvements`, `clean_sheets` and `ep_next` whatever the sort, so only the ordering changes.
 
 | Placeholder | `N <= 5` | `N >= 6` |
 |---|---|---|
@@ -272,12 +272,15 @@ With the floor scaled to `N` this is now a real finding rather than an artefact 
 
 **Set `stats_caveat` for Phase C.** When `N <= 5`, it is the following line; when `N >= 6` it is empty and the line carrying it is omitted from every Phase C prompt.
 
-> **Early-season caveat:** these blocks are ranked on `ep_next` (FPL's projection), not on observed
-> output. The `form`, `expected_goal_involvements` and `clean_sheets` values inside each record come
-> from {N-1} match(es) and are near-noise -- a hot cameo out-reads a quiet elite. The minutes floor
-> is scaled to the gameweek ({mins_form}/{mins_pos} minutes), so these lists admit players a
-> full-season floor would exclude. Weight prior-season pedigree, role and fixtures above these
-> numbers, and do not present a one-match form figure as a trend.
+> **Early-season caveat:** these blocks are ranked on `ep_next` (FPL's projection), but that is not
+> an independent read this early -- `ep_next` tracks `form` almost exactly until FPL's fixture
+> factor moves off 1.0, so the ordering is a `form` ordering with doubtful players scaled down by
+> chance of playing. The `form`, `expected_goal_involvements` and `clean_sheets` values inside each
+> record come from {N-1} match(es) and are near-noise -- a hot cameo out-reads a quiet elite, and
+> the ranking inherits that. The minutes floor is scaled to the gameweek ({mins_form}/{mins_pos}
+> minutes), so these lists admit players a full-season floor would exclude. Weight prior-season
+> pedigree, role and fixtures above these numbers, and do not present a one-match form figure --
+> or the order these blocks arrive in -- as a trend.
 
 ### B9 -- Season Preview Intel
 

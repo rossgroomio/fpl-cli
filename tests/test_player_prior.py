@@ -456,6 +456,16 @@ class TestEarlySeasonQualityWarning:
         assert f"GW{CUTOFF_GW}" in warning["message"]
         assert "ep_next" in warning["message"]
 
+    def test_blended_notice_does_not_sell_ep_next_as_a_second_opinion(self):
+        """`ep_next` tracks `form` until FPL's fixture factor moves off 1.0.
+
+        Pointing a reader at it as the answer to a small-sample quality score
+        sends them to the same observation under a different name (issue #236).
+        """
+        message = early_season_quality_warning(2, blended=True)["message"]
+        assert "tracks form" in message
+        assert "not a second opinion" in message
+
     def test_blended_notice_ends_at_the_cutoff(self):
         assert early_season_quality_warning(CUTOFF_GW - 1, blended=True) is not None
         assert early_season_quality_warning(CUTOFF_GW, blended=True) is None
@@ -466,6 +476,18 @@ class TestEarlySeasonQualityWarning:
         assert warning["code"] == "early_season_small_sample"
         assert "could not be loaded" in warning["message"]
         assert "ep_next" in warning["message"]
+
+    def test_unblended_notice_does_not_offer_ep_next_as_the_remedy(self):
+        """This notice only ever fires before GW6, where `ep_next` is `form`.
+
+        It used to call `ep_next` a prior-informed projection and offer it as
+        the escape from scores that are "pure observation and small-sample
+        dominated" -- the same single observation, one column over.
+        """
+        message = early_season_quality_warning(2, blended=False)["message"]
+        assert "prior-informed projection" not in message
+        assert "no escape" in message
+        assert "tracks form" in message
 
     def test_unblended_notice_ends_at_gw6(self):
         from fpl_cli.services.scoring import MINS_FACTOR_START_GW
