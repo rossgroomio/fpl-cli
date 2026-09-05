@@ -73,3 +73,72 @@ def test_the_skills_that_filter_on_minutes_use_the_placeholder():
     # minutes -- if every call dropped the flag, the tripwire would pass vacuously.
     users = [d for d in SKILL_DOCS if PLACEHOLDER_MIN_MINUTES.search(d.read_text(encoding="utf-8"))]
     assert {_skill_name(d) for d in users} == {"gw-prep", "squad-builder"}
+
+
+# ---------------------------------------------------------------------------
+# The early-season `ep_next` sort is not a second opinion (issue #236)
+# ---------------------------------------------------------------------------
+#
+# Both skills swap the positional sorts for `ep_next` before GW6. That is worth
+# doing -- FPL scales the projection by chance of playing, and `--available-only`
+# keeps doubtful players -- but until FPL's fixture factor moves off 1.0 the
+# projection tracks `form` almost exactly: at GW4 of 2026/27 every row of all
+# four positional shortlists had `ep_next == form`, in the order a `form` sort
+# gives. A skill that sells the swap as a projection hands a sub-agent an
+# ordering it will read as independent of the one-or-two-match sample it is
+# actually made of.
+
+# The `| `{rank_mid}` | `ep_next` | ... |` substitution rows.
+EP_NEXT_RANK_ROW = re.compile(r"\|\s*`\{rank_\w+\}`\s*\|\s*`ep_next`\s*\|")
+
+# The caveat those docs have to carry alongside them.
+EP_NEXT_TRACKS_FORM = re.compile(r"`ep_next` tracks `form`")
+
+# The claim that started this: `ep_next` described as prior-informed, which is
+# what `quality_score` is and what `ep_next` early in a season is not.
+PRIOR_INFORMED_EP_NEXT = re.compile(r"prior-informed projection")
+
+
+def test_the_ep_next_patterns_match_what_the_skills_actually_write():
+    # Guard the guard: a table row reworded past the regex would let the caveat
+    # drop out unnoticed.
+    assert EP_NEXT_RANK_ROW.search("| `{rank_mid}` | `ep_next` | `form` |")
+    assert not EP_NEXT_RANK_ROW.search("| `{rank_mid}` | `form` | `form` |")
+    assert EP_NEXT_TRACKS_FORM.search("in the opening gameweeks `ep_next` tracks `form` almost exactly")
+    assert PRIOR_INFORMED_EP_NEXT.search("FPL's own prior-informed projection for the coming gameweek")
+
+
+@pytest.mark.parametrize("doc", SKILL_DOCS, ids=lambda p: str(p.relative_to(REPO_ROOT)))
+def test_no_skill_calls_ep_next_a_prior_informed_projection(doc: Path):
+    text = doc.read_text(encoding="utf-8")
+    offences = [
+        f"line {text[: m.start()].count(chr(10)) + 1}: {m.group(0)!r}"
+        for m in PRIOR_INFORMED_EP_NEXT.finditer(text)
+    ]
+    assert not offences, (
+        f"{doc.relative_to(REPO_ROOT)} calls a projection prior-informed."
+        " `quality_score` is the field the CLI blends with last season's"
+        " pedigree; FPL's `ep_next` tracks `form` until the fixture factor"
+        " moves off 1.0, so it carries no prior at all in the window the"
+        " skills sort on it:\n" + "\n".join(offences)
+    )
+
+
+@pytest.mark.parametrize("doc", SKILL_DOCS, ids=lambda p: str(p.relative_to(REPO_ROOT)))
+def test_docs_that_rank_on_ep_next_say_it_tracks_form(doc: Path):
+    text = doc.read_text(encoding="utf-8")
+    if not EP_NEXT_RANK_ROW.search(text):
+        pytest.skip("does not substitute `ep_next` into an early-season sort")
+    assert EP_NEXT_TRACKS_FORM.search(text), (
+        f"{doc.relative_to(REPO_ROOT)} swaps the early-season sorts for"
+        " `ep_next` without saying that `ep_next` tracks `form` in that window."
+        " Without it a sub-agent reads the shortlist order as a projection"
+        " rather than as the form ordering it is (issue #236)."
+    )
+
+
+def test_the_skills_that_rank_on_ep_next_are_the_two_expected():
+    # As above: the rule is only meaningful while some skill still makes the
+    # swap -- if both dropped it, the tripwire would pass vacuously.
+    users = [d for d in SKILL_DOCS if EP_NEXT_RANK_ROW.search(d.read_text(encoding="utf-8"))]
+    assert {_skill_name(d) for d in users} == {"gw-prep", "squad-builder"}
