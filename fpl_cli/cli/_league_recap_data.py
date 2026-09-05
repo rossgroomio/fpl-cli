@@ -875,7 +875,11 @@ def configured_fine_rule_types(settings: dict[str, Any], format_name: str) -> li
 
     Gracefully returns an empty list when fines are unconfigured, matching
     `evaluate_league_fines`, so the two can never disagree about whether a
-    gameweek was ruled.
+    gameweek was ruled. A `fines:` block that cannot be parsed is a different
+    thing and raises `ConfigError` through to the command's
+    `config_failure_boundary`: returning an empty list there would record
+    "no rule was configured" for a gameweek whose rules were simply
+    unreadable, which is the false acquittal the field exists to prevent.
     """
     fines_config = parse_fines_config(settings)
     if fines_config is None:
@@ -898,8 +902,10 @@ def evaluate_league_fines(
     (issue #136). `ruled_manager_keys` is what lets the caller leave that row
     unstamped instead.
 
-    Never raises: an unconfigured or failing evaluation degrades to an empty
-    ruling.
+    An unconfigured or failing evaluation degrades to an empty ruling. A
+    malformed `fines:` block does not: `parse_fines_config` raises
+    `ConfigError` and the command's `config_failure_boundary` reports it,
+    for the reason `configured_fine_rule_types` gives above.
     """
     fines_config = parse_fines_config(settings)
     if fines_config is None:

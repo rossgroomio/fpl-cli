@@ -110,6 +110,35 @@ def offline(request, monkeypatch, tmp_path):
     monkeypatch.setattr(httpx.Client, "send", _unreachable_sync)
 
 
+@pytest.fixture
+def malformed_fines(offline, tmp_path):
+    """`offline`, plus the one hand-edit slip that used to take out three commands.
+
+    A `below-threshold` rule that lost its `threshold:` (#170). The `fines:`
+    block is read on nearly every command, so a parse that raised past click
+    was never `league-fines`-shaped: `fpl status` and `fpl league-recap` died
+    the same way, with a traceback on stderr and zero bytes on stdout.
+
+    Layered over `offline` because the two walks that use it need the rest of
+    the install to behave as it does there. Entry and league ids are set,
+    unlike in `offline`, so a command reading the block reaches it rather
+    than stopping at its not-configured path -- `league-fines` needs its
+    league id, and being the one command that touches no network is what
+    keeps the walk from going vacuous with the API down.
+    """
+    settings_file = tmp_path / "user-config" / "settings.yaml"
+    settings = yaml.safe_load(settings_file.read_text(encoding="utf-8"))
+    settings["fpl"] = {
+        "classic_entry_id": 123,
+        "classic_league_id": 456,
+        "draft_entry_id": 789,
+        "draft_league_id": 321,
+    }
+    bad_rule = [{"type": "below-threshold", "penalty": "Pint on video"}]
+    settings["fines"] = {"classic": bad_rule, "draft": bad_rule}
+    settings_file.write_text(yaml.safe_dump(settings), encoding="utf-8")
+
+
 @pytest.fixture(autouse=True)
 def _isolated_user_dirs(tmp_path, monkeypatch):
     """Per-test user dirs and fresh resolver caches.

@@ -3,7 +3,9 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from click.testing import CliRunner
 
+from fpl_cli.cli._context import ConfigError
 from fpl_cli.cli._helpers import _format_pts_display, _gw_position_with_half, _live_player_stats
 from fpl_cli.cli._review_classic import (
     _format_review_classic_player,
@@ -21,7 +23,7 @@ from fpl_cli.cli._review_summarisation import (
     _review_llm_summarise,
 )
 from fpl_cli.cli.preview import _preview_build_fixture_map
-from fpl_cli.cli.review import _review_resolve_gw
+from fpl_cli.cli.review import _review_resolve_gw, review_command
 from tests.conftest import make_draft_player, make_player, make_team
 
 # ---------------------------------------------------------------------------
@@ -472,6 +474,39 @@ class TestReviewLlmSummariseGuards:
                 research_provider=object(),
                 synthesis_provider=None,
             )
+
+
+class TestReviewMalformedFinesConfig:
+    """#170: `review --summarise` parses the fines block too.
+
+    It has no `--format json`, so the whole of its half of the bug is the
+    table-mode one: a `ConfigError` escaping click printed a traceback where
+    the command owed the reader one red line naming the defect.
+
+    Driven through `asyncio.run` rather than a real summarise: the parse sits
+    in `_format_league_context`, three layers inside `_review_llm_summarise`,
+    behind a full classic-and-draft collection and two LLM providers. The
+    seam stands in for "the config was rejected somewhere in the body", which
+    is the only thing the boundary is being asked about here -- that the
+    parse is what raises is `test_fines_config.py`'s job.
+    """
+
+    def test_it_reports_the_defect_instead_of_raising(self):
+        message = "Fine rule 'below-threshold' requires a 'threshold' value"
+
+        def _reject(coro):
+            coro.close()  # never awaited, and an open one warns at collection
+            raise ConfigError(message)
+
+        with patch("fpl_cli.cli.review.asyncio.run", side_effect=_reject):
+            result = CliRunner().invoke(review_command, [])
+
+        assert result.exit_code == 1
+        assert result.exception is None or isinstance(result.exception, SystemExit), (
+            f"raised {result.exception!r} instead of reporting the config defect"
+        )
+        assert message in result.stderr.replace("\n", "")
+        assert "Traceback" not in result.stderr
 
 
 # ---------------------------------------------------------------------------

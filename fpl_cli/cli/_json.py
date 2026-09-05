@@ -2,19 +2,20 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import sys
 from contextlib import contextmanager
 from datetime import datetime
 from decimal import Decimal
 from enum import Enum
-from typing import IO, Any, Callable, Generator, NoReturn, TypeVar
+from typing import IO, Any, Callable, Generator, NoReturn, TypeVar, cast
 
 import click
 import httpx
 from rich.markup import escape as rich_escape
 
-from fpl_cli.cli._context import error_console
+from fpl_cli.cli._context import ConfigError, error_console
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -155,6 +156,51 @@ def api_failure_boundary(command: str, output_format: str) -> Generator[None, No
         )
     except httpx.HTTPError as exc:
         emit_failure(command, f"Could not reach the FPL API: {exc}", output_format, cause=exc)
+
+
+def config_failure_boundary(func: F) -> F:
+    """Report a malformed settings block as this command's failure envelope.
+
+    The sibling of `api_failure_boundary`, for the other failure a command
+    cannot see coming. Config is parsed lazily, deep in whichever command
+    needs it, so a `ConfigError` is raised far from the code that knows the
+    command name and the output format. Left to propagate it reaches click as
+    a traceback: stdout stays empty, and a `--format json` consumer gets no
+    envelope at all -- indistinguishable from a hang or a killed process
+    (#170). One mistyped `fines:` rule took out `league-fines`, `status` and
+    `league-recap` alike, because the settings are read on nearly every
+    command.
+
+    A decorator rather than a context manager, because there is no single
+    seam to wrap the way `asyncio.run()` is one for an outage: `status`
+    parses fines in two branches and `league-recap` reaches its parse through
+    three helpers. Wrapping the callback covers the body wherever the parse
+    happens, and both halves of the envelope are read off the click context,
+    so a command adopting it cannot name itself one thing here and another in
+    its `emit_json`.
+
+    Failing rather than degrading is deliberate. A `fines:` block the parser
+    cannot read is not the same as no fines configured, and `league-recap`
+    treating it as such would stamp an empty `fine_rules_evaluated` into the
+    append-only ledger -- the false acquittal issue #136 exists to prevent,
+    and a season's worth of them cannot be undone.
+    """
+    @functools.wraps(func)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return func(*args, **kwargs)
+        except ConfigError as exc:
+            ctx = click.get_current_context(silent=True)
+            if ctx is None:  # called outside click, e.g. directly from a test
+                emit_failure(func.__name__, str(exc), "table", cause=exc)
+            emit_failure(
+                ctx.command.name or func.__name__,
+                str(exc),
+                ctx.params.get("output_format", "table"),
+                cause=exc,
+            )
+
+    return cast(F, wrapper)
 
 
 @contextmanager

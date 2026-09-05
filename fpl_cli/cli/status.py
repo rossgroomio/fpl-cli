@@ -23,7 +23,12 @@ from fpl_cli.cli._context import (
 from fpl_cli.cli._fines import FinesLeagueData, FinesTeamPlayer, evaluate_fines
 from fpl_cli.cli._fines_config import FinesConfig, parse_fines_config
 from fpl_cli.cli._helpers import _entry_league_meta
-from fpl_cli.cli._json import api_failure_boundary, emit_json, output_format_option
+from fpl_cli.cli._json import (
+    api_failure_boundary,
+    config_failure_boundary,
+    emit_json,
+    output_format_option,
+)
 from fpl_cli.cli.chips import CHIP_NAMES
 from fpl_cli.models.chip_plan import ChipPlan, ChipType, UsedChip
 from fpl_cli.models.player import Player, PlayerStatus
@@ -174,6 +179,7 @@ def _build_fines_context(
 @click.command("status")
 @output_format_option
 @click.pass_context
+@config_failure_boundary
 def status_command(ctx: click.Context, output_format: str) -> None:
     """Show FPL gameweek status and upcoming deadlines."""
     fmt = get_format(ctx)

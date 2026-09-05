@@ -17,6 +17,7 @@ from fpl_cli.cli._context import (
     resolve_output_dir,
     warn_prediction_problems,
 )
+from fpl_cli.cli._json import config_failure_boundary
 from fpl_cli.cli._review_analysis import _review_fixtures, _review_global_stats, _review_league_table
 from fpl_cli.cli._review_classic import _review_classic_league, _review_classic_team, _review_classic_transfers
 from fpl_cli.cli._review_draft import _review_draft
@@ -94,6 +95,7 @@ async def _review_resolve_gw(client, gameweek):
 @click.option("--dry-run", is_flag=True, help="Build and save prompts to data/debug/ without calling LLMs")
 @click.option("--compare-recs", is_flag=True, help="Compare recommendations vs actual decisions")
 @click.pass_context
+@config_failure_boundary
 def review_command(
     ctx: click.Context,
     gameweek: int | None, save: bool, output: str | None,

@@ -69,4 +69,7 @@ llm:
 #       penalty: "Pint on video"
 #
 # Valid rule types: last-place, red-card, below-threshold
+# Valid keys under 'fines': classic, draft, escalation_note - a misspelled one is
+# refused by name rather than ignored, since an ignored key silently disables the
+# rules under it. 'threshold' must be an unquoted number.
 # Net points (transfer hits) controlled by top-level use_net_points setting

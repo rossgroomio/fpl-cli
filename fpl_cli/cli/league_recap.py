@@ -24,6 +24,7 @@ from fpl_cli.cli._context import (
 )
 from fpl_cli.cli._json import (
     api_failure_boundary,
+    config_failure_boundary,
     emit_json,
     emit_json_error,
     json_output_mode,
@@ -66,6 +67,7 @@ logger = logging.getLogger(__name__)
 @click.option("--dry-run", is_flag=True, help="Build and save prompts to data/debug/ without calling LLMs")
 @output_format_option
 @click.pass_context
+@config_failure_boundary
 def league_recap_command(
     ctx: click.Context,
     gameweek: int | None, is_draft: bool, save: bool, output: str | None,

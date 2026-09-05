@@ -692,6 +692,76 @@ def _run_json(client, settings=None, draft_client=None, mock_draft_squad=None):
         return runner.invoke(main, ["status", "--format", "json"])
 
 
+class TestStatusMalformedFinesConfig:
+    """#170: the fines block is read here too, so a bad rule took `status` out.
+
+    This is the one that bites. `status` is where a session starts and where
+    the skills read the season label from, and a `below-threshold` rule whose
+    `threshold:` was lost to a hand-edit is an easy slip -- yet the parse
+    raised past click, so `--format json` exited 1 with an empty stdout and
+    the reason only in a traceback.
+    """
+
+    _BAD_RULES = [{"type": "below-threshold", "penalty": "Pint on video"}]
+
+    def _settings(self):
+        return {
+            "fpl": {"classic_entry_id": 123, "classic_league_id": 999},
+            "fines": {"classic": self._BAD_RULES},
+        }
+
+    def _client(self):
+        return _mock_client(
+            current_gw={"id": 30, "finished": True},
+            next_gw={"id": 31, "deadline_time": "2099-01-01T11:00:00Z"},
+        )
+
+    def test_json_mode_reports_it_as_an_envelope_on_stdout(self):
+        result = _run_json(self._client(), settings=self._settings())
+
+        assert result.exit_code == 1
+        assert result.exception is None or isinstance(result.exception, SystemExit), (
+            f"raised {result.exception!r} instead of reporting the config defect"
+        )
+        payload = json.loads(result.stdout)
+        assert payload["command"] == "status"
+        assert "requires a 'threshold' value" in payload["error"]
+
+    def test_table_mode_says_why_on_stderr_rather_than_raising(self):
+        """stdout is not asserted empty: the gameweek header is genuine output
+        this command had already produced before it reached the fines block."""
+        result = _run(self._client(), settings=self._settings())
+
+        assert result.exit_code == 1
+        assert result.exception is None or isinstance(result.exception, SystemExit), (
+            f"raised {result.exception!r} instead of reporting the config defect"
+        )
+        assert "requires a 'threshold' value" in result.stderr.replace("\n", "")
+        assert "Traceback" not in result.stderr
+
+    def test_a_quoted_threshold_fails_loudly_instead_of_dropping_the_section(self):
+        """The quieter half of the same defect (#258 review).
+
+        `threshold: "40"` parsed, then raised `TypeError` inside the rule
+        handler -- and the JSON branch catches `(httpx.HTTPError, KeyError,
+        TypeError)` around the whole classic fetch, so the `classic` key
+        simply vanished from the payload and `metadata.format` reported no
+        classic league. A consumer saw a valid envelope describing an install
+        it does not have, with nothing anywhere naming the typo.
+        """
+        settings = {
+            "fpl": {"classic_entry_id": 123, "classic_league_id": 999},
+            "fines": {"classic": [{"type": "below-threshold", "threshold": "40"}]},
+        }
+
+        result = _run_json(self._client(), settings=settings)
+
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout)
+        assert payload["command"] == "status"
+        assert "threshold must be a number" in payload["error"]
+
+
 class TestStatusJsonOutput:
     """JSON output for status command."""
 
