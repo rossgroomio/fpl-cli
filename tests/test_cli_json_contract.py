@@ -87,37 +87,6 @@ def test_command_discovery_found_the_tree():
     assert ("squad",) in JSON_COMMANDS, "invoke_without_command groups must be covered"
 
 
-@pytest.fixture(params=[True, False], ids=["custom-on", "custom-off"])
-def offline(request, monkeypatch, tmp_path):
-    """A configured install whose upstream APIs are all unreachable.
-
-    Run twice, because `custom_analysis` picks between two different bodies
-    for the same command -- `fdr` serves Bayesian ratings under one and raw
-    API difficulty under the other, and only the second has the early return
-    that skips the envelope. No entry IDs are set either way, so the commands
-    that need one take their not-configured path. All of it is ordinary
-    first-week state for a real user.
-    """
-    (tmp_path / "user-config" / "settings.yaml").write_text(
-        yaml.safe_dump({"custom_analysis": request.param}), encoding="utf-8",
-    )
-
-    async def _unreachable(*args, **kwargs):
-        raise httpx.ConnectError("connection refused")
-
-    def _unreachable_sync(*args, **kwargs):
-        raise httpx.ConnectError("connection refused")
-
-    for module, attr in (
-        ("fpl_cli.api.fpl", "FPLClient"),
-        ("fpl_cli.api.fpl_draft", "FPLDraftClient"),
-    ):
-        mod = __import__(module, fromlist=[attr])
-        monkeypatch.setattr(getattr(mod, attr), "_get", _unreachable, raising=False)
-    monkeypatch.setattr(httpx.AsyncClient, "send", _unreachable)
-    monkeypatch.setattr(httpx.Client, "send", _unreachable_sync)
-
-
 @pytest.mark.parametrize(
     "command", JSON_COMMANDS, ids=[" ".join(c) or "(root)" for c in JSON_COMMANDS],
 )

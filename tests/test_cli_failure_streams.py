@@ -19,48 +19,25 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import httpx
 import pytest
 import yaml
 from click.testing import CliRunner
 
 from fpl_cli.cli import main
 from fpl_cli.models.player import PlayerPosition
-from tests.conftest import make_player, make_team
+from tests.conftest import make_agent, make_player, make_team
 
 # The same commands the JSON contract walks -- every command with a `--format`
 # flag, and so every command that has promised its reader a stream at all.
 # Imported rather than re-derived: one walker, two formats, no drift between
-# what the two contracts are held to.
+# what the two contracts are held to. The outage they are both driven down is
+# the `offline` fixture in `conftest.py`, shared for the same reason.
 from tests.test_cli_json_contract import JSON_COMMANDS, REQUIRED_PARAMS
 
 
 def _args_for(command: tuple[str, ...]) -> list[str]:
     """The JSON contract's arguments without `--format json`: table mode."""
     return list(command) + REQUIRED_PARAMS.get(" ".join(command), [])
-
-
-@pytest.fixture(params=[True, False], ids=["custom-on", "custom-off"])
-def offline(request, monkeypatch, tmp_path):
-    """A configured install whose upstream APIs are all unreachable.
-
-    The JSON contract's fixture, in table mode. Run under both toggles for
-    the same reason it is: `custom_analysis` picks between two different
-    bodies for `fdr`, `stats` and `fixtures`, and a failure path in one is
-    not a failure path in the other.
-    """
-    (tmp_path / "user-config" / "settings.yaml").write_text(
-        yaml.safe_dump({"custom_analysis": request.param}), encoding="utf-8",
-    )
-
-    async def _unreachable(*args, **kwargs):
-        raise httpx.ConnectError("connection refused")
-
-    def _unreachable_sync(*args, **kwargs):
-        raise httpx.ConnectError("connection refused")
-
-    monkeypatch.setattr(httpx.AsyncClient, "send", _unreachable)
-    monkeypatch.setattr(httpx.Client, "send", _unreachable_sync)
 
 
 @pytest.mark.parametrize(
@@ -75,6 +52,12 @@ def test_a_failing_command_reports_on_stderr_and_leaves_stdout_clean(command, of
     failure prose that belongs on the other stream. A command that
     legitimately renders part of its output before failing is a different
     case and needs its own test, not a loosening of this one.
+
+    A command that does not exit 1 here is skipped rather than failed, which
+    is the walk's blind spot: `chips timing` stops at its not-configured
+    warning and exits 0, so its agent-failure print is pinned in
+    `test_cli_chips.py` instead, where the harness that gets past that
+    warning already lives (#251 review).
     """
     args = _args_for(command)
     result = CliRunner().invoke(main, args)
@@ -184,12 +167,7 @@ class TestFailuresThatSkipTheHelpers:
         assert result.stdout == ""
 
     def test_transfer_eval_reports_an_agent_failure(self, custom_analysis):
-        agent = MagicMock()
-        agent.__aenter__ = AsyncMock(return_value=agent)
-        agent.__aexit__ = AsyncMock(return_value=False)
-        agent.run = AsyncMock(
-            return_value=MagicMock(success=False, data={}, message="no data"),
-        )
+        agent = make_agent(success=False, message="no data")
 
         with patch("fpl_cli.api.fpl.FPLClient", return_value=self._client()), \
              patch("fpl_cli.agents.analysis.transfer_eval.TransferEvalAgent",
