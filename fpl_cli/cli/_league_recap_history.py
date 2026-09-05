@@ -1416,7 +1416,9 @@ async def capture_recap_history(
     store = LeagueHistoryStore(season, fpl_format, league_id)
     # `_report_coverage` below shows the user the store's own unreadable
     # message in full, as a `league_history_store_unreadable` warning, for
-    # every gameweek `coverage()` could not read. Claimed here rather than
+    # every gameweek `coverage()` could not read -- and on the write-failure
+    # path, where `_report_coverage` is skipped, the `_warn` beside that
+    # failure shows the same message for it. Claimed here rather than
     # left to whichever reader happens to touch the file first, so no
     # reordering of the readers below can put a near-identical log line
     # beside that warning again (issue #224).
@@ -1461,8 +1463,23 @@ async def capture_recap_history(
         written = store.append_rows(data["gameweek"], rows)
     except LeagueHistoryError as exc:
         _warn(warnings, HISTORY_WARNING_STORE_UNREADABLE, str(exc))
+        # Coverage is still read, even though this write never landed: the
+        # block is the payload's answer to "which gameweeks can I trust", and
+        # one damaged file is exactly when a consumer needs the answer.
+        # `coverage()` scopes failure to the gameweek -- the bad file comes
+        # back `readable: False`, its neighbours keep their real status -- so
+        # returning the field's `[]` default here both hid the intact
+        # gameweeks and was indistinguishable from a partition with nothing
+        # captured at all (issue #264). Nothing was written, so this reads the
+        # same disk state the write attempt found.
+        #
+        # Deliberately not routed through `_report_coverage`: the `_warn`
+        # above already showed this gameweek's message in full, and the
+        # coverage report would put a near-identical second
+        # `league_history_store_unreadable` line beside it (issue #224).
         return CaptureResult(
             rows=rows, store_readable=False, warnings=warnings,
+            coverage=store.coverage(),
             first_capture_store_path=first_capture_store_path,
         )
 
