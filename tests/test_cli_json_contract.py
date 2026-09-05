@@ -97,7 +97,18 @@ def test_stdout_is_json_or_empty_on_failure(command, offline):
     to stderr and never reaches the command body -- that is click's contract,
     not ours, so the only thing to assert is that it left stdout alone.
     """
-    args = _args_for(command)
+    _assert_stdout_is_an_envelope(_args_for(command))
+
+
+def _assert_stdout_is_an_envelope(args: list[str]) -> None:
+    """Run `fpl <args>` and hold its stdout to the contract, however it ended.
+
+    Shared by the two walks below -- one drives the commands down an outage,
+    the other down a malformed settings block -- because the contract is the
+    same either way and the assertions are the fiddly part: a traceback and a
+    missing envelope are separate failures with separate messages, and click's
+    own exit 2 is its contract rather than ours.
+    """
     result = CliRunner().invoke(main, args)
 
     if result.exception is not None and not isinstance(result.exception, SystemExit):
@@ -124,6 +135,38 @@ def test_stdout_is_json_or_empty_on_failure(command, offline):
             f"First 200 chars: {result.stdout[:200]!r}"
         ) from exc
     assert envelope["command"], "envelope must name the command that produced it"
+
+
+@pytest.mark.parametrize(
+    "command", JSON_COMMANDS, ids=[" ".join(c) or "(root)" for c in JSON_COMMANDS],
+)
+def test_stdout_is_json_when_the_settings_are_malformed(command, malformed_fines):
+    """The other way a command fails before it has anything to print (#170).
+
+    An outage is caught at a seam every command shares; a config parser is
+    not. `parse_fines_config` raised a `ValueError` no caller caught, so one
+    `below-threshold` rule missing its `threshold:` printed a traceback and
+    left stdout empty on `league-fines`, `status` and `league-recap` alike --
+    the same zero-byte stdout #159 closed for every other failure, reopened
+    by a command reading its own config.
+
+    The walk holds the whole tree to the envelope, so a command that starts
+    parsing the block inherits the rule instead of choosing again.
+    `test_the_malformed_block_is_actually_reached` below keeps it honest: the
+    API is down here too, so most of these commands fail before the parse and
+    would pass this vacuously.
+    """
+    _assert_stdout_is_an_envelope(_args_for(command))
+
+
+def test_the_malformed_block_is_actually_reached(malformed_fines):
+    """`league-fines` touches no network, so it gets as far as the parse."""
+    result = CliRunner().invoke(main, ["league-fines", "--format", "json"])
+
+    assert result.exit_code == 1
+    envelope = json.loads(result.stdout)
+    assert envelope["command"] == "league-fines"
+    assert "requires a 'threshold' value" in envelope["error"]
 
 
 @pytest.mark.parametrize(

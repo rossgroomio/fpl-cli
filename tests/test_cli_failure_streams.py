@@ -74,6 +74,39 @@ def test_a_failing_command_reports_on_stderr_and_leaves_stdout_clean(command, of
     )
 
 
+@pytest.mark.parametrize(
+    "command", JSON_COMMANDS, ids=[" ".join(c) or "(root)" for c in JSON_COMMANDS],
+)
+def test_a_malformed_settings_block_is_prose_and_not_a_traceback(command, malformed_fines):
+    """The table-mode half of #170.
+
+    A `ConfigError` that escapes click is on the right stream and in the
+    wrong form: 37 lines of Python that name the file and line the parser
+    raised at, with the sentence the user needs -- which rule, and the valid
+    set -- as the last of them. The rule for table mode is one red line
+    saying why, the same as every other reason a command gives up.
+
+    stdout is not asserted empty, unlike the outage walk above: `fpl status`
+    prints the gameweek and the next deadline before it reads the fines
+    block, and that is output it was asked for, not failure prose.
+    """
+    args = _args_for(command)
+    result = CliRunner().invoke(main, args)
+
+    if result.exception is not None and not isinstance(result.exception, SystemExit):
+        raise AssertionError(
+            f"`fpl {' '.join(args)}` raised {result.exception!r} instead of reporting "
+            f"the failure as prose"
+        ) from result.exception
+
+    if result.exit_code != 1:
+        return
+
+    assert result.stderr.strip(), (
+        f"`fpl {' '.join(args)}` exited 1 without saying why on stderr"
+    )
+
+
 def test_the_two_squad_subcommands_report_on_the_same_stream(offline):
     """The pair from #162: same group, same missing prerequisite, one stream."""
     grid = CliRunner().invoke(main, ["squad", "grid"])

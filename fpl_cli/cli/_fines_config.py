@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from fpl_cli.cli._context import ConfigError
+
 VALID_RULE_TYPES = frozenset({"last-place", "red-card", "below-threshold"})
 
 
@@ -30,13 +32,27 @@ def parse_fines_config(settings: dict[str, Any]) -> FinesConfig | None:
     """Parse fines config from settings dict.
 
     Returns None when no fines are configured.
+
+    Every way a hand-edited `fines:` block can be wrong raises `ConfigError`
+    and nothing else, so one boundary per command (`config_failure_boundary`)
+    covers the lot. That is why the shape checks below exist alongside the
+    rule checks: a list where a mapping belongs used to reach `.get` and raise
+    `AttributeError`, which no boundary catches and which reads as a crash
+    rather than as the config mistake it is (#170).
     """
     fines_raw = settings.get("fines")
     if not fines_raw:
         return None
 
-    classic_raw = fines_raw.get("classic") or []
-    draft_raw = fines_raw.get("draft") or []
+    if not isinstance(fines_raw, dict):
+        msg = (
+            f"'fines' must be a mapping holding 'classic' and/or 'draft' rule lists, "
+            f"got {type(fines_raw).__name__}"
+        )
+        raise ConfigError(msg)
+
+    classic_raw = _rule_list(fines_raw.get("classic"), "classic")
+    draft_raw = _rule_list(fines_raw.get("draft"), "draft")
 
     if not classic_raw and not draft_raw:
         return None
@@ -48,26 +64,43 @@ def parse_fines_config(settings: dict[str, Any]) -> FinesConfig | None:
     return FinesConfig(classic=classic, draft=draft, escalation_note=escalation_note)
 
 
-def _parse_rule(raw: dict[str, Any], format_name: str) -> FineRule:
+def _rule_list(raw: Any, format_name: str) -> list[Any]:
+    """The rules configured for one format, still unparsed."""
+    if not raw:
+        return []
+    if not isinstance(raw, list):
+        msg = f"'fines.{format_name}' must be a list of rules, got {type(raw).__name__}"
+        raise ConfigError(msg)
+    return raw
+
+
+def _parse_rule(raw: Any, format_name: str) -> FineRule:
     """Parse a single rule dict into a FineRule."""
+    if not isinstance(raw, dict):
+        msg = (
+            f"Fine rule in '{format_name}' must be a mapping with a 'type' field, "
+            f"got {type(raw).__name__}"
+        )
+        raise ConfigError(msg)
+
     rule_type = raw.get("type")
     if not rule_type:
         msg = f"Fine rule in '{format_name}' is missing required 'type' field"
-        raise ValueError(msg)
+        raise ConfigError(msg)
 
     if rule_type not in VALID_RULE_TYPES:
         msg = f"Unknown fine rule type '{rule_type}'. Valid types: {', '.join(sorted(VALID_RULE_TYPES))}"
-        raise ValueError(msg)
+        raise ConfigError(msg)
 
     penalty = raw.get("penalty", "Fine triggered")
     if not isinstance(penalty, str):
         msg = f"Fine rule '{rule_type}' penalty must be a string, got {type(penalty).__name__}"
-        raise ValueError(msg)
+        raise ConfigError(msg)
 
     threshold = raw.get("threshold")
     if rule_type == "below-threshold" and threshold is None:
         msg = "Fine rule 'below-threshold' requires a 'threshold' value"
-        raise ValueError(msg)
+        raise ConfigError(msg)
 
     return FineRule(
         type=rule_type,

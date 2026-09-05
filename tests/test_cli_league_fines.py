@@ -6,6 +6,7 @@ import json
 from typing import Any
 from unittest.mock import patch
 
+import pytest
 from click.testing import CliRunner
 
 from fpl_cli.cli.league_fines import league_fines_command
@@ -230,6 +231,87 @@ class TestFailureContract:
 
         assert result.exit_code == 0, result.output
         assert _payload(result)["metadata"]["total_fines"] == 2
+
+
+class TestMalformedFinesConfig:
+    """#170: a bad `fines:` rule is this command's failure, not a traceback.
+
+    `parse_fines_config` raised past every caller, so the messages below --
+    which name the defect and the valid set, and are the useful part -- only
+    ever reached the user as the last line of a Python traceback. Under
+    `--format json` that meant exit 1 with zero bytes on stdout, which a
+    consumer cannot tell from a hang or a killed process, and which is the
+    contract #159 closed for every other way this command fails.
+    """
+
+    DEFECTS = [
+        pytest.param(
+            [{"type": "wooden_spoon_XYZ", "penalty": "Pint on video"}],
+            "Unknown fine rule type 'wooden_spoon_XYZ'", id="unknown-type",
+        ),
+        pytest.param(
+            [{"penalty": "Pint on video"}],
+            "missing required 'type' field", id="no-type",
+        ),
+        pytest.param(
+            [{"type": "below-threshold", "penalty": "Pint on video"}],
+            "requires a 'threshold' value", id="no-threshold",
+        ),
+        pytest.param(
+            [{"type": "last-place", "penalty": 5}],
+            "penalty must be a string", id="non-string-penalty",
+        ),
+    ]
+
+    @staticmethod
+    def _settings(rules: list[Any]) -> dict[str, Any]:
+        return {"fpl": {"classic_league_id": LEAGUE_ID}, "fines": {"classic": rules}}
+
+    @pytest.mark.parametrize("rules,expected", DEFECTS)
+    def test_it_reaches_stdout_as_an_error_envelope(self, rules, expected):
+        result = _invoke(["--format", "json"], settings=self._settings(rules))
+
+        assert result.exit_code == 1
+        assert result.exception is None or isinstance(result.exception, SystemExit), (
+            f"raised {result.exception!r} instead of reporting the config defect"
+        )
+        payload = _payload(result)
+        assert payload["command"] == "league-fines"
+        assert expected in payload["error"]
+
+    @pytest.mark.parametrize("rules,expected", DEFECTS)
+    def test_table_mode_says_why_on_stderr_and_leaves_stdout_clean(self, rules, expected):
+        result = _invoke(settings=self._settings(rules))
+
+        assert result.exit_code == 1
+        assert expected in result.stderr.replace("\n", "")
+        assert result.stdout == "", (
+            f"table-mode failure prose on stdout: {result.stdout[:200]!r} (#162)"
+        )
+
+    def test_a_rule_that_is_not_a_mapping_is_reported_the_same_way(self):
+        """The shape slip the rule checks never covered: a bare list item.
+
+        `- wooden_spoon` instead of `- type: wooden_spoon` reached `.get` on a
+        string and raised `AttributeError`, which the boundary does not catch
+        by design. Only a parser that raises one type end to end makes the
+        boundary enough.
+        """
+        result = _invoke(["--format", "json"], settings=self._settings(["wooden_spoon"]))
+
+        assert result.exit_code == 1
+        assert "must be a mapping with a 'type' field" in _payload(result)["error"]
+
+    def test_the_rejected_rule_type_is_not_read_as_rich_markup(self):
+        """A rule type is user input quoted back into a Rich console, so it
+        needs the escaping `--season` gets above -- and gets it for the same
+        reason: the boundary reports through `emit_failure`."""
+        rules = [{"type": "[bold]wooden[/bold]", "penalty": "Pint"}]
+
+        result = _invoke(settings=self._settings(rules))
+
+        assert result.exit_code == 1
+        assert "[bold]wooden[/bold]" in result.stderr.replace("\n", "")
 
 
 class TestSelection:
