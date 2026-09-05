@@ -1590,6 +1590,16 @@ class TestPrepareScoringData:
         with pytest.raises(ValueError, match="include_understat requires include_players"):
             await prepare_scoring_data(client, include_understat=True, include_players=False)
 
+    async def test_include_match_data_requires_include_players(self):
+        """include_match_data=True without include_players raises ValueError."""
+        from unittest.mock import AsyncMock
+
+        import pytest
+
+        client = AsyncMock()
+        with pytest.raises(ValueError, match="include_match_data requires include_players"):
+            await prepare_scoring_data(client, include_match_data=True, include_players=False)
+
     async def test_next_gw_none_defaults_to_38(self):
         """When get_next_gameweek returns None, next_gw_id defaults to 38."""
         from unittest.mock import AsyncMock
