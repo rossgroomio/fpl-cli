@@ -3,7 +3,7 @@
 import pytest
 
 from fpl_cli.cli._fines import compute_bench_analysis
-from fpl_cli.cli._helpers import _gw_position_with_half, _net_transfer_ids
+from fpl_cli.cli._helpers import _center_window_with_ties, _gw_position_with_half, _net_transfer_ids
 from fpl_cli.cli._review_classic import _collapse_transfer_churn, _format_review_classic_player
 from fpl_cli.models.player import PlayerPosition
 from fpl_cli.prompts.review import (
@@ -608,6 +608,39 @@ class TestCaptainHindsight:
         ]
         s = self._ctx(team)["captain_hindsight"]
         assert "Saka" in s and "optimal captain" in s
+
+
+class TestCenterWindowWithTies:
+    """Unit tests for the #149 rivals-window helper, isolated from the review flow."""
+
+    def _items(self, totals: list[int]) -> list[dict]:
+        return [{"id": i, "total": t} for i, t in enumerate(totals)]
+
+    def test_short_list_returned_whole_with_nothing_omitted(self):
+        items = self._items([10, 9, 8])
+        window, omitted = _center_window_with_ties(items, 1, 7, "total")
+        assert window == items
+        assert omitted == 0
+
+    def test_centre_near_start_expands_into_the_available_side(self):
+        # Centre index 1 with half-width 3 would naively go negative; the
+        # window should still return `target_size` items by pulling more
+        # from below rather than clipping to a lopsided result.
+        items = self._items(list(range(20, 0, -1)))  # 20 distinct totals
+        window, omitted = _center_window_with_ties(items, 1, 7, "total")
+        assert [it["id"] for it in window] == [0, 1, 2, 3, 4, 5, 6]
+        assert omitted == len(items) - 7
+
+    def test_tied_boundary_group_is_never_split(self):
+        # Centred on index 6, the naive window is indices 3-9, which would
+        # show one of the two entries tied on 8 (index 3) but not the other
+        # (index 2) -- the exact defect #149 reports. Both must survive.
+        totals = [10, 9, 8, 8, 7, 6, 5, 4, 3, 2, 1]
+        items = self._items(totals)
+        window, omitted = _center_window_with_ties(items, 6, 7, "total")
+        tied = [it for it in window if it["total"] == 8]
+        assert len(tied) == 2
+        assert omitted == len(items) - len(window)
 
 
 class TestLeagueContextUserMasking:

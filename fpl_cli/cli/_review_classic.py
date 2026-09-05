@@ -10,6 +10,7 @@ from rich.table import Table
 from fpl_cli.cli._context import console, error_console
 from fpl_cli.cli._helpers import (
     _assign_tie_ranks,
+    _center_window_with_ties,
     _fetch_standings_with_costs,
     _format_pts_display,
     _format_review_player,
@@ -21,6 +22,9 @@ from fpl_cli.services.fixture_predictions import is_blank_gameweek, is_double_ga
 from fpl_cli.utils.gameweek import is_opening_gameweek
 
 logger = logging.getLogger(__name__)
+
+# 3 above the user + the user + 3 below -- see #149.
+_NEARBY_RIVALS_WINDOW = 7
 
 
 def _format_review_classic_player(p: dict) -> str:
@@ -405,6 +409,8 @@ async def _review_classic_league(
         user_gw_pts = 0
         total_entries = len(standings)
         nearby: list = []
+        nearby_window: list = []
+        nearby_omitted = 0
         user_entry = next((e for e in standings if e.get("entry") == entry_id), None)
         if user_entry:
             user_rank = user_entry.get("rank", "?")
@@ -423,8 +429,15 @@ async def _review_classic_league(
             nearby.sort(key=lambda x: x.get("total", 0), reverse=True)
 
             if len(nearby) > 1:  # More than just the user
+                user_nearby_index = next(
+                    i for i, e in enumerate(nearby) if e.get("entry") == entry_id
+                )
+                nearby_window, nearby_omitted = _center_window_with_ties(
+                    nearby, user_nearby_index, _NEARBY_RIVALS_WINDOW, "total",
+                )
+
                 console.print("\n[bold]### Nearby Rivals (+/- 25 pts)[/bold]")
-                for entry in nearby[:7]:  # Show up to 7 nearby
+                for entry in nearby_window:
                     rank = entry.get("rank", "?")
                     name = entry.get("player_name", "Unknown")
                     total = entry.get("total", 0)
@@ -437,6 +450,8 @@ async def _review_classic_league(
                         diff_str = f"+{diff}" if diff > 0 else str(diff)
                         diff_style = "red" if diff > 0 else "green"
                         console.print(f"  {rank}. {name} - {total:,} pts ([{diff_style}]{diff_str}[/{diff_style}])")
+                if nearby_omitted:
+                    console.print(f"  [dim]...and {nearby_omitted} more within 25[/dim]")
 
         standings_with_costs = await _fetch_standings_with_costs(
             client, standings, entry_id, gw, fetch_costs=use_net_points,
@@ -558,8 +573,9 @@ async def _review_classic_league(
                     "total": e.get("total", 0),
                     "is_user": e.get("entry") == entry_id,
                 }
-                for e in nearby[:7]
-            ] if len(nearby) > 1 else [],
+                for e in nearby_window
+            ],
+            "nearby_rivals_omitted": nearby_omitted,
             "best_performers": best_performers_for_report,
             "worst_performers": [
                 {

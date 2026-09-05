@@ -109,7 +109,9 @@ League standings not shown for historical GW{{ gameweek }} review - use `fpl lea
 | Pos | Manager | Total | Diff |
 |-----|---------|-------|------|
 {% for r in classic_league.nearby_rivals %}{% set diff = r.total - classic_league.user_total %}| {{ r.rank }} | {{ r.manager_name }} | {{ "{:,}".format(r.total) }} | {% if diff > 0 %}+{{ diff }}{% elif diff < 0 %}{{ diff }}{% else %}-{% endif %} |
-{% endfor %}{% endif %}
+{% endfor %}{% if classic_league.nearby_rivals_omitted %}
+*...and {{ classic_league.nearby_rivals_omitted }} more within 25*
+{% endif %}{% endif %}
 {% if classic_league.best_performers %}
 ### Best GW Performers (Net)
 {% for p in classic_league.best_performers %}{% if p.transfer_cost %}{{ p.rank_str }}. {{ p.name }} - {{ p.points }} net pts ({{ p.gross_points }} gross, -{{ p.transfer_cost }} hit)

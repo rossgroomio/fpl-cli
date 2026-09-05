@@ -120,6 +120,48 @@ def _slice_with_ties(sorted_items: list[dict], n: int) -> list[dict]:
     return [item for item in sorted_items if item["rank"] <= boundary_rank]
 
 
+def _center_window_with_ties(
+    items: list[dict], center_index: int, target_size: int, score_key: str,
+) -> tuple[list[dict], int]:
+    """Return a window of *items* centred on *center_index*, plus the omitted count.
+
+    Unlike a top-N slice, the window is built around the item at
+    *center_index* rather than the start of the list -- a top-slice on a
+    league sorted by score degenerates into "top N overall" once everyone
+    falls within a shared band, silently dropping the very entry (and its
+    neighbours) the window exists to show (#149).
+
+    When the centre sits near either edge, the window expands into the side
+    that has room rather than clipping to a lopsided result. It is then
+    extended past either boundary so a group tied on *score_key* is never
+    split -- which entry of a tie survives an arbitrary input order is not a
+    meaningful cut point. The second return value is how many items were
+    left out, so callers can render an explicit truncation note instead of a
+    silent cap.
+    """
+    n = len(items)
+    if n <= target_size:
+        return list(items), 0
+
+    half = target_size // 2
+    start = center_index - half
+    end = start + target_size
+    if start < 0:
+        end -= start
+        start = 0
+    if end > n:
+        start -= end - n
+        end = n
+        start = max(start, 0)
+
+    while start > 0 and items[start][score_key] == items[start - 1][score_key]:
+        start -= 1
+    while end < n and items[end][score_key] == items[end - 1][score_key]:
+        end += 1
+
+    return items[start:end], n - (end - start)
+
+
 def _fdr_style(fdr: int | float) -> str:
     """Get Rich style for FDR value on 1-7 scale."""
     if fdr <= FDR_EASY:
