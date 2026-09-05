@@ -26,6 +26,14 @@ SKILL_DOCS = sorted(
     ]
 )
 
+# The FPL Mate output style is not a skill, but it carries the same
+# early-season guidance to the same agents and ships as the reference copy
+# downstream vaults sync from (#172). #253 fixed every skill doc and left it
+# behind, so the `ep_next` rule below reads this wider set (#260).
+OUTPUT_STYLE = REPO_ROOT / ".claude" / "output-styles" / "fpl-mate.md"
+
+EP_NEXT_DOCS = sorted([*SKILL_DOCS, OUTPUT_STYLE])
+
 # `--min-minutes 450` and `--min-minutes=450` -- Click accepts either -- but not
 # `--min-minutes {mins_pos}`.
 LITERAL_MIN_MINUTES = re.compile(r"--min-minutes(?:=|\s+)(\d+)")
@@ -96,7 +104,10 @@ EP_NEXT_TRACKS_FORM = re.compile(r"`ep_next` tracks `form`")
 
 # The claim that started this: `ep_next` described as prior-informed, which is
 # what `quality_score` is and what `ep_next` early in a season is not.
-PRIOR_INFORMED_EP_NEXT = re.compile(r"prior-informed projection")
+# "alternative" is the output style's spelling of the same mistake (#260).
+# "estimate" is deliberately not listed: that is the correct description of
+# `quality_score`, and the CLI's own warning uses it.
+PRIOR_INFORMED_EP_NEXT = re.compile(r"prior-informed (?:projection|alternative)")
 
 
 def test_the_ep_next_patterns_match_what_the_skills_actually_write():
@@ -106,10 +117,20 @@ def test_the_ep_next_patterns_match_what_the_skills_actually_write():
     assert not EP_NEXT_RANK_ROW.search("| `{rank_mid}` | `form` | `form` |")
     assert EP_NEXT_TRACKS_FORM.search("in the opening gameweeks `ep_next` tracks `form` almost exactly")
     assert PRIOR_INFORMED_EP_NEXT.search("FPL's own prior-informed projection for the coming gameweek")
+    assert PRIOR_INFORMED_EP_NEXT.search("suggests `-s ep_next` as a prior-informed alternative")
+    # `quality_score` genuinely is prior-informed, in the CLI's own words, so
+    # the guard must not fire on the one sentence these docs need to keep.
+    assert not PRIOR_INFORMED_EP_NEXT.search("Read quality_score as a prior-informed estimate")
 
 
-@pytest.mark.parametrize("doc", SKILL_DOCS, ids=lambda p: str(p.relative_to(REPO_ROOT)))
-def test_no_skill_calls_ep_next_a_prior_informed_projection(doc: Path):
+def test_output_style_was_found():
+    # Guard the guard: a moved or renamed output style would silently stop
+    # checking the single file #253 left carrying the claim.
+    assert OUTPUT_STYLE.is_file()
+
+
+@pytest.mark.parametrize("doc", EP_NEXT_DOCS, ids=lambda p: str(p.relative_to(REPO_ROOT)))
+def test_no_agent_doc_calls_ep_next_prior_informed(doc: Path):
     text = doc.read_text(encoding="utf-8")
     offences = [
         f"line {text[: m.start()].count(chr(10)) + 1}: {m.group(0)!r}"
