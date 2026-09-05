@@ -83,6 +83,17 @@ A command that cannot reach the FPL API, that needs an entry ID you have not con
 or that has nothing cached to show reports it as an `error` envelope and exits 1 — where
 several used to print the reason to stdout, or exit 0 with nothing on it at all.
 
+**Table mode splits the same way.** Without `--format json` the output you asked for goes
+to stdout and everything else goes to stderr — warnings, progress notices, and the reason
+a command exited nonzero. `fpl squad grid 2>/dev/null` prints a grid or prints nothing;
+it never prints half an explanation. That holds for every command, so redirecting either
+stream means the same thing whichever one you run:
+
+```bash
+fpl stats >players.txt          # players in the file, any complaint on the terminal
+fpl stats 2>/dev/null           # quiet, and empty if it failed
+```
+
 ## Player Analysis
 
 ### Captain Picks

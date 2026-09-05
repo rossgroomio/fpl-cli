@@ -100,7 +100,7 @@ def returnees_command(
             message = f"Could not fetch FPL data: {exc}"
             if is_json:
                 emit_json_error(COMMAND, message)
-            console.print(f"[red]{message}[/red]")
+            error_console.print(f"[red]{message}[/red]")
             raise SystemExit(1) from exc
 
         config = _radar_config(settings, window=window)

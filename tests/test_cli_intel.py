@@ -153,7 +153,9 @@ class TestShow:
     def test_missing_team_exits_nonzero(self):
         result = run("show", "ARS")
         assert result.exit_code == 1
-        assert "No preview for" in result.stdout
+        # On stderr, like every table-mode failure (#162).
+        assert "No preview for" in result.stderr
+        assert result.stdout == ""
 
     def test_missing_team_json_emits_error_envelope_on_stdout(self):
         """#141: success and failure envelopes share one stream."""
@@ -314,13 +316,15 @@ class TestResolve:
     def test_missing_team_exits_nonzero(self):
         result = run("resolve", "ARS")
         assert result.exit_code == 1
-        assert "No preview for" in result.stdout
+        assert "No preview for" in result.stderr
+        assert result.stdout == ""
 
     def test_unknown_team_code_is_reported(self):
         write_preview("XYZ", players=[{"name": "Saliba"}])
         result = run("resolve", "XYZ")
         assert result.exit_code == 1
-        assert "No Premier League squad" in result.stdout
+        assert "No Premier League squad" in result.stderr
+        assert result.stdout == ""
 
 
 class TestSchema:

@@ -24,6 +24,10 @@ which envelope you got. Warnings and progress go to stderr; the failure message 
 in `error`, not on stderr. Full contract:
 [Command Reference](../docs/command-reference.md#json-output).
 
+Table mode is the mirror image: the table on stdout, and warnings, progress and the reason
+for a nonzero exit on stderr — so a script reading table output can silence the commentary
+with `2>/dev/null` without losing the table, whichever command it runs.
+
 ## CLI Commands
 
 | Command | Description | JSON | Format | Experimental | Pattern |

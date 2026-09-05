@@ -63,7 +63,6 @@ def sell_prices_command(ctx: click.Context, refresh: bool, visible: bool, output
         if get_format(ctx) == Format.DRAFT:
             emit_failure(
                 COMMAND, "sell-prices is not available in draft format.", output_format,
-                stream=error_console,
             )
 
         if not refresh:
@@ -73,7 +72,6 @@ def sell_prices_command(ctx: click.Context, refresh: bool, visible: bool, output
                     COMMAND,
                     "No cached sell-price data. Run with --refresh to scrape it.",
                     output_format,
-                    stream=error_console,
                 )
             if is_json:
                 _emit_json_finances(cached)
@@ -97,23 +95,23 @@ def sell_prices_command(ctx: click.Context, refresh: bool, visible: bool, output
         result = asyncio.run(_run())
 
         if isinstance(result, Exception):
-            # Not `emit_failure`, which picks one channel or the other: the
-            # troubleshooting steps are worth printing even when a script is
-            # parsing, and inside this block prose is already on stderr. So
-            # both get written -- the reason first, then the steps, then the
-            # envelope on the stdout a consumer is reading.
+            # Not `emit_failure`, which prints prose or an envelope but never
+            # both: the troubleshooting steps are worth printing even when a
+            # script is parsing. So both get written -- the reason first, then
+            # the steps on stderr, then the envelope on the stdout a consumer
+            # is reading.
             message = f"Error scraping FPL: {result}"
             # Escaped: a Playwright timeout embeds the selector it waited on
             # (`locator("[data-test-id='...']")`), which Rich would parse as
             # markup and silently drop -- losing the one detail these
             # troubleshooting lines exist to show (#159 review).
-            console.print(f"[red]{rich_escape(message)}[/red]")
-            console.print("\nTroubleshooting:")
-            console.print("  1. Run: playwright install chromium")
-            console.print("  2. Check credentials: `fpl credentials set`")
-            console.print("  3. Try with --visible flag to see browser")
+            error_console.print(f"[red]{rich_escape(message)}[/red]")
+            error_console.print("\nTroubleshooting:")
+            error_console.print("  1. Run: playwright install chromium")
+            error_console.print("  2. Check credentials: `fpl credentials set`")
+            error_console.print("  3. Try with --visible flag to see browser")
             if any(marker in str(result) for marker in _PROXY_TLS_ERROR_MARKERS):
-                console.print(
+                error_console.print(
                     "  4. Behind a TLS-inspecting proxy the browser's ClientHello may be"
                     " rejected. Point at an older bundled browser, e.g."
                     " FPL_BROWSER_EXECUTABLE=/path/to/chromium and"
@@ -183,7 +181,7 @@ def _save_cache_or_fail(finances: TeamFinances, save_cache, output_format: str) 
     except OSError as exc:
         emit_failure(
             COMMAND, f"Could not write the sell-price cache: {exc}", output_format,
-            cause=exc, stream=error_console,
+            cause=exc,
         )
 
 

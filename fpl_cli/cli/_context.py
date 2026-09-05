@@ -76,16 +76,19 @@ def split_result_warnings(
 
 
 def handle_agent_failure(result: AgentResult) -> None:
-    """Print an agent failure to the console and exit nonzero.
+    """Print an agent failure to stderr and exit nonzero.
 
     Table-mode counterpart to `_json.emit_json_error` -- centralising this
     keeps the two failure paths behaviourally identical, so a copy-pasted
     two-line `return` can't silently reintroduce a zero exit code on
     command failure (#47).
+
+    On stderr, like every other reason a command exits 1 (#162): the parallel
+    with `emit_json_error` only holds if this half keeps stdout clear too.
     """
-    console.print(f"[red]Agent failed: {result.message}[/red]")
+    error_console.print(f"[red]Agent failed: {result.message}[/red]")
     for error in result.errors:
-        console.print(f"  [red]{error}[/red]")
+        error_console.print(f"  [red]{error}[/red]")
     raise SystemExit(1)
 
 

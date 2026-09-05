@@ -11,7 +11,7 @@ from rich.markup import escape as rich_escape
 from rich.panel import Panel
 from rich.table import Table
 
-from fpl_cli.cli._context import Format, console, error_console, get_format, get_settings
+from fpl_cli.cli._context import Format, console, get_format, get_settings
 from fpl_cli.cli._json import emit_failure, emit_json, json_output_mode, output_format_option
 from fpl_cli.season import is_season_label, season_label
 
@@ -81,7 +81,6 @@ def league_fines_command(
                 f"'{season_override}' is not a season label. Use the ledger's own form, "
                 f"e.g. {season_label()}.",
                 output_format,
-                stream=error_console,
             )
 
         key = "draft_league_id" if is_draft else "classic_league_id"
@@ -92,7 +91,6 @@ def league_fines_command(
                 f"No {fpl_format} league id is configured, so there is no ledger partition "
                 f"to read. Set fpl.{key} in settings.yaml (or run 'fpl init').",
                 output_format,
-                stream=error_console,
             )
 
         store = LeagueHistoryStore(season, fpl_format, league_id)

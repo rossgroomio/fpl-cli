@@ -505,7 +505,7 @@ def chips_timing(ctx: click.Context, output_format: str) -> None:
             )
 
         if signals is None:
-            console.print("[red]Agent failed[/red]")
+            error_console.print("[red]Agent failed[/red]")
             raise SystemExit(1)
 
         console.print(Panel.fit("[bold blue]Chip Timing Signals[/bold blue]"))

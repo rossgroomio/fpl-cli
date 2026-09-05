@@ -680,7 +680,15 @@ class TestChipsTimingJsonFormat:
         assert result.exit_code == 1
 
     def test_table_agent_failure_exits_nonzero(self, runner: CliRunner):
-        """Table-mode agent failure must exit nonzero, not just print and succeed (#47)."""
+        """Table-mode agent failure exits nonzero and reports on stderr.
+
+        Nonzero rather than printing and succeeding (#47), and on stderr
+        rather than stdout (#162). This is the only test that reaches that
+        print: the contract walk in `test_cli_failure_streams.py` cannot,
+        because with no `classic_entry_id` configured `chips timing` stops at
+        the not-configured warning and exits 0. Asserting on `result.output`
+        would not hold it either -- Click mixes both streams into that one.
+        """
         plan = ChipPlan(current_gw=30)
         mock_client = AsyncMock()
         mock_client.get_next_gameweek.return_value = {"id": 30}
@@ -694,7 +702,8 @@ class TestChipsTimingJsonFormat:
             result = runner.invoke(main, ["chips", "timing"])
 
         assert result.exit_code == 1
-        assert "Agent failed" in result.output
+        assert "Agent failed" in result.stderr
+        assert result.stdout == ""
 
 
 class TestNoSignals:

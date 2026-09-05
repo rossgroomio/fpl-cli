@@ -8,7 +8,9 @@ from types import ModuleType
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
+import yaml
 
 from fpl_cli.agents.base import Agent, AgentResult, AgentStatus
 from fpl_cli.models.fixture import Fixture
@@ -66,6 +68,46 @@ def stub_scoring_network_seams():
         ),
     ):
         yield
+
+
+@pytest.fixture(params=[True, False], ids=["custom-on", "custom-off"])
+def offline(request, monkeypatch, tmp_path):
+    """A configured install whose upstream APIs are all unreachable.
+
+    The shared driver for the two output contracts: `test_cli_json_contract`
+    walks every `--format json` command down this failure and checks the
+    envelope on stdout, `test_cli_failure_streams` walks the same commands in
+    table mode and checks the prose on stderr. It lives here rather than in
+    either module because a copy in the second one had already dropped the
+    two client-level patches (#251 review), and a contract that skips a
+    command whose outage stopped being an outage fails silently -- both walks
+    treat "did not exit 1" as nothing to assert.
+
+    Both toggles, because `custom_analysis` picks between two different
+    bodies for the same command: `fdr` serves Bayesian ratings under one and
+    raw API difficulty under the other, and only the second has the early
+    return that skips the envelope. No entry IDs are set either way, so the
+    commands that need one take their not-configured path. All of it is
+    ordinary first-week state for a real user.
+    """
+    (tmp_path / "user-config" / "settings.yaml").write_text(
+        yaml.safe_dump({"custom_analysis": request.param}), encoding="utf-8",
+    )
+
+    async def _unreachable(*args, **kwargs):
+        raise httpx.ConnectError("connection refused")
+
+    def _unreachable_sync(*args, **kwargs):
+        raise httpx.ConnectError("connection refused")
+
+    for module, attr in (
+        ("fpl_cli.api.fpl", "FPLClient"),
+        ("fpl_cli.api.fpl_draft", "FPLDraftClient"),
+    ):
+        mod = __import__(module, fromlist=[attr])
+        monkeypatch.setattr(getattr(mod, attr), "_get", _unreachable, raising=False)
+    monkeypatch.setattr(httpx.AsyncClient, "send", _unreachable)
+    monkeypatch.setattr(httpx.Client, "send", _unreachable_sync)
 
 
 @pytest.fixture(autouse=True)
