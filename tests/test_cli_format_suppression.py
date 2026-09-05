@@ -188,9 +188,10 @@ class TestFdrFormatAwareSquad:
             patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=draft_client),
             patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=fixture_agent),
             patch("fpl_cli.services.team_ratings.TeamRatingsService") as mock_ratings,
-            patch("fpl_cli.services.fixture_predictions.FixturePredictionsService") as mock_preds,
+            patch("fpl_cli.cli.fdr.FixturePredictionsService") as mock_preds,
         ):
             mock_ratings.return_value.get_staleness_warning.return_value = None
+            mock_preds.return_value.load_warnings = []
             mock_preds.return_value.get_predicted_blanks.return_value = []
             mock_preds.return_value.get_predicted_doubles.return_value = []
 

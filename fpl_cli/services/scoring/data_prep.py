@@ -205,13 +205,17 @@ async def prepare_scoring_data(
             fixture-adjusted npxG lookup (requires include_players).
 
     Raises:
-        ValueError: If include_understat or include_prior is True but include_players is False.
+        ValueError: If include_understat, include_prior, or include_match_data
+            is True but include_players is False.
     """
     if include_understat and not include_players:
         msg = "include_understat requires include_players"
         raise ValueError(msg)
     if include_prior and not include_players:
         msg = "include_prior requires include_players"
+        raise ValueError(msg)
+    if include_match_data and not include_players:
+        msg = "include_match_data requires include_players"
         raise ValueError(msg)
 
     from fpl_cli.services.team_ratings import TeamRatingsService
