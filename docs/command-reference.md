@@ -923,7 +923,7 @@ rendered, and a skipped editorial (`synthesis_provider_unavailable`) is no excep
 Four things do exit 1, all emitting the shared `{"command", "error"}` envelope on stdout
 under `--format json` (see [JSON Output](#json-output)): an unreachable FPL API, a
 gameweek that could not be resolved at all, a reconciliation failure, and a `fines:` block
-that cannot be parsed. Only the second softens on the table path, where it prints the same
+that cannot be parsed (a bad rule, a mistyped `threshold:`, or an unrecognised key). Only the second softens on the table path, where it prints the same
 message and exits 0. The distinction matters when scripting a retry — an outage is worth
 retrying, the other three are not.
 
@@ -956,11 +956,17 @@ repaired out of an unknown row, or a coarse gameweek upgraded to a fidelity that
 more), in which case it re-rules the whole cohort together so a cohort-relative rule like
 `last-place` cannot end up recorded against two managers in one gameweek.
 
-**A rule it cannot read stops the command.** An unknown `type:`, a rule missing one, a
-`below-threshold` without its `threshold:`, or a non-string `penalty:` is reported by name
-— on stderr in table mode, in the `error` envelope under `--format json` — rather than
+**A block it cannot read stops the command.** An unknown `type:`, a rule missing one, a
+`below-threshold` without its `threshold:`, a non-string `penalty:`, a `threshold:` that
+isn't a number (`"40"` in quotes is the easy YAML slip), or a key `fines:` doesn't
+recognise — only `classic`, `draft` and `escalation_note` are valid — is reported by name,
+on stderr in table mode and in the `error` envelope under `--format json`, rather than
 skipped. The same message comes back from any command that reads the block, `fpl status`
 included, so a hand-edit slip is diagnosed wherever you next run.
+
+The key check matters more than it looks: `clasic:` would otherwise leave the rule list
+empty, which reads downstream as *no fines configured* rather than as a typo, and
+`league-recap` would record that non-ruling as a completed one.
 
 **Counts, not money.** `penalty` is free text, so "4 last-place, 1 red-card" is supportable
 and "£14 owed" is not — that would need a numeric amount stamped onto the row at capture

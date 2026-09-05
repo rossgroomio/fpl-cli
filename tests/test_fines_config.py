@@ -143,6 +143,22 @@ class TestEveryRejectionIsAConfigError:
             {"fines": {"classic": [{"type": "last-place", "penalty": 5}]}},
             "penalty must be a string", id="non-string-penalty",
         ),
+        pytest.param(
+            {"fines": {"classic": [{"type": "below-threshold", "threshold": "40"}]}},
+            "threshold must be a number", id="quoted-threshold",
+        ),
+        pytest.param(
+            {"fines": {"classic": [{"type": "below-threshold", "threshold": True}]}},
+            "threshold must be a number", id="bool-threshold",
+        ),
+        pytest.param(
+            {"fines": {"clasic": [{"type": "last-place"}]}},
+            "Unknown key", id="misspelled-format-key",
+        ),
+        pytest.param(
+            {"fines": {"Classic": [{"type": "last-place"}]}},
+            "Unknown key", id="wrong-case-format-key",
+        ),
     ]
 
     @pytest.mark.parametrize("settings,expected", MALFORMED)
@@ -153,3 +169,56 @@ class TestEveryRejectionIsAConfigError:
     def test_config_error_is_still_a_value_error(self):
         """The type narrowed; the base did not, so existing callers are unaffected."""
         assert issubclass(ConfigError, ValueError)
+
+
+class TestWhatStaysLenient:
+    """Not everything odd in the block is an error, and the line has a reason.
+
+    A value that ends up being *used* is checked: `penalty` reaches a Rich
+    console and `threshold` reaches `user_pts < rule.threshold`, so a wrong
+    type there is a defect however it got in. A key nobody reads is left
+    alone at rule level, because a stray one cannot make a rule vanish -- the
+    rule still parses and still runs. A stray key at *block* level is the
+    opposite and is rejected above: `clasic:` empties the format's rule list,
+    and every caller downstream reads an empty list as "no fines configured".
+    """
+
+    def test_a_float_threshold_still_parses(self):
+        """It compares correctly and always has; narrowing to `int` now would
+        reject a settings.yaml that works today."""
+        settings = {"fines": {"classic": [{"type": "below-threshold", "threshold": 30.5}]}}
+
+        config = parse_fines_config(settings)
+
+        assert config is not None
+        assert config.classic[0].threshold == 30.5
+
+    def test_an_unread_key_inside_a_rule_is_still_ignored(self):
+        settings = {"fines": {"classic": [{"type": "last-place", "use_net_points": True}]}}
+
+        config = parse_fines_config(settings)
+
+        assert config is not None
+        assert config.classic[0] == FineRule(type="last-place")
+
+    def test_a_threshold_on_a_rule_that_never_reads_one_is_still_type_checked(self):
+        """`FineRule.threshold` is typed and stored whatever the rule type, so
+        a value that could never be compared is still worth naming."""
+        settings = {"fines": {"classic": [{"type": "last-place", "threshold": "40"}]}}
+
+        with pytest.raises(ConfigError, match="threshold must be a number"):
+            parse_fines_config(settings)
+
+    def test_all_three_documented_block_keys_are_accepted(self):
+        settings = {
+            "fines": {
+                "classic": [{"type": "last-place"}],
+                "draft": [{"type": "red-card"}],
+                "escalation_note": "Fines double each GW",
+            },
+        }
+
+        config = parse_fines_config(settings)
+
+        assert config is not None
+        assert config.escalation_note == "Fines double each GW"

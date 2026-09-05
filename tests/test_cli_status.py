@@ -739,6 +739,28 @@ class TestStatusMalformedFinesConfig:
         assert "requires a 'threshold' value" in result.stderr.replace("\n", "")
         assert "Traceback" not in result.stderr
 
+    def test_a_quoted_threshold_fails_loudly_instead_of_dropping_the_section(self):
+        """The quieter half of the same defect (#258 review).
+
+        `threshold: "40"` parsed, then raised `TypeError` inside the rule
+        handler -- and the JSON branch catches `(httpx.HTTPError, KeyError,
+        TypeError)` around the whole classic fetch, so the `classic` key
+        simply vanished from the payload and `metadata.format` reported no
+        classic league. A consumer saw a valid envelope describing an install
+        it does not have, with nothing anywhere naming the typo.
+        """
+        settings = {
+            "fpl": {"classic_entry_id": 123, "classic_league_id": 999},
+            "fines": {"classic": [{"type": "below-threshold", "threshold": "40"}]},
+        }
+
+        result = _run_json(self._client(), settings=settings)
+
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout)
+        assert payload["command"] == "status"
+        assert "threshold must be a number" in payload["error"]
+
 
 class TestStatusJsonOutput:
     """JSON output for status command."""

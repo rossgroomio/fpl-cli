@@ -9,6 +9,15 @@ from fpl_cli.cli._context import ConfigError
 
 VALID_RULE_TYPES = frozenset({"last-place", "red-card", "below-threshold"})
 
+# The whole of the block `fpl init` writes and the example in defaults.yaml
+# documents. Checked, unlike the keys inside a rule, because the two typos
+# fail differently: a stray key in a rule leaves the rule parsed and running,
+# while `clasic:` empties that format's rule list and reads downstream as "no
+# fines configured" -- which stamps `fine_rules_evaluated: []` onto the ledger
+# for a gameweek whose rules were never read (#136's false acquittal, and
+# append-only). A rule list that silently disappears has to be an error.
+VALID_FINES_KEYS = frozenset({"classic", "draft", "escalation_note"})
+
 
 @dataclass(frozen=True)
 class FineRule:
@@ -16,7 +25,10 @@ class FineRule:
 
     type: str
     penalty: str = "Fine triggered"
-    threshold: int | None = None
+    # `int | float` because a float threshold compares correctly and always
+    # has -- narrowing it to `int` now would reject a settings.yaml that
+    # works today.
+    threshold: int | float | None = None
 
 
 @dataclass(frozen=True)
@@ -48,6 +60,14 @@ def parse_fines_config(settings: dict[str, Any]) -> FinesConfig | None:
         msg = (
             f"'fines' must be a mapping holding 'classic' and/or 'draft' rule lists, "
             f"got {type(fines_raw).__name__}"
+        )
+        raise ConfigError(msg)
+
+    unknown = sorted(set(fines_raw) - VALID_FINES_KEYS)
+    if unknown:
+        msg = (
+            f"Unknown key(s) in 'fines': {', '.join(repr(k) for k in unknown)}. "
+            f"Valid keys: {', '.join(sorted(VALID_FINES_KEYS))}"
         )
         raise ConfigError(msg)
 
@@ -100,6 +120,23 @@ def _parse_rule(raw: Any, format_name: str) -> FineRule:
     threshold = raw.get("threshold")
     if rule_type == "below-threshold" and threshold is None:
         msg = "Fine rule 'below-threshold' requires a 'threshold' value"
+        raise ConfigError(msg)
+
+    # Checked for the same reason `penalty` is, and more urgently: this is the
+    # one config value that ends up in an arithmetic comparison, so `threshold:
+    # "40"` -- a quoted number is an ordinary YAML slip -- reaches `user_pts <
+    # rule.threshold` as a `TypeError` that nothing reports. `status` catches it
+    # and drops the whole section from the payload; `evaluate_league_fines`
+    # logs it per manager and records nobody as ruled. A bool is rejected with
+    # the rest: `True` is an `int` to Python and would compare as 1, so every
+    # score above zero silently clears a threshold nobody meant to set.
+    if threshold is not None and (
+        isinstance(threshold, bool) or not isinstance(threshold, (int, float))
+    ):
+        msg = (
+            f"Fine rule '{rule_type}' threshold must be a number, "
+            f"got {type(threshold).__name__}"
+        )
         raise ConfigError(msg)
 
     return FineRule(

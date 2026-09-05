@@ -716,6 +716,44 @@ class TestLeagueRecapMalformedFinesConfig:
 
         assert _store().captured_gameweeks() == []
 
+    def test_a_misspelled_format_key_is_refused_rather_than_read_as_unconfigured(self):
+        """The typo that reached the ledger rather than the user (#258 review).
+
+        `clasic:` leaves both rule lists empty, and an empty block parsed to
+        `None` -- which every caller reads as "no fines configured", not as
+        "the rules could not be found". `evaluate_league_fines` then marked
+        every manager ruled against zero rules and the capture stamped
+        `fine_rules_evaluated: []` onto their rows: the false acquittal #136
+        exists to prevent, written by a one-letter slip into an append-only
+        store.
+        """
+        settings = {
+            "fpl": {"classic_league_id": 42},
+            "fines": {"clasic": [{"type": "last-place", "penalty": "Pint"}]},
+        }
+
+        result = _invoke_recap(_recap_data(), ["--format", "json"], settings=settings)
+
+        assert result.exit_code == 1
+        assert "Unknown key" in json.loads(result.stdout)["error"]
+        assert _store().captured_gameweeks() == []
+
+    def test_a_quoted_threshold_is_refused_before_it_can_silently_unrule_everyone(self):
+        """`threshold: "40"` parsed, then raised `TypeError` inside the rule
+        handler, which `evaluate_league_fines` catches per manager and logs --
+        leaving every manager out of `ruled_manager_keys` for every gameweek
+        with nothing on screen to say so (#258 review)."""
+        settings = {
+            "fpl": {"classic_league_id": 42},
+            "fines": {"classic": [{"type": "below-threshold", "threshold": "40"}]},
+        }
+
+        result = _invoke_recap(_recap_data(), ["--format", "json"], settings=settings)
+
+        assert result.exit_code == 1
+        assert "threshold must be a number" in json.loads(result.stdout)["error"]
+        assert _store().captured_gameweeks() == []
+
 
 class TestLeagueRecapCapturesOnEveryRun:
     def test_a_plain_run_captures_the_gameweek_and_exits_zero(self):
