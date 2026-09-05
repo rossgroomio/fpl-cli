@@ -10,13 +10,21 @@ from fpl_cli.services.team_ratings import TeamPerformance, TeamRating
 from fpl_cli.services.team_ratings_prior import (
     BLENDING_CUTOFF_GW,
     POOL_RELIABILITY_BY_SOURCE,
+    PRIOR_BASIS_CHAMPIONSHIP,
+    PRIOR_BASIS_FALLBACK,
+    PRIOR_BASIS_PREMIER_LEAGUE,
     PRIOR_CACHE_VERSION,
+    PRIOR_MIN_GAMES_PER_VENUE,
     PRIOR_SOURCE_UNDERSTAT,
     REGRESSION_CONSTANT,
+    ChampionshipRecords,
+    _full_season_records,
     _prior_from_football_data,
     _prior_from_understat,
     blend_with_prior,
+    describe_prior_inputs,
     generate_prior,
+    load_prior_inputs,
 )
 
 
@@ -410,10 +418,14 @@ class TestChampionshipRescaling:
 
         assert result is not None
         # COV's raw Championship rates: scored 3.0 home / 2.0 away, conceded 1.0 both.
-        assert result["COV"].goals_scored_home < 3.0
-        assert result["COV"].goals_scored_away < 2.0
-        assert result["COV"].goals_conceded_home > 1.0
-        assert result["COV"].goals_conceded_away > 1.0
+        played = result.played["COV"]
+        assert (played.goals_scored_home, played.goals_scored_away) == (3.0, 2.0)
+        assert (played.goals_conceded_home, played.goals_conceded_away) == (1.0, 1.0)
+        ranked = result.ranked["COV"]
+        assert ranked.goals_scored_home < 3.0
+        assert ranked.goals_scored_away < 2.0
+        assert ranked.goals_conceded_home > 1.0
+        assert ranked.goals_conceded_away > 1.0
 
     async def test_returns_none_without_api_key(self):
         """No Championship data means the caller uses the flat estimate."""
@@ -897,9 +909,10 @@ class TestPromotedFallback:
             "ARS": TeamPerformance("ARS", 2.5, 2.2, 0.6, 0.8, 19, 19),
             "MCI": TeamPerformance("MCI", 2.4, 2.1, 0.7, 0.9, 19, 19),
         }
-        championship = {
-            "COV": TeamPerformance("COV", 1.3, 1.1, 1.5, 1.7, 23, 23),
-        }
+        championship = ChampionshipRecords(
+            played={"COV": TeamPerformance("COV", 2.0, 1.6, 0.9, 1.1, 23, 23)},
+            ranked={"COV": TeamPerformance("COV", 1.3, 1.1, 1.5, 1.7, 23, 23)},
+        )
 
         with (
             patch("fpl_cli.services.team_ratings_prior.prior_config_path", return_value=tmp_path / "p.yaml"),
@@ -1017,8 +1030,8 @@ class TestMissingPerformanceRecordWarnings:
             result = await _championship_performances({"COV", "ZZZ"}, 2025, PL_POOL, XG_POOL)
 
         assert result is not None
-        assert "COV" in result
-        assert "ZZZ" not in result
+        assert "COV" in result.ranked
+        assert "ZZZ" not in result.ranked
         assert "ZZZ" in caplog.text
 
     async def test_generate_prior_logs_when_a_team_gets_no_performance_record(self, caplog, tmp_path):
@@ -1094,3 +1107,335 @@ class TestPriorSourceFailureLogging:
         ]
         assert len(records) == 1
         assert records[0].exc_info is None
+
+
+# --- A club back after exactly one season away (#235) ---
+
+def _understat_season(start_year: int, xg_for: float, xg_against: float) -> list[dict]:
+    """A completed Understat season: 19 home and 19 away results, dated in it."""
+    from datetime import date, timedelta
+
+    matches = []
+    for i in range(38):
+        kickoff = date(start_year, 8, 16) + timedelta(days=7 * i)
+        side = "h" if i % 2 == 0 else "a"
+        xg = {"h": str(xg_for), "a": str(xg_against)} if side == "h" else {
+            "h": str(xg_against), "a": str(xg_for)
+        }
+        matches.append({
+            "id": str(i), "isResult": True, "side": side, "xG": xg,
+            "datetime": f"{kickoff.isoformat()} 15:00:00",
+        })
+    return matches
+
+
+def _understat_substituted_season(start_year: int) -> list[dict]:
+    """What Understat serves for a season a club has no record of: its most
+    recent season instead, here the one in progress -- a full fixture list
+    with one result played (Ipswich's opener in #235: 1.58 xG for, 1.18
+    against, at home)."""
+    from datetime import date, timedelta
+
+    matches = [{
+        "id": "opener", "isResult": True, "side": "h",
+        "xG": {"h": "1.58452", "a": "1.17743"},
+        "datetime": f"{date(start_year, 8, 22).isoformat()} 14:00:00",
+    }]
+    for i in range(1, 38):
+        kickoff = date(start_year, 8, 22) + timedelta(days=7 * i)
+        matches.append({
+            "id": str(i), "isResult": False, "side": "h" if i % 2 else "a",
+            "xG": {"h": "0", "a": "0"},
+            "datetime": f"{kickoff.isoformat()} 15:00:00",
+        })
+    return matches
+
+
+# IPS tops a three-club Championship; the other two draw with each other.
+IPSWICH_CHAMPIONSHIP = [
+    {**m, "home_team_tla": m["home_team_tla"].replace("COV", "IPS"),
+     "away_team_tla": m["away_team_tla"].replace("COV", "IPS")}
+    for m in DOMINANT_CHAMPIONSHIP
+]
+
+
+class TestClubReturningAfterOneSeasonAway:
+    """Ipswich in 2026-27: relegated in 2025, promoted again a year later.
+
+    Understat holds their 2024-25 Premier League season and, once GW1 kicks
+    off, their 2026-27 one -- and answers a request for 2025-26, which they
+    spent in the Championship, with the 2026-27 fixture list. Their first
+    home match then read as last season's Premier League xG and, with the
+    away venue estimated from it, bucketed to def 2/2 against nineteen full
+    seasons (#235). The prior must treat them as what they are: a promoted
+    side, rated from their Championship record like the other two.
+    """
+
+    # (name, short, xG per game, xGA per game) -- a pool where 1.18 xGA, the
+    # opener's, sits third of thirteen: exactly the def 2 the issue reported.
+    PL_CLUBS = [
+        ("Arsenal", "ARS", 2.4, 0.9), ("Man City", "MCI", 2.3, 1.0),
+        ("Liverpool", "LIV", 2.2, 1.25), ("Chelsea", "CHE", 2.0, 1.3),
+        ("Spurs", "TOT", 1.8, 1.35), ("Newcastle", "NEW", 1.7, 1.4),
+        ("Aston Villa", "AVL", 1.6, 1.45), ("Brighton", "BHA", 1.5, 1.5),
+        ("Everton", "EVE", 1.3, 1.6), ("Fulham", "FUL", 1.3, 1.7),
+        ("Brentford", "BRE", 1.2, 1.8), ("Bournemouth", "BOU", 1.1, 1.9),
+    ]
+
+    @pytest.fixture
+    def client(self):
+        from tests.conftest import make_team
+
+        client = AsyncMock()
+        teams = [
+            make_team(id=i + 1, name=name, short_name=short)
+            for i, (name, short, _, _) in enumerate(self.PL_CLUBS)
+        ]
+        teams.append(make_team(id=99, name="Ipswich Town", short_name="IPS"))
+        client.get_teams = AsyncMock(return_value=teams)
+        return client
+
+    @pytest.fixture
+    def understat_payloads(self):
+        """getTeamData by (url_name, season): last season for the continuing
+        clubs, and the season in progress for Ipswich whatever was asked."""
+        from fpl_cli.api.understat import TEAM_NAME_MAP
+        from fpl_cli.season import get_season_year
+
+        prev = get_season_year() - 1
+        payloads = {}
+        for name, _, xg_for, xg_against in self.PL_CLUBS:
+            url_name = TEAM_NAME_MAP.get(name, name).replace(" ", "_")
+            payloads[(url_name, str(prev))] = {
+                "players": [], "dates": _understat_season(prev, xg_for, xg_against),
+            }
+        payloads[("Ipswich", str(prev))] = {
+            "players": [], "dates": _understat_substituted_season(prev + 1),
+        }
+        return payloads
+
+    async def _prior(self, client, understat_payloads, tmp_path):
+        async def get_team_json(url_name, season):
+            return understat_payloads.get((url_name, season))
+
+        with (
+            patch("fpl_cli.services.team_ratings_prior.prior_config_path",
+                  return_value=tmp_path / "p.yaml"),
+            patch("fpl_cli.api.understat.UnderstatClient._get_team_json",
+                  side_effect=get_team_json),
+            patch("fpl_cli.api.football_data.FootballDataClient",
+                  return_value=_championship_fd(IPSWICH_CHAMPIONSHIP)),
+        ):
+            return await generate_prior(client)
+
+    async def test_the_returning_club_is_rated_as_a_promoted_side(
+        self, client, understat_payloads, tmp_path
+    ):
+        """Their basis is the Championship record, not one match of this season."""
+        await self._prior(client, understat_payloads, tmp_path)
+
+        with patch("fpl_cli.services.team_ratings_prior.prior_config_path",
+                   return_value=tmp_path / "p.yaml"):
+            inputs = load_prior_inputs()
+
+        assert inputs is not None
+        assert inputs["IPS"]["basis"] == PRIOR_BASIS_CHAMPIONSHIP
+        # The three-club round robin, not the single 2026-27 home match.
+        assert (inputs["IPS"]["home_games"], inputs["IPS"]["away_games"]) == (2, 2)
+        assert inputs["ARS"]["basis"] == PRIOR_BASIS_PREMIER_LEAGUE
+        assert (inputs["ARS"]["home_games"], inputs["ARS"]["away_games"]) == (19, 19)
+
+    async def test_one_home_match_does_not_make_a_top_tier_defence(
+        self, client, understat_payloads, tmp_path
+    ):
+        """The symptom: def 2/2 from 1.18 xGA in one match, which this pool
+        reproduces with the guards off. A promoted side damped onto the
+        Premier League spread never sits inside the top third on any axis."""
+        result = await self._prior(client, understat_payloads, tmp_path)
+
+        assert len(result) == len(self.PL_CLUBS) + 1
+        for axis in ("atk_home", "atk_away", "def_home", "def_away"):
+            assert getattr(result["IPS"], axis) >= 3, axis
+
+    async def test_the_substitution_is_logged_where_the_fetch_happens(
+        self, client, understat_payloads, tmp_path, caplog
+    ):
+        import logging
+
+        with caplog.at_level(logging.INFO, logger="fpl_cli.api.understat"):
+            await self._prior(client, understat_payloads, tmp_path)
+
+        assert "no" in caplog.text and "record for Ipswich" in caplog.text
+
+
+class TestFullSeasonRecordsOnly:
+    """The Premier League pool is completed seasons; a fragment is left out."""
+
+    @staticmethod
+    def _record(team: str, home: int, away: int) -> TeamPerformance:
+        return TeamPerformance(team, 1.5, 1.2, 1.2, 1.5, home, away)
+
+    def test_a_club_short_of_the_bar_on_either_venue_is_dropped(self):
+        pool = {
+            "ARS": self._record("ARS", 19, 19),
+            "IPS": self._record("IPS", 1, 0),
+            "HOM": self._record("HOM", 19, PRIOR_MIN_GAMES_PER_VENUE - 1),
+            "EDG": self._record("EDG", PRIOR_MIN_GAMES_PER_VENUE, PRIOR_MIN_GAMES_PER_VENUE),
+        }
+
+        assert set(_full_season_records(pool, "2025-26")) == {"ARS", "EDG"}
+
+    def test_a_dropped_club_is_named_with_its_record(self, caplog):
+        import logging
+
+        pool = {"ARS": self._record("ARS", 19, 19), "IPS": self._record("IPS", 1, 0)}
+
+        with caplog.at_level(logging.WARNING, logger="fpl_cli.services.team_ratings_prior"):
+            _full_season_records(pool, "2025-26")
+
+        assert "IPS shows 1H/0A matches in the 2025-26 Premier League record" in caplog.text
+        assert "ARS" not in caplog.text
+
+    async def test_the_understat_prior_applies_the_bar_before_its_club_count(self):
+        """Eleven full seasons and a fragment is a pool of eleven -- and ten
+        fragments is no pool at all, so the fallback source gets its turn."""
+        full = {f"T{i:02d}": self._record(f"T{i:02d}", 19, 19) for i in range(11)}
+        client = AsyncMock()
+
+        with patch(
+            "fpl_cli.services.team_ratings.TeamRatingsCalculator.calculate_from_xg",
+            new_callable=AsyncMock,
+            return_value=({}, {**full, "IPS": self._record("IPS", 1, 0)}),
+        ):
+            result = await _prior_from_understat(client, "2025")
+        assert result is not None
+        assert set(result) == set(full)
+
+        fragments = {f"T{i:02d}": self._record(f"T{i:02d}", 2, 1) for i in range(20)}
+        with patch(
+            "fpl_cli.services.team_ratings.TeamRatingsCalculator.calculate_from_xg",
+            new_callable=AsyncMock,
+            return_value=({}, fragments),
+        ):
+            assert await _prior_from_understat(client, "2025") is None
+
+
+class TestPriorInputsInTheCache:
+    """The cache says what each rating was ranked on, so it can be traced."""
+
+    @pytest.fixture
+    def cache_path(self, tmp_path):
+        return tmp_path / "prior.yaml"
+
+    async def _generate(self, cache_path):
+        from tests.conftest import make_team
+
+        client = AsyncMock()
+        client.get_teams = AsyncMock(return_value=[
+            make_team(id=1, name="Arsenal", short_name="ARS"),
+            make_team(id=2, name="Man City", short_name="MCI"),
+            make_team(id=3, name="Coventry", short_name="COV"),
+            make_team(id=4, name="Hull", short_name="HUL"),
+        ])
+        championship = ChampionshipRecords(
+            played={"COV": TeamPerformance("COV", 2.0, 1.6, 0.9, 1.1, 23, 23)},
+            ranked={"COV": TeamPerformance("COV", 1.3, 1.1, 1.5, 1.7, 23, 23)},
+        )
+        with (
+            patch("fpl_cli.services.team_ratings_prior.prior_config_path", return_value=cache_path),
+            patch("fpl_cli.services.team_ratings_prior._prior_from_understat",
+                  return_value=dict(PL_POOL)),
+            patch("fpl_cli.services.team_ratings_prior._championship_performances",
+                  new_callable=AsyncMock, return_value=championship),
+        ):
+            return await generate_prior(client)
+
+    async def test_every_club_records_its_basis(self, cache_path):
+        import yaml
+
+        await self._generate(cache_path)
+
+        with open(cache_path, encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+
+        inputs = data["inputs"]
+        assert inputs["ARS"] == {
+            "basis": PRIOR_BASIS_PREMIER_LEAGUE,
+            "home_games": 19,
+            "away_games": 19,
+            "ranked": {"scored_home": 2.5, "scored_away": 2.2,
+                       "conceded_home": 0.6, "conceded_away": 0.8},
+        }
+        assert inputs["COV"] == {
+            "basis": PRIOR_BASIS_CHAMPIONSHIP,
+            "home_games": 23,
+            "away_games": 23,
+            # Both sides of the damping: as played, and as ranked.
+            "played": {"scored_home": 2.0, "scored_away": 1.6,
+                       "conceded_home": 0.9, "conceded_away": 1.1},
+            "ranked": {"scored_home": 1.3, "scored_away": 1.1,
+                       "conceded_home": 1.5, "conceded_away": 1.7},
+        }
+        assert inputs["HUL"] == {"basis": PRIOR_BASIS_FALLBACK}
+
+    async def test_metadata_names_the_promoted_clubs_and_the_season(self, cache_path):
+        import yaml
+
+        from fpl_cli.season import get_season_year, season_label
+
+        await self._generate(cache_path)
+
+        with open(cache_path, encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+
+        assert data["metadata"]["version"] == PRIOR_CACHE_VERSION
+        assert data["metadata"]["promoted"] == ["COV", "HUL"]
+        assert data["metadata"]["based_on_season"] == season_label(get_season_year() - 1)
+        # The ratings block is unchanged in shape: the trace sits beside it.
+        assert set(data["ratings"]["ARS"]) == {"atk_home", "atk_away", "def_home", "def_away"}
+
+    async def test_the_file_still_loads_as_a_cache(self, cache_path):
+        """A header comment and an extra block must not break the reader."""
+        from fpl_cli.services.team_ratings_prior import _load_prior_cache
+
+        generated = await self._generate(cache_path)
+
+        with patch("fpl_cli.services.team_ratings_prior.prior_config_path", return_value=cache_path):
+            cached = _load_prior_cache()
+
+        assert cached == generated
+
+    async def test_inputs_read_back(self, cache_path):
+        await self._generate(cache_path)
+
+        with patch("fpl_cli.services.team_ratings_prior.prior_config_path", return_value=cache_path):
+            inputs = load_prior_inputs()
+            note = describe_prior_inputs()
+
+        assert inputs is not None
+        assert {team: entry["basis"] for team, entry in inputs.items()} == {
+            "ARS": PRIOR_BASIS_PREMIER_LEAGUE,
+            "MCI": PRIOR_BASIS_PREMIER_LEAGUE,
+            "COV": PRIOR_BASIS_CHAMPIONSHIP,
+            "HUL": PRIOR_BASIS_FALLBACK,
+        }
+        assert note is not None
+        assert "COV from Championship results" in note
+        assert "HUL on the flat promoted estimate" in note
+        assert str(cache_path) in note
+
+    def test_no_provenance_without_a_cache_or_on_an_old_one(self, cache_path):
+        import yaml
+
+        with patch("fpl_cli.services.team_ratings_prior.prior_config_path", return_value=cache_path):
+            assert load_prior_inputs() is None
+            assert describe_prior_inputs() is None
+
+            # A pre-inputs cache: ratings only.
+            with open(cache_path, "w", encoding="utf-8") as f:
+                yaml.dump({
+                    "metadata": {"version": PRIOR_CACHE_VERSION - 1, "teams": ["ARS"]},
+                    "ratings": {"ARS": {"atk_home": 1, "atk_away": 1, "def_home": 1, "def_away": 1}},
+                }, f)
+            assert load_prior_inputs() is None
+            assert describe_prior_inputs() is None

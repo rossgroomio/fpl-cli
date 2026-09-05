@@ -86,6 +86,12 @@ def _show_ratings():
     console.print(table)
 
 
+def _print_prior_basis(note: str | None) -> None:
+    """Show which clubs the prior rates from outside their PL record, if known."""
+    if note:
+        console.print(f"[dim]{rich_escape(note)}[/dim]")
+
+
 @ratings_group.command(name="update")
 @click.option("--since-gw", type=int, default=None, help="Calculate from this GW onwards (recent form)")
 @click.option("--dry-run", is_flag=True, help="Show calculated ratings without saving")
@@ -109,6 +115,7 @@ def ratings_update(since_gw: int | None, dry_run: bool, use_xg: bool):
             BLENDING_CUTOFF_GW,
             REGRESSION_CONSTANT,
             blend_with_prior,
+            describe_prior_inputs,
             generate_prior,
         )
 
@@ -219,6 +226,7 @@ def ratings_update(since_gw: int | None, dry_run: bool, use_xg: bool):
                             f"[yellow]{reason} - ratings would be estimated from "
                             f"last season's prior.[/yellow]"
                         )
+                        _print_prior_basis(describe_prior_inputs())
                     else:
                         console.print(
                             f"[yellow]{reason}, and no previous-season data available "
@@ -233,6 +241,7 @@ def ratings_update(since_gw: int | None, dry_run: bool, use_xg: bool):
                         "[red]No previous-season data available either - ratings unchanged[/red]"
                     )
                     return
+                _print_prior_basis(describe_prior_inputs())
                 console.print(
                     f"\n[green]Estimated ratings saved to "
                     f"{rich_escape(str(service.config_path))}[/green]"
@@ -250,6 +259,7 @@ def ratings_update(since_gw: int | None, dry_run: bool, use_xg: bool):
             # (`max_completed_gw < BLENDING_CUTOFF_GW`), so the two write paths
             # agree; the weight still comes from the sample actually observed.
             blend_note = None
+            prior_basis = None
             if 0 < sample_gws and season_gws < BLENDING_CUTOFF_GW:
                 prior = await generate_prior(client)
                 if prior:
@@ -259,6 +269,10 @@ def ratings_update(since_gw: int | None, dry_run: bool, use_xg: bool):
                         f"Blended with last season's prior: {current_weight:.0%} current form / "
                         f"{1 - current_weight:.0%} prior (shrinkage ends at GW{BLENDING_CUTOFF_GW})"
                     )
+                    # Which clubs that prior rates from something other than
+                    # their Premier League record, and where to see the
+                    # per-club inputs: the trace #235 had no way to ask for.
+                    prior_basis = describe_prior_inputs()
                     source = f"{source}_blended"
                     method = f"{method}_blended"
 
@@ -279,6 +293,7 @@ def ratings_update(since_gw: int | None, dry_run: bool, use_xg: bool):
             )
         if blend_note:
             console.print(f"[dim]{blend_note}[/dim]")
+        _print_prior_basis(prior_basis)
         console.print()
 
         table = Table(show_header=True, header_style="bold")

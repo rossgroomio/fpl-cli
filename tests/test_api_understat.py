@@ -378,6 +378,92 @@ class TestUnderstatClientTeam:
 
             assert result is None
 
+    @staticmethod
+    def _dated(season_year: int, month: int, day: int, **fields) -> dict:
+        return {
+            "id": "1", "isResult": True, "side": "h", "xG": {"h": "1.5", "a": "1.2"},
+            "datetime": f"{season_year}-{month:02d}-{day:02d} 15:00:00",
+            **fields,
+        }
+
+    async def test_get_team_ignores_a_season_understat_substituted(self, caplog):
+        """Understat answers a season a club has no record of with the club's
+        most recent season -- for a promoted club, the one in progress. Asked
+        for 2025 and handed 2026-27 fixtures, the answer is "no record", not
+        those fixtures (#235)."""
+        import logging
+
+        client = UnderstatClient()
+        served = {
+            "players": [{"id": "1", "player_name": "Someone", "team_title": "Ipswich"}],
+            "dates": [
+                self._dated(2026, 8, 22),
+                self._dated(2026, 8, 30, isResult=False, side="a"),
+                self._dated(2027, 5, 23, isResult=False),
+            ],
+        }
+
+        with (
+            caplog.at_level(logging.INFO, logger="fpl_cli.api.understat"),
+            patch.object(client, "_get_team_json", new_callable=AsyncMock, return_value=served),
+        ):
+            result = await client.get_team("Ipswich Town", season="2025")
+
+        assert result is None
+        assert "no 2025-26 record for Ipswich" in caplog.text
+        assert "3 matches from 2026-27" in caplog.text
+
+    async def test_get_team_keeps_only_the_requested_season(self):
+        """Matches are kept by their kickoff date, across the January boundary."""
+        client = UnderstatClient()
+        served = {
+            "players": [],
+            "dates": [
+                self._dated(2025, 8, 16),
+                self._dated(2026, 5, 24, id="2"),
+                self._dated(2026, 8, 22, id="stray"),
+            ],
+        }
+
+        with patch.object(client, "_get_team_json", new_callable=AsyncMock, return_value=served):
+            result = await client.get_team("Arsenal", season="2025")
+
+        assert result is not None
+        assert [m["id"] for m in result["matches"]] == ["1", "2"]
+
+    async def test_get_team_keeps_a_match_with_no_kickoff_date(self, mock_team_json):
+        """Shape drift degrades to the old behaviour rather than emptying the club."""
+        client = UnderstatClient()
+        mock_team_json["dates"].append(self._dated(2030, 1, 1, id="stray", datetime="not a date"))
+
+        with patch.object(client, "_get_team_json", new_callable=AsyncMock, return_value=mock_team_json):
+            result = await client.get_team("Liverpool", season="2025")
+
+        assert result is not None
+        assert len(result["matches"]) == 3
+
+
+class TestMatchesInSeason:
+    """The season guard behind get_team, on its own."""
+
+    def test_the_july_cutover_splits_seasons(self):
+        from fpl_cli.api.understat import matches_in_season
+
+        matches = [
+            {"id": "may", "datetime": "2026-05-24 15:00:00"},
+            {"id": "aug", "datetime": "2026-08-15 15:00:00"},
+        ]
+
+        assert [m["id"] for m in matches_in_season(matches, "2025")] == ["may"]
+        assert [m["id"] for m in matches_in_season(matches, "2026")] == ["aug"]
+
+    def test_an_undated_match_is_kept_for_any_season(self):
+        from fpl_cli.api.understat import matches_in_season
+
+        undated = [{"id": "a"}, {"id": "b", "datetime": None}, {"id": "c", "datetime": "??"}]
+
+        assert matches_in_season(undated, "2025") == undated
+
 
 # --- TestUnderstatClientParsing ---
 
