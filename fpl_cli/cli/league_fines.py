@@ -12,7 +12,13 @@ from rich.panel import Panel
 from rich.table import Table
 
 from fpl_cli.cli._context import Format, console, fpl_config, get_format, get_settings
-from fpl_cli.cli._json import emit_failure, emit_json, json_output_mode, output_format_option
+from fpl_cli.cli._json import (
+    config_failure_boundary,
+    emit_failure,
+    emit_json,
+    json_output_mode,
+    output_format_option,
+)
 from fpl_cli.season import is_season_label, season_label
 
 if TYPE_CHECKING:
@@ -20,7 +26,12 @@ if TYPE_CHECKING:
 
 # Rule types are config keys ("below-threshold"), which make poor column
 # headers. Anything unrecognised falls back to the key itself rather than a
-# guess, so a rule type this table has never seen still gets a column.
+# guess. The fallback is not dead code for a closed set: the columns come
+# from `SeasonFinesTally.rule_types`, which extends the configured order with
+# every rule type observed in the ledger's own `fine_rules_evaluated`. The
+# ledger outlives the release that wrote it, so a rule type recorded by an
+# earlier version and since dropped from `VALID_RULE_TYPES` still needs a
+# column -- and would reach here without ever passing through the parser.
 _RULE_HEADINGS = {
     "last-place": "Last place",
     "below-threshold": "Below threshold",
@@ -37,6 +48,7 @@ _RULE_HEADINGS = {
               help="Use draft league (only needed when both formats are configured)")
 @output_format_option
 @click.pass_context
+@config_failure_boundary
 def league_fines_command(
     ctx: click.Context,
     gameweek: int | None,

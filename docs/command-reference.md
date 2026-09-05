@@ -80,8 +80,12 @@ contract above is the one to script against.
 
 The table applies to every way a command can end, not just the ones it was written for.
 A command that cannot reach the FPL API, that needs an entry ID you have not configured,
-or that has nothing cached to show reports it as an `error` envelope and exits 1 — where
-several used to print the reason to stdout, or exit 0 with nothing on it at all.
+that has nothing cached to show, or that finds a `settings.yaml` block it cannot read
+reports it as an `error` envelope and exits 1 — where several used to print the reason to
+stdout, or exit 0 with nothing on it at all. A malformed `fines:` rule is the one to know
+about: the block is read on nearly every command, so the envelope naming it can come back
+from `fpl status` or `fpl league-recap` as readily as from `fpl league-fines`, and the
+message names the rule and the valid set.
 
 **Table mode splits the same way.** Without `--format json` the output you asked for goes
 to stdout and everything else goes to stderr — warnings, progress notices, and the reason
@@ -947,11 +951,18 @@ it shares the channel: `synthesis_provider_unavailable`.
 None of these change the exit code — `league-recap` exits 0 whenever the recap itself
 rendered, and a skipped editorial (`synthesis_provider_unavailable`) is no exception.
 
-Three things do exit 1, all emitting the shared `{"command", "error"}` envelope on stdout
+Four things do exit 1, all emitting the shared `{"command", "error"}` envelope on stdout
 under `--format json` (see [JSON Output](#json-output)): an unreachable FPL API, a
-gameweek that could not be resolved at all, and a reconciliation failure. Only the second
-softens on the table path, where it prints the same message and exits 0. The distinction
-matters when scripting a retry — an outage is worth retrying, the other two are not.
+gameweek that could not be resolved at all, a reconciliation failure, and a `fines:` block
+that cannot be parsed (a bad rule, a mistyped `threshold:`, or an unrecognised key). Only the second softens on the table path, where it prints the same
+message and exits 0. The distinction matters when scripting a retry — an outage is worth
+retrying, the other three are not.
+
+The fines one refuses rather than degrades on purpose. An unreadable `fines:` block is not
+the same as no fines configured, and recapping anyway would write "every configured rule
+was checked, none triggered" into the append-only ledger for a gameweek whose rules were
+never read — a false acquittal the season cannot be walked back to correct. Fix the rule
+and re-run; nothing has been recorded in the meantime.
 
 ### Season Fines
 
@@ -975,6 +986,18 @@ untouched, and re-rules a gameweek only when it genuinely fills something in (a 
 repaired out of an unknown row, or a coarse gameweek upgraded to a fidelity that can rule
 more), in which case it re-rules the whole cohort together so a cohort-relative rule like
 `last-place` cannot end up recorded against two managers in one gameweek.
+
+**A block it cannot read stops the command.** An unknown `type:`, a rule missing one, a
+`below-threshold` without its `threshold:`, a non-string `penalty:`, a `threshold:` that
+isn't a number (`"40"` in quotes is the easy YAML slip), or a key `fines:` doesn't
+recognise — only `classic`, `draft` and `escalation_note` are valid — is reported by name,
+on stderr in table mode and in the `error` envelope under `--format json`, rather than
+skipped. The same message comes back from any command that reads the block, `fpl status`
+included, so a hand-edit slip is diagnosed wherever you next run.
+
+The key check matters more than it looks: `clasic:` would otherwise leave the rule list
+empty, which reads downstream as *no fines configured* rather than as a typo, and
+`league-recap` would record that non-ruling as a completed one.
 
 **Counts, not money.** `penalty` is free text, so "4 last-place, 1 red-card" is supportable
 and "£14 owed" is not — that would need a numeric amount stamped onto the row at capture

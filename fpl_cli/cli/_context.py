@@ -25,6 +25,26 @@ console = Console()
 error_console = Console(stderr=True)
 
 
+class ConfigError(ValueError):
+    """A `settings.yaml` block a command cannot run past.
+
+    Config is parsed lazily, deep inside whichever command needs it, so the
+    place that finds the defect knows neither the command name nor the format
+    its reader is on. Raising this type rather than a bare `ValueError` lets
+    `config_failure_boundary` (`cli/_json.py`) catch it once per command and
+    turn it into the same `{command, error}` envelope every other failure
+    produces. Before #170 it escaped click as a traceback, which under
+    `--format json` meant exit 1 with zero bytes on stdout -- the one outcome
+    a consumer cannot tell apart from a crash or a hang.
+
+    A `ValueError` subclass because that is what these parsers raised before
+    the boundary existed: a caller already catching `ValueError` keeps
+    working, and the boundary still catches nothing wider than a parser
+    deliberately raises. A bug in our own code raises something else and
+    still surfaces as a traceback, where it can be seen.
+    """
+
+
 def warn_prediction_problems(pred_service: FixturePredictionsService) -> None:
     """Report prediction files that were skipped (unreadable, malformed, empty, stale).
 

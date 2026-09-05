@@ -3,7 +3,9 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from click.testing import CliRunner
 
+from fpl_cli.cli._context import ConfigError
 from fpl_cli.cli._helpers import _format_pts_display, _gw_position_with_half, _live_player_stats
 from fpl_cli.cli._review_classic import (
     _format_review_classic_player,
@@ -21,7 +23,7 @@ from fpl_cli.cli._review_summarisation import (
     _review_llm_summarise,
 )
 from fpl_cli.cli.preview import _preview_build_fixture_map
-from fpl_cli.cli.review import _review_resolve_gw
+from fpl_cli.cli.review import _review_resolve_gw, review_command
 from tests.conftest import make_draft_player, make_player, make_team
 
 # ---------------------------------------------------------------------------
@@ -474,6 +476,39 @@ class TestReviewLlmSummariseGuards:
             )
 
 
+class TestReviewMalformedFinesConfig:
+    """#170: `review --summarise` parses the fines block too.
+
+    It has no `--format json`, so the whole of its half of the bug is the
+    table-mode one: a `ConfigError` escaping click printed a traceback where
+    the command owed the reader one red line naming the defect.
+
+    Driven through `asyncio.run` rather than a real summarise: the parse sits
+    in `_format_league_context`, three layers inside `_review_llm_summarise`,
+    behind a full classic-and-draft collection and two LLM providers. The
+    seam stands in for "the config was rejected somewhere in the body", which
+    is the only thing the boundary is being asked about here -- that the
+    parse is what raises is `test_fines_config.py`'s job.
+    """
+
+    def test_it_reports_the_defect_instead_of_raising(self):
+        message = "Fine rule 'below-threshold' requires a 'threshold' value"
+
+        def _reject(coro):
+            coro.close()  # never awaited, and an open one warns at collection
+            raise ConfigError(message)
+
+        with patch("fpl_cli.cli.review.asyncio.run", side_effect=_reject):
+            result = CliRunner().invoke(review_command, [])
+
+        assert result.exit_code == 1
+        assert result.exception is None or isinstance(result.exception, SystemExit), (
+            f"raised {result.exception!r} instead of reporting the config defect"
+        )
+        assert message in result.stderr.replace("\n", "")
+        assert "Traceback" not in result.stderr
+
+
 # ---------------------------------------------------------------------------
 # _gw_position_with_half
 # ---------------------------------------------------------------------------
@@ -847,6 +882,104 @@ class TestReviewClassicLeagueUserNotOnPage:
         assert result["user_found_in_standings"] is False
         assert result["user_gw_rank"] is None
         assert result["user_gw_points"] == 0
+
+
+class TestReviewClassicLeagueNearbyRivals:
+    """#149: the rivals window must centre on the user, not top-slice the league."""
+
+    @staticmethod
+    def _standings(totals: list[int]) -> list[dict]:
+        # Distinct event_total per manager -- a shared value would tie
+        # everyone in Best/Worst GW Performers too, printing every manager
+        # name and defeating assertions scoped to the rivals section alone.
+        return [
+            {
+                "entry": i + 1,
+                "rank": i + 1,
+                "total": total,
+                "event_total": 50 - i,
+                "player_name": f"Manager{i + 1}",
+            }
+            for i, total in enumerate(totals)
+        ]
+
+    async def test_everyone_within_band_centres_on_user_not_the_top(self, capsys):
+        # 15 managers all within +/-25 of the user (mid-table, index 7 of 15).
+        # A top-7 slice would show ranks 1-7 and omit the user entirely.
+        totals = [1000 - 2 * i for i in range(15)]
+        standings = self._standings(totals)
+        user_entry_id = 8  # index 7 -> rank 8, total 986
+
+        client = AsyncMock()
+        client.get_classic_league_standings = AsyncMock(return_value={
+            "league": {"name": "Big League"},
+            "standings": {"results": standings},
+        })
+
+        result = await _review_classic_league(client, 999, user_entry_id, 5, 5)
+
+        rivals = result["nearby_rivals"]
+        assert [r["rank"] for r in rivals] == [5, 6, 7, 8, 9, 10, 11]
+        assert rivals[3]["is_user"] is True
+        assert rivals[3]["rank"] == 8
+        # The user's own neighbours are shown, not the league's overall top 7.
+        assert not any(r["rank"] == 1 for r in rivals)
+        assert result["nearby_rivals_omitted"] == 8
+
+        out = capsys.readouterr().out
+        rivals_section = out.split("Nearby Rivals")[1].split("Best GW Performers")[0]
+        assert "Manager1 " not in rivals_section  # rank 1, outside the centred window
+        assert "You" in rivals_section
+        assert "...and 8 more within 25" in rivals_section
+
+    async def test_tie_straddling_window_boundary_is_never_split(self, capsys):
+        # Ranks 4 and 4= share a total that falls right on the window's upper
+        # boundary; both must appear together or not at all.
+        totals = [1000, 998, 996, 994, 994, 992, 990, 988, 986, 984, 982, 980, 978, 976, 974]
+        standings = self._standings(totals)
+        # Competition ranking for the tie at index 3/4: 4, 4, 6 (rank 5 is skipped).
+        standings[4]["rank"] = 4
+        user_entry_id = 8  # index 7 -> rank 8, total 988
+
+        client = AsyncMock()
+        client.get_classic_league_standings = AsyncMock(return_value={
+            "league": {"name": "Big League"},
+            "standings": {"results": standings},
+        })
+
+        result = await _review_classic_league(client, 999, user_entry_id, 5, 5)
+
+        rivals = result["nearby_rivals"]
+        tied_totals = [r for r in rivals if r["total"] == 994]
+        assert len(tied_totals) == 2  # both managers on 994, never just one
+        assert [r["rank"] for r in rivals] == [4, 4, 6, 7, 8, 9, 10, 11]
+        assert any(r["is_user"] for r in rivals)
+        assert result["nearby_rivals_omitted"] == 7
+
+        out = capsys.readouterr().out
+        rivals_section = out.split("Nearby Rivals")[1].split("Best GW Performers")[0]
+        assert "Manager4" in rivals_section and "Manager5" in rivals_section
+
+    async def test_rival_tied_with_user_shows_dash_not_zero(self, capsys):
+        # A rival on the exact same total as the user is a diff of 0, which
+        # must render like the sibling report/template renderers ("-"), not
+        # the literal digit "0". The centred window pulls in a same-total
+        # rival more often than the old top-slice did, so this now surfaces
+        # more (report.py's _generate_review_inline and gw_review.md.j2
+        # both already special-case zero this way).
+        standings = self._standings([1000, 1000])
+        client = AsyncMock()
+        client.get_classic_league_standings = AsyncMock(return_value={
+            "league": {"name": "Tied League"},
+            "standings": {"results": standings},
+        })
+
+        await _review_classic_league(client, 999, 1, 5, 5)
+
+        out = capsys.readouterr().out
+        rivals_section = out.split("Nearby Rivals")[1].split("Best GW Performers")[0]
+        assert "(0)" not in rivals_section
+        assert "(-)" in rivals_section
 
 
 class TestClassicPositionFields:

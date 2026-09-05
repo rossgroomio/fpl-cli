@@ -672,6 +672,89 @@ def _invoke_recap(
         return CliRunner().invoke(league_recap_command, args or [])
 
 
+class TestLeagueRecapMalformedFinesConfig:
+    """#170: the same bad rule, the third command it used to take out.
+
+    `league-recap` is the command that *writes* the fines, so it parses the
+    block on every run. Failing rather than degrading is the point: an
+    unreadable `fines:` block is not "no fines configured", and treating it
+    as such would stamp an empty `fine_rules_evaluated` into the append-only
+    ledger -- the false acquittal issue #136 exists to prevent, and one the
+    season cannot be walked back to correct.
+    """
+
+    _SETTINGS = {
+        "fpl": {"classic_league_id": 42},
+        "fines": {"classic": [{"type": "below-threshold", "penalty": "Pint on video"}]},
+    }
+
+    def test_json_mode_reports_it_as_an_envelope_on_stdout(self):
+        result = _invoke_recap(_recap_data(), ["--format", "json"], settings=self._SETTINGS)
+
+        assert result.exit_code == 1
+        assert result.exception is None or isinstance(result.exception, SystemExit), (
+            f"raised {result.exception!r} instead of reporting the config defect"
+        )
+        payload = json.loads(result.stdout)
+        assert payload["command"] == "league-recap"
+        assert "requires a 'threshold' value" in payload["error"]
+
+    def test_table_mode_says_why_on_stderr_rather_than_raising(self):
+        result = _invoke_recap(_recap_data(), settings=self._SETTINGS)
+
+        assert result.exit_code == 1
+        assert result.exception is None or isinstance(result.exception, SystemExit), (
+            f"raised {result.exception!r} instead of reporting the config defect"
+        )
+        assert "requires a 'threshold' value" in result.stderr.replace("\n", "")
+        assert "Traceback" not in result.stderr
+
+    def test_the_ledger_records_nothing_rather_than_an_empty_ruling(self):
+        """Degrading would be worse than failing: an empty `fine_rules_
+        evaluated` reads as "every rule was checked and none triggered"."""
+        _invoke_recap(_recap_data(), settings=self._SETTINGS)
+
+        assert _store().captured_gameweeks() == []
+
+    def test_a_misspelled_format_key_is_refused_rather_than_read_as_unconfigured(self):
+        """The typo that reached the ledger rather than the user (#258 review).
+
+        `clasic:` leaves both rule lists empty, and an empty block parsed to
+        `None` -- which every caller reads as "no fines configured", not as
+        "the rules could not be found". `evaluate_league_fines` then marked
+        every manager ruled against zero rules and the capture stamped
+        `fine_rules_evaluated: []` onto their rows: the false acquittal #136
+        exists to prevent, written by a one-letter slip into an append-only
+        store.
+        """
+        settings = {
+            "fpl": {"classic_league_id": 42},
+            "fines": {"clasic": [{"type": "last-place", "penalty": "Pint"}]},
+        }
+
+        result = _invoke_recap(_recap_data(), ["--format", "json"], settings=settings)
+
+        assert result.exit_code == 1
+        assert "Unknown key" in json.loads(result.stdout)["error"]
+        assert _store().captured_gameweeks() == []
+
+    def test_a_quoted_threshold_is_refused_before_it_can_silently_unrule_everyone(self):
+        """`threshold: "40"` parsed, then raised `TypeError` inside the rule
+        handler, which `evaluate_league_fines` catches per manager and logs --
+        leaving every manager out of `ruled_manager_keys` for every gameweek
+        with nothing on screen to say so (#258 review)."""
+        settings = {
+            "fpl": {"classic_league_id": 42},
+            "fines": {"classic": [{"type": "below-threshold", "threshold": "40"}]},
+        }
+
+        result = _invoke_recap(_recap_data(), ["--format", "json"], settings=settings)
+
+        assert result.exit_code == 1
+        assert "threshold must be a number" in json.loads(result.stdout)["error"]
+        assert _store().captured_gameweeks() == []
+
+
 class TestLeagueRecapCapturesOnEveryRun:
     def test_a_plain_run_captures_the_gameweek_and_exits_zero(self):
         result = _invoke_recap(_recap_data())

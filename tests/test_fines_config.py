@@ -2,6 +2,7 @@
 
 import pytest
 
+from fpl_cli.cli._context import ConfigError
 from fpl_cli.cli._fines_config import FineRule, parse_fines_config
 
 
@@ -73,22 +74,22 @@ class TestParseFinesConfig:
 
     def test_unknown_rule_type_raises(self):
         settings = {"fines": {"classic": [{"type": "own-goal"}]}}
-        with pytest.raises(ValueError, match="Unknown fine rule type 'own-goal'"):
+        with pytest.raises(ConfigError, match="Unknown fine rule type 'own-goal'"):
             parse_fines_config(settings)
 
     def test_missing_type_field_raises(self):
         settings = {"fines": {"classic": [{"penalty": "Pint"}]}}
-        with pytest.raises(ValueError, match="missing required 'type' field"):
+        with pytest.raises(ConfigError, match="missing required 'type' field"):
             parse_fines_config(settings)
 
     def test_non_string_penalty_raises(self):
         settings = {"fines": {"classic": [{"type": "last-place", "penalty": ["a", "b"]}]}}
-        with pytest.raises(ValueError, match="penalty must be a string"):
+        with pytest.raises(ConfigError, match="penalty must be a string"):
             parse_fines_config(settings)
 
     def test_below_threshold_missing_threshold_raises(self):
         settings = {"fines": {"draft": [{"type": "below-threshold"}]}}
-        with pytest.raises(ValueError, match="requires a 'threshold' value"):
+        with pytest.raises(ConfigError, match="requires a 'threshold' value"):
             parse_fines_config(settings)
 
     def test_use_net_points_in_rule_silently_ignored(self):
@@ -97,3 +98,127 @@ class TestParseFinesConfig:
         config = parse_fines_config(settings)
         assert config is not None
         assert not hasattr(config.classic[0], "use_net_points")
+
+
+class TestEveryRejectionIsAConfigError:
+    """#170: one exception type, so one boundary per command covers the block.
+
+    `config_failure_boundary` catches `ConfigError` and nothing wider -- a
+    bug in our own code should still surface as a traceback. That only works
+    if every way a hand-edited `fines:` block can be wrong arrives as one.
+    The shape cases below are why this class exists: each of them used to
+    reach `.get` on something that has none and raise `AttributeError`, which
+    no boundary catches, so `fpl status` exited 1 with an empty stdout and a
+    traceback on stderr -- the exact failure the rule-type checks were fixed
+    for.
+    """
+
+    MALFORMED = [
+        pytest.param({"fines": "wooden spoon"}, "'fines' must be a mapping", id="fines-scalar"),
+        pytest.param(
+            {"fines": {"classic": "last-place"}},
+            "'fines.classic' must be a list", id="format-scalar",
+        ),
+        pytest.param(
+            {"fines": {"draft": [["last-place"]]}},
+            "must be a mapping with a 'type' field", id="rule-not-a-mapping",
+        ),
+        pytest.param(
+            {"fines": {"classic": ["last-place"]}},
+            "must be a mapping with a 'type' field", id="rule-is-a-bare-string",
+        ),
+        pytest.param(
+            {"fines": {"classic": [{"type": "wooden_spoon_XYZ"}]}},
+            "Unknown fine rule type", id="unknown-type",
+        ),
+        pytest.param(
+            {"fines": {"draft": [{"penalty": "Pint"}]}},
+            "missing required 'type' field", id="no-type",
+        ),
+        pytest.param(
+            {"fines": {"draft": [{"type": "below-threshold"}]}},
+            "requires a 'threshold' value", id="no-threshold",
+        ),
+        pytest.param(
+            {"fines": {"classic": [{"type": "last-place", "penalty": 5}]}},
+            "penalty must be a string", id="non-string-penalty",
+        ),
+        pytest.param(
+            {"fines": {"classic": [{"type": "below-threshold", "threshold": "40"}]}},
+            "threshold must be a number", id="quoted-threshold",
+        ),
+        pytest.param(
+            {"fines": {"classic": [{"type": "below-threshold", "threshold": True}]}},
+            "threshold must be a number", id="bool-threshold",
+        ),
+        pytest.param(
+            {"fines": {"clasic": [{"type": "last-place"}]}},
+            "Unknown key", id="misspelled-format-key",
+        ),
+        pytest.param(
+            {"fines": {"Classic": [{"type": "last-place"}]}},
+            "Unknown key", id="wrong-case-format-key",
+        ),
+    ]
+
+    @pytest.mark.parametrize("settings,expected", MALFORMED)
+    def test_it_raises_config_error_and_says_what_is_wrong(self, settings, expected):
+        with pytest.raises(ConfigError, match=expected):
+            parse_fines_config(settings)
+
+    def test_config_error_is_still_a_value_error(self):
+        """The type narrowed; the base did not, so existing callers are unaffected."""
+        assert issubclass(ConfigError, ValueError)
+
+
+class TestWhatStaysLenient:
+    """Not everything odd in the block is an error, and the line has a reason.
+
+    A value that ends up being *used* is checked: `penalty` reaches a Rich
+    console and `threshold` reaches `user_pts < rule.threshold`, so a wrong
+    type there is a defect however it got in. A key nobody reads is left
+    alone at rule level, because a stray one cannot make a rule vanish -- the
+    rule still parses and still runs. A stray key at *block* level is the
+    opposite and is rejected above: `clasic:` empties the format's rule list,
+    and every caller downstream reads an empty list as "no fines configured".
+    """
+
+    def test_a_float_threshold_still_parses(self):
+        """It compares correctly and always has; narrowing to `int` now would
+        reject a settings.yaml that works today."""
+        settings = {"fines": {"classic": [{"type": "below-threshold", "threshold": 30.5}]}}
+
+        config = parse_fines_config(settings)
+
+        assert config is not None
+        assert config.classic[0].threshold == 30.5
+
+    def test_an_unread_key_inside_a_rule_is_still_ignored(self):
+        settings = {"fines": {"classic": [{"type": "last-place", "use_net_points": True}]}}
+
+        config = parse_fines_config(settings)
+
+        assert config is not None
+        assert config.classic[0] == FineRule(type="last-place")
+
+    def test_a_threshold_on_a_rule_that_never_reads_one_is_still_type_checked(self):
+        """`FineRule.threshold` is typed and stored whatever the rule type, so
+        a value that could never be compared is still worth naming."""
+        settings = {"fines": {"classic": [{"type": "last-place", "threshold": "40"}]}}
+
+        with pytest.raises(ConfigError, match="threshold must be a number"):
+            parse_fines_config(settings)
+
+    def test_all_three_documented_block_keys_are_accepted(self):
+        settings = {
+            "fines": {
+                "classic": [{"type": "last-place"}],
+                "draft": [{"type": "red-card"}],
+                "escalation_note": "Fines double each GW",
+            },
+        }
+
+        config = parse_fines_config(settings)
+
+        assert config is not None
+        assert config.escalation_note == "Fines double each GW"
