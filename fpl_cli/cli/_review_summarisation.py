@@ -168,6 +168,11 @@ def _format_research_context(
             )
         dream_team_str = "\n".join(dream_team_lines)
 
+    top_performer = global_data.get("top_performer")
+    top_performer_str = ""
+    if top_performer:
+        top_performer_str = f"{top_performer['name']} ({top_performer['team']}) - {top_performer['points']} pts"
+
     blankers_str = ""
     blankers = global_data.get("blankers")
     if blankers:
@@ -229,6 +234,7 @@ def _format_research_context(
 
     return {
         "dream_team": dream_team_str,
+        "top_performer": top_performer_str,
         "blankers": blankers_str,
         "match_results": match_results_str,
         "manager_context": manager_context_str,
@@ -602,6 +608,7 @@ async def _review_llm_summarise(
     """Run LLM summarisation (research + synthesis). Returns {research_summary, synthesis_summary}."""
     from fpl_cli.prompts.review import (
         REVIEW_RESEARCH_SYSTEM_PROMPT,
+        ensure_top_performer_first,
         get_review_research_prompt,
         get_review_synthesis_prompt,
         validate_research_prose,
@@ -661,6 +668,7 @@ async def _review_llm_summarise(
         dgw_teams=research_ctx["dgw_teams"],
         predicted_dgw_teams=research_ctx["predicted_dgw_teams"],
         team_glossary=research_ctx["team_glossary"],
+        top_performer=research_ctx["top_performer"],
     )
 
     if dry_run:
@@ -690,11 +698,14 @@ async def _review_llm_summarise(
             research_summary, club_corrections = validate_research_teams(
                 research_summary, player_map, teams, table_allowlist=table_allowlist
             )
+            research_summary, top_performer_corrections = ensure_top_performer_first(
+                research_summary, global_data.get("top_performer")
+            )
             research_summary, prose_corrections = validate_research_prose(
                 research_summary, player_map, prose_allowlist
             )
-            all_corrections = club_corrections + prose_corrections
-            table_corrections = len(club_corrections)
+            all_corrections = club_corrections + top_performer_corrections + prose_corrections
+            table_corrections = len(club_corrections) + len(top_performer_corrections)
             prose_corrections_count = len(prose_corrections)
             if all_corrections and debug and debug_dir:
                 corrections_file = debug_dir / "research_corrections.txt"

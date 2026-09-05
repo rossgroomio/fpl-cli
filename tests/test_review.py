@@ -9,6 +9,7 @@ from fpl_cli.models.player import PlayerPosition
 from fpl_cli.prompts.review import (
     REVIEW_RESEARCH_SYSTEM_PROMPT,
     _build_system_prompt,
+    ensure_top_performer_first,
     get_review_research_prompt,
     get_review_synthesis_prompt,
     validate_research_prose,
@@ -868,6 +869,29 @@ class TestResearchPromptWithGWData:
         assert "Sánchez | CHE | GK | 11" in prompt
         assert "MUST ONLY include players from the Dream Team list above" in prompt
 
+    def test_research_prompt_with_top_performer(self):
+        """Test research prompt states the Dream Team's top scorer as a floor (issue #190)."""
+        dream_team = """| Player | Team | Pos | Pts |
+|--------|------|-----|-----|
+| B.Fernandes | MUN | MID | 23 |
+| Haaland | MCI | FWD | 13 |"""
+
+        prompt = get_review_research_prompt(
+            gameweek=2,
+            dream_team=dream_team,
+            top_performer="B.Fernandes (MUN) - 23 pts",
+        )
+
+        assert "**Top Performer:** B.Fernandes (MUN) - 23 pts" in prompt
+        assert "MUST be the first row of Standout Performers" in prompt
+
+    def test_research_prompt_without_top_performer_omits_floor_instruction(self):
+        """No top_performer data → no floor instruction (existing behaviour unchanged)."""
+        dream_team = "| Dorgu | MUN | DEF | 15 |"
+        prompt = get_review_research_prompt(gameweek=2, dream_team=dream_team)
+        assert "**Top Performer:**" not in prompt
+        assert "MUST be the first row of Standout Performers" not in prompt
+
     def test_research_prompt_with_blankers(self):
         """Test research prompt includes Blankers when provided."""
         blankers = """| Player | Team | Ownership | Pts |
@@ -1200,6 +1224,25 @@ class TestFormatResearchContext:
         assert "| Pos |" in result["blankers"]
         assert "| Haaland | MCI | FWD |" in result["blankers"]
         assert "| Van Hecke | BHA | DEF |" in result["blankers"]
+
+    def test_top_performer_formatted(self):
+        """Issue #190: the Dream Team's top_player is threaded into the research prompt."""
+        from fpl_cli.cli._review_analysis import GlobalReviewData
+        from fpl_cli.cli._review_summarisation import _format_research_context
+
+        global_data: GlobalReviewData = {
+            "top_performer": {"name": "B.Fernandes", "team": "MUN", "points": 23},
+        }
+        result = _format_research_context(global_data, {})
+        assert result["top_performer"] == "B.Fernandes (MUN) - 23 pts"
+
+    def test_top_performer_absent_returns_empty_string(self):
+        from fpl_cli.cli._review_analysis import GlobalReviewData
+        from fpl_cli.cli._review_summarisation import _format_research_context
+
+        global_data: GlobalReviewData = {}
+        result = _format_research_context(global_data, {})
+        assert result["top_performer"] == ""
 
 
 class TestBlankersCalculation:
@@ -2093,6 +2136,154 @@ class TestValidateResearchTeams:
         # No spurious "Liverpool -> LIV" rewrite for cosmetic format mismatch
         assert "Liverpool" in result
         assert corrections == []
+
+
+class TestEnsureTopPerformerFirst:
+    """Tests for ensure_top_performer_first (issue #190)."""
+
+    def _table(self, rows):
+        header = "| Player | Club | Pts | Why They Hauled | Source |"
+        sep = "|--------|------|-----|-----------------|--------|"
+        lines = [header, sep]
+        for name, club, pts, note in rows:
+            lines.append(f"| {name} | {club} | {pts} | {note} | Source |")
+        return "\n".join(lines)
+
+    def test_no_top_performer_returns_unchanged(self):
+        table = self._table([("Cherki", "MCI", "14", "Brace")])
+        result, corrections = ensure_top_performer_first(table, None)
+        assert result == table
+        assert corrections == []
+
+    def test_already_first_row_unchanged(self):
+        table = self._table([
+            ("B.Fernandes", "MUN", "23", "Hat-trick"),
+            ("Cherki", "MCI", "14", "Brace"),
+        ])
+        top_performer = {"name": "B.Fernandes", "team": "MUN", "points": 23}
+        result, corrections = ensure_top_performer_first(table, top_performer)
+        assert result == table
+        assert corrections == []
+
+    def test_missing_row_is_inserted_first(self):
+        """Reproduces issue #190: the Dream Team's top scorer was omitted entirely."""
+        table = self._table([
+            ("Cherki", "MCI", "14", "Brace"),
+            ("Haaland", "MCI", "13", "Goal and assist"),
+        ])
+        top_performer = {"name": "B.Fernandes", "team": "MUN", "points": 23}
+        result, corrections = ensure_top_performer_first(table, top_performer)
+        lines = result.split("\n")
+        first_data_row = lines[2]
+        assert "B.Fernandes" in first_data_row
+        assert "| MUN |" in first_data_row
+        assert "23" in first_data_row
+        assert "Cherki" in result
+        assert "Haaland" in result
+        assert any("added as first row" in c for c in corrections)
+
+    def test_buried_row_is_moved_to_first(self):
+        table = self._table([
+            ("Cherki", "MCI", "14", "Brace"),
+            ("B.Fernandes", "MUN", "23", "Hat-trick"),
+        ])
+        top_performer = {"name": "B.Fernandes", "team": "MUN", "points": 23}
+        result, corrections = ensure_top_performer_first(table, top_performer)
+        lines = result.split("\n")
+        first_data_row = lines[2]
+        assert "B.Fernandes" in first_data_row
+        assert "Cherki" in lines[3]
+        assert any("moved to first row" in c for c in corrections)
+
+    def test_no_standout_table_returns_unchanged(self):
+        text = "## Disappointments\n| Player | Club | Pts | What Went Wrong | Concern Level |"
+        top_performer = {"name": "B.Fernandes", "team": "MUN", "points": 23}
+        result, corrections = ensure_top_performer_first(text, top_performer)
+        assert result == text
+        assert corrections == []
+
+    def test_accented_name_matches(self):
+        table = self._table([
+            ("Cherki", "MCI", "14", "Brace"),
+            ("Gakpó", "LIV", "12", "Two goals"),
+        ])
+        top_performer = {"name": "Gakpo", "team": "LIV", "points": 12}
+        result, corrections = ensure_top_performer_first(table, top_performer)
+        lines = result.split("\n")
+        assert "Gakpó" in lines[2]
+        assert any("moved to first row" in c for c in corrections)
+
+    def test_empty_top_performer_dict_returns_unchanged(self):
+        table = self._table([("Cherki", "MCI", "14", "Brace")])
+        result, corrections = ensure_top_performer_first(table, {})
+        assert result == table
+        assert corrections == []
+
+    def test_missing_separator_row_still_moves_buried_target(self):
+        """An LLM that skips the separator must not cost us the first data row -
+        assuming a fixed offset would hide the buried target behind it."""
+        text = (
+            "| Player | Club | Pts | Why They Hauled | Source |\n"
+            "| Cherki | MCI | 14 | Brace | Source |\n"
+            "| B.Fernandes | MUN | 23 | Hat-trick | Source |"
+        )
+        top_performer = {"name": "B.Fernandes", "team": "MUN", "points": 23}
+        result, corrections = ensure_top_performer_first(text, top_performer)
+        lines = result.split("\n")
+        assert "B.Fernandes" in lines[1]
+        assert "Cherki" in lines[2]
+        assert any("moved to first row" in c for c in corrections)
+
+    def test_missing_separator_row_does_not_duplicate_leading_target(self):
+        text = (
+            "| Player | Club | Pts | Why They Hauled | Source |\n"
+            "| B.Fernandes | MUN | 23 | Hat-trick | Source |\n"
+            "| Cherki | MCI | 14 | Brace | Source |"
+        )
+        top_performer = {"name": "B.Fernandes", "team": "MUN", "points": 23}
+        result, corrections = ensure_top_performer_first(text, top_performer)
+        assert result == text
+        assert corrections == []
+        assert result.count("B.Fernandes") == 1
+
+    def test_indented_row_is_matched_not_duplicated(self):
+        """Row-boundary detection tolerates leading whitespace, so name matching
+        must too - otherwise an indented row gets a synthesised duplicate."""
+        text = (
+            "| Player | Club | Pts | Why They Hauled | Source |\n"
+            "|--------|------|-----|-----------------|--------|\n"
+            "  | B.Fernandes | MUN | 23 | Hat-trick | Source |\n"
+            "| Cherki | MCI | 14 | Brace | Source |"
+        )
+        top_performer = {"name": "B.Fernandes", "team": "MUN", "points": 23}
+        result, corrections = ensure_top_performer_first(text, top_performer)
+        assert result == text
+        assert corrections == []
+        assert result.count("B.Fernandes") == 1
+
+    def test_indented_buried_row_is_moved_not_duplicated(self):
+        text = (
+            "| Player | Club | Pts | Why They Hauled | Source |\n"
+            "|--------|------|-----|-----------------|--------|\n"
+            "| Cherki | MCI | 14 | Brace | Source |\n"
+            "  | B.Fernandes | MUN | 23 | Hat-trick | Source |"
+        )
+        top_performer = {"name": "B.Fernandes", "team": "MUN", "points": 23}
+        result, corrections = ensure_top_performer_first(text, top_performer)
+        lines = result.split("\n")
+        assert "B.Fernandes" in lines[2]
+        assert "Cherki" in lines[3]
+        assert result.count("B.Fernandes") == 1
+        assert any("moved to first row" in c for c in corrections)
+
+    def test_separator_row_stays_under_the_header(self):
+        table = self._table([
+            ("Cherki", "MCI", "14", "Brace"),
+            ("B.Fernandes", "MUN", "23", "Hat-trick"),
+        ])
+        top_performer = {"name": "B.Fernandes", "team": "MUN", "points": 23}
+        result, _ = ensure_top_performer_first(table, top_performer)
+        assert result.split("\n")[1].startswith("|---")
 
 
 class TestValidateResearchProse:
