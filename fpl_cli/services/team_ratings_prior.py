@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Collection, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from statistics import mean, pstdev
 from typing import TYPE_CHECKING, Any
@@ -16,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 import yaml
 
 from fpl_cli.paths import user_data_file
+from fpl_cli.season import PROMOTED_CLUBS_PER_SEASON, season_label
 from fpl_cli.services.team_ratings import TeamPerformance, TeamRating
 
 if TYPE_CHECKING:
@@ -52,7 +54,47 @@ BLENDING_CUTOFF_GW = 12
 # changes which clubs reach _prior_from_understat's >= 10 gate, so a v5 cache can
 # hold a football-data fallback table where this code now returns an xG one, or
 # an xG table built from fewer clubs than this code would use.
-PRIOR_CACHE_VERSION = 6
+# 7: the Understat team fetch keeps only the season it asked for, and the PL
+# pool takes full-season records only. Understat answers a request for a season
+# a club has no record of with that club's most recent season -- for a promoted
+# club, the one now in progress -- so a v6 cache built once GW1 had kicked off
+# can hold a promoted side rated on its own first result as though it were last
+# season's Premier League xG (#235: Ipswich def 2/2 off one home match, where
+# the two other promoted clubs read as bottom-of-table). It keys on the current
+# team names, so the team-set check below would serve it all season. The cache
+# also now carries per-club `inputs`, which a v6 file lacks.
+PRIOR_CACHE_VERSION = 7
+
+# A previous-season prior reads *completed* seasons: 19 home and 19 away
+# matches per Premier League club, 23 of each in the Championship. A club
+# showing a fraction of that is not carrying a season's evidence, whatever put
+# it there -- a season Understat substituted (#235), a broken fetch, a payload
+# cut short -- and ranking it among full seasons is how one match became a
+# top-tier rating. The bar is a floor a real record clears by a wide margin in
+# either division, so a genuine club is never dropped for a match or two a
+# source is missing, while a fragment of the shape that bit is nowhere near it.
+# It applies wherever the prior reads a season: the Premier League pool from
+# either source (in generate_prior, so the fallback source is held to it too)
+# and the Championship division the promoted cohort is measured against (a
+# partial club there would skew the baseline every promoted side is z-scored
+# on). `_matches_to_performances` applies the zero-games version of the same
+# idea on the football-data side.
+PRIOR_MIN_GAMES_PER_VENUE = 10
+
+# What each club's prior was ranked on, recorded per club in the cache file as
+# `inputs[<team>].basis` so a rating can be traced back to the record behind it.
+PRIOR_BASIS_PREMIER_LEAGUE = "premier_league"
+"""Last season's Premier League record, from the prior's source."""
+PRIOR_BASIS_CHAMPIONSHIP = "championship"
+"""Last season's Championship record, re-expressed in Premier League units."""
+PRIOR_BASIS_FALLBACK = "promoted_fallback"
+"""No record from either division: the flat bottom-of-table estimate."""
+PRIOR_BASIS_INCOMPLETE = "incomplete_record"
+"""A Premier League record was served for the season but not a season's worth
+of it, and no Championship record either. A club a source has a Premier League
+page for is far more likely a continuing one whose fetch broke than a promoted
+one, so it takes the neutral mid-table rating rather than either being ranked
+on the fragment or handed the promoted side's bottom-of-table estimate."""
 
 # Championship-to-PL adjustment, level. A promoted side scores less in the PL
 # against better defences, and concedes more against better attacks, so the two
@@ -231,17 +273,31 @@ def _matches_to_performances(matches: list[dict[str, Any]]) -> dict[str, TeamPer
     return performances
 
 
-def _load_prior_cache() -> dict[str, TeamRating] | None:
-    """Load cached prior from disk, or None if missing or outdated."""
+def _read_prior_cache() -> dict[str, Any] | None:
+    """The cache file as parsed, or None when missing, malformed or outdated.
+
+    The one reader every cache consumer goes through, so a file written by an
+    older methodology is refused everywhere at once: `_load_prior_cache` must
+    not serve its ratings, and `load_prior_inputs` must not surface its trace
+    as though it described the prior in use.
+    """
     path = prior_config_path()
     if not path.exists():
         return None
     with open(path, encoding="utf-8") as f:
         data = yaml.safe_load(f)
-    if not data or "ratings" not in data or not isinstance(data["ratings"], dict):
+    if not isinstance(data, dict) or not isinstance(data.get("ratings"), dict):
         return None
     metadata = data.get("metadata")
     if not isinstance(metadata, dict) or metadata.get("version") != PRIOR_CACHE_VERSION:
+        return None
+    return data
+
+
+def _load_prior_cache() -> dict[str, TeamRating] | None:
+    """Load cached prior from disk, or None if missing or outdated."""
+    data = _read_prior_cache()
+    if data is None:
         return None
     ratings = {}
     for team, r in data["ratings"].items():
@@ -254,10 +310,86 @@ def _load_prior_cache() -> dict[str, TeamRating] | None:
     return ratings
 
 
+_CACHE_HEADER = """\
+# Previous-season prior for team ratings, generated by fpl-cli. Regenerated
+# when the league's clubs change or the methodology version moves on.
+# `inputs` records what each club's rating was ranked on: its `basis`
+# (premier_league / championship / promoted_fallback / incomplete_record), the
+# matches behind it, the per-game rates that were bucketed (`ranked`, in
+# Premier League units) and, for a Championship side, the rates as played
+# (`played`) before the conversion; an incomplete record shows what was
+# `served`. Never used in a calculation -- it is the trace, not the rating.
+"""
+
+
+def _rates(performance: TeamPerformance) -> dict[str, float]:
+    """The four per-game rates of a record, rounded for the cache file."""
+    return {
+        "scored_home": round(performance.goals_scored_home, 3),
+        "scored_away": round(performance.goals_scored_away, 3),
+        "conceded_home": round(performance.goals_conceded_home, 3),
+        "conceded_away": round(performance.goals_conceded_away, 3),
+    }
+
+
+def _prior_inputs(
+    performances: dict[str, TeamPerformance],
+    championship: ChampionshipRecords | None,
+    promoted_fallback: Collection[str],
+    incomplete: dict[str, TeamPerformance],
+) -> dict[str, dict[str, Any]]:
+    """Per-club provenance for the cache: what each rating was ranked on.
+
+    The answer to "where did this rating come from" that #235 had no way to
+    ask: a promoted side rated on one match of the wrong season is visible
+    here as a Premier League basis with a one-match record, where it should
+    read as a Championship basis with a full one.
+
+    ``performances`` is the ranked pool, ``championship`` the records the
+    promoted sides in it came from, ``promoted_fallback`` the clubs on the
+    flat estimate and ``incomplete`` the fragments that were served but not
+    ranked (those the Championship covered are in the pool under that basis).
+    """
+    from_championship = set(championship.ranked) if championship is not None else set()
+    inputs: dict[str, dict[str, Any]] = {}
+    for team, ranked in performances.items():
+        entry: dict[str, Any] = {
+            "basis": PRIOR_BASIS_CHAMPIONSHIP
+            if team in from_championship
+            else PRIOR_BASIS_PREMIER_LEAGUE,
+            "home_games": ranked.home_games,
+            "away_games": ranked.away_games,
+        }
+        if team in from_championship and championship is not None:
+            entry["played"] = _rates(championship.played[team])
+        entry["ranked"] = _rates(ranked)
+        inputs[team] = entry
+    for team in promoted_fallback:
+        inputs[team] = {"basis": PRIOR_BASIS_FALLBACK}
+    for team, served in incomplete.items():
+        if team not in performances:
+            inputs[team] = {
+                "basis": PRIOR_BASIS_INCOMPLETE,
+                "home_games": served.home_games,
+                "away_games": served.away_games,
+                "served": _rates(served),
+            }
+    return inputs
+
+
 def _save_prior_cache(
-    ratings: dict[str, TeamRating], source: str, teams: list[str]
+    ratings: dict[str, TeamRating],
+    source: str,
+    teams: list[str],
+    *,
+    based_on_season: str,
+    inputs: dict[str, dict[str, Any]],
 ) -> None:
-    """Save prior to disk for caching (atomic write)."""
+    """Save prior to disk for caching (atomic write).
+
+    ``inputs`` is the per-club provenance (:func:`_prior_inputs`), written
+    beside the ratings so the file answers where each one came from.
+    """
     from fpl_cli.utils.files import atomic_write_text
 
     path = prior_config_path()
@@ -265,9 +397,19 @@ def _save_prior_cache(
         "metadata": {
             "version": PRIOR_CACHE_VERSION,
             "source": source,
+            "based_on_season": based_on_season,
             "teams": sorted(teams),
+            "promoted": sorted(
+                team for team, entry in inputs.items()
+                if entry["basis"] in (PRIOR_BASIS_CHAMPIONSHIP, PRIOR_BASIS_FALLBACK)
+            ),
+            "incomplete": sorted(
+                team for team, entry in inputs.items()
+                if entry["basis"] == PRIOR_BASIS_INCOMPLETE
+            ),
         },
         "ratings": {},
+        "inputs": {team: inputs[team] for team in sorted(inputs)},
     }
     for team in sorted(ratings):
         r = ratings[team]
@@ -277,7 +419,74 @@ def _save_prior_cache(
             "def_home": r.def_home,
             "def_away": r.def_away,
         }
-    atomic_write_text(path, yaml.dump(data, default_flow_style=False, sort_keys=False))
+    atomic_write_text(
+        path, _CACHE_HEADER + yaml.dump(data, default_flow_style=False, sort_keys=False)
+    )
+
+
+def load_prior_inputs() -> dict[str, dict[str, Any]] | None:
+    """The per-club provenance the current cache file carries, or None.
+
+    None when there is no cache, or one an older methodology wrote (refused
+    by the same version check that stops its ratings being served). Read from
+    disk rather than threaded out of `generate_prior`, whose return type every
+    caller and test relies on: the file is a few kilobytes, and
+    `generate_prior` always leaves the file it served from in place, so a read
+    straight after it describes that prior.
+    """
+    data = _read_prior_cache()
+    if data is None:
+        return None
+    inputs = data.get("inputs")
+    if not isinstance(inputs, dict) or not inputs:
+        return None
+    return {
+        team: entry for team, entry in inputs.items()
+        if isinstance(entry, dict) and "basis" in entry
+    } or None
+
+
+def describe_prior_inputs() -> str | None:
+    """One line saying which clubs the prior rates from something other than
+    their Premier League record, and where the per-club inputs are.
+
+    For `fpl ratings update`, so the promoted sides' treatment is visible
+    where the prior is applied rather than only in the file. None when the
+    cache carries no provenance.
+    """
+    inputs = load_prior_inputs()
+    if inputs is None:
+        return None
+    championship = sorted(
+        team for team, entry in inputs.items() if entry["basis"] == PRIOR_BASIS_CHAMPIONSHIP
+    )
+    fallback = sorted(
+        team for team, entry in inputs.items() if entry["basis"] == PRIOR_BASIS_FALLBACK
+    )
+    incomplete = sorted(
+        team for team, entry in inputs.items() if entry["basis"] == PRIOR_BASIS_INCOMPLETE
+    )
+    parts = []
+    if championship:
+        parts.append(
+            f"{', '.join(championship)} from Championship results re-expressed in "
+            f"Premier League units"
+        )
+    if fallback:
+        parts.append(
+            f"{', '.join(fallback)} on the flat promoted estimate (no Championship record)"
+        )
+    if incomplete:
+        parts.append(
+            f"{', '.join(incomplete)} at neutral mid-table (an incomplete Premier League "
+            f"record and no Championship one)"
+        )
+    if not parts:
+        parts.append("every club from its Premier League record")
+    return (
+        f"Last season's prior rates {'; '.join(parts)} - per-club inputs in "
+        f"{prior_config_path()}"
+    )
 
 
 async def generate_prior(client: FPLClient) -> dict[str, TeamRating]:
@@ -332,6 +541,15 @@ async def generate_prior(client: FPLClient) -> dict[str, TeamRating]:
     # then be dropped, so rank only the teams actually in the league.
     performances = {t: p for t, p in performances.items() if t in current_team_names}
 
+    # Full seasons only, whichever source served them (PRIOR_MIN_GAMES_PER_VENUE).
+    prev_label = season_label(prev_season_int)
+    performances, incomplete = _full_season_records(performances, prev_label, "Premier League")
+    if not performances:
+        logger.warning(
+            "%s served no full-season record for any club - no ratings prior", source
+        )
+        return {}
+
     # Promoted teams join the same pool on PL-rescaled rates, so the 1-7 spread
     # is a ranking of the real 20 rather than two incomparable divisions. (On the
     # Understat path the pool mixes xG rates with rescaled actual goals, which are
@@ -339,32 +557,65 @@ async def generate_prior(client: FPLClient) -> dict[str, TeamRating]:
     # _axis_reliability and PL_POOL_RELIABILITY.)
     # A promoted team the Championship data doesn't cover gets the flat estimate
     # individually, so partial coverage never promotes it to mid-table by omission.
-    promoted = current_team_names - set(performances)
-    if promoted:
+    absent = current_team_names - set(performances) - set(incomplete)
+    if absent:
         logger.info(
             "No %s performance record for %s - treating as promoted and looking up "
             "Championship data (a continuing team lands here if it fails to join, e.g. "
             "a naming mismatch, rather than because it was actually promoted)",
             source,
-            ", ".join(sorted(promoted)),
+            ", ".join(sorted(absent)),
         )
-    promoted_performances = (
+    if len(absent) > PROMOTED_CLUBS_PER_SEASON:
+        # The league promotes exactly three clubs, so a fourth absentee is a
+        # continuing club that failed to join -- the one shape the Championship
+        # lookup below cannot tell apart from a promoted side with no record.
+        logger.warning(
+            "%d clubs have no record in last season's Premier League pool (%s), but only "
+            "%d are promoted each season - at least one continuing club failed to join "
+            "and will be rated as promoted unless the Championship record says otherwise",
+            len(absent),
+            ", ".join(sorted(absent)),
+            PROMOTED_CLUBS_PER_SEASON,
+        )
+    # A fragment is looked up too: with the season guard in the Understat
+    # fetch, a promoted side reaches here only if that guard was inert, and
+    # its Championship record is what settles it either way.
+    lookup = absent | set(incomplete)
+    championship = (
         await _championship_performances(
-            promoted, prev_season_int, performances, POOL_RELIABILITY_BY_SOURCE[source]
+            lookup, prev_season_int, performances, POOL_RELIABILITY_BY_SOURCE[source]
         )
-        or {}
-        if promoted
-        else {}
+        if lookup
+        else None
     )
-    performances.update(promoted_performances)
-    fallback = {team: _promoted_fallback() for team in promoted - set(promoted_performances)}
+    ranked_promoted = championship.ranked if championship is not None else {}
+    performances.update(ranked_promoted)
+    uncovered = lookup - set(ranked_promoted)
+    fallback_teams = uncovered - set(incomplete)
+    fallback = {team: _promoted_fallback() for team in fallback_teams}
+    for team in sorted(uncovered & set(incomplete)):
+        logger.warning(
+            "%s: a %s Premier League record was served but not a season's worth of it, "
+            "and no Championship record - rated neutral mid-table rather than ranked on "
+            "the fragment or estimated as a promoted side",
+            team,
+            prev_label,
+        )
+        fallback[team] = _default_rating()
 
     from fpl_cli.services.team_ratings import TeamRatingsCalculator
 
     prior = TeamRatingsCalculator._convert_to_ratings(performances)
     prior.update(fallback)
 
-    _save_prior_cache(prior, source, list(current_team_names))
+    _save_prior_cache(
+        prior,
+        source,
+        list(current_team_names),
+        based_on_season=prev_label,
+        inputs=_prior_inputs(performances, championship, fallback_teams, incomplete),
+    )
     return prior
 
 
@@ -381,7 +632,11 @@ async def _prior_from_understat(
 
         calculator = TeamRatingsCalculator(client)
         _, performances = await calculator.calculate_from_xg(season=prev_season)
-        return performances if len(performances) >= 10 else None
+        # Counted on full seasons so a pool of fragments falls through to the
+        # next source; the split itself happens in generate_prior, which holds
+        # every source to the same bar and needs the fragments it drops.
+        full_seasons = sum(_is_full_season(p) for p in performances.values())
+        return performances if full_seasons >= 10 else None
 
     except Exception as exc:  # noqa: BLE001 — graceful degradation
         # No traceback: fpl-cli configures no logging handlers, so a WARNING
@@ -389,6 +644,43 @@ async def _prior_from_understat(
         # into stderr, including under `--format json` (issue #237/#239 review).
         logger.warning("Failed to generate prior from Understat: %s", exc)
         return None
+
+
+def _is_full_season(performance: TeamPerformance) -> bool:
+    """Whether a record is a season's worth on both venues (PRIOR_MIN_GAMES_PER_VENUE)."""
+    return (
+        performance.home_games >= PRIOR_MIN_GAMES_PER_VENUE
+        and performance.away_games >= PRIOR_MIN_GAMES_PER_VENUE
+    )
+
+
+def _full_season_records(
+    performances: dict[str, TeamPerformance], season: str, division: str
+) -> tuple[dict[str, TeamPerformance], dict[str, TeamPerformance]]:
+    """Split a division's records into full seasons and the fragments.
+
+    See PRIOR_MIN_GAMES_PER_VENUE. A fragment is named, with the record it
+    showed, because it is the finding: the source served something other
+    than that club's completed season. What the caller does with it depends
+    on which division it was read from.
+    """
+    full: dict[str, TeamPerformance] = {}
+    fragments: dict[str, TeamPerformance] = {}
+    for team, performance in performances.items():
+        if _is_full_season(performance):
+            full[team] = performance
+            continue
+        fragments[team] = performance
+        logger.warning(
+            "%s shows %dH/%dA matches in the %s %s record, not a season's worth - "
+            "left out rather than ranked against full seasons",
+            team,
+            performance.home_games,
+            performance.away_games,
+            season,
+            division,
+        )
+    return full, fragments
 
 
 async def _prior_from_football_data(prev_season: int) -> dict[str, TeamPerformance] | None:
@@ -506,6 +798,21 @@ def _axis_reliability(performances: Collection[TeamPerformance], axis: str) -> f
     return rate_reliability(mean_rate, sd, _axis_games(performances, axis))
 
 
+@dataclass
+class ChampionshipRecords:
+    """A promoted cohort's Championship season, as played and as ranked.
+
+    ``ranked`` is what the prior buckets -- the rates re-expressed in Premier
+    League units by :func:`_rescale_to_pl`. ``played`` is the input to that
+    conversion, kept so the cache can show both sides of the damping.
+    Both are keyed by FPL short name over the same clubs. A plain record,
+    deliberately unhashable: its fields are dicts.
+    """
+
+    played: dict[str, TeamPerformance]
+    ranked: dict[str, TeamPerformance]
+
+
 def _rescale_to_pl(
     championship: dict[str, TeamPerformance],
     pl_performances: dict[str, TeamPerformance],
@@ -583,7 +890,7 @@ async def _championship_performances(
     prev_season: int,
     pl_performances: dict[str, TeamPerformance],
     pool_reliability: float,
-) -> dict[str, TeamPerformance] | None:
+) -> ChampionshipRecords | None:
     """Per-game rates for promoted teams, re-expressed in Premier League units.
 
     Championship rates are converted to PL-equivalent ones here so the caller
@@ -598,8 +905,9 @@ async def _championship_performances(
     `pool_reliability` is how much of that pool's spread is signal, which
     differs by which source measured it. See :func:`_rescale_to_pl`.
 
-    Returns None when Championship data is unavailable, leaving the caller to
-    fall back to an undifferentiated estimate.
+    Returns the records as played and as ranked (:class:`ChampionshipRecords`),
+    or None when Championship data is unavailable, leaving the caller to fall
+    back to an undifferentiated estimate.
     """
     try:
         from fpl_cli.api.football_data import FootballDataClient
@@ -615,7 +923,11 @@ async def _championship_performances(
         if not matches:
             return None
 
-        championship = _matches_to_performances(matches)
+        # Full seasons only: a partial club here would skew the division mean
+        # and spread every promoted side is z-scored against.
+        championship, _ = _full_season_records(
+            _matches_to_performances(matches), season_label(prev_season), "Championship"
+        )
 
         # _matches_to_performances already keys by FPL short name (it maps TLAs
         # through TLA_TO_FPL), so promoted teams are looked up directly.
@@ -629,7 +941,12 @@ async def _championship_performances(
         if not covered:
             return None
 
-        return _rescale_to_pl(championship, pl_performances, covered, pool_reliability) or None
+        ranked = _rescale_to_pl(championship, pl_performances, covered, pool_reliability)
+        if not ranked:
+            return None
+        return ChampionshipRecords(
+            played={team: championship[team] for team in ranked}, ranked=ranked
+        )
 
     except Exception as exc:  # noqa: BLE001 — graceful degradation
         # No traceback: see the Understat prior's identical except above.

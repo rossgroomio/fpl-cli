@@ -1148,6 +1148,23 @@ class TestGw1FinishedUpdateCLI:
         assert "Calculating ratings from GW1-1 fixtures..." in result.output
         assert "Based on GW1-1 (2 fixtures)" in result.output
 
+    def test_names_what_the_prior_rates_the_promoted_clubs_from(self):
+        """Where the prior is applied, say which clubs it rates from outside
+        their Premier League record and where the per-club inputs are (#235)."""
+        with patch(
+            "fpl_cli.services.team_ratings_prior.describe_prior_inputs",
+            return_value="Last season's prior rates COV from Championship results",
+        ):
+            result, _ = self._run(["ratings", "update", "--dry-run"])
+
+        assert "COV from Championship results" in result.output
+
+    def test_no_prior_basis_line_without_provenance(self):
+        """An older cache carries none, and the line must not invent one."""
+        result, _ = self._run(["ratings", "update", "--dry-run"])
+
+        assert "Last season's prior rates" not in result.output
+
 
 class TestCalculateFromXG:
     """Tests for TeamRatingsCalculator.calculate_from_xg()."""

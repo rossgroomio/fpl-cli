@@ -5,12 +5,13 @@ from __future__ import annotations
 import json
 import logging
 import re
+from datetime import date
 from functools import lru_cache
 from typing import Any
 
 import httpx
 
-from fpl_cli.season import get_season_year, understat_season
+from fpl_cli.season import get_season_year, season_label, understat_season
 from fpl_cli.utils.text import strip_diacritics
 
 logger = logging.getLogger(__name__)
@@ -49,6 +50,78 @@ POSITION_MAP = {
     "D": "DEF",
     "GK": "GK",
 }
+
+
+def _season_year(season: str) -> int:
+    """The start year a season identifier names: ``"2025"`` -> 2025.
+
+    Understat identifies a season by its start year alone, so the hyphenated
+    label the rest of the tool uses (``"2025-26"``) is a caller error here
+    rather than an alternative spelling, and is refused before any request is
+    made instead of surfacing later as a 404-shaped "no data".
+    """
+    if not (season.isdigit() and len(season) == 4):
+        raise ValueError(f"Understat seasons are start years such as '2025', not {season!r}")
+    return int(season)
+
+
+def _match_season_year(match: dict[str, Any]) -> int | None:
+    """Season start year a team-page match belongs to, from its kickoff date.
+
+    Every ``dates`` entry Understat serves carries a ``datetime`` such as
+    ``"2026-08-22 14:00:00"``; the July cutover in `get_season_year` puts an
+    August-to-May season on one start year. None when the entry carries no
+    parseable date.
+
+    The cutover is the fixed July one whose limit `season_partition`
+    documents (#91): a season that overran into July, as 2019-20 did, would
+    have its July matches classified into the following season and dropped
+    from the club's record here. That costs a handful of matches at most,
+    well inside the full-season bar the prior applies to what is left
+    (`team_ratings_prior.PRIOR_MIN_GAMES_PER_VENUE`).
+    """
+    raw = match.get("datetime")
+    if not isinstance(raw, str):
+        return None
+    try:
+        kickoff = date.fromisoformat(raw[:10])
+    except ValueError:
+        return None
+    return get_season_year(kickoff)
+
+
+def matches_in_season(matches: list[dict[str, Any]], season: str) -> list[dict[str, Any]]:
+    """Keep the matches that belong to ``season`` (a start year, e.g. ``"2025"``).
+
+    Understat never 404s a season a club has no record of: ``getTeamData``
+    answers with that club's most recent season instead. For a club just
+    promoted that is the season now in progress, so a request for its
+    *previous* season comes back as this season's fixture list, and any
+    results in it read as last season's evidence -- which is how a promoted
+    side's first home match became a top-tier Premier League defensive prior
+    (#235). The kickoff date is the one field that says which season a match
+    is from, so it decides.
+
+    The dated matches decide. When none of them fall in the season asked for,
+    nothing does: an undated entry in a payload that demonstrably describes
+    another season is that season's too, so it cannot be the one match that
+    keeps a substituted squad alive. An undated entry is kept only when every
+    dated one agrees with the request, or when no entry carries a date at all
+    -- the field is Understat's own and every payload seen carries it, so a
+    wholly undated payload is shape drift, where degrading to the previous
+    behaviour beats silently emptying every club's record at once.
+
+    Raises ValueError for a ``season`` that is not a start year.
+    """
+    year = _season_year(season)
+    classified = [(m, _match_season_year(m)) for m in matches]
+    seasons = {y for _, y in classified if y is not None}
+    if not seasons:
+        return list(matches)
+    if year not in seasons:
+        return []
+    keep_undated = seasons == {year}
+    return [m for m, y in classified if y == year or (y is None and keep_undated)]
 
 
 class UnderstatClient:
@@ -204,14 +277,28 @@ class UnderstatClient:
 
         Uses Understat's JSON API endpoint rather than HTML scraping.
 
+        Only the requested season's matches are returned. Understat answers a
+        request for a season the club has no record of with the club's most
+        recent season instead of an error, so the payload is checked against
+        what was asked for (see :func:`matches_in_season`); a club with no
+        record for ``season`` reads as None, the same as a club Understat does
+        not know at all.
+
         Args:
             team_name: Team name (FPL format, will be mapped).
             season: Season year (start year, e.g. "2025" for 2025/26). Defaults to current.
 
         Returns:
-            Team data with player stats and match records.
+            Team data with player stats and match records, or None when
+            Understat has nothing for that club in that season.
+
+        Raises:
+            ValueError: ``season`` is not a start year -- the hyphenated
+                ``"2025-26"`` label is a caller error, refused before any
+                request is made rather than reported as a club with no data.
         """
         season = season or understat_season(self.season_year)
+        year = _season_year(season)
 
         # Map FPL team name to Understat format
         understat_name = TEAM_NAME_MAP.get(team_name, team_name)
@@ -221,10 +308,29 @@ class UnderstatClient:
         if data is None:
             return None
 
+        matches = data.get("dates") or []
+        in_season = matches_in_season(matches, season)
+        if matches and not in_season:
+            # The players list served alongside is that other season's too,
+            # so nothing in the payload describes the season asked for.
+            served = sorted(
+                {year for year in map(_match_season_year, matches) if year is not None}
+            )
+            logger.info(
+                "Understat has no %s record for %s - it served %d matches from %s "
+                "instead, which are ignored (expected for a club that was not in "
+                "that season's Premier League)",
+                season_label(year),
+                understat_name,
+                len(matches),
+                ", ".join(season_label(year) for year in served),
+            )
+            return None
+
         return {
             "team": team_name,
             "players": [self._parse_player(p) for p in (data.get("players") or [])],
-            "matches": data.get("dates") or [],
+            "matches": in_season,
         }
 
     async def _get_team_json(self, url_name: str, season: str) -> dict[str, Any] | None:
