@@ -112,7 +112,9 @@ returned as though it were your options. `metadata.my_squad_mode` says which
 list a JSON payload holds. Before the first deadline there is no squad to
 rank, so the global list is all there is and
 `metadata.warnings` carries `captain_global_fallback` to say so (stderr in
-table mode). An entry ID that does not resolve is a failure, not a fallback,
+table mode), and `captain_no_next_gameweek` where there is no next gameweek to
+captain for at all — a finished season, or one whose next gameweek is not
+published yet. An entry ID that does not resolve is a failure, not a fallback,
 and is reported in the same words `fpl squad` uses for it.
 
 Output columns: Score, Atk, Def, Form±, Pos±.
@@ -586,15 +588,17 @@ what a config that has lost its `classic_entry_id` also looks like. A script
 or skill that means one format should say so: `fpl squad --classic` reports
 the missing `classic_entry_id` as an error rather than answering with another
 league's roster. The two flags are mutually exclusive, and both apply to
-`fpl squad grid` as well. Table mode names the format in the heading
-(`Squad Analysis (Draft)`); JSON carries it in `metadata.format`.
+`fpl squad grid` — before the subcommand or after it, `fpl squad --classic
+grid` and `fpl squad grid --classic` mean the same thing. Table mode names the
+format in the heading (`Squad Analysis (Draft)`); JSON carries it in
+`metadata.format`.
 
 An entry ID that no longer resolves is reported as such rather than as
 "no squad submitted yet" — classic entry IDs are reissued each season, so a
 404 on the picks endpoint is checked against `entry/<id>/` before it is
-blamed on the calendar. `fpl captain` shares that diagnosis, so the same
-broken config reads the same way from either command. Run `fpl doctor` to
-check the configured IDs.
+blamed on the calendar. `fpl squad grid` and `fpl captain` share that
+diagnosis, so the same broken config reads the same way from any of the three.
+Run `fpl doctor` to check the configured IDs.
 
 A `--watch` name that does not land on one player is skipped rather than
 fatal — both when nothing matches it and when two players answer to it

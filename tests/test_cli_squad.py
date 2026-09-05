@@ -286,6 +286,42 @@ class TestSquadFormatPinning:
         assert result.exit_code == 1
         assert "mutually exclusive" in json.loads(result.stdout)["error"]
 
+    def test_group_level_classic_flag_reaches_the_subcommand(self, runner):
+        """`fpl squad --classic grid` is the same request as `fpl squad grid
+        --classic`; the group callback returns before resolving the format, so
+        the flag used to be parsed and then dropped (#259 review)."""
+        p1, p2 = _patch_settings(self.DRAFT_ONLY)
+        with p1, p2:
+            result = runner.invoke(main, ["squad", "--classic", "grid", "--format", "json"])
+
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout)
+        assert payload["command"] == "plan-grid"
+        assert "classic_entry_id is not set" in payload["error"]
+
+    def test_group_level_draft_flag_reaches_the_subcommand(self, runner):
+        """The mirror case: `--draft` before `grid` on a classic-only config
+        must reach the subcommand and be reported, not be dropped."""
+        p1, p2 = _patch_settings({"fpl": {"classic_entry_id": 123}})
+        with p1, p2:
+            result = runner.invoke(main, ["squad", "--draft", "grid", "--format", "json"])
+
+        assert result.exit_code == 1
+        assert "draft_entry_id is not set" in json.loads(result.stdout)["error"]
+
+    def test_contradictory_flags_before_a_subcommand_error_in_the_subcommands_format(self, runner):
+        """The group's own `--format` is not the subcommand's, so the check has
+        to happen where the reader's format is known -- reporting it from the
+        group put prose on stderr and nothing on stdout (#259 review)."""
+        p1, p2 = _patch_settings({"fpl": {"classic_entry_id": 123}})
+        with p1, p2:
+            result = runner.invoke(main, ["squad", "--classic", "--draft", "grid", "--format", "json"])
+
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout)
+        assert payload["command"] == "plan-grid"
+        assert "mutually exclusive" in payload["error"]
+
     def test_grid_classic_flag_errors_on_a_draft_only_config(self, runner):
         p1, p2 = _patch_settings(self.DRAFT_ONLY)
         with p1, p2:
@@ -473,3 +509,53 @@ class TestTeamCommandRetired:
         """fpl team should produce an error."""
         result = runner.invoke(main, ["team"])
         assert result.exit_code != 0 or "No such command" in result.output
+
+
+class TestGridSharesTheDiagnosis:
+    """`squad grid` must not be a third wording of the same 404 (#259 review)."""
+
+    SETTINGS = {"fpl": {"classic_entry_id": 999999999}}
+
+    def _client(self, *, entry_exists: bool):
+        import httpx
+
+        client = _mock_fpl_client()
+        client.get_next_gameweek = AsyncMock(return_value={"id": 3})
+        client.get_current_gameweek = AsyncMock(return_value={"id": 2})
+        client.get_teams = AsyncMock(return_value=[])
+        client.get_fixtures = AsyncMock(return_value=[])
+
+        def _not_found(path):
+            request = httpx.Request("GET", f"https://fantasy.premierleague.com/api{path}")
+            return httpx.HTTPStatusError(
+                "Not Found", request=request, response=httpx.Response(404, request=request)
+            )
+
+        client.get_manager_picks = AsyncMock(side_effect=_not_found("/entry/999999999/event/3/picks/"))
+        if not entry_exists:
+            client.get_manager_entry = AsyncMock(side_effect=_not_found("/entry/999999999/"))
+        return client
+
+    def _run(self, runner, client):
+        p1, p2 = _patch_settings(self.SETTINGS)
+        ratings = MagicMock()
+        ratings.ensure_fresh = AsyncMock(return_value=None)
+        with p1, p2, \
+             patch("fpl_cli.cli._plan_grid.get_settings", return_value=self.SETTINGS), \
+             patch("fpl_cli.api.fpl.FPLClient", return_value=client), \
+             patch("fpl_cli.services.team_ratings.TeamRatingsService", return_value=ratings):
+            return runner.invoke(main, ["squad", "grid", "--format", "json"])
+
+    def test_stale_entry_gets_the_same_message_as_fpl_squad(self, runner):
+        result = self._run(runner, self._client(entry_exists=False))
+
+        assert result.exit_code == 1
+        error = json.loads(result.stdout)["error"]
+        assert "No FPL entry 999999999 exists" in error
+        assert "Could not fetch squad" not in error
+
+    def test_live_entry_still_reads_as_no_squad_yet(self, runner):
+        result = self._run(runner, self._client(entry_exists=True))
+
+        assert result.exit_code == 1
+        assert "No squad submitted for GW" in json.loads(result.stdout)["error"]

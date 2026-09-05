@@ -106,14 +106,29 @@ class CaptainAgent(Agent):
             return global_top(), False, None
 
         entry_id = context["entry_id"]
+        # Two different reasons there is no gameweek to read a squad from, and
+        # they must not share a message: `get_next_gameweek` returns None once
+        # the season is over as well as before a new bootstrap lands, so
+        # collapsing both into the pre-season wording told a manager "no
+        # gameweek has been played yet" after all 38 of them had (#259
+        # review). Either way the global list is all there is -- but it is not
+        # what was asked for, and saying nothing is how it read as "your
+        # options" (#228).
+        if next_gw is None:
+            return global_top(), False, {
+                "code": "captain_no_next_gameweek",
+                "message": (
+                    "There is no next gameweek to captain for -- the season has "
+                    "finished, or the next one is not published yet -- so these are "
+                    "the top captain options across the game, not a ranking of "
+                    "your squad."
+                ),
+            }
+
         # Picks come from the latest completed gameweek (get_actual_squad_picks
         # falls back past a Free Hit).
-        last_gw = next_gw["id"] - 1 if next_gw else None
-        if not last_gw or last_gw <= 0:
-            # Before the first deadline there is no squad to read, so the
-            # global list is all there is -- but it is not what was asked for,
-            # and nothing said so, which is how it read as "your options"
-            # (#228).
+        last_gw = next_gw["id"] - 1
+        if last_gw <= 0:
             return global_top(), False, {
                 "code": "captain_global_fallback",
                 "message": (

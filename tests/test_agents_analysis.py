@@ -287,6 +287,30 @@ class TestCaptainAgent:
         assert result.data["warnings"][0]["code"] == "captain_global_fallback"
 
     @pytest.mark.asyncio
+    async def test_finished_season_is_not_called_pre_season(
+        self, agent, mock_players, mock_teams, mock_fixtures
+    ):
+        """`get_next_gameweek` returns None after GW38 as well as before a new
+        bootstrap lands, so the pre-season wording told a manager "no gameweek
+        has been played yet" after all 38 had (#259 review)."""
+        with patch.object(agent.client, "get_players", new_callable=AsyncMock) as mock_get_players, \
+             patch.object(agent.client, "get_teams", new_callable=AsyncMock) as mock_get_teams, \
+             patch.object(agent.client, "get_next_gameweek", new_callable=AsyncMock) as mock_next_gw, \
+             patch.object(agent.client, "get_fixtures", new_callable=AsyncMock) as mock_get_fixtures:
+
+            mock_get_players.return_value = mock_players
+            mock_get_teams.return_value = mock_teams
+            mock_next_gw.return_value = None
+            mock_get_fixtures.return_value = mock_fixtures
+
+            result = await agent.run(context={"entry_id": 123})
+
+        assert result.data["my_squad_mode"] is False
+        warning = result.data["warnings"][0]
+        assert warning["code"] == "captain_no_next_gameweek"
+        assert "No gameweek has been played yet" not in warning["message"]
+
+    @pytest.mark.asyncio
     async def test_global_mode_carries_no_fallback_warning(
         self, agent, mock_players, mock_teams, mock_fixtures
     ):

@@ -444,3 +444,21 @@ class TestGetOwnSquadPicks:
             await get_own_squad_picks(client, 123, 2)
 
         client.get_manager_entry.assert_not_awaited()
+
+    async def test_names_the_gameweek_the_free_hit_walk_back_asked_for(self):
+        """`get_actual_squad_picks` steps back a gameweek on a Free Hit, so the
+        404 that lands here is not always for the gameweek the caller named --
+        and naming theirs reports the one request that worked (#259 review)."""
+        client = AsyncMock()
+        client.get_manager_picks = AsyncMock(side_effect=[
+            {"active_chip": "freehit", "picks": []},          # GW10 fetched fine
+            self._not_found("/entry/123/event/9/picks/"),      # GW9 does not exist
+        ])
+        client.get_manager_entry = AsyncMock(return_value={"id": 123, "name": "Team"})
+
+        with pytest.raises(SquadPicksUnavailableError) as exc_info:
+            await get_own_squad_picks(client, 123, 10)
+
+        message = str(exc_info.value)
+        assert "GW9" in message
+        assert "GW10" not in message

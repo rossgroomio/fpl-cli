@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
@@ -269,7 +270,24 @@ class SquadPicksUnavailableError(Exception):
 NO_SQUAD_YET = "No squad submitted for GW{gameweek} yet."
 
 
-async def _diagnose_missing_picks(client: FPLClient, entry_id: int, gameweek: int) -> str:
+def _requested_gameweek(exc: httpx.HTTPStatusError, fallback: int) -> int:
+    """The gameweek the failed request actually asked for.
+
+    `get_actual_squad_picks` steps back one gameweek on a detected Free Hit
+    and fetches again, so the 404 that reaches us is not always for the
+    gameweek the caller named. A manager who joined at GW10 and played Free
+    Hit there gets GW10 fetched fine and GW9 404ing, and reporting "no squad
+    submitted for GW10" names the one request that worked (#259 review).
+
+    Read off the URL our own client built, so the message names the gameweek
+    that was actually missing; the caller's argument stands in if the path
+    ever stops carrying it.
+    """
+    match = re.search(r"/event/(\d+)/", exc.request.url.path)
+    return int(match.group(1)) if match else fallback
+
+
+async def diagnose_missing_picks(client: FPLClient, entry_id: int, gameweek: int) -> str:
     """Why the picks endpoint 404'd: no squad yet, or no such entry.
 
     Both read as a 404 on `entry/<id>/event/<gw>/picks/`. `entry/<id>/`
@@ -322,5 +340,5 @@ async def get_own_squad_picks(
         if exc.response.status_code != 404:
             raise
         raise SquadPicksUnavailableError(
-            await _diagnose_missing_picks(client, entry_id, gameweek)
+            await diagnose_missing_picks(client, entry_id, _requested_gameweek(exc, gameweek))
         ) from exc

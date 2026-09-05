@@ -54,6 +54,7 @@ def grid_command(
         )
 
     async def _grid():
+        from fpl_cli.agents.common import diagnose_missing_picks
         from fpl_cli.api.fpl import FPLClient
         from fpl_cli.services.team_ratings import TeamRatingsService
 
@@ -88,8 +89,10 @@ def grid_command(
                         )
             else:
                 assert entry_id is not None
+                # Bound before the try so the handler below can name the
+                # gameweek the walk had reached when it gave up.
+                lookup_gw = start_gw
                 try:
-                    lookup_gw = start_gw
                     try:
                         picks_data = await client.get_manager_picks(entry_id, lookup_gw)
                     except (httpx.HTTPError, ValueError):
@@ -102,6 +105,21 @@ def grid_command(
 
                     pick_ids = [p["element"] for p in picks_data.get("picks", [])]
                     squad_players = [player_map[pid] for pid in pick_ids if pid in player_map]
+                except httpx.HTTPStatusError as e:
+                    # The walk above already tried the gameweek before this one,
+                    # so a 404 still standing here is not "the squad is not up
+                    # yet for one gameweek" -- it is the same two causes
+                    # `fpl squad` diagnoses, and reporting the raw status made
+                    # a third wording of #228's problem inside the group that
+                    # PR was fixing (#259 review).
+                    if e.response.status_code != 404:
+                        emit_failure(COMMAND, f"Could not fetch squad: {e}", output_format, cause=e)
+                    emit_failure(
+                        COMMAND,
+                        await diagnose_missing_picks(client, entry_id, lookup_gw),
+                        output_format,
+                        cause=e,
+                    )
                 except Exception as e:  # noqa: BLE001 — display resilience
                     emit_failure(COMMAND, f"Could not fetch squad: {e}", output_format, cause=e)
 

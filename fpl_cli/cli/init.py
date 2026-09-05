@@ -13,7 +13,13 @@ from dotenv import dotenv_values, set_key
 from rich.table import Table
 
 from fpl_cli.cli._banner import show_banner
-from fpl_cli.cli._context import _user_config_dir, console, fpl_config, resolve_format
+from fpl_cli.cli._context import (
+    _user_config_dir,
+    console,
+    fpl_config,
+    resolve_format,
+    settings_block,
+)
 from fpl_cli.utils.files import atomic_write_text
 
 
@@ -284,8 +290,8 @@ def _tier_custom_analysis(data: dict[str, Any]) -> None:
 
 def _tier_ai_features(data: dict[str, Any]) -> None:
     """Tier 3 (Optional): Configure LLM providers for AI-powered commands."""
-    existing_llm = data.get("llm", {}) or {}
-    configured = bool(data.get("llm"))
+    existing_llm = settings_block(data, "llm")
+    configured = bool(existing_llm)
 
     if configured:
         prompt = "AI Features (configured) - Reconfigure?"
@@ -296,8 +302,10 @@ def _tier_ai_features(data: dict[str, Any]) -> None:
         return
 
     llm_section = _prompt_llm_config(existing_llm)
-    data.setdefault("llm", {})
-    data["llm"].update(llm_section)
+    # `setdefault` is not enough on a present-but-empty `llm:` -- the same
+    # trap `_tier_fpl_ids` hits, in the file init exists to repair (#259 review).
+    existing_llm.update(llm_section)
+    data["llm"] = existing_llm
 
 
 def _tier_league_table() -> None:

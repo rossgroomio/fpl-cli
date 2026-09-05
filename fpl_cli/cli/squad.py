@@ -31,6 +31,28 @@ from fpl_cli.cli._plan_grid import grid_command
 from fpl_cli.cli.sell_prices import sell_prices_command
 
 
+def _inherited_format_flags(
+    ctx: click.Context, *, is_draft: bool, is_classic: bool,
+) -> tuple[bool, bool]:
+    """A subcommand's format flags, plus the group's.
+
+    `fpl squad --classic grid` and `fpl squad grid --classic` are the same
+    request, but click hands the group's flags to the group callback, which
+    returns as soon as it sees a subcommand -- so the first spelling parsed
+    fine and was then discarded, and a draft-only config answered with the
+    draft grid and exit 0. That is the failure `--classic` was added to
+    prevent, reachable through the more natural spelling of the flag (#259
+    review).
+    """
+    parent = ctx.parent
+    if parent is None:
+        return is_draft, is_classic
+    return (
+        is_draft or bool(parent.params.get("is_draft")),
+        is_classic or bool(parent.params.get("is_classic")),
+    )
+
+
 def _resolve_is_draft(
     fmt: Format | None,
     *,
@@ -75,6 +97,13 @@ def _resolve_is_draft(
 def squad_group(ctx: click.Context, is_draft: bool, is_classic: bool, output_format: str) -> None:
     """Analyze your FPL squad health and fixtures."""
     if ctx.invoked_subcommand is not None:
+        # Deliberately not validating the flags here. The group's own
+        # `--format` is not the subcommand's, so reporting a contradiction
+        # from here got `fpl squad --classic --draft grid --format json`
+        # table-mode prose on stderr and an empty stdout -- the envelope
+        # violation this whole change is about. `_inherited_format_flags`
+        # hands them to the subcommand, which checks them against the format
+        # its own reader asked for.
         return
 
     # Default behaviour: show squad health
@@ -197,6 +226,7 @@ def grid_subcommand(
     is_draft: bool, is_classic: bool, output_format: str,
 ) -> None:
     """Show squad fixture difficulty grid."""
+    is_draft, is_classic = _inherited_format_flags(ctx, is_draft=is_draft, is_classic=is_classic)
     is_draft = _resolve_is_draft(
         get_format(ctx), is_draft=is_draft, is_classic=is_classic,
         command=GRID_COMMAND, output_format=output_format,
