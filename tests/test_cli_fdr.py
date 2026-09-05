@@ -7,6 +7,7 @@ import pytest
 from click.testing import CliRunner
 
 from fpl_cli.cli.fdr import fdr_command
+from fpl_cli.services.fixture_predictions import BlankPrediction, Confidence
 from tests.conftest import make_agent, make_draft_player, make_fixture, make_team
 
 
@@ -56,9 +57,10 @@ def test_fdr_my_squad_draft_builds_context(mock_fixture_agent):
         patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=draft_client),
         patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=mock_fixture_agent),
         patch("fpl_cli.services.team_ratings.TeamRatingsService") as mock_ratings,
-        patch("fpl_cli.services.fixture_predictions.FixturePredictionsService") as mock_preds,
+        patch("fpl_cli.cli.fdr.FixturePredictionsService") as mock_preds,
     ):
         mock_ratings.return_value.get_staleness_warning.return_value = None
+        mock_preds.return_value.load_warnings = []
         mock_preds.return_value.get_predicted_blanks.return_value = []
         mock_preds.return_value.get_predicted_doubles.return_value = []
 
@@ -127,9 +129,10 @@ def test_fdr_my_squad_draft_missing_entry_id(mock_fixture_agent):
         patch("fpl_cli.cli.fdr.get_settings", return_value={"fpl": {}}),
         patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=mock_fixture_agent),
         patch("fpl_cli.services.team_ratings.TeamRatingsService") as mock_ratings,
-        patch("fpl_cli.services.fixture_predictions.FixturePredictionsService") as mock_preds,
+        patch("fpl_cli.cli.fdr.FixturePredictionsService") as mock_preds,
     ):
         mock_ratings.return_value.get_staleness_warning.return_value = None
+        mock_preds.return_value.load_warnings = []
         mock_preds.return_value.get_predicted_blanks.return_value = []
         mock_preds.return_value.get_predicted_doubles.return_value = []
 
@@ -218,9 +221,10 @@ class TestFdrJsonOutput:
             patch("fpl_cli.cli.fdr.custom_analysis_enabled", return_value=True),
             patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=mock_fixture_agent),
             patch("fpl_cli.services.team_ratings.TeamRatingsService") as mock_ratings,
-            patch("fpl_cli.services.fixture_predictions.FixturePredictionsService") as mock_preds,
+            patch("fpl_cli.cli.fdr.FixturePredictionsService") as mock_preds,
         ):
             mock_ratings.return_value.get_staleness_warning.return_value = None
+            mock_preds.return_value.load_warnings = []
             mock_preds.return_value.get_predicted_blanks.return_value = []
             mock_preds.return_value.get_predicted_doubles.return_value = []
 
@@ -237,9 +241,10 @@ class TestFdrJsonOutput:
             patch("fpl_cli.cli.fdr.custom_analysis_enabled", return_value=True),
             patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=mock_fixture_agent),
             patch("fpl_cli.services.team_ratings.TeamRatingsService") as mock_ratings,
-            patch("fpl_cli.services.fixture_predictions.FixturePredictionsService") as mock_preds,
+            patch("fpl_cli.cli.fdr.FixturePredictionsService") as mock_preds,
         ):
             mock_ratings.return_value.get_staleness_warning.return_value = None
+            mock_preds.return_value.load_warnings = []
             mock_preds.return_value.get_predicted_blanks.return_value = []
             mock_preds.return_value.get_predicted_doubles.return_value = []
 
@@ -311,8 +316,9 @@ class TestFdrCustomAnalysisToggle:
         with (
             patch("fpl_cli.cli.fdr.custom_analysis_enabled", return_value=False),
             patch("fpl_cli.api.fpl.FPLClient", return_value=client),
-            patch("fpl_cli.services.fixture_predictions.FixturePredictionsService") as mock_preds,
+            patch("fpl_cli.cli.fdr.FixturePredictionsService") as mock_preds,
         ):
+            mock_preds.return_value.load_warnings = []
             mock_preds.return_value.get_predicted_blanks.return_value = []
             mock_preds.return_value.get_predicted_doubles.return_value = []
 
@@ -327,15 +333,25 @@ class TestFdrCustomAnalysisToggle:
         assert "ARS" in result.output
 
     def test_toggle_off_blanks_still_works(self):
-        """When toggle off, --blanks works normally (data-only path)."""
+        """When toggle off, --blanks works normally (data-only path).
+
+        A predicted blank that doesn't exist in the shipped predictions file
+        is asserted on the output, proving the mock -- not the real service
+        and its shipped data -- drives what's rendered (#160).
+        """
         client = _make_fpl_client_for_raw_fdr()
         with (
             patch("fpl_cli.cli.fdr.custom_analysis_enabled", return_value=False),
             patch("fpl_cli.api.fpl.FPLClient", return_value=client),
-            patch("fpl_cli.services.fixture_predictions.FixturePredictionsService") as mock_preds,
+            patch("fpl_cli.cli.fdr.FixturePredictionsService") as mock_preds,
         ):
             mock_preds.return_value.is_stale = False
-            mock_preds.return_value.get_predicted_blanks.return_value = []
+            mock_preds.return_value.load_warnings = []
+            mock_preds.return_value.get_predicted_blanks.return_value = [
+                # GW25 has no confirmed blank in this synthetic fixture set, so
+                # it only renders if the prediction mock is actually read.
+                BlankPrediction(gameweek=25, teams=["BOU"], confidence=Confidence.HIGH),
+            ]
             mock_preds.return_value.get_predicted_doubles.return_value = []
             mock_preds.return_value.get_metadata.return_value = {"last_updated": "2026-04-01"}
 
@@ -344,6 +360,7 @@ class TestFdrCustomAnalysisToggle:
 
         assert result.exit_code == 0, result.output
         assert "Blank/Double GW" in result.output
+        assert "GW25: BOU" in result.output
 
     def test_toggle_off_position_atk_shows_error(self):
         """When toggle off, --position atk shows custom analysis required message."""
@@ -370,9 +387,10 @@ class TestFdrCustomAnalysisToggle:
             patch("fpl_cli.cli.fdr.custom_analysis_enabled", return_value=True),
             patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=mock_fixture_agent),
             patch("fpl_cli.services.team_ratings.TeamRatingsService") as mock_ratings,
-            patch("fpl_cli.services.fixture_predictions.FixturePredictionsService") as mock_preds,
+            patch("fpl_cli.cli.fdr.FixturePredictionsService") as mock_preds,
         ):
             mock_ratings.return_value.get_staleness_warning.return_value = None
+            mock_preds.return_value.load_warnings = []
             mock_preds.return_value.get_predicted_blanks.return_value = []
             mock_preds.return_value.get_predicted_doubles.return_value = []
 
@@ -388,7 +406,7 @@ class TestFdrCustomAnalysisToggle:
         with (
             patch("fpl_cli.cli.fdr.custom_analysis_enabled", return_value=False),
             patch("fpl_cli.api.fpl.FPLClient", return_value=client),
-            patch("fpl_cli.services.fixture_predictions.FixturePredictionsService") as mock_preds,
+            patch("fpl_cli.cli.fdr.FixturePredictionsService") as mock_preds,
         ):
             mock_preds.return_value.get_predicted_blanks.return_value = []
             mock_preds.return_value.get_predicted_doubles.return_value = []
