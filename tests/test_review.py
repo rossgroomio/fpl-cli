@@ -2465,6 +2465,168 @@ class TestValidateResearchProse:
         assert len(corrections) == 1
 
 
+class TestValidateResearchProseCapitalisedFalsePositives:
+    """A capitalised hit that is not a reference to the unlisted player (#265).
+
+    The scrub patterns are case-sensitive, which saves lowercase homographs
+    ("son", "may") but not a first name or a ground -- both are capitalised in
+    every legitimate use.
+    """
+
+    @pytest.fixture
+    def player_map(self):
+        return {
+            p.id: p
+            for p in [
+                # Allowlisted, and his own first name is another player's web_name.
+                make_player(
+                    id=1, web_name="Cherki", first_name="Rayan",
+                    second_name="Cherki", team_id=13,
+                ),
+                # Allowlisted under an abbreviated web_name, so the full name in
+                # prose is neither first+second nor first+web_name.
+                make_player(
+                    id=2, web_name="B.Fernandes", first_name="Bruno",
+                    second_name="Borges Fernandes", team_id=14,
+                ),
+                make_player(
+                    id=3, web_name="Haaland", first_name="Erling",
+                    second_name="Haaland", team_id=13,
+                ),
+                # Unlisted, and collides with Cherki's first name.
+                make_player(
+                    id=4, web_name="Rayan", first_name="Rayan",
+                    second_name="Ait-Nouri", team_id=3,
+                ),
+                # Unlisted, and collides with a ground.
+                make_player(
+                    id=5, web_name="Trafford", first_name="James",
+                    second_name="Trafford", team_id=11,
+                ),
+                make_player(id=6, web_name="Mac Allister", team_id=14),
+            ]
+        }
+
+    @pytest.fixture
+    def allowlist(self):
+        return {"Cherki", "B.Fernandes", "Haaland", "FillerA", "FillerB"}
+
+    def test_first_name_of_allowlisted_player_is_not_a_disallowed_hit(
+        self, player_map, allowlist
+    ):
+        text = (
+            "## GW3 Narrative\n"
+            "Rayan Cherki and Erling Haaland turned Man City's win into a fever dream.\n"
+            "\n"
+            "## Standout Performers\n"
+        )
+        result, corrections = validate_research_prose(text, player_map, allowlist)
+        assert result == text
+        assert corrections == []
+
+    def test_ground_sharing_a_web_name_is_not_a_disallowed_hit(
+        self, player_map, allowlist
+    ):
+        text = (
+            "## GW3 Narrative\n"
+            "At Old Trafford, Bruno Fernandes became an act of vengeance.\n"
+            "\n"
+            "## Standout Performers\n"
+        )
+        result, corrections = validate_research_prose(text, player_map, allowlist)
+        assert result == text
+        assert corrections == []
+
+    def test_bare_colliding_name_outside_the_exempt_phrase_still_scrubs(
+        self, player_map, allowlist
+    ):
+        # "Trafford" alone is a reference to the unlisted keeper, not a ground.
+        text = (
+            "## GW3 Narrative\n"
+            "Trafford kept a clean sheet on his debut.\n"
+            "\n"
+            "## Standout Performers\n"
+        )
+        result, corrections = validate_research_prose(text, player_map, allowlist)
+        assert "clean sheet on his debut" not in result
+        assert len(corrections) == 1
+        assert "Trafford" in corrections[0]
+
+    def test_second_hit_outside_an_exempt_phrase_still_scrubs_the_sentence(
+        self, player_map, allowlist
+    ):
+        # The exemption is per-occurrence: a legitimate "Old Trafford" does not
+        # license an unlisted player named elsewhere in the same sentence.
+        text = (
+            "## GW3 Narrative\n"
+            "At Old Trafford, Mac Allister ran the game from deep.\n"
+            "\n"
+            "## Standout Performers\n"
+        )
+        result, corrections = validate_research_prose(text, player_map, allowlist)
+        assert "Mac Allister" not in result
+        assert len(corrections) == 1
+
+    def test_full_name_of_an_unlisted_player_is_still_scrubbed(
+        self, player_map, allowlist
+    ):
+        # The exemption is built from allowlisted players only, so inventing a
+        # full name does not smuggle an unlisted player through.
+        text = (
+            "## GW3 Narrative\n"
+            "Rayan Ait-Nouri was the surprise package at wing-back.\n"
+            "\n"
+            "## Standout Performers\n"
+        )
+        result, corrections = validate_research_prose(text, player_map, allowlist)
+        assert "surprise package" not in result
+        assert len(corrections) == 1
+
+    def test_ground_with_a_typographic_apostrophe_is_exempt(self, player_map, allowlist):
+        # LLM prose uses a curly apostrophe as often as a straight one, and
+        # neither is a diacritic, so stripping does not normalise them.
+        player_map[7] = make_player(
+            id=7, web_name="James", first_name="Reece", second_name="James", team_id=6,
+        )
+        text = (
+            "## GW3 Narrative\n"
+            "At St James\u2019 Park the roof nearly came off.\n"
+            "\n"
+            "## Standout Performers\n"
+        )
+        result, corrections = validate_research_prose(text, player_map, allowlist)
+        assert result == text
+        assert corrections == []
+
+    def test_accented_full_name_exempts_the_ascii_rendering(self, allowlist):
+        # Sentences are diacritic-stripped before scanning, so the exempt
+        # phrases must be too -- "Nicolas Jackson" for "Nicolás Jackson".
+        player_map = {
+            p.id: p
+            for p in [
+                make_player(
+                    id=1, web_name="Jackson", first_name="Nicolás",
+                    second_name="Jackson", team_id=6,
+                ),
+                make_player(
+                    id=2, web_name="Nicolas", first_name="Nicolas",
+                    second_name="Dominguez", team_id=17,
+                ),
+            ]
+        }
+        text = (
+            "## GW3 Narrative\n"
+            "Nicolas Jackson led the line with menace.\n"
+            "\n"
+            "## Standout Performers\n"
+        )
+        result, corrections = validate_research_prose(
+            text, player_map, allowlist | {"Jackson"}
+        )
+        assert result == text
+        assert corrections == []
+
+
 class TestValidateResearchProseHeaderVariants:
     """Tests for loosened narrative header regex."""
 

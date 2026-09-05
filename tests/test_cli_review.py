@@ -19,6 +19,7 @@ from fpl_cli.cli._review_summarisation import (
     _format_classic_section,
     _names_match,
     _normalise_name,
+    _report_research_corrections,
     _review_compare_recs,
     _review_llm_summarise,
 )
@@ -474,6 +475,50 @@ class TestReviewLlmSummariseGuards:
                 research_provider=object(),
                 synthesis_provider=None,
             )
+
+
+class TestReportResearchCorrections:
+    """#265: the scrubber's damage is visible without `--debug`."""
+
+    @pytest.fixture
+    def debug_dir(self, tmp_path):
+        # tmp_path itself already holds the isolated FPL_CLI_* dirs.
+        path = tmp_path / "debug"
+        path.mkdir()
+        return path
+
+    def _corrections(self):
+        return ["Salah: club corrected to LIV", "narrative sentence stripped (disallowed: Rayan): At ..."]
+
+    @staticmethod
+    def _unwrapped(capsys):
+        # Rich hard-wraps to the terminal width, so join before matching.
+        return capsys.readouterr().err.replace("\n", "")
+
+    def test_summary_printed_without_debug_and_points_at_the_flag(self, capsys, debug_dir):
+        path = _report_research_corrections(self._corrections(), 1, 1, None)
+        err = self._unwrapped(capsys)
+        assert "1 table fix(es)" in err
+        assert "1 narrative sentence(s) scrubbed" in err
+        assert "--debug" in err
+        # Nothing written when debug is off, so no path to report.
+        assert path is None
+        assert list(debug_dir.iterdir()) == []
+
+    def test_debug_writes_the_detail_and_returns_its_path(self, capsys, debug_dir):
+        corrections = self._corrections()
+        path = _report_research_corrections(corrections, 1, 1, debug_dir)
+        written = debug_dir / "research_corrections.txt"
+        assert path == str(written)
+        assert written.read_text(encoding="utf-8") == "\n".join(corrections)
+        err = self._unwrapped(capsys)
+        assert "research_corrections.txt" in err
+        assert "1 narrative sentence(s) scrubbed" in err
+
+    def test_silent_when_nothing_was_corrected(self, capsys, debug_dir):
+        assert _report_research_corrections([], 0, 0, debug_dir) is None
+        assert capsys.readouterr().err == ""
+        assert list(debug_dir.iterdir()) == []
 
 
 class TestReviewMalformedFinesConfig:
