@@ -491,6 +491,8 @@ class ReportAgent(Agent):
                     diff_str = f"+{diff}" if diff > 0 else str(diff) if diff < 0 else "-"
                     name = r.get("manager_name", "Unknown")
                     lines.append(f"| {r.get('rank')} | {name} | {r.get('total'):,} | {diff_str} |")
+                if cl.get("nearby_rivals_omitted"):
+                    lines.append(f"*...and {cl['nearby_rivals_omitted']} more within 25*")
 
             if cl.get("best_performers"):
                 lines.append("### Best GW Performers")
