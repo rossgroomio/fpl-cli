@@ -30,38 +30,6 @@ from fpl_cli.cli._plan_grid import COMMAND as GRID_COMMAND
 from fpl_cli.cli._plan_grid import grid_command
 from fpl_cli.cli.sell_prices import sell_prices_command
 
-# Pre-season / before the first deadline, the picks endpoint legitimately 404s
-# until a squad has been submitted -- expected, not exceptional.
-_NO_SQUAD_YET = "No squad submitted for GW{gameweek} yet."
-
-
-async def _missing_classic_squad_reason(client, entry_id: int, gameweek: int) -> str:
-    """Why the classic picks endpoint 404'd: no squad yet, or no such entry.
-
-    Both read as a 404 on `entry/<id>/event/<gw>/picks/`, and reporting the
-    pre-deadline explanation for either sent someone whose `classic_entry_id`
-    is simply wrong looking at the calendar (#228) -- the likeliest cause,
-    given classic entry IDs are reissued every season. `entry/<id>/` separates
-    them: it answers for an entry that exists whether or not the squad has
-    been picked.
-
-    Only a 404 there condemns the ID. An outage or a rate limit proves
-    nothing, so anything else keeps the pre-deadline wording rather than
-    accusing a correct ID.
-    """
-    try:
-        await client.get_manager_entry(entry_id)
-    except httpx.HTTPStatusError as exc:
-        if exc.response.status_code == 404:
-            return (
-                f"No FPL entry {entry_id} exists. Classic entry IDs are reissued each "
-                "season -- update classic_entry_id in settings.yaml (or run 'fpl init'), "
-                "and 'fpl doctor' will check it for you."
-            )
-    except httpx.HTTPError:
-        pass
-    return _NO_SQUAD_YET.format(gameweek=gameweek)
-
 
 def _resolve_is_draft(
     fmt: Format | None,
@@ -144,7 +112,11 @@ def squad_group(ctx: click.Context, is_draft: bool, is_classic: bool, output_for
         raise SystemExit(1) from None
 
     async def _run() -> None:
-        from fpl_cli.agents.common import get_actual_squad_picks
+        from fpl_cli.agents.common import (
+            NO_SQUAD_YET,
+            SquadPicksUnavailableError,
+            get_own_squad_picks,
+        )
         from fpl_cli.api.fpl import FPLClient
 
         async with FPLClient() as client:
@@ -165,7 +137,7 @@ def squad_group(ctx: click.Context, is_draft: bool, is_classic: bool, output_for
                     except httpx.HTTPStatusError as exc:
                         if exc.response.status_code != 404:
                             raise
-                        _report_no_squad(_NO_SQUAD_YET.format(gameweek=gw))
+                        _report_no_squad(NO_SQUAD_YET.format(gameweek=gw))
                         return
                 picks = [p.id for p in squad_players]
                 context: dict = {"picks": picks, "format": "draft"}
@@ -174,11 +146,9 @@ def squad_group(ctx: click.Context, is_draft: bool, is_classic: bool, output_for
                 target_gw = max(gw - 1, 1)
                 assert entry_id is not None
                 try:
-                    picks_data, _ = await get_actual_squad_picks(client, entry_id, target_gw)
-                except httpx.HTTPStatusError as exc:
-                    if exc.response.status_code != 404:
-                        raise
-                    _report_no_squad(await _missing_classic_squad_reason(client, entry_id, target_gw))
+                    picks_data, _ = await get_own_squad_picks(client, entry_id, target_gw)
+                except SquadPicksUnavailableError as exc:
+                    _report_no_squad(str(exc))
                     return
                 picks = [p["element"] for p in picks_data.get("picks", [])]
                 context = {"picks": picks, "format": "classic"}

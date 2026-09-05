@@ -2,12 +2,17 @@
 
 from unittest.mock import AsyncMock, patch
 
+import httpx
+import pytest
+
 from fpl_cli.agents.common import (
+    SquadPicksUnavailableError,
     enrich_player,
     fetch_understat_lookup,
     get_actual_squad_picks,
     get_draft_ownership_mapping,
     get_draft_squad_players,
+    get_own_squad_picks,
     rekey_for_draft,
 )
 from fpl_cli.services.matchup import build_team_fixture_map
@@ -357,3 +362,85 @@ class TestRekeyForDraft:
 
     def test_empty_lookup_stays_empty(self):
         assert rekey_for_draft({}, self._map()) == {}
+
+
+class TestGetOwnSquadPicks:
+    """One diagnosis for the two causes behind a picks 404, so `fpl squad` and
+    `fpl captain` cannot word the same broken config differently (#228)."""
+
+    @staticmethod
+    def _not_found(path: str) -> httpx.HTTPStatusError:
+        request = httpx.Request("GET", f"https://fantasy.premierleague.com/api{path}")
+        return httpx.HTTPStatusError(
+            "Not Found", request=request, response=httpx.Response(404, request=request)
+        )
+
+    async def test_passes_picks_through_when_they_exist(self):
+        client = AsyncMock()
+        client.get_manager_picks = AsyncMock(return_value={"active_chip": None, "picks": [{"element": 1}]})
+
+        picks, gw = await get_own_squad_picks(client, 123, 10)
+
+        assert (picks["picks"], gw) == ([{"element": 1}], 10)
+        client.get_manager_entry.assert_not_awaited()
+
+    async def test_live_entry_reads_as_no_squad_yet(self):
+        client = AsyncMock()
+        client.get_manager_picks = AsyncMock(side_effect=self._not_found("/entry/123/event/2/picks/"))
+        client.get_manager_entry = AsyncMock(return_value={"id": 123, "name": "Team"})
+
+        with pytest.raises(SquadPicksUnavailableError) as exc_info:
+            await get_own_squad_picks(client, 123, 2)
+
+        assert "No squad submitted for GW2 yet" in str(exc_info.value)
+
+    async def test_missing_entry_names_the_reissued_id(self):
+        client = AsyncMock()
+        client.get_manager_picks = AsyncMock(side_effect=self._not_found("/entry/999/event/2/picks/"))
+        client.get_manager_entry = AsyncMock(side_effect=self._not_found("/entry/999/"))
+
+        with pytest.raises(SquadPicksUnavailableError) as exc_info:
+            await get_own_squad_picks(client, 999, 2)
+
+        message = str(exc_info.value)
+        assert "No FPL entry 999 exists" in message
+        assert "reissued" in message
+
+    async def test_unreachable_entry_endpoint_does_not_condemn_the_id(self):
+        """A 503 proves nothing about the ID, so the wording must not change."""
+        client = AsyncMock()
+        client.get_manager_picks = AsyncMock(side_effect=self._not_found("/entry/123/event/2/picks/"))
+        request = httpx.Request("GET", "https://fantasy.premierleague.com/api/entry/123/")
+        client.get_manager_entry = AsyncMock(side_effect=httpx.HTTPStatusError(
+            "Service Unavailable", request=request,
+            response=httpx.Response(503, request=request),
+        ))
+
+        with pytest.raises(SquadPicksUnavailableError) as exc_info:
+            await get_own_squad_picks(client, 123, 2)
+
+        assert "No squad submitted for GW2 yet" in str(exc_info.value)
+
+    async def test_a_broken_probe_never_costs_the_report(self):
+        """The probe only refines the message; whatever it raises, the 404 the
+        caller already established still gets reported."""
+        client = AsyncMock()
+        client.get_manager_picks = AsyncMock(side_effect=self._not_found("/entry/123/event/2/picks/"))
+        client.get_manager_entry = AsyncMock(side_effect=ValueError("malformed JSON"))
+
+        with pytest.raises(SquadPicksUnavailableError) as exc_info:
+            await get_own_squad_picks(client, 123, 2)
+
+        assert "No squad submitted for GW2 yet" in str(exc_info.value)
+
+    async def test_a_non_404_still_raises_the_http_error(self):
+        client = AsyncMock()
+        request = httpx.Request("GET", "https://fantasy.premierleague.com/api/entry/123/event/2/picks/")
+        client.get_manager_picks = AsyncMock(side_effect=httpx.HTTPStatusError(
+            "Server Error", request=request, response=httpx.Response(500, request=request),
+        ))
+
+        with pytest.raises(httpx.HTTPStatusError):
+            await get_own_squad_picks(client, 123, 2)
+
+        client.get_manager_entry.assert_not_awaited()

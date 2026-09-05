@@ -7,7 +7,7 @@ from typing import Any
 import httpx
 
 from fpl_cli.agents.base import Agent, AgentResult, AgentStatus
-from fpl_cli.agents.common import get_actual_squad_picks
+from fpl_cli.agents.common import SquadPicksUnavailableError, get_own_squad_picks
 from fpl_cli.api.fpl import FPLClient
 from fpl_cli.models.player import Player
 from fpl_cli.models.types import CaptainCandidate
@@ -127,10 +127,10 @@ class CaptainAgent(Agent):
         # and hand back the global top 30 with SUCCESS, so an entry ID that
         # does not exist produced a plausible ranking and exit 0 for a
         # `--format json` consumer, who had only `my_squad_mode` to tell the
-        # two apart (#228). `run` turns an HTTP error into a FAILED result
-        # naming the status and the path, which is the answer to "whose
+        # two apart (#228). `run` turns both a diagnosed 404 and any other
+        # HTTP error into a FAILED result, which is the answer to "whose
         # squad is this?".
-        picks_data, last_gw = await get_actual_squad_picks(
+        picks_data, last_gw = await get_own_squad_picks(
             self.client, entry_id, last_gw, log=self.log
         )
         pick_ids = [p["element"] for p in picks_data.get("picks", [])]
@@ -210,6 +210,18 @@ class CaptainAgent(Agent):
                 message=f"Top captain pick: {top_picks[0]['player_name'] if top_picks else 'None'}",
             )
 
+        except SquadPicksUnavailableError as e:
+            # Already diagnosed by `get_own_squad_picks`: a wrong entry ID and
+            # a squad not yet picked both 404 on the picks endpoint, and this
+            # says which. `fpl squad` shows the same sentence for the same
+            # config, rather than each command wording it its own way (#228).
+            message = str(e)
+            self.log_error(message)
+            return self._create_result(
+                AgentStatus.FAILED,
+                message=message,
+                errors=[message],
+            )
         except httpx.HTTPStatusError as e:
             # Reached, not unreachable: name the status and path, matching
             # `api_failure_boundary`'s wording for the direct-api commands
