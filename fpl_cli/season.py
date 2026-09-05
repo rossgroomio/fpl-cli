@@ -24,6 +24,9 @@ TOTAL_GAMEWEEKS: int = 38
 CHIP_SPLIT_GW: int = TOTAL_GAMEWEEKS // 2
 """Gameweek boundary for chip availability (each chip once per half)."""
 
+PROMOTED_CLUBS_PER_SEASON: int = 3
+"""Clubs promoted into the Premier League each season (three up, three down since 1995-96)."""
+
 # July is the cutover month: month >= 7 means the current calendar year
 # is the season start year.  This matches the existing pattern in
 # fpl_cli/services/team_ratings_prior.py:150.

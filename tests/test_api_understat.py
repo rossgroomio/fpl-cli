@@ -413,6 +413,50 @@ class TestUnderstatClientTeam:
         assert "no 2025-26 record for Ipswich" in caplog.text
         assert "3 matches from 2026-27" in caplog.text
 
+    async def test_a_lone_undated_entry_cannot_keep_a_substituted_season_alive(self):
+        """A wrong-season payload with one undated fixture is still the wrong
+        season: the dated matches decide, and none of them is 2025-26."""
+        client = UnderstatClient()
+        served = {
+            "players": [{"id": "1", "player_name": "Someone", "team_title": "Ipswich"}],
+            "dates": [
+                self._dated(2026, 8, 22),
+                {"id": "tbc", "isResult": False, "side": "a", "xG": {"h": "0", "a": "0"}},
+            ],
+        }
+
+        with patch.object(client, "_get_team_json", new_callable=AsyncMock, return_value=served):
+            assert await client.get_team("Ipswich Town", season="2025") is None
+
+    async def test_a_mixed_payload_keeps_only_the_dated_matches_of_the_season(self):
+        client = UnderstatClient()
+        served = {
+            "players": [],
+            "dates": [
+                self._dated(2025, 8, 16),
+                self._dated(2026, 8, 22, id="stray"),
+                {"id": "undated", "isResult": False, "side": "a", "xG": {"h": "0", "a": "0"}},
+            ],
+        }
+
+        with patch.object(client, "_get_team_json", new_callable=AsyncMock, return_value=served):
+            result = await client.get_team("Arsenal", season="2025")
+
+        assert result is not None
+        assert [m["id"] for m in result["matches"]] == ["1"]
+
+    async def test_a_season_label_is_refused_before_any_request(self):
+        """The hyphenated label is a caller error, not a club with no data."""
+        client = UnderstatClient()
+
+        with (
+            patch.object(client, "_get_team_json", new_callable=AsyncMock) as mock_get,
+            pytest.raises(ValueError, match="start years such as '2025', not '2025-26'"),
+        ):
+            await client.get_team("Arsenal", season="2025-26")
+
+        mock_get.assert_not_called()
+
     async def test_get_team_keeps_only_the_requested_season(self):
         """Matches are kept by their kickoff date, across the January boundary."""
         client = UnderstatClient()
@@ -463,6 +507,24 @@ class TestMatchesInSeason:
         undated = [{"id": "a"}, {"id": "b", "datetime": None}, {"id": "c", "datetime": "??"}]
 
         assert matches_in_season(undated, "2025") == undated
+
+    def test_undated_entries_are_dropped_beside_a_foreign_season(self):
+        """Dated matches decide; an undated one is kept only when they all agree."""
+        from fpl_cli.api.understat import matches_in_season
+
+        undated = {"id": "u"}
+        foreign = {"id": "f", "datetime": "2026-08-22 14:00:00"}
+        native = {"id": "n", "datetime": "2025-08-16 15:00:00"}
+
+        assert matches_in_season([foreign, undated], "2025") == []
+        assert matches_in_season([native, foreign, undated], "2025") == [native]
+        assert matches_in_season([native, undated], "2025") == [native, undated]
+
+    def test_a_season_label_is_refused(self):
+        from fpl_cli.api.understat import matches_in_season
+
+        with pytest.raises(ValueError, match="not '2025-26'"):
+            matches_in_season([], "2025-26")
 
 
 # --- TestUnderstatClientParsing ---

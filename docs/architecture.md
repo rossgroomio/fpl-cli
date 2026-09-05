@@ -568,7 +568,7 @@ fpl_cli/
 │   │   └── data_prep.py          # ScoringContext / ScoringData + prepare_scoring_data()
 │   ├── player_prior.py           # Player prior (Bayesian early-season confidence)
 │   ├── team_ratings.py           # TeamRatingsService + Calculator (1-7 scale)
-│   ├── team_ratings_prior.py     # Previous-season prior + Bayesian blending (cutoff GW12); the PL pool takes full-season records only, and every club's basis is written to the cache as `inputs`
+│   ├── team_ratings_prior.py     # Previous-season prior + Bayesian blending (cutoff GW12); every pool it reads (the PL pool from either source, the Championship division) takes full-season records only, and every club's basis is written to the cache as `inputs`
 │   ├── matchup.py                # Fixture matchup scoring (0-10)
 │   ├── fixture_predictions.py    # BGW/DGW predictions from YAML + live detection, plus the point-in-time "did his club have a fixture, and how many" read a past gameweek needs
 │   ├── season_previews.py       # Per-team season intel: schema, per-section decay, coverage gate, name resolution
@@ -596,7 +596,7 @@ fpl_cli/
 ├── scraper/
 │   └── fpl_prices.py             # FPLPriceScraper (needs FPL_EMAIL/FPL_PASSWORD; behind TLS-inspecting proxies: FPL_BROWSER_IGNORE_CERTS=1 for cert MITM, or FPL_BROWSER_EXECUTABLE/CHANNEL/ARGS to swap the browser when the ClientHello itself is rejected)
 ├── paths.py                      # SHIPPED_CONFIG_DIR, TEMPLATE_DIR, user_config_dir(), user_data_dir(), user_cache_dir() — each user_* dir overridable via FPL_CLI_CONFIG_DIR / FPL_CLI_DATA_DIR / FPL_CLI_CACHE_DIR (absolute paths only; a relative one raises UserDirError rather than resolving against the cwd)
-├── season.py                     # season_label() (+ vaastav_season() alias), understat_season(), core_insights_season(), TOTAL_GAMEWEEKS, CHIP_SPLIT_GW
+├── season.py                     # season_label() (+ vaastav_season() alias), understat_season(), core_insights_season(), TOTAL_GAMEWEEKS, CHIP_SPLIT_GW, PROMOTED_CLUBS_PER_SEASON
 ├── constants.py                  # MIN_MINUTES_FOR_PER90
 └── utils/
     ├── gameweek.py                # is_opening_gameweek(gw) — shared GW1 check (transfers, waivers and league tables don't exist yet)
@@ -615,7 +615,7 @@ platformdirs (user_config_dir / user_data_dir)  # macOS: ~/Library/Application S
 ├── fixture_predictions.yaml      # Optional BGW/DGW predictions override (config dir); takes precedence over the shipped copy
 ├── previews/{TEAM}.yaml          # Optional season preview intel, one file per team (config dir); user-supplied, nothing shipped but EXAMPLE.yaml
 ├── team_ratings.yaml             # Cached team strength ratings (data dir, auto-refreshed; metadata.season invalidates it across a season boundary)
-├── team_ratings_prior.yaml       # Cached team ratings priors (data dir), with per-club `inputs` (basis: premier_league / championship / promoted_fallback, matches, the rates ranked and, for a Championship side, as played) so a rating can be traced to its record (#235)
+├── team_ratings_prior.yaml       # Cached team ratings priors (data dir), with per-club `inputs` (basis: premier_league / championship / promoted_fallback / incomplete_record, matches, the rates ranked and, for a Championship side, as played) so a rating can be traced to its record (#235)
 ├── player_prior.yaml             # Cached player priors (data dir, generated, season/GW invalidation)
 ├── chip_plan.json                # User's chip plan (data dir, created via `fpl chips add`)
 ├── team_finances.json            # Cached sell prices from scraper (data dir, 12h TTL)
