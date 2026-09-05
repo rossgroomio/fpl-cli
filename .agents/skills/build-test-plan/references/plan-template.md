@@ -28,6 +28,17 @@ produces. Which parts can slip to a later session.]
 - [cost awareness: which flags spend LLM calls, scraper runs or FPL
   requests]
 - [anonymity: fpl-cli is public, this vault is private]
+- **[reports go to a scratch directory, never the vault's report tree.**
+  `preview`, `review` and `league-recap` all take `-o/--output`, so every
+  `--save` in this plan must carry `-o <scratch>/reports`. Files under
+  `01_Reports/<season>/` are point-in-time snapshots of a gameweek as it
+  was analysed at the time — regenerating one overwrites the record with a
+  later model's output, and a preview for a gameweek whose deadline has
+  not passed is simply wrong to have on disk. Neither is a test artifact.
+  The same goes for rewritable state under `data/` that is not the ledger:
+  a test that migrates or rewrites a snapshot file (`returnee_snapshot.json`,
+  `team_ratings*.yaml`, `team_finances.json`) runs against a scratch
+  `FPL_CLI_DATA_DIR`, so the real one is untouched.]
 ## Preflight
 **P1 — version.** [...]
 **P2 — environment.** [...]
@@ -47,7 +58,14 @@ found, and whether this range claims to fix it.]
 ## Wrap-up
 1. [replace the Status line under the title with the run's date, version
    and PASS/FAIL/BLOCKED counts]
-2. [commit generated state worth keeping]
+2. [commit the filled plan, and **only** the generated state that is both
+   irreplaceable and genuinely new: new rows under `data/league_history/`
+   for a gameweek that had none. Do **not** commit regenerated reports
+   under `01_Reports/`, a preview for a future gameweek, or a rewritten
+   `data/` snapshot — revert those with `git checkout` before committing.
+   If a test needed a report, it was written to the scratch dir and the
+   Results-log row cites it from there. The test that a piece of state
+   passes: would this have been created anyway, by real use, today?]
 3. [fill the Results log, summarise counts, separate fpl-cli bugs from
    environment issues, and record anything noticed outside the test
    matrix as a post-plan finding]
@@ -109,8 +127,12 @@ The wrap-up should also have the runner:
   rows is noise. Give it the `testing` label, state the condition that
   unblocks each item, and record the data state at the time of testing:
   a later session cannot reconstruct why something was unreachable.
-- Commit the filled plan alongside the generated artifacts, so the record
-  and the evidence land together.
+- Commit the filled plan alongside any genuinely new ledger rows, so the
+  record and the evidence land together. Evidence that lives in the
+  scratch dir stays there — quote the numbers into the Results-log row
+  instead, because the row has to stand on its own once the scratch dir is
+  gone. Never commit a report the run regenerated: the Results log is the
+  artifact, not a rewritten snapshot.
 
 ## The coverage map
 
