@@ -10,10 +10,13 @@ from fpl_cli.api.understat import (
     TEAM_NAME_MAP,
     UNDERSTAT_TEAM_UNMATCHED,
     UnderstatClient,
+    _normalise,
+    decode_entities,
     match_fpl_to_understat,
     split_team_titles,
     understat_club_rows,
     understat_join_warnings,
+    understat_name_join_stats,
     unmatched_understat_teams,
 )
 from fpl_cli.season import understat_season
@@ -1269,3 +1272,315 @@ class TestSplitTeamTitles:
 
     def test_empty_title(self):
         assert split_team_titles("") == [""]
+
+
+# --- TestNormalise ---
+
+class TestNormalise:
+    """Understat escapes its names for HTML, so the matcher must decode (#263)."""
+
+    def test_html_entity_matches_the_plain_character(self):
+        # The bug in one line: `&#039;` normalised to the digit token `o039shea`,
+        # which no FPL spelling could ever equal, so every apostrophe name lost
+        # its xG enrichment silently.
+        assert _normalise("Dara O&#039;Shea") == _normalise("Dara O'Shea")
+
+    def test_apostrophe_entity_normalises_to_a_separator(self):
+        assert _normalise("Dara O&#039;Shea") == "dara o shea"
+
+    def test_no_digits_survive_an_entity(self):
+        # The specific laundering: the punctuation rule strips `&` and `#` but
+        # cannot strip the digits, so a decoded-too-late entity reads as a
+        # legitimate name token rather than as punctuation.
+        assert "039" not in _normalise("Luke O&#039;Nien")
+
+    @pytest.mark.parametrize(
+        ("escaped", "plain"),
+        [
+            ("Nott&amp;m Forest", "Nott&m Forest"),
+            ("&quot;Chicharito&quot;", '"Chicharito"'),
+            ("O&#x27;Shea", "O'Shea"),
+            ("Andr&eacute; Onana", "André Onana"),
+        ],
+    )
+    def test_other_entities_decode_too(self, escaped, plain):
+        # Apostrophes are only the entity in today's pool. Anything else
+        # Understat escapes launders the same way, so the decode is not
+        # special-cased to `&#039;`.
+        assert _normalise(escaped) == _normalise(plain)
+
+    def test_plain_names_are_unchanged(self):
+        assert _normalise("Bukayo Saka") == "bukayo saka"
+        assert _normalise("Kevin De Bruyne") == "kevin de bruyne"
+
+    def test_diacritics_and_separators_still_normalise(self):
+        assert _normalise("Ødegaard") == "odegaard"
+        assert _normalise("Ruben Dias-Silva") == "ruben dias silva"
+
+
+# --- TestDecodeEntities ---
+
+class TestDecodeEntities:
+    """The payload is decoded once at the boundary, not field by field (#263)."""
+
+    def test_decodes_a_player_name(self):
+        assert decode_entities("Dara O&#039;Shea") == "Dara O'Shea"
+
+    def test_walks_nested_structures(self):
+        # `player_name` is not the only escaped key: `team_title` carries it in
+        # the league payload, and per-match rows carry club names of their own.
+        payload = {
+            "players": [{"player_name": "Nico O&#039;Reilly", "team_title": "Manchester City"}],
+            "matches": [{"h_team": "Nott&amp;m", "goals": {"h": "2"}}],
+        }
+        assert decode_entities(payload) == {
+            "players": [{"player_name": "Nico O'Reilly", "team_title": "Manchester City"}],
+            "matches": [{"h_team": "Nott&m", "goals": {"h": "2"}}],
+        }
+
+    def test_leaves_non_strings_alone(self):
+        assert decode_entities({"time": 1800, "xG": 12.5, "ok": True, "none": None}) == {
+            "time": 1800,
+            "xG": 12.5,
+            "ok": True,
+            "none": None,
+        }
+
+    def test_keys_are_not_decoded(self):
+        # Keys are Understat's field names rather than served text; rewriting
+        # one would rename a field the parser looks up.
+        assert decode_entities({"player_name": "x"}) == {"player_name": "x"}
+
+
+# --- TestPayloadEntityDecoding ---
+
+class TestPayloadEntityDecoding:
+    """Nothing downstream should ever see an escaped name (#263)."""
+
+    def _response(self, payload):
+        response = MagicMock()
+        response.json.return_value = payload
+        response.raise_for_status.return_value = None
+        return response
+
+    async def test_league_players_carry_decoded_names(self, mock_league_api_response):
+        # Patched at the HTTP layer rather than at `_get_api_json`, because the
+        # decode lives inside `_get_api_json` -- stubbing that would test the
+        # stub. This is the whole path a real payload takes.
+        payload = dict(mock_league_api_response)
+        payload["players"] = [
+            {**mock_league_api_response["players"][0],
+             "player_name": "Dara O&#039;Shea",
+             "team_title": "Ipswich"}
+        ]
+        client = UnderstatClient()
+        with patch.object(
+            client._http, "get", new_callable=AsyncMock, return_value=self._response(payload)
+        ):
+            players = await client.get_league_players()
+
+        assert players[0]["name"] == "Dara O'Shea"
+
+    async def test_escaped_team_title_still_passes_the_club_gate(self):
+        # The club gate compares a raw `team_title` against TEAM_NAME_MAP's
+        # plain values, so an entity in a club name would fail all 20 of that
+        # club's players at once -- the #229 shape, from the #263 cause.
+        payload = {
+            "players": [
+                {"id": "1", "player_name": "Some Player", "team_title": "Nott&amp;ingham Forest",
+                 "position": "M", "games": "3", "time": "270"}
+            ]
+        }
+        client = UnderstatClient()
+        with patch.object(
+            client._http, "get", new_callable=AsyncMock, return_value=self._response(payload)
+        ):
+            players = await client.get_league_players()
+
+        assert players[0]["team"] == "Nott&ingham Forest"
+
+    def test_html_embedded_payload_decodes_the_same_way(self):
+        client = UnderstatClient()
+        html_page = (
+            "<script>var playersData = JSON.parse('"
+            '[{"player_name":"Luke O&#039;Nien","team_title":"Sunderland"}]'
+            "');</script>"
+        )
+        assert client._extract_json_data(html_page, "playersData") == [
+            {"player_name": "Luke O'Nien", "team_title": "Sunderland"}
+        ]
+
+
+# --- TestCrossSourceNameContract ---
+
+class TestCrossSourceNameContract:
+    """A payload row as Understat actually serves it, against FPL's own spelling.
+
+    The gap #263 fell through: every existing matcher test uses names already
+    clean on both sides, so the one thing the matcher exists to do -- reconcile
+    two sources that spell the same player differently -- was never tested
+    against a real Understat string.
+    """
+
+    def _pool_row(self, player_name, team_title, position, minutes):
+        # Built through the parser from a raw payload row, so the test cannot
+        # accidentally hand the matcher a cleaner name than production does.
+        return UnderstatClient()._parse_player(
+            {
+                "id": "1",
+                "player_name": player_name,
+                "team_title": team_title,
+                "position": position,
+                "games": "3",
+                "time": str(minutes),
+            }
+        )
+
+    @pytest.mark.parametrize(
+        ("understat_name", "understat_team", "fpl_web_name", "fpl_team", "minutes"),
+        [
+            ("Dara O'Shea", "Ipswich", "O'Shea", "Ipswich Town", 270),
+            ("Nico O'Reilly", "Manchester City", "O'Reilly", "Man City", 150),
+            ("Luke O'Nien", "Sunderland", "O'Nien", "Sunderland", 66),
+        ],
+    )
+    def test_apostrophe_names_join(
+        self, understat_name, understat_team, fpl_web_name, fpl_team, minutes
+    ):
+        pool = [self._pool_row(understat_name, understat_team, "D", minutes)]
+        match = match_fpl_to_understat(
+            fpl_web_name, fpl_team, pool, fpl_position="DEF", fpl_minutes=minutes
+        )
+        assert match is not None
+        assert match["name"] == understat_name
+
+    async def test_an_escaped_payload_joins_end_to_end(self):
+        # The failing case from the issue, start to finish: the raw escaped
+        # string Understat serves, fetched through the client, matched against
+        # FPL's own plain `web_name`.
+        payload = {
+            "players": [
+                {"id": "1", "player_name": "Dara O&#039;Shea", "team_title": "Ipswich",
+                 "position": "D", "games": "3", "time": "270"}
+            ]
+        }
+        response = MagicMock()
+        response.json.return_value = payload
+        response.raise_for_status.return_value = None
+
+        client = UnderstatClient()
+        with patch.object(client._http, "get", new_callable=AsyncMock, return_value=response):
+            pool = await client.get_league_players()
+
+        match = match_fpl_to_understat(
+            "O'Shea", "Ipswich Town", pool, fpl_position="DEF", fpl_minutes=270
+        )
+        assert match is not None
+        assert match["name"] == "Dara O'Shea"
+
+    def test_a_row_that_skipped_the_boundary_still_joins(self):
+        # The second layer earning its place: a row assembled by a caller
+        # rather than fetched -- a test, a cached fixture, the historical
+        # providers -- never passed through `decode_entities`, so the matcher
+        # itself has to tolerate an entity. The name it carries stays as the
+        # caller supplied it; only the join is rescued.
+        pool = [self._pool_row("Dara O&#039;Shea", "Ipswich", "D", 270)]
+        match = match_fpl_to_understat(
+            "O'Shea", "Ipswich Town", pool, fpl_position="DEF", fpl_minutes=270
+        )
+        assert match is not None
+        assert match["name"] == "Dara O&#039;Shea"
+
+
+# --- TestNameJoinStats ---
+
+class TestNameJoinStats:
+    """A player the pool should carry and doesn't had no signal at all (#263)."""
+
+    def _pool(self):
+        return [
+            {"name": "Bukayo Saka", "team": "Arsenal", "position": "M S", "minutes": 900},
+            {"name": "Declan Rice", "team": "Arsenal", "position": "M", "minutes": 880},
+        ]
+
+    def test_a_match_counts_as_an_attempt(self):
+        assert match_fpl_to_understat(
+            "Saka", "Arsenal", self._pool(), fpl_position="MID", fpl_minutes=900
+        ) is not None
+        stats = understat_name_join_stats()
+        assert (stats["attempted"], stats["matched"], stats["missed"]) == (1, 1, 0)
+        assert stats["unmatched"] == []
+
+    def test_a_miss_is_counted_and_named(self):
+        assert match_fpl_to_understat(
+            "Jair Cunha", "Arsenal", self._pool(), fpl_position="DEF", fpl_minutes=270
+        ) is None
+        stats = understat_name_join_stats()
+        assert (stats["attempted"], stats["missed"], stats["miss_rate"]) == (1, 1, 1.0)
+        assert stats["unmatched"] == ["Jair Cunha (Arsenal, 270m)"]
+
+    def test_the_miss_reaches_the_debug_log_with_its_rate(self, caplog):
+        with caplog.at_level(logging.DEBUG, logger="fpl_cli.api.understat"):
+            match_fpl_to_understat(
+                "Jair Cunha", "Arsenal", self._pool(), fpl_position="DEF", fpl_minutes=270
+            )
+
+        assert "No Understat row matched Jair Cunha (Arsenal, 270m)" in caplog.text
+        assert "1 of 1 FPL players with minutes" in caplog.text
+
+    def test_a_miss_is_debug_only_and_never_a_warning(self, caplog):
+        # A few percent of misses is normal, so a single one must not shout --
+        # it is a jump in the rate that means something.
+        with caplog.at_level(logging.WARNING):
+            match_fpl_to_understat(
+                "Jair Cunha", "Arsenal", self._pool(), fpl_position="DEF", fpl_minutes=270
+            )
+
+        assert caplog.text == ""
+        assert understat_join_warnings() == []
+
+    def test_a_minuteless_player_is_not_counted(self):
+        # Legitimately absent from Understat's pool, and several hundred of
+        # them would bury the players whose absence is surprising.
+        match_fpl_to_understat("Some Kid", "Arsenal", self._pool(), fpl_minutes=0)
+        match_fpl_to_understat("Another Kid", "Arsenal", self._pool())
+        assert understat_name_join_stats()["attempted"] == 0
+
+    def test_a_past_season_pool_is_not_counted(self):
+        # A club promoted since is absent from an older pool by definition, so
+        # its misses say nothing about the join (see `_report_unmatched_team`).
+        match_fpl_to_understat(
+            "Some Player", "Arsenal", self._pool(), fpl_minutes=270, season_label="2024-25"
+        )
+        assert understat_name_join_stats()["attempted"] == 0
+
+    def test_an_unresolved_club_is_not_counted(self):
+        # The club tripwire already reports this once; counting it here would
+        # restate one club gap as twenty name misses.
+        match_fpl_to_understat("Some Player", "Coventry City", self._pool(), fpl_minutes=270)
+        assert understat_name_join_stats()["attempted"] == 0
+        assert unmatched_understat_teams() == ["Coventry City"]
+
+    def test_a_cross_club_fallback_match_counts_as_matched(self):
+        # #234's pass still resolves the player, so it is a join success.
+        pool = [
+            {"name": "Bukayo Saka", "team": "Arsenal", "position": "M S", "minutes": 900},
+            {"name": "Some Mover", "team": "Chelsea", "position": "D", "minutes": 270},
+        ]
+        match = match_fpl_to_understat(
+            "Some Mover", "Arsenal", pool, fpl_position="DEF", fpl_minutes=270
+        )
+        assert match is not None
+        stats = understat_name_join_stats()
+        assert (stats["attempted"], stats["matched"]) == (1, 1)
+
+    def test_the_tally_is_reset_per_run(self):
+        # The autouse fixture calls `reset_understat_join_warnings`, so a
+        # previous command's misses cannot leak into this one's rate.
+        assert understat_name_join_stats() == {
+            "attempted": 0,
+            "matched": 0,
+            "missed": 0,
+            "miss_rate": 0.0,
+            "unmatched": [],
+        }
