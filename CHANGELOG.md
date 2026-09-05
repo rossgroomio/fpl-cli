@@ -1,6 +1,34 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [2.4.1] - 2026-09-05
+
+### Bug Fixes
+
+- polish output inconsistencies found in the v2.4 test-plan run (#239)
+- keep agent progress off stdout so JSON output stays parseable (#240)
+- stop league-recap calling a manager's first fine their second (#241)
+- write team_finances.json in stable diff order with real UTF-8 (#244)
+- repair squad-builder and update-gw-prep's normalisation call (#245)
+- restore xG data for a signing yet to play for their new club (#242)
+- scale the `fpl xg` minutes floor to the gameweeks played (#243)
+- show returnee week-over-week changes on every run of a gameweek (#246)
+- stop review bench comparisons mixing combined and per-player (#249)
+- stop fpl returnees flagging a healthy Understat team map (#248)
+- say which league history file is unreadable, and how to repair it (#250)
+- stop GW review dropping the gameweek's top scorer (#252)
+- report every table-mode failure on stderr instead of stdout (#251)
+- raise when include_match_data lacks include_players (#254)
+- stop early-season advice offering ep_next as a second opinion (#253)
+- centre GW review's Nearby Rivals window on the user (#257)
+- report a malformed fines rule instead of crashing with a traceback (#258)
+- report missing or wrong classic IDs instead of masking them (#259)
+- rate a returning promoted club from its Championship record (#256)
+
+### Refactoring
+
+- read every command's settings off the Click context (#247)
+
 ## [2.4.0] - 2026-09-04
 
 ### Bug Fixes
