@@ -572,7 +572,7 @@ fpl_cli/
 │   │   └── data_prep.py          # ScoringContext / ScoringData + prepare_scoring_data()
 │   ├── player_prior.py           # Player prior (Bayesian early-season confidence)
 │   ├── team_ratings.py           # TeamRatingsService + Calculator (1-7 scale)
-│   ├── team_ratings_prior.py     # Previous-season prior + Bayesian blending (cutoff GW12); every pool it reads (the PL pool from either source, the Championship division) takes full-season records only, and every club's basis is written to the cache as `inputs`
+│   ├── team_ratings_prior.py     # Previous-season prior + Bayesian blending (cutoff GW12); every pool it reads (the PL pool from either source, the Championship division) takes full-season records only, and every club's basis is written to the cache as `inputs`. The cache is invalidated by the methodology version, the league's club list, and a one-directional provenance check (`_inputs_have_improved`) that rebuilds only when an input the cached run lacked is available now — so setting `FOOTBALL_DATA_API_KEY` reaches the promoted sides without the file being deleted (#112). A rebuild is then held to `_is_worse_than_cache` (source rank and count of clubs on an estimate) before it may replace the cached prior, and `_record_attempt` stamps the file either way so a down provider costs one retry, not one per command
 │   ├── matchup.py                # Fixture matchup scoring (0-10)
 │   ├── fixture_predictions.py    # BGW/DGW predictions from YAML + live detection, plus the point-in-time "did his club have a fixture, and how many" read a past gameweek needs
 │   ├── season_previews.py       # Per-team season intel: schema, per-section decay, coverage gate, name resolution
@@ -619,7 +619,7 @@ platformdirs (user_config_dir / user_data_dir)  # macOS: ~/Library/Application S
 ├── fixture_predictions.yaml      # Optional BGW/DGW predictions override (config dir); takes precedence over the shipped copy
 ├── previews/{TEAM}.yaml          # Optional season preview intel, one file per team (config dir); user-supplied, nothing shipped but EXAMPLE.yaml
 ├── team_ratings.yaml             # Cached team strength ratings (data dir, auto-refreshed; metadata.season invalidates it across a season boundary)
-├── team_ratings_prior.yaml       # Cached team ratings priors (data dir), with per-club `inputs` (basis: premier_league / championship / promoted_fallback / incomplete_record, matches, the rates ranked and, for a Championship side, as played) so a rating can be traced to its record (#235)
+├── team_ratings_prior.yaml       # Cached team ratings priors (data dir), with per-club `inputs` (basis: premier_league / championship / promoted_fallback / incomplete_record, matches, the rates ranked and, for a Championship side, as played) so a rating can be traced to its record (#235), and `metadata.football_data_configured` recording the install-level inputs the prior has been built against — updated whenever a rebuild is attempted, improved or not, so one input change costs one rebuild (#112)
 ├── player_prior.yaml             # Cached player priors (data dir, generated, season/GW invalidation)
 ├── chip_plan.json                # User's chip plan (data dir, created via `fpl chips add`)
 ├── team_finances.json            # Cached sell prices from scraper (data dir, 12h TTL)
