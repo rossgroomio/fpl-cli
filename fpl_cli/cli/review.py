@@ -301,6 +301,11 @@ def review_command(
                 )
                 collected_data["research_summary"] = llm["research_summary"]
                 collected_data["synthesis_summary"] = llm["synthesis_summary"]
+                # Empty on a clean run. When it isn't, the saved report says so
+                # in its own body: the stderr warning is gone by the time
+                # someone reads the file weeks later, and a verdict the model
+                # dropped must not read as one deliberately omitted (#266).
+                collected_data["synthesis_problems"] = llm["synthesis_problems"]
 
             # --compare-recs reads from the same season directory --save writes
             # to, so resolve it once for both rather than per branch: resolving

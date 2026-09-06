@@ -53,7 +53,7 @@ class PerplexityProvider(OpenAICompatProvider):
             return base
         return LLMResponse(
             content=base.content, model=base.model, usage=base.usage,
-            citations=citations,
+            citations=citations, stop_reason=base.stop_reason,
         )
 
     def post_process(self, content: str) -> str:
