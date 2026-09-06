@@ -36,6 +36,44 @@ unreachability. It does not run on PRs.
 A separate `PR Title` check (`.github/workflows/pr-title.yml`) fails the
 PR when the title doesn't follow the conventional-commit format below.
 
+## Dependencies
+
+There is no lockfile. `pip install -e ".[dev]"` — locally and in CI —
+resolves fresh from the ranges in `pyproject.toml`, which is the same
+resolution `pip install fplkit` gives a user: CI tests what users get. A
+lock could not change that for anyone installing from PyPI, and it would
+keep CI green on the pinned version while a fresh install broke — the
+class of failure #80 hit with PuLP. The `requirements.lock` that used to
+sit at the repo root was that in miniature: three runtime dependencies
+short, generated for macOS and Python 3.12 so a hash-checked install on
+the Linux/3.11 CI runner refused it, and read by nothing (#81). Don't add
+another. The weekly CI cron re-resolves from scratch, so an upstream
+release that breaks main is caught within a week even with no commit
+behind it.
+
+An upper bound is deliberate, not default. A runtime dependency gets one
+only when its next major is a real prospect *and* the code leans on
+surface that major is expected to change:
+
+| Bound | Why |
+|---|---|
+| `httpx<1` | every API client, and `respx` in the tests couples to its transport internals; 0.28 already removed deprecated arguments and 1.0 is the announced cleanup |
+| `pydantic<3` | every model is a v2 `BaseModel` with `ConfigDict`, aliases and `computed_field`; v3 is where the v2 deprecations are removed |
+| `click<9` | the whole CLI, and `CliRunner` in every CLI test; 8.2 already changed how stderr is captured, and 9 removes the 8.x deprecations |
+| `platformdirs<5` | decides where user config, data and cache live (`paths.py`); a major that moves a location strands existing users' files |
+| `pulp<4` | 4.0 removes both solver calls `squad_allocator.py` makes (#80, #82) |
+
+Everything else stays unbounded. `rich` and `keyring` bump majors
+routinely without breaking anything here — a bound there is a PR every
+few months for no protection — and the rest have no major on the
+horizon. When a release does break main, fix the code or add a bound in
+the PR that turns CI green, and add the row above. Dev tools are never
+capped: CI runs them at latest, and a break there is caught and fixed on
+the next PR without reaching a user.
+
+`tests/test_dependencies.py` holds this table to `pyproject.toml` in
+both directions and fails if a lockfile reappears.
+
 ## Commit subjects & PR titles
 
 This repo is public. Keep real manager and league names, entry/league IDs, and FPL account details out of commit subjects, PR titles and bodies, issues, and the changelog — use placeholders when quoting a generated report. Footballer and club names are public data and are fine.
