@@ -778,8 +778,9 @@ its own headline numbers against the table and fill a manager it could not fetch
 table's row. Once the next gameweek's deadline passes the table describes *that* gameweek,
 and the recap takes the same replay path an explicitly older `-g` takes: every figure comes
 from each manager's own gameweek history, positions and cumulative totals are derived
-rather than read off the table (for draft, summed from the ledger), and a manager whose
-fetch fails is recorded unknown rather than filled in. The run says so on stderr and raises
+rather than read off the table (for draft, summed from the ledger), and a manager the replay
+cannot answer for — their fetch failed, or it came back without their gameweek history — is
+recorded unknown rather than filled in from the table. The run says so on stderr and raises
 a `league_standings_moved_on` warning under `--format json`. The gameweek is recorded
 either way — an in-progress gameweek is never recappable, so the recap of the one before it
 has to keep working while the next one plays.

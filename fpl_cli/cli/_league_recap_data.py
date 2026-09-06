@@ -283,15 +283,19 @@ async def _fetch_all_manager_data(
     Point-in-time headline numbers (gross points, cumulative total) are read
     from each manager's own `entry_history` -- present in the picks response
     for any gameweek, past or present -- rather than the standings row, which
-    only ever reflects the *current* state. A picks response with no
-    `entry_history` at all falls back to the standings row, the only source
-    left for it. League position is left to the caller: it needs
-    cross-manager context (and, for a league that started after GW1, a
+    only ever reflects the *current* state. A degraded picks response
+    carrying neither falls back to the standings row only on a live capture,
+    where it describes the same gameweek. On a replay it describes a later
+    one, so it is not used at all: the manager is dropped where their
+    gameweek points are what is missing, and left without a cumulative total
+    where that is (issue #272). League position is left to the caller: it
+    needs cross-manager context (and, for a league that started after GW1, a
     baseline offset) a per-manager fetch does not have.
 
     `is_live_gw` marks the standings as still describing `gw` rather than a
     later gameweek the season has moved on to, which gates the reconciliation
-    against the standings row -- see RecapReconciliationError.
+    against the standings row -- see RecapReconciliationError -- and both
+    headline-number fallbacks.
     """
     sem = asyncio.Semaphore(_PICKS_CONCURRENCY)
 
@@ -314,8 +318,30 @@ async def _fetch_all_manager_data(
         automatic_subs = picks_response.get("automatic_subs", [])
 
         transfer_cost = entry_history.get("event_transfers_cost", 0)
-        gross_points = entry_history.get("points", standings_gross)
-        total_pts = entry_history.get("total_points", standings_total)
+        gross_points = entry_history.get("points")
+        if gross_points is None:
+            if not is_live_gw:
+                # The standings row is the only other source of a gameweek
+                # total, and on a replay it belongs to a later gameweek. Drop
+                # the manager exactly as a failed picks fetch is dropped, so
+                # `build_history_rows` records them UNKNOWN: a gap is visibly
+                # a gap, where a standings number would be indistinguishable
+                # from a real one and would feed `gw_rank`, the awards, the
+                # fines ruling and the append-only ledger (issue #272).
+                logger.warning(
+                    "No point-in-time gameweek points for %s (entry %s) in GW%s: the picks "
+                    "response carried no gameweek history, and the standings describe a "
+                    "later gameweek. Recording them as unknown.",
+                    manager_name, league_entry_id, gw,
+                )
+                return None
+            gross_points = standings_gross
+        # Unlike gross points, a missing cumulative total has somewhere to
+        # land: `total_points` is NotRequired, and every consumer already
+        # treats it as unavailable rather than zero.
+        total_pts = entry_history.get("total_points")
+        if total_pts is None and is_live_gw:
+            total_pts = standings_total
         gw_points = (gross_points - transfer_cost) if use_net_points else gross_points
 
         auto_sub_in_ids = {sub["element_in"] for sub in automatic_subs}
@@ -432,7 +458,6 @@ async def _fetch_all_manager_data(
             entry_id=league_entry_id,
             gw_points=gw_points,
             gross_points=gross_points,
-            total_points=total_pts,
             gw_rank=rank,
             captain=captain_name,
             captain_points=captain_points,
@@ -447,6 +472,8 @@ async def _fetch_all_manager_data(
             transfers=transfers,
             transfers_made=num_transfers,
         )
+        if total_pts is not None:
+            result["total_points"] = total_pts
         # Four more figures the rollover destroys, already in hand on the
         # object the headline numbers came from (R2). Recorded only where the
         # response actually carried them, so a partial one leaves them absent

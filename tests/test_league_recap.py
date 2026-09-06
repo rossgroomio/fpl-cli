@@ -1270,7 +1270,7 @@ class TestClassicHeadlineNumberSourcing:
         assert data_gross["managers"][0]["gw_points"] == 50
         assert data_net["managers"][0]["gw_points"] == 42
 
-    async def test_missing_entry_history_falls_back_to_standings(self):
+    async def test_missing_entry_history_on_a_live_capture_falls_back_to_standings(self):
         standings = [{"entry": 1, "player_name": "Alice", "event_total": 33, "total": 333}]
         client = _FakeClassicClient(
             _standings_response(standings),
@@ -1283,6 +1283,87 @@ class TestClassicHeadlineNumberSourcing:
         m = data["managers"][0]
         assert m["gross_points"] == 33
         assert m["total_points"] == 333
+
+    async def test_missing_entry_history_on_a_replay_drops_the_manager(self, caplog):
+        """Issue #272: the standings belong to a later gameweek, so there is
+        nothing left to source this gameweek's headline numbers from. The
+        manager is dropped as a failed picks fetch is, leaving the cohort to
+        record them UNKNOWN rather than an OK row carrying the wrong era's
+        points."""
+        standings = [{"entry": 1, "player_name": "Alice", "event_total": 33, "total": 333}]
+        client = _FakeClassicClient(
+            _standings_response(standings),
+            {1: {"picks": [], "active_chip": None, "automatic_subs": []}},
+        )
+        with caplog.at_level(logging.WARNING, logger="fpl_cli.cli._league_recap_data"):
+            data = await collect_classic_recap_data(
+                client, {"fpl": {"classic_league_id": 1}}, gw=10,
+                live_stats={}, player_map={}, teams={}, is_live_gw=False,
+            )
+        assert data["managers"] == []
+        # The cohort is what `build_history_rows` turns into the unknown row.
+        assert [c["manager_name"] for c in data["standings_cohort"]] == ["Alice"]
+        assert "Alice" in caplog.text
+        assert "unknown" in caplog.text
+
+    async def test_missing_entry_history_on_a_replay_leaves_the_rest_intact(self):
+        standings = [
+            {"entry": 1, "player_name": "Alice", "event_total": 50, "total": 500},
+            {"entry": 2, "player_name": "Bob", "event_total": 40, "total": 480},
+        ]
+        client = _FakeClassicClient(
+            _standings_response(standings),
+            {
+                1: _picks_response(points=45, total_points=420),
+                2: {"picks": [], "active_chip": None, "automatic_subs": []},
+            },
+        )
+        data = await collect_classic_recap_data(
+            client, {"fpl": {"classic_league_id": 1}}, gw=10,
+            live_stats={}, player_map={}, teams={}, is_live_gw=False,
+        )
+        assert [m["manager_name"] for m in data["managers"]] == ["Alice"]
+        assert data["managers"][0]["gross_points"] == 45
+
+    async def test_missing_cumulative_total_on_a_replay_is_left_unset(self):
+        """A cumulative total has somewhere to land that gross points does
+        not: `total_points` is optional, and unset reads as unavailable
+        everywhere downstream."""
+        standings = [{"entry": 1, "player_name": "Alice", "event_total": 60, "total": 600}]
+        client = _FakeClassicClient(
+            _standings_response(standings),
+            {1: {
+                "picks": [],
+                "entry_history": {"points": 45, "event_transfers_cost": 0, "event_transfers": 0},
+                "active_chip": None,
+                "automatic_subs": [],
+            }},
+        )
+        data = await collect_classic_recap_data(
+            client, {"fpl": {"classic_league_id": 1}}, gw=10,
+            live_stats={}, player_map={}, teams={}, is_live_gw=False,
+        )
+        m = data["managers"][0]
+        assert m["gross_points"] == 45
+        assert "total_points" not in m
+        assert "overall_rank" not in m
+
+    async def test_missing_cumulative_total_on_a_live_capture_falls_back_to_standings(self):
+        standings = [{"entry": 1, "player_name": "Alice", "event_total": 45, "total": 600}]
+        client = _FakeClassicClient(
+            _standings_response(standings),
+            {1: {
+                "picks": [],
+                "entry_history": {"points": 45, "event_transfers_cost": 0, "event_transfers": 0},
+                "active_chip": None,
+                "automatic_subs": [],
+            }},
+        )
+        data = await collect_classic_recap_data(
+            client, {"fpl": {"classic_league_id": 1}}, gw=10,
+            live_stats={}, player_map={}, teams={}, is_live_gw=True,
+        )
+        assert data["managers"][0]["total_points"] == 600
 
     async def test_reconciliation_does_not_run_for_a_past_gameweek(self):
         """A replay is allowed to diverge from (always-current) standings."""
