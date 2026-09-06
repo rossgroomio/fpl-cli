@@ -228,7 +228,7 @@ Run `fpl init` to configure interactively. Settings stored in your platform's co
 | League ID | Standings, fines, league recaps |
 | LLM providers | `--summarise` and `--scout` flags (Perplexity, Anthropic, OpenAI, or any compatible API) |
 | FPL credentials | `fpl squad sell-prices` (browser scraping) |
-| `FOOTBALL_DATA_API_KEY` | League table in `fpl review`; Championship form for promoted teams in pre-season ratings |
+| `FOOTBALL_DATA_API_KEY` | League table in `fpl review`; Championship form for promoted teams in pre-season ratings (set it later and the next command re-rates them — nothing to delete) |
 
 ```bash
 # LLM providers (for --summarise and --scout)

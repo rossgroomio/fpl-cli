@@ -148,6 +148,15 @@ class TeamRating:
         return (self.atk_home + self.atk_away + self.def_home + self.def_away) / 4
 
 
+RATING_AXES = frozenset({"atk_home", "atk_away", "def_home", "def_away"})
+"""The four axes of a :class:`TeamRating`, for code validating them by name.
+
+Anything reading axes out of user-editable YAML -- the overrides file, the
+prior cache -- needs this list, and a local copy in each is a copy to forget
+when the axes change.
+"""
+
+
 @dataclass
 class RatingsMetadata:
     """Metadata about the ratings."""
@@ -312,7 +321,6 @@ class TeamRatingsService:
         if not overrides or not isinstance(overrides, dict):
             return
 
-        valid_axes = {"atk_home", "atk_away", "def_home", "def_away"}
         for team, axes in overrides.items():
             if team not in self._ratings:
                 logger.warning("Override for unknown team: %s", team)
@@ -321,7 +329,7 @@ class TeamRatingsService:
                 continue
             rating = self._ratings[team]
             for axis, value in axes.items():
-                if axis not in valid_axes:
+                if axis not in RATING_AXES:
                     logger.warning("Override for unknown axis: %s.%s", team, axis)
                     continue
                 if not isinstance(value, int) or not (1 <= value <= 7):
