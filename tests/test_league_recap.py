@@ -722,7 +722,29 @@ class TestTransferAwards:
         award = awards["transfer_genius"]
         assert award["manager_name"] == "Alice"
         assert award["value"] == 13
-        assert "Best: Palmer for Wilson (+13)" in award["detail"]
+        assert "Best: Palmer in for Wilson (+13)" in award["detail"]
+
+    def test_move_phrasing_states_direction_not_just_names(self):
+        # Regression for #146: "X for Y" read as X leaving, Y arriving --
+        # backwards from the actual move. Asymmetric names so a reversed
+        # direction would fail this assertion outright.
+        transfers = [
+            RecapTransfer(
+                player_in="Savinho", player_in_team="MCI", player_in_points=0,
+                player_out="Maddison", player_out_team="TOT", player_out_points=1,
+                net=-1, cost=0,
+            ),
+        ]
+        managers = [
+            _make_manager(name="Alice", transfers=transfers),
+            _make_manager(name="Bob"),
+        ]
+        awards: RecapAwards = {}  # type: ignore[typeddict-item]
+        _compute_transfer_awards(managers, awards)
+        detail = awards["transfer_disaster"]["detail"]
+        assert "Savinho in for Maddison (-1)" in detail
+        assert "Maddison in for Savinho" not in detail
+        assert "Savinho for Maddison" not in detail
 
     def test_transfer_disaster(self):
         transfers = [
@@ -813,8 +835,8 @@ class TestTransferAwards:
         assert "+13 raw across 2 transfers" in detail
         assert "-4 hit" in detail
         # Top move first, second move via "also"
-        assert "Best: A for B (+8)" in detail
-        assert "also C for D (+5)" in detail
+        assert "Best: A in for B (+8)" in detail
+        assert "also C in for D (+5)" in detail
 
     def test_detail_caps_at_three_with_omitted_count(self):
         # 5 transfers, cap=3, expect "2 more omitted" tail.
@@ -834,9 +856,9 @@ class TestTransferAwards:
         _compute_transfer_awards(managers, awards)
         detail = awards["transfer_genius"]["detail"]
         # Top 3 by net (descending): In0 (+10), In1 (+9), In2 (+8)
-        assert "Best: In0 for Out0 (+10)" in detail
-        assert "In1 for Out1 (+9)" in detail
-        assert "In2 for Out2 (+8)" in detail
+        assert "Best: In0 in for Out0 (+10)" in detail
+        assert "In1 in for Out1 (+9)" in detail
+        assert "In2 in for Out2 (+8)" in detail
         assert "In3" not in detail
         assert "In4" not in detail
         assert "2 more omitted" in detail
@@ -860,9 +882,9 @@ class TestTransferAwards:
         _compute_transfer_awards(managers, awards)
         detail = awards["transfer_disaster"]["detail"]
         # Top 3 worst by net (ascending): Bust4 (-6), Bust3 (-5), Bust2 (-4)
-        assert "Worst: Bust4 for Star4 (-6)" in detail
-        assert "Bust3 for Star3 (-5)" in detail
-        assert "Bust2 for Star2 (-4)" in detail
+        assert "Worst: Bust4 in for Star4 (-6)" in detail
+        assert "Bust3 in for Star3 (-5)" in detail
+        assert "Bust2 in for Star2 (-4)" in detail
         assert "Bust0" not in detail
         assert "Bust1" not in detail
         assert "2 more omitted" in detail
@@ -884,10 +906,10 @@ class TestTransferAwards:
         awards: RecapAwards = {}  # type: ignore[typeddict-item]
         _compute_transfer_awards(managers, awards)
         detail = awards["transfer_disaster"]["detail"]
-        assert "Worst: Mid for Out (+3)" not in detail
+        assert "Worst: Mid in for Out (+3)" not in detail
         assert "All swaps were profitable" in detail
         assert "the hit cost produced the loss" in detail
-        assert "Mid for Out (+3)" in detail
+        assert "Mid in for Out (+3)" in detail
 
     def test_single_transfer_no_hit_compact_format(self):
         # Single transfer, no hit: skip the redundant raw/count parenthetical.
@@ -906,7 +928,7 @@ class TestTransferAwards:
         _compute_transfer_awards(managers, awards)
         detail = awards["transfer_genius"]["detail"]
         assert "Alice gained 7 net pts overall." in detail
-        assert "Best: Solo for Gone (+7)." in detail
+        assert "Best: Solo in for Gone (+7)." in detail
         assert "raw across" not in detail
         assert "hit" not in detail
 
@@ -2219,7 +2241,7 @@ class TestWaiverAwards:
         awards: RecapAwards = {}  # type: ignore[typeddict-item]
         _compute_waiver_awards(managers, awards)
         detail = awards["waiver_disaster"]["detail"]
-        assert "Bust for Star" in detail  # the real worst (-10), unaffected by chain
+        assert "Bust in for Star" in detail  # the real worst (-10), unaffected by chain
         assert "Georginio" not in detail  # the intermediate must not appear
 
     def test_no_transactions_no_awards(self):
@@ -2272,13 +2294,13 @@ class TestWaiverAwards:
         assert "gained 15 net pts overall" in detail
         assert "+15 raw across 2 waivers" in detail
         assert "hit" not in detail
-        assert "Best: A for B (+8)" in detail
-        assert "also C for D (+7)" in detail
+        assert "Best: A in for B (+8)" in detail
+        assert "also C in for D (+7)" in detail
 
-    def test_waiver_disaster_compact_format(self):
-        # Single negative-net waiver. Verify the new helper format applies on
-        # the waiver disaster path: compact (no "raw across" suffix), no
-        # "hit" mention (waivers have no transfer cost).
+    def test_waiver_disaster_single_move_states_its_kind(self):
+        # Single negative-net waiver. Draft always states the breakdown, even
+        # for a lone move, so this reads "(1 waiver)" -- no "raw across"
+        # (that's redundant at n=1) and no "hit" (waivers have no cost).
         txns = [
             RecapDraftTransaction(
                 player_in="Flop", player_in_team="WHU", player_in_points=0,
@@ -2294,10 +2316,140 @@ class TestWaiverAwards:
         _compute_waiver_awards(managers, awards)
         assert awards["waiver_disaster"]["value"] == -8
         detail = awards["waiver_disaster"]["detail"]
-        assert "Alice lost 8 net pts overall." in detail
-        assert "Worst: Flop for Legend (-8)." in detail
+        assert "Alice lost 8 net pts overall (1 waiver)." in detail
+        assert "Worst: Flop in for Legend (-8)." in detail
         assert "raw across" not in detail
         assert "hit" not in detail
+
+    def test_waiver_genius_single_free_agent_states_its_kind(self):
+        # Single positive-net free-agent pickup (kind "f"): the headline must
+        # say "free agent", never fold it into "waiver".
+        txns = [
+            RecapDraftTransaction(
+                player_in="Star", player_in_team="ARS", player_in_points=9,
+                player_out="Dud", player_out_team="LEI", player_out_points=0,
+                net=9, kind="f",
+            ),
+        ]
+        managers = [
+            _make_manager_with_txns("Alice", txns),
+            _make_manager(name="Bob"),
+        ]
+        awards: RecapAwards = {}  # type: ignore[typeddict-item]
+        _compute_waiver_awards(managers, awards)
+        detail = awards["waiver_genius"]["detail"]
+        assert "Alice gained 9 net pts overall (1 free agent)." in detail
+        assert "Best: Star in for Dud (+9)." in detail
+
+    def test_waiver_genius_mixed_kinds_states_the_breakdown(self):
+        # Two waivers, one free agent: the headline must count and label each
+        # kind separately, in waiver/free-agent order, rather than reporting
+        # "3 waivers".
+        txns = [
+            RecapDraftTransaction(
+                player_in="A", player_in_team="ARS", player_in_points=6,
+                player_out="B", player_out_team="TOT", player_out_points=0,
+                net=6, kind="w",
+            ),
+            RecapDraftTransaction(
+                player_in="C", player_in_team="CHE", player_in_points=5,
+                player_out="D", player_out_team="WHU", player_out_points=0,
+                net=5, kind="w",
+            ),
+            RecapDraftTransaction(
+                player_in="E", player_in_team="EVE", player_in_points=4,
+                player_out="F", player_out_team="NFO", player_out_points=0,
+                net=4, kind="f",
+            ),
+        ]
+        managers = [
+            _make_manager_with_txns("Alice", txns),
+            _make_manager(name="Bob"),
+        ]
+        awards: RecapAwards = {}  # type: ignore[typeddict-item]
+        _compute_waiver_awards(managers, awards)
+        detail = awards["waiver_genius"]["detail"]
+        assert "+15 raw across 3 moves: 2 waivers, 1 free agent" in detail
+
+    def test_waiver_genius_all_free_agents_states_the_plural(self):
+        txns = [
+            RecapDraftTransaction(
+                player_in="A", player_in_team="ARS", player_in_points=6,
+                player_out="B", player_out_team="TOT", player_out_points=0,
+                net=6, kind="f",
+            ),
+            RecapDraftTransaction(
+                player_in="C", player_in_team="CHE", player_in_points=5,
+                player_out="D", player_out_team="WHU", player_out_points=0,
+                net=5, kind="f",
+            ),
+        ]
+        managers = [
+            _make_manager_with_txns("Alice", txns),
+            _make_manager(name="Bob"),
+        ]
+        awards: RecapAwards = {}  # type: ignore[typeddict-item]
+        _compute_waiver_awards(managers, awards)
+        detail = awards["waiver_genius"]["detail"]
+        assert "+11 raw across 2 free agents" in detail
+
+    def test_waiver_genius_unknown_kind_counts_as_other_move(self):
+        # A kind outside {"w", "f"} (or missing entirely) must never be
+        # folded into the waiver count.
+        txns = [
+            RecapDraftTransaction(
+                player_in="A", player_in_team="ARS", player_in_points=6,
+                player_out="B", player_out_team="TOT", player_out_points=0,
+                net=6, kind="w",
+            ),
+            RecapDraftTransaction(
+                player_in="C", player_in_team="CHE", player_in_points=5,
+                player_out="D", player_out_team="WHU", player_out_points=0,
+                net=5, kind="",
+            ),
+        ]
+        managers = [
+            _make_manager_with_txns("Alice", txns),
+            _make_manager(name="Bob"),
+        ]
+        awards: RecapAwards = {}  # type: ignore[typeddict-item]
+        _compute_waiver_awards(managers, awards)
+        detail = awards["waiver_genius"]["detail"]
+        assert "+11 raw across 2 moves: 1 waiver, 1 other move" in detail
+
+    def test_waiver_genius_counts_chain_intermediate_dropped_from_display(self):
+        # Truffert in for Frimpong (waiver), Georginio in for Trossard
+        # (waiver), Dango in for Georginio (free agent). The contracted
+        # display collapses the last two into Dango in for Trossard and never
+        # names Georginio, but the headline must still count all 3 raw moves
+        # (2 waivers, 1 free agent) -- the count a reader checks against the
+        # transactions page.
+        txns = [
+            RecapDraftTransaction(
+                player_in="Truffert", player_in_team="???", player_in_points=7,
+                player_out="Frimpong", player_out_team="???", player_out_points=1,
+                net=6, kind="w",
+            ),
+            RecapDraftTransaction(
+                player_in="Georginio", player_in_team="???", player_in_points=1,
+                player_out="Trossard", player_out_team="???", player_out_points=2,
+                net=-1, kind="w",
+            ),
+            RecapDraftTransaction(
+                player_in="Dango", player_in_team="???", player_in_points=8,
+                player_out="Georginio", player_out_team="???", player_out_points=1,
+                net=7, kind="f",
+            ),
+        ]
+        managers = [
+            _make_manager_with_txns("Alice", txns),
+            _make_manager(name="Bob"),
+        ]
+        awards: RecapAwards = {}  # type: ignore[typeddict-item]
+        _compute_waiver_awards(managers, awards)
+        detail = awards["waiver_genius"]["detail"]
+        assert "+12 raw across 3 moves: 2 waivers, 1 free agent" in detail
+        assert "Georginio" not in detail
 
     def test_waiver_detail_caps_at_three(self):
         txns = [
@@ -2315,7 +2467,7 @@ class TestWaiverAwards:
         awards: RecapAwards = {}  # type: ignore[typeddict-item]
         _compute_waiver_awards(managers, awards)
         detail = awards["waiver_genius"]["detail"]
-        assert "Best: In0 for Out0 (+10)" in detail
+        assert "Best: In0 in for Out0 (+10)" in detail
         assert "2 more omitted" in detail
         assert "In4" not in detail
 
@@ -4031,6 +4183,54 @@ class TestCollectorGameweekClubs:
         txn = data["managers"][0]["transactions"][0]
         assert txn["player_in_team"] == "ALP"
         assert txn["player_out_team"] == "ALP"
+
+    async def test_draft_txn_kind_is_stored_verbatim(self):
+        # #146: the free-agent kind "f" must survive collection unchanged,
+        # not be collapsed into a waiver.
+        data = await self._draft_data_with_txn_kind("f")
+        assert data["managers"][0]["transactions"][0]["kind"] == "f"
+
+    async def test_draft_txn_missing_kind_is_not_defaulted_to_waiver(self):
+        # #146: a transaction with no `kind` at all must not silently become
+        # "w" -- that would misclassify an unknown move as a waiver in the
+        # award breakdown. It is stored as the empty string instead.
+        data = await self._draft_data_with_txn_kind(None)
+        assert data["managers"][0]["transactions"][0]["kind"] == ""
+
+    async def _draft_data_with_txn_kind(self, kind: str | None):
+        dp_in = make_draft_player(id=900, code=555, web_name="In", team=2, element_type=3)
+        dp_out = make_draft_player(id=901, code=666, web_name="Out", team=2, element_type=3)
+        main_in = make_player(id=5, code=555, web_name="In", team_id=2)
+        main_out = make_player(id=6, code=666, web_name="Out", team_id=2)
+        league_details = {
+            "league": {"name": "Draft League"},
+            "standings": [{"league_entry": 10, "event_total": 5, "total": 5}],
+            "league_entries": [
+                {"id": 10, "entry_id": 1, "player_first_name": "A", "player_last_name": "B"},
+            ],
+        }
+        txn: dict[str, Any] = {
+            "event": 15, "result": "a", "entry": 1,
+            "element_in": 900, "element_out": 901,
+        }
+        if kind is not None:
+            txn["kind"] = kind
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        client.get_league_details = AsyncMock(return_value=league_details)
+        client.get_bootstrap_static = AsyncMock(return_value={"elements": [dp_in, dp_out]})
+        client.get_league_transactions = AsyncMock(return_value={"transactions": [txn]})
+        client.get_entry_picks = AsyncMock(
+            side_effect=lambda entry_id, gw: {"picks": [{"element": 900, "position": 1}], "subs": []}
+        )
+        with patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=client):
+            return await collect_draft_recap_data(
+                {"fpl": {"draft_league_id": 1}}, gw=15,
+                live_stats={5: {"total_points": 5}, 6: {"total_points": 2}},
+                players=[main_in, main_out], teams=self._TEAMS, is_live_gw=False,
+                gameweek_clubs={5: 1, 6: 1},
+            )
 
     async def test_an_unmatched_draft_player_keeps_the_draft_bootstraps_club(self):
         """No main-game id, so nothing to look the gameweek's answer up by."""

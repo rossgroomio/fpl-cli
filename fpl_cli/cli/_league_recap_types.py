@@ -72,6 +72,13 @@ class RecapDraftTransaction(TypedDict):
     kind: str
 
 
+# The Draft API's `kind` values, translated to reader-facing labels. A `kind`
+# outside this mapping (or the empty string collection stores when the API
+# sent none) is an "other move" -- never folded into the waiver/free-agent
+# counts a reader would check against the transactions page.
+DRAFT_TRANSACTION_KIND_LABELS: dict[str, str] = {"w": "waiver", "f": "free agent"}
+
+
 class RecapManagerEntry(TypedDict):
     """Per-manager data for one gameweek."""
 
