@@ -76,7 +76,7 @@ from typing import Any
 import httpx
 
 from fpl_cli.paths import user_cache_dir
-from fpl_cli.season import get_season_year, season_label
+from fpl_cli.season import get_season_year, is_season_label, season_label
 from fpl_cli.services.scoring.constants import (
     CALIBRATION_ELITE_TARGET,
     DIFFERENTIAL_QUALITY_WEIGHTS,
@@ -564,6 +564,13 @@ def write_constants(
     """Rewrite the generated anchor block in scoring/constants.py in place."""
     import math
 
+    if not is_season_label(season):
+        raise SystemExit(
+            f"Refusing to write calibration season {season!r} — the block records "
+            "it as a machine-read value that `fpl doctor` compares against the "
+            "newest completed season, so a label it cannot parse would break the "
+            'check rather than fail here. Use the hyphenated form, e.g. "2025-26".'
+        )
     bad = {k: v for k, v in anchors.items() if not math.isfinite(v) or v <= 0}
     if bad:
         raise SystemExit(
@@ -589,6 +596,12 @@ def write_constants(
     lines.append(
         f'CALIBRATION_FINGERPRINT = "{scoring_weights_fingerprint()}"'
     )
+    # The season is in the block as a value, not only in the header prose
+    # above, because it is the one calibration input the fingerprint cannot
+    # guard: the anchors are measurements of a cohort, so a rollover with no
+    # re-run leaves every code-side input identical and the anchors wrong.
+    # `fpl doctor` reads it and warns once a newer season has completed (#128).
+    lines.append(f'CALIBRATION_SEASON = "{season}"')
     lines.append(_END_MARK)
     block = "\n".join(lines)
 

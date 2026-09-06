@@ -3,10 +3,10 @@
 Every tunable in the scoring engine lives here: the StatWeight /
 QualityWeights types, the per-family weight configurations, position
 multipliers, the empirically calibrated quality ceilings (written by
-scripts/calibrate_quality_ceilings.py, guarded by the calibration
-fingerprint), consistency bonus magnitudes and phase-in, and the
-selectors that map a scoring family + position to its weights and
-ceiling.
+scripts/calibrate_quality_ceilings.py, guarded on the code side by the
+calibration fingerprint and on the data side by the season the block
+records), consistency bonus magnitudes and phase-in, and the selectors
+that map a scoring family + position to its weights and ceiling.
 """
 
 from __future__ import annotations
@@ -15,8 +15,11 @@ import dataclasses
 import functools
 import hashlib
 from collections.abc import Collection
+from datetime import date
 from math import inf, isfinite
 from typing import Literal, cast
+
+from fpl_cli.season import get_season_year, season_start_year
 
 # ---------------------------------------------------------------------------
 # Weight types
@@ -404,7 +407,31 @@ QUALITY_CEILINGS: dict[tuple[str, Position], float] = {
     ("value", "FWD"): 21.60,
 }
 CALIBRATION_FINGERPRINT = "d14f7c1b3886caea"
+CALIBRATION_SEASON = "2025-26"
 # --- END calibrated quality ceilings (generated) ---
+
+
+def calibration_seasons_behind(today: date | None = None) -> int:
+    """Completed seasons between CALIBRATION_SEASON and the newest completed one.
+
+    The data-side counterpart to `scoring_weights_fingerprint`, which guards
+    only the *code* inputs: a July rollover that passes without a
+    `scripts/calibrate_quality_ceilings.py --write` re-run leaves the anchors
+    describing a cohort that has since turned over, with every code-side input
+    unchanged and CI green (#128). Zero is the intended steady state for a
+    whole season — last season's anchors are the newest measurable ones while
+    this season is still being played — so only a positive count is staleness.
+
+    Negative (a calibration season that has not finished) can only come from a
+    hand-edited block: the script refuses a season the archive has not
+    completed, so it is reported as its own defect rather than clamped away.
+
+    >>> calibration_seasons_behind(date(2027, 8, 1))  # 2026-27 completed
+    1
+    """
+    newest_completed = get_season_year(today) - 1
+    return newest_completed - season_start_year(CALIBRATION_SEASON)
+
 
 # Ownership-family ceilings = calibrated quality anchor + bonus headroom.
 # The headroom terms stay derived (not calibrated) because their maxima are

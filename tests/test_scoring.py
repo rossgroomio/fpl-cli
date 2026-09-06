@@ -5646,6 +5646,65 @@ class TestCalibrationDriftGuard:
                 f"cap {cap:.2f} — recalibrate or investigate the write path"
             )
 
+    def test_recorded_season_is_a_real_season_label(self):
+        """`fpl doctor` parses CALIBRATION_SEASON, so a bad label breaks the check.
+
+        The write path refuses one, but the block is a plain assignment a
+        hand edit can reach, and the failure would land in a health check
+        rather than here.
+        """
+        from fpl_cli.season import is_season_label
+        from fpl_cli.services.scoring.constants import CALIBRATION_SEASON
+
+        assert is_season_label(CALIBRATION_SEASON)
+
+    def test_recorded_season_matches_the_generated_header(self):
+        """The season is written twice — as prose and as a value — by one run.
+
+        They can only disagree if someone hand-edited the block, which is
+        exactly when the machine-readable half stops being trustworthy.
+        """
+        import re
+        from pathlib import Path
+
+        from fpl_cli.services.scoring import constants as constants_module
+        from fpl_cli.services.scoring.constants import CALIBRATION_SEASON
+
+        source = Path(constants_module.__file__).read_text(encoding="utf-8")
+        header = re.search(
+            r"# Calibrated by scripts/calibrate_quality_ceilings\.py against (\S+)", source
+        )
+        assert header is not None
+        assert header.group(1) == CALIBRATION_SEASON
+
+    def test_recorded_season_has_completed(self):
+        """Anchors are measurements, so they cannot come from a live season."""
+        from fpl_cli.services.scoring.constants import calibration_seasons_behind
+
+        assert calibration_seasons_behind() >= 0
+
+    def test_seasons_behind_counts_completed_rollovers_only(self):
+        """The data-side guard: zero for a whole season, one after the rollover.
+
+        Anchors from last season while this season is played is the intended
+        steady state — last season's cohort is the newest anyone can have
+        measured — so only a July that passes without a re-run counts (#128).
+        """
+        from datetime import date
+        from unittest.mock import patch
+
+        from fpl_cli.services.scoring import constants as constants_module
+        from fpl_cli.services.scoring.constants import calibration_seasons_behind
+
+        with patch.object(constants_module, "CALIBRATION_SEASON", "2025-26"):
+            # 2025-26 in progress, then completed and current all season.
+            assert calibration_seasons_behind(date(2026, 3, 1)) == -1
+            assert calibration_seasons_behind(date(2026, 7, 1)) == 0
+            assert calibration_seasons_behind(date(2027, 3, 1)) == 0
+            # The July 2027 cutover: 2026-27 has completed and nothing re-ran.
+            assert calibration_seasons_behind(date(2027, 7, 1)) == 1
+            assert calibration_seasons_behind(date(2028, 7, 1)) == 2
+
 
 class TestDgwMatchupClamp:
     """DGW matchup windows must not blow through the calibrated ceilings.

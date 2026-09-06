@@ -3,11 +3,13 @@
 The failure modes this command exists for are uniformly silent (#57): a
 recycled draft entry ID resolves to a stranger's team, a classic entry or
 league ID from last season resolves to somebody else's (FPL reissues both from
-a sequence that restarts each July), and a per-team file rebuilt in August
-happily describes last season's twenty clubs. None of them error --
-they produce plausible output. Every check here reports the identity it
-resolved (team name, league name, season) so a wrong-but-valid value is
-visible, and distinguishes "broken, fix this" from "stale, will self-correct".
+a sequence that restarts each July), a per-team file rebuilt in August happily
+describes last season's twenty clubs, and quality scores keep normalising
+against calibrated anchors measured on a cohort that has since turned over.
+None of them error -- they produce plausible output. Every check here reports
+the identity it resolved (team name, league name, season) so a wrong-but-valid
+value is visible, and distinguishes "broken, fix this" from "stale, will
+self-correct".
 """
 # Pattern: direct-api
 
@@ -551,6 +553,76 @@ def _returnee_snapshot_check() -> CheckResult:
     return CheckResult(name, CheckStatus.OK, f"season {file_season}{written_for}")
 
 
+# ---------------------------------------------------------------------------
+# Scoring calibration
+# ---------------------------------------------------------------------------
+
+
+def _quality_ceilings_check() -> CheckResult:
+    """Report whether the calibrated quality anchors still describe a current cohort.
+
+    The one season-derived artefact in the tool that is frozen in code rather
+    than regenerated from a file, so none of the checks above can see it: the
+    anchors in QUALITY_CEILINGS were measured against a completed season, and
+    a July rollover with no `--write` re-run leaves them describing a cohort
+    that has since turned over -- with every code-side input unchanged, so the
+    fingerprint drift guard stays green and the scores merely stop meaning
+    what the docs say (#128). Anchors from last season while this season runs
+    is the intended steady state and reports OK: last season's is the newest
+    cohort anyone can have measured.
+    """
+    from fpl_cli.services.scoring.constants import (
+        CALIBRATION_SEASON,
+        calibration_seasons_behind,
+    )
+
+    name = "quality_ceilings"
+    newest_completed = season_label(get_season_year() - 1)
+    try:
+        behind = calibration_seasons_behind()
+    except ValueError:
+        # A label the season helpers cannot parse -- only reachable by hand
+        # editing the generated block, since the write path refuses one. It is
+        # a finding like any other here: the command that exists to report a
+        # broken setup must not be the one that dies on it.
+        return CheckResult(
+            name,
+            CheckStatus.BROKEN,
+            f"records {CALIBRATION_SEASON!r} as its calibration season, which is "
+            "not a season label — the generated block has been hand-edited",
+            "reinstall fplkit, or re-run scripts/calibrate_quality_ceilings.py "
+            "--write to regenerate the block",
+        )
+    if behind < 0:
+        # Only reachable from a hand-edited block or a machine whose clock is
+        # a year behind. Stale rather than broken either way: a wrong clock
+        # must not exit the command non-zero, and a season that has not
+        # finished yet does self-correct once it does.
+        return CheckResult(
+            name,
+            CheckStatus.STALE,
+            f"calibrated against {CALIBRATION_SEASON}, which has not completed — "
+            "the generated block was hand-edited, or this machine's clock is behind",
+        )
+    if behind:
+        seasons = "season" if behind == 1 else "seasons"
+        return CheckResult(
+            name,
+            CheckStatus.STALE,
+            f"calibrated against {CALIBRATION_SEASON}, {behind} completed {seasons} "
+            f"behind {newest_completed} — player quality scores are normalised "
+            "against a cohort that has since turned over",
+            "upgrade fplkit (`pip install -U fplkit`) for a release calibrated "
+            f"against {newest_completed}; from a checkout, re-run "
+            "scripts/calibrate_quality_ceilings.py --write",
+        )
+    return CheckResult(
+        name,
+        CheckStatus.OK,
+        f"calibrated against {CALIBRATION_SEASON}, the newest completed season",
+    )
+
+
 def _file_checks(teams: list[str] | None) -> list[CheckResult]:
     """Run the data-file checks, containing an unusable FPL_CLI_* override.
 
@@ -629,7 +701,8 @@ def doctor_command(providers_only: bool, output_format: str) -> None:
     """Check your FPL setup for dead IDs, stale data, and config problems.
 
     Verifies each ID in settings.yaml still resolves to your team and league
-    this season, that per-team data files describe the current clubs, and
+    this season, that per-team data files describe the current clubs, that the
+    scoring scale was calibrated against the newest completed season, and
     shows which directories are in use. Problems that need a fix today are
     reported separately from stale data that corrects itself. Exits non-zero
     when something needs fixing.
@@ -750,8 +823,9 @@ def doctor_command(providers_only: bool, output_format: str) -> None:
             id_results.append(CheckResult("draft_entry_id", CheckStatus.SKIPPED, unset_detail))
 
         file_results = _file_checks(teams)
+        calibration_results = [_quality_ceilings_check()]
 
-        all_results = env_results + id_results + file_results
+        all_results = env_results + id_results + file_results + calibration_results
         broken, stale, unchecked = _status_counts(all_results)
 
         if output_format == "json":
@@ -761,6 +835,7 @@ def doctor_command(providers_only: bool, output_format: str) -> None:
                     "environment": [dataclasses.asdict(r) for r in env_results],
                     "settings_ids": [dataclasses.asdict(r) for r in id_results],
                     "data_files": [dataclasses.asdict(r) for r in file_results],
+                    "calibration": [dataclasses.asdict(r) for r in calibration_results],
                 },
                 metadata={
                     "season": season_label(),
@@ -774,6 +849,7 @@ def doctor_command(providers_only: bool, output_format: str) -> None:
             _render_section("Directories", env_results)
             _render_section("Settings IDs", id_results)
             _render_section("Data files", file_results)
+            _render_section("Scoring calibration", calibration_results)
             _print_summary(broken, stale, unchecked)
 
         if broken:
