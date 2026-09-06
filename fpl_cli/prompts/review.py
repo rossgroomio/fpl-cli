@@ -840,8 +840,16 @@ _NARRATIVE_HEADER_RE = re.compile(
     r"^#{2,3}\s+(GW|Gameweek)\s*\d+\s+Narrative\b.*$",
     re.IGNORECASE,
 )
+# Titles and place abbreviations whose full stop does not end a sentence.
+# Splitting after one hides the rest of the phrase from the exempt scan in
+# `validate_research_prose` -- "At St. James' Park" split into "At St." and
+# "James' Park", and the orphaned "James" then read as an unlisted player.
+# A sentence that genuinely ends in one of these now joins the next, which is
+# the rarer error by far in match prose.
+_NON_TERMINAL_ABBREVIATIONS = ("St", "Mr", "Mrs", "Ms", "Dr", "Jr", "Sr")
+_ABBREVIATION_GUARD = "".join(rf"(?<!\b{abbr}\.)" for abbr in _NON_TERMINAL_ABBREVIATIONS)
 _SENTENCE_SPLIT_RE = re.compile(
-    r"(?:(?<=[.!?][\"')\]])|(?<=[.!?]))\s+(?=[A-Z\"'\[(])"
+    rf"{_ABBREVIATION_GUARD}(?:(?<=[.!?][\"')\]])|(?<=[.!?]))\s+(?=[A-Z\"'\[(])"
 )
 _MIN_PROSE_ALLOWLIST_SIZE = 5
 
@@ -881,6 +889,8 @@ _PROSE_EXEMPT_PHRASES: frozenset[str] = frozenset({
     "St James's Park",
     "St Mary's Stadium",
     "St. James' Park",
+    "St. James's Park",
+    "St. Mary's Stadium",
     "Stadium of Light",
     "Stamford Bridge",
     "The Hawthorns",
@@ -937,11 +947,12 @@ def _compile_prose_exempt_patterns(
 def _compile_exempt_phrase(phrase: str) -> re.Pattern[str]:
     """Whole-word pattern for an exempt phrase, tolerant of apostrophe style.
 
-    "St James' Park" reaches us with a typographic apostrophe as often as a
-    typewriter one, and neither is a diacritic, so `strip_diacritics` leaves
-    both alone -- match either.
+    "St James' Park" reaches us with a typographic apostrophe, a typewriter
+    one, or none at all -- "St James Park" is a common rendering, LLMs
+    included. None of the three is a diacritic, so `strip_diacritics` leaves
+    them alone: make the apostrophe optional and match all of them.
     """
-    escaped = re.escape(strip_diacritics(phrase)).replace("'", "['\u2019\u02bc]")
+    escaped = re.escape(strip_diacritics(phrase)).replace("'", "['\u2019\u02bc]?")
     return re.compile(rf"\b{escaped}\b")
 
 
