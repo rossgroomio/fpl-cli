@@ -6,7 +6,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -22,6 +22,8 @@ from fpl_cli.cli._league_recap_history import (
     DETAIL_FLAG,
     HISTORY_WARNING_COVERAGE,
     HISTORY_WARNING_IDENTITY_CARRIED,
+    HISTORY_WARNING_STANDINGS_CARRIED,
+    HISTORY_WARNING_STANDINGS_REPAIRED,
     HISTORY_WARNING_STANDINGS_TRUNCATED,
     HISTORY_WARNING_STORE_UNREADABLE,
     HISTORY_WARNING_TRANSFER_DETAIL_SHORT,
@@ -126,6 +128,13 @@ def _manager(
             entry[key] = kwargs[key]  # type: ignore[literal-required]
     if kwargs.get("total_points") is None:
         del entry["total_points"]
+    # Explicit None means "the collector could not derive this", which on the
+    # TypedDict is an absent key rather than a null -- how a draft replay
+    # arrives (`_assign_point_in_time_positions`). Distinguished from "not
+    # passed", which keeps the default above.
+    for key in ("overall_rank", "previous_rank"):
+        if kwargs.get(key, 0) is None:
+            del entry[key]  # type: ignore[literal-required]
     return entry
 
 
@@ -3542,3 +3551,280 @@ class TestLiveGameweekDerivation:
 
         assert collected_with["is_live_gw"] is False
         assert "has started" not in result.stderr.replace("\n", "")
+
+
+# ---------------------------------------------------------------------------
+# issue #223: a replay must not write a recorded league position away
+# ---------------------------------------------------------------------------
+
+
+class TestReplayKeepsRecordedStandings:
+    """Draft has no per-manager history endpoint and its standings describe a
+    later gameweek, so a replay derives no position at all. Written straight
+    out those nulls supersede a live capture that recorded real ones, and the
+    ledger loses the positions every streak and season count is built on."""
+
+    def _draft(self, gameweek: int, managers, cohort, **kwargs):
+        return _recap_data(
+            gameweek=gameweek, fpl_format="draft",
+            managers=managers, cohort=cohort, **kwargs,
+        )
+
+    def _live_gw1(self):
+        """A GW1 draft capture that recorded both managers' positions."""
+        return self._draft(
+            1,
+            [
+                _manager(name="Alice", entry_id=1, league_entry_id=10,
+                         gross_points=60, total_points=60, overall_rank=1),
+                _manager(name="Bob", entry_id=2, league_entry_id=20,
+                         gross_points=40, total_points=40, overall_rank=2),
+            ],
+            _cohort((10, "Alice", 1, 60, 60), (20, "Bob", 2, 40, 40)),
+        )
+
+    def _replay_gw1(self):
+        """The same gameweek as a replay: no rank, no total, nothing derived."""
+        return self._draft(
+            1,
+            [
+                _manager(name="Alice", entry_id=1, league_entry_id=10, gross_points=60,
+                         total_points=None, overall_rank=None, previous_rank=None),
+                _manager(name="Bob", entry_id=2, league_entry_id=20, gross_points=40,
+                         total_points=None, overall_rank=None, previous_rank=None),
+            ],
+            _cohort((10, "Alice", 1, 60, 60), (20, "Bob", 2, 40, 40)),
+        )
+
+    def _store(self):
+        return _store("draft")
+
+    async def test_a_draft_replay_keeps_the_position_the_gameweek_recorded(self):
+        await capture_recap_history(self._live_gw1(), season=SEASON, finished_gameweeks=[1])
+        assert {k: r.league_position for k, r in self._store().resolved_gameweek(1).items()} == {
+            10: 1, 20: 2,
+        }
+
+        await capture_recap_history(
+            self._replay_gw1(), season=SEASON, is_live_gw=False, finished_gameweeks=[1],
+        )
+
+        resolved = self._store().resolved_gameweek(1)
+        assert {k: r.league_position for k, r in resolved.items()} == {10: 1, 20: 2}
+        assert {k: r.total_points for k, r in resolved.items()} == {10: 60, 20: 40}
+
+    async def test_a_draft_replay_of_a_recorded_gameweek_appends_nothing(self):
+        """The bloat this bug leaves behind: every replay used to add a full
+        set of lines whose only change was a value becoming null, so a
+        gameweek reached 26 lines for 8 managers. Reproducing a gameweek
+        exactly must leave the file byte-identical (R3)."""
+        await capture_recap_history(self._live_gw1(), season=SEASON, finished_gameweeks=[1])
+        before = self._store().gameweek_file(1).read_bytes()
+
+        result = await capture_recap_history(
+            self._replay_gw1(), season=SEASON, is_live_gw=False, finished_gameweeks=[1],
+        )
+
+        assert result.written == []
+        assert self._store().gameweek_file(1).read_bytes() == before
+
+    async def test_a_replay_that_derives_its_own_position_keeps_it(self):
+        """Only nulls are filled, so a genuine correction still lands: the
+        carry must not pin a gameweek to whatever was recorded first."""
+        await capture_recap_history(self._live_gw1(), season=SEASON, finished_gameweeks=[1])
+
+        corrected = self._draft(
+            1,
+            [
+                _manager(name="Alice", entry_id=1, league_entry_id=10,
+                         gross_points=60, total_points=60, overall_rank=2),
+                _manager(name="Bob", entry_id=2, league_entry_id=20,
+                         gross_points=40, total_points=40, overall_rank=1),
+            ],
+            _cohort((10, "Alice", 1, 60, 60), (20, "Bob", 2, 40, 40)),
+        )
+        await capture_recap_history(
+            corrected, season=SEASON, is_live_gw=False, finished_gameweeks=[1],
+        )
+
+        assert {
+            k: r.league_position for k, r in self._store().resolved_gameweek(1).items()
+        } == {10: 2, 20: 1}
+
+    async def test_the_carry_reports_what_it_kept(self):
+        await capture_recap_history(self._live_gw1(), season=SEASON, finished_gameweeks=[1])
+        result = await capture_recap_history(
+            self._replay_gw1(), season=SEASON, is_live_gw=False, finished_gameweeks=[1],
+        )
+        assert any(
+            w["code"] == HISTORY_WARNING_STANDINGS_CARRIED for w in result.warnings
+        )
+
+    async def test_a_ledger_an_earlier_replay_already_nulled_is_repaired(self):
+        """The damage is append-only, so by the time this ships the null row
+        is already the winner. Repair has to read the whole file rather than
+        the resolved winner -- and must not need `--backfill-detail`, a
+        network call, or the user to notice."""
+        store = self._store()
+        recorded = [
+            make_history_row(
+                season=SEASON, fpl_format="draft", league_id=42, gameweek=1,
+                manager_key=key, manager_name=name, gross_points=points,
+                league_position=position, total_points=points,
+            )
+            for key, name, points, position in ((10, "Alice", 60, 1), (20, "Bob", 40, 2))
+        ]
+        store.append_rows(1, recorded)
+        store.append_rows(1, [
+            row.model_copy(update={
+                "league_position": None,
+                "total_points": None,
+                "captured_at": row.captured_at + timedelta(days=1),
+            })
+            for row in recorded
+        ])
+        assert self._store().resolved_gameweek(1)[10].league_position is None
+
+        # An ordinary next-gameweek recap, which never touches GW1 itself.
+        result = await capture_recap_history(
+            self._draft(
+                2,
+                [_manager(name="Alice", entry_id=1, league_entry_id=10, gross_points=50)],
+                _cohort((10, "Alice", 1, 50, 110), (20, "Bob", 2, 30, 70)),
+            ),
+            season=SEASON, finished_gameweeks=[1, 2],
+        )
+
+        resolved = self._store().resolved_gameweek(1)
+        assert {k: r.league_position for k, r in resolved.items()} == {10: 1, 20: 2}
+        assert any(
+            w["code"] == HISTORY_WARNING_STANDINGS_REPAIRED for w in result.warnings
+        )
+
+    async def test_the_repair_writes_nothing_to_a_healthy_ledger(self):
+        await capture_recap_history(self._live_gw1(), season=SEASON, finished_gameweeks=[1])
+        before = self._store().gameweek_file(1).read_bytes()
+
+        result = await capture_recap_history(
+            self._live_gw1(), season=SEASON, finished_gameweeks=[1],
+        )
+
+        assert self._store().gameweek_file(1).read_bytes() == before
+        assert not any(
+            w["code"] == HISTORY_WARNING_STANDINGS_REPAIRED for w in result.warnings
+        )
+
+    async def test_a_draft_gameweek_rebuilt_from_scratch_derives_its_positions(self):
+        """The `--backfill-detail` hole: with the file deleted there is no
+        earlier sibling to carry from. At the league's start gameweek the
+        cumulative total *is* the gameweek score, so `gross_points` alone
+        settles the table."""
+        replayed = self._replay_gw1()
+
+        async def _replay_gw(gameweek: int):
+            return replayed if gameweek == 1 else None
+
+        await capture_recap_history(
+            self._draft(
+                2,
+                [_manager(name="Alice", entry_id=1, league_entry_id=10, gross_points=50)],
+                _cohort((10, "Alice", 1, 50, 110), (20, "Bob", 2, 30, 70)),
+            ),
+            season=SEASON, finished_gameweeks=[1, 2],
+            replay_gameweek=_replay_gw, backfill_detail=True,
+        )
+
+        assert {
+            k: r.league_position for k, r in self._store().resolved_gameweek(1).items()
+        } == {10: 1, 20: 2}
+
+    async def test_a_rebuilt_later_gameweek_sums_its_positions_from_the_ledger(self):
+        """Beyond the start gameweek the cumulative total is reconstructed
+        from the ledger's own earlier rows, so the table is derivable there
+        too -- ascending order is what makes GW1 available to GW2."""
+        gw1 = self._replay_gw1()
+        gw2 = self._draft(
+            2,
+            [
+                _manager(name="Alice", entry_id=1, league_entry_id=10, gross_points=10,
+                         total_points=None, overall_rank=None, previous_rank=None),
+                _manager(name="Bob", entry_id=2, league_entry_id=20, gross_points=50,
+                         total_points=None, overall_rank=None, previous_rank=None),
+            ],
+            _cohort((10, "Alice", 1, 10, 70), (20, "Bob", 2, 50, 90)),
+        )
+
+        async def _replay_gw(gameweek: int):
+            return {1: gw1, 2: gw2}.get(gameweek)
+
+        result = await capture_recap_history(
+            gw2, season=SEASON, is_live_gw=False, finished_gameweeks=[1, 2],
+            replay_gameweek=_replay_gw, backfill_detail=True,
+        )
+
+        # GW1: 60 v 40. GW2: 70 v 90, so Bob takes the table.
+        assert {
+            k: r.league_position for k, r in self._store().resolved_gameweek(2).items()
+        } == {10: 2, 20: 1}
+        # GW2's own row went in with nulls -- GW1 did not exist to sum from
+        # until the backfill rebuilt it, which happens after that write. The
+        # returned rows are what `--format json` and the gw-prep scripts read,
+        # so they have to show what the ledger ended up holding.
+        assert {r.manager_key: r.league_position for r in result.rows} == {10: 2, 20: 1}
+
+    async def test_positions_are_withheld_while_one_manager_has_no_total(self):
+        """A league position is a fact about the whole table. Ranking only the
+        managers who summed cleanly would renumber everyone below whoever was
+        left out, which is worse than leaving the gameweek unranked."""
+        await capture_recap_history(
+            self._draft(
+                1,
+                [_manager(name="Alice", entry_id=1, league_entry_id=10,
+                          gross_points=60, total_points=60, overall_rank=1)],
+                _cohort((10, "Alice", 1, 60, 60)),
+            ),
+            season=SEASON, finished_gameweeks=[1],
+        )
+        # Bob has no GW1 row at all, so GW2 cannot sum his running total.
+        replay_gw2 = self._draft(
+            2,
+            [
+                _manager(name="Alice", entry_id=1, league_entry_id=10, gross_points=10,
+                         total_points=None, overall_rank=None, previous_rank=None),
+                _manager(name="Bob", entry_id=2, league_entry_id=20, gross_points=50,
+                         total_points=None, overall_rank=None, previous_rank=None),
+            ],
+            _cohort((10, "Alice", 1, 10, 70), (20, "Bob", 2, 50, 90)),
+        )
+
+        await capture_recap_history(
+            replay_gw2, season=SEASON, is_live_gw=False, finished_gameweeks=[1, 2],
+        )
+
+        resolved = self._store().resolved_gameweek(2)
+        assert resolved[20].total_points is None
+        assert [r.league_position for r in resolved.values()] == [None, None]
+
+    async def test_a_classic_replay_still_re_derives_rather_than_carries(self):
+        """Classic has the entry-history endpoint, so its replay arrives with
+        a real position and never reaches the carry."""
+        live = _recap_data(
+            gameweek=1,
+            managers=[_manager(name="Alice", entry_id=1, total_points=60, overall_rank=1)],
+            cohort=_cohort((1, "Alice", 1, 60, 60)),
+        )
+        await capture_recap_history(live, season=SEASON, finished_gameweeks=[1])
+
+        replay = _recap_data(
+            gameweek=1,
+            managers=[_manager(name="Alice", entry_id=1, total_points=60, overall_rank=3)],
+            cohort=_cohort((1, "Alice", 1, 60, 60)),
+        )
+        result = await capture_recap_history(
+            replay, season=SEASON, is_live_gw=False, finished_gameweeks=[1],
+        )
+
+        assert _store().resolved_gameweek(1)[1].league_position == 3
+        assert not any(
+            w["code"] == HISTORY_WARNING_STANDINGS_CARRIED for w in result.warnings
+        )
