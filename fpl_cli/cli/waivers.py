@@ -18,7 +18,13 @@ from fpl_cli.cli._context import (
     print_result_warnings,
     split_result_warnings,
 )
-from fpl_cli.cli._json import emit_json, emit_json_error, json_output_mode, output_format_option
+from fpl_cli.cli._json import (
+    emit_failure,
+    emit_json,
+    emit_json_error,
+    json_output_mode,
+    output_format_option,
+)
 
 
 @click.command("waivers")
@@ -34,14 +40,16 @@ def waivers_command(ctx: click.Context, output_format: str) -> None:
     entry_id = fpl_cfg.get("draft_entry_id")
 
     if not league_id:
-        if output_format == "json":
-            with json_output_mode() as stdout:
-                emit_json_error("waivers", "No draft_league_id configured in settings.yaml", file=stdout)
-            return
-        error_console.print(
-            "[yellow]No draft_league_id configured in settings.yaml -- Add your league ID to settings.yaml[/yellow]"
+        # The third command that answered this differently depending on the
+        # format (#286): the envelope exited 1 while the table path printed
+        # its warning and exited 0, so a draft manager who had not configured
+        # the league got a success from `fpl waivers` and a failure from `fpl
+        # waivers --format json`. One message, one exit code, either way.
+        emit_failure(
+            "waivers",
+            "No draft_league_id configured in settings.yaml -- add your league ID to settings.yaml",
+            output_format,
         )
-        return
 
     async def _run() -> None:
         if output_format == "json":

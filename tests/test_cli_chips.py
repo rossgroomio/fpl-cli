@@ -12,6 +12,7 @@ from click.testing import CliRunner
 from fpl_cli.cli import main
 from fpl_cli.cli.chips import _compute_chip_signals, chips_group
 from fpl_cli.models.chip_plan import ChipPlan, ChipType, PlannedChip, UsedChip
+from tests.conftest import make_agent
 
 
 @pytest.fixture
@@ -597,12 +598,43 @@ _SENTINEL = object()
 
 
 def _mock_fetch_and_compute(unplayed=None, planned_by_gw=None, signals=_SENTINEL):
-    """Return an AsyncMock for _fetch_and_compute with given return values."""
+    """Return an AsyncMock for _fetch_and_compute with given return values.
+
+    Only the success shape now: a failed agent is reported inside the real
+    helper rather than signalled back as `signals=None` (#286), so the two
+    tests that drive that path patch `FixtureAgent` instead of this.
+    """
     return AsyncMock(return_value=(
         unplayed or {"freehit", "bboost"},
         planned_by_gw or {},
         signals if signals is not _SENTINEL else [],
     ))
+
+
+def _run_timing_with_failed_agent(runner: CliRunner, args):
+    """Invoke `chips timing` against a `FixtureAgent` that fails.
+
+    Reaches the real `_fetch_and_compute`, so the client calls it makes on
+    the way to the agent are stubbed rather than skipped -- an empty squad
+    and an empty league are enough, since the failure lands before any of it
+    is scored.
+    """
+    plan = ChipPlan(current_gw=30)
+    mock_client = AsyncMock()
+    mock_client.get_next_gameweek.return_value = {"id": 30}
+    mock_client.get_manager_picks = AsyncMock(return_value={"picks": [], "active_chip": None})
+    mock_client.get_players = AsyncMock(return_value=[])
+    mock_client.get_teams = AsyncMock(return_value=[])
+
+    agent = make_agent(success=False, message="Failed to fetch fixture data")
+
+    with patch.object(ChipPlan, "load", return_value=plan), \
+         patch("fpl_cli.cli.chips.get_settings", return_value={"fpl": {"classic_entry_id": 123}}), \
+         patch("fpl_cli.api.fpl.FPLClient") as mock_fpl_cls, \
+         patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=agent):
+        mock_fpl_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_fpl_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+        return runner.invoke(main, ["chips", "timing"] + args)
 
 
 class TestChipsTimingJsonFormat:
@@ -664,46 +696,85 @@ class TestChipsTimingJsonFormat:
         assert "classic_entry_id" in payload["error"]
         assert "{" not in result.stderr
 
-    def test_json_error_agent_failure(self, runner: CliRunner):
-        plan = ChipPlan(current_gw=30)
+    def test_table_no_entry_id_matches_the_envelope(self, runner: CliRunner):
+        """The missing ID is a failure in both formats (#286).
+
+        Table mode used to print a yellow warning and exit 0 while the
+        envelope called the same condition an error and exited 1, so
+        `fpl chips timing && post-signals` posted nothing and reported
+        success. It now takes the shared `require_entry_id` lookup, which is
+        also why the wording matches `fpl squad grid` rather than being this
+        command's own.
+        """
+        with patch("fpl_cli.cli.chips.get_settings", return_value={"fpl": {}}):
+            table = runner.invoke(main, ["chips", "timing"])
+            envelope = runner.invoke(main, ["chips", "timing", "--format", "json"])
+
+        assert table.exit_code == envelope.exit_code == 1
+        assert "classic_entry_id is not set" in " ".join(table.stderr.split())
+        assert table.stdout == ""
+
+    @pytest.mark.parametrize("args", [[], ["--format", "json"]], ids=["table", "json"])
+    def test_no_completed_gameweek_exits_one_in_both_formats(self, runner: CliRunner, args):
+        """GW1, nothing played yet: the same refusal and the same exit code.
+
+        The second branch #286 found -- table mode printed the reason and
+        exited 0 where the envelope exited 1. Both paths compute `last_gw`
+        the same way off the same client, so they have to answer the same.
+        """
+        plan = ChipPlan(current_gw=1)
         mock_client = AsyncMock()
-        mock_client.get_next_gameweek.return_value = {"id": 30}
+        mock_client.get_next_gameweek.return_value = {"id": 1}
 
         with patch.object(ChipPlan, "load", return_value=plan), \
              patch("fpl_cli.cli.chips.get_settings", return_value={"fpl": {"classic_entry_id": 123}}), \
-             patch("fpl_cli.api.fpl.FPLClient") as mock_fpl_cls, \
-             patch("fpl_cli.cli.chips._fetch_and_compute", _mock_fetch_and_compute(signals=None)):
+             patch("fpl_cli.api.fpl.FPLClient") as mock_fpl_cls:
             mock_fpl_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
             mock_fpl_cls.return_value.__aexit__ = AsyncMock(return_value=False)
-            result = runner.invoke(main, ["chips", "timing", "--format", "json"])
+            result = runner.invoke(main, ["chips", "timing"] + args)
 
         assert result.exit_code == 1
+        reported = result.stdout if args else result.stderr
+        assert "No completed gameweek found" in " ".join(reported.split())
+
+    def test_json_error_agent_failure(self, runner: CliRunner):
+        result = _run_timing_with_failed_agent(runner, ["--format", "json"])
+
+        assert result.exit_code == 1
+        assert json.loads(result.stdout)["error"] == (
+            "Fixture agent failed: Failed to fetch fixture data"
+        )
 
     def test_table_agent_failure_exits_nonzero(self, runner: CliRunner):
         """Table-mode agent failure exits nonzero and reports on stderr.
 
         Nonzero rather than printing and succeeding (#47), and on stderr
-        rather than stdout (#162). This is the only test that reaches that
-        print: the contract walk in `test_cli_failure_streams.py` cannot,
-        because with no `classic_entry_id` configured `chips timing` stops at
-        the not-configured warning and exits 0. Asserting on `result.output`
-        would not hold it either -- Click mixes both streams into that one.
+        rather than stdout (#162). This is still the only path the contract
+        walks cannot reach: `test_cli_failure_streams.py` and
+        `test_cli_failure_parity.py` run with no `classic_entry_id` configured,
+        so `chips timing` stops at the missing ID and never gets an agent to
+        fail. Asserting on `result.output` would not hold it either -- Click
+        mixes both streams into that one.
         """
-        plan = ChipPlan(current_gw=30)
-        mock_client = AsyncMock()
-        mock_client.get_next_gameweek.return_value = {"id": 30}
-
-        with patch.object(ChipPlan, "load", return_value=plan), \
-             patch("fpl_cli.cli.chips.get_settings", return_value={"fpl": {"classic_entry_id": 123}}), \
-             patch("fpl_cli.api.fpl.FPLClient") as mock_fpl_cls, \
-             patch("fpl_cli.cli.chips._fetch_and_compute", _mock_fetch_and_compute(signals=None)):
-            mock_fpl_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_fpl_cls.return_value.__aexit__ = AsyncMock(return_value=False)
-            result = runner.invoke(main, ["chips", "timing"])
+        result = _run_timing_with_failed_agent(runner, [])
 
         assert result.exit_code == 1
-        assert "Agent failed" in result.stderr
+        assert "Fixture agent failed" in " ".join(result.stderr.split())
         assert result.stdout == ""
+
+    def test_agent_failure_reads_the_same_in_both_formats(self, runner: CliRunner):
+        """The words, not just the exit code (#286).
+
+        `_fetch_and_compute` used to hand back a bare `None` and leave each
+        caller to describe it: the envelope said `Fixture agent failed`, the
+        terminal said `Agent failed`, and neither passed on the reason the
+        agent itself gave.
+        """
+        table = _run_timing_with_failed_agent(runner, [])
+        envelope = _run_timing_with_failed_agent(runner, ["--format", "json"])
+
+        assert " ".join(table.stderr.split()) == json.loads(envelope.stdout)["error"]
+        assert "Failed to fetch fixture data" in json.loads(envelope.stdout)["error"]
 
 
 class TestNoSignals:
