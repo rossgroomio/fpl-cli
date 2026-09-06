@@ -476,6 +476,35 @@ class TestCaptureRecapHistory:
         assert [c.readable for c in result.coverage] == [False]
         assert [w["code"] for w in result.warnings] == [HISTORY_WARNING_STORE_UNREADABLE]
 
+    async def test_a_second_damaged_gameweek_still_names_itself_and_its_remedy(self, capsys):
+        """Review of #264's fix: reading coverage on the write-failure path
+        newly surfaces *other* damaged gameweeks as `readable: False`, and
+        nothing was naming them. `_report_coverage` is skipped here, the
+        `_warn` beside the failure carries only the recapped gameweek, and
+        `unreadable_reported_by_caller` has dropped the store's own log line
+        to debug -- so a JSON consumer saw `readable: false` with the reason
+        nowhere. Each damaged file must carry its own path and `mv` remedy,
+        and the recapped one must still be warned about exactly once (#224)."""
+        store = _store()
+        store.partition_dir().mkdir(parents=True, exist_ok=True)
+        for gameweek in (4, 5):
+            store.gameweek_file(gameweek).write_text("not json{{{\n", encoding="utf-8")
+
+        result = await capture_recap_history(_recap_data(gameweek=5), season=SEASON)
+
+        assert [(c.gameweek, c.readable) for c in result.coverage] == [(4, False), (5, False)]
+        # One warning each -- the recapped gameweek's from the `_warn` beside
+        # the raise, the other from `_warn_unreadable` -- and no duplicate for
+        # the recapped one, which is what routing the whole set through
+        # `_warn_unreadable` would have produced.
+        assert [w["code"] for w in result.warnings] == [
+            HISTORY_WARNING_STORE_UNREADABLE, HISTORY_WARNING_STORE_UNREADABLE,
+        ]
+        err = _stderr(capsys)
+        for gameweek in (4, 5):
+            assert str(store.gameweek_file(gameweek)) in err
+        assert err.count("mv '") == 2
+
     async def test_an_empty_cohort_over_a_corrupt_store_still_never_raises(self, capsys):
         """R4: a corrupt gameweek file must never escape as a raised error.
 

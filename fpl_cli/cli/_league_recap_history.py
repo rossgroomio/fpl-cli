@@ -1271,11 +1271,6 @@ def _report_coverage(
     """
     by_gameweek = {c.gameweek: c for c in coverage}
     coarse = [gw for gw in targets if (c := by_gameweek.get(gw)) and c.lowest_tier is FidelityTier.COARSE]
-    # Every unreadable gameweek, not just the targeted ones: a file that will
-    # not parse is a store problem whatever window the coverage report spans,
-    # and this is the only place it is surfaced -- `coverage()` hands the
-    # reason back here rather than logging it (issue #224).
-    unreadable = [c.gameweek for c in coverage if not c.readable]
     unknown = [gw for gw in targets if (c := by_gameweek.get(gw)) and c.readable and c.unknown_count]
     uncaptured = [
         gw for gw in targets
@@ -1314,18 +1309,43 @@ def _report_coverage(
     for line in lines:
         _warn(warnings, HISTORY_WARNING_COVERAGE, line)
 
-    # One warning per unreadable gameweek, not one line for the set: each
-    # carries its own file path and `mv` remedy, straight from the store.
-    # `coverage()` always sets `error` alongside `readable=False`, so the
-    # fallback is only reached by an entry built by hand without one -- the
-    # dataclass allows it, and a warning naming no remedy still beats none.
-    for gameweek in unreadable:
-        detail = by_gameweek[gameweek].error or (
+    _warn_unreadable(coverage, warnings=warnings)
+
+
+def _warn_unreadable(
+    coverage: list[GameweekCoverage],
+    *,
+    warnings: list[dict[str, str]],
+    already_reported: int | None = None,
+) -> None:
+    """One `league_history_store_unreadable` warning per unreadable gameweek.
+
+    One warning each, not one line for the set: every entry carries its own
+    file path and `mv` remedy, straight from the store. Every unreadable
+    gameweek, not just the targeted ones -- a file that will not parse is a
+    store problem whatever window the coverage report spans, and a warning is
+    the only place it is surfaced, `coverage()` handing the reason back here
+    rather than logging it (issue #224).
+
+    `already_reported` skips the one gameweek a caller has itself warned
+    about. The write-failure path in `capture_recap_history` shows the store's
+    raised message for the gameweek it was recapping and then calls this for
+    the rest of the partition, so a second damaged file still names itself
+    without the recapped one being warned about twice.
+
+    `coverage()` always sets `error` alongside `readable=False`, so the
+    fallback is only reached by an entry built by hand without one -- the
+    dataclass allows it, and a warning naming no remedy still beats none.
+    """
+    for entry in coverage:
+        if entry.readable or entry.gameweek == already_reported:
+            continue
+        detail = entry.error or (
             "Move the file aside to recapture it; the rest of the season is unaffected."
         )
         _warn(
             warnings, HISTORY_WARNING_STORE_UNREADABLE,
-            f"League history: GW{gameweek} could not be read and is skipped. {detail}",
+            f"League history: GW{entry.gameweek} could not be read and is skipped. {detail}",
         )
 
 
@@ -1418,7 +1438,8 @@ async def capture_recap_history(
     # message in full, as a `league_history_store_unreadable` warning, for
     # every gameweek `coverage()` could not read -- and on the write-failure
     # path, where `_report_coverage` is skipped, the `_warn` beside that
-    # failure shows the same message for it. Claimed here rather than
+    # failure carries the recapped gameweek's message and `_warn_unreadable`
+    # carries the rest of the partition's. Claimed here rather than
     # left to whichever reader happens to touch the file first, so no
     # reordering of the readers below can put a near-identical log line
     # beside that warning again (issue #224).
@@ -1472,14 +1493,21 @@ async def capture_recap_history(
         # gameweeks and was indistinguishable from a partition with nothing
         # captured at all (issue #264). Nothing was written, so this reads the
         # same disk state the write attempt found.
-        #
-        # Deliberately not routed through `_report_coverage`: the `_warn`
-        # above already showed this gameweek's message in full, and the
-        # coverage report would put a near-identical second
-        # `league_history_store_unreadable` line beside it (issue #224).
+        coverage = store.coverage()
+        # Reading the whole partition can turn up a *second* damaged file,
+        # which the `_warn` above says nothing about -- it carries only the
+        # gameweek `append_rows` raised on. Without this the payload would
+        # surface that gameweek as `readable: False` with its reason nowhere:
+        # `_report_coverage` is skipped on this path, `_serialize_coverage`
+        # does not emit `error`, and `unreadable_reported_by_caller` has
+        # dropped the store's own log line to debug. So warn for the rest of
+        # the partition here, passing the recapped gameweek as
+        # `already_reported` -- routing the whole set through would put a
+        # near-identical second line beside the `_warn` above (issue #224).
+        _warn_unreadable(coverage, warnings=warnings, already_reported=data["gameweek"])
         return CaptureResult(
             rows=rows, store_readable=False, warnings=warnings,
-            coverage=store.coverage(),
+            coverage=coverage,
             first_capture_store_path=first_capture_store_path,
         )
 
