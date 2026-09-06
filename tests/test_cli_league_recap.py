@@ -3113,6 +3113,7 @@ class TestEndToEndPromptThroughTheFullCommand:
         assert "gameweeks on top of the league" in user_prompt
         assert "Season phase:" in user_prompt
         assert "Stick to what happened this gameweek, with one exception" in system_prompt
+        assert "season phase" in system_prompt.lower()
 
     def test_a_dry_run_writes_a_prompt_with_the_transfer_roster(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         """Issue #71: the per-manager transfer roster reaches the prompt the
@@ -3151,7 +3152,6 @@ class TestEndToEndPromptThroughTheFullCommand:
         assert "- **Alice** (2 transfers, -4 hit, net +5 after the hit): Haaland (12 pts) in for Isak (3 pts), +9" in user_prompt
         assert "Made no transfers (1): Bob" in user_prompt
         assert 'treat the "## Transfers" section as the source of truth' in system_prompt
-        assert "season phase" in system_prompt.lower()
 
     def _fined_at(self, gameweek: int) -> LeagueRecapData:
         return _recap_data(

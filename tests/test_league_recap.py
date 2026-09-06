@@ -2982,16 +2982,28 @@ class TestPromptFormatting:
         assert "Made no transfers (1): Cam" in text
         assert "Bob" not in text.splitlines()[-1]
 
-    def test_transfers_context_says_when_the_captured_list_came_back_short(self):
+    def test_transfers_context_withholds_the_net_when_the_captured_list_came_back_short(self):
+        """The hit is charged for the whole gameweek, missing moves included,
+        so a partial swing minus the whole hit is not a net to hand the model:
+        the line gives the captured swing before the hit and calls the net
+        unknown, and the manager lists after the fully captured movers however
+        good that swing looks."""
         managers = [
             _make_manager(
                 name="Alice", entry_id=1, transfer_cost=4, transfers_made=3,
                 transfers=[_make_transfer("A", "B", 4, 1, cost=4), _make_transfer("C", "D", 6, 2, cost=4)],
             ),
+            _make_manager(name="Bob", entry_id=2, transfers=[_make_transfer("E", "F", 1, 9)]),
         ]
         text = format_recap_transfers_context(_make_recap_data(managers=managers))
-        assert "(3 transfers, -4 hit, net +3 after the hit)" in text
-        assert "Only 2 of the 3 moves were captured, so the net covers those alone" in text
+        assert (
+            "- **Alice** (3 transfers, -4 hit; only 2 of the 3 moves were captured, +7 across "
+            "those before the hit, so the gameweek's net is unknown): "
+            "A (4 pts) in for B (1 pts), +3; C (6 pts) in for D (2 pts), +4"
+        ) in text
+        alice_line = next(line for line in text.splitlines() if "**Alice**" in line)
+        assert "net +" not in alice_line
+        assert text.index("**Bob**") < text.index("**Alice**")
 
     def test_transfers_context_omits_the_stayed_line_when_everyone_moved(self):
         managers = [_make_manager(name="Alice", entry_id=1, transfers=[_make_transfer("A", "B", 4, 1)])]

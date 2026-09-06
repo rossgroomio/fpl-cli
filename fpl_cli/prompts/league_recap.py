@@ -42,7 +42,7 @@ Your audience is every member of this league. They want entertainment first, inf
 - The biggest bench haul is always funny - lean into it
 - If a manager played a chip, that's a big narrative hook. A chip that flopped deserves mockery; a chip that paid off deserves grudging respect. When referencing chip users, treat the "Chips Played" section as the source of truth — it includes an explicit total count; use that number verbatim. Do NOT count tags in the standings table. Do not name a subset as "the X wildcards" — either name all users of that chip or none.
 - When referencing captain choices, treat the "## Captains" section as the source of truth. It lists every manager grouped by their intended captain pick, with an explicit total count. Use those counts verbatim. NEVER name a captain "outlier", "dissenter", or "the manager(s) who picked Y" unless they appear under that captain in the section. If you describe N managers as picking the modal captain, it must match the section's group size for that player. Do NOT infer captain choices from the awards or standings — they are compressed and miss managers whose pick was neither the best nor the worst.
-- When referencing transfers, hits, or moves in and out, treat the "## Transfers" section as the source of truth. It lists every manager who made a transfer with each move and its points swing, the hit they paid, an explicit count of movers, and the managers who made none - use those counts verbatim. NEVER say a manager transferred, took a hit, or stood still unless that section says so of them, never describe a move it does not list, and where it says a manager's moves were not captured, name none. Do NOT infer transfer activity from the Awards section - it names only the single best and single worst mover, so it never tells you how many managers transferred or what anyone else did. If there is no "## Transfers" section and no transfers note, do not mention transfers, hits, or moves in and out at all - absence of transfer data means there is nothing to report, not licence to invent one.
+- When referencing transfers, hits, or moves in and out, treat the "## Transfers" section as the source of truth. It lists every manager who made a transfer with each move and its points swing, the hit they paid, an explicit count of movers, and the managers who made none - use those counts verbatim. NEVER say a manager transferred, took a hit, or stood still unless that section says so of them, never describe a move it does not list, and where it says a manager's moves or net are unknown, supply neither. Do NOT infer transfer activity from the Awards section - it names only the single best and single worst mover, so it never tells you how many managers transferred or what anyone else did. If there is no "## Transfers" section and no transfers note, do not mention transfers, hits, or moves in and out at all - absence of transfer data means there is nothing to report, not licence to invent one.
 - NEVER claim a manager's bench outscored their team unless bench points are strictly greater than their GW points. Use the exact numbers provided.
 - NEVER alter player or manager names. Use the exact spelling provided in the data.
 - NEVER state a club for a player other than the club given for them in this data - the "## Player Clubs" section, or the club printed beside a name elsewhere. Players change clubs in the transfer windows and your own knowledge of who plays where goes a season out of date, so that section is the only authority. A player it does not list has no club you can state: name them alone ("Haaland's 2 points") rather than supplying one from memory.
@@ -290,13 +290,18 @@ def format_recap_transfers_context(data: LeagueRecapData) -> str:
     recorded it, because the captured list is best-effort: a manager whose
     transfer fetch failed still made their transfers, so they are listed as
     having moved with the moves themselves marked unknown rather than filed
-    with the managers who stood still -- and a list that came back short
-    says so beside its net, which covers the captured moves alone.
+    with the managers who stood still. A list that came back short is listed
+    with the moves it has and no net at all: `transfer_cost` is charged for
+    the whole gameweek, the moves the list is missing included, so a partial
+    swing minus the whole hit is not a figure the model should repeat -- the
+    line gives the swing across the captured moves before the hit and says
+    the gameweek's net is unknown.
 
     Net is post-hit (raw swing minus `transfer_cost`), the same figure the
-    two transfer awards rank on, and the roster is sorted by it best-first so
-    the award winners bookend it. Empty for draft (waivers, not transfers)
-    and when nobody transferred -- GW1 carries its own note for that.
+    two transfer awards rank on. Fully captured movers are sorted by it
+    best-first; the incompletely captured follow them by name, since no net
+    places them. Empty for draft (waivers, not transfers) and when nobody
+    transferred -- GW1 carries its own note for that.
     """
     if data.get("fpl_format") != "classic":
         return ""
@@ -306,6 +311,7 @@ def format_recap_transfers_context(data: LeagueRecapData) -> str:
         return ""
 
     captured: list[tuple[int, str, str]] = []  # (post-hit net, name, line)
+    partial: list[tuple[str, str]] = []  # (name, line)
     uncaptured: list[tuple[str, str]] = []  # (name, line)
     stayed: list[str] = []
     for m in managers:
@@ -330,30 +336,36 @@ def format_recap_transfers_context(data: LeagueRecapData) -> str:
             )))
             continue
 
-        true_net = sum(t["net"] for t in moves) - cost
-        net = f"net {true_net:+d}" + (" after the hit" if cost > 0 else "")
         moves_text = "; ".join(
             f"{t['player_in']} ({t['player_in_points']} pts) in for "
             f"{t['player_out']} ({t['player_out_points']} pts), {t['net']:+d}"
             for t in moves
         )
-        line = f"- {label} ({count} {plural}, {hit}, {net}): {moves_text}"
+        raw = sum(t["net"] for t in moves)
         if len(moves) < count:
-            line += (
-                f". Only {len(moves)} of the {count} moves were captured, so the net "
-                "covers those alone and the rest are unknown"
-            )
-        captured.append((true_net, name, line))
+            # The hit was charged for moves this list cannot see, so a net
+            # built from it would be a confident figure for an unknown week.
+            partial.append((name, (
+                f"- {label} ({count} {plural}, {hit}; only {len(moves)} of the {count} "
+                f"moves were captured, {raw:+d} across those before the hit, so the "
+                f"gameweek's net is unknown): {moves_text}"
+            )))
+            continue
 
-    if not captured and not uncaptured:
+        true_net = raw - cost
+        net = f"net {true_net:+d}" + (" after the hit" if cost > 0 else "")
+        captured.append((true_net, name, f"- {label} ({count} {plural}, {hit}, {net}): {moves_text}"))
+
+    if not captured and not partial and not uncaptured:
         return ""
 
-    movers = len(captured) + len(uncaptured)
+    movers = len(captured) + len(partial) + len(uncaptured)
     lines = [f"Total managers who made transfers: {movers} of {len(managers)}"]
     captured.sort(key=lambda entry: (-entry[0], entry[1]))
     lines.extend(line for _, _, line in captured)
-    uncaptured.sort(key=lambda entry: entry[0])
-    lines.extend(line for _, line in uncaptured)
+    for group in (partial, uncaptured):
+        group.sort(key=lambda entry: entry[0])
+        lines.extend(line for _, line in group)
     if stayed:
         lines.append(f"Made no transfers ({len(stayed)}): {', '.join(sorted(stayed))}")
     return "\n".join(lines)
