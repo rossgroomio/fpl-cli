@@ -109,12 +109,12 @@ This query runs in the 24-48h after the gameweek finished.
 ## Standout Performers
 | Player | Club | Pts | Why They Hauled | Source |
 |--------|------|-----|-----------------|--------|
-[3-5 players drawn EXCLUSIVELY from the Dream Team list above. Do not include any player not on that list. Use actual points from GW data. The Top Performer named in gw_results (the Dream Team's designated highest scorer) MUST be the first row - they cannot be omitted or buried below lower-scoring names.]
+[3-5 players drawn EXCLUSIVELY from the Dream Team list above. Do not include any player not on that list. Use actual points from GW data. The Top Performer named in gw_results (the Dream Team's designated highest scorer) MUST be the first row - they cannot be omitted or buried below lower-scoring names. "Why They Hauled" is the explanation itself, in prose, with no citation inside it. "Source" is where that explanation came from - a named outlet or account (e.g. "The Athletic", "@FPLconnect"), or "GW data" when it rests only on the figures supplied above. Every row must carry a Source; never leave the cell blank and never repeat it inside "Why They Hauled".]
 
 ## Disappointments
 | Player | Club | Pts | What Went Wrong | Concern Level |
 |--------|------|-----|-----------------|---------------|
-[3-5 players drawn EXCLUSIVELY from the Blankers list above. Do not include any player not on that list, even if they had a poor gameweek by other measures. Use actual points and ownership from GW data. The "What Went Wrong" cell must describe only the individual player in that row — do not introduce other players or teams not on the list.]
+[3-5 players drawn EXCLUSIVELY from the Blankers list above. Do not include any player not on that list, even if they had a poor gameweek by other measures. Use actual points and ownership from GW data. The "What Went Wrong" cell must describe only the individual player in that row — do not introduce other players or teams not on the list. "Concern Level" is a one-word verdict on whether the blank looks repeatable - High, Medium or Low - optionally followed by a short qualifier.]
 
 ## Community Pulse
 - **Mood:** [One-word + elaboration]
@@ -830,7 +830,11 @@ def ensure_top_performer_first(
     else:
         club = top_performer.get("team", "???")
         pts = top_performer.get("points", "?")
-        new_row = f"| {name} | {club} | {pts} | Dream Team's designated top performer this gameweek | Official stats |"
+        # "GW data" is the Source value the prompt reserves for a row resting
+        # only on the supplied figures, which is exactly what this synthesized
+        # row is. Any other wording would give the reader two conventions in
+        # one table (#267).
+        new_row = f"| {name} | {club} | {pts} | Dream Team's designated top performer this gameweek | GW data |"
         rows.insert(0, new_row)
         corrections = [f"{name}: added as first row (Dream Team's top performer was missing)"]
 

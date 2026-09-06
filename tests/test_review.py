@@ -2241,6 +2241,14 @@ class TestEnsureTopPerformerFirst:
         assert "Haaland" in result
         assert any("added as first row" in c for c in corrections)
 
+    def test_inserted_row_uses_the_prompt_s_gw_data_source(self):
+        """The synthesized row must use the Source convention the prompt defines (#267)."""
+        table = self._table([("Cherki", "MCI", "14", "Brace")])
+        top_performer = {"name": "B.Fernandes", "team": "MUN", "points": 23}
+        result, _ = ensure_top_performer_first(table, top_performer)
+        inserted_row = result.split("\n")[2]
+        assert inserted_row.rstrip().endswith("| GW data |")
+
     def test_buried_row_is_moved_to_first(self):
         table = self._table([
             ("Cherki", "MCI", "14", "Brace"),

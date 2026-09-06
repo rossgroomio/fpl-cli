@@ -101,7 +101,7 @@ CRITICAL: The following players are INJURED, SUSPENDED, or otherwise UNAVAILABLE
 ## SELL Signals
 | Player | Club | Signal Type | Detail | Confidence |
 |--------|------|-------------|--------|------------|
-[Up to 5 players from <player_reference> to avoid - categorise as: Rotation Risk, Eye-Test Warning, or Narrative Trap. Fewer rows are fine; omit if no one qualifies.]
+[Up to 5 players from <player_reference> to avoid. "Signal Type" is one of: Rotation Risk, Eye-Test Warning, or Narrative Trap. "Detail" is the evidence behind that call, with its attribution. Fewer rows are fine; omit if no one qualifies.]
 
 ## Strategic Intel
 - **Blank/Double GW Watch:** Any planning implications from Ben Crellin or fixture news
