@@ -11,6 +11,8 @@ from fpl_cli.season import (
     core_insights_season,
     get_season_year,
     is_season_label,
+    previous_season_label,
+    previous_season_year,
     season_label,
     season_partition,
     season_start_year,
@@ -221,6 +223,15 @@ class TestIsSeasonLabel:
     def test_every_generated_label_round_trips(self):
         assert all(is_season_label(season_label(y)) for y in range(1995, 2100))
 
+    def test_rejects_non_string_input_instead_of_raising(self):
+        # `.partition` on an int is an AttributeError, which would escape
+        # `season_start_year`'s documented ValueError contract and take out
+        # `fpl doctor`, whose whole job is reporting a bad value rather than
+        # dying on one. Reachable by hand-editing a generated block so the
+        # season loses its quotes.
+        for bad in (20252026, None, ["2025-26"], 2025.0):
+            assert not is_season_label(bad)
+
 
 # -- season_start_year -------------------------------------------------------
 
@@ -235,3 +246,43 @@ class TestSeasonStartYear:
         for bad in ("2025-2026", "2026-28", "reports", "2025", ""):
             with pytest.raises(ValueError):
                 season_start_year(bad)
+
+    def test_non_string_input_is_a_value_error_too(self):
+        # The docstring promises a ValueError for anything that is not a
+        # label, and callers catch that and nothing wider.
+        for bad in (20252026, None, 2025.0):
+            with pytest.raises(ValueError):
+                season_start_year(bad)
+
+
+# -- previous_season_year / previous_season_label ----------------------------
+
+class TestPreviousSeason:
+    """The season before this one, from one expression rather than four.
+
+    Read from several directions -- the player prior's pts/90 source, the
+    calibration script's default season, and the frozen-anchor check in
+    `fpl doctor` -- each of which had re-typed `get_season_year() - 1`.
+    """
+
+    def test_mid_season_is_the_one_that_finished(self):
+        # March 2026 is inside the 2025-26 season, so the newest completed
+        # one is 2024-25 -- not the season being played.
+        assert previous_season_year(date(2026, 3, 1)) == 2024
+        assert previous_season_label(date(2026, 3, 1)) == "2024-25"
+
+    def test_the_july_cutover_moves_it_on(self):
+        assert previous_season_label(date(2026, 6, 30)) == "2024-25"
+        assert previous_season_label(date(2026, 7, 1)) == "2025-26"
+
+    def test_is_always_one_behind_the_current_season(self):
+        for day in (date(2026, 1, 5), date(2026, 8, 20), date(2027, 12, 31)):
+            assert previous_season_year(day) == get_season_year(day) - 1
+
+    def test_defaults_to_today(self):
+        assert previous_season_year() == get_season_year() - 1
+        assert previous_season_label() == season_label(get_season_year() - 1)
+
+    def test_label_round_trips_through_season_start_year(self):
+        day = date(2026, 9, 1)
+        assert season_start_year(previous_season_label(day)) == previous_season_year(day)

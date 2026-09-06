@@ -1242,7 +1242,7 @@ fpl doctor --providers          # Probe the external data sources instead
 fpl doctor --format json        # Machine-readable report (for agents/scripts)
 ```
 
-Rolling a setup into a new season silently invalidates IDs and per-team files: a dead draft league returns nothing, entry and league IDs reissued over the summer resolve to a stranger's team or league, and a per-team file rebuilt in August can still describe last season's twenty clubs. None of these error — they produce plausible output. `fpl doctor` checks all of it in one pass:
+Rolling a setup into a new season silently invalidates IDs and per-team files: a dead draft league returns nothing, entry and league IDs reissued over the summer resolve to a stranger's team or league, a per-team file rebuilt in August can still describe last season's twenty clubs, and the scoring scale can still be anchored to a cohort two summers gone. None of these error — they produce plausible output. `fpl doctor` checks all of it in one pass:
 
 **IDs in `settings.yaml`** — each configured ID is resolved against the live API and the team/league name reported back, so a wrong-but-valid ID is visible:
 
@@ -1259,6 +1259,10 @@ Rolling a setup into a new season silently invalidates IDs and per-team files: a
 - `team_finances.json` — `scraped_at` falls within the current season
 - `player_prior.yaml` — season label matches (auto-invalidated otherwise)
 - `returnee_snapshot.json` — the returnee radar's week-over-week snapshot: season label matches (a previous season's is discarded and rebuilt on the next `fpl returnees` run), and reports the gameweek it currently holds
+
+**Scoring calibration:**
+
+- `quality_ceilings` — the season the [calibrated quality ceilings](custom-analysis.md#quality--value-scores) were measured against, recorded in the generated block as `CALIBRATION_SEASON`. Unlike everything above it, this is season data frozen in code rather than a file that rolls or rebuilds: a July rollover that passes without a recalibration leaves the anchors describing a cohort that has since turned over, with every code-side input unchanged and the fingerprint drift guard green. Anchors from the last completed season are the intended steady state all year and report OK; a completed season newer than the recorded one is **stale**, with the upgrade (a newer `fplkit` release carries a freshly calibrated block) and the maintainer re-run both named
 
 **Environment** — which directory each of config/data/cache resolved to and whether an `FPL_CLI_*` override is in effect, plus whether `settings.yaml` exists.
 
