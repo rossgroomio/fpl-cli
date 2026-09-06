@@ -2496,14 +2496,25 @@ class TestEndToEndStreakThroughTheFullCommand:
 # ---------------------------------------------------------------------------
 
 
+# The reason the real resolver would raise for a gameweek still being played
+# -- the commonest way a recap is declined, and the one #273 reported
+# generically under `--format json` while the specific text went to stderr.
+_UNRESOLVED_REASON = "Gameweek 7 is not yet finished - only completed gameweeks can be reviewed"
+
+
 def _invoke_recap_unresolved_gameweek(args: list[str] | None = None):
     """Like `_invoke_recap`, but the gameweek cannot be resolved at all --
     no collector is ever reached."""
+    from fpl_cli.cli.review import GameweekResolutionError
+
     client = _fpl_client()
     with (
         patch("fpl_cli.cli.league_recap.get_settings", return_value={"fpl": {"classic_league_id": 42}}),
         patch("fpl_cli.api.fpl.FPLClient", return_value=client),
-        patch("fpl_cli.cli.review._review_resolve_gw", AsyncMock(return_value=None)),
+        patch(
+            "fpl_cli.cli.review._review_resolve_gw",
+            AsyncMock(side_effect=GameweekResolutionError(_UNRESOLVED_REASON)),
+        ),
     ):
         from fpl_cli.cli.league_recap import league_recap_command
 
@@ -2825,18 +2836,27 @@ class TestLeagueRecapJsonEnvelope:
         assert result.exit_code == 1
         payload = json.loads(result.stdout)
         assert payload["command"] == "league-recap"
-        assert "error" in payload
+        # #273: the resolver's own reason, not a generic "could not resolve".
+        # A consumer that only reads the envelope now learns which gameweek
+        # was declined and why.
+        assert payload["error"] == _UNRESOLVED_REASON
         # #141: stdout carries the envelope and only the envelope; the prose
         # explaining the failure stays on stderr.
         assert "{" not in result.stderr
 
-    def test_an_unresolved_gameweek_in_table_mode_exits_zero(self):
-        """The deliberate divergence R9/R10 name: `emit_json_error` is the
-        shared JSON contract (always exit 1), but the table path keeps its
-        own softer exit-0 message-and-return behaviour."""
+    def test_an_unresolved_gameweek_in_table_mode_exits_one_with_the_reason_on_stderr(self):
+        """#273: same input, same answer to "did this work".
+
+        The exit code used to depend on the output format -- 1 under
+        `--format json`, 0 in table mode -- and the table path put its reason
+        on stdout, so `2>/dev/null` kept the failure and `> out.txt` hid it.
+        """
         result = _invoke_recap_unresolved_gameweek()
 
-        assert result.exit_code == 0
+        assert result.exit_code == 1
+        assert "Gameweek 7 is not yet finished" in " ".join(result.stderr.split())
+        # No recap was produced, so stdout says nothing.
+        assert result.stdout == ""
 
 
 # ---------------------------------------------------------------------------
