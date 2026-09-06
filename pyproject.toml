@@ -15,7 +15,9 @@ requires-python = ">=3.11"
 dependencies = [
     "httpx>=0.27.0,<1",
     "pydantic>=2.5.0,<3",
-    "click>=8.1.0,<9",
+    # 8.2 is the suite's floor, not the runtime's: every CLI test reads
+    # `result.stderr` off a bare `CliRunner()`, which raises before 8.2 (#277).
+    "click>=8.2,<9",
     "rich>=13.7.0",
     "jinja2>=3.1.0",
     "pyyaml>=6.0.0",
@@ -39,6 +41,9 @@ dev = [
     "respx>=0.21.0",
     "ruff>=0.1.0",
     "pyright>=1.1.0",
+    # tests/test_dependencies.py compares version floors with packaging.version;
+    # pytest pulls it in today, but a transitive import is not a declared one.
+    "packaging>=23.0",
 ]
 
 [project.urls]
