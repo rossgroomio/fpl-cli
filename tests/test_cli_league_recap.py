@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from click.testing import CliRunner
 
+from fpl_cli.cli._league_recap_data import RecapReconciliationError
 from fpl_cli.cli._league_recap_history import (
     _pair_squads,
     HISTORY_WARNING_BACKFILL_MANAGER_UNREACHABLE,
@@ -37,6 +38,7 @@ from fpl_cli.cli._league_recap_types import (
     RecapStandingsEntry,
     RecapTransfer,
 )
+from fpl_cli.cli.league_recap import RECAP_WARNING_STANDINGS_MOVED_ON
 from fpl_cli.models.league_history import (
     CaptureStatus,
     FidelityTier,
@@ -705,10 +707,22 @@ def _fpl_client(gw: int = 5) -> MagicMock:
     client.get_teams = AsyncMock(return_value=[])
     client.get_gameweek_live = AsyncMock(return_value={"elements": []})
     client.get_fixtures = AsyncMock(return_value=[])
-    # `gw` is the latest finished gameweek, so a run resolving that gameweek
-    # sees it as live -- the same relationship the real API reports.
-    client.get_gameweeks = AsyncMock(return_value=[{"id": gw, "finished": True}])
+    # `gw` is the latest finished gameweek *and* the one the API still calls
+    # current, so a run resolving that gameweek sees it as live -- the same
+    # relationship the real API reports in the window between a gameweek's
+    # last whistle and the next deadline. `is_current` is not decoration: it
+    # is half of the liveness test (issue #262), so a payload without it
+    # models a gameweek the standings have already moved past.
+    client.get_gameweeks = AsyncMock(
+        return_value=[{"id": gw, "finished": True, "is_current": True}]
+    )
     return client
+
+
+def _current_gameweek_id(client: MagicMock) -> int | None:
+    """The id `_review_resolve_gw` would report for this client's payload."""
+    gameweeks = client.get_gameweeks.return_value
+    return next((g["id"] for g in gameweeks if g.get("is_current")), None)
 
 
 def _invoke_recap(
@@ -716,6 +730,7 @@ def _invoke_recap(
     client: MagicMock | None = None,
     settings: dict[str, Any] | None = None,
     replays: list[LeagueRecapData] | None = None,
+    collector: AsyncMock | None = None,
     gw: int = 5,
 ):
     """Run the command with the collector stubbed.
@@ -723,9 +738,22 @@ def _invoke_recap(
     `replays` are handed back, in order, to the calls a detailed backfill
     makes after the live collection -- the collector is the same one the
     replay path goes through, so a backfill test cannot stub it separately.
+
+    Pass `collector` to keep a handle on the stub and read back what the
+    command decided before calling it -- `is_live_gw`, above all, which is
+    derived here and nowhere else (issue #262).
     """
     client = client or _fpl_client()
-    collector = (
+    # The stubbed resolver answers `api_current_gw_id` off the same gameweeks
+    # payload the real one reads (both take it from the cached bootstrap), so
+    # a test sets `is_current` in one place and cannot accidentally pair a
+    # payload with a current gameweek that contradicts it.
+    resolved = {
+        "gw": gw,
+        "gw_data": None,
+        "api_current_gw_id": _current_gameweek_id(client),
+    }
+    collector = collector or (
         AsyncMock(side_effect=[collected, *replays])
         if replays else AsyncMock(return_value=collected)
     )
@@ -735,7 +763,7 @@ def _invoke_recap(
             return_value=settings or {"fpl": {"classic_league_id": 42}},
         ),
         patch("fpl_cli.api.fpl.FPLClient", return_value=client),
-        patch("fpl_cli.cli.review._review_resolve_gw", AsyncMock(return_value={"gw": gw})),
+        patch("fpl_cli.cli.review._review_resolve_gw", AsyncMock(return_value=resolved)),
         patch("fpl_cli.cli._league_recap_data.collect_classic_recap_data", collector),
     ):
         from fpl_cli.cli.league_recap import league_recap_command
@@ -997,7 +1025,8 @@ class TestFinesAreRecordedNotJustRendered:
         )
         client = _fpl_client()
         client.get_gameweeks = AsyncMock(return_value=[
-            {"id": 4, "finished": True}, {"id": 5, "finished": True},
+            {"id": 4, "finished": True},
+            {"id": 5, "finished": True, "is_current": True},
         ])
         client.get_manager_history = AsyncMock(return_value={"current": []})
 
@@ -2532,7 +2561,8 @@ class TestLeagueRecapJsonEnvelope:
         path.write_text("not json{{{\n", encoding="utf-8")
         client = _fpl_client()
         client.get_gameweeks = AsyncMock(return_value=[
-            {"id": 1, "finished": True}, {"id": 5, "finished": True},
+            {"id": 1, "finished": True},
+            {"id": 5, "finished": True, "is_current": True},
         ])
 
         result = _invoke_recap(
@@ -2568,7 +2598,8 @@ class TestLeagueRecapJsonEnvelope:
         It must now reach `metadata.warnings` like every other diagnostic."""
         client = _fpl_client()
         client.get_gameweeks = AsyncMock(return_value=[
-            {"id": 4, "finished": True}, {"id": 5, "finished": True},
+            {"id": 4, "finished": True},
+            {"id": 5, "finished": True, "is_current": True},
         ])
         client.get_manager_history = AsyncMock(side_effect=RuntimeError("boom"))
 
@@ -3369,3 +3400,145 @@ class TestPairSquads:
         replayed = [self._p("B", 2)]
         recorded = [self._p("X", 1), self._p("Y", 2)]
         assert _pair_squads(replayed, recorded) == [(replayed[0], recorded[1])]
+
+
+# ---------------------------------------------------------------------------
+# Issue #262: which gameweek the league standings actually describe
+# ---------------------------------------------------------------------------
+
+
+def _gameweeks(*entries: tuple[int, bool, bool]) -> list[dict[str, Any]]:
+    """A `get_gameweeks()` payload from (id, finished, is_current) triples."""
+    return [
+        {"id": gw_id, "finished": finished, "is_current": is_current}
+        for gw_id, finished, is_current in entries
+    ]
+
+
+class TestLiveGameweekDerivation:
+    """`is_live_gw` must mean "the standings still describe this gameweek".
+
+    It used to mean "this is the most recently finished gameweek", and the
+    two part company for the whole duration of every gameweek: the league
+    table's `event_total` follows whatever gameweek the API calls current,
+    so the next deadline moves it on while `max(finished)` stays put. The
+    recap then reconciled GW N-1's collected points against GW N's table,
+    failed on the mismatch, and exited 1 -- taking the ledger capture with
+    it in the very window the recap is meant to be run in (issue #262).
+    """
+
+    # Only the recapped gameweek and what came after it: an earlier finished
+    # gameweek would pull the coarse backfill in and call the collector a
+    # second time, which has nothing to do with the derivation under test.
+    _MOVED_ON = _gameweeks((5, True, False), (6, False, True))
+    _STILL_LIVE = _gameweeks((5, True, True))
+
+    def _run(self, gameweeks: list[dict[str, Any]], args: list[str] | None = None):
+        client = _fpl_client()
+        client.get_gameweeks = AsyncMock(return_value=gameweeks)
+        client.get_manager_history = AsyncMock(return_value={"current": []})
+        collector = AsyncMock(return_value=_recap_data(
+            managers=[_manager(name="Alice", entry_id=1)],
+        ))
+        result = _invoke_recap(
+            _recap_data(), args, client=client, collector=collector,
+        )
+        # The first call is the live collection; a backfill replay, where one
+        # runs, is always a replay and says so for reasons of its own.
+        return result, collector.call_args_list[0].kwargs
+
+    def test_the_just_finished_gameweek_is_live_while_it_is_still_current(self):
+        """The case the reconciliation was written for: the window between a
+        gameweek's last whistle and the next deadline."""
+        _, collected_with = self._run(self._STILL_LIVE)
+
+        assert collected_with["is_live_gw"] is True
+
+    def test_a_later_gameweek_in_progress_makes_it_a_replay(self):
+        """The regression. GW5 is still the newest finished gameweek, but the
+        table now reports GW6, so nothing derived from it belongs to GW5."""
+        _, collected_with = self._run(self._MOVED_ON)
+
+        assert collected_with["is_live_gw"] is False
+
+    def test_the_recap_still_runs_once_the_next_gameweek_starts(self):
+        """The user-visible bug, end to end: exit 1 and no ledger row for the
+        gameweek the recap exists to record.
+
+        The collector stands in for the real one by raising exactly where the
+        real one does -- `_reconcile_classic_headline_numbers` runs only under
+        `is_live_gw`, and a table describing GW6 cannot agree with GW5's
+        collected points wherever a manager took a hit.
+        """
+        async def _collect(**kwargs: Any) -> LeagueRecapData:
+            if kwargs["is_live_gw"]:
+                raise RecapReconciliationError(
+                    "Gameweek-points reconciliation failed for the live gameweek "
+                    "(Alice: entry_history=100 standings=37)."
+                )
+            return _recap_data(managers=[_manager(name="Alice", entry_id=1)])
+
+        client = _fpl_client()
+        client.get_gameweeks = AsyncMock(return_value=self._MOVED_ON)
+        client.get_manager_history = AsyncMock(return_value={"current": []})
+        result = _invoke_recap(
+            _recap_data(), client=client, collector=AsyncMock(side_effect=_collect),
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "reconciliation failed" not in result.output
+        assert _store().captured_gameweeks() == [5]
+
+    def test_the_window_is_explained_rather_than_silently_degraded(self):
+        result, _ = self._run(self._MOVED_ON)
+
+        stderr = result.stderr.replace("\n", "")
+        assert "Gameweek 6 has started" in stderr
+        assert "GW5" in stderr
+
+    def test_the_window_reaches_metadata_warnings_under_json(self):
+        result, _ = self._run(self._MOVED_ON, ["--format", "json"])
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        matching = [
+            w for w in payload["metadata"]["warnings"]
+            if w["code"] == RECAP_WARNING_STANDINGS_MOVED_ON
+        ]
+        assert len(matching) == 1
+        assert "Gameweek 6 has started" in matching[0]["message"]
+        assert "GW5" in matching[0]["message"]
+
+    def test_a_live_gameweek_raises_no_moved_on_warning(self):
+        result, _ = self._run(self._STILL_LIVE, ["--format", "json"])
+
+        payload = json.loads(result.stdout)
+        assert not [
+            w for w in payload["metadata"]["warnings"]
+            if w["code"] == RECAP_WARNING_STANDINGS_MOVED_ON
+        ]
+
+    def test_an_explicitly_older_gameweek_is_a_replay_without_the_notice(self):
+        """`-g 4` while GW5 is current is a replay by intent -- already
+        handled, and nothing about it needs explaining."""
+        client = _fpl_client()
+        client.get_gameweeks = AsyncMock(
+            return_value=_gameweeks((4, True, False), (5, True, True)),
+        )
+        client.get_manager_history = AsyncMock(return_value={"current": []})
+        collector = AsyncMock(return_value=_recap_data(gameweek=4))
+        result = _invoke_recap(
+            _recap_data(gameweek=4), ["-g", "4"],
+            client=client, collector=collector, gw=4,
+        )
+
+        assert collector.call_args_list[0].kwargs["is_live_gw"] is False
+        assert "has started" not in result.stderr.replace("\n", "")
+
+    def test_a_payload_with_no_current_gameweek_is_a_replay_without_the_notice(self):
+        """Nothing to name in a "GW N has started" line, and standings that
+        cannot be placed are standings that cannot be trusted."""
+        result, collected_with = self._run(_gameweeks((5, True, False)))
+
+        assert collected_with["is_live_gw"] is False
+        assert "has started" not in result.stderr.replace("\n", "")
