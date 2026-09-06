@@ -64,7 +64,7 @@ from fpl_cli.services.league_history_notes import (
     NoteSurface,
     SeasonPhase,
 )
-from tests.conftest import make_draft_player, make_player
+from tests.conftest import make_draft_player, make_player, make_team
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -3740,6 +3740,165 @@ class TestCollectorLedgerContract:
         assert squad_player["unmatched"] is False
         assert squad_player["code"] == 510281
         assert squad_player["points"] == 9
+
+
+class TestCollectorGameweekClubs:
+    """#177: a first capture and a coarse-to-detailed upgrade have no recorded
+    row to carry a club forward from, so the gameweek has to answer instead."""
+
+    _TEAMS = {t.id: t for t in (
+        make_team(id=1, name="Alpha", short_name="ALP"),
+        make_team(id=2, name="Beta", short_name="BET"),
+    )}
+
+    async def test_classic_squad_records_the_club_the_gameweek_places_him_at(self):
+        moved = make_player(id=5, code=99_001, web_name="Star", team_id=2)
+        standings = [{"entry": 1, "player_name": "Alice", "event_total": 6, "total": 6}]
+        picks = _picks_response(points=6, total_points=6)
+        picks["picks"] = [{"element": 5, "position": 1, "multiplier": 1}]
+        client = _FakeClassicClient(_standings_response(standings), {1: picks})
+        data = await collect_classic_recap_data(
+            client, {"fpl": {"classic_league_id": 1}}, gw=10,
+            live_stats={}, player_map={5: moved}, teams=self._TEAMS,
+            is_live_gw=False, gameweek_clubs={5: 1},
+        )
+        player = data["managers"][0]["squad"][0]
+        assert player["team"] == "ALP"
+        assert player["team_name"] == "Alpha"
+
+    async def test_classic_squad_keeps_todays_club_where_the_gameweek_is_silent(self):
+        player = make_player(id=5, code=99_001, web_name="Star", team_id=2)
+        standings = [{"entry": 1, "player_name": "Alice", "event_total": 6, "total": 6}]
+        picks = _picks_response(points=6, total_points=6)
+        picks["picks"] = [{"element": 5, "position": 1, "multiplier": 1}]
+        client = _FakeClassicClient(_standings_response(standings), {1: picks})
+        data = await collect_classic_recap_data(
+            client, {"fpl": {"classic_league_id": 1}}, gw=10,
+            live_stats={}, player_map={5: player}, teams=self._TEAMS,
+            is_live_gw=False, gameweek_clubs=None,
+        )
+        assert data["managers"][0]["squad"][0]["team"] == "BET"
+
+    async def test_classic_transfers_are_stamped_from_the_gameweek_too(self):
+        """The player moved *out* never appears in the squad, so his club has
+        nowhere else to come from."""
+        incoming = make_player(id=5, code=99_001, web_name="In", team_id=2)
+        outgoing = make_player(id=6, code=99_002, web_name="Out", team_id=2)
+        standings = [{"entry": 1, "player_name": "Alice", "event_total": 6, "total": 6}]
+        picks = _picks_response(points=6, total_points=6)
+        picks["entry_history"]["event_transfers"] = 1
+        client = _FakeClassicClient(
+            _standings_response(standings), {1: picks},
+            transfers_by_entry={1: [{"event": 10, "element_in": 5, "element_out": 6}]},
+        )
+        data = await collect_classic_recap_data(
+            client, {"fpl": {"classic_league_id": 1}}, gw=10,
+            live_stats={}, player_map={5: incoming, 6: outgoing}, teams=self._TEAMS,
+            is_live_gw=False, gameweek_clubs={5: 1, 6: 1},
+        )
+        transfer = data["managers"][0]["transfers"][0]
+        assert transfer["player_in_team"] == "ALP"
+        assert transfer["player_out_team"] == "ALP"
+        assert transfer["player_in_team_name"] == "Alpha"
+
+    async def _draft_data(self, **kwargs):
+        draft_player = make_draft_player(id=900, code=555, web_name="Star", team=2, element_type=3)
+        main_player = make_player(id=5, code=555, web_name="Star", team_id=2)
+        league_details = {
+            "league": {"name": "Draft League"},
+            "standings": [{"league_entry": 10, "event_total": 5, "total": 5}],
+            "league_entries": [
+                {"id": 10, "entry_id": 1, "player_first_name": "A", "player_last_name": "B"},
+            ],
+        }
+        picks = {1: {"picks": [{"element": 900, "position": 1}], "subs": []}}
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        client.get_league_details = AsyncMock(return_value=league_details)
+        client.get_bootstrap_static = AsyncMock(return_value={"elements": [draft_player]})
+        client.get_league_transactions = AsyncMock(return_value={"transactions": []})
+        client.get_entry_picks = AsyncMock(side_effect=lambda entry_id, gw: picks[entry_id])
+        with patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=client):
+            return await collect_draft_recap_data(
+                {"fpl": {"draft_league_id": 1}}, gw=15,
+                live_stats={5: {"total_points": 5}}, players=[main_player],
+                teams=self._TEAMS, is_live_gw=False, **kwargs,
+            )
+
+    async def test_draft_squad_records_the_club_the_gameweek_places_him_at(self):
+        data = await self._draft_data(gameweek_clubs={5: 1})
+        assert data["managers"][0]["squad"][0]["team"] == "ALP"
+
+    async def test_draft_squad_keeps_todays_club_where_the_gameweek_is_silent(self):
+        data = await self._draft_data(gameweek_clubs=None)
+        assert data["managers"][0]["squad"][0]["team"] == "BET"
+
+    async def test_draft_waiver_moves_are_stamped_from_the_gameweek_too(self):
+        dp_in = make_draft_player(id=900, code=555, web_name="In", team=2, element_type=3)
+        dp_out = make_draft_player(id=901, code=666, web_name="Out", team=2, element_type=3)
+        main_in = make_player(id=5, code=555, web_name="In", team_id=2)
+        main_out = make_player(id=6, code=666, web_name="Out", team_id=2)
+        league_details = {
+            "league": {"name": "Draft League"},
+            "standings": [{"league_entry": 10, "event_total": 5, "total": 5}],
+            "league_entries": [
+                {"id": 10, "entry_id": 1, "player_first_name": "A", "player_last_name": "B"},
+            ],
+        }
+        txns = {"transactions": [{
+            "event": 15, "result": "a", "entry": 1,
+            "element_in": 900, "element_out": 901, "kind": "w",
+        }]}
+        picks = {1: {"picks": [{"element": 900, "position": 1}], "subs": []}}
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        client.get_league_details = AsyncMock(return_value=league_details)
+        client.get_bootstrap_static = AsyncMock(return_value={"elements": [dp_in, dp_out]})
+        client.get_league_transactions = AsyncMock(return_value=txns)
+        client.get_entry_picks = AsyncMock(side_effect=lambda entry_id, gw: picks[entry_id])
+
+        with patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=client):
+            data = await collect_draft_recap_data(
+                {"fpl": {"draft_league_id": 1}}, gw=15,
+                live_stats={5: {"total_points": 5}, 6: {"total_points": 2}},
+                players=[main_in, main_out], teams=self._TEAMS, is_live_gw=False,
+                gameweek_clubs={5: 1, 6: 1},
+            )
+        txn = data["managers"][0]["transactions"][0]
+        assert txn["player_in_team"] == "ALP"
+        assert txn["player_out_team"] == "ALP"
+
+    async def test_an_unmatched_draft_player_keeps_the_draft_bootstraps_club(self):
+        """No main-game id, so nothing to look the gameweek's answer up by."""
+        stranger = make_draft_player(id=901, code=777, web_name="Nobody", team=2, element_type=3)
+        main_player = make_player(id=5, code=555, web_name="Star", team_id=2)
+        league_details = {
+            "league": {"name": "Draft League"},
+            "standings": [{"league_entry": 10, "event_total": 0, "total": 0}],
+            "league_entries": [
+                {"id": 10, "entry_id": 1, "player_first_name": "A", "player_last_name": "B"},
+            ],
+        }
+        picks = {1: {"picks": [{"element": 901, "position": 1}], "subs": []}}
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        client.get_league_details = AsyncMock(return_value=league_details)
+        client.get_bootstrap_static = AsyncMock(return_value={"elements": [stranger]})
+        client.get_league_transactions = AsyncMock(return_value={"transactions": []})
+        client.get_entry_picks = AsyncMock(side_effect=lambda entry_id, gw: picks[entry_id])
+
+        with patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=client):
+            data = await collect_draft_recap_data(
+                {"fpl": {"draft_league_id": 1}}, gw=15, live_stats={},
+                players=[main_player], teams=self._TEAMS, is_live_gw=False,
+                gameweek_clubs={5: 1},
+            )
+        squad_player = data["managers"][0]["squad"][0]
+        assert squad_player["unmatched"] is True
+        assert squad_player["team"] == "BET"
 
 
 class TestRecapPlayerClubs:

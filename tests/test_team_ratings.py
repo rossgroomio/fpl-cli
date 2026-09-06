@@ -1657,6 +1657,108 @@ class TestRatingsUpdateBlending:
         assert mock_save.call_args.kwargs["source"] == "understat_xg_blended"
 
 
+class TestRatingsUpdateRefreshPrior:
+    """`fpl ratings update --refresh-prior` forces the prior to be rebuilt.
+
+    The provenance check in generate_prior covers the input changes it can
+    see; this is the escape hatch for the ones it cannot -- a provider that
+    answered but answered wrongly, say -- so nothing ever needs the cache file
+    deleted by hand (#112).
+
+    What it reports has to come off the rebuild's outcome rather than its
+    ratings: a rebuild that failed and fell back to the cache returns the
+    cache's ratings, which are exactly as truthy as a fresh prior's.
+    """
+
+    def _run(self, args, *, outcome=None):
+        from click.testing import CliRunner
+
+        from fpl_cli.cli import main
+        from fpl_cli.services.team_ratings_prior import PRIOR_REBUILT, PriorRebuild
+        from tests.conftest import make_fixture
+
+        prior = {"ARS": TeamRating(atk_home=4, atk_away=4, def_home=4, def_away=4)}
+        rebuild = PriorRebuild(prior, outcome or PRIOR_REBUILT)
+
+        with (
+            patch(
+                "fpl_cli.services.team_ratings.TeamRatingsCalculator.calculate_from_fixtures",
+                new_callable=AsyncMock,
+                return_value=({"ARS": TeamRating(1, 1, 1, 1)}, {}),
+            ),
+            patch(
+                "fpl_cli.api.fpl.FPLClient.get_fixtures",
+                new_callable=AsyncMock,
+                return_value=[
+                    make_fixture(id=1, gameweek=1, finished=True, home_score=1, away_score=0)
+                ],
+            ),
+            patch(
+                "fpl_cli.services.team_ratings_prior.rebuild_prior",
+                new_callable=AsyncMock,
+                return_value=rebuild,
+            ) as mock_rebuild,
+            patch(
+                "fpl_cli.services.team_ratings_prior.generate_prior",
+                new_callable=AsyncMock,
+                return_value=prior,
+            ) as mock_generate,
+            patch(
+                "fpl_cli.services.team_ratings.TeamRatingsService.get_all_ratings", return_value={}
+            ),
+            patch("fpl_cli.services.team_ratings.TeamRatingsService.save_ratings"),
+            patch("fpl_cli.cli._context.load_settings", return_value={"custom_analysis": True}),
+        ):
+            result = CliRunner().invoke(main, args, catch_exceptions=False)
+
+        assert result.exit_code == 0, result.output
+        return result, mock_rebuild, mock_generate
+
+    def test_the_flag_forces_a_rebuild(self):
+        result, mock_rebuild, _ = self._run(["ratings", "update", "--refresh-prior"])
+
+        mock_rebuild.assert_awaited_once()
+        # A progress notice, so stderr: `2>/dev/null` leaves the table alone.
+        assert "Rebuilding last season's prior" in result.stderr
+
+    def test_without_the_flag_no_rebuild_is_forced(self):
+        _, mock_rebuild, mock_generate = self._run(["ratings", "update"])
+
+        mock_rebuild.assert_not_awaited()
+        mock_generate.assert_awaited()
+
+    def test_a_refused_rebuild_says_the_saved_prior_was_kept(self):
+        """The cache is returned in this case, so the ratings cannot report it."""
+        from fpl_cli.services.team_ratings_prior import PRIOR_KEPT_CACHE
+
+        result, _, _ = self._run(
+            ["ratings", "update", "--refresh-prior"], outcome=PRIOR_KEPT_CACHE
+        )
+
+        assert "did not improve on the saved prior" in result.stderr.replace("\n", "")
+        assert "Calculated Team Ratings" in result.output
+
+    def test_no_prior_at_all_is_not_reported_as_a_kept_copy(self):
+        """There is no saved copy to carry on with, so it must not claim one."""
+        from fpl_cli.services.team_ratings_prior import PRIOR_UNAVAILABLE
+
+        result, _, _ = self._run(
+            ["ratings", "update", "--refresh-prior"], outcome=PRIOR_UNAVAILABLE
+        )
+
+        assert "no prior to rebuild" in result.stderr.replace("\n", "")
+        assert "keeping it" not in result.stderr
+
+    def test_the_rebuild_runs_under_dry_run_too(self):
+        """--dry-run governs team_ratings.yaml; refreshing a stale prior was asked for."""
+        result, mock_rebuild, _ = self._run(
+            ["ratings", "update", "--refresh-prior", "--dry-run"]
+        )
+
+        mock_rebuild.assert_awaited_once()
+        assert "ratings not saved" in result.output
+
+
 class TestRatingsUpdateWithoutResults:
     """`fpl doctor` sends users here at the rollover, when there is nothing to calculate.
 

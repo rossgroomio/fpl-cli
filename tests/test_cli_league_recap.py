@@ -19,6 +19,7 @@ from fpl_cli.cli._league_recap_history import (
     DETAIL_FLAG,
     HISTORY_WARNING_BACKFILL_MANAGER_UNREACHABLE,
     HISTORY_WARNING_BACKFILL_REPLAY_FAILED,
+    HISTORY_WARNING_CLUB_REDERIVED,
     HISTORY_WARNING_COVERAGE,
     HISTORY_WARNING_IDENTITY_CARRIED,
     HISTORY_WARNING_STANDINGS_CARRIED,
@@ -64,7 +65,7 @@ from fpl_cli.services.league_history_notes import (
     SeasonPhase,
     build_notes_pack,
 )
-from tests.conftest import make_history_row
+from tests.conftest import make_fixture, make_history_row, make_player
 
 SEASON = "2026-27"
 CAPTURED_AT = datetime(2026, 8, 22, 12, 0, tzinfo=timezone.utc)
@@ -183,7 +184,10 @@ def _recap_data(
         is_bgw=kwargs.get("is_bgw", False),
         is_dgw=kwargs.get("is_dgw", False),
     )
-    for key in ("fines", "fine_rules_evaluated", "league_size", "league_start_event"):
+    for key in (
+        "fines", "fine_rules_evaluated", "league_size", "league_start_event",
+        "clubs_derived_codes",
+    ):
         if key in kwargs:
             data[key] = kwargs[key]  # type: ignore[literal-required]
     return data
@@ -3443,6 +3447,263 @@ class TestReplayKeepsRecordedIdentity:
         )
         assert resolved[1].transfers[0].player_out_code == 222
 
+
+# ---------------------------------------------------------------------------
+# issue #177: a club the gameweek itself derived supersedes a recorded one
+# ---------------------------------------------------------------------------
+
+
+class TestDerivedClubSupersedesRecorded:
+    """The carry (#175) assumes the recorded club is the better one. It is not
+    when the recorded row was itself written by a first capture or a coarse
+    upgrade, which had nothing to carry and so stamped today's club. Where this
+    run derived the club from the gameweek's own fixtures, that answer wins --
+    otherwise a prevention-only fix leaves those rows wrong permanently."""
+
+    def _data(self, squad, *, derived: list[int] | None = None, **manager_kwargs):
+        return _recap_data(
+            gameweek=1,
+            managers=[_manager(name="Alice", entry_id=1, squad=squad, **manager_kwargs)],
+            cohort=_cohort((1, "Alice", 1, 60, 300)),
+            clubs_derived_codes=derived if derived is not None else [],
+        )
+
+    async def _capture(self, squad, *, derived=None, **manager_kwargs):
+        return await capture_recap_history(
+            self._data(squad, derived=derived, **manager_kwargs),
+            season=SEASON, finished_gameweeks=[1],
+        )
+
+    async def test_a_stale_recorded_club_is_replaced_by_the_derived_one(self):
+        await self._capture([_player(name="Mover", code=510_281, team="TOT", is_captain=True)])
+        await self._capture(
+            [_player(name="Mover", code=510_281, team="MCI", is_captain=True)],
+            derived=[510_281],
+        )
+        assert _store().resolved_gameweek(1)[1].squad[0].team == "MCI"
+
+    async def test_the_replacement_is_reported(self):
+        await self._capture([_player(name="Mover", code=510_281, team="TOT", is_captain=True)])
+        result = await self._capture(
+            [_player(name="Mover", code=510_281, team="MCI", is_captain=True)],
+            derived=[510_281],
+        )
+        assert any(w["code"] == HISTORY_WARNING_CLUB_REDERIVED for w in result.warnings)
+
+    async def test_a_club_the_gameweek_did_not_derive_is_still_carried(self):
+        """The #175 guarantee, unchanged: without the gameweek's own answer a
+        replay's club is just today's bootstrap and must not overwrite."""
+        await self._capture([_player(name="Mover", code=510_281, team="MCI", is_captain=True)])
+        result = await self._capture(
+            [_player(name="Mover", code=510_281, team="TOT", is_captain=True)],
+        )
+        assert _store().resolved_gameweek(1)[1].squad[0].team == "MCI"
+        assert not any(w["code"] == HISTORY_WARNING_CLUB_REDERIVED for w in result.warnings)
+
+    async def test_the_name_is_carried_even_where_the_club_is_derived(self):
+        """Fixtures say nothing about names, so a rename stays carry-only."""
+        await self._capture(
+            [_player(name="Savinho", code=510_281, team="TOT", is_captain=True)],
+            captain="Savinho",
+        )
+        await self._capture(
+            [_player(name="Sávio", code=510_281, team="MCI", is_captain=True)],
+            captain="Sávio", derived=[510_281],
+        )
+        recorded = _store().resolved_gameweek(1)[1].squad[0]
+        assert (recorded.name, recorded.team) == ("Savinho", "MCI")
+
+    async def test_a_derived_club_agreeing_with_the_record_reports_nothing(self):
+        await self._capture([_player(name="Mover", code=510_281, team="MCI", is_captain=True)])
+        result = await self._capture(
+            [_player(name="Mover", code=510_281, team="MCI", is_captain=True)],
+            derived=[510_281],
+        )
+        assert not any(w["code"] == HISTORY_WARNING_CLUB_REDERIVED for w in result.warnings)
+
+    async def test_a_derived_club_matching_todays_still_beats_a_stale_record(self):
+        """The round-trip case: he was at MCI that gameweek, an early capture
+        stamped TOT (where he was at capture time), and he has since returned
+        to MCI. The gameweek derives MCI correctly and today's bootstrap says
+        MCI too — so a "differs from today's club" exemption would drop him
+        and let the stale TOT win, silently."""
+        await self._capture([_player(name="Mover", code=510_281, team="TOT", is_captain=True)])
+        result = await self._capture(
+            [_player(name="Mover", code=510_281, team="MCI", is_captain=True)],
+            derived=[510_281],
+        )
+        assert _store().resolved_gameweek(1)[1].squad[0].team == "MCI"
+        assert any(w["code"] == HISTORY_WARNING_CLUB_REDERIVED for w in result.warnings)
+
+    async def test_an_undecidable_club_never_overwrites_the_record(self):
+        """A single fixture whose pair contains today's club is an assumption,
+        not a derivation, so the resolver leaves it out of the derived set —
+        and the recorded club, which is real evidence, has to win."""
+        await self._capture([_player(name="Mover", code=510_281, team="MCI", is_captain=True)])
+        result = await self._capture(
+            [_player(name="Mover", code=510_281, team="TOT", is_captain=True)],
+            derived=[],
+        )
+        assert _store().resolved_gameweek(1)[1].squad[0].team == "MCI"
+        assert not any(w["code"] == HISTORY_WARNING_CLUB_REDERIVED for w in result.warnings)
+
+    async def test_a_transfers_clubs_are_superseded_the_same_way(self):
+        stale = RecapTransfer(
+            player_in="Mover", player_in_team="TOT", player_in_points=6,
+            player_in_code=510_281,
+            player_out="Other", player_out_team="EVE", player_out_points=1,
+            player_out_code=222,
+            net=5, cost=0,
+        )
+        derived = RecapTransfer(
+            player_in="Mover", player_in_team="MCI", player_in_points=6,
+            player_in_code=510_281,
+            player_out="Other", player_out_team="LIV", player_out_points=1,
+            player_out_code=222,
+            net=5, cost=0,
+        )
+        await self._capture(
+            [_player(name="Mover", code=510_281, team="TOT", is_captain=True)],
+            transfers=[stale],
+        )
+        await self._capture(
+            [_player(name="Mover", code=510_281, team="MCI", is_captain=True)],
+            transfers=[derived], derived=[510_281, 222],
+        )
+        transfer = _store().resolved_gameweek(1)[1].transfers[0]
+        assert (transfer.player_in_team, transfer.player_out_team) == ("MCI", "LIV")
+
+    async def test_one_side_of_a_transfer_can_be_derived_without_the_other(self):
+        await self._capture(
+            [_player(name="Mover", code=510_281, team="TOT", is_captain=True)],
+            transfers=[RecapTransfer(
+                player_in="Mover", player_in_team="TOT", player_in_points=6,
+                player_in_code=510_281,
+                player_out="Other", player_out_team="EVE", player_out_points=1,
+                player_out_code=222,
+                net=5, cost=0,
+            )],
+        )
+        await self._capture(
+            [_player(name="Mover", code=510_281, team="MCI", is_captain=True)],
+            transfers=[RecapTransfer(
+                player_in="Mover", player_in_team="MCI", player_in_points=6,
+                player_in_code=510_281,
+                player_out="Other", player_out_team="LIV", player_out_points=1,
+                player_out_code=222,
+                net=5, cost=0,
+            )],
+            derived=[510_281],
+        )
+        transfer = _store().resolved_gameweek(1)[1].transfers[0]
+        assert (transfer.player_in_team, transfer.player_out_team) == ("MCI", "EVE")
+
+class TestRecapResolvesGameweekClubs:
+    """The command's own half of #177: it holds the live payload, the
+    fixtures and the bootstrap, so it is where the gameweek's clubs are
+    derived and handed to the collector."""
+
+    _MOVED = make_player(id=5, code=99_001, web_name="Mover", team_id=4)
+
+    def _client(self, explain: list[int], *, fixtures=None) -> MagicMock:
+        client = _fpl_client()
+        client.get_players = AsyncMock(return_value=[self._MOVED])
+        client.get_fixtures = AsyncMock(return_value=fixtures if fixtures is not None else [
+            make_fixture(id=71, home_team_id=1, away_team_id=2, finished=True, started=True),
+            make_fixture(id=73, home_team_id=1, away_team_id=3, finished=True, started=True),
+        ])
+        client.get_gameweek_live = AsyncMock(return_value={"elements": [{
+            "id": 5, "stats": {},
+            "explain": [{"fixture": f, "stats": []} for f in explain],
+        }]})
+        return client
+
+    def test_a_double_settles_the_club_and_reaches_the_collector(self):
+        collector = AsyncMock(return_value=_recap_data())
+        result = _invoke_recap(
+            _recap_data(), client=self._client([71, 73]), collector=collector,
+        )
+
+        assert result.exit_code == 0, result.output
+        assert collector.await_args.kwargs["gameweek_clubs"] == {5: 1}
+
+    def test_the_derived_codes_are_stamped_on_the_collected_data(self):
+        """What the identity carry reads to tell a derived club from a
+        restamped one."""
+        collected = _recap_data()
+        _invoke_recap(collected, client=self._client([71, 73]), collector=AsyncMock(return_value=collected))
+
+        assert collected["clubs_derived_codes"] == [99_001]
+
+    def test_a_moved_player_costs_one_player_detail_request(self):
+        client = self._client([71])
+        client.get_player_detail = AsyncMock(
+            return_value={"history": [{"fixture": 71, "was_home": False, "round": 5}]},
+        )
+        collector = AsyncMock(return_value=_recap_data())
+        _invoke_recap(_recap_data(), client=client, collector=collector)
+
+        client.get_player_detail.assert_awaited_once_with(5)
+        assert collector.await_args.kwargs["gameweek_clubs"] == {5: 2}
+
+    def test_a_backfilled_gameweek_is_resolved_against_its_own_fixtures(self):
+        """The path the issue is really about: `--backfill-detail` upgrades
+        every coarse gameweek, and each replay derives its own clubs."""
+        gw5 = _recap_data(gameweek=5)
+        gw4 = _recap_data(gameweek=4)
+        client = self._client([71, 73])
+        client.get_gameweeks = AsyncMock(return_value=[
+            {"id": 4, "finished": True},
+            {"id": 5, "finished": True, "is_current": True},
+        ])
+        client.get_manager_history = AsyncMock(return_value={"current": []})
+        collector = AsyncMock(side_effect=[gw5, gw4])
+
+        result = _invoke_recap(
+            gw5, ["--backfill-detail"], client=client, collector=collector,
+        )
+
+        assert result.exit_code == 0, result.output
+        replay_call = collector.await_args_list[-1]
+        assert replay_call.kwargs["gw"] == 4
+        assert replay_call.kwargs["gameweek_clubs"] == {5: 1}
+        assert gw4["clubs_derived_codes"] == [99_001]
+
+    def test_a_moved_player_is_fetched_once_for_the_whole_backfill(self):
+        """`element-summary` answers for the whole season, so a backfill pays
+        for each moved player once rather than once per gameweek."""
+        gw5 = _recap_data(gameweek=5)
+        gw4 = _recap_data(gameweek=4)
+        client = self._client([71])
+        client.get_player_detail = AsyncMock(
+            return_value={"history": [{"fixture": 71, "was_home": False}]},
+        )
+        client.get_gameweeks = AsyncMock(return_value=[
+            {"id": 4, "finished": True},
+            {"id": 5, "finished": True, "is_current": True},
+        ])
+        client.get_manager_history = AsyncMock(return_value={"current": []})
+
+        _invoke_recap(
+            gw5, ["--backfill-detail"], client=client,
+            collector=AsyncMock(side_effect=[gw5, gw4]),
+        )
+
+        client.get_player_detail.assert_awaited_once_with(5)
+
+    def test_a_gameweek_that_cannot_answer_hands_the_collector_nothing(self):
+        """An unfinished fixture means the `explain` marks are still being
+        written, so today's clubs stand exactly as they did before."""
+        client = self._client([71], fixtures=[
+            make_fixture(id=71, home_team_id=1, away_team_id=2, finished=True, started=True),
+            make_fixture(id=73, home_team_id=1, away_team_id=3, finished=False),
+        ])
+        collected = _recap_data()
+        collector = AsyncMock(return_value=collected)
+        _invoke_recap(collected, client=client, collector=collector)
+
+        assert collector.await_args.kwargs["gameweek_clubs"] is None
+        assert collected["clubs_derived_codes"] == []
 
 # ---------------------------------------------------------------------------
 # issue #178: a current-gameweek recapture must not restamp a recorded row
