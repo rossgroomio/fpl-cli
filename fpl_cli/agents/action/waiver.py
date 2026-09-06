@@ -43,7 +43,7 @@ class WaiverAgent(Agent):
     name = "WaiverAgent"
     description = "Recommends waiver claims for draft leagues"
 
-    def __init__(self, config: dict[str, Any] | None = None):
+    def __init__(self, config: dict[str, Any] | None = None) -> None:
         super().__init__(config)
         self.client = FPLDraftClient()
         self.fpl_client = FPLClient()

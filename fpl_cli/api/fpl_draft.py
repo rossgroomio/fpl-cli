@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, Self
 
 import httpx
 
@@ -27,7 +27,7 @@ class FPLDraftClient:
     - Team squads
     """
 
-    def __init__(self, timeout: float = 30.0):
+    def __init__(self, timeout: float = 30.0) -> None:
         """Initialize the FPL Draft API client.
 
         Args:
@@ -42,10 +42,10 @@ class FPLDraftClient:
         """Close the underlying HTTP client."""
         await self._http.aclose()
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> Self:
         return self
 
-    async def __aexit__(self, *exc):
+    async def __aexit__(self, *exc: object) -> None:
         await self.close()
 
     async def _get(self, endpoint: str) -> Any:

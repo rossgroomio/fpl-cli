@@ -22,6 +22,9 @@ from fpl_cli.season import season_label_range
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
+    from fpl_cli.api.core_insights import CoreInsightsClient
+    from fpl_cli.api.vaastav import VaastavClient
+
 logger = logging.getLogger(__name__)
 
 HISTORICAL_SEASON_COUNT = 4
@@ -108,7 +111,7 @@ class HistoricalDataProvider:
 
     _session_profiles: ClassVar[dict[int, PlayerProfile] | None] = None
 
-    def __init__(self, vaastav, core_insights) -> None:
+    def __init__(self, vaastav: VaastavClient, core_insights: CoreInsightsClient) -> None:
         self._vaastav = vaastav
         self._core_insights = core_insights
 

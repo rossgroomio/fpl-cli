@@ -43,7 +43,7 @@ def _preview_build_fixture_map(gw_fixtures: list[dict]) -> dict[str, str]:
 @click.option("--scout", is_flag=True, help="Run deep research for BUY/SELL analysis")
 @click.option("--dry-run", is_flag=True, help="Build scout prompts and save to data/debug/ without calling LLM")
 @click.pass_context
-def preview_command(ctx: click.Context, save: bool, output: str | None, scout: bool, dry_run: bool):
+def preview_command(ctx: click.Context, save: bool, output: str | None, scout: bool, dry_run: bool) -> None:
     """Run full pre-gameweek analysis and generate report."""
     from pathlib import Path
 
@@ -78,7 +78,7 @@ def preview_command(ctx: click.Context, save: bool, output: str | None, scout: b
     draft_league_id = fpl_cfg.get("draft_league_id")
     draft_entry_id = fpl_cfg.get("draft_entry_id")
 
-    async def _preview():
+    async def _preview() -> None:
         console.print(Panel.fit("[bold blue]Pre-Gameweek Preview[/bold blue]"))
 
         # Get gameweek info
@@ -364,7 +364,7 @@ def preview_command(ctx: click.Context, save: bool, output: str | None, scout: b
                 else:
                     error_console.print(f"[yellow]⚠[/yellow] Scout analysis: {scout_result.message}")
 
-    def _display_preview_summary(data: dict, *, custom_on: bool = True):
+    def _display_preview_summary(data: dict, *, custom_on: bool = True) -> None:
         """Display a summary of the preview analysis."""
 
         # --- Fixture Analysis ---

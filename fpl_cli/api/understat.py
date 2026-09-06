@@ -8,7 +8,7 @@ import logging
 import re
 from datetime import date
 from functools import lru_cache
-from typing import Any
+from typing import Any, Self
 
 import httpx
 
@@ -179,7 +179,7 @@ class UnderstatClient:
     data for players and teams in the top 5 European leagues.
     """
 
-    def __init__(self, timeout: float = 30.0, season_year: int | None = None):
+    def __init__(self, timeout: float = 30.0, season_year: int | None = None) -> None:
         """Initialize the Understat client.
 
         Args:
@@ -196,10 +196,10 @@ class UnderstatClient:
         """Close the underlying HTTP client."""
         await self._http.aclose()
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> Self:
         return self
 
-    async def __aexit__(self, *exc):
+    async def __aexit__(self, *exc: object) -> None:
         await self.close()
 
     async def _get_api_json(self, endpoint: str, referer: str) -> Any:

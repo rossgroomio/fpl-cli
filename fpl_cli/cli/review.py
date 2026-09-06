@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import TYPE_CHECKING, Any
 
 import click
 from rich.panel import Panel
@@ -32,8 +33,11 @@ from fpl_cli.services.fixture_predictions import (
 )
 from fpl_cli.utils.time import format_deadline
 
+if TYPE_CHECKING:
+    from fpl_cli.api.fpl import FPLClient
 
-async def _review_resolve_gw(client, gameweek):
+
+async def _review_resolve_gw(client: FPLClient, gameweek: int | None) -> dict[str, Any] | None:
     """Resolve which gameweek to review. Returns {gw, gw_data, api_current_gw_id} or None."""
     gameweeks = await client.get_gameweeks()
     current_gw = await client.get_current_gameweek()
@@ -101,7 +105,7 @@ def review_command(
     ctx: click.Context,
     gameweek: int | None, save: bool, output: str | None,
     summarise: bool, debug: bool, dry_run: bool, compare_recs: bool,
-):
+) -> None:
     """Review a completed gameweek - your squad's performance and league standings.
 
     \b
@@ -140,7 +144,7 @@ def review_command(
     draft_league_id = fpl_cfg.get("draft_league_id")
     draft_entry_id = fpl_cfg.get("draft_entry_id")
 
-    async def _review():
+    async def _review() -> None:
         from contextlib import AsyncExitStack
 
         async with AsyncExitStack() as stack:

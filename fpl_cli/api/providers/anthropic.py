@@ -7,8 +7,8 @@ from typing import Any, ClassVar, Self
 
 import httpx
 
-from ._http import RetryPolicy, post_json_with_retry
-from ._models import LLMResponse, ProviderError, TokenUsage, log_abnormal_stop
+from fpl_cli.api.providers._http import RetryPolicy, post_json_with_retry
+from fpl_cli.api.providers._models import LLMResponse, ProviderError, TokenUsage, log_abnormal_stop
 
 _BASE_URL = "https://api.anthropic.com/v1"
 _PROVIDER_LABEL = "Anthropic"

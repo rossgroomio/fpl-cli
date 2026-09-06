@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from contextlib import nullcontext
 from datetime import datetime, timezone
 
@@ -169,7 +170,9 @@ def sell_prices_command(ctx: click.Context, refresh: bool, visible: bool, output
         console.print(f"\n[green]Data saved to {rich_escape(str(cache_file()))}[/green]")
 
 
-def _save_cache_or_fail(finances: TeamFinances, save_cache, output_format: str) -> None:
+def _save_cache_or_fail(
+    finances: TeamFinances, save_cache: Callable[[TeamFinances], None], output_format: str,
+) -> None:
     """Persist the scrape, reporting a write failure instead of raising through.
 
     A read-only data directory or a full disk raised straight out of the

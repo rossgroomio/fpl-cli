@@ -26,11 +26,11 @@ logger = logging.getLogger(__name__)
 @click.option("--threshold", "-t", type=float, default=5.0, help="Ownership threshold for elite differentials")
 @click.option("--min-minutes", "-m", type=int, default=60, help="Minimum minutes played (default: 60)")
 @output_format_option
-def differentials_command(threshold: float, min_minutes: int, output_format: str):
+def differentials_command(threshold: float, min_minutes: int, output_format: str) -> None:
     """Find differential picks - high potential, low ownership players."""
     from fpl_cli.agents.analysis.stats import StatsAgent
 
-    async def _run():
+    async def _run() -> None:
         if output_format == "json":
             with json_output_mode() as stdout:
                 from fpl_cli.api.fpl import FPLClient

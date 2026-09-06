@@ -6,9 +6,12 @@ import asyncio
 import logging
 from collections import Counter
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fpl_cli.cli._context import fpl_config
+
+if TYPE_CHECKING:
+    from fpl_cli.api.fpl import FPLClient
 
 logger = logging.getLogger(__name__)
 
@@ -210,7 +213,7 @@ _PLAYERS_FLOAT_FIELDS = {
 
 
 async def _fetch_standings_with_costs(
-    client, standings: list[dict], entry_id: int | None, gw: int,
+    client: FPLClient, standings: list[dict], entry_id: int | None, gw: int,
     *, fetch_costs: bool = True,
 ) -> list[dict]:
     """Fetch transfer costs for all managers in parallel (bounded concurrency).
@@ -236,13 +239,14 @@ async def _fetch_standings_with_costs(
     async def _fetch_one(entry: dict) -> dict:
         league_entry_id = entry.get("entry")
         gross_pts = entry.get("event_total", 0)
-        async with sem:
-            try:
-                picks_data = await client.get_manager_picks(league_entry_id, gw)
-                transfer_cost = picks_data.get("entry_history", {}).get("event_transfers_cost", 0)
-            except Exception as e:  # noqa: BLE001 — best-effort enrichment
-                transfer_cost = 0
-                logger.warning("Failed to fetch transfer cost for entry %s: %s", league_entry_id, e)
+        transfer_cost = 0
+        if league_entry_id is not None:
+            async with sem:
+                try:
+                    picks_data = await client.get_manager_picks(league_entry_id, gw)
+                    transfer_cost = picks_data.get("entry_history", {}).get("event_transfers_cost", 0)
+                except Exception as e:  # noqa: BLE001 — best-effort enrichment
+                    logger.warning("Failed to fetch transfer cost for entry %s: %s", league_entry_id, e)
         return {
             "entry_id": league_entry_id,
             "name": entry.get("player_name", "Unknown"),
@@ -391,12 +395,12 @@ def _validate_team_filter(
     return team.upper()
 
 
-def _format_sort_value(field: str, value) -> str:
+def _format_sort_value(field: str, value: float | None) -> str:
     """Format a player stat value for table display."""
     fmt = _PLAYERS_FIELD_FORMAT.get(field)
-    if fmt == "price":
+    if fmt == "price" and value is not None:
         return f"£{value / 10:.1f}m"
-    if fmt == "pct":
+    if fmt == "pct" and value is not None:
         return f"{value:.1f}%"
     if field in _PLAYERS_FLOAT_FIELDS:
         # Missing-data UX: render em dash. A table column can't be omitted

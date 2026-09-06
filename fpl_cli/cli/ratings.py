@@ -18,20 +18,20 @@ logger = logging.getLogger(__name__)
 
 @click.group("ratings", invoke_without_command=True)
 @click.pass_context
-def ratings_group(ctx):
+def ratings_group(ctx: click.Context) -> None:
     """Display or recalculate team ratings."""
     if ctx.invoked_subcommand is None:
         _show_ratings()
 
 
-def _show_ratings():
+def _show_ratings() -> None:
     """Display current team ratings with staleness info."""
     from fpl_cli.api.fpl import FPLClient
     from fpl_cli.services.team_ratings import TeamRatingsService
 
     service = TeamRatingsService()
 
-    async def _refresh():
+    async def _refresh() -> None:
         async with FPLClient() as client:
             await service.ensure_fresh(client)
 
@@ -96,7 +96,7 @@ def _print_prior_basis(note: str | None) -> None:
 @click.option("--since-gw", type=int, default=None, help="Calculate from this GW onwards (recent form)")
 @click.option("--dry-run", is_flag=True, help="Show calculated ratings without saving")
 @click.option("--use-xg", is_flag=True, help="Use Understat xG data instead of actual goals (full season only)")
-def ratings_update(since_gw: int | None, dry_run: bool, use_xg: bool):
+def ratings_update(since_gw: int | None, dry_run: bool, use_xg: bool) -> None:
     """Recalculate ratings from fixture results.
 
     By default, uses full season actual goals. Use --since-gw N for recent form,
@@ -110,7 +110,7 @@ def ratings_update(since_gw: int | None, dry_run: bool, use_xg: bool):
             "[yellow]Warning: --since-gw is ignored when --use-xg is set (xG path uses full season only)[/yellow]\n"
         )
 
-    async def _update():
+    async def _update() -> None:
         from fpl_cli.services.team_ratings_prior import (
             BLENDING_CUTOFF_GW,
             REGRESSION_CONSTANT,

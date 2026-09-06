@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import click
 import httpx
@@ -45,6 +45,7 @@ from fpl_cli.services.scoring import (
 
 if TYPE_CHECKING:
     from fpl_cli.api.fpl import FPLClient
+    from fpl_cli.api.historical import HistoricalDataProvider
     from fpl_cli.api.vaastav import PlayerProfile
     from fpl_cli.models.player import Player
     from fpl_cli.models.team import Team
@@ -66,7 +67,7 @@ logger = logging.getLogger(__name__)
 def player_command(
     ctx: click.Context, name: str, fixtures: bool, mode: str,
     detail: bool, understat: bool, history: bool, output_format: str,
-):
+) -> None:
     """Look up a player's stats, xG, ownership and fixture run.
 
     NAME can be a player name, numeric ID, or 'Name (TEAM)' to disambiguate.
@@ -85,7 +86,7 @@ def player_command(
     show_draft = fmt != Format.CLASSIC
     show_classic_meta = fmt != Format.DRAFT
 
-    async def _run():
+    async def _run() -> None:
         async with FPLClient() as client:
             settings = get_settings(ctx)
             draft_league_id = fpl_config(settings).get("draft_league_id")
@@ -178,13 +179,17 @@ def player_command(
                 understat_data_map: dict[int, dict] = {}
                 history_map: dict[int, PlayerProfile | str] = {}
 
-                async def _fetch_detail(pid: int):
+                async def _fetch_detail(pid: int) -> tuple[int, dict[str, Any]]:
                     return pid, await client.get_player_detail(pid)
 
-                async def _fetch_understat(pid: int, us_id: int, us_client):
+                async def _fetch_understat(
+                    pid: int, us_id: int, us_client: UnderstatClient,
+                ) -> tuple[int, dict[str, Any] | None]:
                     return pid, await us_client.get_player(us_id)
 
-                async def _fetch_history(pid: int, code: int, vaastav):
+                async def _fetch_history(
+                    pid: int, code: int, vaastav: HistoricalDataProvider,
+                ) -> tuple[int, PlayerProfile | str | None]:
                     try:
                         return pid, await vaastav.get_player_history(code)
                     except httpx.HTTPStatusError as exc:  # noqa: BLE001 — graceful degradation
@@ -204,7 +209,7 @@ def player_command(
                     tasks.extend(_fetch_detail(p.id) for p in display)
                 else:
                     tasks.extend(_fetch_detail(p.id) for p in display if p.id in scored_pids)
-                async def _gather_with_historical():
+                async def _gather_with_historical() -> list[Any]:
                     if history:
                         from fpl_cli.api.historical import make_historical_provider
                         async with make_historical_provider() as historical:
@@ -212,7 +217,7 @@ def player_command(
                             return await _gather_tasks()
                     return await _gather_tasks()
 
-                async def _gather_tasks():
+                async def _gather_tasks() -> list[Any]:
                     if understat and us_matches:
                         async with UnderstatClient() as us_detail_client:
                             us_tasks = [

@@ -26,7 +26,7 @@ class SquadAnalyzerAgent(Agent):
     name = "SquadAnalyzerAgent"
     description = "Analyzes squad composition and identifies weaknesses"
 
-    def __init__(self, config: dict[str, Any] | None = None):
+    def __init__(self, config: dict[str, Any] | None = None) -> None:
         super().__init__(config)
         self.client = FPLClient()
         self.entry_id = config.get("entry_id") if config else None

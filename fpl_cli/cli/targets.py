@@ -22,11 +22,11 @@ from fpl_cli.cli._json import emit_json, emit_json_error, json_output_mode, outp
 @click.option("--min-own", "-o", type=float, default=0, help="Minimum ownership % (default: 0)")
 @click.option("--min-minutes", "-m", type=int, default=60, help="Minimum minutes played (default: 60)")
 @output_format_option
-def targets_command(min_own: float, min_minutes: int, output_format: str):
+def targets_command(min_own: float, min_minutes: int, output_format: str) -> None:
     """Find transfer targets - high performers across all ownership levels."""
     from fpl_cli.agents.analysis.stats import StatsAgent
 
-    async def _run():
+    async def _run() -> None:
         if output_format == "json":
             with json_output_mode() as stdout:
                 async with StatsAgent(config={

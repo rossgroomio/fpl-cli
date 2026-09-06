@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import Any, Self, cast
 
 import httpx
 
@@ -36,7 +36,7 @@ class FPLClient:
     comprehensive data about players, teams, fixtures, and gameweeks.
     """
 
-    def __init__(self, timeout: float = 30.0):
+    def __init__(self, timeout: float = 30.0) -> None:
         """Initialize the FPL API client.
 
         Args:
@@ -50,10 +50,10 @@ class FPLClient:
         """Close the underlying HTTP client."""
         await self._http.aclose()
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> Self:
         return self
 
-    async def __aexit__(self, *exc):
+    async def __aexit__(self, *exc: object) -> None:
         await self.close()
 
     async def _get(self, endpoint: str) -> dict[str, Any]:

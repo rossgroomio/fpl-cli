@@ -82,7 +82,7 @@ def stats_command(
     ctx: click.Context, position: str | None, team: str | None, sort_field: str,
     limit: int, min_minutes: int, available_only: bool, reverse: bool,
     value: bool, window: int | None, output_format: str,
-):
+) -> None:
     """List players with filtering and sorting.
 
     \b
@@ -152,7 +152,7 @@ def stats_command(
     position_map = {"GK": PlayerPosition.GOALKEEPER, "DEF": PlayerPosition.DEFENDER,
                     "MID": PlayerPosition.MIDFIELDER, "FWD": PlayerPosition.FORWARD}
 
-    async def _run():
+    async def _run() -> None:
         async with FPLClient() as client:
             all_players = await client.get_players()
             all_teams = await client.get_teams()

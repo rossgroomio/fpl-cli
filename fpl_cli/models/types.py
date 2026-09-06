@@ -48,7 +48,7 @@ class PlayerStats(TypedDict):
     player_name: str
     team_short: str
     position: str
-    price: int
+    price: float
     ownership: float
     minutes: int
     goals: int

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fpl_cli.agents.base import Agent, AgentResult, AgentStatus
 from fpl_cli.api.fpl import FPLClient
+
+if TYPE_CHECKING:
+    from fpl_cli.models.player import Player
 
 
 class PriceAgent(Agent):
@@ -21,7 +24,7 @@ class PriceAgent(Agent):
     name = "PriceAgent"
     description = "Tracks FPL player price changes and transfer activity"
 
-    def __init__(self, config: dict[str, Any] | None = None):
+    def __init__(self, config: dict[str, Any] | None = None) -> None:
         super().__init__(config)
         self.client = FPLClient()
         # Threshold for "high" transfer activity (percentage of ownership)
@@ -198,7 +201,7 @@ class PriceAgent(Agent):
             if p.cost_change_start < 0
         ]
 
-    def _player_price_data(self, player, team_map: dict[int, Any]) -> dict[str, Any]:
+    def _player_price_data(self, player: Player, team_map: dict[int, Any]) -> dict[str, Any]:
         """Extract price-related data for a player."""
         team = team_map.get(player.team_id)
 

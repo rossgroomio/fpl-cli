@@ -40,7 +40,7 @@ class StartingXIAgent(Agent):
     name = "StartingXIAgent"
     description = "Selects optimal starting XI from squad using formation optimisation"
 
-    def __init__(self, config: dict[str, Any] | None = None):
+    def __init__(self, config: dict[str, Any] | None = None) -> None:
         super().__init__(config)
         self.client = FPLClient()
 

@@ -60,6 +60,10 @@ For a complete inventory of CLI commands, analysis agents, and skills with JSON 
 ### Exception Handling
 - Never use bare `except Exception`. Use specific types for narrow try blocks; use `# noqa: BLE001 — <justification>` for intentional broad handlers (agent top-level, scraper resilience, graceful degradation)
 
+### Typing & Imports
+- Every function signature in `fpl_cli/` and `scripts/` is fully annotated, arguments and return — ruff's `ANN` rules enforce it (`tests/` are exempt: thousands of `def test_*` with no type-safety payoff). `ANN401` is off, so a bare `Any` is allowed where it is the honest type (JSON/YAML values, `*args`/`**kwargs` pass-throughs, duck-typed player objects) — prefer the real type whenever one exists. A name a module needs only for an annotation goes under `if TYPE_CHECKING:` (with `from __future__ import annotations` at the top), which is also how a helper names the `FPLClient` it is handed without importing it at runtime
+- Imports are absolute (`from fpl_cli.api.providers._models import ...`), never relative — ruff `TID252` with `ban-relative-imports = "all"` enforces it; the default setting only bans `from ..parent`, which is how sibling imports survived in `api/providers/`
+
 ### Timestamps
 - User-facing timestamps (deadlines, kickoffs, `generated_at` stamps) must route through `fpl_cli/utils/time.py` (`format_deadline`, `format_kickoff`, `format_generated_at`, `now_uk`). Never `strftime` on a naive `datetime.now()` or print raw API ISO strings to users. Tool is UK-locked: display is always `Europe/London` with GMT/BST label. Internal datetime math stays UTC.
 

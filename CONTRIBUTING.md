@@ -17,6 +17,12 @@ $ pytest                 # Tests
 $ hatch build            # Package build
 ```
 
+Two of the ruff rules are conventions rather than bug-catchers, so they are
+worth knowing before a first PR: every function signature in `fpl_cli/` and
+`scripts/` carries full type annotations (`ANN`; `tests/` are exempt, and a
+bare `Any` is allowed where it is the honest type), and imports are absolute,
+never relative (`TID252`).
+
 The test suite is hermetic: `pytest-socket` blocks all network access
 (`--disable-socket --allow-unix-socket` in `addopts`), so a test that
 reaches a live endpoint fails immediately rather than passing against

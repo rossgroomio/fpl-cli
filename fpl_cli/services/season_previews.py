@@ -424,7 +424,7 @@ class SeasonPreviewsService:
     the free functions below and is driven by the CLI.
     """
 
-    def __init__(self, previews_path: Path | None = None):
+    def __init__(self, previews_path: Path | None = None) -> None:
         # Path resolution is deferred to first load so constructing the service
         # stays total and an FPL_CLI_CONFIG_DIR set after import is honoured.
         self._explicit_path = Path(previews_path) if previews_path is not None else None

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING, Any
 
 from rich.markup import escape as rich_escape
 from rich.table import Table
@@ -21,6 +22,11 @@ from fpl_cli.cli._helpers import (
 from fpl_cli.services.fixture_predictions import is_blank_gameweek, is_double_gameweek
 from fpl_cli.utils.gameweek import is_opening_gameweek
 
+if TYPE_CHECKING:
+    from fpl_cli.api.fpl import FPLClient
+    from fpl_cli.models.player import Player
+    from fpl_cli.models.team import Team
+
 logger = logging.getLogger(__name__)
 
 # 3 above the user + the user + 3 below -- see #149.
@@ -33,11 +39,17 @@ def _format_review_classic_player(p: dict) -> str:
 
 
 async def _review_classic_team(
-    client, entry_id, gw, player_map, teams, gw_data, live_stats,
+    client: FPLClient,
+    entry_id: int | None,
+    gw: int,
+    player_map: dict[int, Player],
+    teams: dict[int, Team],
+    gw_data: dict[str, Any],
+    live_stats: dict[int, dict[str, Any]],
     *, bgw_team_ids: frozenset[int] = frozenset(), dgw_team_ids: frozenset[int] = frozenset(),
     players_with_fixture: frozenset[int] | None = None,
     players_with_double: frozenset[int] | None = None,
-):
+) -> dict[str, Any]:
     """Fetch and display user's classic team performance. Returns dict with team data.
 
     The team-id sets say which clubs blanked and doubled this gameweek; the
@@ -255,7 +267,9 @@ async def _review_classic_team(
     }
 
 
-def _collapse_transfer_churn(gw_transfers, player_map):
+def _collapse_transfer_churn(
+    gw_transfers: list[dict[str, Any]], player_map: dict[int, Player],
+) -> list[tuple[Player, Player]]:
     """Collapse same-GW transfer churn into a net squad delta, paired by position.
 
     A player transferred in then later out (or vice versa) within the same GW is a
@@ -264,7 +278,7 @@ def _collapse_transfer_churn(gw_transfers, player_map):
     possible. Returns a list of (player_in, player_out) tuples. Players not found
     in `player_map` are dropped.
     """
-    def _sort_key(pid):
+    def _sort_key(pid: int) -> tuple[int, str]:
         p = player_map.get(pid)
         return (p.position, p.web_name) if p else (99, "")
 
@@ -274,7 +288,14 @@ def _collapse_transfer_churn(gw_transfers, player_map):
     return list(zip(net_ins, net_outs, strict=False))
 
 
-async def _review_classic_transfers(client, entry_id, gw, player_map, teams, live_stats):
+async def _review_classic_transfers(
+    client: FPLClient,
+    entry_id: int | None,
+    gw: int,
+    player_map: dict[int, Player],
+    teams: dict[int, Team],
+    live_stats: dict[int, dict[str, Any]],
+) -> list[dict[str, Any]]:
     """Fetch and display classic transfers for this GW. Returns list of transfer data."""
     classic_transfers_data = []
     if not entry_id:
@@ -367,9 +388,13 @@ async def _review_classic_transfers(client, entry_id, gw, player_map, teams, liv
 
 
 async def _review_classic_league(
-    client, classic_league_id, entry_id, gw, api_current_gw_id,
+    client: FPLClient,
+    classic_league_id: int | None,
+    entry_id: int | None,
+    gw: int,
+    api_current_gw_id: int | None,
     *, use_net_points: bool = False,
-):
+) -> dict[str, Any] | None:
     """Fetch and display classic league standings. Returns league data dict or None."""
     if not (classic_league_id and entry_id):
         return None

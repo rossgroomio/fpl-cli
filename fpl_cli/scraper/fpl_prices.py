@@ -9,10 +9,14 @@ import shlex
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import keyring
 
 from fpl_cli.paths import user_data_file
+
+if TYPE_CHECKING:
+    from playwright.async_api import Page
 
 logger = logging.getLogger(__name__)
 
@@ -294,7 +298,7 @@ class FPLPriceScraper:
     _ME_RETRY_ATTEMPTS = 5
     _ME_RETRY_DELAY_MS = 1000
 
-    async def _fetch_my_team(self, page) -> dict | None:
+    async def _fetch_my_team(self, page: Page) -> dict | None:
         """Fetch /api/me/ and /api/my-team/{id}/ from the authenticated session.
 
         Returns the my-team payload, or None if either call fails (in which case the
@@ -333,7 +337,7 @@ class FPLPriceScraper:
             logger.debug("Failed to fetch /api/my-team/%s/: %s", entry_id, e)
             return None
 
-    async def _login(self, page, email: str, password: str) -> None:
+    async def _login(self, page: Page, email: str, password: str) -> None:
         """Log in to FPL website."""
         # Start at FPL home page
         await page.goto(self.FPL_HOME_URL, wait_until="domcontentloaded")
@@ -405,7 +409,7 @@ class FPLPriceScraper:
         # Submit the login form
         await self._submit_login(page)
 
-    async def _accept_cookies(self, page) -> None:
+    async def _accept_cookies(self, page: Page) -> None:
         """Accept cookie consent dialog if present."""
         cookie_selectors = [
             "button:has-text('Accept All Cookies')",
@@ -428,7 +432,7 @@ class FPLPriceScraper:
             except Exception:  # noqa: BLE001 — scraper resilience
                 continue
 
-    async def _submit_login(self, page) -> None:
+    async def _submit_login(self, page: Page) -> None:
         """Submit login form and wait for redirect."""
         # Click submit button. #btnSignIn is the actual id on the PingOne DaVinci
         # widget; the type='submit' fallback covered older form layouts.
@@ -462,7 +466,7 @@ class FPLPriceScraper:
                 )
             # Otherwise we might be on another page, continue
 
-    async def _extract_finances(self, page, my_entry_response: dict | None = None) -> TeamFinances:
+    async def _extract_finances(self, page: Page, my_entry_response: dict | None = None) -> TeamFinances:
         """Extract financial data - tries intercepted API data first, falls back to DOM."""
         fallback_reason: str | None = None
         if my_entry_response is None:
@@ -481,7 +485,7 @@ class FPLPriceScraper:
         finances.extraction_errors.append(fallback_reason)
         return finances
 
-    async def _extract_from_intercepted(self, page, my_entry_response: dict) -> TeamFinances | None:
+    async def _extract_from_intercepted(self, page: Page, my_entry_response: dict) -> TeamFinances | None:
         """Build TeamFinances from intercepted /api/my-team/ response data."""
         try:
             bootstrap = await page.evaluate("""
@@ -535,7 +539,7 @@ class FPLPriceScraper:
             scraped_at=datetime.now().isoformat(),
         )
 
-    async def _extract_via_dom(self, page) -> TeamFinances:
+    async def _extract_via_dom(self, page: Page) -> TeamFinances:
         """Fallback: extract financial data by parsing the transfers page DOM."""
         import re
 

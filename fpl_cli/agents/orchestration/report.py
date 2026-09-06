@@ -38,7 +38,7 @@ class ReportAgent(Agent):
     name = "ReportAgent"
     description = "Generates markdown reports"
 
-    def __init__(self, config: dict[str, Any] | None = None):
+    def __init__(self, config: dict[str, Any] | None = None) -> None:
         super().__init__(config)
         self.output_dir = Path(
             config.get("output_dir", ".")

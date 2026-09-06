@@ -14,7 +14,7 @@ import logging
 from collections.abc import Mapping
 from datetime import timedelta
 from math import isfinite
-from typing import ClassVar, TypedDict
+from typing import ClassVar, Self, TypedDict
 
 import httpx
 
@@ -149,7 +149,7 @@ class PlayerLookup:
 
     __slots__ = ("player_code", "web_name", "position", "team_code")
 
-    def __init__(self, player_code: int, web_name: str, position: str, team_code: int):
+    def __init__(self, player_code: int, web_name: str, position: str, team_code: int) -> None:
         self.player_code = player_code
         self.web_name = web_name
         self.position = position
@@ -340,10 +340,10 @@ class CoreInsightsClient:
     async def close(self) -> None:
         await self.fetcher.close()
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> Self:
         return self
 
-    async def __aexit__(self, *exc):
+    async def __aexit__(self, *exc: object) -> None:
         await self.close()
 
     def _is_historical(self, season: str) -> bool:

@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from statistics import mean
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 import yaml
 
@@ -20,6 +20,9 @@ from fpl_cli.paths import user_config_file, user_data_file
 from fpl_cli.season import get_season_year, season_label
 from fpl_cli.utils.files import atomic_write_text
 from fpl_cli.utils.teams import describe_team_set_mismatch
+
+if TYPE_CHECKING:
+    from fpl_cli.api.fpl import FPLClient
 
 logger = logging.getLogger(__name__)
 
@@ -194,7 +197,7 @@ class TeamRatingsService:
 
     _refreshed_this_session: ClassVar[bool] = False
 
-    def __init__(self, config_path: Path | str | None = None):
+    def __init__(self, config_path: Path | str | None = None) -> None:
         # Left unresolved when not supplied so the default follows FPL_CLI_DATA_DIR
         # even if it is set after this module is imported.
         self._config_path = Path(config_path) if config_path else None
@@ -308,7 +311,7 @@ class TeamRatingsService:
                     continue
                 setattr(rating, axis, value)
 
-    async def ensure_fresh(self, client) -> None:
+    async def ensure_fresh(self, client: FPLClient) -> None:
         """Refresh ratings from FPL fixture data if stale, then check the team set.
 
         Compares the latest completed GW against based_on_gws metadata.
@@ -334,7 +337,7 @@ class TeamRatingsService:
         except Exception:  # noqa: BLE001 — a drift warning must never break a command
             logger.debug("Team-set check skipped", exc_info=True)
 
-    async def _refresh(self, client) -> None:
+    async def _refresh(self, client: FPLClient) -> None:
         """Recalculate ratings when completed gameweeks have moved past the file."""
         self._ensure_loaded()
         next_gw = await client.get_next_gameweek()
@@ -413,7 +416,7 @@ class TeamRatingsService:
         else:
             TeamRatingsService._refreshed_this_session = True
 
-    async def _team_set_drifts(self, client) -> bool:
+    async def _team_set_drifts(self, client: FPLClient) -> bool:
         """Whether the rated clubs no longer match the live league.
 
         Wraps check_team_set for the refresh path, where a lookup failure must
@@ -456,7 +459,7 @@ class TeamRatingsService:
             self._team_set_warning = f"⚠️ {mismatch} - run `fpl ratings update`"
         return self._team_set_warning
 
-    async def seed_from_prior(self, client) -> bool:
+    async def seed_from_prior(self, client: FPLClient) -> bool:
         """Rebuild ratings from last season when the current one cannot rate teams.
 
         Pre-season there are no results to rate teams on, and whatever sits in
@@ -974,7 +977,7 @@ class TeamRatingsCalculator:
     on a 1-7 scale using percentile-based bucketing.
     """
 
-    def __init__(self, fpl_client):
+    def __init__(self, fpl_client: FPLClient) -> None:
         """Initialize calculator.
 
         Args:
@@ -1006,9 +1009,9 @@ class TeamRatingsCalculator:
             return {}, {}
 
         if max_gw is None:
-            max_gw = max(f.gameweek for f in completed)
+            max_gw = max(f.gameweek for f in completed if f.gameweek is not None)
 
-        completed = [f for f in completed if f.gameweek <= max_gw]
+        completed = [f for f in completed if f.gameweek is not None and f.gameweek <= max_gw]
 
         # Aggregate stats per team
         stats: dict[str, dict] = {

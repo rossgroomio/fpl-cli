@@ -67,7 +67,17 @@ line-length = 120
 target-version = "py311"
 
 [tool.ruff.lint]
-select = ["BLE001", "E", "F", "I", "N", "TID251", "W"]
+select = ["ANN", "BLE001", "E", "F", "I", "N", "TID", "W"]
+# ANN401 is the one annotation rule left off (#193): a bare `Any` is the honest
+# type at the JSON/YAML boundary, on decorator pass-throughs (*args/**kwargs)
+# and on duck-typed player objects, so the rule fights legitimate code more than
+# it catches missing hints. Prefer the real type wherever one exists.
+ignore = ["ANN401"]
+
+[tool.ruff.lint.flake8-tidy-imports]
+# Absolute imports everywhere (#193). The default only bans `from ..parent`,
+# which is how a dozen sibling `from ._models import ...` lines survived in api/providers.
+ban-relative-imports = "all"
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 # Both halves of #219: main() merges the settings once and puts them on the
@@ -88,8 +98,10 @@ select = ["BLE001", "E", "F", "I", "N", "TID251", "W"]
 # Agents and services have no Click context to read
 "fpl_cli/agents/**/*.py" = ["TID251"]
 # Test files tolerate long lines (fixture dicts, patch chains) and terse loop
-# vars, and construct CLIContext to stand in for the group callback
-"tests/**/*.py" = ["E501", "E741", "TID251"]
+# vars, construct CLIContext to stand in for the group callback, and skip the
+# annotation rules: thousands of `def test_*` signatures with no type-safety
+# payoff (#193)
+"tests/**/*.py" = ["ANN", "E501", "E741", "TID251"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
