@@ -824,6 +824,71 @@ class TestReviewMissingProviderKey:
         summarise.assert_not_called()
         assert fixture_calls == []
 
+    def test_a_rejected_setting_is_still_a_hard_failure(self, monkeypatch):
+        """#287 review: only an absent key degrades.
+
+        `get_llm_provider` also rejects an unknown provider name, a malformed
+        model string and a non-loopback `http://` base_url. Those are settings
+        mistakes rather than a key the user has yet to obtain, and degrading
+        them to a warning plus exit 0 would let a typo'd `llm.research.provider`
+        go unnoticed in anything that only checks the exit code.
+        """
+        from fpl_cli.api.providers import UnknownProviderError
+        from fpl_cli.cli import review as review_module
+
+        monkeypatch.setattr(
+            "fpl_cli.api.providers.get_llm_provider",
+            MagicMock(side_effect=UnknownProviderError("Unknown LLM provider 'perplexty'")),
+        )
+        result = CliRunner().invoke(review_module.review_command, ["--summarise"])
+
+        assert result.exit_code == 1
+        assert "Unknown LLM provider 'perplexty'" in " ".join(result.stderr.split())
+        assert result.stdout == ""
+        # Not the degradation wording: this is a refusal, not a skipped half.
+        assert "skipped" not in result.stderr
+
+    def test_a_research_only_key_does_not_fetch_next_gameweek(self, monkeypatch):
+        """#287 review: the fixture fetch feeds the personal analysis alone.
+
+        It carries a fixtures fetch plus a ratings refresh, and only the
+        synthesis half ever reads the result -- so a run holding just the
+        research key used to pay for it and discard it unread.
+        """
+        from fpl_cli.api.providers import ProviderNotConfiguredError
+        from fpl_cli.cli import review as review_module
+
+        fixture_calls: list[int] = []
+
+        async def _spy(client, gw, teams, *, custom_analysis):
+            fixture_calls.append(gw)
+            return None
+
+        def _resolve(role, settings):
+            if role == "synthesis":
+                raise ProviderNotConfiguredError("ANTHROPIC_API_KEY not set")
+            return MagicMock()
+
+        _stub_review_run(monkeypatch, next_gameweek=_spy)
+        summarise = AsyncMock(return_value={
+            "research_summary": "narrative", "synthesis_summary": "",
+            "table_corrections": 0, "prose_corrections": 0, "corrections_path": None,
+            "synthesis_problems": [], "synthesis_corrections_path": None,
+        })
+        monkeypatch.setattr(review_module, "_review_llm_summarise", summarise)
+        monkeypatch.setattr("fpl_cli.api.providers.get_llm_provider", _resolve)
+
+        result = CliRunner().invoke(
+            review_module.review_command, ["--gameweek", "2", "--summarise"],
+        )
+
+        assert result.exit_code == 0
+        assert fixture_calls == []
+        # The half that has a key still runs, and is handed no fixtures.
+        summarise.assert_called_once()
+        assert summarise.call_args.kwargs["next_gameweek"] is None
+        assert summarise.call_args.kwargs["synthesis_provider"] is None
+
     def test_one_missing_key_still_resolves_the_other_role(self):
         result, resolved = self._invoke(synthesis_error="ANTHROPIC_API_KEY not set")
 

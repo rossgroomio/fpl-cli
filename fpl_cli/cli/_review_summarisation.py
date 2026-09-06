@@ -922,7 +922,14 @@ async def _review_llm_summarise(
     Either provider may be None outside `--dry-run`, which is what the caller
     passes when no key resolved for that role: that half is skipped and its
     summary comes back absent -- `research_summary` None, `synthesis_summary`
-    empty -- the same shape a failed provider call already produces (#287).
+    empty (#287).
+
+    A skip is not the same as a failed provider *call*, and only synthesis
+    treats them alike (both leave `""`). A failed research call leaves a
+    "Community narrative unavailable: ..." string, which is truthy and still
+    renders a "What Happened" section saying so; a skipped one leaves None, so
+    no section appears at all and the saved report's callout carries the
+    reason. That difference is deliberate -- see the branch below.
     """
     from fpl_cli.prompts.review import (
         REVIEW_RESEARCH_SYSTEM_PROMPT,
@@ -996,11 +1003,14 @@ async def _review_llm_summarise(
             console.print("[dim]    → Saved research_system.txt, research_prompt.txt[/dim]")
         research_summary = "[DRY RUN - research provider not called]"
     elif research_provider is None:
-        # Left unset, "What Happened" simply does not appear in the report and
-        # the synthesis prompt below reads "Not available" -- the shape this
-        # section already takes when the provider call fails. The prompt above
-        # is built anyway: it is a template fill over `research_ctx`, which
-        # stage 2 needs regardless.
+        # None, deliberately, and not the "Community narrative unavailable"
+        # string a failed *call* leaves a few lines below: that string is
+        # truthy, so it renders a "What Happened" section whose entire content
+        # is an apology. Nothing was attempted here, so no section appears --
+        # the saved report's callout is what accounts for the absence, and the
+        # synthesis prompt below falls back to "Not available". The prompt
+        # above is built anyway: it is a template fill over `research_ctx`,
+        # which stage 2 needs regardless.
         research_summary = None
     else:
         from fpl_cli.api.providers import ProviderError
