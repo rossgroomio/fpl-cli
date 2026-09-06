@@ -202,6 +202,10 @@ class LeagueRecapData(TypedDict):
     # Absent entirely means the caller ruled every manager it collected.
     fines_ruled_manager_keys: NotRequired[list[int]]
     synthesis_summary: NotRequired[str]
+    # The provider's own stop reason for the editorial, recorded only when it
+    # was not a normal completion (#266). Present means the text above may be
+    # cut off; absent means the provider either finished or said nothing.
+    synthesis_stop_reason: NotRequired[str]
     # Ledger partition key and the league's own start gameweek (absent or 1
     # means it started at GW1, so there is nothing to offset or skip).
     league_id: NotRequired[int]

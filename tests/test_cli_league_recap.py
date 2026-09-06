@@ -993,6 +993,78 @@ _ALL_THREE_RULES = {
 }
 
 
+class TestTruncatedEditorial:
+    """#266: a cut-off editorial must not reach a saved report looking finished.
+
+    The provider now reports why generation stopped, so the one thing the
+    recap owes its reader is to repeat it -- on stderr in table mode, and on
+    the warnings channel under `--format json`, where the payload otherwise
+    carries a truncated `synthesis_summary` indistinguishable from a whole one.
+    """
+
+    def _provider(self, stop_reason):
+        from fpl_cli.api.providers import LLMResponse, TokenUsage
+
+        class _Stub:
+            async def query(self, prompt, system_prompt=None, **kwargs):
+                return LLMResponse(
+                    content="Alice ran away with it, and then",
+                    model="claude-sonnet-5",
+                    usage=TokenUsage(10, 20),
+                    stop_reason=stop_reason,
+                )
+
+            def post_process(self, content):
+                return content
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return None
+
+        return patch("fpl_cli.api.providers.get_llm_provider", return_value=_Stub())
+
+    def test_an_early_stop_is_reported_on_stderr(self):
+        with self._provider("max_tokens"):
+            result = _invoke_recap(_recap_data(), ["--summarise"])
+
+        assert result.exit_code == 0, result.output
+        assert "max_tokens" in result.stderr
+        assert "cut off" in result.stderr
+
+    def test_json_names_it_on_the_warnings_channel(self):
+        with self._provider("max_tokens"):
+            result = _invoke_recap(_recap_data(), ["--summarise", "--format", "json"])
+
+        assert result.exit_code == 0, result.stderr
+        envelope = json.loads(result.stdout)
+        assert envelope["metadata"]["synthesis_summary"] is not None
+        codes = [w["code"] for w in envelope["metadata"]["warnings"]]
+        assert "synthesis_stopped_early" in codes, (
+            "a truncated editorial is indistinguishable from a whole one in the payload"
+        )
+
+    def test_a_normal_completion_carries_no_warning(self):
+        with self._provider("end_turn"):
+            result = _invoke_recap(_recap_data(), ["--summarise", "--format", "json"])
+
+        envelope = json.loads(result.stdout)
+        codes = [w["code"] for w in envelope["metadata"]["warnings"]]
+        assert "synthesis_stopped_early" not in codes
+        assert "max_tokens" not in result.stderr
+
+    def test_a_stop_reason_carrying_rich_markup_still_reaches_the_reader(self):
+        # A custom OpenAI-compatible endpoint is free to send anything here; an
+        # unescaped "[/yellow]" would raise MarkupError and cost the reader the
+        # very message this warning exists to print.
+        with self._provider("[/yellow]cut"):
+            result = _invoke_recap(_recap_data(), ["--summarise"])
+
+        assert result.exit_code == 0, result.output
+        assert "[/yellow]cut" in result.stderr.replace("\n", "")
+
+
 class TestFinesAreRecordedNotJustRendered:
     def test_a_live_capture_records_what_was_ruled_even_when_nothing_triggered(self):
         """`fines == []` says three different things at once without this; the

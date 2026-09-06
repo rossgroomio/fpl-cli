@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 
 from ._http import QueryPacer, RetryPolicy
 from ._models import (
+    NORMAL_STOP_REASONS,
     LLMResponse,
     ProviderError,
     ProviderNotConfiguredError,
@@ -140,6 +141,7 @@ def get_llm_provider(
 
 
 __all__ = [
+    "NORMAL_STOP_REASONS",
     "AnthropicProvider",
     "LLMResponse",
     "OpenAICompatProvider",

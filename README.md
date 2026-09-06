@@ -64,6 +64,12 @@ $ fpl league-recap --summarise     # Add the LLM editorial for the group chat
 $ fpl league-fines                 # Who owes what this season, and which weeks were ruled
 ```
 
+An LLM summary that stops short is caught rather than saved as if it were whole:
+`review --summarise` checks the analysis against the sections its own prompt asked
+for, retries once if a heading is missing or the text ends mid-sentence, and if the
+second try is no better it says what is missing on stderr and repeats it as a warning
+in the saved report. `league-recap --summarise` reports the same for its editorial.
+
 Fines are ruled per gameweek by `league-recap` and recorded against it, so `fpl
 league-fines` reads them straight back off disk — no network, and any season still
 on disk (`--season 2025-26`). Every gameweek that could not be ruled is named

@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from fpl_cli.utils.gameweek import is_opening_gameweek
-from fpl_cli.utils.markdown import fence_flags, parse_heading
+from fpl_cli.utils.markdown import fence_flags, has_heading, parse_heading
 from fpl_cli.utils.text import strip_diacritics
 
 logger = logging.getLogger(__name__)
@@ -1088,3 +1090,153 @@ def validate_research_prose(
 
     new_lines = lines[: header_idx + 1] + ["", new_paragraph, ""] + lines[end_idx:]
     return "\n".join(new_lines), corrections
+
+
+# =============================================================================
+# SYNTHESIS COMPLETENESS (post-generation guard, issue #266)
+# =============================================================================
+
+# The `<output_format>` block is the only part of the system prompt that names
+# sections; reading the requirement back off the prompt that was actually sent
+# keeps the check honest for free. A section added to `_OUTPUT_FORMAT_TAIL` is
+# validated the moment it ships, and the conditional Fine Check is only
+# required on the runs whose prompt asked for it.
+_OUTPUT_FORMAT_BLOCK_RE = re.compile(r"<output_format>(.*?)</output_format>", re.DOTALL)
+# Only depth-2 headings. The `### Classic` / `### Draft` pair under Fine Check
+# is routinely written with a qualifier the matcher cannot reduce, so requiring
+# it would cost a retry on responses that are actually whole.
+_OUTPUT_FORMAT_SECTION_RE = re.compile(r"^##[ \t]+(.+?)[ \t]*$", re.MULTILINE)
+
+# Terminal punctuation, once the markdown decoration a sentence can legally end
+# inside has been peeled off ("...the right call.**", "...(a 9-point swing).").
+_TERMINAL_PUNCTUATION = frozenset(".!?…")
+# Every closing quote/bracket a finished sentence can sit inside, straight and
+# curly both: a response ending `...the right call."` reads as truncated if the
+# closer is not peeled off first, which costs a retry and ships a false warning.
+_TRAILING_DECORATION = "*_`~\"'’”)]}»« \t"
+
+
+def required_synthesis_sections(system_prompt: str) -> list[str]:
+    """The `## ` headings the synthesis system prompt's output format asks for.
+
+    Returned in prompt order, deduplicated. An empty list means the prompt
+    carried no `<output_format>` block and therefore named no sections -- so
+    nothing is missing from a response, rather than everything.
+    """
+    block = _OUTPUT_FORMAT_BLOCK_RE.search(system_prompt)
+    if block is None:
+        return []
+    seen: dict[str, None] = {}
+    for heading in _OUTPUT_FORMAT_SECTION_RE.findall(block.group(1)):
+        seen.setdefault(heading.strip(), None)
+    return list(seen)
+
+
+@dataclass(frozen=True)
+class SynthesisCompleteness:
+    """What the post-generation guard found in a synthesis response.
+
+    `missing_sections` names the `## ` headings the prompt asked for that the
+    response does not carry. `unterminated` is True when the text stops without
+    terminal punctuation, which is what a mid-sentence stop looks like from the
+    outside. `stop_reason` is the provider's own verdict, and is only ever set
+    when that verdict was *not* a normal completion -- the caller filters it,
+    so this module stays free of any provider vocabulary.
+    """
+
+    missing_sections: tuple[str, ...] = ()
+    unterminated: bool = False
+    stop_reason: str | None = None
+
+    @property
+    def complete(self) -> bool:
+        return not (self.missing_sections or self.unterminated or self.stop_reason)
+
+    @property
+    def severity(self) -> tuple[int, int, int]:
+        """Ordering key for picking between two attempts -- lower is better.
+
+        Keyed on the same truthiness `complete` and `problems()` use: a blank
+        stop reason is the provider saying nothing (`LLMResponse.stopped_early`
+        reads it the same way), and three predicates that disagreed about it
+        would let a response report complete while scoring as damaged.
+        """
+        return (
+            len(self.missing_sections),
+            int(self.unterminated),
+            int(bool(self.stop_reason)),
+        )
+
+    def problems(self) -> list[str]:
+        """One line per problem, for the warning and the corrections file."""
+        lines: list[str] = []
+        if self.stop_reason:
+            lines.append(f"provider stopped early (stop_reason: {self.stop_reason})")
+        if self.missing_sections:
+            lines.append(
+                "missing section(s): " + ", ".join(f"## {s}" for s in self.missing_sections)
+            )
+        if self.unterminated:
+            lines.append("response ends without terminal punctuation (likely cut off mid-sentence)")
+        return lines
+
+
+def _ends_mid_sentence(text: str) -> bool:
+    """True when `text` stops somewhere other than the end of a sentence.
+
+    Trailing markdown decoration is peeled off first so a bolded closing clause
+    is not mistaken for a truncation. Empty text is not judged here -- a
+    response with nothing in it is already reported as every section missing.
+    """
+    trimmed = text.rstrip().rstrip(_TRAILING_DECORATION)
+    if not trimmed:
+        return False
+    return trimmed[-1] not in _TERMINAL_PUNCTUATION
+
+
+def check_synthesis_completeness(
+    response: str,
+    system_prompt: str,
+    *,
+    stop_reason: str | None = None,
+    omit_sections: Iterable[str] = (),
+) -> SynthesisCompleteness:
+    """Check a synthesis response against the sections its prompt asked for.
+
+    The research half of the review already has a post-generation guard
+    (`validate_research_teams` / `validate_research_prose`); this is the
+    synthesis half's. It answers one question -- does this response look whole?
+    -- so that a report is never saved from a fragment without the reader being
+    told what is missing (#266).
+
+    Args:
+        response: The synthesis text as it will be used, post-processed by the
+            provider -- so the check judges the string the report gets.
+        system_prompt: The system prompt that was sent, read for its
+            `<output_format>` block. A prompt without one names no sections,
+            which leaves only the ending and the stop reason to judge.
+        stop_reason: The provider's stop reason when it was *not* a normal
+            completion, else None.
+        omit_sections: Headings the run legitimately has no data for, matched
+            case-insensitively (the prompt tells the model to analyse only the
+            format it received data for, so a missing Draft Verdict on a
+            classic-only run is a choice, not a defect).
+
+    Returns:
+        A `SynthesisCompleteness`; `.complete` is True when nothing was found.
+    """
+    # A prompt with no `<output_format>` block names no sections, so there is
+    # nothing to look for -- but the sentence-termination check knows nothing
+    # about headings and still applies, so it is not skipped along with them.
+    skip = {s.strip().casefold() for s in omit_sections}
+    lines = response.split("\n")
+    missing = tuple(
+        heading
+        for heading in required_synthesis_sections(system_prompt)
+        if heading.casefold() not in skip and not has_heading(lines, f"## {heading}")
+    )
+    return SynthesisCompleteness(
+        missing_sections=missing,
+        unterminated=_ends_mid_sentence(response),
+        stop_reason=stop_reason,
+    )
