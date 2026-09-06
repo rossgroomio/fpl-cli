@@ -3445,3 +3445,59 @@ class TestSynthesisCompletenessSeverity:
             self._check(_WHOLE_SYNTHESIS).severity
             < self._check(_WHOLE_SYNTHESIS, stop_reason="max_tokens").severity
         )
+
+
+class TestNextWeekFixtureGrounding:
+    """#191: the "Next Week" section made fixture-dependent calls with no
+    fixture data behind it, so it could only extrapolate from one week of
+    returns -- and told the user to bench a defender at home to the league's
+    weakest side. Either it gets the fixtures, or it stops making those calls."""
+
+    _BLOCK = (
+        "Gameweek 3 fixtures - the gameweek the \"Next Week\" section is about.\n"
+        "- MCI: vs COV (H) ATK 1.5 DEF 2.1"
+    )
+
+    @staticmethod
+    def _prompts(**overrides):
+        return TestOpeningGameweekSynthesisPrompt._prompts(14, **overrides)
+
+    def test_the_block_reaches_the_user_prompt(self):
+        _, prompt = self._prompts(upcoming_fixtures=self._BLOCK)
+        assert f"<next_gameweek>\n{self._BLOCK}\n</next_gameweek>" in prompt
+
+    def test_no_block_no_tags(self):
+        _, prompt = self._prompts()
+        assert "<next_gameweek>" not in prompt
+
+    def test_with_fixtures_the_section_must_cite_them(self):
+        system, _ = self._prompts(upcoming_fixtures=self._BLOCK)
+        assert "must be consistent with the named player's fixture in <next_gameweek>" in system
+        assert "cite the opponent and FDR you are reasoning from" in system
+        # The inverted call the issue reported, forbidden in both directions.
+        assert "whose next fixture is easy on the strength of one poor gameweek" in system
+        assert "whose next fixture is hard on the strength of one good one" in system
+
+    def test_without_fixtures_the_section_is_narrowed(self):
+        system, _ = self._prompts()
+        assert "restricted to observations that do not depend on fixtures" in system
+        assert "Do NOT make start, bench, captain, transfer or waiver recommendations" in system
+        assert "fpl gw-prep" in system
+        assert "<next_gameweek>" not in system.split("<output_format>")[1]
+
+    def test_the_hard_constraint_binds_either_way(self):
+        for kwargs in ({}, {"upcoming_fixtures": self._BLOCK}):
+            system, _ = self._prompts(**kwargs)
+            assert "Issue a fixture-dependent call" in system
+            assert "you know nothing about next gameweek's fixtures" in system
+
+    def test_next_week_is_still_a_required_section_either_way(self):
+        for kwargs in ({}, {"upcoming_fixtures": self._BLOCK}):
+            system, _ = self._prompts(**kwargs)
+            assert "Next Week" in required_synthesis_sections(system)
+
+    def test_the_two_instructions_are_mutually_exclusive(self):
+        grounded, _ = self._prompts(upcoming_fixtures=self._BLOCK)
+        blind, _ = self._prompts()
+        assert "restricted to observations that do not depend on fixtures" not in grounded
+        assert "cite the opponent and FDR you are reasoning from" not in blind

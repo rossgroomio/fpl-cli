@@ -732,6 +732,16 @@ fpl review --dry-run              # Build prompts without calling LLMs
 
 **LLM summary** (`--summarise`): Community narrative via research provider, personal analysis via synthesis provider.
 
+**Next Week:** the personal analysis is given next gameweek's fixtures — every club's opponent
+and venue, and each of your own players' FDR for their own position — so the section's start,
+bench and transfer calls are grounded in what the squad actually plays rather than extrapolated
+from one week of returns. FDR follows the same split as `fpl fixtures` and `fpl fdr`: the 1-7
+team-ratings scale with custom analysis on, the FPL API's 1-5 difficulty with it off, and the
+block names which. Where there is no next gameweek to look at — the final gameweek of a season,
+or fixtures that could not be fetched — the section is narrowed instead: fixture-independent
+observations only ("Tzolis has now blanked twice"), with selection and transfer calls left to
+`fpl gw-prep`.
+
 **Incomplete summaries:** the personal analysis is checked against the sections its own prompt
 asked for before anything is written. A response that is missing a `## ` heading, ends without
 terminal punctuation, or that the provider reports it stopped early on is retried **once** — and

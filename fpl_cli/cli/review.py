@@ -16,11 +16,17 @@ from fpl_cli.cli._context import (
     fpl_config,
     get_format,
     get_settings,
+    is_custom_analysis_enabled,
     resolve_output_dir,
     warn_prediction_problems,
 )
 from fpl_cli.cli._json import config_failure_boundary, emit_failure
-from fpl_cli.cli._review_analysis import _review_fixtures, _review_global_stats, _review_league_table
+from fpl_cli.cli._review_analysis import (
+    _review_fixtures,
+    _review_global_stats,
+    _review_league_table,
+    _review_next_gameweek,
+)
 from fpl_cli.cli._review_classic import _review_classic_league, _review_classic_team, _review_classic_transfers
 from fpl_cli.cli._review_draft import _review_draft
 from fpl_cli.cli._review_summarisation import _review_compare_recs, _review_llm_summarise
@@ -306,6 +312,13 @@ def review_command(
 
             # LLM summarisation if requested (or dry-run to preview prompts)
             if summarise or dry_run:
+                # Only the prompts read this, so it is fetched only when one is
+                # being built - a plain `fpl review` has no use for next
+                # gameweek's fixtures and should not pay for them.
+                next_gameweek = await _review_next_gameweek(
+                    client, gw, teams,
+                    custom_analysis=is_custom_analysis_enabled(settings),
+                )
                 llm = await _review_llm_summarise(
                     gw=gw,
                     gw_data=gw_data,
@@ -322,6 +335,7 @@ def review_command(
                     debug=debug,
                     research_provider=research_provider,
                     synthesis_provider=synthesis_provider,
+                    next_gameweek=next_gameweek,
                 )
                 collected_data["research_summary"] = llm["research_summary"]
                 collected_data["synthesis_summary"] = llm["synthesis_summary"]
