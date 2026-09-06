@@ -840,10 +840,140 @@ _NARRATIVE_HEADER_RE = re.compile(
     r"^#{2,3}\s+(GW|Gameweek)\s*\d+\s+Narrative\b.*$",
     re.IGNORECASE,
 )
+# Titles and place abbreviations whose full stop does not end a sentence.
+# Splitting after one hides the rest of the phrase from the exempt scan in
+# `validate_research_prose` -- "At St. James' Park" split into "At St." and
+# "James' Park", and the orphaned "James" then read as an unlisted player.
+# A sentence that genuinely ends in one of these now joins the next, which is
+# the rarer error by far in match prose.
+_NON_TERMINAL_ABBREVIATIONS = ("St", "Mr", "Mrs", "Ms", "Dr", "Jr", "Sr")
+_ABBREVIATION_GUARD = "".join(rf"(?<!\b{abbr}\.)" for abbr in _NON_TERMINAL_ABBREVIATIONS)
 _SENTENCE_SPLIT_RE = re.compile(
-    r"(?:(?<=[.!?][\"')\]])|(?<=[.!?]))\s+(?=[A-Z\"'\[(])"
+    rf"{_ABBREVIATION_GUARD}(?:(?<=[.!?][\"')\]])|(?<=[.!?]))\s+(?=[A-Z\"'\[(])"
 )
 _MIN_PROSE_ALLOWLIST_SIZE = 5
+
+# Grounds and competitions whose names collide with a player's web_name.
+# The scrub patterns below are case-sensitive so lowercase English homographs
+# ("son", "may") survive, but a ground is capitalised in every legitimate use,
+# so case cannot separate "Old Trafford" from a hallucinated keeper called
+# Trafford -- and match prose names grounds constantly. Exempting the whole
+# phrase rather than the colliding token keeps a bare "Trafford" elsewhere in
+# the same sentence scrubbable.
+_PROSE_EXEMPT_PHRASES: frozenset[str] = frozenset({
+    "American Express Stadium",
+    "Amex Stadium",
+    "Anfield",
+    "Bramall Lane",
+    "Carrow Road",
+    "City Ground",
+    "Craven Cottage",
+    "Deepdale",
+    "Elland Road",
+    "Emirates Stadium",
+    "Etihad Stadium",
+    "Ewood Park",
+    "Goodison Park",
+    "Gtech Community Stadium",
+    "Hill Dickinson Stadium",
+    "Hillsborough",
+    "Kenilworth Road",
+    "King Power Stadium",
+    "London Stadium",
+    "Molineux",
+    "Old Trafford",
+    "Portman Road",
+    "Riverside Stadium",
+    "Selhurst Park",
+    "St James' Park",
+    "St James's Park",
+    "St Mary's Stadium",
+    "St. James' Park",
+    "St. James's Park",
+    "St. Mary's Stadium",
+    "Stadium of Light",
+    "Stamford Bridge",
+    "The Hawthorns",
+    "Tottenham Hotspur Stadium",
+    "Turf Moor",
+    "Vicarage Road",
+    "Villa Park",
+    "Vitality Stadium",
+    "Wembley",
+    "Wembley Stadium",
+    "Carabao Cup",
+    "Champions League",
+    "Community Shield",
+    "Conference League",
+    "Europa League",
+    "FA Cup",
+    "Premier League",
+})
+
+
+def _compile_prose_exempt_patterns(
+    player_map: dict[int, Player],
+    normalised_allow: set[str],
+) -> list[re.Pattern[str]]:
+    """Phrases inside which a disallowed web_name is a legitimate reference.
+
+    Two sources. The full names of allowlisted players, because the allowlist
+    holds web_names and so a player's own first name is unlisted by
+    construction -- "Rayan Cherki" would otherwise be scrubbed on "Rayan", an
+    unrelated forward's web_name. And the fixed ground/competition list above.
+
+    Compiled against the diacritic-stripped phrase to match the sentences,
+    which are stripped before scanning.
+    """
+    phrases: set[str] = set(_PROSE_EXEMPT_PHRASES)
+    for player in player_map.values():
+        web = strip_diacritics(player.web_name).strip()
+        if not web or web.lower() not in normalised_allow:
+            continue
+        first = strip_diacritics(player.first_name).strip()
+        if not first:
+            continue
+        second = strip_diacritics(player.second_name).strip()
+        # "Bruno Fernandes" is neither first+second ("Bruno Borges Fernandes")
+        # nor first+web_name ("Bruno B.Fernandes"), so take the last token of
+        # the second name too.
+        tails = {second, second.split()[-1] if second else "", web}
+        for tail in tails:
+            if tail and tail != first:
+                phrases.add(f"{first} {tail}")
+    return [_compile_exempt_phrase(phrase) for phrase in sorted(phrases)]
+
+
+def _compile_exempt_phrase(phrase: str) -> re.Pattern[str]:
+    """Whole-word pattern for an exempt phrase, tolerant of apostrophe style.
+
+    "St James' Park" reaches us with a typographic apostrophe, a typewriter
+    one, or none at all -- "St James Park" is a common rendering, LLMs
+    included. None of the three is a diacritic, so `strip_diacritics` leaves
+    them alone: make the apostrophe optional and match all of them.
+    """
+    escaped = re.escape(strip_diacritics(phrase)).replace("'", "['\u2019\u02bc]?")
+    return re.compile(rf"\b{escaped}\b")
+
+
+def _first_unexempt_hit(
+    sentence: str,
+    disallowed: list[tuple[str, re.Pattern[str]]],
+    exempt_patterns: list[re.Pattern[str]],
+) -> str | None:
+    """web_name of the first disallowed player named outside an exempt phrase."""
+    exempt_spans: list[tuple[int, int]] | None = None
+    for name, pattern in disallowed:
+        for match in pattern.finditer(sentence):
+            if exempt_spans is None:
+                # Only pay for the exempt scan once a scrub is actually on the
+                # table; most sentences match no disallowed name at all.
+                exempt_spans = [
+                    m.span() for exempt in exempt_patterns for m in exempt.finditer(sentence)
+                ]
+            if not any(start <= match.start() and match.end() <= end for start, end in exempt_spans):
+                return name
+    return None
 
 
 def validate_research_prose(
@@ -856,9 +986,13 @@ def validate_research_prose(
     The research provider's GW Narrative paragraph is freeform prose and is not
     constrained by the table validator. Build a set of disallowed surnames as
     {all PL web_names} − allowlist, then drop any sentence containing a
-    disallowed surname (whole-word match, diacritic-insensitive). If anything
-    is stripped, append a visible "[narrative scrubbed: N reference(s)
-    removed]" stub to the paragraph so the report does not silently shrink.
+    disallowed surname (whole-word match, diacritic-insensitive). A hit that
+    falls inside an exempt phrase -- the full name of an allowlisted player, or
+    a ground or competition (see `_compile_prose_exempt_patterns`) -- does not
+    count, so "Rayan Cherki" and "Old Trafford" survive the unrelated players
+    called Rayan and Trafford. If anything is stripped, append a visible
+    "[narrative scrubbed: N reference(s) removed]" stub to the paragraph so the
+    report does not silently shrink.
 
     Args:
         text: Full research provider response.
@@ -930,15 +1064,13 @@ def validate_research_prose(
             continue
         sentences.extend(_SENTENCE_SPLIT_RE.split(chunk))
 
+    exempt_patterns = _compile_prose_exempt_patterns(player_map, normalised_allow)
+
     kept: list[str] = []
     corrections: list[str] = []
     for sentence in sentences:
         sentence_stripped = strip_diacritics(sentence)
-        hit_name: str | None = None
-        for name, pattern in disallowed:
-            if pattern.search(sentence_stripped):
-                hit_name = name
-                break
+        hit_name = _first_unexempt_hit(sentence_stripped, disallowed, exempt_patterns)
         if hit_name is None:
             kept.append(sentence)
         else:

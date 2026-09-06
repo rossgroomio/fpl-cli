@@ -83,6 +83,35 @@ def _build_research_allowlists(
     return table_allowlist, prose_allowlist
 
 
+def _report_research_corrections(
+    all_corrections: list[str],
+    table_corrections: int,
+    prose_corrections: int,
+    debug_dir: Path | None,
+) -> str | None:
+    """Tell the user what the research validators changed; return the detail file's path.
+
+    Printed on every summarise run, not just `--debug`. The scrubber can take
+    whole sentences out of the narrative, and a report that quietly lost half
+    its prose should say so without the user having had to ask for debug
+    output first (#265). The per-correction detail still only lands on disk
+    under `--debug`.
+    """
+    if not all_corrections:
+        return None
+    error_console.print(
+        f"[yellow]  ⚠ Research corrections: {table_corrections} table fix(es), "
+        f"{prose_corrections} narrative sentence(s) scrubbed[/yellow]"
+    )
+    if debug_dir is None:
+        error_console.print("[dim]    Re-run with --debug to see what changed[/dim]")
+        return None
+    corrections_file = debug_dir / "research_corrections.txt"
+    corrections_file.write_text("\n".join(all_corrections), encoding="utf-8")
+    error_console.print("[dim]    → Saved research_corrections.txt[/dim]")
+    return str(corrections_file)
+
+
 def _read_manager_layer(path: Path) -> dict[str, str]:
     if not path.exists():
         return {}
@@ -711,14 +740,12 @@ async def _review_llm_summarise(
             all_corrections = club_corrections + top_performer_corrections + prose_corrections
             table_corrections = len(club_corrections) + len(top_performer_corrections)
             prose_corrections_count = len(prose_corrections)
-            if all_corrections and debug and debug_dir:
-                corrections_file = debug_dir / "research_corrections.txt"
-                corrections_file.write_text("\n".join(all_corrections), encoding="utf-8")
-                corrections_path = str(corrections_file)
-                console.print(
-                    f"[dim]    → Corrected {len(club_corrections)} table cell(s), scrubbed "
-                    f"{len(prose_corrections)} narrative sentence(s)[/dim]"
-                )
+            corrections_path = _report_research_corrections(
+                all_corrections,
+                table_corrections,
+                prose_corrections_count,
+                debug_dir if debug else None,
+            )
             if research_summary:
                 console.print("[green]  ✓[/green] Community narrative complete")
             else:
