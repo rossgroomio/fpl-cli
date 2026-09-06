@@ -10,6 +10,7 @@ from fpl_cli.prompts.review import (
     REVIEW_RESEARCH_SYSTEM_PROMPT,
     _SENTENCE_SPLIT_RE,
     _build_system_prompt,
+    check_next_week_grounding,
     check_synthesis_completeness,
     ensure_top_performer_first,
     get_review_research_prompt,
@@ -3445,3 +3446,118 @@ class TestSynthesisCompletenessSeverity:
             self._check(_WHOLE_SYNTHESIS).severity
             < self._check(_WHOLE_SYNTHESIS, stop_reason="max_tokens").severity
         )
+
+
+class TestNextWeekFixtureGrounding:
+    """#191: the "Next Week" section made fixture-dependent calls with no
+    fixture data behind it, so it could only extrapolate from one week of
+    returns -- and told the user to bench a defender at home to the league's
+    weakest side. Either it gets the fixtures, or it stops making those calls."""
+
+    _BLOCK = (
+        "Gameweek 3 fixtures - the gameweek the \"Next Week\" section is about.\n"
+        "- MCI: vs COV (H) ATK 1.5 DEF 2.1"
+    )
+
+    @staticmethod
+    def _prompts(**overrides):
+        return TestOpeningGameweekSynthesisPrompt._prompts(14, **overrides)
+
+    def test_the_block_reaches_the_user_prompt(self):
+        _, prompt = self._prompts(upcoming_fixtures=self._BLOCK)
+        assert f"<next_gameweek>\n{self._BLOCK}\n</next_gameweek>" in prompt
+
+    def test_no_block_no_tags(self):
+        _, prompt = self._prompts()
+        assert "<next_gameweek>" not in prompt
+
+    def test_with_fixtures_the_section_must_cite_them(self):
+        system, _ = self._prompts(upcoming_fixtures=self._BLOCK)
+        assert "must be consistent with the named player's fixture in <next_gameweek>" in system
+        assert "cite the opponent and FDR you are reasoning from" in system
+        # The inverted call the issue reported, forbidden in both directions.
+        assert "whose next fixture is easy on the strength of one poor gameweek" in system
+        assert "whose next fixture is hard on the strength of one good one" in system
+
+    def test_without_fixtures_the_section_is_narrowed(self):
+        system, _ = self._prompts()
+        assert "restricted to observations that do not depend on fixtures" in system
+        assert "Do NOT make start, bench, captain, transfer or waiver recommendations" in system
+        assert "fpl gw-prep" in system
+        assert "<next_gameweek>" not in system.split("<output_format>")[1]
+
+    def test_the_hard_constraint_binds_either_way(self):
+        for kwargs in ({}, {"upcoming_fixtures": self._BLOCK}):
+            system, _ = self._prompts(**kwargs)
+            assert "Issue a fixture-dependent call" in system
+            assert "you know nothing about next gameweek's fixtures" in system
+
+    def test_next_week_is_still_a_required_section_either_way(self):
+        for kwargs in ({}, {"upcoming_fixtures": self._BLOCK}):
+            system, _ = self._prompts(**kwargs)
+            assert "Next Week" in required_synthesis_sections(system)
+
+    def test_the_two_instructions_are_mutually_exclusive(self):
+        grounded, _ = self._prompts(upcoming_fixtures=self._BLOCK)
+        blind, _ = self._prompts()
+        assert "restricted to observations that do not depend on fixtures" not in grounded
+        assert "cite the opponent and FDR you are reasoning from" not in blind
+
+
+class TestCheckNextWeekGrounding:
+    """#291 review: the #191 fix was prompt instructions alone, with nothing
+    checking the answer complied. The research half pairs its rules with
+    post-generation validators; this is the same pairing for the new claim."""
+
+    _BLOCK = (
+        "## Every club's GW3 fixture (ATK = for FWD/MID, DEF = for DEF/GK)\n"
+        "- MCI: vs COV (H) ATK 1.5 DEF 2.1\n"
+        "- COV: at MCI (A) ATK 6.4 DEF 6.8\n"
+        "\n## Your Classic squad in GW3\n"
+        "- Gvardiol (MCI, DEF): vs COV (H) FDR 2.1"
+    )
+
+    @staticmethod
+    def _response(next_week):
+        return f"## Summary\nA week.\n\n## Next Week\n{next_week}\n"
+
+    def test_a_cited_figure_from_the_block_passes(self):
+        response = self._response("Hold Gvardiol - City host Coventry at FDR 2.1.")
+        assert check_next_week_grounding(response, self._BLOCK) == []
+
+    def test_a_figure_the_block_never_printed_is_reported(self):
+        response = self._response("Ship Gvardiol, his FDR 5.9 run is brutal.")
+        problems = check_next_week_grounding(response, self._BLOCK)
+        assert len(problems) == 1
+        assert "5.9" in problems[0]
+
+    def test_an_atk_or_def_column_figure_counts_as_printed(self):
+        """The block prints both axes, so either is a legitimate citation."""
+        response = self._response("Haaland's ATK side reads FDR 1.5 - captain him.")
+        assert check_next_week_grounding(response, self._BLOCK) == []
+
+    def test_only_the_next_week_section_is_checked(self):
+        """The verdict sections discuss the gameweek that was played, whose
+        figures have nothing to do with the fixture block."""
+        response = "## Classic Verdict\nHe was an FDR 6.6 pick and it showed.\n\n## Next Week\nHold.\n"
+        assert check_next_week_grounding(response, self._BLOCK) == []
+
+    def test_without_a_block_a_fixture_claim_is_reported(self):
+        response = self._response("Start Salah - he's at home to Burnley.")
+        problems = check_next_week_grounding(response, "")
+        assert len(problems) == 1
+        assert "no fixture data" in problems[0]
+
+    def test_without_a_block_an_fdr_mention_is_reported(self):
+        response = self._response("His FDR 2.0 fixture makes him a hold.")
+        assert check_next_week_grounding(response, "") != []
+
+    def test_without_a_block_a_fixture_free_observation_passes(self):
+        response = self._response("Tzolis has now blanked twice - worth watching in Draft.")
+        assert check_next_week_grounding(response, "") == []
+
+    def test_a_missing_section_is_not_this_guard_s_problem(self):
+        """`check_synthesis_completeness` already reports an absent heading;
+        reporting it twice would double-count one defect."""
+        assert check_next_week_grounding("## Summary\nA week.\n", self._BLOCK) == []
+        assert check_next_week_grounding("", self._BLOCK) == []

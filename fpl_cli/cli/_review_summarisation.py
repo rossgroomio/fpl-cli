@@ -14,12 +14,14 @@ from fpl_cli.cli._context import console, error_console
 from fpl_cli.cli._fines import FinesLeagueData, FinesTeamPlayer, compute_bench_analysis, evaluate_fines
 from fpl_cli.cli._fines_config import parse_fines_config
 from fpl_cli.cli._helpers import _gw_position_with_half
-from fpl_cli.cli._review_analysis import GlobalReviewData
+from fpl_cli.cli._review_analysis import GlobalReviewData, NextGameweekOutlook, TeamNextFixture
 from fpl_cli.cli._review_classic import _format_review_classic_player
 from fpl_cli.cli._review_draft import _format_review_draft_player
-from fpl_cli.models.player import Player
+from fpl_cli.models.player import POSITION_MAP, Player
 from fpl_cli.models.team import Team
 from fpl_cli.paths import SHIPPED_CONFIG_DIR, user_config_file
+from fpl_cli.services.scoring import ATTACKING_POSITIONS
+from fpl_cli.services.team_ratings import api_difficulty_scale, fdr_columns_footer
 from fpl_cli.utils.gameweek import is_opening_gameweek
 from fpl_cli.utils.teams import describe_team_set_mismatch
 from fpl_cli.utils.text import strip_diacritics
@@ -173,18 +175,25 @@ def _report_synthesis_completeness(
     completeness: SynthesisCompleteness,
     attempts: int,
     debug_dir: Path | None,
+    *,
+    extra_problems: Sequence[str] = (),
 ) -> str | None:
-    """Tell the user the synthesis failed its completeness check; return the detail file.
+    """Tell the user the synthesis failed its post-generation checks; return the detail file.
 
     Printed on every summarise run, not just `--debug`, for the same reason the
     research corrections are (#265): the saved report is the durable artefact,
     and one that lost a whole format's verdict must not go to disk looking like
     a deliberate omission (#266). The per-problem detail still only lands on
     disk under `--debug`, alongside `research_corrections.txt`.
+
+    `extra_problems` carries findings from guards outside the completeness
+    check -- today the Next Week grounding one -- so a response that is whole
+    but ungrounded is reported through the one channel rather than a second
+    one the reader has to know to look at.
     """
-    if completeness.complete:
+    problems = completeness.problems() + list(extra_problems)
+    if not problems:
         return None
-    problems = completeness.problems()
     # Escaped, not interpolated raw: a problem line quotes the provider's own
     # `stop_reason`, and a custom OpenAI-compatible endpoint is free to send
     # one containing Rich markup. An unescaped `[/yellow]` in it would raise
@@ -365,6 +374,178 @@ def _format_research_context(
         "predicted_dgw_teams": predicted_dgw_str,
         "team_glossary": team_glossary_str,
     }
+
+
+# The 1-7 team-ratings scale and the FPL API's own 1-5 difficulty are not
+# interchangeable, so the block names whichever one it was built from rather
+# than printing bare numbers the reader has to guess the scale of. Both come
+# from the footer helpers every other FDR surface prints, so the one scale
+# statement an LLM reads cannot drift from the ones a user reads -- and the
+# ratings branch carries the unrated-club caveat with it, because a neutral
+# 4.0 meaning "no data" is indistinguishable from a genuinely average fixture
+# unless the text says so (#291 review).
+def _fdr_scale_note(fdr_source: str, fdr_mode: str) -> str:
+    """How to read the FDR figures in the block, in the scale's own words."""
+    if fdr_source == "team_ratings":
+        return (
+            f"{fdr_columns_footer(fdr_mode)} A player's own figure below is the ATK"
+            " column for forwards and midfielders, the DEF column for defenders"
+            " and goalkeepers."
+        )
+    return f"{api_difficulty_scale()} It is the same figure for every position."
+
+
+# Every position that is not an attacking one, derived from the two
+# authoritative sets rather than spelled out again -- a new position added to
+# POSITION_MAP lands on the defensive axis by default, which is where GK and
+# DEF already sit, instead of silently falling through as unknown.
+DEFENSIVE_POSITIONS: frozenset[str] = frozenset(POSITION_MAP.values()) - ATTACKING_POSITIONS
+
+# How a multi-fixture gameweek is labelled. Anything past a triple is rare
+# enough to have no settled name, so it is stated as a count rather than
+# called a double, which would understate the rotation risk it carries.
+_MULTI_FIXTURE_LABEL = {2: "DOUBLE GAMEWEEK", 3: "TRIPLE GAMEWEEK"}
+
+
+def _fixture_descriptor(fixture: TeamNextFixture) -> str:
+    """One fixture as the prompt reads it: `vs COV (H)` / `at MCI (A)`.
+
+    Shared by the by-club list and the squad lines, which differ only in the
+    FDR suffix they append -- two copies of this f-string could drift on a
+    change to the wording and only one of them be updated (#291 review).
+    """
+    return (
+        f"{'vs' if fixture['venue'] == 'H' else 'at'} {fixture['opponent']}"
+        f" ({fixture['venue']})"
+    )
+
+
+def _player_fdr_note(fixture: TeamNextFixture, position: str) -> str:
+    """The FDR figure that applies to a player in `position`, as a labelled clause.
+
+    An unrecognised position -- including the `???` the squad data falls back
+    to when it carries none -- gets both axes rather than one silently chosen
+    for it: picking the DEF figure for a player whose position was never
+    established would state a number the data does not support, which is the
+    failure this whole block exists to prevent (#291 review).
+    """
+    if position.upper() in ATTACKING_POSITIONS:
+        return f"FDR {fixture['atk_fdr']:.1f}"
+    if position.upper() in DEFENSIVE_POSITIONS:
+        return f"FDR {fixture['def_fdr']:.1f}"
+    return f"ATK {fixture['atk_fdr']:.1f} DEF {fixture['def_fdr']:.1f} (position unknown)"
+
+
+def _squad_fixture_lines(
+    squad: list[dict[str, Any]],
+    fixtures_by_team: dict[str, list[TeamNextFixture]],
+    blank_teams: set[str],
+    next_gw: int,
+) -> list[str]:
+    """One line per squad player: their next fixture(s) and the FDR for their position.
+
+    Ordered as the squad was given rather than by difficulty -- the block is
+    evidence, not a ranking.
+
+    A player with no fixture is only called a blank when their club is on the
+    blank list. A club that simply did not resolve reaches here the same way,
+    and telling the model that club has a blank gameweek would be exactly the
+    invented fixture fact this block exists to stop.
+    """
+    lines: list[str] = []
+    for player in squad:
+        name = player.get("name")
+        club = player.get("team")
+        position = player.get("position") or "???"
+        if not name or not club:
+            continue
+        fixtures = fixtures_by_team.get(club)
+        if not fixtures:
+            reason = (
+                "blank gameweek" if club in blank_teams else "no fixture listed for their club"
+            )
+            lines.append(f"- {name} ({club}, {position}): no GW{next_gw} fixture ({reason})")
+            continue
+        played = ", ".join(
+            f"{_fixture_descriptor(f)} {_player_fdr_note(f, position)}" for f in fixtures
+        )
+        label = _MULTI_FIXTURE_LABEL.get(len(fixtures)) or (
+            f"{len(fixtures)} FIXTURES" if len(fixtures) > 1 else None
+        )
+        suffix = f" [{label}]" if label else ""
+        lines.append(f"- {name} ({club}, {position}): {played}{suffix}")
+    return lines
+
+
+def _format_next_gameweek(
+    next_gameweek: NextGameweekOutlook | None,
+    team_points_data: list[dict[str, Any]],
+    draft_squad_points_data: list[dict[str, Any]],
+) -> str:
+    """Format next gameweek's fixtures for the synthesis prompt's forward look.
+
+    Returns "" when there is nothing to ground the "Next Week" section in,
+    which is the signal the prompt reads to narrow that section to
+    fixture-independent observations instead (issue #191).
+
+    Two lists, because the section makes calls in both directions: every club's
+    fixture, so a player suggested as a target is grounded too, and the user's
+    own squads with each player's positional FDR, which is the side the advice
+    actually goes wrong on.
+    """
+    if not next_gameweek:
+        return ""
+
+    next_gw = next_gameweek["gameweek"]
+    fixtures_by_team = next_gameweek["fixtures_by_team"]
+    if not fixtures_by_team:
+        return ""
+
+    parts = [
+        f"Gameweek {next_gw} fixtures - the gameweek the \"Next Week\" section is about."
+        " This is the only fixture data you have for it.",
+        _fdr_scale_note(next_gameweek["fdr_source"], next_gameweek["fdr_mode"]),
+    ]
+    if next_gameweek["already_played"]:
+        # Reviewing an old gameweek fetches the one after it, which by then has
+        # been played -- and the ratings scoring it are today's, not the ones
+        # that stood at the time. Presenting that as "upcoming" would make the
+        # section confident about a week that is already history (#291 review).
+        parts.append(
+            f"NOTE: GW{next_gw} has already been played. This is a retrospective review, so"
+            f" frame Next Week as what GW{next_gw - 1} suggested going into GW{next_gw} -"
+            " never as advice for a gameweek still to come, and never as a prediction."
+        )
+    if next_gameweek["fdr_warning"]:
+        parts.append(
+            f"CAUTION: {next_gameweek['fdr_warning']} Treat these figures as indicative"
+            " rather than decisive, and say so if you lean on one."
+        )
+    parts.append(f"\n## Every club's GW{next_gw} fixture (ATK = for FWD/MID, DEF = for DEF/GK)")
+    for club in sorted(fixtures_by_team):
+        rendered = ", ".join(
+            f"{_fixture_descriptor(f)} ATK {f['atk_fdr']:.1f} DEF {f['def_fdr']:.1f}"
+            for f in fixtures_by_team[club]
+        )
+        parts.append(f"- {club}: {rendered}")
+
+    blank_teams = next_gameweek["blank_teams"]
+    for label, squad in (("Classic", team_points_data), ("Draft", draft_squad_points_data)):
+        lines = _squad_fixture_lines(squad, fixtures_by_team, set(blank_teams), next_gw)
+        if lines:
+            parts.append(f"\n## Your {label} squad in GW{next_gw}")
+            parts.extend(lines)
+
+    double_teams = next_gameweek["double_teams"]
+    parts.append(
+        f"\nTeams with no GW{next_gw} fixture (blank):"
+        f" {', '.join(blank_teams) if blank_teams else 'none'}"
+    )
+    parts.append(
+        f"Teams playing twice in GW{next_gw} (double):"
+        f" {', '.join(double_teams) if double_teams else 'none'}"
+    )
+    return "\n".join(parts)
 
 
 def _transfer_side(move: dict[str, Any], side: str) -> str:
@@ -730,10 +911,17 @@ async def _review_llm_summarise(
     debug: bool,
     research_provider: Any,
     synthesis_provider: Any,
+    next_gameweek: NextGameweekOutlook | None = None,
 ) -> dict[str, Any]:
-    """Run LLM summarisation (research + synthesis). Returns {research_summary, synthesis_summary}."""
+    """Run LLM summarisation (research + synthesis). Returns {research_summary, synthesis_summary}.
+
+    `next_gameweek` is the fixture data behind the synthesis prompt's "Next
+    Week" section; None narrows that section to observations a results-only
+    view can support (issue #191).
+    """
     from fpl_cli.prompts.review import (
         REVIEW_RESEARCH_SYSTEM_PROMPT,
+        check_next_week_grounding,
         ensure_top_performer_first,
         get_review_research_prompt,
         get_review_synthesis_prompt,
@@ -874,6 +1062,9 @@ async def _review_llm_summarise(
         my_entry_summary=my_entry_summary,
     )
 
+    upcoming_fixtures = _format_next_gameweek(
+        next_gameweek, team_points_data, draft_squad_points_data,
+    )
     synthesis_prompts = get_review_synthesis_prompt(
         gameweek=gw,
         research_summary=research_summary or "Not available",
@@ -911,6 +1102,7 @@ async def _review_llm_summarise(
         use_net_points=settings.get("use_net_points", False),
         dgw_teams=research_ctx["dgw_teams"],
         bgw_teams=research_ctx["bgw_teams"],
+        upcoming_fixtures=upcoming_fixtures,
     )
     synthesis_system, synthesis_prompt = synthesis_prompts
 
@@ -939,12 +1131,20 @@ async def _review_llm_summarise(
                 system_prompt=synthesis_system,
                 omit_sections=omit_sections,
             )
-            if completeness.complete:
+            # The grounding guard rides the same channel as the completeness
+            # one: both answer "is this response usable as written", and a
+            # reader weeks later needs them in the same place -- stderr now,
+            # and the saved report's warning callout for good.
+            grounding_problems = check_next_week_grounding(
+                synthesis_summary, upcoming_fixtures,
+            )
+            if completeness.complete and not grounding_problems:
                 console.print("[green]  ✓[/green] Personal analysis complete")
             else:
-                synthesis_problems = completeness.problems()
+                synthesis_problems = completeness.problems() + grounding_problems
                 synthesis_corrections_path = _report_synthesis_completeness(
                     completeness, attempts, debug_dir if debug else None,
+                    extra_problems=grounding_problems,
                 )
 
             if debug and debug_dir:
