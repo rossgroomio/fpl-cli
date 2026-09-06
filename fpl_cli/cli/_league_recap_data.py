@@ -1018,9 +1018,13 @@ def _captain_detail(
     `points` is the value the tie was struck on. Pass it for worst-captain,
     where the tie is on *effective* captain points (the vice's score when the
     captain did not play) and so need not equal any tied manager's raw
-    `captain_points`. Groups are capped at _DETAIL_CAP so a wide tie in a large
-    league does not sprawl; the "## Captains" prompt section remains the full
-    per-manager roster.
+    `captain_points`. Groups are capped at _DETAIL_CAP, as are the managers
+    named inside one group, so a wide tie in a large league does not sprawl;
+    the "## Captains" prompt section remains the full per-manager roster.
+
+    A tie the whole league is in collapses further, to a single line counting
+    each captain: nobody stood out, so there is no manager worth naming and
+    the grouped block would be the entire roster (issue #145).
     """
     if len(caps) == 1:
         m = caps[0]
@@ -1045,12 +1049,43 @@ def _captain_detail(
 
     pts = caps[0]["captain_points"] if points is None else points
     groups = sorted(by_player.items(), key=lambda kv: (-len(kv[1]), kv[0]))
+
+    # A league-wide tie is one fact about the gameweek, not an award: grouped,
+    # it names every manager, and since Best and Worst then hold the same set
+    # it named them all twice (issue #145). Collapse only once the roster is
+    # longer than a capped block would be, so a small league keeps the prose
+    # that already fits.
+    if total_managers > _DETAIL_CAP and len(caps) == total_managers:
+        picks = ", ".join(
+            f"{player} ×{len(names)}" + ("" if played_by_player[player] else " (dnp)")
+            for player, names in groups[:_DETAIL_CAP]
+        )
+        dropped_players = max(0, len(groups) - _DETAIL_CAP)
+        # "returned" rather than "scored" once any captain sat the gameweek
+        # out: what those managers got came from their vice.
+        verb = "scored" if all(played_by_player.values()) else "returned"
+        unit = "pt" if pts == 1 else "pts"
+        return (
+            f"Captaincy was a wash — all {total_managers} captains {verb} {pts} {unit}"
+            f" ({picks})" + _omitted_suffix(dropped_players, "player")
+        )
+
     omitted = sum(len(names) for _, names in groups[_DETAIL_CAP:])
 
     parts = []
     for player, names in groups[:_DETAIL_CAP]:
         n = len(names)
-        joined = ", ".join(names[:-1]) + " and " + names[-1] if n > 1 else names[0]
+        # Naming the managers is the point of a narrow tie, but the same list
+        # is roster-length when most of the league shares a captain, so it is
+        # capped like the groups themselves.
+        shown = names[:_DETAIL_CAP]
+        extra = n - len(shown)
+        if extra:
+            joined = ", ".join(shown) + f" and {extra} other{'' if extra == 1 else 's'}"
+        elif n > 1:
+            joined = ", ".join(shown[:-1]) + " and " + shown[-1]
+        else:
+            joined = shown[0]
         verb = "all captained" if n > 2 else "captained"
         fraction = f" [{n} of {total_managers} managers]" if total_managers > 0 and n < total_managers else ""
         scored = f"({pts} pts)" if played_by_player[player] else f"(dnp; vice scored {pts})"
@@ -1135,27 +1170,46 @@ def _compute_shared_awards(
     # Captain awards (classic only - draft has no captaincy)
     if format_name == "classic":
         league_size = total_managers if total_managers is not None else len(managers)
-        best_cap_pts = max(m["captain_points"] for m in managers)
-        if best_cap_pts > 0:
-            best_caps = [m for m in managers if m["captain_points"] == best_cap_pts]
-            awards["best_captain"] = RecapAwardEntry(
-                manager_name=" and ".join(m["manager_name"] for m in best_caps),
-                value=best_cap_pts,
-                detail=_captain_detail(best_caps, league_size, points=best_cap_pts),
-            )
 
         # Effective captain pts: use vice's score if captain didn't play (VC takeover).
         # This correctly ranks a blanking VC below a played captain who scored 0.
         def _effective_cap_pts(m: RecapManagerEntry) -> int:
             return m["captain_points"] if m.get("captain_played") else m.get("vice_captain_points", 0)
 
-        worst_cap_pts = min(_effective_cap_pts(m) for m in managers)
-        worst_caps = [m for m in managers if _effective_cap_pts(m) == worst_cap_pts]
-        awards["worst_captain"] = RecapAwardEntry(
-            manager_name=" and ".join(m["manager_name"] for m in worst_caps),
-            value=worst_cap_pts,
-            detail=_captain_detail(worst_caps, league_size, points=worst_cap_pts),
+        best_cap_pts = max(m["captain_points"] for m in managers)
+        # Held as positions in `managers`, not managers: two managers can share
+        # a display name, and comparing the two sets is what decides whether
+        # the awards are one fact printed twice.
+        best_positions = (
+            {i for i, m in enumerate(managers) if m["captain_points"] == best_cap_pts}
+            if best_cap_pts > 0
+            else set()
         )
+        worst_cap_pts = min(_effective_cap_pts(m) for m in managers)
+        worst_positions = {
+            i for i, m in enumerate(managers) if _effective_cap_pts(m) == worst_cap_pts
+        }
+
+        if best_positions:
+            best_caps = [managers[i] for i in sorted(best_positions)]
+            awards["best_captain"] = RecapAwardEntry(
+                manager_name=" and ".join(m["manager_name"] for m in best_caps),
+                value=best_cap_pts,
+                detail=_captain_detail(best_caps, league_size, points=best_cap_pts),
+            )
+
+        # Best and Worst over the same managers render as two identical blocks
+        # under opposite headings (issue #145). Everyone scored the same, so
+        # neither reading is more true -- Best keeps it and Worst is dropped
+        # rather than repeated. Best is absent when every captain scored 0, and
+        # the sets differ then too, so Worst still carries the gameweek.
+        if worst_positions != best_positions:
+            worst_caps = [managers[i] for i in sorted(worst_positions)]
+            awards["worst_captain"] = RecapAwardEntry(
+                manager_name=" and ".join(m["manager_name"] for m in worst_caps),
+                value=worst_cap_pts,
+                detail=_captain_detail(worst_caps, league_size, points=worst_cap_pts),
+            )
 
     # Format-specific awards
     if format_name == "classic":

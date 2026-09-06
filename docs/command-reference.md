@@ -776,6 +776,11 @@ either way — an in-progress gameweek is never recappable, so the recap of the 
 has to keep working while the next one plays.
 
 **Awards:** GW winner/loser, biggest bench haul, best/worst captain, transfer/waiver genius and disaster.
+A tied award records every manager who tied but names at most three of them in its prose, so a wide
+tie stays a line rather than a roster. A captain tie the whole league is in is not an award at all —
+it collapses to one line counting each pick ("Captaincy was a wash — all 19 captains scored 2 pts
+(Haaland ×14, Salah ×5)"), and where Best and Worst Captain cover the same managers only Best is
+reported: the same fact under two headings is printed once.
 
 **Standings movement:** position changes derived from point differentials, per-manager highlights. Both tables — this gameweek's and the one before it — are ranked the same way, so managers level on points share a place on each and no arrow is reported for a tie nobody left.
 
