@@ -239,13 +239,14 @@ async def _fetch_standings_with_costs(
     async def _fetch_one(entry: dict) -> dict:
         league_entry_id = entry.get("entry")
         gross_pts = entry.get("event_total", 0)
-        async with sem:
-            try:
-                picks_data = await client.get_manager_picks(entry["entry"], gw)
-                transfer_cost = picks_data.get("entry_history", {}).get("event_transfers_cost", 0)
-            except Exception as e:  # noqa: BLE001 — best-effort enrichment
-                transfer_cost = 0
-                logger.warning("Failed to fetch transfer cost for entry %s: %s", league_entry_id, e)
+        transfer_cost = 0
+        if league_entry_id is not None:
+            async with sem:
+                try:
+                    picks_data = await client.get_manager_picks(league_entry_id, gw)
+                    transfer_cost = picks_data.get("entry_history", {}).get("event_transfers_cost", 0)
+                except Exception as e:  # noqa: BLE001 — best-effort enrichment
+                    logger.warning("Failed to fetch transfer cost for entry %s: %s", league_entry_id, e)
         return {
             "entry_id": league_entry_id,
             "name": entry.get("player_name", "Unknown"),

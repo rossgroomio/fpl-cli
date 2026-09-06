@@ -207,6 +207,17 @@ async def _review_global_stats(
     return global_data
 
 
+def _stat_player(entry: dict[str, Any], player_map: dict[int, Player]) -> Player | None:
+    """The player a fixture stat entry names, or None when it names nobody.
+
+    The entries come straight off the FPL API unvalidated, so one without an
+    `element` drops out of the display on its own rather than aborting the
+    whole results section.
+    """
+    element = entry.get("element")
+    return player_map.get(element) if element is not None else None
+
+
 async def _review_fixtures(
     client: FPLClient,
     gw: int,
@@ -246,7 +257,7 @@ async def _review_fixtures(
                 # Group by player and count goals
                 goals_by_player = {}
                 for g in goal_scorers:
-                    player = player_map.get(g["element"])
+                    player = _stat_player(g, player_map)
                     if player:
                         team = teams.get(player.team_id)
                         team_abbr = team.short_name if team else "???"
@@ -272,7 +283,7 @@ async def _review_fixtures(
             assist_names = []
             if assists:
                 for a in assists:
-                    player = player_map.get(a["element"])
+                    player = _stat_player(a, player_map)
                     if player:
                         team = teams.get(player.team_id)
                         team_abbr = team.short_name if team else "???"
@@ -289,7 +300,7 @@ async def _review_fixtures(
             bonus_strs = []
             if bonus:
                 for b in bonus:
-                    player = player_map.get(b["element"])
+                    player = _stat_player(b, player_map)
                     if player:
                         team = teams.get(player.team_id)
                         team_abbr = team.short_name if team else "???"
@@ -304,7 +315,7 @@ async def _review_fixtures(
             red_card_strs_plain = []
             if red_cards:
                 for r in red_cards:
-                    player = player_map.get(r["element"])
+                    player = _stat_player(r, player_map)
                     if player:
                         team = teams.get(player.team_id)
                         team_abbr = team.short_name if team else "???"
@@ -323,7 +334,7 @@ async def _review_fixtures(
             own_goal_strs = []
             if own_goals:
                 for og in own_goals:
-                    player = player_map.get(og["element"])
+                    player = _stat_player(og, player_map)
                     if player:
                         team = teams.get(player.team_id)
                         team_abbr = team.short_name if team else "???"

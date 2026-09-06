@@ -25,7 +25,7 @@ from fpl_cli.cli._review_summarisation import (
 )
 from fpl_cli.cli.preview import _preview_build_fixture_map
 from fpl_cli.cli.review import _review_resolve_gw, review_command
-from tests.conftest import make_draft_player, make_player, make_team
+from tests.conftest import make_draft_player, make_fixture, make_player, make_team
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1582,3 +1582,62 @@ class TestReviewThreadsTheGameweeksFixtureSet:
             "global": (frozenset({401}), None),
             "draft": (frozenset({401}), frozenset({401})),
         }
+
+
+# ---------------------------------------------------------------------------
+# Malformed API rows degrade one row at a time, not one section at a time
+# ---------------------------------------------------------------------------
+
+class TestReviewFixturesTolerateMalformedStats:
+    """A fixture stat entry FPL sends without an `element` drops out on its own.
+
+    The entries are raw API payload. One bad record was skipped by the old
+    `.get()` lookup and must not now abort the whole results section (#279
+    review).
+    """
+
+    TEAMS = {  # noqa: RUF012 — plain test data, not a mutable default
+        1: make_team(id=1, short_name="ARS", name="Arsenal"),
+        2: make_team(id=2, short_name="CHE", name="Chelsea"),
+    }
+
+    async def test_entry_without_element_is_skipped_not_fatal(self):
+        from fpl_cli.cli._review_analysis import _review_fixtures
+
+        scorer = make_player(id=401, web_name="Saka", team_id=1)
+        broken = make_fixture(
+            id=1, gameweek=15, home_team_id=1, away_team_id=2, finished=True, home_score=1, away_score=1,
+            stats=[{"identifier": "goals_scored", "h": [{"value": 1, "element": 401}], "a": [{"value": 1}]}],
+        )
+        clean = make_fixture(
+            id=2, gameweek=15, home_team_id=2, away_team_id=1, finished=True, home_score=0, away_score=1,
+            stats=[{"identifier": "goals_scored", "h": [], "a": [{"value": 1, "element": 401}]}],
+        )
+
+        data = await _review_fixtures(MagicMock(), 15, {401: scorer}, self.TEAMS, [], fixtures=[broken, clean])
+
+        assert len(data) == 2
+        assert all("Saka" in (d["goals"] or "") for d in data)
+
+
+class TestStandingsCostsTolerateMissingEntryId:
+    """A standings row without an `entry` id gets no picks call and a zero cost,
+    while the rows around it are still enriched (#279 review)."""
+
+    async def test_row_without_entry_id_is_left_gross_only(self):
+        from fpl_cli.cli._helpers import _fetch_standings_with_costs
+
+        client = MagicMock()
+        client.get_manager_picks = AsyncMock(return_value={"entry_history": {"event_transfers_cost": 4}})
+        standings = [
+            {"entry": 7, "player_name": "Manager A", "event_total": 50},
+            {"player_name": "Manager B", "event_total": 40},
+        ]
+
+        rows = await _fetch_standings_with_costs(client, standings, 7, 15)
+
+        client.get_manager_picks.assert_awaited_once_with(7, 15)
+        assert [(r["entry_id"], r["transfer_cost"], r["net_points"], r["is_user"]) for r in rows] == [
+            (7, 4, 46, True),
+            (None, 0, 40, False),
+        ]
