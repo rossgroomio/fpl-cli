@@ -1602,6 +1602,66 @@ class TestClassicPositionCohort:
         assert "overall_rank" not in alice
         assert "previous_rank" not in alice
 
+    async def test_replay_one_partial_response_only_costs_that_manager_a_position(self):
+        """Bob's picks fetched fine but carry no `total_points`. He alone goes
+        unranked; Alice and Cara, whose own responses were complete, keep
+        their positions instead of being blanked with him (issue #294)."""
+        standings = [
+            {"entry": 1, "player_name": "Alice", "event_total": 50, "total": 500},
+            {"entry": 2, "player_name": "Bob", "event_total": 40, "total": 450},
+            {"entry": 3, "player_name": "Cara", "event_total": 30, "total": 400},
+        ]
+        bob = _picks_response(points=40, total_points=0)
+        del bob["entry_history"]["total_points"]
+        picks = {
+            1: _picks_response(points=50, total_points=320),
+            2: bob,
+            3: _picks_response(points=30, total_points=290),
+        }
+        data = await collect_classic_recap_data(
+            _FakeClassicClient(_standings_response(standings), picks),
+            {"fpl": {"classic_league_id": 1}}, gw=10,
+            live_stats={}, player_map={}, teams={}, is_live_gw=False,
+        )
+        by_name = {m["manager_name"]: m for m in data["managers"]}
+        assert by_name["Alice"]["overall_rank"] == 1
+        assert by_name["Cara"]["overall_rank"] == 2
+        assert "overall_rank" not in by_name["Bob"]
+        assert "previous_rank" not in by_name["Bob"]
+        assert by_name["Alice"]["previous_rank"] == 1
+        assert by_name["Cara"]["previous_rank"] == 2
+
+    async def test_replay_start_offset_failure_only_costs_that_manager_a_position(self):
+        """The same scoping when it is `_apply_league_start_offset` that drops
+        a total: one failed history fetch leaves that manager unranked, not
+        the whole league (issue #294)."""
+        standings = [
+            {"entry": 1, "player_name": "Alice", "event_total": 50, "total": 200},
+            {"entry": 2, "player_name": "Bob", "event_total": 40, "total": 210},
+        ]
+        picks = {
+            1: _picks_response(points=50, total_points=500),
+            2: _picks_response(points=40, total_points=480),
+        }
+
+        class _PartialHistoryClient(_FakeClassicClient):
+            async def get_manager_history(self, entry_id):
+                if entry_id == 2:
+                    raise RuntimeError("boom")
+                return await super().get_manager_history(entry_id)
+
+        client = _PartialHistoryClient(
+            _standings_response(standings, start_event=5), picks,
+            history_by_entry={1: {"current": [{"event": 4, "total_points": 300}]}},
+        )
+        data = await collect_classic_recap_data(
+            client, {"fpl": {"classic_league_id": 1}}, gw=10,
+            live_stats={}, player_map={}, teams={}, is_live_gw=False,
+        )
+        by_name = {m["manager_name"]: m for m in data["managers"]}
+        assert by_name["Alice"]["overall_rank"] == 1
+        assert "overall_rank" not in by_name["Bob"]
+
     async def test_replay_with_a_complete_cohort_still_derives_positions(self):
         standings = [
             {"entry": 1, "player_name": "Alice", "event_total": 50, "total": 500},
