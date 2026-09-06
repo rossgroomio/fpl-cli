@@ -95,6 +95,7 @@ HISTORY_WARNING_BACKFILL_MANAGER_UNREACHABLE = "league_history_backfill_manager_
 HISTORY_WARNING_BACKFILL_REPLAY_FAILED = "league_history_backfill_replay_failed"
 HISTORY_WARNING_BACKFILL_WRITE_FAILED = "league_history_backfill_write_failed"
 HISTORY_WARNING_IDENTITY_CARRIED = "league_history_identity_carried"
+HISTORY_WARNING_CLUB_REDERIVED = "league_history_club_rederived"
 HISTORY_WARNING_STANDINGS_CARRIED = "league_history_standings_carried"
 HISTORY_WARNING_STANDINGS_REPAIRED = "league_history_standings_repaired"
 
@@ -1167,11 +1168,22 @@ def _fill_draft_standings(
         _assign_cohort_ranks(rows)
 
 
+def _overruled_codes(data: LeagueRecapData) -> frozenset[int]:
+    """The codes whose club this capture derived from the gameweek's fixtures.
+
+    Absent means the caller never resolved gameweek clubs, which is not the
+    same as "resolved and nothing moved": either way there is nothing to
+    exempt from the carry, so both collapse to the empty set here.
+    """
+    return frozenset(data.get("clubs_overruled_codes") or ())
+
+
 def _carry_recorded_identity(
     store: LeagueHistoryStore, gameweek: int, rows: list[LeagueHistoryRow],
-    *, warnings: list[dict[str, str]],
+    *, overruled_codes: frozenset[int] = frozenset(),
+    warnings: list[dict[str, str]],
 ) -> int:
-    """Keep the name, club and position the gameweek recorded for each player.
+    """Keep the identity the gameweek recorded for each player.
 
     A replay resolves every pick against *today's* bootstrap, so a player
     transferred or renamed since comes back wearing his current club and
@@ -1179,6 +1191,15 @@ def _carry_recorded_identity(
     (issue #169). Points, cards and the pick flags are all re-derived from the
     gameweek's own data and stay as the replay found them; only the fields
     that describe who a player *was* are carried.
+
+    `overruled_codes` names the players whose club this replay derived from
+    the gameweek's own fixtures rather than restamping from the bootstrap
+    (`services/player_clubs.py`). Those clubs are *not* carried: the recorded
+    one may itself be today's club, written by a first capture or a coarse
+    upgrade that had nothing to carry, and carrying it forward would preserve
+    that mistake permanently. The derived club supersedes it instead, so the
+    repair reaches rows already on disk (issue #177). Name and position are
+    not derivable from fixtures and stay carry-forward-only either way.
 
     Identity is never lowered either: where the recorded row resolved a code
     and this replay did not, the code is restored, so the ledger's
@@ -1199,6 +1220,7 @@ def _carry_recorded_identity(
 
     recorded_rows = _first_recorded(previous)
     carried = 0
+    rederived = 0
     for row in rows:
         recorded = recorded_rows.get(row.manager_key)
         if recorded is None or row.capture_status is not CaptureStatus.OK:
@@ -1211,7 +1233,12 @@ def _carry_recorded_identity(
 
         for new, old in pairs:
             before = (new.name, new.team, new.position, new.code)
-            new.name, new.team, new.position = old.name, old.team, old.position
+            new.name, new.position = old.name, old.position
+            if new.code in overruled_codes:
+                if new.team != old.team:
+                    rederived += 1
+            else:
+                new.team = old.team
             if new.code is None and old.code is not None:
                 new.code = old.code
             if (new.name, new.team, new.position, new.code) != before:
@@ -1228,7 +1255,7 @@ def _carry_recorded_identity(
             if pick.code is None and old_pick.code is not None:
                 pick.code = old_pick.code
 
-        _carry_move_identity(row, recorded)
+        rederived += _carry_move_identity(row, recorded, overruled_codes)
 
     if carried:
         _warn(
@@ -1237,6 +1264,13 @@ def _carry_recorded_identity(
             f"reference already recorded for {carried} player(s) rather than the ones "
             f"they carry today. Picks are resolved against the current bootstrap, "
             f"which has moved on since the gameweek was played.",
+        )
+    if rederived:
+        _warn(
+            warnings, HISTORY_WARNING_CLUB_REDERIVED,
+            f"League history: GW{gameweek} replaced the club recorded for {rederived} "
+            f"player(s) with the one the gameweek's own fixtures place them at. The "
+            f"recorded club was stamped from a bootstrap that had already moved on.",
         )
     return carried
 
@@ -1248,7 +1282,9 @@ _MOVE_SIDES = (
 )
 
 
-def _carry_move_identity(row: LeagueHistoryRow, recorded: LeagueHistoryRow) -> None:
+def _carry_move_identity(
+    row: LeagueHistoryRow, recorded: LeagueHistoryRow, overruled_codes: frozenset[int],
+) -> int:
     """Apply the same rule to the row's transfers and waiver moves.
 
     Slot-aligned like the squad, and for the same reason: a manager's moves in
@@ -1261,6 +1297,9 @@ def _carry_move_identity(row: LeagueHistoryRow, recorded: LeagueHistoryRow) -> N
     side falls back to what the recorded row knows about that code. That
     carries a name and club but cannot restore a code, since a move whose code
     the replay lost is exactly the one this path cannot identify.
+
+    `overruled_codes` holds the same club exemption the squad carry makes, and
+    returns how many recorded clubs the derived one replaced.
     """
     known = {
         code: (name, team)
@@ -1273,6 +1312,7 @@ def _carry_move_identity(row: LeagueHistoryRow, recorded: LeagueHistoryRow) -> N
         if code is not None
     } | {p.code: (p.name, p.team) for p in recorded.squad if p.code is not None}
 
+    rederived = 0
     for replayed_moves, recorded_moves in (
         (row.transfers, recorded.transfers),
         (row.transactions, recorded.transactions),
@@ -1291,9 +1331,14 @@ def _carry_move_identity(row: LeagueHistoryRow, recorded: LeagueHistoryRow) -> N
                     name, team = known[code]
                     old_code = None
                 setattr(move, name_attr, name)
-                setattr(move, team_attr, team)
+                if getattr(move, code_attr) in overruled_codes:
+                    if getattr(move, team_attr) != team:
+                        rederived += 1
+                else:
+                    setattr(move, team_attr, team)
                 if getattr(move, code_attr) is None and old_code is not None:
                     setattr(move, code_attr, old_code)
+    return rederived
 
 
 async def _coarse_backfill(
@@ -1472,7 +1517,10 @@ async def _detailed_backfill(
             tier=FidelityTier.DETAILED,
             is_live_gw=False,
         )
-        _carry_recorded_identity(store, gameweek, rows, warnings=warnings)
+        _carry_recorded_identity(
+            store, gameweek, rows,
+            overruled_codes=_overruled_codes(replayed), warnings=warnings,
+        )
         # A replayed gameweek is finished by definition, so its standings are
         # done moving and a null here is a loss rather than an update.
         _carry_recorded_standings(store, gameweek, rows, warnings=warnings)
@@ -1927,7 +1975,10 @@ async def capture_recap_history(
     # `_carry_recorded_identity` already no-ops when nothing is recorded yet,
     # so a genuine first capture is unaffected.
     if data["gameweek"] in finished_gameweeks:
-        _carry_recorded_identity(store, data["gameweek"], rows, warnings=warnings)
+        _carry_recorded_identity(
+            store, data["gameweek"], rows,
+            overruled_codes=_overruled_codes(data), warnings=warnings,
+        )
         # Same gate, same reason: a finished gameweek's position is done
         # moving, so a run that cannot re-derive it must not write it away
         # (issue #223). A gameweek still live is skipped because a fresh

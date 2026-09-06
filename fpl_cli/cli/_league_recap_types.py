@@ -236,6 +236,12 @@ class LeagueRecapData(TypedDict):
     # Whether the gameweek itself was blank or double, recorded on every row.
     is_bgw: NotRequired[bool]
     is_dgw: NotRequired[bool]
+    # The stable codes of players this capture placed at a club other than the
+    # one they are at today, derived from the gameweek's own fixtures. The
+    # identity carry reads it to tell a club it should keep from one it should
+    # replace with what the ledger already recorded (issue #177). Absent when
+    # the caller never resolved gameweek clubs at all.
+    clubs_overruled_codes: NotRequired[list[int]]
     # Report-surfaced League History text (U10), absent when capture could
     # not build a notes pack at all.
     league_history_phase_text: NotRequired[str]
