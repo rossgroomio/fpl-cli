@@ -1,4 +1,15 @@
 *Generated: {{ generated_at }}*
+{% if summary_unavailable %}
+
+> [!WARNING]
+> **Part of the requested summary is missing.** It was skipped for want of a
+> usable provider key, not deliberately left out:
+{% for note in summary_unavailable %}
+> - {{ note }}
+{% endfor %}
+
+---
+{% endif %}
 {% if synthesis_summary %}
 {{ synthesis_summary }}
 {% if synthesis_problems %}

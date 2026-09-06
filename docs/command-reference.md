@@ -740,7 +740,7 @@ fpl review --dry-run              # Build prompts without calling LLMs
 
 **Results:** all fixtures with scores, goal scorers, assists, and bonus points.
 
-**LLM summary** (`--summarise`): Community narrative via research provider, personal analysis via synthesis provider.
+**LLM summary** (`--summarise`): Community narrative via research provider, personal analysis via synthesis provider. The summary is an add-on: the review itself needs no key, so a role whose provider has no usable key is skipped with the reason on stderr (`Community narrative skipped: ...` / `Personal analysis skipped: ...`) and the review still prints, still saves its report and still exits **0**. The two roles resolve independently, so one key buys the half it belongs to rather than nothing. A saved report generated from such a run names each skipped half and why in a warning callout above the summary, so a section absent for want of a key never reads as one deliberately left out.
 
 **Next Week:** the personal analysis is given next gameweek's fixtures — every club's opponent
 and venue, and each of your own players' FDR for their own position — so the section's start,
@@ -783,11 +783,11 @@ cannot answer; there the current clubs answer instead, which can differ from tha
 clubs once a transfer has happened in between.
 
 **A gameweek it will not review** — one still being played, an id the season does not have,
-a season with nothing finished yet — is refused with the reason on **stderr** and exit **1**,
-as is `--summarise` with no usable provider key. `review` has no `--format json`, so stdout
-carries the review or nothing at all, and `fpl review 2>/dev/null` is silent on a refusal
-rather than printing half an explanation. Both refusals used to exit 0 with the reason on
-stdout; the gameweek one is shared with `league-recap`, which behaved the same way.
+a season with nothing finished yet — is refused with the reason on **stderr** and exit **1**.
+`review` has no `--format json`, so stdout carries the review or nothing at all, and `fpl review
+2>/dev/null` is silent on a refusal rather than printing half an explanation. It used to exit 0
+with the reason on stdout, as did `league-recap`, which shares the resolver. A missing provider
+key was refused the same way until it stopped being a refusal at all — see the LLM summary above.
 
 ### League Recap
 

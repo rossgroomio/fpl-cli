@@ -470,41 +470,150 @@ class TestPreviewBuildFixtureMap:
 # TestReviewLlmSummariseGuards
 # ---------------------------------------------------------------------------
 
-_LLM_SUMMARISE_BASE_KWARGS = dict(
-    gw=1,
-    gw_data={},
-    collected_data={},
-    classic_team=None,
-    classic_transfers_data=None,
-    classic_league_data=None,
-    draft_result=None,
-    global_data=None,
-    player_map={},
-    teams={},
-    settings={},
-    debug=False,
-)
+def _stub_review_run(monkeypatch, *, next_gameweek=None, gameweek=2):
+    """Stub every fetch `fpl review` makes so the command runs offline.
+
+    `next_gameweek` replaces the fixture lookup that feeds the LLM prompt and
+    nothing else, so a caller can assert whether the run reached for it.
+    """
+    from fpl_cli.cli import review as review_module
+
+    client = MagicMock()
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=False)
+    client.get_gameweeks = AsyncMock(return_value=[{"id": gameweek, "finished": True}])
+    client.get_current_gameweek = AsyncMock(return_value={"id": gameweek, "finished": True})
+    client.get_players = AsyncMock(return_value=[])
+    client.get_teams = AsyncMock(return_value=[make_team(id=19, short_name="MCI")])
+    client.get_gameweek_live = AsyncMock(return_value={"elements": []})
+    client.get_fixtures = AsyncMock(return_value=[])
+    monkeypatch.setattr("fpl_cli.api.fpl.FPLClient", MagicMock(return_value=client))
+    if next_gameweek is not None:
+        monkeypatch.setattr(review_module, "_review_next_gameweek", next_gameweek)
+    monkeypatch.setattr(review_module, "_review_classic_team", AsyncMock(return_value={
+        "my_entry_summary": None, "active_chip": None,
+        "team_points_data": [], "my_picks_data": [], "automatic_subs": [],
+    }))
+    monkeypatch.setattr(review_module, "_review_classic_transfers", AsyncMock(return_value=[]))
+    monkeypatch.setattr(review_module, "_review_classic_league", AsyncMock(return_value=None))
+    monkeypatch.setattr(review_module, "_review_global_stats", AsyncMock(return_value={}))
+    monkeypatch.setattr(review_module, "_review_draft", AsyncMock(return_value={
+        "draft_squad_points_data": [], "draft_transactions_data": [],
+        "draft_league_data": None, "draft_league_name": "Draft League",
+        "draft_automatic_subs": [], "draft_player_map": {},
+    }))
+    monkeypatch.setattr(review_module, "_review_fixtures", AsyncMock(return_value=[]))
+    monkeypatch.setattr(review_module, "_review_league_table", AsyncMock(return_value=[]))
+    return client
 
 
-class TestReviewLlmSummariseGuards:
+def _summarise_kwargs(**overrides):
+    """A `_review_llm_summarise` call carrying both formats' data, no providers.
 
-    async def test_raises_if_research_provider_none_and_not_dry_run(self):
-        with pytest.raises(ValueError, match="research_provider"):
+    Callers add `dry_run`, `research_provider` and `synthesis_provider`.
+    """
+    kwargs = dict(
+        gw=7,
+        gw_data={"average_entry_score": 55, "highest_score": 120},
+        collected_data={"fixtures": [], "draft_transactions": []},
+        classic_team={
+            "my_entry_summary": {"points": 62, "rank": 900_000, "overall_rank": 1_100_000},
+            "team_points_data": [_classic_player()],
+            "automatic_subs": [],
+            "active_chip": None,
+            "my_picks_data": [],
+        },
+        classic_transfers_data=[],
+        classic_league_data=None,
+        draft_result={
+            "draft_league_data": None,
+            "draft_league_name": "Draft League",
+            "draft_squad_points_data": [_draft_player(name="Haaland", team="MCI", points=8)],
+            "draft_automatic_subs": [],
+            "draft_player_map": {},
+        },
+        global_data={},
+        player_map={},
+        teams={},
+        settings={},
+        debug=False,
+    )
+    kwargs.update(overrides)
+    return kwargs
+
+
+class TestReviewLlmSummariseSkipsTheHalfItCannotRun:
+    """#287: a provider it has no key for costs that half, not the review.
+
+    Both guards used to be `ValueError`s, so one absent key took down the
+    review, the half the other key could still have produced, and -- with
+    `--save` -- the report as well.
+    """
+
+    async def test_a_missing_research_provider_skips_only_that_half(self):
+        synthesis = _StubSynthesisProvider(_reply(_WHOLE, "end_turn"))
+        result = await _review_llm_summarise(
+            **_summarise_kwargs(),
+            dry_run=False,
+            research_provider=None,
+            synthesis_provider=synthesis,
+        )
+
+        assert result["research_summary"] is None
+        assert result["synthesis_summary"] == _WHOLE
+        assert len(synthesis.calls) == 1
+
+    async def test_the_synthesis_prompt_says_the_narrative_is_not_available(self):
+        synthesis = _StubSynthesisProvider(_reply(_WHOLE, "end_turn"))
+        await _review_llm_summarise(
+            **_summarise_kwargs(),
+            dry_run=False,
+            research_provider=None,
+            synthesis_provider=synthesis,
+        )
+
+        assert "Not available" in synthesis.calls[0]["prompt"]
+
+    async def test_a_missing_synthesis_provider_skips_only_that_half(self):
+        research = _StubSynthesisProvider(_reply("## GW7 Narrative\nIt happened.\n"))
+        result = await _review_llm_summarise(
+            **_summarise_kwargs(),
+            dry_run=False,
+            research_provider=research,
+            synthesis_provider=None,
+        )
+
+        assert "It happened." in result["research_summary"]
+        assert result["synthesis_summary"] == ""
+        assert result["synthesis_problems"] == []
+        assert len(research.calls) == 1
+
+    async def test_a_skipped_synthesis_never_builds_its_prompt(self):
+        """The fines block is ruled while formatting that prompt, so a config
+        the parser rejects would fail a run whose synthesis half is skipped."""
+        research = _StubSynthesisProvider(_reply("## GW7 Narrative\nIt happened.\n"))
+        with patch(
+            "fpl_cli.cli._review_summarisation._format_league_context",
+        ) as league_ctx:
             await _review_llm_summarise(
-                **_LLM_SUMMARISE_BASE_KWARGS,
+                **_summarise_kwargs(),
                 dry_run=False,
-                research_provider=None,
-                synthesis_provider=object(),
-            )
-
-    async def test_raises_if_synthesis_provider_none_and_not_dry_run(self):
-        with pytest.raises(ValueError, match="synthesis_provider"):
-            await _review_llm_summarise(
-                **_LLM_SUMMARISE_BASE_KWARGS,
-                dry_run=False,
-                research_provider=object(),
+                research_provider=research,
                 synthesis_provider=None,
             )
+
+        league_ctx.assert_not_called()
+
+    async def test_dry_run_still_needs_neither_provider(self):
+        result = await _review_llm_summarise(
+            **_summarise_kwargs(),
+            dry_run=True,
+            research_provider=None,
+            synthesis_provider=None,
+        )
+
+        assert "DRY RUN" in result["research_summary"]
+        assert result["synthesis_summary"] == ""
 
 
 class TestReportResearchCorrections:
@@ -637,32 +746,92 @@ class TestReviewUnresolvableGameweek:
 
 
 class TestReviewMissingProviderKey:
-    """The sibling refusal in the same function, found reviewing #273.
+    """#287: a key the summary needs is not a key the review needs.
 
-    `--summarise` with no usable key printed on stdout and returned exit 0,
-    so `fpl review --summarise > out.txt` left the error in the file where
-    the review should have been, and `2>/dev/null` could not quieten it.
+    `--summarise` with an unusable key used to abort the whole command, and
+    resolving both roles under one `try` meant one missing key cost the half
+    the other key could still have produced. The review -- squad, transfers,
+    standings, fixtures, results -- needs neither, so each half now degrades
+    on its own with the reason on stderr, exactly as `league-recap` does for
+    its editorial (#144).
     """
 
     @staticmethod
-    def _invoke():
-        from fpl_cli.api.providers import ProviderError
+    def _invoke(*, research_error=None, synthesis_error=None):
+        from fpl_cli.api.providers import ProviderNotConfiguredError
+
+        resolved = []
+
+        def _resolve(role, settings):
+            error = research_error if role == "research" else synthesis_error
+            if error:
+                raise ProviderNotConfiguredError(error)
+            resolved.append(role)
+            return MagicMock()
+
+        def _skip_the_review(coro):
+            # The body needs a live API; the resolution above it is what is
+            # under test, and it has already run by the time this is reached.
+            coro.close()
 
         with (
             patch("fpl_cli.cli.review.get_settings", return_value={}),
-            patch(
-                "fpl_cli.api.providers.get_llm_provider",
-                side_effect=ProviderError("No API key for research provider"),
-            ),
+            patch("fpl_cli.api.providers.get_llm_provider", side_effect=_resolve),
+            patch("fpl_cli.cli.review.asyncio.run", side_effect=_skip_the_review),
         ):
-            return CliRunner().invoke(review_command, ["--summarise"])
+            result = CliRunner().invoke(review_command, ["--summarise"])
+        return result, resolved
 
-    def test_it_exits_one_with_the_reason_on_stderr(self):
-        result = self._invoke()
+    def test_a_missing_key_warns_on_stderr_and_the_review_still_runs(self):
+        result, _ = self._invoke(
+            research_error="PERPLEXITY_API_KEY not set",
+            synthesis_error="ANTHROPIC_API_KEY not set",
+        )
 
-        assert result.exit_code == 1
-        assert "No API key for research provider" in " ".join(result.stderr.split())
+        err = " ".join(result.stderr.split())
+        assert result.exit_code == 0
+        assert "Community narrative skipped: PERPLEXITY_API_KEY not set" in err
+        assert "Personal analysis skipped: ANTHROPIC_API_KEY not set" in err
+        # The warnings are warnings: stdout stays the review's own stream.
         assert result.stdout == ""
+
+    def test_with_neither_key_the_review_runs_and_the_summariser_never_does(self, monkeypatch):
+        from fpl_cli.api.providers import ProviderNotConfiguredError
+        from fpl_cli.cli import review as review_module
+
+        fixture_calls: list[int] = []
+
+        async def _spy(client, gw, teams, *, custom_analysis):
+            fixture_calls.append(gw)
+            return None
+
+        _stub_review_run(monkeypatch, next_gameweek=_spy)
+        summarise = AsyncMock()
+        monkeypatch.setattr(review_module, "_review_llm_summarise", summarise)
+        monkeypatch.setattr(
+            "fpl_cli.api.providers.get_llm_provider",
+            MagicMock(side_effect=ProviderNotConfiguredError("no key")),
+        )
+
+        result = CliRunner().invoke(
+            review_module.review_command, ["--gameweek", "2", "--summarise"],
+        )
+
+        assert result.exit_code == 0
+        assert "Gameweek 2 Review" in result.stdout
+        # Nothing for it to do, so it is not called -- and the fixture fetch
+        # that only feeds its prompt is not made either.
+        summarise.assert_not_called()
+        assert fixture_calls == []
+
+    def test_one_missing_key_still_resolves_the_other_role(self):
+        result, resolved = self._invoke(synthesis_error="ANTHROPIC_API_KEY not set")
+
+        assert result.exit_code == 0
+        assert resolved == ["research"]
+        err = " ".join(result.stderr.split())
+        assert "Personal analysis skipped" in err
+        assert "Community narrative skipped" not in err
 
 
 # ---------------------------------------------------------------------------
@@ -1911,37 +2080,12 @@ class TestReviewLlmSummariseSurfacesAnIncompleteSynthesis:
 
     @staticmethod
     def _kwargs(synthesis_provider, **overrides):
-        kwargs = dict(
-            gw=7,
-            gw_data={"average_entry_score": 55, "highest_score": 120},
-            collected_data={"fixtures": [], "draft_transactions": []},
-            classic_team={
-                "my_entry_summary": {"points": 62, "rank": 900_000, "overall_rank": 1_100_000},
-                "team_points_data": [_classic_player()],
-                "automatic_subs": [],
-                "active_chip": None,
-                "my_picks_data": [],
-            },
-            classic_transfers_data=[],
-            classic_league_data=None,
-            draft_result={
-                "draft_league_data": None,
-                "draft_league_name": "Draft League",
-                "draft_squad_points_data": [_draft_player(name="Haaland", team="MCI", points=8)],
-                "draft_automatic_subs": [],
-                "draft_player_map": {},
-            },
-            global_data={},
-            player_map={},
-            teams={},
-            settings={},
+        return _summarise_kwargs(
             dry_run=False,
-            debug=False,
             research_provider=_StubSynthesisProvider(_reply("## GW7 Narrative\nIt happened.\n")),
             synthesis_provider=synthesis_provider,
+            **overrides,
         )
-        kwargs.update(overrides)
-        return kwargs
 
     async def test_a_truncated_response_is_reported_and_returned(self, capsys):
         provider = _StubSynthesisProvider(_reply(_TRUNCATED, "max_tokens"))
@@ -2427,31 +2571,7 @@ class TestNextGameweekReachesTheSynthesisPrompt:
             calls.append(gw)
             return None
 
-        client = MagicMock()
-        client.__aenter__ = AsyncMock(return_value=client)
-        client.__aexit__ = AsyncMock(return_value=False)
-        client.get_gameweeks = AsyncMock(return_value=[{"id": 2, "finished": True}])
-        client.get_current_gameweek = AsyncMock(return_value={"id": 2, "finished": True})
-        client.get_players = AsyncMock(return_value=[])
-        client.get_teams = AsyncMock(return_value=[make_team(id=19, short_name="MCI")])
-        client.get_gameweek_live = AsyncMock(return_value={"elements": []})
-        client.get_fixtures = AsyncMock(return_value=[])
-        monkeypatch.setattr("fpl_cli.api.fpl.FPLClient", MagicMock(return_value=client))
-        monkeypatch.setattr(review_module, "_review_next_gameweek", _spy)
-        monkeypatch.setattr(review_module, "_review_classic_team", AsyncMock(return_value={
-            "my_entry_summary": None, "active_chip": None,
-            "team_points_data": [], "my_picks_data": [], "automatic_subs": [],
-        }))
-        monkeypatch.setattr(review_module, "_review_classic_transfers", AsyncMock(return_value=[]))
-        monkeypatch.setattr(review_module, "_review_classic_league", AsyncMock(return_value=None))
-        monkeypatch.setattr(review_module, "_review_global_stats", AsyncMock(return_value={}))
-        monkeypatch.setattr(review_module, "_review_draft", AsyncMock(return_value={
-            "draft_squad_points_data": [], "draft_transactions_data": [],
-            "draft_league_data": None, "draft_league_name": "Draft League",
-            "draft_automatic_subs": [], "draft_player_map": {},
-        }))
-        monkeypatch.setattr(review_module, "_review_fixtures", AsyncMock(return_value=[]))
-        monkeypatch.setattr(review_module, "_review_league_table", AsyncMock(return_value=[]))
+        _stub_review_run(monkeypatch, next_gameweek=_spy)
 
         runner = CliRunner()
         assert runner.invoke(review_module.review_command, ["--gameweek", "2"]).exit_code == 0
