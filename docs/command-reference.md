@@ -80,6 +80,13 @@ the table path to exit 0 — `review` and `league-recap` on a gameweek neither c
 resolve, `fpl history` on a provider that refused, `fpl chips timing` with no
 `classic_entry_id` and `fpl waivers` with no `draft_league_id` — and none do now.
 
+The `error` string is the reason itself, not a category for it. `fpl history` and
+`fpl price-history` used to answer an unreachable provider with a fixed `Failed to fetch
+historical data` / `Failed to fetch price history data` while the upstream's own message
+went to stderr — readable to someone watching the terminal, invisible to the consumer told
+to script against `error`. Both now carry the cause, as `fpl chips timing` carries the
+fixture agent's.
+
 The table applies to every way a command can end, not just the ones it was written for.
 A command that cannot reach the FPL API, that needs an entry ID you have not configured,
 that has nothing cached to show, or that finds a `settings.yaml` block it cannot read
