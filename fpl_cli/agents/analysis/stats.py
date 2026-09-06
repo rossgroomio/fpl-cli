@@ -26,6 +26,7 @@ from fpl_cli.services.scoring import (
 )
 
 if TYPE_CHECKING:
+    from fpl_cli.models.player import Player
     from fpl_cli.services.player_prior import PlayerPrior
 
 # Minutes per finished gameweek the scaled floor asks for: half of the 90 the
@@ -57,7 +58,7 @@ class StatsAgent(Agent):
     name = "StatsAgent"
     description = "Fetches underlying statistics (xG, xA) from FPL API"
 
-    def __init__(self, config: dict[str, Any] | None = None):
+    def __init__(self, config: dict[str, Any] | None = None) -> None:
         super().__init__(config)
         self.client = FPLClient()
 
@@ -482,7 +483,7 @@ class StatsAgent(Agent):
 
     def _calculate_player_stats(
         self,
-        player,
+        player: Player,
         team_map: dict[int, Any],
     ) -> PlayerStats:  # enrichment fields added by run()
         """Calculate underlying stats for a player."""
@@ -531,7 +532,7 @@ class StatsAgent(Agent):
 
     def _calculate_windowed_stats(
         self,
-        player,
+        player: Player,
         history: list[dict[str, Any]],
         start_gw: int,
         end_gw: int,

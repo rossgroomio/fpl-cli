@@ -12,7 +12,10 @@ from fpl_cli.models.player import BLANK_POINTS_THRESHOLD, POSITION_MAP
 from fpl_cli.services.fixture_predictions import had_fixture
 
 if TYPE_CHECKING:
+    from fpl_cli.api.fpl import FPLClient
     from fpl_cli.models.fixture import Fixture
+    from fpl_cli.models.player import Player
+    from fpl_cli.models.team import Team
     from fpl_cli.services.fixture_predictions import DoublePrediction
 
 
@@ -29,11 +32,15 @@ class GlobalReviewData(TypedDict, total=False):
 
 
 async def _review_global_stats(
-    client, gw, player_map, teams, live_stats,
+    client: FPLClient,
+    gw: int,
+    player_map: dict[int, Player],
+    teams: dict[int, Team],
+    live_stats: dict[int, dict[str, Any]],
     *,
     bgw_team_ids: frozenset[int] = frozenset(),
     players_with_fixture: frozenset[int] | None = None,
-):
+) -> GlobalReviewData:
     """Fetch global GW stats: top scorers, dream team, blankers. Returns dict.
 
     `bgw_team_ids` is the set of clubs with no fixture this gameweek, which
@@ -71,8 +78,8 @@ async def _review_global_stats(
                 {
                     "name": player_map[pid].web_name,
                     "team": (
-                        teams.get(player_map[pid].team_id).short_name
-                        if teams.get(player_map[pid].team_id)
+                        scorer_team.short_name
+                        if (scorer_team := teams.get(player_map[pid].team_id))
                         else "???"
                     ),
                     "points": pts,
@@ -200,7 +207,15 @@ async def _review_global_stats(
     return global_data
 
 
-async def _review_fixtures(client, gw, player_map, teams, my_picks_data, *, fixtures: list[Fixture] | None = None):
+async def _review_fixtures(
+    client: FPLClient,
+    gw: int,
+    player_map: dict[int, Player],
+    teams: dict[int, Team],
+    my_picks_data: list[dict[str, Any]],
+    *,
+    fixtures: list[Fixture] | None = None,
+) -> list[dict[str, Any]]:
     """Fetch and display fixture results. Returns list of fixture data.
 
     Args:
@@ -231,7 +246,7 @@ async def _review_fixtures(client, gw, player_map, teams, my_picks_data, *, fixt
                 # Group by player and count goals
                 goals_by_player = {}
                 for g in goal_scorers:
-                    player = player_map.get(g.get("element"))
+                    player = player_map.get(g["element"])
                     if player:
                         team = teams.get(player.team_id)
                         team_abbr = team.short_name if team else "???"
@@ -257,7 +272,7 @@ async def _review_fixtures(client, gw, player_map, teams, my_picks_data, *, fixt
             assist_names = []
             if assists:
                 for a in assists:
-                    player = player_map.get(a.get("element"))
+                    player = player_map.get(a["element"])
                     if player:
                         team = teams.get(player.team_id)
                         team_abbr = team.short_name if team else "???"
@@ -274,7 +289,7 @@ async def _review_fixtures(client, gw, player_map, teams, my_picks_data, *, fixt
             bonus_strs = []
             if bonus:
                 for b in bonus:
-                    player = player_map.get(b.get("element"))
+                    player = player_map.get(b["element"])
                     if player:
                         team = teams.get(player.team_id)
                         team_abbr = team.short_name if team else "???"
@@ -289,7 +304,7 @@ async def _review_fixtures(client, gw, player_map, teams, my_picks_data, *, fixt
             red_card_strs_plain = []
             if red_cards:
                 for r in red_cards:
-                    player = player_map.get(r.get("element"))
+                    player = player_map.get(r["element"])
                     if player:
                         team = teams.get(player.team_id)
                         team_abbr = team.short_name if team else "???"
@@ -308,7 +323,7 @@ async def _review_fixtures(client, gw, player_map, teams, my_picks_data, *, fixt
             own_goal_strs = []
             if own_goals:
                 for og in own_goals:
-                    player = player_map.get(og.get("element"))
+                    player = player_map.get(og["element"])
                     if player:
                         team = teams.get(player.team_id)
                         team_abbr = team.short_name if team else "???"
@@ -335,7 +350,7 @@ async def _review_fixtures(client, gw, player_map, teams, my_picks_data, *, fixt
     return fixtures_data
 
 
-async def _review_league_table():
+async def _review_league_table() -> list[dict[str, Any]]:
     """Fetch PL league table from football-data.org. Returns list of standings."""
     league_table_data = []
     try:

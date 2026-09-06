@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+from typing import TYPE_CHECKING
 
 import click
 from rich.table import Table
@@ -27,6 +28,9 @@ from fpl_cli.cli._json import (
 )
 from fpl_cli.utils.text import strip_diacritics
 
+if TYPE_CHECKING:
+    from fpl_cli.scraper.fpl_prices import TeamFinances
+
 
 @click.command("transfer-eval")
 @click.option("--out", "out_player", required=True, help="Player to transfer out (name, ID, or 'Name (TEAM)')")
@@ -36,7 +40,7 @@ from fpl_cli.utils.text import strip_diacritics
 )
 @click.pass_context
 @output_format_option
-def transfer_eval_command(ctx: click.Context, out_player: str, in_players: str, output_format: str):
+def transfer_eval_command(ctx: click.Context, out_player: str, in_players: str, output_format: str) -> None:
     """Compare transfer OUT player against IN candidates on two scoring horizons.
 
     Shows Outlook (multi-GW quality) and This GW (lineup impact) deltas
@@ -66,7 +70,7 @@ def transfer_eval_command(ctx: click.Context, out_player: str, in_players: str, 
     rolling_window = int(get_settings(ctx).get("rolling_window", 5))
     in_names = [n.strip() for n in in_players.split(",") if n.strip()]
 
-    async def _run():
+    async def _run() -> None:
         async with FPLClient() as client:
             all_players = await client.get_players()
             all_teams = await client.get_teams()
@@ -152,7 +156,7 @@ def transfer_eval_command(ctx: click.Context, out_player: str, in_players: str, 
             asyncio.run(_run())
 
 
-def _find_sell_price(finances, out_name: str) -> float | None:
+def _find_sell_price(finances: TeamFinances | None, out_name: str) -> float | None:
     """Find the sell price of the OUT player from scraper cache."""
     if not finances or not finances.squad:
         return None
@@ -164,14 +168,16 @@ def _find_sell_price(finances, out_name: str) -> float | None:
     return None
 
 
-def _compute_budget(finances, sell_price: float | None, in_price: float) -> float | None:
+def _compute_budget(finances: TeamFinances | None, sell_price: float | None, in_price: float) -> float | None:
     """Compute budget surplus/deficit for an IN candidate."""
     if finances is None or sell_price is None:
         return None
     return round(finances.bank + sell_price - in_price, 1)
 
 
-def _emit_json_output(data: dict, finances, sell_price: float | None, fmt) -> None:
+def _emit_json_output(
+    data: dict, finances: TeamFinances | None, sell_price: float | None, fmt: Format | None,
+) -> None:
     """Emit JSON output with optional affordability fields.
 
     The early-season quality notice the analysis attaches travels in
@@ -197,7 +203,7 @@ def _emit_json_output(data: dict, finances, sell_price: float | None, fmt) -> No
 
 
 def _render_table(
-    data: dict, finances, sell_price: float | None, fmt, rolling_window: int,
+    data: dict, finances: TeamFinances | None, sell_price: float | None, fmt: Format | None, rolling_window: int,
 ) -> None:
     """Render Rich table with format-aware columns."""
     show_price = fmt != Format.DRAFT

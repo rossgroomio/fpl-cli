@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 import click
 from rich.table import Table
@@ -32,7 +33,7 @@ PRICE_HISTORY_SORT_FIELDS = [
 def price_history_command(
     position: str | None, team: str | None, sort_field: str,
     limit: int, last_n: int | None, reverse: bool, output_format: str,
-):
+) -> None:
     """Show price trajectory and transfer momentum.
 
     \b
@@ -44,7 +45,7 @@ def price_history_command(
     from fpl_cli.api.fpl import FPLClient
     from fpl_cli.api.historical import make_historical_provider
 
-    async def _run():
+    async def _run() -> None:
         import httpx
 
         async with FPLClient() as fpl_client, make_historical_provider() as historical:
@@ -128,7 +129,7 @@ def price_history_command(
                 records = [r for r in records if r["team"].upper() == team_upper]
 
             # Sort
-            def sort_key(r):
+            def sort_key(r: dict[str, Any]) -> float:
                 val = r.get(sort_field)
                 if val is None:
                     return float("-inf")

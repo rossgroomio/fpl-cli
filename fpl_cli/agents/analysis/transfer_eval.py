@@ -56,7 +56,7 @@ class TransferEvalAgent(Agent):
     name = "TransferEvalAgent"
     description = "Evaluates transfer candidates across outlook and lineup horizons"
 
-    def __init__(self, config: dict[str, Any] | None = None):
+    def __init__(self, config: dict[str, Any] | None = None) -> None:
         super().__init__(config)
         self.client = FPLClient()
 

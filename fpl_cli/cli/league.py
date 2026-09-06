@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 @click.command("league")
 @click.pass_context
-def league_command(ctx: click.Context):
+def league_command(ctx: click.Context) -> None:
     """Show live league standings for Classic and Draft leagues.
 
     Displays the first 50 managers in each league (FPL API page limit).
@@ -38,7 +38,7 @@ def league_command(ctx: click.Context):
     show_classic = fmt != Format.DRAFT
     show_draft = fmt != Format.CLASSIC
 
-    async def _league():
+    async def _league() -> None:
         async with FPLClient() as client:
             # Get current GW status
             current_gw = await client.get_current_gameweek()

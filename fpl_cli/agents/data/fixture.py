@@ -43,7 +43,7 @@ class FixtureAgent(Agent):
         self,
         config: dict[str, Any] | None = None,
         client: FPLClient | None = None,
-    ):
+    ) -> None:
         super().__init__(config)
         self.client = client or FPLClient()
         self._owns_client = client is None

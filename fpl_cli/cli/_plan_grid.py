@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import TYPE_CHECKING, Any
 
 import click
 import httpx
@@ -19,6 +20,9 @@ from fpl_cli.cli._json import (
 )
 from fpl_cli.models.player import AmbiguousPlayerError, resolve_player
 
+if TYPE_CHECKING:
+    from fpl_cli.models.player import Player
+
 # The envelope name predates the `squad grid` spelling and is what JSON
 # consumers already key on -- kept so a failure envelope matches its success one.
 COMMAND = "plan-grid"
@@ -34,7 +38,7 @@ COMMAND = "plan-grid"
 @click.pass_context
 def grid_command(
     ctx: click.Context, gws: int, watch: tuple[str, ...], mode: str, is_draft: bool, output_format: str,
-):
+) -> None:
     """Show squad fixture difficulty grid.
 
     Displays each player's positional FDR colour-coded across upcoming GWs.
@@ -53,7 +57,7 @@ def grid_command(
             settings, is_draft=False, command=COMMAND, output_format=output_format,
         )
 
-    async def _grid():
+    async def _grid() -> None:
         from fpl_cli.agents.common import diagnose_missing_picks
         from fpl_cli.api.fpl import FPLClient
         from fpl_cli.services.team_ratings import TeamRatingsService
@@ -154,7 +158,7 @@ def grid_command(
         sorted_squad = sorted(squad_players, key=lambda p: pos_order.get(p.position_name, 9))
 
         if output_format == "json":
-            def _player_json(p):
+            def _player_json(p: Player) -> dict[str, Any]:
                 player_team = team_map.get(p.team_id)
                 team_short = player_team.short_name if player_team else None
                 gw_data: dict[str, list[dict]] = {}
@@ -202,7 +206,7 @@ def grid_command(
         for gw in gw_range:
             table.add_column(f"GW{gw}", justify="center", min_width=5)
 
-        def render_player_row(p):
+        def render_player_row(p: Player) -> list[str]:
             row = [p.position_name, p.web_name]
             player_team = team_map.get(p.team_id)
             if not player_team:

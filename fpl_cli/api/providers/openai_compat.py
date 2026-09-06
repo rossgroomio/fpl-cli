@@ -7,8 +7,8 @@ from typing import Any, ClassVar, Self
 
 import httpx
 
-from ._http import RetryPolicy, post_json_with_retry
-from ._models import LLMResponse, ProviderError, TokenUsage
+from fpl_cli.api.providers._http import RetryPolicy, post_json_with_retry
+from fpl_cli.api.providers._models import LLMResponse, ProviderError, TokenUsage
 
 _DEFAULT_BASE_URL = "https://api.openai.com/v1"
 

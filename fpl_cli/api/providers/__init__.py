@@ -8,8 +8,8 @@ import re
 from typing import Any
 from urllib.parse import urlparse
 
-from ._http import QueryPacer, RetryPolicy
-from ._models import (
+from fpl_cli.api.providers._http import QueryPacer, RetryPolicy
+from fpl_cli.api.providers._models import (
     LLMResponse,
     ProviderError,
     ProviderNotConfiguredError,
@@ -17,9 +17,9 @@ from ._models import (
     TokenUsage,
     UnknownProviderError,
 )
-from .anthropic import AnthropicProvider
-from .openai_compat import OpenAICompatProvider
-from .perplexity import PerplexityProvider
+from fpl_cli.api.providers.anthropic import AnthropicProvider
+from fpl_cli.api.providers.openai_compat import OpenAICompatProvider
+from fpl_cli.api.providers.perplexity import PerplexityProvider
 
 ProviderType = type[AnthropicProvider] | type[PerplexityProvider] | type[OpenAICompatProvider]
 

@@ -9,13 +9,13 @@ from fpl_cli.cli._context import console, error_console
 
 
 @click.group("credentials")
-def credentials_group():
+def credentials_group() -> None:
     """Manage FPL credentials stored in system keyring."""
     pass
 
 
 @credentials_group.command("set")
-def credentials_set():
+def credentials_set() -> None:
     """Store FPL email and password in system keyring."""
     import keyring
 
@@ -27,7 +27,7 @@ def credentials_set():
 
 
 @credentials_group.command("clear")
-def credentials_clear():
+def credentials_clear() -> None:
     """Remove FPL credentials from system keyring."""
     import keyring
     from keyring.errors import PasswordDeleteError

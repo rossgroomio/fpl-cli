@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
+
 from rich.markup import escape as rich_escape
 from rich.table import Table
 
@@ -17,6 +19,11 @@ from fpl_cli.cli._helpers import (
 from fpl_cli.models.player import POSITION_MAP
 from fpl_cli.services.fixture_predictions import is_blank_gameweek, is_double_gameweek
 
+if TYPE_CHECKING:
+    from fpl_cli.api.fpl import FPLClient
+    from fpl_cli.models.player import Player
+    from fpl_cli.models.team import Team
+
 
 def _format_review_draft_player(p: dict) -> str:
     """Format a draft squad player for LLM prompt."""
@@ -24,12 +31,19 @@ def _format_review_draft_player(p: dict) -> str:
 
 
 async def _review_draft(
-    client, draft_league_id, draft_entry_id, gw, api_current_gw_id,
-    players, player_map, teams, live_stats,
+    client: FPLClient,
+    draft_league_id: int | None,
+    draft_entry_id: int | None,
+    gw: int,
+    api_current_gw_id: int | None,
+    players: list[Player],
+    player_map: dict[int, Player],
+    teams: dict[int, Team],
+    live_stats: dict[int, dict[str, Any]],
     *, bgw_team_ids: frozenset[int] = frozenset(), dgw_team_ids: frozenset[int] = frozenset(),
     players_with_fixture: frozenset[int] | None = None,
     players_with_double: frozenset[int] | None = None,
-):
+) -> dict[str, Any]:
     """Fetch and display draft league data. Returns dict with draft data.
 
     The team-id sets say which clubs blanked and doubled this gameweek; the
@@ -248,7 +262,9 @@ async def _review_draft(
 
                     # Collapse same-GW churn using net squad delta (Counter diff).
                     # Pair residual adds and drops by (position, web_name) for like-for-like rows.
-                    def _draft_sort_key(pid, _map=draft_player_map):
+                    def _draft_sort_key(
+                        pid: int, _map: dict[int, dict[str, Any]] = draft_player_map,
+                    ) -> tuple[int, str]:
                         p = _map.get(pid) or {}
                         return (p.get("element_type") or 99, p.get("web_name") or "")
 

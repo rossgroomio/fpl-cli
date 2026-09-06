@@ -24,7 +24,7 @@ from fpl_cli.cli._json import emit_json, emit_json_error, json_output_mode, outp
 @click.command("waivers")
 @output_format_option
 @click.pass_context
-def waivers_command(ctx: click.Context, output_format: str):
+def waivers_command(ctx: click.Context, output_format: str) -> None:
     """Show waiver recommendations for your draft league."""
     from fpl_cli.agents.action.waiver import WaiverAgent
 
@@ -43,7 +43,7 @@ def waivers_command(ctx: click.Context, output_format: str):
         )
         return
 
-    async def _run():
+    async def _run() -> None:
         if output_format == "json":
             with json_output_mode() as stdout:
                 async with WaiverAgent(config={

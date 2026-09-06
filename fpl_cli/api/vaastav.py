@@ -6,7 +6,7 @@ import csv
 import io
 import logging
 from datetime import timedelta
-from typing import ClassVar
+from typing import ClassVar, Self
 
 import httpx
 
@@ -85,7 +85,7 @@ class VaastavClient:
         self,
         fetcher: DatasetFetcher,
         seasons: tuple[str, ...] | None = None,
-    ):
+    ) -> None:
         self.fetcher = fetcher
         self.seasons = seasons if seasons is not None else season_label_range()
         self._season_data: dict[str, list[SeasonHistory]] | None = None
@@ -95,10 +95,10 @@ class VaastavClient:
         """Close the underlying fetcher."""
         await self.fetcher.close()
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> Self:
         return self
 
-    async def __aexit__(self, *exc):
+    async def __aexit__(self, *exc: object) -> None:
         await self.close()
 
     def _is_historical(self, season: str) -> bool:

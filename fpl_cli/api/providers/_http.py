@@ -23,7 +23,7 @@ from typing import Any
 
 import httpx
 
-from ._models import ProviderError, RateLimitError
+from fpl_cli.api.providers._models import ProviderError, RateLimitError
 
 logger = logging.getLogger(__name__)
 

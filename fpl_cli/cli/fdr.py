@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import click
 import httpx
@@ -44,6 +44,9 @@ from fpl_cli.services.fixture_predictions import (
     find_double_gameweeks,
 )
 from fpl_cli.services.team_ratings import fdr_columns_footer
+
+if TYPE_CHECKING:
+    from fpl_cli.api.fpl import FPLClient
 
 _CONFIDENCE_COLORS = {
     "confirmed": "green", "high": "green", "medium": "yellow", "low": "red",
@@ -89,7 +92,7 @@ def _render_blanks_doubles(
                 )
 
 
-async def _picks_for_exposure(client, entry_id: int, last_gw: int) -> dict:
+async def _picks_for_exposure(client: FPLClient, entry_id: int, last_gw: int) -> dict:
     """The manager's picks for *last_gw*, stepping back over a Free Hit.
 
     A Free Hit squad is a one-week aberration, so exposure is more useful
@@ -117,7 +120,7 @@ def fdr_command(
     ctx: click.Context, mode: str, position: str, from_gw: int | None,
     to_gw: int | None, my_squad: bool, draft: bool, blanks: bool,
     output_format: str,
-):
+) -> None:
     """Analyze fixture difficulty - easy runs, blanks, doubles.
 
     FDR mode determines how fixture difficulty is calculated:
@@ -162,7 +165,7 @@ def fdr_command(
             output_format,
         )
 
-    async def _run():
+    async def _run() -> None:
         # direct-api: blanks-only path bypasses agent
         if blanks:
             async with FPLClient() as client:

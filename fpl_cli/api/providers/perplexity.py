@@ -5,8 +5,8 @@ from __future__ import annotations
 import re
 from typing import Any, ClassVar
 
-from ._models import LLMResponse
-from .openai_compat import OpenAICompatProvider
+from fpl_cli.api.providers._models import LLMResponse
+from fpl_cli.api.providers.openai_compat import OpenAICompatProvider
 
 _BASE_URL = "https://api.perplexity.ai"
 

@@ -13,11 +13,11 @@ from fpl_cli.cli._context import console, handle_agent_failure
 
 
 @click.command("price-changes")
-def price_changes_command():
+def price_changes_command() -> None:
     """Show price changes and transfer activity."""
     from fpl_cli.agents.data.price import PriceAgent
 
-    async def _run():
+    async def _run() -> None:
         async with PriceAgent() as agent:
             result = await agent.run()
 

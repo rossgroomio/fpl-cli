@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import TYPE_CHECKING
 
 import click
 from click.core import ParameterSource
@@ -24,6 +25,9 @@ from fpl_cli.cli._json import (
     output_format_option,
 )
 
+if TYPE_CHECKING:
+    from fpl_cli.models.fixture import Fixture
+
 _API_SCALE_FOOTER = (
     "FDR scale: 1 (easiest) - 5 (hardest), the FPL API's own difficulty. "
     "Enable custom analysis (`fpl init`) for the venue-aware 1-7 team-ratings FDR."
@@ -36,7 +40,7 @@ _API_SCALE_FOOTER = (
               help="FDR mode: 'difference' (team vs opponent) or 'opponent' (opponent rating only)")
 @output_format_option
 @click.pass_context
-def fixtures_command(ctx: click.Context, gameweek: int | None, mode: str, output_format: str):
+def fixtures_command(ctx: click.Context, gameweek: int | None, mode: str, output_format: str) -> None:
     """Show fixtures for a gameweek."""
     # Same gate as `fpl fdr` and `fpl preview`: with custom analysis off, the
     # canonical FPL API difficulty rather than the Bayesian team ratings, so
@@ -52,12 +56,12 @@ def fixtures_command(ctx: click.Context, gameweek: int | None, mode: str, output
             "showing FPL API difficulty.[/yellow]"
         )
 
-    async def _run():
+    async def _run() -> None:
         from fpl_cli.api.fpl import FPLClient
         from fpl_cli.services.team_ratings import TeamRatingsService, fdr_scale_footer
         from fpl_cli.utils.time import format_kickoff
 
-        async def _resolve_ratings(client) -> TeamRatingsService | None:
+        async def _resolve_ratings(client: FPLClient) -> TeamRatingsService | None:
             """The ratings service, or None when custom analysis is off.
 
             None is the signal to fall back to API difficulty, so the opted-out
@@ -69,7 +73,9 @@ def fixtures_command(ctx: click.Context, gameweek: int | None, mode: str, output
             await service.ensure_fresh(client)
             return service
 
-        def _fixture_fdr(fixture, home_name, away_name, service) -> tuple[float, float]:
+        def _fixture_fdr(
+            fixture: Fixture, home_name: str, away_name: str, service: TeamRatingsService | None,
+        ) -> tuple[float, float]:
             """(home, away) FDR for one fixture, on whichever scale is in play."""
             if service is None:
                 return fixture.home_difficulty, fixture.away_difficulty
@@ -78,7 +84,7 @@ def fixtures_command(ctx: click.Context, gameweek: int | None, mode: str, output
                 service.get_fixture_fdr(away_name, home_name, "away", mode=mode),
             )
 
-        def _ratings_warnings(service) -> list[dict[str, str]]:
+        def _ratings_warnings(service: TeamRatingsService | None) -> list[dict[str, str]]:
             """Coded `metadata.warnings` entries; empty when ratings are not in play.
 
             Always a list, so a consumer indexes it rather than checking for the

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any
+from typing import Any, Self
 
 import httpx
 
@@ -19,7 +19,7 @@ class FootballDataClient:
     and form, which the FPL bootstrap-static endpoint does not supply.
     """
 
-    def __init__(self, timeout: float = 30.0):
+    def __init__(self, timeout: float = 30.0) -> None:
         self.timeout = timeout
         self.api_key = os.environ.get("FOOTBALL_DATA_API_KEY")
         self._http = httpx.AsyncClient(base_url=BASE_URL, timeout=self.timeout)
@@ -28,10 +28,10 @@ class FootballDataClient:
         """Close the underlying HTTP client."""
         await self._http.aclose()
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> Self:
         return self
 
-    async def __aexit__(self, *exc):
+    async def __aexit__(self, *exc: object) -> None:
         await self.close()
 
     @property

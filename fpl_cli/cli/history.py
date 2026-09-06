@@ -14,10 +14,10 @@ from fpl_cli.cli.player import _build_history_json
 
 @click.command("history")
 @output_format_option
-def history_command(output_format: str):
+def history_command(output_format: str) -> None:
     """Show historical player performance across seasons."""
 
-    async def _run():
+    async def _run() -> None:
         from fpl_cli.api.fpl import FPLClient
         from fpl_cli.api.historical import make_historical_provider
 

@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Self
 
 from rich.console import Console
 
@@ -58,7 +58,7 @@ class Agent(ABC):
     name: str = "BaseAgent"
     description: str = "Base agent class"
 
-    def __init__(self, config: dict[str, Any] | None = None):
+    def __init__(self, config: dict[str, Any] | None = None) -> None:
         """Initialize the agent with optional configuration.
 
         Args:
@@ -72,10 +72,10 @@ class Agent(ABC):
         """Close resources held by this agent. Override in subclasses."""
         pass
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> Self:
         return self
 
-    async def __aexit__(self, *exc):
+    async def __aexit__(self, *exc: object) -> None:
         await self.close()
 
     @abstractmethod

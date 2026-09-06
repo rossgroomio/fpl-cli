@@ -24,7 +24,7 @@ from fpl_cli.cli._json import emit_json, emit_json_error, json_output_mode, outp
 @click.option("--all", "all_season", is_flag=True, help="Analyze whole season instead of recent gameweeks")
 @output_format_option
 @click.pass_context
-def xg_command(ctx: click.Context, last_n: int, all_season: bool, output_format: str):
+def xg_command(ctx: click.Context, last_n: int, all_season: bool, output_format: str) -> None:
     """Analyse underlying stats: xG, xA, overperformers."""
     from fpl_cli.agents.analysis.stats import StatsAgent
 
@@ -41,7 +41,7 @@ def xg_command(ctx: click.Context, last_n: int, all_season: bool, output_format:
         table_views = {"underperformers", "top_xgi_per_90"}
         json_views = {"underperformers", "top_xgi_per_90"}
 
-    async def _run():
+    async def _run() -> None:
         if output_format == "json":
             with json_output_mode() as stdout:
                 async with StatsAgent(config={

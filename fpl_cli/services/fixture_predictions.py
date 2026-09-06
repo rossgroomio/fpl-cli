@@ -87,7 +87,7 @@ class FixturePredictionsService:
     because a caller that named a file wants to know it could not be read.
     """
 
-    def __init__(self, config_path: Path | None = None):
+    def __init__(self, config_path: Path | None = None) -> None:
         # No filesystem work here: user_config_dir() resolves on first load so
         # constructing the service stays total, and an FPL_CLI_CONFIG_DIR set
         # after import is still honoured.

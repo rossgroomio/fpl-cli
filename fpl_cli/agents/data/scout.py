@@ -26,7 +26,7 @@ class ScoutAgent(Agent):
         self,
         config: dict[str, Any] | None = None,
         settings: dict[str, Any] | None = None,
-    ):
+    ) -> None:
         super().__init__(config)
         self.client = FPLClient()
         self.research_provider = get_llm_provider(

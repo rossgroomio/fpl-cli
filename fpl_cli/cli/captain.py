@@ -24,7 +24,7 @@ from fpl_cli.cli._json import emit_json, emit_json_error, json_output_mode, outp
 @click.option("--global", "-g", "global_mode", is_flag=True, help="Show global captain picks instead of your squad")
 @output_format_option
 @click.pass_context
-def captain_command(ctx: click.Context, global_mode: bool, output_format: str):
+def captain_command(ctx: click.Context, global_mode: bool, output_format: str) -> None:
     """Analyze and rank captain options for next gameweek.
 
     \b
@@ -44,7 +44,7 @@ def captain_command(ctx: click.Context, global_mode: bool, output_format: str):
         alternative="Or pass --global to rank the top captain options across the game.",
     )
 
-    async def _run():
+    async def _run() -> None:
         if output_format == "json":
             with json_output_mode() as stdout:
                 async with CaptainAgent() as agent:
