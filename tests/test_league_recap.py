@@ -897,6 +897,41 @@ class TestStandingsMovement:
         assert [m["previous_rank"] for m in managers] == [1, 2, 4, 5]
         assert all(m["previous_rank"] == m["overall_rank"] for m in managers)
 
+    def test_replay_with_no_cumulative_totals_at_all_warns_once_and_accurately(self, caplog):
+        """A draft replay carries no `total_points` for anyone, so every entry
+        is unplaceable and nobody is ranked. One warning saying exactly that,
+        not one per manager claiming the rest of the league is still ranked
+        (PR #295 review)."""
+        league_rows = [(i, 500 - i * 10, 50) for i in (1, 2, 3)]
+        managers = [
+            _make_manager(name=f"M{i}", entry_id=i, gw_points=50,
+                          total_points=None, overall_rank=None, previous_rank=None)
+            for i in (1, 2, 3)
+        ]
+        with caplog.at_level(logging.WARNING, logger="fpl_cli.cli._league_recap_data"):
+            _compute_standings_movement(managers, league_rows, allow_standings_fallback=False)
+        assert all("previous_rank" not in m for m in managers)
+        warnings = [r.getMessage() for r in caplog.records]
+        assert len(warnings) == 1
+        assert "no manager had a point-in-time cumulative total" in warnings[0]
+        assert "still ranked" not in warnings[0]
+
+    def test_replay_aborting_on_a_later_entry_makes_no_still_ranked_claim(self, caplog):
+        """Bob is missing a total and Cara never fetched: the cohort abort
+        fires further down the standings, so the partial-manager warning must
+        not have already promised the rest of the league was ranked."""
+        league_rows = [(1, 500, 50), (2, 490, 50), (3, 480, 50)]
+        managers = [
+            _make_manager(name="Alice", entry_id=1, gw_points=50, total_points=500,
+                          overall_rank=None, previous_rank=None),
+            _make_manager(name="Bob", entry_id=2, gw_points=50, total_points=None,
+                          overall_rank=None, previous_rank=None),
+        ]  # Cara (entry 3) failed to fetch entirely
+        with caplog.at_level(logging.WARNING, logger="fpl_cli.cli._league_recap_data"):
+            _compute_standings_movement(managers, league_rows, allow_standings_fallback=False)
+        assert all("previous_rank" not in m for m in managers)
+        assert not any("still ranked" in r.getMessage() for r in caplog.records)
+
     def test_tied_previous_totals_all_share_the_first_place(self):
         """Managers level on the previous table shared it, so none of them can
         be reported as having been above the others.

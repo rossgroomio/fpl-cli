@@ -635,6 +635,34 @@ def derive_point_in_time_positions(
     return positions
 
 
+def _log_unplaceable(names: list[str], *, ranked: bool, previous: bool) -> None:
+    """Report the managers a replay could not place, once the outcome is known.
+
+    Only after the whole cohort has been walked is it settled whether anyone
+    else was placed at all: a draft replay carries no cumulative total for
+    any manager (`_fetch_draft_manager` sets one only on a live capture), so
+    every entry lands here and nobody is ranked, and even in a classic league
+    an entry that never fetched can abort the cohort further down the
+    standings order. Warning per entry inside the loop claimed the rest of
+    the league was still ranked before either was known (PR #295 review).
+    """
+    if not names:
+        return
+    table = "previous league position" if previous else "league position"
+    if ranked:
+        logger.warning(
+            "No %s for %s: their picks carried no cumulative total, and the standings "
+            "belong to a later gameweek. The rest of the league is still ranked.",
+            table, ", ".join(names),
+        )
+    else:
+        logger.warning(
+            "No %s could be derived: no manager had a point-in-time cumulative total, "
+            "and the standings belong to a later gameweek.",
+            table,
+        )
+
+
 def _assign_point_in_time_positions(
     managers: list[RecapManagerEntry],
     league_totals: Sequence[tuple[int, int]],
@@ -670,6 +698,7 @@ def _assign_point_in_time_positions(
     """
     by_entry = {m["entry_id"]: m for m in managers}
     totals: list[tuple[int, int]] = []
+    unplaceable: list[str] = []
     for entry_id, standings_total in league_totals:
         fetched = by_entry.get(entry_id)
         if fetched is not None and "total_points" in fetched:
@@ -677,12 +706,7 @@ def _assign_point_in_time_positions(
         elif allow_standings_fallback:
             totals.append((entry_id, standings_total))
         elif fetched is not None:
-            logger.warning(
-                "No league position for %s (entry %s): their picks carried no cumulative "
-                "total, and the standings total belongs to a later gameweek. The rest of "
-                "the league is still ranked.",
-                fetched["manager_name"], entry_id,
-            )
+            unplaceable.append(fetched["manager_name"])
         else:
             logger.warning(
                 "League positions unavailable: no point-in-time cumulative total for "
@@ -690,6 +714,8 @@ def _assign_point_in_time_positions(
                 entry_id,
             )
             return
+
+    _log_unplaceable(unplaceable, ranked=bool(totals), previous=False)
 
     position_map = derive_point_in_time_positions(totals)
     for m in managers:
@@ -843,6 +869,7 @@ def _compute_standings_movement(
         ]
     else:
         rows = []
+        unplaceable: list[str] = []
         for entry_id, total, gw_pts in league_rows:
             fetched = by_entry.get(entry_id)
             if fetched is not None and "total_points" in fetched:
@@ -850,12 +877,7 @@ def _compute_standings_movement(
             elif allow_standings_fallback:
                 rows.append((entry_id, total, gw_pts))
             elif fetched is not None:
-                logger.warning(
-                    "No previous league position for %s (entry %s): their picks carried no "
-                    "cumulative total, and the standings row belongs to a later gameweek. "
-                    "The rest of the league is still ranked.",
-                    fetched["manager_name"], entry_id,
-                )
+                unplaceable.append(fetched["manager_name"])
             else:
                 logger.warning(
                     "Standings movement unavailable: no point-in-time cumulative total "
@@ -863,6 +885,7 @@ def _compute_standings_movement(
                     entry_id,
                 )
                 return
+        _log_unplaceable(unplaceable, ranked=bool(rows), previous=True)
 
     prev_totals = [(entry_id, total - gw_pts) for entry_id, total, gw_pts in rows]
     # The same ranking helper `overall_rank` is derived through, not a local
