@@ -934,14 +934,6 @@ async def _review_llm_summarise(
         validate_research_teams,
     )
 
-    # A provider the caller could not resolve arrives as None, and each half
-    # skips on its own below. These used to be two `ValueError`s, which made a
-    # missing key for either role fatal to the whole review (#287); the halves
-    # already degrade to an absent summary when the provider *call* fails, and
-    # an absent provider is the same outcome reached earlier.
-    research_skipped = not dry_run and research_provider is None
-    synthesis_skipped = not dry_run and synthesis_provider is None
-
     # Unpack classic_team bundle
     my_entry_summary = classic_team["my_entry_summary"]
     team_points_data = classic_team["team_points_data"]
@@ -995,14 +987,7 @@ async def _review_llm_summarise(
         top_performer=research_ctx["top_performer"],
     )
 
-    if research_skipped:
-        # Left unset, "What Happened" simply does not appear in the report and
-        # the synthesis prompt below reads "Not available" -- the shape this
-        # section already takes when the provider call fails. The prompt above
-        # is built anyway: it is a template fill over `research_ctx`, which
-        # stage 2 needs regardless.
-        research_summary = None
-    elif dry_run:
+    if dry_run:
         # Save prompts without calling API
         console.print("[dim]  Building research prompt...[/dim]")
         if debug_dir:
@@ -1010,6 +995,13 @@ async def _review_llm_summarise(
             (debug_dir / "research_prompt.txt").write_text(research_prompt, encoding="utf-8")
             console.print("[dim]    → Saved research_system.txt, research_prompt.txt[/dim]")
         research_summary = "[DRY RUN - research provider not called]"
+    elif research_provider is None:
+        # Left unset, "What Happened" simply does not appear in the report and
+        # the synthesis prompt below reads "Not available" -- the shape this
+        # section already takes when the provider call fails. The prompt above
+        # is built anyway: it is a template fill over `research_ctx`, which
+        # stage 2 needs regardless.
+        research_summary = None
     else:
         from fpl_cli.api.providers import ProviderError
 
@@ -1062,7 +1054,7 @@ async def _review_llm_summarise(
             error_console.print(f"[red]  ✗ Research failed: {rich_escape(str(e))}[/red]")
             research_summary = "Community narrative unavailable: research provider error."
 
-    if synthesis_skipped:
+    if not dry_run and synthesis_provider is None:
         # Skipped outright rather than after the fact: everything below
         # formats squad, league and fixture context purely to build a
         # prompt no provider will read, and `_format_league_context` rules
