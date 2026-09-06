@@ -636,6 +636,35 @@ class TestReviewUnresolvableGameweek:
         assert result.stdout == ""
 
 
+class TestReviewMissingProviderKey:
+    """The sibling refusal in the same function, found reviewing #273.
+
+    `--summarise` with no usable key printed on stdout and returned exit 0,
+    so `fpl review --summarise > out.txt` left the error in the file where
+    the review should have been, and `2>/dev/null` could not quieten it.
+    """
+
+    @staticmethod
+    def _invoke():
+        from fpl_cli.api.providers import ProviderError
+
+        with (
+            patch("fpl_cli.cli.review.get_settings", return_value={}),
+            patch(
+                "fpl_cli.api.providers.get_llm_provider",
+                side_effect=ProviderError("No API key for research provider"),
+            ),
+        ):
+            return CliRunner().invoke(review_command, ["--summarise"])
+
+    def test_it_exits_one_with_the_reason_on_stderr(self):
+        result = self._invoke()
+
+        assert result.exit_code == 1
+        assert "No API key for research provider" in " ".join(result.stderr.split())
+        assert result.stdout == ""
+
+
 # ---------------------------------------------------------------------------
 # _gw_position_with_half
 # ---------------------------------------------------------------------------

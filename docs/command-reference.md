@@ -752,11 +752,11 @@ cannot answer; there the current clubs answer instead, which can differ from tha
 clubs once a transfer has happened in between.
 
 **A gameweek it will not review** — one still being played, an id the season does not have,
-a season with nothing finished yet — is refused with the reason on **stderr** and exit **1**.
-`review` has no `--format json`, so stdout carries the review or nothing at all, and
-`fpl review 2>/dev/null` is silent on a refusal rather than printing half an explanation.
-It shares its resolver with `league-recap`, and both used to exit 0 here with the reason on
-stdout.
+a season with nothing finished yet — is refused with the reason on **stderr** and exit **1**,
+as is `--summarise` with no usable provider key. `review` has no `--format json`, so stdout
+carries the review or nothing at all, and `fpl review 2>/dev/null` is silent on a refusal
+rather than printing half an explanation. Both refusals used to exit 0 with the reason on
+stdout; the gameweek one is shared with `league-recap`, which behaved the same way.
 
 ### League Recap
 

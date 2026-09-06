@@ -149,8 +149,12 @@ def review_command(
                 research_provider = get_llm_provider("research", settings)
                 synthesis_provider = get_llm_provider("synthesis", settings)
             except ProviderError as e:
-                console.print(f"[red]Error: {e}[/red]")
-                return
+                # The sibling of the resolver refusal below, and the same
+                # defect until now: printed on stdout and returned exit 0,
+                # so `fpl review --summarise > out.txt` left the error
+                # sitting in the file as though it were the review, and
+                # `2>/dev/null` could not quieten it (#273 review).
+                emit_failure("review", str(e), "table", cause=e)
     fpl_cfg = fpl_config(settings)
     entry_id = fpl_cfg.get("classic_entry_id")
     classic_league_id = fpl_cfg.get("classic_league_id")
