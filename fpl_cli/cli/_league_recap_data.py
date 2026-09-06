@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from fpl_cli.cli._context import fpl_config
 from fpl_cli.cli._fines import (
+    RED_CARD_RULE_TYPE,
     FineResult,
     FinesLeagueData,
     FinesTeamPlayer,
@@ -54,6 +56,7 @@ from fpl_cli.cli._league_recap_types import (
     RecapAwardEntry,
     RecapAwards,
     RecapDraftTransaction,
+    RecapFinePlayer,
     RecapFineResult,
     RecapManagerEntry,
     RecapManagerPlayer,
@@ -283,15 +286,19 @@ async def _fetch_all_manager_data(
     Point-in-time headline numbers (gross points, cumulative total) are read
     from each manager's own `entry_history` -- present in the picks response
     for any gameweek, past or present -- rather than the standings row, which
-    only ever reflects the *current* state. A picks response with no
-    `entry_history` at all falls back to the standings row, the only source
-    left for it. League position is left to the caller: it needs
-    cross-manager context (and, for a league that started after GW1, a
+    only ever reflects the *current* state. A degraded picks response
+    carrying neither falls back to the standings row only on a live capture,
+    where it describes the same gameweek. On a replay it describes a later
+    one, so it is not used at all: the manager is dropped where their
+    gameweek points are what is missing, and left without a cumulative total
+    where that is (issue #272). League position is left to the caller: it
+    needs cross-manager context (and, for a league that started after GW1, a
     baseline offset) a per-manager fetch does not have.
 
     `is_live_gw` marks the standings as still describing `gw` rather than a
     later gameweek the season has moved on to, which gates the reconciliation
-    against the standings row -- see RecapReconciliationError.
+    against the standings row -- see RecapReconciliationError -- and both
+    headline-number fallbacks.
     """
     sem = asyncio.Semaphore(_PICKS_CONCURRENCY)
 
@@ -314,8 +321,30 @@ async def _fetch_all_manager_data(
         automatic_subs = picks_response.get("automatic_subs", [])
 
         transfer_cost = entry_history.get("event_transfers_cost", 0)
-        gross_points = entry_history.get("points", standings_gross)
-        total_pts = entry_history.get("total_points", standings_total)
+        gross_points = entry_history.get("points")
+        if gross_points is None:
+            if not is_live_gw:
+                # The standings row is the only other source of a gameweek
+                # total, and on a replay it belongs to a later gameweek. Drop
+                # the manager exactly as a failed picks fetch is dropped, so
+                # `build_history_rows` records them UNKNOWN: a gap is visibly
+                # a gap, where a standings number would be indistinguishable
+                # from a real one and would feed `gw_rank`, the awards, the
+                # fines ruling and the append-only ledger (issue #272).
+                logger.warning(
+                    "No point-in-time gameweek points for %s (entry %s) in GW%s: the picks "
+                    "response carried no gameweek history, and the standings describe a "
+                    "later gameweek. Recording them as unknown.",
+                    manager_name, league_entry_id, gw,
+                )
+                return None
+            gross_points = standings_gross
+        # Unlike gross points, a missing cumulative total has somewhere to
+        # land: `total_points` is NotRequired, and every consumer already
+        # treats it as unavailable rather than zero.
+        total_pts = entry_history.get("total_points")
+        if total_pts is None and is_live_gw:
+            total_pts = standings_total
         gw_points = (gross_points - transfer_cost) if use_net_points else gross_points
 
         auto_sub_in_ids = {sub["element_in"] for sub in automatic_subs}
@@ -432,7 +461,6 @@ async def _fetch_all_manager_data(
             entry_id=league_entry_id,
             gw_points=gw_points,
             gross_points=gross_points,
-            total_points=total_pts,
             gw_rank=rank,
             captain=captain_name,
             captain_points=captain_points,
@@ -447,6 +475,8 @@ async def _fetch_all_manager_data(
             transfers=transfers,
             transfers_made=num_transfers,
         )
+        if total_pts is not None:
+            result["total_points"] = total_pts
         # Four more figures the rollover destroys, already in hand on the
         # object the headline numbers came from (R2). Recorded only where the
         # response actually carried them, so a partial one leaves them absent
@@ -608,6 +638,34 @@ def derive_point_in_time_positions(
     return positions
 
 
+def _log_unplaceable(names: list[str], *, ranked: bool, previous: bool) -> None:
+    """Report the managers a replay could not place, once the outcome is known.
+
+    Only after the whole cohort has been walked is it settled whether anyone
+    else was placed at all: a draft replay carries no cumulative total for
+    any manager (`_fetch_draft_manager` sets one only on a live capture), so
+    every entry lands here and nobody is ranked, and even in a classic league
+    an entry that never fetched can abort the cohort further down the
+    standings order. Warning per entry inside the loop claimed the rest of
+    the league was still ranked before either was known (PR #295 review).
+    """
+    if not names:
+        return
+    table = "previous league position" if previous else "league position"
+    if ranked:
+        logger.warning(
+            "No %s for %s: their picks carried no cumulative total, and the standings "
+            "belong to a later gameweek. The rest of the league is still ranked.",
+            table, ", ".join(names),
+        )
+    else:
+        logger.warning(
+            "No %s could be derived: no manager had a point-in-time cumulative total, "
+            "and the standings belong to a later gameweek.",
+            table,
+        )
+
+
 def _assign_point_in_time_positions(
     managers: list[RecapManagerEntry],
     league_totals: Sequence[tuple[int, int]],
@@ -626,21 +684,32 @@ def _assign_point_in_time_positions(
     for a manager with no point-in-time total. It may only for a live
     capture, where the standings describe the same point in time as the
     collected data. On a replay they describe a later one, and mixing the
-    two eras in a single ranking produces positions that are wrong for both:
-    rather than that, no position is derived for anyone and the report
-    renders them unavailable.
+    two eras in a single ranking produces positions that are wrong for both.
+
+    What a replay does instead depends on *why* the total is missing. An
+    entry that never fetched at all is a hole in the cohort of unknown
+    depth -- it is not in `managers`, so nothing about its gameweek is
+    known -- and the whole table is left underivable rather than renumbered
+    around it. A manager who *is* in `managers` fetched fine and is only
+    missing the cumulative total; they are left out of the ranking alone,
+    exactly as `_apply_league_start_offset` already drops one manager's
+    total, so one partial picks response no longer blanks every other
+    manager's position (issue #294).
 
     Mutates managers in-place. Leaves `overall_rank` unset wherever no
     position could be derived.
     """
     by_entry = {m["entry_id"]: m for m in managers}
     totals: list[tuple[int, int]] = []
+    unplaceable: list[str] = []
     for entry_id, standings_total in league_totals:
         fetched = by_entry.get(entry_id)
         if fetched is not None and "total_points" in fetched:
             totals.append((entry_id, fetched["total_points"]))
         elif allow_standings_fallback:
             totals.append((entry_id, standings_total))
+        elif fetched is not None:
+            unplaceable.append(fetched["manager_name"])
         else:
             logger.warning(
                 "League positions unavailable: no point-in-time cumulative total for "
@@ -648,6 +717,8 @@ def _assign_point_in_time_positions(
                 entry_id,
             )
             return
+
+    _log_unplaceable(unplaceable, ranked=bool(totals), previous=False)
 
     position_map = derive_point_in_time_positions(totals)
     for m in managers:
@@ -774,7 +845,11 @@ def _compute_standings_movement(
     subtracted back out here when it's off -- otherwise a manager who took a
     hit this GW has their previous total over-credited by the hit amount.
     Standings-only rows have no hit data to correct with and are used as-is
-    (an existing, unavoidable approximation for failed fetches).
+    (an existing, unavoidable approximation for failed fetches). On a replay
+    the split matches _assign_point_in_time_positions: an entry that never
+    fetched leaves the whole previous table underivable, while a fetched
+    manager missing only their cumulative total is left out of the ranking
+    on their own (issue #294).
 
     A manager with no point-in-time `total_points` (an unreconstructable
     draft replay, see U2) cannot be placed on the previous table at all --
@@ -797,12 +872,15 @@ def _compute_standings_movement(
         ]
     else:
         rows = []
+        unplaceable: list[str] = []
         for entry_id, total, gw_pts in league_rows:
             fetched = by_entry.get(entry_id)
             if fetched is not None and "total_points" in fetched:
                 rows.append((entry_id, fetched["total_points"], _net_gw_points(fetched)))
             elif allow_standings_fallback:
                 rows.append((entry_id, total, gw_pts))
+            elif fetched is not None:
+                unplaceable.append(fetched["manager_name"])
             else:
                 logger.warning(
                     "Standings movement unavailable: no point-in-time cumulative total "
@@ -810,6 +888,7 @@ def _compute_standings_movement(
                     entry_id,
                 )
                 return
+        _log_unplaceable(unplaceable, ranked=bool(rows), previous=True)
 
     prev_totals = [(entry_id, total - gw_pts) for entry_id, total, gw_pts in rows]
     # The same ranking helper `overall_rank` is derived through, not a local
@@ -834,6 +913,68 @@ def _compute_standings_movement(
 # ---------------------------------------------------------------------------
 
 
+# The parenthesised player list a red-card fine's message carries, and the
+# three functions below are the only code that knows its shape: one writes it,
+# one reads it back, one restates it. Keeping them together is what lets the
+# ledger correct a stored ruling's names without knowing the format at all
+# (issue #176) -- a change to the message reaches all three in one edit.
+#
+# Anchored on the prefix rather than matching any parenthesised group, so a
+# penalty that carries its own brackets ("Pay the pot (cash)") is never
+# mistaken for the player list. A name that carries brackets does not match at
+# all, which reads back as "this message names nobody" and leaves the row
+# exactly as recorded -- the safe direction to fail in.
+_RED_CARD_PREFIX = "Red card in starting XI"
+_FINE_PLAYER_SEPARATOR = ", "
+_FINE_PLAYER_LIST = re.compile(re.escape(_RED_CARD_PREFIX) + r" \(([^()]*)\)")
+
+
+def recap_fine_player_names(message: str) -> list[str]:
+    """The players a recap fine message names, in the order it names them.
+
+    Empty for every message that names nobody, which is most of them: only a
+    red-card ruling lists players. Read back only to size up a ruling recorded
+    before the names were stored as references -- never to decide what the
+    corrected names should be, which comes from the squad.
+
+    Split on the exact separator the message was written with rather than on a
+    bare comma, so a display name carrying one ("Smith, Jr") reads back whole.
+    A name carrying the separator itself still reads as two, which the caller
+    sees as a count that no longer matches the squad and declines to repair --
+    the same safe direction a name carrying brackets fails in.
+    """
+    match = _FINE_PLAYER_LIST.search(message)
+    if match is None:
+        return []
+    return [name for name in match.group(1).split(_FINE_PLAYER_SEPARATOR) if name]
+
+
+def restate_recap_fine_players(
+    message: str, previous: Sequence[str], names: Sequence[str],
+) -> str:
+    """The same message with the players `previous` names replaced by `names`.
+
+    An exact swap of the list the caller says is in there, not a pattern
+    applied to whatever it finds: the caller already holds the names the
+    message was written from, so nothing has to be guessed about the prose
+    around them. A message that does not contain that list is returned
+    untouched -- a caller restating a *changed* list has to check for that and
+    leave the whole ruling alone, or it lands a message and a set of references
+    naming different people.
+
+    Only the names move. The rule it describes, the penalty it carries and the
+    manager it was ruled against are all left alone -- restating who a ruling
+    was about is not re-ruling it.
+    """
+    if not previous or not names:
+        return message
+    return message.replace(
+        f"({_FINE_PLAYER_SEPARATOR.join(previous)})",
+        f"({_FINE_PLAYER_SEPARATOR.join(names)})",
+        1,
+    )
+
+
 def _recap_fine_message(result: FineResult, manager_name: str) -> str:
     """Generate a clean recap-specific fine message (no 'FINE TRIGGERED' prefix)."""
     # Extract the penalty text (after the last period-space in the original message)
@@ -845,12 +986,16 @@ def _recap_fine_message(result: FineResult, manager_name: str) -> str:
 
     if result.rule_type == "last-place":
         return f"Finished last in the gameweek. {penalty}" if penalty else "Finished last in the gameweek."
-    if result.rule_type == "red-card":
-        # Extract player names from original message
-        red_names = ""
-        if "(" in result.message and ")" in result.message:
-            red_names = result.message.split("(")[1].split(")")[0]
-        base = f"Red card in starting XI ({red_names})"
+    if result.rule_type == RED_CARD_RULE_TYPE:
+        # The handler's own list of who it fined, not a re-read of the prose
+        # it wrote. Recovering the names by splitting the handler's message
+        # apart was the only reason this had to be prose all the way down --
+        # with the list in hand the ruling can carry references too, which is
+        # what survives a rename (issue #176).
+        base = (
+            f"{_RED_CARD_PREFIX} "
+            f"({_FINE_PLAYER_SEPARATOR.join(p.name for p in result.players)})"
+        )
         return f"{base}. {penalty}" if penalty else f"{base}."
     if result.rule_type == "below-threshold":
         return f"Scored below threshold. {penalty}" if penalty else "Scored below threshold."
@@ -969,6 +1114,9 @@ def evaluate_league_fines(
                     red_cards=p["red_cards"],
                     contributed=p["contributed"],
                     auto_sub_out=p["auto_sub_out"],
+                    # Carried so a triggered ruling can record *which* player
+                    # it named, not just today's spelling of him (issue #176).
+                    code=p["code"],
                 )
                 for p in m["squad"]
             ]
@@ -986,6 +1134,9 @@ def evaluate_league_fines(
                         manager_key=recap_manager_key(m),
                         rule_type=r.rule_type,
                         message=msg,
+                        players=[
+                            RecapFinePlayer(name=p.name, code=p.code) for p in r.players
+                        ],
                     ))
             ruled.add(recap_manager_key(m))
 

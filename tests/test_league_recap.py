@@ -32,6 +32,8 @@ from fpl_cli.cli._league_recap_data import (
     configured_fine_rule_types,
     derive_point_in_time_positions,
     evaluate_league_fines,
+    recap_fine_player_names,
+    restate_recap_fine_players,
 )
 from fpl_cli.cli._league_recap_types import (
     RecapAwards,
@@ -138,6 +140,7 @@ def _make_squad_player(
         name=name,
         team="ARS",
         position="MID",
+        code=kwargs.get("code"),
         points=points,
         is_captain=kwargs.get("is_captain", False),
         is_vice_captain=kwargs.get("is_vice_captain", False),
@@ -148,6 +151,51 @@ def _make_squad_player(
         red_cards=kwargs.get("red_cards", 0),
         unmatched=kwargs.get("unmatched", False),
     )
+
+
+class TestRecapFineMessagePlayers:
+    """#176: the ledger restates a stored ruling's names through these two, so
+    the shapes they cannot read are the shapes they must not rewrite either."""
+
+    PENALTY = "Buy the round"
+
+    def _message(self, names: str) -> str:
+        return f"Red card in starting XI ({names}). {self.PENALTY}"
+
+    def test_the_names_read_back_in_the_order_the_message_lists_them(self):
+        assert recap_fine_player_names(self._message("Sávio, Hothead")) == [
+            "Sávio", "Hothead",
+        ]
+
+    def test_a_name_carrying_a_bare_comma_reads_back_whole(self):
+        """Split on the separator the message was written with, not on any
+        comma in it (#290 review)."""
+        assert recap_fine_player_names(self._message("Smith,Jr")) == ["Smith,Jr"]
+
+    def test_a_name_carrying_the_separator_itself_reads_as_two(self):
+        """The limit of reading names out of prose, asserted rather than left
+        implicit: the caller sees a count the squad cannot corroborate and
+        declines the repair, which is the safe direction to fail in."""
+        assert recap_fine_player_names(self._message("Smith, Jr")) == ["Smith", "Jr"]
+
+    def test_a_message_naming_nobody_reads_back_empty(self):
+        assert recap_fine_player_names("Finished last in the gameweek. Pint") == []
+
+    def test_a_penalty_carrying_brackets_is_not_mistaken_for_the_player_list(self):
+        message = "Red card in starting XI (Sávio). Pay the pot (cash)"
+        assert recap_fine_player_names(message) == ["Sávio"]
+        assert restate_recap_fine_players(message, ["Sávio"], ["Savinho"]) == (
+            "Red card in starting XI (Savinho). Pay the pot (cash)"
+        )
+
+    def test_what_reads_back_out_restates_back_in(self):
+        message = self._message("Sávio, Hothead")
+        names = recap_fine_player_names(message)
+        assert restate_recap_fine_players(message, names, names) == message
+
+    def test_a_message_that_does_not_spell_the_list_out_is_returned_untouched(self):
+        message = self._message("Sávio")
+        assert restate_recap_fine_players(message, ["Someone Else"], ["Savinho"]) == message
 
 
 # ---------------------------------------------------------------------------
@@ -897,6 +945,41 @@ class TestStandingsMovement:
         assert [m["previous_rank"] for m in managers] == [1, 2, 4, 5]
         assert all(m["previous_rank"] == m["overall_rank"] for m in managers)
 
+    def test_replay_with_no_cumulative_totals_at_all_warns_once_and_accurately(self, caplog):
+        """A draft replay carries no `total_points` for anyone, so every entry
+        is unplaceable and nobody is ranked. One warning saying exactly that,
+        not one per manager claiming the rest of the league is still ranked
+        (PR #295 review)."""
+        league_rows = [(i, 500 - i * 10, 50) for i in (1, 2, 3)]
+        managers = [
+            _make_manager(name=f"M{i}", entry_id=i, gw_points=50,
+                          total_points=None, overall_rank=None, previous_rank=None)
+            for i in (1, 2, 3)
+        ]
+        with caplog.at_level(logging.WARNING, logger="fpl_cli.cli._league_recap_data"):
+            _compute_standings_movement(managers, league_rows, allow_standings_fallback=False)
+        assert all("previous_rank" not in m for m in managers)
+        warnings = [r.getMessage() for r in caplog.records]
+        assert len(warnings) == 1
+        assert "no manager had a point-in-time cumulative total" in warnings[0]
+        assert "still ranked" not in warnings[0]
+
+    def test_replay_aborting_on_a_later_entry_makes_no_still_ranked_claim(self, caplog):
+        """Bob is missing a total and Cara never fetched: the cohort abort
+        fires further down the standings, so the partial-manager warning must
+        not have already promised the rest of the league was ranked."""
+        league_rows = [(1, 500, 50), (2, 490, 50), (3, 480, 50)]
+        managers = [
+            _make_manager(name="Alice", entry_id=1, gw_points=50, total_points=500,
+                          overall_rank=None, previous_rank=None),
+            _make_manager(name="Bob", entry_id=2, gw_points=50, total_points=None,
+                          overall_rank=None, previous_rank=None),
+        ]  # Cara (entry 3) failed to fetch entirely
+        with caplog.at_level(logging.WARNING, logger="fpl_cli.cli._league_recap_data"):
+            _compute_standings_movement(managers, league_rows, allow_standings_fallback=False)
+        assert all("previous_rank" not in m for m in managers)
+        assert not any("still ranked" in r.getMessage() for r in caplog.records)
+
     def test_tied_previous_totals_all_share_the_first_place(self):
         """Managers level on the previous table shared it, so none of them can
         be reported as having been above the others.
@@ -1270,7 +1353,7 @@ class TestClassicHeadlineNumberSourcing:
         assert data_gross["managers"][0]["gw_points"] == 50
         assert data_net["managers"][0]["gw_points"] == 42
 
-    async def test_missing_entry_history_falls_back_to_standings(self):
+    async def test_missing_entry_history_on_a_live_capture_falls_back_to_standings(self):
         standings = [{"entry": 1, "player_name": "Alice", "event_total": 33, "total": 333}]
         client = _FakeClassicClient(
             _standings_response(standings),
@@ -1283,6 +1366,87 @@ class TestClassicHeadlineNumberSourcing:
         m = data["managers"][0]
         assert m["gross_points"] == 33
         assert m["total_points"] == 333
+
+    async def test_missing_entry_history_on_a_replay_drops_the_manager(self, caplog):
+        """Issue #272: the standings belong to a later gameweek, so there is
+        nothing left to source this gameweek's headline numbers from. The
+        manager is dropped as a failed picks fetch is, leaving the cohort to
+        record them UNKNOWN rather than an OK row carrying the wrong era's
+        points."""
+        standings = [{"entry": 1, "player_name": "Alice", "event_total": 33, "total": 333}]
+        client = _FakeClassicClient(
+            _standings_response(standings),
+            {1: {"picks": [], "active_chip": None, "automatic_subs": []}},
+        )
+        with caplog.at_level(logging.WARNING, logger="fpl_cli.cli._league_recap_data"):
+            data = await collect_classic_recap_data(
+                client, {"fpl": {"classic_league_id": 1}}, gw=10,
+                live_stats={}, player_map={}, teams={}, is_live_gw=False,
+            )
+        assert data["managers"] == []
+        # The cohort is what `build_history_rows` turns into the unknown row.
+        assert [c["manager_name"] for c in data["standings_cohort"]] == ["Alice"]
+        assert "Alice" in caplog.text
+        assert "unknown" in caplog.text
+
+    async def test_missing_entry_history_on_a_replay_leaves_the_rest_intact(self):
+        standings = [
+            {"entry": 1, "player_name": "Alice", "event_total": 50, "total": 500},
+            {"entry": 2, "player_name": "Bob", "event_total": 40, "total": 480},
+        ]
+        client = _FakeClassicClient(
+            _standings_response(standings),
+            {
+                1: _picks_response(points=45, total_points=420),
+                2: {"picks": [], "active_chip": None, "automatic_subs": []},
+            },
+        )
+        data = await collect_classic_recap_data(
+            client, {"fpl": {"classic_league_id": 1}}, gw=10,
+            live_stats={}, player_map={}, teams={}, is_live_gw=False,
+        )
+        assert [m["manager_name"] for m in data["managers"]] == ["Alice"]
+        assert data["managers"][0]["gross_points"] == 45
+
+    async def test_missing_cumulative_total_on_a_replay_is_left_unset(self):
+        """A cumulative total has somewhere to land that gross points does
+        not: `total_points` is optional, and unset reads as unavailable
+        everywhere downstream."""
+        standings = [{"entry": 1, "player_name": "Alice", "event_total": 60, "total": 600}]
+        client = _FakeClassicClient(
+            _standings_response(standings),
+            {1: {
+                "picks": [],
+                "entry_history": {"points": 45, "event_transfers_cost": 0, "event_transfers": 0},
+                "active_chip": None,
+                "automatic_subs": [],
+            }},
+        )
+        data = await collect_classic_recap_data(
+            client, {"fpl": {"classic_league_id": 1}}, gw=10,
+            live_stats={}, player_map={}, teams={}, is_live_gw=False,
+        )
+        m = data["managers"][0]
+        assert m["gross_points"] == 45
+        assert "total_points" not in m
+        assert "overall_rank" not in m
+
+    async def test_missing_cumulative_total_on_a_live_capture_falls_back_to_standings(self):
+        standings = [{"entry": 1, "player_name": "Alice", "event_total": 45, "total": 600}]
+        client = _FakeClassicClient(
+            _standings_response(standings),
+            {1: {
+                "picks": [],
+                "entry_history": {"points": 45, "event_transfers_cost": 0, "event_transfers": 0},
+                "active_chip": None,
+                "automatic_subs": [],
+            }},
+        )
+        data = await collect_classic_recap_data(
+            client, {"fpl": {"classic_league_id": 1}}, gw=10,
+            live_stats={}, player_map={}, teams={}, is_live_gw=True,
+        )
+        assert data["managers"][0]["total_points"] == 600
 
     async def test_reconciliation_does_not_run_for_a_past_gameweek(self):
         """A replay is allowed to diverge from (always-current) standings."""
@@ -1520,6 +1684,66 @@ class TestClassicPositionCohort:
         alice = data["managers"][0]
         assert "overall_rank" not in alice
         assert "previous_rank" not in alice
+
+    async def test_replay_one_partial_response_only_costs_that_manager_a_position(self):
+        """Bob's picks fetched fine but carry no `total_points`. He alone goes
+        unranked; Alice and Cara, whose own responses were complete, keep
+        their positions instead of being blanked with him (issue #294)."""
+        standings = [
+            {"entry": 1, "player_name": "Alice", "event_total": 50, "total": 500},
+            {"entry": 2, "player_name": "Bob", "event_total": 40, "total": 450},
+            {"entry": 3, "player_name": "Cara", "event_total": 30, "total": 400},
+        ]
+        bob = _picks_response(points=40, total_points=0)
+        del bob["entry_history"]["total_points"]
+        picks = {
+            1: _picks_response(points=50, total_points=320),
+            2: bob,
+            3: _picks_response(points=30, total_points=290),
+        }
+        data = await collect_classic_recap_data(
+            _FakeClassicClient(_standings_response(standings), picks),
+            {"fpl": {"classic_league_id": 1}}, gw=10,
+            live_stats={}, player_map={}, teams={}, is_live_gw=False,
+        )
+        by_name = {m["manager_name"]: m for m in data["managers"]}
+        assert by_name["Alice"]["overall_rank"] == 1
+        assert by_name["Cara"]["overall_rank"] == 2
+        assert "overall_rank" not in by_name["Bob"]
+        assert "previous_rank" not in by_name["Bob"]
+        assert by_name["Alice"]["previous_rank"] == 1
+        assert by_name["Cara"]["previous_rank"] == 2
+
+    async def test_replay_start_offset_failure_only_costs_that_manager_a_position(self):
+        """The same scoping when it is `_apply_league_start_offset` that drops
+        a total: one failed history fetch leaves that manager unranked, not
+        the whole league (issue #294)."""
+        standings = [
+            {"entry": 1, "player_name": "Alice", "event_total": 50, "total": 200},
+            {"entry": 2, "player_name": "Bob", "event_total": 40, "total": 210},
+        ]
+        picks = {
+            1: _picks_response(points=50, total_points=500),
+            2: _picks_response(points=40, total_points=480),
+        }
+
+        class _PartialHistoryClient(_FakeClassicClient):
+            async def get_manager_history(self, entry_id):
+                if entry_id == 2:
+                    raise RuntimeError("boom")
+                return await super().get_manager_history(entry_id)
+
+        client = _PartialHistoryClient(
+            _standings_response(standings, start_event=5), picks,
+            history_by_entry={1: {"current": [{"event": 4, "total_points": 300}]}},
+        )
+        data = await collect_classic_recap_data(
+            client, {"fpl": {"classic_league_id": 1}}, gw=10,
+            live_stats={}, player_map={}, teams={}, is_live_gw=False,
+        )
+        by_name = {m["manager_name"]: m for m in data["managers"]}
+        assert by_name["Alice"]["overall_rank"] == 1
+        assert "overall_rank" not in by_name["Bob"]
 
     async def test_replay_with_a_complete_cohort_still_derives_positions(self):
         standings = [
@@ -2210,6 +2434,31 @@ class TestEvaluateLeagueFines:
         assert result[0]["rule_type"] == "red-card"
         assert "Hothead" in result[0]["message"]
 
+    def test_a_red_card_ruling_carries_the_players_it_names(self):
+        """#176: the stored ruling has to hold a reference to who was fined.
+        The message alone is only what FPL called him at ruling time."""
+        red_player = _make_squad_player(
+            name="Sávio", code=510_281, red_cards=1, contributed=True,
+        )
+        squad = [red_player] + [_make_squad_player(name=f"P{i}") for i in range(10)]
+        rules = [{"type": "red-card", "penalty": "Buy the round"}]
+        managers = [_make_manager(name="Alice", squad=squad)]
+
+        result = evaluate_league_fines(managers, self._settings_with_fines(rules), "classic").fines
+
+        assert result[0]["players"] == [{"name": "Sávio", "code": 510_281}]
+
+    def test_a_ruling_that_names_nobody_records_an_empty_list_not_silence(self):
+        squad = [_make_squad_player(name=f"P{i}") for i in range(11)]
+        managers = [
+            _make_manager(name="Alice", gw_points=80, squad=squad),
+            _make_manager(name="Bob", gw_points=20, entry_id=2, squad=squad),
+        ]
+
+        result = evaluate_league_fines(managers, self._settings_with_fines(), "classic").fines
+
+        assert result[0]["players"] == []
+
     def test_red_card_fine_triggers_on_bench_boost_bench_slot(self):
         # BB-flagged bench slot counts as contributed; a red card there must fine.
         bb_bench_red = _make_squad_player(
@@ -2276,6 +2525,21 @@ class TestEvaluateLeagueFines:
         ruling = evaluate_league_fines(managers, {}, "classic")
 
         assert ruling.ruled_manager_keys == frozenset({1, 2})
+
+    def test_the_message_names_the_handler_s_players_not_a_re_read_of_its_prose(self):
+        """The recap message used to recover the names by splitting the
+        handler's own message back apart. It takes them from the result now,
+        so the two cannot disagree (issue #176)."""
+        squad = [
+            _make_squad_player(name="A (sic)", code=1, red_cards=1, contributed=True),
+            _make_squad_player(name="B", code=2, red_cards=1, contributed=True),
+        ]
+        rules = [{"type": "red-card", "penalty": "Round"}]
+        managers = [_make_manager(name="Alice", squad=squad)]
+
+        result = evaluate_league_fines(managers, self._settings_with_fines(rules), "classic").fines
+
+        assert result[0]["message"] == "Red card in starting XI (A (sic), B). Round"
 
     def test_below_threshold_is_measured_on_gross_points_not_gross_plus_the_hit(self):
         """`gross_points` is already gross whatever `use_net_points` says.

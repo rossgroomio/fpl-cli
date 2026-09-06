@@ -88,6 +88,22 @@ class TestWaiversJsonFormat:
         result = _run_waivers(["--format", "json"], has_league_id=False)
         assert result.exit_code == 1
 
+    def test_no_league_id_exits_the_same_way_in_both_formats(self):
+        """A draft manager with no league configured gets one answer (#286).
+
+        The envelope called it an error and exited 1; table mode printed a
+        yellow warning and exited 0, so `fpl waivers && notify` notified on a
+        command that had recommended nothing. Both now report the same
+        sentence, on the stream that format's reader is parsing.
+        """
+        table = _run_waivers(has_league_id=False)
+        envelope = _run_waivers(["--format", "json"], has_league_id=False)
+
+        assert table.exit_code == envelope.exit_code == 1
+        assert "No draft_league_id configured" in " ".join(table.stderr.split())
+        assert table.stdout == ""
+        assert json.loads(envelope.stdout)["error"].startswith("No draft_league_id configured")
+
     def test_json_agent_failure_exits_nonzero(self):
         agent_result = _make_agent_result(success=False, message="API timeout")
         result = _run_waivers(["--format", "json"], agent_result=agent_result)

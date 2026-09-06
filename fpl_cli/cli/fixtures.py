@@ -24,12 +24,13 @@ from fpl_cli.cli._json import (
     emit_json_error,
     output_format_option,
 )
+from fpl_cli.services.team_ratings import api_difficulty_scale
 
 if TYPE_CHECKING:
     from fpl_cli.models.fixture import Fixture
 
 _API_SCALE_FOOTER = (
-    "FDR scale: 1 (easiest) - 5 (hardest), the FPL API's own difficulty. "
+    f"{api_difficulty_scale()} "
     "Enable custom analysis (`fpl init`) for the venue-aware 1-7 team-ratings FDR."
 )
 

@@ -79,6 +79,19 @@ def _run_history(args=None, codes=None, profiles=None):
         return runner.invoke(main, ["history"] + (args or []))
 
 
+def _run_failing_history(args=None):
+    """Invoke `history` with an upstream that refuses, in either format."""
+    fpl = _mock_fpl([80201])
+    fpl.get_players = AsyncMock(side_effect=RuntimeError("API down"))
+    hist = _mock_historical({})
+    runner = CliRunner()
+    with (
+        patch("fpl_cli.api.fpl.FPLClient", return_value=fpl),
+        patch("fpl_cli.api.historical.make_historical_provider", return_value=hist),
+    ):
+        return runner.invoke(main, ["history"] + (args or []))
+
+
 class TestHistory:
     def test_outputs_current_season_players_only(self):
         result = _run_history(codes=[80201, 99999])
@@ -152,20 +165,14 @@ class TestHistoryJson:
         assert data[0]["name"] == "Salah"
 
     def test_json_error_on_exception(self):
-        mock_fpl = AsyncMock()
-        mock_fpl.get_players = AsyncMock(side_effect=RuntimeError("API down"))
-        mock_fpl.__aenter__ = AsyncMock(return_value=mock_fpl)
-        mock_fpl.__aexit__ = AsyncMock(return_value=False)
-
-        hist = _mock_historical({})
-        runner = CliRunner()
-        with (
-            patch("fpl_cli.api.fpl.FPLClient", return_value=mock_fpl),
-            patch("fpl_cli.api.historical.make_historical_provider", return_value=hist),
-        ):
-            result = runner.invoke(main, ["history", "--format", "json"])
-        # emit_json_error raises SystemExit(1)
+        result = _run_failing_history(["--format", "json"])
         assert result.exit_code == 1
+        payload = json.loads(result.stdout)
+        assert payload["command"] == "history"
+        # The cause, not a stand-in for it: the envelope used to say only
+        # "Failed to fetch historical data" while "API down" went to the
+        # stream a `--format json` consumer is told not to read (#286).
+        assert "API down" in payload["error"]
 
     def test_json_sorted_by_name(self):
         profile_z = _make_profile(web_name="Zaha", element_code=111)
@@ -177,3 +184,29 @@ class TestHistoryJson:
         )
         names = [p["name"] for p in json.loads(result.output)["data"]]
         assert names == ["Alexander-Arnold", "Zaha"]
+
+
+class TestHistoryFailure:
+    """A provider that refuses is one answer in both formats (#286).
+
+    Table mode printed the cause on stdout and exited 0, so `fpl history >
+    seasons.txt` filed the failure as though it were the profiles and
+    `fpl history && rebuild-priors` rebuilt off nothing; `--format json`
+    exited 1 with the cause dropped. Same refusal, same exit code, and the
+    reason on the stream the caller is reading.
+    """
+
+    def test_table_exits_one_with_the_reason_on_stderr(self):
+        result = _run_failing_history()
+
+        assert result.exit_code == 1
+        assert "Failed to fetch historical data: API down" in " ".join(result.stderr.split())
+        # stdout carries the profiles, and there are none.
+        assert result.stdout == ""
+
+    def test_both_formats_agree_on_the_exit_code(self):
+        assert (
+            _run_failing_history().exit_code
+            == _run_failing_history(["--format", "json"]).exit_code
+            == 1
+        )

@@ -73,10 +73,19 @@ gave up on a step — which may or may not name the cause the envelope names, an
 commands is empty. Script against `error` and the exit code, never against stderr.
 
 Warnings never change the exit code — a command that produced its payload exits 0 and
-reports the problem in `metadata.warnings` (and on stderr), rather than failing. A few
-commands deliberately soften the *table* path to exit 0 where the JSON path exits 1
-(`league-recap` on an unresolvable gameweek prints the message and returns); the JSON
-contract above is the one to script against.
+reports the problem in `metadata.warnings` (and on stderr), rather than failing. Nor does
+the format change it: whatever a command answers with an `error` envelope it also refuses
+in table mode, with the same reason on stderr and the same exit 1. Several used to soften
+the table path to exit 0 — `review` and `league-recap` on a gameweek neither could
+resolve, `fpl history` on a provider that refused, `fpl chips timing` with no
+`classic_entry_id` and `fpl waivers` with no `draft_league_id` — and none do now.
+
+The `error` string is the reason itself, not a category for it. `fpl history` and
+`fpl price-history` used to answer an unreachable provider with a fixed `Failed to fetch
+historical data` / `Failed to fetch price history data` while the upstream's own message
+went to stderr — readable to someone watching the terminal, invisible to the consumer told
+to script against `error`. Both now carry the cause, as `fpl chips timing` carries the
+fixture agent's.
 
 The table applies to every way a command can end, not just the ones it was written for.
 A command that cannot reach the FPL API, that needs an entry ID you have not configured,
@@ -90,7 +99,10 @@ message names the rule and the valid set.
 **Table mode splits the same way.** Without `--format json` the output you asked for goes
 to stdout and everything else goes to stderr — warnings, progress notices, and the reason
 a command exited nonzero. `fpl squad grid 2>/dev/null` prints a grid or prints nothing;
-it never prints half an explanation. That holds for every command, so redirecting either
+it never prints half an explanation. That holds for every command that takes `--format`.
+Three that do not — `fpl chips sync`, `fpl chips add` and `fpl preview` — still print the
+reason they gave up on stdout and exit 0, so a redirect captures the explanation instead
+of the output and `2>/dev/null` will not quieten it. Everywhere else, redirecting either
 stream means the same thing whichever one you run:
 
 ```bash
@@ -735,6 +747,27 @@ fpl review --dry-run              # Build prompts without calling LLMs
 
 **LLM summary** (`--summarise`): Community narrative via research provider, personal analysis via synthesis provider.
 
+**Next Week:** the personal analysis is given next gameweek's fixtures — every club's opponent
+and venue, and each of your own players' FDR for their own position — so the section's start,
+bench and transfer calls are grounded in what the squad actually plays rather than extrapolated
+from one week of returns. FDR follows the same split as `fpl fixtures` and `fpl fdr`: the 1-7
+team-ratings scale with custom analysis on, the FPL API's 1-5 difficulty with it off, and the
+block carries the same scale footer those tables print, unrated-club caveat included — a
+neutral 4.0 meaning "no data" reads exactly like a genuinely average fixture otherwise. Ratings
+that cannot support difficulty at all are named in the block as well, rather than reaching the
+analysis as figures to reason from.
+
+Where there is no next gameweek to look at — the final gameweek of a season, or fixtures that
+could not be fetched — the section is narrowed instead: fixture-independent observations only
+("Tzolis has now blanked twice"), with selection and transfer calls left to `fpl gw-prep`.
+Reviewing an older gameweek gets the gameweek that followed it, marked as already played so
+the section reads as what that week suggested at the time rather than as a forecast.
+
+The answer is checked against the data it was given, the way the community narrative already
+is: an FDR figure the section cites that the block never printed, or any fixture claim at all
+on a run with no fixture data, is reported alongside the completeness findings below — on
+stderr, and as a warning callout in the saved report.
+
 **Incomplete summaries:** the personal analysis is checked against the sections its own prompt
 asked for before anything is written. A response that is missing a `## ` heading, ends without
 terminal punctuation, or that the provider reports it stopped early on is retried **once** — and
@@ -753,6 +786,13 @@ gameweek judges a player transferred since on the fixtures he actually had at th
 writes those marks per fixture as it finishes, so a gameweek with a fixture still to complete
 cannot answer; there the current clubs answer instead, which can differ from that gameweek's
 clubs once a transfer has happened in between.
+
+**A gameweek it will not review** — one still being played, an id the season does not have,
+a season with nothing finished yet — is refused with the reason on **stderr** and exit **1**,
+as is `--summarise` with no usable provider key. `review` has no `--format json`, so stdout
+carries the review or nothing at all, and `fpl review 2>/dev/null` is silent on a refusal
+rather than printing half an explanation. Both refusals used to exit 0 with the reason on
+stdout; the gameweek one is shared with `league-recap`, which behaved the same way.
 
 ### League Recap
 
@@ -774,8 +814,9 @@ its own headline numbers against the table and fill a manager it could not fetch
 table's row. Once the next gameweek's deadline passes the table describes *that* gameweek,
 and the recap takes the same replay path an explicitly older `-g` takes: every figure comes
 from each manager's own gameweek history, positions and cumulative totals are derived
-rather than read off the table (for draft, summed from the ledger), and a manager whose
-fetch fails is recorded unknown rather than filled in. The run says so on stderr and raises
+rather than read off the table (for draft, summed from the ledger), and a manager the replay
+cannot answer for — their fetch failed, or it came back without their gameweek history — is
+recorded unknown rather than filled in from the table. The run says so on stderr and raises
 a `league_standings_moved_on` warning under `--format json`. The gameweek is recorded
 either way — an in-progress gameweek is never recappable, so the recap of the one before it
 has to keep working while the next one plays.
@@ -901,13 +942,21 @@ rather than guessed.
 
 `fines` records the fines ruled against that manager that gameweek, keyed by manager
 rather than display name so a mid-season rename cannot split a tally and two managers
-sharing a name cannot merge into one. Beside it, `fine_rules_evaluated` (schema version
-4) records which rule types were actually ruled, whether or not any triggered — without
-it an empty `fines` list means three different things at once (nobody was fined, no
-rules were configured, no rule was ever checked), and [Season Fines](#season-fines)
-would score all three as innocence. A list names exactly the rules ruled, `[]` means
-nothing was configured, and empty means nothing is recorded either way: an unknown
-capture row, or a row written before schema version 4.
+sharing a name cannot merge into one. Each fine also carries `players` (schema version
+5): the players its message names, each with the stable cross-season code that still
+identifies him after FPL renames him. A red-card fine's message spells out whatever the
+player was called when it was ruled, so a gameweek replayed months later would otherwise
+name him by today's name on a row whose squad records the name he actually played under.
+A list names exactly those players, `[]` means the rule names nobody (`last-place` and
+`below-threshold` describe a score), and empty means nothing is recorded either way: a
+row written before schema version 5, whose names are restated from its own squad the
+next time the gameweek is captured or replayed. Beside it, `fine_rules_evaluated` (schema
+version 4) records which rule types were actually ruled, whether or not any triggered —
+without it an empty `fines` list means three different things at once (nobody was fined,
+no rules were configured, no rule was ever checked), and
+[Season Fines](#season-fines) would score all three as innocence. A list names exactly
+the rules ruled, `[]` means nothing was configured, and empty means nothing is recorded
+either way: an unknown capture row, or a row written before schema version 4.
 
 Rows are append-only. Re-running a gameweek that has not changed writes nothing; a
 re-run whose numbers differ (bonus points settled, a failed fetch repaired, a coarse
@@ -997,11 +1046,20 @@ rendered, and a skipped or truncated editorial (`synthesis_provider_unavailable`
 `synthesis_stopped_early`) is no exception.
 
 Four things do exit 1, all emitting the shared `{"command", "error"}` envelope on stdout
-under `--format json` (see [JSON Output](#json-output)): an unreachable FPL API, a
-gameweek that could not be resolved at all, a reconciliation failure, and a `fines:` block
-that cannot be parsed (a bad rule, a mistyped `threshold:`, or an unrecognised key). Only the second softens on the table path, where it prints the same
-message and exits 0. The distinction matters when scripting a retry — an outage is worth
-retrying, the other three are not.
+under `--format json` (see [JSON Output](#json-output)) and the same message as red prose
+on stderr in table mode: an unreachable FPL API, a gameweek that could not be resolved at
+all, a reconciliation failure, and a `fines:` block that cannot be parsed (a bad rule, a
+mistyped `threshold:`, or an unrecognised key). The distinction matters when scripting a
+retry — an outage is worth retrying, the other three are not.
+
+The second used to answer differently depending on how you asked: exit 1 with a generic
+`"Could not resolve a gameweek to recap."` under `--format json`, exit **0** in table mode
+with the specific reason on stdout. It now exits 1 either way and carries the reason the
+resolver actually has — `Gameweek 7 is not yet finished`, `Gameweek 99 not found`,
+`Season hasn't started` — into whichever channel you are reading. `fpl review` shares the
+resolver and changed with it, from exit 0 and prose on stdout to exit 1 and prose on
+stderr. Declining a gameweek still being played is unchanged and deliberate: there are no
+final scores to recap until it finishes.
 
 The fines one refuses rather than degrades on purpose. An unreadable `fines:` block is not
 the same as no fines configured, and recapping anyway would write "every configured rule
@@ -1187,7 +1245,7 @@ Rolling a setup into a new season silently invalidates IDs and per-team files: a
 
 - `classic_entry_id` resolves, reporting the team and manager name, **and belongs to `classic_league_id`** (via the entry's own `leagues.classic`) — catching an ID reissued over the summer that now points at someone else's team. The reissued-ID verdict only fires when the league itself checked out, so a stale league ID cannot condemn a correct entry
 - `classic_league_id` resolves, reporting the league name back. No season assertion: classic league IDs come from a sequence that restarts each July, so `created` always lands in the current season and last season's ID resolves to a *different* league rather than going dead. The stamp proves nothing here — the entry's membership check above is what proves the pairing is still yours
-- `draft_league_id` resolves; flagged when its draft was held in a previous season (draft leagues are recreated each season)
+- `draft_league_id` resolves; flagged when its draft was held in a previous season (draft leagues are recreated each season). The fix hint points at `fpl init` rather than a manual edit, because init derives this ID from your `draft_entry_id` and never prompts for it unless that derivation fails
 - `draft_entry_id` resolves **and belongs to `draft_league_id`** (via the entry's `league_set`), catching a recycled ID that points at someone else's team — the recycled-ID verdict only fires when the league itself checked out, so a stale league ID cannot condemn a correct entry
 
 **Data files:**

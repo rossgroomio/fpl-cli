@@ -11,7 +11,7 @@ from rich.table import Table
 
 from fpl_cli.cli._context import console, error_console
 from fpl_cli.cli._helpers import _validate_team_filter
-from fpl_cli.cli._json import emit_json, emit_json_error, json_output_mode, output_format_option
+from fpl_cli.cli._json import emit_failure, emit_json, json_output_mode, output_format_option
 
 PRICE_HISTORY_SORT_FIELDS = [
     "price_change", "price_slope", "price_acceleration",
@@ -60,12 +60,16 @@ def price_history_command(
                     )
                 )
             except httpx.HTTPError as e:
-                if output_format == "json":
-                    with json_output_mode() as stdout:
-                        emit_json_error("price-history", "Failed to fetch price history data", file=stdout)
-                    return
-                error_console.print(f"[red]Failed to fetch price history: {e}[/red]")
-                raise SystemExit(1)
+                # One sentence for both readers (#286). The exit code and the
+                # stream were already right here, which is why this command
+                # cleared the sweep that found `fpl history`; the wording was
+                # not. Table mode named the upstream that refused while the
+                # envelope said only "Failed to fetch price history data", so
+                # the consumer told to script against `error` was the one
+                # reader who could not see what had gone wrong.
+                emit_failure(
+                    "price-history", f"Failed to fetch price history: {e}", output_format, cause=e,
+                )
 
             current_gw = current_gw_data["id"] if current_gw_data else 0
 

@@ -9,7 +9,13 @@ from rich.table import Table
 
 from fpl_cli.cli._context import console, error_console
 from fpl_cli.models.player import BLANK_POINTS_THRESHOLD, POSITION_MAP
-from fpl_cli.services.fixture_predictions import had_fixture
+from fpl_cli.season import TOTAL_GAMEWEEKS
+from fpl_cli.services.fixture_predictions import (
+    find_blank_gameweeks,
+    find_double_gameweeks,
+    had_fixture,
+)
+from fpl_cli.services.team_ratings import DEFAULT_FDR_MODE
 
 if TYPE_CHECKING:
     from fpl_cli.api.fpl import FPLClient
@@ -17,6 +23,7 @@ if TYPE_CHECKING:
     from fpl_cli.models.player import Player
     from fpl_cli.models.team import Team
     from fpl_cli.services.fixture_predictions import DoublePrediction
+    from fpl_cli.services.team_ratings import TeamRatingsService
 
 
 class GlobalReviewData(TypedDict, total=False):
@@ -398,3 +405,142 @@ async def _review_league_table() -> list[dict[str, Any]]:
         console.print(lt_table)
 
     return league_table_data
+
+
+class TeamNextFixture(TypedDict):
+    """One of a club's fixtures in the gameweek after the reviewed one."""
+
+    opponent: str
+    venue: str
+    atk_fdr: float
+    def_fdr: float
+
+
+class NextGameweekOutlook(TypedDict):
+    """Next gameweek's fixtures, keyed by the short name of the club playing them."""
+
+    gameweek: int
+    fixtures_by_team: dict[str, list[TeamNextFixture]]
+    blank_teams: list[str]
+    double_teams: list[str]
+    fdr_source: str
+    fdr_mode: str
+    fdr_warning: str | None
+    already_played: bool
+
+
+async def _review_next_gameweek(
+    client: FPLClient,
+    gw: int,
+    teams: dict[int, Team],
+    *,
+    custom_analysis: bool,
+) -> NextGameweekOutlook | None:
+    """Next gameweek's fixtures and difficulty, for the review's forward look.
+
+    The review is otherwise built entirely from results, which left its "Next
+    Week" section making start, bench and transfer calls with no sight of the
+    fixtures those calls turn on -- so it extrapolated from one week of points
+    and advised benching a defender at home to the league's weakest side
+    (issue #191). This is the data that section was missing.
+
+    Difficulty follows the same split as `fpl fixtures` and `fpl fdr`: the
+    team-ratings positional FDR (1-7) when custom analysis is on, the FPL API's
+    own difficulty (1-5, position-blind, so both axes carry it) when it is off,
+    so one fixture reads the same number here as on the surface that prints it
+    (#202). `fdr_source` says which, because the two scales are not
+    interchangeable and the prompt has to name the one it was handed, and
+    `fdr_warning` carries `get_staleness_warning()` verbatim -- ratings that
+    cannot separate two teams, or that do not know a promoted club, score a
+    neutral 4.0 that reads exactly like a genuinely average fixture, and the
+    one FDR surface an LLM sees must not present that as analysis. Unrated
+    clubs keep the 4.0 rather than falling back to the API's 1-5, which would
+    put one club on a different scale inside the same column (#202).
+
+    Returns None when there is no next gameweek to look at -- the reviewed
+    gameweek was the last of the season, or its fixtures could not be fetched.
+    Reviewing an older gameweek still gets the gameweek that followed it, which
+    is the one that review's "Next Week" section is about -- but by then those
+    fixtures have been played and the ratings scoring them are today's, not the
+    ones that stood at the time, so `already_played` marks the block
+    retrospective rather than letting it read as advice for a gameweek still to
+    come.
+    """
+    next_gw = gw + 1
+    if next_gw > TOTAL_GAMEWEEKS:
+        return None
+
+    try:
+        fixtures = await client.get_fixtures(next_gw)
+    except Exception as e:  # noqa: BLE001 — graceful degradation
+        error_console.print(
+            f"[yellow]Could not fetch GW{next_gw} fixtures: {rich_escape(str(e))}[/yellow]"
+        )
+        return None
+
+    if not fixtures:
+        return None
+
+    ratings = await _resolve_review_ratings(client, custom_analysis)
+
+    fixtures_by_team: dict[str, list[TeamNextFixture]] = {}
+    for fixture in fixtures:
+        home = teams.get(fixture.home_team_id)
+        away = teams.get(fixture.away_team_id)
+        if not home or not away:
+            continue
+        for team, opponent, venue in ((home, away, "home"), (away, home, "away")):
+            if ratings is not None:
+                pair = ratings.get_positional_fdr_pair(
+                    team.short_name, opponent.short_name, venue, mode=DEFAULT_FDR_MODE,
+                )
+                atk_fdr, def_fdr = pair["ATK"], pair["DEF"]
+            else:
+                api_difficulty = float(
+                    fixture.home_difficulty if venue == "home" else fixture.away_difficulty
+                )
+                atk_fdr = def_fdr = api_difficulty
+            fixtures_by_team.setdefault(team.short_name, []).append({
+                "opponent": opponent.short_name,
+                "venue": "H" if venue == "home" else "A",
+                "atk_fdr": atk_fdr,
+                "def_fdr": def_fdr,
+            })
+
+    teams_list = list(teams.values())
+    fixtures_by_gw = {next_gw: fixtures}
+    blanks = find_blank_gameweeks(fixtures_by_gw, teams_list, next_gw, next_gw)
+    doubles = find_double_gameweeks(fixtures_by_gw, teams_list, next_gw, next_gw)
+
+    return {
+        "gameweek": next_gw,
+        "fixtures_by_team": fixtures_by_team,
+        "blank_teams": sorted(t["short_name"] for t in blanks.get(next_gw, [])),
+        "double_teams": sorted(t["short_name"] for t in doubles.get(next_gw, [])),
+        "fdr_source": "team_ratings" if ratings is not None else "fpl_api",
+        "fdr_mode": DEFAULT_FDR_MODE,
+        "fdr_warning": ratings.get_staleness_warning() if ratings is not None else None,
+        "already_played": all(f.finished for f in fixtures),
+    }
+
+
+async def _resolve_review_ratings(
+    client: FPLClient, custom_analysis: bool,
+) -> TeamRatingsService | None:
+    """The team-ratings service, or None to score fixtures on FPL API difficulty.
+
+    None only on the opted-out path, where no service is constructed and no
+    refresh is attempted -- the same shape as `fpl fixtures`'s `_resolve_ratings`.
+    There is no failure branch to add beside it: `ensure_fresh` swallows both a
+    failed refresh and a failed team-set check, so it cannot raise, and a
+    `try` around it would be dead code claiming a fallback that never fires
+    (#291 review). Ratings that came back unusable are reported instead, by
+    `get_staleness_warning()` at the call site.
+    """
+    if not custom_analysis:
+        return None
+    from fpl_cli.services.team_ratings import TeamRatingsService
+
+    service = TeamRatingsService()
+    await service.ensure_fresh(client)
+    return service

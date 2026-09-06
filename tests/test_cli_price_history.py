@@ -108,6 +108,18 @@ def _run(args=None, trends=None, players=None, teams=None, current_gw=6):
         return runner.invoke(main, ["price-history"] + (args or []))
 
 
+def _run_failing(args):
+    """Invoke `price-history` with the trend provider refusing, in either format."""
+    fpl, historical = _make_clients()
+    historical.get_gw_trends = AsyncMock(side_effect=httpx.HTTPError("Network error"))
+    runner = CliRunner()
+    with (
+        patch("fpl_cli.api.fpl.FPLClient", return_value=fpl),
+        patch("fpl_cli.api.historical.make_historical_provider", return_value=historical),
+    ):
+        return runner.invoke(main, args)
+
+
 class TestPriceHistoryDefault:
     def test_default_output_shows_all_players(self):
         result = _run()
@@ -288,30 +300,29 @@ class TestPriceHistoryErrors:
         assert data["metadata"]["is_stale"] is True
 
     def test_fetch_failure_table(self):
-        fpl, historical = _make_clients()
-        historical.get_gw_trends = AsyncMock(side_effect=httpx.HTTPError("Network error"))
-        runner = CliRunner()
-        with (
-            patch("fpl_cli.api.fpl.FPLClient", return_value=fpl),
-            patch("fpl_cli.api.historical.make_historical_provider", return_value=historical),
-        ):
-            result = runner.invoke(main, ["price-history"])
-        assert result.exit_code != 0
-        assert "Failed to fetch" in result.output
+        result = _run_failing(["price-history"])
+        assert result.exit_code == 1
+        assert "Failed to fetch price history: Network error" in " ".join(result.stderr.split())
+        assert result.stdout == ""
 
     def test_fetch_failure_json(self):
-        fpl, historical = _make_clients()
-        historical.get_gw_trends = AsyncMock(side_effect=httpx.HTTPError("Network error"))
-        runner = CliRunner()
-        with (
-            patch("fpl_cli.api.fpl.FPLClient", return_value=fpl),
-            patch("fpl_cli.api.historical.make_historical_provider", return_value=historical),
-        ):
-            result = runner.invoke(main, ["price-history", "--format", "json"])
-        assert result.exit_code != 0
-        data = json.loads(result.output)
+        result = _run_failing(["price-history", "--format", "json"])
+        assert result.exit_code == 1
+        data = json.loads(result.stdout)
         assert data["command"] == "price-history"
-        assert "error" in data
+        # The upstream's own words, not a stand-in for them: the envelope used
+        # to say "Failed to fetch price history data" while the table path
+        # named the cause, so the reader told to script against `error` was
+        # the one who could not see what had gone wrong (#286).
+        assert data["error"] == "Failed to fetch price history: Network error"
+
+    def test_fetch_failure_reads_the_same_in_both_formats(self):
+        """One sentence for both readers, and one exit code (#286)."""
+        table = _run_failing(["price-history"])
+        envelope = _run_failing(["price-history", "--format", "json"])
+
+        assert table.exit_code == envelope.exit_code == 1
+        assert " ".join(table.stderr.split()) == json.loads(envelope.stdout)["error"]
 
 
 class TestPriceHistoryLastN:

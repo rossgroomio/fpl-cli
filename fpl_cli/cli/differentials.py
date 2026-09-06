@@ -35,10 +35,6 @@ def differentials_command(threshold: float, min_minutes: int, output_format: str
             with json_output_mode() as stdout:
                 from fpl_cli.api.fpl import FPLClient
 
-                async with FPLClient() as client:
-                    next_gw = await client.get_next_gameweek()
-                gameweek = next_gw["id"] if next_gw else None
-
                 async with StatsAgent(config={
                     "differential_threshold": threshold,
                     "semi_differential_threshold": 15.0,
@@ -51,6 +47,18 @@ def differentials_command(threshold: float, min_minutes: int, output_format: str
                 if not result.success:
                     emit_json_error("differentials", result.message, file=stdout)
                     return
+
+                # After the agent, not before it (#286). The gameweek is a
+                # metadata stamp on a payload that does not exist yet, and
+                # fetching it first meant the two formats met an unreachable
+                # API in different code: this path died in the client, where
+                # `api_failure_boundary` calls it "Could not reach the FPL
+                # API", while table mode reached the agent and reported the
+                # stats failure it came back with. Same outage, two answers,
+                # neither wrong -- they were describing different events.
+                async with FPLClient() as client:
+                    next_gw = await client.get_next_gameweek()
+                gameweek = next_gw["id"] if next_gw else None
 
                 combined: dict = {
                     "differentials": result.data.get("differentials", {}),

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from fpl_cli.utils.gameweek import is_opening_gameweek
-from fpl_cli.utils.markdown import fence_flags, has_heading, parse_heading
+from fpl_cli.utils.markdown import fence_flags, has_heading, leaf_body, parse_heading
 from fpl_cli.utils.text import strip_diacritics
 
 logger = logging.getLogger(__name__)
@@ -109,12 +109,12 @@ This query runs in the 24-48h after the gameweek finished.
 ## Standout Performers
 | Player | Club | Pts | Why They Hauled | Source |
 |--------|------|-----|-----------------|--------|
-[3-5 players drawn EXCLUSIVELY from the Dream Team list above. Do not include any player not on that list. Use actual points from GW data. The Top Performer named in gw_results (the Dream Team's designated highest scorer) MUST be the first row - they cannot be omitted or buried below lower-scoring names.]
+[3-5 players drawn EXCLUSIVELY from the Dream Team list above. Do not include any player not on that list. Use actual points from GW data. The Top Performer named in gw_results (the Dream Team's designated highest scorer) MUST be the first row - they cannot be omitted or buried below lower-scoring names. "Why They Hauled" is the explanation itself, in prose, with no citation inside it. "Source" is where that explanation came from - a named outlet or account (e.g. "The Athletic", "@FPLconnect"), or "GW data" when it rests only on the figures supplied above. Every row must carry a Source; never leave the cell blank and never repeat it inside "Why They Hauled".]
 
 ## Disappointments
 | Player | Club | Pts | What Went Wrong | Concern Level |
 |--------|------|-----|-----------------|---------------|
-[3-5 players drawn EXCLUSIVELY from the Blankers list above. Do not include any player not on that list, even if they had a poor gameweek by other measures. Use actual points and ownership from GW data. The "What Went Wrong" cell must describe only the individual player in that row — do not introduce other players or teams not on the list.]
+[3-5 players drawn EXCLUSIVELY from the Blankers list above. Do not include any player not on that list, even if they had a poor gameweek by other measures. Use actual points and ownership from GW data. The "What Went Wrong" cell must describe only the individual player in that row — do not introduce other players or teams not on the list. "Concern Level" is a one-word verdict on whether the blank looks repeatable - High, Medium or Low - optionally followed by a short qualifier.]
 
 ## Community Pulse
 - **Mood:** [One-word + elaboration]
@@ -249,6 +249,7 @@ _HARD_CONSTRAINTS_BASE_NEVER = """\
 - State or imply a club for any player other than the club printed beside their name in the supplied data. Squad lines read `- Name (Club, POS): N pts` - that club is the only authority on who they play for. Players change clubs in the transfer windows and your training data lags behind, so a player you "know" at one club may have moved. This applies to grouping too: only put players together as a club's contingent ("the Brighton pair") when every one of them carries that club label in the data. If you want to name a player who has no club label anywhere in the data, name them without a club rather than guessing one
 - Make a blanket scored-or-blanked claim - "everyone scored", "nobody blanked", "the whole bench delivered", "all 15 contributed" - without checking every points total it covers. One player on 0 makes it false. Under Bench Boost the bench totals are part of the claim, since all 15 count. Either name what the data actually shows or drop the sweeping line
 - Mix an aggregate framing and a per-player framing in the same clause when comparing several players' points to one player's total (e.g. "X, Y and Z combined to be outscored by him individually" - "combined" and "individually" claim two different, contradictory sums). Pick one: either sum the group's points yourself and compare that single total ("X, Y and Z combined for N, fewer than his M"), or compare each on its own ("X, Y and Z each scored fewer than his M individually") - verify the arithmetic actually supports whichever framing you choose before writing it, and never both in the same sentence
+- Issue a fixture-dependent call - start, bench, captain, transfer, waiver, or "move on from" - that the fixture data does not support. The `<next_gameweek>` block is the only thing you know about what any club plays next: when it is present, a call must match the fixture it names rather than this gameweek's points, and when it is absent you know nothing about next gameweek's fixtures and must make no such call at all
 - Use the word "league" to refer to the global FPL game. In this prompt, "league" ALWAYS means the user's mini-league (Classic or Draft) by name. The "Global FPL top score" and "Global FPL average" are community-wide stats across all FPL managers worldwide - refer to them as "the global top score", "the overall average", or "the best manager in the game". NEVER write "the highest in the league", "the top score in the league", or any phrasing that implies these global stats came from the user's mini-league\""""
 
 _HARD_CONSTRAINTS_FINE_NEVER = """\
@@ -362,8 +363,22 @@ _OUTPUT_FORMAT_TAIL = """\
 **Selection:** [Note any selection mistakes - did benched players outscore starters? If 2+ players from the same team collectively hauled or blanked, note the exposure outcome. If a bench player from the Bench vs Starters data outscored more than one starter, say so as either an aggregate ("combined for N, more than his M") or a per-player claim ("each scored fewer than his M individually") - never both in the same clause - and check the arithmetic before writing it. If selections were good, acknowledge briefly.]
 
 ## Next Week
-[1-2 sentences: What does this GW suggest for upcoming decisions? If suggesting players to move on from, specify whether this applies to Classic, Draft, or both.]
+{next_week_instruction}
 </output_format>"""
+
+
+# Two "Next Week" instructions, picked by whether the run has next gameweek's
+# fixtures. The section asks for forward-looking calls, and until #191 it was
+# asked for them with no sight of the fixtures those calls turn on: one week of
+# returns was the only evidence available, so the advice was "chase last week's
+# points" by construction, and a defender at home to the league's weakest side
+# got dropped for scoring 5. Grounded, the section keeps its job; blind, it is
+# narrowed to what a results-only view can honestly support.
+_NEXT_WEEK_WITH_FIXTURES = """\
+[1-2 sentences: What does this GW suggest for upcoming decisions? Every start, bench, transfer or drop call must be consistent with the named player's fixture in <next_gameweek> - cite the opponent and FDR you are reasoning from. Do not advise moving on from, benching or selling a player whose next fixture is easy on the strength of one poor gameweek, and do not advise starting or bringing in a player whose next fixture is hard on the strength of one good one; where the points and the fixture disagree, the fixture is the stronger evidence and one gameweek of returns is the weaker. Name no player whose club has no line in <next_gameweek>, and no fixture that block does not list. If suggesting players to move on from, specify whether this applies to Classic, Draft, or both.]"""
+
+_NEXT_WEEK_WITHOUT_FIXTURES = """\
+[1-2 sentences: What patterns from this GW are worth watching? No fixture data for the next gameweek was supplied, so this section is restricted to observations that do not depend on fixtures - a repeated blank, a player losing minutes, a run of returns worth noting. Do NOT make start, bench, captain, transfer or waiver recommendations, and do not say a fixture is easy or hard: you cannot see the fixtures. Point the user at `fpl gw-prep` for those calls. If flagging a player to keep an eye on, specify whether this applies to Classic, Draft, or both.]"""
 
 _EDGE_CASE_WAIVERS = 'If no waivers processed in Draft, note "No waivers this week" in Draft Verdict'
 _EDGE_CASE_MISSING_DATA = "If data for one format is missing, analyse only the format with data"
@@ -408,6 +423,7 @@ Authoritative fixture counts for this gameweek (use this, NOT the community narr
 - Blank Gameweek teams (did not play): {bgw_teams_line}
 - Every other team played ONCE (single gameweek).
 </gw_fixtures>
+{next_gameweek_block}
 {season_context}
 
 <classic_data>
@@ -456,9 +472,18 @@ Overall League Position: {draft_position} of {draft_total}
 
 
 def _build_system_prompt(
-    *, has_fines: bool, use_net_points: bool = False, is_opening_gameweek: bool = False,
+    *,
+    has_fines: bool,
+    use_net_points: bool = False,
+    is_opening_gameweek: bool = False,
+    has_upcoming_fixtures: bool = False,
 ) -> str:
-    """Assemble the synthesis system prompt with conditional fine sections."""
+    """Assemble the synthesis system prompt with conditional fine sections.
+
+    `has_upcoming_fixtures` says whether the run carries a `<next_gameweek>`
+    block, which decides which of the two "Next Week" instructions the output
+    format asks for (see `_NEXT_WEEK_WITH_FIXTURES`).
+    """
     never_lines = [_HARD_CONSTRAINTS_BASE_NEVER]
     if has_fines:
         never_lines.append(_HARD_CONSTRAINTS_FINE_NEVER)
@@ -487,7 +512,11 @@ def _build_system_prompt(
         output_format += _OUTPUT_FORMAT_FINE_CHECK_TEMPLATE.format(
             points_instruction=_FINE_CHECK_POINTS_INSTRUCTION[use_net_points],
         )
-    output_format += _OUTPUT_FORMAT_TAIL
+    output_format += _OUTPUT_FORMAT_TAIL.format(
+        next_week_instruction=(
+            _NEXT_WEEK_WITH_FIXTURES if has_upcoming_fixtures else _NEXT_WEEK_WITHOUT_FIXTURES
+        ),
+    )
 
     parts = [
         _SYSTEM_INTRO,
@@ -534,8 +563,18 @@ def get_review_synthesis_prompt(
     use_net_points: bool = False,
     dgw_teams: str = "",
     bgw_teams: str = "",
+    upcoming_fixtures: str = "",
 ) -> tuple[str, str]:
     """Generate the synthesis system and user prompts for personalised gameweek analysis.
+
+    Args:
+        upcoming_fixtures: Formatted next-gameweek fixture block (see
+            `_format_next_gameweek` in `cli/_review_summarisation.py`), or ""
+            when the run has none. It is the only fixture data the "Next Week"
+            section gets, so it also decides which of the two instructions for
+            that section the system prompt carries: grounded advice when it is
+            present, fixture-independent observations only when it is not
+            (issue #191).
 
     Returns:
         Tuple of (system_prompt, user_prompt).
@@ -562,7 +601,13 @@ def get_review_synthesis_prompt(
     has_fines = bool(fine_results)
     opening_gameweek = is_opening_gameweek(gameweek)
     system_prompt = _build_system_prompt(
-        has_fines=has_fines, use_net_points=use_net_points, is_opening_gameweek=opening_gameweek,
+        has_fines=has_fines,
+        use_net_points=use_net_points,
+        is_opening_gameweek=opening_gameweek,
+        has_upcoming_fixtures=bool(upcoming_fixtures),
+    )
+    next_gameweek_block = (
+        f"\n<next_gameweek>\n{upcoming_fixtures}\n</next_gameweek>" if upcoming_fixtures else ""
     )
 
     user_parts = [
@@ -588,6 +633,7 @@ def get_review_synthesis_prompt(
             active_chip_line=active_chip_line,
             dgw_teams_line=dgw_teams or "none this gameweek",
             bgw_teams_line=bgw_teams or "none this gameweek",
+            next_gameweek_block=next_gameweek_block,
             season_context=_SEASON_CONTEXT_OPENING_GAMEWEEK if opening_gameweek else "",
             draft_points=draft_points,
             draft_league_name=draft_league_name,
@@ -830,7 +876,11 @@ def ensure_top_performer_first(
     else:
         club = top_performer.get("team", "???")
         pts = top_performer.get("points", "?")
-        new_row = f"| {name} | {club} | {pts} | Dream Team's designated top performer this gameweek | Official stats |"
+        # "GW data" is the Source value the prompt reserves for a row resting
+        # only on the supplied figures, which is exactly what this synthesized
+        # row is. Any other wording would give the reader two conventions in
+        # one table (#267).
+        new_row = f"| {name} | {club} | {pts} | Dream Team's designated top performer this gameweek | GW data |"
         rows.insert(0, new_row)
         corrections = [f"{name}: added as first row (Dream Team's top performer was missing)"]
 
@@ -1192,6 +1242,94 @@ def _ends_mid_sentence(text: str) -> bool:
     if not trimmed:
         return False
     return trimmed[-1] not in _TERMINAL_PUNCTUATION
+
+
+# =============================================================================
+# NEXT WEEK GROUNDING (post-generation guard, issue #191 / #291 review)
+# =============================================================================
+
+# A difficulty figure as either side writes it: "FDR 2.1", "FDR of 2.1", and
+# the "ATK 1.5 DEF 2.1" pair the block's by-club list prints. All three labels
+# have to be read on the block side or its column figures would count as
+# unprinted, and a model quoting one correctly would be reported for it. A
+# number the block never printed is a fabricated one, which is the failure
+# mode #191 was about, one layer along.
+_FDR_CITATION_RE = re.compile(
+    r"\b(?:FDR|ATK|DEF)\s+(?:of\s+)?(\d+(?:\.\d+)?)", re.IGNORECASE
+)
+
+# Fixture vocabulary the narrowed instruction forbids outright: with no block
+# in the prompt, the model knows nothing about who plays whom, so any of these
+# is a claim it cannot have got from the data.
+_FIXTURE_CLAIM_RE = re.compile(
+    r"\bFDR\b"
+    r"|\bat home to\b|\baway (?:at|to)\b|\bhosts?\b|\btravels? to\b"
+    r"|\b(?:easy|kind|tough|hard|favourable|difficult|nasty)\s+(?:run of\s+)?fixtures?\b"
+    r"|\bfixtures? (?:turn|swing|ease|soften|toughen)\b",
+    re.IGNORECASE,
+)
+
+_NEXT_WEEK_HEADING = "## Next Week"
+
+
+def check_next_week_grounding(response: str, upcoming_fixtures: str) -> list[str]:
+    """Check the Next Week section against the fixture data it was given.
+
+    The rest of #191's fix is prompt instructions, and an instruction is
+    something a model can drop -- under length pressure, or simply because the
+    research narrative pulled harder. The research half already pairs its
+    prompt rules with post-generation validators (`validate_research_teams`,
+    `validate_research_prose`); this is the same pairing for the claim this
+    change introduced.
+
+    Two things are checkable without re-deriving the model's reasoning, and
+    only those two are checked:
+
+    - With a block: every FDR figure the section cites must be one the block
+      actually printed. Matching is exact to one decimal place, because the
+      section is told to cite the figure it reasoned from -- so a number that
+      is merely near one is either a different fixture's or nobody's.
+    - Without one: the section must make no fixture claim at all, because it
+      was given nothing to make one from.
+
+    Whether a *recommendation* matches the fixture behind it is a judgement
+    this cannot make, so it does not try -- it reports, and the report goes
+    where the completeness guard's already does.
+
+    Args:
+        response: The synthesis text as it will be used, post-processed.
+        upcoming_fixtures: The `<next_gameweek>` block that was sent, or "".
+
+    Returns:
+        One line per problem found, empty when the section is grounded (or
+        absent -- a missing section is the completeness guard's to report).
+    """
+    body = leaf_body(response.split("\n"), _NEXT_WEEK_HEADING)
+    if not body:
+        return []
+    text = "\n".join(body)
+
+    if not upcoming_fixtures:
+        claim = _FIXTURE_CLAIM_RE.search(text)
+        if claim:
+            return [
+                f'"Next Week" makes a fixture claim ({claim.group(0)!r}) on a run with no'
+                " fixture data - the section was asked for observations only"
+            ]
+        return []
+
+    printed = {
+        round(float(value), 1) for value in _FDR_CITATION_RE.findall(upcoming_fixtures)
+    }
+    unmatched = sorted(
+        {round(float(raw), 1) for raw in _FDR_CITATION_RE.findall(text)} - printed
+    )
+    if unmatched:
+        return [
+            '"Next Week" cites FDR figure(s) that do not appear in the fixture data: '
+            + ", ".join(f"{value:g}" for value in unmatched)
+        ]
+    return []
 
 
 def check_synthesis_completeness(
