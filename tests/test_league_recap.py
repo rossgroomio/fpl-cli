@@ -53,6 +53,7 @@ from fpl_cli.prompts.league_recap import (
     format_recap_player_clubs_context,
     format_recap_season_fines_context,
     format_recap_standings_context,
+    format_recap_transfers_context,
     get_recap_synthesis_prompt,
 )
 from fpl_cli.services.league_history_fines import ManagerFineTally, SeasonFinesTally
@@ -90,6 +91,7 @@ def _make_manager(
     active_chip: str | None = None,
     squad: list[RecapManagerPlayer] | None = None,
     transfers: list[RecapTransfer] | None = None,
+    transfers_made: int | None = None,
 ) -> RecapManagerEntry:
     """Factory for RecapManagerEntry with sensible defaults.
 
@@ -126,7 +128,23 @@ def _make_manager(
         del result["previous_rank"]
     if transfers is not None:
         result["transfers"] = transfers
+    if transfers_made is not None:
+        result["transfers_made"] = transfers_made
     return result
+
+
+def _make_transfer(
+    player_in: str,
+    player_out: str,
+    in_points: int,
+    out_points: int,
+    cost: int = 0,
+) -> RecapTransfer:
+    return RecapTransfer(
+        player_in=player_in, player_in_team="ARS", player_in_points=in_points,
+        player_out=player_out, player_out_team="LIV", player_out_points=out_points,
+        net=in_points - out_points, cost=cost,
+    )
 
 
 def _make_squad_player(
@@ -2886,6 +2904,137 @@ class TestPromptFormatting:
         )
         assert "## Captains" not in user
 
+    def test_transfers_context_lists_every_mover_with_moves_hit_and_net(self):
+        """Issue #71: every mover, every move, the hit, the post-hit net, and
+        who stood still -- not just the best and worst the awards name."""
+        managers = [
+            _make_manager(
+                name="Alice", entry_id=1, transfer_cost=4, transfers_made=2,
+                transfers=[
+                    _make_transfer("Haaland", "Isak", 12, 3, cost=4),
+                    _make_transfer("Saka", "Palmer", 2, 2, cost=4),
+                ],
+            ),
+            _make_manager(name="Bob", entry_id=2, transfers_made=0, transfers=[]),
+            _make_manager(
+                name="Cam", entry_id=3, transfers_made=1,
+                transfers=[_make_transfer("Wood", "Watkins", 1, 9)],
+            ),
+        ]
+        text = format_recap_transfers_context(_make_recap_data(managers=managers))
+        lines = text.splitlines()
+        assert lines[0] == "Total managers who made transfers: 2 of 3"
+        assert (
+            "- **Alice** (2 transfers, -4 hit, net +5 after the hit): "
+            "Haaland (12 pts) in for Isak (3 pts), +9; Saka (2 pts) in for Palmer (2 pts), +0"
+        ) in lines
+        assert "- **Cam** (1 transfer, no hit, net -8): Wood (1 pts) in for Watkins (9 pts), -8" in lines
+        assert lines[-1] == "Made no transfers (1): Bob"
+
+    def test_transfers_context_orders_movers_best_net_first(self):
+        managers = [
+            _make_manager(name="Cam", entry_id=3, transfers=[_make_transfer("A", "B", 1, 9)]),
+            _make_manager(name="Alice", entry_id=1, transfers=[_make_transfer("C", "D", 12, 3)]),
+            _make_manager(name="Bob", entry_id=2, transfers=[_make_transfer("E", "F", 5, 5)]),
+        ]
+        text = format_recap_transfers_context(_make_recap_data(managers=managers))
+        assert text.index("**Alice**") < text.index("**Bob**") < text.index("**Cam**")
+
+    def test_transfers_context_ranks_on_the_post_hit_net(self):
+        """+9 raw on a -8 hit ranks below +3 raw with no hit, the same figure
+        the transfer awards are drawn from."""
+        managers = [
+            _make_manager(
+                name="Alice", entry_id=1, transfer_cost=8,
+                transfers=[_make_transfer("A", "B", 12, 3, cost=8)],
+            ),
+            _make_manager(name="Bob", entry_id=2, transfers=[_make_transfer("C", "D", 5, 2)]),
+        ]
+        text = format_recap_transfers_context(_make_recap_data(managers=managers))
+        assert text.index("**Bob**") < text.index("**Alice**")
+        assert "net +1 after the hit" in text
+
+    def test_transfers_context_tags_the_chip_a_mover_played(self):
+        managers = [
+            _make_manager(
+                name="Alice", entry_id=1, active_chip="WC", transfers_made=2,
+                transfers=[_make_transfer("A", "B", 4, 1), _make_transfer("C", "D", 6, 2)],
+            ),
+        ]
+        text = format_recap_transfers_context(_make_recap_data(managers=managers))
+        assert "- **Alice** [WC] (2 transfers, no hit, net +7):" in text
+
+    def test_transfers_context_keeps_an_uncaptured_mover_among_the_movers(self):
+        """A failed transfer fetch leaves the list empty while the API's count
+        says they moved: they are a mover with unknown moves, never a manager
+        who stood still."""
+        managers = [
+            _make_manager(name="Alice", entry_id=1, transfers=[_make_transfer("A", "B", 4, 1)]),
+            _make_manager(name="Bob", entry_id=2, transfer_cost=4, transfers_made=3, transfers=[]),
+            _make_manager(name="Cam", entry_id=3, transfers_made=0, transfers=[]),
+        ]
+        text = format_recap_transfers_context(_make_recap_data(managers=managers))
+        assert text.startswith("Total managers who made transfers: 2 of 3")
+        assert (
+            "- **Bob** (3 transfers, -4 hit): the moves themselves were not captured, "
+            "so who came in and who went out is unknown - name nobody"
+        ) in text
+        assert "Made no transfers (1): Cam" in text
+        assert "Bob" not in text.splitlines()[-1]
+
+    def test_transfers_context_says_when_the_captured_list_came_back_short(self):
+        managers = [
+            _make_manager(
+                name="Alice", entry_id=1, transfer_cost=4, transfers_made=3,
+                transfers=[_make_transfer("A", "B", 4, 1, cost=4), _make_transfer("C", "D", 6, 2, cost=4)],
+            ),
+        ]
+        text = format_recap_transfers_context(_make_recap_data(managers=managers))
+        assert "(3 transfers, -4 hit, net +3 after the hit)" in text
+        assert "Only 2 of the 3 moves were captured, so the net covers those alone" in text
+
+    def test_transfers_context_omits_the_stayed_line_when_everyone_moved(self):
+        managers = [_make_manager(name="Alice", entry_id=1, transfers=[_make_transfer("A", "B", 4, 1)])]
+        text = format_recap_transfers_context(_make_recap_data(managers=managers))
+        assert "Total managers who made transfers: 1 of 1" in text
+        assert "Made no transfers" not in text
+
+    def test_transfers_context_empty_when_nobody_transferred(self):
+        managers = [
+            _make_manager(name="Alice", entry_id=1, transfers_made=0, transfers=[]),
+            _make_manager(name="Bob", entry_id=2),
+        ]
+        assert format_recap_transfers_context(_make_recap_data(managers=managers)) == ""
+
+    def test_transfers_context_empty_for_draft(self):
+        managers = [_make_manager(name="Alice", entry_id=1, transfers=[_make_transfer("A", "B", 4, 1)])]
+        data = _make_recap_data(managers=managers)
+        data["fpl_format"] = "draft"
+        assert format_recap_transfers_context(data) == ""
+
+    def test_transfers_context_empty_when_no_managers(self):
+        assert format_recap_transfers_context(_make_recap_data(managers=[])) == ""
+
+    def test_synthesis_prompt_includes_transfers_section_after_chips(self):
+        _, user = get_recap_synthesis_prompt(
+            gw=5, league_name="Test", fpl_format="classic",
+            awards_text="x", standings_text="| t |", fines_text="",
+            chips_text="- **Wildcard** (1): Alice",
+            transfers_text="Total managers who made transfers: 1 of 2\n- **Alice** (1 transfer, no hit, net +3): A (4 pts) in for B (1 pts), +3",
+            player_clubs_text="- A: Arsenal",
+        )
+        assert "## Transfers" in user
+        assert "Total managers who made transfers: 1 of 2" in user
+        assert user.index("## Chips Played") < user.index("## Transfers") < user.index("## Player Clubs")
+
+    def test_synthesis_prompt_omits_transfers_section_when_empty(self):
+        _, user = get_recap_synthesis_prompt(
+            gw=5, league_name="Test", fpl_format="classic",
+            awards_text="x", standings_text="| t |", fines_text="",
+            transfers_text="",
+        )
+        assert "## Transfers" not in user
+
     def test_fines_context_includes_triggered(self):
         from fpl_cli.cli._league_recap_types import RecapFineResult
 
@@ -2938,7 +3087,8 @@ class TestPromptFormatting:
     def test_synthesis_system_prompt_fences_transfer_invention(self):
         from fpl_cli.prompts.league_recap import RECAP_SYNTHESIS_SYSTEM_PROMPT
 
-        assert "Only reference transfers that appear explicitly" in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        assert 'treat the "## Transfers" section as the source of truth' in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        assert "Do NOT infer transfer activity from the Awards section" in RECAP_SYNTHESIS_SYSTEM_PROMPT
         assert "not licence to invent" in RECAP_SYNTHESIS_SYSTEM_PROMPT
 
     def test_synthesis_system_prompt_binds_club_claims_to_the_data(self):

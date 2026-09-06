@@ -42,7 +42,7 @@ Your audience is every member of this league. They want entertainment first, inf
 - The biggest bench haul is always funny - lean into it
 - If a manager played a chip, that's a big narrative hook. A chip that flopped deserves mockery; a chip that paid off deserves grudging respect. When referencing chip users, treat the "Chips Played" section as the source of truth — it includes an explicit total count; use that number verbatim. Do NOT count tags in the standings table. Do not name a subset as "the X wildcards" — either name all users of that chip or none.
 - When referencing captain choices, treat the "## Captains" section as the source of truth. It lists every manager grouped by their intended captain pick, with an explicit total count. Use those counts verbatim. NEVER name a captain "outlier", "dissenter", or "the manager(s) who picked Y" unless they appear under that captain in the section. If you describe N managers as picking the modal captain, it must match the section's group size for that player. Do NOT infer captain choices from the awards or standings — they are compressed and miss managers whose pick was neither the best nor the worst.
-- Only reference transfers that appear explicitly in the Awards section or in a transfers note. If no transfer information is given, do not mention transfers, hits, or moves in and out at all - absence of transfer data means there is nothing to report, not licence to invent one.
+- When referencing transfers, hits, or moves in and out, treat the "## Transfers" section as the source of truth. It lists every manager who made a transfer with each move and its points swing, the hit they paid, an explicit count of movers, and the managers who made none - use those counts verbatim. NEVER say a manager transferred, took a hit, or stood still unless that section says so of them, never describe a move it does not list, and where it says a manager's moves were not captured, name none. Do NOT infer transfer activity from the Awards section - it names only the single best and single worst mover, so it never tells you how many managers transferred or what anyone else did. If there is no "## Transfers" section and no transfers note, do not mention transfers, hits, or moves in and out at all - absence of transfer data means there is nothing to report, not licence to invent one.
 - NEVER claim a manager's bench outscored their team unless bench points are strictly greater than their GW points. Use the exact numbers provided.
 - NEVER alter player or manager names. Use the exact spelling provided in the data.
 - NEVER state a club for a player other than the club given for them in this data - the "## Player Clubs" section, or the club printed beside a name elsewhere. Players change clubs in the transfer windows and your own knowledge of who plays where goes a season out of date, so that section is the only authority. A player it does not list has no club you can state: name them alone ("Haaland's 2 points") rather than supplying one from memory.
@@ -61,6 +61,7 @@ def get_recap_synthesis_prompt(
     season_fines_text: str = "",
     captains_text: str = "",
     chips_text: str = "",
+    transfers_text: str = "",
     player_clubs_text: str = "",
     league_history_text: str = "",
     is_bgw: bool = False,
@@ -103,6 +104,9 @@ def get_recap_synthesis_prompt(
 
     if chips_text:
         sections.extend(["", "## Chips Played", chips_text])
+
+    if transfers_text:
+        sections.extend(["", "## Transfers", transfers_text])
 
     if player_clubs_text:
         sections.extend(["", "## Player Clubs", player_clubs_text])
@@ -266,6 +270,92 @@ def format_recap_chips_context(data: LeagueRecapData) -> str:
         lines.append(f"- **{label}** ({len(users)}): {', '.join(users)}")
         total += len(users)
     lines.insert(0, f"Total chips played this GW: {total}")
+    return "\n".join(lines)
+
+
+def format_recap_transfers_context(data: LeagueRecapData) -> str:
+    """Per-manager transfer roster: every mover with each move, the hit they
+    paid and the post-hit net, plus the managers who made none (issue #71).
+
+    Mirrors the captains/chips enumerate-and-lock shape. The Awards section
+    names only the single best and single worst mover, and it was the only
+    transfer data the model ever saw -- so nothing stopped it inventing moves
+    for the ten managers in between, or reading "only two managers made
+    transfers" off a section that was never a roster. Listing every mover,
+    and naming who stood still, gives each transfer claim a line to be
+    checked against, the way a captain "outlier" is checked against the
+    Captains section.
+
+    The move count is the API's own `transfers_made` where the collector
+    recorded it, because the captured list is best-effort: a manager whose
+    transfer fetch failed still made their transfers, so they are listed as
+    having moved with the moves themselves marked unknown rather than filed
+    with the managers who stood still -- and a list that came back short
+    says so beside its net, which covers the captured moves alone.
+
+    Net is post-hit (raw swing minus `transfer_cost`), the same figure the
+    two transfer awards rank on, and the roster is sorted by it best-first so
+    the award winners bookend it. Empty for draft (waivers, not transfers)
+    and when nobody transferred -- GW1 carries its own note for that.
+    """
+    if data.get("fpl_format") != "classic":
+        return ""
+
+    managers = data.get("managers", [])
+    if not managers:
+        return ""
+
+    captured: list[tuple[int, str, str]] = []  # (post-hit net, name, line)
+    uncaptured: list[tuple[str, str]] = []  # (name, line)
+    stayed: list[str] = []
+    for m in managers:
+        name = m["manager_name"]
+        moves = m.get("transfers") or []
+        made = m.get("transfers_made")
+        count = len(moves) if made is None else max(made, len(moves))
+        if not count:
+            stayed.append(name)
+            continue
+
+        cost = m.get("transfer_cost", 0)
+        chip = m.get("active_chip")
+        label = f"**{name}**" + (f" [{chip}]" if chip else "")
+        plural = "transfer" if count == 1 else "transfers"
+        hit = f"-{cost} hit" if cost > 0 else "no hit"
+
+        if not moves:
+            uncaptured.append((name, (
+                f"- {label} ({count} {plural}, {hit}): the moves themselves were not "
+                "captured, so who came in and who went out is unknown - name nobody"
+            )))
+            continue
+
+        true_net = sum(t["net"] for t in moves) - cost
+        net = f"net {true_net:+d}" + (" after the hit" if cost > 0 else "")
+        moves_text = "; ".join(
+            f"{t['player_in']} ({t['player_in_points']} pts) in for "
+            f"{t['player_out']} ({t['player_out_points']} pts), {t['net']:+d}"
+            for t in moves
+        )
+        line = f"- {label} ({count} {plural}, {hit}, {net}): {moves_text}"
+        if len(moves) < count:
+            line += (
+                f". Only {len(moves)} of the {count} moves were captured, so the net "
+                "covers those alone and the rest are unknown"
+            )
+        captured.append((true_net, name, line))
+
+    if not captured and not uncaptured:
+        return ""
+
+    movers = len(captured) + len(uncaptured)
+    lines = [f"Total managers who made transfers: {movers} of {len(managers)}"]
+    captured.sort(key=lambda entry: (-entry[0], entry[1]))
+    lines.extend(line for _, _, line in captured)
+    uncaptured.sort(key=lambda entry: entry[0])
+    lines.extend(line for _, line in uncaptured)
+    if stayed:
+        lines.append(f"Made no transfers ({len(stayed)}): {', '.join(sorted(stayed))}")
     return "\n".join(lines)
 
 

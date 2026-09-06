@@ -835,6 +835,7 @@ async def _recap_llm_summarise(
         format_recap_player_clubs_context,
         format_recap_season_fines_context,
         format_recap_standings_context,
+        format_recap_transfers_context,
         get_recap_synthesis_prompt,
     )
 
@@ -851,6 +852,7 @@ async def _recap_llm_summarise(
     captains_text = format_recap_captains_context(collected_data, player_clubs)
     player_clubs_text = format_recap_player_clubs_context(player_clubs)
     chips_text = format_recap_chips_context(collected_data)
+    transfers_text = format_recap_transfers_context(collected_data)
     fines_text = format_recap_fines_context(collected_data, fines_tally)
     league_history_text = format_recap_league_history_context(notes_pack)
     season_fines_text = format_recap_season_fines_context(fines_tally)
@@ -865,6 +867,7 @@ async def _recap_llm_summarise(
         season_fines_text=season_fines_text,
         captains_text=captains_text,
         chips_text=chips_text,
+        transfers_text=transfers_text,
         player_clubs_text=player_clubs_text,
         league_history_text=league_history_text,
         is_bgw=is_bgw,

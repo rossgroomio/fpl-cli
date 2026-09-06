@@ -3113,6 +3113,44 @@ class TestEndToEndPromptThroughTheFullCommand:
         assert "gameweeks on top of the league" in user_prompt
         assert "Season phase:" in user_prompt
         assert "Stick to what happened this gameweek, with one exception" in system_prompt
+
+    def test_a_dry_run_writes_a_prompt_with_the_transfer_roster(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        """Issue #71: the per-manager transfer roster reaches the prompt the
+        command actually sends, alongside the rule that pins narration to it."""
+        monkeypatch.chdir(tmp_path)
+
+        def _tr(name_in: str, name_out: str, in_pts: int, out_pts: int) -> RecapTransfer:
+            return RecapTransfer(
+                player_in=name_in, player_in_team="ARS", player_in_points=in_pts,
+                player_out=name_out, player_out_team="LIV", player_out_points=out_pts,
+                net=in_pts - out_pts, cost=4,
+            )
+
+        result = _invoke_recap(_recap_data(
+            gameweek=5,
+            managers=[
+                _manager(
+                    name="Alice", entry_id=1, overall_rank=1, previous_rank=1, total_points=300,
+                    transfer_cost=4, transfers_made=2,
+                    transfers=[_tr("Haaland", "Isak", 12, 3), _tr("Saka", "Palmer", 2, 2)],
+                ),
+                _manager(
+                    name="Bob", entry_id=2, gw_rank=2, overall_rank=2, previous_rank=2,
+                    total_points=280, transfers_made=0, transfers=[],
+                ),
+            ],
+            cohort=_cohort((1, "Alice", 1, 60, 300), (2, "Bob", 2, 40, 280)),
+        ), ["--dry-run"])
+
+        assert result.exit_code == 0, result.output
+        system_prompt = (tmp_path / "data" / "debug" / "recap_system.txt").read_text(encoding="utf-8")
+        user_prompt = (tmp_path / "data" / "debug" / "recap_prompt.txt").read_text(encoding="utf-8")
+
+        assert "## Transfers" in user_prompt
+        assert "Total managers who made transfers: 1 of 2" in user_prompt
+        assert "- **Alice** (2 transfers, -4 hit, net +5 after the hit): Haaland (12 pts) in for Isak (3 pts), +9" in user_prompt
+        assert "Made no transfers (1): Bob" in user_prompt
+        assert 'treat the "## Transfers" section as the source of truth' in system_prompt
         assert "season phase" in system_prompt.lower()
 
     def _fined_at(self, gameweek: int) -> LeagueRecapData:
