@@ -830,7 +830,11 @@ def ensure_top_performer_first(
     else:
         club = top_performer.get("team", "???")
         pts = top_performer.get("points", "?")
-        new_row = f"| {name} | {club} | {pts} | Dream Team's designated top performer this gameweek | Official stats |"
+        # "GW data" is the Source value the prompt reserves for a row resting
+        # only on the supplied figures, which is exactly what this synthesized
+        # row is. Any other wording would give the reader two conventions in
+        # one table (#267).
+        new_row = f"| {name} | {club} | {pts} | Dream Team's designated top performer this gameweek | GW data |"
         rows.insert(0, new_row)
         corrections = [f"{name}: added as first row (Dream Team's top performer was missing)"]
 
