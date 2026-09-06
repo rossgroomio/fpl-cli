@@ -18,6 +18,7 @@ from fpl_cli.cli._league_recap_data import RecapReconciliationError
 from fpl_cli.cli._league_recap_history import (
     _apply_recorded_standings,
     _pair_squads,
+    _repair_fine_identity,
     HISTORY_WARNING_BACKFILL_MANAGER_UNREACHABLE,
     HISTORY_WARNING_BACKFILL_REPLAY_FAILED,
     DETAIL_FLAG,
@@ -258,6 +259,20 @@ class TestBuildHistoryRows:
         assert row.captain.had_fixture is False
         assert row.vice_captain is not None
         assert row.vice_captain.code == 223_340
+
+    def test_a_hand_built_fine_player_without_a_code_records_no_reference(self):
+        """`_fines_for` supports a ruling built by hand, and this function has
+        no guard of its own -- indexing a key that is merely conventional would
+        lose the whole gameweek's capture to a `KeyError` (#290 review)."""
+        data = _recap_data(fines=[{
+            "manager_name": "Alice", "manager_key": 1, "rule_type": "red-card",
+            "message": "Red card in starting XI (Trent). Round",
+            "players": [{"name": "Trent"}],
+        }])
+
+        row = build_history_rows(data, season=SEASON, captured_at=CAPTURED_AT)[0]
+
+        assert row.fines[0].players == [LedgerFinePlayer(name="Trent", code=None)]
 
     def test_the_raw_chip_name_is_stored_not_the_display_abbreviation(self):
         data = _recap_data(managers=[_manager(active_chip="BB")])
@@ -3592,7 +3607,7 @@ class TestRecordedFineKeepsRecordedIdentity:
             **kwargs,
         )
 
-    async def _damage(self, fines: list[LedgerFine]) -> None:
+    async def _damage(self, fines: list[LedgerFine], *, marker: str = "Sávio") -> None:
         """Put a ruling on disk as a pre-#176 run left it: the squad carried
         back to the name the gameweek recorded, the fine still naming today's.
 
@@ -3613,7 +3628,7 @@ class TestRecordedFineKeepsRecordedIdentity:
         store.gameweek_file(1).write_text(
             "".join(row.model_dump_json() + "\n" for row in lines), encoding="utf-8",
         )
-        assert "Sávio" in self._recorded_fine().message, "the damage this repairs"
+        assert marker in self._recorded_fine().message, "the damage this repairs"
 
     async def _replay_gw1(self, name: str, **kwargs) -> LedgerFine:
         replayed = self._incomplete(name, **kwargs)
@@ -3670,6 +3685,95 @@ class TestRecordedFineKeepsRecordedIdentity:
 
         assert fine.message == f"Red card in starting XI (Sávio, Hothead). {self.PENALTY}"
         assert fine.players is None, "nothing was recorded, so nothing is claimed"
+
+    async def test_a_reference_less_ruling_the_squad_now_contradicts_is_left_alone(self):
+        """Matching counts do not prove matching players (#290 review). Where
+        the message names someone still sitting in the squad but no longer
+        counted as sent off, the facts moved rather than the name, and adopting
+        whoever the predicate now selects would stamp a stranger's name and
+        reference onto the ruling."""
+        await self._damage(
+            [LedgerFine(
+                manager_key=1, rule_type="red-card",
+                message=f"Red card in starting XI (Calm). {self.PENALTY}",
+            )],
+            marker="Calm",
+        )
+
+        fine = await self._replay_gw1("Sávio")
+
+        assert fine.message == f"Red card in starting XI (Calm). {self.PENALTY}"
+        assert fine.players is None
+
+    async def test_the_standings_sweep_repairs_a_fine_on_a_row_it_rewrites(self):
+        """The one pass that reaches a finished gameweek without
+        `--backfill-detail`, and it rewrites these rows anyway -- so a stale
+        name left alone here is re-anchored as the new winner on every run,
+        with nothing short of a detailed replay to put it right (#290 review).
+        """
+        store = _store()
+        recorded = make_history_row(
+            season=SEASON, league_id=42, gameweek=1, manager_key=1,
+            manager_name="Alice", gross_points=60, transfer_cost=0,
+            league_position=1, total_points=60,
+            squad=[LedgerPlayer(
+                name="Savinho", team="MCI", position="MID", code=self.CODE,
+                red_cards=1, contributed=True,
+            )],
+            fines=[LedgerFine(
+                manager_key=1, rule_type="red-card",
+                message=f"Red card in starting XI (Sávio). {self.PENALTY}",
+            )],
+            fine_rules_evaluated=["red-card"],
+        )
+        store.append_rows(1, [recorded])
+        store.append_rows(1, [recorded.model_copy(update={
+            "league_position": None, "total_points": None,
+            "captured_at": recorded.captured_at + timedelta(days=1),
+        })])
+
+        # An ordinary next-gameweek recap, which never replays GW1 itself.
+        await capture_recap_history(
+            self._data("Sávio", gameweek=2), season=SEASON, finished_gameweeks=[1, 2],
+        )
+
+        row = _store().resolved_gameweek(1)[1]
+        assert row.league_position == 1, "the standings repair still lands"
+        assert row.fines[0].message == f"Red card in starting XI (Savinho). {self.PENALTY}"
+
+
+class TestRepairFineIdentity:
+    """#290 review: a ruling's prose and its references must never come out of
+    this naming different people."""
+
+    def _row(self, message: str):
+        return make_history_row(
+            season=SEASON, league_id=42, gameweek=1, manager_key=1,
+            squad=[LedgerPlayer(
+                name="Savinho", team="MCI", position="MID", code=510_281,
+                red_cards=1, contributed=True,
+            )],
+            fines=[LedgerFine(manager_key=1, rule_type="red-card", message=message)],
+            fine_rules_evaluated=["red-card"],
+        )
+
+    def test_a_message_the_restatement_cannot_reach_leaves_the_ruling_alone(self):
+        """The message does not spell its list out the way it reads back, so
+        rewriting the references alone would leave the two disagreeing."""
+        message = "Red card in starting XI (Sávio, ). Buy the round"
+        row = self._row(message)
+
+        _repair_fine_identity([row])
+
+        assert row.fines[0].message == message
+        assert row.fines[0].players is None
+
+    def test_a_ruling_whose_names_already_agree_still_gains_its_references(self):
+        row = self._row("Red card in starting XI (Savinho). Buy the round")
+
+        _repair_fine_identity([row])
+
+        assert row.fines[0].players == [LedgerFinePlayer(name="Savinho", code=510_281)]
 
 
 class TestPairSquads:

@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from fpl_cli.cli._context import fpl_config
 from fpl_cli.cli._fines import (
+    RED_CARD_RULE_TYPE,
     FineResult,
     FinesLeagueData,
     FinesTeamPlayer,
@@ -848,6 +849,7 @@ def _compute_standings_movement(
 # all, which reads back as "this message names nobody" and leaves the row
 # exactly as recorded -- the safe direction to fail in.
 _RED_CARD_PREFIX = "Red card in starting XI"
+_FINE_PLAYER_SEPARATOR = ", "
 _FINE_PLAYER_LIST = re.compile(re.escape(_RED_CARD_PREFIX) + r" \(([^()]*)\)")
 
 
@@ -858,11 +860,17 @@ def recap_fine_player_names(message: str) -> list[str]:
     red-card ruling lists players. Read back only to size up a ruling recorded
     before the names were stored as references -- never to decide what the
     corrected names should be, which comes from the squad.
+
+    Split on the exact separator the message was written with rather than on a
+    bare comma, so a display name carrying one ("Smith, Jr") reads back whole.
+    A name carrying the separator itself still reads as two, which the caller
+    sees as a count that no longer matches the squad and declines to repair --
+    the same safe direction a name carrying brackets fails in.
     """
     match = _FINE_PLAYER_LIST.search(message)
     if match is None:
         return []
-    return [name.strip() for name in match.group(1).split(",") if name.strip()]
+    return [name for name in match.group(1).split(_FINE_PLAYER_SEPARATOR) if name]
 
 
 def restate_recap_fine_players(
@@ -874,7 +882,9 @@ def restate_recap_fine_players(
     applied to whatever it finds: the caller already holds the names the
     message was written from, so nothing has to be guessed about the prose
     around them. A message that does not contain that list is returned
-    untouched.
+    untouched -- a caller restating a *changed* list has to check for that and
+    leave the whole ruling alone, or it lands a message and a set of references
+    naming different people.
 
     Only the names move. The rule it describes, the penalty it carries and the
     manager it was ruled against are all left alone -- restating who a ruling
@@ -882,7 +892,11 @@ def restate_recap_fine_players(
     """
     if not previous or not names:
         return message
-    return message.replace(f"({', '.join(previous)})", f"({', '.join(names)})", 1)
+    return message.replace(
+        f"({_FINE_PLAYER_SEPARATOR.join(previous)})",
+        f"({_FINE_PLAYER_SEPARATOR.join(names)})",
+        1,
+    )
 
 
 def _recap_fine_message(result: FineResult, manager_name: str) -> str:
@@ -896,13 +910,16 @@ def _recap_fine_message(result: FineResult, manager_name: str) -> str:
 
     if result.rule_type == "last-place":
         return f"Finished last in the gameweek. {penalty}" if penalty else "Finished last in the gameweek."
-    if result.rule_type == "red-card":
+    if result.rule_type == RED_CARD_RULE_TYPE:
         # The handler's own list of who it fined, not a re-read of the prose
         # it wrote. Recovering the names by splitting the handler's message
         # apart was the only reason this had to be prose all the way down --
         # with the list in hand the ruling can carry references too, which is
         # what survives a rename (issue #176).
-        base = f"{_RED_CARD_PREFIX} ({', '.join(p.name for p in result.players)})"
+        base = (
+            f"{_RED_CARD_PREFIX} "
+            f"({_FINE_PLAYER_SEPARATOR.join(p.name for p in result.players)})"
+        )
         return f"{base}. {penalty}" if penalty else f"{base}."
     if result.rule_type == "below-threshold":
         return f"Scored below threshold. {penalty}" if penalty else "Scored below threshold."

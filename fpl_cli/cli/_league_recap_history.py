@@ -226,9 +226,14 @@ def _fines_for(
                 manager_key=manager_key,
                 rule_type=fine["rule_type"],
                 message=fine["message"],
+                # `code` is read through `.get`, like `_eval_red_card` reads
+                # it: a hand-built entry that names a player and says nothing
+                # about his reference records `None` rather than raising a
+                # `KeyError` through `build_history_rows`, which has no guard
+                # of its own and would lose the whole gameweek's capture.
                 players=(
                     None if players is None
-                    else [LedgerFinePlayer(name=p["name"], code=p["code"]) for p in players]
+                    else [LedgerFinePlayer(name=p["name"], code=p.get("code")) for p in players]
                 ),
             ))
     return out
@@ -842,12 +847,25 @@ def _reconstructed_fine_players(
     to count what it names, never to decide who: parsing names back out of a
     message is exactly the coupling this replaces.
 
-    Adopted only when the derivation names as many players as the message
-    does. A replay drops a pick today's bootstrap cannot resolve, so a squad
-    that has lost one would otherwise quietly un-name a player the gameweek
-    fined -- and a ruling is frozen at capture (`_freeze_recorded_fines`), so
-    narrowing one is not this pass's to do. Where the two disagree the row is
-    left exactly as recorded.
+    Adopted only where the squad corroborates it, on two counts. It has to
+    name as many players as the message does: a replay drops a pick today's
+    bootstrap cannot resolve, so a squad that has lost one would otherwise
+    quietly un-name a player the gameweek fined, and a ruling is frozen at
+    capture (`_freeze_recorded_fines`), so narrowing one is not this pass's to
+    do. And no name the message already uses may belong to a squad member the
+    predicate does not select -- that is the difference between a rename and a
+    changed ruling. A rename leaves the old name nowhere in the squad, because
+    `_carry_recorded_identity` has just put the recorded one back in its place;
+    a player still sitting in the squad under the name the message uses, no
+    longer counted as sent off, means the facts moved rather than the name, and
+    substituting whoever the predicate now selects would stamp a stranger's
+    name and reference onto the ruling. Either way the row is left exactly as
+    recorded.
+
+    A player the replay lost *and* replaced with another offender still reads
+    as a rename here, and there is no signal on a reference-less row that tells
+    the two apart. That is the irreducible limit of repairing prose, and the
+    reason a ruling now records who it named.
     """
     if fine.rule_type != RED_CARD_RULE_TYPE or not recorded_names:
         return None
@@ -862,6 +880,12 @@ def _reconstructed_fine_players(
         for p in row.squad
     ])
     if len(offenders) != len(recorded_names):
+        return None
+    offender_names = {p["name"] for p in offenders}
+    squad_names = {p.name for p in row.squad}
+    if any(
+        name in squad_names and name not in offender_names for name in recorded_names
+    ):
         return None
     return [LedgerFinePlayer(name=p["name"], code=p.get("code")) for p in offenders]
 
@@ -923,12 +947,16 @@ def _repair_fine_identity(rows: list[LeagueHistoryRow]) -> None:
                 )
                 for p in players
             ]
-            repaired.append(fine.model_copy(update={
-                "players": named,
-                "message": restate_recap_fine_players(
-                    fine.message, in_message, [p.name for p in named],
-                ),
-            }))
+            names = [p.name for p in named]
+            message = restate_recap_fine_players(fine.message, in_message, names)
+            if names != in_message and message == fine.message:
+                # The message did not spell the list out the way `in_message`
+                # says it did, so it kept the old names while the references
+                # took the new ones -- one ruling naming two different sets of
+                # players. Nothing moves unless both do.
+                repaired.append(fine)
+                continue
+            repaired.append(fine.model_copy(update={"players": named, "message": message}))
         row.fines = repaired
 
 
@@ -1361,6 +1389,12 @@ async def _coarse_backfill(
         _assign_cohort_ranks(gameweek_rows)
         _apply_coarse_fines(gameweek_rows, rules=fine_rules, use_net_points=use_net_points)
         _freeze_recorded_fines(store, gameweek, gameweek_rows)
+        # No `_repair_fine_identity` here, unlike the other two paths the
+        # freeze runs on. A coarse row carries no squad to restate names from,
+        # and the one ruling it can inherit that names anybody is a red-card
+        # fine frozen forward from a *detailed* prior -- whose row outranks
+        # this one, so `append_rows` drops this line before it is written at
+        # all. There is nothing on disk for a repair here to reach.
         try:
             written = store.append_rows(gameweek, gameweek_rows)
         except LeagueHistoryError as exc:
@@ -1529,12 +1563,14 @@ def _repair_recorded_standings(
         except LeagueHistoryError:
             continue
 
-        # Shallow: only the scalars in `_STANDINGS_ROW_FIELDS` are ever
-        # assigned on a candidate, so the nested squad, transfers and fines are
-        # shared with the stored row rather than rebuilt. This sweep runs on
-        # every recap for every target gameweek, and one league with a single
+        # Shallow: the only scalars ever assigned on a candidate are those in
+        # `_STANDINGS_ROW_FIELDS`, so the nested squad and transfers are shared
+        # with the stored row rather than rebuilt. This sweep runs on every
+        # recap for every target gameweek, and one league with a single
         # unrepairable gameweek would otherwise deep-copy every manager's whole
-        # squad on every future run. Anything here that starts mutating a
+        # squad on every future run. `_repair_fine_identity` is safe alongside
+        # that because it *rebinds* `fines` to a rebuilt list rather than
+        # editing the models in it -- anything here that starts mutating a
         # nested model in place needs the deep copy back.
         candidates = [(winners[key], winners[key].model_copy()) for key in sorted(winners)]
         rows = [candidate for _, candidate in candidates]
@@ -1543,6 +1579,12 @@ def _repair_recorded_standings(
             _fill_draft_standings(
                 store, rows, gameweek=gameweek, start_gameweek=start_gameweek,
             )
+        # These rows are being rewritten anyway, and this is the one pass that
+        # reaches a finished gameweek without `--backfill-detail`. Without it
+        # the sweep re-anchors a stale fine name as the new winner every time
+        # it fires, and nothing short of a detailed replay ever puts it right
+        # (issue #176).
+        _repair_fine_identity(rows)
 
         captured_at = datetime.now(tz=timezone.utc)
         changed: list[LeagueHistoryRow] = []
@@ -1564,13 +1606,28 @@ def _repair_recorded_standings(
             continue
         if written:
             repaired.add(gameweek)
-            _warn(
-                warnings, HISTORY_WARNING_STANDINGS_REPAIRED,
-                f"League history: GW{gameweek} had its league position or cumulative "
-                f"total restored for {len(written)} manager(s) from what the ledger "
-                f"itself already recorded. An earlier replay of that gameweek wrote "
-                f"them away; nothing was re-fetched to put them back.",
+            # Counted over the standings fields alone, not over every row
+            # written: a row this pass rewrote only to restate a fine's player
+            # names has had no position restored, and saying otherwise would
+            # report a repair that did not happen. The restatement itself stays
+            # silent here, as it does everywhere else.
+            written_keys = {row.manager_key for row in written}
+            restored = sum(
+                1 for winner, candidate in candidates
+                if candidate.manager_key in written_keys
+                and any(
+                    getattr(candidate, name) != getattr(winner, name)
+                    for name in _STANDINGS_ROW_FIELDS
+                )
             )
+            if restored:
+                _warn(
+                    warnings, HISTORY_WARNING_STANDINGS_REPAIRED,
+                    f"League history: GW{gameweek} had its league position or cumulative "
+                    f"total restored for {restored} manager(s) from what the ledger "
+                    f"itself already recorded. An earlier replay of that gameweek wrote "
+                    f"them away; nothing was re-fetched to put them back.",
+                )
     return repaired
 
 

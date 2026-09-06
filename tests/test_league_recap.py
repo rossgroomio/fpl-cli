@@ -32,6 +32,8 @@ from fpl_cli.cli._league_recap_data import (
     configured_fine_rule_types,
     derive_point_in_time_positions,
     evaluate_league_fines,
+    recap_fine_player_names,
+    restate_recap_fine_players,
 )
 from fpl_cli.cli._league_recap_types import (
     RecapAwards,
@@ -149,6 +151,51 @@ def _make_squad_player(
         red_cards=kwargs.get("red_cards", 0),
         unmatched=kwargs.get("unmatched", False),
     )
+
+
+class TestRecapFineMessagePlayers:
+    """#176: the ledger restates a stored ruling's names through these two, so
+    the shapes they cannot read are the shapes they must not rewrite either."""
+
+    PENALTY = "Buy the round"
+
+    def _message(self, names: str) -> str:
+        return f"Red card in starting XI ({names}). {self.PENALTY}"
+
+    def test_the_names_read_back_in_the_order_the_message_lists_them(self):
+        assert recap_fine_player_names(self._message("Sávio, Hothead")) == [
+            "Sávio", "Hothead",
+        ]
+
+    def test_a_name_carrying_a_bare_comma_reads_back_whole(self):
+        """Split on the separator the message was written with, not on any
+        comma in it (#290 review)."""
+        assert recap_fine_player_names(self._message("Smith,Jr")) == ["Smith,Jr"]
+
+    def test_a_name_carrying_the_separator_itself_reads_as_two(self):
+        """The limit of reading names out of prose, asserted rather than left
+        implicit: the caller sees a count the squad cannot corroborate and
+        declines the repair, which is the safe direction to fail in."""
+        assert recap_fine_player_names(self._message("Smith, Jr")) == ["Smith", "Jr"]
+
+    def test_a_message_naming_nobody_reads_back_empty(self):
+        assert recap_fine_player_names("Finished last in the gameweek. Pint") == []
+
+    def test_a_penalty_carrying_brackets_is_not_mistaken_for_the_player_list(self):
+        message = "Red card in starting XI (Sávio). Pay the pot (cash)"
+        assert recap_fine_player_names(message) == ["Sávio"]
+        assert restate_recap_fine_players(message, ["Sávio"], ["Savinho"]) == (
+            "Red card in starting XI (Savinho). Pay the pot (cash)"
+        )
+
+    def test_what_reads_back_out_restates_back_in(self):
+        message = self._message("Sávio, Hothead")
+        names = recap_fine_player_names(message)
+        assert restate_recap_fine_players(message, names, names) == message
+
+    def test_a_message_that_does_not_spell_the_list_out_is_returned_untouched(self):
+        message = self._message("Sávio")
+        assert restate_recap_fine_players(message, ["Someone Else"], ["Savinho"]) == message
 
 
 # ---------------------------------------------------------------------------
