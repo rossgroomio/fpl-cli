@@ -39,6 +39,7 @@ def _rate_limited(retry_after: str | None = None):
 
 
 from fpl_cli.api.providers import (  # noqa: E402 — placed after module-level helper definition; no circular dependency
+    NORMAL_STOP_REASONS,
     AnthropicProvider,
     LLMResponse,
     OpenAICompatProvider,
@@ -57,6 +58,7 @@ from fpl_cli.api.providers._http import (  # noqa: E402
     error_detail,
     retry_after_seconds,
 )
+from fpl_cli.api.providers._models import log_abnormal_stop  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -107,6 +109,48 @@ class TestLLMResponse:
         r = LLMResponse(content="hi", model="m", usage=TokenUsage(0, 0))
         with pytest.raises(AttributeError):
             r.content = "bye"  # type: ignore[misc]
+
+
+class TestStopReason:
+    """#266: a truncated response used to be indistinguishable from a whole one."""
+
+    @staticmethod
+    def _response(stop_reason):
+        return LLMResponse(
+            content="hi", model="m", usage=TokenUsage(0, 0), stop_reason=stop_reason,
+        )
+
+    def test_absent_by_default(self):
+        assert LLMResponse(content="hi", model="m", usage=TokenUsage(0, 0)).stop_reason is None
+
+    @pytest.mark.parametrize("reason", sorted(NORMAL_STOP_REASONS))
+    def test_a_normal_completion_is_not_an_early_stop(self, reason):
+        assert self._response(reason).stopped_early is False
+
+    @pytest.mark.parametrize(
+        "reason", ["max_tokens", "length", "refusal", "content_filter", "model_context_window_exceeded"],
+    )
+    def test_an_abnormal_reason_is_an_early_stop(self, reason):
+        assert self._response(reason).stopped_early is True
+
+    def test_a_silent_provider_is_not_treated_as_truncated(self):
+        # No field at all is not evidence either way -- only an explicit
+        # abnormal reason counts, so a stub provider never cries wolf.
+        assert self._response(None).stopped_early is False
+
+    def test_both_anthropic_and_openai_normal_reasons_are_covered(self):
+        assert {"end_turn", "stop"} <= NORMAL_STOP_REASONS
+
+    def test_an_early_stop_is_logged_at_warning(self, caplog):
+        with caplog.at_level("WARNING", logger="fpl_cli.api.providers._models"):
+            log_abnormal_stop(self._response("max_tokens"), "Anthropic")
+        assert "Anthropic" in caplog.text
+        assert "max_tokens" in caplog.text
+
+    def test_a_normal_stop_logs_nothing(self, caplog):
+        with caplog.at_level("WARNING", logger="fpl_cli.api.providers._models"):
+            log_abnormal_stop(self._response("end_turn"), "Anthropic")
+        assert caplog.text == ""
 
 
 # ---------------------------------------------------------------------------
@@ -241,6 +285,34 @@ class TestAnthropicProvider:
         call_payload = provider._http.post.call_args[1]["json"]
         assert call_payload["max_tokens"] == 2048
 
+    async def test_stop_reason_is_carried_from_the_envelope(self, provider, mock_response):
+        provider._http = AsyncMock()
+        provider._http.post = AsyncMock(
+            return_value=_make_httpx_response({**mock_response, "stop_reason": "end_turn"}),
+        )
+
+        result = await provider.query("test")
+        assert result.stop_reason == "end_turn"
+        assert result.stopped_early is False
+
+    async def test_a_max_tokens_truncation_is_visible_to_the_caller(self, provider, mock_response):
+        provider._http = AsyncMock()
+        provider._http.post = AsyncMock(
+            return_value=_make_httpx_response({**mock_response, "stop_reason": "max_tokens"}),
+        )
+
+        result = await provider.query("test")
+        assert result.stop_reason == "max_tokens"
+        assert result.stopped_early is True
+
+    async def test_an_envelope_without_a_stop_reason_leaves_it_unset(self, provider, mock_response):
+        provider._http = AsyncMock()
+        provider._http.post = AsyncMock(return_value=_make_httpx_response(mock_response))
+
+        result = await provider.query("test")
+        assert result.stop_reason is None
+        assert result.stopped_early is False
+
 
 # ---------------------------------------------------------------------------
 # PerplexityProvider
@@ -289,6 +361,18 @@ class TestPerplexityProvider:
         assert "[1]" not in cleaned
         assert "Sources:" not in cleaned
 
+    async def test_finish_reason_survives_the_citation_rebuild(self, provider, mock_response):
+        # The citation branch rebuilds the LLMResponse, which is exactly where
+        # a field added to the base parse can silently get dropped (#266).
+        data = {**mock_response, "choices": [{**mock_response["choices"][0], "finish_reason": "length"}]}
+        provider._http = AsyncMock()
+        provider._http.post = AsyncMock(return_value=_make_httpx_response(data))
+
+        result = await provider.query("test")
+        assert result.citations == ["https://example.com"]
+        assert result.stop_reason == "length"
+        assert result.stopped_early is True
+
 
 # ---------------------------------------------------------------------------
 # OpenAICompatProvider
@@ -317,6 +401,34 @@ class TestOpenAICompatProvider:
         result = await provider.query("test")
         assert isinstance(result, LLMResponse)
         assert result.content == "GPT response"
+
+    async def test_finish_reason_is_carried_as_the_stop_reason(self, provider, mock_response):
+        data = {**mock_response, "choices": [{**mock_response["choices"][0], "finish_reason": "stop"}]}
+        provider._http = AsyncMock()
+        provider._http.post = AsyncMock(return_value=_make_httpx_response(data))
+
+        result = await provider.query("test")
+        assert result.stop_reason == "stop"
+        assert result.stopped_early is False
+
+    async def test_a_length_truncation_is_visible_to_the_caller(self, provider, mock_response):
+        data = {**mock_response, "choices": [{**mock_response["choices"][0], "finish_reason": "length"}]}
+        provider._http = AsyncMock()
+        provider._http.post = AsyncMock(return_value=_make_httpx_response(data))
+
+        result = await provider.query("test")
+        assert result.stop_reason == "length"
+        assert result.stopped_early is True
+
+    async def test_no_choices_leaves_the_stop_reason_unset(self, provider):
+        provider._http = AsyncMock()
+        provider._http.post = AsyncMock(return_value=_make_httpx_response({
+            "choices": [], "model": "gpt-4o", "usage": {},
+        }))
+
+        result = await provider.query("test")
+        assert result.content == ""
+        assert result.stop_reason is None
 
     async def test_malformed_json_response_raises(self, provider):
         resp = MagicMock()

@@ -730,6 +730,16 @@ fpl review --dry-run              # Build prompts without calling LLMs
 
 **LLM summary** (`--summarise`): Community narrative via research provider, personal analysis via synthesis provider.
 
+**Incomplete summaries:** the personal analysis is checked against the sections its own prompt
+asked for before anything is written. A response that is missing a `## ` heading, ends without
+terminal punctuation, or that the provider reports it stopped early on is retried **once** — and
+if the second attempt is no better, the first one stands and the run says so on stderr, naming
+what is missing. Under `--debug` the detail lands in `data/debug/synthesis_corrections.txt`
+alongside `research_corrections.txt`. A saved report generated from such a response carries the
+same list as a warning callout above the summary, so a verdict the model dropped never reads as
+one deliberately omitted. A verdict for a format the run has no squad data for is not counted as
+missing — the prompt tells the model to analyse only the format it was given.
+
 **Blanks and doubles:** a zero from a player whose club had no fixture is marked `[BGW]` rather
 than read as a choice that failed, and such a player is kept off the Blankers list entirely; a
 player whose club played twice is marked `[DGW]`. Which clubs those were is read off the
@@ -796,7 +806,7 @@ names the gap and forbids numbering the fine instead. `--format json` is
 ungated too — `metadata.season_fines` is emitted every
 week, so a scripted consumer never sees it appear and disappear on a calendar it cannot see.
 
-**LLM editorial** (`--summarise`): Newsletter-style narrative via synthesis provider. Names names, calls out decisions. The editorial is an add-on: if the synthesis provider has no usable API key the recap still renders, still saves its report and still captures the ledger, with the reason on stderr and a `synthesis_provider_unavailable` warning in JSON. `synthesis_summary` is `null` on such a run — the warning is what distinguishes it from a run that never asked for an editorial.
+**LLM editorial** (`--summarise`): Newsletter-style narrative via synthesis provider. Names names, calls out decisions. The editorial is an add-on: if the synthesis provider has no usable API key the recap still renders, still saves its report and still captures the ledger, with the reason on stderr and a `synthesis_provider_unavailable` warning in JSON. `synthesis_summary` is `null` on such a run — the warning is what distinguishes it from a run that never asked for an editorial. An editorial the provider stopped generating early (a token ceiling, a refusal) is written out as it stands, with the reason on stderr and a `synthesis_stopped_early` warning in JSON — a truncated editorial is otherwise indistinguishable from a whole one.
 
 **Streaks:** notable open streaks print under `Streaks:` on console — leaders only, so console stays a highlights view — and in full as a `# League History` section in the saved report. Each is reported as an observed count over its true span (e.g. "3 in the last 11, with 8 not recorded") rather than a bare "in a row" once any gameweek went uncaptured. A streak surfaces once its run reaches the condition's own minimum: 2 gameweeks for weeks on top, gameweek wins, last-place finishes, captain blanks and transfer hits; 3 for waiver hauls and backfires. Bottom-half gameweeks and green-arrow droughts never surface as streaks at all — both restate where the table already shows a manager is, so their run exists to drive the season count's firing rule rather than to be read on its own.
 
@@ -966,10 +976,12 @@ they share the channel: `synthesis_provider_unavailable` and `league_standings_m
 | `league_history_backfill_write_failed` | A backfilled gameweek could not be written; the rest of the backfill continues |
 | `league_history_identity_carried` | A finished gameweek kept the name, club or position it already had recorded for one or more players rather than the ones today's bootstrap gives them, or restored a player reference this capture had lost. Raised by a re-capture of a finished gameweek as well as by a replay; any one of the four on its own raises it |
 | `synthesis_provider_unavailable` | `--summarise` was asked for but the synthesis provider had no usable key; everything else in the recap, the capture included, ran normally |
+| `synthesis_stopped_early` | The provider reported that the editorial stopped for a reason other than finishing (a token ceiling, a refusal), so `synthesis_summary` may be cut off mid-sentence. Everything else in the recap is unaffected |
 | `league_standings_moved_on` | The recapped gameweek is the most recently finished one, but a later gameweek has started, so the league table no longer describes it. The gameweek is recapped and recorded from each manager's own gameweek history instead — see [When to run it](#league-recap) |
 
 None of these change the exit code — `league-recap` exits 0 whenever the recap itself
-rendered, and a skipped editorial (`synthesis_provider_unavailable`) is no exception.
+rendered, and a skipped or truncated editorial (`synthesis_provider_unavailable`,
+`synthesis_stopped_early`) is no exception.
 
 Four things do exit 1, all emitting the shared `{"command", "error"}` envelope on stdout
 under `--format json` (see [JSON Output](#json-output)): an unreachable FPL API, a

@@ -10,9 +10,11 @@ from fpl_cli.prompts.review import (
     REVIEW_RESEARCH_SYSTEM_PROMPT,
     _SENTENCE_SPLIT_RE,
     _build_system_prompt,
+    check_synthesis_completeness,
     ensure_top_performer_first,
     get_review_research_prompt,
     get_review_synthesis_prompt,
+    required_synthesis_sections,
     validate_research_prose,
     validate_research_teams,
 )
@@ -3228,3 +3230,188 @@ class TestSynthesisClubGrounding:
         system = _build_system_prompt(has_fines=has_fines)
         assert "Make a blanket scored-or-blanked claim" in system
         assert "Under Bench Boost the bench totals are part of the claim" in system
+
+
+# ---------------------------------------------------------------------------
+# Synthesis completeness (#266)
+# ---------------------------------------------------------------------------
+
+# The shape the bug reported: a Classic Verdict that stops mid-clause and no
+# Draft Verdict at all, with nothing downstream noticing.
+_TRUNCATED_SYNTHESIS = """\
+## Summary
+A week that promised much and delivered a shrug.
+
+## Classic Verdict
+Salah did his bit; nobody else turned up.
+
+**Selection:** Ballard's 8 points rotted on the bench while Virgil limped to just 1 - a straight
+defensive swap you'll wish you'd made. No transfers were made this week, so"""
+
+_WHOLE_SYNTHESIS = """\
+## Summary
+A week that promised much and delivered a shrug.
+
+## Classic Verdict
+Salah did his bit; nobody else turned up.
+
+**Selection:** The captain was the right call.
+
+## Draft Verdict
+The waiver claim paid off.
+
+**Selection:** No complaints.
+
+## Next Week
+Move Virgil on before the price drop.
+"""
+
+
+class TestRequiredSynthesisSections:
+    """The requirement is read back off the prompt, not restated as a constant."""
+
+    def test_the_no_fines_prompt_asks_for_four_sections(self):
+        assert required_synthesis_sections(_build_system_prompt(has_fines=False)) == [
+            "Summary", "Classic Verdict", "Draft Verdict", "Next Week",
+        ]
+
+    def test_the_fines_prompt_adds_fine_check(self):
+        sections = required_synthesis_sections(_build_system_prompt(has_fines=True))
+        assert "Fine Check" in sections
+        # Order matters: the list doubles as the prompt's own running order.
+        assert sections.index("Fine Check") == 1
+
+    def test_the_conditional_section_is_absent_when_the_prompt_never_asked(self):
+        assert "Fine Check" not in required_synthesis_sections(_build_system_prompt(has_fines=False))
+
+    def test_only_top_level_sections_are_required(self):
+        # `### Classic` / `### Draft` sit under Fine Check and are routinely
+        # written with a qualifier, so requiring them would cost a retry on
+        # responses that are actually whole.
+        sections = required_synthesis_sections(_build_system_prompt(has_fines=True))
+        assert "Classic" not in sections
+        assert "Draft" not in sections
+
+    def test_a_prompt_with_no_output_format_block_requires_nothing(self):
+        assert required_synthesis_sections("You are an analyst. Be brief.") == []
+
+
+class TestCheckSynthesisCompleteness:
+
+    @staticmethod
+    def _system(has_fines=False):
+        return _build_system_prompt(has_fines=has_fines)
+
+    def test_the_reported_truncation_is_detected(self):
+        result = check_synthesis_completeness(_TRUNCATED_SYNTHESIS, self._system())
+        assert result.complete is False
+        assert result.missing_sections == ("Draft Verdict", "Next Week")
+        assert result.unterminated is True
+
+    def test_a_whole_response_passes(self):
+        result = check_synthesis_completeness(_WHOLE_SYNTHESIS, self._system())
+        assert result.complete is True
+        assert result.problems() == []
+
+    def test_the_problems_name_what_is_missing(self):
+        problems = check_synthesis_completeness(_TRUNCATED_SYNTHESIS, self._system()).problems()
+        assert any("## Draft Verdict" in p for p in problems)
+        assert any("terminal punctuation" in p for p in problems)
+
+    def test_an_abnormal_stop_reason_is_reported_even_on_a_whole_response(self):
+        result = check_synthesis_completeness(
+            _WHOLE_SYNTHESIS, self._system(), stop_reason="max_tokens",
+        )
+        assert result.complete is False
+        assert result.problems() == ["provider stopped early (stop_reason: max_tokens)"]
+
+    def test_no_stop_reason_leaves_a_whole_response_alone(self):
+        assert check_synthesis_completeness(
+            _WHOLE_SYNTHESIS, self._system(), stop_reason=None,
+        ).complete is True
+
+    def test_an_omitted_section_is_not_counted_as_missing(self):
+        # The prompt tells the model to analyse only the format it has data
+        # for, so a draft-less run legitimately has no Draft Verdict.
+        result = check_synthesis_completeness(
+            _WHOLE_SYNTHESIS.replace("## Draft Verdict", "## Draft Notes"),
+            self._system(),
+            omit_sections=["Draft Verdict"],
+        )
+        assert result.missing_sections == ()
+
+    def test_omission_matching_ignores_case(self):
+        result = check_synthesis_completeness(
+            "## Summary\nFine.\n\n## Classic Verdict\nGood.\n\n## Next Week\nOnwards.\n",
+            self._system(),
+            omit_sections=["draft verdict"],
+        )
+        assert result.missing_sections == ()
+
+    def test_a_decorated_heading_still_counts_as_present(self):
+        # LLM output routinely qualifies a heading it was told to write
+        # verbatim; the matcher tolerates that, so it must not read as missing.
+        result = check_synthesis_completeness(
+            _WHOLE_SYNTHESIS.replace("## Draft Verdict", "## Draft Verdict (no waivers)"),
+            self._system(),
+        )
+        assert result.missing_sections == ()
+
+    def test_an_empty_response_is_every_section_missing(self):
+        result = check_synthesis_completeness("", self._system())
+        assert len(result.missing_sections) == 4
+        # Nothing to judge the ending of, so it is not also called truncated.
+        assert result.unterminated is False
+
+    def test_the_fines_prompt_requires_its_fine_check_section(self):
+        result = check_synthesis_completeness(_WHOLE_SYNTHESIS, self._system(has_fines=True))
+        assert result.missing_sections == ("Fine Check",)
+
+    @pytest.mark.parametrize("ending", [
+        "the right call.",
+        "the right call.**",
+        "was it, though?",
+        "what a week!",
+        "and on it goes…",
+        "(a nine-point swing).",
+    ])
+    def test_a_finished_sentence_is_not_flagged(self, ending):
+        text = _WHOLE_SYNTHESIS.rstrip().rsplit("\n", 1)[0] + "\n" + ending
+        assert check_synthesis_completeness(text, self._system()).unterminated is False
+
+    @pytest.mark.parametrize("ending", [
+        "No transfers were made this week, so",
+        "**Selection:** Ballard's 8 points rotted on the",
+    ])
+    def test_a_sentence_that_stops_dead_is_flagged(self, ending):
+        text = _WHOLE_SYNTHESIS.rstrip().rsplit("\n", 1)[0] + "\n" + ending
+        assert check_synthesis_completeness(text, self._system()).unterminated is True
+
+    def test_a_prompt_with_no_output_format_block_only_reports_the_stop_reason(self):
+        result = check_synthesis_completeness(
+            "half a sentence and then", "Be brief.", stop_reason="max_tokens",
+        )
+        assert result.missing_sections == ()
+        assert result.unterminated is False
+        assert result.stop_reason == "max_tokens"
+
+
+class TestSynthesisCompletenessSeverity:
+    """The retry keeps whichever attempt is less damaged."""
+
+    @staticmethod
+    def _check(text, **kwargs):
+        return check_synthesis_completeness(text, _build_system_prompt(has_fines=False), **kwargs)
+
+    def test_a_whole_response_beats_a_truncated_one(self):
+        assert self._check(_WHOLE_SYNTHESIS).severity < self._check(_TRUNCATED_SYNTHESIS).severity
+
+    def test_fewer_missing_sections_wins(self):
+        one_missing = _WHOLE_SYNTHESIS.replace("## Next Week\nMove Virgil on before the price drop.\n", "")
+        assert self._check(one_missing).severity < self._check(_TRUNCATED_SYNTHESIS).severity
+
+    def test_a_clean_stop_beats_an_early_one_at_equal_damage(self):
+        assert (
+            self._check(_WHOLE_SYNTHESIS).severity
+            < self._check(_WHOLE_SYNTHESIS, stop_reason="max_tokens").severity
+        )

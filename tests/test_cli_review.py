@@ -1,10 +1,12 @@
 """Tests for review-related CLI helpers."""
 
+import pathlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
 
+from fpl_cli.api.providers import LLMResponse, TokenUsage
 from fpl_cli.cli._context import ConfigError
 from fpl_cli.cli._helpers import _format_pts_display, _gw_position_with_half, _live_player_stats
 from fpl_cli.cli._review_classic import (
@@ -20,11 +22,14 @@ from fpl_cli.cli._review_summarisation import (
     _names_match,
     _normalise_name,
     _report_research_corrections,
+    _report_synthesis_completeness,
     _review_compare_recs,
     _review_llm_summarise,
+    _synthesise_with_completeness_check,
 )
 from fpl_cli.cli.preview import _preview_build_fixture_map
 from fpl_cli.cli.review import _review_resolve_gw, review_command
+from fpl_cli.prompts.review import check_synthesis_completeness
 from tests.conftest import make_draft_player, make_player, make_team
 
 # ---------------------------------------------------------------------------
@@ -1582,3 +1587,258 @@ class TestReviewThreadsTheGameweeksFixtureSet:
             "global": (frozenset({401}), None),
             "draft": (frozenset({401}), frozenset({401})),
         }
+
+
+# ---------------------------------------------------------------------------
+# Synthesis completeness guard (#266)
+# ---------------------------------------------------------------------------
+
+_SYNTHESIS_SYSTEM = """\
+<output_format>
+## Summary
+[2-3 sentences]
+
+## Classic Verdict
+[2-3 sentences]
+
+## Draft Verdict
+[2-3 sentences]
+
+## Next Week
+[1-2 sentences]
+</output_format>"""
+
+_WHOLE = """\
+## Summary
+A shrug of a week.
+
+## Classic Verdict
+Salah carried it.
+
+## Draft Verdict
+The waiver paid off.
+
+## Next Week
+Move Virgil on.
+"""
+
+# The reported shape: the Classic Verdict stops mid-clause and the Draft
+# Verdict never arrives.
+_TRUNCATED = """\
+## Summary
+A shrug of a week.
+
+## Classic Verdict
+Salah carried it. No transfers were made this week, so"""
+
+
+class _StubSynthesisProvider:
+    """Returns each queued response in turn, recording every call."""
+
+    def __init__(self, *responses):
+        self._responses = list(responses)
+        self.calls: list[dict] = []
+
+    async def query(self, prompt, system_prompt=None, **kwargs):
+        self.calls.append({"prompt": prompt, "system_prompt": system_prompt})
+        return self._responses[min(len(self.calls) - 1, len(self._responses) - 1)]
+
+    def post_process(self, content):
+        return content
+
+
+def _reply(content, stop_reason=None):
+    return LLMResponse(
+        content=content, model="claude-sonnet-5", usage=TokenUsage(10, 20), stop_reason=stop_reason,
+    )
+
+
+async def _synthesise(provider, omit_sections=()):
+    return await _synthesise_with_completeness_check(
+        provider, prompt="analyse this", system_prompt=_SYNTHESIS_SYSTEM,
+        omit_sections=omit_sections,
+    )
+
+
+class TestSynthesiseWithCompletenessCheck:
+
+    async def test_a_whole_response_is_returned_on_the_first_call(self):
+        provider = _StubSynthesisProvider(_reply(_WHOLE))
+        content, completeness, attempts = await _synthesise(provider)
+        assert content == _WHOLE
+        assert completeness.complete is True
+        assert attempts == 1
+        assert len(provider.calls) == 1
+
+    async def test_an_incomplete_response_is_retried_once(self, capsys):
+        provider = _StubSynthesisProvider(_reply(_TRUNCATED), _reply(_WHOLE))
+        content, completeness, attempts = await _synthesise(provider)
+        assert content == _WHOLE
+        assert completeness.complete is True
+        assert attempts == 2
+        assert len(provider.calls) == 2
+        assert "retrying once" in capsys.readouterr().err.replace("\n", "")
+
+    async def test_the_retry_resends_the_same_prompts(self):
+        provider = _StubSynthesisProvider(_reply(_TRUNCATED), _reply(_WHOLE))
+        await _synthesise(provider)
+        assert provider.calls[0] == provider.calls[1]
+
+    async def test_it_stops_after_the_retry_rather_than_looping(self):
+        provider = _StubSynthesisProvider(_reply(_TRUNCATED))
+        content, completeness, attempts = await _synthesise(provider)
+        assert attempts == 2
+        assert len(provider.calls) == 2
+        assert completeness.complete is False
+        assert content == _TRUNCATED
+
+    async def test_a_worse_retry_never_displaces_a_better_first_attempt(self):
+        nearly = _WHOLE.replace("## Next Week\nMove Virgil on.\n", "")
+        provider = _StubSynthesisProvider(_reply(nearly), _reply(_TRUNCATED))
+        content, completeness, _ = await _synthesise(provider)
+        assert content == nearly
+        assert completeness.missing_sections == ("Next Week",)
+
+    async def test_an_abnormal_stop_reason_alone_triggers_the_retry(self):
+        provider = _StubSynthesisProvider(_reply(_WHOLE, "max_tokens"), _reply(_WHOLE, "end_turn"))
+        content, completeness, attempts = await _synthesise(provider)
+        assert attempts == 2
+        assert completeness.complete is True
+        assert content == _WHOLE
+
+    async def test_a_normal_stop_reason_is_not_treated_as_a_problem(self):
+        provider = _StubSynthesisProvider(_reply(_WHOLE, "end_turn"))
+        _, completeness, attempts = await _synthesise(provider)
+        assert attempts == 1
+        assert completeness.stop_reason is None
+
+    async def test_an_omitted_section_does_not_cost_a_retry(self):
+        draftless = _WHOLE.replace("## Draft Verdict\nThe waiver paid off.\n\n", "")
+        provider = _StubSynthesisProvider(_reply(draftless))
+        _, completeness, attempts = await _synthesise(provider, omit_sections=["Draft Verdict"])
+        assert attempts == 1
+        assert completeness.complete is True
+
+
+class TestReportSynthesisCompleteness:
+
+    @pytest.fixture
+    def debug_dir(self, tmp_path):
+        path = tmp_path / "debug"
+        path.mkdir()
+        return path
+
+    @staticmethod
+    def _unwrapped(capsys):
+        # Rich hard-wraps to the terminal width, so join before matching.
+        return capsys.readouterr().err.replace("\n", "")
+
+    def _incomplete(self):
+        return check_synthesis_completeness(_TRUNCATED, _SYNTHESIS_SYSTEM, stop_reason="max_tokens")
+
+    def test_the_warning_is_printed_without_debug_and_points_at_the_flag(self, capsys, debug_dir):
+        path = _report_synthesis_completeness(self._incomplete(), 2, None)
+        err = self._unwrapped(capsys)
+        assert "incomplete after 2 attempt(s)" in err
+        assert "## Draft Verdict" in err
+        assert "max_tokens" in err
+        assert "--debug" in err
+        assert path is None
+        assert list(debug_dir.iterdir()) == []
+
+    def test_debug_writes_the_detail_and_returns_its_path(self, capsys, debug_dir):
+        completeness = self._incomplete()
+        path = _report_synthesis_completeness(completeness, 2, debug_dir)
+        written = debug_dir / "synthesis_corrections.txt"
+        assert path == str(written)
+        assert written.read_text(encoding="utf-8") == "\n".join(completeness.problems()) + "\n"
+        assert "synthesis_corrections.txt" in self._unwrapped(capsys)
+
+    def test_silent_when_the_response_was_whole(self, capsys, debug_dir):
+        whole = check_synthesis_completeness(_WHOLE, _SYNTHESIS_SYSTEM)
+        assert _report_synthesis_completeness(whole, 1, debug_dir) is None
+        assert capsys.readouterr().err == ""
+        assert list(debug_dir.iterdir()) == []
+
+
+class TestReviewLlmSummariseSurfacesAnIncompleteSynthesis:
+    """#266: end to end, a truncated synthesis must not reach the report silently."""
+
+    @staticmethod
+    def _kwargs(synthesis_provider, **overrides):
+        kwargs = dict(
+            gw=7,
+            gw_data={"average_entry_score": 55, "highest_score": 120},
+            collected_data={"fixtures": [], "draft_transactions": []},
+            classic_team={
+                "my_entry_summary": {"points": 62, "rank": 900_000, "overall_rank": 1_100_000},
+                "team_points_data": [_classic_player()],
+                "automatic_subs": [],
+                "active_chip": None,
+                "my_picks_data": [],
+            },
+            classic_transfers_data=[],
+            classic_league_data=None,
+            draft_result={
+                "draft_league_data": None,
+                "draft_league_name": "Draft League",
+                "draft_squad_points_data": [_draft_player(name="Haaland", team="MCI", points=8)],
+                "draft_automatic_subs": [],
+                "draft_player_map": {},
+            },
+            global_data={},
+            player_map={},
+            teams={},
+            settings={},
+            dry_run=False,
+            debug=False,
+            research_provider=_StubSynthesisProvider(_reply("## GW7 Narrative\nIt happened.\n")),
+            synthesis_provider=synthesis_provider,
+        )
+        kwargs.update(overrides)
+        return kwargs
+
+    async def test_a_truncated_response_is_reported_and_returned(self, capsys):
+        provider = _StubSynthesisProvider(_reply(_TRUNCATED, "max_tokens"))
+        result = await _review_llm_summarise(**self._kwargs(provider))
+
+        # Two attempts: the guard retries once before giving up.
+        assert len(provider.calls) == 2
+        assert result["synthesis_summary"] == _TRUNCATED
+        problems = result["synthesis_problems"]
+        assert any("## Draft Verdict" in p for p in problems)
+        assert any("max_tokens" in p for p in problems)
+        err = capsys.readouterr().err.replace("\n", "")
+        assert "incomplete after 2 attempt(s)" in err
+
+    async def test_a_whole_response_reports_nothing(self, capsys):
+        provider = _StubSynthesisProvider(_reply(_WHOLE, "end_turn"))
+        result = await _review_llm_summarise(**self._kwargs(provider))
+
+        assert len(provider.calls) == 1
+        assert result["synthesis_problems"] == []
+        assert result["synthesis_corrections_path"] is None
+        assert "incomplete" not in capsys.readouterr().err
+
+    async def test_debug_writes_the_detail_beside_the_research_corrections(self, capsys, tmp_path, monkeypatch):
+        # `_review_llm_summarise` writes its debug output to a relative
+        # `data/debug`, so run it from an isolated cwd.
+        monkeypatch.chdir(tmp_path)
+        provider = _StubSynthesisProvider(_reply(_TRUNCATED, "max_tokens"))
+        result = await _review_llm_summarise(**self._kwargs(provider, debug=True))
+
+        written = tmp_path / "data" / "debug" / "synthesis_corrections.txt"
+        # The debug dir is relative by design, so compare the resolved file.
+        assert pathlib.Path(result["synthesis_corrections_path"]).resolve() == written.resolve()
+        assert "## Draft Verdict" in written.read_text(encoding="utf-8")
+
+    async def test_a_synthesis_failure_still_returns_no_problems(self, capsys):
+        class _Boom:
+            async def query(self, *a, **k):
+                raise RuntimeError("provider exploded")
+
+        result = await _review_llm_summarise(**self._kwargs(_Boom()))
+        # The existing graceful-degradation path owns this case: an empty
+        # summary is already visible, so the guard adds nothing to it.
+        assert result["synthesis_summary"] == ""
+        assert result["synthesis_problems"] == []

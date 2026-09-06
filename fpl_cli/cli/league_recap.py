@@ -519,6 +519,20 @@ def league_recap_command(
                                 ),
                             }] if synthesis_unavailable else []
                         ) + (
+                            # A truncated editorial is indistinguishable from a
+                            # complete one in the payload itself, so the stop
+                            # reason rides the warnings channel rather than
+                            # leaving a consumer to guess (#266).
+                            [{
+                                "code": "synthesis_stopped_early",
+                                "message": (
+                                    "The editorial may be cut off: the provider"
+                                    " stopped with stop_reason"
+                                    f" {collected_data['synthesis_stop_reason']!r}"
+                                    " rather than finishing normally."
+                                ),
+                            }] if collected_data.get("synthesis_stop_reason") else []
+                        ) + (
                             [{
                                 "code": RECAP_WARNING_STANDINGS_MOVED_ON,
                                 "message": (
@@ -837,7 +851,17 @@ async def _recap_llm_summarise(
                 system_prompt=system_prompt,
             )
             collected_data["synthesis_summary"] = synthesis_provider.post_process(synthesis_result.content)
-            console.print("[green]  Done[/green] League editorial complete")
+            if synthesis_result.stopped_early:
+                # The recap's editorial goes into a saved report too, so a
+                # truncated one must not look finished. Recorded for the JSON
+                # payload as well as said out loud here (#266).
+                collected_data["synthesis_stop_reason"] = synthesis_result.stop_reason
+                error_console.print(
+                    "[yellow]  The editorial may be cut off: the provider stopped early"
+                    f" (stop_reason: {synthesis_result.stop_reason})[/yellow]"
+                )
+            else:
+                console.print("[green]  Done[/green] League editorial complete")
         except ProviderError as e:
             error_console.print(f"[yellow]  LLM synthesis failed: {e}[/yellow]")
         except Exception:  # noqa: BLE001 — graceful degradation

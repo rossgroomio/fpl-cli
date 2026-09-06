@@ -595,3 +595,43 @@ class TestPreviewPerformanceStatsWindow:
         for render in (self.agent._generate_preview_report, self.agent._generate_preview_inline):
             output = render(3, self._data_with_stats())
             assert "Performance Stats (Last 6 GWs)" in output
+
+
+# ---------------------------------------------------------------------------
+# Group 8: incomplete synthesis is visible in the saved report (#266)
+# ---------------------------------------------------------------------------
+
+class TestSynthesisProblemsCallout:
+    """A verdict the model dropped must not read as one deliberately omitted.
+
+    The stderr warning is gone by the time someone opens the file weeks later,
+    so the durable artefact has to say so itself.
+    """
+
+    def setup_method(self):
+        self.agent = ReportAgent()
+
+    def _render(self, **overrides):
+        data = _review_data()
+        data["synthesis_summary"] = "## Summary\nA shrug of a week.\n\n## Classic Verdict\nGrim, and then"
+        data.update(overrides)
+        return self.agent._generate_review_report(29, data)
+
+    def test_the_problems_are_named_in_the_report(self):
+        output = self._render(synthesis_problems=[
+            "missing section(s): ## Draft Verdict, ## Next Week",
+            "response ends without terminal punctuation (likely cut off mid-sentence)",
+        ])
+        assert "failed its completeness check" in output
+        assert "## Draft Verdict" in output
+        assert "terminal punctuation" in output
+
+    def test_the_summary_itself_is_still_written(self):
+        output = self._render(synthesis_problems=["missing section(s): ## Draft Verdict"])
+        assert "A shrug of a week." in output
+
+    def test_a_clean_run_adds_no_callout(self):
+        assert "completeness check" not in self._render(synthesis_problems=[])
+
+    def test_a_run_that_never_set_the_key_adds_no_callout(self):
+        assert "completeness check" not in self._render()

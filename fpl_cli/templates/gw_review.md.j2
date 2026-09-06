@@ -1,6 +1,15 @@
 *Generated: {{ generated_at }}*
 {% if synthesis_summary %}
 {{ synthesis_summary }}
+{% if synthesis_problems %}
+
+> [!WARNING]
+> **This summary failed its completeness check.** Whatever is named below was lost in
+> generation, not deliberately left out:
+{% for problem in synthesis_problems %}
+> - {{ problem }}
+{% endfor %}
+{% endif %}
 
 ---
 {% endif %}
