@@ -25,6 +25,7 @@ from fpl_cli.cli._context import (
 from fpl_cli.cli._json import (
     api_failure_boundary,
     config_failure_boundary,
+    emit_failure,
     emit_json,
     emit_json_error,
     json_output_mode,
@@ -93,7 +94,7 @@ def league_recap_command(
         evaluate_league_fines,
     )
     from fpl_cli.cli._league_recap_history import capture_recap_history
-    from fpl_cli.cli.review import _review_resolve_gw
+    from fpl_cli.cli.review import GameweekResolutionError, _review_resolve_gw
 
     settings = get_settings(ctx)
     fmt = get_format(ctx)
@@ -139,11 +140,16 @@ def league_recap_command(
             if synthesis_provider is not None:
                 await stack.enter_async_context(synthesis_provider)
             # Resolve gameweek
-            gw_result = await _review_resolve_gw(client, gameweek)
-            if gw_result is None:
-                if output_format == "json":
-                    emit_json_error("league-recap", "Could not resolve a gameweek to recap.", file=stdout)
-                return
+            try:
+                gw_result = await _review_resolve_gw(client, gameweek)
+            except GameweekResolutionError as exc:
+                # The resolver's own reason, not a generic stand-in: under
+                # `--format json` the envelope used to say "Could not resolve
+                # a gameweek to recap." while "Gameweek 7 is not yet finished"
+                # went to stderr, and in table mode the same refusal exited 0
+                # (issue #273). `emit_failure` settles both -- stderr prose or
+                # the envelope on stdout, exit 1 either way.
+                emit_failure("league-recap", str(exc), output_format, cause=exc)
             gw: int = gw_result["gw"]
             # Taken from the resolver rather than re-scanned here: it already
             # found the current gameweek, off the same cached bootstrap

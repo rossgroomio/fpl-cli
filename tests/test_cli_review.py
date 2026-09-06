@@ -28,7 +28,7 @@ from fpl_cli.cli._review_summarisation import (
     _synthesise_with_completeness_check,
 )
 from fpl_cli.cli.preview import _preview_build_fixture_map
-from fpl_cli.cli.review import _review_resolve_gw, review_command
+from fpl_cli.cli.review import GameweekResolutionError, _review_resolve_gw, review_command
 from fpl_cli.prompts.review import check_synthesis_completeness
 from tests.conftest import make_draft_player, make_fixture, make_player, make_team
 
@@ -333,22 +333,35 @@ class TestFormatReviewDraftPlayer:
 # ---------------------------------------------------------------------------
 
 class TestReviewResolveGw:
+    """#273: an unresolvable gameweek raises its reason rather than printing
+    prose and handing back `None` -- so both call sites can report the same
+    reason on the same stream with the same exit code."""
 
-    async def test_explicit_gw_not_found_returns_none(self):
+    async def test_explicit_gw_not_found_raises_with_reason(self, capsys):
         client = _make_client(
             gameweeks=[_make_gw(id_=5, finished=True)],
             current_gw=_make_gw(id_=5, finished=True),
         )
-        result = await _review_resolve_gw(client, gameweek=99)
-        assert result is None
+        with pytest.raises(GameweekResolutionError, match="Gameweek 99 not found"):
+            await _review_resolve_gw(client, gameweek=99)
+        # The reason travels in the exception, not down a stream the resolver
+        # picked for itself -- stdout least of all.
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert captured.err == ""
 
-    async def test_explicit_gw_not_finished_returns_none(self):
+    async def test_explicit_gw_not_finished_raises_with_reason(self, capsys):
         client = _make_client(
             gameweeks=[_make_gw(id_=10, finished=False)],
             current_gw=_make_gw(id_=10, finished=False),
         )
-        result = await _review_resolve_gw(client, gameweek=10)
-        assert result is None
+        with pytest.raises(GameweekResolutionError) as exc_info:
+            await _review_resolve_gw(client, gameweek=10)
+        assert "Gameweek 10 is not yet finished" in str(exc_info.value)
+        assert "only completed gameweeks can be reviewed" in str(exc_info.value)
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert captured.err == ""
 
     async def test_explicit_gw_finished_returns_result(self):
         gw_data = _make_gw(id_=8, finished=True)
@@ -362,28 +375,40 @@ class TestReviewResolveGw:
         assert result["gw_data"] == gw_data
         assert result["api_current_gw_id"] == 9
 
-    async def test_no_current_gw_returns_none(self):
+    async def test_no_current_gw_raises_with_reason(self):
         client = _make_client(gameweeks=[], current_gw=None)
-        result = await _review_resolve_gw(client, gameweek=None)
-        assert result is None
+        with pytest.raises(GameweekResolutionError, match="Could not determine current gameweek"):
+            await _review_resolve_gw(client, gameweek=None)
 
-    async def test_current_gw_id_1_in_progress_returns_none(self):
+    async def test_current_gw_id_1_in_progress_raises_with_reason(self):
         # id=1, not finished → id-1 = 0 < 1, no completed GW yet
         client = _make_client(
             gameweeks=[_make_gw(id_=1, finished=False)],
             current_gw=_make_gw(id_=1, finished=False),
         )
-        result = await _review_resolve_gw(client, gameweek=None)
-        assert result is None
+        with pytest.raises(GameweekResolutionError, match="No completed gameweeks yet"):
+            await _review_resolve_gw(client, gameweek=None)
 
-    async def test_current_gw_in_progress_derived_gw_not_finished_returns_none(self):
+    async def test_current_gw_in_progress_derived_gw_not_finished_raises_with_reason(self):
         # current GW=5 in progress → try GW 4; GW 4 is not finished
         client = _make_client(
             gameweeks=[_make_gw(id_=4, finished=False), _make_gw(id_=5, finished=False)],
             current_gw=_make_gw(id_=5, finished=False),
         )
-        result = await _review_resolve_gw(client, gameweek=None)
-        assert result is None
+        with pytest.raises(GameweekResolutionError) as exc_info:
+            await _review_resolve_gw(client, gameweek=None)
+        assert "Gameweek 4 is not yet finished" in str(exc_info.value)
+        assert "-g/--gameweek" in str(exc_info.value)
+
+    async def test_derived_gw_missing_from_the_payload_raises_with_reason(self):
+        # The current gameweek is known but the one before it is absent from
+        # the same payload: the branch that used to print on stdout.
+        client = _make_client(
+            gameweeks=[_make_gw(id_=5, finished=False)],
+            current_gw=_make_gw(id_=5, finished=False),
+        )
+        with pytest.raises(GameweekResolutionError, match="Gameweek 4 not found"):
+            await _review_resolve_gw(client, gameweek=None)
 
     async def test_current_gw_finished_returns_result(self):
         gw_data = _make_gw(id_=7, finished=True)
@@ -557,6 +582,58 @@ class TestReviewMalformedFinesConfig:
         )
         assert message in result.stderr.replace("\n", "")
         assert "Traceback" not in result.stderr
+
+
+class TestReviewUnresolvableGameweek:
+    """#273: the refusal reaches the reader on one stream, with exit 1.
+
+    `review` used to print the reason on stdout and exit 0, so `2>/dev/null`
+    kept the failure text, `> out.txt` swallowed it, and a script had no way
+    to tell a declined gameweek from a review that produced nothing.
+    Declining an in-progress gameweek is right; reporting it that way was not.
+    """
+
+    @staticmethod
+    def _invoke(args, *, gameweeks, current_gw):
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        client.get_gameweeks = AsyncMock(return_value=gameweeks)
+        client.get_current_gameweek = AsyncMock(return_value=current_gw)
+        with patch("fpl_cli.api.fpl.FPLClient", MagicMock(return_value=client)):
+            return CliRunner().invoke(review_command, args)
+
+    def test_an_in_progress_gameweek_exits_one_with_the_reason_on_stderr(self):
+        in_progress = _make_gw(id_=7, finished=False)
+        result = self._invoke(
+            ["--gameweek", "7"], gameweeks=[in_progress], current_gw=in_progress,
+        )
+
+        assert result.exit_code == 1
+        assert "Gameweek 7 is not yet finished" in " ".join(result.stderr.split())
+        # The whole point: stdout carries the review, and there is none.
+        assert result.stdout == ""
+
+    def test_a_gameweek_that_does_not_exist_exits_one_with_the_reason_on_stderr(self):
+        finished = _make_gw(id_=5, finished=True)
+        result = self._invoke(
+            ["--gameweek", "99"], gameweeks=[finished], current_gw=finished,
+        )
+
+        assert result.exit_code == 1
+        assert "Gameweek 99 not found" in " ".join(result.stderr.split())
+        assert result.stdout == ""
+
+    def test_a_season_that_has_not_started_exits_one_with_the_reason_on_stderr(self):
+        result = self._invoke(
+            [],
+            gameweeks=[{"id": 1, "finished": False, "deadline_time": "2026-08-21T17:30:00Z"}],
+            current_gw=None,
+        )
+
+        assert result.exit_code == 1
+        assert "Season hasn't started" in " ".join(result.stderr.split())
+        assert result.stdout == ""
 
 
 # ---------------------------------------------------------------------------
@@ -853,7 +930,7 @@ class TestNormaliseNameDiacritics:
 
 class TestReviewResolveGwPreSeason:
 
-    async def test_no_current_gw_and_nothing_finished_reports_season_not_started(self, capsys):
+    async def test_no_current_gw_and_nothing_finished_reports_season_not_started(self):
         client = _make_client(
             gameweeks=[
                 {"id": 1, "finished": False, "deadline_time": "2026-08-21T17:30:00Z"},
@@ -861,21 +938,21 @@ class TestReviewResolveGwPreSeason:
             ],
             current_gw=None,
         )
-        result = await _review_resolve_gw(client, gameweek=None)
-        assert result is None
-        out = capsys.readouterr().err
-        assert "Season hasn't started" in out
-        assert "Could not determine" not in out
+        with pytest.raises(GameweekResolutionError) as exc_info:
+            await _review_resolve_gw(client, gameweek=None)
+        reason = str(exc_info.value)
+        assert "Season hasn't started" in reason
+        assert "GW1 deadline:" in reason
+        assert "Could not determine" not in reason
 
-    async def test_no_current_gw_with_finished_gws_keeps_generic_message(self, capsys):
+    async def test_no_current_gw_with_finished_gws_keeps_generic_message(self):
         # Season over / API oddity: something finished, so this is not pre-season.
         client = _make_client(
             gameweeks=[{"id": 38, "finished": True}],
             current_gw=None,
         )
-        result = await _review_resolve_gw(client, gameweek=None)
-        assert result is None
-        assert "Could not determine current gameweek" in capsys.readouterr().err
+        with pytest.raises(GameweekResolutionError, match="Could not determine current gameweek"):
+            await _review_resolve_gw(client, gameweek=None)
 
 
 class TestReviewClassicTransfersGw1:

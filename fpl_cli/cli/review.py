@@ -19,7 +19,7 @@ from fpl_cli.cli._context import (
     resolve_output_dir,
     warn_prediction_problems,
 )
-from fpl_cli.cli._json import config_failure_boundary
+from fpl_cli.cli._json import config_failure_boundary, emit_failure
 from fpl_cli.cli._review_analysis import _review_fixtures, _review_global_stats, _review_league_table
 from fpl_cli.cli._review_classic import _review_classic_league, _review_classic_team, _review_classic_transfers
 from fpl_cli.cli._review_draft import _review_draft
@@ -37,8 +37,26 @@ if TYPE_CHECKING:
     from fpl_cli.api.fpl import FPLClient
 
 
-async def _review_resolve_gw(client: FPLClient, gameweek: int | None) -> dict[str, Any] | None:
-    """Resolve which gameweek to review. Returns {gw, gw_data, api_current_gw_id} or None."""
+class GameweekResolutionError(Exception):
+    """No gameweek could be resolved to review or recap, and why.
+
+    The resolver used to print its own prose and hand back `None`, which left
+    each caller with a failure it could not describe: `league-recap` emitted a
+    generic "Could not resolve a gameweek to recap." under `--format json`
+    while the specific reason went to a different stream, and two of the
+    branches printed that reason on stdout (issue #273). Carrying the reason
+    out instead lets every call site report it through `emit_failure()` -- one
+    stream, one exit code, and the reason the reader actually needs.
+    """
+
+
+async def _review_resolve_gw(client: FPLClient, gameweek: int | None) -> dict[str, Any]:
+    """Resolve which gameweek to review. Returns {gw, gw_data, api_current_gw_id}.
+
+    Raises `GameweekResolutionError` carrying the reason when no gameweek can
+    be resolved -- an unknown id, one still being played, or a season with
+    nothing finished to look back on.
+    """
     gameweeks = await client.get_gameweeks()
     current_gw = await client.get_current_gameweek()
     api_current_gw_id = current_gw["id"] if current_gw else None
@@ -46,12 +64,12 @@ async def _review_resolve_gw(client: FPLClient, gameweek: int | None) -> dict[st
     if gameweek is not None:
         gw_data = next((g for g in gameweeks if g["id"] == gameweek), None)
         if not gw_data:
-            console.print(f"[red]Gameweek {gameweek} not found[/red]")
-            return None
+            raise GameweekResolutionError(f"Gameweek {gameweek} not found")
         if not gw_data.get("finished"):
-            console.print(f"[red]Gameweek {gameweek} is not yet finished[/red]")
-            console.print("Only completed gameweeks can be reviewed")
-            return None
+            raise GameweekResolutionError(
+                f"Gameweek {gameweek} is not yet finished"
+                " - only completed gameweeks can be reviewed"
+            )
         gw = gameweek
     else:
         if current_gw and current_gw.get("finished"):
@@ -59,33 +77,28 @@ async def _review_resolve_gw(client: FPLClient, gameweek: int | None) -> dict[st
         elif current_gw:
             gw = current_gw["id"] - 1
             if gw < 1:
-                error_console.print("[yellow]No completed gameweeks yet[/yellow]")
-                return None
+                raise GameweekResolutionError("No completed gameweeks yet")
         elif gameweeks and not any(g.get("finished") for g in gameweeks):
             # No current gameweek and nothing finished: the season has not
             # kicked off yet, which is not the same as a lookup failure.
             first_gw = min(gameweeks, key=lambda g: g["id"])
             deadline = first_gw.get("deadline_time")
             deadline_note = f" (GW1 deadline: {format_deadline(deadline)})" if deadline else ""
-            error_console.print(
-                f"[yellow]Season hasn't started - no completed gameweeks to review{deadline_note}[/yellow]"
+            raise GameweekResolutionError(
+                f"Season hasn't started - no completed gameweeks to review{deadline_note}"
             )
-            return None
         else:
-            error_console.print("[yellow]Could not determine current gameweek[/yellow]")
-            return None
+            raise GameweekResolutionError("Could not determine current gameweek")
 
         gw_data = next((g for g in gameweeks if g["id"] == gw), None)
         if not gw_data:
-            console.print(f"[red]Gameweek {gw} not found[/red]")
-            return None
+            raise GameweekResolutionError(f"Gameweek {gw} not found")
 
         if not gw_data.get("finished"):
-            error_console.print(
-                f"[yellow]Gameweek {gw} is not yet finished"
-                " -- Use -g/--gameweek to specify a completed gameweek[/yellow]"
+            raise GameweekResolutionError(
+                f"Gameweek {gw} is not yet finished"
+                " - use -g/--gameweek to specify a completed gameweek"
             )
-            return None
 
     return {"gw": gw, "gw_data": gw_data, "api_current_gw_id": api_current_gw_id}
 
@@ -154,9 +167,16 @@ def review_command(
             if synthesis_provider is not None:
                 await stack.enter_async_context(synthesis_provider)
 
-            gw_result = await _review_resolve_gw(client, gameweek)
-            if gw_result is None:
-                return
+            try:
+                gw_result = await _review_resolve_gw(client, gameweek)
+            except GameweekResolutionError as exc:
+                # `review` has no `--format json`, so the format is always
+                # table: the reason on stderr, exit 1. It used to print on
+                # stdout and exit 0, which told a script the review had
+                # succeeded and left `2>/dev/null` showing the failure
+                # (issue #273). Declining a gameweek still being played is
+                # unchanged -- only how the refusal is reported.
+                emit_failure("review", str(exc), "table", cause=exc)
             gw = gw_result["gw"]
             gw_data = gw_result["gw_data"]
             api_current_gw_id = gw_result["api_current_gw_id"]

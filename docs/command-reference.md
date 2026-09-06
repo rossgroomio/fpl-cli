@@ -74,9 +74,11 @@ commands is empty. Script against `error` and the exit code, never against stder
 
 Warnings never change the exit code — a command that produced its payload exits 0 and
 reports the problem in `metadata.warnings` (and on stderr), rather than failing. A few
-commands deliberately soften the *table* path to exit 0 where the JSON path exits 1
-(`league-recap` on an unresolvable gameweek prints the message and returns); the JSON
-contract above is the one to script against.
+commands still soften the *table* path to exit 0 where the JSON path exits 1
+(`fpl chips timing` with no `classic_entry_id` configured prints the message and returns);
+the JSON contract above is the one to script against. `review` and `league-recap` used to
+be among them and no longer are — a gameweek neither can resolve exits 1 either way, with
+the same reason.
 
 The table applies to every way a command can end, not just the ones it was written for.
 A command that cannot reach the FPL API, that needs an entry ID you have not configured,
@@ -749,6 +751,13 @@ writes those marks per fixture as it finishes, so a gameweek with a fixture stil
 cannot answer; there the current clubs answer instead, which can differ from that gameweek's
 clubs once a transfer has happened in between.
 
+**A gameweek it will not review** — one still being played, an id the season does not have,
+a season with nothing finished yet — is refused with the reason on **stderr** and exit **1**.
+`review` has no `--format json`, so stdout carries the review or nothing at all, and
+`fpl review 2>/dev/null` is silent on a refusal rather than printing half an explanation.
+It shares its resolver with `league-recap`, and both used to exit 0 here with the reason on
+stdout.
+
 ### League Recap
 
 Entertainment-first post-gameweek report for the whole league.
@@ -992,11 +1001,20 @@ rendered, and a skipped or truncated editorial (`synthesis_provider_unavailable`
 `synthesis_stopped_early`) is no exception.
 
 Four things do exit 1, all emitting the shared `{"command", "error"}` envelope on stdout
-under `--format json` (see [JSON Output](#json-output)): an unreachable FPL API, a
-gameweek that could not be resolved at all, a reconciliation failure, and a `fines:` block
-that cannot be parsed (a bad rule, a mistyped `threshold:`, or an unrecognised key). Only the second softens on the table path, where it prints the same
-message and exits 0. The distinction matters when scripting a retry — an outage is worth
-retrying, the other three are not.
+under `--format json` (see [JSON Output](#json-output)) and the same message as red prose
+on stderr in table mode: an unreachable FPL API, a gameweek that could not be resolved at
+all, a reconciliation failure, and a `fines:` block that cannot be parsed (a bad rule, a
+mistyped `threshold:`, or an unrecognised key). The distinction matters when scripting a
+retry — an outage is worth retrying, the other three are not.
+
+The second used to answer differently depending on how you asked: exit 1 with a generic
+`"Could not resolve a gameweek to recap."` under `--format json`, exit **0** in table mode
+with the specific reason on stdout. It now exits 1 either way and carries the reason the
+resolver actually has — `Gameweek 7 is not yet finished`, `Gameweek 99 not found`,
+`Season hasn't started` — into whichever channel you are reading. `fpl review` shares the
+resolver and changed with it, from exit 0 and prose on stdout to exit 1 and prose on
+stderr. Declining a gameweek still being played is unchanged and deliberate: there are no
+final scores to recap until it finishes.
 
 The fines one refuses rather than degrades on purpose. An unreadable `fines:` block is not
 the same as no fines configured, and recapping anyway would write "every configured rule
