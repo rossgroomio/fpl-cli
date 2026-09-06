@@ -813,7 +813,9 @@ The green-arrow drought reads the current run rather than the season total, sinc
 **JSON:** `--format json` emits one row per manager — the same shape written to the
 ledger, built from the rows this run assembled, so manager data is present even when the
 store could not be written. `metadata` carries `coverage` (per gameweek: fidelity-tier
-counts, unknown managers, whether the file was readable), `season_phase`, `notes_pack`
+counts, unknown managers, whether the file was readable — every gameweek with a file on
+disk appears there with a status, a damaged one as `readable: false`, so an empty list
+means only that nothing has been captured yet), `season_phase`, `notes_pack`
 (every entry, including those below their reporting minimum and every nonzero season
 count whether or not it grew this gameweek), `season_fines` (the whole
 season tally, emitted every week regardless of the milestone gate the printed surfaces use), `synthesis_summary` (with

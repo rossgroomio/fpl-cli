@@ -434,6 +434,77 @@ class TestCaptureRecapHistory:
         assert str(path) in err
         assert path.read_bytes() == before
 
+    async def test_a_corrupt_target_gameweek_leaves_its_neighbours_coverage_intact(self):
+        """Issue #264: the `append_rows` failure path returned before
+        `store.coverage()` was ever called, so `CaptureResult.coverage` fell
+        back to its `[]` default -- taking every *readable* gameweek in the
+        partition down with the bad one. `[]` also reads as "nothing captured
+        yet", so a consumer could not tell an empty partition from a damaged
+        one. Every gameweek with a file on disk must appear with a status."""
+        store = _store()
+        store.append_rows(4, [make_history_row(
+            season=SEASON, fpl_format="classic", league_id=42, gameweek=4,
+            manager_key=1, manager_name="Alice",
+        )])
+        corrupt = store.gameweek_file(5)
+        corrupt.write_text("not json{{{\n", encoding="utf-8")
+
+        result = await capture_recap_history(_recap_data(), season=SEASON)
+
+        assert result.store_readable is False
+        by_gameweek = {c.gameweek: c for c in result.coverage}
+        assert sorted(by_gameweek) == [4, 5]
+        # The untouched gameweek keeps its real status...
+        assert by_gameweek[4].readable is True
+        assert by_gameweek[4].tier_counts == {FidelityTier.DETAILED: 1}
+        # ...and the damaged one says so rather than vanishing, carrying the
+        # store's own path-and-remedy message with it.
+        assert by_gameweek[5].readable is False
+        assert str(corrupt) in (by_gameweek[5].error or "")
+
+    async def test_a_corrupt_store_reports_coverage_without_a_second_unreadable_warning(self):
+        """The coverage read added for #264 must not undo #224: the `_warn`
+        in the failure path already shows this gameweek's message in full, so
+        routing the same coverage through `_report_coverage` would put a
+        near-identical `league_history_store_unreadable` line beside it."""
+        path = _store().gameweek_file(5)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("not json{{{\n", encoding="utf-8")
+
+        result = await capture_recap_history(_recap_data(), season=SEASON)
+
+        assert [c.readable for c in result.coverage] == [False]
+        assert [w["code"] for w in result.warnings] == [HISTORY_WARNING_STORE_UNREADABLE]
+
+    async def test_a_second_damaged_gameweek_still_names_itself_and_its_remedy(self, capsys):
+        """Review of #264's fix: reading coverage on the write-failure path
+        newly surfaces *other* damaged gameweeks as `readable: False`, and
+        nothing was naming them. `_report_coverage` is skipped here, the
+        `_warn` beside the failure carries only the recapped gameweek, and
+        `unreadable_reported_by_caller` has dropped the store's own log line
+        to debug -- so a JSON consumer saw `readable: false` with the reason
+        nowhere. Each damaged file must carry its own path and `mv` remedy,
+        and the recapped one must still be warned about exactly once (#224)."""
+        store = _store()
+        store.partition_dir().mkdir(parents=True, exist_ok=True)
+        for gameweek in (4, 5):
+            store.gameweek_file(gameweek).write_text("not json{{{\n", encoding="utf-8")
+
+        result = await capture_recap_history(_recap_data(gameweek=5), season=SEASON)
+
+        assert [(c.gameweek, c.readable) for c in result.coverage] == [(4, False), (5, False)]
+        # One warning each -- the recapped gameweek's from the `_warn` beside
+        # the raise, the other from `_warn_unreadable` -- and no duplicate for
+        # the recapped one, which is what routing the whole set through
+        # `_warn_unreadable` would have produced.
+        assert [w["code"] for w in result.warnings] == [
+            HISTORY_WARNING_STORE_UNREADABLE, HISTORY_WARNING_STORE_UNREADABLE,
+        ]
+        err = _stderr(capsys)
+        for gameweek in (4, 5):
+            assert str(store.gameweek_file(gameweek)) in err
+        assert err.count("mv '") == 2
+
     async def test_an_empty_cohort_over_a_corrupt_store_still_never_raises(self, capsys):
         """R4: a corrupt gameweek file must never escape as a raised error.
 
@@ -2427,6 +2498,29 @@ class TestLeagueRecapJsonEnvelope:
         assert len(payload["data"]) == 1
         codes = [w["code"] for w in payload["metadata"]["warnings"]]
         assert HISTORY_WARNING_STORE_UNREADABLE in codes
+
+    def test_a_corrupted_store_still_reports_every_gameweek_it_can_read(self):
+        """Issue #264: with the recapped gameweek's own file damaged,
+        `metadata.coverage` came back `[]` -- so a consumer repairing the
+        store learned from the warning which file was broken but could not
+        learn from the payload which of the others were still intact."""
+        store = _store()
+        store.append_rows(4, [make_history_row(
+            season=SEASON, fpl_format="classic", league_id=42, gameweek=4,
+            manager_key=1, manager_name="Alice",
+        )])
+        store.gameweek_file(5).write_text("not json{{{\n", encoding="utf-8")
+
+        result = _invoke_recap(
+            _recap_data(managers=[_manager(name="Alice", entry_id=1)]), ["--format", "json"],
+        )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        by_gw = {c["gameweek"]: c for c in payload["metadata"]["coverage"]}
+        assert by_gw[4]["readable"] is True
+        assert by_gw[4]["tier_counts"] == {"detailed": 1}
+        assert by_gw[5]["readable"] is False
 
     def test_an_unreadable_prior_gameweek_reaches_metadata_warnings_with_its_remedy(self):
         """Issue #224: a consumer scripting on the documented
