@@ -241,6 +241,11 @@ def format_recap_standings_context(data: LeagueRecapData) -> str:
     return "\n".join(lines)
 
 
+def _pts(points: int) -> str:
+    """A points figure with its unit: "1 pt", "0 pts", "12 pts"."""
+    return f"{points} pt" if points == 1 else f"{points} pts"
+
+
 _CHIP_LABEL = {
     "WC": "Wildcard",
     "FH": "Free Hit",
@@ -264,7 +269,7 @@ def format_recap_chips_context(data: LeagueRecapData) -> str:
         chip = m.get("active_chip")
         if not chip:
             continue
-        by_chip.setdefault(chip, []).append(f"{m['manager_name']} ({m['gw_points']} pts)")
+        by_chip.setdefault(chip, []).append(f"{m['manager_name']} ({_pts(m['gw_points'])})")
 
     if not by_chip:
         return ""
@@ -346,8 +351,8 @@ def format_recap_transfers_context(data: LeagueRecapData) -> str:
             continue
 
         moves_text = "; ".join(
-            f"{t['player_in']} ({t['player_in_points']} pts) in for "
-            f"{t['player_out']} ({t['player_out_points']} pts), {t['net']:+d}"
+            f"{t['player_in']} ({_pts(t['player_in_points'])}) in for "
+            f"{t['player_out']} ({_pts(t['player_out_points'])}), {t['net']:+d}"
             for t in moves
         )
         raw = sum(t["net"] for t in moves)
@@ -423,8 +428,8 @@ def format_recap_waivers_context(data: LeagueRecapData) -> str:
         labelled = ", ".join(f"{count} {label}{'s' if count != 1 else ''}" for label, count in present)
         summary = labelled if len(present) == 1 else f"{len(moves)} moves: {labelled}"
         moves_text = "; ".join(
-            f"{t['player_in']} ({t['player_in_points']} pts) in for "
-            f"{t['player_out']} ({t['player_out_points']} pts), {t['net']:+d} "
+            f"{t['player_in']} ({_pts(t['player_in_points'])}) in for "
+            f"{t['player_out']} ({_pts(t['player_out_points'])}), {t['net']:+d} "
             f"[{draft_transaction_kind_label(t['kind'])}]"
             for t in moves
         )

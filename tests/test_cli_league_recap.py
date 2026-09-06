@@ -3193,8 +3193,8 @@ class TestEndToEndPromptThroughTheFullCommand:
         assert "Total managers who made waiver or free-agent moves: 1 of 2" in user_prompt
         assert (
             "- **Alice** (2 moves: 1 waiver, 1 free agent, net +4): "
-            "Savinho (0 pts) in for Maddison (1 pts), -1 [waiver]; "
-            "Dango (6 pts) in for Georginio (1 pts), +5 [free agent]"
+            "Savinho (0 pts) in for Maddison (1 pt), -1 [waiver]; "
+            "Dango (6 pts) in for Georginio (1 pt), +5 [free agent]"
         ) in user_prompt
         assert "Made no moves (1): Bob" in user_prompt
         assert "## Transfers" not in user_prompt

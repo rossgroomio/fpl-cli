@@ -3081,7 +3081,7 @@ class TestPromptFormatting:
             "- **Alice** (2 transfers, -4 hit, net +5 after the hit): "
             "Haaland (12 pts) in for Isak (3 pts), +9; Saka (2 pts) in for Palmer (2 pts), +0"
         ) in lines
-        assert "- **Cam** (1 transfer, no hit, net -8): Wood (1 pts) in for Watkins (9 pts), -8" in lines
+        assert "- **Cam** (1 transfer, no hit, net -8): Wood (1 pt) in for Watkins (9 pts), -8" in lines
         assert lines[-1] == "Made no transfers (1): Bob"
 
     def test_transfers_context_orders_movers_best_net_first(self):
@@ -3152,7 +3152,7 @@ class TestPromptFormatting:
         assert (
             "- **Alice** (3 transfers, -4 hit; only 2 of the 3 moves were captured, +7 across "
             "those before the hit, so the gameweek's net is unknown): "
-            "A (4 pts) in for B (1 pts), +3; C (6 pts) in for D (2 pts), +4"
+            "A (4 pts) in for B (1 pt), +3; C (6 pts) in for D (2 pts), +4"
         ) in text
         alice_line = next(line for line in text.splitlines() if "**Alice**" in line)
         assert "net +" not in alice_line
@@ -3222,10 +3222,10 @@ class TestPromptFormatting:
         assert lines[0] == "Total managers who made waiver or free-agent moves: 2 of 3"
         assert (
             "- **Alice** (2 moves: 1 waiver, 1 free agent, net +4): "
-            "Savinho (0 pts) in for Maddison (1 pts), -1 [waiver]; "
-            "Dango (6 pts) in for Georginio (1 pts), +5 [free agent]"
+            "Savinho (0 pts) in for Maddison (1 pt), -1 [waiver]; "
+            "Dango (6 pts) in for Georginio (1 pt), +5 [free agent]"
         ) in lines
-        assert "- **Cam** (1 waiver, net -8): Wood (1 pts) in for Watkins (9 pts), -8 [waiver]" in lines
+        assert "- **Cam** (1 waiver, net -8): Wood (1 pt) in for Watkins (9 pts), -8 [waiver]" in lines
         assert lines[-1] == "Made no moves (1): Bob"
 
     def test_waivers_context_lists_a_chain_as_the_raw_moves_not_the_contracted_pair(self):
@@ -3237,7 +3237,7 @@ class TestPromptFormatting:
         text = format_recap_waivers_context(self._draft_data(managers))
         assert (
             "- **Alice** (2 waivers, net +8): "
-            "B (4 pts) in for A (1 pts), +3 [waiver]; C (9 pts) in for B (4 pts), +5 [waiver]"
+            "B (4 pts) in for A (1 pt), +3 [waiver]; C (9 pts) in for B (4 pts), +5 [waiver]"
         ) in text
         assert "C (9 pts) in for A" not in text
 
@@ -3269,7 +3269,7 @@ class TestPromptFormatting:
         awards: RecapAwards = {}  # type: ignore[typeddict-item]
         _compute_waiver_awards(managers, awards)
         text = format_recap_waivers_context(self._draft_data(managers))
-        assert "(1 free agent, net +8): A (9 pts) in for B (1 pts), +8 [free agent]" in text
+        assert "(1 free agent, net +8): A (9 pts) in for B (1 pt), +8 [free agent]" in text
         assert "(1 free agent)" in awards["waiver_genius"]["detail"]
 
     def test_waivers_context_omits_the_stayed_line_when_everyone_moved(self):
@@ -3298,7 +3298,7 @@ class TestPromptFormatting:
             awards_text="x", standings_text="| t |", fines_text="",
             waivers_text=(
                 "Total managers who made waiver or free-agent moves: 1 of 2\n"
-                "- **Alice** (1 waiver, net +3): A (4 pts) in for B (1 pts), +3 [waiver]"
+                "- **Alice** (1 waiver, net +3): A (4 pts) in for B (1 pt), +3 [waiver]"
             ),
             player_clubs_text="- A: Arsenal",
         )
