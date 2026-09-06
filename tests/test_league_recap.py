@@ -42,6 +42,8 @@ from fpl_cli.cli._league_recap_types import (
     RecapManagerEntry,
     RecapManagerPlayer,
     RecapTransfer,
+    draft_transaction_kind_counts,
+    format_move_counts,
 )
 from fpl_cli.prompts.league_recap import (
     collect_player_clubs,
@@ -54,6 +56,7 @@ from fpl_cli.prompts.league_recap import (
     format_recap_season_fines_context,
     format_recap_standings_context,
     format_recap_transfers_context,
+    format_recap_waivers_context,
     get_recap_synthesis_prompt,
 )
 from fpl_cli.services.league_history_fines import ManagerFineTally, SeasonFinesTally
@@ -2480,6 +2483,39 @@ def _txn(pin: str, pin_pts: int, pout: str, pout_pts: int, kind: str = "w") -> R
     )
 
 
+class TestFormatMoveCounts:
+    """One rendering of a kind-count breakdown, shared by the award headline
+    and the waiver roster (PR #303 review)."""
+
+    def test_a_single_kind_reads_as_its_count_alone(self):
+        assert format_move_counts([("transfer", 2)]) == "2 transfers"
+        assert format_move_counts([("waiver", 2), ("free agent", 0), ("other move", 0)]) == "2 waivers"
+
+    def test_a_lone_move_is_singular(self):
+        assert format_move_counts([("free agent", 1)]) == "1 free agent"
+
+    def test_mixed_kinds_lead_with_the_total(self):
+        assert (
+            format_move_counts([("waiver", 2), ("free agent", 1), ("other move", 0)])
+            == "3 moves: 2 waivers, 1 free agent"
+        )
+
+    def test_empty_buckets_are_dropped_and_nothing_reads_as_nothing(self):
+        assert format_move_counts([("waiver", 0), ("free agent", 0)]) == ""
+
+    def test_the_award_and_the_roster_render_one_breakdown_alike(self):
+        txns = [_txn("A", 9, "B", 1), _txn("C", 4, "D", 2, kind="f")]
+        managers = [_make_manager_with_txns("Alice", txns), _make_manager(name="Bob")]
+        awards: RecapAwards = {}  # type: ignore[typeddict-item]
+        _compute_waiver_awards(managers, awards)
+        data = _make_recap_data(managers=managers)
+        data["fpl_format"] = "draft"
+        rendered = format_move_counts(draft_transaction_kind_counts(txns))
+        assert rendered == "2 moves: 1 waiver, 1 free agent"
+        assert f"across {rendered}" in awards["waiver_genius"]["detail"]
+        assert f"**Alice** ({rendered}, net" in format_recap_waivers_context(data)
+
+
 class TestContractDraftTxnChains:
     """Chain rebuilds within a manager-GW collapse to endpoint pairs."""
 
@@ -3014,6 +3050,22 @@ class TestPromptFormatting:
         assert "Alice (dnp; vice Salah scored 12 pts)" in text
         assert "Bob (7 pts)" in text
 
+    def test_captains_context_prints_a_lone_point_in_the_singular(self):
+        """A captain on exactly one point, or a vice who took over for one,
+        reads "1 pt" like the chips and move rosters do -- one document, one
+        unit."""
+        managers = [
+            _make_manager(name="Alice", entry_id=1, captain="Haaland", captain_points=1),
+            _make_manager(
+                name="Bob", entry_id=2, captain="Salah", captain_points=0, captain_played=False,
+                vice_captain="Saka", vice_captain_points=1,
+            ),
+        ]
+        text = format_recap_captains_context(_make_recap_data(managers=managers))
+        assert "Alice (1 pt)" in text
+        assert "Bob (dnp; vice Saka scored 1 pt)" in text
+        assert "1 pts" not in text
+
     def test_captains_context_empty_for_draft(self):
         managers = [_make_manager(name="Cam", entry_id=1, captain="Haaland")]
         data = _make_recap_data(managers=managers)
@@ -3080,7 +3132,7 @@ class TestPromptFormatting:
             "- **Alice** (2 transfers, -4 hit, net +5 after the hit): "
             "Haaland (12 pts) in for Isak (3 pts), +9; Saka (2 pts) in for Palmer (2 pts), +0"
         ) in lines
-        assert "- **Cam** (1 transfer, no hit, net -8): Wood (1 pts) in for Watkins (9 pts), -8" in lines
+        assert "- **Cam** (1 transfer, no hit, net -8): Wood (1 pt) in for Watkins (9 pts), -8" in lines
         assert lines[-1] == "Made no transfers (1): Bob"
 
     def test_transfers_context_orders_movers_best_net_first(self):
@@ -3151,7 +3203,7 @@ class TestPromptFormatting:
         assert (
             "- **Alice** (3 transfers, -4 hit; only 2 of the 3 moves were captured, +7 across "
             "those before the hit, so the gameweek's net is unknown): "
-            "A (4 pts) in for B (1 pts), +3; C (6 pts) in for D (2 pts), +4"
+            "A (4 pts) in for B (1 pt), +3; C (6 pts) in for D (2 pts), +4"
         ) in text
         alice_line = next(line for line in text.splitlines() if "**Alice**" in line)
         assert "net +" not in alice_line
@@ -3198,6 +3250,138 @@ class TestPromptFormatting:
             transfers_text="",
         )
         assert "## Transfers" not in user
+
+    def _draft_data(self, managers):
+        data = _make_recap_data(managers=managers)
+        data["fpl_format"] = "draft"
+        return data
+
+    def test_waivers_context_lists_every_mover_with_kind_tags_and_net(self):
+        """Issue #301: every draft mover with each move tagged by kind, the
+        net, an explicit mover count, and who stood still -- not just the
+        best and worst the two waiver awards name."""
+        managers = [
+            _make_manager_with_txns("Alice", [
+                _txn("Savinho", 0, "Maddison", 1),
+                _txn("Dango", 6, "Georginio", 1, kind="f"),
+            ], entry_id=1),
+            _make_manager(name="Bob", entry_id=2),
+            _make_manager_with_txns("Cam", [_txn("Wood", 1, "Watkins", 9)], entry_id=3),
+        ]
+        text = format_recap_waivers_context(self._draft_data(managers))
+        lines = text.splitlines()
+        assert lines[0] == "Total managers who made waiver or free-agent moves: 2 of 3"
+        assert (
+            "- **Alice** (2 moves: 1 waiver, 1 free agent, net +4): "
+            "Savinho (0 pts) in for Maddison (1 pt), -1 [waiver]; "
+            "Dango (6 pts) in for Georginio (1 pt), +5 [free agent]"
+        ) in lines
+        assert "- **Cam** (1 waiver, net -8): Wood (1 pt) in for Watkins (9 pts), -8 [waiver]" in lines
+        assert lines[-1] == "Made no moves (1): Bob"
+
+    def test_waivers_context_lists_a_chain_as_the_raw_moves_not_the_contracted_pair(self):
+        """B in for A, then C in for B, is two moves the manager made. The
+        awards contract them to C-for-A so their Best/Worst line never names
+        a player the manager did not end the gameweek with; the roster is a
+        record of activity, so it keeps both -- and the net is the same."""
+        managers = [_make_manager_with_txns("Alice", [_txn("B", 4, "A", 1), _txn("C", 9, "B", 4)])]
+        text = format_recap_waivers_context(self._draft_data(managers))
+        assert (
+            "- **Alice** (2 waivers, net +8): "
+            "B (4 pts) in for A (1 pt), +3 [waiver]; C (9 pts) in for B (4 pts), +5 [waiver]"
+        ) in text
+        assert "C (9 pts) in for A" not in text
+
+    def test_waivers_context_orders_movers_best_net_first(self):
+        managers = [
+            _make_manager_with_txns("Cam", [_txn("A", 1, "B", 9)], entry_id=3),
+            _make_manager_with_txns("Alice", [_txn("C", 12, "D", 3)], entry_id=1),
+            _make_manager_with_txns("Bob", [_txn("E", 5, "F", 5)], entry_id=2),
+        ]
+        text = format_recap_waivers_context(self._draft_data(managers))
+        assert text.index("**Alice**") < text.index("**Bob**") < text.index("**Cam**")
+
+    def test_waivers_context_tags_an_unknown_kind_as_an_other_move(self):
+        """The collector stores the API's `kind` verbatim, the empty string
+        included; the roster labels what it cannot name rather than calling
+        it a waiver -- the same fallback the awards' headline count uses."""
+        managers = [_make_manager_with_txns("Alice", [_txn("A", 2, "B", 5, kind="")])]
+        text = format_recap_waivers_context(self._draft_data(managers))
+        assert "- **Alice** (1 other move, net -3): A (2 pts) in for B (5 pts), -3 [other move]" in text
+
+    def test_waivers_context_and_the_waiver_award_label_a_move_alike(self):
+        """One vocabulary for one move (issue #301): the kind the roster tags
+        a free-agent pickup with is the kind the award's headline counts it
+        under, so the editorial never reads the same move two ways."""
+        managers = [
+            _make_manager_with_txns("Alice", [_txn("A", 9, "B", 1, kind="f")]),
+            _make_manager(name="Bob"),
+        ]
+        awards: RecapAwards = {}  # type: ignore[typeddict-item]
+        _compute_waiver_awards(managers, awards)
+        text = format_recap_waivers_context(self._draft_data(managers))
+        assert "(1 free agent, net +8): A (9 pts) in for B (1 pt), +8 [free agent]" in text
+        assert "(1 free agent)" in awards["waiver_genius"]["detail"]
+
+    def test_waivers_context_omits_the_stayed_line_when_everyone_moved(self):
+        managers = [_make_manager_with_txns("Alice", [_txn("A", 4, "B", 1)])]
+        text = format_recap_waivers_context(self._draft_data(managers))
+        assert "Total managers who made waiver or free-agent moves: 1 of 1" in text
+        assert "Made no moves" not in text
+
+    def test_waivers_context_empty_when_nobody_moved(self):
+        managers = [
+            _make_manager_with_txns("Alice", [], entry_id=1),
+            _make_manager(name="Bob", entry_id=2),
+        ]
+        assert format_recap_waivers_context(self._draft_data(managers)) == ""
+
+    def test_waivers_context_empty_for_classic(self):
+        managers = [_make_manager_with_txns("Alice", [_txn("A", 4, "B", 1)])]
+        assert format_recap_waivers_context(_make_recap_data(managers=managers)) == ""
+
+    def test_waivers_context_empty_when_no_managers(self):
+        assert format_recap_waivers_context(self._draft_data([])) == ""
+
+    def test_synthesis_prompt_includes_waivers_section_for_draft(self):
+        _, user = get_recap_synthesis_prompt(
+            gw=5, league_name="Test", fpl_format="draft",
+            awards_text="x", standings_text="| t |", fines_text="",
+            waivers_text=(
+                "Total managers who made waiver or free-agent moves: 1 of 2\n"
+                "- **Alice** (1 waiver, net +3): A (4 pts) in for B (1 pt), +3 [waiver]"
+            ),
+            player_clubs_text="- A: Arsenal",
+        )
+        assert "## Waivers and Free Agents" in user
+        assert "Total managers who made waiver or free-agent moves: 1 of 2" in user
+        assert user.index("## GW Standings") < user.index("## Waivers and Free Agents") < user.index("## Player Clubs")
+        assert "## Transfers" not in user
+
+    def test_synthesis_prompt_omits_waivers_section_when_empty(self):
+        _, user = get_recap_synthesis_prompt(
+            gw=5, league_name="Test", fpl_format="draft",
+            awards_text="x", standings_text="| t |", fines_text="",
+            waivers_text="",
+        )
+        assert "## Waivers and Free Agents" not in user
+
+    def test_synthesis_system_prompt_names_the_draft_roster_as_the_source_of_truth(self):
+        """#301: draft narration is pinned to the waiver roster rather than to
+        the two waiver awards, the kind tag decides what a move is called, and
+        the say-nothing fallback fires only when neither roster is present."""
+        from fpl_cli.prompts.league_recap import RECAP_SYNTHESIS_SYSTEM_PROMPT
+
+        assert (
+            'the "## Waivers and Free Agents" section is the source of truth for waiver claims '
+            "and free-agent signings"
+        ) in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        assert "never call a move tagged [free agent] a waiver claim" in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        assert "Do NOT infer waiver activity from the Awards section" in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        assert (
+            'If there is no "## Transfers" section, no "## Waivers and Free Agents" section '
+            "and no transfers note"
+        ) in RECAP_SYNTHESIS_SYSTEM_PROMPT
 
     def test_fines_context_includes_triggered(self):
         from fpl_cli.cli._league_recap_types import RecapFineResult

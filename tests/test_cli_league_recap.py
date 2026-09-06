@@ -807,6 +807,9 @@ def _invoke_recap(
         patch("fpl_cli.api.fpl.FPLClient", return_value=client),
         patch("fpl_cli.cli.review._review_resolve_gw", AsyncMock(return_value=resolved)),
         patch("fpl_cli.cli._league_recap_data.collect_classic_recap_data", collector),
+        # `--draft` routes to the other collector; the same stub answers both
+        # so a draft run needs nothing beyond the flag.
+        patch("fpl_cli.cli._league_recap_data.collect_draft_recap_data", collector),
     ):
         from fpl_cli.cli.league_recap import league_recap_command
 
@@ -3152,6 +3155,50 @@ class TestEndToEndPromptThroughTheFullCommand:
         assert "- **Alice** (2 transfers, -4 hit, net +5 after the hit): Haaland (12 pts) in for Isak (3 pts), +9" in user_prompt
         assert "Made no transfers (1): Bob" in user_prompt
         assert 'treat the "## Transfers" section as the source of truth' in system_prompt
+
+    def test_a_draft_dry_run_writes_a_prompt_with_the_waiver_roster(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        """Issue #301: the draft half of the roster above. Every waiver and
+        free-agent move reaches the prompt the command actually sends, tagged
+        by kind, alongside the rule that pins draft narration to it."""
+        monkeypatch.chdir(tmp_path)
+
+        def _txn(name_in: str, name_out: str, in_pts: int, out_pts: int, kind: str) -> RecapDraftTransaction:
+            return RecapDraftTransaction(
+                player_in=name_in, player_in_team="MCI", player_in_points=in_pts,
+                player_out=name_out, player_out_team="TOT", player_out_points=out_pts,
+                net=in_pts - out_pts, kind=kind,
+            )
+
+        result = _invoke_recap(_recap_data(
+            gameweek=5, fpl_format="draft",
+            managers=[
+                _manager(
+                    name="Alice", entry_id=1, league_entry_id=10, overall_rank=1, previous_rank=1,
+                    total_points=300,
+                    transactions=[_txn("Savinho", "Maddison", 0, 1, "w"), _txn("Dango", "Georginio", 6, 1, "f")],
+                ),
+                _manager(
+                    name="Bob", entry_id=2, league_entry_id=20, gw_rank=2, overall_rank=2, previous_rank=2,
+                    total_points=280, transactions=[],
+                ),
+            ],
+            cohort=_cohort((10, "Alice", 1, 60, 300), (20, "Bob", 2, 40, 280)),
+        ), ["--draft", "--dry-run"], settings={"fpl": {"draft_league_id": 42}})
+
+        assert result.exit_code == 0, result.output
+        system_prompt = (tmp_path / "data" / "debug" / "recap_system.txt").read_text(encoding="utf-8")
+        user_prompt = (tmp_path / "data" / "debug" / "recap_prompt.txt").read_text(encoding="utf-8")
+
+        assert "## Waivers and Free Agents" in user_prompt
+        assert "Total managers who made waiver or free-agent moves: 1 of 2" in user_prompt
+        assert (
+            "- **Alice** (2 moves: 1 waiver, 1 free agent, net +4): "
+            "Savinho (0 pts) in for Maddison (1 pt), -1 [waiver]; "
+            "Dango (6 pts) in for Georginio (1 pt), +5 [free agent]"
+        ) in user_prompt
+        assert "Made no moves (1): Bob" in user_prompt
+        assert "## Transfers" not in user_prompt
+        assert 'the "## Waivers and Free Agents" section is the source of truth' in system_prompt
 
     def _fined_at(self, gameweek: int) -> LeagueRecapData:
         return _recap_data(

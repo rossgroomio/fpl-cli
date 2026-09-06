@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from fpl_cli.cli._league_recap_types import LeagueRecapData
+from fpl_cli.cli._league_recap_types import (
+    LeagueRecapData,
+    draft_transaction_kind_counts,
+    draft_transaction_kind_label,
+    format_move_counts,
+)
 from fpl_cli.services.league_history_fines import SeasonFinesTally, format_fine_breakdown
 from fpl_cli.services.league_history_notes import NotesPack, NoteSurface
 from fpl_cli.utils.gameweek import format_gameweek_list, is_opening_gameweek
@@ -21,7 +26,7 @@ Your audience is every member of this league. They want entertainment first, inf
 <tone>
 - Newsletter columnist voice: opinionated, fun, a bit cheeky
 - Name specific managers when praising or roasting
-- Reference specific decisions (captain picks, bench choices, and transfers where transfer data is provided)
+- Reference specific decisions (captain picks, bench choices, and transfers or waiver moves where that data is provided)
 - Use the data to tell a story, not just list stats
 - Frame the recap around the season phase named in the "## League History" section: an opener (GW1) sets an early-season tone, a finale may reflect on the whole campaign using that section's season-spanning facts, and a midpoint or run-in gameweek should stay proportionate to where the season actually is - don't manufacture stakes the data doesn't support
 - Brief - 300-400 words max. Punchy paragraphs, not walls of text
@@ -42,7 +47,8 @@ Your audience is every member of this league. They want entertainment first, inf
 - The biggest bench haul is always funny - lean into it
 - If a manager played a chip, that's a big narrative hook. A chip that flopped deserves mockery; a chip that paid off deserves grudging respect. When referencing chip users, treat the "Chips Played" section as the source of truth — it includes an explicit total count; use that number verbatim. Do NOT count tags in the standings table. Do not name a subset as "the X wildcards" — either name all users of that chip or none.
 - When referencing captain choices, treat the "## Captains" section as the source of truth. It lists every manager grouped by their intended captain pick, with an explicit total count. Use those counts verbatim. NEVER name a captain "outlier", "dissenter", or "the manager(s) who picked Y" unless they appear under that captain in the section. If you describe N managers as picking the modal captain, it must match the section's group size for that player. Do NOT infer captain choices from the awards or standings — they are compressed and miss managers whose pick was neither the best nor the worst.
-- When referencing transfers, hits, or moves in and out, treat the "## Transfers" section as the source of truth. It lists every manager who made a transfer with each move and its points swing, the hit they paid, an explicit count of movers, and the managers who made none - use those counts verbatim. NEVER say a manager transferred, took a hit, or stood still unless that section says so of them, never describe a move it does not list, and where it says a manager's moves or net are unknown, supply neither. Do NOT infer transfer activity from the Awards section - it names only the single best and single worst mover, so it never tells you how many managers transferred or what anyone else did. If there is no "## Transfers" section and no transfers note, do not mention transfers, hits, or moves in and out at all - absence of transfer data means there is nothing to report, not licence to invent one.
+- When referencing transfers, hits, or moves in and out, treat the "## Transfers" section as the source of truth. It lists every manager who made a transfer with each move and its points swing, the hit they paid, an explicit count of movers, and the managers who made none - use those counts verbatim. NEVER say a manager transferred, took a hit, or stood still unless that section says so of them, never describe a move it does not list, and where it says a manager's moves or net are unknown, supply neither. Do NOT infer transfer activity from the Awards section - it names only the single best and single worst mover, so it never tells you how many managers transferred or what anyone else did. If there is no "## Transfers" section, no "## Waivers and Free Agents" section and no transfers note, do not mention transfers, waivers, hits, or moves in and out at all - absence of transfer data means there is nothing to report, not licence to invent one.
+- In draft, the "## Waivers and Free Agents" section is the source of truth for waiver claims and free-agent signings, the same way. It lists every manager who made a move with each move as it was made, its points swing and its kind tag - [waiver] or [free agent] - an explicit count of movers, and the managers who made none - use those counts verbatim. NEVER say a manager claimed, signed, dropped, or stood still unless that section says so of them, never describe a move it does not list, and never call a move tagged [free agent] a waiver claim or a move tagged [waiver] a free-agent signing - the tag is the move's kind. Draft has no transfer hits, so never mention one. Do NOT infer waiver activity from the Awards section - Waiver Genius and Waiver Disaster name only the single best and single worst mover, so they never tell you how many managers moved or what anyone else did.
 - NEVER claim a manager's bench outscored their team unless bench points are strictly greater than their GW points. Use the exact numbers provided.
 - NEVER alter player or manager names. Use the exact spelling provided in the data.
 - NEVER state a club for a player other than the club given for them in this data - the "## Player Clubs" section, or the club printed beside a name elsewhere. Players change clubs in the transfer windows and your own knowledge of who plays where goes a season out of date, so that section is the only authority. A player it does not list has no club you can state: name them alone ("Haaland's 2 points") rather than supplying one from memory.
@@ -62,6 +68,7 @@ def get_recap_synthesis_prompt(
     captains_text: str = "",
     chips_text: str = "",
     transfers_text: str = "",
+    waivers_text: str = "",
     player_clubs_text: str = "",
     league_history_text: str = "",
     is_bgw: bool = False,
@@ -107,6 +114,9 @@ def get_recap_synthesis_prompt(
 
     if transfers_text:
         sections.extend(["", "## Transfers", transfers_text])
+
+    if waivers_text:
+        sections.extend(["", "## Waivers and Free Agents", waivers_text])
 
     if player_clubs_text:
         sections.extend(["", "## Player Clubs", player_clubs_text])
@@ -232,6 +242,11 @@ def format_recap_standings_context(data: LeagueRecapData) -> str:
     return "\n".join(lines)
 
 
+def _pts(points: int) -> str:
+    """A points figure with its unit: "1 pt", "0 pts", "12 pts"."""
+    return f"{points} pt" if points == 1 else f"{points} pts"
+
+
 _CHIP_LABEL = {
     "WC": "Wildcard",
     "FH": "Free Hit",
@@ -255,7 +270,7 @@ def format_recap_chips_context(data: LeagueRecapData) -> str:
         chip = m.get("active_chip")
         if not chip:
             continue
-        by_chip.setdefault(chip, []).append(f"{m['manager_name']} ({m['gw_points']} pts)")
+        by_chip.setdefault(chip, []).append(f"{m['manager_name']} ({_pts(m['gw_points'])})")
 
     if not by_chip:
         return ""
@@ -337,8 +352,8 @@ def format_recap_transfers_context(data: LeagueRecapData) -> str:
             continue
 
         moves_text = "; ".join(
-            f"{t['player_in']} ({t['player_in_points']} pts) in for "
-            f"{t['player_out']} ({t['player_out_points']} pts), {t['net']:+d}"
+            f"{t['player_in']} ({_pts(t['player_in_points'])}) in for "
+            f"{t['player_out']} ({_pts(t['player_out_points'])}), {t['net']:+d}"
             for t in moves
         )
         raw = sum(t["net"] for t in moves)
@@ -368,6 +383,66 @@ def format_recap_transfers_context(data: LeagueRecapData) -> str:
         lines.extend(line for _, line in group)
     if stayed:
         lines.append(f"Made no transfers ({len(stayed)}): {', '.join(sorted(stayed))}")
+    return "\n".join(lines)
+
+
+def format_recap_waivers_context(data: LeagueRecapData) -> str:
+    """Per-manager waiver and free-agent roster: every draft mover with each
+    move as it was made, tagged by kind, plus the managers who made none
+    (issue #301) -- the draft half of `format_recap_transfers_context`.
+
+    Same enumerate-and-lock shape, simpler mechanics. Draft moves come from
+    the league-wide transactions endpoint, already filtered to this gameweek
+    and to accepted moves, so the list is complete: no `transfers_made` to
+    cross-check, no mover whose moves went uncaptured, no hit and no chip.
+
+    Each move is listed raw rather than chain-contracted. A manager who
+    brought B in for A and then C in for B made two moves, and the awards
+    contract them to one (`_contract_draft_txn_chains`) only so their
+    Best/Worst line never names a player the manager did not end the
+    gameweek with -- a display compression, not a record of activity. The
+    net is the same either way (an intermediate cancels algebraically), so
+    it is the figure the two waiver awards rank on.
+
+    Every move carries its kind, so the editorial can tell a waiver claim
+    from a free-agent pickup instead of calling every move a waiver (#146),
+    using the same labels the awards print. Empty for classic (transfers,
+    not waivers) and when nobody moved.
+    """
+    if data.get("fpl_format") != "draft":
+        return ""
+
+    managers = data.get("managers", [])
+    if not managers:
+        return ""
+
+    movers: list[tuple[int, str, str]] = []  # (net, name, line)
+    stayed: list[str] = []
+    for m in managers:
+        name = m["manager_name"]
+        moves = m.get("transactions") or []
+        if not moves:
+            stayed.append(name)
+            continue
+
+        summary = format_move_counts(draft_transaction_kind_counts(moves))
+        moves_text = "; ".join(
+            f"{t['player_in']} ({_pts(t['player_in_points'])}) in for "
+            f"{t['player_out']} ({_pts(t['player_out_points'])}), {t['net']:+d} "
+            f"[{draft_transaction_kind_label(t['kind'])}]"
+            for t in moves
+        )
+        net = sum(t["net"] for t in moves)
+        movers.append((net, name, f"- **{name}** ({summary}, net {net:+d}): {moves_text}"))
+
+    if not movers:
+        return ""
+
+    movers.sort(key=lambda entry: (-entry[0], entry[1]))
+    lines = [f"Total managers who made waiver or free-agent moves: {len(movers)} of {len(managers)}"]
+    lines.extend(line for _, _, line in movers)
+    if stayed:
+        lines.append(f"Made no moves ({len(stayed)}): {', '.join(sorted(stayed))}")
     return "\n".join(lines)
 
 
@@ -453,11 +528,11 @@ def format_recap_captains_context(
         if not captain:
             continue
         if m.get("captain_played"):
-            annotation = f"{m['captain_points']} pts"
+            annotation = _pts(m["captain_points"])
         else:
             vc_name = m.get("vice_captain") or "?"
             vc_pts = m.get("vice_captain_points", 0)
-            annotation = f"dnp; vice {vc_name} scored {vc_pts} pts"
+            annotation = f"dnp; vice {vc_name} scored {_pts(vc_pts)}"
         by_captain.setdefault(captain, []).append((m["manager_name"], annotation))
 
     if not by_captain:
