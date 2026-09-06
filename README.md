@@ -64,6 +64,11 @@ $ fpl league-recap --summarise     # Add the LLM editorial for the group chat
 $ fpl league-fines                 # Who owes what this season, and which weeks were ruled
 ```
 
+`review --summarise` writes its "Next Week" section against next gameweek's fixtures —
+your own players' opponents and positional FDR — so it can't tell you to bench a defender
+who is at home to the league's weakest side just because he scored 5 last week. When there
+is no next gameweek to see, it drops the selection calls and says to run `fpl gw-prep`.
+
 An LLM summary that stops short is caught rather than saved as if it were whole:
 `review --summarise` checks the analysis against the sections its own prompt asked
 for, retries once if a heading is missing or the text ends mid-sentence, and if the
