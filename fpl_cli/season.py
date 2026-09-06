@@ -13,8 +13,10 @@ Format conventions used by external data sources:
 
 from __future__ import annotations
 
-from datetime import date
+from collections.abc import Mapping, Sequence
+from datetime import date, datetime
 from pathlib import Path
+from typing import Any
 
 # -- Constants ---------------------------------------------------------------
 
@@ -48,6 +50,33 @@ def get_season_year(today: date | None = None) -> int:
     """
     d = today or date.today()
     return d.year if d.month >= _CUTOVER_MONTH else d.year - 1
+
+
+def season_year_from_gameweeks(gameweeks: Sequence[Mapping[str, Any]]) -> int | None:
+    """Derive the season start year from GW1's deadline, not the clock (#91).
+
+    `get_season_year()`'s July cutover assumes a season always finishes
+    before 1 July. 2019-20 didn't -- it ran to July 2020, COVID-delayed --
+    so the clock stamped its final gameweeks with the *following* season's
+    label. GW1's deadline doesn't have that problem: whenever the season
+    ends, it started when it started.
+
+    Returns None when `gameweeks` has no GW1 or GW1 carries no parseable
+    `deadline_time` -- pre-season, before fixtures are released, or a caller
+    handed an unrelated payload -- so the caller can fall back to
+    `get_season_year()` rather than receive a guess.
+
+    >>> season_year_from_gameweeks([{"id": 1, "deadline_time": "2019-08-09T18:00:00Z"}])
+    2019
+    """
+    gw1 = next((gw for gw in gameweeks if gw.get("id") == 1), None)
+    deadline = gw1.get("deadline_time") if gw1 else None
+    if not isinstance(deadline, str):
+        return None
+    try:
+        return datetime.fromisoformat(deadline.replace("Z", "+00:00")).year
+    except ValueError:
+        return None
 
 
 # -- Format helpers ----------------------------------------------------------
@@ -152,14 +181,13 @@ def season_partition(base: Path, season: str | None = None) -> Path:
     name -- the mislabelling #85 is about. `resolve_output_dir` warns when it
     sees that shape rather than letting it pass silently.
 
-    Limitation: the label comes from `season_label()`, which derives the
-    season from today's date on a fixed July cutover rather than from the
-    gameweek being written. A season that overruns the cutover -- 2019-20,
-    delayed into July 2020 by COVID -- is stamped with the following season's
-    label, and its late gameweeks collide with that season's own. Deriving the
-    label from GW1's deadline would fix it, but `season_label()` is the shared
-    season source for the ledger, Understat and Core-Insights alike, so that
-    change belongs with those rather than here (#91).
+    Defaults to `season_label()` -- today's date on a fixed July cutover --
+    when `season` is omitted. That mislabels a season that overruns the
+    cutover (2019-20, delayed into July 2020 by COVID): its late gameweeks
+    would collide with that season's own. A caller that can reach
+    bootstrap-static should derive the label from GW1's deadline instead
+    (`season_year_from_gameweeks()`) and pass it explicitly -- as `review`,
+    `league-recap` and `preview` do -- rather than rely on the default (#91).
 
     >>> season_partition(Path("01_Reports"), season="2026-27").as_posix()
     '01_Reports/2026-27'

@@ -14,6 +14,7 @@ from fpl_cli.season import (
     season_label,
     season_partition,
     season_start_year,
+    season_year_from_gameweeks,
     understat_season,
     vaastav_season,
     vaastav_season_range,
@@ -53,6 +54,53 @@ class TestGetSeasonYear:
         # Smoke test: should return an int without error.
         result = get_season_year()
         assert isinstance(result, int)
+
+
+# -- season_year_from_gameweeks -----------------------------------------------
+
+class TestSeasonYearFromGameweeks:
+    """#91: the year comes from GW1's deadline, not the clock, so a season
+    that overruns the July cutover (2019-20, delayed into July 2020 by
+    COVID) still resolves to the year it started."""
+
+    def test_reads_gw1s_deadline_year(self):
+        gameweeks = [{"id": 1, "deadline_time": "2019-08-09T18:00:00Z"}]
+        assert season_year_from_gameweeks(gameweeks) == 2019
+
+    def test_a_season_overrunning_into_july_still_resolves_to_its_start_year(self):
+        """The regression itself: 2019-20 finished in July 2020, but its
+        GW1 deadline still says 2019 -- unlike `get_season_year()`, which a
+        July-or-later clock would resolve to 2020."""
+        gameweeks = [
+            {"id": 1, "deadline_time": "2019-08-09T18:00:00Z"},
+            {"id": 38, "deadline_time": "2020-07-26T15:00:00Z"},
+        ]
+        assert season_year_from_gameweeks(gameweeks) == 2019
+
+    def test_ignores_other_gameweeks_deadlines(self):
+        gameweeks = [
+            {"id": 1, "deadline_time": "2026-08-15T11:00:00Z"},
+            {"id": 2, "deadline_time": "2026-08-22T11:00:00Z"},
+        ]
+        assert season_year_from_gameweeks(gameweeks) == 2026
+
+    def test_missing_gw1_returns_none(self):
+        gameweeks = [{"id": 2, "deadline_time": "2026-08-22T11:00:00Z"}]
+        assert season_year_from_gameweeks(gameweeks) is None
+
+    def test_empty_payload_returns_none(self):
+        assert season_year_from_gameweeks([]) is None
+
+    def test_gw1_with_no_deadline_returns_none(self):
+        """Pre-season, before fixtures are released: GW1 exists but carries
+        no deadline yet."""
+        assert season_year_from_gameweeks([{"id": 1, "deadline_time": None}]) is None
+
+    def test_gw1_with_unparseable_deadline_returns_none(self):
+        assert season_year_from_gameweeks([{"id": 1, "deadline_time": "not-a-date"}]) is None
+
+    def test_a_plain_date_without_time_still_parses(self):
+        assert season_year_from_gameweeks([{"id": 1, "deadline_time": "2026-08-14"}]) == 2026
 
 
 # -- understat_season --------------------------------------------------------

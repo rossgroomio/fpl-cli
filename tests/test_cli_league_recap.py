@@ -16,12 +16,9 @@ from click.testing import CliRunner
 
 from fpl_cli.cli._league_recap_data import RecapReconciliationError
 from fpl_cli.cli._league_recap_history import (
-    _apply_recorded_standings,
-    _pair_squads,
-    _repair_fine_identity,
+    DETAIL_FLAG,
     HISTORY_WARNING_BACKFILL_MANAGER_UNREACHABLE,
     HISTORY_WARNING_BACKFILL_REPLAY_FAILED,
-    DETAIL_FLAG,
     HISTORY_WARNING_COVERAGE,
     HISTORY_WARNING_IDENTITY_CARRIED,
     HISTORY_WARNING_STANDINGS_CARRIED,
@@ -30,6 +27,9 @@ from fpl_cli.cli._league_recap_history import (
     HISTORY_WARNING_STORE_UNREADABLE,
     HISTORY_WARNING_TRANSFER_DETAIL_SHORT,
     HISTORY_WARNING_UNMATCHED_PLAYERS,
+    _apply_recorded_standings,
+    _pair_squads,
+    _repair_fine_identity,
     build_history_rows,
     capture_recap_history,
 )
@@ -53,7 +53,7 @@ from fpl_cli.models.league_history import (
     LedgerPlayer,
     LedgerTransaction,
 )
-from fpl_cli.season import CHIP_SPLIT_GW, TOTAL_GAMEWEEKS, season_label
+from fpl_cli.season import CHIP_SPLIT_GW, TOTAL_GAMEWEEKS, get_season_year, season_label
 from fpl_cli.services.league_history import LeagueHistoryStore
 from fpl_cli.services.league_history_notes import (
     GameweekWindow,
@@ -749,6 +749,11 @@ def _fpl_client(gw: int = 5) -> MagicMock:
     client.get_gameweeks = AsyncMock(
         return_value=[{"id": gw, "finished": True, "is_current": True}]
     )
+    # No GW1 in this payload, so the real derivation would fall back to the
+    # clock (#91) -- matched here so the ledger partition and report paths
+    # these tests assert against (`SEASON`, `season_label()`) still agree
+    # with what the command actually resolves.
+    client.get_season_year = AsyncMock(return_value=get_season_year())
     return client
 
 
@@ -802,6 +807,27 @@ def _invoke_recap(
         from fpl_cli.cli.league_recap import league_recap_command
 
         return CliRunner().invoke(league_recap_command, args or [])
+
+
+class TestLedgerPartitionUsesGw1DerivedSeason:
+    """#91: the ledger row lands in the season GW1's deadline names, not
+    whatever the clock says today. The case that matters is a season
+    overrunning the July cutover -- 2019-20, delayed into July 2020 by
+    COVID -- where the two disagree and a clock-derived partition would
+    collide the overrun season's late gameweeks with the following one's."""
+
+    def test_a_season_overrunning_the_cutover_writes_its_own_partition(self):
+        client = _fpl_client(gw=5)
+        # Simulates the derivation off a GW1 deadline of August 2019, for a
+        # capture actually running after the July 2020 cutover -- the clock
+        # alone would say `SEASON` (2026-27, per the fixture default).
+        client.get_season_year = AsyncMock(return_value=2019)
+
+        result = _invoke_recap(_recap_data(), client=client)
+
+        assert result.exit_code == 0, result.output
+        assert LeagueHistoryStore("2019-20", "classic", 42).captured_gameweeks() == [5]
+        assert LeagueHistoryStore(SEASON, "classic", 42).captured_gameweeks() == []  # type: ignore[arg-type]
 
 
 class TestLeagueRecapMalformedFinesConfig:

@@ -600,7 +600,7 @@ fpl_cli/
 ├── scraper/
 │   └── fpl_prices.py             # FPLPriceScraper (needs FPL_EMAIL/FPL_PASSWORD; behind TLS-inspecting proxies: FPL_BROWSER_IGNORE_CERTS=1 for cert MITM, or FPL_BROWSER_EXECUTABLE/CHANNEL/ARGS to swap the browser when the ClientHello itself is rejected)
 ├── paths.py                      # SHIPPED_CONFIG_DIR, TEMPLATE_DIR, user_config_dir(), user_data_dir(), user_cache_dir() — each user_* dir overridable via FPL_CLI_CONFIG_DIR / FPL_CLI_DATA_DIR / FPL_CLI_CACHE_DIR (absolute paths only; a relative one raises UserDirError rather than resolving against the cwd)
-├── season.py                     # season_label() (+ vaastav_season() alias), understat_season(), core_insights_season(), TOTAL_GAMEWEEKS, CHIP_SPLIT_GW, PROMOTED_CLUBS_PER_SEASON
+├── season.py                     # season_label() (+ vaastav_season() alias), understat_season(), core_insights_season(), TOTAL_GAMEWEEKS, CHIP_SPLIT_GW, PROMOTED_CLUBS_PER_SEASON. season_year_from_gameweeks() derives the year from GW1's deadline rather than the July-cutover clock (#91) — FPLClient.get_season_year() wraps it with the clock as fallback, and review/league-recap/preview/status pass the result through explicitly so a season overrunning the cutover (2019-20, delayed into July 2020) still resolves to the year it started
 ├── constants.py                  # MIN_MINUTES_FOR_PER90
 └── utils/
     ├── gameweek.py                # is_opening_gameweek(gw) — shared GW1 check (transfers, waivers and league tables don't exist yet)

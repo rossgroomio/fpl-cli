@@ -115,6 +115,7 @@ def _invoke(argv: list[str]):
     client.get_teams = AsyncMock(return_value=[])
     client.get_current_gameweek = AsyncMock(return_value={"id": 3})
     client.get_next_gameweek = AsyncMock(return_value={"id": 4})
+    client.get_season_year = AsyncMock(return_value=2026)
     client.__aenter__ = AsyncMock(return_value=client)
     client.__aexit__ = AsyncMock(return_value=False)
 

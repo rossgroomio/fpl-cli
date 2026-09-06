@@ -30,6 +30,7 @@ from fpl_cli.cli._review_analysis import (
 from fpl_cli.cli._review_classic import _review_classic_league, _review_classic_team, _review_classic_transfers
 from fpl_cli.cli._review_draft import _review_draft
 from fpl_cli.cli._review_summarisation import _review_compare_recs, _review_llm_summarise
+from fpl_cli.season import season_label
 from fpl_cli.services.fixture_predictions import (
     FixturePredictionsService,
     find_blank_gameweeks,
@@ -360,7 +361,10 @@ def review_command(
             # to, so resolve it once for both rather than per branch: resolving
             # twice would also warn twice about a stale directory. Pure and
             # cheap, so it is not worth guarding on the flags.
-            output_dir = resolve_output_dir(settings, output)
+            # Derived from GW1's deadline rather than the clock (#91), so a
+            # gameweek reviewed after the season overruns the July cutover
+            # still lands in that season's own directory.
+            output_dir = resolve_output_dir(settings, output, season=season_label(await client.get_season_year()))
 
             # Compare recommendations vs actuals if requested
             if compare_recs:

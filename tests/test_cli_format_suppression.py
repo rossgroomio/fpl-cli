@@ -111,6 +111,7 @@ class TestStatusFormatSuppression:
         client.__aexit__ = AsyncMock(return_value=False)
         client.get_current_gameweek = AsyncMock(return_value={"id": 25, "finished": False})
         client.get_next_gameweek = AsyncMock(return_value={"id": 26, "deadline_time": "2026-03-28T11:30:00Z"})
+        client.get_season_year = AsyncMock(return_value=2026)
         client.get_players = AsyncMock(return_value=[])
         client.get_teams = AsyncMock(return_value=[])
         client.get_manager_entry = AsyncMock(return_value={})

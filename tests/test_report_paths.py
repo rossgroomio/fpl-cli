@@ -80,6 +80,18 @@ class TestResolveOutputDir:
 
         assert resolve_output_dir(settings) == tmp_path / "01_Reports" / label
 
+    def test_an_explicit_season_overrides_the_clock(self, tmp_path, frozen_season):
+        """#91: a caller holding a GW1-derived season (`review`, `league-recap`,
+        `preview`) passes it explicitly rather than relying on the clock-based
+        default -- which matters precisely when a season overruns the July
+        cutover and the two disagree."""
+        frozen_season(2026)  # clock says 2026-27
+        settings = {"reports": {"output_dir": str(tmp_path / "01_Reports")}}
+
+        resolved = resolve_output_dir(settings, season="2019-20")
+
+        assert resolved == tmp_path / "01_Reports" / "2019-20"
+
     def test_consecutive_seasons_resolve_to_different_dirs(self, tmp_path, monkeypatch):
         """The regression itself: one configured output dir, two seasons, two
         destinations."""
@@ -118,6 +130,20 @@ class TestStaleSeasonDirectory:
         warning = capsys.readouterr().err
         assert "2025-26" in warning
         assert "2026-27" in warning
+
+    def test_the_stale_check_compares_against_an_explicit_season_not_the_clock(
+        self, tmp_path, frozen_season, capsys,
+    ):
+        """#91: a caller passing a GW1-derived season gets the warning judged
+        against *that* season, so a run during a July-overrun no longer
+        misreports a current directory as stale (or a stale one as current)
+        just because the clock disagrees with the data."""
+        frozen_season(2026)  # clock says 2026-27
+        settings = {"reports": {"output_dir": str(tmp_path / "01_Reports" / "2019-20")}}
+
+        resolve_output_dir(settings, season="2019-20")
+
+        assert capsys.readouterr().err == ""
 
     def test_the_current_season_dir_does_not_warn(self, tmp_path, frozen_season, capsys):
         """The supported shortcut stays quiet -- only a stale label is worth

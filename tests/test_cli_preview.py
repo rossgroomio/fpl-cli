@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from click.testing import CliRunner
 
 from fpl_cli.cli.preview import preview_command
-from fpl_cli.season import season_label
+from fpl_cli.season import get_season_year, season_label
 from tests.conftest import make_agent, make_draft_player, make_player
 
 
@@ -19,6 +19,9 @@ def _make_fpl_client(gw=25):
     client.get_players = AsyncMock(return_value=[])
     client.get_teams = AsyncMock(return_value=[])
     client.get_fixtures = AsyncMock(return_value=[])
+    # Clock-derived default, matching the pre-#91 behaviour these tests
+    # asserted against (`season_label()` with no explicit year).
+    client.get_season_year = AsyncMock(return_value=get_season_year())
     return client
 
 

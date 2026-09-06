@@ -1648,6 +1648,7 @@ class TestReviewThreadsTheGameweeksFixtureSet:
         client.__aexit__ = AsyncMock(return_value=False)
         client.get_gameweeks = AsyncMock(return_value=[{"id": 15, "finished": True}])
         client.get_current_gameweek = AsyncMock(return_value={"id": 20, "finished": False})
+        client.get_season_year = AsyncMock(return_value=2026)
         client.get_players = AsyncMock(return_value=[
             make_player(id=401, team_id=19), make_player(id=402, team_id=3),
         ])
@@ -2432,6 +2433,7 @@ class TestNextGameweekReachesTheSynthesisPrompt:
         client.__aexit__ = AsyncMock(return_value=False)
         client.get_gameweeks = AsyncMock(return_value=[{"id": 2, "finished": True}])
         client.get_current_gameweek = AsyncMock(return_value={"id": 2, "finished": True})
+        client.get_season_year = AsyncMock(return_value=2026)
         client.get_players = AsyncMock(return_value=[])
         client.get_teams = AsyncMock(return_value=[make_team(id=19, short_name="MCI")])
         client.get_gameweek_live = AsyncMock(return_value={"elements": []})

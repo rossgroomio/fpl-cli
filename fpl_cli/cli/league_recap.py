@@ -191,10 +191,15 @@ def league_recap_command(
             # Get next GW deadline
             from datetime import datetime, timedelta
 
-            from fpl_cli.season import TOTAL_GAMEWEEKS
+            from fpl_cli.season import TOTAL_GAMEWEEKS, season_label
             from fpl_cli.utils.time import format_deadline
 
             gameweeks = await client.get_gameweeks()
+            # From GW1's deadline, not the clock (#91): a ledger row written
+            # for a season that overruns the July cutover (2019-20, delayed
+            # into July 2020 by COVID) must still land in that season's own
+            # partition, not the one the calendar has since rolled into.
+            season = season_label(await client.get_season_year())
             next_gw_data = next((g for g in gameweeks if g["id"] == gw + 1), None)
             next_deadline = None
             waiver_deadline = None
@@ -365,6 +370,7 @@ def league_recap_command(
             with error_console.capture() if output_format == "json" else nullcontext():
                 capture_result = await capture_recap_history(
                     collected_data,
+                    season=season,
                     is_live_gw=is_live_gw,
                     # Classic's coarse tier: one call per manager for the
                     # whole season. Draft has no per-manager history endpoint.
@@ -476,7 +482,7 @@ def league_recap_command(
 
             # Generate report if saving
             if save or output:
-                output_dir = resolve_output_dir(settings, output)
+                output_dir = resolve_output_dir(settings, output, season=season)
                 agent = ReportAgent(config={"output_dir": output_dir})
                 result = await agent.run(context={
                     "report_type": "league-recap",

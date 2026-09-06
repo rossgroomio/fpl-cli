@@ -271,7 +271,7 @@ def get_settings(ctx: click.Context) -> dict[str, Any]:
     return load_settings()
 
 
-def _warn_if_stale_season_dir(base: Path) -> None:
+def _warn_if_stale_season_dir(base: Path, season: str | None = None) -> None:
     """Warn when a report directory is named for a season that has passed.
 
     Left alone this is the quiet half of #85: the directory keeps last
@@ -279,17 +279,25 @@ def _warn_if_stale_season_dir(base: Path) -> None:
     Partitioning still happens -- nesting loses no data, where reusing the
     stale directory would file the reports under the wrong season -- but the
     user hears about it once so they can repoint the setting.
+
+    `season` is the label this write is actually targeting -- a GW1-derived
+    one where the caller has it, `season_label()`'s clock-derived default
+    otherwise -- so the warning compares against the same season the file
+    ends up under rather than always the clock's answer (#91).
     """
-    if is_season_label(base.name) and base.name != season_label():
+    current = season or season_label()
+    if is_season_label(base.name) and base.name != current:
         error_console.print(
             f"[yellow]Warning:[/yellow] report directory {base} is named for season "
-            f"{base.name}, but the current season is {season_label()}. "
-            f"Reports will be written to {base / season_label()}. "
+            f"{base.name}, but the current season is {current}. "
+            f"Reports will be written to {base / current}. "
             f"Drop the season from the setting -- it is appended automatically."
         )
 
 
-def resolve_output_dir(settings: dict[str, Any], output: str | None = None) -> Path:
+def resolve_output_dir(
+    settings: dict[str, Any], output: str | None = None, season: str | None = None,
+) -> Path:
     """Season-partitioned directory that generated reports are written to.
 
     `output` is the command's `--output` flag, which wins over the configured
@@ -297,14 +305,20 @@ def resolve_output_dir(settings: dict[str, Any], output: str | None = None) -> P
     by gameweek alone, so an unpartitioned destination lets a new season's
     GW21 report overwrite the previous season's (#85), and a scripted
     `--output` is no less entitled to that protection than a configured one.
+
+    `season` defaults to `season_label()` -- today's date -- same as
+    `season_partition()` itself. A caller sitting on an open `FPLClient`
+    should pass `season_label(await client.get_season_year())` instead, so a
+    report written for a season that overruns the July cutover still lands
+    in that season's own directory (#91).
     """
     if output:
         base = Path(output).expanduser()
     else:
         raw = settings_block(settings, "reports").get("output_dir")
         base = Path(raw).expanduser() if raw else _user_config_dir() / "output"
-    _warn_if_stale_season_dir(base)
-    return season_partition(base)
+    _warn_if_stale_season_dir(base, season)
+    return season_partition(base, season)
 
 
 def resolve_research_dir(settings: dict[str, Any], source: str) -> Path:
