@@ -107,15 +107,23 @@ class TestWarningsOnStderr:
         assert result.exit_code == 1
         mock_error.print.assert_any_call("[yellow]draft_entry_id not configured[/yellow]")
 
-    def test_chips_timing_missing_classic_entry_id_warning_on_stderr(self, monkeypatch):
-        """Missing classic_entry_id must route warning via error_console."""
+    def test_chips_timing_missing_classic_entry_id_reports_on_stderr(self, monkeypatch):
+        """Missing classic_entry_id is a failure, on stderr, with exit 1.
+
+        It used to be a yellow warning printed through this module's own
+        `error_console` and followed by exit 0, while `--format json` called
+        the same condition an error and exited 1 (#286). It now goes through
+        `require_entry_id`, so the stream is asserted directly rather than by
+        patching the console: the prose is `emit_failure`'s, printed from
+        `_json`, and a patch here would no longer see it.
+        """
         import fpl_cli.cli.chips as chips_mod
 
-        mock_error = MagicMock()
-        monkeypatch.setattr(chips_mod, "error_console", mock_error)
         monkeypatch.setattr(chips_mod, "get_settings", lambda _ctx: {})
 
         runner = CliRunner()
-        runner.invoke(main, ["chips", "timing"])
+        result = runner.invoke(main, ["chips", "timing"])
 
-        mock_error.print.assert_called_once_with("[yellow]classic_entry_id not configured[/yellow]")
+        assert result.exit_code == 1
+        assert "classic_entry_id is not set" in " ".join(result.stderr.split())
+        assert result.stdout == ""

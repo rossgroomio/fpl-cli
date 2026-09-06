@@ -8,7 +8,7 @@ import asyncio
 import click
 
 from fpl_cli.cli._context import console, error_console
-from fpl_cli.cli._json import emit_json, emit_json_error, json_output_mode, output_format_option
+from fpl_cli.cli._json import emit_failure, emit_json, json_output_mode, output_format_option
 from fpl_cli.cli.player import _build_history_json
 
 
@@ -72,10 +72,16 @@ def history_command(output_format: str) -> None:
                         f"xgi/90={xgi_str} {xgi_trend} {cost_str}"
                     )
             except Exception as e:  # noqa: BLE001 — display resilience
-                if output_format == "json":
-                    with json_output_mode() as stdout:
-                        emit_json_error("history", "Failed to fetch historical data", file=stdout)
-                    return
-                console.print(f"[red]Error fetching historical data: {e}[/red]")
+                # One reason, one stream, one exit code (#286). Table mode
+                # printed the cause on stdout and exited 0 -- so `fpl history
+                # > seasons.txt` filed the failure as though it were the
+                # profiles -- while `--format json` exited 1 with a generic
+                # "Failed to fetch historical data" and left the cause on the
+                # stream it had just told consumers not to read. `emit_failure`
+                # settles both, and *e* rides in the message so the envelope
+                # names the upstream that refused rather than a stand-in.
+                emit_failure(
+                    "history", f"Failed to fetch historical data: {e}", output_format, cause=e,
+                )
 
     asyncio.run(_run())

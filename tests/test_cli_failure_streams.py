@@ -54,10 +54,14 @@ def test_a_failing_command_reports_on_stderr_and_leaves_stdout_clean(command, of
     case and needs its own test, not a loosening of this one.
 
     A command that does not exit 1 here is skipped rather than failed, which
-    is the walk's blind spot: `chips timing` stops at its not-configured
-    warning and exits 0, so its agent-failure print is pinned in
-    `test_cli_chips.py` instead, where the harness that gets past that
-    warning already lives (#251 review).
+    is the walk's blind spot -- and the one that let three commands exit 0 in
+    table mode while the envelope beside them exited 1 (#286).
+    `test_cli_exit_parity.py` closes it by comparing the two codes rather
+    than asserting either, so a command that quietly stops exiting 1 here is
+    caught there. What stays skipped is what lies past an early exit:
+    `chips timing` stops at its missing entry ID, so its agent-failure print
+    is pinned in `test_cli_chips.py` instead, where the harness that gets
+    past that already lives (#251 review).
     """
     args = _args_for(command)
     result = CliRunner().invoke(main, args)

@@ -11,8 +11,10 @@ from rich.panel import Panel
 from rich.table import Table
 
 from fpl_cli.cli._context import console, error_console, fpl_config, get_settings
+from fpl_cli.cli._helpers import require_entry_id
 from fpl_cli.cli._json import (
     api_failure_boundary,
+    emit_failure,
     emit_json,
     emit_json_error,
     json_output_mode,
@@ -458,14 +460,15 @@ def chips_timing(ctx: click.Context, output_format: str) -> None:
     async def _run() -> None:
         plan = ChipPlan.load()
 
-        settings = get_settings(ctx)
-        entry_id = fpl_config(settings).get("classic_entry_id")
-        if not entry_id:
-            if output_format == "json":
-                emit_json_error("chips-timing", "classic_entry_id not configured")
-            else:
-                error_console.print("[yellow]classic_entry_id not configured[/yellow]")
-            return
+        # Through the shared lookup rather than a hand-rolled branch (#286).
+        # The old one exited 1 under `--format json` and 0 in table mode, so
+        # `fpl chips timing && deploy` ran the second half on a command that
+        # had produced no signals; and it worded the same missing ID two ways,
+        # which is the drift `require_entry_id` was extracted to stop.
+        entry_id = require_entry_id(
+            get_settings(ctx), is_draft=False,
+            command="chips-timing", output_format=output_format,
+        )
 
         if output_format == "json":
             with json_output_mode() as stdout:
@@ -474,8 +477,9 @@ def chips_timing(ctx: click.Context, output_format: str) -> None:
                     current_gw = next_gw_data.get("id", 1) if next_gw_data else 1
                     last_gw = current_gw - 1
                     if last_gw <= 0:
-                        emit_json_error("chips-timing", "No completed gameweek found", file=stdout)
-                        return
+                        emit_failure(
+                            "chips-timing", "No completed gameweek found", output_format,
+                        )
 
                     unplayed, planned_by_gw, signals = await _fetch_and_compute(
                         client, plan, entry_id, current_gw, last_gw,
@@ -497,8 +501,7 @@ def chips_timing(ctx: click.Context, output_format: str) -> None:
             current_gw = next_gw_data.get("id", 1) if next_gw_data else 1
             last_gw = current_gw - 1
             if last_gw <= 0:
-                error_console.print("[yellow]No completed gameweek found[/yellow]")
-                return
+                emit_failure("chips-timing", "No completed gameweek found", output_format)
 
             unplayed, planned_by_gw, signals = await _fetch_and_compute(
                 client, plan, entry_id, current_gw, last_gw,

@@ -73,12 +73,12 @@ gave up on a step — which may or may not name the cause the envelope names, an
 commands is empty. Script against `error` and the exit code, never against stderr.
 
 Warnings never change the exit code — a command that produced its payload exits 0 and
-reports the problem in `metadata.warnings` (and on stderr), rather than failing. A few
-commands still soften the *table* path to exit 0 where the JSON path exits 1
-(`fpl chips timing` with no `classic_entry_id` configured prints the message and returns);
-the JSON contract above is the one to script against. `review` and `league-recap` used to
-be among them and no longer are — a gameweek neither can resolve exits 1 either way, with
-the same reason.
+reports the problem in `metadata.warnings` (and on stderr), rather than failing. Nor does
+the format change it: whatever a command answers with an `error` envelope it also refuses
+in table mode, with the same reason on stderr and the same exit 1. Several used to soften
+the table path to exit 0 — `review` and `league-recap` on a gameweek neither could
+resolve, `fpl history` on a provider that refused, `fpl chips timing` with no
+`classic_entry_id` and `fpl waivers` with no `draft_league_id` — and none do now.
 
 The table applies to every way a command can end, not just the ones it was written for.
 A command that cannot reach the FPL API, that needs an entry ID you have not configured,
@@ -92,7 +92,10 @@ message names the rule and the valid set.
 **Table mode splits the same way.** Without `--format json` the output you asked for goes
 to stdout and everything else goes to stderr — warnings, progress notices, and the reason
 a command exited nonzero. `fpl squad grid 2>/dev/null` prints a grid or prints nothing;
-it never prints half an explanation. That holds for every command, so redirecting either
+it never prints half an explanation. That holds for every command that takes `--format`.
+Three that do not — `fpl chips sync`, `fpl chips add` and `fpl preview` — still print the
+reason they gave up on stdout and exit 0, so a redirect captures the explanation instead
+of the output and `2>/dev/null` will not quieten it. Everywhere else, redirecting either
 stream means the same thing whichever one you run:
 
 ```bash

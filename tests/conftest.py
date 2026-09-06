@@ -74,14 +74,15 @@ def stub_scoring_network_seams():
 def offline(request, monkeypatch, tmp_path):
     """A configured install whose upstream APIs are all unreachable.
 
-    The shared driver for the two output contracts: `test_cli_json_contract`
+    The shared driver for the three output contracts: `test_cli_json_contract`
     walks every `--format json` command down this failure and checks the
     envelope on stdout, `test_cli_failure_streams` walks the same commands in
-    table mode and checks the prose on stderr. It lives here rather than in
-    either module because a copy in the second one had already dropped the
-    two client-level patches (#251 review), and a contract that skips a
-    command whose outage stopped being an outage fails silently -- both walks
-    treat "did not exit 1" as nothing to assert.
+    table mode and checks the prose on stderr, and `test_cli_exit_parity`
+    walks them in both and checks the two exit codes match. It lives here
+    rather than in any of them because a copy in the second one had already
+    dropped the two client-level patches (#251 review), and a contract that
+    skips a command whose outage stopped being an outage fails silently --
+    the first two walks treat "did not exit 1" as nothing to assert.
 
     Both toggles, because `custom_analysis` picks between two different
     bodies for the same command: `fdr` serves Bayesian ratings under one and
