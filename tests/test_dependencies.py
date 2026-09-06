@@ -16,6 +16,7 @@ more holds the one floor that is the suite's rather than the runtime's:
 
 import re
 import tomllib
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -50,31 +51,32 @@ def _runtime_requirements() -> list[str]:
         return tomllib.load(fh)["project"]["dependencies"]
 
 
-def _upper_bounds(requirements: list[str]) -> dict[str, str]:
-    """Map each requirement that carries an upper bound to that clause."""
-    bounds: dict[str, str] = {}
+def _clauses(requirements: list[str]) -> Iterator[tuple[str, str]]:
+    """Yield every ``(name, clause)`` a requirement list carries, names lowercased.
+
+    The one place a requirement is parsed, so the floor and ceiling readers
+    below cannot drift apart on a specifier shape or a marker edge case.
+    """
     for requirement in requirements:
         match = _REQUIREMENT.match(requirement)
         assert match is not None, f"unparseable requirement: {requirement!r}"
         name, specifiers = match.group(1).lower(), match.group(2)
         for clause in (c.strip() for c in specifiers.split(",")):
-            # `<`, `<=`, `==`, `~=` all cap the version; `>=`, `>`, `!=` do not.
-            if clause.startswith(("<", "==", "~=")):
-                bounds[name] = clause
-    return bounds
+            if clause:
+                yield name, clause
+
+
+def _upper_bounds(requirements: list[str]) -> dict[str, str]:
+    """Map each requirement that carries an upper bound to that clause."""
+    # `<`, `<=`, `==`, `~=` all cap the version; `>=`, `>`, `!=` do not.
+    return {name: clause for name, clause in _clauses(requirements) if clause.startswith(("<", "==", "~="))}
 
 
 def _lower_bounds(requirements: list[str]) -> dict[str, str]:
     """Map each requirement that carries a ``>=`` floor to that version."""
-    floors: dict[str, str] = {}
-    for requirement in requirements:
-        match = _REQUIREMENT.match(requirement)
-        assert match is not None, f"unparseable requirement: {requirement!r}"
-        name, specifiers = match.group(1).lower(), match.group(2)
-        for clause in (c.strip() for c in specifiers.split(",")):
-            if clause.startswith(">="):
-                floors[name] = clause.removeprefix(">=").strip()
-    return floors
+    return {
+        name: clause.removeprefix(">=").strip() for name, clause in _clauses(requirements) if clause.startswith(">=")
+    }
 
 
 def _documented_bounds() -> dict[str, str]:

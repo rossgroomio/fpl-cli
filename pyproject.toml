@@ -41,6 +41,9 @@ dev = [
     "respx>=0.21.0",
     "ruff>=0.1.0",
     "pyright>=1.1.0",
+    # tests/test_dependencies.py compares version floors with packaging.version;
+    # pytest pulls it in today, but a transitive import is not a declared one.
+    "packaging>=23.0",
 ]
 
 [project.urls]
