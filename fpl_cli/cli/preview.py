@@ -89,6 +89,10 @@ def preview_command(ctx: click.Context, save: bool, output: str | None, scout: b
                 return
 
             gw = next_gw["id"]
+            # From GW1's deadline rather than the clock (#91), so a preview
+            # generated after the season overruns the July cutover still
+            # writes to that season's own report directory.
+            season = season_label(await client.get_season_year())
             raw_deadline = next_gw.get("deadline_time", "")
             deadline = format_deadline(raw_deadline) if raw_deadline else "Unknown"
             generated_at = format_generated_at()
@@ -276,7 +280,7 @@ def preview_command(ctx: click.Context, save: bool, output: str | None, scout: b
 
         # Generate report if requested
         if save:
-            output_dir = resolve_output_dir(settings, output)
+            output_dir = resolve_output_dir(settings, output, season=season)
 
             console.print("\n[dim]Generating report...[/dim]")
             async with ReportAgent(config={"output_dir": output_dir}) as report_agent:
@@ -334,7 +338,7 @@ def preview_command(ctx: click.Context, save: bool, output: str | None, scout: b
                     metadata = (
                         f"---\n"
                         f"gameweek: {gw}\n"
-                        f"season: {season_label()}\n"
+                        f"season: {season}\n"
                         f"generated: {scout_generated}\n"
                         f"deadline: {deadline}\n"
                         f"source: scout\n"
@@ -342,7 +346,7 @@ def preview_command(ctx: click.Context, save: bool, output: str | None, scout: b
                     )
 
                     # Save scout reports to dedicated directory
-                    scout_dir = resolve_research_dir(settings, "ai-scout-reports")
+                    scout_dir = resolve_research_dir(settings, "ai-scout-reports", season=season)
                     scout_dir.mkdir(parents=True, exist_ok=True)
 
                     # Save referenced version (with citations appended)

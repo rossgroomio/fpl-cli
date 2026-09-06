@@ -332,6 +332,29 @@ class TestSelection:
         assert "LastSeason" in output
         assert "2025-26" in output
 
+    def test_the_default_reads_the_captured_season_over_the_clocks_guess(self):
+        """#91 review: `league-recap` now writes under GW1's derived season,
+        which during a season overrunning the July cutover can differ from
+        `season_label()`'s clock-only guess. Without this, the default read
+        would open the wrong, empty partition next to a fully captured one."""
+        LeagueHistoryStore("2019-20", "classic", LEAGUE_ID).append_rows(38, [make_history_row(
+            season="2019-20", league_id=LEAGUE_ID, gameweek=38,
+            manager_key=1, manager_name="Overrun", fine_rules_evaluated=ALL_RULES, fines=[_fine(1)],
+        )])
+
+        # `season_label` (the clock) says the *next* season -- as it would in
+        # July 2020, after 2019-20's COVID-delayed finale but before #91's fix
+        # -- while the ledger row above is filed correctly under 2019-20.
+        with (
+            patch("fpl_cli.cli.league_fines.get_settings", return_value=_SETTINGS),
+            patch("fpl_cli.cli.league_fines.season_label", return_value="2020-21"),
+        ):
+            result = CliRunner().invoke(league_fines_command, [])
+
+        assert result.exit_code == 0, result.output
+        assert "Overrun" in result.output
+        assert "2019-20" in result.output
+
     def test_draft_reads_the_draft_partition(self):
         _seed_two_gameweeks("draft")
 

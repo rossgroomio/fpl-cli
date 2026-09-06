@@ -201,6 +201,10 @@ def status_command(ctx: click.Context, output_format: str) -> None:
         async with _FPLClient() as client:
             current_gw = await client.get_current_gameweek()
             next_gw = await client.get_next_gameweek()
+            # From GW1's deadline rather than the clock (#91): skills read
+            # this exact metadata.season as their season label, so a season
+            # that overruns the July cutover must not mislead them.
+            season = season_label(await client.get_season_year())
 
             # --- JSON early return ---
             if output_format == "json":
@@ -215,7 +219,7 @@ def status_command(ctx: click.Context, output_format: str) -> None:
                 if fmt is None:
                     emit_json("status", json_data, metadata={
                         "gameweek": current_gw["id"] if current_gw else None,
-                        "season": season_label(),
+                        "season": season,
                         "format": None,
                     })
                     return
@@ -254,7 +258,7 @@ def status_command(ctx: click.Context, output_format: str) -> None:
                 )
                 emit_json("status", json_data, metadata={
                     "gameweek": current_gw["id"] if current_gw else None,
-                    "season": season_label(),
+                    "season": season,
                     "format": format_str,
                 })
                 return

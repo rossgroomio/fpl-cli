@@ -362,6 +362,35 @@ class TestFPLClient:
             assert next_gw is None
 
     @pytest.mark.asyncio
+    async def test_get_season_year_reads_gw1s_deadline(self, client):
+        """#91: GW1's deadline decides the year, not the clock -- even when
+        the payload's *current* gameweek belongs to a season overrunning
+        into the next one (2019-20, delayed into July 2020 by COVID)."""
+        data = {
+            "elements": [], "teams": [],
+            "events": [
+                {"id": 1, "is_current": False, "is_next": False, "deadline_time": "2019-08-09T18:00:00Z"},
+                {"id": 38, "is_current": True, "is_next": False, "deadline_time": "2020-07-26T15:00:00Z"},
+            ],
+        }
+        with patch.object(client, "_get", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = data
+
+            assert await client.get_season_year() == 2019
+
+    @pytest.mark.asyncio
+    async def test_get_season_year_falls_back_to_the_clock_without_gw1(self, client):
+        """Pre-season, before fixtures are released: no GW1 deadline to read,
+        so the clock-derived year still answers rather than raising."""
+        from fpl_cli.season import get_season_year
+
+        data = {"elements": [], "teams": [], "events": []}
+        with patch.object(client, "_get", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = data
+
+            assert await client.get_season_year() == get_season_year()
+
+    @pytest.mark.asyncio
     async def test_get_player_detail(self, client):
         """Test fetching player detail."""
         mock_response = {

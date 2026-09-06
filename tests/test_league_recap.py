@@ -2640,6 +2640,7 @@ class TestLeagueRecapCommandStopCondition:
         client.get_gameweeks = AsyncMock(
             return_value=[{"id": 5, "finished": True, "is_current": True}]
         )
+        client.get_season_year = AsyncMock(return_value=2026)
         resolved = {"gw": 5, "gw_data": None, "api_current_gw_id": 5}
 
         with (

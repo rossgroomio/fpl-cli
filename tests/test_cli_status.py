@@ -9,7 +9,7 @@ from click.testing import CliRunner
 
 from fpl_cli.cli import main
 from fpl_cli.models.player import PlayerStatus
-from fpl_cli.season import season_label
+from fpl_cli.season import get_season_year, season_label
 from tests.conftest import make_player, make_team
 
 
@@ -21,6 +21,9 @@ def _mock_client(
     client = MagicMock()
     client.get_current_gameweek = AsyncMock(return_value=current_gw)
     client.get_next_gameweek = AsyncMock(return_value=next_gw)
+    # Clock-derived default (matches the pre-#91 behaviour this mock used to
+    # get for free): the season-overrun tests below override it explicitly.
+    client.get_season_year = AsyncMock(return_value=get_season_year())
     client.get_manager_entry = AsyncMock(return_value=manager_entry or {})
     client.get_manager_history = AsyncMock(return_value=history or {"current": [], "chips": []})
     client.get_manager_picks = AsyncMock(return_value=picks or {"picks": []})
@@ -868,6 +871,23 @@ class TestStatusJsonOutput:
         result = _run_json(client)
         payload = json.loads(result.output)
         assert payload["metadata"]["season"] == season_label()
+
+    def test_metadata_season_comes_from_gw1_not_the_clock(self):
+        """#91: a season overrunning the July cutover (2019-20, delayed into
+        July 2020 by COVID) must still report its own label here -- skills
+        read this field as ground truth, so a clock-derived answer during the
+        overrun would point them at the wrong season directory."""
+        client = _mock_client(
+            current_gw={"id": 30, "finished": True},
+            next_gw={"id": 31, "deadline_time": "2099-01-01T11:00:00Z"},
+            history={"current": [{"event": 30, "points": 65, "overall_rank": 50000}], "chips": []},
+        )
+        client.get_season_year = AsyncMock(return_value=2019)
+
+        result = _run_json(client)
+
+        payload = json.loads(result.output)
+        assert payload["metadata"]["season"] == "2019-20"
 
     def test_metadata_carries_the_season_without_configured_entry_ids(self):
         """The early-return branch taken when no format resolves still has to

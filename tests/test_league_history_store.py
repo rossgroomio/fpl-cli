@@ -700,6 +700,70 @@ class TestStoreSeasonPartitioning:
         assert redirected in path.parents
 
 
+class TestMostRecentCapturedSeason:
+    """#91 review: the network-free read-side counterpart to a write side
+    that now derives the season from GW1's deadline rather than the clock."""
+
+    def test_none_when_nothing_has_ever_been_captured(self):
+        from fpl_cli.services.league_history import most_recent_captured_season
+
+        assert most_recent_captured_season("classic", 1) is None
+
+    def test_finds_the_only_captured_season(self):
+        from fpl_cli.services.league_history import LeagueHistoryStore, most_recent_captured_season
+
+        LeagueHistoryStore("2019-20", "classic", 1).append_rows(
+            38, [make_history_row(season="2019-20", gameweek=38)],
+        )
+
+        assert most_recent_captured_season("classic", 1) == "2019-20"
+
+    def test_prefers_the_newer_of_two_captured_seasons(self):
+        """The regression this exists for: a season overrunning the July
+        cutover leaves an older season's partition on disk alongside the
+        following one's, and the newer one must win."""
+        from fpl_cli.services.league_history import LeagueHistoryStore, most_recent_captured_season
+
+        LeagueHistoryStore("2025-26", "classic", 1).append_rows(
+            10, [make_history_row(season="2025-26", gameweek=10)],
+        )
+        LeagueHistoryStore("2026-27", "classic", 1).append_rows(
+            1, [make_history_row(season="2026-27", gameweek=1)],
+        )
+
+        assert most_recent_captured_season("classic", 1) == "2026-27"
+
+    def test_scopes_to_the_given_format_and_league(self):
+        from fpl_cli.services.league_history import LeagueHistoryStore, most_recent_captured_season
+
+        LeagueHistoryStore("2026-27", "draft", 1).append_rows(
+            1, [make_history_row(season="2026-27", fpl_format="draft", gameweek=1)],
+        )
+        LeagueHistoryStore("2026-27", "classic", 2).append_rows(
+            1, [make_history_row(season="2026-27", league_id=2, gameweek=1)],
+        )
+
+        assert most_recent_captured_season("classic", 1) is None
+
+    def test_ignores_a_non_season_directory_under_the_ledger_root(self, tmp_path, monkeypatch):
+        """A stray or user-created directory must not be mistaken for a
+        season -- `is_season_label` is exact for the same reason it is in
+        `season.py`'s own stale-directory check."""
+        from fpl_cli.paths import user_data_dir
+        from fpl_cli.services.league_history import league_history_dir, most_recent_captured_season
+
+        user_data_dir.cache_clear()
+        monkeypatch.setenv("FPL_CLI_DATA_DIR", str(tmp_path))
+        try:
+            stray = league_history_dir() / "archive" / "classic-1"
+            stray.mkdir(parents=True)
+            (stray / "gw01.ndjson").write_text("", encoding="utf-8")
+
+            assert most_recent_captured_season("classic", 1) is None
+        finally:
+            user_data_dir.cache_clear()
+
+
 class TestStoreCoverage:
     def test_coverage_reports_tier_and_status_counts_per_gameweek(self):
         from fpl_cli.models.league_history import FidelityTier

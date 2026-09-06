@@ -9,6 +9,7 @@ import httpx
 from fpl_cli.models.fixture import Fixture
 from fpl_cli.models.player import Player
 from fpl_cli.models.team import Team
+from fpl_cli.season import resolve_season_year
 
 BASE_URL = "https://fantasy.premierleague.com/api"
 
@@ -175,6 +176,20 @@ class FPLClient:
             if gw["is_current"]:
                 return gw
         return None
+
+    async def get_season_year(self) -> int:
+        """Season start year, derived from GW1's deadline rather than the clock (#91).
+
+        See `fpl_cli.season.resolve_season_year()` for the policy: GW1's own
+        year while the season it names is still live, the clock's once that
+        season has fully concluded and the calendar has moved past it (the
+        close-season gap before the next one's fixtures are published).
+        Prefer this over calling `season_label()` / `get_season_year()` bare
+        wherever an `FPLClient` is already open: it gives the same answer all
+        season, including through a season that overruns the July cutover.
+        """
+        gameweeks = await self.get_gameweeks()
+        return resolve_season_year(gameweeks)
 
     async def get_next_gameweek(self) -> dict[str, Any] | None:
         """Get the next gameweek.

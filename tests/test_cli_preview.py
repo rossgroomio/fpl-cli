@@ -6,12 +6,18 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from click.testing import CliRunner
 
 from fpl_cli.cli.preview import preview_command
-from fpl_cli.season import season_label
+from fpl_cli.season import get_season_year, season_label
 from tests.conftest import make_agent, make_draft_player, make_player
 
 
-def _make_fpl_client(gw=25):
-    """Minimal FPLClient mock for preview tests."""
+def _make_fpl_client(gw=25, season_year=None):
+    """Minimal FPLClient mock for preview tests.
+
+    `season_year` defaults to the clock-derived value, matching the pre-#91
+    behaviour these tests asserted against (`season_label()` with no
+    explicit year). A caller simulating a season overrunning the July
+    cutover passes an explicit one that disagrees with the clock.
+    """
     client = MagicMock()
     client.__aenter__ = AsyncMock(return_value=client)
     client.__aexit__ = AsyncMock(return_value=False)
@@ -19,6 +25,7 @@ def _make_fpl_client(gw=25):
     client.get_players = AsyncMock(return_value=[])
     client.get_teams = AsyncMock(return_value=[])
     client.get_fixtures = AsyncMock(return_value=[])
+    client.get_season_year = AsyncMock(return_value=season_year if season_year is not None else get_season_year())
     return client
 
 
@@ -221,9 +228,9 @@ class TestPreviewCustomAnalysisToggle:
         fpl_client.get_fixtures.assert_awaited_once()
 
 
-def _run_scout_preview(tmp_path):
+def _run_scout_preview(tmp_path, season_year=None):
     """Invoke `preview --scout` with a mocked scout agent and a temp research dir."""
-    fpl_client = _make_fpl_client()
+    fpl_client = _make_fpl_client(season_year=season_year)
     fixture_agent = _make_agent(data={"easy_fixture_runs": {"overall": []}, "team_form": []})
     stats_agent = _make_agent(data={"top_xgi_per_90": [], "underperformers": [], "value_picks": []})
     price_agent = _make_agent(data={})
@@ -285,6 +292,21 @@ class TestScoutReportsAreSeasonPartitioned:
             tmp_path / "02_Research" / "ai-scout-reports" / season_label() / "gw25-scout-preview.md"
         )
         assert f"season: {season_label()}" in report.read_text(encoding="utf-8")
+
+    def test_the_directory_follows_the_gw1_derived_season_not_the_clock(self, tmp_path):
+        """#91 review: the frontmatter switched to the GW1-derived season, but
+        the directory it was written into (`resolve_research_dir`) had not --
+        so a season overrunning the July cutover would write a file whose own
+        frontmatter disagreed with the directory it sat in."""
+        result = _run_scout_preview(tmp_path, season_year=2019)
+
+        assert result.exit_code == 0, result.output
+        scout_dir = tmp_path / "02_Research" / "ai-scout-reports" / "2019-20"
+        report = scout_dir / "gw25-scout-preview.md"
+        assert report.exists()
+        assert "season: 2019-20" in report.read_text(encoding="utf-8")
+        # Not filed under whatever the clock says today.
+        assert scout_dir != tmp_path / "02_Research" / "ai-scout-reports" / season_label()
 
 
 class TestPreviewDraftSquadMatching:
