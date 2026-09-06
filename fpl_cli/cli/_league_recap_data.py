@@ -1449,6 +1449,13 @@ def _format_award_detail(
     counts from the raw transaction list (not the contracted `moves` list),
     so a chain-collapsed intermediate still counts toward the total even
     though it is never named in the shown moves.
+
+    This means `breakdown`'s total and `moves`' shown-plus-omitted total can
+    differ, by design (issue #146): a collapsed intermediate's net is already
+    folded into a shown line (or cancelled out entirely in a closed loop),
+    not sitting hidden behind the cap, so it never gets an omitted-count
+    entry of its own -- `omitted` counts only real cap truncation of the
+    (already-contracted) `moves` list.
     """
     if not moves:
         raise ValueError("_format_award_detail requires at least one move")
