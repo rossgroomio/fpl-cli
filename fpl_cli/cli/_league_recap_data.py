@@ -53,7 +53,6 @@ if TYPE_CHECKING:
             self, league_id: int, page: int = 1, /,
         ) -> dict[str, Any]: ...
 from fpl_cli.cli._league_recap_types import (
-    DRAFT_TRANSACTION_KIND_LABELS,
     LeagueRecapData,
     RecapAwardEntry,
     RecapAwards,
@@ -64,6 +63,7 @@ from fpl_cli.cli._league_recap_types import (
     RecapManagerPlayer,
     RecapStandingsEntry,
     RecapTransfer,
+    draft_transaction_kind_counts,
 )
 from fpl_cli.services.fixture_predictions import had_fixture
 from fpl_cli.services.player_clubs import gameweek_club
@@ -1608,19 +1608,6 @@ def _contract_draft_txn_chains(
     return contracted
 
 
-def _draft_kind_breakdown(txns: list[RecapDraftTransaction]) -> list[tuple[str, int]]:
-    """Count a manager's raw draft transactions by kind label, in the fixed
-    display order (waivers, free agents, other moves). Built from the raw
-    list rather than the chain-contracted one, so a manager's headline count
-    reflects every move they made -- including an intermediate the Best/Worst
-    line never names because a follow-up move replaced it the same GW."""
-    counts: dict[str, int] = {"waiver": 0, "free agent": 0, "other move": 0}
-    for t in txns:
-        label = DRAFT_TRANSACTION_KIND_LABELS.get(t["kind"], "other move")
-        counts[label] += 1
-    return [(label, counts[label]) for label in ("waiver", "free agent", "other move")]
-
-
 def _compute_waiver_awards(
     managers: list[RecapManagerEntry],
     awards: RecapAwards,
@@ -1652,7 +1639,7 @@ def _compute_waiver_awards(
                 moves=list(genius_effective),
                 transfer_cost=0,
                 side="genius",
-                breakdown=_draft_kind_breakdown(genius.get("transactions", [])),
+                breakdown=draft_transaction_kind_counts(genius.get("transactions", [])),
                 always_label_single=True,
             ),
         )
@@ -1669,7 +1656,7 @@ def _compute_waiver_awards(
                 moves=list(disaster_effective),
                 transfer_cost=0,
                 side="disaster",
-                breakdown=_draft_kind_breakdown(disaster.get("transactions", [])),
+                breakdown=draft_transaction_kind_counts(disaster.get("transactions", [])),
                 always_label_single=True,
             ),
         )

@@ -77,6 +77,35 @@ class RecapDraftTransaction(TypedDict):
 # sent none) is an "other move" -- never folded into the waiver/free-agent
 # counts a reader would check against the transactions page.
 DRAFT_TRANSACTION_KIND_LABELS: dict[str, str] = {"w": "waiver", "f": "free agent"}
+DRAFT_TRANSACTION_OTHER_LABEL = "other move"
+# The fixed order a per-manager kind count is printed in, wherever it is
+# printed: the two waiver awards and the editorial's waiver roster both read
+# it, so one move is never a "waiver" on one surface and a "free agent" on
+# the other (issues #146, #301).
+DRAFT_TRANSACTION_LABEL_ORDER: tuple[str, ...] = (
+    *DRAFT_TRANSACTION_KIND_LABELS.values(), DRAFT_TRANSACTION_OTHER_LABEL,
+)
+
+
+def draft_transaction_kind_label(kind: str) -> str:
+    """Reader-facing label for one transaction's `kind`, "other move" for any
+    value the mapping does not know -- the empty string included."""
+    return DRAFT_TRANSACTION_KIND_LABELS.get(kind, DRAFT_TRANSACTION_OTHER_LABEL)
+
+
+def draft_transaction_kind_counts(
+    txns: list[RecapDraftTransaction],
+) -> list[tuple[str, int]]:
+    """Count a manager's raw draft transactions by kind label, every label in
+    the fixed display order whether or not it is present. Built from the raw
+    list rather than a chain-contracted one, so a headline count reflects
+    every move the manager made -- including an intermediate the awards'
+    Best/Worst line never names because a follow-up move replaced it the
+    same gameweek."""
+    counts = {label: 0 for label in DRAFT_TRANSACTION_LABEL_ORDER}
+    for t in txns:
+        counts[draft_transaction_kind_label(t["kind"])] += 1
+    return [(label, counts[label]) for label in DRAFT_TRANSACTION_LABEL_ORDER]
 
 
 class RecapManagerEntry(TypedDict):
