@@ -407,6 +407,136 @@ class TestAwardsTies:
         assert detail.count("captained") == 3
         assert "3 more managers omitted" in detail
 
+    def test_wide_captain_tie_caps_managers_within_a_group(self):
+        """Most of the league on one captain must not print a roster-length group."""
+        managers = [
+            _make_manager(name=f"M{i:02d}", entry_id=i, captain="Haaland", captain_points=2)
+            for i in range(14)
+        ] + [_make_manager(name="Top", entry_id=99, captain="Salah", captain_points=12)]
+        awards = _compute_shared_awards(managers, total_managers=15)
+        detail = awards["worst_captain"]["detail"]
+        assert detail == (
+            "M00, M01, M02 and 11 others all captained Haaland (2 pts) [14 of 15 managers]"
+        )
+        # The award still records every tied manager, only the prose is trimmed
+        assert awards["worst_captain"]["manager_name"].count(" and ") == 13
+
+    def test_league_wide_captain_tie_collapses_to_one_line(self):
+        """Issue #145: a tie everyone is in names nobody and is awarded once."""
+        managers = [
+            _make_manager(
+                name=f"M{i:02d}",
+                entry_id=i,
+                captain="Haaland" if i < 14 else "Salah",
+                captain_points=2,
+            )
+            for i in range(19)
+        ]
+        awards = _compute_shared_awards(managers, total_managers=19)
+        assert awards["best_captain"]["detail"] == (
+            "Captaincy was a wash — all 19 captains scored 2 pts (Haaland ×14, Salah ×5)"
+        )
+        assert not any(m["manager_name"] in awards["best_captain"]["detail"] for m in managers)
+        # Best and Worst hold the same managers, so the second block is dropped
+        assert "worst_captain" not in awards
+        # The award still records every tied manager, only the prose is trimmed
+        assert awards["best_captain"]["manager_name"].count(" and ") == 18
+
+    def test_league_wide_captain_tie_caps_the_captains_it_names(self):
+        """A wash spread over many captains reports the omitted players."""
+        managers = [
+            _make_manager(name=f"M{i:02d}", entry_id=i, captain=f"Cap{i}", captain_points=3)
+            for i in range(5)
+        ]
+        awards = _compute_shared_awards(managers, total_managers=5)
+        detail = awards["best_captain"]["detail"]
+        assert detail.startswith("Captaincy was a wash — all 5 captains scored 3 pts (")
+        assert detail.count("×1") == 3
+        assert detail.endswith("; 2 more players omitted")
+
+    def test_league_wide_captain_tie_flags_captains_that_did_not_play(self):
+        """A wash reached through vice takeovers must not credit the captains."""
+        managers = [
+            _make_manager(
+                name=f"M{i:02d}",
+                entry_id=i,
+                captain="Haaland",
+                captain_points=0,
+                captain_played=False,
+                vice_captain_points=1,
+            )
+            for i in range(6)
+        ]
+        awards = _compute_shared_awards(managers, total_managers=6)
+        assert "best_captain" not in awards
+        assert awards["worst_captain"]["detail"] == (
+            "Captaincy was a wash — all 6 captaincies were worth 1 pt (Haaland ×6 (dnp))"
+        )
+
+    def test_league_wide_captain_tie_mixing_played_and_vice_routes(self):
+        """Half the tie scored it, half got it from a vice: claim neither route."""
+        managers = [
+            _make_manager(name=f"P{i}", entry_id=i, captain="Haaland", captain_points=2)
+            for i in range(5)
+        ] + [
+            _make_manager(
+                name=f"D{i}",
+                entry_id=10 + i,
+                captain="Salah",
+                captain_points=0,
+                captain_played=False,
+                vice_captain_points=2,
+            )
+            for i in range(5)
+        ]
+        awards = _compute_shared_awards(managers, total_managers=10)
+        assert awards["worst_captain"]["detail"] == (
+            "Captaincy was a wash — all 10 captaincies were worth 2 pts"
+            " (Haaland ×5, Salah ×5 (dnp))"
+        )
+
+    def test_league_wide_captain_tie_keeps_grouped_prose_in_a_small_league(self):
+        """Three managers fit in a capped block, so nothing is collapsed."""
+        managers = [
+            _make_manager(name=n, entry_id=i, captain="Salah", captain_points=10)
+            for i, n in enumerate(("Alice", "Bob", "Charlie"))
+        ]
+        awards = _compute_shared_awards(managers, total_managers=3)
+        assert awards["best_captain"]["detail"] == "Alice, Bob and Charlie all captained Salah (10 pts)"
+        assert "worst_captain" not in awards
+
+    def test_captain_awards_not_duplicated_when_one_manager_holds_both(self):
+        """Best and Worst on the same manager is one fact under two headings.
+
+        Alice's captain is both the highest raw score and the lowest effective
+        one; Bob's captain blanked but his vice beat it, so he is in neither
+        set. Nothing about the gameweek is lost by dropping the repeat.
+        """
+        managers = [
+            _make_manager(name="Alice", entry_id=1, captain="Salah", captain_points=10),
+            _make_manager(
+                name="Bob",
+                entry_id=2,
+                captain="Haaland",
+                captain_points=4,
+                captain_played=False,
+                vice_captain_points=15,
+            ),
+        ]
+        awards = _compute_shared_awards(managers, total_managers=2)
+        assert awards["best_captain"]["detail"] == "Alice captained Salah (10 pts)"
+        assert "worst_captain" not in awards
+
+    def test_captain_awards_kept_when_the_sets_differ(self):
+        """The common case still gets both awards."""
+        managers = [
+            _make_manager(name="Alice", entry_id=1, captain="Salah", captain_points=15),
+            _make_manager(name="Bob", entry_id=2, captain="Haaland", captain_points=2),
+        ]
+        awards = _compute_shared_awards(managers, total_managers=2)
+        assert awards["best_captain"]["manager_name"] == "Alice"
+        assert awards["worst_captain"]["manager_name"] == "Bob"
+
 
 # ---------------------------------------------------------------------------
 # Awards: edge cases
