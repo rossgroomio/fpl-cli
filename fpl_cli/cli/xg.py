@@ -107,7 +107,7 @@ def xg_command(ctx: click.Context, last_n: int, all_season: bool, output_format:
         table.add_column("Goals", justify="right")
         table.add_column("Assists", justify="right")
 
-        for p in data["top_xgi_per_90"][:10]:
+        for p in data.get("top_xgi_per_90", [])[:10]:
             table.add_row(
                 p["player_name"],
                 p["team_short"],
@@ -120,7 +120,7 @@ def xg_command(ctx: click.Context, last_n: int, all_season: bool, output_format:
         console.print(table)
 
         # Underperformers
-        if data["underperformers"]:
+        if data.get("underperformers"):
             console.print("\n[bold green]Underperformers (G+A < xGI, due a rise):[/bold green]")
             table = Table(show_header=True, header_style="bold")
             table.add_column("Player")
@@ -129,7 +129,7 @@ def xg_command(ctx: click.Context, last_n: int, all_season: bool, output_format:
             table.add_column("xGI", justify="right")
             table.add_column("Diff", justify="right")
 
-            for p in data["underperformers"][:8]:
+            for p in data.get("underperformers", [])[:8]:
                 table.add_row(
                     p["player_name"],
                     p["team_short"],
@@ -140,7 +140,7 @@ def xg_command(ctx: click.Context, last_n: int, all_season: bool, output_format:
             console.print(table)
 
         # Value picks
-        if data["value_picks"]:
+        if data.get("value_picks"):
             console.print("\n[bold cyan]Value Picks (high xGI, low ownership):[/bold cyan]")
             table = Table(show_header=True, header_style="bold")
             table.add_column("Player")
@@ -149,7 +149,7 @@ def xg_command(ctx: click.Context, last_n: int, all_season: bool, output_format:
             table.add_column("Own%", justify="right")
             table.add_column("xGI/90", justify="right")
 
-            for p in data["value_picks"][:8]:
+            for p in data.get("value_picks", [])[:8]:
                 table.add_row(
                     p["player_name"],
                     p["team_short"],
