@@ -7,6 +7,7 @@ import asyncio
 from typing import TYPE_CHECKING, Any
 
 import click
+from rich.markup import escape as rich_escape
 from rich.panel import Panel
 
 from fpl_cli.cli._context import (
@@ -145,22 +146,56 @@ def review_command(
 
     research_provider = None
     synthesis_provider = None
+    research_unavailable: str | None = None
+    synthesis_unavailable: str | None = None
 
-    # Resolve LLM providers if summarise or dry_run requested
-    if summarise or dry_run:
-        if not dry_run:
-            from fpl_cli.api.providers import ProviderError, get_llm_provider
+    # Resolve LLM providers if summarise requested (--dry-run calls neither)
+    if summarise and not dry_run:
+        from fpl_cli.api.providers import (
+            ProviderError,
+            ProviderNotConfiguredError,
+            get_llm_provider,
+        )
 
-            try:
-                research_provider = get_llm_provider("research", settings)
-                synthesis_provider = get_llm_provider("synthesis", settings)
-            except ProviderError as e:
-                # The sibling of the resolver refusal below, and the same
-                # defect until now: printed on stdout and returned exit 0,
-                # so `fpl review --summarise > out.txt` left the error
-                # sitting in the file as though it were the review, and
-                # `2>/dev/null` could not quieten it (#273 review).
-                emit_failure("review", str(e), "table", cause=e)
+        # One `try` per role, and an absent key is fatal to neither. The review
+        # itself -- squad, transfers, standings, fixtures, results -- needs no
+        # key at all, so losing the lot because an add-on cannot run is the
+        # trade #144 already ruled on for `league-recap`'s editorial. Sharing
+        # one `try` cost as much again: a missing key for either role took the
+        # other half down with it, so holding one key bought nothing (#287).
+        #
+        # Only the absent key degrades, though. `get_llm_provider` also rejects
+        # a provider name it does not know, a malformed model string and a
+        # `base_url` that is neither https nor loopback -- settings mistakes,
+        # not a key the user has yet to obtain, and a run that shrugged them off
+        # with exit 0 would let a typo'd `llm.research.provider` sit unnoticed
+        # in a cron job forever. Those keep the hard failure they had before
+        # this degradation existed; the boundary on the callback only catches
+        # `ConfigError`, so letting them propagate would mean a traceback.
+        try:
+            research_provider = get_llm_provider("research", settings)
+        except ProviderNotConfiguredError as e:
+            research_unavailable = str(e)
+            error_console.print(
+                f"[yellow]Community narrative skipped: {rich_escape(str(e))}[/yellow]"
+            )
+        except ProviderError as e:
+            emit_failure("review", str(e), "table", cause=e)
+        try:
+            synthesis_provider = get_llm_provider("synthesis", settings)
+        except ProviderNotConfiguredError as e:
+            synthesis_unavailable = str(e)
+            error_console.print(
+                f"[yellow]Personal analysis skipped: {rich_escape(str(e))}[/yellow]"
+            )
+        except ProviderError as e:
+            emit_failure("review", str(e), "table", cause=e)
+
+    # With both halves out there is nothing for the summariser to do
+    # (`league-recap` skips its own call the same way, #159 review).
+    # `--dry-run` never resolves a provider, so it always runs.
+    run_summarise = dry_run or research_provider is not None or synthesis_provider is not None
+
     fpl_cfg = fpl_config(settings)
     entry_id = fpl_cfg.get("classic_entry_id")
     classic_league_id = fpl_cfg.get("classic_league_id")
@@ -226,8 +261,12 @@ def review_command(
             # in place it was pure addition to the run; here it overlaps the
             # sections that follow. Cancelled on unwind so an exception before
             # the await never leaves it pending against a closing client.
+            # Gated on the synthesis half rather than on `run_summarise`: the
+            # personal analysis is the only thing that reads this, so a run
+            # holding a research key and no synthesis key would otherwise pay
+            # the latency above and discard the answer unread (#287 review).
             next_gameweek_task = None
-            if summarise or dry_run:
+            if dry_run or synthesis_provider is not None:
                 next_gameweek_task = asyncio.create_task(
                     _review_next_gameweek(
                         client, gw, teams,
@@ -328,7 +367,7 @@ def review_command(
             }
 
             # LLM summarisation if requested (or dry-run to preview prompts)
-            if summarise or dry_run:
+            if run_summarise:
                 next_gameweek = await next_gameweek_task if next_gameweek_task else None
                 llm = await _review_llm_summarise(
                     gw=gw,
@@ -355,6 +394,16 @@ def review_command(
                 # someone reads the file weeks later, and a verdict the model
                 # dropped must not read as one deliberately omitted (#266).
                 collected_data["synthesis_problems"] = llm["synthesis_problems"]
+
+            # Set outside the branch above, because with both keys absent that
+            # branch does not run at all and the report is exactly the one that
+            # needs to explain itself. A file read weeks later has no stderr
+            # left to read, and a section skipped for want of a key must not
+            # look like one nobody asked for (#266's reasoning, same file).
+            collected_data["summary_unavailable"] = [
+                *([f"Community narrative: {research_unavailable}"] if research_unavailable else []),
+                *([f"Personal analysis: {synthesis_unavailable}"] if synthesis_unavailable else []),
+            ]
 
             # --compare-recs reads from the same season directory --save writes
             # to, so resolve it once for both rather than per branch: resolving

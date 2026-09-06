@@ -75,6 +75,12 @@ for, retries once if a heading is missing or the text ends mid-sentence, and if 
 second try is no better it says what is missing on stderr and repeats it as a warning
 in the saved report. `league-recap --summarise` reports the same for its editorial.
 
+The summary is an add-on, and a missing key costs only the half it belongs to. The
+review itself — squad, transfers, standings, fixtures, results — needs no key at all,
+so `review --summarise` with a key for one provider prints that half, says on stderr
+why the other was skipped, and still exits 0; a saved report names each skipped half
+in its own warning callout. `league-recap --summarise` does the same for its editorial.
+
 Fines are ruled per gameweek by `league-recap` and recorded against it, so `fpl
 league-fines` reads them straight back off disk — no network, and any season still
 on disk (`--season 2025-26`). Every gameweek that could not be ruled is named

@@ -918,6 +918,18 @@ async def _review_llm_summarise(
     `next_gameweek` is the fixture data behind the synthesis prompt's "Next
     Week" section; None narrows that section to observations a results-only
     view can support (issue #191).
+
+    Either provider may be None outside `--dry-run`, which is what the caller
+    passes when no key resolved for that role: that half is skipped and its
+    summary comes back absent -- `research_summary` None, `synthesis_summary`
+    empty (#287).
+
+    A skip is not the same as a failed provider *call*, and only synthesis
+    treats them alike (both leave `""`). A failed research call leaves a
+    "Community narrative unavailable: ..." string, which is truthy and still
+    renders a "What Happened" section saying so; a skipped one leaves None, so
+    no section appears at all and the saved report's callout carries the
+    reason. That difference is deliberate -- see the branch below.
     """
     from fpl_cli.prompts.review import (
         REVIEW_RESEARCH_SYSTEM_PROMPT,
@@ -928,11 +940,6 @@ async def _review_llm_summarise(
         validate_research_prose,
         validate_research_teams,
     )
-
-    if not dry_run and research_provider is None:
-        raise ValueError("research_provider must be provided when dry_run=False")
-    if not dry_run and synthesis_provider is None:
-        raise ValueError("synthesis_provider must be provided when dry_run=False")
 
     # Unpack classic_team bundle
     my_entry_summary = classic_team["my_entry_summary"]
@@ -995,6 +1002,16 @@ async def _review_llm_summarise(
             (debug_dir / "research_prompt.txt").write_text(research_prompt, encoding="utf-8")
             console.print("[dim]    → Saved research_system.txt, research_prompt.txt[/dim]")
         research_summary = "[DRY RUN - research provider not called]"
+    elif research_provider is None:
+        # None, deliberately, and not the "Community narrative unavailable"
+        # string a failed *call* leaves a few lines below: that string is
+        # truthy, so it renders a "What Happened" section whose entire content
+        # is an apology. Nothing was attempted here, so no section appears --
+        # the saved report's callout is what accounts for the absence, and the
+        # synthesis prompt below falls back to "Not available". The prompt
+        # above is built anyway: it is a template fill over `research_ctx`,
+        # which stage 2 needs regardless.
+        research_summary = None
     else:
         from fpl_cli.api.providers import ProviderError
 
@@ -1041,120 +1058,130 @@ async def _review_llm_summarise(
                 (debug_dir / "research_response.txt").write_text(research_result.content, encoding="utf-8")
                 console.print("[dim]    → Saved research_*.txt[/dim]")
         except ProviderError as e:
-            console.print(f"[red]  ✗ Research failed: {rich_escape(str(e))}[/red]")
+            error_console.print(f"[red]  ✗ Research failed: {rich_escape(str(e))}[/red]")
             research_summary = f"Community narrative unavailable: {e}"
         except Exception as e:  # noqa: BLE001 — graceful degradation
-            console.print(f"[red]  ✗ Research failed: {rich_escape(str(e))}[/red]")
+            error_console.print(f"[red]  ✗ Research failed: {rich_escape(str(e))}[/red]")
             research_summary = "Community narrative unavailable: research provider error."
 
-    # Stage 2: Synthesis - personal analysis
-    classic_fmt = _format_classic_section(
-        team_points_data, automatic_subs, player_map, classic_transfers_data,
-        active_chip=active_chip, gameweek=gw,
-    )
-    draft_fmt = _format_draft_section(
-        draft_squad_points_data, draft_automatic_subs, draft_player_map,
-        collected_data.get("draft_transactions", []),
-    )
-    classic_positions = _classic_position_fields(classic_league_data)
-    league_ctx = _format_league_context(
-        classic_league_data, draft_league_data, team_points_data, draft_squad_points_data, settings,
-        my_entry_summary=my_entry_summary,
-    )
-
-    upcoming_fixtures = _format_next_gameweek(
-        next_gameweek, team_points_data, draft_squad_points_data,
-    )
-    synthesis_prompts = get_review_synthesis_prompt(
-        gameweek=gw,
-        research_summary=research_summary or "Not available",
-        classic_points=my_entry_summary["points"] if my_entry_summary else 0,
-        classic_average=gw_data.get("average_entry_score", 0),
-        classic_highest=gw_data.get("highest_score", 0),
-        classic_gw_rank=my_entry_summary["rank"] if my_entry_summary else 0,
-        classic_overall_rank=my_entry_summary["overall_rank"] if my_entry_summary else 0,
-        classic_captain=league_ctx["captain_label"],
-        classic_captain_points=league_ctx["captain_points"],
-        classic_captain_hindsight=league_ctx["captain_hindsight"],
-        classic_players=classic_fmt["players"],
-        classic_transfers=classic_fmt["transfers"],
-        classic_league_name=classic_league_data["league_name"] if classic_league_data else "Unknown",
-        classic_gw_position=classic_positions["gw_position"],
-        classic_position=classic_positions["position"],
-        classic_total=classic_positions["total"],
-        classic_rivals=league_ctx["classic_rivals"],
-        classic_worst_performers=league_ctx["classic_worst_performers"] or "No data",
-        classic_transfer_impact=league_ctx["classic_transfer_impact"],
-        draft_points=draft_league_data["user_gw_points"] if draft_league_data else 0,
-        draft_league_name=draft_league_name,
-        draft_players=draft_fmt["players"],
-        draft_transactions=draft_fmt["transactions"],
-        draft_gw_position=_gw_position_with_half(
-            draft_league_data["user_gw_rank"],
-            draft_league_data["total_entries"],
-        ) if draft_league_data else "?",
-        draft_position=draft_league_data["user_position"] if draft_league_data else 0,
-        draft_total=draft_league_data["total_entries"] if draft_league_data else 0,
-        draft_worst_performers=league_ctx["draft_worst_performers"] or "No data",
-        fine_results=league_ctx["fine_results"],
-        escalation_note=league_ctx["escalation_note"],
-        active_chip=active_chip,
-        use_net_points=settings.get("use_net_points", False),
-        dgw_teams=research_ctx["dgw_teams"],
-        bgw_teams=research_ctx["bgw_teams"],
-        upcoming_fixtures=upcoming_fixtures,
-    )
-    synthesis_system, synthesis_prompt = synthesis_prompts
-
-    if dry_run:
-        console.print("[dim]  Building synthesis prompt...[/dim]")
-        if debug_dir:
-            (debug_dir / "synthesis_system.txt").write_text(synthesis_system, encoding="utf-8")
-            (debug_dir / "synthesis_prompt.txt").write_text(synthesis_prompt, encoding="utf-8")
-            console.print("[dim]    → Saved synthesis_system.txt, synthesis_prompt.txt[/dim]")
+    if not dry_run and synthesis_provider is None:
+        # Skipped outright rather than after the fact: everything below
+        # formats squad, league and fixture context purely to build a
+        # prompt no provider will read, and `_format_league_context` rules
+        # the week's fines on the way (`league-recap` skips its own call
+        # for the same reason, #159 review). The empty summary is what a
+        # failed synthesis call already leaves behind, and `collected_data`,
+        # the saved report and the completeness guard all cope with it.
         synthesis_summary = ""
-        console.print("[green]  ✓[/green] Prompts saved to data/debug/")
     else:
-        try:
-            console.print("[dim]  Generating personal analysis...[/dim]")
-            # The prompt asks for both formats' verdicts unconditionally, but
-            # it also tells the model to analyse only the format it was given
-            # data for -- so a verdict the run has no squad behind is an
-            # instructed omission, not a section the guard should chase.
-            omit_sections = [
-                *([] if team_points_data else ["Classic Verdict"]),
-                *([] if draft_squad_points_data else ["Draft Verdict"]),
-            ]
-            synthesis_summary, completeness, attempts = await _synthesise_with_completeness_check(
-                synthesis_provider,
-                prompt=synthesis_prompt,
-                system_prompt=synthesis_system,
-                omit_sections=omit_sections,
-            )
-            # The grounding guard rides the same channel as the completeness
-            # one: both answer "is this response usable as written", and a
-            # reader weeks later needs them in the same place -- stderr now,
-            # and the saved report's warning callout for good.
-            grounding_problems = check_next_week_grounding(
-                synthesis_summary, upcoming_fixtures,
-            )
-            if completeness.complete and not grounding_problems:
-                console.print("[green]  ✓[/green] Personal analysis complete")
-            else:
-                synthesis_problems = completeness.problems() + grounding_problems
-                synthesis_corrections_path = _report_synthesis_completeness(
-                    completeness, attempts, debug_dir if debug else None,
-                    extra_problems=grounding_problems,
-                )
+        # Stage 2: Synthesis - personal analysis
+        classic_fmt = _format_classic_section(
+            team_points_data, automatic_subs, player_map, classic_transfers_data,
+            active_chip=active_chip, gameweek=gw,
+        )
+        draft_fmt = _format_draft_section(
+            draft_squad_points_data, draft_automatic_subs, draft_player_map,
+            collected_data.get("draft_transactions", []),
+        )
+        classic_positions = _classic_position_fields(classic_league_data)
+        league_ctx = _format_league_context(
+            classic_league_data, draft_league_data, team_points_data, draft_squad_points_data, settings,
+            my_entry_summary=my_entry_summary,
+        )
 
-            if debug and debug_dir:
+        upcoming_fixtures = _format_next_gameweek(
+            next_gameweek, team_points_data, draft_squad_points_data,
+        )
+        synthesis_prompts = get_review_synthesis_prompt(
+            gameweek=gw,
+            research_summary=research_summary or "Not available",
+            classic_points=my_entry_summary["points"] if my_entry_summary else 0,
+            classic_average=gw_data.get("average_entry_score", 0),
+            classic_highest=gw_data.get("highest_score", 0),
+            classic_gw_rank=my_entry_summary["rank"] if my_entry_summary else 0,
+            classic_overall_rank=my_entry_summary["overall_rank"] if my_entry_summary else 0,
+            classic_captain=league_ctx["captain_label"],
+            classic_captain_points=league_ctx["captain_points"],
+            classic_captain_hindsight=league_ctx["captain_hindsight"],
+            classic_players=classic_fmt["players"],
+            classic_transfers=classic_fmt["transfers"],
+            classic_league_name=classic_league_data["league_name"] if classic_league_data else "Unknown",
+            classic_gw_position=classic_positions["gw_position"],
+            classic_position=classic_positions["position"],
+            classic_total=classic_positions["total"],
+            classic_rivals=league_ctx["classic_rivals"],
+            classic_worst_performers=league_ctx["classic_worst_performers"] or "No data",
+            classic_transfer_impact=league_ctx["classic_transfer_impact"],
+            draft_points=draft_league_data["user_gw_points"] if draft_league_data else 0,
+            draft_league_name=draft_league_name,
+            draft_players=draft_fmt["players"],
+            draft_transactions=draft_fmt["transactions"],
+            draft_gw_position=_gw_position_with_half(
+                draft_league_data["user_gw_rank"],
+                draft_league_data["total_entries"],
+            ) if draft_league_data else "?",
+            draft_position=draft_league_data["user_position"] if draft_league_data else 0,
+            draft_total=draft_league_data["total_entries"] if draft_league_data else 0,
+            draft_worst_performers=league_ctx["draft_worst_performers"] or "No data",
+            fine_results=league_ctx["fine_results"],
+            escalation_note=league_ctx["escalation_note"],
+            active_chip=active_chip,
+            use_net_points=settings.get("use_net_points", False),
+            dgw_teams=research_ctx["dgw_teams"],
+            bgw_teams=research_ctx["bgw_teams"],
+            upcoming_fixtures=upcoming_fixtures,
+        )
+        synthesis_system, synthesis_prompt = synthesis_prompts
+
+        if dry_run:
+            console.print("[dim]  Building synthesis prompt...[/dim]")
+            if debug_dir:
                 (debug_dir / "synthesis_system.txt").write_text(synthesis_system, encoding="utf-8")
                 (debug_dir / "synthesis_prompt.txt").write_text(synthesis_prompt, encoding="utf-8")
-                (debug_dir / "synthesis_response.txt").write_text(synthesis_summary, encoding="utf-8")
-                console.print("[dim]    → Saved synthesis_*.txt[/dim]")
-        except Exception as e:  # noqa: BLE001 — graceful degradation
-            console.print(f"[red]  ✗ Synthesis failed: {rich_escape(str(e))}[/red]")
+                console.print("[dim]    → Saved synthesis_system.txt, synthesis_prompt.txt[/dim]")
             synthesis_summary = ""
+            console.print("[green]  ✓[/green] Prompts saved to data/debug/")
+        else:
+            try:
+                console.print("[dim]  Generating personal analysis...[/dim]")
+                # The prompt asks for both formats' verdicts unconditionally, but
+                # it also tells the model to analyse only the format it was given
+                # data for -- so a verdict the run has no squad behind is an
+                # instructed omission, not a section the guard should chase.
+                omit_sections = [
+                    *([] if team_points_data else ["Classic Verdict"]),
+                    *([] if draft_squad_points_data else ["Draft Verdict"]),
+                ]
+                synthesis_summary, completeness, attempts = await _synthesise_with_completeness_check(
+                    synthesis_provider,
+                    prompt=synthesis_prompt,
+                    system_prompt=synthesis_system,
+                    omit_sections=omit_sections,
+                )
+                # The grounding guard rides the same channel as the completeness
+                # one: both answer "is this response usable as written", and a
+                # reader weeks later needs them in the same place -- stderr now,
+                # and the saved report's warning callout for good.
+                grounding_problems = check_next_week_grounding(
+                    synthesis_summary, upcoming_fixtures,
+                )
+                if completeness.complete and not grounding_problems:
+                    console.print("[green]  ✓[/green] Personal analysis complete")
+                else:
+                    synthesis_problems = completeness.problems() + grounding_problems
+                    synthesis_corrections_path = _report_synthesis_completeness(
+                        completeness, attempts, debug_dir if debug else None,
+                        extra_problems=grounding_problems,
+                    )
+
+                if debug and debug_dir:
+                    (debug_dir / "synthesis_system.txt").write_text(synthesis_system, encoding="utf-8")
+                    (debug_dir / "synthesis_prompt.txt").write_text(synthesis_prompt, encoding="utf-8")
+                    (debug_dir / "synthesis_response.txt").write_text(synthesis_summary, encoding="utf-8")
+                    console.print("[dim]    → Saved synthesis_*.txt[/dim]")
+            except Exception as e:  # noqa: BLE001 — graceful degradation
+                error_console.print(f"[red]  ✗ Synthesis failed: {rich_escape(str(e))}[/red]")
+                synthesis_summary = ""
 
     return {
         "research_summary": research_summary,
