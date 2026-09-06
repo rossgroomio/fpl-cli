@@ -71,6 +71,10 @@ For a complete inventory of CLI commands, analysis agents, and skills with JSON 
 - Generated reports are season-partitioned: `<output dir>/<season>/gw{N}-review.md`, `<research dir>/ai-scout-reports/<season>/gw{N}-scout-preview.md`. Filenames carry a gameweek but no season, so a flat directory lets a new season's GW21 report overwrite the previous season's. Resolve destinations with `resolve_output_dir(settings, output)` (`cli/_context.py`), which partitions the configured dir and an explicit `--output` alike; partition anything else with `season_partition()` (`fpl_cli/season.py`). `ReportAgent` writes to `output_dir` verbatim — never add a second season segment there
 - Skills writing alongside these reports take the label from `fpl status --format json` (`metadata.season`), never hardcoded
 
+### Dependencies
+- No lockfile: every install, CI included, resolves fresh from `pyproject.toml`, so CI tests what `pip install fplkit` gives users. Never add a `requirements.lock` / `uv.lock` — `tests/test_dependencies.py` fails if one appears (#81)
+- An upper bound is deliberate, not default: add one only when the dependency's next major is a real prospect and the code leans on surface it would change, and add its row to the table in CONTRIBUTING.md (`## Dependencies`), which the same test holds to `pyproject.toml`. Capped today: `httpx<1`, `pydantic<3`, `click<9`, `platformdirs<5`, `pulp<4`; everything else, dev tools included, stays unbounded and the weekly CI cron catches an upstream break
+
 ### Commits & Changelog
 - Commit subjects and PR titles follow conventional commits. `feat:`/`fix:`/`refactor:`/`perf:` become release-notes lines via git-cliff (`cliff.toml`); `chore:`/`docs:`/`ci:`/`test:`/`style:` and merge commits are skipped
 - A changelog-visible subject must read as a standalone user-facing change — the release pipeline publishes it verbatim in CHANGELOG.md and the GitHub release
@@ -96,7 +100,7 @@ For a complete inventory of CLI commands, analysis agents, and skills with JSON 
 - Architecture doc must stay in sync: adding a new agent, service, API client, or CLI command requires updating `docs/architecture.md`
 - TOOLS.md must stay in sync: adding, removing, or changing a CLI command, analysis agent, or skill requires updating `.agents/TOOLS.md`
 - AGENTS.md must stay in sync: any change to project instructions in CLAUDE.md requires the same change in AGENTS.md
-- CONTRIBUTING.md must stay in sync: changes to commit/PR conventions, CI checks, or the release pipeline require the same change in CONTRIBUTING.md (the human-facing copy)
+- CONTRIBUTING.md must stay in sync: changes to commit/PR conventions, CI checks, the dependency policy, or the release pipeline require the same change in CONTRIBUTING.md (the human-facing copy)
 - CLI changes require corresponding unit tests
 - Changing a function's return format: update existing tests to match and confirm pytest passes
 - Tests: `pytest-asyncio` with `asyncio_mode = "auto"`, factories in `tests/conftest.py` — `make_player()`, `make_team()`, `make_fixture()`, `make_history_row()`, `make_agent()`, and the draft equivalents (`make_draft_player()`, `make_draft_team()`, `make_draft_league_entry()`, `make_draft_standing()`). `make_agent()` is the async-context-manager stand-in every CLI test needs when it patches an agent — use it rather than rebuilding the `__aenter__`/`__aexit__`/`run()` mock locally, which is how six copies of the same shape accumulated

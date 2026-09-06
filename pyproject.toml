@@ -6,10 +6,16 @@ readme = "README.md"
 license = {text = "MIT"}
 authors = [{name = "Ross Groom", email = "rossgroom1+tech@gmail.com"}]
 requires-python = ">=3.11"
+# No lockfile: every install, CI included, resolves fresh from these ranges,
+# which is the resolution `pip install fplkit` gives a user -- CI tests what
+# users get. An upper bound is deliberate, not default: add one only where the
+# next major is a real prospect and the code leans on surface it would change,
+# and add its row to the table in CONTRIBUTING.md (## Dependencies), which
+# tests/test_dependencies.py holds to this list (#81).
 dependencies = [
-    "httpx>=0.27.0",
-    "pydantic>=2.5.0",
-    "click>=8.1.0",
+    "httpx>=0.27.0,<1",
+    "pydantic>=2.5.0,<3",
+    "click>=8.1.0,<9",
     "rich>=13.7.0",
     "jinja2>=3.1.0",
     "pyyaml>=6.0.0",
