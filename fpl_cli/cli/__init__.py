@@ -37,7 +37,7 @@ from fpl_cli.cli.targets import targets_command
 from fpl_cli.cli.transfer_eval import transfer_eval_command
 from fpl_cli.cli.waivers import waivers_command
 from fpl_cli.cli.xg import xg_command
-from fpl_cli.paths import ensure_legacy_migration, load_env_files
+from fpl_cli.paths import ensure_legacy_migration, ensure_user_dirs_valid, load_env_files
 
 load_env_files()
 
@@ -61,6 +61,9 @@ def main(ctx: click.Context) -> None:
         return
     # Deferred to invocation: the user dirs must not resolve until .env is loaded.
     ensure_legacy_migration()
+    # Eager, not lazy: a relative override must fail every command identically,
+    # not only the ones that happen to touch that particular dir (#139).
+    ensure_user_dirs_valid()
     if ctx.invoked_subcommand == "init":
         ctx.obj = CLIContext(format=None, settings={})
         return

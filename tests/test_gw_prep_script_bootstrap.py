@@ -118,3 +118,37 @@ def test_wrong_interpreter_reports_itself(script):
     assert "fpl_cli" in joined
     assert sys.executable in joined
     assert "venv" in joined
+
+
+# ---- bootstrap_user_dirs(): a bad FPL_CLI_* override ------------------------
+
+
+def test_bootstrap_rejects_relative_data_dir(monkeypatch, tmp_path, capsys):
+    """A relative FPL_CLI_DATA_DIR must fail here the same way it fails `fpl` --
+    these scripts are the other entry point CLAUDE.md calls out, running in
+    fpl-cli's own venv but never through `fpl_cli.cli.main()` (#139 review).
+
+    `_LEGACY_CONFIG_DIR` / `_LEGACY_DATA_DIR` are pointed at nonexistent paths
+    to match an installed venv, where they never exist: in this repo checkout
+    both are real (the project's own `config/` and `data/`), so
+    `ensure_legacy_migration()` alone would already resolve `user_data_dir()`
+    as a side effect and pass this test regardless of whether
+    `ensure_user_dirs_valid()` runs -- the thing actually under test.
+    """
+    import fpl_cli.paths as paths_mod
+    from fpl_cli.paths import user_data_dir
+
+    monkeypatch.setattr(paths_mod, "_LEGACY_CONFIG_DIR", tmp_path / "no-legacy-config")
+    monkeypatch.setattr(paths_mod, "_LEGACY_DATA_DIR", tmp_path / "no-legacy-data")
+    monkeypatch.setenv("FPL_CLI_DATA_DIR", "./somewhere")
+    user_data_dir.cache_clear()
+
+    with pytest.raises(SystemExit) as exc_info:
+        _mod.bootstrap_user_dirs()
+
+    assert exc_info.value.code == 1
+    data = json.loads(capsys.readouterr().out)
+    assert data["error"] is True
+    joined = " ".join(data["messages"])
+    assert "FPL_CLI_DATA_DIR" in joined
+    assert "relative path" in joined

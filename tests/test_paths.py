@@ -271,6 +271,63 @@ class TestLazyResolution:
         assert result.stdout.strip() == str(data_dir.resolve())
 
 
+class TestAllDirsValidatedEagerlyInCLI:
+    """Every FPL_CLI_* override is rejected identically, even on a command
+    that never touches that particular dir on its own (#139).
+
+    `fpl status` resolves neither the data dir nor the cache dir on this code
+    path -- before the eager check in `main()`, a relative FPL_CLI_DATA_DIR or
+    FPL_CLI_CACHE_DIR silently resolved against the cwd here, while the same
+    value under FPL_CLI_CONFIG_DIR was rejected (`load_settings()` reaches
+    `user_config_dir()` on every command).
+
+    `_LEGACY_CONFIG_DIR` / `_LEGACY_DATA_DIR` are pointed at nonexistent paths
+    to match an installed package (where they never exist): in a repo
+    checkout both are real (the project's own `config/` and `data/`), so
+    `_migrate_legacy_files()` skips its early return and resolves
+    `user_data_dir()` itself as a side effect -- which would make the
+    FPL_CLI_DATA_DIR case here pass on the strength of that migration path
+    rather than of `ensure_user_dirs_valid()`, the thing under test (PR #281
+    review).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_legacy_dirs(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(paths_mod, "_LEGACY_CONFIG_DIR", tmp_path / "no-legacy-config")
+        monkeypatch.setattr(paths_mod, "_LEGACY_DATA_DIR", tmp_path / "no-legacy-data")
+
+    @pytest.mark.parametrize(("env_var", "resolver"), RESOLVERS)
+    def test_relative_override_rejected_on_status(self, env_var, resolver, monkeypatch):
+        from click.testing import CliRunner
+
+        from fpl_cli.cli import main
+
+        monkeypatch.setenv(env_var, "./somewhere")
+        resolver.cache_clear()
+
+        result = CliRunner().invoke(main, ["status"], catch_exceptions=False)
+
+        assert result.exit_code == 1
+        assert env_var in result.output
+        assert "relative path" in result.output
+        assert "Traceback" not in result.output
+
+    @pytest.mark.parametrize(("env_var", "resolver"), RESOLVERS)
+    def test_relative_override_rejected_on_init(self, env_var, resolver, monkeypatch):
+        from click.testing import CliRunner
+
+        from fpl_cli.cli import main
+
+        monkeypatch.setenv(env_var, "./somewhere")
+        resolver.cache_clear()
+
+        result = CliRunner().invoke(main, ["init"], catch_exceptions=False)
+
+        assert result.exit_code == 1
+        assert env_var in result.output
+        assert "relative path" in result.output
+
+
 class TestUnusableOverrideInCLI:
     """The CLI turns an unusable override into an error message, not a traceback."""
 

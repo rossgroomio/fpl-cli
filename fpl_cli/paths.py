@@ -59,6 +59,20 @@ class UserDirError(RuntimeError):
     """An FPL_CLI_* directory override points somewhere unusable."""
 
 
+def _relative_override_error(env_var: str, env: str) -> UserDirError:
+    # Resolving a relative override against the cwd would give a different
+    # directory per invocation, so config silently loads only when fpl is run
+    # from one place (#46). No stable anchor exists for a CLI, so say so
+    # rather than guess one.
+    return UserDirError(
+        f"{env_var} is set to {env!r}, which is a relative path. It would be "
+        f"resolved against the current working directory, so fpl-cli would read "
+        f"a different directory depending on where you ran it from. "
+        f"Use an absolute path (from here that is {Path(env).expanduser().resolve()}), "
+        f"or unset it to use the default location."
+    )
+
+
 def _resolve_user_dir(env_var: str, platformdirs_func: str) -> Path:
     """Resolve one writable dir: env override if set, else platformdirs.
 
@@ -75,17 +89,7 @@ def _resolve_user_dir(env_var: str, platformdirs_func: str) -> Path:
     if env:
         path = Path(env).expanduser()
         if not path.is_absolute():
-            # Resolving a relative override against the cwd would give a
-            # different directory per invocation, so config silently loads
-            # only when fpl is run from one place (#46). No stable anchor
-            # exists for a CLI, so say so rather than guess one.
-            raise UserDirError(
-                f"{env_var} is set to {env!r}, which is a relative path. It would be "
-                f"resolved against the current working directory, so fpl-cli would read "
-                f"a different directory depending on where you ran it from. "
-                f"Use an absolute path (from here that is {Path(env).expanduser().resolve()}), "
-                f"or unset it to use the default location."
-            )
+            raise _relative_override_error(env_var, env)
         path = path.resolve()
         # A directory the user pointed us at may be shared with other tools, so
         # its mode is theirs to set. Only lock down one we create ourselves.
@@ -141,6 +145,34 @@ def user_data_dir() -> Path:
     user_data_dir.cache_clear() first (handled by the autouse fixture in conftest.py).
     """
     return _resolve_user_dir("FPL_CLI_DATA_DIR", "user_data_path")
+
+
+def ensure_user_dirs_valid() -> None:
+    """Reject a relative FPL_CLI_* override for all three dirs, eagerly.
+
+    A relative override is only caught when something actually resolves that
+    particular dir -- `load_settings()` reaches `user_config_dir()` on every
+    command, but `user_data_dir()` / `user_cache_dir()` are otherwise only
+    reached by a command that happens to touch data or cache. Left alone that
+    makes the #46 guard asymmetric: a relative FPL_CLI_CONFIG_DIR is rejected
+    everywhere, while a relative FPL_CLI_DATA_DIR resolves against the cwd on
+    any command that doesn't read the data dir on its own -- `fpl status`
+    included (#139). Called once per invocation from the CLI entry point,
+    before dispatch, so every command sees the same accept/reject outcome.
+
+    Deliberately a string check only -- no platformdirs, no mkdir. Calling
+    the full resolvers here would also gate every command's startup on the
+    data/cache dir being *creatable* (permissions, a full disk, a read-only
+    mount), not just on the override being absolute -- turning an unrelated
+    filesystem problem into a startup failure for commands that never touch
+    that dir, `fpl init` (the fix for a broken dir) included. Absoluteness is
+    re-checked, not shared, by whichever resolver a command actually calls;
+    duplicating the check is what keeps this function filesystem-free.
+    """
+    for env_var in ("FPL_CLI_CONFIG_DIR", "FPL_CLI_DATA_DIR", "FPL_CLI_CACHE_DIR"):
+        env = os.environ.get(env_var)
+        if env and not Path(env).expanduser().is_absolute():
+            raise _relative_override_error(env_var, env)
 
 
 def user_config_file(name: str) -> Path:
