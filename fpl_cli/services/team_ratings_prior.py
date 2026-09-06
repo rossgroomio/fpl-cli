@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 
+from fpl_cli.api.football_data import api_key_configured
 from fpl_cli.paths import user_data_file
 from fpl_cli.season import PROMOTED_CLUBS_PER_SEASON, season_label
 from fpl_cli.services.team_ratings import TeamPerformance, TeamRating
@@ -80,6 +81,22 @@ PRIOR_CACHE_VERSION = 7
 # on). `_matches_to_performances` applies the zero-games version of the same
 # idea on the football-data side.
 PRIOR_MIN_GAMES_PER_VENUE = 10
+
+# Recorded in the cache's metadata: whether the run that wrote it had a
+# football-data.org key. It is the one input to the prior that an install can
+# gain or lose without the code changing, and without it there is no
+# Championship record, so every promoted side takes the flat bottom-of-table
+# estimate. The version stamp cannot express "this particular install's inputs
+# changed" and the team-set check sees the same twenty clubs either way, so
+# setting the key mid-season used to change nothing until the file was deleted
+# by hand (#112). Compared on load by `_inputs_have_improved`.
+#
+# Only the key is recorded, not whether the fetch then succeeded: configuration
+# is a stable fact about the install, where an outcome would have the cache
+# re-attempting a failing provider on every command. What each club actually
+# ended up ranked on is already in `inputs[<team>].basis` below, which is the
+# other half of the comparison.
+PRIOR_FOOTBALL_DATA_CONFIGURED = "football_data_configured"
 
 # What each club's prior was ranked on, recorded per club in the cache file as
 # `inputs[<team>].basis` so a rating can be traced back to the record behind it.
@@ -277,9 +294,13 @@ def _read_prior_cache() -> dict[str, Any] | None:
     """The cache file as parsed, or None when missing, malformed or outdated.
 
     The one reader every cache consumer goes through, so a file written by an
-    older methodology is refused everywhere at once: `_load_prior_cache` must
-    not serve its ratings, and `load_prior_inputs` must not surface its trace
-    as though it described the prior in use.
+    older methodology is refused everywhere at once: `generate_prior` must not
+    serve its ratings, and `load_prior_inputs` must not surface its trace as
+    though it described the prior in use.
+
+    Note this is the *validity* check alone. Whether a valid cache is still
+    the best this install can do is a separate question, asked once at the
+    point it would be served -- see `_inputs_have_improved`.
     """
     path = prior_config_path()
     if not path.exists():
@@ -294,11 +315,8 @@ def _read_prior_cache() -> dict[str, Any] | None:
     return data
 
 
-def _load_prior_cache() -> dict[str, TeamRating] | None:
-    """Load cached prior from disk, or None if missing or outdated."""
-    data = _read_prior_cache()
-    if data is None:
-        return None
+def _ratings_from_cache(data: dict[str, Any]) -> dict[str, TeamRating]:
+    """The ratings held by a cache file `_read_prior_cache` accepted."""
     ratings = {}
     for team, r in data["ratings"].items():
         ratings[team] = TeamRating(
@@ -310,9 +328,54 @@ def _load_prior_cache() -> dict[str, TeamRating] | None:
     return ratings
 
 
+def _inputs_have_improved(data: dict[str, Any]) -> bool:
+    """Whether this run could build a better prior than the cache holds.
+
+    One-directional by construction (#112): it asks only whether an input the
+    cached run *lacked* is available now, never whether the two runs differ. A
+    source that has since gone away -- a key removed, a provider down -- leaves
+    a good cache alone rather than replacing it with a worse prior, which is
+    the opposite of what a rebuild is for.
+
+    Today that is one input: a football-data.org key, without which there is no
+    Championship record and every promoted side shares the flat
+    bottom-of-table estimate. Two conditions have to hold together, because
+    either alone would rebuild a cache that has nothing to gain: the key must
+    be available now and not have been then, and some club must actually be
+    sitting on a rating a Championship record could improve. A prior where
+    every club was ranked on its own Premier League record is already the best
+    this code can produce, whatever keys have appeared since.
+
+    A file written before this field existed says nothing either way, so it is
+    decided on the clubs alone -- which rebuilds it at most once, since the
+    rebuilt file records the answer.
+    """
+    metadata = data.get("metadata")
+    if not isinstance(metadata, dict):
+        return False
+    if metadata.get(PRIOR_FOOTBALL_DATA_CONFIGURED) is True:
+        return False
+    if not api_key_configured():
+        return False
+    inputs = data.get("inputs")
+    if not isinstance(inputs, dict):
+        return False
+    # `incomplete_record` counts alongside `promoted_fallback`: it is where a
+    # club's Premier League record arrived as a fragment and no Championship
+    # one settled it, so a Championship lookup is exactly what it went without.
+    return any(
+        isinstance(entry, dict)
+        and entry.get("basis") in (PRIOR_BASIS_FALLBACK, PRIOR_BASIS_INCOMPLETE)
+        for entry in inputs.values()
+    )
+
+
 _CACHE_HEADER = """\
 # Previous-season prior for team ratings, generated by fpl-cli. Regenerated
-# when the league's clubs change or the methodology version moves on.
+# when the league's clubs change, the methodology version moves on, or an
+# input this run went without becomes available -- `football_data_configured`
+# records whether a football-data.org key was set, so configuring one later
+# rebuilds the promoted sides instead of leaving them on the flat estimate.
 # `inputs` records what each club's rating was ranked on: its `basis`
 # (premier_league / championship / promoted_fallback / incomplete_record), the
 # matches behind it, the per-game rates that were bucketed (`ranked`, in
@@ -384,11 +447,15 @@ def _save_prior_cache(
     *,
     based_on_season: str,
     inputs: dict[str, dict[str, Any]],
+    football_data_configured: bool,
 ) -> None:
     """Save prior to disk for caching (atomic write).
 
     ``inputs`` is the per-club provenance (:func:`_prior_inputs`), written
-    beside the ratings so the file answers where each one came from.
+    beside the ratings so the file answers where each one came from, and
+    ``football_data_configured`` the install-level input this run had
+    (:data:`PRIOR_FOOTBALL_DATA_CONFIGURED`), so a later run can tell whether
+    it can now do better.
     """
     from fpl_cli.utils.files import atomic_write_text
 
@@ -397,6 +464,7 @@ def _save_prior_cache(
         "metadata": {
             "version": PRIOR_CACHE_VERSION,
             "source": source,
+            PRIOR_FOOTBALL_DATA_CONFIGURED: football_data_configured,
             "based_on_season": based_on_season,
             "teams": sorted(teams),
             "promoted": sorted(
@@ -473,9 +541,16 @@ def describe_prior_inputs() -> str | None:
             f"Premier League units"
         )
     if fallback:
-        parts.append(
-            f"{', '.join(fallback)} on the flat promoted estimate (no Championship record)"
-        )
+        # The remedy travels with the finding: an undifferentiated promoted
+        # cohort is otherwise the only visible symptom of a missing key, and
+        # nothing else in the output names the cause (#112).
+        why = "no Championship record"
+        if not api_key_configured():
+            why += (
+                "; set FOOTBALL_DATA_API_KEY to rate them on last season's "
+                "Championship results"
+            )
+        parts.append(f"{', '.join(fallback)} on the flat promoted estimate ({why})")
     if incomplete:
         parts.append(
             f"{', '.join(incomplete)} at neutral mid-table (an incomplete Premier League "
@@ -489,28 +564,80 @@ def describe_prior_inputs() -> str | None:
     )
 
 
-async def generate_prior(client: FPLClient) -> dict[str, TeamRating]:
-    """Generate prior ratings from previous season data.
+async def generate_prior(client: FPLClient, *, refresh: bool = False) -> dict[str, TeamRating]:
+    """Generate prior ratings from previous season data, cached between runs.
 
     Fallback chain: Understat xG/xGA -> football-data.org.
     Promoted teams use Championship data rescaled to PL-equivalent rates.
 
+    The cache is served when it describes this league (see the team-set check
+    below) and this run has nothing better to build from than the run that
+    wrote it (:func:`_inputs_have_improved`).
+
+    Args:
+        refresh: Rebuild even when the cache would have been served. The escape
+            hatch for a reason provenance cannot infer -- a provider that was
+            reachable but wrong, say -- so nothing needs the file deleted by
+            hand. A rebuild that comes back empty still leaves the cached prior
+            in place and returns it, so forcing one can never cost a caller the
+            prior it had.
+
     Returns:
         Ratings by team short name, or an empty dict when no source has
         previous-season data. Callers must treat the empty case as "no prior"
-        rather than substituting a uniform table -- see the comment below.
+        rather than substituting a uniform table -- see the comment in
+        :func:`_build_prior`.
     """
     teams = await client.get_teams()
     current_team_names = {t.short_name for t in teams}
 
-    # Check cache validity
-    cached = _load_prior_cache()
-    if cached is not None:
-        cached_teams = set(cached.keys())
+    # The prior this run is replacing, held only where it still describes the
+    # current league: a cache that fails the team-set check is wrong for this
+    # season and must not be fallen back to, where one being rebuilt for
+    # better inputs is merely improvable and remains the best thing available
+    # if the rebuild finds nothing.
+    superseded: dict[str, TeamRating] | None = None
+    cached_data = _read_prior_cache()
+    if cached_data is not None:
+        cached = _ratings_from_cache(cached_data)
+        cached_teams = set(cached)
         mismatches = len(current_team_names - cached_teams) + len(cached_teams - current_team_names)
         if mismatches <= 2:
-            return cached
+            if refresh:
+                superseded = cached
+            elif _inputs_have_improved(cached_data):
+                logger.info(
+                    "Rebuilding the cached ratings prior: a football-data.org key is "
+                    "configured now and was not when the cache was written, so the "
+                    "promoted sides can be rated on Championship results rather than "
+                    "the flat estimate"
+                )
+                superseded = cached
+            else:
+                return cached
 
+    prior = await _build_prior(client, current_team_names)
+    if not prior and superseded is not None:
+        # The rebuild found nothing this run -- a provider down, a key that
+        # does not work. The cached prior is untouched on disk and still
+        # describes this league, so serve it rather than reporting no prior
+        # and having every caller fall back to flat mid-table.
+        logger.warning(
+            "Could not rebuild the ratings prior - keeping the cached one (%s)",
+            prior_config_path(),
+        )
+        return superseded
+    return prior
+
+
+async def _build_prior(
+    client: FPLClient, current_team_names: set[str]
+) -> dict[str, TeamRating]:
+    """Build the prior from source data and cache it, ignoring any cache.
+
+    The cache gate lives in :func:`generate_prior`; everything here runs
+    against the providers.
+    """
     from fpl_cli.season import get_season_year
 
     current_season_year = get_season_year()
@@ -615,6 +742,7 @@ async def generate_prior(client: FPLClient) -> dict[str, TeamRating]:
         list(current_team_names),
         based_on_season=prev_label,
         inputs=_prior_inputs(performances, championship, fallback_teams, incomplete),
+        football_data_configured=api_key_configured(),
     )
     return prior
 

@@ -96,11 +96,22 @@ def _print_prior_basis(note: str | None) -> None:
 @click.option("--since-gw", type=int, default=None, help="Calculate from this GW onwards (recent form)")
 @click.option("--dry-run", is_flag=True, help="Show calculated ratings without saving")
 @click.option("--use-xg", is_flag=True, help="Use Understat xG data instead of actual goals (full season only)")
-def ratings_update(since_gw: int | None, dry_run: bool, use_xg: bool) -> None:
+@click.option(
+    "--refresh-prior",
+    is_flag=True,
+    help="Rebuild last season's prior from scratch instead of reusing the saved copy",
+)
+def ratings_update(
+    since_gw: int | None, dry_run: bool, use_xg: bool, refresh_prior: bool
+) -> None:
     """Recalculate ratings from fixture results.
 
     By default, uses full season actual goals. Use --since-gw N for recent form,
     or --use-xg for expected goals (less noise, full season only).
+
+    Last season's prior is saved and reused, and rebuilt on its own when the
+    league's clubs change or a source that was unavailable becomes available.
+    Use --refresh-prior to force that rebuild for a reason it cannot see.
     """
     from fpl_cli.api.fpl import FPLClient, finished_gameweek_ids
     from fpl_cli.services.team_ratings import TeamRatingsCalculator, TeamRatingsService
@@ -125,6 +136,20 @@ def ratings_update(since_gw: int | None, dry_run: bool, use_xg: bool) -> None:
         current_ratings = service.get_all_ratings()
 
         async with FPLClient() as client:
+            # Up front, before anything reads the prior: the rebuild rewrites
+            # the cache file, so every use below -- the blend, seed_from_prior,
+            # the dry-run preview -- sees the fresh copy without each having to
+            # thread the flag down to it. Rebuilt even under --dry-run: that
+            # flag governs team_ratings.yaml, and refreshing a stale prior is
+            # what was asked for either way.
+            if refresh_prior:
+                console.print("[bold]Rebuilding last season's prior...[/bold]\n")
+                if not await generate_prior(client, refresh=True):
+                    error_console.print(
+                        "[yellow]Could not rebuild the prior from any source - "
+                        "carrying on with the saved copy.[/yellow]\n"
+                    )
+
             calculator = TeamRatingsCalculator(client)
 
             based_on_gws: tuple[int, int] | None = None

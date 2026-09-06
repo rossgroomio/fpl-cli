@@ -395,6 +395,18 @@ Championship playoff results are excluded. football-data serves them in the same
 
 Two degenerate cases are called out explicitly rather than ranked silently: no ratings at all (every fixture would score a neutral 4.0) and ratings that fail to separate any two teams. `generate_prior()` returns nothing when no source has previous-season data, rather than a uniform 4.0 table: a flat prior would be indistinguishable from a real one, saved as "estimated ratings", cached for the season, and blended into genuine current form.
 
+#### When the prior is rebuilt
+
+The prior is cached in `team_ratings_prior.yaml` and reused between runs, so most commands never rebuild it. Three things invalidate it, and the third is what the version stamp and the club list between them could never see.
+
+`PRIOR_CACHE_VERSION` catches a methodology change: a bump discards every user's file on release, because the ratings it holds are ones this code would no longer produce. The club-list comparison catches a season rollover: a cache describing a different twenty is a cache for a different league. Neither can catch *the data available to build this prior is different now* - the same twenty clubs, the same methodology, and a source that has appeared since.
+
+That is what `metadata.football_data_configured` is for. Without a football-data.org key there is no Championship record, so every promoted side takes the flat bottom-of-table estimate; the cache records whether the run that wrote it had one, and a run that has a key where the cached run did not rebuilds. Before this, configuring `FOOTBALL_DATA_API_KEY` mid-season changed nothing at all: the cache held the current twenty clubs, so it was returned before the key was ever consulted, and the promoted sides stayed pinned to the flat estimate until the file was deleted by hand (#112). Only the key is recorded, not whether the fetch then succeeded - configuration is a stable fact about the install, where an outcome would have the cache re-attempting a failing provider on every command. What each club ended up ranked on is already in `inputs`, which is the other half of the comparison: a key is a reason to rebuild only when some club is actually sitting on a rating a Championship record could improve.
+
+The comparison runs one way by construction. It asks whether an input the cached run *lacked* is available now, never whether the two runs differ, so a transient outage or a key removed leaves a good prior alone instead of replacing it with a worse one. The same principle covers the rebuild itself: if it comes back empty - a provider down, a key that does not work - the cached prior is still on disk and is returned, rather than reporting no prior and having every caller fall back to flat mid-table. A cache that fails the *club-list* check is not held that way, since it is wrong for this league rather than merely improvable.
+
+`fpl ratings update --refresh-prior` forces a rebuild for a reason provenance cannot infer - a source that answered, but answered wrongly. It is the escape hatch, not the remedy: nothing about a changed input should need it.
+
 ### xG-Based Calculation
 
 `fpl ratings update --use-xg` recalculates using Understat xG instead of actual goals. Less noise, uses full season data rather than rolling window.

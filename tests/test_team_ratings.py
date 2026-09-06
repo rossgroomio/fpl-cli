@@ -1657,6 +1657,81 @@ class TestRatingsUpdateBlending:
         assert mock_save.call_args.kwargs["source"] == "understat_xg_blended"
 
 
+class TestRatingsUpdateRefreshPrior:
+    """`fpl ratings update --refresh-prior` forces the prior to be rebuilt.
+
+    The provenance check in generate_prior covers the input changes it can
+    see; this is the escape hatch for the ones it cannot -- a provider that
+    answered but answered wrongly, say -- so nothing ever needs the cache file
+    deleted by hand (#112).
+    """
+
+    def _run(self, args, *, prior=None):
+        from click.testing import CliRunner
+
+        from fpl_cli.cli import main
+        from tests.conftest import make_fixture
+
+        if prior is None:
+            prior = {"ARS": TeamRating(atk_home=4, atk_away=4, def_home=4, def_away=4)}
+
+        with (
+            patch(
+                "fpl_cli.services.team_ratings.TeamRatingsCalculator.calculate_from_fixtures",
+                new_callable=AsyncMock,
+                return_value=({"ARS": TeamRating(1, 1, 1, 1)}, {}),
+            ),
+            patch(
+                "fpl_cli.api.fpl.FPLClient.get_fixtures",
+                new_callable=AsyncMock,
+                return_value=[
+                    make_fixture(id=1, gameweek=1, finished=True, home_score=1, away_score=0)
+                ],
+            ),
+            patch(
+                "fpl_cli.services.team_ratings_prior.generate_prior",
+                new_callable=AsyncMock,
+                return_value=prior,
+            ) as mock_prior,
+            patch(
+                "fpl_cli.services.team_ratings.TeamRatingsService.get_all_ratings", return_value={}
+            ),
+            patch("fpl_cli.services.team_ratings.TeamRatingsService.save_ratings"),
+            patch("fpl_cli.cli._context.load_settings", return_value={"custom_analysis": True}),
+        ):
+            result = CliRunner().invoke(main, args, catch_exceptions=False)
+
+        assert result.exit_code == 0, result.output
+        return result, mock_prior
+
+    def test_the_flag_forces_a_rebuild(self):
+        result, mock_prior = self._run(["ratings", "update", "--refresh-prior"])
+
+        assert mock_prior.await_args_list[0].kwargs == {"refresh": True}
+        assert "Rebuilding last season's prior" in result.output
+
+    def test_without_the_flag_the_saved_prior_is_reused(self):
+        _, mock_prior = self._run(["ratings", "update"])
+
+        assert all(call.kwargs.get("refresh") is not True for call in mock_prior.await_args_list)
+
+    def test_a_rebuild_that_finds_nothing_says_so_and_carries_on(self):
+        """generate_prior leaves the cached file alone, so the run is still useful."""
+        result, _ = self._run(["ratings", "update", "--refresh-prior"], prior={})
+
+        # On stderr: the table is what stdout carries, so `2>/dev/null` means
+        # the same thing here as on every other command.
+        assert "Could not rebuild the prior" in result.stderr
+        assert "Calculated Team Ratings" in result.output
+
+    def test_the_rebuild_runs_under_dry_run_too(self):
+        """--dry-run governs team_ratings.yaml; refreshing a stale prior was asked for."""
+        result, mock_prior = self._run(["ratings", "update", "--refresh-prior", "--dry-run"])
+
+        assert mock_prior.await_args_list[0].kwargs == {"refresh": True}
+        assert "ratings not saved" in result.output
+
+
 class TestRatingsUpdateWithoutResults:
     """`fpl doctor` sends users here at the rollover, when there is nothing to calculate.
 

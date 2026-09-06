@@ -9,7 +9,20 @@ from typing import Any, Self
 import httpx
 
 BASE_URL = "https://api.football-data.org/v4"
+API_KEY_ENV = "FOOTBALL_DATA_API_KEY"
 logger = logging.getLogger(__name__)
+
+
+def api_key_configured() -> bool:
+    """Whether a football-data.org key is present in the environment.
+
+    The same question :attr:`FootballDataClient.is_configured` answers, for
+    callers that only want the answer and not a client -- constructing one
+    opens an httpx session that would then have to be closed. Read at the
+    point of use rather than cached, so a key that arrives with `.env` after
+    import is seen.
+    """
+    return bool(os.environ.get(API_KEY_ENV))
 
 
 class FootballDataClient:
@@ -21,7 +34,7 @@ class FootballDataClient:
 
     def __init__(self, timeout: float = 30.0) -> None:
         self.timeout = timeout
-        self.api_key = os.environ.get("FOOTBALL_DATA_API_KEY")
+        self.api_key = os.environ.get(API_KEY_ENV)
         self._http = httpx.AsyncClient(base_url=BASE_URL, timeout=self.timeout)
 
     async def close(self) -> None:
