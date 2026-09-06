@@ -16,6 +16,7 @@ from click.testing import CliRunner
 
 from fpl_cli.cli._league_recap_data import RecapReconciliationError
 from fpl_cli.cli._league_recap_history import (
+    _apply_recorded_standings,
     _pair_squads,
     HISTORY_WARNING_BACKFILL_MANAGER_UNREACHABLE,
     HISTORY_WARNING_BACKFILL_REPLAY_FAILED,
@@ -128,10 +129,15 @@ def _manager(
             entry[key] = kwargs[key]  # type: ignore[literal-required]
     if kwargs.get("total_points") is None:
         del entry["total_points"]
-    # Explicit None means "the collector could not derive this", which on the
-    # TypedDict is an absent key rather than a null -- how a draft replay
-    # arrives (`_assign_point_in_time_positions`). Distinguished from "not
-    # passed", which keeps the default above.
+    # "The collector could not derive this", which on the TypedDict is an
+    # absent key rather than a null -- how a draft replay arrives
+    # (`_assign_point_in_time_positions`). Only an explicit None drops these
+    # two: the `0` sentinel separates that from "not passed", which keeps the
+    # default set above. Deliberately *not* how `total_points` behaves on the
+    # line above -- with no sentinel it cannot tell the two apart, so it drops
+    # the key whenever the caller stays silent, and its default is dead for
+    # every call that does. Left alone because the tests that want a total
+    # already pass one explicitly.
     for key in ("overall_rank", "previous_rank"):
         if kwargs.get(key, 0) is None:
             del entry[key]  # type: ignore[literal-required]
@@ -3701,6 +3707,55 @@ class TestReplayKeepsRecordedStandings:
             w["code"] == HISTORY_WARNING_STANDINGS_REPAIRED for w in result.warnings
         )
 
+    async def test_a_gameweek_mixing_carried_and_derived_positions_stays_unranked(self):
+        """A position carried from the ledger and one re-derived from totals
+        are two different rankings, and draft's own standings break h2h ties on
+        points-for in a way re-deriving cannot. Filling only the nulls from a
+        fresh ranking therefore renumbers part of the cohort against the rest:
+        the cohort here would land two managers on 2 and nobody on 3, and
+        because both fields end up non-null the sweep never revisits it."""
+        store = self._store()
+        recorded = [
+            make_history_row(
+                season=SEASON, fpl_format="draft", league_id=42, gameweek=1,
+                manager_key=key, manager_name=name, gross_points=points,
+                league_position=position, total_points=points,
+            )
+            for key, name, points, position in ((10, "Alice", 200, 1), (30, "Charlie", 150, 2))
+        ]
+        store.append_rows(1, recorded)
+        store.append_rows(1, [
+            row.model_copy(update={
+                "league_position": None,
+                "total_points": None,
+                "captured_at": row.captured_at + timedelta(days=1),
+            })
+            for row in recorded
+        ])
+        # Bob has never had a position recorded, so only his total can be
+        # reconstructed -- he is the row a fresh ranking would fill.
+        store.append_rows(1, [make_history_row(
+            season=SEASON, fpl_format="draft", league_id=42, gameweek=1,
+            manager_key=20, manager_name="Bob", gross_points=180,
+        )])
+
+        await capture_recap_history(
+            self._draft(
+                2,
+                [_manager(name="Alice", entry_id=1, league_entry_id=10, gross_points=50)],
+                _cohort((10, "Alice", 1, 50, 250), (20, "Bob", 2, 30, 210),
+                        (30, "Charlie", 3, 20, 170)),
+            ),
+            season=SEASON, finished_gameweeks=[1, 2],
+        )
+
+        positions = {k: r.league_position for k, r in self._store().resolved_gameweek(1).items()}
+        # The two recorded positions are restored...
+        assert (positions[10], positions[30]) == (1, 2)
+        # ...and Bob is left unranked rather than handed a place from a
+        # ranking the other two were never part of.
+        assert positions[20] is None
+
     async def test_the_repair_writes_nothing_to_a_healthy_ledger(self):
         await capture_recap_history(self._live_gw1(), season=SEASON, finished_gameweeks=[1])
         before = self._store().gameweek_file(1).read_bytes()
@@ -3713,6 +3768,86 @@ class TestReplayKeepsRecordedStandings:
         assert not any(
             w["code"] == HISTORY_WARNING_STANDINGS_REPAIRED for w in result.warnings
         )
+
+    async def test_a_nulled_unknown_row_is_repaired_too(self):
+        """An unknown row captured live carries the standings position and
+        total for the same point in time (`_unknown_row`), so a replay that
+        superseded one with nulls is as repairable as any other row. Gating
+        the sweep on `capture_status is OK` would step over it."""
+        store = self._store()
+        recorded = make_history_row(
+            season=SEASON, fpl_format="draft", league_id=42, gameweek=1,
+            manager_key=20, manager_name="Bob", capture_status="unknown",
+            gross_points=40, league_position=2, total_points=40,
+        )
+        store.append_rows(1, [recorded])
+        store.append_rows(1, [recorded.model_copy(update={
+            "league_position": None,
+            "total_points": None,
+            "gross_points": None,
+            "captured_at": recorded.captured_at + timedelta(days=1),
+        })])
+
+        await capture_recap_history(
+            self._draft(
+                2,
+                [_manager(name="Alice", entry_id=1, league_entry_id=10, gross_points=50)],
+                _cohort((10, "Alice", 1, 50, 110), (20, "Bob", 2, 30, 70)),
+            ),
+            season=SEASON, finished_gameweeks=[1, 2],
+        )
+
+        restored = self._store().resolved_gameweek(1)[20]
+        assert (restored.league_position, restored.total_points) == (2, 40)
+        assert restored.capture_status is CaptureStatus.UNKNOWN
+
+    async def test_a_nulled_previous_position_is_repaired_too(self):
+        """`previous_league_position` is one of the three fields the carry
+        restores, so the sweep has to ask about it as well -- a gameweek whose
+        position and total both survived can still have lost it."""
+        store = self._store()
+        recorded = make_history_row(
+            season=SEASON, fpl_format="draft", league_id=42, gameweek=2,
+            manager_key=10, manager_name="Alice", gross_points=50,
+            league_position=1, previous_league_position=3, total_points=110,
+        )
+        store.append_rows(2, [recorded])
+        store.append_rows(2, [recorded.model_copy(update={
+            "previous_league_position": None,
+            "captured_at": recorded.captured_at + timedelta(days=1),
+        })])
+        assert self._store().resolved_gameweek(2)[10].previous_league_position is None
+
+        await capture_recap_history(
+            self._draft(
+                3,
+                [_manager(name="Alice", entry_id=1, league_entry_id=10, gross_points=20)],
+                _cohort((10, "Alice", 1, 20, 130)),
+            ),
+            season=SEASON, finished_gameweeks=[1, 2, 3],
+        )
+
+        assert self._store().resolved_gameweek(2)[10].previous_league_position == 3
+
+    async def test_the_start_gameweek_is_not_swept_for_its_absent_predecessor(self):
+        """`previous_league_position` is legitimately null at the league's
+        first scored gameweek, so asking about it there would re-attempt the
+        sweep on every run of every league forever."""
+        await capture_recap_history(self._live_gw1(), season=SEASON, finished_gameweeks=[1])
+        assert self._store().resolved_gameweek(1)[10].previous_league_position is None
+        before = self._store().gameweek_file(1).read_bytes()
+
+        # `_apply_recorded_standings` is reached once per gameweek the carry
+        # runs for, and once more for every gameweek the sweep decides is
+        # damaged. GW1 is the carry's alone.
+        with patch(
+            "fpl_cli.cli._league_recap_history._apply_recorded_standings",
+            side_effect=_apply_recorded_standings,
+        ) as applied:
+            await capture_recap_history(self._live_gw1(), season=SEASON, finished_gameweeks=[1])
+
+        assert self._store().gameweek_file(1).read_bytes() == before
+        assert applied.call_count == 1
 
     async def test_a_draft_gameweek_rebuilt_from_scratch_derives_its_positions(self):
         """The `--backfill-detail` hole: with the file deleted there is no

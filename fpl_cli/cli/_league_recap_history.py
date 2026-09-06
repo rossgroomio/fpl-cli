@@ -996,15 +996,25 @@ def _fill_draft_standings(
     gameweek's score -- so its positions come out of `gross_points` alone,
     with no earlier gameweek and no endpoint needed.
 
-    Positions are derived only once every row has a total. A league position
-    is a fact about the whole table: ranking just the managers who summed
-    cleanly would renumber everyone below whoever was left out, which is worse
-    than leaving the gameweek unranked.
+    A whole table is derived or none of it is, on two counts. Every row needs
+    a total, because ranking just the managers who summed cleanly would
+    renumber everyone below whoever was left out. And no row may already carry
+    a position, because `_assign_cohort_ranks` fills only the nulls: a cohort
+    where some positions were carried and the rest re-derived is ranked
+    against two different tables at once, and lands two managers on the same
+    place with nobody on the next. That is not a tie-shaped edge case -- draft
+    breaks a head-to-head tie on points-for, which a cumulative total cannot
+    reproduce, so a carried position and a re-derived one disagree in the
+    ordinary case. A null says "unknown", which every streak condition holds
+    across; a wrong position is recorded as fact and, with both fields then
+    non-null, never revisited.
     """
     _fill_draft_cumulative_totals(
         store, rows, gameweek=gameweek, start_gameweek=start_gameweek,
     )
-    if rows and all(row.total_points is not None for row in rows):
+    if rows and all(
+        row.total_points is not None and row.league_position is None for row in rows
+    ):
         _assign_cohort_ranks(rows)
 
 
@@ -1350,9 +1360,9 @@ def _repair_recorded_standings(
     Idempotent, and silent on a healthy ledger: once a position is restored
     the candidate reproduces the stored row and `append_rows` writes nothing.
     A gameweek that genuinely cannot be filled -- a draft run with a hole in
-    it, so no cumulative total exists -- is re-attempted each run and each
-    time writes nothing, which is the same bounded no-op an unrepairable
-    unknown row already costs.
+    it, or a manager nobody ever reached -- is re-attempted every run and each
+    time writes nothing. That costs one file parse, against the per-manager
+    fetch `_detailed_backfill` already re-attempts for the same gameweeks.
 
     Returns the gameweeks that gained a superseding row, like both backfill
     tiers, so the caller can invalidate their counters.
@@ -1365,15 +1375,29 @@ def _repair_recorded_standings(
             # Reported by `_warn_unreadable`, and never overwritten: a repair
             # that rewrote it would destroy whatever it still holds (R4).
             continue
-        # Gated on the resolved read, which is memoized, so a healthy gameweek
-        # costs nothing beyond the parse the coverage pass pays for anyway.
-        # An unknown row is excluded from the trigger: it has no total by
-        # definition (R19), and firing on one would re-attempt every gameweek
-        # holding an unreachable manager on every single run.
+        # Asked of exactly the fields the repair below restores, so the two
+        # cannot drift apart, and of every row rather than just the `OK` ones:
+        # an unknown row captured live carries a real position and total
+        # (`_unknown_row`), so a replay that superseded one with nulls is as
+        # repairable as any other row.
+        #
+        # `previous_league_position` is the one field null does not mean damage
+        # for: at the league's first scored gameweek there was no table to move
+        # from (issue #147). Asking about it there would fire this sweep on
+        # every run of every league forever, so it is asked through the same
+        # helper the collectors gate that field with -- the two cannot disagree
+        # about which gameweek that is.
+        #
+        # The read itself is memoized, so a healthy gameweek costs nothing
+        # beyond the parse the coverage pass above already paid for.
+        repairable = [
+            name for name in _CARRIED_STANDINGS_FIELDS
+            if name != "previous_league_position"
+            or _has_previous_gameweek(gameweek, start_gameweek)
+        ]
         if not any(
-            row.capture_status is CaptureStatus.OK
-            and (row.league_position is None or row.total_points is None)
-            for row in winners.values()
+            getattr(row, name) is None
+            for row in winners.values() for name in repairable
         ):
             continue
         try:
@@ -1381,9 +1405,14 @@ def _repair_recorded_standings(
         except LeagueHistoryError:
             continue
 
-        candidates = [
-            (winners[key], winners[key].model_copy(deep=True)) for key in sorted(winners)
-        ]
+        # Shallow: only the scalars in `_STANDINGS_ROW_FIELDS` are ever
+        # assigned on a candidate, so the nested squad, transfers and fines are
+        # shared with the stored row rather than rebuilt. This sweep runs on
+        # every recap for every target gameweek, and one league with a single
+        # unrepairable gameweek would otherwise deep-copy every manager's whole
+        # squad on every future run. Anything here that starts mutating a
+        # nested model in place needs the deep copy back.
+        candidates = [(winners[key], winners[key].model_copy()) for key in sorted(winners)]
         rows = [candidate for _, candidate in candidates]
         _apply_recorded_standings(rows, _earliest_recorded_standings(stored))
         if fpl_format == "draft":
