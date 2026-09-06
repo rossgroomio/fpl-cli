@@ -27,6 +27,12 @@ class FinesTeamPlayer(TypedDict):
     red_cards: int
     contributed: bool
     auto_sub_out: bool
+    # Stable cross-season element_code, so a fine that names a player records
+    # *which* player and not merely what he was called on the day. Optional
+    # because most callers only render the message and throw it away
+    # (`status`, `review`); the ledger's capture path is the one that stores
+    # a ruling for good, and it is the one that fills this in (issue #176).
+    code: NotRequired[int | None]
 
 
 class _RuleHandler(Protocol):
@@ -37,12 +43,27 @@ class _RuleHandler(Protocol):
 
 
 @dataclass(frozen=True)
+class FinePlayer:
+    """One player a fine names, held as a reference rather than as prose."""
+
+    name: str
+    code: int | None = None
+
+
+@dataclass(frozen=True)
 class FineResult:
     """Result of evaluating a single fine rule."""
 
     rule_type: str
     triggered: bool
     message: str
+    # The players `message` names, in the order it names them. Empty for every
+    # rule that names nobody -- `last-place` and `below-threshold` describe a
+    # score, not a squad. Carried so a caller that stores the ruling can store
+    # a reference to who it was about: a name embedded in prose is whatever
+    # the bootstrap called that player at ruling time, and stops being true
+    # the moment FPL renames him (issue #176).
+    players: tuple[FinePlayer, ...] = ()
 
 
 def _no_league_data(rule: FineRule) -> FineResult:
@@ -123,24 +144,36 @@ def _eval_last_place(
     )
 
 
+def red_card_offenders(team_data: list[FinesTeamPlayer]) -> list[FinesTeamPlayer]:
+    """The starting-XI players a red-card fine is ruled from, in squad order.
+
+    Split out of the handler below so the predicate has one home. The ledger
+    re-derives the offenders of an already-recorded fine from the squad on the
+    row, to repair a ruling written before player references were stored
+    (issue #176), and a second copy of "sent off, actually started, not subbed
+    out" that drifted from this one would rename the wrong players.
+    """
+    return [
+        p for p in team_data
+        if p.get("red_cards", 0) > 0 and p.get("contributed", True) and not p.get("auto_sub_out")
+    ]
+
+
 def _eval_red_card(
     rule: FineRule,
     league_data: FinesLeagueData | None,  # noqa: ARG001
     team_data: list[FinesTeamPlayer],
     use_net_points: bool,  # noqa: ARG001
 ) -> FineResult:
-    red_card_players = []
-    if team_data:
-        for p in team_data:
-            if p.get("red_cards", 0) > 0 and p.get("contributed", True) and not p.get("auto_sub_out"):
-                red_card_players.append(p["name"])
+    offenders = red_card_offenders(team_data or [])
 
-    if red_card_players:
-        names = ", ".join(red_card_players)
+    if offenders:
+        names = ", ".join(p["name"] for p in offenders)
         return FineResult(
             rule_type=rule.type,
             triggered=True,
             message=f"FINE TRIGGERED: Red card in your starting XI ({names}). {rule.penalty}.",
+            players=tuple(FinePlayer(name=p["name"], code=p.get("code")) for p in offenders),
         )
     return FineResult(rule_type=rule.type, triggered=False, message="No red card fine.")
 
@@ -203,9 +236,14 @@ class _Rule:
     needs_squad: bool
 
 
+# The one rule that names players rather than describing a score. Named here
+# so a caller reconstructing an old ruling's references can ask for it by
+# name instead of spelling the string out beside its own copy of the rule.
+RED_CARD_RULE_TYPE = "red-card"
+
 _RULE_HANDLERS: dict[str, _Rule] = {
     "last-place": _Rule(_eval_last_place, needs_squad=False),
-    "red-card": _Rule(_eval_red_card, needs_squad=True),
+    RED_CARD_RULE_TYPE: _Rule(_eval_red_card, needs_squad=True),
     "below-threshold": _Rule(_eval_below_threshold, needs_squad=False),
 }
 

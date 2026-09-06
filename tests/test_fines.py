@@ -93,6 +93,49 @@ class TestRedCard:
         results = evaluate_fines(_config(classic=[RED_CARD_RULE]), "classic", None, team)
         assert results[0].triggered is False
 
+    def test_the_fine_names_who_it_fined_as_references_not_only_as_prose(self):
+        """#176: the message spells out whatever the bootstrap called a player
+        at ruling time. A caller storing the ruling needs to know *which*
+        player that was, so the name can be restated after a rename."""
+        team: list[FinesTeamPlayer] = [
+            {"name": "Sávio", "red_cards": 1, "contributed": True, "auto_sub_out": False,
+             "code": 510_281},
+            {"name": "Calm", "red_cards": 0, "contributed": True, "auto_sub_out": False,
+             "code": 118_748},
+        ]
+        results = evaluate_fines(_config(classic=[RED_CARD_RULE]), "classic", None, team)
+        assert [(p.name, p.code) for p in results[0].players] == [("Sávio", 510_281)]
+
+    def test_a_pick_that_never_resolved_is_named_with_no_reference(self):
+        team: list[FinesTeamPlayer] = [
+            {"name": "Trent", "red_cards": 1, "contributed": True, "auto_sub_out": False},
+        ]
+        results = evaluate_fines(_config(classic=[RED_CARD_RULE]), "classic", None, team)
+        assert [(p.name, p.code) for p in results[0].players] == [("Trent", None)]
+
+    def test_the_offenders_are_named_in_squad_order(self):
+        team: list[FinesTeamPlayer] = [
+            {"name": "First", "red_cards": 1, "contributed": True, "auto_sub_out": False},
+            {"name": "Benched", "red_cards": 1, "contributed": False, "auto_sub_out": False},
+            {"name": "Second", "red_cards": 1, "contributed": True, "auto_sub_out": False},
+        ]
+        results = evaluate_fines(_config(classic=[RED_CARD_RULE]), "classic", None, team)
+        assert [p.name for p in results[0].players] == ["First", "Second"]
+        assert "(First, Second)" in results[0].message
+
+    def test_a_rule_that_names_nobody_records_no_players(self):
+        """`last-place` and `below-threshold` describe a score, not a squad --
+        so an empty list here is a real answer rather than a gap."""
+        league: FinesLeagueData = {
+            "user_gw_points": 20,
+            "worst_performers": [{"is_user": True, "name": "Alice", "points": 20, "gross_points": 20}],
+        }
+        results = evaluate_fines(
+            _config(classic=[LAST_PLACE_RULE, THRESHOLD_RULE]), "classic", league, [],
+        )
+        assert [r.triggered for r in results] == [True, True]
+        assert all(r.players == () for r in results)
+
 
 class TestBelowThreshold:
     def test_below_threshold_triggers_fine(self):

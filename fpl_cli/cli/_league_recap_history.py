@@ -24,9 +24,12 @@ from typing import TYPE_CHECKING, Any
 from fpl_cli.cli._context import error_console
 from fpl_cli.cli._fines import (
     COHORT_ONLY_RULE_TYPES,
+    RED_CARD_RULE_TYPE,
     FinesLeagueData,
+    FinesTeamPlayer,
     WorstPerformer,
     evaluate_rules,
+    red_card_offenders,
     rules_for_format,
 )
 from fpl_cli.cli._fines_config import FineRule, FinesConfig
@@ -36,7 +39,9 @@ from fpl_cli.cli._league_recap_data import (
     _recap_fine_message,
     derive_point_in_time_positions,
     raw_chip_name,
+    recap_fine_player_names,
     recap_manager_key,
+    restate_recap_fine_players,
 )
 from fpl_cli.cli._league_recap_types import (
     LeagueRecapData,
@@ -50,6 +55,7 @@ from fpl_cli.models.league_history import (
     LeagueHistoryRow,
     LedgerCaptaincy,
     LedgerFine,
+    LedgerFinePlayer,
     LedgerPlayer,
     LedgerTransaction,
     LedgerTransfer,
@@ -212,10 +218,18 @@ def _fines_for(
         key = fine.get("manager_key")
         matched = key == manager_key if key is not None else fine["manager_name"] == manager_name
         if matched:
+            # Absent stays `None` rather than collapsing into the `[]` that
+            # means "this ruling names nobody" -- a hand-built ruling said
+            # nothing either way, which is not the same answer (issue #176).
+            players = fine.get("players")
             out.append(LedgerFine(
                 manager_key=manager_key,
                 rule_type=fine["rule_type"],
                 message=fine["message"],
+                players=(
+                    None if players is None
+                    else [LedgerFinePlayer(name=p["name"], code=p["code"]) for p in players]
+                ),
             ))
     return out
 
@@ -746,6 +760,12 @@ def _apply_coarse_fines(
                 manager_key=row.manager_key,
                 rule_type=result.rule_type,
                 message=_recap_fine_message(result, row.manager_name),
+                # Always empty here and recorded as such: this tier can only
+                # rule what cohort points alone decide, and no such rule names
+                # a player.
+                players=[
+                    LedgerFinePlayer(name=p.name, code=p.code) for p in result.players
+                ],
             )
             for result in results if result.triggered
         ]
@@ -809,6 +829,107 @@ def _freeze_recorded_fines(
         if prior is not None:
             row.fines = list(prior.fines)
             row.fine_rules_evaluated = list(prior.fine_rules_evaluated or ())
+
+
+def _reconstructed_fine_players(
+    fine: LedgerFine, row: LeagueHistoryRow, recorded_names: list[str],
+) -> list[LedgerFinePlayer] | None:
+    """Who a ruling recorded before schema version 5 must have named.
+
+    Those rows carry the names as prose and nothing else, so a repair has to
+    re-derive the references -- from the row's own squad, through the same
+    predicate that ruled them (`red_card_offenders`). The prose is read only
+    to count what it names, never to decide who: parsing names back out of a
+    message is exactly the coupling this replaces.
+
+    Adopted only when the derivation names as many players as the message
+    does. A replay drops a pick today's bootstrap cannot resolve, so a squad
+    that has lost one would otherwise quietly un-name a player the gameweek
+    fined -- and a ruling is frozen at capture (`_freeze_recorded_fines`), so
+    narrowing one is not this pass's to do. Where the two disagree the row is
+    left exactly as recorded.
+    """
+    if fine.rule_type != RED_CARD_RULE_TYPE or not recorded_names:
+        return None
+    offenders = red_card_offenders([
+        FinesTeamPlayer(
+            name=p.name,
+            red_cards=p.red_cards,
+            contributed=p.contributed,
+            auto_sub_out=p.auto_sub_out,
+            code=p.code,
+        )
+        for p in row.squad
+    ])
+    if len(offenders) != len(recorded_names):
+        return None
+    return [LedgerFinePlayer(name=p["name"], code=p.get("code")) for p in offenders]
+
+
+def _repair_fine_identity(rows: list[LeagueHistoryRow]) -> None:
+    """Restate the players a recorded fine names from the row's own squad.
+
+    A fine's message embeds player names as free text resolved against the
+    bootstrap that ruled it. A replay rules against *today's* bootstrap, so a
+    since-renamed player is stored under his current name in `fines` and,
+    thanks to `_carry_recorded_identity`, under the name the gameweek actually
+    recorded in `squad` -- the same row disagreeing with itself (issue #176).
+    Nothing reads the message back today, but the ledger is the only surviving
+    copy of a gameweek once the API collapses it in July, so a wrong record is
+    the whole defect.
+
+    Runs *after* `_freeze_recorded_fines`, which is what makes it a repair
+    rather than a prevention. The freeze carries a recorded ruling forward
+    verbatim, so a message written wrong once becomes the resolved winner and
+    is frozen wrong on every replay afterwards; a correction applied before it
+    would simply be overwritten by the mistake.
+
+    Only who a ruling names ever moves. Which rule triggered, which manager it
+    was ruled against and what it costs them are untouched -- the ruling stays
+    frozen, and this restates the identity inside it exactly as the squad carry
+    restates a pick's.
+
+    Rebuilds rather than mutates: `_freeze_recorded_fines` carries the *store's*
+    own `LedgerFine` objects onto a row by reference, and `resolved_gameweek`
+    memoizes what it hands out, so editing one in place would rewrite the
+    ledger's cached view of the gameweek it was read from.
+    """
+    for row in rows:
+        if not row.fines:
+            continue
+        squad_names = {p.code: p.name for p in row.squad if p.code is not None}
+        repaired: list[LedgerFine] = []
+        for fine in row.fines:
+            players = fine.players
+            # What the message itself spells out. Known for certain on a row
+            # that stored its references -- the message was written from them
+            # -- and read back off the prose only for one that did not.
+            in_message = (
+                [p.name for p in players] if players is not None
+                else recap_fine_player_names(fine.message)
+            )
+            if players is None:
+                players = _reconstructed_fine_players(fine, row, in_message)
+            if not players:
+                # Either the ruling names nobody -- which `last-place` and
+                # `below-threshold` genuinely do not -- or it predates the
+                # references and could not be reconstructed safely.
+                repaired.append(fine)
+                continue
+            named = [
+                LedgerFinePlayer(
+                    name=squad_names.get(p.code, p.name) if p.code is not None else p.name,
+                    code=p.code,
+                )
+                for p in players
+            ]
+            repaired.append(fine.model_copy(update={
+                "players": named,
+                "message": restate_recap_fine_players(
+                    fine.message, in_message, [p.name for p in named],
+                ),
+            }))
+        row.fines = repaired
 
 
 def _first_recorded(rows: list[LeagueHistoryRow]) -> dict[int, LeagueHistoryRow]:
@@ -1326,6 +1447,9 @@ async def _detailed_backfill(
                 store, rows, gameweek=gameweek, start_gameweek=start_gameweek,
             )
         _freeze_recorded_fines(store, gameweek, rows)
+        # After the freeze, never before it: a ruling carried forward verbatim
+        # carries its player names too, and those are what this puts right.
+        _repair_fine_identity(rows)
         try:
             written = store.append_rows(gameweek, rows)
         except LeagueHistoryError as exc:
@@ -1752,6 +1876,12 @@ async def capture_recap_history(
         # (issue #223). A gameweek still live is skipped because a fresh
         # position there genuinely supersedes the last one.
         _carry_recorded_standings(store, data["gameweek"], rows, warnings=warnings)
+        # And the same gate again: this run ruled the fines against the same
+        # drifted bootstrap, so they name players by today's names on a row
+        # whose squad the carry above has just put back (issue #176). While
+        # the gameweek is still live there is no drift to correct -- the
+        # squad and the ruling came from the same fetch minutes ago.
+        _repair_fine_identity(rows)
     if fpl_format == "draft" and rows:
         _fill_draft_standings(
             store, rows,

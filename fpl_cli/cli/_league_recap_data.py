@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol
@@ -54,6 +55,7 @@ from fpl_cli.cli._league_recap_types import (
     RecapAwardEntry,
     RecapAwards,
     RecapDraftTransaction,
+    RecapFinePlayer,
     RecapFineResult,
     RecapManagerEntry,
     RecapManagerPlayer,
@@ -834,6 +836,55 @@ def _compute_standings_movement(
 # ---------------------------------------------------------------------------
 
 
+# The parenthesised player list a red-card fine's message carries, and the
+# three functions below are the only code that knows its shape: one writes it,
+# one reads it back, one restates it. Keeping them together is what lets the
+# ledger correct a stored ruling's names without knowing the format at all
+# (issue #176) -- a change to the message reaches all three in one edit.
+#
+# Anchored on the prefix rather than matching any parenthesised group, so a
+# penalty that carries its own brackets ("Pay the pot (cash)") is never
+# mistaken for the player list. A name that carries brackets does not match at
+# all, which reads back as "this message names nobody" and leaves the row
+# exactly as recorded -- the safe direction to fail in.
+_RED_CARD_PREFIX = "Red card in starting XI"
+_FINE_PLAYER_LIST = re.compile(re.escape(_RED_CARD_PREFIX) + r" \(([^()]*)\)")
+
+
+def recap_fine_player_names(message: str) -> list[str]:
+    """The players a recap fine message names, in the order it names them.
+
+    Empty for every message that names nobody, which is most of them: only a
+    red-card ruling lists players. Read back only to size up a ruling recorded
+    before the names were stored as references -- never to decide what the
+    corrected names should be, which comes from the squad.
+    """
+    match = _FINE_PLAYER_LIST.search(message)
+    if match is None:
+        return []
+    return [name.strip() for name in match.group(1).split(",") if name.strip()]
+
+
+def restate_recap_fine_players(
+    message: str, previous: Sequence[str], names: Sequence[str],
+) -> str:
+    """The same message with the players `previous` names replaced by `names`.
+
+    An exact swap of the list the caller says is in there, not a pattern
+    applied to whatever it finds: the caller already holds the names the
+    message was written from, so nothing has to be guessed about the prose
+    around them. A message that does not contain that list is returned
+    untouched.
+
+    Only the names move. The rule it describes, the penalty it carries and the
+    manager it was ruled against are all left alone -- restating who a ruling
+    was about is not re-ruling it.
+    """
+    if not previous or not names:
+        return message
+    return message.replace(f"({', '.join(previous)})", f"({', '.join(names)})", 1)
+
+
 def _recap_fine_message(result: FineResult, manager_name: str) -> str:
     """Generate a clean recap-specific fine message (no 'FINE TRIGGERED' prefix)."""
     # Extract the penalty text (after the last period-space in the original message)
@@ -846,11 +897,12 @@ def _recap_fine_message(result: FineResult, manager_name: str) -> str:
     if result.rule_type == "last-place":
         return f"Finished last in the gameweek. {penalty}" if penalty else "Finished last in the gameweek."
     if result.rule_type == "red-card":
-        # Extract player names from original message
-        red_names = ""
-        if "(" in result.message and ")" in result.message:
-            red_names = result.message.split("(")[1].split(")")[0]
-        base = f"Red card in starting XI ({red_names})"
+        # The handler's own list of who it fined, not a re-read of the prose
+        # it wrote. Recovering the names by splitting the handler's message
+        # apart was the only reason this had to be prose all the way down --
+        # with the list in hand the ruling can carry references too, which is
+        # what survives a rename (issue #176).
+        base = f"{_RED_CARD_PREFIX} ({', '.join(p.name for p in result.players)})"
         return f"{base}. {penalty}" if penalty else f"{base}."
     if result.rule_type == "below-threshold":
         return f"Scored below threshold. {penalty}" if penalty else "Scored below threshold."
@@ -969,6 +1021,9 @@ def evaluate_league_fines(
                     red_cards=p["red_cards"],
                     contributed=p["contributed"],
                     auto_sub_out=p["auto_sub_out"],
+                    # Carried so a triggered ruling can record *which* player
+                    # it named, not just today's spelling of him (issue #176).
+                    code=p["code"],
                 )
                 for p in m["squad"]
             ]
@@ -986,6 +1041,9 @@ def evaluate_league_fines(
                         manager_key=recap_manager_key(m),
                         rule_type=r.rule_type,
                         message=msg,
+                        players=[
+                            RecapFinePlayer(name=p.name, code=p.code) for p in r.players
+                        ],
                     ))
             ruled.add(recap_manager_key(m))
 

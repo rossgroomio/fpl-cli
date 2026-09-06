@@ -152,6 +152,16 @@ class RecapAwards(TypedDict, total=False):
     waiver_disaster: RecapAwardEntry
 
 
+class RecapFinePlayer(TypedDict):
+    """One player a fine names, carried alongside the prose that names him."""
+
+    name: str
+    # Stable cross-season element_code, or None where the pick never resolved
+    # to one. The message spells out whatever the player was called when the
+    # fine was ruled; this is what still identifies him after a rename.
+    code: int | None
+
+
 class RecapFineResult(TypedDict):
     """A fine triggered for a specific manager."""
 
@@ -162,6 +172,11 @@ class RecapFineResult(TypedDict):
     manager_key: NotRequired[int]
     rule_type: str
     message: str
+    # Who `message` names. Present and empty is a real answer -- a `last-place`
+    # or `below-threshold` ruling names nobody. Absent means the caller built
+    # this by hand and said nothing either way, which the ledger records as
+    # unknown rather than as "names nobody" (issue #176).
+    players: NotRequired[list[RecapFinePlayer]]
 
 
 class RecapStandingsEntry(TypedDict):
