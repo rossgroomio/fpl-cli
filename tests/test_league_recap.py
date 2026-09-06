@@ -2241,12 +2241,17 @@ class TestLeagueRecapCommandStopCondition:
         client.get_teams = AsyncMock(return_value=[])
         client.get_gameweek_live = AsyncMock(return_value={"elements": []})
         client.get_fixtures = AsyncMock(return_value=[])
-        client.get_gameweeks = AsyncMock(return_value=[{"id": 5, "finished": True}])
+        # GW5 finished and still current: the live capture the reconciliation
+        # is written for, and the only state in which it runs at all.
+        client.get_gameweeks = AsyncMock(
+            return_value=[{"id": 5, "finished": True, "is_current": True}]
+        )
+        resolved = {"gw": 5, "gw_data": None, "api_current_gw_id": 5}
 
         with (
             patch("fpl_cli.cli.league_recap.get_settings", return_value={"fpl": {"classic_league_id": 1}}),
             patch("fpl_cli.api.fpl.FPLClient", return_value=client),
-            patch("fpl_cli.cli.review._review_resolve_gw", AsyncMock(return_value={"gw": 5})),
+            patch("fpl_cli.cli.review._review_resolve_gw", AsyncMock(return_value=resolved)),
             patch(
                 "fpl_cli.cli._league_recap_data.collect_classic_recap_data",
                 AsyncMock(side_effect=RecapReconciliationError("numbers disagree")),

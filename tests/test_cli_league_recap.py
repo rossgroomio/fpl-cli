@@ -648,6 +648,12 @@ def _fpl_client(gw: int = 5) -> MagicMock:
     return client
 
 
+def _current_gameweek_id(client: MagicMock) -> int | None:
+    """The id `_review_resolve_gw` would report for this client's payload."""
+    gameweeks = client.get_gameweeks.return_value
+    return next((g["id"] for g in gameweeks if g.get("is_current")), None)
+
+
 def _invoke_recap(
     collected: LeagueRecapData, args: list[str] | None = None, *,
     client: MagicMock | None = None,
@@ -667,6 +673,15 @@ def _invoke_recap(
     derived here and nowhere else (issue #262).
     """
     client = client or _fpl_client()
+    # The stubbed resolver answers `api_current_gw_id` off the same gameweeks
+    # payload the real one reads (both take it from the cached bootstrap), so
+    # a test sets `is_current` in one place and cannot accidentally pair a
+    # payload with a current gameweek that contradicts it.
+    resolved = {
+        "gw": gw,
+        "gw_data": None,
+        "api_current_gw_id": _current_gameweek_id(client),
+    }
     collector = collector or (
         AsyncMock(side_effect=[collected, *replays])
         if replays else AsyncMock(return_value=collected)
@@ -677,7 +692,7 @@ def _invoke_recap(
             return_value=settings or {"fpl": {"classic_league_id": 42}},
         ),
         patch("fpl_cli.api.fpl.FPLClient", return_value=client),
-        patch("fpl_cli.cli.review._review_resolve_gw", AsyncMock(return_value={"gw": gw})),
+        patch("fpl_cli.cli.review._review_resolve_gw", AsyncMock(return_value=resolved)),
         patch("fpl_cli.cli._league_recap_data.collect_classic_recap_data", collector),
     ):
         from fpl_cli.cli.league_recap import league_recap_command
@@ -3397,6 +3412,7 @@ class TestLiveGameweekDerivation:
             if w["code"] == RECAP_WARNING_STANDINGS_MOVED_ON
         ]
         assert len(matching) == 1
+        assert "Gameweek 6 has started" in matching[0]["message"]
         assert "GW5" in matching[0]["message"]
 
     def test_a_live_gameweek_raises_no_moved_on_warning(self):

@@ -145,6 +145,11 @@ def league_recap_command(
                     emit_json_error("league-recap", "Could not resolve a gameweek to recap.", file=stdout)
                 return
             gw: int = gw_result["gw"]
+            # Taken from the resolver rather than re-scanned here: it already
+            # found the current gameweek, off the same cached bootstrap
+            # payload, to decide which gameweek to recap. One source keeps
+            # that decision and the liveness test below from disagreeing.
+            api_current_gw_id: int | None = gw_result["api_current_gw_id"]
 
             console.print(Panel.fit(f"[bold blue]Gameweek {gw} League Recap[/bold blue]"))
 
@@ -211,24 +216,19 @@ def league_recap_command(
             # asks before it shows a league table for a gameweek
             # (`_review_classic_league`'s `is_historical_review`).
             finished_gws = finished_gameweek_ids(gameweeks)
-            current_gw_id = next((g["id"] for g in gameweeks if g.get("is_current")), None)
-            is_live_gw = (
-                bool(finished_gws) and gw == max(finished_gws) and gw == current_gw_id
-            )
+            is_max_finished = bool(finished_gws) and gw == max(finished_gws)
+            is_live_gw = is_max_finished and gw == api_current_gw_id
             # Said out loud only where the user asked for the latest gameweek
             # and the season moved past it -- an explicitly older `-g` is a
             # replay by intent and needs no explaining. Without this the
             # degradation is silent, and for draft it is visible (cumulative
             # totals and positions fall back to the ledger, or go unavailable).
             standings_moved_on = (
-                bool(finished_gws)
-                and gw == max(finished_gws)
-                and current_gw_id is not None
-                and gw != current_gw_id
+                is_max_finished and api_current_gw_id is not None and gw != api_current_gw_id
             )
             if standings_moved_on:
                 error_console.print(
-                    f"[yellow]Gameweek {current_gw_id} has started, so the league table now"
+                    f"[yellow]Gameweek {api_current_gw_id} has started, so the league table now"
                     f" describes it rather than GW{gw}. Recapping GW{gw} from each manager's"
                     " own gameweek history instead -- run the recap before the next deadline"
                     " for the fullest capture.[/yellow]"
@@ -522,7 +522,7 @@ def league_recap_command(
                             [{
                                 "code": RECAP_WARNING_STANDINGS_MOVED_ON,
                                 "message": (
-                                    f"Gameweek {current_gw_id} has started, so the league"
+                                    f"Gameweek {api_current_gw_id} has started, so the league"
                                     f" table describes it rather than GW{gw}. GW{gw} was"
                                     " recapped from each manager's own gameweek history;"
                                     " figures that only the live table can supply are"
