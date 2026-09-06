@@ -529,7 +529,7 @@ fpl_cli/
 │   ├── _league_recap_*.py        # League recap helpers & types (`_league_recap_history.py` orchestrates capture: builds ledger rows, corrects previous league position from recorded rows, runs the two-tier backfill including the coarse tier's partial fine ruling, keeps the name/club/position a replayed gameweek already recorded rather than restamping it from today's bootstrap (`_carry_recorded_identity`, reading the earliest recorded line rather than the resolved winner so an already-restamped gameweek is repaired), and returns the notes pack and season fine tally the console, report, prompt and JSON payload all read)
 │   ├── _fines.py / _fines_config.py  # League fines system, including the cohort-only/needs-a-squad rule split the coarse ledger tier narrows by
 │   ├── league_fines.py           # `league-fines`: season fine table read straight off the ledger, no network
-│   ├── doctor_providers.py       # Live provider probes for `doctor --providers` (shape/volume/join checks; the Core-Insights per-GW probe runs the real parsers, so it cannot pass a file the runtime reads as zero records)
+│   ├── doctor_providers.py       # Live provider probes for `doctor --providers` (shape/volume/join checks; the Core-Insights per-GW probe runs the real parsers, so it cannot pass a file the runtime reads as zero records, and the Understat name-join probe runs the real matcher, so a club resolving cannot stand in for its players joining)
 │   └── [command files]           # One file per command/group
 ├── agents/
 │   ├── base.py                   # Agent ABC, AgentResult, AgentStatus
@@ -543,7 +543,7 @@ fpl_cli/
 │   ├── dataset_fetcher.py         # DatasetFetcher (disk cache with ETag/TTL for GitHub CSVs)
 │   ├── fpl.py                    # FPLClient (main API, caches bootstrap-static)
 │   ├── fpl_draft.py              # FPLDraftClient + match_draft_to_main()
-│   ├── understat.py              # UnderstatClient + match_fpl_to_understat(), understat_club_rows() (the club gate the matcher and `fpl doctor --providers` share), understat_join_warnings(), matches_in_season() (the season guard behind get_team())
+│   ├── understat.py              # UnderstatClient + match_fpl_to_understat(), understat_club_rows() (the club gate the matcher and `fpl doctor --providers` share), understat_join_warnings(), understat_name_join_stats() (the name-level join rate, the signal a silently unmatched player had none of), decode_entities() (Understat escapes its payload for HTML, so it is decoded once at the fetch boundary), matches_in_season() (the season guard behind get_team())
 │   ├── historical_types.py       # Shared dataclasses (SeasonHistory — incl. the four optional per-90 DEF/GK rates only Core-Insights publishes, PlayerProfile, GwTrendProfile) + compute_trend/compute_acceleration/compute_reliability
 │   ├── vaastav.py                # VaastavClient (the two oldest seasons of the window via DatasetFetcher)
 │   ├── core_insights.py          # CoreInsightsClient (last season + the season in progress via DatasetFetcher)

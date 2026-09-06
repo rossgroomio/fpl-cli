@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import json
 import logging
 import re
@@ -41,6 +42,21 @@ TEAM_NAME_MAP = {
     "Spurs": "Tottenham",
     "Sunderland": "Sunderland",
 }
+
+# Characters that stand in for an apostrophe or a hyphen inside a name and so
+# have to separate its words rather than vanish. FPL serves the ASCII pair
+# (`O'Shea` is U+0027); the rest are what an editorial pipeline serves in their
+# place, and decoding an entity is exactly how one arrives -- `&rsquo;` and
+# `&#8217;` both decode to U+2019, not U+0027 (#263 review).
+#
+# Deleting one instead of separating on it is not a smaller failure than the
+# entity was: `Dara O’Shea` collapses to the single word `oshea`, which fails
+# the exact tier, fails all-words (FPL's `o` is not among its words) and fails
+# prefix (nothing starts with `shea`) -- the same silent no-match, for the same
+# player. `strip_diacritics` cannot help: U+2019 has no decomposition and is
+# not a combining mark, so it reaches the punctuation rule intact.
+_NAME_SEPARATORS = ".-'\u2019\u2018\u02bc\u00b4`"
+_NAME_SEPARATOR_RE = re.compile(f"[{re.escape(_NAME_SEPARATORS)}]")
 
 # Map Understat position tokens to FPL positions
 POSITION_MAP = {
@@ -124,6 +140,38 @@ def matches_in_season(matches: list[dict[str, Any]], season: str) -> list[dict[s
     return [m for m, y in classified if y == year or (y is None and keep_undated)]
 
 
+def decode_entities(value: Any) -> Any:
+    """Undo Understat's HTML escaping throughout a freshly decoded payload.
+
+    Understat serves its page data as JSON escaped for the HTML it is embedded
+    in rather than for JSON, so an apostrophe arrives as ``&#039;`` and
+    ``Dara O'Shea`` reads as ``Dara O&#039;Shea`` (#263). Nothing downstream
+    expected that: the name is displayed verbatim, and `_normalise` laundered
+    the entity into the digit token ``o039shea``, which can never match FPL's
+    plain ``O'Shea`` -- so every apostrophe name silently lost npxG, xGChain
+    and the quality and value scores built on them.
+
+    Decoded here, at the one boundary a payload enters through, rather than
+    field by field wherever a name is read: the escaping is not confined to one
+    key (``player_name`` and ``team_title`` both carry it, and per-match rows
+    carry club names of their own), and a per-field fix leaves the next
+    escaped field to be found the same way this one was. Walking the structure
+    keeps that promise for keys nobody has looked at yet.
+
+    Unescaping is only safe *after* JSON parsing, never on the response text:
+    a ``&quot;`` in the raw body would decode into a quote inside a JSON
+    string and break the parse.
+    """
+    if isinstance(value, str):
+        return html.unescape(value)
+    if isinstance(value, dict):
+        # Keys are Understat's field names, not served text -- left alone.
+        return {key: decode_entities(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [decode_entities(item) for item in value]
+    return value
+
+
 class UnderstatClient:
     """Client for fetching data from Understat.
 
@@ -162,7 +210,7 @@ class UnderstatClient:
             referer: Referer URL for the request.
 
         Returns:
-            Parsed JSON response.
+            Parsed JSON response, with Understat's HTML escaping undone.
         """
         headers = {
             "X-Requested-With": "XMLHttpRequest",
@@ -171,7 +219,7 @@ class UnderstatClient:
         }
         response = await self._http.get(f"/{endpoint}", headers=headers)
         response.raise_for_status()
-        return response.json()
+        return decode_entities(response.json())
 
     async def _get_html(self, endpoint: str) -> str:
         """Fetch HTML from Understat.
@@ -186,21 +234,24 @@ class UnderstatClient:
         response.raise_for_status()
         return response.text
 
-    def _extract_json_data(self, html: str, var_name: str) -> Any:
+    def _extract_json_data(self, raw_html: str, var_name: str) -> Any:
         """Extract JSON data embedded in HTML.
 
         Understat embeds data as JavaScript variables in the page.
 
         Args:
-            html: HTML content.
+            raw_html: HTML content. Named around the `html` module this
+                function's sibling now decodes with, so reaching for
+                `html.unescape` in here does not silently resolve to the
+                parameter.
             var_name: JavaScript variable name to extract.
 
         Returns:
-            Parsed JSON data.
+            Parsed JSON data, with Understat's HTML escaping undone.
         """
         # Pattern matches: var varName = JSON.parse('...')
         pattern = rf"var\s+{var_name}\s*=\s*JSON\.parse\('([^']+)'\)"
-        match = re.search(pattern, html)
+        match = re.search(pattern, raw_html)
 
         if not match:
             return None
@@ -208,7 +259,9 @@ class UnderstatClient:
         # The data is escaped, need to decode it
         encoded_data = match.group(1)
         decoded_data = encoded_data.encode().decode("unicode_escape")
-        return json.loads(decoded_data)
+        # Same escaping as the XHR API serves, decoded the same way (#263):
+        # the two paths carry the same payload and must not disagree about it.
+        return decode_entities(json.loads(decoded_data))
 
     async def get_league_players(self, season: str | None = None) -> list[dict[str, Any]]:
         """Get all players in the Premier League with their stats.
@@ -420,9 +473,20 @@ def _normalise(text: str) -> str:
     Cached because the cross-club fallback rescans every Understat row for
     each player the club gate matched nothing for, so a full-league
     enrichment pass normalises the same few hundred names over and over.
+
+    HTML entities are decoded first, and before the punctuation rules rather
+    than after: those rules cannot undo an entity, they launder it. ``&#039;``
+    lost its ``&`` and ``#`` and kept its digits, so ``Dara O&#039;Shea``
+    normalised to ``dara o039shea`` -- a token indistinguishable from a real
+    name (#263). `decode_entities` already decodes everything arriving from
+    Understat; this repeats it because a name also reaches here from FPL,
+    from a caller's own dict, and from the historical providers, and a
+    matcher that can only be trusted on pre-decoded input is one call site
+    away from the same silent miss.
     """
+    text = html.unescape(text)
     text = strip_diacritics(text).lower()
-    text = re.sub(r"[.\-']", " ", text)  # Name separators → spaces
+    text = _NAME_SEPARATOR_RE.sub(" ", text)  # Name separators → spaces
     text = re.sub(r"[^a-z0-9 ]", "", text)  # Strip remaining punctuation
     return re.sub(r" +", " ", text).strip()  # Collapse whitespace
 
@@ -494,6 +558,12 @@ _unmatched_team_warned: set[tuple[str, str | None]] = set()
 # Warning code the join-drop tripwire travels under in a JSON envelope's
 # ``metadata.warnings``.
 UNDERSTAT_TEAM_UNMATCHED = "understat_team_unmatched"
+
+# Name-level join tally for this run: how many players the pool was expected to
+# carry the matcher was asked about, and which of them it found nothing for.
+# Reset by `reset_understat_join_warnings` alongside the club record.
+_name_join_attempts = 0
+_name_join_misses: list[str] = []
 
 
 def _report_unmatched_team(
@@ -568,7 +638,7 @@ def understat_join_warnings() -> list[dict[str, str]]:
 
 
 def reset_understat_join_warnings() -> None:
-    """Forget every join-drop tripwire recorded so far.
+    """Forget every join-drop tripwire and name-join tally recorded so far.
 
     The record is process-global so the warning fires once rather than once per
     player, which makes this the hook that scopes it to a run instead. The CLI
@@ -576,7 +646,82 @@ def reset_understat_join_warnings() -> None:
     surface in the next command's `metadata.warnings`; anything driving the
     agents directly, in a process that outlives one pass, owns the same call.
     """
+    global _name_join_attempts
+
     _unmatched_team_warned.clear()
+    _name_join_attempts = 0
+    _name_join_misses.clear()
+
+
+def _record_name_join(
+    fpl_name: str,
+    fpl_team: str,
+    fpl_minutes: int | None,
+    match: dict[str, Any] | None,
+    season_label: str | None,
+) -> None:
+    """Tally one name-level join attempt, and log the misses.
+
+    The club tripwire catches a whole club dropping out of the pool; nothing
+    counted a player the pool *does* carry a club for and still failed to
+    match. #263 was invisible for exactly that reason -- three players lost
+    their xG enrichment with no warning anywhere, no null outside the output
+    itself, and a `fpl doctor --providers` that stayed green because it only
+    checks whether clubs resolve.
+
+    A few percent of misses is normal (players genuinely absent from
+    Understat, cameos it has not ingested, a name the two sources spell
+    differently), so this is a debug line carrying a running rate rather than
+    a warning: it is a jump in the rate that means something, not any single
+    miss.
+
+    Counted only for players FPL says have played, in the season in progress,
+    whose club the pool carries:
+
+    - a minuteless player is legitimately absent from Understat's pool, and
+      counting them would bury the signal under several hundred rows;
+    - a past season's pool cannot carry a club promoted since, so its misses
+      are expected by definition (see `_report_unmatched_team`);
+    - a club nothing carries already reports itself once, and counting it here
+      would restate one club gap as twenty name misses.
+    """
+    global _name_join_attempts
+
+    if season_label is not None or not fpl_minutes:
+        return
+
+    _name_join_attempts += 1
+    if match is not None:
+        return
+
+    _name_join_misses.append(f"{fpl_name} ({fpl_team}, {fpl_minutes}m)")
+    logger.debug(
+        "No Understat row matched %s (%s, %dm) — %d of %d FPL players with minutes "
+        "unmatched so far this run",
+        fpl_name,
+        fpl_team,
+        fpl_minutes,
+        len(_name_join_misses),
+        _name_join_attempts,
+    )
+
+
+def understat_name_join_stats() -> dict[str, Any]:
+    """This run's name-level join tally: how much of the pool actually joined.
+
+    ``attempted`` counts the players the live pool is expected to cover --
+    FPL says they have played, and Understat carries their club -- so the rate
+    is against the population a miss is surprising in, not against every
+    registered player. ``unmatched`` names them in the order they were tried.
+    """
+    missed = len(_name_join_misses)
+    return {
+        "attempted": _name_join_attempts,
+        "matched": _name_join_attempts - missed,
+        "missed": missed,
+        "miss_rate": round(missed / _name_join_attempts, 4) if _name_join_attempts else 0.0,
+        "unmatched": list(_name_join_misses),
+    }
 
 
 def _minutes_ratio(fpl_minutes: int | None, player: dict[str, Any]) -> float | None:
@@ -772,19 +917,21 @@ def match_fpl_to_understat(
     if not team_seen and understat_players:
         _report_unmatched_team(fpl_team, fpl_team_mapped, season_label)
 
-    if best_match is not None:
-        return best_match
-
     if not team_seen:
         # Nothing carries this club, so every one of its players fails here
         # identically — a TEAM_NAME_MAP gap or a roster Understat has yet to
         # ingest, not a transfer. Sending 20 players off to guess across the
         # league would turn one legible warning into 20 silent strangers'
-        # rows, so the whole club fails together as it did before #234.
+        # rows, so the whole club fails together as it did before #234. The
+        # name-level tally skips it for the same reason.
         return None
 
-    # The club resolved but carries no name match, which is what a player who
-    # has moved and not yet played for the new club looks like.
-    return _match_across_clubs(
-        fpl_name_norm, fpl_words, understat_players, fpl_position, fpl_minutes
-    )
+    if best_match is None:
+        # The club resolved but carries no name match, which is what a player
+        # who has moved and not yet played for the new club looks like.
+        best_match = _match_across_clubs(
+            fpl_name_norm, fpl_words, understat_players, fpl_position, fpl_minutes
+        )
+
+    _record_name_join(fpl_name, fpl_team, fpl_minutes, best_match, season_label)
+    return best_match
