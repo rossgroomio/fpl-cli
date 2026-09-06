@@ -20,7 +20,7 @@ import dataclasses
 import json
 import os
 from collections.abc import Awaitable, Callable
-from datetime import datetime
+from datetime import date, datetime
 from enum import StrEnum
 from typing import Any
 
@@ -41,7 +41,7 @@ from fpl_cli.paths import (
     user_data_dir,
     user_data_file,
 )
-from fpl_cli.season import get_season_year, season_label
+from fpl_cli.season import get_season_year, previous_season_label, season_label
 from fpl_cli.utils.teams import describe_team_set_mismatch
 
 
@@ -577,9 +577,12 @@ def _quality_ceilings_check() -> CheckResult:
     )
 
     name = "quality_ceilings"
-    newest_completed = season_label(get_season_year() - 1)
+    # One read of the clock for both, so the label reported and the verdict
+    # cannot straddle a July cutover that lands between two calls.
+    today = date.today()
+    newest_completed = previous_season_label(today)
     try:
-        behind = calibration_seasons_behind()
+        behind = calibration_seasons_behind(today)
     except ValueError:
         # A label the season helpers cannot parse -- only reachable by hand
         # editing the generated block, since the write path refuses one. It is

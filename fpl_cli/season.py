@@ -84,6 +84,34 @@ def season_label(year: int | None = None) -> str:
     return f"{y}-{(y + 1) % 100:02d}"
 
 
+def previous_season_year(today: date | None = None) -> int:
+    """Start year of the newest *completed* season.
+
+    One expression, in one place, because "the season before this one" is
+    asked from several directions: the player prior reads last season's
+    pts/90, the calibration script defaults to calibrating against it, and
+    `fpl doctor` measures the frozen quality anchors against it. Each had
+    re-typed `get_season_year() - 1` locally.
+
+    The July cutover makes this exact rather than approximate: from the
+    cutover onwards the season in progress is the current one, so the one
+    before it has finished and nothing newer can have been measured.
+
+    >>> previous_season_year(date(2026, 9, 1))
+    2025
+    """
+    return get_season_year(today) - 1
+
+
+def previous_season_label(today: date | None = None) -> str:
+    """Hyphenated label of the newest completed season.
+
+    >>> previous_season_label(date(2026, 9, 1))
+    '2025-26'
+    """
+    return season_label(previous_season_year(today))
+
+
 def season_label_range(year: int | None = None, count: int = 4) -> tuple[str, ...]:
     """Return a trailing window of season identifiers in hyphenated format.
 
@@ -104,9 +132,18 @@ def is_season_label(name: str) -> bool:
     directory a user pointed at last season apart from an ordinary directory
     that merely contains digits.
 
+    Non-string input answers False rather than raising: the annotation says
+    `str`, but the callers that lean on this are reading names off disk or out
+    of a generated block, and `season_start_year` promises them a ValueError
+    for anything that is not a label. An AttributeError out of `.partition`
+    would break that promise in the one place it matters -- a health check
+    reporting the bad value instead of dying on it.
+
     >>> is_season_label("2026-27"), is_season_label("2026-28"), is_season_label("reports")
     (True, False, False)
     """
+    if not isinstance(name, str):
+        return False
     year, _, _ = name.partition("-")
     if not (len(year) == 4 and year.isdigit()):
         return False

@@ -645,6 +645,16 @@ class TestCalibrationCheck:
         assert result.exit_code == 1
         assert "not a season label" in _flat(result)
 
+    def test_season_that_lost_its_quotes_is_broken_too(self):
+        # A hand edit that drops the quotes leaves an int, which used to reach
+        # `.partition` and take the command out with an AttributeError past the
+        # ValueError guard. It is the same finding as any other bad label.
+        with patch("fpl_cli.services.scoring.constants.CALIBRATION_SEASON", 20252026):
+            result = _run(_mock_client())
+        assert result.exception is None or isinstance(result.exception, SystemExit)
+        assert result.exit_code == 1
+        assert "not a season label" in _flat(result)
+
     def test_json_reports_the_calibration_section(self):
         with patch(
             "fpl_cli.services.scoring.constants.CALIBRATION_SEASON",

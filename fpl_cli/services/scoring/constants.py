@@ -19,7 +19,7 @@ from datetime import date
 from math import inf, isfinite
 from typing import Literal, cast
 
-from fpl_cli.season import get_season_year, season_start_year
+from fpl_cli.season import previous_season_year, season_start_year
 
 # ---------------------------------------------------------------------------
 # Weight types
@@ -429,8 +429,7 @@ def calibration_seasons_behind(today: date | None = None) -> int:
     >>> calibration_seasons_behind(date(2027, 8, 1))  # 2026-27 completed
     1
     """
-    newest_completed = get_season_year(today) - 1
-    return newest_completed - season_start_year(CALIBRATION_SEASON)
+    return previous_season_year(today) - season_start_year(CALIBRATION_SEASON)
 
 
 # Ownership-family ceilings = calibrated quality anchor + bonus headroom.

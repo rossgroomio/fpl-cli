@@ -76,7 +76,7 @@ from typing import Any
 import httpx
 
 from fpl_cli.paths import user_cache_dir
-from fpl_cli.season import get_season_year, is_season_label, season_label
+from fpl_cli.season import is_season_label, previous_season_label
 from fpl_cli.services.scoring.constants import (
     CALIBRATION_ELITE_TARGET,
     DIFFERENTIAL_QUALITY_WEIGHTS,
@@ -627,7 +627,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n", 1)[0])
     parser.add_argument(
         "--season",
-        default=season_label(get_season_year() - 1),
+        default=previous_season_label(),
         help="Completed season to calibrate against (default: last season)",
     )
     parser.add_argument(

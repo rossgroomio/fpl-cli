@@ -154,7 +154,7 @@ class TestComputeConfidence:
 
 
 class TestGeneratePlayerPrior:
-    @patch("fpl_cli.services.player_prior._previous_season_label", return_value="2024-25")
+    @patch("fpl_cli.services.player_prior.previous_season_label", return_value="2024-25")
     def test_player_with_history(self, _mock_season):
         """Player with qualifying history gets prior_strength from percentile rank."""
         profiles = {
@@ -173,7 +173,7 @@ class TestGeneratePlayerPrior:
         assert result[1].source == "history"
         assert result[1].prior_strength > result[3].prior_strength > result[2].prior_strength
 
-    @patch("fpl_cli.services.player_prior._previous_season_label", return_value="2024-25")
+    @patch("fpl_cli.services.player_prior.previous_season_label", return_value="2024-25")
     def test_no_history_uses_price(self, _mock_season):
         """Player without qualifying history gets price-based prior_strength."""
         profiles = {}  # No vaastav data
@@ -190,7 +190,7 @@ class TestGeneratePlayerPrior:
         # Price-based capped at PRICE_CONFIDENCE_FACTOR
         assert result[1].prior_strength <= PRICE_CONFIDENCE_FACTOR
 
-    @patch("fpl_cli.services.player_prior._previous_season_label", return_value="2024-25")
+    @patch("fpl_cli.services.player_prior.previous_season_label", return_value="2024-25")
     def test_below_min_minutes_falls_to_price(self, _mock_season):
         """Player with < MIN_MINUTES last season uses price fallback."""
         profiles = {
@@ -202,7 +202,7 @@ class TestGeneratePlayerPrior:
         result = generate_player_prior(profiles, players, current_gw=3)
         assert result[1].source == "price"
 
-    @patch("fpl_cli.services.player_prior._previous_season_label", return_value="2024-25")
+    @patch("fpl_cli.services.player_prior.previous_season_label", return_value="2024-25")
     def test_cutoff_gw_confidence_is_1(self, _mock_season):
         """At cutoff GW, all players get confidence=1.0."""
         profiles = {
@@ -214,7 +214,7 @@ class TestGeneratePlayerPrior:
         result = generate_player_prior(profiles, players, current_gw=CUTOFF_GW)
         assert result[1].confidence == 1.0
 
-    @patch("fpl_cli.services.player_prior._previous_season_label", return_value="2024-25")
+    @patch("fpl_cli.services.player_prior.previous_season_label", return_value="2024-25")
     def test_empty_profiles_graceful(self, _mock_season):
         """Empty vaastav data -> all players get price-based priors."""
         players = [
@@ -224,7 +224,7 @@ class TestGeneratePlayerPrior:
         assert result[1].source == "price"
         assert result[1].confidence > 0
 
-    @patch("fpl_cli.services.player_prior._previous_season_label", return_value="2024-25")
+    @patch("fpl_cli.services.player_prior.previous_season_label", return_value="2024-25")
     def test_reliability_threaded_from_profile(self, _mock_season):
         """Player with history profile gets reliability from profile.reliability."""
         profiles = {100: _make_profile(100, [_make_season(100, "2024-25", 150, 2700)], reliability=0.85)}
@@ -232,7 +232,7 @@ class TestGeneratePlayerPrior:
         result = generate_player_prior(profiles, players, current_gw=3)
         assert result[1].reliability == pytest.approx(0.85)
 
-    @patch("fpl_cli.services.player_prior._previous_season_label", return_value="2024-25")
+    @patch("fpl_cli.services.player_prior.previous_season_label", return_value="2024-25")
     def test_no_profile_gets_none_reliability(self, _mock_season):
         """Player with no profile (price fallback) gets reliability=None."""
         profiles: dict = {}
@@ -240,7 +240,7 @@ class TestGeneratePlayerPrior:
         result = generate_player_prior(profiles, players, current_gw=3)
         assert result[1].reliability is None
 
-    @patch("fpl_cli.services.player_prior._previous_season_label", return_value="2024-25")
+    @patch("fpl_cli.services.player_prior.previous_season_label", return_value="2024-25")
     def test_zero_reliability_preserved_not_converted_to_none(self, _mock_season):
         """Profile with reliability=0.0 gets PlayerPrior.reliability==0.0, not None."""
         profiles = {100: _make_profile(100, [_make_season(100, "2024-25", 150, 2700)], reliability=0.0)}
@@ -249,7 +249,7 @@ class TestGeneratePlayerPrior:
         assert result[1].reliability == 0.0
         assert result[1].reliability is not None
 
-    @patch("fpl_cli.services.player_prior._previous_season_label", return_value="2024-25")
+    @patch("fpl_cli.services.player_prior.previous_season_label", return_value="2024-25")
     def test_position_ranking_uses_current_fpl_position(self, _mock_season):
         """Percentile rank uses current FPL position, not historical vaastav position."""
         # Profile has MID position in history but player is now FWD
@@ -398,7 +398,7 @@ class TestLoadOrGeneratePlayerPriors:
         assert result == cached
         make_provider.assert_not_called()
 
-    @patch("fpl_cli.services.player_prior._previous_season_label", return_value="2024-25")
+    @patch("fpl_cli.services.player_prior.previous_season_label", return_value="2024-25")
     async def test_generates_and_caches_on_a_miss(self, _mock_season):
         players = [make_player(id=1, code=100, position=PlayerPosition.MIDFIELDER, now_cost=80)]
         profiles = {100: _make_profile(100, [_make_season(100, total_points=180, minutes=2700)])}
