@@ -470,7 +470,29 @@ class TestAwardsTies:
         awards = _compute_shared_awards(managers, total_managers=6)
         assert "best_captain" not in awards
         assert awards["worst_captain"]["detail"] == (
-            "Captaincy was a wash — all 6 captains returned 1 pt (Haaland ×6 (dnp))"
+            "Captaincy was a wash — all 6 captaincies were worth 1 pt (Haaland ×6 (dnp))"
+        )
+
+    def test_league_wide_captain_tie_mixing_played_and_vice_routes(self):
+        """Half the tie scored it, half got it from a vice: claim neither route."""
+        managers = [
+            _make_manager(name=f"P{i}", entry_id=i, captain="Haaland", captain_points=2)
+            for i in range(5)
+        ] + [
+            _make_manager(
+                name=f"D{i}",
+                entry_id=10 + i,
+                captain="Salah",
+                captain_points=0,
+                captain_played=False,
+                vice_captain_points=2,
+            )
+            for i in range(5)
+        ]
+        awards = _compute_shared_awards(managers, total_managers=10)
+        assert awards["worst_captain"]["detail"] == (
+            "Captaincy was a wash — all 10 captaincies were worth 2 pts"
+            " (Haaland ×5, Salah ×5 (dnp))"
         )
 
     def test_league_wide_captain_tie_keeps_grouped_prose_in_a_small_league(self):

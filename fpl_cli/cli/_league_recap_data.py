@@ -1061,12 +1061,19 @@ def _captain_detail(
             for player, names in groups[:_DETAIL_CAP]
         )
         dropped_players = max(0, len(groups) - _DETAIL_CAP)
-        # "returned" rather than "scored" once any captain sat the gameweek
-        # out: what those managers got came from their vice.
-        verb = "scored" if all(played_by_player.values()) else "returned"
         unit = "pt" if pts == 1 else "pts"
+        # Only a tie every captain played for can say the captains scored it.
+        # A tie can mix captains who scored the value with captains who blanked
+        # and had a vice reach it, and either verb would misdescribe one half of
+        # it, so the neutral phrasing leaves the per-pick (dnp) marks to say
+        # which route each group took.
+        lead = (
+            f"all {total_managers} captains scored {pts} {unit}"
+            if all(played_by_player.values())
+            else f"all {total_managers} captaincies were worth {pts} {unit}"
+        )
         return (
-            f"Captaincy was a wash — all {total_managers} captains {verb} {pts} {unit}"
+            f"Captaincy was a wash — {lead}"
             f" ({picks})" + _omitted_suffix(dropped_players, "player")
         )
 
