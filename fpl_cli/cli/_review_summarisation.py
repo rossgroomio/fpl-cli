@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import yaml
 from rich.markup import escape as rich_escape
@@ -22,6 +23,9 @@ from fpl_cli.paths import SHIPPED_CONFIG_DIR, user_config_file
 from fpl_cli.utils.gameweek import is_opening_gameweek
 from fpl_cli.utils.teams import describe_team_set_mismatch
 from fpl_cli.utils.text import strip_diacritics
+
+if TYPE_CHECKING:
+    from fpl_cli.prompts.review import SynthesisCompleteness
 
 # Goals/assists strings: "Damsgaard (BRE), Thiago x2 (BRE)".
 # Bonus: "Bruno (NEW, 3)". Red cards / own goals: "Player (XYZ)" (with optional
@@ -109,6 +113,95 @@ def _report_research_corrections(
     corrections_file = debug_dir / "research_corrections.txt"
     corrections_file.write_text("\n".join(all_corrections), encoding="utf-8")
     error_console.print("[dim]    → Saved research_corrections.txt[/dim]")
+    return str(corrections_file)
+
+
+# The synthesis gets one retry when it comes back detectably incomplete: a
+# second call is cheap next to a saved report that quietly lost a verdict, and
+# two attempts is where it stops -- a model that stops early twice is telling
+# us something a third roll will not fix.
+_MAX_SYNTHESIS_ATTEMPTS = 2
+
+
+async def _synthesise_with_completeness_check(
+    provider: Any,
+    *,
+    prompt: str,
+    system_prompt: str,
+    omit_sections: Sequence[str],
+) -> tuple[str, SynthesisCompleteness, int]:
+    """Query the synthesis provider, retrying once if the answer looks incomplete.
+
+    Returns `(content, completeness, attempts)`. The retry only replaces the
+    first attempt when it is strictly less damaged, so a worse second roll can
+    never displace a better first one -- and when both are whole the first is
+    what ships, unchanged from the single-call behaviour.
+    """
+    from fpl_cli.prompts.review import check_synthesis_completeness
+
+    best_content = ""
+    best: SynthesisCompleteness | None = None
+    for attempt in range(1, _MAX_SYNTHESIS_ATTEMPTS + 1):
+        result = await provider.query(prompt=prompt, system_prompt=system_prompt)
+        # Post-processed before it is judged, like the research stage beside it
+        # and `league-recap`'s editorial: the synthesis role is not restricted
+        # to one provider, so a Perplexity-backed run arrives with citation
+        # markers and a trailing source list. Checking the raw text would judge
+        # a string the report never carries -- and read that source list as a
+        # sentence that stops dead.
+        content = provider.post_process(result.content)
+        completeness = check_synthesis_completeness(
+            content,
+            system_prompt,
+            # Only an abnormal stop reaches the checker: a provider that says
+            # nothing, or says it finished normally, is not evidence either way.
+            stop_reason=result.stop_reason if result.stopped_early else None,
+            omit_sections=omit_sections,
+        )
+        if best is None or completeness.severity < best.severity:
+            best_content, best = content, completeness
+        if best.complete or attempt == _MAX_SYNTHESIS_ATTEMPTS:
+            return best_content, best, attempt
+        error_console.print(
+            "[yellow]  ⚠ Personal analysis looks incomplete "
+            f"({rich_escape('; '.join(completeness.problems()))}) -- retrying once[/yellow]"
+        )
+    raise AssertionError("unreachable: the loop returns on its last attempt")  # pragma: no cover
+
+
+def _report_synthesis_completeness(
+    completeness: SynthesisCompleteness,
+    attempts: int,
+    debug_dir: Path | None,
+) -> str | None:
+    """Tell the user the synthesis failed its completeness check; return the detail file.
+
+    Printed on every summarise run, not just `--debug`, for the same reason the
+    research corrections are (#265): the saved report is the durable artefact,
+    and one that lost a whole format's verdict must not go to disk looking like
+    a deliberate omission (#266). The per-problem detail still only lands on
+    disk under `--debug`, alongside `research_corrections.txt`.
+    """
+    if completeness.complete:
+        return None
+    problems = completeness.problems()
+    # Escaped, not interpolated raw: a problem line quotes the provider's own
+    # `stop_reason`, and a custom OpenAI-compatible endpoint is free to send
+    # one containing Rich markup. An unescaped `[/yellow]` in it would raise
+    # MarkupError and cost the reader this message entirely.
+    error_console.print(
+        f"[yellow]  ⚠ Personal analysis incomplete after {attempts} attempt(s): "
+        f"{rich_escape('; '.join(problems))}[/yellow]"
+    )
+    error_console.print(
+        "[dim]    The summary is used as-is - whatever it names is absent from it[/dim]"
+    )
+    if debug_dir is None:
+        error_console.print("[dim]    Re-run with --debug to save the detail[/dim]")
+        return None
+    corrections_file = debug_dir / "synthesis_corrections.txt"
+    corrections_file.write_text("\n".join(problems) + "\n", encoding="utf-8")
+    error_console.print("[dim]    → Saved synthesis_corrections.txt[/dim]")
     return str(corrections_file)
 
 
@@ -672,6 +765,8 @@ async def _review_llm_summarise(
     table_corrections = 0
     prose_corrections_count = 0
     corrections_path: str | None = None
+    synthesis_problems: list[str] = []
+    synthesis_corrections_path: str | None = None
 
     if dry_run:
         console.print("\n[dim]Dry run: building prompts without calling LLMs...[/dim]")
@@ -830,12 +925,27 @@ async def _review_llm_summarise(
     else:
         try:
             console.print("[dim]  Generating personal analysis...[/dim]")
-            synthesis_result = await synthesis_provider.query(
+            # The prompt asks for both formats' verdicts unconditionally, but
+            # it also tells the model to analyse only the format it was given
+            # data for -- so a verdict the run has no squad behind is an
+            # instructed omission, not a section the guard should chase.
+            omit_sections = [
+                *([] if team_points_data else ["Classic Verdict"]),
+                *([] if draft_squad_points_data else ["Draft Verdict"]),
+            ]
+            synthesis_summary, completeness, attempts = await _synthesise_with_completeness_check(
+                synthesis_provider,
                 prompt=synthesis_prompt,
                 system_prompt=synthesis_system,
+                omit_sections=omit_sections,
             )
-            synthesis_summary = synthesis_result.content
-            console.print("[green]  ✓[/green] Personal analysis complete")
+            if completeness.complete:
+                console.print("[green]  ✓[/green] Personal analysis complete")
+            else:
+                synthesis_problems = completeness.problems()
+                synthesis_corrections_path = _report_synthesis_completeness(
+                    completeness, attempts, debug_dir if debug else None,
+                )
 
             if debug and debug_dir:
                 (debug_dir / "synthesis_system.txt").write_text(synthesis_system, encoding="utf-8")
@@ -852,6 +962,8 @@ async def _review_llm_summarise(
         "table_corrections": table_corrections,
         "prose_corrections": prose_corrections_count,
         "corrections_path": corrections_path,
+        "synthesis_problems": synthesis_problems,
+        "synthesis_corrections_path": synthesis_corrections_path,
     }
 
 

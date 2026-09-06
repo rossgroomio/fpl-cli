@@ -401,6 +401,8 @@ classDiagram
         +model: str
         +usage: TokenUsage
         +citations: list~str~
+        +stop_reason: str|None
+        +stopped_early: bool
     }
 
     class OpenAICompatProvider {
@@ -430,6 +432,8 @@ classDiagram
 ```
 
 All providers share the `LLMResponse` contract. `OpenAICompatProvider` supports OpenAI, Groq, Together, Ollama via configurable `base_url`. Provider selection configured in settings.
+
+`stop_reason` carries the provider's own verdict on why generation ended, verbatim in whichever vocabulary it used — Anthropic's `stop_reason`, an OpenAI-compatible API's `finish_reason`. `stopped_early` reads it against `NORMAL_STOP_REASONS`, a single set covering both dialects (the vocabularies do not collide), and every provider announces an abnormal one at WARNING via `log_abnormal_stop` — the same reason `_http` announces its retries there, so a truncation is visible on any command that talks to an LLM. `None` means the provider said nothing, which is never treated as evidence of truncation. Without this a cut-off response and a complete one were indistinguishable downstream, which is how a saved gameweek review shipped missing a whole format's verdict at exit 0 (#266).
 
 Both HTTP providers post through `_http.post_json_with_retry`, the one place their error handling lives: it retries an HTTP 429 with `RetryPolicy` (exponential backoff with jitter, `Retry-After` honoured, the whole wait bounded by one budget, each retry announced at WARNING) and raises `RateLimitError` — a `ProviderError` subclass carrying the server's `retry_after` — once the attempts are spent, and turns every other error status, a timeout, or a non-JSON body into a sanitised `ProviderError`. That is the same 429-is-transient distinction `DatasetFetcher` draws for the historical datasets. The module also holds `QueryPacer`, which keeps request starts a configured interval apart for a caller that fires several queries at once; `fpl returnees --enrich` pairs it with an in-flight cap, reads the typed error to re-query only the rate-limited subset of its shortlist once, and reports a still-refused player as rate-limited rather than unanswered.
 
@@ -550,7 +554,7 @@ fpl_cli/
 │   ├── historical.py             # HistoricalDataProvider (composition: vaastav + Core-Insights) + historical_season_windows() (the disjoint source allocation) + merge_season_histories()
 │   ├── football_data.py          # FootballDataClient (standings, match results)
 │   └── providers/                # LLM provider abstraction
-│       ├── _models.py            # LLMResponse, TokenUsage, ProviderError, RateLimitError
+│       ├── _models.py            # LLMResponse (incl. stop_reason/stopped_early), TokenUsage, NORMAL_STOP_REASONS, log_abnormal_stop, ProviderError, RateLimitError
 │       ├── _http.py              # Shared HTTP plumbing: 429 backoff (RetryPolicy, post_with_retry), the providers' one error path (post_json_with_retry), QueryPacer for batching callers
 │       ├── anthropic.py          # AnthropicProvider
 │       ├── openai_compat.py      # OpenAICompatProvider (OpenAI, Groq, Together, Ollama)
@@ -588,7 +592,7 @@ fpl_cli/
 │   └── types.py                  # TypedDicts: CaptainCandidate, WaiverTarget, EnrichedPlayer, etc.
 ├── prompts/
 │   ├── scout.py                  # ScoutAgent system/user prompts
-│   ├── review.py                 # Review research + synthesis prompts. Squad and transfer lines in the synthesis data block carry each player's full club name, and the hard constraints bind club affiliation and blanket scored/blanked claims to that supplied data — an LLM's own club knowledge goes stale every transfer window
+│   ├── review.py                 # Review research + synthesis prompts. Squad and transfer lines in the synthesis data block carry each player's full club name, and the hard constraints bind club affiliation and blanket scored/blanked claims to that supplied data — an LLM's own club knowledge goes stale every transfer window. Also the synthesis half's post-generation guard (`check_synthesis_completeness`, `required_synthesis_sections`), which reads the required `## ` headings back off the prompt that was actually sent rather than restating them as a constant
 │   ├── returnees.py              # Return-intel search prompt for `fpl returnees --enrich` (one player per query, so a citation list belongs to a single player)
 │   └── league_recap.py           # League recap synthesis prompts, including the anchored League History section, its never-infer-history rule (emitted even when the pack is empty), and the season-phase framing instruction. The GW Standings section leads with an explicit "Previous gameweek's leader" fact (issue #189) so a "topped the table"/"fell from the top" claim is checkable against a stated name instead of inferred from the Prev column or the size of a fall, and the rules forbid merging two managers' separate League History entries into a shared record or "club". `collect_player_clubs()` regroups the club each squad/transfer row already resolved off its `team_id` by the name the prose uses, feeding both a `## Player Clubs` roster and the club printed inline on each captain group, so club claims bind to supplied data instead of recall; a name the data gives two clubs for is dropped rather than guessed at, since the prose can't tell the two players apart
 ├── parsers/

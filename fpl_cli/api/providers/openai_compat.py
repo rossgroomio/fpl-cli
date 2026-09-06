@@ -8,7 +8,7 @@ from typing import Any, ClassVar, Self
 import httpx
 
 from ._http import RetryPolicy, post_json_with_retry
-from ._models import LLMResponse, ProviderError, TokenUsage
+from ._models import LLMResponse, ProviderError, TokenUsage, log_abnormal_stop
 
 _DEFAULT_BASE_URL = "https://api.openai.com/v1"
 
@@ -63,18 +63,33 @@ class OpenAICompatProvider:
 
     def _parse_response(self, data: dict[str, Any]) -> LLMResponse:
         content = ""
+        finish_reason: str | None = None
         if data.get("choices"):
-            content = data["choices"][0].get("message", {}).get("content", "")
+            choice = data["choices"][0]
+            # `or ""` rather than a `.get` default: a refusal or content-filter
+            # completion sends an explicit `"content": null` (the text lives in
+            # a sibling `refusal` field), and the default only covers an absent
+            # key. A None here would reach every consumer of `content: str`.
+            content = choice.get("message", {}).get("content") or ""
+            # "stop" when the model finished, "length" when it hit the token
+            # ceiling, "content_filter" when the provider cut it. Subclasses
+            # that override this method reuse it via super(), so the field
+            # reaches every OpenAI-compatible provider. Blank normalises to
+            # None -- "the provider said nothing", not an unrecognised reason.
+            finish_reason = choice.get("finish_reason") or None
         raw_usage = data.get("usage", {})
         usage = TokenUsage(
             input_tokens=raw_usage.get("prompt_tokens", 0),
             output_tokens=raw_usage.get("completion_tokens", 0),
         )
-        return LLMResponse(
+        response = LLMResponse(
             content=content,
             model=data.get("model", self.model),
             usage=usage,
+            stop_reason=finish_reason,
         )
+        log_abnormal_stop(response, self._PROVIDER_LABEL)
+        return response
 
     async def query(
         self,
