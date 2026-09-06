@@ -56,7 +56,7 @@ def test_a_failing_command_reports_on_stderr_and_leaves_stdout_clean(command, of
     A command that does not exit 1 here is skipped rather than failed, which
     is the walk's blind spot -- and the one that let three commands exit 0 in
     table mode while the envelope beside them exited 1 (#286).
-    `test_cli_exit_parity.py` closes it by comparing the two codes rather
+    `test_cli_failure_parity.py` closes it by comparing the two codes rather
     than asserting either, so a command that quietly stops exiting 1 here is
     caught there. What stays skipped is what lies past an early exit:
     `chips timing` stops at its missing entry ID, so its agent-failure print

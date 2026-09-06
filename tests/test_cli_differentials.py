@@ -122,6 +122,36 @@ class TestDifferentialsJsonFormat:
         result = _run_differentials(["--format", "json"], stats_result=stats_result)
         assert result.exit_code == 1
 
+    def test_json_does_not_fetch_the_gameweek_before_the_agent(self):
+        """A failed agent is reported without a stamp being fetched for it (#286).
+
+        The fetch used to come first, so an unreachable API killed this path
+        inside the client — reported by `api_failure_boundary` as "Could not
+        reach the FPL API" — while table mode, which never fetches it, got as
+        far as the agent and reported the stats failure instead. Two answers
+        to one outage, because the two paths were failing at different points
+        rather than wording one event differently.
+        """
+        client = _mock_fpl_client()
+        stats_result = _make_stats_result(success=False, message="API timeout")
+
+        result = _run_differentials(
+            ["--format", "json"], stats_result=stats_result, fpl_client=client,
+        )
+
+        assert result.exit_code == 1
+        assert json.loads(result.stdout)["error"] == "API timeout"
+        client.get_next_gameweek.assert_not_called()
+
+    def test_the_same_agent_failure_reads_the_same_in_both_formats(self):
+        stats_result = _make_stats_result(success=False, message="API timeout")
+
+        table = _run_differentials(stats_result=stats_result)
+        envelope = _run_differentials(["--format", "json"], stats_result=stats_result)
+
+        assert table.exit_code == envelope.exit_code == 1
+        assert json.loads(envelope.stdout)["error"] in " ".join(table.stderr.split())
+
     def test_json_captain_failure_graceful(self):
         captain_result = _make_captain_result(success=False, message="Captain failed")
         result = _run_differentials(["--format", "json"], captain_result=captain_result)

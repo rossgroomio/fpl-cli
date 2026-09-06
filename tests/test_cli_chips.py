@@ -751,7 +751,7 @@ class TestChipsTimingJsonFormat:
         Nonzero rather than printing and succeeding (#47), and on stderr
         rather than stdout (#162). This is still the only path the contract
         walks cannot reach: `test_cli_failure_streams.py` and
-        `test_cli_exit_parity.py` run with no `classic_entry_id` configured,
+        `test_cli_failure_parity.py` run with no `classic_entry_id` configured,
         so `chips timing` stops at the missing ID and never gets an agent to
         fail. Asserting on `result.output` would not hold it either -- Click
         mixes both streams into that one.

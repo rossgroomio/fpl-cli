@@ -77,8 +77,10 @@ def offline(request, monkeypatch, tmp_path):
     The shared driver for the three output contracts: `test_cli_json_contract`
     walks every `--format json` command down this failure and checks the
     envelope on stdout, `test_cli_failure_streams` walks the same commands in
-    table mode and checks the prose on stderr, and `test_cli_exit_parity`
-    walks them in both and checks the two exit codes match. It lives here
+    table mode and checks the prose on stderr, and `test_cli_failure_parity`
+    walks them in both and checks the two answers match — same exit code,
+    and an envelope naming the cause the terminal was given rather than a
+    category standing in for it. It lives here
     rather than in any of them because a copy in the second one had already
     dropped the two client-level patches (#251 review), and a contract that
     skips a command whose outage stopped being an outage fails silently --
