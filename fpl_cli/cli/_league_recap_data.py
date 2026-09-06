@@ -635,6 +635,34 @@ def derive_point_in_time_positions(
     return positions
 
 
+def _log_unplaceable(names: list[str], *, ranked: bool, previous: bool) -> None:
+    """Report the managers a replay could not place, once the outcome is known.
+
+    Only after the whole cohort has been walked is it settled whether anyone
+    else was placed at all: a draft replay carries no cumulative total for
+    any manager (`_fetch_draft_manager` sets one only on a live capture), so
+    every entry lands here and nobody is ranked, and even in a classic league
+    an entry that never fetched can abort the cohort further down the
+    standings order. Warning per entry inside the loop claimed the rest of
+    the league was still ranked before either was known (PR #295 review).
+    """
+    if not names:
+        return
+    table = "previous league position" if previous else "league position"
+    if ranked:
+        logger.warning(
+            "No %s for %s: their picks carried no cumulative total, and the standings "
+            "belong to a later gameweek. The rest of the league is still ranked.",
+            table, ", ".join(names),
+        )
+    else:
+        logger.warning(
+            "No %s could be derived: no manager had a point-in-time cumulative total, "
+            "and the standings belong to a later gameweek.",
+            table,
+        )
+
+
 def _assign_point_in_time_positions(
     managers: list[RecapManagerEntry],
     league_totals: Sequence[tuple[int, int]],
@@ -653,21 +681,32 @@ def _assign_point_in_time_positions(
     for a manager with no point-in-time total. It may only for a live
     capture, where the standings describe the same point in time as the
     collected data. On a replay they describe a later one, and mixing the
-    two eras in a single ranking produces positions that are wrong for both:
-    rather than that, no position is derived for anyone and the report
-    renders them unavailable.
+    two eras in a single ranking produces positions that are wrong for both.
+
+    What a replay does instead depends on *why* the total is missing. An
+    entry that never fetched at all is a hole in the cohort of unknown
+    depth -- it is not in `managers`, so nothing about its gameweek is
+    known -- and the whole table is left underivable rather than renumbered
+    around it. A manager who *is* in `managers` fetched fine and is only
+    missing the cumulative total; they are left out of the ranking alone,
+    exactly as `_apply_league_start_offset` already drops one manager's
+    total, so one partial picks response no longer blanks every other
+    manager's position (issue #294).
 
     Mutates managers in-place. Leaves `overall_rank` unset wherever no
     position could be derived.
     """
     by_entry = {m["entry_id"]: m for m in managers}
     totals: list[tuple[int, int]] = []
+    unplaceable: list[str] = []
     for entry_id, standings_total in league_totals:
         fetched = by_entry.get(entry_id)
         if fetched is not None and "total_points" in fetched:
             totals.append((entry_id, fetched["total_points"]))
         elif allow_standings_fallback:
             totals.append((entry_id, standings_total))
+        elif fetched is not None:
+            unplaceable.append(fetched["manager_name"])
         else:
             logger.warning(
                 "League positions unavailable: no point-in-time cumulative total for "
@@ -675,6 +714,8 @@ def _assign_point_in_time_positions(
                 entry_id,
             )
             return
+
+    _log_unplaceable(unplaceable, ranked=bool(totals), previous=False)
 
     position_map = derive_point_in_time_positions(totals)
     for m in managers:
@@ -801,7 +842,11 @@ def _compute_standings_movement(
     subtracted back out here when it's off -- otherwise a manager who took a
     hit this GW has their previous total over-credited by the hit amount.
     Standings-only rows have no hit data to correct with and are used as-is
-    (an existing, unavoidable approximation for failed fetches).
+    (an existing, unavoidable approximation for failed fetches). On a replay
+    the split matches _assign_point_in_time_positions: an entry that never
+    fetched leaves the whole previous table underivable, while a fetched
+    manager missing only their cumulative total is left out of the ranking
+    on their own (issue #294).
 
     A manager with no point-in-time `total_points` (an unreconstructable
     draft replay, see U2) cannot be placed on the previous table at all --
@@ -824,12 +869,15 @@ def _compute_standings_movement(
         ]
     else:
         rows = []
+        unplaceable: list[str] = []
         for entry_id, total, gw_pts in league_rows:
             fetched = by_entry.get(entry_id)
             if fetched is not None and "total_points" in fetched:
                 rows.append((entry_id, fetched["total_points"], _net_gw_points(fetched)))
             elif allow_standings_fallback:
                 rows.append((entry_id, total, gw_pts))
+            elif fetched is not None:
+                unplaceable.append(fetched["manager_name"])
             else:
                 logger.warning(
                     "Standings movement unavailable: no point-in-time cumulative total "
@@ -837,6 +885,7 @@ def _compute_standings_movement(
                     entry_id,
                 )
                 return
+        _log_unplaceable(unplaceable, ranked=bool(rows), previous=True)
 
     prev_totals = [(entry_id, total - gw_pts) for entry_id, total, gw_pts in rows]
     # The same ranking helper `overall_rank` is derived through, not a local

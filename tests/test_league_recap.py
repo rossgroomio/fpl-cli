@@ -897,6 +897,41 @@ class TestStandingsMovement:
         assert [m["previous_rank"] for m in managers] == [1, 2, 4, 5]
         assert all(m["previous_rank"] == m["overall_rank"] for m in managers)
 
+    def test_replay_with_no_cumulative_totals_at_all_warns_once_and_accurately(self, caplog):
+        """A draft replay carries no `total_points` for anyone, so every entry
+        is unplaceable and nobody is ranked. One warning saying exactly that,
+        not one per manager claiming the rest of the league is still ranked
+        (PR #295 review)."""
+        league_rows = [(i, 500 - i * 10, 50) for i in (1, 2, 3)]
+        managers = [
+            _make_manager(name=f"M{i}", entry_id=i, gw_points=50,
+                          total_points=None, overall_rank=None, previous_rank=None)
+            for i in (1, 2, 3)
+        ]
+        with caplog.at_level(logging.WARNING, logger="fpl_cli.cli._league_recap_data"):
+            _compute_standings_movement(managers, league_rows, allow_standings_fallback=False)
+        assert all("previous_rank" not in m for m in managers)
+        warnings = [r.getMessage() for r in caplog.records]
+        assert len(warnings) == 1
+        assert "no manager had a point-in-time cumulative total" in warnings[0]
+        assert "still ranked" not in warnings[0]
+
+    def test_replay_aborting_on_a_later_entry_makes_no_still_ranked_claim(self, caplog):
+        """Bob is missing a total and Cara never fetched: the cohort abort
+        fires further down the standings, so the partial-manager warning must
+        not have already promised the rest of the league was ranked."""
+        league_rows = [(1, 500, 50), (2, 490, 50), (3, 480, 50)]
+        managers = [
+            _make_manager(name="Alice", entry_id=1, gw_points=50, total_points=500,
+                          overall_rank=None, previous_rank=None),
+            _make_manager(name="Bob", entry_id=2, gw_points=50, total_points=None,
+                          overall_rank=None, previous_rank=None),
+        ]  # Cara (entry 3) failed to fetch entirely
+        with caplog.at_level(logging.WARNING, logger="fpl_cli.cli._league_recap_data"):
+            _compute_standings_movement(managers, league_rows, allow_standings_fallback=False)
+        assert all("previous_rank" not in m for m in managers)
+        assert not any("still ranked" in r.getMessage() for r in caplog.records)
+
     def test_tied_previous_totals_all_share_the_first_place(self):
         """Managers level on the previous table shared it, so none of them can
         be reported as having been above the others.
@@ -1601,6 +1636,66 @@ class TestClassicPositionCohort:
         alice = data["managers"][0]
         assert "overall_rank" not in alice
         assert "previous_rank" not in alice
+
+    async def test_replay_one_partial_response_only_costs_that_manager_a_position(self):
+        """Bob's picks fetched fine but carry no `total_points`. He alone goes
+        unranked; Alice and Cara, whose own responses were complete, keep
+        their positions instead of being blanked with him (issue #294)."""
+        standings = [
+            {"entry": 1, "player_name": "Alice", "event_total": 50, "total": 500},
+            {"entry": 2, "player_name": "Bob", "event_total": 40, "total": 450},
+            {"entry": 3, "player_name": "Cara", "event_total": 30, "total": 400},
+        ]
+        bob = _picks_response(points=40, total_points=0)
+        del bob["entry_history"]["total_points"]
+        picks = {
+            1: _picks_response(points=50, total_points=320),
+            2: bob,
+            3: _picks_response(points=30, total_points=290),
+        }
+        data = await collect_classic_recap_data(
+            _FakeClassicClient(_standings_response(standings), picks),
+            {"fpl": {"classic_league_id": 1}}, gw=10,
+            live_stats={}, player_map={}, teams={}, is_live_gw=False,
+        )
+        by_name = {m["manager_name"]: m for m in data["managers"]}
+        assert by_name["Alice"]["overall_rank"] == 1
+        assert by_name["Cara"]["overall_rank"] == 2
+        assert "overall_rank" not in by_name["Bob"]
+        assert "previous_rank" not in by_name["Bob"]
+        assert by_name["Alice"]["previous_rank"] == 1
+        assert by_name["Cara"]["previous_rank"] == 2
+
+    async def test_replay_start_offset_failure_only_costs_that_manager_a_position(self):
+        """The same scoping when it is `_apply_league_start_offset` that drops
+        a total: one failed history fetch leaves that manager unranked, not
+        the whole league (issue #294)."""
+        standings = [
+            {"entry": 1, "player_name": "Alice", "event_total": 50, "total": 200},
+            {"entry": 2, "player_name": "Bob", "event_total": 40, "total": 210},
+        ]
+        picks = {
+            1: _picks_response(points=50, total_points=500),
+            2: _picks_response(points=40, total_points=480),
+        }
+
+        class _PartialHistoryClient(_FakeClassicClient):
+            async def get_manager_history(self, entry_id):
+                if entry_id == 2:
+                    raise RuntimeError("boom")
+                return await super().get_manager_history(entry_id)
+
+        client = _PartialHistoryClient(
+            _standings_response(standings, start_event=5), picks,
+            history_by_entry={1: {"current": [{"event": 4, "total_points": 300}]}},
+        )
+        data = await collect_classic_recap_data(
+            client, {"fpl": {"classic_league_id": 1}}, gw=10,
+            live_stats={}, player_map={}, teams={}, is_live_gw=False,
+        )
+        by_name = {m["manager_name"]: m for m in data["managers"]}
+        assert by_name["Alice"]["overall_rank"] == 1
+        assert "overall_rank" not in by_name["Bob"]
 
     async def test_replay_with_a_complete_cohort_still_derives_positions(self):
         standings = [
