@@ -17,10 +17,25 @@ clubs. A player turns out for one club, so his club that gameweek is in the
 intersection of his fixtures' club pairs:
 
 - Two entries (a double) intersect to exactly one club. Settled outright.
-- One entry leaves the fixture's two clubs. Today's club being one of them is
-  taken as "he has not moved"; today's club being *neither* is proof that he
-  has, and `element-summary/{id}/` is then worth one call to say where he was.
+- One entry leaves the fixture's two clubs, which does not say which side he
+  was on. Today's club being *neither* is proof that he has moved, and
+  `element-summary/{id}/` is then worth one call to place him exactly.
 - No entries (his club blanked) leaves nothing to intersect and no answer.
+
+That leaves one case this deliberately does **not** answer: a single fixture
+whose pair contains today's club. It is tempting to read as "he has not
+moved", and it usually is -- but a player who moved from one of those two
+clubs to the other is the same shape and the pair cannot tell them apart. So
+it is recorded as no answer rather than as today's club, which gives the
+precedence ladder the callers rely on:
+
+1. A club derived here is exact, and supersedes whatever a row already holds.
+2. A club a prior row recorded beats an assumption, so the identity carry
+   keeps it (issue #169's guarantee, unchanged).
+3. Today's club is the fallback, as it was before any of this.
+
+Reading the ambiguous case as an answer would invert 1 and 2 and let today's
+club overwrite a correctly recorded one -- the very bug this exists to fix.
 
 Club only. Name and position are not derivable from fixtures at all, so they
 stay carry-forward-only and a first capture still records today's.
@@ -30,7 +45,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
+
+import httpx
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
@@ -41,8 +59,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# The same permit the recap's own per-manager fetches take out. A drift is
-# rare by construction, so this bounds a burst rather than a stream.
+# This module's own permit, deliberately tighter than the recap's
+# `_PICKS_CONCURRENCY` of 10: a drift is rare by construction, so this bounds
+# a short burst rather than a stream. The two pools are separate and never
+# run at the same time -- `resolve()` is awaited to completion before the
+# picks phase begins.
 _DETAIL_CONCURRENCY = 5
 
 
@@ -50,6 +71,24 @@ class PlayerDetailClient(Protocol):
     """The one FPLClient method the moved-player lookup calls."""
 
     async def get_player_detail(self, player_id: int, /) -> dict[str, Any]: ...
+
+
+@dataclass(frozen=True)
+class GameweekClubs:
+    """What one gameweek's own data says about where its players were.
+
+    Both fields come out of a single pass over the live payload, which is why
+    they travel together: `had_fixture` and the club stamping ask overlapping
+    questions of the same `explain` entries, and scanning ~700 elements twice
+    per gameweek is wasted work on a whole-season backfill.
+    """
+
+    # Player id to the club he was at, for the players the gameweek could
+    # place *exactly*. Absent means no answer, not "today's club".
+    clubs: Mapping[int, int]
+    # Every player whose club had a fixture at all -- what `had_fixture`
+    # needs, and a strict superset of `clubs`.
+    with_fixture: frozenset[int]
 
 
 def resolve_player_fixtures(
@@ -64,12 +103,16 @@ def resolve_player_fixtures(
     populated rather than a league-wide blank. None in all of those, so the
     caller falls back to today's clubs exactly as before.
 
+    Every `explain` fixture id is kept, including one this gameweek's fixture
+    list does not carry, so that `frozenset(result)` is exactly the answer
+    `resolve_players_with_fixture` gives and the two cannot drift apart.
+    `narrow_clubs` is where an id with no known pair drops out.
+
     A player whose club had no fixture is absent from the mapping: there is
     nothing to intersect for him and no club to recover.
     """
     if not fixtures or not all(f.finished for f in fixtures):
         return None
-    known = {f.id for f in fixtures}
     elements = live_data.get("elements") or []
     by_player: dict[int, frozenset[int]] = {}
     for element in elements:
@@ -79,7 +122,7 @@ def resolve_player_fixtures(
         played = frozenset(
             fixture_id
             for entry in element.get("explain") or ()
-            if (fixture_id := entry.get("fixture")) in known
+            if (fixture_id := entry.get("fixture")) is not None
         )
         if played:
             by_player[player_id] = played
@@ -96,9 +139,9 @@ def narrow_clubs(
 ) -> dict[int, frozenset[int]]:
     """Per player, the clubs his own fixtures narrow him down to.
 
-    One club for a double gameweek, two for a single. Never empty: every
-    fixture id here came from `_club_pairs`'s own gameweek, and a player's
-    entries all belong to one club, so the intersection always holds it.
+    One club for a double gameweek, two for a single. A fixture id with no
+    pair in this gameweek is skipped rather than treated as a constraint, and
+    a player left with no pair at all drops out entirely.
     """
     pairs = _club_pairs(fixtures)
     candidates: dict[int, frozenset[int]] = {}
@@ -117,16 +160,21 @@ def narrow_clubs(
 def settle_clubs(
     candidates: Mapping[int, frozenset[int]], clubs_now: Mapping[int, int],
 ) -> tuple[dict[int, int], frozenset[int]]:
-    """Split the candidates into the clubs settled and the players still open.
+    """Split the candidates into the clubs settled exactly and the open ones.
 
-    Settled outright where the intersection is a single club, and settled as
-    today's club where today's club is one of the two a single fixture leaves
-    -- a player at one of the clubs whose fixture it was has, on the evidence
-    the gameweek carries, not moved.
+    Settled only where the intersection is a single club, which a double
+    gameweek gives outright. A single fixture leaves two, and the pair alone
+    never says which side he was on:
 
-    Left open is the one case worth paying for: a player whose current club is
-    absent from his own fixture's pair has definitely moved, and the pair
-    alone does not say which of the two he moved from.
+    - Today's club is *neither* of them, so he has certainly moved. Returned
+      as open, which is what buys him an `element-summary` lookup -- a
+      handful a season rather than one per player.
+    - Today's club is one of them. Read as an answer this would say "he has
+      not moved", but a player who moved between those exact two clubs looks
+      identical, and the wrong answer would be unflaggable by construction
+      since it always equals today's club. So it is neither settled nor
+      opened: no answer, and the recorded club (then today's) stands. See the
+      precedence ladder in the module docstring.
     """
     settled: dict[int, int] = {}
     moved: set[int] = set()
@@ -135,11 +183,7 @@ def settle_clubs(
             settled[player_id] = next(iter(clubs))
             continue
         club_now = clubs_now.get(player_id)
-        if club_now is None:
-            continue
-        if club_now in clubs:
-            settled[player_id] = club_now
-        else:
+        if club_now is not None and club_now not in clubs:
             moved.add(player_id)
     return settled, frozenset(moved)
 
@@ -194,25 +238,29 @@ def gameweek_club(
     return teams.get(resolved) if resolved is not None else None
 
 
-def overruled_player_codes(
+def derived_player_codes(
     players: Iterable[Player], clubs: Mapping[int, int] | None,
 ) -> list[int]:
-    """The codes of players the gameweek placed somewhere other than today.
+    """The codes of players this gameweek placed exactly.
+
+    Presence in `clubs` is the whole test, deliberately: every club in there
+    was derived from the gameweek's own fixtures, so it outranks a recorded
+    one whether or not it happens to match today's bootstrap. Testing
+    "differs from today's club" instead would drop the case this is for -- a
+    player who left and came back, whose gameweek club is right, whose
+    recorded club is a stale capture-time stamp, and whose two clubs agree
+    today. That row would keep the stale club, silently.
 
     Keyed on `code` rather than the seasonal id because that is what a ledger
-    row carries, and this is what tells the identity carry that a replayed
-    club was derived from the gameweek rather than restamped from today's
-    bootstrap -- so a stale club already on disk is superseded rather than
-    carried forward over the correct one (issue #177).
+    row carries. A player the gameweek could not place exactly is absent, so
+    the identity carry keeps what the row already recorded (issue #177).
     """
     if not clubs:
         return []
     return sorted({
         player.code
         for player in players
-        if player.code
-        and (club := clubs.get(player.id)) is not None
-        and club != player.team_id
+        if player.code and player.id in clubs
     })
 
 
@@ -223,8 +271,13 @@ class GameweekClubResolver:
     players have moved for all of them, so the fetch is cached per player
     rather than per gameweek: `element-summary/{id}/` returns the whole
     season's history in one response, which answers for every gameweek the
-    run goes on to replay. A failed fetch is cached too -- an endpoint that
-    404s for one player would otherwise be retried once per gameweek.
+    run goes on to replay.
+
+    Only a *permanent* failure is cached. One resolver serves a whole
+    backfill, so caching a timeout or a 5xx would let one blip on the first
+    gameweek that needs a player silently cost him every later one; a 4xx
+    says the endpoint will keep answering the same way and is worth
+    remembering.
     """
 
     def __init__(self, client: PlayerDetailClient) -> None:
@@ -236,8 +289,8 @@ class GameweekClubResolver:
         live_data: dict[str, Any],
         fixtures: Sequence[Fixture],
         clubs_now: Mapping[int, int],
-    ) -> dict[int, int] | None:
-        """Player id to the club he was at, for one gameweek. None when unanswerable."""
+    ) -> GameweekClubs | None:
+        """What one gameweek says about its own clubs. None when it cannot say."""
         player_fixtures = resolve_player_fixtures(live_data, fixtures)
         if player_fixtures is None:
             return None
@@ -245,7 +298,7 @@ class GameweekClubResolver:
         settled, moved = settle_clubs(candidates, clubs_now)
         if moved:
             settled.update(await self._place_moved(moved, player_fixtures, fixtures))
-        return settled
+        return GameweekClubs(clubs=settled, with_fixture=frozenset(player_fixtures))
 
     async def _place_moved(
         self,
@@ -259,9 +312,17 @@ class GameweekClubResolver:
             detail = await self._fetch(player_id, sem)
             if detail is None:
                 return player_id, None
-            return player_id, club_from_player_detail(
-                detail, player_fixtures[player_id], fixtures,
-            )
+            try:
+                club = club_from_player_detail(
+                    detail, player_fixtures[player_id], fixtures,
+                )
+            except Exception as exc:  # noqa: BLE001 — best-effort enrichment
+                # Guarded for the same reason the fetch is: one unexpected
+                # `history` shape must cost that player his club, not abort
+                # every other lookup in the batch and the recap with it.
+                logger.debug("Could not read a club off player %s's history: %s", player_id, exc)
+                return player_id, None
+            return player_id, club
 
         placed: dict[int, int] = {}
         for player_id, club in await asyncio.gather(*(_one(p) for p in sorted(moved))):
@@ -281,9 +342,25 @@ class GameweekClubResolver:
             return self._detail[player_id]
         async with sem:
             try:
-                detail: Mapping[str, Any] | None = await self._client.get_player_detail(player_id)
+                detail: Mapping[str, Any] = await self._client.get_player_detail(player_id)
             except Exception as exc:  # noqa: BLE001 — best-effort enrichment
                 logger.debug("Could not fetch player detail for %s: %s", player_id, exc)
-                detail = None
+                if _is_permanent(exc):
+                    self._detail[player_id] = None
+                return None
         self._detail[player_id] = detail
         return detail
+
+
+def _is_permanent(exc: BaseException) -> bool:
+    """Whether re-requesting this player later would fail the same way.
+
+    A 4xx is the endpoint's settled answer; a timeout, a connection error or
+    a 5xx is the moment, and the next gameweek deserves a fresh attempt.
+    Anything unrecognised is treated as transient, so an unfamiliar failure
+    costs a retry rather than the rest of the run.
+    """
+    return (
+        isinstance(exc, httpx.HTTPStatusError)
+        and 400 <= exc.response.status_code < 500
+    )

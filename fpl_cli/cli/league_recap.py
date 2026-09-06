@@ -174,32 +174,28 @@ def league_recap_command(
             # Which clubs had no fixture, so a recorded squad can tell a
             # player who blanked apart from one who never kicked a ball. Same
             # threading shape `review` uses for its per-format helpers.
-            from fpl_cli.services.fixture_predictions import (
-                find_blank_gameweeks,
-                resolve_players_with_fixture,
-            )
+            from fpl_cli.services.fixture_predictions import find_blank_gameweeks
             from fpl_cli.services.player_clubs import (
                 GameweekClubResolver,
-                overruled_player_codes,
+                derived_player_codes,
             )
 
             teams_list = list(teams.values())
             blank_gws = find_blank_gameweeks({gw: raw_fixtures}, teams_list, gw, gw)
             bgw_team_ids = frozenset(t["team_id"] for t in blank_gws.get(gw, []))
-            # Same question answered from the gameweek rather than from
-            # today's clubs, which is the only answer a replay can trust
-            # (issue #169). None whenever the gameweek cannot answer, and
-            # `bgw_team_ids` carries it as before.
-            with_fixture = resolve_players_with_fixture(live_data, raw_fixtures)
-            # And the club itself, off the same gameweek. One resolver for the
-            # whole run so the handful of moved players it has to look up are
-            # fetched once between them, not once per gameweek a backfill
-            # replays (issue #177).
+            # Both questions the gameweek can answer about itself -- which
+            # players' clubs had a fixture (issue #169) and which club each
+            # was at (issue #177) -- off one pass over the live payload, since
+            # they read the same `explain` entries. None whenever the gameweek
+            # cannot answer, and today's clubs carry it as before. One
+            # resolver for the whole run, so the handful of moved players it
+            # has to look up are fetched once between them rather than once
+            # per gameweek a backfill replays.
             club_resolver = GameweekClubResolver(client)
             clubs_now = {p.id: p.team_id for p in players}
-            gameweek_clubs = await club_resolver.resolve(
-                live_data, raw_fixtures, clubs_now,
-            )
+            gw_clubs = await club_resolver.resolve(live_data, raw_fixtures, clubs_now)
+            with_fixture = gw_clubs.with_fixture if gw_clubs else None
+            gameweek_clubs = gw_clubs.clubs if gw_clubs else None
 
             # Get next GW deadline
             from datetime import datetime, timedelta
@@ -284,10 +280,10 @@ def league_recap_command(
             # Add context metadata
             collected_data["is_bgw"] = is_bgw
             collected_data["is_dgw"] = is_dgw
-            # Which players the gameweek placed away from the club they are at
-            # now, so the identity carry keeps this run's derived club instead
-            # of a stale one already on disk (issue #177).
-            collected_data["clubs_overruled_codes"] = overruled_player_codes(
+            # Which players the gameweek placed exactly, so the identity
+            # carry keeps this run's derived club instead of a stale one
+            # already on disk (issue #177).
+            collected_data["clubs_derived_codes"] = derived_player_codes(
                 players, gameweek_clubs,
             )
             collected_data["season_length"] = TOTAL_GAMEWEEKS  # type: ignore[typeddict-unknown-key]
@@ -329,12 +325,11 @@ def league_recap_command(
                 target_bgw_ids = frozenset(
                     t["team_id"] for t in target_blanks.get(target_gw, [])
                 )
-                target_with_fixture = resolve_players_with_fixture(
-                    target_live, target_fixtures,
-                )
-                target_clubs = await club_resolver.resolve(
+                target = await club_resolver.resolve(
                     target_live, target_fixtures, clubs_now,
                 )
+                target_with_fixture = target.with_fixture if target else None
+                target_clubs = target.clubs if target else None
                 if is_draft:
                     replayed = await collect_draft_recap_data(
                         settings=settings, gw=target_gw, live_stats=target_stats,
@@ -353,7 +348,7 @@ def league_recap_command(
                     )
                 replayed["is_bgw"] = len(target_fixtures) < 10
                 replayed["is_dgw"] = len(target_fixtures) > 10
-                replayed["clubs_overruled_codes"] = overruled_player_codes(
+                replayed["clubs_derived_codes"] = derived_player_codes(
                     players, target_clubs,
                 )
                 # Ruled here, not only on the live path: without this a

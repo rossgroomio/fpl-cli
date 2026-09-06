@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import httpx
+
 from fpl_cli.services.player_clubs import (
     GameweekClubResolver,
     club_from_player_detail,
+    derived_player_codes,
     gameweek_club,
     narrow_clubs,
-    overruled_player_codes,
     resolve_player_fixtures,
     settle_clubs,
 )
@@ -45,10 +47,13 @@ class TestResolvePlayerFixtures:
     def test_no_fixtures_at_all_declines_to_answer(self):
         assert resolve_player_fixtures(_live((10, [71])), []) is None
 
-    def test_a_fixture_from_another_gameweek_is_ignored(self):
-        """`explain` is scoped to the gameweek fetched, but a stray id would
-        otherwise widen an intersection rather than narrow it."""
-        assert resolve_player_fixtures(_live((10, [71, 999])), FIXTURES) == {10: frozenset({71})}
+    def test_every_explain_id_is_kept_so_the_had_fixture_answer_cannot_drift(self):
+        """`frozenset(result)` has to equal `resolve_players_with_fixture`'s
+        own answer, which counts an `explain` entry whatever it names. An id
+        with no pair in this gameweek drops out in `narrow_clubs` instead."""
+        assert resolve_player_fixtures(_live((10, [71, 999])), FIXTURES) == {
+            10: frozenset({71, 999}),
+        }
 
 
 class TestNarrowClubs:
@@ -59,6 +64,14 @@ class TestNarrowClubs:
     def test_a_single_fixture_leaves_both_its_clubs(self):
         assert narrow_clubs({10: frozenset({71})}, FIXTURES) == {10: frozenset({1, 2})}
 
+    def test_a_fixture_from_another_gameweek_constrains_nothing(self):
+        """A stray id would otherwise widen an intersection rather than
+        narrow it, or empty it outright."""
+        assert narrow_clubs({10: frozenset({71, 999})}, FIXTURES) == {10: frozenset({1, 2})}
+
+    def test_a_player_whose_fixtures_are_all_unknown_drops_out(self):
+        assert narrow_clubs({10: frozenset({999})}, FIXTURES) == {}
+
 
 class TestSettleClubs:
     def test_a_double_settles_without_consulting_todays_club(self):
@@ -66,10 +79,23 @@ class TestSettleClubs:
         assert settled == {10: 1}
         assert moved == frozenset()
 
-    def test_todays_club_inside_the_pair_is_taken_as_unmoved(self):
+    def test_todays_club_inside_the_pair_settles_nothing(self):
+        """It reads as "he has not moved", but a player who moved between
+        those exact two clubs is the same shape and the pair cannot tell them
+        apart. Answering would put a guess where the ladder wants silence."""
         settled, moved = settle_clubs({10: frozenset({1, 2})}, {10: 2})
-        assert settled == {10: 2}
+        assert settled == {}
         assert moved == frozenset()
+
+    def test_a_transfer_to_the_opponent_of_his_own_fixture_is_never_asserted(self):
+        """He was at club 1 in a week club 1 played club 2, and has since
+        moved to club 2. Reading today's club as the answer would record club
+        2 for a gameweek he spent at club 1 -- and it could never be flagged,
+        since the wrong answer equals today's club by construction. Declining
+        leaves the recorded club (then today's) to stand."""
+        settled, moved = settle_clubs({10: frozenset({1, 2})}, {10: 2})
+        assert 10 not in settled
+        assert 10 not in moved
 
     def test_todays_club_outside_the_pair_is_proof_he_moved(self):
         settled, moved = settle_clubs({10: frozenset({1, 2})}, {10: 4})
@@ -132,52 +158,75 @@ class TestGameweekClub:
         assert gameweek_club(None, None, clubs=None, teams=self._TEAMS) is None
 
 
-class TestOverruledPlayerCodes:
-    def test_only_players_the_gameweek_moved_are_named(self):
+class TestDerivedPlayerCodes:
+    def test_every_player_the_gameweek_placed_is_named(self):
         players = [
             make_player(id=10, code=1000, team_id=4),
             make_player(id=20, code=2000, team_id=3),
         ]
-        assert overruled_player_codes(players, {10: 1, 20: 3}) == [1000]
+        assert derived_player_codes(players, {10: 1}) == [1000]
+
+    def test_a_derived_club_matching_todays_is_still_named(self):
+        """The case a "differs from today's club" test would drop: he left and
+        came back, so the gameweek's club and today's agree -- while the row on
+        disk holds a stale capture-time stamp that must not win."""
+        players = [make_player(id=10, code=1000, team_id=1)]
+        assert derived_player_codes(players, {10: 1}) == [1000]
+
+    def test_a_player_the_gameweek_could_not_place_is_not_named(self):
+        players = [make_player(id=10, code=1000, team_id=4)]
+        assert derived_player_codes(players, {20: 1}) == []
 
     def test_no_answer_names_nobody(self):
         players = [make_player(id=10, code=1000, team_id=4)]
-        assert overruled_player_codes(players, None) == []
+        assert derived_player_codes(players, None) == []
 
     def test_a_player_with_no_code_cannot_be_named(self):
         players = [make_player(id=10, code=0, team_id=4)]
-        assert overruled_player_codes(players, {10: 1}) == []
+        assert derived_player_codes(players, {10: 1}) == []
+
+
+def _http_error(status: int) -> httpx.HTTPStatusError:
+    request = httpx.Request("GET", "https://example.invalid/")
+    return httpx.HTTPStatusError(
+        "boom", request=request, response=httpx.Response(status, request=request),
+    )
 
 
 class _DetailClient:
     """Stands in for FPLClient's one method the moved-player lookup calls."""
 
-    def __init__(self, details: dict[int, dict]) -> None:
+    def __init__(self, details: dict[int, dict], error: Exception | None = None) -> None:
         self._details = details
+        self._error = error or _http_error(404)
         self.calls: list[int] = []
 
     async def get_player_detail(self, player_id: int, /) -> dict:
         self.calls.append(player_id)
         if player_id not in self._details:
-            raise KeyError(player_id)
+            raise self._error
         return self._details[player_id]
 
 
 class TestGameweekClubResolver:
     async def test_a_double_needs_no_lookup_at_all(self):
         client = _DetailClient({})
-        clubs = await GameweekClubResolver(client).resolve(
+        resolved = await GameweekClubResolver(client).resolve(
             _live((10, [71, 73])), FIXTURES, {10: 4},
         )
-        assert clubs == {10: 1}
+        assert resolved is not None
+        assert resolved.clubs == {10: 1}
         assert client.calls == []
 
     async def test_a_moved_player_is_placed_by_his_own_history(self):
         client = _DetailClient({10: {"history": [{"fixture": 71, "was_home": False}]}})
-        clubs = await GameweekClubResolver(client).resolve(
+        resolved = await GameweekClubResolver(client).resolve(
             _live((10, [71]), (20, [72])), FIXTURES, {10: 4, 20: 3},
         )
-        assert clubs == {10: 2, 20: 3}
+        assert resolved is not None
+        # Player 20's club is one of his own fixture's pair, so the gameweek
+        # declines rather than asserting today's club (see settle_clubs).
+        assert resolved.clubs == {10: 2}
         assert client.calls == [10]
 
     async def test_only_the_drifted_player_costs_a_call(self):
@@ -188,31 +237,74 @@ class TestGameweekClubResolver:
 
     async def test_a_failed_lookup_leaves_the_player_on_todays_club(self):
         client = _DetailClient({})
-        clubs = await GameweekClubResolver(client).resolve(
+        resolved = await GameweekClubResolver(client).resolve(
             _live((10, [71])), FIXTURES, {10: 4},
         )
-        assert clubs == {}
+        assert resolved is not None
+        assert resolved.clubs == {}
 
     async def test_the_detail_fetch_is_shared_across_replayed_gameweeks(self):
         """A backfill replays every gameweek and the same players moved for all
         of them; `element-summary` answers for the whole season in one call."""
         client = _DetailClient({10: {"history": [
             {"fixture": 71, "was_home": False},
-            {"fixture": 73, "was_home": False},
+            {"fixture": 73, "was_home": True},
         ]}})
         resolver = GameweekClubResolver(client)
-        first = await resolver.resolve(_live((10, [71])), FIXTURES, {10: 4})
-        second = await resolver.resolve(_live((10, [73])), FIXTURES, {10: 4})
-        assert first == {10: 2}
-        assert second == {10: 4}
+        # Club 3 today, so he is outside both fixtures' pairs and each
+        # gameweek needs him placed -- one response settles both.
+        first = await resolver.resolve(_live((10, [71])), FIXTURES, {10: 3})
+        second = await resolver.resolve(_live((10, [73])), FIXTURES, {10: 3})
+        assert first is not None and second is not None
+        assert first.clubs == {10: 2}
+        assert second.clubs == {10: 1}
         assert client.calls == [10]
 
-    async def test_a_failed_lookup_is_not_retried_every_gameweek(self):
+    async def test_a_permanently_failed_lookup_is_not_retried_every_gameweek(self):
         client = _DetailClient({})
         resolver = GameweekClubResolver(client)
         await resolver.resolve(_live((10, [71])), FIXTURES, {10: 4})
         await resolver.resolve(_live((10, [71])), FIXTURES, {10: 4})
         assert client.calls == [10]
+
+    async def test_a_transient_failure_is_retried_on_the_next_gameweek(self):
+        """One resolver serves a whole backfill, so caching a timeout would
+        let one blip cost this player every gameweek after it."""
+        client = _DetailClient({}, error=httpx.ReadTimeout("slow"))
+        resolver = GameweekClubResolver(client)
+        await resolver.resolve(_live((10, [71])), FIXTURES, {10: 4})
+        await resolver.resolve(_live((10, [71])), FIXTURES, {10: 4})
+        assert client.calls == [10, 10]
+
+    async def test_a_server_error_is_transient_too(self):
+        client = _DetailClient({}, error=_http_error(503))
+        resolver = GameweekClubResolver(client)
+        await resolver.resolve(_live((10, [71])), FIXTURES, {10: 4})
+        await resolver.resolve(_live((10, [71])), FIXTURES, {10: 4})
+        assert client.calls == [10, 10]
+
+    async def test_an_unreadable_history_costs_one_player_not_the_batch(self):
+        """`club_from_player_detail` runs outside the fetch's own guard, and
+        one raise there used to abort every other lookup and the recap."""
+        client = _DetailClient({
+            10: {"history": "not a list of rows"},
+            20: {"history": [{"fixture": 72, "was_home": True}]},
+        })
+        resolved = await GameweekClubResolver(client).resolve(
+            _live((10, [71]), (20, [72])), FIXTURES, {10: 4, 20: 1},
+        )
+        assert resolved is not None
+        assert resolved.clubs == {20: 3}
+
+    async def test_the_with_fixture_set_comes_off_the_same_pass(self):
+        """`had_fixture` and the club stamping read the same `explain`
+        entries, so one scan answers both."""
+        client = _DetailClient({})
+        resolved = await GameweekClubResolver(client).resolve(
+            _live((10, [71, 73]), (20, [72]), (30, [])), FIXTURES, {10: 1, 20: 3},
+        )
+        assert resolved is not None
+        assert resolved.with_fixture == frozenset({10, 20})
 
     async def test_a_gameweek_that_cannot_answer_declines_rather_than_guessing(self):
         client = _DetailClient({})

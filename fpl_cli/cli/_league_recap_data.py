@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import re
 from collections.abc import Mapping, Sequence
@@ -311,6 +312,9 @@ async def _fetch_all_manager_data(
     headline-number fallbacks.
     """
     sem = asyncio.Semaphore(_PICKS_CONCURRENCY)
+    # Bound once: every club lookup below asks the same two questions of the
+    # same two lookups, and only the player varies.
+    club_of = functools.partial(gameweek_club, clubs=gameweek_clubs, teams=teams)
 
     async def _fetch_one(entry: dict, rank: int) -> RecapManagerEntry | None:
         league_entry_id: int = entry.get("entry", 0)
@@ -386,9 +390,7 @@ async def _fetch_all_manager_data(
             if is_bench and player.id not in auto_sub_in_ids and not is_bench_boost_player:
                 bench_points += pts
 
-            player_team = gameweek_club(
-                player.id, player.team_id, clubs=gameweek_clubs, teams=teams,
-            )
+            player_team = club_of(player.id, player.team_id)
             squad.append(RecapManagerPlayer(
                 name=player.web_name,
                 team=player_team.short_name if player_team else "???",
@@ -446,12 +448,8 @@ async def _fetch_all_manager_data(
                     if pin and pout:
                         pin_pts, _, _ = _live_player_stats(live_stats, pin.id)
                         pout_pts, _, _ = _live_player_stats(live_stats, pout.id)
-                        pin_team = gameweek_club(
-                            pin.id, pin.team_id, clubs=gameweek_clubs, teams=teams,
-                        )
-                        pout_team = gameweek_club(
-                            pout.id, pout.team_id, clubs=gameweek_clubs, teams=teams,
-                        )
+                        pin_team = club_of(pin.id, pin.team_id)
+                        pout_team = club_of(pout.id, pout.team_id)
                         transfer = RecapTransfer(
                             player_in=pin.web_name,
                             player_in_team=pin_team.short_name if pin_team else "???",
@@ -1734,6 +1732,8 @@ async def collect_draft_recap_data(
 
         # Fetch picks for each manager
         sem = asyncio.Semaphore(_PICKS_CONCURRENCY)
+        # Same binding the classic collector makes, for the same reason.
+        club_of = functools.partial(gameweek_club, clubs=gameweek_clubs, teams=teams)
         managers: list[RecapManagerEntry] = []
 
         async def _fetch_draft_manager(standing: dict[str, Any], rank: int) -> RecapManagerEntry | None:
@@ -1774,9 +1774,7 @@ async def collect_draft_recap_data(
                 unmatched = main_id is None
                 pts, _, red_cards = _live_player_stats(live_stats, main_id)
                 pos_name = POSITION_MAP.get(draft_player.get("element_type"), "???")
-                draft_team = gameweek_club(
-                    main_id, draft_player.get("team"), clubs=gameweek_clubs, teams=teams,
-                )
+                draft_team = club_of(main_id, draft_player.get("team"))
                 team_short = draft_team.short_name if draft_team else "???"
                 squad_position = pick.get("position", 1)
                 is_bench = squad_position > 11
@@ -1845,12 +1843,8 @@ async def collect_draft_recap_data(
                 main_out_id = draft_to_main_id.get(pout_id) if pout_id else None
                 out_pts, _, _ = _live_player_stats(live_stats, main_out_id)
 
-                in_club = gameweek_club(
-                    main_in_id, dp_in.get("team"), clubs=gameweek_clubs, teams=teams,
-                )
-                out_club = gameweek_club(
-                    main_out_id, dp_out.get("team"), clubs=gameweek_clubs, teams=teams,
-                )
+                in_club = club_of(main_in_id, dp_in.get("team"))
+                out_club = club_of(main_out_id, dp_out.get("team"))
 
                 transaction = RecapDraftTransaction(
                     player_in=dp_in.get("web_name", "Unknown"),

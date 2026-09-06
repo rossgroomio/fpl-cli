@@ -186,7 +186,7 @@ def _recap_data(
     )
     for key in (
         "fines", "fine_rules_evaluated", "league_size", "league_start_event",
-        "clubs_overruled_codes",
+        "clubs_derived_codes",
     ):
         if key in kwargs:
             data[key] = kwargs[key]  # type: ignore[literal-required]
@@ -3434,17 +3434,17 @@ class TestDerivedClubSupersedesRecorded:
     run derived the club from the gameweek's own fixtures, that answer wins --
     otherwise a prevention-only fix leaves those rows wrong permanently."""
 
-    def _data(self, squad, *, overruled: list[int] | None = None, **manager_kwargs):
+    def _data(self, squad, *, derived: list[int] | None = None, **manager_kwargs):
         return _recap_data(
             gameweek=1,
             managers=[_manager(name="Alice", entry_id=1, squad=squad, **manager_kwargs)],
             cohort=_cohort((1, "Alice", 1, 60, 300)),
-            clubs_overruled_codes=overruled if overruled is not None else [],
+            clubs_derived_codes=derived if derived is not None else [],
         )
 
-    async def _capture(self, squad, *, overruled=None, **manager_kwargs):
+    async def _capture(self, squad, *, derived=None, **manager_kwargs):
         return await capture_recap_history(
-            self._data(squad, overruled=overruled, **manager_kwargs),
+            self._data(squad, derived=derived, **manager_kwargs),
             season=SEASON, finished_gameweeks=[1],
         )
 
@@ -3452,7 +3452,7 @@ class TestDerivedClubSupersedesRecorded:
         await self._capture([_player(name="Mover", code=510_281, team="TOT", is_captain=True)])
         await self._capture(
             [_player(name="Mover", code=510_281, team="MCI", is_captain=True)],
-            overruled=[510_281],
+            derived=[510_281],
         )
         assert _store().resolved_gameweek(1)[1].squad[0].team == "MCI"
 
@@ -3460,7 +3460,7 @@ class TestDerivedClubSupersedesRecorded:
         await self._capture([_player(name="Mover", code=510_281, team="TOT", is_captain=True)])
         result = await self._capture(
             [_player(name="Mover", code=510_281, team="MCI", is_captain=True)],
-            overruled=[510_281],
+            derived=[510_281],
         )
         assert any(w["code"] == HISTORY_WARNING_CLUB_REDERIVED for w in result.warnings)
 
@@ -3482,7 +3482,7 @@ class TestDerivedClubSupersedesRecorded:
         )
         await self._capture(
             [_player(name="Sávio", code=510_281, team="MCI", is_captain=True)],
-            captain="Sávio", overruled=[510_281],
+            captain="Sávio", derived=[510_281],
         )
         recorded = _store().resolved_gameweek(1)[1].squad[0]
         assert (recorded.name, recorded.team) == ("Savinho", "MCI")
@@ -3491,8 +3491,34 @@ class TestDerivedClubSupersedesRecorded:
         await self._capture([_player(name="Mover", code=510_281, team="MCI", is_captain=True)])
         result = await self._capture(
             [_player(name="Mover", code=510_281, team="MCI", is_captain=True)],
-            overruled=[510_281],
+            derived=[510_281],
         )
+        assert not any(w["code"] == HISTORY_WARNING_CLUB_REDERIVED for w in result.warnings)
+
+    async def test_a_derived_club_matching_todays_still_beats_a_stale_record(self):
+        """The round-trip case: he was at MCI that gameweek, an early capture
+        stamped TOT (where he was at capture time), and he has since returned
+        to MCI. The gameweek derives MCI correctly and today's bootstrap says
+        MCI too — so a "differs from today's club" exemption would drop him
+        and let the stale TOT win, silently."""
+        await self._capture([_player(name="Mover", code=510_281, team="TOT", is_captain=True)])
+        result = await self._capture(
+            [_player(name="Mover", code=510_281, team="MCI", is_captain=True)],
+            derived=[510_281],
+        )
+        assert _store().resolved_gameweek(1)[1].squad[0].team == "MCI"
+        assert any(w["code"] == HISTORY_WARNING_CLUB_REDERIVED for w in result.warnings)
+
+    async def test_an_undecidable_club_never_overwrites_the_record(self):
+        """A single fixture whose pair contains today's club is an assumption,
+        not a derivation, so the resolver leaves it out of the derived set —
+        and the recorded club, which is real evidence, has to win."""
+        await self._capture([_player(name="Mover", code=510_281, team="MCI", is_captain=True)])
+        result = await self._capture(
+            [_player(name="Mover", code=510_281, team="TOT", is_captain=True)],
+            derived=[],
+        )
+        assert _store().resolved_gameweek(1)[1].squad[0].team == "MCI"
         assert not any(w["code"] == HISTORY_WARNING_CLUB_REDERIVED for w in result.warnings)
 
     async def test_a_transfers_clubs_are_superseded_the_same_way(self):
@@ -3516,7 +3542,7 @@ class TestDerivedClubSupersedesRecorded:
         )
         await self._capture(
             [_player(name="Mover", code=510_281, team="MCI", is_captain=True)],
-            transfers=[derived], overruled=[510_281, 222],
+            transfers=[derived], derived=[510_281, 222],
         )
         transfer = _store().resolved_gameweek(1)[1].transfers[0]
         assert (transfer.player_in_team, transfer.player_out_team) == ("MCI", "LIV")
@@ -3541,7 +3567,7 @@ class TestDerivedClubSupersedesRecorded:
                 player_out_code=222,
                 net=5, cost=0,
             )],
-            overruled=[510_281],
+            derived=[510_281],
         )
         transfer = _store().resolved_gameweek(1)[1].transfers[0]
         assert (transfer.player_in_team, transfer.player_out_team) == ("MCI", "EVE")
@@ -3575,13 +3601,13 @@ class TestRecapResolvesGameweekClubs:
         assert result.exit_code == 0, result.output
         assert collector.await_args.kwargs["gameweek_clubs"] == {5: 1}
 
-    def test_the_overruled_codes_are_stamped_on_the_collected_data(self):
+    def test_the_derived_codes_are_stamped_on_the_collected_data(self):
         """What the identity carry reads to tell a derived club from a
         restamped one."""
         collected = _recap_data()
         _invoke_recap(collected, client=self._client([71, 73]), collector=AsyncMock(return_value=collected))
 
-        assert collected["clubs_overruled_codes"] == [99_001]
+        assert collected["clubs_derived_codes"] == [99_001]
 
     def test_a_moved_player_costs_one_player_detail_request(self):
         client = self._client([71])
@@ -3615,7 +3641,7 @@ class TestRecapResolvesGameweekClubs:
         replay_call = collector.await_args_list[-1]
         assert replay_call.kwargs["gw"] == 4
         assert replay_call.kwargs["gameweek_clubs"] == {5: 1}
-        assert gw4["clubs_overruled_codes"] == [99_001]
+        assert gw4["clubs_derived_codes"] == [99_001]
 
     def test_a_moved_player_is_fetched_once_for_the_whole_backfill(self):
         """`element-summary` answers for the whole season, so a backfill pays
@@ -3651,7 +3677,7 @@ class TestRecapResolvesGameweekClubs:
         _invoke_recap(collected, client=client, collector=collector)
 
         assert collector.await_args.kwargs["gameweek_clubs"] is None
-        assert collected["clubs_overruled_codes"] == []
+        assert collected["clubs_derived_codes"] == []
 
 # ---------------------------------------------------------------------------
 # issue #178: a current-gameweek recapture must not restamp a recorded row
