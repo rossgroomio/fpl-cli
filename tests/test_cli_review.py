@@ -2059,6 +2059,16 @@ def _next_gw_client(fixtures, teams):
     return client
 
 
+def _ratings_stub(staleness_warning=None):
+    """A TeamRatingsService stand-in. `ensure_fresh` returns rather than raising,
+    which is what the real one does with every failure it meets."""
+    service = MagicMock()
+    service.ensure_fresh = AsyncMock()
+    service.get_positional_fdr_pair = MagicMock(return_value={"ATK": 1.5, "DEF": 2.1})
+    service.get_staleness_warning = MagicMock(return_value=staleness_warning)
+    return service
+
+
 _NEXT_GW_TEAMS = {
     19: make_team(id=19, short_name="MCI", name="Man City"),
     7: make_team(id=7, short_name="COV", name="Coventry City"),
@@ -2083,6 +2093,8 @@ class TestReviewNextGameweek:
         assert outlook is not None
         assert outlook["gameweek"] == 3
         assert outlook["fdr_source"] == "fpl_api"
+        assert outlook["fdr_warning"] is None
+        assert outlook["already_played"] is False
         # API difficulty is position-blind, so both axes carry the same figure.
         assert outlook["fixtures_by_team"] == {
             "MCI": [{"opponent": "COV", "venue": "H", "atk_fdr": 2.0, "def_fdr": 2.0}],
@@ -2092,9 +2104,7 @@ class TestReviewNextGameweek:
     async def test_positional_fdr_when_custom_analysis_is_on(self, monkeypatch):
         from fpl_cli.cli import _review_analysis
 
-        service = MagicMock()
-        service.ensure_fresh = AsyncMock()
-        service.get_positional_fdr_pair = MagicMock(return_value={"ATK": 1.5, "DEF": 2.1})
+        service = _ratings_stub()
         monkeypatch.setattr(
             "fpl_cli.services.team_ratings.TeamRatingsService", MagicMock(return_value=service)
         )
@@ -2111,28 +2121,49 @@ class TestReviewNextGameweek:
         assert outlook["fixtures_by_team"]["MCI"] == [
             {"opponent": "COV", "venue": "H", "atk_fdr": 1.5, "def_fdr": 2.1}
         ]
-        service.get_positional_fdr_pair.assert_any_call("MCI", "COV", "home")
-        service.get_positional_fdr_pair.assert_any_call("COV", "MCI", "away")
+        # The mode is named rather than left to the callee's default, so the
+        # footer describing the figures cannot name a different one.
+        service.get_positional_fdr_pair.assert_any_call("MCI", "COV", "home", mode="difference")
+        service.get_positional_fdr_pair.assert_any_call("COV", "MCI", "away", mode="difference")
 
-    async def test_falls_back_to_api_difficulty_when_ratings_fail(self, monkeypatch):
-        """A ratings failure costs the scale, not the whole fixture block."""
+    async def test_unusable_ratings_are_carried_out_not_silently_kept(self, monkeypatch):
+        """`ensure_fresh` never raises -- it logs and keeps whatever it has, so
+        a flat 4.0-everywhere set reaches the prompt looking like real analysis
+        unless the warning travels with it (#291 review)."""
         from fpl_cli.cli._review_analysis import _review_next_gameweek
 
-        service = MagicMock()
-        service.ensure_fresh = AsyncMock(side_effect=RuntimeError("ratings file unreadable"))
+        service = _ratings_stub(
+            staleness_warning="⚠️ No team ratings available - every fixture scores 4.0."
+        )
         monkeypatch.setattr(
             "fpl_cli.services.team_ratings.TeamRatingsService", MagicMock(return_value=service)
         )
 
-        fixtures = [make_fixture(gameweek=3, home_team_id=19, away_team_id=7,
-                                 home_difficulty=2, away_difficulty=5)]
         outlook = await _review_next_gameweek(
-            _next_gw_client(fixtures, _NEXT_GW_TEAMS), 2, _NEXT_GW_TEAMS, custom_analysis=True,
+            _next_gw_client(
+                [make_fixture(gameweek=3, home_team_id=19, away_team_id=7)], _NEXT_GW_TEAMS,
+            ),
+            2, _NEXT_GW_TEAMS, custom_analysis=True,
         )
 
         assert outlook is not None
-        assert outlook["fdr_source"] == "fpl_api"
-        assert outlook["fixtures_by_team"]["MCI"][0]["atk_fdr"] == 2.0
+        # Still the 1-7 scale, per #202 -- an unrated club keeps its neutral
+        # 4.0 rather than dropping to the API's 1-5 inside the same column.
+        assert outlook["fdr_source"] == "team_ratings"
+        assert outlook["fdr_warning"] == "⚠️ No team ratings available - every fixture scores 4.0."
+
+    async def test_a_gameweek_already_played_is_marked_retrospective(self):
+        from fpl_cli.cli._review_analysis import _review_next_gameweek
+
+        fixtures = [
+            make_fixture(gameweek=3, home_team_id=19, away_team_id=7, finished=True),
+        ]
+        outlook = await _review_next_gameweek(
+            _next_gw_client(fixtures, _NEXT_GW_TEAMS), 2, _NEXT_GW_TEAMS, custom_analysis=False,
+        )
+
+        assert outlook is not None
+        assert outlook["already_played"] is True
 
     async def test_blank_and_double_teams_are_reported(self):
         from fpl_cli.cli._review_analysis import _review_next_gameweek
@@ -2192,6 +2223,9 @@ def _outlook(**overrides):
         "blank_teams": [],
         "double_teams": [],
         "fdr_source": "team_ratings",
+        "fdr_mode": "difference",
+        "fdr_warning": None,
+        "already_played": False,
     }
     outlook.update(overrides)
     return outlook
@@ -2217,13 +2251,25 @@ class TestFormatNextGameweek:
         assert "- Haaland (MCI, FWD): vs COV (H) FDR 1.5" in block
 
     def test_names_the_scale_it_was_built_from(self):
+        """Both notes come from the footer helpers every other FDR surface
+        prints, so a prompt and a table cannot state different scales."""
         from fpl_cli.cli._review_summarisation import _format_next_gameweek
+        from fpl_cli.services.team_ratings import api_difficulty_scale, fdr_columns_footer
 
         ratings = _format_next_gameweek(_outlook(), [], [])
         api = _format_next_gameweek(_outlook(fdr_source="fpl_api"), [], [])
 
-        assert "1-7 scale" in ratings
-        assert "1-5 difficulty" in api
+        assert fdr_columns_footer("difference") in ratings
+        assert api_difficulty_scale() in api
+
+    def test_the_unrated_club_caveat_reaches_the_prompt(self):
+        """A neutral 4.0 meaning "no data" is indistinguishable from a
+        genuinely average fixture unless the block says so (#291 review)."""
+        from fpl_cli.cli._review_summarisation import _format_next_gameweek
+
+        block = _format_next_gameweek(_outlook(), [], [])
+
+        assert "Fixtures involving an unrated club score a neutral 4.0." in block
 
     def test_both_squads_are_listed_separately(self):
         from fpl_cli.cli._review_summarisation import _format_next_gameweek
@@ -2281,19 +2327,61 @@ class TestFormatNextGameweek:
         assert "- Mystery (???, MID): no GW3 fixture (no fixture listed for their club)" in block
         assert "blank gameweek" not in block
 
-    def test_a_player_listed_twice_appears_once(self):
+    def test_a_player_with_no_position_gets_both_axes(self):
+        """Silently picking the DEF axis for a player whose position never
+        resolved would state a figure the data does not support (#291 review)."""
         from fpl_cli.cli._review_summarisation import _format_next_gameweek
 
         block = _format_next_gameweek(
-            _outlook(),
-            [
-                {"name": "Gvardiol", "team": "MCI", "position": "DEF"},
-                {"name": "Gvardiol", "team": "MCI", "position": "DEF"},
-            ],
-            [],
+            _outlook(), [{"name": "Mystery", "team": "MCI", "position": None}], [],
         )
 
-        assert block.count("- Gvardiol (MCI, DEF)") == 1
+        assert "- Mystery (MCI, ???): vs COV (H) ATK 1.5 DEF 2.1 (position unknown)" in block
+
+    def test_a_keeper_is_scored_on_the_defensive_axis(self):
+        from fpl_cli.cli._review_summarisation import _format_next_gameweek
+
+        block = _format_next_gameweek(
+            _outlook(), [{"name": "Ederson", "team": "MCI", "position": "GK"}], [],
+        )
+
+        assert "- Ederson (MCI, GK): vs COV (H) FDR 2.1" in block
+
+    def test_three_fixtures_are_not_called_a_double(self):
+        from fpl_cli.cli._review_summarisation import _format_next_gameweek
+
+        outlook = _outlook(fixtures_by_team={
+            "SUN": [
+                {"opponent": "BRE", "venue": "A", "atk_fdr": 4.9, "def_fdr": 5.2},
+                {"opponent": "EVE", "venue": "H", "atk_fdr": 3.9, "def_fdr": 4.0},
+                {"opponent": "AVL", "venue": "H", "atk_fdr": 4.4, "def_fdr": 4.5},
+            ],
+        })
+        block = _format_next_gameweek(
+            outlook, [{"name": "Ballard", "team": "SUN", "position": "DEF"}], [],
+        )
+
+        assert "[TRIPLE GAMEWEEK]" in block
+        assert "DOUBLE GAMEWEEK" not in block
+
+    def test_unusable_ratings_are_flagged_in_the_block(self):
+        from fpl_cli.cli._review_summarisation import _format_next_gameweek
+
+        block = _format_next_gameweek(
+            _outlook(fdr_warning="⚠️ Ratings do not separate any two teams."), [], [],
+        )
+
+        assert "CAUTION: ⚠️ Ratings do not separate any two teams." in block
+        assert "indicative rather than decisive" in block
+
+    def test_an_already_played_gameweek_is_marked_retrospective(self):
+        from fpl_cli.cli._review_summarisation import _format_next_gameweek
+
+        block = _format_next_gameweek(_outlook(already_played=True), [], [])
+
+        assert "NOTE: GW3 has already been played" in block
+        assert "what GW2 suggested going into GW3" in block
+        assert "never as a prediction" in block
 
     def test_empty_without_an_outlook(self):
         from fpl_cli.cli._review_summarisation import _format_next_gameweek
@@ -2374,3 +2462,62 @@ class TestNextGameweekReachesTheSynthesisPrompt:
         result = runner.invoke(review_module.review_command, ["--gameweek", "2", "--dry-run"])
         assert result.exit_code == 0, result.output
         assert calls == [2]
+
+
+class TestGroundingProblemsRideTheCompletenessChannel:
+    """A whole-but-ungrounded response has to reach the same warning and the
+    same report callout as an incomplete one (#291 review)."""
+
+    @staticmethod
+    def _kwargs(provider, **overrides):
+        return TestReviewLlmSummariseSurfacesAnIncompleteSynthesis._kwargs(
+            provider, **overrides
+        )
+
+    async def test_an_invented_fdr_is_reported(self, capsys):
+        response = _WHOLE.replace("Move Virgil on.", "Move Virgil on - his FDR 6.6 run is grim.")
+        provider = _StubSynthesisProvider(_reply(response, "end_turn"))
+
+        result = await _review_llm_summarise(
+            **self._kwargs(provider, next_gameweek=_outlook())
+        )
+
+        assert any("6.6" in p for p in result["synthesis_problems"])
+        assert "do not appear in the fixture data" in capsys.readouterr().err
+
+    async def test_a_grounded_response_reports_nothing(self, capsys):
+        response = _WHOLE.replace("Move Virgil on.", "Hold Gvardiol - FDR 2.1 at home.")
+        provider = _StubSynthesisProvider(_reply(response, "end_turn"))
+
+        result = await _review_llm_summarise(
+            **self._kwargs(provider, next_gameweek=_outlook())
+        )
+
+        assert result["synthesis_problems"] == []
+        assert "Personal analysis complete" in capsys.readouterr().out
+
+    async def test_a_fixture_claim_with_no_block_is_reported(self, capsys):
+        response = _WHOLE.replace("Move Virgil on.", "Start Salah, he's at home to Burnley.")
+        provider = _StubSynthesisProvider(_reply(response, "end_turn"))
+
+        result = await _review_llm_summarise(**self._kwargs(provider))
+
+        assert any("no fixture data" in p for p in result["synthesis_problems"])
+
+    async def test_grounding_and_completeness_problems_arrive_together(self, capsys):
+        """One channel, both findings - not a second one the reader has to
+        know to look at."""
+        truncated = (
+            "## Summary\nA shrug.\n\n## Classic Verdict\nSalah carried it.\n\n"
+            "## Next Week\nShip him, that FDR 6.6 run is grim."
+        )
+        provider = _StubSynthesisProvider(_reply(truncated, "max_tokens"))
+
+        result = await _review_llm_summarise(
+            **self._kwargs(provider, next_gameweek=_outlook())
+        )
+
+        problems = result["synthesis_problems"]
+        assert any("## Draft Verdict" in p for p in problems)
+        assert any("max_tokens" in p for p in problems)
+        assert any("6.6" in p for p in problems)

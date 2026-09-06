@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from fpl_cli.utils.gameweek import is_opening_gameweek
-from fpl_cli.utils.markdown import fence_flags, has_heading, parse_heading
+from fpl_cli.utils.markdown import fence_flags, has_heading, leaf_body, parse_heading
 from fpl_cli.utils.text import strip_diacritics
 
 logger = logging.getLogger(__name__)
@@ -1242,6 +1242,94 @@ def _ends_mid_sentence(text: str) -> bool:
     if not trimmed:
         return False
     return trimmed[-1] not in _TERMINAL_PUNCTUATION
+
+
+# =============================================================================
+# NEXT WEEK GROUNDING (post-generation guard, issue #191 / #291 review)
+# =============================================================================
+
+# A difficulty figure as either side writes it: "FDR 2.1", "FDR of 2.1", and
+# the "ATK 1.5 DEF 2.1" pair the block's by-club list prints. All three labels
+# have to be read on the block side or its column figures would count as
+# unprinted, and a model quoting one correctly would be reported for it. A
+# number the block never printed is a fabricated one, which is the failure
+# mode #191 was about, one layer along.
+_FDR_CITATION_RE = re.compile(
+    r"\b(?:FDR|ATK|DEF)\s+(?:of\s+)?(\d+(?:\.\d+)?)", re.IGNORECASE
+)
+
+# Fixture vocabulary the narrowed instruction forbids outright: with no block
+# in the prompt, the model knows nothing about who plays whom, so any of these
+# is a claim it cannot have got from the data.
+_FIXTURE_CLAIM_RE = re.compile(
+    r"\bFDR\b"
+    r"|\bat home to\b|\baway (?:at|to)\b|\bhosts?\b|\btravels? to\b"
+    r"|\b(?:easy|kind|tough|hard|favourable|difficult|nasty)\s+(?:run of\s+)?fixtures?\b"
+    r"|\bfixtures? (?:turn|swing|ease|soften|toughen)\b",
+    re.IGNORECASE,
+)
+
+_NEXT_WEEK_HEADING = "## Next Week"
+
+
+def check_next_week_grounding(response: str, upcoming_fixtures: str) -> list[str]:
+    """Check the Next Week section against the fixture data it was given.
+
+    The rest of #191's fix is prompt instructions, and an instruction is
+    something a model can drop -- under length pressure, or simply because the
+    research narrative pulled harder. The research half already pairs its
+    prompt rules with post-generation validators (`validate_research_teams`,
+    `validate_research_prose`); this is the same pairing for the claim this
+    change introduced.
+
+    Two things are checkable without re-deriving the model's reasoning, and
+    only those two are checked:
+
+    - With a block: every FDR figure the section cites must be one the block
+      actually printed. Matching is exact to one decimal place, because the
+      section is told to cite the figure it reasoned from -- so a number that
+      is merely near one is either a different fixture's or nobody's.
+    - Without one: the section must make no fixture claim at all, because it
+      was given nothing to make one from.
+
+    Whether a *recommendation* matches the fixture behind it is a judgement
+    this cannot make, so it does not try -- it reports, and the report goes
+    where the completeness guard's already does.
+
+    Args:
+        response: The synthesis text as it will be used, post-processed.
+        upcoming_fixtures: The `<next_gameweek>` block that was sent, or "".
+
+    Returns:
+        One line per problem found, empty when the section is grounded (or
+        absent -- a missing section is the completeness guard's to report).
+    """
+    body = leaf_body(response.split("\n"), _NEXT_WEEK_HEADING)
+    if not body:
+        return []
+    text = "\n".join(body)
+
+    if not upcoming_fixtures:
+        claim = _FIXTURE_CLAIM_RE.search(text)
+        if claim:
+            return [
+                f'"Next Week" makes a fixture claim ({claim.group(0)!r}) on a run with no'
+                " fixture data - the section was asked for observations only"
+            ]
+        return []
+
+    printed = {
+        round(float(value), 1) for value in _FDR_CITATION_RE.findall(upcoming_fixtures)
+    }
+    unmatched = sorted(
+        {round(float(raw), 1) for raw in _FDR_CITATION_RE.findall(text)} - printed
+    )
+    if unmatched:
+        return [
+            '"Next Week" cites FDR figure(s) that do not appear in the fixture data: '
+            + ", ".join(f"{value:g}" for value in unmatched)
+        ]
+    return []
 
 
 def check_synthesis_completeness(

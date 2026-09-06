@@ -15,6 +15,7 @@ from fpl_cli.services.fixture_predictions import (
     find_double_gameweeks,
     had_fixture,
 )
+from fpl_cli.services.team_ratings import DEFAULT_FDR_MODE
 
 if TYPE_CHECKING:
     from fpl_cli.api.fpl import FPLClient
@@ -423,6 +424,9 @@ class NextGameweekOutlook(TypedDict):
     blank_teams: list[str]
     double_teams: list[str]
     fdr_source: str
+    fdr_mode: str
+    fdr_warning: str | None
+    already_played: bool
 
 
 async def _review_next_gameweek(
@@ -445,13 +449,22 @@ async def _review_next_gameweek(
     own difficulty (1-5, position-blind, so both axes carry it) when it is off,
     so one fixture reads the same number here as on the surface that prints it
     (#202). `fdr_source` says which, because the two scales are not
-    interchangeable and the prompt has to name the one it was handed.
+    interchangeable and the prompt has to name the one it was handed, and
+    `fdr_warning` carries `get_staleness_warning()` verbatim -- ratings that
+    cannot separate two teams, or that do not know a promoted club, score a
+    neutral 4.0 that reads exactly like a genuinely average fixture, and the
+    one FDR surface an LLM sees must not present that as analysis. Unrated
+    clubs keep the 4.0 rather than falling back to the API's 1-5, which would
+    put one club on a different scale inside the same column (#202).
 
     Returns None when there is no next gameweek to look at -- the reviewed
     gameweek was the last of the season, or its fixtures could not be fetched.
     Reviewing an older gameweek still gets the gameweek that followed it, which
-    is the one that review's "Next Week" section is about; the ratings behind
-    its FDR are today's, not the ones that stood at the time.
+    is the one that review's "Next Week" section is about -- but by then those
+    fixtures have been played and the ratings scoring them are today's, not the
+    ones that stood at the time, so `already_played` marks the block
+    retrospective rather than letting it read as advice for a gameweek still to
+    come.
     """
     next_gw = gw + 1
     if next_gw > TOTAL_GAMEWEEKS:
@@ -479,7 +492,7 @@ async def _review_next_gameweek(
         for team, opponent, venue in ((home, away, "home"), (away, home, "away")):
             if ratings is not None:
                 pair = ratings.get_positional_fdr_pair(
-                    team.short_name, opponent.short_name, venue
+                    team.short_name, opponent.short_name, venue, mode=DEFAULT_FDR_MODE,
                 )
                 atk_fdr, def_fdr = pair["ATK"], pair["DEF"]
             else:
@@ -505,29 +518,29 @@ async def _review_next_gameweek(
         "blank_teams": sorted(t["short_name"] for t in blanks.get(next_gw, [])),
         "double_teams": sorted(t["short_name"] for t in doubles.get(next_gw, [])),
         "fdr_source": "team_ratings" if ratings is not None else "fpl_api",
+        "fdr_mode": DEFAULT_FDR_MODE,
+        "fdr_warning": ratings.get_staleness_warning() if ratings is not None else None,
+        "already_played": all(f.finished for f in fixtures),
     }
 
 
 async def _resolve_review_ratings(
     client: FPLClient, custom_analysis: bool,
 ) -> TeamRatingsService | None:
-    """The team-ratings service, or None to fall back to FPL API difficulty.
+    """The team-ratings service, or None to score fixtures on FPL API difficulty.
 
-    None on both the opted-out path -- where no service is constructed and no
-    refresh is attempted, as in `fpl fixtures` -- and on a refresh that failed,
-    so a review still gets a fixture block rather than nothing at all.
+    None only on the opted-out path, where no service is constructed and no
+    refresh is attempted -- the same shape as `fpl fixtures`'s `_resolve_ratings`.
+    There is no failure branch to add beside it: `ensure_fresh` swallows both a
+    failed refresh and a failed team-set check, so it cannot raise, and a
+    `try` around it would be dead code claiming a fallback that never fires
+    (#291 review). Ratings that came back unusable are reported instead, by
+    `get_staleness_warning()` at the call site.
     """
     if not custom_analysis:
         return None
     from fpl_cli.services.team_ratings import TeamRatingsService
 
-    try:
-        service = TeamRatingsService()
-        await service.ensure_fresh(client)
-    except Exception as e:  # noqa: BLE001 — graceful degradation
-        error_console.print(
-            f"[yellow]Could not load team ratings, falling back to FPL difficulty:"
-            f" {rich_escape(str(e))}[/yellow]"
-        )
-        return None
+    service = TeamRatingsService()
+    await service.ensure_fresh(client)
     return service

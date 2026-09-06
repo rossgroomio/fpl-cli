@@ -57,6 +57,24 @@ _FDR_SCALE = "FDR scale: 1 (easiest) - 7 (hardest)"
 _FDR_UNRATED_NOTE = "Fixtures involving an unrated club score a neutral 4.0."
 """Closing clause of every FDR footer, true on the general figure and both positional ones."""
 
+DEFAULT_FDR_MODE = "difference"
+"""The mode every FDR surface scores in unless the caller asks for another.
+
+Also the default of `get_positional_fdr`, so a caller that names it and one
+that omits it cannot describe their figures differently.
+"""
+
+
+def api_difficulty_scale() -> str:
+    """The scale sentence for the FPL API's own 1-5 difficulty.
+
+    The other half of the question `_FDR_SCALE` answers -- which scale is on
+    screen -- for the surfaces that fall back to the API when custom analysis
+    is off. Here rather than in one of them so `fpl fixtures` and the review's
+    prompt block cannot state different scales for the same number.
+    """
+    return "FDR scale: 1 (easiest) - 5 (hardest), the FPL API's own difficulty."
+
 
 def fdr_columns_footer(mode: str) -> str:
     """Footer for a table showing FDR beside ATK and DEF, all scored in ``mode``.

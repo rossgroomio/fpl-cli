@@ -10,6 +10,7 @@ from fpl_cli.prompts.review import (
     REVIEW_RESEARCH_SYSTEM_PROMPT,
     _SENTENCE_SPLIT_RE,
     _build_system_prompt,
+    check_next_week_grounding,
     check_synthesis_completeness,
     ensure_top_performer_first,
     get_review_research_prompt,
@@ -3501,3 +3502,62 @@ class TestNextWeekFixtureGrounding:
         blind, _ = self._prompts()
         assert "restricted to observations that do not depend on fixtures" not in grounded
         assert "cite the opponent and FDR you are reasoning from" not in blind
+
+
+class TestCheckNextWeekGrounding:
+    """#291 review: the #191 fix was prompt instructions alone, with nothing
+    checking the answer complied. The research half pairs its rules with
+    post-generation validators; this is the same pairing for the new claim."""
+
+    _BLOCK = (
+        "## Every club's GW3 fixture (ATK = for FWD/MID, DEF = for DEF/GK)\n"
+        "- MCI: vs COV (H) ATK 1.5 DEF 2.1\n"
+        "- COV: at MCI (A) ATK 6.4 DEF 6.8\n"
+        "\n## Your Classic squad in GW3\n"
+        "- Gvardiol (MCI, DEF): vs COV (H) FDR 2.1"
+    )
+
+    @staticmethod
+    def _response(next_week):
+        return f"## Summary\nA week.\n\n## Next Week\n{next_week}\n"
+
+    def test_a_cited_figure_from_the_block_passes(self):
+        response = self._response("Hold Gvardiol - City host Coventry at FDR 2.1.")
+        assert check_next_week_grounding(response, self._BLOCK) == []
+
+    def test_a_figure_the_block_never_printed_is_reported(self):
+        response = self._response("Ship Gvardiol, his FDR 5.9 run is brutal.")
+        problems = check_next_week_grounding(response, self._BLOCK)
+        assert len(problems) == 1
+        assert "5.9" in problems[0]
+
+    def test_an_atk_or_def_column_figure_counts_as_printed(self):
+        """The block prints both axes, so either is a legitimate citation."""
+        response = self._response("Haaland's ATK side reads FDR 1.5 - captain him.")
+        assert check_next_week_grounding(response, self._BLOCK) == []
+
+    def test_only_the_next_week_section_is_checked(self):
+        """The verdict sections discuss the gameweek that was played, whose
+        figures have nothing to do with the fixture block."""
+        response = "## Classic Verdict\nHe was an FDR 6.6 pick and it showed.\n\n## Next Week\nHold.\n"
+        assert check_next_week_grounding(response, self._BLOCK) == []
+
+    def test_without_a_block_a_fixture_claim_is_reported(self):
+        response = self._response("Start Salah - he's at home to Burnley.")
+        problems = check_next_week_grounding(response, "")
+        assert len(problems) == 1
+        assert "no fixture data" in problems[0]
+
+    def test_without_a_block_an_fdr_mention_is_reported(self):
+        response = self._response("His FDR 2.0 fixture makes him a hold.")
+        assert check_next_week_grounding(response, "") != []
+
+    def test_without_a_block_a_fixture_free_observation_passes(self):
+        response = self._response("Tzolis has now blanked twice - worth watching in Draft.")
+        assert check_next_week_grounding(response, "") == []
+
+    def test_a_missing_section_is_not_this_guard_s_problem(self):
+        """`check_synthesis_completeness` already reports an absent heading;
+        reporting it twice would double-count one defect."""
+        assert check_next_week_grounding("## Summary\nA week.\n", self._BLOCK) == []
+        assert check_next_week_grounding("", self._BLOCK) == []

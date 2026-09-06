@@ -219,6 +219,23 @@ def review_command(
             players_with_fixture = resolve_players_with_fixture(live_data, raw_fixtures)
             players_with_double = resolve_players_with_double(live_data, raw_fixtures)
 
+            # Started here rather than at its use below, and only when a prompt
+            # is being built: nothing it needs arrives after `teams`, and it
+            # carries real latency of its own -- a fixtures fetch, plus a
+            # ratings refresh that can re-derive from a season of results. Left
+            # in place it was pure addition to the run; here it overlaps the
+            # sections that follow. Cancelled on unwind so an exception before
+            # the await never leaves it pending against a closing client.
+            next_gameweek_task = None
+            if summarise or dry_run:
+                next_gameweek_task = asyncio.create_task(
+                    _review_next_gameweek(
+                        client, gw, teams,
+                        custom_analysis=is_custom_analysis_enabled(settings),
+                    )
+                )
+                stack.callback(next_gameweek_task.cancel)
+
             # Classic section
             if show_classic:
                 console.print("\n[bold cyan]# Classic[/bold cyan]")
@@ -312,13 +329,7 @@ def review_command(
 
             # LLM summarisation if requested (or dry-run to preview prompts)
             if summarise or dry_run:
-                # Only the prompts read this, so it is fetched only when one is
-                # being built - a plain `fpl review` has no use for next
-                # gameweek's fixtures and should not pay for them.
-                next_gameweek = await _review_next_gameweek(
-                    client, gw, teams,
-                    custom_analysis=is_custom_analysis_enabled(settings),
-                )
+                next_gameweek = await next_gameweek_task if next_gameweek_task else None
                 llm = await _review_llm_summarise(
                     gw=gw,
                     gw_data=gw_data,
