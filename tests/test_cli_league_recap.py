@@ -1039,6 +1039,16 @@ class TestTruncatedEditorial:
         assert "synthesis_stopped_early" not in codes
         assert "max_tokens" not in result.stderr
 
+    def test_a_stop_reason_carrying_rich_markup_still_reaches_the_reader(self):
+        # A custom OpenAI-compatible endpoint is free to send anything here; an
+        # unescaped "[/yellow]" would raise MarkupError and cost the reader the
+        # very message this warning exists to print.
+        with self._provider("[/yellow]cut"):
+            result = _invoke_recap(_recap_data(), ["--summarise"])
+
+        assert result.exit_code == 0, result.output
+        assert "[/yellow]cut" in result.stderr.replace("\n", "")
+
 
 class TestFinesAreRecordedNotJustRendered:
     def test_a_live_capture_records_what_was_ruled_even_when_nothing_triggered(self):
