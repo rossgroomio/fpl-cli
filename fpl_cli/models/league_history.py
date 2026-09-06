@@ -38,7 +38,11 @@ from pydantic import BaseModel, ConfigDict, Field
 # 4: `fine_rules_evaluated` added, so an empty `fines` list can be told apart
 #    from a capture that never ruled any fine at all. Purely additive too, so
 #    an older row still validates with it defaulting to None (issue #136).
-LEAGUE_HISTORY_VERSION = 4
+# 5: `LedgerFine.players` added -- the players a fine's message names, held as
+#    references so a stored ruling survives a rename instead of having to be
+#    parsed back out of its own prose (issue #176). Purely additive again, so
+#    a version-4 row still validates with it defaulting to None.
+LEAGUE_HISTORY_VERSION = 5
 
 # The oldest version this code can still parse. Raising this floor bricks every
 # store holding older lines, so it moves only alongside a one-time rewrite that
@@ -187,6 +191,18 @@ class LedgerTransaction(BaseModel):
     kind: str = "w"
 
 
+class LedgerFinePlayer(BaseModel):
+    """One player a fine names, recorded as a reference rather than as prose."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    # Stable cross-season element_code (R6). None where the pick the fine was
+    # ruled from never resolved to one, which leaves `name` the only handle on
+    # him -- the same trade `LedgerPlayer` makes.
+    code: int | None = None
+
+
 class LedgerFine(BaseModel):
     """A fine ruled at capture time, keyed by manager rather than display name.
 
@@ -199,6 +215,18 @@ class LedgerFine(BaseModel):
     manager_key: int
     rule_type: str
     message: str
+    # Who `message` names, as references. The message itself spells the names
+    # out as free text resolved against the bootstrap that ruled the fine, so
+    # a player FPL renames later is stored under a name the gameweek never
+    # knew -- beside a squad that records his real one (issue #176). Three
+    # states, all distinct:
+    #
+    # - a list: exactly these players, and the codes that survive a rename.
+    # - `[]`: this ruling names nobody, which `last-place` and
+    #   `below-threshold` genuinely do not -- they describe a score.
+    # - `None`: nothing is recorded either way. A row written before schema
+    #   version 5, or a caller that built the ruling by hand.
+    players: list[LedgerFinePlayer] | None = None
 
 
 class LeagueHistoryRow(BaseModel):

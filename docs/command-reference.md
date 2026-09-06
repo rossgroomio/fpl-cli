@@ -916,13 +916,21 @@ rather than guessed.
 
 `fines` records the fines ruled against that manager that gameweek, keyed by manager
 rather than display name so a mid-season rename cannot split a tally and two managers
-sharing a name cannot merge into one. Beside it, `fine_rules_evaluated` (schema version
-4) records which rule types were actually ruled, whether or not any triggered — without
-it an empty `fines` list means three different things at once (nobody was fined, no
-rules were configured, no rule was ever checked), and [Season Fines](#season-fines)
-would score all three as innocence. A list names exactly the rules ruled, `[]` means
-nothing was configured, and empty means nothing is recorded either way: an unknown
-capture row, or a row written before schema version 4.
+sharing a name cannot merge into one. Each fine also carries `players` (schema version
+5): the players its message names, each with the stable cross-season code that still
+identifies him after FPL renames him. A red-card fine's message spells out whatever the
+player was called when it was ruled, so a gameweek replayed months later would otherwise
+name him by today's name on a row whose squad records the name he actually played under.
+A list names exactly those players, `[]` means the rule names nobody (`last-place` and
+`below-threshold` describe a score), and empty means nothing is recorded either way: a
+row written before schema version 5, whose names are restated from its own squad the
+next time the gameweek is captured or replayed. Beside it, `fine_rules_evaluated` (schema
+version 4) records which rule types were actually ruled, whether or not any triggered —
+without it an empty `fines` list means three different things at once (nobody was fined,
+no rules were configured, no rule was ever checked), and
+[Season Fines](#season-fines) would score all three as innocence. A list names exactly
+the rules ruled, `[]` means nothing was configured, and empty means nothing is recorded
+either way: an unknown capture row, or a row written before schema version 4.
 
 Rows are append-only. Re-running a gameweek that has not changed writes nothing; a
 re-run whose numbers differ (bonus points settled, a failed fetch repaired, a coarse

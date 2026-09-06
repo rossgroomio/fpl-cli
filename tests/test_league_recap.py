@@ -32,6 +32,8 @@ from fpl_cli.cli._league_recap_data import (
     configured_fine_rule_types,
     derive_point_in_time_positions,
     evaluate_league_fines,
+    recap_fine_player_names,
+    restate_recap_fine_players,
 )
 from fpl_cli.cli._league_recap_types import (
     RecapAwards,
@@ -138,6 +140,7 @@ def _make_squad_player(
         name=name,
         team="ARS",
         position="MID",
+        code=kwargs.get("code"),
         points=points,
         is_captain=kwargs.get("is_captain", False),
         is_vice_captain=kwargs.get("is_vice_captain", False),
@@ -148,6 +151,51 @@ def _make_squad_player(
         red_cards=kwargs.get("red_cards", 0),
         unmatched=kwargs.get("unmatched", False),
     )
+
+
+class TestRecapFineMessagePlayers:
+    """#176: the ledger restates a stored ruling's names through these two, so
+    the shapes they cannot read are the shapes they must not rewrite either."""
+
+    PENALTY = "Buy the round"
+
+    def _message(self, names: str) -> str:
+        return f"Red card in starting XI ({names}). {self.PENALTY}"
+
+    def test_the_names_read_back_in_the_order_the_message_lists_them(self):
+        assert recap_fine_player_names(self._message("Sávio, Hothead")) == [
+            "Sávio", "Hothead",
+        ]
+
+    def test_a_name_carrying_a_bare_comma_reads_back_whole(self):
+        """Split on the separator the message was written with, not on any
+        comma in it (#290 review)."""
+        assert recap_fine_player_names(self._message("Smith,Jr")) == ["Smith,Jr"]
+
+    def test_a_name_carrying_the_separator_itself_reads_as_two(self):
+        """The limit of reading names out of prose, asserted rather than left
+        implicit: the caller sees a count the squad cannot corroborate and
+        declines the repair, which is the safe direction to fail in."""
+        assert recap_fine_player_names(self._message("Smith, Jr")) == ["Smith", "Jr"]
+
+    def test_a_message_naming_nobody_reads_back_empty(self):
+        assert recap_fine_player_names("Finished last in the gameweek. Pint") == []
+
+    def test_a_penalty_carrying_brackets_is_not_mistaken_for_the_player_list(self):
+        message = "Red card in starting XI (Sávio). Pay the pot (cash)"
+        assert recap_fine_player_names(message) == ["Sávio"]
+        assert restate_recap_fine_players(message, ["Sávio"], ["Savinho"]) == (
+            "Red card in starting XI (Savinho). Pay the pot (cash)"
+        )
+
+    def test_what_reads_back_out_restates_back_in(self):
+        message = self._message("Sávio, Hothead")
+        names = recap_fine_player_names(message)
+        assert restate_recap_fine_players(message, names, names) == message
+
+    def test_a_message_that_does_not_spell_the_list_out_is_returned_untouched(self):
+        message = self._message("Sávio")
+        assert restate_recap_fine_players(message, ["Someone Else"], ["Savinho"]) == message
 
 
 # ---------------------------------------------------------------------------
@@ -2386,6 +2434,31 @@ class TestEvaluateLeagueFines:
         assert result[0]["rule_type"] == "red-card"
         assert "Hothead" in result[0]["message"]
 
+    def test_a_red_card_ruling_carries_the_players_it_names(self):
+        """#176: the stored ruling has to hold a reference to who was fined.
+        The message alone is only what FPL called him at ruling time."""
+        red_player = _make_squad_player(
+            name="Sávio", code=510_281, red_cards=1, contributed=True,
+        )
+        squad = [red_player] + [_make_squad_player(name=f"P{i}") for i in range(10)]
+        rules = [{"type": "red-card", "penalty": "Buy the round"}]
+        managers = [_make_manager(name="Alice", squad=squad)]
+
+        result = evaluate_league_fines(managers, self._settings_with_fines(rules), "classic").fines
+
+        assert result[0]["players"] == [{"name": "Sávio", "code": 510_281}]
+
+    def test_a_ruling_that_names_nobody_records_an_empty_list_not_silence(self):
+        squad = [_make_squad_player(name=f"P{i}") for i in range(11)]
+        managers = [
+            _make_manager(name="Alice", gw_points=80, squad=squad),
+            _make_manager(name="Bob", gw_points=20, entry_id=2, squad=squad),
+        ]
+
+        result = evaluate_league_fines(managers, self._settings_with_fines(), "classic").fines
+
+        assert result[0]["players"] == []
+
     def test_red_card_fine_triggers_on_bench_boost_bench_slot(self):
         # BB-flagged bench slot counts as contributed; a red card there must fine.
         bb_bench_red = _make_squad_player(
@@ -2452,6 +2525,21 @@ class TestEvaluateLeagueFines:
         ruling = evaluate_league_fines(managers, {}, "classic")
 
         assert ruling.ruled_manager_keys == frozenset({1, 2})
+
+    def test_the_message_names_the_handler_s_players_not_a_re_read_of_its_prose(self):
+        """The recap message used to recover the names by splitting the
+        handler's own message back apart. It takes them from the result now,
+        so the two cannot disagree (issue #176)."""
+        squad = [
+            _make_squad_player(name="A (sic)", code=1, red_cards=1, contributed=True),
+            _make_squad_player(name="B", code=2, red_cards=1, contributed=True),
+        ]
+        rules = [{"type": "red-card", "penalty": "Round"}]
+        managers = [_make_manager(name="Alice", squad=squad)]
+
+        result = evaluate_league_fines(managers, self._settings_with_fines(rules), "classic").fines
+
+        assert result[0]["message"] == "Red card in starting XI (A (sic), B). Round"
 
     def test_below_threshold_is_measured_on_gross_points_not_gross_plus_the_hit(self):
         """`gross_points` is already gross whatever `use_net_points` says.
