@@ -13,6 +13,7 @@ from fpl_cli.season import (
     is_season_label,
     previous_season_label,
     previous_season_year,
+    resolve_season_year,
     season_label,
     season_partition,
     season_start_year,
@@ -103,6 +104,56 @@ class TestSeasonYearFromGameweeks:
 
     def test_a_plain_date_without_time_still_parses(self):
         assert season_year_from_gameweeks([{"id": 1, "deadline_time": "2026-08-14"}]) == 2026
+
+
+# -- resolve_season_year -------------------------------------------------------
+
+class TestResolveSeasonYear:
+    """`FPLClient.get_season_year()`'s policy (#91 review), factored out for
+    unit testing: GW1's own year while its season is live, the clock's once
+    that season has fully concluded and the calendar has moved past it."""
+
+    def test_a_live_season_keeps_its_own_gw1_derived_year_past_the_cutover(self):
+        """The regression this PR exists for: 2019-20 overran into July
+        2020, still with gameweeks left to play. A July-or-later clock must
+        not override GW1's answer just because it disagrees."""
+        gameweeks = [
+            {"id": 1, "deadline_time": "2019-08-09T18:00:00Z", "finished": True},
+            {"id": 38, "deadline_time": "2020-07-26T15:00:00Z", "finished": False},
+        ]
+        assert resolve_season_year(gameweeks, today=date(2020, 7, 20)) == 2019
+
+    def test_a_concluded_season_falls_back_to_a_newer_clock(self):
+        """The close-season gap: bootstrap-static keeps serving the just-
+        finished season's events, all `finished: True`, until the next
+        season's fixtures are published. GW1's year is then stale."""
+        gameweeks = [
+            {"id": 1, "deadline_time": "2025-08-09T18:00:00Z", "finished": True},
+            {"id": 38, "deadline_time": "2026-05-24T15:00:00Z", "finished": True},
+        ]
+        assert resolve_season_year(gameweeks, today=date(2026, 7, 5)) == 2026
+
+    def test_a_concluded_season_before_the_cutover_keeps_its_own_year(self):
+        """Right after the season ends but before 1 July, the clock has not
+        rolled over either -- so there is nothing to prefer it over."""
+        gameweeks = [
+            {"id": 1, "deadline_time": "2025-08-09T18:00:00Z", "finished": True},
+            {"id": 38, "deadline_time": "2026-05-24T15:00:00Z", "finished": True},
+        ]
+        assert resolve_season_year(gameweeks, today=date(2026, 5, 25)) == 2025
+
+    def test_a_freshly_published_new_season_is_not_treated_as_concluded(self):
+        """Fixtures released for the new season replace the whole payload,
+        none of them finished yet -- so this is the ordinary live-season
+        case, not the stale-data one, even before the clock's own cutover."""
+        gameweeks = [{"id": 1, "deadline_time": "2026-08-15T18:00:00Z", "finished": False}]
+        assert resolve_season_year(gameweeks, today=date(2026, 6, 20)) == 2026
+
+    def test_no_gw1_falls_back_to_the_clock(self):
+        assert resolve_season_year([], today=date(2026, 8, 1)) == 2026
+
+    def test_defaults_to_todays_clock_when_unspecified(self):
+        assert resolve_season_year([]) == get_season_year()
 
 
 # -- understat_season --------------------------------------------------------

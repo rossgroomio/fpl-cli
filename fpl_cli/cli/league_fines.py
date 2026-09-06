@@ -69,7 +69,7 @@ def league_fines_command(
     """
     from fpl_cli.cli._fines import rules_for_format
     from fpl_cli.cli._fines_config import parse_fines_config
-    from fpl_cli.services.league_history import LeagueHistoryStore
+    from fpl_cli.services.league_history import LeagueHistoryStore, most_recent_captured_season
     from fpl_cli.services.league_history_fines import build_season_fines_tally
 
     settings = get_settings(ctx)
@@ -81,7 +81,6 @@ def league_fines_command(
     fpl_format = "draft" if is_draft else "classic"
 
     with json_output_mode() if output_format == "json" else nullcontext() as stdout:
-        season = season_override or season_label()
         if season_override and not is_season_label(season_override):
             # Through `emit_failure` rather than a hand-rolled branch (#159):
             # it is the one place that knows prose and an envelope are
@@ -104,6 +103,19 @@ def league_fines_command(
                 f"to read. Set fpl.{key} in settings.yaml (or run 'fpl init').",
                 output_format,
             )
+
+        # Prefers the season the ledger was actually last written under over
+        # today's clock-derived guess (#91 review): `league-recap`'s write
+        # side now derives the season from GW1's deadline, and a network-free
+        # reader defaulting to the clock would open the wrong, empty
+        # partition next to a fully captured one during a season overrunning
+        # the July cutover. Falls back to the clock only when nothing has
+        # ever been captured for this league.
+        season = (
+            season_override
+            or most_recent_captured_season(fpl_format, league_id)
+            or season_label()
+        )
 
         store = LeagueHistoryStore(season, fpl_format, league_id)
         captured = store.captured_gameweeks()

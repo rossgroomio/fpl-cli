@@ -40,6 +40,7 @@ from fpl_cli.models.league_history import (
     weakest_tier,
 )
 from fpl_cli.paths import user_data_dir
+from fpl_cli.season import is_season_label, season_start_year
 from fpl_cli.utils.files import atomic_write_text
 
 logger = logging.getLogger(__name__)
@@ -77,6 +78,35 @@ def partition_dir(season: str, fpl_format: LeagueFormat, league_id: int) -> Path
     existed (R5).
     """
     return league_history_dir() / partition_segment(season, fpl_format, league_id)
+
+
+def most_recent_captured_season(fpl_format: LeagueFormat, league_id: int) -> str | None:
+    """The newest season holding any captured gameweek for this league, or None.
+
+    The network-free read side's answer to "which season", for a caller like
+    `league-fines` that cannot reach an `FPLClient` to derive today's season
+    from GW1's deadline the way `league-recap`'s write side does (#91). A
+    ledger row is written under the season GW1 deadline actually named, which
+    during a season overrunning the July cutover can differ from whatever
+    `season_label()`'s clock-only guess says *today* -- so a reader defaulting
+    to the clock could open the wrong, empty partition next to a fully
+    captured one. Preferring the season the ledger itself was last written
+    under keeps the two in step without giving the reader a network
+    dependency the writer alone needs.
+
+    None when nothing has ever been captured for this `(format, league_id)`,
+    so a caller falls back to its own clock-derived default -- there is
+    nothing on disk to disagree with yet.
+    """
+    root = league_history_dir()
+    if not root.is_dir():
+        return None
+    seasons = [
+        entry.name for entry in root.iterdir()
+        if entry.is_dir() and is_season_label(entry.name)
+        and any((entry / f"{fpl_format}-{league_id}").glob("gw*.ndjson"))
+    ]
+    return max(seasons, key=season_start_year) if seasons else None
 
 
 @dataclass(frozen=True)

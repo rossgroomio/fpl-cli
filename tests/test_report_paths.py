@@ -189,6 +189,17 @@ class TestResolveResearchDir:
 
         assert resolved == user_config_dir() / "research" / "ai-scout-reports" / label
 
+    def test_an_explicit_season_overrides_the_clock(self, tmp_path, frozen_season):
+        """#91 review: `preview --scout` derives its season from GW1's
+        deadline and must pass it through here rather than let the clock
+        override it -- the same gap `resolve_output_dir` already closed."""
+        frozen_season(2026)  # clock says 2026-27
+        settings = {"reports": {"research_dir": str(tmp_path / "02_Research")}}
+
+        resolved = resolve_research_dir(settings, "ai-scout-reports", season="2019-20")
+
+        assert resolved == tmp_path / "02_Research" / "ai-scout-reports" / "2019-20"
+
     def test_sibling_sources_get_independent_partitions(self, tmp_path, frozen_season):
         """A second research source cannot skip the partition -- it comes with
         the resolver rather than being the caller's job to remember."""

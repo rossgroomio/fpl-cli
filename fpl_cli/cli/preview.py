@@ -346,7 +346,7 @@ def preview_command(ctx: click.Context, save: bool, output: str | None, scout: b
                     )
 
                     # Save scout reports to dedicated directory
-                    scout_dir = resolve_research_dir(settings, "ai-scout-reports")
+                    scout_dir = resolve_research_dir(settings, "ai-scout-reports", season=season)
                     scout_dir.mkdir(parents=True, exist_ok=True)
 
                     # Save referenced version (with citations appended)

@@ -79,6 +79,43 @@ def season_year_from_gameweeks(gameweeks: Sequence[Mapping[str, Any]]) -> int | 
         return None
 
 
+def resolve_season_year(
+    gameweeks: Sequence[Mapping[str, Any]], today: date | None = None,
+) -> int:
+    """The season year a bootstrap-static payload names, favouring GW1 over the clock.
+
+    `FPLClient.get_season_year()`'s policy, factored out so it is testable
+    without an event loop or a mocked client (#91 review). Three cases:
+
+    - No GW1, or an unparseable deadline (pre-season, before fixtures are
+      released): the clock is all there is.
+    - GW1 exists and at least one gameweek in the payload is not yet
+      finished (the season is live): GW1's own year, always -- this is the
+      case the derivation exists for, and a season overrunning the July
+      cutover (2019-20, into July 2020) must not be second-guessed against
+      a clock that has since rolled into the following season.
+    - Every gameweek in the payload is finished (the season shown is over)
+      *and* the clock's year is newer: the clock. `bootstrap-static` keeps
+      serving a just-finished season's events, untouched, through the close
+      season until the next one's fixtures are released -- GW1's year is
+      then stale, naming a season that has already ended, and trusting it
+      would silently misfile the very first `fpl status`/`review`/
+      `league-recap` runs of the new season (the same mislabelling #91 is
+      about, at the other end of the year).
+
+    >>> resolve_season_year([{"id": 1, "deadline_time": "2019-08-09T18:00:00Z"}])
+    2019
+    """
+    clock_year = get_season_year(today)
+    gw1_year = season_year_from_gameweeks(gameweeks)
+    if gw1_year is None:
+        return clock_year
+    season_concluded = bool(gameweeks) and all(gw.get("finished") for gw in gameweeks)
+    if season_concluded and clock_year > gw1_year:
+        return clock_year
+    return gw1_year
+
+
 # -- Format helpers ----------------------------------------------------------
 
 def understat_season(year: int | None = None) -> str:

@@ -321,7 +321,7 @@ def resolve_output_dir(
     return season_partition(base, season)
 
 
-def resolve_research_dir(settings: dict[str, Any], source: str) -> Path:
+def resolve_research_dir(settings: dict[str, Any], source: str, season: str | None = None) -> Path:
     """Season-partitioned directory for one research `source`, e.g. `ai-scout-reports`.
 
     The research root holds one subdirectory per source -- and, in the vault,
@@ -330,10 +330,15 @@ def resolve_research_dir(settings: dict[str, Any], source: str) -> Path:
     than returning the bare root is what makes that non-optional: a future
     writer adding `injury-news/` gets the partition by construction instead of
     having to remember to wrap the result in `season_partition()`.
+
+    `season` behaves as it does on `resolve_output_dir` -- omit it for the
+    clock-derived default, or pass a GW1-derived one from an open `FPLClient`
+    so a source written during a season that overruns the July cutover lands
+    in that season's own directory rather than the clock's guess (#91).
     """
     raw = settings_block(settings, "reports").get("research_dir")
     root = Path(raw).expanduser() if raw else _user_config_dir() / "research"
-    return season_partition(root / source)
+    return season_partition(root / source, season)
 
 
 def load_settings() -> dict[str, Any]:
