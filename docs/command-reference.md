@@ -822,6 +822,8 @@ either way — an in-progress gameweek is never recappable, so the recap of the 
 has to keep working while the next one plays.
 
 **Awards:** GW winner/loser, biggest bench haul, best/worst captain, transfer/waiver genius and disaster.
+The draft waiver awards count and label waiver claims and free-agent signings separately (e.g. "across
+2 moves: 1 waiver, 1 free agent") rather than folding both into "waivers".
 A tied award records every manager who tied but bounds the prose it prints them in: at most three
 picks, at most three managers named under each, and the rest counted rather than listed, so the line
 is the same length whether five managers tied or fifty. A captain tie the whole league is in is not

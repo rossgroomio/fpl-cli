@@ -53,6 +53,7 @@ if TYPE_CHECKING:
             self, league_id: int, page: int = 1, /,
         ) -> dict[str, Any]: ...
 from fpl_cli.cli._league_recap_types import (
+    DRAFT_TRANSACTION_KIND_LABELS,
     LeagueRecapData,
     RecapAwardEntry,
     RecapAwards,
@@ -1393,7 +1394,39 @@ def _compute_shared_awards(
 
 
 def _fmt_award_move(m: RecapTransfer | RecapDraftTransaction) -> str:
-    return f"{m['player_in']} for {m['player_out']} ({m['net']:+d})"
+    return f"{m['player_in']} in for {m['player_out']} ({m['net']:+d})"
+
+
+def _award_breakdown_clause(
+    breakdown: list[tuple[str, int]],
+    *,
+    raw: int,
+    transfer_cost: int,
+    always_label_single: bool,
+) -> str:
+    """Render the parenthetical after an award headline from a labelled count
+    breakdown, e.g. [("transfer", 2)] or [("waiver", 1), ("free agent", 1)].
+
+    A hit always gets the full "raw across ... hit" form. Otherwise a single
+    bucket collapses to "N labels"; more than one bucket spells out each
+    ("N moves: a waivers, b free agents"). `always_label_single` makes even a
+    lone move state its label (draft, so a lone free-agent pickup under the
+    Waiver Genius heading is never left unlabelled) rather than going compact
+    (classic's unchanged single-transfer behaviour).
+    """
+    present = [(label, count) for label, count in breakdown if count]
+    n = sum(count for _, count in present)
+    labelled = ", ".join(f"{count} {label}{'s' if count != 1 else ''}" for label, count in present)
+
+    if transfer_cost > 0:
+        return f" ({raw:+d} raw across {labelled}, -{transfer_cost} hit)"
+    if n > 1:
+        if len(present) == 1:
+            return f" ({raw:+d} raw across {labelled})"
+        return f" ({raw:+d} raw across {n} moves: {labelled})"
+    if always_label_single and n == 1:
+        return f" ({labelled})"
+    return ""
 
 
 def _format_award_detail(
@@ -1402,13 +1435,27 @@ def _format_award_detail(
     moves: list[RecapTransfer] | list[RecapDraftTransaction],
     transfer_cost: int,
     side: Literal["genius", "disaster"],
-    label_singular: str,
+    breakdown: list[tuple[str, int]],
+    always_label_single: bool = False,
 ) -> str:
     """Format the detail string for a transfer/waiver genius or disaster award.
 
     Surfaces the top _DETAIL_CAP moves by net (for the side of the award),
     aggregate context (raw, hit, overall true_net), and an omitted-count tail
     when more moves exist than the cap. Uniform across transfer and waiver.
+
+    `breakdown` drives the headline's parenthetical clause and is independent
+    of `moves`: classic supplies its transfer count, draft supplies kind
+    counts from the raw transaction list (not the contracted `moves` list),
+    so a chain-collapsed intermediate still counts toward the total even
+    though it is never named in the shown moves.
+
+    This means `breakdown`'s total and `moves`' shown-plus-omitted total can
+    differ, by design (issue #146): a collapsed intermediate's net is already
+    folded into a shown line (or cancelled out entirely in a closed loop),
+    not sitting hidden behind the cap, so it never gets an omitted-count
+    entry of its own -- `omitted` counts only real cap truncation of the
+    (already-contracted) `moves` list.
     """
     if not moves:
         raise ValueError("_format_award_detail requires at least one move")
@@ -1428,14 +1475,9 @@ def _format_award_detail(
         magnitude = abs(true_net)
         lead = "Worst"
 
-    plural = label_singular if n == 1 else f"{label_singular}s"
-    if transfer_cost > 0:
-        context = f" ({raw:+d} raw across {n} {plural}, -{transfer_cost} hit)"
-    elif n > 1:
-        context = f" ({raw:+d} raw across {n} {plural})"
-    else:
-        context = ""
-
+    context = _award_breakdown_clause(
+        breakdown, raw=raw, transfer_cost=transfer_cost, always_label_single=always_label_single,
+    )
     headline = f"{manager_name} {verb} {magnitude} net pts overall{context}."
 
     shown = sorted_moves[:_DETAIL_CAP]
@@ -1496,7 +1538,7 @@ def _compute_transfer_awards(
                 moves=list(genius.get("transfers", [])),
                 transfer_cost=genius.get("transfer_cost", 0),
                 side="genius",
-                label_singular="transfer",
+                breakdown=[("transfer", len(genius.get("transfers", [])))],
             ),
         )
 
@@ -1511,7 +1553,7 @@ def _compute_transfer_awards(
                 moves=list(disaster.get("transfers", [])),
                 transfer_cost=disaster.get("transfer_cost", 0),
                 side="disaster",
-                label_singular="transfer",
+                breakdown=[("transfer", len(disaster.get("transfers", [])))],
             ),
         )
 
@@ -1566,6 +1608,19 @@ def _contract_draft_txn_chains(
     return contracted
 
 
+def _draft_kind_breakdown(txns: list[RecapDraftTransaction]) -> list[tuple[str, int]]:
+    """Count a manager's raw draft transactions by kind label, in the fixed
+    display order (waivers, free agents, other moves). Built from the raw
+    list rather than the chain-contracted one, so a manager's headline count
+    reflects every move they made -- including an intermediate the Best/Worst
+    line never names because a follow-up move replaced it the same GW."""
+    counts: dict[str, int] = {"waiver": 0, "free agent": 0, "other move": 0}
+    for t in txns:
+        label = DRAFT_TRANSACTION_KIND_LABELS.get(t["kind"], "other move")
+        counts[label] += 1
+    return [(label, counts[label]) for label in ("waiver", "free agent", "other move")]
+
+
 def _compute_waiver_awards(
     managers: list[RecapManagerEntry],
     awards: RecapAwards,
@@ -1597,7 +1652,8 @@ def _compute_waiver_awards(
                 moves=list(genius_effective),
                 transfer_cost=0,
                 side="genius",
-                label_singular="waiver",
+                breakdown=_draft_kind_breakdown(genius.get("transactions", [])),
+                always_label_single=True,
             ),
         )
 
@@ -1613,7 +1669,8 @@ def _compute_waiver_awards(
                 moves=list(disaster_effective),
                 transfer_cost=0,
                 side="disaster",
-                label_singular="waiver",
+                breakdown=_draft_kind_breakdown(disaster.get("transactions", [])),
+                always_label_single=True,
             ),
         )
 
@@ -1856,7 +1913,10 @@ async def collect_draft_recap_data(
                     player_out_team_name=out_club.name if out_club else None,
                     player_out_points=out_pts,
                     net=in_pts - out_pts,
-                    kind=txn.get("kind", "w"),
+                    # Store what the API sent verbatim -- defaulting a missing
+                    # kind to "w" would misclassify it as a waiver in the
+                    # award breakdown instead of the honest "other move".
+                    kind=txn.get("kind", ""),
                 )
                 if pin_id is not None and (in_code := draft_to_main_code.get(pin_id)):
                     transaction["player_in_code"] = in_code
