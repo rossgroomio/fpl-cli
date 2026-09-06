@@ -63,7 +63,12 @@ def is_fpl_cli_missing(exc: ModuleNotFoundError) -> bool:
 
 
 try:
-    from fpl_cli.paths import UserDirError, ensure_legacy_migration, load_env_files
+    from fpl_cli.paths import (
+        UserDirError,
+        ensure_legacy_migration,
+        ensure_user_dirs_valid,
+        load_env_files,
+    )
 except ModuleNotFoundError as exc:
     if not is_fpl_cli_missing(exc):
         raise
@@ -78,9 +83,15 @@ def bootstrap_user_dirs() -> None:
     repo-root dirs silently gets empty settings and regenerated ratings.
     A bad FPL_CLI_* override surfaces here as a clean JSON error instead
     of a traceback mid-agent.
+
+    `ensure_user_dirs_valid()` is the CLI's other startup step: without it, a
+    relative FPL_CLI_DATA_DIR/FPL_CLI_CACHE_DIR resolves silently against
+    this script's launching cwd instead of failing here, in an installed venv
+    where the legacy dirs migration checks for never exist (#139 review).
     """
     try:
         load_env_files()
         ensure_legacy_migration()
+        ensure_user_dirs_valid()
     except UserDirError as exc:
         fail([str(exc)])
