@@ -124,10 +124,13 @@ def ratings_update(
     async def _update() -> None:
         from fpl_cli.services.team_ratings_prior import (
             BLENDING_CUTOFF_GW,
+            PRIOR_KEPT_CACHE,
+            PRIOR_UNAVAILABLE,
             REGRESSION_CONSTANT,
             blend_with_prior,
             describe_prior_inputs,
             generate_prior,
+            rebuild_prior,
         )
 
         service = TeamRatingsService()
@@ -143,11 +146,20 @@ def ratings_update(
             # flag governs team_ratings.yaml, and refreshing a stale prior is
             # what was asked for either way.
             if refresh_prior:
-                console.print("[bold]Rebuilding last season's prior...[/bold]\n")
-                if not await generate_prior(client, refresh=True):
+                # Reported off the outcome, not the ratings: a rebuild that
+                # failed and fell back to the cache returns the cache's ratings,
+                # which are as truthy as a fresh prior's.
+                error_console.print("[bold]Rebuilding last season's prior...[/bold]\n")
+                rebuild = await rebuild_prior(client)
+                if rebuild.outcome == PRIOR_KEPT_CACHE:
                     error_console.print(
-                        "[yellow]Could not rebuild the prior from any source - "
-                        "carrying on with the saved copy.[/yellow]\n"
+                        "[yellow]The rebuild did not improve on the saved prior - "
+                        "keeping it. Run with -v for the reason.[/yellow]\n"
+                    )
+                elif rebuild.outcome == PRIOR_UNAVAILABLE:
+                    error_console.print(
+                        "[yellow]No previous-season data available from any source - "
+                        "there is no prior to rebuild.[/yellow]\n"
                     )
 
             calculator = TeamRatingsCalculator(client)
