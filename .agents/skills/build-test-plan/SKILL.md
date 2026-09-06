@@ -224,6 +224,34 @@ code path runs tells you nothing about whether the bug is gone.
 the source. Commands, files on disk, exit codes, stdout vs stderr — never
 internal functions.
 
+**It writes nothing into the vault the run wouldn't have written anyway.**
+The vault is someone's working record, not a scratch pad. `01_Reports/`
+holds point-in-time snapshots — the gameweek as it was analysed at the
+time — so a test that regenerates one overwrites the record with a later
+model's output, and a test that saves a preview for a gameweek whose
+deadline has not passed creates a file that should not exist yet. Both
+land in a PR as noise the author then has to spot and revert, which has
+happened on more than one run.
+
+So: every `--save` you write into a plan carries `-o <scratch>/reports`.
+`preview`, `review` and `league-recap` all take `-o/--output`, and the
+report is just as assertable from a scratch path — you are checking its
+content, not its location. Where a test must assert the *default* path is
+used, assert it on a scratch `HOME`/cwd rather than by writing into the
+real tree.
+
+The same discipline covers `data/`: the ledger under
+`data/league_history/` is the one thing worth capturing for real, because
+its rows are append-only and cannot be reconstructed once the season moves
+on. Everything else there — `returnee_snapshot.json`, `team_ratings*.yaml`,
+`team_finances.json` — is regenerable state the CLI rewrites, so a test
+that migrates or rewrites one points `FPL_CLI_DATA_DIR` at a throwaway
+copy. A migration performed as a side effect of a test is not a change
+anyone decided to make, and it reads in review as if it were.
+
+The question to ask of every artifact a plan produces: *would this have
+been created anyway, by real use, today?* If no, it goes to scratch.
+
 **It builds a fixture before it gives up.** When live data can't reach a
 code path, a scratch fixture often can: point `FPL_CLI_DATA_DIR` at a
 throwaway copy of the store and doctor a row to the shape the bug needed,
