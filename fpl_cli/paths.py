@@ -143,6 +143,24 @@ def user_data_dir() -> Path:
     return _resolve_user_dir("FPL_CLI_DATA_DIR", "user_data_path")
 
 
+def ensure_user_dirs_valid() -> None:
+    """Resolve all three FPL_CLI_* dirs eagerly, so a bad override fails identically.
+
+    Each resolver only validates its own override, and only when something
+    calls it -- `load_settings()` reaches `user_config_dir()` on every
+    command, but `user_data_dir()` / `user_cache_dir()` are otherwise only
+    reached by a command that happens to touch data or cache. Left alone that
+    makes the #46 guard asymmetric: a relative FPL_CLI_CONFIG_DIR is rejected
+    everywhere, while a relative FPL_CLI_DATA_DIR resolves against the cwd on
+    any command that doesn't read the data dir on its own -- `fpl status`
+    included (#139). Called once per invocation from the CLI entry point,
+    before dispatch, so every command sees the same accept/reject outcome.
+    """
+    user_config_dir()
+    user_data_dir()
+    user_cache_dir()
+
+
 def user_config_file(name: str) -> Path:
     """Path of one file in the user config dir.
 
