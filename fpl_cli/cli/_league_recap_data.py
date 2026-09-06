@@ -64,6 +64,7 @@ from fpl_cli.cli._league_recap_types import (
     RecapStandingsEntry,
     RecapTransfer,
     draft_transaction_kind_counts,
+    format_move_counts,
 )
 from fpl_cli.services.fixture_predictions import had_fixture
 from fpl_cli.services.player_clubs import gameweek_club
@@ -1414,18 +1415,15 @@ def _award_breakdown_clause(
     Waiver Genius heading is never left unlabelled) rather than going compact
     (classic's unchanged single-transfer behaviour).
     """
-    present = [(label, count) for label, count in breakdown if count]
-    n = sum(count for _, count in present)
-    labelled = ", ".join(f"{count} {label}{'s' if count != 1 else ''}" for label, count in present)
+    n = sum(count for _, count in breakdown)
+    counts = format_move_counts(breakdown)
 
     if transfer_cost > 0:
-        return f" ({raw:+d} raw across {labelled}, -{transfer_cost} hit)"
+        return f" ({raw:+d} raw across {counts}, -{transfer_cost} hit)"
     if n > 1:
-        if len(present) == 1:
-            return f" ({raw:+d} raw across {labelled})"
-        return f" ({raw:+d} raw across {n} moves: {labelled})"
+        return f" ({raw:+d} raw across {counts})"
     if always_label_single and n == 1:
-        return f" ({labelled})"
+        return f" ({counts})"
     return ""
 
 

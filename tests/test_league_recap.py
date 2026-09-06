@@ -42,6 +42,8 @@ from fpl_cli.cli._league_recap_types import (
     RecapManagerEntry,
     RecapManagerPlayer,
     RecapTransfer,
+    draft_transaction_kind_counts,
+    format_move_counts,
 )
 from fpl_cli.prompts.league_recap import (
     collect_player_clubs,
@@ -2481,6 +2483,39 @@ def _txn(pin: str, pin_pts: int, pout: str, pout_pts: int, kind: str = "w") -> R
     )
 
 
+class TestFormatMoveCounts:
+    """One rendering of a kind-count breakdown, shared by the award headline
+    and the waiver roster (PR #303 review)."""
+
+    def test_a_single_kind_reads_as_its_count_alone(self):
+        assert format_move_counts([("transfer", 2)]) == "2 transfers"
+        assert format_move_counts([("waiver", 2), ("free agent", 0), ("other move", 0)]) == "2 waivers"
+
+    def test_a_lone_move_is_singular(self):
+        assert format_move_counts([("free agent", 1)]) == "1 free agent"
+
+    def test_mixed_kinds_lead_with_the_total(self):
+        assert (
+            format_move_counts([("waiver", 2), ("free agent", 1), ("other move", 0)])
+            == "3 moves: 2 waivers, 1 free agent"
+        )
+
+    def test_empty_buckets_are_dropped_and_nothing_reads_as_nothing(self):
+        assert format_move_counts([("waiver", 0), ("free agent", 0)]) == ""
+
+    def test_the_award_and_the_roster_render_one_breakdown_alike(self):
+        txns = [_txn("A", 9, "B", 1), _txn("C", 4, "D", 2, kind="f")]
+        managers = [_make_manager_with_txns("Alice", txns), _make_manager(name="Bob")]
+        awards: RecapAwards = {}  # type: ignore[typeddict-item]
+        _compute_waiver_awards(managers, awards)
+        data = _make_recap_data(managers=managers)
+        data["fpl_format"] = "draft"
+        rendered = format_move_counts(draft_transaction_kind_counts(txns))
+        assert rendered == "2 moves: 1 waiver, 1 free agent"
+        assert f"across {rendered}" in awards["waiver_genius"]["detail"]
+        assert f"**Alice** ({rendered}, net" in format_recap_waivers_context(data)
+
+
 class TestContractDraftTxnChains:
     """Chain rebuilds within a manager-GW collapse to endpoint pairs."""
 
@@ -3014,6 +3049,22 @@ class TestPromptFormatting:
         text = format_recap_captains_context(data)
         assert "Alice (dnp; vice Salah scored 12 pts)" in text
         assert "Bob (7 pts)" in text
+
+    def test_captains_context_prints_a_lone_point_in_the_singular(self):
+        """A captain on exactly one point, or a vice who took over for one,
+        reads "1 pt" like the chips and move rosters do -- one document, one
+        unit."""
+        managers = [
+            _make_manager(name="Alice", entry_id=1, captain="Haaland", captain_points=1),
+            _make_manager(
+                name="Bob", entry_id=2, captain="Salah", captain_points=0, captain_played=False,
+                vice_captain="Saka", vice_captain_points=1,
+            ),
+        ]
+        text = format_recap_captains_context(_make_recap_data(managers=managers))
+        assert "Alice (1 pt)" in text
+        assert "Bob (dnp; vice Saka scored 1 pt)" in text
+        assert "1 pts" not in text
 
     def test_captains_context_empty_for_draft(self):
         managers = [_make_manager(name="Cam", entry_id=1, captain="Haaland")]

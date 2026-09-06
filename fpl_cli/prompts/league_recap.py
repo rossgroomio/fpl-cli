@@ -6,6 +6,7 @@ from fpl_cli.cli._league_recap_types import (
     LeagueRecapData,
     draft_transaction_kind_counts,
     draft_transaction_kind_label,
+    format_move_counts,
 )
 from fpl_cli.services.league_history_fines import SeasonFinesTally, format_fine_breakdown
 from fpl_cli.services.league_history_notes import NotesPack, NoteSurface
@@ -424,9 +425,7 @@ def format_recap_waivers_context(data: LeagueRecapData) -> str:
             stayed.append(name)
             continue
 
-        present = [(label, count) for label, count in draft_transaction_kind_counts(moves) if count]
-        labelled = ", ".join(f"{count} {label}{'s' if count != 1 else ''}" for label, count in present)
-        summary = labelled if len(present) == 1 else f"{len(moves)} moves: {labelled}"
+        summary = format_move_counts(draft_transaction_kind_counts(moves))
         moves_text = "; ".join(
             f"{t['player_in']} ({_pts(t['player_in_points'])}) in for "
             f"{t['player_out']} ({_pts(t['player_out_points'])}), {t['net']:+d} "
@@ -529,11 +528,11 @@ def format_recap_captains_context(
         if not captain:
             continue
         if m.get("captain_played"):
-            annotation = f"{m['captain_points']} pts"
+            annotation = _pts(m["captain_points"])
         else:
             vc_name = m.get("vice_captain") or "?"
             vc_pts = m.get("vice_captain_points", 0)
-            annotation = f"dnp; vice {vc_name} scored {vc_pts} pts"
+            annotation = f"dnp; vice {vc_name} scored {_pts(vc_pts)}"
         by_captain.setdefault(captain, []).append((m["manager_name"], annotation))
 
     if not by_captain:

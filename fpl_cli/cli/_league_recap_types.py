@@ -108,6 +108,19 @@ def draft_transaction_kind_counts(
     return [(label, counts[label]) for label in DRAFT_TRANSACTION_LABEL_ORDER]
 
 
+def format_move_counts(breakdown: list[tuple[str, int]]) -> str:
+    """Render a labelled count breakdown as prose: "2 transfers", "1 free
+    agent", or across more than one kind "3 moves: 2 waivers, 1 free agent".
+    Empty buckets are dropped. The one rendering behind the transfer and
+    waiver awards' headline and the editorial's waiver roster, so a new kind
+    or a pluralisation change lands in every surface at once."""
+    present = [(label, count) for label, count in breakdown if count]
+    labelled = ", ".join(f"{count} {label}{'s' if count != 1 else ''}" for label, count in present)
+    if len(present) <= 1:
+        return labelled
+    return f"{sum(count for _, count in present)} moves: {labelled}"
+
+
 class RecapManagerEntry(TypedDict):
     """Per-manager data for one gameweek."""
 
