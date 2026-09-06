@@ -51,9 +51,16 @@ CI_SEASON = core_insights_season()
 PLAYER_KEYS = [field.alias or name for name, field in Player.model_fields.items()]
 
 
-def _element(pid: int, drop: tuple[str, ...] = ()) -> dict:
+def _element(pid: int, drop: tuple[str, ...] = (), joins: bool = False) -> dict:
     element = {key: 0 for key in PLAYER_KEYS if key not in drop}
     element["id"] = pid
+    if joins:
+        # A player the name-join probe will actually ask about: minutes played,
+        # at team `pid`, named as `_understat_players` names that team's row.
+        element["web_name"] = f"Player {pid}"
+        element["team"] = pid
+        element["minutes"] = 900
+        element["element_type"] = 3
     return element
 
 
@@ -61,6 +68,7 @@ def _bootstrap(
     finished_gws: int = 5,
     drop_player_key: tuple[str, ...] = (),
     team_names: list[str] | None = None,
+    joining_players: int = 0,
 ) -> dict:
     names = team_names if team_names is not None else [f"Team {i:02d}" for i in range(1, 21)]
     return {
@@ -69,7 +77,10 @@ def _bootstrap(
             for i, name in enumerate(names, start=1)
         ],
         "events": [{"id": i, "finished": i <= finished_gws} for i in range(1, 39)],
-        "elements": [_element(i, drop=drop_player_key) for i in range(1, 401)],
+        "elements": [
+            _element(i, drop=drop_player_key, joins=i <= joining_players)
+            for i in range(1, 401)
+        ],
     }
 
 
@@ -89,10 +100,15 @@ def _csv(
 BLANK_ELO = frozenset({"home_team_elo", "away_team_elo"})
 
 
-def _understat_players(team_names: list[str]) -> dict:
+def _understat_players(team_names: list[str], player_names: list[str] | None = None) -> dict:
     return {
         "players": [
-            {"id": str(i), "player_name": f"Player {i}", "team_title": team, "time": "900"}
+            {
+                "id": str(i),
+                "player_name": player_names[i - 1] if player_names else f"Player {i}",
+                "team_title": team,
+                "time": "900",
+            }
             for i, team in enumerate(team_names, start=1)
         ]
     }
@@ -129,7 +145,9 @@ def _register_routes(
     vaastav_overrides: dict[str, Response] | None = None,
     ci_overrides: dict[tuple[str, str], Response] | None = None,
     understat_teams: list[str] | None = None,
+    understat_player_names: list[str] | None = None,
     bootstrap_team_names: list[str] | None = None,
+    joining_players: int = 20,
     gw_missing: tuple[int, ...] = (),
     gw_texts: dict[tuple[int, str], str] | None = None,
     gw_404: frozenset[tuple[int, str]] = frozenset(),
@@ -141,6 +159,7 @@ def _register_routes(
         finished_gws=finished_gws,
         drop_player_key=drop_player_key,
         team_names=bootstrap_team_names,
+        joining_players=joining_players,
     )
     fpl_route = respx.get(FPL_BOOTSTRAP_URL)
     if fpl_error is not None:
@@ -205,7 +224,9 @@ def _register_routes(
     teams = understat_teams if understat_teams is not None else [
         f"Team {i:02d}" for i in range(1, 21)
     ]
-    respx.get(UNDERSTAT_URL).mock(return_value=Response(200, json=_understat_players(teams)))
+    respx.get(UNDERSTAT_URL).mock(
+        return_value=Response(200, json=_understat_players(teams, understat_player_names))
+    )
 
     tlas = fd_tlas if fd_tlas is not None else [f"T{i:02d}" for i in range(1, 21)]
     respx.get(FD_STANDINGS_URL).mock(return_value=Response(200, json=_fd_standings(tlas)))
@@ -239,6 +260,7 @@ class TestHealthyProviders:
         assert "player-match records" in flat
         assert "players resolve for the join" in flat
         assert "resolve to an Understat team" in flat
+        assert "20 of 20 players with minutes join by name" in flat
         assert "resolve to FPL short names through TLA_TO_FPL" in flat
 
     @respx.mock
@@ -656,6 +678,113 @@ class TestLagAndUnreachability:
         # The cross-source checks depend on the live team list and must
         # report unchecked rather than guessing.
         assert "could not fetch the live team list" in flat
+
+
+class TestUnderstatNameJoin:
+    """Resolving 20 clubs said nothing about whether their players join (#263)."""
+
+    def _row(self, result):
+        payload = json.loads(result.output)
+        return next(
+            c for c in payload["data"]["providers"] if c["name"] == "Understat name join"
+        )
+
+    @respx.mock
+    def test_a_full_join_is_ok(self, monkeypatch):
+        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
+        _register_routes(finished_gws=5)
+        result = _run(["--format", "json"])
+        row = self._row(result)
+        assert row["status"] == "ok"
+        assert "20 of 20 players with minutes join by name" in row["detail"]
+
+    @respx.mock
+    def test_a_single_miss_stays_ok_but_names_the_player(self, monkeypatch):
+        # A few percent always miss — players Understat has no row for, cameos
+        # in a gameweek it has not ingested. Naming them is the point: the rate
+        # is what to watch, and a human can only watch it if they can see it.
+        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
+        names = [f"Player {i}" for i in range(1, 21)]
+        names[7] = "Somebody Else"
+        _register_routes(finished_gws=5, understat_player_names=names)
+        result = _run(["--format", "json"])
+        row = self._row(result)
+        assert row["status"] == "ok"
+        assert "19 of 20 players with minutes join by name" in row["detail"]
+        assert "Player 8 (Team 08, 900m)" in row["detail"]
+
+    @respx.mock
+    def test_a_wholesale_name_break_is_broken(self, monkeypatch):
+        # The regression this row exists for: every club still resolves, so
+        # the club check stays green while no player joins at all.
+        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
+        _register_routes(
+            finished_gws=5,
+            understat_player_names=[f"Stranger {i}" for i in range(1, 21)],
+        )
+        result = _run(["--format", "json"])
+        payload = json.loads(result.output)
+        row = self._row(result)
+        assert row["status"] == "broken"
+        assert "100% of players with minutes match no Understat row" in row["detail"]
+        # And the club check is still green, which is exactly why this row had
+        # to exist rather than being folded into that one.
+        club_row = next(
+            c for c in payload["data"]["providers"] if c["name"] == "Understat team map"
+        )
+        assert club_row["status"] == "ok"
+
+    @respx.mock
+    def test_a_wholesale_name_break_is_stale_early_season(self, monkeypatch):
+        # Before the pool has settled, players whose only minutes came in a
+        # gameweek Understat has not ingested legitimately miss.
+        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
+        _register_routes(
+            finished_gws=2,
+            understat_player_names=[f"Stranger {i}" for i in range(1, 21)],
+        )
+        result = _run(["--format", "json"])
+        row = self._row(result)
+        assert row["status"] == "stale"
+        assert "may be ingestion lag" in row["detail"]
+
+    @respx.mock
+    def test_an_unresolved_club_is_not_restated_as_name_misses(self, monkeypatch):
+        # Team 20 carries no Understat rows at all. That is the club check's
+        # finding; counting its players here would restate one club gap as a
+        # squad's worth of name misses and bury the real ones.
+        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
+        _register_routes(
+            finished_gws=5,
+            understat_teams=[f"Team {i:02d}" for i in range(1, 20)],
+        )
+        result = _run(["--format", "json"])
+        row = self._row(result)
+        assert row["status"] == "ok"
+        assert "19 of 19 players with minutes join by name" in row["detail"]
+        assert "Player 20" not in row["detail"]
+
+    @respx.mock
+    def test_no_players_with_minutes_is_skipped(self, monkeypatch):
+        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
+        _register_routes(finished_gws=5, joining_players=0)
+        result = _run(["--format", "json"])
+        row = self._row(result)
+        assert row["status"] == "skipped"
+        assert "no players with minutes at a resolved club yet" in row["detail"]
+
+    @respx.mock
+    def test_unreachable_fpl_api_is_unchecked(self, monkeypatch):
+        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
+        _register_routes(
+            fpl_error=httpx.ConnectError(
+                "boom", request=httpx.Request("GET", FPL_BOOTSTRAP_URL)
+            )
+        )
+        result = _run(["--format", "json"])
+        row = self._row(result)
+        assert row["status"] == "unchecked"
+        assert "could not fetch the live" in row["detail"]
 
 
 class TestJsonOutput:

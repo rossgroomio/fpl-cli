@@ -1309,6 +1309,29 @@ class TestNormalise:
         # special-cased to `&#039;`.
         assert _normalise(escaped) == _normalise(plain)
 
+    @pytest.mark.parametrize(
+        "variant",
+        [
+            "Dara O\u2019Shea",  # right single quote — what &rsquo;/&#8217; decode to
+            "Dara O\u2018Shea",  # left single quote
+            "Dara O\u02bcShea",  # modifier letter apostrophe
+            "Dara O\u00b4Shea",  # acute accent standing in for one
+            "Dara O`Shea",  # grave accent standing in for one
+        ],
+    )
+    def test_apostrophe_lookalikes_separate_like_the_ascii_one(self, variant):
+        # Decoding is only half the job: a decoded `&rsquo;` is U+2019, not
+        # U+0027, so a separator rule that only knows the ASCII apostrophe
+        # deletes it outright instead of splitting on it. That collapses
+        # `Dara O’Shea` to the single word `oshea`, which fails the exact tier,
+        # fails all-words (FPL's `o` is not among its words) and fails prefix
+        # (nothing starts with `shea`) — the same silent no-match #263 was.
+        assert _normalise(variant) == _normalise("Dara O'Shea")
+
+    @pytest.mark.parametrize("entity", ["&rsquo;", "&#8217;", "&#x2019;"])
+    def test_curly_quote_entities_join_end_to_end(self, entity):
+        assert _normalise(f"Dara O{entity}Shea") == "dara o shea"
+
     def test_plain_names_are_unchanged(self):
         assert _normalise("Bukayo Saka") == "bukayo saka"
         assert _normalise("Kevin De Bruyne") == "kevin de bruyne"
@@ -1477,6 +1500,17 @@ class TestCrossSourceNameContract:
         )
         assert match is not None
         assert match["name"] == "Dara O'Shea"
+
+    @pytest.mark.parametrize("apostrophe", ["'", "\u2019", "&#039;", "&rsquo;"])
+    def test_any_apostrophe_form_joins_to_fpl(self, apostrophe):
+        # Whatever Understat serves in the apostrophe's place, the join has to
+        # land: FPL only ever serves U+0027, so every other form is ours to
+        # reconcile.
+        pool = [self._pool_row(f"Dara O{apostrophe}Shea", "Ipswich", "D", 270)]
+        match = match_fpl_to_understat(
+            "O'Shea", "Ipswich Town", pool, fpl_position="DEF", fpl_minutes=270
+        )
+        assert match is not None
 
     def test_a_row_that_skipped_the_boundary_still_joins(self):
         # The second layer earning its place: a row assembled by a caller

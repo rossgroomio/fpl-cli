@@ -43,6 +43,21 @@ TEAM_NAME_MAP = {
     "Sunderland": "Sunderland",
 }
 
+# Characters that stand in for an apostrophe or a hyphen inside a name and so
+# have to separate its words rather than vanish. FPL serves the ASCII pair
+# (`O'Shea` is U+0027); the rest are what an editorial pipeline serves in their
+# place, and decoding an entity is exactly how one arrives -- `&rsquo;` and
+# `&#8217;` both decode to U+2019, not U+0027 (#263 review).
+#
+# Deleting one instead of separating on it is not a smaller failure than the
+# entity was: `Dara O’Shea` collapses to the single word `oshea`, which fails
+# the exact tier, fails all-words (FPL's `o` is not among its words) and fails
+# prefix (nothing starts with `shea`) -- the same silent no-match, for the same
+# player. `strip_diacritics` cannot help: U+2019 has no decomposition and is
+# not a combining mark, so it reaches the punctuation rule intact.
+_NAME_SEPARATORS = ".-'\u2019\u2018\u02bc\u00b4`"
+_NAME_SEPARATOR_RE = re.compile(f"[{re.escape(_NAME_SEPARATORS)}]")
+
 # Map Understat position tokens to FPL positions
 POSITION_MAP = {
     "F": "FWD",
@@ -219,13 +234,16 @@ class UnderstatClient:
         response.raise_for_status()
         return response.text
 
-    def _extract_json_data(self, html: str, var_name: str) -> Any:
+    def _extract_json_data(self, raw_html: str, var_name: str) -> Any:
         """Extract JSON data embedded in HTML.
 
         Understat embeds data as JavaScript variables in the page.
 
         Args:
-            html: HTML content.
+            raw_html: HTML content. Named around the `html` module this
+                function's sibling now decodes with, so reaching for
+                `html.unescape` in here does not silently resolve to the
+                parameter.
             var_name: JavaScript variable name to extract.
 
         Returns:
@@ -233,7 +251,7 @@ class UnderstatClient:
         """
         # Pattern matches: var varName = JSON.parse('...')
         pattern = rf"var\s+{var_name}\s*=\s*JSON\.parse\('([^']+)'\)"
-        match = re.search(pattern, html)
+        match = re.search(pattern, raw_html)
 
         if not match:
             return None
@@ -468,7 +486,7 @@ def _normalise(text: str) -> str:
     """
     text = html.unescape(text)
     text = strip_diacritics(text).lower()
-    text = re.sub(r"[.\-']", " ", text)  # Name separators → spaces
+    text = _NAME_SEPARATOR_RE.sub(" ", text)  # Name separators → spaces
     text = re.sub(r"[^a-z0-9 ]", "", text)  # Strip remaining punctuation
     return re.sub(r" +", " ", text).strip()  # Collapse whitespace
 

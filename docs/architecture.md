@@ -529,7 +529,7 @@ fpl_cli/
 │   ├── _league_recap_*.py        # League recap helpers & types (`_league_recap_history.py` orchestrates capture: builds ledger rows, corrects previous league position from recorded rows, runs the two-tier backfill including the coarse tier's partial fine ruling, keeps the name/club/position a replayed gameweek already recorded rather than restamping it from today's bootstrap (`_carry_recorded_identity`, reading the earliest recorded line rather than the resolved winner so an already-restamped gameweek is repaired), and returns the notes pack and season fine tally the console, report, prompt and JSON payload all read)
 │   ├── _fines.py / _fines_config.py  # League fines system, including the cohort-only/needs-a-squad rule split the coarse ledger tier narrows by
 │   ├── league_fines.py           # `league-fines`: season fine table read straight off the ledger, no network
-│   ├── doctor_providers.py       # Live provider probes for `doctor --providers` (shape/volume/join checks; the Core-Insights per-GW probe runs the real parsers, so it cannot pass a file the runtime reads as zero records)
+│   ├── doctor_providers.py       # Live provider probes for `doctor --providers` (shape/volume/join checks; the Core-Insights per-GW probe runs the real parsers, so it cannot pass a file the runtime reads as zero records, and the Understat name-join probe runs the real matcher, so a club resolving cannot stand in for its players joining)
 │   └── [command files]           # One file per command/group
 ├── agents/
 │   ├── base.py                   # Agent ABC, AgentResult, AgentStatus

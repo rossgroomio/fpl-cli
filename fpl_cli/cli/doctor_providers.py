@@ -60,6 +60,16 @@ CSV_ROW_FLOOR = 400
 # After this many finished gameweeks, every club must resolve.
 UNDERSTAT_SETTLED_GWS = 3
 
+# The share of players FPL says have played that the live pool is allowed to
+# not join by name. A few percent always miss -- players Understat carries no
+# row for, cameos in a gameweek it has not ingested, a name the two sources
+# genuinely spell differently -- so the ceiling sits well above that: what it
+# catches is the two sides ceasing to agree about names wholesale, which is
+# what a renamed payload key or a laundered character class looks like. The
+# rate is reported either way, because a drift worth noticing shows up in the
+# number long before it crosses any threshold (#263).
+UNDERSTAT_NAME_MISS_CEILING = 0.20
+
 
 def _unreachable(exc: httpx.HTTPError) -> str:
     if isinstance(exc, httpx.HTTPStatusError):
@@ -721,8 +731,102 @@ def _understat_team_titles(players: list[dict[str, Any]]) -> set[str]:
     return titles
 
 
+def _understat_name_join_check(
+    understat_players: list[dict[str, Any]],
+    elements: list[dict[str, Any]],
+    team_name_by_id: dict[int, str],
+    unresolved: set[str],
+    finished_gws: int,
+) -> CheckResult:
+    """How much of the pool joins player by player, not just club by club.
+
+    The club check catches a club dropping out whole. #263 was the other
+    shape: three players whose club resolved perfectly and whose names could
+    never match, because Understat HTML-escapes an apostrophe and the matcher
+    laundered the entity into a digit token. Nothing saw it -- this probe
+    reported all 20 clubs healthy throughout, because resolving a club says
+    nothing about whether its players' names line up.
+
+    Asked of `match_fpl_to_understat` itself, on the pool the scoring commands
+    scan, for the same reason the club check is asked of the club gate: a rate
+    computed beside the matcher is free to drift from the matcher's own answer
+    and report health it does not have (#229).
+    """
+    from fpl_cli.api.understat import (
+        match_fpl_to_understat,
+        reset_understat_join_warnings,
+        understat_name_join_stats,
+    )
+    from fpl_cli.models.player import POSITION_MAP
+
+    name = "Understat name join"
+
+    # A club the map fails to resolve is the check above's finding, and every
+    # one of its players would arrive here as a name miss -- one club gap
+    # restated as a squad's worth, burying the handful of real ones. Skipping
+    # them also keeps that check's own warning off doctor's stderr.
+    candidates = [
+        (el, team)
+        for el in elements
+        if int(el.get("minutes") or 0) > 0
+        and (team := team_name_by_id.get(int(el.get("team") or 0))) is not None
+        and team not in unresolved
+    ]
+    if not candidates:
+        return CheckResult(
+            name, CheckStatus.SKIPPED, "no players with minutes at a resolved club yet"
+        )
+
+    # The tally is process-global, so it is reset here to measure this probe
+    # alone rather than whatever ran before it.
+    reset_understat_join_warnings()
+    for el, team in candidates:
+        match_fpl_to_understat(
+            str(el.get("web_name") or ""),
+            team,
+            understat_players,
+            fpl_position=POSITION_MAP.get(int(el.get("element_type") or 0)),
+            fpl_minutes=int(el.get("minutes") or 0),
+        )
+
+    stats = understat_name_join_stats()
+    attempted, matched, missed = stats["attempted"], stats["matched"], stats["missed"]
+    joined = f"{matched} of {attempted} players with minutes join by name"
+    if missed:
+        sample = "; ".join(stats["unmatched"][:5])
+        joined += f" — no row for {sample}" + (", …" if missed > 5 else "")
+
+    if stats["miss_rate"] <= UNDERSTAT_NAME_MISS_CEILING:
+        return CheckResult(name, CheckStatus.OK, joined)
+
+    pct = f"{stats['miss_rate']:.0%}"
+    if finished_gws < UNDERSTAT_SETTLED_GWS:
+        return CheckResult(
+            name,
+            CheckStatus.STALE,
+            f"{pct} of players with minutes match no Understat row — early season, "
+            f"may be ingestion lag; broken if it persists ({joined})",
+            "if it persists, check how Understat is spelling names "
+            "(fpl_cli/api/understat.py)",
+        )
+    return CheckResult(
+        name,
+        CheckStatus.BROKEN,
+        f"{pct} of players with minutes match no Understat row — these players "
+        f"silently lose xG enrichment ({joined})",
+        "compare a failing name against Understat's own spelling: the payload is "
+        "HTML-escaped, so a character the matcher does not treat as a separator "
+        "fails every name carrying it (_normalise in fpl_cli/api/understat.py)",
+    )
+
+
 async def _understat_checks(
-    team_names: list[str] | None, finished_gws: int, *, bootstrap_available: bool
+    team_names: list[str] | None,
+    finished_gws: int,
+    *,
+    bootstrap_available: bool,
+    elements: list[dict[str, Any]] | None = None,
+    team_name_by_id: dict[int, str] | None = None,
 ) -> list[CheckResult]:
     from fpl_cli.api.understat import UnderstatClient, understat_club_rows
 
@@ -778,6 +882,11 @@ async def _understat_checks(
         results.append(
             CheckResult(map_name, CheckStatus.UNCHECKED, "no Understat data to resolve against")
         )
+        results.append(
+            CheckResult(
+                "Understat name join", CheckStatus.UNCHECKED, "no Understat data to join against"
+            )
+        )
         return results
 
     titles = _understat_team_titles(players)
@@ -795,6 +904,13 @@ async def _understat_checks(
                 "could not fetch the live team list to compare against",
             )
         )
+        results.append(
+            CheckResult(
+                "Understat name join",
+                CheckStatus.UNCHECKED,
+                "could not fetch the live team list to join against",
+            )
+        )
         return results
 
     # End-to-end join check, run through the enrichment's own club gate: each
@@ -804,6 +920,25 @@ async def _understat_checks(
     # collected here rather than asked of the matcher is a second copy of the
     # gate, free to drift from the one that decides (#229).
     unresolved = sorted(t for t in team_names if not understat_club_rows(t, players))
+
+    # Appended after the club verdict below, but computed here so both read the
+    # same `unresolved`: the name check is only meaningful for clubs that did
+    # resolve.
+    def _name_join() -> list[CheckResult]:
+        if elements is None or team_name_by_id is None:
+            return [
+                CheckResult(
+                    "Understat name join",
+                    CheckStatus.UNCHECKED,
+                    "could not fetch the live player list to join against",
+                )
+            ]
+        return [
+            _understat_name_join_check(
+                players, elements, team_name_by_id, set(unresolved), finished_gws
+            )
+        ]
+
     if not unresolved:
         results.append(
             CheckResult(
@@ -832,7 +967,7 @@ async def _understat_checks(
                 "update TEAM_NAME_MAP (fpl_cli/api/understat.py)",
             )
         )
-    return results
+    return results + _name_join()
 
 
 # ---------------------------------------------------------------------------
@@ -942,12 +1077,16 @@ async def provider_checks() -> list[CheckResult]:
 
     team_names: list[str] | None = None
     short_names: list[str] | None = None
+    elements: list[dict[str, Any]] | None = None
+    team_name_by_id: dict[int, str] | None = None
     latest_finished_gw: int | None = None
     finished_gws = 0
     if bootstrap is not None:
         teams = bootstrap.get("teams") or []
         team_names = [str(t.get("name", "")) for t in teams]
         short_names = [str(t.get("short_name", "")) for t in teams]
+        elements = bootstrap.get("elements") or []
+        team_name_by_id = {int(t.get("id", 0)): str(t.get("name", "")) for t in teams}
         finished = [
             int(e.get("id", 0)) for e in (bootstrap.get("events") or []) if e.get("finished")
         ]
@@ -971,7 +1110,11 @@ async def provider_checks() -> list[CheckResult]:
         results.append(CheckResult("Core-Insights", CheckStatus.BROKEN, str(exc)))
 
     results += await _understat_checks(
-        team_names, finished_gws, bootstrap_available=bootstrap is not None
+        team_names,
+        finished_gws,
+        bootstrap_available=bootstrap is not None,
+        elements=elements,
+        team_name_by_id=team_name_by_id,
     )
     results += await _football_data_checks(short_names)
     return results
