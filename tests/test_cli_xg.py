@@ -184,6 +184,18 @@ class TestXgCustomAnalysisToggle:
         data = json.loads(result.output)
         assert data["metadata"]["custom_analysis"] is False
 
+    def test_toggle_off_table_renders_without_value_picks_key(self):
+        """StatsAgent only emits keys for requested views, so with the toggle
+        off `value_picks` is absent from `data` entirely, not just empty
+        (#48). The renderer must not crash with a KeyError on the missing key.
+        """
+        data = _make_agent_result().data
+        del data["value_picks"]
+        result = _run_xg(agent_result=_make_agent_result(data=data), custom_analysis=False)
+        assert result.exit_code == 0, result.output
+        assert "Haaland" in result.output
+        assert "Value Picks" not in result.output
+
 
 class TestXgWindowAndFloorReporting:
     """`fpl xg` says which window and minutes floor it actually applied (#227).
