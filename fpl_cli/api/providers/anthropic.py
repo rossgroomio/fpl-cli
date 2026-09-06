@@ -100,8 +100,9 @@ class AnthropicProvider:
             # Present on every Messages API response: "end_turn" when the model
             # finished, "max_tokens" when the ceiling cut it off, "refusal" and
             # friends otherwise. Carried rather than acted on here -- the
-            # caller decides what an early stop means for its artefact.
-            stop_reason=data.get("stop_reason"),
+            # caller decides what an early stop means for its artefact. Blank
+            # normalises to None, so "not told" has exactly one representation.
+            stop_reason=data.get("stop_reason") or None,
         )
         log_abnormal_stop(response, _PROVIDER_LABEL)
         return response

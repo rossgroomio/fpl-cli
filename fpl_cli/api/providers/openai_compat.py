@@ -66,12 +66,17 @@ class OpenAICompatProvider:
         finish_reason: str | None = None
         if data.get("choices"):
             choice = data["choices"][0]
-            content = choice.get("message", {}).get("content", "")
+            # `or ""` rather than a `.get` default: a refusal or content-filter
+            # completion sends an explicit `"content": null` (the text lives in
+            # a sibling `refusal` field), and the default only covers an absent
+            # key. A None here would reach every consumer of `content: str`.
+            content = choice.get("message", {}).get("content") or ""
             # "stop" when the model finished, "length" when it hit the token
             # ceiling, "content_filter" when the provider cut it. Subclasses
             # that override this method reuse it via super(), so the field
-            # reaches every OpenAI-compatible provider.
-            finish_reason = choice.get("finish_reason")
+            # reaches every OpenAI-compatible provider. Blank normalises to
+            # None -- "the provider said nothing", not an unrecognised reason.
+            finish_reason = choice.get("finish_reason") or None
         raw_usage = data.get("usage", {})
         usage = TokenUsage(
             input_tokens=raw_usage.get("prompt_tokens", 0),

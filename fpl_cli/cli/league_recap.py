@@ -858,7 +858,7 @@ async def _recap_llm_summarise(
                 collected_data["synthesis_stop_reason"] = synthesis_result.stop_reason
                 error_console.print(
                     "[yellow]  The editorial may be cut off: the provider stopped early"
-                    f" (stop_reason: {synthesis_result.stop_reason})[/yellow]"
+                    f" (stop_reason: {rich_escape(str(synthesis_result.stop_reason))})[/yellow]"
                 )
             else:
                 console.print("[green]  Done[/green] League editorial complete")

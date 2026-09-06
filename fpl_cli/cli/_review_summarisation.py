@@ -143,7 +143,13 @@ async def _synthesise_with_completeness_check(
     best: SynthesisCompleteness | None = None
     for attempt in range(1, _MAX_SYNTHESIS_ATTEMPTS + 1):
         result = await provider.query(prompt=prompt, system_prompt=system_prompt)
-        content = result.content
+        # Post-processed before it is judged, like the research stage beside it
+        # and `league-recap`'s editorial: the synthesis role is not restricted
+        # to one provider, so a Perplexity-backed run arrives with citation
+        # markers and a trailing source list. Checking the raw text would judge
+        # a string the report never carries -- and read that source list as a
+        # sentence that stops dead.
+        content = provider.post_process(result.content)
         completeness = check_synthesis_completeness(
             content,
             system_prompt,
@@ -158,7 +164,7 @@ async def _synthesise_with_completeness_check(
             return best_content, best, attempt
         error_console.print(
             "[yellow]  ⚠ Personal analysis looks incomplete "
-            f"({'; '.join(completeness.problems())}) -- retrying once[/yellow]"
+            f"({rich_escape('; '.join(completeness.problems()))}) -- retrying once[/yellow]"
         )
     raise AssertionError("unreachable: the loop returns on its last attempt")  # pragma: no cover
 
@@ -179,9 +185,13 @@ def _report_synthesis_completeness(
     if completeness.complete:
         return None
     problems = completeness.problems()
+    # Escaped, not interpolated raw: a problem line quotes the provider's own
+    # `stop_reason`, and a custom OpenAI-compatible endpoint is free to send
+    # one containing Rich markup. An unescaped `[/yellow]` in it would raise
+    # MarkupError and cost the reader this message entirely.
     error_console.print(
         f"[yellow]  ⚠ Personal analysis incomplete after {attempts} attempt(s): "
-        f"{'; '.join(problems)}[/yellow]"
+        f"{rich_escape('; '.join(problems))}[/yellow]"
     )
     error_console.print(
         "[dim]    The summary is used as-is - whatever it names is absent from it[/dim]"

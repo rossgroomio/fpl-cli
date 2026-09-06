@@ -3374,6 +3374,12 @@ class TestCheckSynthesisCompleteness:
         "what a week!",
         "and on it goes…",
         "(a nine-point swing).",
+        # Closing quotes, straight and curly: a finished sentence routinely
+        # ends inside one, and reading that as a truncation costs a retry.
+        'he called it "the right call."',
+        "he called it \u201cthe right call.\u201d",
+        "he called it 'the right call.'",
+        "he called it \u2018the right call.\u2019",
     ])
     def test_a_finished_sentence_is_not_flagged(self, ending):
         text = _WHOLE_SYNTHESIS.rstrip().rsplit("\n", 1)[0] + "\n" + ending
@@ -3387,13 +3393,29 @@ class TestCheckSynthesisCompleteness:
         text = _WHOLE_SYNTHESIS.rstrip().rsplit("\n", 1)[0] + "\n" + ending
         assert check_synthesis_completeness(text, self._system()).unterminated is True
 
-    def test_a_prompt_with_no_output_format_block_only_reports_the_stop_reason(self):
-        result = check_synthesis_completeness(
-            "half a sentence and then", "Be brief.", stop_reason="max_tokens",
-        )
+    def test_a_prompt_with_no_output_format_block_requires_no_sections(self):
+        result = check_synthesis_completeness("All done here.", "Be brief.")
         assert result.missing_sections == ()
-        assert result.unterminated is False
-        assert result.stop_reason == "max_tokens"
+        assert result.complete is True
+
+    def test_a_prompt_with_no_output_format_block_still_checks_the_ending(self):
+        # Knowing no headings is not a reason to stop reading the last
+        # sentence: the two checks are independent, and a clean stop on a
+        # block-less prompt would otherwise report a cut-off answer as whole.
+        result = check_synthesis_completeness("half a sentence and then", "Be brief.")
+        assert result.missing_sections == ()
+        assert result.unterminated is True
+        assert result.complete is False
+
+    @pytest.mark.parametrize("blank", ["", None])
+    def test_a_blank_stop_reason_is_the_provider_saying_nothing(self, blank):
+        # `complete`, `severity` and `problems()` must agree about it -- three
+        # predicates reading a blank differently is how a truncated response
+        # reports whole while scoring as damaged.
+        result = check_synthesis_completeness(_WHOLE_SYNTHESIS, self._system(), stop_reason=blank)
+        assert result.complete is True
+        assert result.problems() == []
+        assert result.severity == (0, 0, 0)
 
 
 class TestSynthesisCompletenessSeverity:

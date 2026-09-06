@@ -138,6 +138,13 @@ class TestStopReason:
         # abnormal reason counts, so a stub provider never cries wolf.
         assert self._response(None).stopped_early is False
 
+    def test_a_blank_reason_reads_the_same_as_no_reason(self):
+        # A non-conformant OpenAI-compatible endpoint sending
+        # `"finish_reason": ""` on every response would otherwise have every
+        # answer read as truncated -- a retry and a warning each time, saying
+        # nothing true.
+        assert self._response("").stopped_early is False
+
     def test_both_anthropic_and_openai_normal_reasons_are_covered(self):
         assert {"end_turn", "stop"} <= NORMAL_STOP_REASONS
 
@@ -313,6 +320,15 @@ class TestAnthropicProvider:
         assert result.stop_reason is None
         assert result.stopped_early is False
 
+    async def test_a_blank_stop_reason_normalises_to_unset(self, provider, mock_response):
+        provider._http = AsyncMock()
+        provider._http.post = AsyncMock(
+            return_value=_make_httpx_response({**mock_response, "stop_reason": ""}),
+        )
+
+        # "Not told" gets exactly one representation downstream.
+        assert (await provider.query("test")).stop_reason is None
+
 
 # ---------------------------------------------------------------------------
 # PerplexityProvider
@@ -429,6 +445,32 @@ class TestOpenAICompatProvider:
         result = await provider.query("test")
         assert result.content == ""
         assert result.stop_reason is None
+
+    async def test_an_explicit_null_content_becomes_an_empty_string(self, provider):
+        # The shape a refusal / content_filter completion sends: the text lives
+        # in a sibling `refusal` field and `content` is null, which a `.get`
+        # default does not cover. A None here reaches every consumer of
+        # `content: str` and turns an informative early-stop report into an
+        # AttributeError swallowed by a graceful-degradation handler.
+        provider._http = AsyncMock()
+        provider._http.post = AsyncMock(return_value=_make_httpx_response({
+            "choices": [{"message": {"content": None, "refusal": "no"}, "finish_reason": "content_filter"}],
+            "model": "gpt-4o", "usage": {},
+        }))
+
+        result = await provider.query("test")
+        assert result.content == ""
+        assert result.stop_reason == "content_filter"
+        assert result.stopped_early is True
+
+    async def test_a_blank_finish_reason_normalises_to_unset(self, provider, mock_response):
+        data = {**mock_response, "choices": [{**mock_response["choices"][0], "finish_reason": ""}]}
+        provider._http = AsyncMock()
+        provider._http.post = AsyncMock(return_value=_make_httpx_response(data))
+
+        result = await provider.query("test")
+        assert result.stop_reason is None
+        assert result.stopped_early is False
 
     async def test_malformed_json_response_raises(self, provider):
         resp = MagicMock()

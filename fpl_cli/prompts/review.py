@@ -1110,16 +1110,18 @@ _OUTPUT_FORMAT_SECTION_RE = re.compile(r"^##[ \t]+(.+?)[ \t]*$", re.MULTILINE)
 # Terminal punctuation, once the markdown decoration a sentence can legally end
 # inside has been peeled off ("...the right call.**", "...(a 9-point swing).").
 _TERMINAL_PUNCTUATION = frozenset(".!?…")
-_TRAILING_DECORATION = "*_`~\"'’)]}» \t"
+# Every closing quote/bracket a finished sentence can sit inside, straight and
+# curly both: a response ending `...the right call."` reads as truncated if the
+# closer is not peeled off first, which costs a retry and ships a false warning.
+_TRAILING_DECORATION = "*_`~\"'’”)]}»« \t"
 
 
 def required_synthesis_sections(system_prompt: str) -> list[str]:
     """The `## ` headings the synthesis system prompt's output format asks for.
 
     Returned in prompt order, deduplicated. An empty list means the prompt
-    carried no `<output_format>` block, in which case there is nothing to
-    validate against and the caller should skip the check rather than treat
-    every heading as missing.
+    carried no `<output_format>` block and therefore named no sections -- so
+    nothing is missing from a response, rather than everything.
     """
     block = _OUTPUT_FORMAT_BLOCK_RE.search(system_prompt)
     if block is None:
@@ -1152,11 +1154,17 @@ class SynthesisCompleteness:
 
     @property
     def severity(self) -> tuple[int, int, int]:
-        """Ordering key for picking between two attempts -- lower is better."""
+        """Ordering key for picking between two attempts -- lower is better.
+
+        Keyed on the same truthiness `complete` and `problems()` use: a blank
+        stop reason is the provider saying nothing (`LLMResponse.stopped_early`
+        reads it the same way), and three predicates that disagreed about it
+        would let a response report complete while scoring as damaged.
+        """
         return (
             len(self.missing_sections),
             int(self.unterminated),
-            int(self.stop_reason is not None),
+            int(bool(self.stop_reason)),
         )
 
     def problems(self) -> list[str]:
@@ -1202,9 +1210,11 @@ def check_synthesis_completeness(
     told what is missing (#266).
 
     Args:
-        response: The synthesis provider's raw text.
+        response: The synthesis text as it will be used, post-processed by the
+            provider -- so the check judges the string the report gets.
         system_prompt: The system prompt that was sent, read for its
-            `<output_format>` block.
+            `<output_format>` block. A prompt without one names no sections,
+            which leaves only the ending and the stop reason to judge.
         stop_reason: The provider's stop reason when it was *not* a normal
             completion, else None.
         omit_sections: Headings the run legitimately has no data for, matched
@@ -1215,15 +1225,14 @@ def check_synthesis_completeness(
     Returns:
         A `SynthesisCompleteness`; `.complete` is True when nothing was found.
     """
-    required = required_synthesis_sections(system_prompt)
-    if not required:
-        return SynthesisCompleteness(stop_reason=stop_reason)
-
+    # A prompt with no `<output_format>` block names no sections, so there is
+    # nothing to look for -- but the sentence-termination check knows nothing
+    # about headings and still applies, so it is not skipped along with them.
     skip = {s.strip().casefold() for s in omit_sections}
     lines = response.split("\n")
     missing = tuple(
         heading
-        for heading in required
+        for heading in required_synthesis_sections(system_prompt)
         if heading.casefold() not in skip and not has_heading(lines, f"## {heading}")
     )
     return SynthesisCompleteness(

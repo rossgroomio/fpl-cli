@@ -71,11 +71,15 @@ class LLMResponse:
     def stopped_early(self) -> bool:
         """True when the provider named a stop reason that is not a normal completion.
 
-        `None` means the provider did not say, which is not evidence of
-        truncation -- only an explicit abnormal reason counts, so a provider
-        (or a test stub) that omits the field never raises a false alarm.
+        A missing reason is not evidence of truncation -- only an explicit
+        abnormal one counts, so a provider (or a test stub) that omits the
+        field never raises a false alarm. An *empty* reason is treated the
+        same way rather than as an unrecognised one: a non-conformant
+        OpenAI-compatible endpoint that sends `"finish_reason": ""` on every
+        response would otherwise have every answer read as truncated, which
+        costs a retry and a warning each time and says nothing true.
         """
-        return self.stop_reason is not None and self.stop_reason not in NORMAL_STOP_REASONS
+        return bool(self.stop_reason) and self.stop_reason not in NORMAL_STOP_REASONS
 
 
 def log_abnormal_stop(response: LLMResponse, label: str) -> None:

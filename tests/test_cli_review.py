@@ -1633,10 +1633,15 @@ Salah carried it. No transfers were made this week, so"""
 
 
 class _StubSynthesisProvider:
-    """Returns each queued response in turn, recording every call."""
+    """Returns each queued response in turn, recording every call.
 
-    def __init__(self, *responses):
+    `post_process` defaults to identity; pass one to stand in for a provider
+    that rewrites its own output (Perplexity strips citation markers).
+    """
+
+    def __init__(self, *responses, post_process=None):
         self._responses = list(responses)
+        self._post_process = post_process
         self.calls: list[dict] = []
 
     async def query(self, prompt, system_prompt=None, **kwargs):
@@ -1644,7 +1649,7 @@ class _StubSynthesisProvider:
         return self._responses[min(len(self.calls) - 1, len(self._responses) - 1)]
 
     def post_process(self, content):
-        return content
+        return self._post_process(content) if self._post_process else content
 
 
 def _reply(content, stop_reason=None):
@@ -1719,6 +1724,31 @@ class TestSynthesiseWithCompletenessCheck:
         assert attempts == 1
         assert completeness.complete is True
 
+    async def test_the_returned_text_is_post_processed(self):
+        # The synthesis role is not restricted to one provider, so a
+        # Perplexity-backed run arrives with citation markers and a trailing
+        # source list the provider strips itself.
+        provider = _StubSynthesisProvider(
+            _reply(_WHOLE.rstrip() + "\n\nSources:\n1. https://example.com"),
+            post_process=lambda text: text.split("\n\nSources:")[0],
+        )
+        content, completeness, attempts = await _synthesise(provider)
+        assert "Sources:" not in content
+        # And the check judged that same string: the raw one trails off in a
+        # URL list, which reads as a sentence that stops dead.
+        assert completeness.complete is True
+        assert attempts == 1
+
+    async def test_a_stop_reason_carrying_rich_markup_does_not_break_the_notice(self, capsys):
+        # A custom OpenAI-compatible endpoint is free to send anything here;
+        # an unescaped "[/yellow]" would raise MarkupError and cost the reader
+        # the very message this guard exists to print.
+        provider = _StubSynthesisProvider(_reply(_WHOLE, "[/yellow]oops"), _reply(_WHOLE, "[bold]nope"))
+        _, completeness, attempts = await _synthesise(provider)
+        assert attempts == 2
+        assert completeness.stop_reason == "[/yellow]oops"
+        assert "[/yellow]oops" in capsys.readouterr().err.replace("\n", "")
+
 
 class TestReportSynthesisCompleteness:
 
@@ -1759,6 +1789,15 @@ class TestReportSynthesisCompleteness:
         assert _report_synthesis_completeness(whole, 1, debug_dir) is None
         assert capsys.readouterr().err == ""
         assert list(debug_dir.iterdir()) == []
+
+    def test_a_stop_reason_carrying_rich_markup_still_reaches_the_reader(self, capsys, debug_dir):
+        completeness = check_synthesis_completeness(
+            _TRUNCATED, _SYNTHESIS_SYSTEM, stop_reason="[/yellow]cut",
+        )
+        _report_synthesis_completeness(completeness, 2, debug_dir)
+        err = self._unwrapped(capsys)
+        assert "[/yellow]cut" in err
+        assert "## Draft Verdict" in err
 
 
 class TestReviewLlmSummariseSurfacesAnIncompleteSynthesis:
