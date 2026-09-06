@@ -162,6 +162,20 @@ _CLASSIC_ENTRY_FIX = (
     "each season (or run `fpl init`)"
 )
 
+# `fpl init` prompts only for draft_entry_id and derives the league ID from it
+# (`_fetch_draft_league_id`), so the league hint leads with the command rather
+# than with the manual edit. Both hints appear twice below -- the 404 branch and
+# the membership/season branch -- and shared constants stop the pairs drifting.
+_DRAFT_LEAGUE_FIX = (
+    "run `fpl init` — it derives draft_league_id from your draft_entry_id "
+    "(or update settings.yaml by hand; draft league IDs change each season)"
+)
+
+_DRAFT_ENTRY_FIX = (
+    "update draft_entry_id in settings.yaml — draft entry IDs are reissued "
+    "each season (or run `fpl init`)"
+)
+
 
 def _classic_league_ids(entry: dict[str, Any]) -> set[int]:
     """IDs of every classic league the entry payload says it plays in."""
@@ -259,7 +273,7 @@ async def _draft_league_check(draft_client: Any, league_id: int) -> CheckResult:
         name,
         draft_client.get_league_details(league_id),
         f"{league_id} does not resolve — no draft league has this ID",
-        "update draft_league_id in settings.yaml — draft league IDs change each season",
+        _DRAFT_LEAGUE_FIX,
     )
     if failure or data is None:
         return failure or CheckResult(name, CheckStatus.UNCHECKED, "no data returned")
@@ -272,7 +286,7 @@ async def _draft_league_check(draft_client: Any, league_id: int) -> CheckResult:
             CheckStatus.BROKEN,
             f'{league_id} → "{league_name}", drafted in {draft_season} — '
             "not this season's league",
-            "update draft_league_id in settings.yaml — draft league IDs change each season",
+            _DRAFT_LEAGUE_FIX,
         )
     return CheckResult(name, CheckStatus.OK, f'{league_id} → "{league_name}"')
 
@@ -285,7 +299,7 @@ async def _draft_entry_check(
         name,
         draft_client.get_entry_profile(entry_id),
         f"{entry_id} does not resolve — no draft team has this entry ID",
-        "update draft_entry_id in settings.yaml — draft entry IDs are reissued each season",
+        _DRAFT_ENTRY_FIX,
     )
     if failure or data is None:
         return failure or CheckResult(name, CheckStatus.UNCHECKED, "no data returned")
@@ -315,7 +329,7 @@ async def _draft_entry_check(
             CheckStatus.BROKEN,
             f'{entry_id} → "{team}" ({owner}), which is not in draft league {league_id} — '
             "likely a recycled ID pointing at someone else's team",
-            "update draft_entry_id in settings.yaml — draft entry IDs are reissued each season",
+            _DRAFT_ENTRY_FIX,
         )
     return CheckResult(
         name,

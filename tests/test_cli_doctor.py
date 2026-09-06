@@ -294,6 +294,44 @@ class TestIdChecks:
         assert result.exit_code == 1
         assert "598 does not resolve" in result.output
 
+    def test_dead_draft_league_hint_points_at_init(self):
+        # #105: `fpl init` derives draft_league_id from draft_entry_id, so the
+        # hint must name it rather than reading as "go find the number".
+        result = _run(
+            _mock_client(),
+            settings={"fpl": {"draft_league_id": 598}},
+            draft_client=_mock_draft_client(league_error=_http_404()),
+        )
+        assert "run `fpl init`" in _flat(result)
+        assert "derives draft_league_id from your draft_entry_id" in _flat(result)
+
+    def test_previous_season_draft_league_is_broken_with_init_hint(self):
+        details = {
+            "league": {"name": "Last Year's League", "draft_dt": f"{CURRENT_YEAR - 1}-08-01T00:00:00Z"}
+        }
+        result = _run(
+            _mock_client(),
+            settings={"fpl": {"draft_league_id": 4321}},
+            draft_client=_mock_draft_client(league_details=details),
+        )
+        assert result.exit_code == 1
+        flat = _flat(result)
+        assert f"drafted in {PREVIOUS_SEASON}" in flat
+        # Both draft_league_id branches share one constant, so the 404 hint and
+        # the wrong-season hint cannot drift apart.
+        assert "derives draft_league_id from your draft_entry_id" in flat
+
+    def test_dead_draft_entry_hint_mentions_init(self):
+        result = _run(
+            _mock_client(),
+            settings={"fpl": {"draft_entry_id": 90368}},
+            draft_client=_mock_draft_client(entry_error=_http_404()),
+        )
+        assert result.exit_code == 1
+        flat = _flat(result)
+        assert "update draft_entry_id in settings.yaml" in flat
+        assert "(or run `fpl init`)" in flat
+
     def test_draft_entry_in_wrong_league_is_broken(self):
         # The issue-57 case: the recycled ID resolves fine, to a stranger's
         # team in a different league -- membership is what must fail it.
