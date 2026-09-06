@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
@@ -64,6 +65,7 @@ from fpl_cli.cli._league_recap_types import (
     RecapTransfer,
 )
 from fpl_cli.services.fixture_predictions import had_fixture
+from fpl_cli.services.player_clubs import gameweek_club
 
 logger = logging.getLogger(__name__)
 
@@ -159,6 +161,7 @@ async def collect_classic_recap_data(
     is_live_gw: bool = True,
     bgw_team_ids: frozenset[int] = frozenset(),
     players_with_fixture: frozenset[int] | None = None,
+    gameweek_clubs: Mapping[int, int] | None = None,
 ) -> LeagueRecapData:
     """Fetch all managers' picks and compute league-wide recap data.
 
@@ -178,6 +181,12 @@ async def collect_classic_recap_data(
     (issue #169); `resolve_players_with_fixture` (`services/fixture_predictions.py`)
     builds it.
 
+    `gameweek_clubs` says which club each player was on the books at in `gw`,
+    derived from the gameweek's own fixtures rather than from the bootstrap's
+    current one, so a replay records the club a player actually played for
+    (issue #177); `GameweekClubResolver` (`services/player_clubs.py`) builds
+    it. None wherever the gameweek cannot answer, and today's club stands.
+
     Returns a LeagueRecapData dict ready for template rendering.
     """
     # `Any`, deliberately: the recap has never guarded a missing league id --
@@ -196,6 +205,7 @@ async def collect_classic_recap_data(
         client, standings, gw, live_stats, player_map, teams,
         use_net_points=use_net_points, is_live_gw=is_live_gw,
         bgw_team_ids=bgw_team_ids, players_with_fixture=players_with_fixture,
+        gameweek_clubs=gameweek_clubs,
     )
 
     league_rows = [
@@ -280,6 +290,7 @@ async def _fetch_all_manager_data(
     is_live_gw: bool = True,
     bgw_team_ids: frozenset[int] = frozenset(),
     players_with_fixture: frozenset[int] | None = None,
+    gameweek_clubs: Mapping[int, int] | None = None,
 ) -> list[RecapManagerEntry]:
     """Fetch picks for every manager in the league, extract recap data.
 
@@ -301,6 +312,9 @@ async def _fetch_all_manager_data(
     headline-number fallbacks.
     """
     sem = asyncio.Semaphore(_PICKS_CONCURRENCY)
+    # Bound once: every club lookup below asks the same two questions of the
+    # same two lookups, and only the player varies.
+    club_of = functools.partial(gameweek_club, clubs=gameweek_clubs, teams=teams)
 
     async def _fetch_one(entry: dict, rank: int) -> RecapManagerEntry | None:
         league_entry_id: int = entry.get("entry", 0)
@@ -376,7 +390,7 @@ async def _fetch_all_manager_data(
             if is_bench and player.id not in auto_sub_in_ids and not is_bench_boost_player:
                 bench_points += pts
 
-            player_team = teams.get(player.team_id)
+            player_team = club_of(player.id, player.team_id)
             squad.append(RecapManagerPlayer(
                 name=player.web_name,
                 team=player_team.short_name if player_team else "???",
@@ -434,8 +448,8 @@ async def _fetch_all_manager_data(
                     if pin and pout:
                         pin_pts, _, _ = _live_player_stats(live_stats, pin.id)
                         pout_pts, _, _ = _live_player_stats(live_stats, pout.id)
-                        pin_team = teams.get(pin.team_id)
-                        pout_team = teams.get(pout.team_id)
+                        pin_team = club_of(pin.id, pin.team_id)
+                        pout_team = club_of(pout.id, pout.team_id)
                         transfer = RecapTransfer(
                             player_in=pin.web_name,
                             player_in_team=pin_team.short_name if pin_team else "???",
@@ -1657,6 +1671,7 @@ async def collect_draft_recap_data(
     is_live_gw: bool = True,
     bgw_team_ids: frozenset[int] = frozenset(),
     players_with_fixture: frozenset[int] | None = None,
+    gameweek_clubs: Mapping[int, int] | None = None,
 ) -> LeagueRecapData:
     """Fetch all managers' draft picks and compute league-wide recap data.
 
@@ -1668,6 +1683,11 @@ async def collect_draft_recap_data(
     cumulative total can only be trusted from the standings for a live
     capture; a replayed gameweek leaves it unset (R10) until a ledger exists
     to sum it from (U6, not built yet).
+
+    `bgw_team_ids` / `players_with_fixture` / `gameweek_clubs` carry the same
+    meaning they do on the classic collector. Clubs are read against the
+    matched main-game player, so a draft pick the main game never matched
+    keeps the draft bootstrap's current club -- there is no id to place him by.
     """
     from fpl_cli.api.fpl_draft import FPLDraftClient, match_draft_to_main
     from fpl_cli.models.player import POSITION_MAP
@@ -1712,6 +1732,8 @@ async def collect_draft_recap_data(
 
         # Fetch picks for each manager
         sem = asyncio.Semaphore(_PICKS_CONCURRENCY)
+        # Same binding the classic collector makes, for the same reason.
+        club_of = functools.partial(gameweek_club, clubs=gameweek_clubs, teams=teams)
         managers: list[RecapManagerEntry] = []
 
         async def _fetch_draft_manager(standing: dict[str, Any], rank: int) -> RecapManagerEntry | None:
@@ -1752,7 +1774,7 @@ async def collect_draft_recap_data(
                 unmatched = main_id is None
                 pts, _, red_cards = _live_player_stats(live_stats, main_id)
                 pos_name = POSITION_MAP.get(draft_player.get("element_type"), "???")
-                draft_team = teams.get(draft_player.get("team"))
+                draft_team = club_of(main_id, draft_player.get("team"))
                 team_short = draft_team.short_name if draft_team else "???"
                 squad_position = pick.get("position", 1)
                 is_bench = squad_position > 11
@@ -1821,8 +1843,8 @@ async def collect_draft_recap_data(
                 main_out_id = draft_to_main_id.get(pout_id) if pout_id else None
                 out_pts, _, _ = _live_player_stats(live_stats, main_out_id)
 
-                in_club = teams.get(dp_in.get("team"))
-                out_club = teams.get(dp_out.get("team"))
+                in_club = club_of(main_in_id, dp_in.get("team"))
+                out_club = club_of(main_out_id, dp_out.get("team"))
 
                 transaction = RecapDraftTransaction(
                     player_in=dp_in.get("web_name", "Unknown"),

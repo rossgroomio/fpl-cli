@@ -27,6 +27,7 @@ from fpl_cli.services.team_ratings_prior import (
     describe_prior_inputs,
     generate_prior,
     load_prior_inputs,
+    rebuild_prior,
 )
 
 
@@ -1620,14 +1621,18 @@ class TestPriorInputsInTheCache:
 
     async def test_the_file_still_loads_as_a_cache(self, cache_path):
         """A header comment and an extra block must not break the reader."""
-        from fpl_cli.services.team_ratings_prior import _load_prior_cache
+        from fpl_cli.services.team_ratings_prior import (
+            _ratings_from_cache,
+            _read_prior_cache,
+        )
 
         generated = await self._generate(cache_path)
 
         with patch("fpl_cli.services.team_ratings_prior.prior_config_path", return_value=cache_path):
-            cached = _load_prior_cache()
+            data = _read_prior_cache()
 
-        assert cached == generated
+        assert data is not None
+        assert _ratings_from_cache(data) == generated
 
     async def test_inputs_read_back(self, cache_path):
         await self._generate(cache_path)
@@ -1675,3 +1680,517 @@ class TestPriorInputsInTheCache:
                     "inputs": {"ARS": {"basis": PRIOR_BASIS_PREMIER_LEAGUE}},
                 }, f)
             assert load_prior_inputs() is None
+
+
+class TestCacheInvalidationOnBetterInputs:
+    """Configuring FOOTBALL_DATA_API_KEY must reach the prior on its own (#112).
+
+    The cache had two validity tests -- the schema version and the league's
+    club list -- and neither can see that *this install's inputs* changed.
+    Setting the key mid-season left every promoted side pinned to the flat
+    bottom-of-table estimate until the file was deleted by hand.
+
+    The comparison has to stay one-directional: a rebuild happens only when
+    this run can do better than the cached one, never merely differently, so a
+    key that goes away cannot replace a good prior with a worse one.
+    """
+
+    TEAMS = ("ARS", "MCI", "COV")
+    CACHED_RATING = 7
+
+    @pytest.fixture
+    def cache_path(self, tmp_path):
+        return tmp_path / "prior.yaml"
+
+    @pytest.fixture(autouse=True)
+    def _no_key_by_default(self, monkeypatch):
+        """Never inherit a real key -- these tests are about its presence."""
+        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
+
+    @classmethod
+    def _client(cls):
+        from tests.conftest import make_team
+
+        client = AsyncMock()
+        client.get_teams = AsyncMock(return_value=[
+            make_team(id=i, name=name, short_name=name)
+            for i, name in enumerate(cls.TEAMS, start=1)
+        ])
+        return client
+
+    @classmethod
+    def _write_cache(cls, path, *, configured, cov_basis=PRIOR_BASIS_FALLBACK):
+        """A valid current-version cache, flat at CACHED_RATING so a rebuild shows.
+
+        ``configured`` is what the cached run recorded for its football-data
+        key; None writes a file from before that field existed.
+        """
+        import yaml
+
+        metadata = {
+            "version": PRIOR_CACHE_VERSION,
+            "source": PRIOR_SOURCE_UNDERSTAT,
+            "teams": sorted(cls.TEAMS),
+        }
+        if configured is not None:
+            metadata["football_data_configured"] = configured
+        inputs = {team: {"basis": PRIOR_BASIS_PREMIER_LEAGUE} for team in cls.TEAMS}
+        inputs["COV"] = {"basis": cov_basis}
+        rating = dict.fromkeys(("atk_home", "atk_away", "def_home", "def_away"), cls.CACHED_RATING)
+        with open(path, "w", encoding="utf-8") as f:
+            yaml.dump({
+                "metadata": metadata,
+                "ratings": {team: dict(rating) for team in cls.TEAMS},
+                "inputs": inputs,
+            }, f)
+
+    @staticmethod
+    async def _generate(cache_path, *, sources=True, refresh=False, pl_pool=None):
+        """Run the prior against a two-club PL pool plus a promoted COV.
+
+        ``refresh`` takes the forced path (`rebuild_prior`) rather than the
+        cache-gated one, and returns its ratings so both read alike here.
+        """
+        championship = ChampionshipRecords(
+            played={"COV": TeamPerformance("COV", 2.0, 1.6, 0.9, 1.1, 23, 23)},
+            ranked={"COV": TeamPerformance("COV", 1.3, 1.1, 1.5, 1.7, 23, 23)},
+        )
+        mock_championship = AsyncMock(return_value=championship if sources else None)
+        with (
+            patch("fpl_cli.services.team_ratings_prior.prior_config_path", return_value=cache_path),
+            patch("fpl_cli.services.team_ratings_prior._prior_from_understat",
+                  return_value=(pl_pool if pl_pool is not None else dict(PL_POOL))
+                  if sources else None),
+            patch("fpl_cli.services.team_ratings_prior._prior_from_football_data",
+                  new_callable=AsyncMock, return_value=None),
+            patch("fpl_cli.services.team_ratings_prior._championship_performances",
+                  mock_championship),
+        ):
+            client = TestCacheInvalidationOnBetterInputs._client()
+            result = (
+                (await rebuild_prior(client)).prior if refresh else await generate_prior(client)
+            )
+        return result, mock_championship
+
+    def _is_cached_copy(self, prior):
+        return all(r.atk_home == self.CACHED_RATING for r in prior.values())
+
+    async def test_a_key_configured_since_the_cache_was_written_rebuilds_it(
+        self, cache_path, monkeypatch
+    ):
+        """The issue's case: the key appears, so the promoted side is re-rated."""
+        self._write_cache(cache_path, configured=False)
+        monkeypatch.setenv("FOOTBALL_DATA_API_KEY", "test-key")
+
+        prior, mock_championship = await self._generate(cache_path)
+
+        mock_championship.assert_awaited_once()
+        assert not self._is_cached_copy(prior)
+        # COV is ranked against the PL pool now, not sitting on the flat estimate.
+        with patch("fpl_cli.services.team_ratings_prior.prior_config_path", return_value=cache_path):
+            inputs = load_prior_inputs()
+        assert inputs is not None
+        assert inputs["COV"]["basis"] == PRIOR_BASIS_CHAMPIONSHIP
+
+    async def test_a_cache_that_already_had_the_key_is_served(self, cache_path, monkeypatch):
+        """Nothing new is available, so there is nothing to rebuild for."""
+        self._write_cache(cache_path, configured=True)
+        monkeypatch.setenv("FOOTBALL_DATA_API_KEY", "test-key")
+
+        prior, mock_championship = await self._generate(cache_path)
+
+        assert self._is_cached_copy(prior)
+        mock_championship.assert_not_awaited()
+
+    async def test_still_no_key_serves_the_cache(self, cache_path):
+        """The input the cache went without is still missing."""
+        self._write_cache(cache_path, configured=False)
+
+        prior, mock_championship = await self._generate(cache_path)
+
+        assert self._is_cached_copy(prior)
+        mock_championship.assert_not_awaited()
+
+    async def test_a_key_is_no_reason_to_rebuild_a_prior_with_nothing_to_gain(
+        self, cache_path, monkeypatch
+    ):
+        """Every club on its own PL record is already the best this code does."""
+        self._write_cache(cache_path, configured=False, cov_basis=PRIOR_BASIS_PREMIER_LEAGUE)
+        monkeypatch.setenv("FOOTBALL_DATA_API_KEY", "test-key")
+
+        prior, mock_championship = await self._generate(cache_path)
+
+        assert self._is_cached_copy(prior)
+        mock_championship.assert_not_awaited()
+
+    async def test_a_key_going_away_never_invalidates(self, cache_path):
+        """One-directional: a source lost is not a reason to build a worse prior.
+
+        A transient football-data outage (or a key pulled) would otherwise
+        discard a cache whose promoted sides carry real Championship evidence
+        and replace them with the flat estimate.
+        """
+        self._write_cache(cache_path, configured=True, cov_basis=PRIOR_BASIS_CHAMPIONSHIP)
+
+        prior, mock_championship = await self._generate(cache_path)
+
+        assert self._is_cached_copy(prior)
+        mock_championship.assert_not_awaited()
+
+    async def test_a_cache_from_before_the_field_rebuilds_at_most_once(
+        self, cache_path, monkeypatch
+    ):
+        """An existing file says nothing either way, so the clubs decide it.
+
+        It must not rebuild every run: the rebuilt file records the answer, so
+        the second call is served from the cache.
+        """
+        self._write_cache(cache_path, configured=None)
+        monkeypatch.setenv("FOOTBALL_DATA_API_KEY", "test-key")
+
+        first, first_championship = await self._generate(cache_path)
+        second, second_championship = await self._generate(cache_path)
+
+        first_championship.assert_awaited_once()
+        assert not self._is_cached_copy(first)
+        second_championship.assert_not_awaited()
+        assert second == first
+
+    async def test_a_rebuild_that_finds_nothing_keeps_the_cached_prior(
+        self, cache_path, monkeypatch
+    ):
+        """A provider down must not cost the caller the prior it already had.
+
+        Returning {} here would have every caller report "no prior" and fall
+        back to flat mid-table, with a perfectly good file still on disk.
+        """
+        self._write_cache(cache_path, configured=False)
+        monkeypatch.setenv("FOOTBALL_DATA_API_KEY", "test-key")
+
+        prior, _ = await self._generate(cache_path, sources=False)
+
+        assert self._is_cached_copy(prior)
+        assert prior.keys() == set(self.TEAMS)
+
+    async def test_refresh_rebuilds_a_cache_that_would_have_been_served(self, cache_path):
+        """The escape hatch, for a reason provenance cannot infer."""
+        self._write_cache(cache_path, configured=True)
+
+        prior, mock_championship = await self._generate(cache_path, refresh=True)
+
+        mock_championship.assert_awaited_once()
+        assert not self._is_cached_copy(prior)
+
+    async def test_a_forced_refresh_that_finds_nothing_keeps_the_cached_prior(self, cache_path):
+        """Forcing a rebuild can never be worse than not forcing one."""
+        self._write_cache(cache_path, configured=True)
+
+        prior, _ = await self._generate(cache_path, sources=False, refresh=True)
+
+        assert self._is_cached_copy(prior)
+
+    async def test_a_cache_for_a_different_league_is_not_fallen_back_to(self, cache_path):
+        """The team-set check is a different verdict: that cache is simply wrong.
+
+        Holding it as a fallback would serve last season's clubs when the
+        rebuild fails, which is the state #106/#109 exist to end.
+        """
+        import yaml
+
+        self._write_cache(cache_path, configured=True)
+        with open(cache_path, encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+        data["ratings"] = {
+            f"OLD{i}": dict.fromkeys(
+                ("atk_home", "atk_away", "def_home", "def_away"), self.CACHED_RATING
+            )
+            for i in range(4)
+        }
+        with open(cache_path, "w", encoding="utf-8") as f:
+            yaml.dump(data, f)
+
+        prior, _ = await self._generate(cache_path, sources=False)
+
+        assert prior == {}
+
+    @pytest.mark.parametrize("key, expected", [("test-key", True), (None, False)])
+    async def test_the_cache_records_whether_a_key_was_configured(
+        self, cache_path, monkeypatch, key, expected
+    ):
+        """The field the comparison reads back, written on every save."""
+        import yaml
+
+        if key:
+            monkeypatch.setenv("FOOTBALL_DATA_API_KEY", key)
+
+        await self._generate(cache_path)
+
+        with open(cache_path, encoding="utf-8") as f:
+            metadata = yaml.safe_load(f)["metadata"]
+        assert metadata["football_data_configured"] is expected
+
+    async def test_the_flat_estimate_carries_its_remedy(self, cache_path, monkeypatch):
+        """An undifferentiated promoted cohort is the only visible symptom.
+
+        Without the remedy attached, `source: prior_understat_xg` reads the
+        same whether the promoted sides came from Championship data or the
+        flat estimate, so there is nothing to act on.
+        """
+        with (
+            patch("fpl_cli.services.team_ratings_prior.prior_config_path", return_value=cache_path),
+            patch("fpl_cli.services.team_ratings_prior._prior_from_understat",
+                  return_value=dict(PL_POOL)),
+            patch("fpl_cli.services.team_ratings_prior._championship_performances",
+                  new_callable=AsyncMock, return_value=None),
+        ):
+            await generate_prior(self._client())
+            without_key = describe_prior_inputs()
+            monkeypatch.setenv("FOOTBALL_DATA_API_KEY", "test-key")
+            with_key = describe_prior_inputs()
+
+        assert "COV on the flat promoted estimate" in without_key
+        assert "set FOOTBALL_DATA_API_KEY" in without_key
+        # Already set: naming it again would be advice the user has taken.
+        assert "COV on the flat promoted estimate" in with_key
+        assert "FOOTBALL_DATA_API_KEY" not in with_key
+
+
+class TestARebuildMayNotDowngradeThePrior:
+    """A rebuild is a chance to improve the prior, never a licence to worsen it.
+
+    Emptiness was the only gate, so a rebuild that came back full but degraded
+    -- Understat failing mid-run and dropping the pool to football-data's
+    noisier goals, football-data 429ing and dropping the promoted sides back to
+    the flat estimate -- overwrote a better cached prior and then latched,
+    because the file it wrote recorded that these inputs had been tried.
+    """
+
+    TEAMS = ("ARS", "MCI", "COV")
+    CACHED_RATING = 2
+
+    @pytest.fixture
+    def cache_path(self, tmp_path):
+        return tmp_path / "prior.yaml"
+
+    @pytest.fixture(autouse=True)
+    def _key_set(self, monkeypatch):
+        monkeypatch.setenv("FOOTBALL_DATA_API_KEY", "test-key")
+
+    @classmethod
+    def _client(cls):
+        from tests.conftest import make_team
+
+        client = AsyncMock()
+        client.get_teams = AsyncMock(return_value=[
+            make_team(id=i, name=name, short_name=name)
+            for i, name in enumerate(cls.TEAMS, start=1)
+        ])
+        return client
+
+    @classmethod
+    def _write_cache(cls, path, *, source, cov_basis):
+        import yaml
+
+        inputs = {team: {"basis": PRIOR_BASIS_PREMIER_LEAGUE} for team in cls.TEAMS}
+        inputs["COV"] = {"basis": cov_basis}
+        axes = dict.fromkeys(
+            ("atk_home", "atk_away", "def_home", "def_away"), cls.CACHED_RATING
+        )
+        with open(path, "w", encoding="utf-8") as f:
+            yaml.dump({
+                "metadata": {
+                    "version": PRIOR_CACHE_VERSION,
+                    "source": source,
+                    # Not yet tried with a key, so the automatic gate opens for
+                    # a cache that has a club to gain.
+                    "football_data_configured": False,
+                    "teams": sorted(cls.TEAMS),
+                },
+                "ratings": {team: dict(axes) for team in cls.TEAMS},
+                "inputs": inputs,
+            }, f)
+
+    @classmethod
+    async def _run(cls, cache_path, *, pl_source=True, championship=True, refresh=False):
+        """A rebuild whose PL source and Championship lookup can each be failed.
+
+        ``pl_source`` False fails Understat and serves football-data instead --
+        the real fallback, and the source regression the guard has to catch;
+        ``None`` fails both, leaving nothing to build from.
+        """
+        records = ChampionshipRecords(
+            played={"COV": TeamPerformance("COV", 2.0, 1.6, 0.9, 1.1, 23, 23)},
+            ranked={"COV": TeamPerformance("COV", 1.3, 1.1, 1.5, 1.7, 23, 23)},
+        )
+        with (
+            patch("fpl_cli.services.team_ratings_prior.prior_config_path", return_value=cache_path),
+            patch("fpl_cli.services.team_ratings_prior._prior_from_understat",
+                  return_value=dict(PL_POOL) if pl_source is True else None),
+            patch("fpl_cli.services.team_ratings_prior._prior_from_football_data",
+                  new_callable=AsyncMock,
+                  return_value=dict(PL_POOL) if pl_source is False else None),
+            patch("fpl_cli.services.team_ratings_prior._championship_performances",
+                  new_callable=AsyncMock, return_value=records if championship else None),
+        ):
+            client = cls._client()
+            return (await rebuild_prior(client)).prior if refresh else await generate_prior(client)
+
+    @staticmethod
+    def _cache(cache_path):
+        import yaml
+
+        with open(cache_path, encoding="utf-8") as f:
+            return yaml.safe_load(f)
+
+    def _is_cached_copy(self, prior):
+        return bool(prior) and all(r.atk_home == self.CACHED_RATING for r in prior.values())
+
+    async def test_a_rebuild_on_a_worse_source_is_refused(self, cache_path):
+        """Understat failing mid-run must not swap an xG prior for a goals one."""
+        self._write_cache(
+            cache_path, source=PRIOR_SOURCE_UNDERSTAT, cov_basis=PRIOR_BASIS_FALLBACK
+        )
+
+        prior = await self._run(cache_path, pl_source=False)
+
+        assert self._is_cached_copy(prior)
+        assert self._cache(cache_path)["metadata"]["source"] == PRIOR_SOURCE_UNDERSTAT
+
+    async def test_a_rebuild_that_loses_a_championship_club_is_refused(self, cache_path):
+        """football-data 429ing mid-rebuild must not un-rate a promoted side.
+
+        Forced, because a cache with no club left to gain never rebuilds on its
+        own -- which is the shape `--refresh-prior` puts at risk.
+        """
+        self._write_cache(
+            cache_path, source=PRIOR_SOURCE_UNDERSTAT, cov_basis=PRIOR_BASIS_CHAMPIONSHIP
+        )
+
+        prior = await self._run(cache_path, championship=False, refresh=True)
+
+        assert self._is_cached_copy(prior)
+        assert self._cache(cache_path)["inputs"]["COV"]["basis"] == PRIOR_BASIS_CHAMPIONSHIP
+
+    async def test_a_rebuild_that_improves_a_club_is_kept(self, cache_path):
+        """The case the whole feature exists for still goes through."""
+        self._write_cache(
+            cache_path, source=PRIOR_SOURCE_UNDERSTAT, cov_basis=PRIOR_BASIS_FALLBACK
+        )
+
+        prior = await self._run(cache_path)
+
+        assert not self._is_cached_copy(prior)
+        assert self._cache(cache_path)["inputs"]["COV"]["basis"] == PRIOR_BASIS_CHAMPIONSHIP
+
+    async def test_a_refused_rebuild_still_records_the_attempt(self, cache_path):
+        """Otherwise the trigger stays hot and every command re-runs the providers.
+
+        The file keeps its ratings and its trace; only the record of which
+        inputs have been tried moves on, which is what bounds the retry to one.
+        """
+        self._write_cache(
+            cache_path, source=PRIOR_SOURCE_UNDERSTAT, cov_basis=PRIOR_BASIS_FALLBACK
+        )
+
+        await self._run(cache_path, pl_source=False)
+        cached = self._cache(cache_path)
+
+        assert cached["metadata"]["football_data_configured"] is True
+        assert cached["metadata"]["source"] == PRIOR_SOURCE_UNDERSTAT
+        assert cached["inputs"]["COV"]["basis"] == PRIOR_BASIS_FALLBACK
+
+        # ...and the next call is served straight from it, providers untouched.
+        with (
+            patch("fpl_cli.services.team_ratings_prior.prior_config_path",
+                  return_value=cache_path),
+            patch("fpl_cli.services.team_ratings_prior._prior_from_understat",
+                  side_effect=AssertionError("providers must not be consulted again")),
+        ):
+            again = await generate_prior(self._client())
+
+        assert self._is_cached_copy(again)
+
+    async def test_a_rebuild_that_finds_nothing_records_the_attempt_too(self, cache_path):
+        """Both providers down is the same bounded retry, not one per command."""
+        self._write_cache(
+            cache_path, source=PRIOR_SOURCE_UNDERSTAT, cov_basis=PRIOR_BASIS_FALLBACK
+        )
+
+        prior = await self._run(cache_path, pl_source=None, championship=False)
+
+        assert self._is_cached_copy(prior)
+        assert self._cache(cache_path)["metadata"]["football_data_configured"] is True
+
+    async def test_the_remedy_survives_the_key_being_set(self, cache_path):
+        """A latched cache must not become undiscoverable from the output.
+
+        With a key set and clubs still on the flat estimate, the "set the key"
+        line no longer applies, and without a replacement the one way back to a
+        healthy prior is nowhere in the tool's output.
+        """
+        self._write_cache(
+            cache_path, source=PRIOR_SOURCE_UNDERSTAT, cov_basis=PRIOR_BASIS_FALLBACK
+        )
+
+        with patch(
+            "fpl_cli.services.team_ratings_prior.prior_config_path", return_value=cache_path
+        ):
+            note = describe_prior_inputs()
+
+        assert note is not None
+        assert "COV on the flat promoted estimate" in note
+        assert "--refresh-prior" in note
+
+
+class TestMalformedCachedRatings:
+    """A file documented as inspectable will be hand-edited, so it is validated.
+
+    An unguarded `null` axis became `TeamRating(atk_home=None)` and survived to
+    blend_with_prior's arithmetic, failing a long way from the cause.
+    """
+
+    @pytest.fixture
+    def cache_path(self, tmp_path):
+        return tmp_path / "prior.yaml"
+
+    @staticmethod
+    def _write(path, ratings):
+        import yaml
+
+        with open(path, "w", encoding="utf-8") as f:
+            yaml.dump({
+                "metadata": {"version": PRIOR_CACHE_VERSION, "teams": ["ARS"]},
+                "ratings": ratings,
+            }, f)
+
+    @pytest.mark.parametrize(
+        "ratings",
+        [
+            {"ARS": {"atk_home": None, "atk_away": 2, "def_home": 2, "def_away": 2}},
+            {"ARS": {"atk_home": 70, "atk_away": 2, "def_home": 2, "def_away": 2}},
+            {"ARS": {"atk_home": "2", "atk_away": 2, "def_home": 2, "def_away": 2}},
+            {"ARS": "not a mapping"},
+        ],
+        ids=["null_axis", "out_of_range", "string_axis", "not_a_mapping"],
+    )
+    def test_a_malformed_rating_refuses_the_whole_cache(self, cache_path, ratings):
+        from fpl_cli.services.team_ratings_prior import _read_prior_cache
+
+        self._write(cache_path, ratings)
+        with patch(
+            "fpl_cli.services.team_ratings_prior.prior_config_path", return_value=cache_path
+        ):
+            assert _read_prior_cache() is None
+
+    def test_a_missing_axis_still_defaults(self, cache_path):
+        """Absent axes have always defaulted to a neutral 4 -- only bad ones are new."""
+        from fpl_cli.services.team_ratings_prior import _ratings_from_cache, _read_prior_cache
+
+        self._write(cache_path, {"ARS": {"atk_home": 2}})
+        with patch(
+            "fpl_cli.services.team_ratings_prior.prior_config_path", return_value=cache_path
+        ):
+            data = _read_prior_cache()
+
+        assert data is not None
+        assert _ratings_from_cache(data)["ARS"] == TeamRating(2, 4, 4, 4)
