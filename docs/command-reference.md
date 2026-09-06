@@ -745,7 +745,7 @@ fpl review --dry-run              # Build prompts without calling LLMs
 
 **Results:** all fixtures with scores, goal scorers, assists, and bonus points.
 
-**LLM summary** (`--summarise`): Community narrative via research provider, personal analysis via synthesis provider.
+**LLM summary** (`--summarise`): Community narrative via research provider, personal analysis via synthesis provider. The summary is an add-on: the review itself needs no key, so a role whose provider has no usable key is skipped with the reason on stderr (`Community narrative skipped: ...` / `Personal analysis skipped: ...`) and the review still prints, still saves its report and still exits **0**. The two roles resolve independently, so one key buys the half it belongs to rather than nothing. A saved report generated from such a run names each skipped half and why in a warning callout above the summary, so a section absent for want of a key never reads as one deliberately left out.
 
 **Next Week:** the personal analysis is given next gameweek's fixtures — every club's opponent
 and venue, and each of your own players' FDR for their own position — so the section's start,
@@ -788,11 +788,11 @@ cannot answer; there the current clubs answer instead, which can differ from tha
 clubs once a transfer has happened in between.
 
 **A gameweek it will not review** — one still being played, an id the season does not have,
-a season with nothing finished yet — is refused with the reason on **stderr** and exit **1**,
-as is `--summarise` with no usable provider key. `review` has no `--format json`, so stdout
-carries the review or nothing at all, and `fpl review 2>/dev/null` is silent on a refusal
-rather than printing half an explanation. Both refusals used to exit 0 with the reason on
-stdout; the gameweek one is shared with `league-recap`, which behaved the same way.
+a season with nothing finished yet — is refused with the reason on **stderr** and exit **1**.
+`review` has no `--format json`, so stdout carries the review or nothing at all, and `fpl review
+2>/dev/null` is silent on a refusal rather than printing half an explanation. It used to exit 0
+with the reason on stdout, as did `league-recap`, which shares the resolver. A missing provider
+key was refused the same way until it stopped being a refusal at all — see the LLM summary above.
 
 ### League Recap
 
@@ -1242,7 +1242,7 @@ fpl doctor --providers          # Probe the external data sources instead
 fpl doctor --format json        # Machine-readable report (for agents/scripts)
 ```
 
-Rolling a setup into a new season silently invalidates IDs and per-team files: a dead draft league returns nothing, entry and league IDs reissued over the summer resolve to a stranger's team or league, and a per-team file rebuilt in August can still describe last season's twenty clubs. None of these error — they produce plausible output. `fpl doctor` checks all of it in one pass:
+Rolling a setup into a new season silently invalidates IDs and per-team files: a dead draft league returns nothing, entry and league IDs reissued over the summer resolve to a stranger's team or league, a per-team file rebuilt in August can still describe last season's twenty clubs, and the scoring scale can still be anchored to a cohort two summers gone. None of these error — they produce plausible output. `fpl doctor` checks all of it in one pass:
 
 **IDs in `settings.yaml`** — each configured ID is resolved against the live API and the team/league name reported back, so a wrong-but-valid ID is visible:
 
@@ -1259,6 +1259,10 @@ Rolling a setup into a new season silently invalidates IDs and per-team files: a
 - `team_finances.json` — `scraped_at` falls within the current season
 - `player_prior.yaml` — season label matches (auto-invalidated otherwise)
 - `returnee_snapshot.json` — the returnee radar's week-over-week snapshot: season label matches (a previous season's is discarded and rebuilt on the next `fpl returnees` run), and reports the gameweek it currently holds
+
+**Scoring calibration:**
+
+- `quality_ceilings` — the season the [calibrated quality ceilings](custom-analysis.md#quality--value-scores) were measured against, recorded in the generated block as `CALIBRATION_SEASON`. Unlike everything above it, this is season data frozen in code rather than a file that rolls or rebuilds: a July rollover that passes without a recalibration leaves the anchors describing a cohort that has since turned over, with every code-side input unchanged and the fingerprint drift guard green. Anchors from the last completed season are the intended steady state all year and report OK; a completed season newer than the recorded one is **stale**, with the upgrade (a newer `fplkit` release carries a freshly calibrated block) and the maintainer re-run both named
 
 **Environment** — which directory each of config/data/cache resolved to and whether an `FPL_CLI_*` override is in effect, plus whether `settings.yaml` exists.
 

@@ -635,3 +635,43 @@ class TestSynthesisProblemsCallout:
 
     def test_a_run_that_never_set_the_key_adds_no_callout(self):
         assert "completeness check" not in self._render()
+
+
+# ---------------------------------------------------------------------------
+# Group 9: a summary half skipped for want of a key says so (#287)
+# ---------------------------------------------------------------------------
+
+class TestSummaryUnavailableCallout:
+    """A section missing because no key could produce it must not read as one
+    nobody asked for. The stderr warning is gone by the time the file is read."""
+
+    def setup_method(self):
+        self.agent = ReportAgent()
+
+    def _render(self, **overrides):
+        data = _review_data()
+        data.update(overrides)
+        return self.agent._generate_review_report(29, data)
+
+    def test_each_skipped_half_is_named_with_its_reason(self):
+        output = self._render(summary_unavailable=[
+            "Community narrative: PERPLEXITY_API_KEY not set",
+            "Personal analysis: ANTHROPIC_API_KEY not set",
+        ])
+        assert "Part of the requested summary is missing" in output
+        assert "Community narrative: PERPLEXITY_API_KEY not set" in output
+        assert "Personal analysis: ANTHROPIC_API_KEY not set" in output
+
+    def test_the_half_that_ran_is_still_written(self):
+        output = self._render(
+            research_summary="# What Happened\nHaaland scored again.",
+            summary_unavailable=["Personal analysis: ANTHROPIC_API_KEY not set"],
+        )
+        assert "Haaland scored again." in output
+        assert "Personal analysis: ANTHROPIC_API_KEY not set" in output
+
+    def test_a_run_with_both_keys_adds_no_callout(self):
+        assert "requested summary is missing" not in self._render(summary_unavailable=[])
+
+    def test_a_run_that_never_asked_for_a_summary_adds_no_callout(self):
+        assert "requested summary is missing" not in self._render()

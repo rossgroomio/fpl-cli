@@ -75,6 +75,12 @@ for, retries once if a heading is missing or the text ends mid-sentence, and if 
 second try is no better it says what is missing on stderr and repeats it as a warning
 in the saved report. `league-recap --summarise` reports the same for its editorial.
 
+The summary is an add-on, and a missing key costs only the half it belongs to. The
+review itself — squad, transfers, standings, fixtures, results — needs no key at all,
+so `review --summarise` with a key for one provider prints that half, says on stderr
+why the other was skipped, and still exits 0; a saved report names each skipped half
+in its own warning callout. `league-recap --summarise` does the same for its editorial.
+
 Fines are ruled per gameweek by `league-recap` and recorded against it, so `fpl
 league-fines` reads them straight back off disk — no network, and any season still
 on disk (`--season 2025-26`). Every gameweek that could not be ruled is named
@@ -105,7 +111,7 @@ $ fpl doctor                       # Verify configured IDs and data files - esse
 $ fpl doctor --providers           # Probe the external data sources for shape and volume drift
 ```
 
-Every ID in settings.yaml is resolved against the live API and the team/league name reported back, so a dead or recycled ID (which otherwise fails silently) is visible. Per-team data files are checked against the current season's clubs. Exits non-zero when something needs fixing.
+Every ID in settings.yaml is resolved against the live API and the team/league name reported back, so a dead or recycled ID (which otherwise fails silently) is visible. Per-team data files are checked against the current season's clubs, and the scoring scale against the newest completed season. Exits non-zero when something needs fixing.
 
 `--providers` checks the other side of the bargain: that each external data source (FPL and Draft APIs, the historical datasets, Understat, football-data.org) still serves data of the expected shape and size, that every club resolves across sources and its players still join to them by name, and that the per-gameweek match files actually parse into records through the same code the scoring commands run — the upstream drift that otherwise surfaces as plausible but wrong output, especially at a season rollover.
 

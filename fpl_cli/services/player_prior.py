@@ -36,7 +36,7 @@ from typing import TYPE_CHECKING, Any
 import yaml
 
 from fpl_cli.paths import user_data_file
-from fpl_cli.season import get_season_year, season_label
+from fpl_cli.season import previous_season_label, season_label
 from fpl_cli.utils.files import atomic_write_text
 
 if TYPE_CHECKING:
@@ -62,11 +62,6 @@ class PlayerPrior:
     confidence: float  # 0.0-1.0, how much to trust current-season data
     source: str  # "history", "price", "position-average"
     reliability: float | None = None  # recency-weighted historical availability (None = no history)
-
-
-def _previous_season_label() -> str:
-    """Get the season label for the previous season."""
-    return season_label(get_season_year() - 1)
 
 
 def _extract_prev_season_pts_per_90(
@@ -218,7 +213,7 @@ def generate_player_prior(
     """
     from fpl_cli.services.scoring import _position_from_element_type
 
-    prev_season = _previous_season_label()
+    prev_season = previous_season_label()
 
     # Build code->player mapping
     code_to_player: dict[int, Player] = {}

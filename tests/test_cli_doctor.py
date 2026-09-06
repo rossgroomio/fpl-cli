@@ -586,6 +586,89 @@ class TestDataFileChecks:
         assert "settings could not be read" in entry_row["detail"]
 
 
+class TestCalibrationCheck:
+    """The quality ceilings are season data frozen in code, so nothing but a
+    date comparison can notice a rollover that passed without a re-run (#128).
+    """
+
+    def test_last_completed_season_is_ok(self):
+        with patch(
+            "fpl_cli.services.scoring.constants.CALIBRATION_SEASON", PREVIOUS_SEASON
+        ):
+            result = _run(_mock_client())
+        assert result.exit_code == 0
+        assert f"calibrated against {PREVIOUS_SEASON}" in _flat(result)
+        assert "the newest completed season" in _flat(result)
+
+    def test_one_season_behind_is_stale_with_both_fixes(self):
+        # The mid-season steady state is anchors from last season; one season
+        # further back means a July rollover went by without a re-run.
+        with patch(
+            "fpl_cli.services.scoring.constants.CALIBRATION_SEASON",
+            season_label(CURRENT_YEAR - 2),
+        ):
+            result = _run(_mock_client())
+        flat = _flat(result)
+        # Stale, not broken: the scores are still usable, so it must not gate
+        # a script that runs `fpl doctor` before a gameweek.
+        assert result.exit_code == 0
+        assert f"1 completed season behind {PREVIOUS_SEASON}" in flat
+        assert "pip install -U fplkit" in flat
+        assert "scripts/calibrate_quality_ceilings.py --write" in flat
+
+    def test_several_seasons_behind_counts_them(self):
+        with patch(
+            "fpl_cli.services.scoring.constants.CALIBRATION_SEASON",
+            season_label(CURRENT_YEAR - 4),
+        ):
+            result = _run(_mock_client())
+        assert f"3 completed seasons behind {PREVIOUS_SEASON}" in _flat(result)
+
+    def test_unfinished_calibration_season_is_stale_not_broken(self):
+        # A hand-edited block or a machine whose clock is a year behind. Either
+        # way it must not exit non-zero -- a wrong clock is not a broken setup.
+        with patch(
+            "fpl_cli.services.scoring.constants.CALIBRATION_SEASON", CURRENT_SEASON
+        ):
+            result = _run(_mock_client())
+        assert result.exit_code == 0
+        assert "has not completed" in _flat(result)
+        assert "clock is behind" in _flat(result)
+
+    def test_unparseable_season_is_broken_not_a_traceback(self):
+        # The command that exists to report a broken setup must survive one:
+        # a hand-edited block that season_start_year raises on is a row, not
+        # an exception out of `fpl doctor`.
+        with patch("fpl_cli.services.scoring.constants.CALIBRATION_SEASON", "2025"):
+            result = _run(_mock_client())
+        assert result.exception is None or isinstance(result.exception, SystemExit)
+        assert result.exit_code == 1
+        assert "not a season label" in _flat(result)
+
+    def test_season_that_lost_its_quotes_is_broken_too(self):
+        # A hand edit that drops the quotes leaves an int, which used to reach
+        # `.partition` and take the command out with an AttributeError past the
+        # ValueError guard. It is the same finding as any other bad label.
+        with patch("fpl_cli.services.scoring.constants.CALIBRATION_SEASON", 20252026):
+            result = _run(_mock_client())
+        assert result.exception is None or isinstance(result.exception, SystemExit)
+        assert result.exit_code == 1
+        assert "not a season label" in _flat(result)
+
+    def test_json_reports_the_calibration_section(self):
+        with patch(
+            "fpl_cli.services.scoring.constants.CALIBRATION_SEASON",
+            season_label(CURRENT_YEAR - 2),
+        ):
+            result = _run(_mock_client(), args=["--format", "json"])
+        payload = json.loads(result.output)
+        row = payload["data"]["calibration"][0]
+        assert row["name"] == "quality_ceilings"
+        assert row["status"] == "stale"
+        assert row["fix"]
+        assert payload["metadata"]["stale"] >= 1
+
+
 class TestJsonOutput:
     def test_json_envelope_and_exit_code(self):
         result = _run(
@@ -599,7 +682,12 @@ class TestJsonOutput:
         assert payload["metadata"]["season"] == CURRENT_SEASON
         assert payload["metadata"]["broken"] == 1
         sections = payload["data"]
-        assert set(sections) == {"environment", "settings_ids", "data_files"}
+        assert set(sections) == {
+            "environment",
+            "settings_ids",
+            "data_files",
+            "calibration",
+        }
         entry_check = next(
             c for c in sections["settings_ids"] if c["name"] == "classic_entry_id"
         )
