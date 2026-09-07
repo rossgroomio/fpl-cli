@@ -145,9 +145,6 @@ Captain's score is doubled. If captain doesn't play, vice-captain becomes captai
 ### Transfers
 Unlimited free transfers before your first deadline. After that: 1 free transfer per GW, unused transfers roll over up to a **maximum of 5**. Extra transfers cost **4 points** each. Max 20 transfers per GW (does not apply when playing Wildcard or Free Hit).
 
-### AFCON Transfers
-Between GW15 (Sat 6 Dec) and GW16 (Sat 13 Dec), all managers are topped up to 5 free transfers. These can be carried over.
-
 ### Player Prices
 Prices fluctuate based on transfer market popularity (changes begin when the season starts). Selling price includes a **50% sell-on fee** (rounded up to nearest £0.1m) on any profit.
 
