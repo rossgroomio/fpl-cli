@@ -42,6 +42,7 @@ from fpl_cli.cli._league_recap_data import (
 from fpl_cli.cli._league_recap_types import (
     PriorSeasonsSummary,
     RecapAwards,
+    RecapDraftLostClaim,
     RecapDraftTransaction,
     RecapFineResult,
     RecapManagerEntry,
@@ -2484,6 +2485,14 @@ class TestWaiverAwards:
         assert "In4" not in detail
 
 
+def _lost(pin: str, pout: str, kind: str = "w", priority: int | None = 1) -> RecapDraftLostClaim:
+    return RecapDraftLostClaim(
+        player_in=pin, player_in_team="???",
+        player_out=pout, player_out_team="???",
+        kind=kind, priority=priority,
+    )
+
+
 def _txn(pin: str, pin_pts: int, pout: str, pout_pts: int, kind: str = "w") -> RecapDraftTransaction:
     return RecapDraftTransaction(
         player_in=pin, player_in_team="???", player_in_points=pin_pts,
@@ -3286,7 +3295,7 @@ class TestPromptFormatting:
             "Dango (6 pts) in for Georginio (1 pt), +5 [free agent]"
         ) in lines
         assert "- **Cam** (1 waiver, net -8): Wood (1 pt) in for Watkins (9 pts), -8 [waiver]" in lines
-        assert lines[-1] == "Made no moves (1): Bob"
+        assert lines[-1] == "Made no moves and submitted no claims (1): Bob"
 
     def test_waivers_context_lists_a_chain_as_the_raw_moves_not_the_contracted_pair(self):
         """B in for A, then C in for B, is two moves the manager made. The
@@ -3331,6 +3340,51 @@ class TestPromptFormatting:
         text = format_recap_waivers_context(self._draft_data(managers))
         assert "(1 free agent, net +8): A (9 pts) in for B (1 pt), +8 [free agent]" in text
         assert "(1 free agent)" in awards["waiver_genius"]["detail"]
+
+    def test_a_manager_whose_only_activity_was_a_lost_claim_is_not_listed_as_inactive(self):
+        """Issue #329: the reported failure. A manager went in at priority 1
+        for Elanga and was beaten to him; the roster said he made no moves and
+        the editorial called it sitting the waiver wire out."""
+        managers = [
+            _make_manager_with_txns("Alice", [_txn("Savinho", 4, "Maddison", 1)], entry_id=1),
+            _make_manager(name="Bob", entry_id=2),
+            _make_manager(name="Cam", entry_id=3),
+        ]
+        managers[1]["lost_claims"] = [_lost("Elanga", "Savio")]
+        text = format_recap_waivers_context(self._draft_data(managers))
+        assert (
+            "Claimed a player but lost him to a rival, so ended with no move (1): "
+            "Bob (claimed Elanga [waiver, priority 1])"
+        ) in text
+        assert "Made no moves and submitted no claims (1): Cam" in text
+        assert "Bob" not in text.split("Made no moves and submitted no claims")[1]
+
+    def test_a_movers_lost_claims_are_listed_alongside_the_moves_that_landed(self):
+        managers = [_make_manager_with_txns("Alice", [_txn("Wood", 6, "Watkins", 1)])]
+        managers[0]["lost_claims"] = [_lost("Elanga", "Savio", priority=2)]
+        text = format_recap_waivers_context(self._draft_data(managers))
+        assert "also claimed and lost: Elanga [waiver, priority 2]" in text
+        assert "Total managers who made waiver or free-agent moves: 1 of 1" in text
+
+    def test_a_free_agent_claim_prints_no_priority(self):
+        managers = [_make_manager(name="Alice", entry_id=1)]
+        managers[0]["lost_claims"] = [_lost("Elanga", "Savio", kind="f", priority=None)]
+        text = format_recap_waivers_context(self._draft_data(managers))
+        assert "Alice (claimed Elanga [free agent])" in text
+        assert "priority" not in text
+
+    def test_the_section_is_written_when_the_only_activity_was_a_lost_claim(self):
+        """Nobody moved, so the section used to be suppressed entirely -- and
+        the editorial then had no waiver data at all to contradict it."""
+        managers = [
+            _make_manager(name="Alice", entry_id=1),
+            _make_manager(name="Bob", entry_id=2),
+        ]
+        managers[0]["lost_claims"] = [_lost("Elanga", "Savio")]
+        text = format_recap_waivers_context(self._draft_data(managers))
+        assert text.splitlines()[0] == "Total managers who made waiver or free-agent moves: 0 of 2"
+        assert "Alice (claimed Elanga [waiver, priority 1])" in text
+        assert "Made no moves and submitted no claims (1): Bob" in text
 
     def test_waivers_context_omits_the_stayed_line_when_everyone_moved(self):
         managers = [_make_manager_with_txns("Alice", [_txn("A", 4, "B", 1)])]
@@ -4460,6 +4514,120 @@ class TestCollectorGameweekClubs:
         assert squad_player["team"] == "BET"
 
 
+class TestDraftLostClaims:
+    """Issue #329: 42% of the feed's transaction rows were discarded before
+    anything downstream could see them, so a manager who was outbid was
+    indistinguishable from one who never tried."""
+
+    _TEAMS = {
+        1: make_team(id=1, name="Alpha", short_name="ALP"),
+        2: make_team(id=2, name="Beta", short_name="BET"),
+    }
+
+    async def _collect(self, txns):
+        elanga = make_draft_player(id=900, code=555, web_name="Elanga", team=1, element_type=3)
+        savio = make_draft_player(id=901, code=666, web_name="Savio", team=2, element_type=3)
+        keeper = make_draft_player(id=902, code=777, web_name="Keeper", team=1, element_type=1)
+        main_elanga = make_player(id=5, code=555, web_name="Elanga", team_id=1)
+        main_savio = make_player(id=6, code=666, web_name="Savio", team_id=2)
+        main_keeper = make_player(id=7, code=777, web_name="Keeper", team_id=1)
+        league_details = {
+            "league": {"name": "Draft League"},
+            "standings": [{"league_entry": 10, "event_total": 0, "total": 0}],
+            "league_entries": [
+                {"id": 10, "entry_id": 1, "player_first_name": "A", "player_last_name": "B"},
+            ],
+        }
+        picks = {1: {"picks": [{"element": 902, "position": 1}], "subs": []}}
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        client.get_league_details = AsyncMock(return_value=league_details)
+        client.get_bootstrap_static = AsyncMock(
+            return_value={"elements": [elanga, savio, keeper]}
+        )
+        client.get_league_transactions = AsyncMock(return_value={"transactions": txns})
+        client.get_entry_picks = AsyncMock(side_effect=lambda entry_id, gw: picks[entry_id])
+
+        with patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=client):
+            return await collect_draft_recap_data(
+                {"fpl": {"draft_league_id": 1}}, gw=3,
+                live_stats={5: {"total_points": 9}, 6: {"total_points": 1}, 7: {"total_points": 0}},
+                players=[main_elanga, main_savio, main_keeper],
+                teams=self._TEAMS, is_live_gw=False,
+            )
+
+    async def test_a_lost_claim_is_carried_through_ingestion(self):
+        """The reported case: a priority-1 claim for Elanga that a rival won.
+        The manager's whole gameweek, and previously invisible."""
+        data = await self._collect([{
+            "event": 3, "result": "di", "entry": 1, "kind": "w", "priority": 1,
+            "element_in": 900, "element_out": 901,
+        }])
+        manager = data["managers"][0]
+        assert manager["transactions"] == []
+        assert manager["lost_claims"] == [{
+            "player_in": "Elanga", "player_in_team": "ALP", "player_in_team_name": "Alpha",
+            "player_in_code": 555,
+            "player_out": "Savio", "player_out_team": "BET", "player_out_team_name": "Beta",
+            "player_out_code": 666,
+            "kind": "w", "priority": 1,
+        }]
+
+    async def test_a_do_row_is_not_recorded_as_an_attempt(self):
+        """A `do` row is the cascade behind a claim that succeeded -- the
+        manager's own earlier accepted claim already used that drop. Counting
+        it would report the winner of a race as having lost one."""
+        data = await self._collect([
+            {
+                "event": 3, "result": "a", "entry": 1, "kind": "w", "priority": 1,
+                "element_in": 900, "element_out": 901,
+            },
+            {
+                "event": 3, "result": "do", "entry": 1, "kind": "w", "priority": 2,
+                "element_in": 902, "element_out": 901,
+            },
+        ])
+        manager = data["managers"][0]
+        assert "lost_claims" not in manager
+        assert [t["player_in"] for t in manager["transactions"]] == ["Elanga"]
+
+    async def test_the_accepted_move_list_is_unchanged_by_the_widened_ingestion(self):
+        """The ledger, the awards and every net figure read `transactions`.
+        Widening what is fetched must leave that list exactly as it was."""
+        data = await self._collect([
+            {
+                "event": 3, "result": "a", "entry": 1, "kind": "w", "priority": 2,
+                "element_in": 900, "element_out": 901,
+            },
+            {
+                "event": 3, "result": "di", "entry": 1, "kind": "w", "priority": 1,
+                "element_in": 902, "element_out": 901,
+            },
+        ])
+        manager = data["managers"][0]
+        assert len(manager["transactions"]) == 1
+        txn = manager["transactions"][0]
+        assert (txn["player_in"], txn["player_out"], txn["net"]) == ("Elanga", "Savio", 8)
+        assert [c["player_in"] for c in manager["lost_claims"]] == ["Keeper"]
+
+    async def test_a_lost_claim_from_another_gameweek_is_not_picked_up(self):
+        data = await self._collect([{
+            "event": 2, "result": "di", "entry": 1, "kind": "w", "priority": 1,
+            "element_in": 900, "element_out": 901,
+        }])
+        assert "lost_claims" not in data["managers"][0]
+
+    async def test_a_free_agent_claim_records_no_priority(self):
+        """Free agents are first-come-first-served and the feed sends a null
+        priority; printing "priority None" would invent a spent claim."""
+        data = await self._collect([{
+            "event": 3, "result": "di", "entry": 1, "kind": "f", "priority": None,
+            "element_in": 900, "element_out": 901,
+        }])
+        assert data["managers"][0]["lost_claims"][0]["priority"] is None
+
+
 class TestRecapPlayerClubs:
     """#150: the recap prompt carried no club data at all, so any club the
     narrative named came from training data a transfer window out of date."""
@@ -4502,6 +4670,16 @@ class TestRecapPlayerClubs:
             "player_out": "Watkins", "player_out_team": "AVL", "player_out_team_name": "Aston Villa",
         }])
         assert "- Semenyo: Man Utd" in text
+
+    def test_roster_covers_a_lost_claims_players(self):
+        """A claim a rival won can name a player no squad and no accepted move
+        does, and the prose is forbidden to state a club the roster omits."""
+        text = self._roster(lost_claims=[{
+            "player_in": "Elanga", "player_in_team": "NEW", "player_in_team_name": "Newcastle",
+            "player_out": "Sávio", "player_out_team": "MCI", "player_out_team_name": "Man City",
+        }])
+        assert "- Elanga: Newcastle" in text
+        assert "- Sávio: Man City" in text
 
     def test_roster_drops_a_name_two_clubs_claim(self):
         """Two players share a web_name most seasons. The recap names players by

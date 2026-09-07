@@ -5,6 +5,7 @@ from __future__ import annotations
 from fpl_cli.cli._league_recap_types import (
     LeagueRecapData,
     PriorSeasonsSummary,
+    RecapDraftLostClaim,
     draft_transaction_kind_counts,
     draft_transaction_kind_label,
     format_move_counts,
@@ -51,6 +52,7 @@ Your audience is every member of this league. They want entertainment first, inf
 - When referencing captain choices, treat the "## Captains" section as the source of truth. It lists every manager grouped by their intended captain pick, with an explicit total count. Use those counts verbatim. NEVER name a captain "outlier", "dissenter", or "the manager(s) who picked Y" unless they appear under that captain in the section. If you describe N managers as picking the modal captain, it must match the section's group size for that player. Do NOT infer captain choices from the awards or standings — they are compressed and miss managers whose pick was neither the best nor the worst.
 - When referencing transfers, hits, or moves in and out, treat the "## Transfers" section as the source of truth. It lists every manager who made a transfer with each move and its points swing, the hit they paid, an explicit count of movers, and the managers who made none - use those counts verbatim. NEVER say a manager transferred, took a hit, or stood still unless that section says so of them, never describe a move it does not list, and where it says a manager's moves or net are unknown, supply neither. Do NOT infer transfer activity from the Awards section - it names only the single best and single worst mover, so it never tells you how many managers transferred or what anyone else did. If there is no "## Transfers" section, no "## Waivers and Free Agents" section and no transfers note, do not mention transfers, waivers, hits, or moves in and out at all - absence of transfer data means there is nothing to report, not licence to invent one.
 - In draft, the "## Waivers and Free Agents" section is the source of truth for waiver claims and free-agent signings, the same way. It lists every manager who made a move with each move as it was made, its points swing and its kind tag - [waiver] or [free agent] - an explicit count of movers, and the managers who made none - use those counts verbatim. NEVER say a manager claimed, signed, dropped, or stood still unless that section says so of them, never describe a move it does not list, and never call a move tagged [free agent] a waiver claim or a move tagged [waiver] a free-agent signing - the tag is the move's kind. Draft has no transfer hits, so never mention one. Do NOT infer waiver activity from the Awards section - Waiver Genius and Waiver Disaster name only the single best and single worst mover, so they never tell you how many managers moved or what anyone else did.
+- A waiver is a competition, so a manager can be busy and still have no move to show for it. The "## Waivers and Free Agents" section separates the two cases and the distinction is not optional: only the managers it lists as having made no moves AND submitted no claims sat the waiver wire out. A manager it lists as having claimed a player and lost him to a rival WAS active - they spent a claim, at the priority the line states, and were beaten to the player. Say they tried and missed, never that they did nothing, "sat it out", "stayed put", "didn't bother", "kept their powder dry" or "showed restraint", and never assign a motive - discipline, laziness, apathy - to an absence from the movers list. The same goes for a mover's "also claimed and lost" tail: it is extra activity, not a move they made.
 - NEVER claim a manager's bench outscored their team unless bench points are strictly greater than their GW points. Use the exact numbers provided.
 - NEVER alter player or manager names. Use the exact spelling provided in the data.
 - NEVER state a club for a player other than the club given for them in this data - the "## Player Clubs" section, or the club printed beside a name elsewhere. Players change clubs in the transfer windows and your own knowledge of who plays where goes a season out of date, so that section is the only authority. A player it does not list has no club you can state: name them alone ("Haaland's 2 points") rather than supplying one from memory.
@@ -392,15 +394,41 @@ def format_recap_transfers_context(data: LeagueRecapData) -> str:
     return "\n".join(lines)
 
 
+def _format_lost_claims(claims: list[RecapDraftLostClaim]) -> str:
+    """Render a manager's lost claims as "Elanga [waiver, priority 1]".
+
+    The priority is the point of printing them: three managers spending a
+    first-choice claim on the same player is the week's story, and a claim
+    made at priority 5 is a different thing from one made at priority 1.
+    Omitted for a free-agent pickup, which has no priority to spend.
+    """
+    return ", ".join(
+        f"{c['player_in']} [{draft_transaction_kind_label(c['kind'])}"
+        + (f", priority {c['priority']}" if c["priority"] is not None else "")
+        + "]"
+        for c in claims
+    )
+
+
 def format_recap_waivers_context(data: LeagueRecapData) -> str:
     """Per-manager waiver and free-agent roster: every draft mover with each
-    move as it was made, tagged by kind, plus the managers who made none
-    (issue #301) -- the draft half of `format_recap_transfers_context`.
+    move as it was made, tagged by kind, plus the managers who claimed and
+    lost and the managers who did neither (issues #301, #329) -- the draft
+    half of `format_recap_transfers_context`.
 
     Same enumerate-and-lock shape, simpler mechanics. Draft moves come from
-    the league-wide transactions endpoint, already filtered to this gameweek
-    and to accepted moves, so the list is complete: no `transfers_made` to
-    cross-check, no mover whose moves went uncaptured, no hit and no chip.
+    the league-wide transactions endpoint, already filtered to this gameweek,
+    so the list is complete: no `transfers_made` to cross-check, no mover
+    whose moves went uncaptured, no hit and no chip.
+
+    Movers and non-movers are not the whole cohort, which is why the outbid
+    group exists. A waiver is a competition, and a manager who loses one ends
+    the gameweek with no accepted move -- identical, in the moves list, to a
+    manager who submitted nothing. Told only "made no moves", the editorial
+    read that as inactivity and assigned a motive for it ("discipline or
+    laziness") to someone who had gone in at priority 1 and been beaten to
+    the player. So the three groups are stated separately and the roster
+    never lets absence from the movers stand for absence of intent.
 
     Each move is listed raw rather than chain-contracted. A manager who
     brought B in for A and then C in for B made two moves, and the awards
@@ -423,12 +451,17 @@ def format_recap_waivers_context(data: LeagueRecapData) -> str:
         return ""
 
     movers: list[tuple[int, str, str]] = []  # (net, name, line)
+    outbid: list[str] = []
     stayed: list[str] = []
     for m in managers:
         name = m["manager_name"]
         moves = m.get("transactions") or []
+        lost = m.get("lost_claims") or []
         if not moves:
-            stayed.append(name)
+            if lost:
+                outbid.append(f"{name} (claimed {_format_lost_claims(lost)})")
+            else:
+                stayed.append(name)
             continue
 
         summary = format_move_counts(draft_transaction_kind_counts(moves))
@@ -439,25 +472,35 @@ def format_recap_waivers_context(data: LeagueRecapData) -> str:
             for t in moves
         )
         net = sum(t["net"] for t in moves)
-        movers.append((net, name, f"- **{name}** ({summary}, net {net:+d}): {moves_text}"))
+        line = f"- **{name}** ({summary}, net {net:+d}): {moves_text}"
+        if lost:
+            line += f" | also claimed and lost: {_format_lost_claims(lost)}"
+        movers.append((net, name, line))
 
-    if not movers:
+    if not movers and not outbid:
         return ""
 
     movers.sort(key=lambda entry: (-entry[0], entry[1]))
     lines = [f"Total managers who made waiver or free-agent moves: {len(movers)} of {len(managers)}"]
     lines.extend(line for _, _, line in movers)
+    if outbid:
+        lines.append(
+            f"Claimed a player but lost him to a rival, so ended with no move "
+            f"({len(outbid)}): {'; '.join(sorted(outbid))}"
+        )
     if stayed:
-        lines.append(f"Made no moves ({len(stayed)}): {', '.join(sorted(stayed))}")
+        lines.append(
+            f"Made no moves and submitted no claims ({len(stayed)}): {', '.join(sorted(stayed))}"
+        )
     return "\n".join(lines)
 
 
 def collect_player_clubs(data: LeagueRecapData) -> dict[str, str]:
     """Map player name -> full club name across every player in the recap data.
 
-    Squads and transfers carry the club resolved at collection time, off the
-    player's `team_id`, so nothing is reconstructed here -- this only regroups
-    them by the name the recap prose actually uses.
+    Squads, transfers and lost claims carry the club resolved at collection
+    time, off the player's `team_id`, so nothing is reconstructed here -- this
+    only regroups them by the name the recap prose actually uses.
 
     That regrouping is what forces the one judgement call: the recap names
     players by name alone, and most seasons have two players sharing a
@@ -481,7 +524,14 @@ def collect_player_clubs(data: LeagueRecapData) -> dict[str, str]:
     for manager in data.get("managers", []):
         for player in manager.get("squad", []):
             record(player.get("name"), player.get("team_name"))
-        for move in [*(manager.get("transfers") or []), *(manager.get("transactions") or [])]:
+        for move in [
+            *(manager.get("transfers") or []),
+            *(manager.get("transactions") or []),
+            # A lost claim can name a player nobody's squad or accepted move
+            # does -- the manager who wanted him still has his old player, and
+            # the rival who won him may not be in this league.
+            *(manager.get("lost_claims") or []),
+        ]:
             record(move.get("player_in"), move.get("player_in_team_name"))
             record(move.get("player_out"), move.get("player_out_team_name"))
 

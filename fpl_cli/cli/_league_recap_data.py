@@ -56,6 +56,7 @@ from fpl_cli.cli._league_recap_types import (
     LeagueRecapData,
     RecapAwardEntry,
     RecapAwards,
+    RecapDraftLostClaim,
     RecapDraftTransaction,
     RecapFinePlayer,
     RecapFineResult,
@@ -1887,7 +1888,12 @@ async def collect_draft_recap_data(
     matched main-game player, so a draft pick the main game never matched
     keeps the draft bootstrap's current club -- there is no id to place him by.
     """
-    from fpl_cli.api.fpl_draft import FPLDraftClient, match_draft_to_main
+    from fpl_cli.api.fpl_draft import (
+        FPLDraftClient,
+        is_accepted_transaction,
+        is_lost_claim,
+        match_draft_to_main,
+    )
     from fpl_cli.models.player import POSITION_MAP
 
     draft_league_id: Any = fpl_config(settings).get("draft_league_id")
@@ -1919,14 +1925,21 @@ async def collect_draft_recap_data(
             if main_player.code
         }
 
-        # Fetch all transactions for the league, filter to this GW
+        # Fetch all transactions for the league, filter to this GW. The feed
+        # carries denied claims alongside accepted ones, and they answer
+        # different questions: what moved comes from the accepted rows alone,
+        # but who was active cannot -- a manager whose only claim a rival won
+        # has no accepted row and used to be indistinguishable from one who
+        # submitted nothing (issue #329). So both are kept, separately.
         txn_response = await draft_client.get_league_transactions(draft_league_id)
         all_txns: list[dict[str, Any]] = txn_response.get("transactions", [])
-        gw_txns = [
-            t for t in all_txns
-            if t.get("event") == gw and t.get("result") == "a"
-        ]
-        txns_by_entry = _bucket_draft_txns_by_league_entry(gw_txns, league_entries)
+        gw_txns = [t for t in all_txns if t.get("event") == gw]
+        txns_by_entry = _bucket_draft_txns_by_league_entry(
+            [t for t in gw_txns if is_accepted_transaction(t)], league_entries,
+        )
+        lost_by_entry = _bucket_draft_txns_by_league_entry(
+            [t for t in gw_txns if is_lost_claim(t)], league_entries,
+        )
 
         # Fetch picks for each manager
         sem = asyncio.Semaphore(_PICKS_CONCURRENCY)
@@ -2065,6 +2078,47 @@ async def collect_draft_recap_data(
                     transaction["player_out_code"] = out_code
                 manager_txns.append(transaction)
 
+            # Claims this manager lost to a rival. No points and no net --
+            # nothing moved -- so this stays a roster of attempts rather than
+            # a second ledger of moves.
+            lost_claims: list[RecapDraftLostClaim] = []
+            for txn in lost_by_entry.get(league_entry_id, []):
+                lost_in_id: int | None = txn.get("element_in")
+                lost_out_id: int | None = txn.get("element_out")
+                lost_in = draft_player_map.get(lost_in_id) if lost_in_id else None
+                lost_out = draft_player_map.get(lost_out_id) if lost_out_id else None
+
+                if not lost_in or not lost_out:
+                    logger.warning(
+                        "Skipping malformed lost draft claim (entry=%s in=%s out=%s)",
+                        txn.get("entry"), lost_in_id, lost_out_id,
+                    )
+                    continue
+
+                lost_in_main_id = draft_to_main_id.get(lost_in_id) if lost_in_id else None
+                lost_out_main_id = draft_to_main_id.get(lost_out_id) if lost_out_id else None
+                lost_in_club = club_of(lost_in_main_id, lost_in.get("team"))
+                lost_out_club = club_of(lost_out_main_id, lost_out.get("team"))
+                raw_priority = txn.get("priority")
+
+                claim = RecapDraftLostClaim(
+                    player_in=lost_in.get("web_name", "Unknown"),
+                    player_in_team=lost_in_club.short_name if lost_in_club else "???",
+                    player_in_team_name=lost_in_club.name if lost_in_club else None,
+                    player_out=lost_out.get("web_name", "Unknown"),
+                    player_out_team=lost_out_club.short_name if lost_out_club else "???",
+                    player_out_team_name=lost_out_club.name if lost_out_club else None,
+                    # Stored verbatim for the same reason an accepted move's
+                    # is: a missing kind is an "other move", never a waiver.
+                    kind=txn.get("kind", ""),
+                    priority=raw_priority if isinstance(raw_priority, int) else None,
+                )
+                if lost_in_id is not None and (lost_in_code := draft_to_main_code.get(lost_in_id)):
+                    claim["player_in_code"] = lost_in_code
+                if lost_out_id is not None and (lost_out_code := draft_to_main_code.get(lost_out_id)):
+                    claim["player_out_code"] = lost_out_code
+                lost_claims.append(claim)
+
             gw_points = computed_gw_points
             if is_live_gw and computed_gw_points != standings_gw_pts:
                 unmatched_names = [p["name"] for p in squad if p["unmatched"]]
@@ -2110,6 +2164,8 @@ async def collect_draft_recap_data(
                 auto_subs=auto_sub_descs,
                 transactions=manager_txns,
             )
+            if lost_claims:
+                result["lost_claims"] = lost_claims
             if is_live_gw:
                 result["total_points"] = standings_total
                 # On a live capture the standings *are* the point in time, so

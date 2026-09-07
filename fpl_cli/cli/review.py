@@ -329,6 +329,7 @@ def review_command(
                 # Must match return shape of _review_draft
                 draft_result = {
                     "draft_squad_points_data": [], "draft_transactions_data": [],
+                    "draft_lost_claims_data": [],
                     "draft_league_data": None, "draft_automatic_subs": [],
                     "draft_player_map": {},
                 }
@@ -361,6 +362,7 @@ def review_command(
                 "global_stats": global_data,
                 "draft_squad_points": draft_result["draft_squad_points_data"],
                 "draft_transactions": draft_result["draft_transactions_data"],
+                "draft_lost_claims": draft_result["draft_lost_claims_data"],
                 "draft_league": draft_result["draft_league_data"],
                 "fixtures": fixtures_data,
                 "league_table": league_table_data,
@@ -498,6 +500,12 @@ def review_command(
                                 f"  Waiver P{p}: [green]✓[/green] "
                                 f"{w['rec_in']} ← {w['rec_out']}"
                                 f" (followed, net {w.get('actual_net', 0)})"
+                            )
+                        elif w.get("lost_claim"):
+                            console.print(
+                                f"  Waiver P{p}: [yellow]✗[/yellow] "
+                                f"{w.get('claimed_in') or w['rec_in']} ← {w['rec_out']}"
+                                f" (claimed, lost to a rival)"
                             )
                         elif w.get("not_executed"):
                             console.print(

@@ -189,6 +189,16 @@ Processed **24 hours before the GW deadline**. After processing, **free agency**
 
 **Locked players** (unavailable for waivers): players added to the game within 24 hours of the waiver deadline, or players recently dropped from another squad. Locked players become available at the next waiver deadline.
 
+**Conditional chains and outcomes.** A manager submits several claims in their own priority order, and claims may share a drop, so only one of a group is ever expected to land. Each submitted claim ends in one of three states, and the last two are not the same thing:
+
+| Outcome | Meaning |
+|---|---|
+| Accepted | The claim was processed; the incoming player joined the squad and the nominated player was dropped |
+| Lost to a rival | A manager with higher priority claimed the same player. A genuine attempt, and the manager ends with no move from it |
+| Drop already used | An earlier accepted claim by the same manager had already dropped the nominated player, so this one could not be processed. The cascade behind a claim that succeeded, not an attempt that failed - it cannot occur without that earlier accepted claim |
+
+Only accepted claims changed a squad, so only they belong in a record of moves. But a manager who submitted claims and lost them all was active, and reading their absence from the accepted set as inactivity misreports them.
+
 ### Free Agents
 Unclaimed players can be picked up first-come, first-served in the **24-hour window before each GW deadline**. Free agent pickups don't affect waiver priority.
 

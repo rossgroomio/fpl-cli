@@ -216,6 +216,41 @@ class TestTemplateRendering:
         output = self.agent._generate_review_report(29, data)
         assert "[DIDN'T PLAY]" in output
 
+    def test_review_report_lists_a_claim_a_rival_won(self):
+        """Issue #329: the saved report dropped unsuccessful claims with
+        everything else downstream of the accepted-only filter."""
+        data = _review_data()
+        data["draft_lost_claims"] = [{
+            "player_in": "Elanga", "player_in_team": "NEW",
+            "player_out": "Sávio", "player_out_team": "MCI",
+            "kind": "w", "kind_label": "waiver", "priority": 1,
+        }]
+        output = self.agent._generate_review_report(29, data)
+        assert "## Claims Lost" in output
+        assert "| Elanga (NEW) | Sávio (MCI) | waiver | 1 |" in output
+
+    def test_review_report_omits_claims_lost_when_there_were_none(self):
+        assert "## Claims Lost" not in self.agent._generate_review_report(29, _review_data())
+
+    def test_review_report_marks_a_lost_claim_apart_from_an_ignored_one(self):
+        """"Different" would say the manager acted on the advice another way;
+        "Not exec" would say they ignored it. Neither is what happened."""
+        data = _review_data()
+        data["recs_comparison"] = {
+            "classic": {},
+            "draft": {
+                "waivers": [{
+                    "priority": 1, "rec_in": "Elanga", "rec_out": "Sávio",
+                    "actual_in": None, "actual_out": None, "followed": False,
+                    "lost_claim": True, "claimed_in": "Elanga",
+                }],
+                "unadvised_waivers": [],
+            },
+        }
+        output = self.agent._generate_review_report(29, data)
+        assert "| 1 | Elanga | Sávio | Claimed, lost |" in output
+        assert "Not exec" not in output
+
     def test_review_unused_bench_marker(self):
         data = _review_data()
         data["team_points"][1]["contributed"] = False

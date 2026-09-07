@@ -500,6 +500,7 @@ def _stub_review_run(monkeypatch, *, next_gameweek=None, gameweek=2):
     monkeypatch.setattr(review_module, "_review_global_stats", AsyncMock(return_value={}))
     monkeypatch.setattr(review_module, "_review_draft", AsyncMock(return_value={
         "draft_squad_points_data": [], "draft_transactions_data": [],
+        "draft_lost_claims_data": [],
         "draft_league_data": None, "draft_league_name": "Draft League",
         "draft_automatic_subs": [], "draft_player_map": {},
     }))
@@ -962,11 +963,13 @@ def _make_collected(
     team_points=None,
     classic_transfers=None,
     draft_transactions=None,
+    draft_lost_claims=None,
 ):
     return {
         "team_points": team_points or [],
         "classic_transfers": classic_transfers or [],
         "draft_transactions": draft_transactions or [],
+        "draft_lost_claims": draft_lost_claims or [],
     }
 
 
@@ -1114,6 +1117,33 @@ class TestReviewCompareRecsWaivers:
         assert len(waivers) == 1
         assert waivers[0]["followed"] is False
         assert waivers[0].get("not_executed") is True
+
+    def test_a_claim_a_rival_won_is_not_reported_as_never_executed(self):
+        """Issue #329: the claim was submitted and lost. "Not executed" reads
+        back as advice the manager ignored."""
+        recs = _make_recs(waivers=[{"priority": 1, "in": "Nyoni", "out": "Wirtz"}])
+        collected = _make_collected(draft_transactions=[], draft_lost_claims=[{
+            "player_in": "Nyoni", "player_in_team": "LIV",
+            "player_out": "Wirtz", "player_out_team": "LIV",
+            "kind": "w", "priority": 1,
+        }])
+        result = _review_compare_recs(recs, collected, {}, {})
+        waivers = result["draft"]["waivers"]
+        assert len(waivers) == 1
+        assert waivers[0]["followed"] is False
+        assert waivers[0].get("lost_claim") is True
+        assert waivers[0].get("claimed_in") == "Nyoni"
+        assert "not_executed" not in waivers[0]
+
+    def test_an_unrelated_lost_claim_leaves_the_rec_not_executed(self):
+        recs = _make_recs(waivers=[{"priority": 1, "in": "Nyoni", "out": "Wirtz"}])
+        collected = _make_collected(draft_transactions=[], draft_lost_claims=[{
+            "player_in": "Elanga", "player_in_team": "NEW",
+            "player_out": "Savio", "player_out_team": "MCI",
+            "kind": "w", "priority": 1,
+        }])
+        result = _review_compare_recs(recs, collected, {}, {})
+        assert result["draft"]["waivers"][0].get("not_executed") is True
 
 
 class TestReviewCompareRecsNoFile:
@@ -1558,6 +1588,39 @@ class TestReviewTransferClubLabel:
         text = _format_classic_section([], [], {}, [move], gameweek=9)["transfers"]
         assert "- Watkins (2 pts) → Gyökeres (9 pts)" in text
 
+    def test_a_lost_claim_is_listed_instead_of_no_waivers_this_week(self):
+        """Issue #329: a gameweek whose only waiver activity was a claim a
+        rival won is not a gameweek the manager sat out."""
+        from fpl_cli.cli._review_summarisation import _format_draft_section
+
+        claim = {
+            "player_in": "Elanga", "player_in_team": "NEW", "player_in_team_name": "Newcastle",
+            "player_out": "Sávio", "player_out_team": "MCI", "player_out_team_name": "Man City",
+            "kind": "w", "priority": 1,
+        }
+        text = _format_draft_section([], [], {}, [], [claim])["transactions"]
+        assert "No waivers this week" not in text
+        assert "Claims submitted and lost to a rival" in text
+        assert "- Elanga (Newcastle) for Sávio (Man City) [waiver] (priority 1)" in text
+
+    def test_lost_claims_are_listed_alongside_the_moves_that_landed(self):
+        from fpl_cli.cli._review_summarisation import _format_draft_section
+
+        claim = {
+            "player_in": "Elanga", "player_in_team": "NEW", "player_in_team_name": "Newcastle",
+            "player_out": "Sávio", "player_out_team": "MCI", "player_out_team_name": "Man City",
+            "kind": "f", "priority": None,
+        }
+        text = _format_draft_section([], [], {}, [self._transfer()], [claim])["transactions"]
+        assert "Watkins (Aston Villa) (2 pts) → Gyökeres (Arsenal) (9 pts)" in text
+        assert "- Elanga (Newcastle) for Sávio (Man City) [free agent]" in text
+        assert "priority" not in text
+
+    def test_a_quiet_week_still_reads_as_no_waivers(self):
+        from fpl_cli.cli._review_summarisation import _format_draft_section
+
+        assert _format_draft_section([], [], {}, [], [])["transactions"] == "No waivers this week"
+
     def test_draft_free_agent_pickup_keeps_its_placeholder(self):
         from fpl_cli.cli._review_summarisation import _format_draft_section
 
@@ -1571,6 +1634,71 @@ class TestReviewTransferClubLabel:
         p = _classic_player(name="Mystery", team="???", display_points=1)
         p["team_name"] = None
         assert _format_review_classic_player(p) == "- Mystery (???, MID): 1 pts"
+
+
+class TestReviewDraftLostClaims:
+    """Issue #329: the user's own review filtered to accepted rows too, so a
+    week whose only waiver activity was a claim a rival won read as a week
+    with no waiver activity at all."""
+
+    _TEAMS = {
+        19: make_team(id=19, short_name="MCI", name="Man City"),
+        4: make_team(id=4, short_name="NEW", name="Newcastle"),
+    }
+
+    async def _run(self, txns):
+        elanga = make_draft_player(id=900, code=555, web_name="Elanga", team=4, element_type=3)
+        savio = make_draft_player(id=403, code=510281, web_name="Sávio", team=19, element_type=3)
+        main_elanga = make_player(id=900, code=555, web_name="Elanga", team_id=4)
+        main_savio = make_player(id=403, code=510281, web_name="Sávio", team_id=19)
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        client.get_league_details = AsyncMock(return_value={
+            "league": {"name": "Draft League"},
+            "standings": [{"league_entry": 10, "event_total": 9, "total": 9, "rank": 1}],
+            "league_entries": [
+                {"id": 10, "entry_id": 1, "player_first_name": "A", "player_last_name": "B"},
+            ],
+        })
+        client.get_bootstrap_static = AsyncMock(return_value={"elements": [elanga, savio]})
+        client.get_entry_picks = AsyncMock(
+            return_value={"picks": [{"element": 403, "position": 1}], "subs": []}
+        )
+        client.get_league_transactions = AsyncMock(return_value={"transactions": txns})
+        players = [main_elanga, main_savio]
+        with patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=client):
+            return await _review_draft(
+                MagicMock(), 1, 1, gw=3, api_current_gw_id=3,
+                players=players, player_map={p.id: p for p in players},
+                teams=self._TEAMS, live_stats={403: {"total_points": 9, "minutes": 90}},
+            )
+
+    async def test_a_claim_a_rival_won_is_recorded_rather_than_discarded(self):
+        data = await self._run([{
+            "event": 3, "result": "di", "entry": 1, "kind": "w", "priority": 1,
+            "element_in": 900, "element_out": 403,
+        }])
+        assert data["draft_transactions_data"] == []
+        assert data["draft_lost_claims_data"] == [{
+            "player_in": "Elanga", "player_in_team": "NEW", "player_in_team_name": "Newcastle",
+            "player_out": "Sávio", "player_out_team": "MCI", "player_out_team_name": "Man City",
+            "kind": "w", "kind_label": "waiver", "priority": 1,
+        }]
+
+    async def test_a_do_row_is_not_recorded_as_a_lost_claim(self):
+        data = await self._run([{
+            "event": 3, "result": "do", "entry": 1, "kind": "w", "priority": 2,
+            "element_in": 900, "element_out": 403,
+        }])
+        assert data["draft_lost_claims_data"] == []
+
+    async def test_another_managers_lost_claim_is_not_mine(self):
+        data = await self._run([{
+            "event": 3, "result": "di", "entry": 2, "kind": "w", "priority": 1,
+            "element_in": 900, "element_out": 403,
+        }])
+        assert data["draft_lost_claims_data"] == []
 
 
 class TestReviewDraftPlayerMatching:
@@ -1918,6 +2046,7 @@ class TestReviewThreadsTheGameweeksFixtureSet:
         monkeypatch.setattr(review_module, "_review_global_stats", _spy("global", {}))
         monkeypatch.setattr(review_module, "_review_draft", _spy("draft", {
             "draft_squad_points_data": [], "draft_transactions_data": [],
+            "draft_lost_claims_data": [],
             "draft_league_data": None, "draft_automatic_subs": [],
             "draft_player_map": {},
         }))

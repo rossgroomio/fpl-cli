@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any, Self
 
 import httpx
@@ -15,6 +15,44 @@ from fpl_cli.utils.text import strip_diacritics
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://draft.premierleague.com/api"
+
+# The Draft API's transaction `result` codes. Every row the league processed
+# carries one, and the two denial codes do not mean the same thing -- reading
+# either as "no move happened" is right, reading either as "no attempt was
+# made" is wrong for one of them and right for the other (issue #329).
+#
+# `a`  -- the league processed the claim into a completed move.
+# `di` -- denied because a rival won the incoming player. A genuine
+#         competitive loss: the manager tried and was beaten to him.
+# `do` -- denied because the outgoing player had already been used as the
+#         drop in an earlier accepted claim by the same manager. Managers
+#         submit several claims sharing one drop slot expecting only one to
+#         land, so this is the cascade behind a claim that succeeded, not an
+#         attempt that failed. It cannot occur without that earlier accepted
+#         claim, so a `do` row never stands alone as a manager's only
+#         activity.
+DRAFT_TXN_ACCEPTED = "a"
+DRAFT_TXN_LOST_TO_RIVAL = "di"
+DRAFT_TXN_DROP_ALREADY_USED = "do"
+
+
+def is_accepted_transaction(txn: Mapping[str, Any]) -> bool:
+    """Whether the league turned this transaction row into a completed move.
+
+    The only rows that changed a squad, so the only ones a move ledger, a net
+    points swing or a "who dropped whom" question may be built from.
+    """
+    return txn.get("result") == DRAFT_TXN_ACCEPTED
+
+
+def is_lost_claim(txn: Mapping[str, Any]) -> bool:
+    """Whether this row is a claim the manager submitted and a rival won.
+
+    True for `di` alone. A `do` row is deliberately excluded: counting it as
+    a failed attempt would misreport the manager whose *winning* claim caused
+    it, which is the misattribution this classification exists to prevent.
+    """
+    return txn.get("result") == DRAFT_TXN_LOST_TO_RIVAL
 
 
 class FPLDraftClient:
@@ -336,6 +374,11 @@ class FPLDraftClient:
         releases_by_player: dict[int, dict[str, Any]] = {}
 
         for txn in transactions.get("transactions", []):
+            # A denied claim names the player it would have dropped, but the
+            # drop never happened -- only an accepted row released anybody.
+            if not is_accepted_transaction(txn):
+                continue
+
             element_out = txn.get("element_out")
             gameweek = txn.get("event", 0)
 

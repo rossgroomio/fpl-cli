@@ -14,6 +14,7 @@ from fpl_cli.cli._context import console, error_console
 from fpl_cli.cli._fines import FinesLeagueData, FinesTeamPlayer, compute_bench_analysis, evaluate_fines
 from fpl_cli.cli._fines_config import parse_fines_config
 from fpl_cli.cli._helpers import _gw_position_with_half
+from fpl_cli.cli._league_recap_types import draft_transaction_kind_label
 from fpl_cli.cli._review_analysis import GlobalReviewData, NextGameweekOutlook, TeamNextFixture
 from fpl_cli.cli._review_classic import _format_review_classic_player
 from fpl_cli.cli._review_draft import _format_review_draft_player
@@ -646,8 +647,16 @@ def _format_draft_section(
     draft_automatic_subs: list[dict[str, Any]],
     draft_player_map: dict[int, dict[str, Any]],
     draft_transactions: list[dict[str, Any]],
+    draft_lost_claims: list[dict[str, Any]] | None = None,
 ) -> dict[str, str]:
-    """Format draft squad data for the synthesis prompt."""
+    """Format draft squad data for the synthesis prompt.
+
+    Lost claims are listed alongside the moves that landed. A waiver is a
+    competition, so a gameweek can be busy and still produce no move, and
+    "No waivers this week" is only true when nothing was submitted either --
+    saying it of a claim a rival won reports the manager as idle when they
+    were outbid (issue #329).
+    """
     draft_players_str = "\n".join([
         _format_review_draft_player(p) for p in draft_squad_points_data
     ]) if draft_squad_points_data else "No data"
@@ -675,12 +684,23 @@ def _format_draft_section(
     if draft_bench:
         draft_players_str += f"\n\nBench vs Starters (formation-valid swaps):\n{draft_bench}"
 
-    draft_transactions_str = "\n".join([
+    txn_lines = [
         f"- {_transfer_side(t, 'out')} ({t['player_out_points'] or 0} pts)"
         f" → {_transfer_side(t, 'in')} ({t['player_in_points']} pts)"
         f" = {'+' if t['net'] > 0 else ''}{t['net']} ({t['verdict']})"
         for t in draft_transactions
-    ]) if draft_transactions else "No waivers this week"
+    ]
+    if draft_lost_claims:
+        txn_lines.append(
+            "Claims submitted and lost to a rival (no move resulted, but these were made):"
+        )
+        txn_lines.extend(
+            f"- {_transfer_side(c, 'in')} for {_transfer_side(c, 'out')}"
+            f" [{draft_transaction_kind_label(c.get('kind', ''))}]"
+            + (f" (priority {c['priority']})" if c.get("priority") is not None else "")
+            for c in draft_lost_claims
+        )
+    draft_transactions_str = "\n".join(txn_lines) if txn_lines else "No waivers this week"
 
     return {
         "players": draft_players_str,
@@ -1112,6 +1132,7 @@ async def _review_llm_summarise(
         draft_fmt = _format_draft_section(
             draft_squad_points_data, draft_automatic_subs, draft_player_map,
             collected_data.get("draft_transactions", []),
+            collected_data.get("draft_lost_claims", []),
         )
         classic_positions = _classic_position_fields(classic_league_data)
         league_ctx = _format_league_context(
@@ -1280,6 +1301,7 @@ def _review_compare_recs(
     team_points = collected_data.get("team_points", [])
     classic_transfers = collected_data.get("classic_transfers", [])
     draft_transactions = collected_data.get("draft_transactions", [])
+    draft_lost_claims = collected_data.get("draft_lost_claims", [])
 
     # --- Classic Captain ---
     rec_captain = recs["classic"].get("captain")
@@ -1412,6 +1434,13 @@ def _review_compare_recs(
                 matched = True
                 break
         if not matched:
+            # A claim a rival won was executed -- it just lost. Reporting it
+            # as "not executed" reads back as advice the manager ignored
+            # (issue #329).
+            lost = next(
+                (c for c in draft_lost_claims if _names_match(c.get("player_out", "") or "", rec_out)),
+                None,
+            )
             waiver_comparisons.append({
                 "priority": priority,
                 "rec_in": rec_in,
@@ -1419,7 +1448,11 @@ def _review_compare_recs(
                 "actual_in": None,
                 "actual_out": None,
                 "followed": False,
-                "not_executed": True,
+                **(
+                    {"lost_claim": True, "claimed_in": lost.get("player_in")}
+                    if lost is not None
+                    else {"not_executed": True}
+                ),
             })
 
     unadvised_waivers = []

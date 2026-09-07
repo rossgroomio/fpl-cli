@@ -451,7 +451,12 @@ _NEXT_WEEK_WITH_FIXTURES = """\
 _NEXT_WEEK_WITHOUT_FIXTURES = """\
 [1-2 sentences: What patterns from this GW are worth watching? No fixture data for the next gameweek was supplied, so this section is restricted to observations that do not depend on fixtures - a repeated blank, a player losing minutes, a run of returns worth noting. Do NOT make start, bench, captain, transfer or waiver recommendations, and do not say a fixture is easy or hard: you cannot see the fixtures. Point the user at `fpl gw-prep` for those calls. If flagging a player to keep an eye on, specify whether this applies to Classic, Draft, or both.]"""
 
-_EDGE_CASE_WAIVERS = 'If no waivers processed in Draft, note "No waivers this week" in Draft Verdict'
+_EDGE_CASE_WAIVERS = (
+    'The "Waivers Processed" section is the only source for Draft waiver activity. Note '
+    '"No waivers this week" in Draft Verdict only when it says exactly that - a claim it '
+    'lists as lost to a rival was submitted and beaten, so report it as a claim made and '
+    'lost, never as a week without waiver activity'
+)
 _EDGE_CASE_MISSING_DATA = "If data for one format is missing, analyse only the format with data"
 
 _EDGE_CASES = f"""\
