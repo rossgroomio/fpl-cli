@@ -327,12 +327,13 @@ def _format_research_context(
     blankers = global_data.get("blankers")
     if blankers:
         blankers_lines = [
-            "| Player | Team | Pos | Ownership | Pts |",
-            "|--------|------|-----|-----------|-----|",
+            "| Player | Team | Pos | Ownership | Mins | Pts |",
+            "|--------|------|-----|-----------|------|-----|",
         ]
         for b in blankers:
             blankers_lines.append(
-                f"| {b['name']} | {b['team']} | {b.get('position', '???')} | {b['ownership']:.1f}% | {b['points']} |"
+                f"| {b['name']} | {b['team']} | {b.get('position', '???')} |"
+                f" {b['ownership']:.1f}% | {b.get('minutes', 0)} | {b['points']} |"
             )
         blankers_str = "\n".join(blankers_lines)
 
