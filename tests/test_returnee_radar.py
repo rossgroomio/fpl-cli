@@ -793,6 +793,47 @@ def test_understat_matches_a_player_who_moved_since_that_season():
     assert matched.entries[0].quality.quality_score > unmatched.entries[0].quality.quality_score
 
 
+def test_understat_does_not_join_a_mover_to_a_surname_twin_at_the_current_club():
+    """The loose same-club pass (#310) stays off against a past season's pool.
+
+    "Walle Egeli" joins "Sindre Egeli" in the live pool, where the club a row
+    carries is the club being asked about. Here the club is the player's
+    *current* one and the pool is a past season, so a mover with no row of
+    their own must not take a same-surname predecessor's.
+    """
+    player = _flagged(code=4248, web_name="Walle Egeli")
+    modest = _season(
+        4248, minutes=1600, starts=20, total_points=80,
+        expected_goals=4.0, expected_assists=3.0,
+    )
+    profiles = {4248: _profile(4248, modest)}
+    understat = {
+        LAST_SEASON: [
+            {
+                "name": "Sindre Egeli",
+                "team": "Test FC",  # the current club's old roster
+                "position": "F M S",
+                "minutes": 1600,
+                "npxG_per_90": 0.6,
+                "xGChain_per_90": 1.1,
+                "penalty_xG_per_90": 0.1,
+                "xGI_per_90": 0.8,
+            },
+        ],
+    }
+    config = RadarConfig(price_watchlist_percentile=0.1)
+
+    matched = _radar(
+        [player], {1: _prior(0.45, source="price")},
+        profiles=profiles, understat_seasons=understat, config=config,
+    )
+    unmatched = _radar(
+        [player], {1: _prior(0.45, source="price")}, profiles=profiles, config=config,
+    )
+
+    assert matched.entries[0].quality.quality_score == unmatched.entries[0].quality.quality_score
+
+
 def test_understat_declines_when_the_current_club_is_absent_from_that_season():
     """A club no row in that season carries fails as a block, not player by player.
 

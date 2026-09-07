@@ -1721,9 +1721,13 @@ def _understat_match(
     since" is the common case here rather than the rare one: their row carries
     the club they played that season at, and the gate rejects it. Such a player
     joins only on the name-only fallback (#234) — an unambiguous full-name
-    match whose minutes corroborate, or nothing. The snapshot cannot narrow
-    this: `SnapshotRecord` stores no club, and it is discarded at a season
-    boundary anyway, so it knows nothing about the club held in a past season.
+    match whose minutes corroborate, or nothing. The loose same-club pass
+    (#310) stays off for a past pool for the same reason: the club it would
+    corroborate on is the current one, so for a mover it would be scanning
+    the current club's old roster for a surname twin. The snapshot cannot
+    narrow this: `SnapshotRecord` stores no club, and it is discarded at a
+    season boundary anyway, so it knows nothing about the club held in a past
+    season.
 
     The season label goes with it so the join-drop tripwire knows this pool is
     a past one, where a club promoted since carries no rows for the ordinary

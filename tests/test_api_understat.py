@@ -1005,6 +1005,241 @@ class TestMatchFPLToUnderstat:
         assert not inspect.iscoroutinefunction(match_fpl_to_understat)
 
 
+# --- TestLooseNameTiers ---
+
+class TestLooseNameTiers:
+    """The last-resort pass for a player the two sources name differently (#310).
+
+    Every strict tier needs each FPL word found in the Understat name, so a
+    name FPL carries and Understat drops -- or a transliteration the two
+    spell differently -- failed outright. The loose tiers take those, and
+    only those: the negatives here matter more than the positives, since
+    the risk of any looser tier is that it starts joining different players
+    who happen to look alike.
+    """
+
+    def test_double_barrelled_surname_joins_the_single_surname_row(self):
+        """FPL's "Gannon-Doak" is Understat's "Ben Doak"."""
+        players = [
+            {"id": 1, "name": "Ben Doak", "team": "Bournemouth", "position": "S", "minutes": 2},
+            {"id": 2, "name": "Justin Kluivert", "team": "Bournemouth", "position": "M", "minutes": 239},
+        ]
+        result = match_fpl_to_understat(
+            "Gannon-Doak", "Bournemouth", players, fpl_position="MID", fpl_minutes=2
+        )
+        assert result is not None
+        assert result["id"] == 1
+
+    def test_middle_name_fpl_carries_and_understat_drops(self):
+        """FPL's "Walle Egeli" is Understat's "Sindre Egeli"."""
+        players = [
+            {"id": 1, "name": "Sindre Egeli", "team": "Ipswich", "position": "S", "minutes": 8},
+            {"id": 2, "name": "Exequiel Palacios", "team": "Ipswich", "position": "M", "minutes": 106},
+        ]
+        result = match_fpl_to_understat(
+            "Walle Egeli", "Ipswich Town", players, fpl_position="FWD", fpl_minutes=10
+        )
+        assert result is not None
+        assert result["id"] == 1
+
+    def test_mononym_row_joins_the_longer_fpl_name(self):
+        """FPL's "Jair Cunha" is Understat's mononym "Jair"."""
+        players = [
+            {"id": 1, "name": "Jair", "team": "Nottingham Forest", "position": "D", "minutes": 270},
+            {"id": 2, "name": "Murillo", "team": "Nottingham Forest", "position": "D", "minutes": 270},
+        ]
+        result = match_fpl_to_understat(
+            "Jair Cunha", "Nott'm Forest", players, fpl_position="DEF", fpl_minutes=270
+        )
+        assert result is not None
+        assert result["id"] == 1
+
+    def test_transliteration_variant_joins(self):
+        """"Yarmoliuk" and "Yehor Yarmolyuk" diverge mid-word, past any prefix."""
+        players = [
+            {"id": 1, "name": "Yehor Yarmolyuk", "team": "Brentford", "position": "S", "minutes": 76},
+            {"id": 2, "name": "Kevin Schade", "team": "Brentford", "position": "M", "minutes": 270},
+        ]
+        result = match_fpl_to_understat(
+            "Yarmoliuk", "Brentford", players, fpl_position="MID", fpl_minutes=89
+        )
+        assert result is not None
+        assert result["id"] == 1
+
+    def test_transliteration_fold_covers_a_first_name(self):
+        """"Yeremy" is Understat's "Yeremi Pino", not a player with no row."""
+        players = [
+            {"id": 1, "name": "Yeremi Pino", "team": "Crystal Palace", "position": "M S", "minutes": 189},
+            {"id": 2, "name": "Ismaila Sarr", "team": "Crystal Palace", "position": "M", "minutes": 270},
+        ]
+        result = match_fpl_to_understat(
+            "Yeremy", "Crystal Palace", players, fpl_position="MID", fpl_minutes=190
+        )
+        assert result is not None
+        assert result["id"] == 1
+
+    def test_a_shared_first_name_does_not_join(self):
+        """"João Pedro" must not wear "Pedro Neto"'s row the week his own is missing.
+
+        Any shared word would join these; the loose tiers need the surname.
+        """
+        players = [
+            {"id": 1, "name": "Pedro Neto", "team": "Chelsea", "position": "M", "minutes": 167},
+            {"id": 2, "name": "Cole Palmer", "team": "Chelsea", "position": "M", "minutes": 270},
+        ]
+        result = match_fpl_to_understat(
+            "João Pedro", "Chelsea", players, fpl_position="FWD", fpl_minutes=270
+        )
+        assert result is None
+
+    def test_a_shared_particle_does_not_join(self):
+        """"Van Hecke" and "van de Ven" share a word and nothing else."""
+        players = [
+            {"id": 1, "name": "Micky van de Ven", "team": "Tottenham", "position": "D", "minutes": 180},
+            {"id": 2, "name": "Cristian Romero", "team": "Tottenham", "position": "D", "minutes": 270},
+        ]
+        result = match_fpl_to_understat(
+            "Van Hecke", "Spurs", players, fpl_position="DEF", fpl_minutes=270
+        )
+        assert result is None
+
+    def test_a_shared_surname_does_not_override_a_contradicting_initial(self):
+        """"J.Ramsey" is not "Aaron Ramsey", whatever row the pool is missing.
+
+        FPL abbreviates to an initial exactly when a surname is shared, so
+        the initial is its statement of which one this is.
+        """
+        players = [
+            {"id": 1, "name": "Aaron Ramsey", "team": "Aston Villa", "position": "M", "minutes": 900},
+            {"id": 2, "name": "Ollie Watkins", "team": "Aston Villa", "position": "F", "minutes": 900},
+        ]
+        result = match_fpl_to_understat(
+            "J.Ramsey", "Aston Villa", players, fpl_position="MID", fpl_minutes=900
+        )
+        assert result is None
+
+    def test_a_shared_token_that_is_not_a_word_does_not_join(self):
+        """A shared number in the surname position is not a shared surname.
+
+        `_normalise` keeps digits, and the doctor probe's wholesale-break
+        fixture is exactly two lists of names sharing a row index.
+        """
+        players = [
+            {"id": 1, "name": "Stranger 8", "team": "Chelsea", "position": "M", "minutes": 900},
+            {"id": 2, "name": "Stranger 9", "team": "Chelsea", "position": "M", "minutes": 900},
+        ]
+        result = match_fpl_to_understat(
+            "Player 8", "Chelsea", players, fpl_position="MID", fpl_minutes=900
+        )
+        assert result is None
+
+    def test_a_bare_surname_row_does_not_satisfy_an_initial(self):
+        """"J.Ramsey" is not a lone "Ramsey" row either.
+
+        The mononym shape reaches the same ambiguity through a different
+        branch: FPL abbreviated to an initial because the surname alone is
+        ambiguous, so a surname alone cannot resolve it.
+        """
+        players = [
+            {"id": 1, "name": "Ramsey", "team": "Aston Villa", "position": "M", "minutes": 900},
+            {"id": 2, "name": "Ollie Watkins", "team": "Aston Villa", "position": "F", "minutes": 900},
+        ]
+        result = match_fpl_to_understat(
+            "J.Ramsey", "Aston Villa", players, fpl_position="MID", fpl_minutes=900
+        )
+        assert result is None
+
+    def test_a_numeric_mononym_does_not_join(self):
+        """The word guard holds for the mononym shape too, not only the surname one."""
+        players = [
+            {"id": 1, "name": "8", "team": "Chelsea", "position": "M", "minutes": 900},
+            {"id": 2, "name": "Cole Palmer", "team": "Chelsea", "position": "M", "minutes": 900},
+        ]
+        result = match_fpl_to_understat(
+            "Player 8", "Chelsea", players, fpl_position="MID", fpl_minutes=900
+        )
+        assert result is None
+
+    def test_loose_tiers_need_minutes_to_corroborate(self):
+        """A shared surname beside seasons of different lengths is a namesake."""
+        players = [
+            {"id": 1, "name": "Ben Doak", "team": "Bournemouth", "position": "S", "minutes": 900},
+            {"id": 2, "name": "Justin Kluivert", "team": "Bournemouth", "position": "M", "minutes": 900},
+        ]
+        result = match_fpl_to_understat(
+            "Gannon-Doak", "Bournemouth", players, fpl_position="MID", fpl_minutes=2
+        )
+        assert result is None
+
+    def test_loose_tiers_refuse_an_ambiguous_surname(self):
+        """Two club-mates sharing the surname are declined, not guessed at."""
+        players = [
+            {"id": 1, "name": "Ben Doak", "team": "Bournemouth", "position": "M", "minutes": 2},
+            {"id": 2, "name": "Tom Doak", "team": "Bournemouth", "position": "M", "minutes": 2},
+        ]
+        result = match_fpl_to_understat(
+            "Gannon-Doak", "Bournemouth", players, fpl_position="MID", fpl_minutes=2
+        )
+        assert result is None
+
+    def test_loose_tiers_never_leave_the_club(self):
+        """Across the league a shared surname is a namesake, not a spelling."""
+        players = [
+            {"id": 1, "name": "Ben Doak", "team": "Liverpool", "position": "S", "minutes": 2},
+            {"id": 2, "name": "Justin Kluivert", "team": "Bournemouth", "position": "M", "minutes": 239},
+        ]
+        result = match_fpl_to_understat(
+            "Gannon-Doak", "Bournemouth", players, fpl_position="MID", fpl_minutes=2
+        )
+        assert result is None
+
+    def test_the_club_blind_full_name_pass_runs_before_the_loose_one(self):
+        """A mover still listed at the old club under his full name is found there.
+
+        The loose pass is ordered after the club-blind one so a same-surname
+        teammate at the new club cannot claim him first.
+        """
+        players = [
+            {"id": 1, "name": "Ben Gannon-Doak", "team": "Liverpool", "position": "S", "minutes": 2},
+            {"id": 2, "name": "Tom Doak", "team": "Bournemouth", "position": "M", "minutes": 2},
+        ]
+        result = match_fpl_to_understat(
+            "Gannon-Doak", "Bournemouth", players, fpl_position="MID", fpl_minutes=2
+        )
+        assert result is not None
+        assert result["id"] == 1
+
+    def test_loose_tiers_stay_off_for_a_past_seasons_pool(self):
+        """A past pool is matched on the player's current club, which cannot corroborate.
+
+        The returnee radar scores a player's current club against the season
+        they played, so for a mover the club is wrong by construction and the
+        loose pass would be scanning the current club's old roster for a
+        surname twin.
+        """
+        players = [
+            {"id": 1, "name": "Ben Doak", "team": "Bournemouth", "position": "S", "minutes": 2},
+            {"id": 2, "name": "Justin Kluivert", "team": "Bournemouth", "position": "M", "minutes": 239},
+        ]
+        result = match_fpl_to_understat(
+            "Gannon-Doak", "Bournemouth", players,
+            fpl_position="MID", fpl_minutes=2, season_label="2025-26",
+        )
+        assert result is None
+
+    def test_a_strict_club_match_still_outranks_a_loose_one(self):
+        """The loose pass never runs when a strict tier has already matched."""
+        players = [
+            {"id": 1, "name": "Sindre Egeli", "team": "Ipswich", "position": "S", "minutes": 10},
+            {"id": 2, "name": "Sindre Walle Egeli", "team": "Ipswich", "position": "M", "minutes": 10},
+        ]
+        result = match_fpl_to_understat(
+            "Walle Egeli", "Ipswich Town", players, fpl_position="FWD", fpl_minutes=10
+        )
+        assert result is not None
+        assert result["id"] == 2
+
+
 # --- TestUnderstatClientCaching ---
 
 class TestUnderstatClientCaching:
