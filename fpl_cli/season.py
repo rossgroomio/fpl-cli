@@ -116,6 +116,30 @@ def resolve_season_year(
     return gw1_year
 
 
+def is_previous_season_year(year: int, season_year: int) -> bool:
+    """Whether `year` names a season that finished before the one in progress.
+
+    Ordered rather than exact, because the two arguments are derived
+    differently. `season_year` is the season now in progress, resolved from
+    GW1's deadline where a caller can reach the API; `year` is a timestamp's,
+    and an arbitrary past date has nothing but the July cutover to go on.
+    A season overrunning the cutover (2019-20, delayed into July 2020) makes
+    them disagree in *both* directions -- a July timestamp lands a year ahead
+    of the season it was written in -- and only the behind case means the data
+    is old. So a timestamp at or past the current season's year belongs to a
+    season that has not finished, and nothing it stamps is a previous
+    season's (#308).
+
+    Lives here rather than beside its callers because "is this from a finished
+    season" is the same question `previous_season_year` answers from the other
+    direction, and the overrun is the reason both are subtle.
+
+    >>> is_previous_season_year(2018, 2019), is_previous_season_year(2020, 2019)
+    (True, False)
+    """
+    return year < season_year
+
+
 # -- Format helpers ----------------------------------------------------------
 
 def understat_season(year: int | None = None) -> str:

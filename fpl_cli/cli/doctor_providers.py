@@ -38,7 +38,7 @@ import httpx
 from fpl_cli.api.contract import missing_columns
 from fpl_cli.cli.doctor import CheckResult, CheckStatus
 from fpl_cli.paths import UserDirError
-from fpl_cli.season import TOTAL_GAMEWEEKS
+from fpl_cli.season import TOTAL_GAMEWEEKS, resolve_season_year
 from fpl_cli.utils.teams import describe_team_set_mismatch
 
 if TYPE_CHECKING:
@@ -1065,12 +1065,20 @@ async def _football_data_checks(short_names: list[str] | None) -> list[CheckResu
 # ---------------------------------------------------------------------------
 
 
-async def provider_checks() -> list[CheckResult]:
+async def provider_checks() -> tuple[list[CheckResult], int]:
     """Run every provider probe, containing per-provider failures.
 
     The FPL bootstrap runs first because three later probes compare against
     the live team list and gameweek state; when it is unreachable those
     comparisons report unchecked rather than guessing.
+
+    Returns the season year alongside the results so `fpl doctor --providers`
+    can label its report without a second `bootstrap-static/` download:
+    `FPLClient` memoises that payload on the instance alone, so resolving the
+    season through a client of its own fetched the same few megabytes twice
+    per run (#308 review). An unreachable bootstrap leaves `events` empty and
+    `resolve_season_year` falls back to the July clock, which is the same
+    degradation the local checks make.
     """
     fpl_results, bootstrap = await _fpl_checks()
     results = list(fpl_results)
@@ -1117,4 +1125,4 @@ async def provider_checks() -> list[CheckResult]:
         team_name_by_id=team_name_by_id,
     )
     results += await _football_data_checks(short_names)
-    return results
+    return results, resolve_season_year((bootstrap or {}).get("events") or [])

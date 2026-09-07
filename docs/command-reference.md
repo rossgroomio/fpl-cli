@@ -1300,6 +1300,8 @@ Rolling a setup into a new season silently invalidates IDs and per-team files: a
 
 **Environment** — which directory each of config/data/cache resolved to and whether an `FPL_CLI_*` override is in effect, plus whether `settings.yaml` exists.
 
+**Which season it is** — the season doctor reports in `metadata.season`, and judges "a previous season's" against, comes from GW1's `deadline_time` where the API answers and the July cutover only where it does not — the same rule `fpl status` uses, so the two commands cannot name different seasons for the same moment. A season that overruns 1 July (2019-20, COVID-delayed) therefore keeps its own label in both, and a `team_finances.json` scraped during that overrun reads as current rather than as a previous season's.
+
 Each finding is classified as **broken** (wrong answers now — fix it today), **stale** (self-corrects or needs one routine refresh), **skipped** (not configured/present), or **unchecked** (API unreachable). Exits non-zero when anything is broken, so it can gate scripts.
 
 **`--providers`** checks the external data sources instead of the local setup. None of them version anything, and the tool degrades gracefully everywhere, so upstream drift otherwise surfaces as plausible but wrong output — a renamed stat field zeroes every player's xG without an error. Each probe asserts shape and volume, not just reachability, and where a column check is not the contract it runs the parser itself:

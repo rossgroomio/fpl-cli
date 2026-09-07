@@ -10,6 +10,7 @@ from fpl_cli.season import (
     TOTAL_GAMEWEEKS,
     core_insights_season,
     get_season_year,
+    is_previous_season_year,
     is_season_label,
     previous_season_label,
     previous_season_year,
@@ -154,6 +155,26 @@ class TestResolveSeasonYear:
 
     def test_defaults_to_todays_clock_when_unspecified(self):
         assert resolve_season_year([]) == get_season_year()
+
+
+# -- is_previous_season_year -------------------------------------------------
+
+class TestIsPreviousSeasonYear:
+    """Ordered rather than exact, because a season overrunning the July
+    cutover puts a timestamp's clock-derived year *ahead* of the season it
+    was written in (#308)."""
+
+    def test_an_earlier_year_is_a_finished_season(self):
+        assert is_previous_season_year(2018, 2019) is True
+
+    def test_the_season_in_progress_is_not(self):
+        assert is_previous_season_year(2019, 2019) is False
+
+    def test_a_timestamp_past_the_cutover_of_an_overrunning_season_is_not(self):
+        """July 2020, with 2019-20 still running: the clock stamps the
+        timestamp 2020 while GW1's deadline still says the live season is
+        2019. Exact comparison would call current data a previous season's."""
+        assert is_previous_season_year(get_season_year(date(2020, 7, 20)), 2019) is False
 
 
 # -- understat_season --------------------------------------------------------

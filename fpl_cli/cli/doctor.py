@@ -41,7 +41,12 @@ from fpl_cli.paths import (
     user_data_dir,
     user_data_file,
 )
-from fpl_cli.season import get_season_year, previous_season_label, season_label
+from fpl_cli.season import (
+    get_season_year,
+    is_previous_season_year,
+    previous_season_label,
+    season_label,
+)
 from fpl_cli.utils.teams import describe_team_set_mismatch
 
 
@@ -70,17 +75,41 @@ _STATUS_ICONS: dict[CheckStatus, tuple[str, str]] = {
 }
 
 
-def _season_of_timestamp(value: Any) -> str | None:
-    """Season label a timestamp falls in, or None when it cannot be parsed."""
+def _season_year_of_timestamp(value: Any) -> int | None:
+    """Season start year a timestamp falls in, or None when it cannot be parsed.
+
+    The July cutover is the only rule available for an arbitrary past date --
+    GW1's deadline names one season, not the season every timestamp belongs
+    to -- so callers compare the result against the resolved current year
+    with `is_previous_season_year`, which explains why that is ordered rather
+    than exact.
+    """
     if isinstance(value, datetime):
-        return season_label(get_season_year(value.date()))
+        return get_season_year(value.date())
     if not isinstance(value, str) or not value:
         return None
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
-    return season_label(get_season_year(parsed.date()))
+    return get_season_year(parsed.date())
+
+
+async def _resolve_season_year(client: Any) -> int:
+    """The season year doctor names and measures staleness against.
+
+    From GW1's deadline when the API answers, the July-cutover clock when it
+    does not. `fpl status` resolves its own `metadata.season` the same way
+    (#91); doctor kept calling the bare clock form, so the two commands named
+    different seasons in exactly the case #91 exists for (#308). Doctor stays
+    usable offline -- the whole point is diagnosing a setup that is not
+    working -- so an unreachable API degrades to the clock rather than
+    failing the command.
+    """
+    try:
+        return await client.get_season_year()
+    except (httpx.HTTPError, KeyError, TypeError):
+        return get_season_year()
 
 
 def _manager_name(data: dict[str, Any]) -> str:
@@ -269,7 +298,7 @@ async def _classic_league_check(client: Any, league_id: int) -> CheckResult:
     )
 
 
-async def _draft_league_check(draft_client: Any, league_id: int) -> CheckResult:
+async def _draft_league_check(draft_client: Any, league_id: int, season_year: int) -> CheckResult:
     name = "draft_league_id"
     data, failure = await _resolve(
         name,
@@ -281,12 +310,12 @@ async def _draft_league_check(draft_client: Any, league_id: int) -> CheckResult:
         return failure or CheckResult(name, CheckStatus.UNCHECKED, "no data returned")
     league = data.get("league") or {}
     league_name = league.get("name") or "?"
-    draft_season = _season_of_timestamp(league.get("draft_dt"))
-    if draft_season and draft_season != season_label():
+    draft_year = _season_year_of_timestamp(league.get("draft_dt"))
+    if draft_year is not None and is_previous_season_year(draft_year, season_year):
         return CheckResult(
             name,
             CheckStatus.BROKEN,
-            f'{league_id} → "{league_name}", drafted in {draft_season} — '
+            f'{league_id} → "{league_name}", drafted in {season_label(draft_year)} — '
             "not this season's league",
             _DRAFT_LEAGUE_FIX,
         )
@@ -459,7 +488,7 @@ def _previews_check(teams: list[str] | None) -> CheckResult:
     return CheckResult(name, CheckStatus.OK, f"{len(previews)} of {len(teams)} clubs covered")
 
 
-def _team_finances_check() -> CheckResult:
+def _team_finances_check(season_year: int) -> CheckResult:
     name = "team_finances.json"
     path = user_data_file(name)
     if not path.exists():
@@ -483,12 +512,12 @@ def _team_finances_check() -> CheckResult:
             "has no readable scraped_at stamp",
             "re-scrape with `fpl squad sell-prices --refresh`",
         )
-    file_season = season_label(get_season_year(scraped_at.date()))
-    if file_season != season_label():
+    file_year = get_season_year(scraped_at.date())
+    if is_previous_season_year(file_year, season_year):
         return CheckResult(
             name,
             CheckStatus.BROKEN,
-            f"scraped {scraped_at.date().isoformat()} ({file_season}) — "
+            f"scraped {scraped_at.date().isoformat()} ({season_label(file_year)}) — "
             "a previous season's squad and prices",
             "re-scrape with `fpl squad sell-prices --refresh`",
         )
@@ -510,6 +539,10 @@ def _player_prior_check() -> CheckResult:
             f"unreadable: {exc}",
             "delete the file — it is rebuilt on next use",
         )
+    # The bare clock form deliberately, unlike the checks above (#308): this
+    # predicts what `load_cached_priors` will decide, and that comparison is
+    # clock-derived. Matching doctor's own reported season here would report a
+    # file the runtime is about to accept as stale.
     if file_season != season_label():
         return CheckResult(
             name,
@@ -543,6 +576,8 @@ def _returnee_snapshot_check() -> CheckResult:
     if file_season != season_label():
         # The radar reads this itself and treats a season mismatch as a first
         # run, so the only cost is one week of missing week-over-week changes.
+        # Clock-derived for the same reason as the prior above (#308): the
+        # comparison mirrors `load_store`'s, so it must share its basis.
         return CheckResult(
             name,
             CheckStatus.STALE,
@@ -626,7 +661,7 @@ def _quality_ceilings_check() -> CheckResult:
     )
 
 
-def _file_checks(teams: list[str] | None) -> list[CheckResult]:
+def _file_checks(teams: list[str] | None, season_year: int) -> list[CheckResult]:
     """Run the data-file checks, containing an unusable FPL_CLI_* override.
 
     Each check resolves the config or data dir itself, so a broken override
@@ -638,7 +673,7 @@ def _file_checks(teams: list[str] | None) -> list[CheckResult]:
         ("team_ratings.yaml", lambda: _team_ratings_check(teams)),
         ("team_managers.yaml", lambda: _team_managers_check(teams)),
         ("previews/", lambda: _previews_check(teams)),
-        ("team_finances.json", _team_finances_check),
+        ("team_finances.json", lambda: _team_finances_check(season_year)),
         ("player_prior.yaml", _player_prior_check),
         ("returnee_snapshot.json", _returnee_snapshot_check),
     ]
@@ -725,23 +760,22 @@ def doctor_command(providers_only: bool, output_format: str) -> None:
         if providers_only:
             from fpl_cli.cli.doctor_providers import provider_checks
 
-            provider_results = await provider_checks()
+            provider_results, provider_season_year = await provider_checks()
+            season = season_label(provider_season_year)
             broken, stale, unchecked = _status_counts(provider_results)
             if output_format == "json":
                 emit_json(
                     "doctor",
                     {"providers": [dataclasses.asdict(r) for r in provider_results]},
                     metadata={
-                        "season": season_label(),
+                        "season": season,
                         "broken": broken,
                         "stale": stale,
                         "unchecked": unchecked,
                     },
                 )
             else:
-                console.print(
-                    Panel.fit(f"[bold blue]FPL Doctor — season {season_label()}[/bold blue]")
-                )
+                console.print(Panel.fit(f"[bold blue]FPL Doctor — season {season}[/bold blue]"))
                 _render_section("Providers", provider_results)
                 _print_summary(broken, stale, unchecked)
             if broken:
@@ -770,6 +804,10 @@ def doctor_command(providers_only: bool, output_format: str) -> None:
         id_results: list[CheckResult] = []
         teams: list[str] | None
         async with _FPLClient() as client:
+            # One resolution for the label reported and every staleness
+            # verdict below, so they cannot name different seasons (#308).
+            season_year = await _resolve_season_year(client)
+            season = season_label(season_year)
             try:
                 teams = [t.short_name for t in await client.get_teams()]
             except httpx.HTTPError:
@@ -804,7 +842,9 @@ def doctor_command(providers_only: bool, output_format: str) -> None:
             async with _FPLDraftClient() as draft_client:
                 league_result: CheckResult | None = None
                 if draft_league_id:
-                    league_result = await _draft_league_check(draft_client, draft_league_id)
+                    league_result = await _draft_league_check(
+                        draft_client, draft_league_id, season_year
+                    )
                     id_results.append(league_result)
                 else:
                     id_results.append(
@@ -825,7 +865,7 @@ def doctor_command(providers_only: bool, output_format: str) -> None:
             id_results.append(CheckResult("draft_league_id", CheckStatus.SKIPPED, unset_detail))
             id_results.append(CheckResult("draft_entry_id", CheckStatus.SKIPPED, unset_detail))
 
-        file_results = _file_checks(teams)
+        file_results = _file_checks(teams, season_year)
         calibration_results = [_quality_ceilings_check()]
 
         all_results = env_results + id_results + file_results + calibration_results
@@ -841,14 +881,14 @@ def doctor_command(providers_only: bool, output_format: str) -> None:
                     "calibration": [dataclasses.asdict(r) for r in calibration_results],
                 },
                 metadata={
-                    "season": season_label(),
+                    "season": season,
                     "broken": broken,
                     "stale": stale,
                     "unchecked": unchecked,
                 },
             )
         else:
-            console.print(Panel.fit(f"[bold blue]FPL Doctor — season {season_label()}[/bold blue]"))
+            console.print(Panel.fit(f"[bold blue]FPL Doctor — season {season}[/bold blue]"))
             _render_section("Directories", env_results)
             _render_section("Settings IDs", id_results)
             _render_section("Data files", file_results)

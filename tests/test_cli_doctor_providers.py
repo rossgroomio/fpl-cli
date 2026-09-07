@@ -264,6 +264,21 @@ class TestHealthyProviders:
         assert "resolve to FPL short names through TLA_TO_FPL" in flat
 
     @respx.mock
+    def test_bootstrap_static_is_fetched_once(self, monkeypatch):
+        """The season label rides on the probe's own bootstrap (#308 review).
+
+        `FPLClient` memoises bootstrap-static on the instance alone, so
+        resolving the season through a client of its own downloaded the same
+        few megabytes a second time on every run.
+        """
+        monkeypatch.setenv("FOOTBALL_DATA_API_KEY", "test-key")
+        _register_routes()
+        result = _run()
+        assert result.exit_code == 0
+        fetches = [c for c in respx.calls if str(c.request.url) == FPL_BOOTSTRAP_URL]
+        assert len(fetches) == 1
+
+    @respx.mock
     def test_football_data_unconfigured_is_skipped(self, monkeypatch):
         monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
         _register_routes()

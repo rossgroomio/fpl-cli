@@ -12,7 +12,7 @@ import yaml
 from click.testing import CliRunner
 
 from fpl_cli.cli import main
-from fpl_cli.cli.doctor import _season_of_timestamp
+from fpl_cli.cli.doctor import _season_year_of_timestamp
 from fpl_cli.paths import SHIPPED_CONFIG_DIR
 from fpl_cli.season import get_season_year, season_label
 from fpl_cli.services.returnee_radar import SNAPSHOT_FILENAME
@@ -46,8 +46,19 @@ def _mock_client(
     entry_error=None,
     league_error=None,
     teams_error=None,
+    season_year=None,
+    season_year_error=None,
 ):
     client = MagicMock()
+    # Doctor asks the API which season it is rather than the clock (#308), so
+    # every mock answers it -- a bare MagicMock would fail the await and
+    # silently exercise only the offline fallback.
+    if season_year_error is not None:
+        client.get_season_year = AsyncMock(side_effect=season_year_error)
+    else:
+        client.get_season_year = AsyncMock(
+            return_value=CURRENT_YEAR if season_year is None else season_year
+        )
     if teams_error is not None:
         client.get_teams = AsyncMock(side_effect=teams_error)
     else:
@@ -106,7 +117,12 @@ def _mock_draft_client(league_details=None, entry_profile=None, league_error=Non
     return client
 
 
-def _run(client, settings=None, draft_client=None, args=None):
+def _run(client, settings=None, draft_client=None, args=None, command="doctor"):
+    """Invoke a command against `client`.
+
+    `command` is a parameter so a test can run `status` against the very same
+    mock, which is the only way to assert the two agree about the season.
+    """
     settings = settings if settings is not None else {"fpl": {}}
     runner = CliRunner()
     with ExitStack() as stack:
@@ -117,7 +133,7 @@ def _run(client, settings=None, draft_client=None, args=None):
             stack.enter_context(
                 patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=draft_client)
             )
-        return runner.invoke(main, ["doctor", *(args or [])])
+        return runner.invoke(main, [command, *(args or [])])
 
 
 def _data_dir() -> Path:
@@ -153,17 +169,93 @@ def _write_snapshot(season: str, gameweek: int = 5) -> None:
     )
 
 
-class TestSeasonOfTimestamp:
+class TestSeasonYearOfTimestamp:
     def test_parses_iso_z_string(self):
-        assert _season_of_timestamp(f"{CURRENT_YEAR}-08-01T10:00:00Z") == CURRENT_SEASON
+        assert _season_year_of_timestamp(f"{CURRENT_YEAR}-08-01T10:00:00Z") == CURRENT_YEAR
 
     def test_accepts_datetime(self):
-        assert _season_of_timestamp(datetime(CURRENT_YEAR - 1, 9, 1)) == PREVIOUS_SEASON
+        assert _season_year_of_timestamp(datetime(CURRENT_YEAR - 1, 9, 1)) == CURRENT_YEAR - 1
 
     def test_rejects_garbage(self):
-        assert _season_of_timestamp("not-a-date") is None
-        assert _season_of_timestamp(None) is None
-        assert _season_of_timestamp(123) is None
+        assert _season_year_of_timestamp("not-a-date") is None
+        assert _season_year_of_timestamp(None) is None
+        assert _season_year_of_timestamp(123) is None
+
+
+class TestSeasonResolution:
+    """Doctor names the season the API does, not the clock (#308).
+
+    `fpl status` derives its `metadata.season` from GW1's deadline (#91).
+    Doctor called the bare clock form, so the two disagreed in exactly the
+    case #91 exists for -- a season overrunning the 1 July cutover -- and
+    doctor's own staleness verdicts were measured against the wrong label.
+    Every test here simulates that by having the API name a season a year
+    behind the clock, which is what an overrun looks like from GW1's deadline.
+    """
+
+    # The season still being played when it overruns 1 July: it started a year
+    # ago, so the clock has already rolled its label on to the next one.
+    OVERRUN_YEAR = CURRENT_YEAR - 1
+    OVERRUN_SEASON = PREVIOUS_SEASON
+
+    def test_reported_season_comes_from_the_api(self):
+        result = _run(_mock_client(season_year=self.OVERRUN_YEAR), args=["--format", "json"])
+        payload = json.loads(result.output)
+        assert payload["metadata"]["season"] == self.OVERRUN_SEASON
+
+    def test_agrees_with_status(self):
+        """The gap #308 names: nothing pinned the two commands' labels together."""
+        client = _mock_client(season_year=self.OVERRUN_YEAR)
+        client.get_current_gameweek = AsyncMock(return_value={"id": 37, "finished": True})
+        client.get_next_gameweek = AsyncMock(
+            return_value={"id": 38, "deadline_time": f"{CURRENT_YEAR}-07-12T17:30:00Z"}
+        )
+        doctor = _run(client, args=["--format", "json"])
+        status = _run(client, args=["--format", "json"], command="status")
+        doctor_season = json.loads(doctor.output)["metadata"]["season"]
+        assert doctor_season == json.loads(status.output)["metadata"]["season"]
+        assert doctor_season == self.OVERRUN_SEASON
+
+    def test_falls_back_to_the_clock_when_the_api_is_unreachable(self):
+        """Doctor has to run when nothing works -- that is what it is for."""
+        result = _run(_mock_client(season_year_error=_http_404()), args=["--format", "json"])
+        payload = json.loads(result.output)
+        assert payload["metadata"]["season"] == CURRENT_SEASON
+
+    def test_finances_scraped_past_the_cutover_are_not_a_previous_season(self):
+        """A July scrape during an overrunning season is current, not stale."""
+        (_data_dir() / "team_finances.json").write_text(
+            json.dumps({"scraped_at": f"{CURRENT_YEAR}-07-05T12:00:00"}),
+            encoding="utf-8",
+        )
+        result = _run(_mock_client(season_year=self.OVERRUN_YEAR))
+        assert result.exit_code == 0
+        assert f"scraped {CURRENT_YEAR}-07-05" in result.output
+        assert "previous season" not in _flat(result)
+
+    def test_finances_from_a_finished_season_are_still_broken(self):
+        (_data_dir() / "team_finances.json").write_text(
+            json.dumps({"scraped_at": f"{self.OVERRUN_YEAR - 1}-08-15T12:00:00"}),
+            encoding="utf-8",
+        )
+        result = _run(_mock_client(season_year=self.OVERRUN_YEAR))
+        assert result.exit_code == 1
+        assert "previous season" in _flat(result)
+
+    def test_draft_league_of_the_live_season_is_ok(self):
+        details = {
+            "league": {
+                "name": "This Season's League",
+                "draft_dt": f"{self.OVERRUN_YEAR}-08-01T00:00:00Z",
+            }
+        }
+        result = _run(
+            _mock_client(season_year=self.OVERRUN_YEAR),
+            settings={"fpl": {"draft_league_id": 4321}},
+            draft_client=_mock_draft_client(league_details=details),
+        )
+        assert result.exit_code == 0
+        assert "not this season's league" not in _flat(result)
 
 
 class TestEnvironmentSection:
