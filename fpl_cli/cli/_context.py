@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import os
+import sys
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -16,7 +17,7 @@ from fpl_cli.paths import SHIPPED_CONFIG_DIR, UserDirError, user_config_dir
 from fpl_cli.season import is_season_label, season_label, season_partition
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
 
     from fpl_cli.agents.base import AgentResult
     from fpl_cli.services.fixture_predictions import FixturePredictionsService
@@ -404,17 +405,70 @@ def experimental_gate_message(cmd_name: str) -> str:
     )
 
 
+def _argv_requests_json(argv: Sequence[str]) -> bool:
+    """Whether *argv* asks for `--format json`, scanned without a full parse.
+
+    Called from `FormatAwareGroup.main`'s `UserDirError` handler, which fires
+    before click has parsed anything -- there is no `CLIContext.format` yet,
+    and dispatching through click to get one would need to resolve the very
+    directory this handler exists to report as broken (#307).
+    """
+    for i, token in enumerate(argv):
+        if token == "--format":
+            return i + 1 < len(argv) and argv[i + 1].lower() == "json"
+        if token.startswith("--format="):
+            return token.split("=", 1)[1].lower() == "json"
+    return False
+
+
+def _command_from_argv(argv: Sequence[str]) -> str:
+    """First non-option token in *argv*, or "fpl" if there isn't one.
+
+    Stands in for `ctx.command.name` in the error envelope -- the real
+    context doesn't exist yet at the point this runs (#307). `--format` is a
+    per-command option that in practice always follows the subcommand, but
+    its value is skipped here too rather than risk it being mistaken for one.
+    """
+    skip_next = False
+    for token in argv:
+        if skip_next:
+            skip_next = False
+            continue
+        if token == "--format":
+            skip_next = True
+            continue
+        if not token.startswith("-"):
+            return token
+    return "fpl"
+
+
 class FormatAwareGroup(click.Group):
     """Click group that renders commands in format-aware sections."""
 
     def main(self, *args: Any, **kwargs: Any) -> Any:
-        """Report an unusable FPL_CLI_* directory as an error, not a traceback."""
+        """Report an unusable FPL_CLI_* directory as an error, not a traceback.
+
+        Under `--format json` this must still land the `{command, error}`
+        envelope on stdout (#307): the directory check runs eagerly, before
+        subcommand dispatch, so a plain `click.ClickException` -- stderr only,
+        no envelope -- would otherwise leave a JSON consumer with zero bytes
+        on stdout and exit 1, indistinguishable from a hang or a crash.
+        """
         try:
             return super().main(*args, **kwargs)
         except UserDirError as exc:
             if not kwargs.get("standalone_mode", True):
                 # Click's contract for programmatic use: raise, don't print-and-exit.
                 raise
+            argv = kwargs.get("args")
+            if argv is None and args:
+                argv = args[0]
+            if argv is None:
+                argv = sys.argv[1:]
+            if _argv_requests_json(argv):
+                from fpl_cli.cli._json import emit_json_error
+
+                emit_json_error(_command_from_argv(argv), str(exc), cause=exc)
             failure = click.ClickException(str(exc))
             failure.show()
             raise SystemExit(failure.exit_code) from exc

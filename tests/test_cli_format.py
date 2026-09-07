@@ -5,7 +5,14 @@ from unittest.mock import patch
 import click
 from click.testing import CliRunner
 
-from fpl_cli.cli._context import CLIContext, Format, FormatAwareGroup, resolve_format
+from fpl_cli.cli._context import (
+    CLIContext,
+    Format,
+    FormatAwareGroup,
+    _argv_requests_json,
+    _command_from_argv,
+    resolve_format,
+)
 
 
 class TestResolveFormat:
@@ -127,6 +134,48 @@ class TestFormatAwareGroupHelp:
     def test_no_branded_header_line(self):
         output = self._get_help(Format.BOTH)
         assert output.startswith("Usage:")
+
+
+class TestArgvRequestsJson:
+    """`FormatAwareGroup.main`'s `UserDirError` handler recovers `--format json`
+    from raw argv, since it fires before click has parsed anything (#307).
+    """
+
+    def test_space_form(self):
+        assert _argv_requests_json(["status", "--format", "json"]) is True
+
+    def test_equals_form(self):
+        assert _argv_requests_json(["status", "--format=json"]) is True
+
+    def test_case_insensitive(self):
+        assert _argv_requests_json(["status", "--format", "JSON"]) is True
+
+    def test_table_format_is_false(self):
+        assert _argv_requests_json(["status", "--format", "table"]) is False
+
+    def test_no_format_flag_is_false(self):
+        assert _argv_requests_json(["status"]) is False
+
+    def test_empty_argv_is_false(self):
+        assert _argv_requests_json([]) is False
+
+    def test_dangling_format_flag_is_false(self):
+        """`--format` with nothing after it -- click would reject this itself."""
+        assert _argv_requests_json(["status", "--format"]) is False
+
+
+class TestCommandFromArgv:
+    def test_first_non_option_token(self):
+        assert _command_from_argv(["status", "--format", "json"]) == "status"
+
+    def test_flags_before_the_command_are_skipped(self):
+        assert _command_from_argv(["--verbose", "chips", "sync"]) == "chips"
+
+    def test_falls_back_to_fpl_when_nothing_but_flags(self):
+        assert _command_from_argv(["--format", "json"]) == "fpl"
+
+    def test_falls_back_to_fpl_on_empty_argv(self):
+        assert _command_from_argv([]) == "fpl"
 
 
 class TestBrandedVersion:
