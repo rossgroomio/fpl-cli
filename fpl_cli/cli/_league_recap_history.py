@@ -1036,10 +1036,53 @@ def _pair_squads(
 # (`_assign_point_in_time_positions`).
 _CARRIED_STANDINGS_FIELDS = ("league_position", "previous_league_position", "total_points")
 
+# The one carried field a null does not mean damage for, named once so the
+# gate below and the repair tally cannot disagree about which it is.
+_GATED_STANDINGS_FIELD = "previous_league_position"
+
 # Everything the carry, the draft reconstruction and the repair sweep between
 # them can change on a row -- `_assign_cohort_ranks` restates `gw_rank` off the
 # same pass that settles a position.
 _STANDINGS_ROW_FIELDS = (*_CARRIED_STANDINGS_FIELDS, "gw_rank")
+
+# What the repair sweep counts and names -- the carried fields minus the one
+# `_carried_standings_fields` gates, derived from that tuple rather than
+# retyped so a field added to one cannot go missing from the other. Narrower
+# than the fields the sweep fills, on the reasoning the fine restatement
+# already follows: the warning speaks of a league position or a cumulative
+# total, so a row rewritten only to put a `previous_league_position` or a
+# `gw_rank` back has had neither restored, and saying otherwise reports a
+# repair that did not happen (issue #319). Widen the warning's wording along
+# with this tuple if a fourth carried field ever joins it.
+_REPAIRED_STANDINGS_FIELDS = tuple(
+    name for name in _CARRIED_STANDINGS_FIELDS if name != _GATED_STANDINGS_FIELD
+)
+
+
+def _carried_standings_fields(gameweek: int, start_gameweek: int) -> tuple[str, ...]:
+    """The standings fields a gameweek may carry, repair or be asked about.
+
+    `previous_league_position` is the one field null does not mean damage for:
+    at the league's first scored gameweek there was no table to move from, so
+    `build_history_rows` records none whatever the collector handed over
+    (issue #147). Filling it there from the ledger's own earlier lines puts
+    back exactly the pre-#147 values the write path refuses to record -- and
+    because the earliest capture of a first gameweek usually recorded each
+    manager's *current* place, what lands reads "held station" where the truth
+    is "there was no previous gameweek" (issue #319).
+
+    Gated here rather than in each caller, because the carry and the repair
+    sweep are one fill apart and only one of them used to ask: a plain replay
+    of a league's first gameweek reproduced the bug on an undamaged ledger.
+    Asked through the same helper the collectors gate that field with, so the
+    two cannot disagree about which gameweek that is -- a league that started
+    at GW12 has no predecessor at GW12 either.
+    """
+    return tuple(
+        name for name in _CARRIED_STANDINGS_FIELDS
+        if name != _GATED_STANDINGS_FIELD
+        or _has_previous_gameweek(gameweek, start_gameweek)
+    )
 
 
 def _earliest_recorded_standings(
@@ -1074,6 +1117,7 @@ def _earliest_recorded_standings(
 
 def _apply_recorded_standings(
     rows: list[LeagueHistoryRow], recorded: dict[int, dict[str, int]],
+    *, fields: Collection[str],
 ) -> int:
     """Fill each row's null standings fields from what was recorded before.
 
@@ -1082,6 +1126,11 @@ def _apply_recorded_standings(
     which is what lets a replay of an already-recorded gameweek reproduce it
     exactly and so write no line at all.
 
+    `fields` is the gate, and it is required rather than defaulted: a field
+    this gameweek would not be *asked* about must not be one it writes either
+    (`_carried_standings_fields`), and every caller of this fill knows the
+    gameweek it is filling.
+
     Returns how many values were restored, so the caller can say so.
     """
     carried = 0
@@ -1089,8 +1138,9 @@ def _apply_recorded_standings(
         known = recorded.get(row.manager_key)
         if not known:
             continue
-        for name, value in known.items():
-            if getattr(row, name) is None:
+        for name in fields:
+            value = known.get(name)
+            if value is not None and getattr(row, name) is None:
                 setattr(row, name, value)
                 carried += 1
     return carried
@@ -1098,7 +1148,7 @@ def _apply_recorded_standings(
 
 def _carry_recorded_standings(
     store: LeagueHistoryStore, gameweek: int, rows: list[LeagueHistoryRow],
-    *, warnings: list[dict[str, str]],
+    *, start_gameweek: int, warnings: list[dict[str, str]],
 ) -> int:
     """Keep the league position and cumulative total the gameweek recorded.
 
@@ -1112,6 +1162,11 @@ def _carry_recorded_standings(
     gameweek is carried into, because only a finished gameweek is done
     moving. While one is still live a fresh position genuinely supersedes an
     older one, and none of them are null anyway.
+
+    `start_gameweek` is the second gate, the one `_carried_standings_fields`
+    holds: at the league's first scored gameweek `previous_league_position`
+    is null by design, so carrying one in resurrects a value #147 removed
+    (issue #319).
     """
     try:
         previous = store.load_gameweek(gameweek)
@@ -1121,7 +1176,10 @@ def _carry_recorded_standings(
     if not previous:
         return 0
 
-    carried = _apply_recorded_standings(rows, _earliest_recorded_standings(previous))
+    carried = _apply_recorded_standings(
+        rows, _earliest_recorded_standings(previous),
+        fields=_carried_standings_fields(gameweek, start_gameweek),
+    )
     if carried:
         _warn(
             warnings, HISTORY_WARNING_STANDINGS_CARRIED,
@@ -1545,7 +1603,9 @@ async def _detailed_backfill(
         )
         # A replayed gameweek is finished by definition, so its standings are
         # done moving and a null here is a loss rather than an update.
-        _carry_recorded_standings(store, gameweek, rows, warnings=warnings)
+        _carry_recorded_standings(
+            store, gameweek, rows, start_gameweek=start_gameweek, warnings=warnings,
+        )
         if fpl_format == "draft" and rows:
             _fill_draft_standings(
                 store, rows, gameweek=gameweek, start_gameweek=start_gameweek,
@@ -1592,6 +1652,16 @@ def _repair_recorded_standings(
     time writes nothing. That costs one file parse, against the per-manager
     fetch `_detailed_backfill` already re-attempts for the same gameweeks.
 
+    Silent in that case too, deliberately. A field with no non-null line
+    anywhere in the gameweek reads identically whether a replay wrote it away
+    or nothing ever recorded it: the ledger is append-only, so real damage
+    leaves the original capture on the line below and *is* repairable, while
+    the no-source state is the ordinary one for a coarse capture, a draft
+    replay that could not reconstruct a total, or a manager who never fetched.
+    Warning on it would fire on healthy leagues every run and say nothing true
+    about them; what is missing is reported by `_report_coverage` instead
+    (issue #319).
+
     Returns the gameweeks that gained a superseding row, like both backfill
     tiers, so the caller can invalidate their counters.
     """
@@ -1603,26 +1673,17 @@ def _repair_recorded_standings(
             # Reported by `_warn_unreadable`, and never overwritten: a repair
             # that rewrote it would destroy whatever it still holds (R4).
             continue
-        # Asked of exactly the fields the repair below restores, so the two
-        # cannot drift apart, and of every row rather than just the `OK` ones:
-        # an unknown row captured live carries a real position and total
+        # Asked of exactly the fields the repair below restores -- the same
+        # tuple, handed to the same fill, so the two cannot drift apart and a
+        # field this gameweek is not asked about is one it will not write
+        # either (issue #319). Asked of every row rather than just the `OK`
+        # ones: an unknown row captured live carries a real position and total
         # (`_unknown_row`), so a replay that superseded one with nulls is as
         # repairable as any other row.
         #
-        # `previous_league_position` is the one field null does not mean damage
-        # for: at the league's first scored gameweek there was no table to move
-        # from (issue #147). Asking about it there would fire this sweep on
-        # every run of every league forever, so it is asked through the same
-        # helper the collectors gate that field with -- the two cannot disagree
-        # about which gameweek that is.
-        #
         # The read itself is memoized, so a healthy gameweek costs nothing
         # beyond the parse the coverage pass above already paid for.
-        repairable = [
-            name for name in _CARRIED_STANDINGS_FIELDS
-            if name != "previous_league_position"
-            or _has_previous_gameweek(gameweek, start_gameweek)
-        ]
+        repairable = _carried_standings_fields(gameweek, start_gameweek)
         if not any(
             getattr(row, name) is None
             for row in winners.values() for name in repairable
@@ -1644,7 +1705,9 @@ def _repair_recorded_standings(
         # nested model in place needs the deep copy back.
         candidates = [(winners[key], winners[key].model_copy()) for key in sorted(winners)]
         rows = [candidate for _, candidate in candidates]
-        _apply_recorded_standings(rows, _earliest_recorded_standings(stored))
+        _apply_recorded_standings(
+            rows, _earliest_recorded_standings(stored), fields=repairable,
+        )
         if fpl_format == "draft":
             _fill_draft_standings(
                 store, rows, gameweek=gameweek, start_gameweek=start_gameweek,
@@ -1676,18 +1739,20 @@ def _repair_recorded_standings(
             continue
         if written:
             repaired.add(gameweek)
-            # Counted over the standings fields alone, not over every row
-            # written: a row this pass rewrote only to restate a fine's player
-            # names has had no position restored, and saying otherwise would
-            # report a repair that did not happen. The restatement itself stays
-            # silent here, as it does everywhere else.
+            # Counted over exactly the fields the message names, not over
+            # every row written: a row this pass rewrote only to restate a
+            # fine's player names -- or to restate a `gw_rank` off a position
+            # it already held -- has had neither a league position nor a
+            # cumulative total restored, and saying otherwise reports a repair
+            # that did not happen. The restatement itself stays silent here, as
+            # it does everywhere else.
             written_keys = {row.manager_key for row in written}
             restored = sum(
                 1 for winner, candidate in candidates
                 if candidate.manager_key in written_keys
                 and any(
                     getattr(candidate, name) != getattr(winner, name)
-                    for name in _STANDINGS_ROW_FIELDS
+                    for name in _REPAIRED_STANDINGS_FIELDS
                 )
             )
             if restored:
@@ -1714,6 +1779,7 @@ async def _backfill(
     backfill_detail: bool,
     fines_config: FinesConfig | None,
     use_net_points: bool,
+    start_gameweek: int,
     warnings: list[dict[str, str]],
 ) -> set[int]:
     """Fill what this run is allowed to fill, cheapest tier first.
@@ -1727,7 +1793,6 @@ async def _backfill(
     if not targets:
         return set()
 
-    start_gameweek = league_first_gameweek(data.get("league_start_event"))
     gaps = _gaps(store.coverage(), targets)
     repaired: set[int] = set()
 
@@ -1959,6 +2024,15 @@ async def capture_recap_history(
         return CaptureResult(store_readable=False, warnings=warnings)
 
     fpl_format: LeagueFormat = "draft" if data["fpl_format"] == "draft" else "classic"
+    # The league's own first scored gameweek, resolved once and handed down
+    # rather than re-derived at each reader: the carry's
+    # `previous_league_position` gate, the draft reconstruction, `_backfill`
+    # (and through it both tiers and the repair sweep), the notes pack and the
+    # fines tally all ask the same question of the same `data`. The two
+    # helpers handed that whole dict -- `_target_gameweeks` and
+    # `_coarse_backfill` -- still ask it themselves, through the same
+    # `league_first_gameweek`.
+    start_gameweek = league_first_gameweek(data.get("league_start_event"))
     store = LeagueHistoryStore(season, fpl_format, league_id)
     # `_report_coverage` below shows the user the store's own unreadable
     # message in full, as a `league_history_store_unreadable` warning, for
@@ -2005,7 +2079,10 @@ async def capture_recap_history(
         # moving, so a run that cannot re-derive it must not write it away
         # (issue #223). A gameweek still live is skipped because a fresh
         # position there genuinely supersedes the last one.
-        _carry_recorded_standings(store, data["gameweek"], rows, warnings=warnings)
+        _carry_recorded_standings(
+            store, data["gameweek"], rows,
+            start_gameweek=start_gameweek, warnings=warnings,
+        )
         # And the same gate again: this run ruled the fines against the same
         # drifted bootstrap, so they name players by today's names on a row
         # whose squad the carry above has just put back (issue #176). While
@@ -2016,7 +2093,7 @@ async def capture_recap_history(
         _fill_draft_standings(
             store, rows,
             gameweek=data["gameweek"],
-            start_gameweek=league_first_gameweek(data.get("league_start_event")),
+            start_gameweek=start_gameweek,
         )
     _quality_warnings(data, rows, warnings)
 
@@ -2095,6 +2172,7 @@ async def capture_recap_history(
         backfill_detail=backfill_detail,
         fines_config=fines_config,
         use_net_points=use_net_points,
+        start_gameweek=start_gameweek,
         warnings=warnings,
     )
     # A repair `_backfill` just made can land on a gameweek the counters
@@ -2137,7 +2215,7 @@ async def capture_recap_history(
     # run (U9 fails open internally -- a store problem here costs the pack,
     # never the recap).
     notes_pack = build_notes_pack(
-        store, data["gameweek"], league_start_gameweek=league_first_gameweek(data.get("league_start_event")),
+        store, data["gameweek"], league_start_gameweek=start_gameweek,
     )
 
     # Also built from the store rather than from `rows`: the season table is a
@@ -2148,7 +2226,7 @@ async def capture_recap_history(
     fines_tally = build_season_fines_tally(
         store,
         data["gameweek"],
-        league_start_gameweek=league_first_gameweek(data.get("league_start_event")),
+        league_start_gameweek=start_gameweek,
         rule_types=data.get("fine_rules_evaluated") or [],
     )
 

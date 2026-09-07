@@ -4760,6 +4760,238 @@ class TestReplayKeepsRecordedStandings:
 
 
 # ---------------------------------------------------------------------------
+# issue #319: neither the carry nor the sweep may invent a first gameweek's
+# previous position, and the sweep must count only what it says it restored
+# ---------------------------------------------------------------------------
+
+
+class TestFirstGameweekKeepsItsAbsentPreviousPosition:
+    """`previous_league_position` is null at a league's first scored gameweek
+    by design (issue #147), and the ledger is append-only, so the pre-#147
+    lines that *do* carry one are still on disk below the rows that do not.
+    Filling from them puts back exactly what the write path refuses to record
+    -- and on a first gameweek those values are mostly each manager's own
+    current place, so what lands reads "held station" rather than "there was
+    no previous gameweek"."""
+
+    @staticmethod
+    def _legacy_lines(store: LeagueHistoryStore, gameweek: int) -> None:
+        """A pre-#147 capture of each winning row: the same figures, plus the
+        `previous_league_position` that release stopped recording. Stamped
+        older so it loses resolution and only ever acts as a *source*, which
+        is what a real partition captured before #147 looks like."""
+        store.append_rows(gameweek, [
+            row.model_copy(update={
+                "previous_league_position": row.league_position,
+                "captured_at": row.captured_at - timedelta(days=1),
+            })
+            for row in store.resolved_gameweek(gameweek).values()
+        ])
+
+    async def test_a_draft_replay_of_the_first_gameweek_invents_no_previous_position(self):
+        """The carry ran ungated, so an ordinary replay of GW1 -- no damage,
+        no flag, nothing to repair -- resurrected the pre-#147 value."""
+        live = _recap_data(
+            gameweek=1, fpl_format="draft",
+            managers=[
+                _manager(name="Alice", entry_id=1, league_entry_id=10,
+                         gross_points=60, total_points=60, overall_rank=1),
+                _manager(name="Bob", entry_id=2, league_entry_id=20,
+                         gross_points=40, total_points=40, overall_rank=2),
+            ],
+            cohort=_cohort((10, "Alice", 1, 60, 60), (20, "Bob", 2, 40, 40)),
+        )
+        await capture_recap_history(live, season=SEASON, finished_gameweeks=[1])
+        self._legacy_lines(_store("draft"), 1)
+
+        replay = _recap_data(
+            gameweek=1, fpl_format="draft",
+            managers=[
+                _manager(name="Alice", entry_id=1, league_entry_id=10, gross_points=60,
+                         total_points=None, overall_rank=None, previous_rank=None),
+                _manager(name="Bob", entry_id=2, league_entry_id=20, gross_points=40,
+                         total_points=None, overall_rank=None, previous_rank=None),
+            ],
+            cohort=_cohort((10, "Alice", 1, 60, 60), (20, "Bob", 2, 40, 40)),
+        )
+        await capture_recap_history(
+            replay, season=SEASON, is_live_gw=False, finished_gameweeks=[1],
+        )
+
+        resolved = _store("draft").resolved_gameweek(1)
+        # The two fields a replay genuinely cannot re-fetch are still carried...
+        assert {k: r.league_position for k, r in resolved.items()} == {10: 1, 20: 2}
+        assert {k: r.total_points for k, r in resolved.items()} == {10: 60, 20: 40}
+        # ...and the one that is null by design stays null.
+        assert [r.previous_league_position for r in resolved.values()] == [None, None]
+
+    async def test_a_later_gameweek_still_carries_its_previous_position(self):
+        """The gate is the league's first gameweek, not the field: from GW2 on
+        a recorded previous position is as unfetchable, and as worth keeping,
+        as the position beside it."""
+        store = _store("draft")
+        recorded = make_history_row(
+            season=SEASON, fpl_format="draft", league_id=42, gameweek=2,
+            manager_key=10, manager_name="Alice", gross_points=50,
+            league_position=1, previous_league_position=3, total_points=110,
+        )
+        store.append_rows(2, [recorded])
+
+        replay = _recap_data(
+            gameweek=2, fpl_format="draft",
+            managers=[
+                _manager(name="Alice", entry_id=1, league_entry_id=10, gross_points=50,
+                         total_points=None, overall_rank=None, previous_rank=None),
+            ],
+            cohort=_cohort((10, "Alice", 1, 50, 110)),
+        )
+        await capture_recap_history(
+            replay, season=SEASON, is_live_gw=False, finished_gameweeks=[1, 2],
+        )
+
+        assert _store("draft").resolved_gameweek(2)[10].previous_league_position == 3
+
+    async def test_a_league_that_started_late_keeps_its_own_first_gameweek_clean(self):
+        """A league created at GW12 has no predecessor at GW12 either, so the
+        gate is `league_start_event` rather than GW1 -- the same helper the
+        collectors and `build_history_rows` ask."""
+        common = {
+            "fpl_format": "draft",
+            "league_start_event": 12,
+            "cohort": _cohort((10, "Alice", 1, 60, 60)),
+        }
+        await capture_recap_history(
+            _recap_data(
+                gameweek=12,
+                managers=[_manager(name="Alice", entry_id=1, league_entry_id=10,
+                                   gross_points=60, total_points=60, overall_rank=1)],
+                **common,
+            ),
+            season=SEASON, finished_gameweeks=[12],
+        )
+        self._legacy_lines(_store("draft"), 12)
+
+        await capture_recap_history(
+            _recap_data(
+                gameweek=12,
+                managers=[_manager(name="Alice", entry_id=1, league_entry_id=10,
+                                   gross_points=60, total_points=None,
+                                   overall_rank=None, previous_rank=None)],
+                **common,
+            ),
+            season=SEASON, is_live_gw=False, finished_gameweeks=[12],
+        )
+
+        resolved = _store("draft").resolved_gameweek(12)
+        assert resolved[10].league_position == 1
+        assert resolved[10].previous_league_position is None
+
+
+class TestTheRepairSweepCountsOnlyWhatItRestored:
+    """One damaged row must cost one rewritten row and one reported repair.
+    The sweep filled every carried field and counted every standings field, so
+    a single nulled position rewrote the whole gameweek -- reintroducing the
+    absent previous position on every row -- and reported the rewrite as the
+    repair."""
+
+    @staticmethod
+    def _seed(*, damaged: int | None = None, positions: bool = True) -> LeagueHistoryStore:
+        """A classic GW1 with a pre-#147 line below each row, and optionally
+        one manager's position nulled by a later replay.
+
+        `positions=False` is the harsher case: no line anywhere in the file
+        ever recorded a league position, so the previous one those pre-#147
+        lines hold is the only thing a fill could reach.
+        """
+        store = _store()
+        recorded = [
+            make_history_row(
+                season=SEASON, fpl_format="classic", league_id=42, gameweek=1,
+                manager_key=key, manager_name=name, gross_points=points,
+                league_position=position if positions else None, total_points=points,
+                previous_league_position=position,
+            )
+            for key, name, points, position in (
+                (1, "Alice", 60, 1), (2, "Bob", 50, 2), (3, "Cara", 40, 3),
+            )
+        ]
+        # The pre-#147 lines first, then the rows that superseded them once
+        # the first gameweek stopped recording a previous position.
+        store.append_rows(1, recorded)
+        store.append_rows(1, [
+            row.model_copy(update={
+                "previous_league_position": None,
+                "captured_at": row.captured_at + timedelta(days=1),
+            })
+            for row in recorded
+        ])
+        if damaged is not None:
+            winner = store.resolved_gameweek(1)[damaged]
+            store.append_rows(1, [winner.model_copy(update={
+                "league_position": None,
+                "captured_at": winner.captured_at + timedelta(days=1),
+            })])
+        return store
+
+    @staticmethod
+    async def _recap_gw2():
+        """An ordinary next-gameweek recap: it never touches GW1 itself, so
+        anything that changes there is the sweep's doing."""
+        return await capture_recap_history(
+            _recap_data(
+                gameweek=2,
+                managers=[_manager(name="Alice", entry_id=1, total_points=110,
+                                   overall_rank=1, previous_rank=1)],
+                cohort=_cohort((1, "Alice", 1, 50, 110), (2, "Bob", 2, 40, 90),
+                               (3, "Cara", 3, 30, 70)),
+            ),
+            season=SEASON, finished_gameweeks=[1, 2],
+        )
+
+    async def test_one_damaged_position_rewrites_one_row_and_reports_one(self):
+        self._seed(damaged=2)
+        untouched = {
+            key: row for key, row in _store().resolved_gameweek(1).items() if key != 2
+        }
+
+        result = await self._recap_gw2()
+
+        resolved = _store().resolved_gameweek(1)
+        # The damaged half of the sweep still works.
+        assert resolved[2].league_position == 2
+        # Every other manager's winning row is the one that was already there,
+        # timestamp included -- not a rewrite that only added a previous
+        # position back.
+        assert {key: resolved[key] for key in untouched} == untouched
+        assert [r.previous_league_position for r in resolved.values()] == [None, None, None]
+        repaired = [
+            w for w in result.warnings if w["code"] == HISTORY_WARNING_STANDINGS_REPAIRED
+        ]
+        assert len(repaired) == 1
+        assert "for 1 manager(s)" in repaired[0]["message"]
+
+    async def test_a_gameweek_with_nothing_to_restore_from_claims_no_repair(self):
+        """The harsher variant: every row's position nulled with no surviving
+        source. The sweep used to fill the pre-#147 previous position instead,
+        count that as the repair, and append rows still holding the null --
+        an over-claim that then silenced itself, because the second run
+        reproduced the stored row and warned about nothing."""
+        self._seed(positions=False)
+        winners = _store().resolved_gameweek(1)
+        assert [r.league_position for r in winners.values()] == [None, None, None]
+        before = _store().gameweek_file(1).read_bytes()
+
+        result = await self._recap_gw2()
+
+        # Nothing appended -- in particular not the damaged rows re-stamped
+        # with a previous position bolted on.
+        assert _store().gameweek_file(1).read_bytes() == before
+        assert not any(
+            w["code"] == HISTORY_WARNING_STANDINGS_REPAIRED for w in result.warnings
+        )
+
+
+# ---------------------------------------------------------------------------
 # Prior seasons (issue #131)
 # ---------------------------------------------------------------------------
 
