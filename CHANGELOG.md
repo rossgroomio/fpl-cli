@@ -1,6 +1,19 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [2.6.0] - 2026-09-07
+
+### Bug Fixes
+
+- drop ratings update's dead -v hint for a kept prior (#311)
+- carry the --format json envelope through a relative FPL_CLI_* rejection (#312)
+- derive `fpl doctor`'s season from GW1's deadline like `fpl status` (#314)
+- warn in the saved review when the summary came back empty (#313)
+
+### Features
+
+- join Understat rows for players the two sources spell differently (#315)
+
 ## [2.5.0] - 2026-09-07
 
 ### Bug Fixes
