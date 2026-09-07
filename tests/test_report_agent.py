@@ -247,6 +247,50 @@ class TestTemplateRendering:
         output = self.agent._generate_review_report(29, data)
         assert "Position:** 3 of 10" in output
 
+    # Nearby Rivals table: is_user marks the reader's own row (#327).
+
+    def _nearby_rivals_data(self) -> dict:
+        data = _review_data()
+        data["classic_league"] = {
+            "league_name": "Office League", "user_position": 7, "total_entries": 20,
+            "user_gw_points": 60, "user_total": 205,
+            "nearby_rivals": [
+                {"rank": 5, "manager_name": "Ben May", "total": 210, "is_user": False},
+                {"rank": 6, "manager_name": "Ed Thomas", "total": 208, "is_user": False},
+                {"rank": 7, "manager_name": "Ross Groom", "total": 205, "is_user": True},
+                {"rank": 8, "manager_name": "Alex Stout", "total": 205, "is_user": False},
+                {"rank": 9, "manager_name": "Sam Lowe", "total": 204, "is_user": False},
+            ],
+        }
+        return data
+
+    def test_review_nearby_rivals_marks_user_row(self):
+        output = self.agent._generate_review_report(29, self._nearby_rivals_data())
+        user_row = next(line for line in output.splitlines() if line.startswith("| 7 |"))
+        assert "You" in user_row
+        assert "Ross Groom" not in user_row
+        assert "-" not in user_row.split("|")[4]  # diff cell is blank, not "-"
+
+    def test_review_nearby_rivals_tied_rival_distinguished_from_user(self):
+        # Alex Stout ties the user's total (205); the self-row and the tied
+        # rival must not render identically.
+        output = self.agent._generate_review_report(29, self._nearby_rivals_data())
+        tied_row = next(line for line in output.splitlines() if "Alex Stout" in line)
+        user_row = next(line for line in output.splitlines() if line.startswith("| 7 |"))
+        assert "| 8 | Alex Stout | 205 | 0 |" in tied_row
+        assert tied_row.split("|")[4] != user_row.split("|")[4]
+
+    def test_review_nearby_rivals_diff_arithmetic(self):
+        output = self.agent._generate_review_report(29, self._nearby_rivals_data())
+        assert "| 5 | Ben May | 210 | +5 |" in output
+        assert "| 9 | Sam Lowe | 204 | -1 |" in output
+
+    def test_review_nearby_rivals_column_not_named_diff(self):
+        # "Diff" alone reads as a position delta, not a points gap.
+        output = self.agent._generate_review_report(29, self._nearby_rivals_data())
+        assert "Pts Diff" in output
+        assert "| Diff |" not in output
+
     def test_review_bench_boost_marker(self):
         # BB bench players are contributors with is_bench_boost_player=True -> [BB] suffix
         data = _review_data()
