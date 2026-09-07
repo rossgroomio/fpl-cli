@@ -162,6 +162,27 @@ class TestOverrunningSeason:
         assert service.season == self.CLOCK
         assert service.has_ratings is False
 
+    def test_adopting_a_season_drops_everything_derived_from_the_old_load(
+        self, ratings_file
+    ):
+        """The reset contract, asserted directly.
+
+        `ensure_fresh` recomputes the team-set warning immediately after
+        adopting, so the production path masks a gap here — but the warning
+        is a diff against `self._ratings`, and those are discarded, so it
+        cannot outlive them.
+        """
+        service = TeamRatingsService(config_path=ratings_file, season=self.LIVE)
+        assert service.check_team_set(["ARS", "BUR", "COV"]) is not None
+        assert service._team_set_warning is not None
+
+        service._adopt_season(self.CLOCK)
+
+        assert service._team_set_warning is None
+        assert service._stale_season is None
+        assert service._metadata is None
+        assert service._ratings == {}
+
     def test_a_save_is_stamped_with_the_resolved_season(self, ratings_file):
         """Stamping a write with the clock would hand the next read a file
         from a season that has not started."""

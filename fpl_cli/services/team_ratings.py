@@ -259,6 +259,13 @@ class TeamRatingsService:
         read before `ensure_fresh` is enough -- and if it discarded the
         ratings on that basis the verdict has to be retaken, not just
         relabelled.
+
+        Everything derived from the discarded load goes with it, the team-set
+        warning included: `check_team_set` diffs the live league against
+        `self._ratings`, so a warning cached under the old season describes a
+        rating set that is no longer loaded. `ensure_fresh` happens to
+        recompute it immediately afterwards, which is not something a reset
+        contract should depend on.
         """
         if season == self._season:
             return
@@ -267,6 +274,7 @@ class TeamRatingsService:
             self._ratings = {}
             self._metadata = None
             self._stale_season = None
+            self._team_set_warning = None
             self._loaded = False
 
     @property
