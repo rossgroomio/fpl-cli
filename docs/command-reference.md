@@ -412,7 +412,7 @@ A club that has played only one venue is rated on it. Once GW1 finishes, every c
 
 Early-season results are shrunk toward that previous-season prior, by the automatic refresh and by `fpl ratings update` alike: a one-gameweek sample carries 1/7 of the weight, six gameweeks half, and the prior drops out entirely once GW12 has completed. Shrinkage is gated on how far the season has run, so a narrow window late on is not blended -- `--since-gw 30` at GW34 saves recent form alone. Inside the early-season window the weight follows the size of that window rather than the gameweek number, so `--since-gw 8` at GW10 is weighted as three gameweeks of evidence. Blended files are stamped `calculated_blended` / `understat_xg_blended` / `auto_calculated_blended` so `fpl ratings` shows that shrinkage was applied. While the sample is shorter than six gameweeks the prior still carries most of the weight, and every fixture-difficulty view says so - `Ratings are mostly last season's prior - 1 gameweek of results carries 14% of the weight`. That replaces the pre-season estimate warning, which stops applying the moment a gameweek completes.
 
-Ratings are tied to the season that produced them. A file carried across a season boundary is ignored rather than served, because it rates the three relegated clubs and knows nothing about the three promoted ones. Ratings that cover the wrong set of clubs are called out by name — `team_ratings.yaml is missing COV, HUL, IPS and still rates BUR, WHU, WOL` — which catches a rollover that a "days old" check cannot: a file rebuilt in early August is new by date and still describes last season's league.
+Ratings are tied to the season that produced them. A file carried across a season boundary is ignored rather than served, because it rates the three relegated clubs and knows nothing about the three promoted ones. Which season is "in progress" comes from GW1's deadline, not the July clock, so a season overrunning 1 July keeps its own ratings instead of having them discarded with a third of the run-in still to play. Ratings that cover the wrong set of clubs are called out by name — `team_ratings.yaml is missing COV, HUL, IPS and still rates BUR, WHU, WOL` — which catches a rollover that a "days old" check cannot: a file rebuilt in early August is new by date and still describes last season's league.
 
 See [Team Ratings](custom-analysis.md#team-ratings) for calculation methodology, axes, early-season blending, pre-season estimates, and manual overrides.
 
@@ -1291,7 +1291,7 @@ Rolling a setup into a new season silently invalidates IDs and per-team files: a
 
 **Data files:**
 
-- `team_ratings.yaml` — season stamp and team set vs the live league (problems here are stale, not broken: the ratings service already ignores or rebuilds bad files)
+- `team_ratings.yaml` — season stamp and team set vs the live league, judged against the same resolved season the report names (problems here are stale, not broken: the ratings service already ignores or rebuilds bad files)
 - `team_managers.yaml` — merged shipped + user copy covers exactly the current twenty clubs
 - `previews/` — optional season preview intel: a file for a club not in the current league is flagged (it loads and inflates the coverage gate), and files the loader skipped (previous season, malformed) are surfaced with `fpl intel` as the follow-up
 - `team_finances.json` — `scraped_at` falls within the current season

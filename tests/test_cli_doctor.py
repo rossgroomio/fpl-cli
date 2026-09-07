@@ -258,6 +258,101 @@ class TestSeasonResolution:
         assert "not this season's league" not in _flat(result)
 
 
+class TestDataFileRowsShareTheReportedSeason:
+    """No `data_files` row may quietly judge on the clock (#318).
+
+    #314 threaded the resolved season through the checks it touched and
+    missed `team_ratings.yaml`, which went on comparing against the clock —
+    so in an overrunning season doctor called a live file stale and told the
+    user their fixture difficulty had collapsed. This asserts the property
+    rather than the row, so the next check added on the wrong basis fails
+    here instead of shipping.
+
+    Two rows are on the clock deliberately and are listed, not exempted by
+    accident: their loaders really do discard on a clock-derived label
+    mismatch, so the row is predicting runtime behaviour.
+    """
+
+    CLOCK_DERIVED = {"player_prior.yaml", "returnee_snapshot.json"}
+
+    def test_every_row_agrees_with_metadata_season_or_is_listed(self):
+        """The API names a season a year behind the clock — an overrun."""
+        live = PREVIOUS_SEASON
+        (_data_dir() / "team_finances.json").write_text(
+            json.dumps({"scraped_at": f"{CURRENT_YEAR}-07-05T12:00:00"}), encoding="utf-8"
+        )
+        _write_snapshot(live)
+        (_data_dir() / "player_prior.yaml").write_text(
+            yaml.dump({"metadata": {"season": live, "gameweek": 38}, "priors": {}}),
+            encoding="utf-8",
+        )
+        (_data_dir() / "team_ratings.yaml").write_text(
+            yaml.dump({
+                "metadata": {
+                    "season": live,
+                    "last_updated": f"{CURRENT_YEAR}-07-01",
+                    "source": "calculated",
+                    "staleness_threshold_days": 30,
+                    "based_on_gws": [1, 36],
+                    "calculation_method": "full_season",
+                },
+                "ratings": {
+                    t: {"atk_home": 1, "atk_away": 2, "def_home": 3, "def_away": 4}
+                    for t in ("ARS", "MCI")
+                },
+            }),
+            encoding="utf-8",
+        )
+
+        result = _run(
+            _mock_client(season_year=CURRENT_YEAR - 1), args=["--format", "json"]
+        )
+        payload = json.loads(result.output)
+        assert payload["metadata"]["season"] == live
+
+        offenders = [
+            row["name"]
+            for row in payload["data"]["data_files"]
+            if row["name"] not in self.CLOCK_DERIVED
+            and CURRENT_SEASON in row["detail"]
+        ]
+        assert offenders == [], (
+            f"{offenders} named the clock's season {CURRENT_SEASON!r} while the "
+            f"report is for {live!r}"
+        )
+
+    def test_the_ratings_row_does_not_call_a_live_file_stale(self):
+        """The #318 row itself, from the outside."""
+        live = PREVIOUS_SEASON
+        (_data_dir() / "team_ratings.yaml").write_text(
+            yaml.dump({
+                "metadata": {
+                    "season": live,
+                    "last_updated": f"{CURRENT_YEAR}-07-01",
+                    "source": "calculated",
+                    "staleness_threshold_days": 30,
+                    "based_on_gws": [1, 36],
+                    "calculation_method": "full_season",
+                },
+                "ratings": {
+                    t: {"atk_home": 1, "atk_away": 2, "def_home": 3, "def_away": 4}
+                    for t in ("ARS", "MCI")
+                },
+            }),
+            encoding="utf-8",
+        )
+        result = _run(
+            _mock_client(season_year=CURRENT_YEAR - 1), args=["--format", "json"]
+        )
+        row = next(
+            r
+            for r in json.loads(result.output)["data"]["data_files"]
+            if r["name"] == "team_ratings.yaml"
+        )
+        assert "different league" not in row["detail"]
+        assert "neutral 4.0" not in row["detail"]
+
+
 class TestEnvironmentSection:
     def test_reports_dirs_and_override_source(self):
         result = _run(_mock_client())
