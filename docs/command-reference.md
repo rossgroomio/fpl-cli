@@ -1418,7 +1418,7 @@ llm:
     model: claude-sonnet-5
     timeout: 60
     query_defaults:
-      max_tokens: 4096
+      max_tokens: 8000
 ```
 
 ### LLM Providers

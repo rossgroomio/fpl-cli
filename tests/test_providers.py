@@ -1024,3 +1024,19 @@ class TestGetLlmProvider:
         """No provider configured at all."""
         with pytest.raises(UnknownProviderError):
             get_llm_provider("research", {})
+
+
+class TestShippedSynthesisMaxTokens:
+    """#316: a synthesis `max_tokens` cap shares its ceiling with the model's
+    thinking, so a cap too small produces a structurally empty response no
+    retry can fix (see AnthropicProvider.query). 4096 was that cap; 8000 was
+    the smallest value the issue's own repro table found clean. Pin a floor
+    on the shipped default so it cannot silently regress back below it.
+    """
+
+    def test_shipped_default_leaves_headroom_for_a_full_review(self):
+        from fpl_cli.cli._context import load_settings
+
+        settings = load_settings()
+        max_tokens = settings["llm"]["synthesis"]["query_defaults"]["max_tokens"]
+        assert max_tokens >= 8000
