@@ -866,8 +866,10 @@ week, so a scripted consumer never sees it appear and disappear on a calendar it
 
 **Prior seasons:** on the league's opening gameweek — GW1, or the league's own
 `start_event` for one created later — the recap fetches each manager's FPL history
-(`entry/{id}/history/`, one request per manager, made on that gameweek and no other) and
-writes a `# Prior Seasons` section into the saved report: one line per manager with the
+(`entry/{id}/history/`, one request per manager, made on that gameweek only and only when
+something will read it — `--save`, `--output` or `--summarise`; a league created after GW1
+already fetches the same payload on that gameweek to rescope its totals, and the two share
+it) and writes a `# Prior Seasons` section into the saved report: one line per manager with the
 seasons played, the span with any seasons sat out, last season's points, rank and top-%
 finish, and the best season on record. With `--summarise` the same lines reach the
 editorial as a locked `## Prior Seasons` section with an explicit count, and the system

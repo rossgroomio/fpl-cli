@@ -94,10 +94,8 @@ def league_recap_command(
         RecapReconciliationError,
         collect_classic_recap_data,
         collect_draft_recap_data,
-        collect_prior_seasons,
         configured_fine_rule_types,
         evaluate_league_fines,
-        is_league_opening_gameweek,
     )
     from fpl_cli.cli._league_recap_history import capture_recap_history
     from fpl_cli.cli.review import GameweekResolutionError, _review_resolve_gw
@@ -261,6 +259,18 @@ def league_recap_command(
                     " for the fullest capture.[/yellow]"
                 )
 
+            # Whether anything will read each manager's FPL record before
+            # this season (issue #131): the saved report and the editorial
+            # are its only surfaces, so a bare run or a JSON run does not
+            # pay the request per manager the collector would otherwise
+            # make at the league's opener, and nor does an editorial already
+            # known to be skipped. The collector applies the opener gate
+            # itself; the replay below never asks, since a replayed gameweek
+            # only goes to the ledger, which never records it.
+            wants_prior_seasons = bool(save or output) or (
+                (summarise or dry_run) and synthesis_unavailable is None
+            )
+
             # Collect format-specific data
             try:
                 if is_draft:
@@ -277,6 +287,7 @@ def league_recap_command(
                         is_live_gw=is_live_gw, bgw_team_ids=bgw_team_ids,
                         players_with_fixture=with_fixture,
                         gameweek_clubs=gameweek_clubs,
+                        with_prior_seasons=wants_prior_seasons,
                     )
             except RecapReconciliationError as e:
                 # A stop condition, not a soft skip: exit non-zero so a
@@ -321,18 +332,6 @@ def league_recap_command(
                 settings, collected_data["fpl_format"],
             )
             collected_data["fines_ruled_manager_keys"] = sorted(ruling.ruled_manager_keys)
-
-            # Each manager's FPL record before this season (issue #131),
-            # fetched once a season, at the league's opening gameweek: it
-            # does not change between gameweeks, the ledger has nothing of
-            # its own to narrate yet, and it costs one request per manager.
-            # Classic only -- draft has no per-manager history endpoint --
-            # and on the live path only: a replayed gameweek goes to the
-            # ledger, which never records it.
-            if not is_draft and is_league_opening_gameweek(
-                gw, collected_data.get("league_start_event"),
-            ):
-                await collect_prior_seasons(client, collected_data["managers"])
 
             async def _replay_gameweek(target_gw: int) -> LeagueRecapData | None:
                 """Re-collect one finished gameweek for the detailed backfill.

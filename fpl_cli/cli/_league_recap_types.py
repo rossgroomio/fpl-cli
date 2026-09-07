@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import NotRequired, TypedDict
 
-from fpl_cli.utils.text import ordinal_suffix
+from fpl_cli.utils.text import ordinal_word
 
 
 class RecapManagerPlayer(TypedDict):
@@ -413,6 +413,12 @@ def summarise_prior_seasons(
     "2025/26" form, so a manager whose most recent season is that one can
     be described as having played "last season" -- and one who sat it out
     is not, however recent their latest season looks.
+
+    A manager without the key at all was never asked, and is outside the
+    summary rather than in `unavailable`: "could not be fetched" is a claim
+    about a request that was made. The collector populates every manager it
+    is handed, so today that only arises for a caller mixing cohorts; the
+    three lists and `total_managers` then cover the managers it asked for.
     """
     if not any("prior_seasons" in m for m in managers):
         return None
@@ -421,6 +427,8 @@ def summarise_prior_seasons(
     new_to_fpl: list[str] = []
     unavailable: list[str] = []
     for m in managers:
+        if "prior_seasons" not in m:
+            continue
         name = m["manager_name"]
         seasons = m.get("prior_seasons")
         if seasons is None:
@@ -459,7 +467,9 @@ def format_prior_seasons_line(
     and is undocumented; the gap count says how many seasons inside the span
     were sat out. The season being played is counted into the ordinal
     because the manager is, by construction, playing it: they are in the
-    league being recapped. "Last season" is only said of the season that
+    league being recapped -- and it is spelt the way the fines placement
+    spells its ordinals ("their third season", "their 11th"), since both
+    land in one prompt. "Last season" is only said of the season that
     actually just finished; a most recent season older than that is named as
     such, with the season sat out. Every figure is the API's own, grouped
     for reading, so the editorial has nothing left to compute.
@@ -484,7 +494,7 @@ def format_prior_seasons_line(
         )
     line = (
         f"{name}: {played} prior FPL season{'s' if played != 1 else ''} played ({span}), "
-        f"making this their {nth}{ordinal_suffix(nth)} season of FPL. "
+        f"making this their {ordinal_word(nth)} season of FPL. "
         f"{recent}: {_season_result(last)}"
     )
     # Reversed so a tie on points and rank resolves to the more recent

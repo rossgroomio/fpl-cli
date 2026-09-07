@@ -38,6 +38,7 @@ from fpl_cli.cli._league_recap_data import (
     _has_previous_gameweek,
     _recap_fine_message,
     derive_point_in_time_positions,
+    league_first_gameweek,
     raw_chip_name,
     recap_fine_player_names,
     recap_manager_key,
@@ -598,7 +599,7 @@ def _target_gameweeks(data: LeagueRecapData, finished_gameweeks: Collection[int]
     not GW1 -- is the floor. An unfinished gameweek is never a gap: its numbers
     are still moving.
     """
-    start = data.get("league_start_event") or 1
+    start = league_first_gameweek(data.get("league_start_event"))
     current = data["gameweek"]
     return sorted(gw for gw in set(finished_gameweeks) if start <= gw <= current)
 
@@ -1390,7 +1391,7 @@ async def _coarse_backfill(
         return set()
 
     captured_at = datetime.now(tz=timezone.utc)
-    start = data.get("league_start_event") or 1
+    start = league_first_gameweek(data.get("league_start_event"))
     semaphore = asyncio.Semaphore(_PICKS_CONCURRENCY)
 
     async def _fetch(entry: RecapStandingsEntry) -> tuple[RecapStandingsEntry, dict[str, Any]]:
@@ -1726,7 +1727,7 @@ async def _backfill(
     if not targets:
         return set()
 
-    start_gameweek = data.get("league_start_event") or 1
+    start_gameweek = league_first_gameweek(data.get("league_start_event"))
     gaps = _gaps(store.coverage(), targets)
     repaired: set[int] = set()
 
@@ -2015,7 +2016,7 @@ async def capture_recap_history(
         _fill_draft_standings(
             store, rows,
             gameweek=data["gameweek"],
-            start_gameweek=data.get("league_start_event") or 1,
+            start_gameweek=league_first_gameweek(data.get("league_start_event")),
         )
     _quality_warnings(data, rows, warnings)
 
@@ -2136,7 +2137,7 @@ async def capture_recap_history(
     # run (U9 fails open internally -- a store problem here costs the pack,
     # never the recap).
     notes_pack = build_notes_pack(
-        store, data["gameweek"], league_start_gameweek=data.get("league_start_event") or 1,
+        store, data["gameweek"], league_start_gameweek=league_first_gameweek(data.get("league_start_event")),
     )
 
     # Also built from the store rather than from `rows`: the season table is a
@@ -2147,7 +2148,7 @@ async def capture_recap_history(
     fines_tally = build_season_fines_tally(
         store,
         data["gameweek"],
-        league_start_gameweek=data.get("league_start_event") or 1,
+        league_start_gameweek=league_first_gameweek(data.get("league_start_event")),
         rule_types=data.get("fine_rules_evaluated") or [],
     )
 

@@ -2,7 +2,7 @@
 
 import pytest
 
-from fpl_cli.utils.text import ordinal_suffix, strip_diacritics
+from fpl_cli.utils.text import ordinal_suffix, ordinal_word, strip_diacritics
 
 
 @pytest.mark.parametrize(
@@ -44,3 +44,11 @@ def test_strip_diacritics_preserves_case() -> None:
 )
 def test_ordinal_suffix(n: int, expected: str) -> None:
     assert ordinal_suffix(n) == expected
+
+
+@pytest.mark.parametrize(
+    ("n", "expected"),
+    [(1, "first"), (2, "second"), (3, "third"), (10, "tenth"), (11, "11th"), (21, "21st"), (22, "22nd")],
+)
+def test_ordinal_word(n: int, expected: str) -> None:
+    assert ordinal_word(n) == expected

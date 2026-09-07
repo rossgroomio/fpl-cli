@@ -12,7 +12,7 @@ from fpl_cli.cli._league_recap_types import (
 from fpl_cli.services.league_history_fines import SeasonFinesTally, format_fine_breakdown
 from fpl_cli.services.league_history_notes import NotesPack, NoteSurface
 from fpl_cli.utils.gameweek import format_gameweek_list, is_opening_gameweek
-from fpl_cli.utils.text import ordinal_suffix
+from fpl_cli.utils.text import ordinal_word
 
 # =============================================================================
 # SYNTHESIS PROMPT (Stage 2: League-wide editorial)
@@ -642,33 +642,17 @@ def format_recap_prior_seasons_context(summary: PriorSeasonsSummary | None) -> s
         f"{summary.total_managers}",
     ]
     lines.extend(f"- {line}" for line in summary.lines)
-    if summary.new_to_fpl:
+    # The absence statements are the report's own sentences, verbatim, so
+    # the two surfaces cannot name the same manager's gap two ways; the one
+    # instruction the model needs about them follows rather than replaces.
+    coverage = summary.coverage_lines
+    if coverage:
+        lines.extend(coverage)
         lines.append(
-            f"No prior FPL seasons on record ({len(summary.new_to_fpl)}): "
-            f"{', '.join(summary.new_to_fpl)} - this is their first season of FPL on "
-            "record, so they have no past to describe"
-        )
-    if summary.unavailable:
-        lines.append(
-            f"Prior seasons could not be fetched ({len(summary.unavailable)}): "
-            f"{', '.join(summary.unavailable)} - say nothing about their past either way"
+            "A manager named in the statements above has no past for you to describe - "
+            "say nothing about their earlier seasons either way"
         )
     return "\n".join(lines)
-
-
-# Spelt out to the tenth, which covers every fine total a season realistically
-# reaches; past that the numeral is clearer than the word anyway.
-_ORDINAL_WORDS = (
-    "first", "second", "third", "fourth", "fifth",
-    "sixth", "seventh", "eighth", "ninth", "tenth",
-)
-
-
-def _ordinal(n: int) -> str:
-    """"first", "second", ... then "11th", "21st", "22nd"."""
-    if 1 <= n <= len(_ORDINAL_WORDS):
-        return _ORDINAL_WORDS[n - 1]
-    return f"{n}{ordinal_suffix(n)}"
 
 
 def _season_fine_placements(
@@ -745,7 +729,7 @@ def _season_fine_placements(
         else:
             lines.append(
                 f"- {name}: this gameweek's {rule_type} fine is {name}'s "
-                f"{_ordinal(count)} of the season, this one included.",
+                f"{ordinal_word(count)} of the season, this one included.",
             )
     return lines
 

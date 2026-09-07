@@ -33,6 +33,7 @@ from fpl_cli.cli._league_recap_data import (
     configured_fine_rule_types,
     derive_point_in_time_positions,
     evaluate_league_fines,
+    fetch_manager_histories,
     is_league_opening_gameweek,
     recap_fine_player_names,
     restate_recap_fine_players,
@@ -4836,6 +4837,11 @@ class TestShapePriorSeasons:
 
         assert "rank_percentage" not in shape_prior_seasons(rows)[0]
 
+    def test_a_row_that_is_not_a_mapping_is_skipped_rather_than_fatal(self):
+        rows = [None, 3, {"season_name": "2023/24", "total_points": 1900, "rank": 9}]
+
+        assert [s["season_name"] for s in shape_prior_seasons(rows)] == ["2023/24"]
+
     def test_a_row_missing_a_finish_is_dropped_rather_than_zeroed(self):
         rows = [
             {"season_name": "2024/25", "total_points": 2100},
@@ -4907,6 +4913,165 @@ class TestCollectPriorSeasons:
         assert managers[0]["prior_seasons"] == [_season("2025/26", 2000, 900000)]
         assert managers[1]["prior_seasons"] is None
 
+    async def test_a_pre_fetched_history_map_is_used_without_a_request(self):
+        class _NeverAsked:
+            async def get_manager_history(self, entry_id):
+                raise AssertionError("the map should have answered")
+
+        managers = [_make_manager(name="Alice", entry_id=1)]
+
+        await collect_prior_seasons(_NeverAsked(), managers, histories={
+            1: {"past": [{"season_name": "2025/26", "total_points": 2000, "rank": 900000}]},
+        })
+
+        assert managers[0]["prior_seasons"] == [_season("2025/26", 2000, 900000)]
+
+    async def test_a_row_that_is_not_a_mapping_is_skipped_rather_than_taking_the_run_down(self):
+        managers = [_make_manager(name="Alice", entry_id=1)]
+
+        await collect_prior_seasons(_FakeClassicClient({}, {}), managers, histories={
+            1: {"past": [None, {"season_name": "2025/26", "total_points": 2000, "rank": 900000}]},
+        })
+
+        assert managers[0]["prior_seasons"] == [_season("2025/26", 2000, 900000)]
+
+    async def test_a_past_that_is_not_a_list_reads_as_unavailable_not_as_no_seasons(self):
+        managers = [_make_manager(name="Alice", entry_id=1)]
+
+        await collect_prior_seasons(
+            _FakeClassicClient({}, {}), managers, histories={1: {"past": "garbage"}},
+        )
+
+        assert managers[0]["prior_seasons"] is None
+
+
+class TestFetchManagerHistories:
+    async def test_a_failure_is_none_and_the_rest_are_intact(self):
+        class _Partial:
+            async def get_manager_history(self, entry_id):
+                if entry_id == 2:
+                    raise RuntimeError("boom")
+                return {"current": [], "past": []}
+
+        histories = await fetch_manager_histories(
+            _Partial(), [_make_manager(name="Alice", entry_id=1), _make_manager(name="Bob", entry_id=2)],
+        )
+
+        assert histories == {1: {"current": [], "past": []}, 2: None}
+
+
+class _CountingClassicClient(_FakeClassicClient):
+    """`_FakeClassicClient` that records every manager-history request."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.history_calls: list[int] = []
+
+    async def get_manager_history(self, entry_id):
+        self.history_calls.append(entry_id)
+        return await super().get_manager_history(entry_id)
+
+
+class TestClassicCollectorPriorSeasons:
+    """The classic collector owns the opener gate and fetches each manager's
+    history once, shared between the league-start offset and the
+    prior-seasons roster (review on #304: a late-starting league's own
+    opener used to fetch every manager twice)."""
+
+    _STANDINGS = [
+        {"entry": 1, "player_name": "Alice", "event_total": 60, "total": 60},
+        {"entry": 2, "player_name": "Bob", "event_total": 50, "total": 50},
+    ]
+    _PICKS = {
+        1: _picks_response(points=60, total_points=60),
+        2: _picks_response(points=50, total_points=50),
+    }
+    _PAST = [{"season_name": "2025/26", "total_points": 2000, "rank": 900000, "rank_percentage": "20"}]
+    _LATE_START_HISTORIES = {
+        1: {"current": [{"event": 2, "total_points": 20}], "past": _PAST},
+        2: {"current": [{"event": 2, "total_points": 10}], "past": []},
+    }
+
+    @classmethod
+    def _client(cls, start_event=None, history_by_entry=None):
+        return _CountingClassicClient(
+            _standings_response(cls._STANDINGS, start_event), cls._PICKS,
+            history_by_entry=history_by_entry,
+        )
+
+    @staticmethod
+    async def _collect(client, gw, *, with_prior_seasons):
+        data = await collect_classic_recap_data(
+            client, {"fpl": {"classic_league_id": 1}}, gw=gw,
+            live_stats={}, player_map={}, teams={}, is_live_gw=False,
+            with_prior_seasons=with_prior_seasons,
+        )
+        return {m["manager_name"]: m for m in data["managers"]}
+
+    async def test_the_opener_fetches_once_per_manager_when_asked(self):
+        client = self._client(history_by_entry={1: {"current": [], "past": self._PAST}})
+
+        by_name = await self._collect(client, gw=1, with_prior_seasons=True)
+
+        assert sorted(client.history_calls) == [1, 2]
+        assert by_name["Alice"]["prior_seasons"] == [_season("2025/26", 2000, 900000, "20")]
+        assert by_name["Bob"]["prior_seasons"] == []
+
+    async def test_nothing_is_fetched_unless_asked(self):
+        client = self._client(history_by_entry={1: {"current": [], "past": self._PAST}})
+
+        by_name = await self._collect(client, gw=1, with_prior_seasons=False)
+
+        assert client.history_calls == []
+        assert all("prior_seasons" not in m for m in by_name.values())
+
+    async def test_a_later_gameweek_fetches_nothing_even_when_asked(self):
+        client = self._client(history_by_entry={1: {"current": [], "past": self._PAST}})
+
+        by_name = await self._collect(client, gw=2, with_prior_seasons=True)
+
+        assert client.history_calls == []
+        assert all("prior_seasons" not in m for m in by_name.values())
+
+    async def test_a_late_starting_league_shares_one_fetch_between_offset_and_roster(self):
+        client = self._client(start_event=3, history_by_entry=self._LATE_START_HISTORIES)
+
+        by_name = await self._collect(client, gw=3, with_prior_seasons=True)
+
+        assert sorted(client.history_calls) == [1, 2]
+        assert by_name["Alice"]["total_points"] == 40
+        assert by_name["Bob"]["total_points"] == 40
+        assert by_name["Alice"]["prior_seasons"] == [_season("2025/26", 2000, 900000, "20")]
+        assert by_name["Bob"]["prior_seasons"] == []
+
+    async def test_a_late_starting_league_past_its_opener_fetches_only_for_the_offset(self):
+        client = self._client(start_event=3, history_by_entry=self._LATE_START_HISTORIES)
+
+        by_name = await self._collect(client, gw=4, with_prior_seasons=True)
+
+        assert sorted(client.history_calls) == [1, 2]
+        assert by_name["Alice"]["total_points"] == 40
+        assert all("prior_seasons" not in m for m in by_name.values())
+
+    async def test_one_managers_failed_fetch_costs_both_readers_only_that_manager(self):
+        class _Partial(_CountingClassicClient):
+            async def get_manager_history(self, entry_id):
+                if entry_id == 2:
+                    raise RuntimeError("network blip")
+                return await super().get_manager_history(entry_id)
+
+        client = _Partial(
+            _standings_response(self._STANDINGS, 3), self._PICKS,
+            history_by_entry=self._LATE_START_HISTORIES,
+        )
+
+        by_name = await self._collect(client, gw=3, with_prior_seasons=True)
+
+        assert by_name["Alice"]["total_points"] == 40
+        assert by_name["Alice"]["prior_seasons"] == [_season("2025/26", 2000, 900000, "20")]
+        assert "total_points" not in by_name["Bob"]
+        assert by_name["Bob"]["prior_seasons"] is None
+
 
 class TestFormatPriorSeasonsLine:
     def test_a_full_record_reads_as_one_sentence(self):
@@ -4920,7 +5085,7 @@ class TestFormatPriorSeasonsLine:
 
         assert line == (
             "Alice: 3 prior FPL seasons played (2014/15 to 2025/26; 9 seasons missed in "
-            "between), making this their 4th season of FPL. Last season (2025/26): 2,301 pts, "
+            "between), making this their fourth season of FPL. Last season (2025/26): 2,301 pts, "
             "rank 55,120 (top 1%). Best season: 2023/24, 2,512 pts, rank 6,780 (top 0.1%)."
         )
 
@@ -4933,7 +5098,7 @@ class TestFormatPriorSeasonsLine:
 
         assert line.startswith(
             "Alice: 2 prior FPL seasons played (2020/21 to 2025/26; 4 seasons missed in "
-            "between), making this their 3rd season of FPL."
+            "between), making this their third season of FPL."
         )
 
     def test_a_single_season_has_no_best_clause(self):
@@ -4942,7 +5107,7 @@ class TestFormatPriorSeasonsLine:
         )
 
         assert line == (
-            "Bob: 1 prior FPL season played (2025/26), making this their 2nd season of FPL. "
+            "Bob: 1 prior FPL season played (2025/26), making this their second season of FPL. "
             "Last season (2025/26): 1,900 pts, rank 2,345,678 (top 31%)."
         )
 
@@ -5051,6 +5216,18 @@ class TestSummarisePriorSeasons:
             "Prior seasons could not be fetched for Cam.",
         ]
 
+    def test_a_manager_never_asked_is_outside_the_summary_not_unfetched(self):
+        """Absent key, not None: "could not be fetched" is a claim about a
+        request that was made (review on #304)."""
+        managers = [_with_prior_seasons("Alice", 1, []), _make_manager(name="Bob", entry_id=2)]
+
+        summary = summarise_prior_seasons(managers)
+
+        assert summary is not None
+        assert summary.new_to_fpl == ["Alice"]
+        assert summary.unavailable == []
+        assert summary.total_managers == 1
+
     def test_coverage_lines_join_names_in_prose(self):
         managers = [_with_prior_seasons(n, i, []) for i, n in enumerate(["Cam", "Alice", "Bob"], 1)]
 
@@ -5088,8 +5265,26 @@ class TestPriorSeasonsPromptSection:
 
         text = format_recap_prior_seasons_context(summary)
 
-        assert "No prior FPL seasons on record (1): Bob - this is their first season of FPL on record" in text
-        assert "Prior seasons could not be fetched (2): Cam, Dee - say nothing about their past" in text
+        assert "No prior FPL seasons on record for Bob: this is their first season of FPL on record." in text
+        assert "Prior seasons could not be fetched for Cam and Dee." in text
+        assert "say nothing about their earlier seasons either way" in text
+
+    def test_the_absence_statements_are_the_reports_own_sentences(self):
+        """One rendering for both surfaces (review on #304): the prompt
+        repeats `coverage_lines` verbatim rather than rebuilding the name
+        lists with its own joining."""
+        summary = PriorSeasonsSummary(lines=[], new_to_fpl=["Bob", "Cam"], unavailable=["Dee"])
+
+        text = format_recap_prior_seasons_context(summary)
+
+        assert all(line in text.splitlines() for line in summary.coverage_lines)
+
+    def test_no_instruction_about_absence_when_nobody_is_absent(self):
+        summary = PriorSeasonsSummary(lines=["Alice: a record."], new_to_fpl=[], unavailable=[])
+
+        text = format_recap_prior_seasons_context(summary)
+
+        assert "say nothing about their earlier seasons" not in text
 
     def test_says_the_record_is_fpl_wide_and_silent_on_league_tenure(self):
         text = format_recap_prior_seasons_context(
