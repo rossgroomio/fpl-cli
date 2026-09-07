@@ -4501,6 +4501,133 @@ class TestReplayKeepsRecordedStandings:
             w["code"] == HISTORY_WARNING_STANDINGS_REPAIRED for w in result.warnings
         )
 
+    def _settling_captures(self, positions, *, fpl_format="draft", manager_key=10):
+        """One manager's gameweek captured repeatedly while it was settling.
+
+        Each capture records a different league position as bonus and late
+        results land, so the first line holds a stale place and the last holds
+        the settled one. `total_points` agrees throughout, which is what makes
+        the position the only field under test.
+        """
+        store = _store(fpl_format)
+        base = make_history_row(
+            season=SEASON, fpl_format=fpl_format, league_id=42, gameweek=1,
+            manager_key=manager_key, manager_name="Alice", gross_points=60,
+            league_position=positions[0], total_points=60,
+        )
+        for offset, position in enumerate(positions):
+            store.append_rows(1, [base.model_copy(update={
+                "league_position": position,
+                "captured_at": base.captured_at + timedelta(hours=offset),
+            })])
+        return base
+
+    async def test_the_repair_restores_the_last_recorded_position_not_the_first(self):
+        """What keeps a nulled replay row out of the read is the value being
+        non-null, not the line being earliest, so the direction is free to be
+        right about the rest: taking the *first* non-null restores the stale
+        place the gameweek held mid-settlement, where the damage destroyed the
+        settled one recorded last (issue #320)."""
+        base = self._settling_captures((10, 11, 8, 7))
+        self._store().append_rows(1, [base.model_copy(update={
+            "league_position": None,
+            "captured_at": base.captured_at + timedelta(days=1),
+        })])
+        assert self._store().resolved_gameweek(1)[10].league_position is None
+
+        # An ordinary next-gameweek recap, which never touches GW1 itself.
+        await capture_recap_history(
+            self._draft(
+                2,
+                [_manager(name="Alice", entry_id=1, league_entry_id=10, gross_points=50)],
+                _cohort((10, "Alice", 1, 50, 110)),
+            ),
+            season=SEASON, finished_gameweeks=[1, 2],
+        )
+
+        assert self._store().resolved_gameweek(1)[10].league_position == 7
+
+    async def test_the_carry_keeps_the_last_recorded_position_not_the_first(self):
+        """The same read is on the carry path, and the carry runs on ordinary
+        draft recaps rather than only after damage -- so the direction decides
+        which recorded value wins every week, not just once a ledger is
+        broken (issue #320)."""
+        self._settling_captures((10, 11, 8, 7))
+
+        result = await capture_recap_history(
+            self._draft(
+                1,
+                [_manager(name="Alice", entry_id=1, league_entry_id=10, gross_points=60,
+                          total_points=None, overall_rank=None, previous_rank=None)],
+                _cohort((10, "Alice", 1, 60, 60)),
+            ),
+            season=SEASON, is_live_gw=False, finished_gameweeks=[1],
+        )
+
+        assert {r.manager_key: r.league_position for r in result.rows} == {10: 7}
+        assert self._store().resolved_gameweek(1)[10].league_position == 7
+
+    async def test_the_repair_restores_the_last_recorded_position_for_classic_too(self):
+        """The sweep is format-agnostic and the issue was found on a classic
+        league: draft is only where the *carry* fires most weeks. A classic
+        ledger an earlier replay nulled is repaired by the same read, so the
+        direction has to be pinned on both formats (issue #320)."""
+        base = self._settling_captures((10, 11, 8, 7), fpl_format="classic", manager_key=1)
+        _store().append_rows(1, [base.model_copy(update={
+            "league_position": None,
+            "captured_at": base.captured_at + timedelta(days=1),
+        })])
+        assert _store().resolved_gameweek(1)[1].league_position is None
+
+        await capture_recap_history(
+            _recap_data(
+                gameweek=2,
+                managers=[_manager(name="Alice", entry_id=1, total_points=110, overall_rank=1)],
+                cohort=_cohort((1, "Alice", 1, 50, 110)),
+            ),
+            season=SEASON, finished_gameweeks=[1, 2],
+        )
+
+        assert _store().resolved_gameweek(1)[1].league_position == 7
+
+    async def test_the_last_recorded_value_is_the_latest_captured_not_the_last_line(self):
+        """Nothing makes file order capture order: `append_rows` skips a row
+        on tier rank alone, so two same-tier captures land in call order and a
+        slow run finishing after a faster later one writes a chronologically
+        earlier line below it. `resolve_rows` breaks its own tie on
+        `captured_at` rather than on position in the file, and this read has
+        to agree with it -- reading by position restores the stale value
+        again, silently, which is the whole of issue #320."""
+        store = self._store()
+        base = make_history_row(
+            season=SEASON, fpl_format="draft", league_id=42, gameweek=1,
+            manager_key=10, manager_name="Alice", gross_points=60,
+            league_position=7, total_points=60,
+        )
+        # Written newest-first, so the settled 7 was captured last but sits
+        # *above* the stale 10 in the file.
+        for hours, position in ((3, 7), (1, 10)):
+            store.append_rows(1, [base.model_copy(update={
+                "league_position": position,
+                "captured_at": base.captured_at + timedelta(hours=hours),
+            })])
+        store.append_rows(1, [base.model_copy(update={
+            "league_position": None,
+            "captured_at": base.captured_at + timedelta(days=1),
+        })])
+        assert self._store().resolved_gameweek(1)[10].league_position is None
+
+        await capture_recap_history(
+            self._draft(
+                2,
+                [_manager(name="Alice", entry_id=1, league_entry_id=10, gross_points=50)],
+                _cohort((10, "Alice", 1, 50, 110)),
+            ),
+            season=SEASON, finished_gameweeks=[1, 2],
+        )
+
+        assert self._store().resolved_gameweek(1)[10].league_position == 7
+
     async def test_a_gameweek_mixing_carried_and_derived_positions_stays_unranked(self):
         """A position carried from the ledger and one re-derived from totals
         are two different rankings, and draft's own standings break h2h ties on
