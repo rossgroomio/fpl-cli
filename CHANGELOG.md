@@ -1,6 +1,43 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [2.5.0] - 2026-09-07
+
+### Bug Fixes
+
+- stop the fpl-mate output style calling ep_next prior-informed (#261)
+- restore xG enrichment for players with an apostrophe in their name (#268)
+- keep coverage readable when one ledger file is damaged (#271)
+- stop the review scrubber deleting sentences naming full names (#270)
+- recap the last completed gameweek once the next one has kicked off (#274)
+- stop fpl xg table output crashing when custom analysis is off (#275)
+- cap httpx, pydantic and click below their next majors (#278)
+- stop a truncated LLM summary being saved without a warning (#276)
+- stop a draft replay erasing the league positions it recorded (#280)
+- validate FPL_CLI_DATA_DIR and FPL_CLI_CACHE_DIR eagerly like FPL_CLI_CONFIG_DIR (#281)
+- raise the click floor to 8.2 so the test suite can capture stderr (#283)
+- collapse a league-wide captain tie into one recap line (#282)
+- fill the blank Source column in a review's Standout Performers (#284)
+- exit 1 with the real reason when review or recap cannot run (#285)
+- point doctor's draft ID fix hints at `fpl init` (#288)
+- keep the current table's points out of a replayed gameweek's recap (#293)
+- report a failure the same way whatever the output format (#292)
+- keep league positions when one manager's replay data is partial (#295)
+- stop a replay renaming the player a stored red-card fine names (#290)
+- ground the review's "Next Week" advice in next gameweek's fixtures (#291)
+- rebuild the ratings prior when a football-data key appears (#289)
+- record the club a player played for in a replayed gameweek (#296)
+- keep `review --summarise` running when an LLM key is missing (#297)
+- derive season labels from GW1's deadline instead of the clock (#299)
+- correct award move direction and free-agent mislabelling (#302)
+
+### Features
+
+- flag stale quality-score calibration in `fpl doctor` (#298)
+- hand the league-recap editorial every manager's transfers (#300)
+- give the draft recap editorial every waiver and free-agent move (#303)
+- give the season-opener recap each manager's prior FPL seasons (#304)
+
 ## [2.4.1] - 2026-09-05
 
 ### Bug Fixes
