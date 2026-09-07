@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import json
 import os
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -326,6 +327,93 @@ class TestAllDirsValidatedEagerlyInCLI:
         assert result.exit_code == 1
         assert env_var in result.output
         assert "relative path" in result.output
+
+
+class TestRelativeOverrideJsonEnvelope:
+    """Under `--format json` the eager rejection still carries a `{command,
+    error}` envelope on stdout, not zero bytes with exit 1 (#307).
+
+    The check in `main()` fires from the group callback, before subcommand
+    dispatch has put a `CLIContext` (and its resolved format) anywhere --
+    `FormatAwareGroup.main` has to recover the requested format from the raw
+    argv instead of reading it off a context that doesn't exist yet. Mirrors
+    `TestAllDirsValidatedEagerlyInCLI`'s legacy-dir patch for the same reason:
+    a repo checkout's real `config/`/`data/` would otherwise let this pass on
+    the strength of the migration path rather than the check under test.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_legacy_dirs(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(paths_mod, "_LEGACY_CONFIG_DIR", tmp_path / "no-legacy-config")
+        monkeypatch.setattr(paths_mod, "_LEGACY_DATA_DIR", tmp_path / "no-legacy-data")
+
+    @pytest.mark.parametrize(("env_var", "resolver"), RESOLVERS)
+    def test_relative_override_reports_json_envelope(self, env_var, resolver, monkeypatch):
+        from click.testing import CliRunner
+
+        from fpl_cli.cli import main
+
+        monkeypatch.setenv(env_var, "./somewhere")
+        resolver.cache_clear()
+
+        result = CliRunner().invoke(
+            main, ["status", "--format", "json"], catch_exceptions=False,
+        )
+
+        assert result.exit_code == 1
+        assert result.stdout.strip(), (
+            "a JSON consumer must get an envelope, not zero bytes on stdout"
+        )
+        envelope = json.loads(result.stdout)
+        assert envelope["command"] == "status"
+        assert env_var in envelope["error"]
+        assert "relative path" in envelope["error"]
+
+    def test_equals_form_is_recognised(self, monkeypatch):
+        from click.testing import CliRunner
+
+        from fpl_cli.cli import main
+
+        monkeypatch.setenv("FPL_CLI_DATA_DIR", "./somewhere")
+        user_data_dir.cache_clear()
+
+        result = CliRunner().invoke(
+            main, ["status", "--format=json"], catch_exceptions=False,
+        )
+
+        assert result.exit_code == 1
+        envelope = json.loads(result.stdout)
+        assert envelope["command"] == "status"
+        assert "FPL_CLI_DATA_DIR" in envelope["error"]
+
+    def test_envelope_names_the_invoked_subcommand(self, monkeypatch):
+        from click.testing import CliRunner
+
+        from fpl_cli.cli import main
+
+        monkeypatch.setenv("FPL_CLI_DATA_DIR", "./somewhere")
+        user_data_dir.cache_clear()
+
+        result = CliRunner().invoke(
+            main, ["chips", "--format", "json"], catch_exceptions=False,
+        )
+
+        assert json.loads(result.stdout)["command"] == "chips"
+
+    def test_table_mode_is_unchanged(self, monkeypatch):
+        """No `--format json` on argv: the plain stderr message, same as before this fix."""
+        from click.testing import CliRunner
+
+        from fpl_cli.cli import main
+
+        monkeypatch.setenv("FPL_CLI_DATA_DIR", "./somewhere")
+        user_data_dir.cache_clear()
+
+        result = CliRunner().invoke(main, ["status"], catch_exceptions=False)
+
+        assert result.exit_code == 1
+        assert result.stdout == ""
+        assert "relative path" in result.stderr
 
 
 class TestUnusableOverrideInCLI:

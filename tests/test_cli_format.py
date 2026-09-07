@@ -5,7 +5,14 @@ from unittest.mock import patch
 import click
 from click.testing import CliRunner
 
-from fpl_cli.cli._context import CLIContext, Format, FormatAwareGroup, resolve_format
+from fpl_cli.cli._context import (
+    CLIContext,
+    Format,
+    FormatAwareGroup,
+    _argv_requests_json,
+    _command_from_argv,
+    resolve_format,
+)
 
 
 class TestResolveFormat:
@@ -127,6 +134,83 @@ class TestFormatAwareGroupHelp:
     def test_no_branded_header_line(self):
         output = self._get_help(Format.BOTH)
         assert output.startswith("Usage:")
+
+
+class TestArgvRequestsJson:
+    """`FormatAwareGroup.main`'s `UserDirError` handler recovers `--format json`
+    from raw argv, since it fires before click has parsed anything (#307).
+    """
+
+    def test_space_form(self):
+        assert _argv_requests_json(["status", "--format", "json"]) is True
+
+    def test_equals_form(self):
+        assert _argv_requests_json(["status", "--format=json"]) is True
+
+    def test_case_insensitive(self):
+        assert _argv_requests_json(["status", "--format", "JSON"]) is True
+
+    def test_table_format_is_false(self):
+        assert _argv_requests_json(["status", "--format", "table"]) is False
+
+    def test_no_format_flag_is_false(self):
+        assert _argv_requests_json(["status"]) is False
+
+    def test_empty_argv_is_false(self):
+        assert _argv_requests_json([]) is False
+
+    def test_dangling_format_flag_is_false(self):
+        """`--format` with nothing after it -- click would reject this itself."""
+        assert _argv_requests_json(["status", "--format"]) is False
+
+
+class TestCommandFromArgv:
+    """A real subgroup subcommand doesn't reliably answer with either argv
+    token: `chips timing` names its envelope `chips-timing`, `intel show`
+    just says `intel`, `squad grid` / `squad sell-prices` say `plan-grid` /
+    `sell-prices` -- unrelated to either token (#312 review). None of that
+    is one convention a scan could special-case correctly, so a real
+    subcommand dispatch under a registered group falls back to "fpl" rather
+    than guess. Only a flat command (including one with its own positional
+    argument) or a bare group invocation is unambiguous enough to name --
+    which needs the live click tree, hence passing the real `main` group
+    rather than a bare argv list.
+    """
+
+    def test_first_non_option_token(self):
+        from fpl_cli.cli import main as cli_main
+        assert _command_from_argv(["status", "--format", "json"], cli_main) == "status"
+
+    def test_flat_command_with_a_positional_argument(self):
+        """`player Salah` is `player`'s own argument, not a `Salah` subcommand."""
+        from fpl_cli.cli import main as cli_main
+        assert _command_from_argv(["player", "Salah", "--format", "json"], cli_main) == "player"
+
+    def test_bare_group_invocation(self):
+        from fpl_cli.cli import main as cli_main
+        assert _command_from_argv(["chips", "--format", "json"], cli_main) == "chips"
+
+    def test_a_real_subcommand_dispatch_is_reported_as_unknown(self):
+        from fpl_cli.cli import main as cli_main
+        assert _command_from_argv(["chips", "timing", "--format", "json"], cli_main) == "fpl"
+
+    def test_a_subcommand_that_would_coincidentally_match_the_group_still_defers(self):
+        """`intel show`'s real envelope happens to be "intel" too, but nothing here can
+        tell it apart from `chips timing`, so it gives up rather than guess right by luck."""
+        from fpl_cli.cli import main as cli_main
+        assert _command_from_argv(["intel", "show", "--format", "json"], cli_main) == "fpl"
+
+    def test_flags_before_the_command_are_skipped(self):
+        from fpl_cli.cli import main as cli_main
+        assert _command_from_argv(["--verbose", "status", "--format", "json"], cli_main) == "status"
+
+    def test_falls_back_to_fpl_when_nothing_but_flags(self):
+        from fpl_cli.cli import main as cli_main
+        assert _command_from_argv(["--format", "json"], cli_main) == "fpl"
+
+    def test_falls_back_to_fpl_on_empty_argv(self):
+        from fpl_cli.cli import main as cli_main
+        assert _command_from_argv([], cli_main) == "fpl"
 
 
 class TestBrandedVersion:

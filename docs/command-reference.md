@@ -96,6 +96,15 @@ about: the block is read on nearly every command, so the envelope naming it can 
 from `fpl status` or `fpl league-recap` as readily as from `fpl league-fines`, and the
 message names the rule and the valid set.
 
+A relative `FPL_CLI_CONFIG_DIR` / `FPL_CLI_DATA_DIR` / `FPL_CLI_CACHE_DIR` override is
+rejected before any command runs, so this one case has no parsed `--format` to read when it
+fails — the CLI scans the raw command line for `--format json` instead. The envelope's
+`command` names your subcommand where that is unambiguous (`fpl status`, or a bare group like
+`fpl chips`), and falls back to `"fpl"` for a subgroup's own subcommand (`fpl chips timing`,
+`fpl squad grid`, `fpl intel show`) or a line that was nothing but options — those commands
+don't name their own envelope after either word you typed, and guessing wrong would be worse
+than saying so.
+
 **Table mode splits the same way.** Without `--format json` the output you asked for goes
 to stdout and everything else goes to stderr — warnings, progress notices, and the reason
 a command exited nonzero. `fpl squad grid 2>/dev/null` prints a grid or prints nothing;
