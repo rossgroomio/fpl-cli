@@ -2167,6 +2167,13 @@ class TestReportSynthesisCompleteness:
         assert "## Draft Verdict" in err
 
 
+class _Boom:
+    """A synthesis provider whose call never lands (timeout, 500, spent 429)."""
+
+    async def query(self, *a, **k):
+        raise RuntimeError("provider exploded")
+
+
 class TestReviewLlmSummariseSurfacesAnIncompleteSynthesis:
     """#266: end to end, a truncated synthesis must not reach the report silently."""
 
@@ -2227,16 +2234,48 @@ class TestReviewLlmSummariseSurfacesAnIncompleteSynthesis:
         assert pathlib.Path(result["synthesis_corrections_path"]).resolve() == written.resolve()
         assert "## Draft Verdict" in written.read_text(encoding="utf-8")
 
-    async def test_a_synthesis_failure_still_returns_no_problems(self, capsys):
-        class _Boom:
+    async def test_a_call_that_never_landed_is_reported_like_one_that_did(self, capsys):
+        # #317: this used to assert the opposite, on the reasoning that an
+        # empty summary was visible on its own. #306 disproved that -- an empty
+        # summary renders as nothing at all -- so an exception has to reach the
+        # report through the same channel a damaged response does.
+        result = await _review_llm_summarise(**self._kwargs(_Boom()))
+
+        assert result["synthesis_summary"] == ""
+        problems = result["synthesis_problems"]
+        assert len(problems) == 1
+        assert "the synthesis call failed" in problems[0]
+        assert "RuntimeError: provider exploded" in problems[0]
+        assert "Synthesis failed: provider exploded" in capsys.readouterr().err
+
+    async def test_a_multiline_provider_error_stays_one_callout_bullet(self):
+        # Each problem renders as `> - {{ problem }}`, so an error wrapped
+        # across lines would break out of the blockquote mid-callout.
+        class _WordyBoom:
             async def query(self, *a, **k):
-                raise RuntimeError("provider exploded")
+                raise ConnectionError("connection refused\n  while posting to /v1/messages")
+
+        result = await _review_llm_summarise(**self._kwargs(_WordyBoom()))
+        problem = result["synthesis_problems"][0]
+        assert "\n" not in problem
+        assert "connection refused while posting to /v1/messages" in problem
+
+    async def test_the_failure_reaches_the_saved_report_as_a_callout(self):
+        # The two halves pinned against each other: whatever the guard puts in
+        # `synthesis_problems`, the template has to render it -- which is the
+        # branch #306 fixed and this failure path now shares.
+        from fpl_cli.agents.orchestration.report import ReportAgent
 
         result = await _review_llm_summarise(**self._kwargs(_Boom()))
-        # The existing graceful-degradation path owns this case: an empty
-        # summary is already visible, so the guard adds nothing to it.
-        assert result["synthesis_summary"] == ""
-        assert result["synthesis_problems"] == []
+        report = ReportAgent()._generate_review_report(7, {
+            "generated_at": "Sun 7 Sep 2026, 08:00 BST",
+            "synthesis_summary": result["synthesis_summary"],
+            "synthesis_problems": result["synthesis_problems"],
+        })
+
+        assert "[!WARNING]" in report
+        assert "did not come through intact" in report
+        assert "> - the synthesis call failed (RuntimeError: provider exploded)" in report
 
 
 # ---------------------------------------------------------------------------

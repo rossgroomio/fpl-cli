@@ -1182,6 +1182,16 @@ async def _review_llm_summarise(
             except Exception as e:  # noqa: BLE001 — graceful degradation
                 error_console.print(f"[red]  ✗ Synthesis failed: {rich_escape(str(e))}[/red]")
                 synthesis_summary = ""
+                # The report has to carry it too. Degrading gracefully ends at
+                # stderr, which is gone by the time the file is read: with no
+                # summary and no callout, a call that never landed reads as a
+                # report that never had a personal analysis in it. That is the
+                # silence #306 closed for a call that returned nothing, reached
+                # by the other route (#317). Whitespace is collapsed because
+                # the callout renders each line as a blockquote bullet, and a
+                # provider error wrapped across lines would break out of it.
+                detail = " ".join(f"{type(e).__name__}: {e}".split())
+                synthesis_problems = [f"the synthesis call failed ({detail})"]
 
     return {
         "research_summary": research_summary,

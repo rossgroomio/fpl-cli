@@ -622,7 +622,7 @@ class TestSynthesisProblemsCallout:
             "missing section(s): ## Draft Verdict, ## Next Week",
             "response ends without terminal punctuation (likely cut off mid-sentence)",
         ])
-        assert "failed its completeness check" in output
+        assert "did not come through intact" in output
         assert "## Draft Verdict" in output
         assert "terminal punctuation" in output
 
@@ -631,10 +631,10 @@ class TestSynthesisProblemsCallout:
         assert "A shrug of a week." in output
 
     def test_a_clean_run_adds_no_callout(self):
-        assert "completeness check" not in self._render(synthesis_problems=[])
+        assert "did not come through intact" not in self._render(synthesis_problems=[])
 
     def test_a_run_that_never_set_the_key_adds_no_callout(self):
-        assert "completeness check" not in self._render()
+        assert "did not come through intact" not in self._render()
 
     def test_an_empty_summary_still_carries_the_callout(self):
         # The worst truncation is the one that returns nothing at all, and it
@@ -648,7 +648,7 @@ class TestSynthesisProblemsCallout:
                 "the response is empty (the provider returned no text)",
             ],
         )
-        assert "failed its completeness check" in output
+        assert "did not come through intact" in output
         assert "max_tokens" in output
         assert "the provider returned no text" in output
 
@@ -656,7 +656,7 @@ class TestSynthesisProblemsCallout:
         # A reader needs to know the text is incomplete before reading it, not
         # after -- and the missing-key callout above it already reads that way.
         output = self._render(synthesis_problems=["missing section(s): ## Draft Verdict"])
-        assert output.index("failed its completeness check") < output.index("A shrug of a week.")
+        assert output.index("did not come through intact") < output.index("A shrug of a week.")
 
     def test_a_clean_run_is_spaced_exactly_as_it_was(self):
         # The callout moving above the summary must cost the ordinary report
@@ -681,7 +681,7 @@ class TestSynthesisProblemsCallout:
 
     def test_a_whitespace_only_summary_alone_writes_no_block_at_all(self):
         output = self._render(synthesis_summary="   ", synthesis_problems=[])
-        assert "completeness check" not in output
+        assert "did not come through intact" not in output
         assert "*Generated:" in output
         assert output.split("\n")[1].startswith("#")
 
