@@ -2943,6 +2943,18 @@ class TestValidateResearchCounts:
         return {
             1: make_team(id=1, name="Liverpool", short_name="LIV"),
             2: make_team(id=2, name="Nottingham Forest", short_name="NFO"),
+            3: make_team(id=3, name="Man City", short_name="MCI"),
+            4: make_team(id=4, name="Tottenham", short_name="TOT"),
+        }
+
+    @pytest.fixture
+    def player_map(self):
+        return {
+            p.id: p
+            for p in [
+                make_player(id=1, web_name="Ederson", team_id=3),
+                make_player(id=2, web_name="Salah", team_id=1),
+            ]
         }
 
     @staticmethod
@@ -2991,6 +3003,64 @@ class TestValidateResearchCounts:
 
     def test_leaves_a_count_scoped_to_a_club_alone(self, aggregates, teams):
         text = self._narrative("Liverpool kept two clean sheets in a week and barely noticed.")
+        result, corrections = validate_research_counts(text, aggregates, teams)
+        assert result == text
+        assert corrections == []
+
+    def test_leaves_a_count_scoped_by_a_club_nickname_alone(self, aggregates, teams):
+        """A Liew-ish narrative reaches for "Spurs" long before "Tottenham"."""
+        text = self._narrative("Spurs banked two clean sheets across a tidy week.")
+        result, corrections = validate_research_counts(text, aggregates, teams)
+        assert result == text
+        assert corrections == []
+
+    def test_leaves_a_count_scoped_to_a_player_alone(self, aggregates, teams, player_map):
+        text = self._narrative(
+            "Ederson claimed four clean sheets already this season, a personal best."
+        )
+        result, corrections = validate_research_counts(text, aggregates, teams, player_map)
+        assert result == text
+        assert corrections == []
+
+    def test_leaves_a_count_the_previous_sentence_scoped_alone(self, aggregates, teams):
+        """The club a sentence is still about is named in the one before it."""
+        text = self._narrative(
+            "Liverpool's rearguard was the story of the week.\n"
+            "Two clean sheets underlined a new discipline at the back."
+        )
+        result, corrections = validate_research_counts(text, aggregates, teams)
+        assert result == text
+        assert corrections == []
+
+    def test_leaves_a_count_an_anaphoric_pronoun_scoped_alone(self, aggregates):
+        """No club named, but "they" is standing in for one."""
+        text = self._narrative("Two clean sheets underlined how disciplined they had become.")
+        result, corrections = validate_research_counts(text, aggregates)
+        assert result == text
+        assert corrections == []
+
+    def test_an_ordinary_club_word_costs_a_correction(self, aggregates, teams):
+        """"City" tokenised off "Man City" suppresses a fix it need not.
+
+        The accepted cost of a guard that errs towards leaving prose alone: a
+        missed correction ships the model's own words, a wrong one fabricates.
+        """
+        text = self._narrative(
+            "City continued to look imperious as four clean sheets kept the table tight."
+        )
+        result, corrections = validate_research_counts(text, aggregates, teams)
+        assert result == text
+        assert corrections == []
+
+    def test_a_contraction_does_not_pass_for_a_possessive(self, aggregates, teams):
+        """"That's four clean sheets" is not "Forest's four clean sheets"."""
+        text = self._narrative("That's four clean sheets, a quiet weekend by any measure.")
+        result, corrections = validate_research_counts(text, aggregates, teams)
+        assert "That's six clean sheets" in result
+        assert len(corrections) == 1
+
+    def test_a_possessive_on_a_plural_club_noun_still_scopes(self, aggregates, teams):
+        text = self._narrative("The Reds' two clean sheets were the quietest story going.")
         result, corrections = validate_research_counts(text, aggregates, teams)
         assert result == text
         assert corrections == []
@@ -3060,14 +3130,14 @@ class TestValidateResearchCounts:
             "```\n"
             "## Standout Performers\n"
             "```\n"
-            "Four clean sheets, and the division held its breath.\n"
+            "Four clean sheets across a weekend of held breath.\n"
             "\n"
             "## Standout Performers\n"
         )
         result, corrections = validate_research_counts(text, aggregates)
         # The real narrative opens at the unfenced header and runs to the
         # unfenced heading, so the sentence between the fences is in scope.
-        assert "Six clean sheets, and the division held its breath." in result
+        assert "Six clean sheets across a weekend of held breath." in result
         assert len(corrections) == 1
 
 
@@ -3079,12 +3149,18 @@ class TestResearchPromptForbidsDerivedCounts:
         assert "clean sheets and goalless draws" in REVIEW_RESEARCH_SYSTEM_PROMPT
 
     def test_forbids_counting_the_scorelines(self):
-        assert "Never count, total or infer an aggregate from the scorelines" in (
+        assert "Never count, total, average or otherwise infer a summary statistic" in (
             REVIEW_RESEARCH_SYSTEM_PROMPT
         )
 
-    def test_forbids_a_count_the_summary_line_does_not_carry(self):
-        assert "never state a division-wide count the Summary line does not carry" in (
+    def test_forbids_a_figure_the_summary_line_does_not_carry(self):
+        assert "never state a division-wide figure the Summary line does not carry" in (
+            REVIEW_RESEARCH_SYSTEM_PROMPT
+        )
+
+    def test_keeps_a_catch_all_beyond_the_enumerated_counts(self):
+        """A derived rate or average is no statistic the validator can check."""
+        assert "count, rate, average, share or other numeric summary statistic" in (
             REVIEW_RESEARCH_SYSTEM_PROMPT
         )
 

@@ -1061,6 +1061,7 @@ async def _review_llm_summarise(
                 research_summary,
                 fixture_aggregates(collected_data.get("fixtures", [])),
                 teams,
+                player_map,
             )
             all_corrections = (
                 club_corrections + top_performer_corrections + prose_corrections + count_corrections

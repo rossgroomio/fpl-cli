@@ -75,7 +75,7 @@ NEVER:
 - Treat a blank-gameweek zero as a performance failure - most FPL managers plan for these
 - Speculate about future double or blank gameweeks for teams NOT listed in the provided actual or predicted DGW data
 - Treat 3-letter team codes (LEE, NEW, MAN, BUR, ARS, etc.) as surnames or people's names. LEE is Leeds United, not someone called "Lee"; NEW is Newcastle, not "New"; MAN is Manchester, not "Man". In prose, always expand codes to the full team name (or a natural short form like "Leeds", "Newcastle", "Man Utd"). Reserve 3-letter codes for table cells only
-- Fabricate or derive any division-wide count. The "Summary:" line at the top of the GW Results block is the only authority on how many fixtures, goals, clean sheets and goalless draws there were - quote its numbers exactly. Never count, total or infer an aggregate from the scorelines listed beneath it: a clean sheet is per team, not per goalless match, so counting the 0-0s gets it wrong. And never state a division-wide count the Summary line does not carry - red cards, penalties, hat-tricks, teams that failed to score - write around it instead. If the Summary line is absent, cite no counts at all
+- Fabricate or derive any division-wide count, rate, average, share or other numeric summary statistic. The "Summary:" line at the top of the GW Results block is the only authority on how many fixtures, goals, clean sheets and goalless draws there were - quote its numbers exactly. Never count, total, average or otherwise infer a summary statistic from the scorelines listed beneath it: a clean sheet is per team, not per goalless match, so counting the 0-0s gets it wrong. And never state a division-wide figure the Summary line does not carry - red cards, penalties, hat-tricks, teams that failed to score, the average scoreline, the share of matches drawn - write around it instead. If the Summary line is absent, cite no such figures at all
 - Split a DGW player's gameweek total across their two fixtures ("14 in the first, 5 in the second"). You only receive the GW total - any per-match breakdown is fabrication. Cite the full GW total only, or describe the haul qualitatively ("a clean sheet and a goal in the DGW") without assigning points to individual fixtures
 - Fabricate transfer history, loan arrangements, or contractual details about players in the Disappointments or Standout Performers tables. If you lack sourced information explaining why a player blanked or hauled, describe the statistical outcome ("returned just 1 point") without inventing a backstory. Do not reference a player's club history, loan status, or off-field context unless it appeared in your search results
 - Name any player in the GW Narrative paragraph who does not appear in the Dream Team list, the Blankers list, or as a goalscorer/assister in the GW Results match lines. The narrative must reference only players grounded in the provided data - no metaphorical comparisons, no "X reminded us of Y", no "the next Z". If you cannot make a point without naming an unprovided player, drop the comparison and describe what actually happened instead
@@ -1295,63 +1295,112 @@ _COUNT_CLAIM_RE = re.compile(
     re.IGNORECASE,
 )
 
-# A count sitting in a clause that scopes it to one team or player is not the
-# division-wide aggregate and must be left alone: "Liverpool's two clean sheets
-# in a week" is a different claim from "two clean sheets" and rewriting it to
-# the round's total would be nonsense. Possessives, scope pronouns, the words
-# for a club, and double-gameweek vocabulary all mark that narrowing.
-_SCOPE_WORDS: tuple[str, ...] = (
-    "his", "her", "their", "its", "our", "your", "my",
+# A count is the division-wide aggregate only when the prose gives it nobody
+# else to belong to. So the guard looks for a nominal the count could be scoped
+# to -- a club, a nickname, a PL player, a pronoun standing in for one -- and
+# leaves the number alone when it finds one. That is deliberately the generous
+# direction: a missed correction leaves the text as the model wrote it, while a
+# wrong one *fabricates* a claim in prose that was true, which is a worse
+# failure than the miscount this guard exists to catch. The signal it keys on is
+# real rather than incidental -- a sentence stating a round-wide total ("four
+# clean sheets, two goalless stalemates") names nobody, precisely because it is
+# about the division rather than about anyone in it.
+_SCOPE_PRONOUNS: tuple[str, ...] = (
+    "he", "him", "his", "she", "her", "hers", "they", "them", "their", "theirs",
+    "its", "our", "ours", "your", "yours", "my", "mine",
     "team", "teams", "side", "sides", "club", "clubs",
     "double", "doubles", "twice", "each", "apiece", "consecutive", "successive",
 )
-_SCOPE_GUARD_RE = re.compile(
-    r"['’ʼ]s\b|s['’ʼ](?!\w)|\b(?:" + "|".join(_SCOPE_WORDS) + r")\b",
-    re.IGNORECASE,
-)
+_SCOPE_PRONOUN_RE = re.compile(r"\b(?:" + "|".join(_SCOPE_PRONOUNS) + r")\b", re.IGNORECASE)
 
-# Sentence and clause boundaries. A guard word two clauses away says nothing
-# about this count, so the scope check reads only the clause the number sits in.
-_CLAUSE_BOUNDARIES = frozenset(",;:.!?—–\n")
-
-
-def _clause_around(line: str, start: int, end: int) -> str:
-    """The clause `line[start:end]` sits in, bounded by punctuation."""
-    left = 0
-    for i in range(start - 1, -1, -1):
-        if line[i] in _CLAUSE_BOUNDARIES:
-            left = i + 1
-            break
-    right = len(line)
-    for i in range(end, len(line)):
-        if line[i] in _CLAUSE_BOUNDARIES:
-            right = i
-            break
-    return line[left:right]
+# A possessive only scopes the count it is attached to, so this is anchored to
+# the text immediately before the number rather than searched for loose in the
+# sentence: "Liverpool's two clean sheets" and "the Reds' two clean sheets" are
+# scoped, while the "It's" in "It's rare to see four clean sheets" is elsewhere
+# in the sentence and says nothing about who kept them. Anchoring alone is not
+# enough, because a contraction can sit in the anchored position too -- "That's
+# four clean sheets" is the same shape as "Forest's four clean sheets" and
+# means nothing like it -- so the possessor is checked against the stems that
+# only ever form one.
+_CONTRACTION_STEMS: frozenset[str] = frozenset({
+    "it", "that", "this", "there", "here", "what", "who", "he", "she",
+    "one", "everyone", "everybody", "someone", "somebody", "nobody",
+    "something", "nothing", "let",
+})
+_POSSESSIVE_BEFORE_RE = re.compile(r"(?:(?P<stem>\w+)['’ʼ]s|(?P<plural>\w+s)['’ʼ])\s+$")
 
 
-def _club_token_re(teams: dict[int, Team] | None) -> re.Pattern[str] | None:
-    """Case-sensitive pattern for club names, or None when no teams were supplied.
+def _possessive_scopes_count(before: str) -> bool:
+    """True when a genuine possessive sits directly in front of the number."""
+    match = _POSSESSIVE_BEFORE_RE.search(before)
+    if match is None:
+        return False
+    stem = match.group("stem")
+    return stem is None or stem.lower() not in _CONTRACTION_STEMS
 
-    Full names plus their individual words of four letters or more, which is
-    how the narrative is told to refer to clubs ("Nottingham Forest", "Forest").
-    Three-letter short codes are left out on purpose: matched case-insensitively
-    they collide with English ("NEW", "MAN"), and matched case-sensitively they
-    add nothing, because the prompt reserves codes for table cells.
+
+# Club nicknames a narrative reaches for far more readily than the official
+# name -- the prompt asks for Liew-ish prose, and "Spurs banked two clean
+# sheets" carries no official name to match on. Case-sensitive, like the club
+# and player patterns: these are capitalised in every real use, and a lowercase
+# "saints" or "blues" is not a club.
+_CLUB_NICKNAMES: frozenset[str] = frozenset({
+    "Baggies", "Bees", "Black Cats", "Blades", "Blues", "Canaries", "Cherries",
+    "Citizens", "Clarets", "Cottagers", "Eagles", "Foxes", "Gunners", "Hammers",
+    "Hornets", "Lilywhites", "Magpies", "Owls", "Potters", "Rams", "Red Devils",
+    "Reds", "Robins", "Saints", "Seagulls", "Spurs", "Toffees", "Toon",
+    "Tractor Boys", "Villans", "Whites",
+})
+
+
+def _scope_token_re(
+    teams: dict[int, Team] | None,
+    player_map: dict[int, Player] | None,
+) -> re.Pattern[str]:
+    """Case-sensitive pattern for every nominal a count could be scoped to.
+
+    Club names and the words inside them ("Nottingham Forest", "Forest"), the
+    nicknames above, and every PL player's `web_name`. Matched case-sensitively
+    so lowercase homographs survive -- "son", "may", "city" as an ordinary noun
+    -- the same convention `validate_research_prose` uses, and against the
+    diacritic-stripped sentence so "Hojlund" still matches "Højlund".
+
+    Breadth is the point: "City", "Forest" and "Palace" will each suppress a
+    correction in a sentence that meant the ordinary English word, and that is
+    the failure this guard is willing to have. Three-letter short codes are
+    still left out -- the prompt reserves them for table cells, and they would
+    add nothing here.
     """
-    if not teams:
-        return None
-    tokens: set[str] = set()
-    for team in teams.values():
-        name = (team.name or "").strip()
+    tokens: set[str] = set(_CLUB_NICKNAMES)
+    for team in (teams or {}).values():
+        name = strip_diacritics(team.name or "").strip()
         if not name:
             continue
         tokens.add(name)
         tokens.update(word for word in name.split() if len(word) >= 4)
-    if not tokens:
-        return None
-    alternation = "|".join(re.escape(t) for t in sorted(tokens, key=len, reverse=True))
+    for player in (player_map or {}).values():
+        web = strip_diacritics(player.web_name or "").strip()
+        if web:
+            tokens.add(web)
+    alternation = "|".join(re.escape(t) for t in sorted(tokens, key=lambda t: (-len(t), t)))
     return re.compile(rf"\b(?:{alternation})\b")
+
+
+def _sentence_spans(paragraph: str) -> list[tuple[int, int]]:
+    """`(start, end)` of each sentence in `paragraph`, as offsets into it.
+
+    Offsets rather than the split strings, because a correction is applied back
+    to the paragraph in place. A line break with no terminal punctuation before
+    it does not split, so two lines of one sentence stay one sentence -- which
+    is the safe way round, since the scope check then sees the whole thing.
+    """
+    spans: list[tuple[int, int]] = []
+    cursor = 0
+    for gap in _SENTENCE_SPLIT_RE.finditer(paragraph):
+        spans.append((cursor, gap.start()))
+        cursor = gap.end()
+    spans.append((cursor, len(paragraph)))
+    return spans
 
 
 def _render_count(value: int, sample: str) -> str:
@@ -1368,6 +1417,7 @@ def validate_research_counts(
     text: str,
     aggregates: FixtureAggregates,
     teams: dict[int, Team] | None = None,
+    player_map: dict[int, Player] | None = None,
 ) -> tuple[str, list[str]]:
     """Correct division-wide counts in the GW Narrative that contradict the fixtures.
 
@@ -1378,18 +1428,27 @@ def validate_research_counts(
     could not see it: the sentence named no player at all.
 
     Only the GW Narrative paragraph is scanned, and only for the countable nouns
-    in `_COUNTABLE_NOUNS`, whose bare use there is division-wide. A claim whose
-    clause scopes it to one club or player is left alone (see `_SCOPE_GUARD_RE`
-    and `_club_token_re`); a claim that contradicts the aggregate has its number
-    rewritten in place, keeping the prose and the digits-or-words style the
-    model chose. Nothing is scrubbed -- the sentence was true apart from the
-    figure, and a corrected figure makes it true.
+    in `_COUNTABLE_NOUNS`, whose bare use there is division-wide. A claim is
+    corrected only when neither its own sentence nor the one before it names
+    anyone the count could belong to -- a club, a nickname, a player, a pronoun
+    standing in for one -- and when no possessive is attached to the number
+    itself. A round-wide total is exactly the sentence that names nobody, so
+    that test is what separates it from "Spurs banked two clean sheets"; the
+    previous sentence counts too, because the club a later sentence is still
+    talking about is usually named in it rather than repeated.
+
+    A contradicting figure has its number rewritten in place, keeping the prose
+    and the digits-or-words style the model chose. Nothing is scrubbed -- the
+    sentence was true apart from the figure, and a corrected figure makes it
+    true.
 
     Args:
         text: Full research provider response.
         aggregates: Counts computed from the same fixture data the prompt pinned.
-        teams: PL teams, used to spot a club name scoping a count. Optional; the
-            possessive and pronoun guards still apply without it.
+        teams: PL teams, for the club half of the scope check. Optional.
+        player_map: Full PL roster, for the player half. Optional -- without
+            either, only pronouns and possessives narrow a count, so pass both
+            wherever they are to hand.
 
     Returns:
         (corrected_text, corrections_log).
@@ -1406,43 +1465,63 @@ def validate_research_counts(
         return text, []
     header_idx, end_idx = span
 
-    club_re = _club_token_re(teams)
-    corrections: list[str] = []
-    new_lines = list(lines)
+    paragraph = "\n".join(lines[header_idx + 1 : end_idx])
+    if not paragraph.strip():
+        return text, []
 
-    for idx in range(header_idx + 1, end_idx):
-        line = lines[idx]
-        rebuilt: list[str] = []
-        cursor = 0
-        for match in _COUNT_CLAIM_RE.finditer(line):
-            noun_text = match.group("noun")
-            field, singular, plural = _NOUN_FORMS[noun_text.lower()]
-            stated = _NUMBER_WORDS.get(match.group("number").lower())
-            if stated is None:
-                stated = int(match.group("number"))
-            actual = int(getattr(aggregates, field))
-            if stated == actual:
-                continue
-            clause = _clause_around(line, match.start(), match.end())
-            if _SCOPE_GUARD_RE.search(clause) or (club_re is not None and club_re.search(clause)):
-                continue
-            replacement = (
-                f"{_render_count(actual, match.group('number'))} "
-                f"{singular if actual == 1 else plural}"
-            )
-            rebuilt.append(line[cursor : match.start()])
-            rebuilt.append(replacement)
-            cursor = match.end()
-            corrections.append(
-                f"narrative count corrected ({plural}): "
-                f"{match.group(0)} -> {replacement}"
-            )
-        if cursor:
-            rebuilt.append(line[cursor:])
-            new_lines[idx] = "".join(rebuilt)
+    scope_re = _scope_token_re(teams, player_map)
+    sentences = _sentence_spans(paragraph)
+    # Sentence index -> whether it names anyone a count could be scoped to.
+    # Computed once per sentence rather than per match: the roster alternation
+    # is large, and a sentence is re-consulted as its successor's predecessor.
+    named: list[bool] = [
+        bool(scope_re.search(strip_diacritics(paragraph[start:stop])))
+        for start, stop in sentences
+    ]
+
+    corrections: list[str] = []
+    rebuilt: list[str] = []
+    cursor = 0
+    for match in _COUNT_CLAIM_RE.finditer(paragraph):
+        field, singular, plural = _NOUN_FORMS[match.group("noun").lower()]
+        stated = _NUMBER_WORDS.get(match.group("number").lower())
+        if stated is None:
+            stated = int(match.group("number"))
+        actual = int(getattr(aggregates, field))
+        if stated == actual:
+            continue
+
+        index = next(
+            (i for i, (start, stop) in enumerate(sentences) if start <= match.start() < stop),
+            len(sentences) - 1,
+        )
+        sentence = paragraph[sentences[index][0] : sentences[index][1]]
+        if named[index] or (index > 0 and named[index - 1]):
+            continue
+        if _SCOPE_PRONOUN_RE.search(sentence):
+            continue
+        if _possessive_scopes_count(paragraph[sentences[index][0] : match.start()]):
+            continue
+
+        replacement = (
+            f"{_render_count(actual, match.group('number'))} "
+            f"{singular if actual == 1 else plural}"
+        )
+        rebuilt.append(paragraph[cursor : match.start()])
+        rebuilt.append(replacement)
+        cursor = match.end()
+        corrections.append(
+            f"narrative count corrected ({plural}): {match.group(0)} -> {replacement}"
+        )
 
     if not corrections:
         return text, []
+
+    rebuilt.append(paragraph[cursor:])
+    # Replacements never carry a newline, so the paragraph keeps its line count
+    # and the sections around it are spliced back untouched.
+    new_paragraph = "".join(rebuilt)
+    new_lines = lines[: header_idx + 1] + new_paragraph.split("\n") + lines[end_idx:]
     return "\n".join(new_lines), corrections
 
 
