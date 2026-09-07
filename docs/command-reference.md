@@ -864,6 +864,29 @@ week, so a scripted consumer never sees it appear and disappear on a calendar it
 
 **Streaks:** notable open streaks print under `Streaks:` on console — leaders only, so console stays a highlights view — and in full as a `# League History` section in the saved report. Each is reported as an observed count over its true span (e.g. "3 in the last 11, with 8 not recorded") rather than a bare "in a row" once any gameweek went uncaptured. A streak surfaces once its run reaches the condition's own minimum: 2 gameweeks for weeks on top, gameweek wins, last-place finishes, captain blanks and transfer hits; 3 for waiver hauls and backfires. Bottom-half gameweeks and green-arrow droughts never surface as streaks at all — both restate where the table already shows a manager is, so their run exists to drive the season count's firing rule rather than to be read on its own.
 
+**Prior seasons:** on the league's opening gameweek — GW1, or the league's own
+`start_event` for one created later — the recap fetches each manager's FPL history
+(`entry/{id}/history/`, one request per manager, made on that gameweek only and only when
+something will read it — `--save`, `--output` or `--summarise`; a league created after GW1
+already fetches the same payload on that gameweek to rescope its totals, and the two share
+it) and writes a `# Prior Seasons` section into the saved report: one line per manager with the
+seasons played, the span with any seasons sat out, last season's points, rank and top-%
+finish, and the best season on record. With `--summarise` the same lines reach the
+editorial as a locked `## Prior Seasons` section with an explicit count, and the system
+prompt pins any claim about a manager's earlier seasons to it. Two things it deliberately
+will not say. Tenure is FPL-wide — "their 11th season of FPL", never "in this league" —
+because classic entry and league IDs are reissued every season, so neither the API nor
+the ledger can say when anyone joined this league. And "last season" is only said of the
+season that actually just finished; a manager whose most recent season is older is
+described as having sat last season out. Tenure counts seasons actually played (the
+history's own list) rather than the entry's `years_active`, which disagrees with it. A
+manager with an empty history is named as having no prior seasons on record — the API's
+own answer, not a gap — and one whose fetch failed is named as unfetched, so neither
+surface silently omits anyone. Draft has no per-manager history endpoint, so a draft
+recap has no such section. Nothing is written to the ledger and the `--format json`
+rows are unchanged: the record is the manager's, outside this league, and it does not
+change between gameweeks.
+
 **Replayed gameweeks keep who a player was:** a backfill resolves every pick against today's bootstrap, so a player transferred or renamed since would otherwise land on a past gameweek's row wearing his current club and current name. The recorded name and position are kept instead — and the club too, except where the gameweek's own fixtures derive one (below), which supersedes the record rather than yielding to it. A code the gameweek already resolved is never dropped just because the live lookup has stopped finding him. Everything the gameweek itself can answer — points, cards, the pick flags, whether his club had a fixture — is re-derived by the replay as normal, so a repair still improves what it can. The reading goes back to the *earliest* row recorded for that gameweek rather than the newest, so a gameweek an older version already restamped is repaired rather than having the restamp carried forward. A gameweek with nothing recorded yet — a first capture, or a coarse tier being upgraded, which stores no squad — has nothing to keep, and there the **club** is derived from the gameweek instead (below); the name and position are not derivable that way and stay as today's bootstrap gives them.
 
 **A past gameweek's clubs, derived from the gameweek:** the two cases above with nothing to keep are the documented workflow — a mid-season first run captures the whole season at the coarse tier, and `--backfill-detail` then upgrades every gameweek — so without this a whole season of rows would carry today's club for every player transferred since. FPL's live data records, per player, which of that gameweek's fixtures his club played, and a fixture names its two clubs, so a player's club that week is what his own fixtures have in common: a double gameweek narrows to exactly one club and settles it outright, while a single fixture leaves two and cannot say which side he was on. Today's club being *neither* of those two is proof that he has moved, and only then — a handful of players a season, not fifteen per manager per gameweek — is his own season history worth a request to place him exactly. Today's club being *one* of the two is left unanswered rather than read as "he has not moved": a player who moved between those exact two clubs looks identical, and the wrong answer would equal today's club and so could never be flagged. The club already recorded for that gameweek is better evidence than the assumption, so it stands. The season history answers for every gameweek at once, so a whole-season backfill pays for each moved player once rather than once per gameweek. A club that blanked has no fixture to intersect and no answer; there the recorded club, then today's, still stands. A club derived this way — exactly, by one of those two routes — *supersedes* one already recorded, unlike the name and position above: a row written by an earlier first capture or coarse upgrade holds today's club as fact, and carrying that forward would preserve the mistake permanently. That holds even where the derived club matches today's, which is what repairs a player who left and came back. `league_history_club_rederived` says how many were replaced.

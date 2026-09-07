@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import NotRequired, TypedDict
+
+from fpl_cli.utils.text import ordinal_word
 
 
 class RecapManagerPlayer(TypedDict):
@@ -121,6 +125,28 @@ def format_move_counts(breakdown: list[tuple[str, int]]) -> str:
     return f"{sum(count for _, count in present)} moves: {labelled}"
 
 
+class RecapPriorSeason(TypedDict):
+    """One earlier FPL season a classic manager's entry played, as the
+    manager-history endpoint's `past` list reports it (issue #131).
+
+    FPL-wide, not this league's: the endpoint knows where the entry finished
+    among every FPL manager that season and nothing about which mini-leagues
+    it sat in. Only seasons actually played are listed, so a list can have
+    gaps inside its span.
+    """
+
+    # The API's own label, "2024/25".
+    season_name: str
+    total_points: int
+    # Finishing rank among every FPL manager that season.
+    rank: int
+    # The API's `rank_percentage`, kept as the string it sends ("4", "0.1",
+    # "0.0") rather than parsed: it is display text -- "top 4%" -- and the
+    # precision the API chose is the precision the FPL site shows. Absent
+    # where the API sent none.
+    rank_percentage: NotRequired[str]
+
+
 class RecapManagerEntry(TypedDict):
     """Per-manager data for one gameweek."""
 
@@ -171,6 +197,17 @@ class RecapManagerEntry(TypedDict):
     # this is the only way to tell an empty list apart from a manager who made
     # none -- and to detect a captured list that came back short.
     transfers_made: NotRequired[int]
+    # Classic only, and only at the league's opening gameweek (issue #131):
+    # every earlier FPL season this entry played, FPL-wide, from the
+    # manager-history endpoint's `past` list. Three states, all distinct:
+    # absent means never fetched (every later gameweek, and draft), None
+    # means the fetch failed, and an empty list is the API's own answer --
+    # an entry with no prior seasons on record. The report and the prompt
+    # name the last two differently, and a gameweek where every fetch
+    # failed still gets its section. Never written to the ledger: it is
+    # the manager's record outside this league, not the league's own
+    # history, and it does not change from one gameweek to the next.
+    prior_seasons: NotRequired[list[RecapPriorSeason] | None]
 
 
 class RecapAwardEntry(TypedDict):
@@ -307,3 +344,201 @@ class LeagueRecapData(TypedDict):
     season_fines_span: NotRequired[str]
     season_fines_lines: NotRequired[list[str]]
     season_fines_coverage_lines: NotRequired[list[str]]
+    # Report-surfaced prior-season text (issue #131), stashed as plain
+    # strings like the `league_history_*` fields so the template needs no
+    # knowledge of the manager rows: one line per manager with a record,
+    # then the statements of who has none and who could not be asked. Both
+    # absent outside the league's opening gameweek, when nothing was fetched.
+    prior_seasons_lines: NotRequired[list[str]]
+    prior_seasons_coverage_lines: NotRequired[list[str]]
+
+
+# ---------------------------------------------------------------------------
+# Prior seasons (issue #131)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PriorSeasonsSummary:
+    """Every fetched manager's FPL record before this season, sorted into
+    the three answers the fetch can give: a record, no record, or no answer.
+
+    `lines` carries one sentence per manager with at least one earlier
+    season on record, best most-recent finish first. `new_to_fpl` names the
+    managers whose fetch came back with no seasons at all -- a real answer,
+    not a gap -- and `unavailable` those whose fetch never completed. Built
+    once and read by both the saved report and the editorial prompt, so the
+    two cannot describe one manager's past two ways.
+    """
+
+    lines: list[str]
+    new_to_fpl: list[str]
+    unavailable: list[str]
+
+    @property
+    def total_managers(self) -> int:
+        return len(self.lines) + len(self.new_to_fpl) + len(self.unavailable)
+
+    @property
+    def coverage_lines(self) -> list[str]:
+        """The absence statements, in report prose: who has no record and
+        who could not be asked. Stated rather than left as a missing bullet,
+        the convention the League History coverage lines already follow."""
+        lines: list[str] = []
+        if self.new_to_fpl:
+            lines.append(
+                f"No prior FPL seasons on record for {_join_names(self.new_to_fpl)}: "
+                "this is their first season of FPL on record."
+            )
+        if self.unavailable:
+            lines.append(
+                f"Prior seasons could not be fetched for {_join_names(self.unavailable)}."
+            )
+        return lines
+
+
+def summarise_prior_seasons(
+    managers: Sequence[RecapManagerEntry],
+    *,
+    previous_season_name: str | None = None,
+) -> PriorSeasonsSummary | None:
+    """Fold the managers' `prior_seasons` into the summary both surfaces
+    read, or None when no manager carries the key at all: the fetch was
+    never made (any gameweek but the league's opener), and the section is
+    then omitted. A failed fetch leaves the key present and None, so a
+    gameweek where every fetch failed is still a section -- a roster of
+    "could not be fetched" -- rather than silence about the whole cohort.
+
+    `previous_season_name` is the season just finished, in the API's own
+    "2025/26" form, so a manager whose most recent season is that one can
+    be described as having played "last season" -- and one who sat it out
+    is not, however recent their latest season looks.
+
+    A manager without the key at all was never asked, and is outside the
+    summary rather than in `unavailable`: "could not be fetched" is a claim
+    about a request that was made. The collector populates every manager it
+    is handed, so today that only arises for a caller mixing cohorts; the
+    three lists and `total_managers` then cover the managers it asked for.
+    """
+    if not any("prior_seasons" in m for m in managers):
+        return None
+
+    with_record: list[tuple[int, str, str]] = []  # (most recent rank, name, line)
+    new_to_fpl: list[str] = []
+    unavailable: list[str] = []
+    for m in managers:
+        if "prior_seasons" not in m:
+            continue
+        name = m["manager_name"]
+        seasons = m.get("prior_seasons")
+        if seasons is None:
+            unavailable.append(name)
+        elif not seasons:
+            new_to_fpl.append(name)
+        else:
+            ordered = _ordered_seasons(seasons)
+            line = format_prior_seasons_line(
+                name, ordered, previous_season_name=previous_season_name,
+            )
+            with_record.append((ordered[-1]["rank"], name, line))
+    with_record.sort(key=lambda entry: (entry[0], entry[1]))
+    return PriorSeasonsSummary(
+        lines=[line for _, _, line in with_record],
+        new_to_fpl=sorted(new_to_fpl),
+        unavailable=sorted(unavailable),
+    )
+
+
+def format_prior_seasons_line(
+    name: str,
+    seasons: Sequence[RecapPriorSeason],
+    *,
+    previous_season_name: str | None = None,
+) -> str:
+    """One manager's FPL record before this season, as a sentence.
+
+    "Alice: 10 prior FPL seasons played (2014/15 to 2025/26; 2 seasons
+    missed in between), making this their 11th season of FPL. Last season
+    (2025/26): 2,301 pts, rank 55,120 (top 1%). Best season: 2023/24,
+    2,512 pts, rank 6,780 (top 0.1%)."
+
+    Tenure is the length of `past` -- seasons actually played -- rather than
+    the entry's `years_active`, which disagrees with it in both directions
+    and is undocumented; the gap count says how many seasons inside the span
+    were sat out. The season being played is counted into the ordinal
+    because the manager is, by construction, playing it: they are in the
+    league being recapped -- and it is spelt the way the fines placement
+    spells its ordinals ("their third season", "their 11th"), since both
+    land in one prompt. "Last season" is only said of the season that
+    actually just finished; a most recent season older than that is named as
+    such, with the season sat out. Every figure is the API's own, grouped
+    for reading, so the editorial has nothing left to compute.
+    """
+    ordered = _ordered_seasons(seasons)
+    played = len(ordered)
+    first, last = ordered[0], ordered[-1]
+    span = (
+        first["season_name"] if played == 1
+        else f"{first['season_name']} to {last['season_name']}"
+    )
+    missed = _seasons_missed(ordered)
+    if missed:
+        span += f"; {missed} season{'s' if missed != 1 else ''} missed in between"
+    nth = played + 1
+    if previous_season_name is None or last["season_name"] == previous_season_name:
+        recent = f"Last season ({last['season_name']})"
+    else:
+        recent = (
+            f"Most recent season ({last['season_name']}; did not play "
+            f"{previous_season_name})"
+        )
+    line = (
+        f"{name}: {played} prior FPL season{'s' if played != 1 else ''} played ({span}), "
+        f"making this their {ordinal_word(nth)} season of FPL. "
+        f"{recent}: {_season_result(last)}"
+    )
+    # Reversed so a tie on points and rank resolves to the more recent
+    # season, which is then the one already named above.
+    best = max(reversed(ordered), key=lambda s: (s["total_points"], -s["rank"]))
+    if played == 1:
+        line += "."
+    elif best is last:
+        line += ", their best to date."
+    else:
+        line += f". Best season: {best['season_name']}, {_season_result(best)}."
+    return line
+
+
+def _ordered_seasons(seasons: Sequence[RecapPriorSeason]) -> list[RecapPriorSeason]:
+    """Oldest first. The API already lists them that way; sorted here so the
+    "most recent" and "first" readings never depend on it staying so."""
+    return sorted(seasons, key=lambda s: s["season_name"])
+
+
+def _season_result(season: RecapPriorSeason) -> str:
+    """"2,301 pts, rank 55,120 (top 1%)" -- the percentage only where the
+    API sent one."""
+    text = f"{season['total_points']:,} pts, rank {season['rank']:,}"
+    pct = season.get("rank_percentage")
+    if pct:
+        text += f" (top {pct}%)"
+    return text
+
+
+def _seasons_missed(ordered: Sequence[RecapPriorSeason]) -> int:
+    """How many seasons inside the span were sat out. `past` lists only the
+    seasons played, so the span's length minus the list's is the gap; zero
+    where a season label does not start with its year."""
+    try:
+        first = int(ordered[0]["season_name"][:4])
+        last = int(ordered[-1]["season_name"][:4])
+    except ValueError:
+        return 0
+    return max(0, (last - first + 1) - len(ordered))
+
+
+def _join_names(names: Sequence[str]) -> str:
+    """"Alice", "Alice and Bob", "Alice, Bob and Carol"."""
+    if len(names) <= 1:
+        return "".join(names)
+    return f"{', '.join(names[:-1])} and {names[-1]}"

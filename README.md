@@ -104,6 +104,15 @@ prints twice a season, at GW19 and the finale, alongside the fines table. Unjudg
 gameweeks are always stated beside the number — see
 [Season counts](docs/command-reference.md#league-recap) for the per-count rules.
 
+On the league's first gameweek the recap also looks up each manager's FPL record from
+previous seasons — how many they have played, how they finished last season, their best
+season — and puts it in the saved report and, with `--summarise`, in front of the
+editorial as a locked section, since "finished in the top 4% last year" is the one
+piece of history a fresh season has. The record is FPL-wide, never "Nth season in
+this league": entry and league IDs are reissued every season, so the API cannot say
+when anyone joined. A manager with no previous seasons is named as new to FPL rather
+than left out.
+
 ### Checking Your Setup
 
 ```console

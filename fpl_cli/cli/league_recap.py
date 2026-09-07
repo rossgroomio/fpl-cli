@@ -31,7 +31,11 @@ from fpl_cli.cli._json import (
     json_output_mode,
     output_format_option,
 )
-from fpl_cli.cli._league_recap_types import LeagueRecapData
+from fpl_cli.cli._league_recap_types import (
+    LeagueRecapData,
+    PriorSeasonsSummary,
+    summarise_prior_seasons,
+)
 from fpl_cli.services.league_history import GameweekCoverage
 from fpl_cli.services.league_history_fines import (
     ManagerFineTally,
@@ -208,7 +212,8 @@ def league_recap_command(
             # for a season that overruns the July cutover (2019-20, delayed
             # into July 2020 by COVID) must still land in that season's own
             # partition, not the one the calendar has since rolled into.
-            season = season_label(await client.get_season_year())
+            season_year = await client.get_season_year()
+            season = season_label(season_year)
             next_gw_data = next((g for g in gameweeks if g["id"] == gw + 1), None)
             next_deadline = None
             waiver_deadline = None
@@ -254,6 +259,18 @@ def league_recap_command(
                     " for the fullest capture.[/yellow]"
                 )
 
+            # Whether anything will read each manager's FPL record before
+            # this season (issue #131): the saved report and the editorial
+            # are its only surfaces, so a bare run or a JSON run does not
+            # pay the request per manager the collector would otherwise
+            # make at the league's opener, and nor does an editorial already
+            # known to be skipped. The collector applies the opener gate
+            # itself; the replay below never asks, since a replayed gameweek
+            # only goes to the ledger, which never records it.
+            wants_prior_seasons = bool(save or output) or (
+                (summarise or dry_run) and synthesis_unavailable is None
+            )
+
             # Collect format-specific data
             try:
                 if is_draft:
@@ -270,6 +287,7 @@ def league_recap_command(
                         is_live_gw=is_live_gw, bgw_team_ids=bgw_team_ids,
                         players_with_fixture=with_fixture,
                         gameweek_clubs=gameweek_clubs,
+                        with_prior_seasons=wants_prior_seasons,
                     )
             except RecapReconciliationError as e:
                 # A stop condition, not a soft skip: exit non-zero so a
@@ -440,6 +458,23 @@ def league_recap_command(
                     entry.text for entry in notes_pack.coverage_entries
                 ]
 
+            # Prior seasons (issue #131): folded once and read by the report
+            # and the editorial alike, so neither surface can describe a
+            # manager's past differently from the other. None outside the
+            # league's opening gameweek, when nothing was fetched -- the
+            # report then omits the section rather than heading an empty one.
+            prior_seasons = summarise_prior_seasons(
+                collected_data["managers"],
+                # The API names a season "2025/26" where the label helper
+                # says "2025-26"; the season just finished is the one a
+                # manager's most recent season is checked against before
+                # the report calls it "last season".
+                previous_season_name=season_label(season_year - 1).replace("-", "/"),
+            )
+            if prior_seasons is not None:
+                collected_data["prior_seasons_lines"] = prior_seasons.lines
+                collected_data["prior_seasons_coverage_lines"] = prior_seasons.coverage_lines
+
             # The *printed* season table is a set-piece, not a weekly
             # fixture: a full standings-style table answers "who owes what
             # this season", which is worth reading at the halfway boundary
@@ -494,6 +529,7 @@ def league_recap_command(
                         # Ungated: see above -- the model gets season totals
                         # every week and chooses whether to use them.
                         fines_tally=capture_result.fines_tally,
+                        prior_seasons=prior_seasons,
                     )
                 except ProviderError as e:
                     error_console.print(f"[yellow]LLM summarisation failed: {e}[/yellow]")
@@ -823,6 +859,7 @@ async def _recap_llm_summarise(
     season_length: int = 38,
     notes_pack: NotesPack | None = None,
     fines_tally: SeasonFinesTally | None = None,
+    prior_seasons: PriorSeasonsSummary | None = None,
 ) -> None:
     """Run LLM summarisation for league recap. Mutates collected_data to add summaries."""
     from fpl_cli.prompts.league_recap import (
@@ -833,6 +870,7 @@ async def _recap_llm_summarise(
         format_recap_fines_context,
         format_recap_league_history_context,
         format_recap_player_clubs_context,
+        format_recap_prior_seasons_context,
         format_recap_season_fines_context,
         format_recap_standings_context,
         format_recap_transfers_context,
@@ -858,6 +896,7 @@ async def _recap_llm_summarise(
     fines_text = format_recap_fines_context(collected_data, fines_tally)
     league_history_text = format_recap_league_history_context(notes_pack)
     season_fines_text = format_recap_season_fines_context(fines_tally)
+    prior_seasons_text = format_recap_prior_seasons_context(prior_seasons)
 
     system_prompt, user_prompt = get_recap_synthesis_prompt(
         gw=gw,
@@ -873,6 +912,7 @@ async def _recap_llm_summarise(
         waivers_text=waivers_text,
         player_clubs_text=player_clubs_text,
         league_history_text=league_history_text,
+        prior_seasons_text=prior_seasons_text,
         is_bgw=is_bgw,
         is_dgw=is_dgw,
         season_length=season_length,

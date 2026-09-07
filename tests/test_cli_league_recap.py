@@ -129,6 +129,7 @@ def _manager(
     for key in (
         "transfers", "transactions", "league_entry_id",
         "team_value", "bank", "global_rank", "global_gw_rank", "transfers_made",
+        "prior_seasons",
     ):
         if key in kwargs:
             entry[key] = kwargs[key]  # type: ignore[literal-required]
@@ -3115,7 +3116,7 @@ class TestEndToEndPromptThroughTheFullCommand:
         assert "Alice" in user_prompt
         assert "gameweeks on top of the league" in user_prompt
         assert "Season phase:" in user_prompt
-        assert "Stick to what happened this gameweek, with one exception" in system_prompt
+        assert "Stick to what happened this gameweek, with two exceptions" in system_prompt
         assert "season phase" in system_prompt.lower()
 
     def test_a_dry_run_writes_a_prompt_with_the_transfer_roster(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -4756,3 +4757,241 @@ class TestReplayKeepsRecordedStandings:
         assert not any(
             w["code"] == HISTORY_WARNING_STANDINGS_CARRIED for w in result.warnings
         )
+
+
+# ---------------------------------------------------------------------------
+# Prior seasons (issue #131)
+# ---------------------------------------------------------------------------
+
+# The API names a season "2025/26"; the test derives both names from the same
+# clock the mocked client answers `get_season_year` with, so the "last
+# season" wording it asserts holds whichever season the suite runs in.
+_LAST_SEASON = season_label(get_season_year() - 1).replace("-", "/")
+_SEASON_BEFORE = season_label(get_season_year() - 2).replace("-", "/")
+
+
+def _past(*seasons: tuple[str, int, int, str]) -> list[dict[str, Any]]:
+    return [
+        {"season_name": name, "total_points": points, "rank": rank, "rank_percentage": pct}
+        for name, points, rank, pct in seasons
+    ]
+
+
+def _recap_report(tmp_path: Path, gw: int) -> str:
+    return (tmp_path / season_label() / f"gw{gw}-league-recap.md").read_text(encoding="utf-8")
+
+
+class TestPriorSeasonsAtTheOpener:
+    """Issue #131: the command asks the classic collector for each manager's
+    FPL record before this season only when a surface will read it -- the
+    saved report, the editorial -- never for a replay and never for a draft
+    league, and what the collector hands back reaches the report and the
+    prompt. The collector's own opener gate and its one shared fetch are
+    covered in `test_league_recap.py`."""
+
+    @staticmethod
+    def _data(gameweek: int = 1) -> LeagueRecapData:
+        return _recap_data(
+            gameweek=gameweek,
+            managers=[
+                _manager(name="Alice", entry_id=1, prior_seasons=_past(
+                    (_SEASON_BEFORE, 2100, 150000, "2"), (_LAST_SEASON, 2300, 40000, "1"),
+                )),
+                _manager(
+                    name="Bob", entry_id=2, gross_points=50, gw_rank=2, overall_rank=2,
+                    prior_seasons=[],
+                ),
+            ],
+            cohort=_cohort((1, "Alice", 1, 60, 60), (2, "Bob", 2, 50, 50)),
+        )
+
+    def test_saving_the_report_asks_the_collector_for_prior_seasons(self, tmp_path: Path):
+        collector = AsyncMock(return_value=self._data())
+
+        result = _invoke_recap(
+            self._data(), ["--save", "--output", str(tmp_path)], collector=collector, gw=1,
+        )
+
+        assert result.exit_code == 0, result.output
+        assert collector.await_args.kwargs["with_prior_seasons"] is True
+
+    def test_the_editorial_asks_for_them_too(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.chdir(tmp_path)
+        collector = AsyncMock(return_value=self._data())
+
+        result = _invoke_recap(self._data(), ["--dry-run"], collector=collector, gw=1)
+
+        assert result.exit_code == 0, result.output
+        assert collector.await_args.kwargs["with_prior_seasons"] is True
+
+    @pytest.mark.parametrize("args", [[], ["--format", "json"]])
+    def test_a_run_with_no_surface_to_read_them_does_not_ask(self, args: list[str]):
+        """Neither the console nor the JSON payload carries prior seasons,
+        so neither run pays a request per manager for them (review on #304)."""
+        collector = AsyncMock(return_value=self._data())
+
+        result = _invoke_recap(self._data(), args, collector=collector, gw=1)
+
+        assert result.exit_code == 0, result.output
+        assert collector.await_args.kwargs["with_prior_seasons"] is False
+
+    def test_an_editorial_already_known_to_be_skipped_does_not_ask(self):
+        from fpl_cli.api.providers import ProviderError
+
+        collector = AsyncMock(return_value=self._data())
+        with patch(
+            "fpl_cli.api.providers.get_llm_provider",
+            side_effect=ProviderError("ANTHROPIC_API_KEY not set"),
+        ):
+            result = _invoke_recap(self._data(), ["--summarise"], collector=collector, gw=1)
+
+        assert result.exit_code == 0, result.output
+        assert collector.await_args.kwargs["with_prior_seasons"] is False
+
+    def test_a_replayed_gameweek_never_asks(self, tmp_path: Path):
+        """The replay only feeds the ledger, which never records prior
+        seasons -- so the opener replayed under `--backfill-detail` is not
+        asked, whatever the live run wanted."""
+        client = _fpl_client(gw=2)
+        client.get_gameweeks = AsyncMock(return_value=[
+            {"id": 1, "finished": True},
+            {"id": 2, "finished": True, "is_current": True},
+        ])
+        client.get_manager_history = AsyncMock(return_value={"current": []})
+        collector = AsyncMock(side_effect=[_recap_data(gameweek=2), self._data(gameweek=1)])
+
+        result = _invoke_recap(
+            _recap_data(gameweek=2), ["--backfill-detail", "--save", "--output", str(tmp_path)],
+            client=client, collector=collector, gw=2,
+        )
+
+        assert result.exit_code == 0, result.output
+        live, replay = collector.await_args_list
+        assert live.kwargs["with_prior_seasons"] is True
+        assert "with_prior_seasons" not in replay.kwargs
+
+    def test_the_report_carries_what_the_collector_found(self, tmp_path: Path):
+        result = _invoke_recap(self._data(), ["--save", "--output", str(tmp_path)], gw=1)
+
+        assert result.exit_code == 0, result.output
+        content = _recap_report(tmp_path, 1)
+        assert "# Prior Seasons" in content
+        assert (
+            f"- Alice: 2 prior FPL seasons played ({_SEASON_BEFORE} to {_LAST_SEASON}), making "
+            f"this their third season of FPL. Last season ({_LAST_SEASON}): 2,300 pts, rank 40,000 "
+            "(top 1%), their best to date."
+        ) in content
+        assert "*No prior FPL seasons on record for Bob: this is their first season of FPL on record.*" in content
+
+    def test_a_manager_the_fetch_failed_for_is_named_as_unfetched(self, tmp_path: Path):
+        data = _recap_data(gameweek=1, managers=[_manager(name="Alice", entry_id=1, prior_seasons=None)])
+
+        result = _invoke_recap(data, ["--save", "--output", str(tmp_path)], gw=1)
+
+        assert result.exit_code == 0, result.output
+        content = _recap_report(tmp_path, 1)
+        assert "# Prior Seasons" in content
+        assert "*Prior seasons could not be fetched for Alice.*" in content
+
+    def test_a_gameweek_with_nothing_fetched_has_no_section(self, tmp_path: Path):
+        result = _invoke_recap(_recap_data(gameweek=5), ["--save", "--output", str(tmp_path)], gw=5)
+
+        assert result.exit_code == 0, result.output
+        assert "# Prior Seasons" not in _recap_report(tmp_path, 5)
+
+    def test_the_editorial_prompt_carries_the_section(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ):
+        monkeypatch.chdir(tmp_path)
+
+        result = _invoke_recap(self._data(), ["--dry-run"], gw=1)
+
+        assert result.exit_code == 0, result.output
+        user_prompt = (tmp_path / "data" / "debug" / "recap_prompt.txt").read_text(encoding="utf-8")
+        assert "## Prior Seasons" in user_prompt
+        assert "Total managers with prior FPL seasons on record: 1 of 2" in user_prompt
+        assert "No prior FPL seasons on record for Bob: this is their first season of FPL on record." in user_prompt
+        assert user_prompt.index("## League History") < user_prompt.index("## Prior Seasons")
+
+    def test_a_draft_league_at_its_opener_asks_nothing_and_gets_no_section(self, tmp_path: Path):
+        """Draft has no per-manager history endpoint: the draft collector is
+        never asked, the endpoint is never touched, the report has no
+        section (review on #304 -- nothing exercised the draft opener)."""
+        client = _fpl_client(gw=1)
+        client.get_manager_history = AsyncMock(
+            return_value={"current": [], "past": _past((_LAST_SEASON, 2300, 40000, "1"))},
+        )
+        data = _recap_data(
+            gameweek=1, fpl_format="draft",
+            managers=[_manager(name="Alice", entry_id=1, league_entry_id=10)],
+            cohort=_cohort((10, "Alice", 1, 60, 60)),
+        )
+        collector = AsyncMock(return_value=data)
+
+        result = _invoke_recap(
+            data, ["--draft", "--save", "--output", str(tmp_path)],
+            client=client, collector=collector, settings={"fpl": {"draft_league_id": 42}}, gw=1,
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "with_prior_seasons" not in collector.await_args.kwargs
+        client.get_manager_history.assert_not_awaited()
+        content = (tmp_path / season_label() / "gw1-league-recap-draft.md").read_text(encoding="utf-8")
+        assert "# Prior Seasons" not in content
+
+    def test_the_ledger_row_never_carries_prior_seasons(self):
+        """The record is the manager's, outside this league, and it does not
+        change between gameweeks -- so it is not the league's history to
+        keep, and the row shape is unchanged by it."""
+        result = _invoke_recap(self._data(), ["--format", "json"], gw=1)
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        assert all("prior_seasons" not in row for row in payload["data"])
+        assert "prior_seasons" not in _store().resolved_gameweek(1)[1].model_dump()
+
+
+class TestPriorSeasonsReportSection:
+    async def test_lines_and_coverage_render_under_one_heading(self, tmp_path: Path):
+        from fpl_cli.agents.orchestration.report import ReportAgent
+
+        agent = ReportAgent(config={"output_dir": str(tmp_path)})
+        data = dict(_recap_data(gameweek=1))
+        data["prior_seasons_lines"] = ["Alice: 2 prior FPL seasons played (2024/25 to 2025/26)."]
+        data["prior_seasons_coverage_lines"] = [
+            "No prior FPL seasons on record for Bob: this is their first season of FPL on record.",
+        ]
+
+        result = await agent.run(context={"report_type": "league-recap", "gameweek": 1, "data": data})
+
+        content = Path(result.data["report_path"]).read_text(encoding="utf-8")
+        assert "# Prior Seasons" in content
+        assert "not in this league" in content
+        assert "- Alice: 2 prior FPL seasons played (2024/25 to 2025/26)." in content
+        assert "*No prior FPL seasons on record for Bob: this is their first season of FPL on record.*" in content
+
+    async def test_coverage_alone_still_renders_the_section(self, tmp_path: Path):
+        from fpl_cli.agents.orchestration.report import ReportAgent
+
+        agent = ReportAgent(config={"output_dir": str(tmp_path)})
+        data = dict(_recap_data(gameweek=1))
+        data["prior_seasons_lines"] = []
+        data["prior_seasons_coverage_lines"] = ["Prior seasons could not be fetched for Alice."]
+
+        result = await agent.run(context={"report_type": "league-recap", "gameweek": 1, "data": data})
+
+        content = Path(result.data["report_path"]).read_text(encoding="utf-8")
+        assert "# Prior Seasons" in content
+        assert "*Prior seasons could not be fetched for Alice.*" in content
+
+    async def test_no_section_at_all_without_the_fields(self, tmp_path: Path):
+        from fpl_cli.agents.orchestration.report import ReportAgent
+
+        agent = ReportAgent(config={"output_dir": str(tmp_path)})
+
+        result = await agent.run(
+            context={"report_type": "league-recap", "gameweek": 5, "data": dict(_recap_data())},
+        )
+
+        content = Path(result.data["report_path"]).read_text(encoding="utf-8")
+        assert "# Prior Seasons" not in content
