@@ -1186,32 +1186,43 @@ def required_synthesis_sections(system_prompt: str) -> list[str]:
 class SynthesisCompleteness:
     """What the post-generation guard found in a synthesis response.
 
-    `missing_sections` names the `## ` headings the prompt asked for that the
-    response does not carry. `unterminated` is True when the text stops without
-    terminal punctuation, which is what a mid-sentence stop looks like from the
-    outside. `stop_reason` is the provider's own verdict, and is only ever set
-    when that verdict was *not* a normal completion -- the caller filters it,
-    so this module stays free of any provider vocabulary.
+    `empty` is True when the response carries no text at all -- the shape a
+    hard truncation takes when the model was still thinking at the ceiling, so
+    there was never a prose block to return. `missing_sections` names the `## `
+    headings the prompt asked for that the response does not carry.
+    `unterminated` is True when the text stops without terminal punctuation,
+    which is what a mid-sentence stop looks like from the outside.
+    `stop_reason` is the provider's own verdict, and is only ever set when that
+    verdict was *not* a normal completion -- the caller filters it, so this
+    module stays free of any provider vocabulary.
     """
 
     missing_sections: tuple[str, ...] = ()
     unterminated: bool = False
     stop_reason: str | None = None
+    empty: bool = False
 
     @property
     def complete(self) -> bool:
-        return not (self.missing_sections or self.unterminated or self.stop_reason)
+        return not (
+            self.empty or self.missing_sections or self.unterminated or self.stop_reason
+        )
 
     @property
-    def severity(self) -> tuple[int, int, int]:
+    def severity(self) -> tuple[int, int, int, int]:
         """Ordering key for picking between two attempts -- lower is better.
 
         Keyed on the same truthiness `complete` and `problems()` use: a blank
         stop reason is the provider saying nothing (`LLMResponse.stopped_early`
-        reads it the same way), and three predicates that disagreed about it
-        would let a response report complete while scoring as damaged.
+        reads it the same way), and predicates that disagreed about it would
+        let a response report complete while scoring as damaged.
+
+        Emptiness leads, because any surviving prose beats none: with a prompt
+        that names no sections the missing-section count cannot separate the
+        two, and the attempt that said something has to win.
         """
         return (
+            int(self.empty),
             len(self.missing_sections),
             int(self.unterminated),
             int(bool(self.stop_reason)),
@@ -1222,7 +1233,13 @@ class SynthesisCompleteness:
         lines: list[str] = []
         if self.stop_reason:
             lines.append(f"provider stopped early (stop_reason: {self.stop_reason})")
-        if self.missing_sections:
+        if self.empty:
+            # One fault, not one per section: with nothing in the response
+            # every heading is trivially absent, and listing them all reads as
+            # several separate things having gone wrong instead of the one
+            # that did.
+            lines.append("the response is empty (the provider returned no text)")
+        elif self.missing_sections:
             lines.append(
                 "missing section(s): " + ", ".join(f"## {s}" for s in self.missing_sections)
             )
@@ -1236,7 +1253,8 @@ def _ends_mid_sentence(text: str) -> bool:
 
     Trailing markdown decoration is peeled off first so a bolded closing clause
     is not mistaken for a truncation. Empty text is not judged here -- a
-    response with nothing in it is already reported as every section missing.
+    response with nothing in it is reported as `empty` in its own right, and
+    reading it as a sentence that stops dead would say the same thing twice.
     """
     trimmed = text.rstrip().rstrip(_TRAILING_DECORATION)
     if not trimmed:
@@ -1377,4 +1395,9 @@ def check_synthesis_completeness(
         missing_sections=missing,
         unterminated=_ends_mid_sentence(response),
         stop_reason=stop_reason,
+        # Whitespace counts as nothing: a response of two newlines tells the
+        # reader exactly as much as one of zero, and the report would carry
+        # neither. Reported as its own fault so a total loss is not described
+        # only as the set of headings it happens to be short of (#306).
+        empty=not response.strip(),
     )

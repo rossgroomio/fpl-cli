@@ -8,7 +8,13 @@ from typing import Any, ClassVar, Self
 import httpx
 
 from fpl_cli.api.providers._http import RetryPolicy, post_json_with_retry
-from fpl_cli.api.providers._models import LLMResponse, ProviderError, TokenUsage, log_abnormal_stop
+from fpl_cli.api.providers._models import (
+    LLMResponse,
+    ProviderError,
+    TokenUsage,
+    log_abnormal_stop,
+    log_textless_response,
+)
 
 _BASE_URL = "https://api.anthropic.com/v1"
 _PROVIDER_LABEL = "Anthropic"
@@ -81,10 +87,21 @@ class AnthropicProvider:
             label=_PROVIDER_LABEL, policy=self.RETRY_POLICY,
         )
 
+        # Only text blocks carry prose, but the types that were *not* text are
+        # worth keeping: a ceiling reached while the model was still thinking
+        # returns a lone `thinking` block, and the empty string that falls out
+        # of this loop is otherwise indistinguishable from a model with
+        # nothing to say (#306). Text blocks are deliberately not collected --
+        # a response of nothing but an empty text block *is* a model with
+        # nothing to say, and naming "text" as the reason there was no text
+        # would contradict itself.
         content = ""
+        non_text_blocks: list[str] = []
         for block in data.get("content", []):
             if block.get("type") == "text":
                 content += block.get("text", "")
+            else:
+                non_text_blocks.append(str(block.get("type")))
 
         # Normalise usage: Anthropic returns input_tokens/output_tokens directly
         raw_usage = data.get("usage", {})
@@ -105,6 +122,7 @@ class AnthropicProvider:
             stop_reason=data.get("stop_reason") or None,
         )
         log_abnormal_stop(response, _PROVIDER_LABEL)
+        log_textless_response(response, _PROVIDER_LABEL, non_text_blocks)
         return response
 
     def post_process(self, content: str) -> str:

@@ -3371,6 +3371,45 @@ class TestCheckSynthesisCompleteness:
         assert len(result.missing_sections) == 4
         # Nothing to judge the ending of, so it is not also called truncated.
         assert result.unterminated is False
+        assert result.empty is True
+
+    def test_an_empty_response_is_reported_as_one_fault(self):
+        # Not four: with nothing in the response every heading is trivially
+        # absent, and a list of them reads as several things having gone wrong
+        # rather than the one that did (#306).
+        problems = check_synthesis_completeness("", self._system()).problems()
+        assert problems == ["the response is empty (the provider returned no text)"]
+
+    @pytest.mark.parametrize("blank", ["", "   ", "\n\n"])
+    def test_whitespace_is_as_empty_as_nothing(self, blank):
+        result = check_synthesis_completeness(blank, self._system())
+        assert result.empty is True
+        assert result.complete is False
+
+    def test_an_empty_response_is_incomplete_even_with_no_sections_to_miss(self):
+        # A prompt with no `<output_format>` block names no headings, so
+        # emptiness is the only thing left to catch it -- without it a response
+        # of nothing reads as whole and reaches the report unremarked (#306).
+        result = check_synthesis_completeness("", "Be brief.")
+        assert result.missing_sections == ()
+        assert result.complete is False
+        assert result.problems() == ["the response is empty (the provider returned no text)"]
+
+    def test_a_truncation_names_the_stop_reason_beside_the_emptiness(self):
+        # The reported #306 run: max_tokens reached mid-thought, so the
+        # provider stopped early *and* returned nothing.
+        problems = check_synthesis_completeness(
+            "", self._system(), stop_reason="max_tokens",
+        ).problems()
+        assert problems == [
+            "provider stopped early (stop_reason: max_tokens)",
+            "the response is empty (the provider returned no text)",
+        ]
+
+    def test_a_response_with_prose_still_names_its_missing_sections(self):
+        problems = check_synthesis_completeness(_TRUNCATED_SYNTHESIS, self._system()).problems()
+        assert any("missing section(s)" in p for p in problems)
+        assert not any("is empty" in p for p in problems)
 
     def test_the_fines_prompt_requires_its_fine_check_section(self):
         result = check_synthesis_completeness(_WHOLE_SYNTHESIS, self._system(has_fines=True))
@@ -3424,7 +3463,7 @@ class TestCheckSynthesisCompleteness:
         result = check_synthesis_completeness(_WHOLE_SYNTHESIS, self._system(), stop_reason=blank)
         assert result.complete is True
         assert result.problems() == []
-        assert result.severity == (0, 0, 0)
+        assert result.severity == (0, 0, 0, 0)
 
 
 class TestSynthesisCompletenessSeverity:
@@ -3446,6 +3485,9 @@ class TestSynthesisCompletenessSeverity:
             self._check(_WHOLE_SYNTHESIS).severity
             < self._check(_WHOLE_SYNTHESIS, stop_reason="max_tokens").severity
         )
+
+    def test_any_surviving_prose_beats_none(self):
+        assert self._check(_TRUNCATED_SYNTHESIS).severity < self._check("").severity
 
 
 class TestNextWeekFixtureGrounding:
