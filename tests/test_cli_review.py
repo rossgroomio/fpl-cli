@@ -2260,6 +2260,44 @@ class TestReviewLlmSummariseSurfacesAnIncompleteSynthesis:
         assert "\n" not in problem
         assert "connection refused while posting to /v1/messages" in problem
 
+    async def test_a_failure_after_the_call_returned_is_not_blamed_on_the_call(self, monkeypatch):
+        # The `try` used to cover the grounding check and the debug writes as
+        # well, so a defect in any of them discarded a summary the provider had
+        # already handed over and reported "the synthesis call failed" -- a
+        # confident lie about which half broke. Only the call is guarded now,
+        # so our own bug surfaces as itself (#322 review).
+        def _boom(*a, **k):
+            raise ZeroDivisionError("a bug in the grounding checker")
+
+        # Imported inside the function, so the source module is what to patch.
+        monkeypatch.setattr("fpl_cli.prompts.review.check_next_week_grounding", _boom)
+        provider = _StubSynthesisProvider(_reply(_WHOLE, "end_turn"))
+
+        with pytest.raises(ZeroDivisionError):
+            await _review_llm_summarise(**self._kwargs(provider))
+
+    async def test_an_exception_carrying_no_message_names_only_its_type(self):
+        class _Silent:
+            async def query(self, *a, **k):
+                raise RuntimeError
+
+        result = await _review_llm_summarise(**self._kwargs(_Silent()))
+        # Not "RuntimeError:" with nothing after the colon, which reads as
+        # output that was itself cut off.
+        assert result["synthesis_problems"] == ["the synthesis call failed (RuntimeError)"]
+
+    async def test_debug_saves_the_failure_beside_the_other_corrections(self, tmp_path, monkeypatch):
+        # Same artefact whichever way the analysis was lost, so a `--debug`
+        # bundle does not need explaining.
+        monkeypatch.chdir(tmp_path)
+        result = await _review_llm_summarise(**self._kwargs(_Boom(), debug=True))
+
+        written = tmp_path / "data" / "debug" / "synthesis_corrections.txt"
+        assert pathlib.Path(result["synthesis_corrections_path"]).resolve() == written.resolve()
+        assert "the synthesis call failed (RuntimeError: provider exploded)" in written.read_text(
+            encoding="utf-8",
+        )
+
     async def test_the_failure_reaches_the_saved_report_as_a_callout(self):
         # The two halves pinned against each other: whatever the guard puts in
         # `synthesis_problems`, the template has to render it -- which is the
