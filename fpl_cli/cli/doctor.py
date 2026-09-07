@@ -41,7 +41,12 @@ from fpl_cli.paths import (
     user_data_dir,
     user_data_file,
 )
-from fpl_cli.season import get_season_year, previous_season_label, season_label
+from fpl_cli.season import (
+    get_season_year,
+    is_previous_season_year,
+    previous_season_label,
+    season_label,
+)
 from fpl_cli.utils.teams import describe_team_set_mismatch
 
 
@@ -76,7 +81,8 @@ def _season_year_of_timestamp(value: Any) -> int | None:
     The July cutover is the only rule available for an arbitrary past date --
     GW1's deadline names one season, not the season every timestamp belongs
     to -- so callers compare the result against the resolved current year
-    with `<` rather than `!=`. See `_is_previous_season` for why.
+    with `is_previous_season_year`, which explains why that is ordered rather
+    than exact.
     """
     if isinstance(value, datetime):
         return get_season_year(value.date())
@@ -87,21 +93,6 @@ def _season_year_of_timestamp(value: Any) -> int | None:
     except ValueError:
         return None
     return get_season_year(parsed.date())
-
-
-def _is_previous_season(timestamp_year: int, season_year: int) -> bool:
-    """Whether a timestamp's cutover year puts it in a season already finished.
-
-    Ordered, not exact, because the two years are derived differently (#308):
-    `season_year` comes from GW1's deadline where the API answers, the
-    timestamp's from the July clock. A season overrunning the cutover
-    (2019-20, delayed into July 2020) makes them disagree in both directions
-    -- a July timestamp lands a year *ahead* of the season it was actually
-    written in -- and only the behind case means the data is old. A timestamp
-    at or past the current season's year belongs to a season that has not
-    finished, so nothing it stamps can be a previous season's.
-    """
-    return timestamp_year < season_year
 
 
 async def _resolve_season_year(client: Any) -> int:
@@ -320,7 +311,7 @@ async def _draft_league_check(draft_client: Any, league_id: int, season_year: in
     league = data.get("league") or {}
     league_name = league.get("name") or "?"
     draft_year = _season_year_of_timestamp(league.get("draft_dt"))
-    if draft_year is not None and _is_previous_season(draft_year, season_year):
+    if draft_year is not None and is_previous_season_year(draft_year, season_year):
         return CheckResult(
             name,
             CheckStatus.BROKEN,
@@ -522,7 +513,7 @@ def _team_finances_check(season_year: int) -> CheckResult:
             "re-scrape with `fpl squad sell-prices --refresh`",
         )
     file_year = get_season_year(scraped_at.date())
-    if _is_previous_season(file_year, season_year):
+    if is_previous_season_year(file_year, season_year):
         return CheckResult(
             name,
             CheckStatus.BROKEN,
@@ -769,9 +760,8 @@ def doctor_command(providers_only: bool, output_format: str) -> None:
         if providers_only:
             from fpl_cli.cli.doctor_providers import provider_checks
 
-            async with _FPLClient() as client:
-                season = season_label(await _resolve_season_year(client))
-            provider_results = await provider_checks()
+            provider_results, provider_season_year = await provider_checks()
+            season = season_label(provider_season_year)
             broken, stale, unchecked = _status_counts(provider_results)
             if output_format == "json":
                 emit_json(

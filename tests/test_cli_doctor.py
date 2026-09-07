@@ -117,7 +117,12 @@ def _mock_draft_client(league_details=None, entry_profile=None, league_error=Non
     return client
 
 
-def _run(client, settings=None, draft_client=None, args=None):
+def _run(client, settings=None, draft_client=None, args=None, command="doctor"):
+    """Invoke a command against `client`.
+
+    `command` is a parameter so a test can run `status` against the very same
+    mock, which is the only way to assert the two agree about the season.
+    """
     settings = settings if settings is not None else {"fpl": {}}
     runner = CliRunner()
     with ExitStack() as stack:
@@ -128,7 +133,7 @@ def _run(client, settings=None, draft_client=None, args=None):
             stack.enter_context(
                 patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=draft_client)
             )
-        return runner.invoke(main, ["doctor", *(args or [])])
+        return runner.invoke(main, [command, *(args or [])])
 
 
 def _data_dir() -> Path:
@@ -205,14 +210,8 @@ class TestSeasonResolution:
         client.get_next_gameweek = AsyncMock(
             return_value={"id": 38, "deadline_time": f"{CURRENT_YEAR}-07-12T17:30:00Z"}
         )
-        settings = {"fpl": {}}
-        runner = CliRunner()
-        with ExitStack() as stack:
-            stack.enter_context(patch("fpl_cli.cli.load_settings", return_value=settings))
-            stack.enter_context(patch("fpl_cli.cli.doctor.load_settings", return_value=settings))
-            stack.enter_context(patch("fpl_cli.api.fpl.FPLClient", return_value=client))
-            doctor = runner.invoke(main, ["doctor", "--format", "json"])
-            status = runner.invoke(main, ["status", "--format", "json"])
+        doctor = _run(client, args=["--format", "json"])
+        status = _run(client, args=["--format", "json"], command="status")
         doctor_season = json.loads(doctor.output)["metadata"]["season"]
         assert doctor_season == json.loads(status.output)["metadata"]["season"]
         assert doctor_season == self.OVERRUN_SEASON
