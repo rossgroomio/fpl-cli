@@ -1114,9 +1114,21 @@ def _last_recorded_standings(
     Every row is read, not just the `OK` ones: an unknown row captured live
     carries the standings position and total for the same point in time
     (`_unknown_row`), and those are exactly as recorded as an OK row's.
+
+    "Last" is chronological, not the last line in the file. Nothing enforces
+    that the two agree: `append_rows` skips a row on tier rank alone, so two
+    same-tier captures land in call order, and a slow run finishing after a
+    faster later one writes a chronologically earlier line below it. Reading
+    by position would then take the stale value again, silently, which is the
+    bug this direction exists to fix. `resolve_rows` breaks its own tie on
+    `captured_at` for the same reason, and this read has to agree with it --
+    it is not `resolution_sort_key`, though, because that key picks the winner
+    and this read exists to see past one.
     """
+    # Stable, so captures sharing a timestamp keep file order and the last of
+    # them still wins.
     latest: dict[int, dict[str, int]] = {}
-    for row in reversed(rows):
+    for row in reversed(sorted(rows, key=lambda row: row.captured_at)):
         known = latest.setdefault(row.manager_key, {})
         for name in _CARRIED_STANDINGS_FIELDS:
             value = getattr(row, name)
