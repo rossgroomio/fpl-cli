@@ -421,15 +421,32 @@ def _argv_requests_json(argv: Sequence[str]) -> bool:
     return False
 
 
-def _command_from_argv(argv: Sequence[str]) -> str:
-    """First non-option token in *argv*, or "fpl" if there isn't one.
+def _command_from_argv(argv: Sequence[str], group: click.Group) -> str:
+    """The command name the real dispatch would have used, best-effort.
 
     Stands in for `ctx.command.name` in the error envelope -- the real
     context doesn't exist yet at the point this runs (#307). `--format` is a
     per-command option that in practice always follows the subcommand, but
     its value is skipped here too rather than risk it being mistaken for one.
+
+    A subgroup's own subcommand does not reliably answer with either token:
+    `chips timing` names its envelope `chips-timing`, `intel show` and
+    `intel resolve` both just say `intel`, and `squad grid` / `squad
+    sell-prices` say `plan-grid` / `sell-prices` -- unrelated to either token
+    (#312 review). None of that is one convention a scan could special-case
+    correctly, and guessing wrong (`chips` for what is actually
+    `chips-timing`) is worse than admitting the scan can't know: a consumer
+    keying off `command` would see a name that command never otherwise
+    emits. So this falls back to "fpl" whenever the tokens name a real
+    subcommand dispatch under a registered group -- using *group*, the live
+    click tree already built at import time, to tell that apart from a flat
+    command's own positional argument (`player Salah` is not `player`
+    dispatching to a `Salah` subcommand). A bare group invocation
+    (`chips` alone) or a flat command is unambiguous either way and still
+    resolves to its own name.
     """
     skip_next = False
+    tokens: list[str] = []
     for token in argv:
         if skip_next:
             skip_next = False
@@ -438,8 +455,15 @@ def _command_from_argv(argv: Sequence[str]) -> str:
             skip_next = True
             continue
         if not token.startswith("-"):
-            return token
-    return "fpl"
+            tokens.append(token)
+            if len(tokens) == 2:
+                break
+    if not tokens:
+        return "fpl"
+    first_command = group.commands.get(tokens[0])
+    if isinstance(first_command, click.Group) and len(tokens) > 1 and tokens[1] in first_command.commands:
+        return "fpl"
+    return tokens[0]
 
 
 class FormatAwareGroup(click.Group):
@@ -468,7 +492,7 @@ class FormatAwareGroup(click.Group):
             if _argv_requests_json(argv):
                 from fpl_cli.cli._json import emit_json_error
 
-                emit_json_error(_command_from_argv(argv), str(exc), cause=exc)
+                emit_json_error(_command_from_argv(argv, self), str(exc), cause=exc)
             failure = click.ClickException(str(exc))
             failure.show()
             raise SystemExit(failure.exit_code) from exc

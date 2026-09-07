@@ -99,8 +99,11 @@ message names the rule and the valid set.
 A relative `FPL_CLI_CONFIG_DIR` / `FPL_CLI_DATA_DIR` / `FPL_CLI_CACHE_DIR` override is
 rejected before any command runs, so this one case has no parsed `--format` to read when it
 fails — the CLI scans the raw command line for `--format json` instead. The envelope's
-`command` is whichever word you typed first that was not itself an option (your subcommand),
-or `"fpl"` if the line was nothing but options.
+`command` names your subcommand where that is unambiguous (`fpl status`, or a bare group like
+`fpl chips`), and falls back to `"fpl"` for a subgroup's own subcommand (`fpl chips timing`,
+`fpl squad grid`, `fpl intel show`) or a line that was nothing but options — those commands
+don't name their own envelope after either word you typed, and guessing wrong would be worse
+than saying so.
 
 **Table mode splits the same way.** Without `--format json` the output you asked for goes
 to stdout and everything else goes to stderr — warnings, progress notices, and the reason
