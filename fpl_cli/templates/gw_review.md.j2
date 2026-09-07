@@ -10,8 +10,6 @@
 
 ---
 {% endif %}
-{% if synthesis_summary %}
-{{ synthesis_summary }}
 {% if synthesis_problems %}
 
 > [!WARNING]
@@ -21,6 +19,11 @@
 > - {{ problem }}
 {% endfor %}
 {% endif %}
+{% if synthesis_summary %}
+
+{{ synthesis_summary }}
+{% endif %}
+{% if synthesis_problems or synthesis_summary %}
 
 ---
 {% endif %}

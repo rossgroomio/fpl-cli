@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
@@ -96,4 +97,27 @@ def log_abnormal_stop(response: LLMResponse, label: str) -> None:
         "%s stopped early (stop_reason=%r) after %d output token(s) -- "
         "the response may be cut off",
         label, response.stop_reason, response.usage.output_tokens,
+    )
+
+
+def log_textless_response(
+    response: LLMResponse, label: str, block_types: Sequence[str],
+) -> None:
+    """Announce a response that carried blocks, none of them text.
+
+    A model that reasons before it answers emits its thinking first, so a
+    ceiling reached mid-thought returns content with no prose block in it at
+    all. The concatenated text is then `""` -- honest, but indistinguishable
+    downstream from a model that had nothing to say. Naming the block types
+    that did arrive is what separates the two for anyone reading stderr (#306).
+
+    Silent when there was no content at all: a genuinely empty envelope is not
+    the same finding, and `log_abnormal_stop` has already spoken if it was cut
+    off.
+    """
+    if response.content or not block_types:
+        return
+    logger.warning(
+        "%s returned no text content -- the response carried only %s block(s)",
+        label, ", ".join(sorted(set(block_types))),
     )

@@ -58,7 +58,10 @@ from fpl_cli.api.providers._http import (  # noqa: E402
     error_detail,
     retry_after_seconds,
 )
-from fpl_cli.api.providers._models import log_abnormal_stop  # noqa: E402
+from fpl_cli.api.providers._models import (  # noqa: E402
+    log_abnormal_stop,
+    log_textless_response,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -157,6 +160,37 @@ class TestStopReason:
     def test_a_normal_stop_logs_nothing(self, caplog):
         with caplog.at_level("WARNING", logger="fpl_cli.api.providers._models"):
             log_abnormal_stop(self._response("end_turn"), "Anthropic")
+        assert caplog.text == ""
+
+
+class TestLogTextlessResponse:
+    """A response of nothing but thinking must not read as a model with nothing
+    to say -- naming the blocks that did arrive is what separates the two (#306)."""
+
+    @staticmethod
+    def _response(content=""):
+        return LLMResponse(content=content, model="claude-sonnet-5", usage=TokenUsage(10, 200))
+
+    def test_a_blockful_response_with_no_prose_is_named(self, caplog):
+        with caplog.at_level("WARNING", logger="fpl_cli.api.providers._models"):
+            log_textless_response(self._response(), "Anthropic", ["thinking"])
+        assert "Anthropic" in caplog.text
+        assert "thinking" in caplog.text
+
+    def test_repeated_block_types_are_named_once(self, caplog):
+        with caplog.at_level("WARNING", logger="fpl_cli.api.providers._models"):
+            log_textless_response(self._response(), "Anthropic", ["thinking", "thinking"])
+        assert caplog.text.count("thinking") == 1
+
+    def test_a_response_with_prose_logs_nothing(self, caplog):
+        with caplog.at_level("WARNING", logger="fpl_cli.api.providers._models"):
+            log_textless_response(self._response("Hello"), "Anthropic", ["thinking", "text"])
+        assert caplog.text == ""
+
+    def test_an_envelope_with_no_blocks_at_all_logs_nothing(self, caplog):
+        # A different finding, and not this one's to report.
+        with caplog.at_level("WARNING", logger="fpl_cli.api.providers._models"):
+            log_textless_response(self._response(), "Anthropic", [])
         assert caplog.text == ""
 
 
@@ -328,6 +362,42 @@ class TestAnthropicProvider:
 
         # "Not told" gets exactly one representation downstream.
         assert (await provider.query("test")).stop_reason is None
+
+    async def test_a_response_cut_off_mid_thought_carries_no_text(self, provider, caplog):
+        # The reported shape of #306: a reasoning model reaches the ceiling
+        # before it has finished thinking, so `content` is a lone thinking
+        # block and there is no prose block to concatenate.
+        provider._http = AsyncMock()
+        provider._http.post = AsyncMock(return_value=_make_httpx_response({
+            "content": [{"type": "thinking", "thinking": "Let me work through the squad..."}],
+            "model": "claude-sonnet-5",
+            "usage": {"input_tokens": 3200, "output_tokens": 200},
+            "stop_reason": "max_tokens",
+        }))
+
+        with caplog.at_level("WARNING", logger="fpl_cli.api.providers._models"):
+            result = await provider.query("test")
+        assert result.content == ""
+        assert result.stopped_early is True
+        # Both facts reach stderr: it stopped early, and it said nothing.
+        assert "max_tokens" in caplog.text
+        assert "thinking" in caplog.text
+
+    async def test_prose_beside_a_thinking_block_is_still_returned(self, provider, caplog):
+        provider._http = AsyncMock()
+        provider._http.post = AsyncMock(return_value=_make_httpx_response({
+            "content": [
+                {"type": "thinking", "thinking": "Weighing it up..."},
+                {"type": "text", "text": "Hello from Claude"},
+            ],
+            "model": "claude-sonnet-5",
+            "usage": {"input_tokens": 10, "output_tokens": 20},
+        }))
+
+        with caplog.at_level("WARNING", logger="fpl_cli.api.providers._models"):
+            result = await provider.query("test")
+        assert result.content == "Hello from Claude"
+        assert caplog.text == ""
 
 
 # ---------------------------------------------------------------------------

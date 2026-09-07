@@ -769,13 +769,17 @@ on a run with no fixture data, is reported alongside the completeness findings b
 stderr, and as a warning callout in the saved report.
 
 **Incomplete summaries:** the personal analysis is checked against the sections its own prompt
-asked for before anything is written. A response that is missing a `## ` heading, ends without
-terminal punctuation, or that the provider reports it stopped early on is retried **once** — and
-if the second attempt is no better, the first one stands and the run says so on stderr, naming
-what is missing. Under `--debug` the detail lands in `data/debug/synthesis_corrections.txt`
-alongside `research_corrections.txt`. A saved report generated from such a response carries the
-same list as a warning callout above the summary, so a verdict the model dropped never reads as
-one deliberately omitted. A verdict for a format the run has no squad data for is not counted as
+asked for before anything is written. A response that comes back empty, is missing a `## `
+heading, ends without terminal punctuation, or that the provider reports it stopped early on is
+retried **once** — and if the second attempt is no better, the less damaged of the two stands
+and the run says so on stderr, naming what is missing. Under `--debug` the detail lands in
+`data/debug/synthesis_corrections.txt` alongside `research_corrections.txt`. A saved report
+generated from such a response carries the same list as a warning callout above the summary, so
+a verdict the model dropped never reads as one deliberately omitted. The callout does not depend
+on there being a summary to qualify: a response that returned no text at all — the shape a hard
+`max_tokens` truncation takes when the model was still thinking at the ceiling — is the one that
+most needs explaining, and is reported as a single "the response is empty" finding rather than
+as every section it happens to be short of. A verdict for a format the run has no squad data for is not counted as
 missing — the prompt tells the model to analyse only the format it was given.
 
 **Blanks and doubles:** a zero from a player whose club had no fixture is marked `[BGW]` rather

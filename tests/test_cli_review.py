@@ -2039,6 +2039,31 @@ class TestSynthesiseWithCompletenessCheck:
         assert completeness.complete is False
         assert content == _TRUNCATED
 
+    async def test_an_empty_response_is_retried_like_any_other_fragment(self, capsys):
+        # The #306 shape: max_tokens reached while the model was still
+        # thinking, so the provider returns a stop reason and no prose at all.
+        provider = _StubSynthesisProvider(_reply("", "max_tokens"), _reply(_WHOLE))
+        content, completeness, attempts = await _synthesise(provider)
+        assert content == _WHOLE
+        assert completeness.complete is True
+        assert attempts == 2
+        assert "retrying once" in capsys.readouterr().err.replace("\n", "")
+
+    async def test_a_fragment_displaces_an_empty_first_attempt(self):
+        # Any surviving prose beats none, even prose that stops mid-clause.
+        provider = _StubSynthesisProvider(_reply("", "max_tokens"), _reply(_TRUNCATED, "max_tokens"))
+        content, completeness, _ = await _synthesise(provider)
+        assert content == _TRUNCATED
+        assert completeness.empty is False
+
+    async def test_two_empty_attempts_report_the_emptiness(self):
+        provider = _StubSynthesisProvider(_reply("", "max_tokens"))
+        content, completeness, attempts = await _synthesise(provider)
+        assert content == ""
+        assert attempts == 2
+        assert completeness.empty is True
+        assert "the response is empty (the provider returned no text)" in completeness.problems()
+
     async def test_a_worse_retry_never_displaces_a_better_first_attempt(self):
         nearly = _WHOLE.replace("## Next Week\nMove Virgil on.\n", "")
         provider = _StubSynthesisProvider(_reply(nearly), _reply(_TRUNCATED))
@@ -2166,6 +2191,20 @@ class TestReviewLlmSummariseSurfacesAnIncompleteSynthesis:
         assert any("max_tokens" in p for p in problems)
         err = capsys.readouterr().err.replace("\n", "")
         assert "incomplete after 2 attempt(s)" in err
+
+    async def test_an_empty_response_still_reaches_the_report_as_a_problem(self, capsys):
+        # #306: the worst truncation returned nothing, and the guard described
+        # it only through the sections it was short of -- while the report,
+        # gating its callout on the summary, said nothing at all. Both halves
+        # have to survive an empty string.
+        provider = _StubSynthesisProvider(_reply("", "max_tokens"))
+        result = await _review_llm_summarise(**self._kwargs(provider))
+
+        assert result["synthesis_summary"] == ""
+        problems = result["synthesis_problems"]
+        assert "the response is empty (the provider returned no text)" in problems
+        assert any("max_tokens" in p for p in problems)
+        assert "incomplete after 2 attempt(s)" in capsys.readouterr().err.replace("\n", "")
 
     async def test_a_whole_response_reports_nothing(self, capsys):
         provider = _StubSynthesisProvider(_reply(_WHOLE, "end_turn"))

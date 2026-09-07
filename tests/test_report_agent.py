@@ -636,6 +636,38 @@ class TestSynthesisProblemsCallout:
     def test_a_run_that_never_set_the_key_adds_no_callout(self):
         assert "completeness check" not in self._render()
 
+    def test_an_empty_summary_still_carries_the_callout(self):
+        # The worst truncation is the one that returns nothing at all, and it
+        # used to be the one the report said least about: the callout hung off
+        # the summary being non-empty, so a total loss went to disk silent
+        # (#306). It is now the summary that is optional, not the warning.
+        output = self._render(
+            synthesis_summary="",
+            synthesis_problems=[
+                "provider stopped early (stop_reason: max_tokens)",
+                "the response is empty (the provider returned no text)",
+            ],
+        )
+        assert "failed its completeness check" in output
+        assert "max_tokens" in output
+        assert "the provider returned no text" in output
+
+    def test_the_callout_is_written_above_the_summary(self):
+        # A reader needs to know the text is incomplete before reading it, not
+        # after -- and the missing-key callout above it already reads that way.
+        output = self._render(synthesis_problems=["missing section(s): ## Draft Verdict"])
+        assert output.index("failed its completeness check") < output.index("A shrug of a week.")
+
+    def test_the_separator_still_closes_the_summary_block(self):
+        # The rule under the summary belongs to the pair, not to the summary:
+        # a callout with no summary must not run straight into "What Happened".
+        output = self._render(
+            synthesis_summary="",
+            synthesis_problems=["the response is empty (the provider returned no text)"],
+            research_summary="# What Happened\nHaaland scored again.",
+        )
+        assert output.index("---") < output.index("# What Happened")
+
 
 # ---------------------------------------------------------------------------
 # Group 9: a summary half skipped for want of a key says so (#287)
