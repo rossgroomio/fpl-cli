@@ -501,11 +501,15 @@ def _fold_transliteration(name_norm: str) -> str:
 
     Applied to an already-normalised name on *both* sides of a comparison, so
     a pair that differs only by the fold compares equal: ``yarmoliuk`` and
-    ``yarmolyuk`` both fold to ``iarmoliuk`` (#310). The folds are the ones
-    the misses have actually shown -- ``y``/``i`` (``j`` too, which also
-    covers ``ye`` against ``ie``), ``kh``/``h``, and a doubled consonant --
-    and each coarsens both names rather than guessing at the right spelling
-    of either, so the result is a blunter key, never a corrected name.
+    ``yarmolyuk`` both fold to ``iarmoliuk`` (#310). The folds are #310's
+    list of the variants a Ukrainian transliteration commonly turns on --
+    ``y``/``i`` (``j`` too, which also covers ``ye`` against ``ie``),
+    ``kh``/``h``, and a doubled consonant -- of which only ``y``/``i`` has
+    caused a miss so far. Each coarsens both names rather than guessing at
+    the right spelling of either, so the result is a blunter key, never a
+    corrected name; a Western name the fold also touches ("Markham" to
+    "marham") can only meet a same-club row whose fold is the same, with
+    minutes agreeing, after every strict tier has failed both.
     """
     folded = name_norm.replace("kh", "h")
     folded = re.sub(r"[yj]", "i", folded)
@@ -823,19 +827,20 @@ def _name_tier(fpl_name_norm: str, fpl_words: list[str], understat_name: str) ->
 
     # Partial: both sides carry a surname and agree on it ("Gannon-Doak" and
     # "Ben Doak"), or Understat's whole, shorter name sits inside FPL's ("Jair"
-    # in "Jair Cunha") -- the direction all-words does not cover. A shared
-    # surname must not override an initial FPL chose to disambiguate with,
-    # and it must be a word: `_normalise` keeps digits, and a shared number
-    # is a shared row index, not a shared name.
-    surname = fpl_words[-1]
-    if len(fpl_words) > 1 and (
-        (
-            len(us_words) > 1
-            and surname.isalpha()
-            and surname == us_words[-1]
-            and _initials_agree(fpl_words, us_words)
+    # in "Jair Cunha") -- the direction all-words does not cover. Both shapes
+    # share the guards: the words the two names share must be words, since
+    # `_normalise` keeps digits and a shared number is a shared row index,
+    # not a shared name; and neither may override an initial FPL chose to
+    # disambiguate with, which a bare surname can never satisfy -- FPL
+    # abbreviates to an initial exactly when the surname alone is ambiguous.
+    if (
+        len(fpl_words) > 1
+        and all(w.isalpha() for w in us_words)
+        and _initials_agree(fpl_words, us_words)
+        and (
+            (len(us_words) > 1 and fpl_words[-1] == us_words[-1])
+            or all(w in fpl_words for w in us_words)
         )
-        or all(w in fpl_words for w in us_words)
     ):
         return _NAME_PARTIAL
     return 0
@@ -998,7 +1003,8 @@ def _match_loosely_within_club(
     omits, a mononym inside a longer name -- and never leaves the club, since
     across the league a shared surname is a namesake far more often than a
     spelling. Minutes must corroborate and a shared top score is refused, as
-    `_best_corroborated_match` describes.
+    `_best_corroborated_match` describes. The caller keeps it to the live
+    pool, where the club a row carries is the club being asked about.
     """
     return _best_corroborated_match(
         club_rows,
@@ -1026,14 +1032,16 @@ def match_fpl_to_understat(
     own club carries no name match at all falls through to the name-only pass
     in ``_match_across_clubs`` (#234) — but only when the club itself resolved,
     so a club no Understat row carries keeps failing as a block — and, failing
-    that too, to ``_match_loosely_within_club`` (#310), which admits the
-    looser name tiers back inside the club. Returns None when no pass is
-    confident.
+    that too and only in the live pool, to ``_match_loosely_within_club``
+    (#310), which admits the looser name tiers back inside the club. Returns
+    None when no pass is confident.
 
     *season_label* names the season ``understat_players`` covers when that is
     not the one in progress; leaving it None says the pool is the live one. It
-    only steers the join-drop tripwire — see ``_report_unmatched_team`` for why
-    an absent club means something different in a past season's pool.
+    steers the join-drop tripwire — see ``_report_unmatched_team`` for why an
+    absent club means something different in a past season's pool — and
+    withholds the loose pass, whose club corroboration a past pool cannot
+    give: the club matched there is the player's current one.
     """
     fpl_name_norm = _normalise(fpl_name)
     fpl_words = fpl_name_norm.split()
@@ -1041,18 +1049,14 @@ def match_fpl_to_understat(
 
     best_match = None
     best_score = (0, 0)
-    club_rows: list[dict[str, Any]] = []
 
-    for player in understat_players:
-        # The same gate `understat_club_rows` (and so `fpl doctor`) applies, so
-        # the health check and the enrichment can never disagree about which
-        # clubs resolve. Season totals stay cumulative across both clubs of a
-        # mid-season move, which is what the minutes bonus wants — FPL's
-        # minutes are cumulative too.
-        if not _carries_club(player.get("team"), fpl_team_mapped):
-            continue
-        club_rows.append(player)
+    # The gate `fpl doctor` probes through, so the health check and the
+    # enrichment can never disagree about which clubs resolve. Season totals
+    # stay cumulative across both clubs of a mid-season move, which is what
+    # the minutes bonus wants — FPL's minutes are cumulative too.
+    club_rows = understat_club_rows(fpl_team, understat_players)
 
+    for player in club_rows:
         score = _score_candidate(
             player,
             fpl_name_norm,
@@ -1084,9 +1088,13 @@ def match_fpl_to_understat(
             fpl_name_norm, fpl_words, understat_players, fpl_position, fpl_minutes
         )
 
-    if best_match is None:
+    if best_match is None and season_label is None:
         # Neither the strict tiers inside the club nor the full name across
-        # it: the two sources may simply spell this player differently.
+        # it: the two sources may simply spell this player differently. Live
+        # pool only. A past season's pool is matched against the player's
+        # *current* club, and for the mover that path calls its common case
+        # the club is the one corroboration the loose tiers lean on -- they
+        # would be scanning the current club's old roster for a surname twin.
         best_match = _match_loosely_within_club(
             fpl_name_norm, fpl_words, club_rows, fpl_position, fpl_minutes
         )

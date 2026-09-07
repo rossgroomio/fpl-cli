@@ -1133,6 +1133,33 @@ class TestLooseNameTiers:
         )
         assert result is None
 
+    def test_a_bare_surname_row_does_not_satisfy_an_initial(self):
+        """"J.Ramsey" is not a lone "Ramsey" row either.
+
+        The mononym shape reaches the same ambiguity through a different
+        branch: FPL abbreviated to an initial because the surname alone is
+        ambiguous, so a surname alone cannot resolve it.
+        """
+        players = [
+            {"id": 1, "name": "Ramsey", "team": "Aston Villa", "position": "M", "minutes": 900},
+            {"id": 2, "name": "Ollie Watkins", "team": "Aston Villa", "position": "F", "minutes": 900},
+        ]
+        result = match_fpl_to_understat(
+            "J.Ramsey", "Aston Villa", players, fpl_position="MID", fpl_minutes=900
+        )
+        assert result is None
+
+    def test_a_numeric_mononym_does_not_join(self):
+        """The word guard holds for the mononym shape too, not only the surname one."""
+        players = [
+            {"id": 1, "name": "8", "team": "Chelsea", "position": "M", "minutes": 900},
+            {"id": 2, "name": "Cole Palmer", "team": "Chelsea", "position": "M", "minutes": 900},
+        ]
+        result = match_fpl_to_understat(
+            "Player 8", "Chelsea", players, fpl_position="MID", fpl_minutes=900
+        )
+        assert result is None
+
     def test_loose_tiers_need_minutes_to_corroborate(self):
         """A shared surname beside seasons of different lengths is a namesake."""
         players = [
@@ -1181,6 +1208,24 @@ class TestLooseNameTiers:
         )
         assert result is not None
         assert result["id"] == 1
+
+    def test_loose_tiers_stay_off_for_a_past_seasons_pool(self):
+        """A past pool is matched on the player's current club, which cannot corroborate.
+
+        The returnee radar scores a player's current club against the season
+        they played, so for a mover the club is wrong by construction and the
+        loose pass would be scanning the current club's old roster for a
+        surname twin.
+        """
+        players = [
+            {"id": 1, "name": "Ben Doak", "team": "Bournemouth", "position": "S", "minutes": 2},
+            {"id": 2, "name": "Justin Kluivert", "team": "Bournemouth", "position": "M", "minutes": 239},
+        ]
+        result = match_fpl_to_understat(
+            "Gannon-Doak", "Bournemouth", players,
+            fpl_position="MID", fpl_minutes=2, season_label="2025-26",
+        )
+        assert result is None
 
     def test_a_strict_club_match_still_outranks_a_loose_one(self):
         """The loose pass never runs when a strict tier has already matched."""
