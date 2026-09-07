@@ -491,6 +491,27 @@ def _normalise(text: str) -> str:
     return re.sub(r" +", " ", text).strip()  # Collapse whitespace
 
 
+# A consonant written twice, once `y` and `j` have already folded to `i`.
+_DOUBLED_CONSONANT_RE = re.compile(r"([b-df-hk-np-tv-xz])\1")
+
+
+@lru_cache(maxsize=4096)
+def _fold_transliteration(name_norm: str) -> str:
+    """Collapse the spellings a Latin transliteration commonly varies between.
+
+    Applied to an already-normalised name on *both* sides of a comparison, so
+    a pair that differs only by the fold compares equal: ``yarmoliuk`` and
+    ``yarmolyuk`` both fold to ``iarmoliuk`` (#310). The folds are the ones
+    the misses have actually shown -- ``y``/``i`` (``j`` too, which also
+    covers ``ye`` against ``ie``), ``kh``/``h``, and a doubled consonant --
+    and each coarsens both names rather than guessing at the right spelling
+    of either, so the result is a blunter key, never a corrected name.
+    """
+    folded = name_norm.replace("kh", "h")
+    folded = re.sub(r"[yj]", "i", folded)
+    return _DOUBLED_CONSONANT_RE.sub(r"\1", folded)
+
+
 def split_team_titles(team_title: str) -> list[str]:
     """Split an Understat ``team_title`` into its constituent club names.
 
@@ -538,15 +559,32 @@ _NAME_EXACT = 10
 _NAME_ALL_WORDS = 8
 _NAME_PREFIX = 7
 
-# The lowest tier the club-gated pass will admit. It is every tier there is
-# today, and deliberately named rather than left implicit: a future
-# lower-confidence tier has to raise this floor to opt itself out.
-_NAME_TIER_FLOOR = _NAME_PREFIX
+# The loose tiers (#310). Every tier above needs each FPL word found in the
+# Understat name, and that asymmetry is what keeps "João Pedro" off "Pedro
+# Neto" when the two share a club: a word FPL carries that Understat does not
+# usually means a different person. Usually. It also fails a player the two
+# sources simply name differently -- FPL's "Gannon-Doak" is Understat's "Ben
+# Doak", "Walle Egeli" its "Sindre Egeli", "Jair Cunha" its mononym "Jair" --
+# and a transliteration they spell differently ("Yarmoliuk" against "Yehor
+# Yarmolyuk", "Yeremy" against "Yeremi Pino"), which no prefix survives
+# because the divergence is mid-word. These sit below the floor, so neither
+# the club pass nor the club-blind pass admits them; only the last-resort
+# `_match_loosely_within_club` does, and it demands the club, the minutes and
+# an unambiguous answer -- more corroboration than the strict tiers ask for.
+# A shared word alone is not a tier: "Van Hecke" and "van de Ven" share one.
+_NAME_TRANSLITERATED = 5  # exact or all-words once transliteration variants fold
+_NAME_PARTIAL = 4  # surname agrees, or Understat's shorter name sits inside FPL's
 
-# How closely the two sources must agree on minutes before a club-blind match
-# is allowed to stand. Both count the same league's minutes, so a real match
-# agrees closely and a namesake at another club usually does not.
-_CROSS_CLUB_MIN_MINUTES_RATIO = 0.5
+# The lowest tier the club-gated pass will admit: the strict tiers, and only
+# them. The loose floor is what the last-resort pass admits instead.
+_NAME_TIER_FLOOR = _NAME_PREFIX
+_NAME_LOOSE_FLOOR = _NAME_PARTIAL
+
+# How closely the two sources must agree on minutes before a match missing one
+# of its usual corroborations -- the club, or the full name -- is allowed to
+# stand. Both count the same league's minutes, so a real match agrees closely
+# and a namesake usually does not.
+_CORROBORATING_MIN_MINUTES_RATIO = 0.5
 
 # FPL teams already reported as matching no Understat players, so the join-drop
 # warning below fires once per team per process rather than once per player.
@@ -742,6 +780,67 @@ def _minutes_ratio(fpl_minutes: int | None, player: dict[str, Any]) -> float | N
     return min(fpl_minutes, us_minutes) / high
 
 
+def _initials_agree(fpl_words: list[str], us_words: list[str]) -> bool:
+    """Whether every one-letter FPL word is the initial of a word Understat spells out.
+
+    FPL abbreviates a first name to its initial exactly when a surname is
+    shared -- ``J.Ramsey`` beside ``A.Ramsey`` -- so the initial is FPL's
+    own statement of which one this is, and a loose tier that ignored it
+    would join ``J.Ramsey`` to ``Aaron Ramsey`` the week Jacob's row is
+    missing. A full word absent from Understat is a name it dropped; an
+    initial it contradicts is a different player.
+    """
+    return all(
+        len(word) > 1 or any(us_word.startswith(word) for us_word in us_words)
+        for word in fpl_words
+    )
+
+
+def _name_tier(fpl_name_norm: str, fpl_words: list[str], understat_name: str) -> int:
+    """The confidence tier two normalised names match at, or 0 for none.
+
+    The three strict tiers first, then the loose ones (#310), which a caller
+    keeps out of its pass with a ``min_name_tier`` above them rather than by
+    asking for them not to be computed -- a tier is a fact about the two
+    names, and which tiers a pass trusts is that pass's decision.
+    """
+    us_words = understat_name.split()
+    if fpl_name_norm == understat_name:
+        return _NAME_EXACT
+    if not fpl_words:
+        return 0
+    if all(w in us_words for w in fpl_words):
+        return _NAME_ALL_WORDS
+    if all(any(uw.startswith(fw) for uw in us_words) for fw in fpl_words):
+        return _NAME_PREFIX
+
+    # Transliteration: the same two full-name tests, on both names folded.
+    folded_fpl = _fold_transliteration(fpl_name_norm)
+    folded_us = _fold_transliteration(understat_name)
+    folded_us_words = folded_us.split()
+    if folded_fpl == folded_us or all(w in folded_us_words for w in folded_fpl.split()):
+        return _NAME_TRANSLITERATED
+
+    # Partial: both sides carry a surname and agree on it ("Gannon-Doak" and
+    # "Ben Doak"), or Understat's whole, shorter name sits inside FPL's ("Jair"
+    # in "Jair Cunha") -- the direction all-words does not cover. A shared
+    # surname must not override an initial FPL chose to disambiguate with,
+    # and it must be a word: `_normalise` keeps digits, and a shared number
+    # is a shared row index, not a shared name.
+    surname = fpl_words[-1]
+    if len(fpl_words) > 1 and (
+        (
+            len(us_words) > 1
+            and surname.isalpha()
+            and surname == us_words[-1]
+            and _initials_agree(fpl_words, us_words)
+        )
+        or all(w in fpl_words for w in us_words)
+    ):
+        return _NAME_PARTIAL
+    return 0
+
+
 def _score_candidate(
     player: dict[str, Any],
     fpl_name_norm: str,
@@ -752,33 +851,21 @@ def _score_candidate(
 ) -> tuple[int, int]:
     """Score one Understat candidate as ``(name_tier, bonus)``.
 
-    The pair is ordered lexicographically by both callers, which keeps the
+    The pair is ordered lexicographically by every caller, which keeps the
     position and minutes bonuses as tiebreakers *within* a name tier instead of
     letting them promote a looser name match above a stronger one.
 
     A tier of 0 means "not a candidate": no viable name match, or one below
-    ``min_name_tier``. Every field is read defensively — the fallback pass
+    ``min_name_tier``. Every field is read defensively — the club-blind pass
     scores rows belonging to clubs the caller never asked about, so one
     malformed row in an undocumented payload must not take out the lookup.
     """
     understat_name = _normalise(str(player.get("name") or ""))
     if not understat_name:
         return 0, 0
-    us_words = understat_name.split()
 
-    # Word-overlap name scoring
-    if fpl_name_norm == understat_name:
-        tier = _NAME_EXACT
-    elif fpl_words and all(w in us_words for w in fpl_words):
-        tier = _NAME_ALL_WORDS
-    elif fpl_words and all(
-        any(uw.startswith(fw) for uw in us_words) for fw in fpl_words
-    ):
-        tier = _NAME_PREFIX
-    else:
-        return 0, 0
-
-    if tier < min_name_tier:
+    tier = _name_tier(fpl_name_norm, fpl_words, understat_name)
+    if tier < min_name_tier:  # 0 is below every floor
         return 0, 0
 
     bonus = 0
@@ -803,6 +890,58 @@ def _score_candidate(
     return tier, bonus
 
 
+def _best_corroborated_match(
+    candidates: list[dict[str, Any]],
+    fpl_name_norm: str,
+    fpl_words: list[str],
+    fpl_position: str | None,
+    fpl_minutes: int | None,
+    min_name_tier: int,
+    pass_name: str,
+) -> dict[str, Any] | None:
+    """The one candidate a pass missing its usual corroboration can stand on.
+
+    Shared by the two fallback passes, which each relax a different thing --
+    the club-blind pass the club, the loose pass the name -- and so lean on
+    the same substitutes: minutes must corroborate where both sources report
+    them, since a namesake rarely has a season the same length, and a top
+    score two candidates share is refused rather than guessed at.
+    """
+    best_match: dict[str, Any] | None = None
+    best_score = (0, 0)
+    ambiguous = False
+
+    for player in candidates:
+        ratio = _minutes_ratio(fpl_minutes, player)
+        if ratio is not None and ratio < _CORROBORATING_MIN_MINUTES_RATIO:
+            continue
+        score = _score_candidate(
+            player,
+            fpl_name_norm,
+            fpl_words,
+            fpl_position,
+            fpl_minutes,
+            min_name_tier=min_name_tier,
+        )
+        if score[0] == 0:
+            continue
+        if score > best_score:
+            best_score, best_match, ambiguous = score, player, False
+        elif score == best_score and player is not best_match:
+            ambiguous = True
+
+    if ambiguous:
+        logger.debug(
+            "Understat name %r has several equally good %s candidates — "
+            "declining rather than guessing",
+            fpl_name_norm,
+            pass_name,
+        )
+        return None
+
+    return best_match
+
+
 def _match_across_clubs(
     fpl_name_norm: str,
     fpl_words: list[str],
@@ -821,45 +960,55 @@ def _match_across_clubs(
 
     Dropping the gate re-opens the homonym risk it existed to close, so this
     pass is deliberately narrow. Only a full-name match counts (exact, or every
-    FPL word present — no prefix tier). Minutes must corroborate where both
-    sources report them, since a namesake at another club rarely has a season
-    the same length. A top pair two candidates share is refused rather than
-    guessed at. The caller adds the last condition: it only reaches here for a
-    club Understat *does* carry players for, so an unresolved club still fails
-    as a block rather than 20 players each guessing across the league.
+    FPL word present — no prefix tier, and none of the loose ones). Minutes
+    must corroborate and a shared top score is refused, as
+    `_best_corroborated_match` describes. The caller adds the last condition:
+    it only reaches here for a club Understat *does* carry players for, so an
+    unresolved club still fails as a block rather than 20 players each
+    guessing across the league.
     """
-    best_match: dict[str, Any] | None = None
-    best_score = (0, 0)
-    ambiguous = False
+    return _best_corroborated_match(
+        understat_players,
+        fpl_name_norm,
+        fpl_words,
+        fpl_position,
+        fpl_minutes,
+        min_name_tier=_NAME_ALL_WORDS,
+        pass_name="club-blind",
+    )
 
-    for player in understat_players:
-        ratio = _minutes_ratio(fpl_minutes, player)
-        if ratio is not None and ratio < _CROSS_CLUB_MIN_MINUTES_RATIO:
-            continue
-        score = _score_candidate(
-            player,
-            fpl_name_norm,
-            fpl_words,
-            fpl_position,
-            fpl_minutes,
-            min_name_tier=_NAME_ALL_WORDS,
-        )
-        if score[0] == 0:
-            continue
-        if score > best_score:
-            best_score, best_match, ambiguous = score, player, False
-        elif score == best_score and player is not best_match:
-            ambiguous = True
 
-    if ambiguous:
-        logger.debug(
-            "Understat name %r matches several players outside the FPL club — "
-            "declining rather than guessing",
-            fpl_name_norm,
-        )
-        return None
+def _match_loosely_within_club(
+    fpl_name_norm: str,
+    fpl_words: list[str],
+    club_rows: list[dict[str, Any]],
+    fpl_position: str | None,
+    fpl_minutes: int | None,
+) -> dict[str, Any] | None:
+    """Match a player the two sources name differently, inside their club (#310).
 
-    return best_match
+    The last resort, and ordered last on purpose: it runs only once the strict
+    tiers have failed within the club *and* the full-name pass has failed
+    across it, so a mover whose Understat row still shows the old club under
+    the full name reaches the club-blind pass before a same-surname teammate
+    at the new club can claim them here.
+
+    It admits the tiers below the floor -- a name that agrees once
+    transliteration variants fold, a shared surname beside a name one source
+    omits, a mononym inside a longer name -- and never leaves the club, since
+    across the league a shared surname is a namesake far more often than a
+    spelling. Minutes must corroborate and a shared top score is refused, as
+    `_best_corroborated_match` describes.
+    """
+    return _best_corroborated_match(
+        club_rows,
+        fpl_name_norm,
+        fpl_words,
+        fpl_position,
+        fpl_minutes,
+        min_name_tier=_NAME_LOOSE_FLOOR,
+        pass_name="loose same-club",
+    )
 
 
 def match_fpl_to_understat(
@@ -876,8 +1025,10 @@ def match_fpl_to_understat(
     position and minutes played, and returns the most confident. A player whose
     own club carries no name match at all falls through to the name-only pass
     in ``_match_across_clubs`` (#234) — but only when the club itself resolved,
-    so a club no Understat row carries keeps failing as a block. Returns None
-    when neither pass is confident.
+    so a club no Understat row carries keeps failing as a block — and, failing
+    that too, to ``_match_loosely_within_club`` (#310), which admits the
+    looser name tiers back inside the club. Returns None when no pass is
+    confident.
 
     *season_label* names the season ``understat_players`` covers when that is
     not the one in progress; leaving it None says the pool is the live one. It
@@ -890,7 +1041,7 @@ def match_fpl_to_understat(
 
     best_match = None
     best_score = (0, 0)
-    team_seen = False
+    club_rows: list[dict[str, Any]] = []
 
     for player in understat_players:
         # The same gate `understat_club_rows` (and so `fpl doctor`) applies, so
@@ -900,7 +1051,7 @@ def match_fpl_to_understat(
         # minutes are cumulative too.
         if not _carries_club(player.get("team"), fpl_team_mapped):
             continue
-        team_seen = True
+        club_rows.append(player)
 
         score = _score_candidate(
             player,
@@ -914,10 +1065,10 @@ def match_fpl_to_understat(
             best_score = score
             best_match = player
 
-    if not team_seen and understat_players:
+    if not club_rows and understat_players:
         _report_unmatched_team(fpl_team, fpl_team_mapped, season_label)
 
-    if not team_seen:
+    if not club_rows:
         # Nothing carries this club, so every one of its players fails here
         # identically — a TEAM_NAME_MAP gap or a roster Understat has yet to
         # ingest, not a transfer. Sending 20 players off to guess across the
@@ -931,6 +1082,13 @@ def match_fpl_to_understat(
         # who has moved and not yet played for the new club looks like.
         best_match = _match_across_clubs(
             fpl_name_norm, fpl_words, understat_players, fpl_position, fpl_minutes
+        )
+
+    if best_match is None:
+        # Neither the strict tiers inside the club nor the full name across
+        # it: the two sources may simply spell this player differently.
+        best_match = _match_loosely_within_club(
+            fpl_name_norm, fpl_words, club_rows, fpl_position, fpl_minutes
         )
 
     _record_name_join(fpl_name, fpl_team, fpl_minutes, best_match, season_label)
