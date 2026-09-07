@@ -91,13 +91,17 @@ class AnthropicProvider:
         # worth keeping: a ceiling reached while the model was still thinking
         # returns a lone `thinking` block, and the empty string that falls out
         # of this loop is otherwise indistinguishable from a model with
-        # nothing to say (#306).
+        # nothing to say (#306). Text blocks are deliberately not collected --
+        # a response of nothing but an empty text block *is* a model with
+        # nothing to say, and naming "text" as the reason there was no text
+        # would contradict itself.
         content = ""
-        block_types: list[str] = []
+        non_text_blocks: list[str] = []
         for block in data.get("content", []):
-            block_types.append(str(block.get("type")))
             if block.get("type") == "text":
                 content += block.get("text", "")
+            else:
+                non_text_blocks.append(str(block.get("type")))
 
         # Normalise usage: Anthropic returns input_tokens/output_tokens directly
         raw_usage = data.get("usage", {})
@@ -118,7 +122,7 @@ class AnthropicProvider:
             stop_reason=data.get("stop_reason") or None,
         )
         log_abnormal_stop(response, _PROVIDER_LABEL)
-        log_textless_response(response, _PROVIDER_LABEL, block_types)
+        log_textless_response(response, _PROVIDER_LABEL, non_text_blocks)
         return response
 
     def post_process(self, content: str) -> str:

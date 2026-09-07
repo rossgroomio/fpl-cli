@@ -1253,7 +1253,8 @@ def _ends_mid_sentence(text: str) -> bool:
 
     Trailing markdown decoration is peeled off first so a bolded closing clause
     is not mistaken for a truncation. Empty text is not judged here -- a
-    response with nothing in it is already reported as every section missing.
+    response with nothing in it is reported as `empty` in its own right, and
+    reading it as a sentence that stops dead would say the same thing twice.
     """
     trimmed = text.rstrip().rstrip(_TRAILING_DECORATION)
     if not trimmed:

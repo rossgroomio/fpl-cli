@@ -184,11 +184,12 @@ class TestLogTextlessResponse:
 
     def test_a_response_with_prose_logs_nothing(self, caplog):
         with caplog.at_level("WARNING", logger="fpl_cli.api.providers._models"):
-            log_textless_response(self._response("Hello"), "Anthropic", ["thinking", "text"])
+            log_textless_response(self._response("Hello"), "Anthropic", ["thinking"])
         assert caplog.text == ""
 
-    def test_an_envelope_with_no_blocks_at_all_logs_nothing(self, caplog):
-        # A different finding, and not this one's to report.
+    def test_nothing_but_an_empty_text_block_logs_nothing(self, caplog):
+        # A model with nothing to say, which this has nothing to add to --
+        # and blaming "text" for there being no text would contradict itself.
         with caplog.at_level("WARNING", logger="fpl_cli.api.providers._models"):
             log_textless_response(self._response(), "Anthropic", [])
         assert caplog.text == ""
@@ -382,6 +383,25 @@ class TestAnthropicProvider:
         # Both facts reach stderr: it stopped early, and it said nothing.
         assert "max_tokens" in caplog.text
         assert "thinking" in caplog.text
+
+    async def test_an_empty_text_block_is_not_blamed_on_its_own_type(self, provider, caplog):
+        # The ceiling can land at the start of a text block rather than inside
+        # the thinking: the answer is empty, but "carried only text block(s)"
+        # would be a diagnostic contradicting itself.
+        provider._http = AsyncMock()
+        provider._http.post = AsyncMock(return_value=_make_httpx_response({
+            "content": [{"type": "text", "text": ""}],
+            "model": "claude-sonnet-5",
+            "usage": {"input_tokens": 3200, "output_tokens": 200},
+            "stop_reason": "max_tokens",
+        }))
+
+        with caplog.at_level("WARNING", logger="fpl_cli.api.providers._models"):
+            result = await provider.query("test")
+        assert result.content == ""
+        # The truncation is still announced; the block types are not.
+        assert "max_tokens" in caplog.text
+        assert "no text content" not in caplog.text
 
     async def test_prose_beside_a_thinking_block_is_still_returned(self, provider, caplog):
         provider._http = AsyncMock()

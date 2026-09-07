@@ -19,11 +19,13 @@
 > - {{ problem }}
 {% endfor %}
 {% endif %}
-{% if synthesis_summary %}
+{% if synthesis_summary | trim %}
+{% if synthesis_problems %}
 
+{% endif %}
 {{ synthesis_summary }}
 {% endif %}
-{% if synthesis_problems or synthesis_summary %}
+{% if synthesis_problems or synthesis_summary | trim %}
 
 ---
 {% endif %}

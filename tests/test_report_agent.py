@@ -658,6 +658,33 @@ class TestSynthesisProblemsCallout:
         output = self._render(synthesis_problems=["missing section(s): ## Draft Verdict"])
         assert output.index("failed its completeness check") < output.index("A shrug of a week.")
 
+    def test_a_clean_run_is_spaced_exactly_as_it_was(self):
+        # The callout moving above the summary must cost the ordinary report
+        # nothing: no blank line between the "Generated:" line and the summary
+        # that was not there before.
+        output = self._render(synthesis_problems=[])
+        assert "*\n## Summary\nA shrug of a week." in output
+
+    def test_the_callout_is_separated_from_the_summary_it_qualifies(self):
+        output = self._render(synthesis_problems=["missing section(s): ## Draft Verdict"])
+        assert "> - missing section(s): ## Draft Verdict\n\n## Summary" in output
+
+    def test_a_whitespace_only_summary_is_as_absent_as_an_empty_one(self):
+        # The guard calls a whitespace-only response empty; raw Jinja
+        # truthiness would still render it, leaving the callout followed by
+        # blank lines and a stray rule.
+        output = self._render(
+            synthesis_summary="\n\n",
+            synthesis_problems=["the response is empty (the provider returned no text)"],
+        )
+        assert "> - the response is empty (the provider returned no text)\n\n---\n" in output
+
+    def test_a_whitespace_only_summary_alone_writes_no_block_at_all(self):
+        output = self._render(synthesis_summary="   ", synthesis_problems=[])
+        assert "completeness check" not in output
+        assert "*Generated:" in output
+        assert output.split("\n")[1].startswith("#")
+
     def test_the_separator_still_closes_the_summary_block(self):
         # The rule under the summary belongs to the pair, not to the summary:
         # a callout with no summary must not run straight into "What Happened".
