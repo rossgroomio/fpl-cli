@@ -208,6 +208,21 @@ def _report_synthesis_completeness(
     if debug_dir is None:
         error_console.print("[dim]    Re-run with --debug to save the detail[/dim]")
         return None
+    return _write_synthesis_corrections(problems, debug_dir)
+
+
+def _write_synthesis_corrections(
+    problems: Sequence[str], debug_dir: Path | None,
+) -> str | None:
+    """Save the problem lines to `synthesis_corrections.txt`; return its path.
+
+    Shared by both paths that produce problems, so a `--debug` bundle carries
+    the same artefact whether the response came back damaged or the call never
+    returned at all -- an asymmetry there is one more thing to reason about
+    when reading someone's bug report. `None` when the run has no debug dir.
+    """
+    if debug_dir is None:
+        return None
     corrections_file = debug_dir / "synthesis_corrections.txt"
     corrections_file.write_text("\n".join(problems) + "\n", encoding="utf-8")
     error_console.print("[dim]    → Saved synthesis_corrections.txt[/dim]")
@@ -1142,22 +1157,50 @@ async def _review_llm_summarise(
             synthesis_summary = ""
             console.print("[green]  ✓[/green] Prompts saved to data/debug/")
         else:
+            console.print("[dim]  Generating personal analysis...[/dim]")
+            # The prompt asks for both formats' verdicts unconditionally, but
+            # it also tells the model to analyse only the format it was given
+            # data for -- so a verdict the run has no squad behind is an
+            # instructed omission, not a section the guard should chase.
+            omit_sections = [
+                *([] if team_points_data else ["Classic Verdict"]),
+                *([] if draft_squad_points_data else ["Draft Verdict"]),
+            ]
+            # The call, and only the call. Graceful degradation is for the
+            # things a provider does to us -- a timeout, a 500, a spent 429, a
+            # revoked key -- and everything downstream of the response is our
+            # own code: a bug in the grounding checker or an unwritable debug
+            # dir surfaces as a traceback rather than being reported as a
+            # failure of a call that in fact returned. A wider `try` would also
+            # throw away the good summary it had already been handed (#322
+            # review).
             try:
-                console.print("[dim]  Generating personal analysis...[/dim]")
-                # The prompt asks for both formats' verdicts unconditionally, but
-                # it also tells the model to analyse only the format it was given
-                # data for -- so a verdict the run has no squad behind is an
-                # instructed omission, not a section the guard should chase.
-                omit_sections = [
-                    *([] if team_points_data else ["Classic Verdict"]),
-                    *([] if draft_squad_points_data else ["Draft Verdict"]),
-                ]
                 synthesis_summary, completeness, attempts = await _synthesise_with_completeness_check(
                     synthesis_provider,
                     prompt=synthesis_prompt,
                     system_prompt=synthesis_system,
                     omit_sections=omit_sections,
                 )
+            except Exception as e:  # noqa: BLE001 — graceful degradation
+                error_console.print(f"[red]  ✗ Synthesis failed: {rich_escape(str(e))}[/red]")
+                synthesis_summary = ""
+                # The report has to carry it too. Degrading gracefully ends at
+                # stderr, which is gone by the time the file is read: with no
+                # summary and no callout, a call that never landed reads as a
+                # report that never had a personal analysis in it. That is the
+                # silence #306 closed for a call that returned nothing, reached
+                # by the other route (#317). Whitespace is collapsed because
+                # the callout renders each line as a blockquote bullet, and a
+                # provider error wrapped across lines would break out of it.
+                message = " ".join(str(e).split())
+                # A bare `raise SomeError()` has no message, and "SomeError:"
+                # with nothing after the colon reads as truncated output.
+                detail = f"{type(e).__name__}: {message}" if message else type(e).__name__
+                synthesis_problems = [f"the synthesis call failed ({detail})"]
+                synthesis_corrections_path = _write_synthesis_corrections(
+                    synthesis_problems, debug_dir if debug else None,
+                )
+            else:
                 # The grounding guard rides the same channel as the completeness
                 # one: both answer "is this response usable as written", and a
                 # reader weeks later needs them in the same place -- stderr now,
@@ -1179,9 +1222,6 @@ async def _review_llm_summarise(
                     (debug_dir / "synthesis_prompt.txt").write_text(synthesis_prompt, encoding="utf-8")
                     (debug_dir / "synthesis_response.txt").write_text(synthesis_summary, encoding="utf-8")
                     console.print("[dim]    → Saved synthesis_*.txt[/dim]")
-            except Exception as e:  # noqa: BLE001 — graceful degradation
-                error_console.print(f"[red]  ✗ Synthesis failed: {rich_escape(str(e))}[/red]")
-                synthesis_summary = ""
 
     return {
         "research_summary": research_summary,

@@ -791,6 +791,11 @@ most needs explaining, and is reported as a single "the response is empty" findi
 as every section it happens to be short of. A verdict for a format the run has no squad data for is not counted as
 missing — the prompt tells the model to analyse only the format it was given.
 
+A call that never lands at all — a timeout, a 500, a 429 that outlasted its retries, a revoked
+key — is reported through the same callout, naming the failure. The run still exits **0** with
+the rest of the review intact, but the saved report says the analysis was attempted and lost
+rather than leaving a reader to wonder whether the template ever had one.
+
 **Blanks and doubles:** a zero from a player whose club had no fixture is marked `[BGW]` rather
 than read as a choice that failed, and such a player is kept off the Blankers list entirely; a
 player whose club played twice is marked `[DGW]`. Which clubs those were is read off the
