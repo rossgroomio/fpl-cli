@@ -99,6 +99,7 @@ For a complete inventory of CLI commands, analysis agents, and skills with JSON 
 - README must stay in sync: any CLI command added/changed/removed requires updating the relevant job section under `## Usage` (After the Gameweek, Checking Your Setup, Scouting Players, Before the Deadline, Strategic Planning, Season Preview Intel, Custom Analysis, JSON Output) and, if the command has detailed flags or formulas, `docs/command-reference.md`
 - Architecture doc must stay in sync: adding a new agent, service, API client, or CLI command requires updating `docs/architecture.md`
 - TOOLS.md must stay in sync: adding, removing, or changing a CLI command, analysis agent, or skill requires updating `.agents/TOOLS.md`
+- Output style must stay in sync: adding, removing, or renaming a CLI command requires updating the Data Grounding section of `.claude/output-styles/fpl-mate.md`, the fast-path index FPL Mate reaches for - `tests/test_output_style_sync.py` fails when a registered command is never named there, or when the file names one that no longer exists
 - AGENTS.md must stay in sync: any change to project instructions in CLAUDE.md requires the same change in AGENTS.md
 - CONTRIBUTING.md must stay in sync: changes to commit/PR conventions, CI checks, the dependency policy, or the release pipeline require the same change in CONTRIBUTING.md (the human-facing copy)
 - CLI changes require corresponding unit tests

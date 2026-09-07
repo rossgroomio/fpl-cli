@@ -54,7 +54,11 @@ This guide describes the CLI as shipped at this commit. If a documented command 
 
 When pulling data for comparison or field extraction, use `--format json` on commands that support it (stats, player, history, price-history, fixtures, captain, targets, transfer-eval, differentials, xg, waivers, returnees, intel, squad, squad grid, fdr, status, chips, doctor, sell-prices, allocate, league-recap, league-fines). Actual records are in `data` within the `{command, metadata, data}` envelope. Use Rich (default) for single-player lookups and qualitative assessment.
 
-`ratings`, `price-changes` and `league` are Rich-only - read the table, don't try to parse JSON out of them. Warnings (skipped intel files, data-provider drift, a missing API key) go to **stderr**, not into the JSON payload, so a stdout-only parse drops them silently. Capture stderr when output looks thinner than you expected. As of v2.3.0, a command failure under `--format json` is a `{command, error}` envelope on stdout (exit 1) - the same channel as success, so check for an `error` key before assuming a thin or empty parse means the command hung.
+`ratings`, `price-changes`, `league`, `preview` and `review` are Rich-only - read the table or the written report, don't try to parse JSON out of them. Warnings (skipped intel files, data-provider drift, a missing API key) go to **stderr**, not into the JSON payload, so a stdout-only parse drops them silently. Capture stderr when output looks thinner than you expected. As of v2.3.0, a command failure under `--format json` is a `{command, error}` envelope on stdout (exit 1) - the same channel as success, so check for an `error` key before assuming a thin or empty parse means the command hung.
+
+Seven commands below are off unless `custom_analysis: true` is set in `settings.yaml`: `captain`, `targets`, `differentials`, `waivers`, `transfer-eval`, `allocate` and `ratings` are hidden from `fpl --help` entirely with it off, and a call comes back "is a custom-analysis command and is currently switched off". That is a config state, not a missing feature - say so and point at `fpl init`, don't quietly substitute a weaker command. The rest still run with it off, but come back narrower: `fpl fdr` refuses `-p atk|def` outright, `fpl fixtures` falls back to the FPL API's raw 1-5 difficulty rather than the venue-aware FDR (so those numbers won't line up with `fpl fdr`'s), and `fpl xg`, `fpl stats -v`, `fpl player`, `fpl preview` and `fpl review` drop their custom-scored sections. `fpl status` just prints a note that the features exist.
+
+Format shapes the help listing rather than availability: a draft-only setup drops the classic commands (`captain`, `targets`, `differentials`, `allocate`, `chips`, `credentials`) out of `fpl --help`, and a classic-only one drops `waivers`. They still resolve when called, and fail on the entry or league ID that isn't configured - so a command missing from `--help` is a format signal, not proof it's gone.
 
 **Quick lookups:**
 - `fpl status` - GW state, deadline countdown, post-GW summary, pre-deadline info
@@ -62,18 +66,20 @@ When pulling data for comparison or field extraction, use `--format json` on com
   - `-f` fixture run with positional FDR (`-m difference|opponent` switches how FDR is computed)
   - `-d` GW-by-GW match performance (FPL API, always fresh)
   - `-u` Understat analysis (shot analysis + situation profile) - use with `-d` for MID/FWD
-  - `-H` historical career arc - pts/90, xGI/90, cost trajectory across last 3 seasons
+  - `-H` historical career arc - per-season points, minutes, starts, goals, assists, xGI and cost across the last four seasons, with pts/90, xGI/90 and cost trends beneath. The trend line says "trend" only on three or more qualifying seasons and "change" on fewer - a two-season "change" is one comparison, not a direction
 - `fpl stats` - ranked player list; `-p MID` position filter, `-t ARS` team filter, `-s <field>` sort (form, ict_index, now_cost, selected_by_percent, transfers_in_event, ep_next, defensive_contribution_per_90...), `-n` limit, `-a` exclude injured/suspended/unavailable, `-r` sort ascending, `--min-minutes` appearances filter, `-v` adds quality, quality/£m, and rolling pts/£m columns (sorts by quality/£m by default - use with position filter for best results), `-w N` rolling fixture window (3-10). No `--draft` flag on this command
-- `fpl fixtures <gw>` - who plays who, difficulty
+- `fpl fixtures -g <gw>` - who plays who, difficulty. The gameweek is a flag, not a positional argument (`fpl fixtures 5` is an error); `-m opponent` rates the opponent alone
+- `fpl history` - career arc for every current player in one pass: per-season pts/90 and xGI/90 plus points, xGI and cost trends. No filters and no flags beyond `--format`, so it's the bulk read - `fpl player -H` is the single-player one
 - `fpl league` - standings context for risk calibration
 - `fpl doctor` - setup health check: dead IDs, stale per-team data, which config/data dirs are live. Reach for it when the numbers look wrong rather than assuming the analysis is. `--providers` probes the upstream sources instead (FPL/Draft APIs, vaastav, Core-Insights, Understat, football-data.org) - that's the check for plausible-but-wrong output caused by a renamed field upstream. Exits non-zero only when something is genuinely broken
+- `fpl init` - the setup walkthrough (entry and league IDs, format, custom analysis). Where to send the user when `doctor` reports nothing configured, or when a command they want is switched off - never guess IDs on their behalf
 
 **Analysis agents (run when the question needs deeper data):**
 - `fpl captain` - captain rankings for the GW (use `--global` for picks beyond your squad)
 - `fpl targets` - transfer targets across all ownership levels; `--min-own` floors ownership, `-m` sets the minutes bar
 - `fpl differentials` - low-ownership picks with strong underlying numbers; `-t` sets the ownership ceiling, `-m` the minutes bar
-- `fpl fdr` - fixture runs, blanks, doubles; `-p atk|def` to filter by position, `--from-gw`/`--to-gw` to set the window (default: current +6), `-m opponent` to rate the opponent alone, `--my-squad` for squad exposure to blanks/doubles (critical before chip decisions), `--blanks` for the confirmed-plus-predicted blank/double schedule on its own
-- `fpl ratings` - team strength ratings (attack/defence home+away, overall avg, 1=best); use to go beyond raw FDR numbers when a team has a "good" fixture against a strong side. `fpl ratings update --since-gw N` re-rates on recent form only, `--use-xg` rates on xG instead of actual goals, `--dry-run` to look before saving
+- `fpl fdr` - fixture runs, blanks, doubles; `-p atk|def` to filter by position, `--from-gw`/`--to-gw` to set the window (default: current +6), `-m opponent` to rate the opponent alone, `--my-squad` for squad exposure to blanks/doubles (critical before chip decisions; add `--draft` when both formats are configured), `--blanks` for the confirmed-plus-predicted blank/double schedule on its own
+- `fpl ratings` - team strength ratings (attack/defence home+away, overall avg, 1=best); use to go beyond raw FDR numbers when a team has a "good" fixture against a strong side. `fpl ratings update --since-gw N` re-rates on recent form only, `--use-xg` rates on xG instead of actual goals, `--dry-run` to look before saving, `--refresh-prior` rebuilds last season's prior from scratch (it rebuilds itself when the league's clubs change, so this is for a staleness it can't see)
 - `fpl price-changes` - price risers/fallers, hot transfers in/out, season value gains - use when transfer timing is at stake
 - `fpl price-history` - season-long price trajectory and transfer momentum from vaastav GW data; `--sort price_slope` for biggest movers, `-p`/`-t` to filter, `-n N` to scope metrics to the last N GWs (min 4), `-l` limit, `-r` ascending - use when evaluating wildcard/free-hit value or spotting price trends over the season arc
 - `fpl xg` - full xG/xA analysis (`-n 6` last 6 GWs, `--all` whole season); surfaces underperformers, overperformers, value picks
@@ -94,19 +100,23 @@ When pulling data for comparison or field extraction, use `--format json` on com
   - `full` (75%+ of teams covered) - intel may support *or* oppose a pick
   - `negative_filter_only` - downgrade only: injuries, rotation risk. **Never promote a player off it.** Under partial coverage the written-up teams carry "nailed on, takes corners" notes and the rest carry nothing, so absence of a flag would read as absence of merit
   - `none` - ignore entirely
+- Authoring rather than asking: `fpl intel init` scaffolds an empty preview file per team and `fpl intel resolve <TEAM>` matches the player names in one to FPL player codes (`--write` saves them back, `--all` re-resolves already-coded players; ambiguity is reported, never guessed). That's the preview-ingest path - reach for it when the user is adding intel, not when they're asking a question of it
 - Intel is richest pre-season and through the opening weeks, then ages out by design. An empty payload is a valid answer, not a failure - don't go hunting for a substitute source to fill the gap
 
 **Squad building:**
 - `fpl allocate` - ILP solver for mathematically optimal 15-player squad; `--budget 95.0` custom budget, `--horizon 8` gameweeks ahead, `--free-transfers N` banked FTs (more FTs weights near-term gameweeks more heavily), `--bench-boost-gw N` drops the bench discount for that week so the solver actually builds a boostable bench, `--bench-discount` to tune it by hand, `--sell-prices <path>` for WC/FH sell-price budgeting. Classic only. Use as the starting point when building a wildcard or season-start squad, then layer in qualitative factors
 
 **Chip planning:**
-- `fpl chips` - planned and used chips. `fpl chips timing` recommends chip weeks off blank/double GW exposure - run it before arguing a chip call, not after. `fpl chips add <chip> -g <gw>` and `remove -g <gw>` to plan, `sync` to pull actual usage from the FPL API
+- `fpl chips` - planned and used chips. `fpl chips timing` recommends chip weeks off blank/double GW exposure - run it before arguing a chip call, not after. `fpl chips add <chip> -g <gw>` and `fpl chips remove -g <gw>` to plan (chip keys are `wildcard`, `freehit`, `bboost`, `3xc`), `fpl chips sync` to pull actual usage from the FPL API
 - `fpl squad grid` - colour-coded fixture difficulty grid across squad (`-w <name>` adds watch players, `-n N` sets gameweeks shown, `-m opponent` rates the opponent alone)
-- `fpl squad sell-prices` - buy/sell prices and P&L across squad (use `--refresh` to scrape fresh data, `--format json` for allocator input)
+- `fpl squad sell-prices` - buy/sell prices and P&L across squad. Classic only (draft has no budget); cached by default, `--refresh` scrapes the FPL site (needs credentials from `fpl credentials set` or `FPL_EMAIL`/`FPL_PASSWORD`), `--format json` for allocator input
+
+**Pre-deadline write-up:**
+- `fpl preview` - the whole pre-gameweek report in one run (fixtures, prices, stats, captaincy) rather than a command at a time; `-s` saves it under the configured output directory, `--scout` adds LLM deep research for BUY/SELL calls (needs API keys), `--dry-run` builds the scout prompts without spending a call. Rich-only, and it writes a markdown report - there's no JSON envelope to parse
 
 **Post-gameweek:**
-- `fpl review` - GW performance; use `--compare-recs` to check recommendations vs actual decisions
-- `fpl league-recap` - whole-league recap for a completed GW; `--backfill-detail` rebuilds earlier gameweeks in full (captains, squads, transfers) at the cost of one extra request per manager per gameweek, so use it deliberately
+- `fpl review` - GW performance; `-g N` for a specific gameweek (default: last completed), `-s` saves the report, `--summarise` adds an LLM write-up (needs API keys; a missing key skips the summary rather than failing the run), `--compare-recs` checks recommendations vs actual decisions
+- `fpl league-recap` - whole-league recap for a completed GW; `-g N` picks the gameweek (default: last completed), `--draft` when both formats are configured, `--summarise` adds the editorial narrative (needs API keys), and `--backfill-detail` rebuilds earlier gameweeks in full (captains, squads, transfers) at the cost of one extra request per manager per gameweek, so use it deliberately
 - `fpl league-fines` - season-to-date fines tally read straight from the league-history ledger, no network call; `-g` tallies through a specific gameweek (default: latest recorded), `--season` targets a season, `--draft` when both formats are configured. Zero-total managers are listed too - a manager with nothing fined and one no gameweek has ruled on yet are different facts, and gameweeks that couldn't be ruled are named separately rather than silently reading as "no fine"
 
 **Existing research:**
