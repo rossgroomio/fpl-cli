@@ -1036,17 +1036,27 @@ def _pair_squads(
 # (`_assign_point_in_time_positions`).
 _CARRIED_STANDINGS_FIELDS = ("league_position", "previous_league_position", "total_points")
 
+# The one carried field a null does not mean damage for, named once so the
+# gate below and the repair tally cannot disagree about which it is.
+_GATED_STANDINGS_FIELD = "previous_league_position"
+
 # Everything the carry, the draft reconstruction and the repair sweep between
 # them can change on a row -- `_assign_cohort_ranks` restates `gw_rank` off the
 # same pass that settles a position.
 _STANDINGS_ROW_FIELDS = (*_CARRIED_STANDINGS_FIELDS, "gw_rank")
 
-# What the repair sweep counts and names. Narrower than the fields it fills, on
-# the reasoning the fine restatement already follows: the warning speaks of a
-# league position or a cumulative total, so a row rewritten only to put a
-# `previous_league_position` or a `gw_rank` back has had neither restored and
-# saying otherwise reports a repair that did not happen (issue #319).
-_REPAIRED_STANDINGS_FIELDS = ("league_position", "total_points")
+# What the repair sweep counts and names -- the carried fields minus the one
+# `_carried_standings_fields` gates, derived from that tuple rather than
+# retyped so a field added to one cannot go missing from the other. Narrower
+# than the fields the sweep fills, on the reasoning the fine restatement
+# already follows: the warning speaks of a league position or a cumulative
+# total, so a row rewritten only to put a `previous_league_position` or a
+# `gw_rank` back has had neither restored, and saying otherwise reports a
+# repair that did not happen (issue #319). Widen the warning's wording along
+# with this tuple if a fourth carried field ever joins it.
+_REPAIRED_STANDINGS_FIELDS = tuple(
+    name for name in _CARRIED_STANDINGS_FIELDS if name != _GATED_STANDINGS_FIELD
+)
 
 
 def _carried_standings_fields(gameweek: int, start_gameweek: int) -> tuple[str, ...]:
@@ -1070,7 +1080,7 @@ def _carried_standings_fields(gameweek: int, start_gameweek: int) -> tuple[str, 
     """
     return tuple(
         name for name in _CARRIED_STANDINGS_FIELDS
-        if name != "previous_league_position"
+        if name != _GATED_STANDINGS_FIELD
         or _has_previous_gameweek(gameweek, start_gameweek)
     )
 
@@ -1769,6 +1779,7 @@ async def _backfill(
     backfill_detail: bool,
     fines_config: FinesConfig | None,
     use_net_points: bool,
+    start_gameweek: int,
     warnings: list[dict[str, str]],
 ) -> set[int]:
     """Fill what this run is allowed to fill, cheapest tier first.
@@ -1782,7 +1793,6 @@ async def _backfill(
     if not targets:
         return set()
 
-    start_gameweek = league_first_gameweek(data.get("league_start_event"))
     gaps = _gaps(store.coverage(), targets)
     repaired: set[int] = set()
 
@@ -2014,10 +2024,14 @@ async def capture_recap_history(
         return CaptureResult(store_readable=False, warnings=warnings)
 
     fpl_format: LeagueFormat = "draft" if data["fpl_format"] == "draft" else "classic"
-    # The league's own first scored gameweek, resolved once for every reader
-    # below it -- the carry's `previous_league_position` gate, the draft
-    # reconstruction, the notes pack and the fines tally all ask the same
-    # question and must not be able to answer it differently.
+    # The league's own first scored gameweek, resolved once and handed down
+    # rather than re-derived at each reader: the carry's
+    # `previous_league_position` gate, the draft reconstruction, `_backfill`
+    # (and through it both tiers and the repair sweep), the notes pack and the
+    # fines tally all ask the same question of the same `data`. The two
+    # helpers handed that whole dict -- `_target_gameweeks` and
+    # `_coarse_backfill` -- still ask it themselves, through the same
+    # `league_first_gameweek`.
     start_gameweek = league_first_gameweek(data.get("league_start_event"))
     store = LeagueHistoryStore(season, fpl_format, league_id)
     # `_report_coverage` below shows the user the store's own unreadable
@@ -2158,6 +2172,7 @@ async def capture_recap_history(
         backfill_detail=backfill_detail,
         fines_config=fines_config,
         use_net_points=use_net_points,
+        start_gameweek=start_gameweek,
         warnings=warnings,
     )
     # A repair `_backfill` just made can land on a gameweek the counters
