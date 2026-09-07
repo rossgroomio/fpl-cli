@@ -1067,8 +1067,8 @@ def _carried_standings_fields(gameweek: int, start_gameweek: int) -> tuple[str, 
     `build_history_rows` records none whatever the collector handed over
     (issue #147). Filling it there from the ledger's own earlier lines puts
     back exactly the pre-#147 values the write path refuses to record -- and
-    because the earliest capture of a first gameweek usually recorded each
-    manager's *current* place, what lands reads "held station" where the truth
+    because a capture of a first gameweek usually recorded each manager's
+    *current* place, what lands reads "held station" where the truth
     is "there was no previous gameweek" (issue #319).
 
     Gated here rather than in each caller, because the carry and the repair
@@ -1085,16 +1085,26 @@ def _carried_standings_fields(gameweek: int, start_gameweek: int) -> tuple[str, 
     )
 
 
-def _earliest_recorded_standings(
+def _last_recorded_standings(
     rows: list[LeagueHistoryRow],
 ) -> dict[int, dict[str, int]]:
-    """Per manager, the first value each standings field was ever recorded with.
+    """Per manager, the last value each standings field was recorded with.
 
-    Earliest rather than `resolved_gameweek`'s winner, for the reason
+    Recorded rather than `resolved_gameweek`'s winner, for the reason
     `_first_recorded` gives: the ledger is append-only, so a row an earlier
     replay already degraded sits *above* the original capture and wins
     resolution. Reading the winner would preserve the mistake rather than
     repair it.
+
+    The property that does that work is *non-null*, not *earliest*. The guard
+    below is what makes a degraded row contribute nothing, and it holds in
+    either direction, so reading backwards is exactly as safe against one.
+    What direction decides is which *recorded* value wins when several
+    disagree -- and there the later one is right: a gameweek captured several
+    times while it was still settling holds a stale position in its first
+    capture and the settled one in its last, and taking the first restores the
+    stale one (issue #320). Read backwards for that reason, not by accident;
+    "earliest" is the wrong invariant to restore here.
 
     Per field rather than per row, because no single row need hold all three:
     a gameweek captured live records its position and total while GW-1 is
@@ -1105,14 +1115,14 @@ def _earliest_recorded_standings(
     carries the standings position and total for the same point in time
     (`_unknown_row`), and those are exactly as recorded as an OK row's.
     """
-    earliest: dict[int, dict[str, int]] = {}
-    for row in rows:
-        known = earliest.setdefault(row.manager_key, {})
+    latest: dict[int, dict[str, int]] = {}
+    for row in reversed(rows):
+        known = latest.setdefault(row.manager_key, {})
         for name in _CARRIED_STANDINGS_FIELDS:
             value = getattr(row, name)
             if value is not None:
                 known.setdefault(name, value)
-    return earliest
+    return latest
 
 
 def _apply_recorded_standings(
@@ -1177,7 +1187,7 @@ def _carry_recorded_standings(
         return 0
 
     carried = _apply_recorded_standings(
-        rows, _earliest_recorded_standings(previous),
+        rows, _last_recorded_standings(previous),
         fields=_carried_standings_fields(gameweek, start_gameweek),
     )
     if carried:
@@ -1706,7 +1716,7 @@ def _repair_recorded_standings(
         candidates = [(winners[key], winners[key].model_copy()) for key in sorted(winners)]
         rows = [candidate for _, candidate in candidates]
         _apply_recorded_standings(
-            rows, _earliest_recorded_standings(stored), fields=repairable,
+            rows, _last_recorded_standings(stored), fields=repairable,
         )
         if fpl_format == "draft":
             _fill_draft_standings(

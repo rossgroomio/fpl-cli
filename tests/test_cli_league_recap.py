@@ -4501,6 +4501,72 @@ class TestReplayKeepsRecordedStandings:
             w["code"] == HISTORY_WARNING_STANDINGS_REPAIRED for w in result.warnings
         )
 
+    def _settling_captures(self, positions):
+        """One manager's gameweek captured repeatedly while it was settling.
+
+        Each capture records a different league position as bonus and late
+        results land, so the first line holds a stale place and the last holds
+        the settled one. `total_points` agrees throughout, which is what makes
+        the position the only field under test.
+        """
+        store = self._store()
+        base = make_history_row(
+            season=SEASON, fpl_format="draft", league_id=42, gameweek=1,
+            manager_key=10, manager_name="Alice", gross_points=60,
+            league_position=positions[0], total_points=60,
+        )
+        for offset, position in enumerate(positions):
+            store.append_rows(1, [base.model_copy(update={
+                "league_position": position,
+                "captured_at": base.captured_at + timedelta(hours=offset),
+            })])
+        return base
+
+    async def test_the_repair_restores_the_last_recorded_position_not_the_first(self):
+        """What keeps a nulled replay row out of the read is the value being
+        non-null, not the line being earliest, so the direction is free to be
+        right about the rest: taking the *first* non-null restores the stale
+        place the gameweek held mid-settlement, where the damage destroyed the
+        settled one recorded last (issue #320)."""
+        base = self._settling_captures((10, 11, 8, 7))
+        self._store().append_rows(1, [base.model_copy(update={
+            "league_position": None,
+            "captured_at": base.captured_at + timedelta(days=1),
+        })])
+        assert self._store().resolved_gameweek(1)[10].league_position is None
+
+        # An ordinary next-gameweek recap, which never touches GW1 itself.
+        await capture_recap_history(
+            self._draft(
+                2,
+                [_manager(name="Alice", entry_id=1, league_entry_id=10, gross_points=50)],
+                _cohort((10, "Alice", 1, 50, 110)),
+            ),
+            season=SEASON, finished_gameweeks=[1, 2],
+        )
+
+        assert self._store().resolved_gameweek(1)[10].league_position == 7
+
+    async def test_the_carry_keeps_the_last_recorded_position_not_the_first(self):
+        """The same read is on the carry path, and the carry runs on ordinary
+        draft recaps rather than only after damage -- so the direction decides
+        which recorded value wins every week, not just once a ledger is
+        broken (issue #320)."""
+        self._settling_captures((10, 11, 8, 7))
+
+        result = await capture_recap_history(
+            self._draft(
+                1,
+                [_manager(name="Alice", entry_id=1, league_entry_id=10, gross_points=60,
+                          total_points=None, overall_rank=None, previous_rank=None)],
+                _cohort((10, "Alice", 1, 60, 60)),
+            ),
+            season=SEASON, is_live_gw=False, finished_gameweeks=[1],
+        )
+
+        assert {r.manager_key: r.league_position for r in result.rows} == {10: 7}
+        assert self._store().resolved_gameweek(1)[10].league_position == 7
+
     async def test_a_gameweek_mixing_carried_and_derived_positions_stays_unranked(self):
         """A position carried from the ledger and one re-derived from totals
         are two different rankings, and draft's own standings break h2h ties on
