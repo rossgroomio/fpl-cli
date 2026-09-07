@@ -375,11 +375,15 @@ async def _draft_entry_check(
 # ---------------------------------------------------------------------------
 
 
-def _team_ratings_check(teams: list[str] | None) -> CheckResult:
+def _team_ratings_check(teams: list[str] | None, season: str) -> CheckResult:
     from fpl_cli.services.team_ratings import TeamRatingsService
 
     name = "team_ratings.yaml"
-    service = TeamRatingsService()
+    # The resolved season, not the clock (#318): doctor mirrors the service's
+    # own verdict, so handing it the label the rest of the report uses is what
+    # keeps the row from disagreeing with `metadata.season` -- and the service
+    # reaches the same verdict here as it does under a live client.
+    service = TeamRatingsService(season=season)
     if not service.config_path.exists():
         return CheckResult(
             name,
@@ -670,7 +674,7 @@ def _file_checks(teams: list[str] | None, season_year: int) -> list[CheckResult]
     that diagnosed the override) and, under --format json, the envelope.
     """
     checks: list[tuple[str, Callable[[], CheckResult]]] = [
-        ("team_ratings.yaml", lambda: _team_ratings_check(teams)),
+        ("team_ratings.yaml", lambda: _team_ratings_check(teams, season_label(season_year))),
         ("team_managers.yaml", lambda: _team_managers_check(teams)),
         ("previews/", lambda: _previews_check(teams)),
         ("team_finances.json", lambda: _team_finances_check(season_year)),

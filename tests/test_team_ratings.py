@@ -4,6 +4,7 @@ import logging
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 import yaml
 
@@ -73,6 +74,125 @@ class TestTeamPerformance:
         assert perf.goals_scored_away == 1.5
         assert perf.goals_conceded_home == 0.5
         assert perf.goals_conceded_away == 1.0
+
+
+class TestOverrunningSeason:
+    """A season running past 1 July keeps its ratings (#318).
+
+    The clock names the following season from 1 July, so a ratings file
+    stamped with the season still being played looked like a previous
+    season's and was discarded -- dropping every fixture to a neutral 4.0
+    mid-season. The season the service judges against comes from GW1's
+    deadline instead, via `ensure_fresh` or an explicit label.
+    """
+
+    LIVE = "2026-27"
+    CLOCK = "2027-28"  # what 5 July 2027 says while 2026-27 is still running
+
+    @pytest.fixture
+    def ratings_file(self, tmp_path):
+        path = tmp_path / "team_ratings.yaml"
+        path.write_text(
+            yaml.dump({
+                "metadata": {
+                    "season": self.LIVE,
+                    "last_updated": "2027-05-20",
+                    "source": "calculated",
+                    "staleness_threshold_days": 30,
+                    "based_on_gws": [1, 36],
+                    "calculation_method": "full_season",
+                },
+                "ratings": {
+                    "ARS": {"atk_home": 1, "atk_away": 2, "def_home": 1, "def_away": 2},
+                    "BUR": {"atk_home": 7, "atk_away": 7, "def_home": 7, "def_away": 7},
+                },
+            }),
+            encoding="utf-8",
+        )
+        return path
+
+    def test_the_clock_alone_discards_the_live_seasons_ratings(self, ratings_file):
+        """The defect, pinned: without a resolved season this is what happens."""
+        service = TeamRatingsService(config_path=ratings_file, season=self.CLOCK)
+        assert service.has_ratings is False
+        assert service.get_positional_fdr("FWD", "ARS", "BUR", "home") == 4.0
+
+    def test_a_resolved_season_keeps_them(self, ratings_file):
+        service = TeamRatingsService(config_path=ratings_file, season=self.LIVE)
+        assert service.has_ratings is True
+        assert service.get_rating("ARS") is not None
+        assert service.get_positional_fdr("FWD", "ARS", "BUR", "home") != 4.0
+        assert "different league" not in (service.get_staleness_warning() or "")
+
+    def test_a_genuinely_previous_seasons_file_is_still_discarded(self, ratings_file):
+        """The check still has to fire at a real rollover -- the file rates
+        clubs that have since been relegated."""
+        service = TeamRatingsService(config_path=ratings_file, season="2028-29")
+        assert service.has_ratings is False
+        warning = service.get_staleness_warning()
+        assert f"from {self.LIVE}, not 2028-29" in warning
+
+    async def test_ensure_fresh_retakes_a_verdict_reached_on_the_clock(
+        self, ratings_file, monkeypatch
+    ):
+        """A property read before `ensure_fresh` loads against the clock, so
+        adopting the resolved season has to re-read rather than relabel."""
+        monkeypatch.setattr(TeamRatingsService, "_refreshed_this_session", True)
+        service = TeamRatingsService(config_path=ratings_file, season=self.CLOCK)
+        assert service.has_ratings is False  # judged early, on the clock
+
+        client = AsyncMock()
+        client.get_season_year = AsyncMock(return_value=2026)  # GW1 says 2026-27
+        client.get_teams = AsyncMock(return_value=[])
+        await service.ensure_fresh(client)
+
+        assert service.season == self.LIVE
+        assert service.has_ratings is True
+
+    async def test_an_unreachable_client_leaves_the_clock_in_place(
+        self, ratings_file, monkeypatch
+    ):
+        monkeypatch.setattr(TeamRatingsService, "_refreshed_this_session", True)
+        service = TeamRatingsService(config_path=ratings_file, season=self.CLOCK)
+        client = AsyncMock()
+        client.get_season_year = AsyncMock(side_effect=httpx.ConnectError("boom"))
+        client.get_teams = AsyncMock(return_value=[])
+        await service.ensure_fresh(client)
+
+        assert service.season == self.CLOCK
+        assert service.has_ratings is False
+
+    def test_adopting_a_season_drops_everything_derived_from_the_old_load(
+        self, ratings_file
+    ):
+        """The reset contract, asserted directly.
+
+        `ensure_fresh` recomputes the team-set warning immediately after
+        adopting, so the production path masks a gap here — but the warning
+        is a diff against `self._ratings`, and those are discarded, so it
+        cannot outlive them.
+        """
+        service = TeamRatingsService(config_path=ratings_file, season=self.LIVE)
+        assert service.check_team_set(["ARS", "BUR", "COV"]) is not None
+        assert service._team_set_warning is not None
+
+        service._adopt_season(self.CLOCK)
+
+        assert service._team_set_warning is None
+        assert service._stale_season is None
+        assert service._metadata is None
+        assert service._ratings == {}
+
+    def test_a_save_is_stamped_with_the_resolved_season(self, ratings_file):
+        """Stamping a write with the clock would hand the next read a file
+        from a season that has not started."""
+        service = TeamRatingsService(config_path=ratings_file, season=self.LIVE)
+        service.save_ratings(
+            {"ARS": TeamRating(atk_home=1, atk_away=2, def_home=1, def_away=2)},
+            source="calculated",
+        )
+        written = yaml.safe_load(ratings_file.read_text(encoding="utf-8"))
+        assert written["metadata"]["season"] == self.LIVE
 
 
 class TestTeamRatingsService:
@@ -2102,7 +2222,10 @@ class TestDoctorTreatsBlendNoteAsHealthy:
             "fpl_cli.services.team_ratings.TeamRatingsService.config_path",
             new_callable=lambda: property(lambda self: path),
         ):
-            return _team_ratings_check(teams)
+            # The file below is stamped with the clock's season, so passing it
+            # here keeps these tests on the blend/drift branches rather than
+            # the season one.
+            return _team_ratings_check(teams, season_label())
 
     def test_prior_dominated_file_is_ok_with_the_note(self, tmp_path):
         from fpl_cli.cli.doctor import CheckStatus

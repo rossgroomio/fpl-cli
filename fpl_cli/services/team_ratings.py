@@ -224,15 +224,58 @@ class TeamRatingsService:
 
     _refreshed_this_session: ClassVar[bool] = False
 
-    def __init__(self, config_path: Path | str | None = None) -> None:
+    def __init__(
+        self, config_path: Path | str | None = None, season: str | None = None
+    ) -> None:
         # Left unresolved when not supplied so the default follows FPL_CLI_DATA_DIR
         # even if it is set after this module is imported.
         self._config_path = Path(config_path) if config_path else None
+        self._season = season
         self._ratings: dict[str, TeamRating] = {}
         self._metadata: RatingsMetadata | None = None
         self._loaded = False
         self._stale_season: str | None = None
         self._team_set_warning: str | None = None
+
+    @property
+    def season(self) -> str:
+        """The season this service treats as the one in progress.
+
+        The July-cutover clock unless a caller supplied a label resolved from
+        GW1's deadline. The distinction is load-bearing rather than cosmetic:
+        a season overrunning the cutover (2019-20, delayed into July 2020) has
+        the clock naming the *following* season from 1 July, so a ratings file
+        stamped with the live season looked like a previous season's and was
+        discarded -- taking every fixture down to a neutral 4.0 mid-season
+        (#318). `ensure_fresh` resolves it from the API; `fpl doctor` passes
+        the label it already resolved.
+        """
+        return self._season or season_label()
+
+    def _adopt_season(self, season: str) -> None:
+        """Adopt a resolved season, re-reading the file if it was judged early.
+
+        `_load_ratings` may already have run against the clock -- a property
+        read before `ensure_fresh` is enough -- and if it discarded the
+        ratings on that basis the verdict has to be retaken, not just
+        relabelled.
+
+        Everything derived from the discarded load goes with it, the team-set
+        warning included: `check_team_set` diffs the live league against
+        `self._ratings`, so a warning cached under the old season describes a
+        rating set that is no longer loaded. `ensure_fresh` happens to
+        recompute it immediately afterwards, which is not something a reset
+        contract should depend on.
+        """
+        if season == self._season:
+            return
+        self._season = season
+        if self._loaded:
+            self._ratings = {}
+            self._metadata = None
+            self._stale_season = None
+            self._team_set_warning = None
+            self._loaded = False
 
     @property
     def config_path(self) -> Path:
@@ -273,7 +316,7 @@ class TeamRatingsService:
             based_on_gws = None
 
         file_season = _season_of(meta.get("season"), last_updated)
-        if file_season and file_season != season_label():
+        if file_season and file_season != self.season:
             # A file from a previous season describes a different league: it
             # still rates the relegated clubs and knows nothing about the
             # promoted ones. Serving those numbers is worse than serving none,
@@ -282,7 +325,7 @@ class TeamRatingsService:
             logger.info(
                 "Team ratings stale (season %s != %s) - ignoring",
                 file_season,
-                season_label(),
+                self.season,
             )
             self._stale_season = file_season
             self._metadata = _empty_metadata()
@@ -346,7 +389,19 @@ class TeamRatingsService:
         The team-set check runs whether or not a refresh happened: a file that
         is fresh by date can still describe last season's twenty clubs, and
         that is the mismatch a date can never catch.
+
+        Resolving the season is the first thing done, and is why every async
+        consumer routes through here: the file's own stamp is judged against
+        GW1's deadline rather than the clock, so a season overrunning 1 July
+        keeps its ratings instead of having them thrown away mid-season
+        (#318). A client that cannot answer leaves the clock in place, which
+        is the answer the service had before.
         """
+        try:
+            self._adopt_season(season_label(await client.get_season_year()))
+        except Exception:  # noqa: BLE001 — the clock is a usable fallback
+            logger.debug("Season resolution skipped; using the clock", exc_info=True)
+
         if not TeamRatingsService._refreshed_this_session:
             try:
                 await self._refresh(client)
@@ -538,7 +593,7 @@ class TeamRatingsService:
         """
         data = {
             "metadata": {
-                "season": season_label(),
+                "season": self.season,
                 "last_updated": datetime.now().strftime("%Y-%m-%d"),
                 "source": source,
                 "staleness_threshold_days": 30,
@@ -582,7 +637,7 @@ class TeamRatingsService:
             staleness_threshold_days=30,
             based_on_gws=based_on_gws,
             calculation_method=calculation_method,
-            season=season_label(),
+            season=self.season,
         )
         self._loaded = True
         # Whatever was wrong with the old file has just been replaced.
@@ -870,7 +925,7 @@ class TeamRatingsService:
 
         if self._stale_season:
             return (
-                f"⚠️ Team ratings are from {self._stale_season}, not {season_label()} - "
+                f"⚠️ Team ratings are from {self._stale_season}, not {self.season} - "
                 "they describe a different league, so they were ignored and every "
                 "fixture will score a neutral 4.0. Run `fpl ratings update`."
             )
