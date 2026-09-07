@@ -61,6 +61,7 @@ from fpl_cli.cli._league_recap_types import (
     RecapFineResult,
     RecapManagerEntry,
     RecapManagerPlayer,
+    RecapPriorSeason,
     RecapStandingsEntry,
     RecapTransfer,
     draft_transaction_kind_counts,
@@ -803,6 +804,71 @@ async def _apply_league_start_offset(
 
 
 # ---------------------------------------------------------------------------
+# Prior seasons (issue #131)
+# ---------------------------------------------------------------------------
+
+
+async def collect_prior_seasons(
+    client: ManagerHistoryClient,
+    managers: list[RecapManagerEntry],
+) -> None:
+    """Attach each manager's FPL seasons before this one (issue #131).
+
+    Reads the manager-history endpoint's `past` list -- one row per season
+    the entry played, going back as far as the account does -- and stores
+    it on the manager row as `prior_seasons`. Classic only, by construction:
+    draft has no per-manager history endpoint. The caller gates it to the
+    league's opening gameweek (`is_league_opening_gameweek`), the one week
+    a season the record is news and the ledger has nothing of its own yet.
+
+    Best-effort, like `_apply_league_start_offset`: a manager whose fetch
+    fails is recorded as None rather than given an empty list, because an
+    empty `past` is the API's own answer -- an entry in its first recorded
+    season -- and the two must read differently downstream; and recorded
+    rather than left absent, because absent means the fetch was never made,
+    and a gameweek where every fetch failed must still say so. A row the
+    API sends without a season name, points or rank is dropped rather than
+    filled with zeros a reader would take for a finish.
+    """
+    sem = asyncio.Semaphore(_PICKS_CONCURRENCY)
+
+    async def _one(m: RecapManagerEntry) -> None:
+        async with sem:
+            try:
+                history = await client.get_manager_history(m["entry_id"])
+            except Exception as e:  # noqa: BLE001 — best-effort colour; recorded as unavailable
+                logger.warning(
+                    "Failed to fetch prior seasons for %s (entry %s); their FPL record "
+                    "before this season is left unavailable: %s",
+                    m["manager_name"], m["entry_id"], e,
+                )
+                m["prior_seasons"] = None
+                return
+        m["prior_seasons"] = shape_prior_seasons(history.get("past") or [])
+
+    await asyncio.gather(*(_one(m) for m in managers))
+
+
+def shape_prior_seasons(past: Sequence[Mapping[str, Any]]) -> list[RecapPriorSeason]:
+    """The API's `past` rows as `RecapPriorSeason`s, dropping any that lack a
+    season name, points or rank. `rank_percentage` travels as the string the
+    API sends; a row without one simply omits it."""
+    seasons: list[RecapPriorSeason] = []
+    for row in past:
+        name = row.get("season_name")
+        points = row.get("total_points")
+        rank = row.get("rank")
+        if not isinstance(name, str) or not isinstance(points, int) or not isinstance(rank, int):
+            continue
+        season = RecapPriorSeason(season_name=name, total_points=points, rank=rank)
+        pct = row.get("rank_percentage")
+        if pct is not None and pct != "":
+            season["rank_percentage"] = str(pct)
+        seasons.append(season)
+    return seasons
+
+
+# ---------------------------------------------------------------------------
 # Standings movement
 # ---------------------------------------------------------------------------
 
@@ -824,7 +890,29 @@ def _has_previous_gameweek(gw: int, start_event: int | None = None) -> bool:
     after GW1 scores its members only from there, so that gameweek has no
     predecessor either even though GW1 exists.
     """
-    return gw > max(1, start_event or 1)
+    return gw > _league_first_gameweek(start_event)
+
+
+def is_league_opening_gameweek(gw: int, start_event: int | None = None) -> bool:
+    """Whether `gw` is the first gameweek this league scored -- the
+    complement of `_has_previous_gameweek`, for what happens once a season
+    rather than from the second gameweek on.
+
+    Prior seasons (issue #131) are fetched on this gameweek and no other: a
+    manager's FPL record before this season does not change between
+    gameweeks, the ledger has nothing of its own yet to narrate, and one
+    extra request per manager is a price worth paying once. A league
+    created after GW1 has its opener at `start_event`, the same gameweek the
+    ledger treats as its first (issue #147), so a league that started at
+    GW3 gets the section on its GW3 recap rather than never.
+    """
+    return gw == _league_first_gameweek(start_event)
+
+
+def _league_first_gameweek(start_event: int | None) -> int:
+    """The first gameweek this league scored: GW1, or its own `start_event`
+    for a league created after the season began."""
+    return max(1, start_event or 1)
 
 
 def _compute_standings_movement(

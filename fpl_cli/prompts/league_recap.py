@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from fpl_cli.cli._league_recap_types import (
     LeagueRecapData,
+    PriorSeasonsSummary,
     draft_transaction_kind_counts,
     draft_transaction_kind_label,
     format_move_counts,
@@ -28,18 +29,19 @@ Your audience is every member of this league. They want entertainment first, inf
 - Name specific managers when praising or roasting
 - Reference specific decisions (captain picks, bench choices, and transfers or waiver moves where that data is provided)
 - Use the data to tell a story, not just list stats
-- Frame the recap around the season phase named in the "## League History" section: an opener (GW1) sets an early-season tone, a finale may reflect on the whole campaign using that section's season-spanning facts, and a midpoint or run-in gameweek should stay proportionate to where the season actually is - don't manufacture stakes the data doesn't support
+- Frame the recap around the season phase named in the "## League History" section: an opener (GW1) sets an early-season tone - and where a "## Prior Seasons" section is present, its returning-manager records are the opener's natural colour - a finale may reflect on the whole campaign using that section's season-spanning facts, and a midpoint or run-in gameweek should stay proportionate to where the season actually is - don't manufacture stakes the data doesn't support
 - Brief - 300-400 words max. Punchy paragraphs, not walls of text
 </tone>
 
 <rules>
 - NEVER give advice or recommendations. This is a recap, not a preview
 - NEVER speculate about future gameweeks
-- Stick to what happened this gameweek, with one exception: a historical claim (a streak, trend, or season-arc fact spanning more than this gameweek) is permitted only when it appears in the "## League History" section, stated using that section's own wording for counts, spans, and holds. A streak, trend, or season-arc fact not listed there is forbidden to mention, however obvious it might seem. Do NOT infer history from the Awards or GW Standings sections - they are compressed and can misrepresent what actually happened over time
+- Stick to what happened this gameweek, with two exceptions: a historical claim (a streak, trend, or season-arc fact spanning more than this gameweek) is permitted only when it appears in the "## League History" section, stated using that section's own wording for counts, spans, and holds; and a manager's FPL seasons before this one are permitted only as the "## Prior Seasons" rule below allows. A streak, trend, or season-arc fact not listed there is forbidden to mention, however obvious it might seem. Do NOT infer history from the Awards or GW Standings sections - they are compressed and can misrepresent what actually happened over time
 - Every League History entry is about ONE named manager only. NEVER combine two managers into a shared record, streak, or "club" - phrasing like "joined by X", "joins Y in that club", or "the two of them share" is forbidden unless a single League History entry explicitly names both managers together. Two managers who each had a one-off gameweek in a different week (e.g. one finished last in GW1, a different one finished last in GW2) do not form a joint record for either of them - each stays a separate, single-gameweek fact, and under the previous rule a single gameweek's worth of an event is not itself a reportable streak at all
 - A claim that a manager "topped the table", "was previously top", "led before this gameweek", or "fell from the top/first place" must match the "Previous gameweek's leader" statement at the top of the GW Standings section exactly - never infer the previous leader yourself from the size of a fall, the Prev column, or anything else. If that statement names no leader, make no such claim about anyone
 - A League History entry phrased as an observed count over a span (e.g. "3 in the last 11, with 8 not recorded") must be repeated that way, never simplified to "in a row" or "consecutive" unless the section itself already uses that phrasing
 - A League History season-count line (e.g. "4 gameweek wins this season") is optional colour in the Season Fines mould: use one when it sharpens something that happened this gameweek ("Bob's fourth gameweek win of the season"), or - when the section carries the season's full counts, at the halfway boundary and the finale - to ground a season retrospective. Take the count verbatim, repeat its "not judged" qualifier alongside it or leave the line out, and never derive or extrapolate a season total yourself from the weekly sections
+- A manager's FPL seasons before this one - how many they have played, how they finished last season, their best season, whether they are "returning", a "veteran" or a "newcomer", "entering their Nth season" - may be described only when the "## Prior Seasons" section is present and says so of that manager, with its season names, points, ranks, percentages and counts repeated verbatim. That record is FPL-wide, never this league's: write "their 11th season of FPL", never "their 11th season in this league", "a founder member" or "back for another year in this league" - the section cannot say when anyone joined this league, and neither can you. A manager it lists under "No prior FPL seasons on record" is in their first recorded season and has no past to describe; one it lists under "could not be fetched" gets no claim about their past in either direction. Never derive a trajectory the section does not state ("improving", "declining", "off the pace they set last year") - one gameweek's points against a full season's total is no comparison at all. Without a "## Prior Seasons" section, mention nobody's earlier seasons
 - If fines were triggered, make them a highlight
 - The "## Season Fines" section is optional colour, not a required beat. Use it when a season total sharpens what already happened this gameweek ("Bob's fourth last-place of the season"), and leave it out entirely when it adds nothing - do not open or close on the season table, do not list it out, and never pad the recap with it. A gameweek where nobody was fined rarely needs it at all
 - When you do use it, take its numbers verbatim and only from that section. NEVER add up fines yourself from the "## Fines" section, which covers this gameweek alone, and never present a total the Season Fines section qualifies as incomplete as though it were final - repeat its qualification alongside it or leave the number out
@@ -71,6 +73,7 @@ def get_recap_synthesis_prompt(
     waivers_text: str = "",
     player_clubs_text: str = "",
     league_history_text: str = "",
+    prior_seasons_text: str = "",
     is_bgw: bool = False,
     is_dgw: bool = False,
     season_length: int = 38,
@@ -129,6 +132,9 @@ def get_recap_synthesis_prompt(
 
     if league_history_text:
         sections.extend(["", "## League History", league_history_text])
+
+    if prior_seasons_text:
+        sections.extend(["", "## Prior Seasons", prior_seasons_text])
 
     if research_summary:
         sections.extend(["", "## GW Context (from research)", research_summary])
@@ -602,6 +608,51 @@ def format_recap_league_history_context(pack: NotesPack | None) -> str:
         lines.append("Coverage:")
         for entry in pack.coverage_entries:
             lines.append(f"- {entry.text}")
+    return "\n".join(lines)
+
+
+def format_recap_prior_seasons_context(summary: PriorSeasonsSummary | None) -> str:
+    """Each manager's FPL record before this season, FPL-wide (issue #131).
+
+    Enumerate-and-lock, like Captains and Chips: an explicit count of the
+    managers with a record, one line each carrying every figure the API
+    gave, and the managers with no record and no answer named rather than
+    omitted. The League History section is the league's own memory, and at
+    the season opener it has none -- this is the one section that can say a
+    returning manager finished in the top 4% last year, or that another is
+    in their first recorded season.
+
+    The preamble says what the tenure is *not*. Entry IDs and league IDs
+    are reissued every season, so the API cannot say when anyone joined
+    this league, and "their 11th season" invites exactly that reading; it
+    is pinned here as well as in the system prompt because the section is
+    what the model quotes from.
+
+    Empty when nothing was fetched -- every gameweek but the league's opener,
+    and every draft recap -- so the section is absent and the system
+    prompt's fallback ("mention nobody's earlier seasons") applies.
+    """
+    if summary is None:
+        return ""
+    lines = [
+        "Each manager's FPL record before this season, from the game's own history. "
+        "Seasons and finishes are FPL-wide - played anywhere in FPL, ranked against every "
+        "FPL manager - and say nothing about when anyone joined this league.",
+        f"Total managers with prior FPL seasons on record: {len(summary.lines)} of "
+        f"{summary.total_managers}",
+    ]
+    lines.extend(f"- {line}" for line in summary.lines)
+    if summary.new_to_fpl:
+        lines.append(
+            f"No prior FPL seasons on record ({len(summary.new_to_fpl)}): "
+            f"{', '.join(summary.new_to_fpl)} - this is their first season of FPL on "
+            "record, so they have no past to describe"
+        )
+    if summary.unavailable:
+        lines.append(
+            f"Prior seasons could not be fetched ({len(summary.unavailable)}): "
+            f"{', '.join(summary.unavailable)} - say nothing about their past either way"
+        )
     return "\n".join(lines)
 
 

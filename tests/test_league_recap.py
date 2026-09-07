@@ -29,21 +29,28 @@ from fpl_cli.cli._league_recap_data import (
     _reconcile_classic_headline_numbers,
     collect_classic_recap_data,
     collect_draft_recap_data,
+    collect_prior_seasons,
     configured_fine_rule_types,
     derive_point_in_time_positions,
     evaluate_league_fines,
+    is_league_opening_gameweek,
     recap_fine_player_names,
     restate_recap_fine_players,
+    shape_prior_seasons,
 )
 from fpl_cli.cli._league_recap_types import (
+    PriorSeasonsSummary,
     RecapAwards,
     RecapDraftTransaction,
     RecapFineResult,
     RecapManagerEntry,
     RecapManagerPlayer,
+    RecapPriorSeason,
     RecapTransfer,
     draft_transaction_kind_counts,
     format_move_counts,
+    format_prior_seasons_line,
+    summarise_prior_seasons,
 )
 from fpl_cli.prompts.league_recap import (
     collect_player_clubs,
@@ -53,6 +60,7 @@ from fpl_cli.prompts.league_recap import (
     format_recap_fines_context,
     format_recap_league_history_context,
     format_recap_player_clubs_context,
+    format_recap_prior_seasons_context,
     format_recap_season_fines_context,
     format_recap_standings_context,
     format_recap_transfers_context,
@@ -3668,11 +3676,15 @@ class TestLeagueHistoryPromptSection:
         assert "League History" in system
         assert "forbidden" in system.lower()
 
-    def test_the_blanket_stick_to_gameweek_rule_now_names_the_bounded_exception(self):
+    def test_the_blanket_stick_to_gameweek_rule_names_its_bounded_exceptions(self):
+        """League History for the league's own past; Prior Seasons (issue
+        #131) for a manager's FPL record before it. Both are named in the
+        blanket rule itself, so neither reads as a loophole in it."""
         from fpl_cli.prompts.league_recap import RECAP_SYNTHESIS_SYSTEM_PROMPT
 
-        assert "Stick to what happened this gameweek, with one exception" in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        assert "Stick to what happened this gameweek, with two exceptions" in RECAP_SYNTHESIS_SYSTEM_PROMPT
         assert '"## League History" section' in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        assert '"## Prior Seasons" rule below' in RECAP_SYNTHESIS_SYSTEM_PROMPT
 
     def test_the_season_count_rule_frames_counts_as_optional_colour(self):
         from fpl_cli.prompts.league_recap import RECAP_SYNTHESIS_SYSTEM_PROMPT
@@ -4770,3 +4782,356 @@ class TestFinePlacement:
 
         assert '"second"' in system
         assert "Two managers each on 1 are two separate first offences" in system
+
+
+# ---------------------------------------------------------------------------
+# Prior seasons (issue #131)
+# ---------------------------------------------------------------------------
+
+
+def _season(name: str, points: int, rank: int, pct: str | None = None) -> RecapPriorSeason:
+    season = RecapPriorSeason(season_name=name, total_points=points, rank=rank)
+    if pct is not None:
+        season["rank_percentage"] = pct
+    return season
+
+
+def _with_prior_seasons(
+    name: str, entry_id: int, seasons: list[RecapPriorSeason] | None,
+) -> RecapManagerEntry:
+    """A manager row as the collector leaves it: `seasons` None means the
+    fetch failed, `[]` means the API answered with no seasons. A manager the
+    collector never reached is the bare `_make_manager`, with no key."""
+    manager = _make_manager(name=name, entry_id=entry_id)
+    manager["prior_seasons"] = seasons
+    return manager
+
+
+class TestLeagueOpeningGameweek:
+    def test_gw1_opens_a_league_that_started_with_the_season(self):
+        assert is_league_opening_gameweek(1) is True
+        assert is_league_opening_gameweek(2) is False
+
+    def test_a_late_starting_league_opens_on_its_own_start_event(self):
+        assert is_league_opening_gameweek(3, start_event=3) is True
+        assert is_league_opening_gameweek(1, start_event=3) is False
+        assert is_league_opening_gameweek(4, start_event=3) is False
+
+    def test_the_opener_is_the_one_gameweek_with_no_predecessor_from_the_start_on(self):
+        """The two helpers share one definition of the league's first
+        gameweek, so a league cannot open on one gameweek and gain a
+        previous table on another."""
+        assert not _has_previous_gameweek(3, 3) and is_league_opening_gameweek(3, 3)
+        assert _has_previous_gameweek(4, 3) and not is_league_opening_gameweek(4, 3)
+
+
+class TestShapePriorSeasons:
+    def test_keeps_the_api_fields_and_the_percentage_as_a_string(self):
+        rows = [{"season_name": "2024/25", "total_points": 2100, "rank": 150000, "rank_percentage": "2"}]
+
+        assert shape_prior_seasons(rows) == [_season("2024/25", 2100, 150000, "2")]
+
+    def test_a_row_without_a_percentage_omits_it_rather_than_inventing_one(self):
+        rows = [{"season_name": "2024/25", "total_points": 2100, "rank": 150000}]
+
+        assert "rank_percentage" not in shape_prior_seasons(rows)[0]
+
+    def test_a_row_missing_a_finish_is_dropped_rather_than_zeroed(self):
+        rows = [
+            {"season_name": "2024/25", "total_points": 2100},
+            {"season_name": "2023/24", "total_points": 1900, "rank": 9},
+        ]
+
+        assert [s["season_name"] for s in shape_prior_seasons(rows)] == ["2023/24"]
+
+
+class TestCollectPriorSeasons:
+    async def test_each_manager_gets_the_past_list_the_api_returns(self):
+        client = _FakeClassicClient({}, {}, history_by_entry={
+            1: {"current": [], "past": [
+                {"season_name": "2024/25", "total_points": 2100, "rank": 150000, "rank_percentage": "2"},
+            ]},
+        })
+        managers = [_make_manager(name="Alice", entry_id=1)]
+
+        await collect_prior_seasons(client, managers)
+
+        assert managers[0]["prior_seasons"] == [_season("2024/25", 2100, 150000, "2")]
+
+    async def test_an_empty_past_is_recorded_as_empty_not_left_absent(self):
+        """The API's own answer for an entry in its first season -- a real
+        fact the report states, not a gap it hides."""
+        client = _FakeClassicClient({}, {}, history_by_entry={1: {"current": [], "past": []}})
+        managers = [_make_manager(name="Alice", entry_id=1)]
+
+        await collect_prior_seasons(client, managers)
+
+        assert managers[0]["prior_seasons"] == []
+
+    async def test_a_history_without_a_past_key_reads_as_no_seasons(self):
+        client = _FakeClassicClient({}, {})  # answers {"current": []} for everyone
+        managers = [_make_manager(name="Alice", entry_id=1)]
+
+        await collect_prior_seasons(client, managers)
+
+        assert managers[0]["prior_seasons"] == []
+
+    async def test_a_failed_fetch_records_none_rather_than_no_seasons(self):
+        """None, not `[]` -- an empty list is the API saying "no seasons" --
+        and not absent either, since absent means never asked: a gameweek
+        where every fetch fails still has to say so."""
+        class _FailingHistoryClient:
+            async def get_manager_history(self, entry_id):
+                raise RuntimeError("network blip")
+
+        managers = [_make_manager(name="Alice", entry_id=1)]
+
+        await collect_prior_seasons(_FailingHistoryClient(), managers)
+
+        assert "prior_seasons" in managers[0]
+        assert managers[0]["prior_seasons"] is None
+
+    async def test_one_failure_does_not_disturb_the_others(self):
+        class _PartialClient:
+            async def get_manager_history(self, entry_id):
+                if entry_id == 2:
+                    raise RuntimeError("network blip")
+                return {"current": [], "past": [
+                    {"season_name": "2025/26", "total_points": 2000, "rank": 900000},
+                ]}
+
+        managers = [_make_manager(name="Alice", entry_id=1), _make_manager(name="Bob", entry_id=2)]
+
+        await collect_prior_seasons(_PartialClient(), managers)
+
+        assert managers[0]["prior_seasons"] == [_season("2025/26", 2000, 900000)]
+        assert managers[1]["prior_seasons"] is None
+
+
+class TestFormatPriorSeasonsLine:
+    def test_a_full_record_reads_as_one_sentence(self):
+        seasons = [
+            _season("2014/15", 1802, 1200345, "38"),
+            _season("2023/24", 2512, 6780, "0.1"),
+            _season("2025/26", 2301, 55120, "1"),
+        ]
+
+        line = format_prior_seasons_line("Alice", seasons, previous_season_name="2025/26")
+
+        assert line == (
+            "Alice: 3 prior FPL seasons played (2014/15 to 2025/26; 9 seasons missed in "
+            "between), making this their 4th season of FPL. Last season (2025/26): 2,301 pts, "
+            "rank 55,120 (top 1%). Best season: 2023/24, 2,512 pts, rank 6,780 (top 0.1%)."
+        )
+
+    def test_tenure_counts_seasons_played_not_the_span(self):
+        """The issue's own correction: `past` lists only the seasons played,
+        so the span can be longer than the count, and the gap is said."""
+        seasons = [_season("2020/21", 1500, 3000000), _season("2025/26", 2000, 900000)]
+
+        line = format_prior_seasons_line("Alice", seasons, previous_season_name="2025/26")
+
+        assert line.startswith(
+            "Alice: 2 prior FPL seasons played (2020/21 to 2025/26; 4 seasons missed in "
+            "between), making this their 3rd season of FPL."
+        )
+
+    def test_a_single_season_has_no_best_clause(self):
+        line = format_prior_seasons_line(
+            "Bob", [_season("2025/26", 1900, 2345678, "31")], previous_season_name="2025/26",
+        )
+
+        assert line == (
+            "Bob: 1 prior FPL season played (2025/26), making this their 2nd season of FPL. "
+            "Last season (2025/26): 1,900 pts, rank 2,345,678 (top 31%)."
+        )
+
+    def test_a_most_recent_season_that_is_also_the_best_is_said_once(self):
+        seasons = [_season("2023/24", 1500, 3000000, "60"), _season("2025/26", 2000, 900000, "20")]
+
+        line = format_prior_seasons_line("Alice", seasons, previous_season_name="2025/26")
+
+        assert line.endswith(
+            "Last season (2025/26): 2,000 pts, rank 900,000 (top 20%), their best to date.",
+        )
+        assert "Best season" not in line
+
+    def test_a_season_sat_out_is_not_called_last_season(self):
+        line = format_prior_seasons_line(
+            "Cam", [_season("2023/24", 1500, 3000000, "60")], previous_season_name="2025/26",
+        )
+
+        assert "Most recent season (2023/24; did not play 2025/26): 1,500 pts" in line
+        assert "Last season" not in line
+
+    def test_without_a_previous_season_name_the_most_recent_is_called_last_season(self):
+        line = format_prior_seasons_line("Cam", [_season("2023/24", 1500, 3000000)])
+
+        assert "Last season (2023/24)" in line
+
+    def test_the_api_order_does_not_decide_which_season_is_most_recent(self):
+        seasons = [_season("2025/26", 2000, 900000), _season("2020/21", 1500, 3000000)]
+
+        line = format_prior_seasons_line("Dee", seasons, previous_season_name="2025/26")
+
+        assert "(2020/21 to 2025/26;" in line
+        assert "Last season (2025/26)" in line
+
+    def test_a_percentage_the_api_did_not_send_is_not_printed(self):
+        line = format_prior_seasons_line("Eve", [_season("2025/26", 2000, 900000)])
+
+        assert "top" not in line
+        assert "%" not in line
+
+    def test_a_tie_on_points_and_rank_names_the_more_recent_season_as_best(self):
+        seasons = [_season("2020/21", 2000, 900000), _season("2025/26", 2000, 900000)]
+
+        line = format_prior_seasons_line("Fay", seasons, previous_season_name="2025/26")
+
+        assert line.endswith("their best to date.")
+
+    def test_a_best_season_is_the_one_with_most_points_then_the_better_rank(self):
+        seasons = [
+            _season("2020/21", 2000, 900000),
+            _season("2021/22", 2000, 800000),
+            _season("2025/26", 1500, 3000000),
+        ]
+
+        line = format_prior_seasons_line("Gus", seasons, previous_season_name="2025/26")
+
+        assert line.endswith("Best season: 2021/22, 2,000 pts, rank 800,000.")
+
+
+class TestSummarisePriorSeasons:
+    def test_none_when_nothing_was_fetched(self):
+        """Absent everywhere means the fetch was never made -- every
+        gameweek but the opener -- which is not a roster of failures."""
+        assert summarise_prior_seasons([_make_manager(name="Alice")]) is None
+
+    def test_every_fetch_failing_is_not_the_same_as_no_fetch(self):
+        """The whole cohort unreachable is a section naming them all as
+        unfetched, not the silence a non-opener gets."""
+        managers = [_with_prior_seasons("Alice", 1, None), _with_prior_seasons("Bob", 2, None)]
+
+        summary = summarise_prior_seasons(managers)
+
+        assert summary is not None
+        assert summary.lines == []
+        assert summary.unavailable == ["Alice", "Bob"]
+        assert summary.coverage_lines == ["Prior seasons could not be fetched for Alice and Bob."]
+
+    def test_sorts_managers_by_most_recent_finish_then_name(self):
+        managers = [
+            _with_prior_seasons("Cam", 3, [_season("2025/26", 1500, 3000000)]),
+            _with_prior_seasons("Bob", 2, [_season("2025/26", 2000, 900000)]),
+            _with_prior_seasons("Alice", 1, [_season("2025/26", 2000, 900000)]),
+        ]
+
+        summary = summarise_prior_seasons(managers, previous_season_name="2025/26")
+
+        assert summary is not None
+        assert [line.split(":")[0] for line in summary.lines] == ["Alice", "Bob", "Cam"]
+
+    def test_separates_no_record_from_no_answer_and_counts_the_whole_cohort(self):
+        managers = [
+            _with_prior_seasons("Alice", 1, [_season("2025/26", 2000, 900000)]),
+            _with_prior_seasons("Bob", 2, []),
+            _with_prior_seasons("Cam", 3, None),
+        ]
+
+        summary = summarise_prior_seasons(managers, previous_season_name="2025/26")
+
+        assert summary is not None
+        assert len(summary.lines) == 1
+        assert summary.new_to_fpl == ["Bob"]
+        assert summary.unavailable == ["Cam"]
+        assert summary.total_managers == 3
+        assert summary.coverage_lines == [
+            "No prior FPL seasons on record for Bob: this is their first season of FPL on record.",
+            "Prior seasons could not be fetched for Cam.",
+        ]
+
+    def test_coverage_lines_join_names_in_prose(self):
+        managers = [_with_prior_seasons(n, i, []) for i, n in enumerate(["Cam", "Alice", "Bob"], 1)]
+
+        summary = summarise_prior_seasons(managers)
+
+        assert summary is not None
+        assert summary.coverage_lines == [
+            "No prior FPL seasons on record for Alice, Bob and Cam: this is their first "
+            "season of FPL on record.",
+        ]
+
+    def test_the_previous_season_name_reaches_every_line(self):
+        managers = [_with_prior_seasons("Alice", 1, [_season("2023/24", 1500, 3000000)])]
+
+        summary = summarise_prior_seasons(managers, previous_season_name="2025/26")
+
+        assert summary is not None
+        assert "did not play 2025/26" in summary.lines[0]
+
+
+class TestPriorSeasonsPromptSection:
+    def test_empty_when_nothing_was_fetched(self):
+        assert format_recap_prior_seasons_context(None) == ""
+
+    def test_counts_the_managers_with_a_record_against_the_whole_cohort(self):
+        summary = PriorSeasonsSummary(lines=["Alice: a record."], new_to_fpl=["Bob"], unavailable=["Cam"])
+
+        text = format_recap_prior_seasons_context(summary)
+
+        assert "Total managers with prior FPL seasons on record: 1 of 3" in text
+        assert "- Alice: a record." in text
+
+    def test_states_absence_rather_than_omitting_it(self):
+        summary = PriorSeasonsSummary(lines=[], new_to_fpl=["Bob"], unavailable=["Cam", "Dee"])
+
+        text = format_recap_prior_seasons_context(summary)
+
+        assert "No prior FPL seasons on record (1): Bob - this is their first season of FPL on record" in text
+        assert "Prior seasons could not be fetched (2): Cam, Dee - say nothing about their past" in text
+
+    def test_says_the_record_is_fpl_wide_and_silent_on_league_tenure(self):
+        text = format_recap_prior_seasons_context(
+            PriorSeasonsSummary(lines=[], new_to_fpl=["Bob"], unavailable=[]),
+        )
+
+        assert "FPL-wide" in text
+        assert "say nothing about when anyone joined this league" in text
+
+    def test_the_section_lands_after_league_history_and_before_research(self):
+        _, user = get_recap_synthesis_prompt(
+            gw=1, league_name="Test", fpl_format="classic",
+            awards_text="x", standings_text="| t |", fines_text="",
+            league_history_text="Season phase: the season opener",
+            prior_seasons_text="Total managers with prior FPL seasons on record: 1 of 1",
+            research_summary="Some research.",
+        )
+
+        assert "## Prior Seasons" in user
+        assert (
+            user.index("## League History")
+            < user.index("## Prior Seasons")
+            < user.index("## GW Context (from research)")
+        )
+
+    def test_no_section_when_the_caller_supplies_no_text(self):
+        _, user = get_recap_synthesis_prompt(
+            gw=5, league_name="Test", fpl_format="classic",
+            awards_text="x", standings_text="| t |", fines_text="",
+        )
+
+        assert "## Prior Seasons" not in user
+
+    def test_the_system_prompt_pins_prior_season_claims_to_the_section(self):
+        from fpl_cli.prompts.league_recap import RECAP_SYNTHESIS_SYSTEM_PROMPT
+
+        assert '"## Prior Seasons" section is present' in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        assert "FPL-wide, never this league's" in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        assert 'never "their 11th season in this league"' in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        assert "mention nobody's earlier seasons" in RECAP_SYNTHESIS_SYSTEM_PROMPT
+
+    def test_the_system_prompt_forbids_deriving_a_trajectory(self):
+        from fpl_cli.prompts.league_recap import RECAP_SYNTHESIS_SYSTEM_PROMPT
+
+        assert "Never derive a trajectory the section does not state" in RECAP_SYNTHESIS_SYSTEM_PROMPT

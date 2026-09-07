@@ -81,6 +81,26 @@
 {% endif %}
 {% endif %}
 
+{% if (prior_seasons_lines is defined and prior_seasons_lines) or (prior_seasons_coverage_lines is defined and prior_seasons_coverage_lines) %}
+---
+
+# Prior Seasons
+
+*Each manager's FPL record before this season, from the game's own history — seasons played anywhere in FPL, not in this league.*
+
+{% if prior_seasons_lines is defined and prior_seasons_lines %}
+{% for line in prior_seasons_lines %}
+- {{ line }}
+{% endfor %}
+
+{% endif %}
+{% if prior_seasons_coverage_lines is defined and prior_seasons_coverage_lines %}
+{% for line in prior_seasons_coverage_lines %}
+*{{ line }}*
+{% endfor %}
+{% endif %}
+{% endif %}
+
 {% if fines is defined and fines %}
 ---
 
