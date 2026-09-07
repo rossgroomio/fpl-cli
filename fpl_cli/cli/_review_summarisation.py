@@ -93,6 +93,7 @@ def _report_research_corrections(
     all_corrections: list[str],
     table_corrections: int,
     prose_corrections: int,
+    count_corrections: int,
     debug_dir: Path | None,
 ) -> str | None:
     """Tell the user what the research validators changed; return the detail file's path.
@@ -100,14 +101,17 @@ def _report_research_corrections(
     Printed on every summarise run, not just `--debug`. The scrubber can take
     whole sentences out of the narrative, and a report that quietly lost half
     its prose should say so without the user having had to ask for debug
-    output first (#265). The per-correction detail still only lands on disk
-    under `--debug`.
+    output first (#265). The count figure is there for the opposite reason: a
+    line reading "0 narrative sentence(s) scrubbed" was taken as a clean bill of
+    health on a narrative whose arithmetic nothing had ever inspected (#324).
+    The per-correction detail still only lands on disk under `--debug`.
     """
     if not all_corrections:
         return None
     error_console.print(
         f"[yellow]  ⚠ Research corrections: {table_corrections} table fix(es), "
-        f"{prose_corrections} narrative sentence(s) scrubbed[/yellow]"
+        f"{prose_corrections} narrative sentence(s) scrubbed, "
+        f"{count_corrections} narrative count(s) corrected[/yellow]"
     )
     if debug_dir is None:
         error_console.print("[dim]    Re-run with --debug to see what changed[/dim]")
@@ -335,13 +339,11 @@ def _format_research_context(
     fixtures_data = collected_data.get("fixtures", [])
     match_results_str = ""
     if fixtures_data:
-        total_goals = sum(
-            (f.get("home_score") or 0) + (f.get("away_score") or 0) for f in fixtures_data
-        )
-        match_lines = [
-            f"Summary: {len(fixtures_data)} fixtures, {total_goals} total goals "
-            f"(use these exact counts - do not fabricate alternatives)."
-        ]
+        from fpl_cli.prompts.review import fixture_aggregates
+
+        # Every count the narrative is allowed to state, pinned here and checked
+        # by `validate_research_counts` off the same computation (#324).
+        match_lines = [fixture_aggregates(fixtures_data).summary_line()]
         for f in fixtures_data:
             match_lines.append(
                 f"{f['home_team']} {f['home_score']}-{f['away_score']} {f['away_team']}"
@@ -950,8 +952,10 @@ async def _review_llm_summarise(
         REVIEW_RESEARCH_SYSTEM_PROMPT,
         check_next_week_grounding,
         ensure_top_performer_first,
+        fixture_aggregates,
         get_review_research_prompt,
         get_review_synthesis_prompt,
+        validate_research_counts,
         validate_research_prose,
         validate_research_teams,
     )
@@ -974,6 +978,7 @@ async def _review_llm_summarise(
     synthesis_summary = None
     table_corrections = 0
     prose_corrections_count = 0
+    count_corrections_count = 0
     corrections_path: str | None = None
     synthesis_problems: list[str] = []
     synthesis_corrections_path: str | None = None
@@ -1052,13 +1057,23 @@ async def _review_llm_summarise(
             research_summary, prose_corrections = validate_research_prose(
                 research_summary, player_map, prose_allowlist
             )
-            all_corrections = club_corrections + top_performer_corrections + prose_corrections
+            research_summary, count_corrections = validate_research_counts(
+                research_summary,
+                fixture_aggregates(collected_data.get("fixtures", [])),
+                teams,
+                player_map,
+            )
+            all_corrections = (
+                club_corrections + top_performer_corrections + prose_corrections + count_corrections
+            )
             table_corrections = len(club_corrections) + len(top_performer_corrections)
             prose_corrections_count = len(prose_corrections)
+            count_corrections_count = len(count_corrections)
             corrections_path = _report_research_corrections(
                 all_corrections,
                 table_corrections,
                 prose_corrections_count,
+                count_corrections_count,
                 debug_dir if debug else None,
             )
             if research_summary:
@@ -1228,6 +1243,7 @@ async def _review_llm_summarise(
         "synthesis_summary": synthesis_summary,
         "table_corrections": table_corrections,
         "prose_corrections": prose_corrections_count,
+        "count_corrections": count_corrections_count,
         "corrections_path": corrections_path,
         "synthesis_problems": synthesis_problems,
         "synthesis_corrections_path": synthesis_corrections_path,

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -75,7 +75,7 @@ NEVER:
 - Treat a blank-gameweek zero as a performance failure - most FPL managers plan for these
 - Speculate about future double or blank gameweeks for teams NOT listed in the provided actual or predicted DGW data
 - Treat 3-letter team codes (LEE, NEW, MAN, BUR, ARS, etc.) as surnames or people's names. LEE is Leeds United, not someone called "Lee"; NEW is Newcastle, not "New"; MAN is Manchester, not "Man". In prose, always expand codes to the full team name (or a natural short form like "Leeds", "Newcastle", "Man Utd"). Reserve 3-letter codes for table cells only
-- Fabricate fixture counts, goal totals, or any other numeric summary statistic. If you mention the number of fixtures or total goals, use the values from the "Summary:" line at the top of the GW Results block. If that line is absent, don't cite a count at all
+- Fabricate or derive any division-wide count, rate, average, share or other numeric summary statistic. The "Summary:" line at the top of the GW Results block is the only authority on how many fixtures, goals, clean sheets and goalless draws there were - quote its numbers exactly. Never count, total, average or otherwise infer a summary statistic from the scorelines listed beneath it: a clean sheet is per team, not per goalless match, so counting the 0-0s gets it wrong. And never state a division-wide figure the Summary line does not carry - red cards, penalties, hat-tricks, teams that failed to score, the average scoreline, the share of matches drawn - write around it instead. If the Summary line is absent, cite no such figures at all
 - Split a DGW player's gameweek total across their two fixtures ("14 in the first, 5 in the second"). You only receive the GW total - any per-match breakdown is fabrication. Cite the full GW total only, or describe the haul qualitatively ("a clean sheet and a goal in the DGW") without assigning points to individual fixtures
 - Fabricate transfer history, loan arrangements, or contractual details about players in the Disappointments or Standout Performers tables. If you lack sourced information explaining why a player blanked or hauled, describe the statistical outcome ("returned just 1 point") without inventing a backstory. Do not reference a player's club history, loan status, or off-field context unless it appeared in your search results
 - Name any player in the GW Narrative paragraph who does not appear in the Dream Team list, the Blankers list, or as a goalscorer/assister in the GW Results match lines. The narrative must reference only players grounded in the provided data - no metaphorical comparisons, no "X reminded us of Y", no "the next Z". If you cannot make a point without naming an unprovided player, drop the comparison and describe what actually happened instead
@@ -133,6 +133,77 @@ This query runs in the 24-48h after the gameweek finished.
 - Prioritise signal over noise - focus on the narrative-worthy performers
 - Capture what makes this GW memorable or notable
 </quality_requirements>"""
+
+
+# The aggregates the research prompt pins and the narrative validator enforces,
+# in the order the `Summary:` line prints them. Singular forms; `_pluralise`
+# adds the "s". Adding a row here extends both the prompt and the check, which
+# is the point -- a count pinned in only one of the two is how #324 shipped a
+# wrong clean-sheet total.
+_AGGREGATE_LABELS: tuple[tuple[str, str], ...] = (
+    ("fixtures", "fixture"),
+    ("total_goals", "total goal"),
+    ("clean_sheets", "clean sheet"),
+    ("goalless_draws", "goalless draw"),
+)
+
+
+def _pluralise(count: int, noun: str) -> str:
+    """Render a count with its noun: 6 clean sheets, but 1 clean sheet."""
+    return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
+
+
+@dataclass(frozen=True)
+class FixtureAggregates:
+    """The countable facts a gameweek's scorelines fix, computed once.
+
+    The `Summary:` line handed to the research provider as ground truth and the
+    validator that checks the narrative coming back both read this object, so a
+    count the prompt pins cannot drift from the count the check enforces.
+    """
+
+    fixtures: int = 0
+    total_goals: int = 0
+    clean_sheets: int = 0
+    goalless_draws: int = 0
+
+    def summary_line(self) -> str:
+        """The `Summary:` line that heads the GW Results block."""
+        counts = ", ".join(
+            _pluralise(int(getattr(self, field)), noun) for field, noun in _AGGREGATE_LABELS
+        )
+        return f"Summary: {counts} (use these exact counts - do not fabricate alternatives)."
+
+
+def fixture_aggregates(fixtures_data: Iterable[Mapping[str, Any]]) -> FixtureAggregates:
+    """Count fixtures, goals, clean sheets and goalless draws from the scorelines.
+
+    A clean sheet belongs to a *team*, so a 0-0 contributes two and a 1-0
+    contributes one. Deriving the total from the goalless draws alone -- the
+    shortcut a model left to its own devices takes -- misses every clean sheet
+    kept in a match that had goals.
+    """
+    fixtures = 0
+    total_goals = 0
+    clean_sheets = 0
+    goalless_draws = 0
+    for fixture in fixtures_data:
+        home = fixture.get("home_score") or 0
+        away = fixture.get("away_score") or 0
+        fixtures += 1
+        total_goals += home + away
+        if away == 0:
+            clean_sheets += 1
+        if home == 0:
+            clean_sheets += 1
+        if home == 0 and away == 0:
+            goalless_draws += 1
+    return FixtureAggregates(
+        fixtures=fixtures,
+        total_goals=total_goals,
+        clean_sheets=clean_sheets,
+        goalless_draws=goalless_draws,
+    )
 
 
 def get_review_research_prompt(
@@ -963,6 +1034,31 @@ _PROSE_EXEMPT_PHRASES: frozenset[str] = frozenset({
 })
 
 
+def _narrative_span(lines: list[str]) -> tuple[int, int] | None:
+    """`(header_index, end_index)` of the GW Narrative section, or None if absent.
+
+    `end_index` is exclusive and lands on the next heading, so the paragraph is
+    `lines[header_index + 1 : end_index]`. Fence-aware, so a code example in the
+    response carrying a line that merely looks like a heading (a leading '#')
+    neither opens nor closes the section.
+    """
+    fenced = list(fence_flags(lines))
+    header_idx: int | None = None
+    for i, line in enumerate(lines):
+        if not fenced[i] and _NARRATIVE_HEADER_RE.match(line):
+            header_idx = i
+            break
+    if header_idx is None:
+        return None
+
+    end_idx = len(lines)
+    for j in range(header_idx + 1, len(lines)):
+        if not fenced[j] and parse_heading(lines[j]) is not None:
+            end_idx = j
+            break
+    return header_idx, end_idx
+
+
 def _compile_prose_exempt_patterns(
     player_map: dict[int, Player],
     normalised_allow: set[str],
@@ -1057,19 +1153,11 @@ def validate_research_prose(
         (corrected_text, corrections_log).
     """
     lines = text.split("\n")
-    # Fence-aware so a code example in the response containing a line that
-    # merely looks like a heading (a leading '#') doesn't falsely open or
-    # close the narrative section.
-    fenced = list(fence_flags(lines))
-    header_idx: int | None = None
-    for i, line in enumerate(lines):
-        if not fenced[i] and _NARRATIVE_HEADER_RE.match(line):
-            header_idx = i
-            break
-
-    if header_idx is None:
+    span = _narrative_span(lines)
+    if span is None:
         logger.warning("validate_research_prose: no narrative header found in text")
         return text, []
+    header_idx, end_idx = span
 
     # Guard against an empty/near-empty allowlist collapsing the whole narrative:
     # any realistic GW supplies far more than this from Dream Team alone.
@@ -1080,12 +1168,6 @@ def validate_research_prose(
             _MIN_PROSE_ALLOWLIST_SIZE,
         )
         return text, []
-
-    end_idx = len(lines)
-    for j in range(header_idx + 1, len(lines)):
-        if not fenced[j] and parse_heading(lines[j]) is not None:
-            end_idx = j
-            break
 
     paragraph = "\n".join(lines[header_idx + 1 : end_idx]).strip()
     if not paragraph:
@@ -1139,6 +1221,307 @@ def validate_research_prose(
     new_paragraph = f"{rebuilt} {stub}" if rebuilt else stub
 
     new_lines = lines[: header_idx + 1] + ["", new_paragraph, ""] + lines[end_idx:]
+    return "\n".join(new_lines), corrections
+
+
+# =============================================================================
+# NARRATIVE COUNT VALIDATION (post-generation guard, issue #324)
+# =============================================================================
+
+_UNIT_WORDS: tuple[str, ...] = (
+    "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+    "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
+    "seventeen", "eighteen", "nineteen",
+)
+_TENS_WORDS: tuple[str, ...] = (
+    "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety",
+)
+
+
+def _build_number_words() -> tuple[dict[str, int], dict[int, str]]:
+    """Word forms for 0-99 in both directions, hyphenated and spaced.
+
+    A gameweek's totals live well inside 0-99 (38 fixtures at the very most,
+    goals in the thirties), and prose writes them as words far more often than
+    digits -- "four clean sheets", not "4 clean sheets".
+    """
+    word_to_int = {word: value for value, word in enumerate(_UNIT_WORDS)}
+    int_to_word = {value: word for value, word in enumerate(_UNIT_WORDS)}
+    for index, tens_word in enumerate(_TENS_WORDS, start=2):
+        base = index * 10
+        word_to_int[tens_word] = base
+        int_to_word[base] = tens_word
+        for unit in range(1, 10):
+            word_to_int[f"{tens_word}-{_UNIT_WORDS[unit]}"] = base + unit
+            word_to_int[f"{tens_word} {_UNIT_WORDS[unit]}"] = base + unit
+            int_to_word[base + unit] = f"{tens_word}-{_UNIT_WORDS[unit]}"
+    return word_to_int, int_to_word
+
+
+_NUMBER_WORDS, _WORD_FOR_NUMBER = _build_number_words()
+
+# (singular, plural, FixtureAggregates field). Only noun phrases whose bare use
+# in a gameweek narrative is a division-wide count belong here. Plain "goals"
+# and "matches" are deliberately absent: "Haaland's two goals" and "a side with
+# two matches" are ordinary prose, and rewriting either against a division-wide
+# total would be a worse error than the one this guard exists to fix. "total
+# goals" is the phrasing the `Summary:` line uses and carries no such reading.
+_COUNTABLE_NOUNS: tuple[tuple[str, str, str], ...] = (
+    ("clean sheet", "clean sheets", "clean_sheets"),
+    ("goalless draw", "goalless draws", "goalless_draws"),
+    ("goalless stalemate", "goalless stalemates", "goalless_draws"),
+    ("scoreless draw", "scoreless draws", "goalless_draws"),
+    ("goalless match", "goalless matches", "goalless_draws"),
+    ("goalless game", "goalless games", "goalless_draws"),
+    ("total goal", "total goals", "total_goals"),
+    ("fixture", "fixtures", "fixtures"),
+)
+
+# Lowercased noun form -> (field, singular, plural).
+_NOUN_FORMS: dict[str, tuple[str, str, str]] = {
+    form: (field, singular, plural)
+    for singular, plural, field in _COUNTABLE_NOUNS
+    for form in (singular, plural)
+}
+
+# Longest-first so "goalless draws" wins over nothing and "total goals" is not
+# clipped; alternation is first-match-wins at a given position.
+_NUMBER_PATTERN = "|".join(
+    [r"\d{1,3}"] + [re.escape(w) for w in sorted(_NUMBER_WORDS, key=len, reverse=True)]
+)
+_NOUN_PATTERN = "|".join(re.escape(f) for f in sorted(_NOUN_FORMS, key=len, reverse=True))
+_COUNT_CLAIM_RE = re.compile(
+    rf"\b(?P<number>{_NUMBER_PATTERN})\s+(?P<noun>{_NOUN_PATTERN})\b",
+    re.IGNORECASE,
+)
+
+# A count is the division-wide aggregate only when the prose gives it nobody
+# else to belong to. So the guard looks for a nominal the count could be scoped
+# to -- a club, a nickname, a PL player, a pronoun standing in for one -- and
+# leaves the number alone when it finds one. That is deliberately the generous
+# direction: a missed correction leaves the text as the model wrote it, while a
+# wrong one *fabricates* a claim in prose that was true, which is a worse
+# failure than the miscount this guard exists to catch. The signal it keys on is
+# real rather than incidental -- a sentence stating a round-wide total ("four
+# clean sheets, two goalless stalemates") names nobody, precisely because it is
+# about the division rather than about anyone in it.
+_SCOPE_PRONOUNS: tuple[str, ...] = (
+    "he", "him", "his", "she", "her", "hers", "they", "them", "their", "theirs",
+    "its", "our", "ours", "your", "yours", "my", "mine",
+    "team", "teams", "side", "sides", "club", "clubs",
+    "double", "doubles", "twice", "each", "apiece", "consecutive", "successive",
+)
+_SCOPE_PRONOUN_RE = re.compile(r"\b(?:" + "|".join(_SCOPE_PRONOUNS) + r")\b", re.IGNORECASE)
+
+# A possessive only scopes the count it is attached to, so this is anchored to
+# the text immediately before the number rather than searched for loose in the
+# sentence: "Liverpool's two clean sheets" and "the Reds' two clean sheets" are
+# scoped, while the "It's" in "It's rare to see four clean sheets" is elsewhere
+# in the sentence and says nothing about who kept them. Anchoring alone is not
+# enough, because a contraction can sit in the anchored position too -- "That's
+# four clean sheets" is the same shape as "Forest's four clean sheets" and
+# means nothing like it -- so the possessor is checked against the stems that
+# only ever form one.
+_CONTRACTION_STEMS: frozenset[str] = frozenset({
+    "it", "that", "this", "there", "here", "what", "who", "he", "she",
+    "one", "everyone", "everybody", "someone", "somebody", "nobody",
+    "something", "nothing", "let",
+})
+_POSSESSIVE_BEFORE_RE = re.compile(r"(?:(?P<stem>\w+)['’ʼ]s|(?P<plural>\w+s)['’ʼ])\s+$")
+
+
+def _possessive_scopes_count(before: str) -> bool:
+    """True when a genuine possessive sits directly in front of the number."""
+    match = _POSSESSIVE_BEFORE_RE.search(before)
+    if match is None:
+        return False
+    stem = match.group("stem")
+    return stem is None or stem.lower() not in _CONTRACTION_STEMS
+
+
+# Club nicknames a narrative reaches for far more readily than the official
+# name -- the prompt asks for Liew-ish prose, and "Spurs banked two clean
+# sheets" carries no official name to match on. Case-sensitive, like the club
+# and player patterns: these are capitalised in every real use, and a lowercase
+# "saints" or "blues" is not a club.
+_CLUB_NICKNAMES: frozenset[str] = frozenset({
+    "Baggies", "Bees", "Black Cats", "Blades", "Blues", "Canaries", "Cherries",
+    "Citizens", "Clarets", "Cottagers", "Eagles", "Foxes", "Gunners", "Hammers",
+    "Hornets", "Lilywhites", "Magpies", "Owls", "Potters", "Rams", "Red Devils",
+    "Reds", "Robins", "Saints", "Seagulls", "Spurs", "Toffees", "Toon",
+    "Tractor Boys", "Villans", "Whites",
+})
+
+
+def _scope_token_re(
+    teams: dict[int, Team] | None,
+    player_map: dict[int, Player] | None,
+) -> re.Pattern[str]:
+    """Case-sensitive pattern for every nominal a count could be scoped to.
+
+    Club names and the words inside them ("Nottingham Forest", "Forest"), the
+    nicknames above, and every PL player's `web_name`. Matched case-sensitively
+    so lowercase homographs survive -- "son", "may", "city" as an ordinary noun
+    -- the same convention `validate_research_prose` uses, and against the
+    diacritic-stripped sentence so "Hojlund" still matches "Højlund".
+
+    Breadth is the point: "City", "Forest" and "Palace" will each suppress a
+    correction in a sentence that meant the ordinary English word, and that is
+    the failure this guard is willing to have. Three-letter short codes are
+    still left out -- the prompt reserves them for table cells, and they would
+    add nothing here.
+    """
+    tokens: set[str] = set(_CLUB_NICKNAMES)
+    for team in (teams or {}).values():
+        name = strip_diacritics(team.name or "").strip()
+        if not name:
+            continue
+        tokens.add(name)
+        tokens.update(word for word in name.split() if len(word) >= 4)
+    for player in (player_map or {}).values():
+        web = strip_diacritics(player.web_name or "").strip()
+        if web:
+            tokens.add(web)
+    alternation = "|".join(re.escape(t) for t in sorted(tokens, key=lambda t: (-len(t), t)))
+    return re.compile(rf"\b(?:{alternation})\b")
+
+
+def _sentence_spans(paragraph: str) -> list[tuple[int, int]]:
+    """`(start, end)` of each sentence in `paragraph`, as offsets into it.
+
+    Offsets rather than the split strings, because a correction is applied back
+    to the paragraph in place. A line break with no terminal punctuation before
+    it does not split, so two lines of one sentence stay one sentence -- which
+    is the safe way round, since the scope check then sees the whole thing.
+    """
+    spans: list[tuple[int, int]] = []
+    cursor = 0
+    for gap in _SENTENCE_SPLIT_RE.finditer(paragraph):
+        spans.append((cursor, gap.start()))
+        cursor = gap.end()
+    spans.append((cursor, len(paragraph)))
+    return spans
+
+
+def _render_count(value: int, sample: str) -> str:
+    """Render `value` the way the model wrote `sample` - digits or words."""
+    if sample[:1].isdigit():
+        return str(value)
+    word = _WORD_FOR_NUMBER.get(value)
+    if word is None:
+        return str(value)
+    return word[:1].upper() + word[1:] if sample[:1].isupper() else word
+
+
+def validate_research_counts(
+    text: str,
+    aggregates: FixtureAggregates,
+    teams: dict[int, Team] | None = None,
+    player_map: dict[int, Player] | None = None,
+) -> tuple[str, list[str]]:
+    """Correct division-wide counts in the GW Narrative that contradict the fixtures.
+
+    The `Summary:` line pins the aggregates the narrative may state, but nothing
+    stopped the model deriving its own from the scorelines printed underneath --
+    which is how a gameweek with six clean sheets was reported as four, the
+    count you get from the 0-0s alone (#324). The three name-based validators
+    could not see it: the sentence named no player at all.
+
+    Only the GW Narrative paragraph is scanned, and only for the countable nouns
+    in `_COUNTABLE_NOUNS`, whose bare use there is division-wide. A claim is
+    corrected only when neither its own sentence nor the one before it names
+    anyone the count could belong to -- a club, a nickname, a player, a pronoun
+    standing in for one -- and when no possessive is attached to the number
+    itself. A round-wide total is exactly the sentence that names nobody, so
+    that test is what separates it from "Spurs banked two clean sheets"; the
+    previous sentence counts too, because the club a later sentence is still
+    talking about is usually named in it rather than repeated.
+
+    A contradicting figure has its number rewritten in place, keeping the prose
+    and the digits-or-words style the model chose. Nothing is scrubbed -- the
+    sentence was true apart from the figure, and a corrected figure makes it
+    true.
+
+    Args:
+        text: Full research provider response.
+        aggregates: Counts computed from the same fixture data the prompt pinned.
+        teams: PL teams, for the club half of the scope check. Optional.
+        player_map: Full PL roster, for the player half. Optional -- without
+            either, only pronouns and possessives narrow a count, so pass both
+            wherever they are to hand.
+
+    Returns:
+        (corrected_text, corrections_log).
+    """
+    if aggregates.fixtures == 0:
+        # No fixture data reached the prompt, so no `Summary:` line was written
+        # and there is no ground truth to check the narrative against.
+        return text, []
+
+    lines = text.split("\n")
+    span = _narrative_span(lines)
+    if span is None:
+        logger.warning("validate_research_counts: no narrative header found in text")
+        return text, []
+    header_idx, end_idx = span
+
+    paragraph = "\n".join(lines[header_idx + 1 : end_idx])
+    if not paragraph.strip():
+        return text, []
+
+    scope_re = _scope_token_re(teams, player_map)
+    sentences = _sentence_spans(paragraph)
+    # Sentence index -> whether it names anyone a count could be scoped to.
+    # Computed once per sentence rather than per match: the roster alternation
+    # is large, and a sentence is re-consulted as its successor's predecessor.
+    named: list[bool] = [
+        bool(scope_re.search(strip_diacritics(paragraph[start:stop])))
+        for start, stop in sentences
+    ]
+
+    corrections: list[str] = []
+    rebuilt: list[str] = []
+    cursor = 0
+    for match in _COUNT_CLAIM_RE.finditer(paragraph):
+        field, singular, plural = _NOUN_FORMS[match.group("noun").lower()]
+        stated = _NUMBER_WORDS.get(match.group("number").lower())
+        if stated is None:
+            stated = int(match.group("number"))
+        actual = int(getattr(aggregates, field))
+        if stated == actual:
+            continue
+
+        index = next(
+            (i for i, (start, stop) in enumerate(sentences) if start <= match.start() < stop),
+            len(sentences) - 1,
+        )
+        sentence = paragraph[sentences[index][0] : sentences[index][1]]
+        if named[index] or (index > 0 and named[index - 1]):
+            continue
+        if _SCOPE_PRONOUN_RE.search(sentence):
+            continue
+        if _possessive_scopes_count(paragraph[sentences[index][0] : match.start()]):
+            continue
+
+        replacement = (
+            f"{_render_count(actual, match.group('number'))} "
+            f"{singular if actual == 1 else plural}"
+        )
+        rebuilt.append(paragraph[cursor : match.start()])
+        rebuilt.append(replacement)
+        cursor = match.end()
+        corrections.append(
+            f"narrative count corrected ({plural}): {match.group(0)} -> {replacement}"
+        )
+
+    if not corrections:
+        return text, []
+
+    rebuilt.append(paragraph[cursor:])
+    # Replacements never carry a newline, so the paragraph keeps its line count
+    # and the sections around it are spliced back untouched.
+    new_paragraph = "".join(rebuilt)
+    new_lines = lines[: header_idx + 1] + new_paragraph.split("\n") + lines[end_idx:]
     return "\n".join(new_lines), corrections
 
 

@@ -628,7 +628,11 @@ class TestReportResearchCorrections:
         return path
 
     def _corrections(self):
-        return ["Salah: club corrected to LIV", "narrative sentence stripped (disallowed: Rayan): At ..."]
+        return [
+            "Salah: club corrected to LIV",
+            "narrative sentence stripped (disallowed: Rayan): At ...",
+            "narrative count corrected (clean sheets): four clean sheets -> six clean sheets",
+        ]
 
     @staticmethod
     def _unwrapped(capsys):
@@ -636,10 +640,11 @@ class TestReportResearchCorrections:
         return capsys.readouterr().err.replace("\n", "")
 
     def test_summary_printed_without_debug_and_points_at_the_flag(self, capsys, debug_dir):
-        path = _report_research_corrections(self._corrections(), 1, 1, None)
+        path = _report_research_corrections(self._corrections(), 1, 1, 1, None)
         err = self._unwrapped(capsys)
         assert "1 table fix(es)" in err
         assert "1 narrative sentence(s) scrubbed" in err
+        assert "1 narrative count(s) corrected" in err
         assert "--debug" in err
         # Nothing written when debug is off, so no path to report.
         assert path is None
@@ -647,7 +652,7 @@ class TestReportResearchCorrections:
 
     def test_debug_writes_the_detail_and_returns_its_path(self, capsys, debug_dir):
         corrections = self._corrections()
-        path = _report_research_corrections(corrections, 1, 1, debug_dir)
+        path = _report_research_corrections(corrections, 1, 1, 1, debug_dir)
         written = debug_dir / "research_corrections.txt"
         assert path == str(written)
         assert written.read_text(encoding="utf-8") == "\n".join(corrections)
@@ -656,7 +661,7 @@ class TestReportResearchCorrections:
         assert "1 narrative sentence(s) scrubbed" in err
 
     def test_silent_when_nothing_was_corrected(self, capsys, debug_dir):
-        assert _report_research_corrections([], 0, 0, debug_dir) is None
+        assert _report_research_corrections([], 0, 0, 0, debug_dir) is None
         assert capsys.readouterr().err == ""
         assert list(debug_dir.iterdir()) == []
 

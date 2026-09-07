@@ -9,13 +9,16 @@ from fpl_cli.models.player import PlayerPosition
 from fpl_cli.prompts.review import (
     REVIEW_RESEARCH_SYSTEM_PROMPT,
     _SENTENCE_SPLIT_RE,
+    FixtureAggregates,
     _build_system_prompt,
     check_next_week_grounding,
     check_synthesis_completeness,
     ensure_top_performer_first,
+    fixture_aggregates,
     get_review_research_prompt,
     get_review_synthesis_prompt,
     required_synthesis_sections,
+    validate_research_counts,
     validate_research_prose,
     validate_research_teams,
 )
@@ -2847,6 +2850,319 @@ class TestValidateResearchProseFenceAwareness:
         # section must not have been truncated at the fenced '#' line.
         assert "# a python comment, not a heading" in result
         assert "The rest of the gameweek passed quietly." in result
+
+
+# The GW3 card from #324: two 0-0s plus two clean sheets kept in matches that
+# had goals. Deriving the clean-sheet count from the goalless draws alone gives
+# four, which is exactly the number the unaided model reported.
+_GW3_FIXTURES = [
+    {"home_team": "IPS", "home_score": 0, "away_team": "LIV", "away_score": 2},
+    {"home_team": "NEW", "home_score": 2, "away_team": "BOU", "away_score": 2},
+    {"home_team": "BRE", "home_score": 1, "away_team": "SUN", "away_score": 1},
+    {"home_team": "BHA", "home_score": 1, "away_team": "LEE", "away_score": 1},
+    {"home_team": "FUL", "home_score": 2, "away_team": "CRY", "away_score": 3},
+    {"home_team": "MCI", "home_score": 1, "away_team": "COV", "away_score": 0},
+    {"home_team": "NFO", "home_score": 0, "away_team": "TOT", "away_score": 0},
+    {"home_team": "HUL", "home_score": 0, "away_team": "AVL", "away_score": 0},
+    {"home_team": "EVE", "home_score": 2, "away_team": "MUN", "away_score": 2},
+    {"home_team": "ARS", "home_score": 2, "away_team": "CHE", "away_score": 1},
+]
+
+
+class TestFixtureAggregates:
+    """#324: the counts the research prompt pins as ground truth."""
+
+    def test_counts_clean_sheets_kept_in_matches_that_had_goals(self):
+        agg = fixture_aggregates(_GW3_FIXTURES)
+        assert agg.fixtures == 10
+        assert agg.total_goals == 23
+        # LIV, MCI, NFO, TOT, HUL, AVL - not just the four inside the 0-0s.
+        assert agg.clean_sheets == 6
+        assert agg.goalless_draws == 2
+
+    def test_clean_sheets_are_per_team_not_per_match(self):
+        agg = fixture_aggregates([{"home_score": 0, "away_score": 0}])
+        assert agg.clean_sheets == 2
+        assert agg.goalless_draws == 1
+
+    def test_no_fixtures_is_all_zeroes(self):
+        assert fixture_aggregates([]) == FixtureAggregates()
+
+    def test_missing_scores_count_as_nil(self):
+        agg = fixture_aggregates([{"home_score": None, "away_score": None}, {}])
+        assert agg.fixtures == 2
+        assert agg.total_goals == 0
+        assert agg.clean_sheets == 4
+        assert agg.goalless_draws == 2
+
+    def test_summary_line_pins_every_aggregate(self):
+        line = fixture_aggregates(_GW3_FIXTURES).summary_line()
+        assert line == (
+            "Summary: 10 fixtures, 23 total goals, 6 clean sheets, 2 goalless draws "
+            "(use these exact counts - do not fabricate alternatives)."
+        )
+
+    def test_summary_line_uses_singular_for_one(self):
+        line = fixture_aggregates([{"home_score": 1, "away_score": 0}]).summary_line()
+        assert line.startswith("Summary: 1 fixture, 1 total goal, 1 clean sheet, 0 goalless draws")
+
+
+class TestResearchContextSummaryLine:
+    """#324: the Summary line the research prompt actually receives."""
+
+    def test_match_results_open_with_every_pinned_count(self):
+        from fpl_cli.cli._review_analysis import GlobalReviewData
+        from fpl_cli.cli._review_summarisation import _format_research_context
+
+        global_data: GlobalReviewData = {}
+        result = _format_research_context(global_data, {"fixtures": _GW3_FIXTURES})
+        first_line = result["match_results"].split("\n")[0]
+        assert first_line == (
+            "Summary: 10 fixtures, 23 total goals, 6 clean sheets, 2 goalless draws "
+            "(use these exact counts - do not fabricate alternatives)."
+        )
+
+    def test_no_fixtures_means_no_match_results_block(self):
+        from fpl_cli.cli._review_analysis import GlobalReviewData
+        from fpl_cli.cli._review_summarisation import _format_research_context
+
+        global_data: GlobalReviewData = {}
+        result = _format_research_context(global_data, {"fixtures": []})
+        assert result["match_results"] == ""
+
+
+class TestValidateResearchCounts:
+    """#324: a division-wide count in the narrative that the fixtures contradict."""
+
+    @pytest.fixture
+    def aggregates(self):
+        return fixture_aggregates(_GW3_FIXTURES)
+
+    @pytest.fixture
+    def teams(self):
+        return {
+            1: make_team(id=1, name="Liverpool", short_name="LIV"),
+            2: make_team(id=2, name="Nottingham Forest", short_name="NFO"),
+            3: make_team(id=3, name="Man City", short_name="MCI"),
+            4: make_team(id=4, name="Tottenham", short_name="TOT"),
+        }
+
+    @pytest.fixture
+    def player_map(self):
+        return {
+            p.id: p
+            for p in [
+                make_player(id=1, web_name="Ederson", team_id=3),
+                make_player(id=2, web_name="Salah", team_id=1),
+            ]
+        }
+
+    @staticmethod
+    def _narrative(sentence):
+        return (
+            "## GW3 Narrative\n"
+            f"{sentence}\n"
+            "\n"
+            "## Standout Performers\n"
+            "| Player | Club | Pts | Why They Hauled | Source |\n"
+        )
+
+    def test_corrects_the_clean_sheet_count_from_issue_324(self, aggregates):
+        text = self._narrative(
+            "Gameweek 3 felt like a deep breath held across the division: four clean "
+            "sheets, two goalless stalemates, and yet in the spaces between the "
+            "silences, chaos."
+        )
+        result, corrections = validate_research_counts(text, aggregates)
+        assert "six clean sheets" in result
+        assert "four clean sheets" not in result
+        # The goalless count was right and is left exactly as written.
+        assert "two goalless stalemates" in result
+        assert corrections == [
+            "narrative count corrected (clean sheets): four clean sheets -> six clean sheets"
+        ]
+        # Everything outside the narrative is untouched.
+        assert "## Standout Performers" in result
+        assert "| Player | Club | Pts | Why They Hauled | Source |" in result
+
+    def test_correct_counts_pass_through_unchanged(self, aggregates):
+        text = self._narrative(
+            "Six clean sheets and two goalless draws across ten fixtures, and 23 "
+            "total goals to show for it."
+        )
+        result, corrections = validate_research_counts(text, aggregates)
+        assert result == text
+        assert corrections == []
+
+    def test_digits_stay_digits_and_words_stay_words(self, aggregates):
+        text = self._narrative("Four clean sheets, 3 goalless draws, twenty-one total goals.")
+        result, _ = validate_research_counts(text, aggregates)
+        assert "Six clean sheets" in result
+        assert "2 goalless draws" in result
+        assert "twenty-three total goals" in result
+
+    def test_leaves_a_count_scoped_to_a_club_alone(self, aggregates, teams):
+        text = self._narrative("Liverpool kept two clean sheets in a week and barely noticed.")
+        result, corrections = validate_research_counts(text, aggregates, teams)
+        assert result == text
+        assert corrections == []
+
+    def test_leaves_a_count_scoped_by_a_club_nickname_alone(self, aggregates, teams):
+        """A Liew-ish narrative reaches for "Spurs" long before "Tottenham"."""
+        text = self._narrative("Spurs banked two clean sheets across a tidy week.")
+        result, corrections = validate_research_counts(text, aggregates, teams)
+        assert result == text
+        assert corrections == []
+
+    def test_leaves_a_count_scoped_to_a_player_alone(self, aggregates, teams, player_map):
+        text = self._narrative(
+            "Ederson claimed four clean sheets already this season, a personal best."
+        )
+        result, corrections = validate_research_counts(text, aggregates, teams, player_map)
+        assert result == text
+        assert corrections == []
+
+    def test_leaves_a_count_the_previous_sentence_scoped_alone(self, aggregates, teams):
+        """The club a sentence is still about is named in the one before it."""
+        text = self._narrative(
+            "Liverpool's rearguard was the story of the week.\n"
+            "Two clean sheets underlined a new discipline at the back."
+        )
+        result, corrections = validate_research_counts(text, aggregates, teams)
+        assert result == text
+        assert corrections == []
+
+    def test_leaves_a_count_an_anaphoric_pronoun_scoped_alone(self, aggregates):
+        """No club named, but "they" is standing in for one."""
+        text = self._narrative("Two clean sheets underlined how disciplined they had become.")
+        result, corrections = validate_research_counts(text, aggregates)
+        assert result == text
+        assert corrections == []
+
+    def test_an_ordinary_club_word_costs_a_correction(self, aggregates, teams):
+        """"City" tokenised off "Man City" suppresses a fix it need not.
+
+        The accepted cost of a guard that errs towards leaving prose alone: a
+        missed correction ships the model's own words, a wrong one fabricates.
+        """
+        text = self._narrative(
+            "City continued to look imperious as four clean sheets kept the table tight."
+        )
+        result, corrections = validate_research_counts(text, aggregates, teams)
+        assert result == text
+        assert corrections == []
+
+    def test_a_contraction_does_not_pass_for_a_possessive(self, aggregates, teams):
+        """"That's four clean sheets" is not "Forest's four clean sheets"."""
+        text = self._narrative("That's four clean sheets, a quiet weekend by any measure.")
+        result, corrections = validate_research_counts(text, aggregates, teams)
+        assert "That's six clean sheets" in result
+        assert len(corrections) == 1
+
+    def test_a_possessive_on_a_plural_club_noun_still_scopes(self, aggregates, teams):
+        text = self._narrative("The Reds' two clean sheets were the quietest story going.")
+        result, corrections = validate_research_counts(text, aggregates, teams)
+        assert result == text
+        assert corrections == []
+
+    def test_leaves_a_possessive_count_alone(self, aggregates):
+        text = self._narrative("Their two clean sheets were the week's quietest story.")
+        result, corrections = validate_research_counts(text, aggregates)
+        assert result == text
+        assert corrections == []
+
+    def test_leaves_a_double_gameweek_count_alone(self, aggregates):
+        text = self._narrative("A side with two fixtures should have run away with it.")
+        result, corrections = validate_research_counts(text, aggregates)
+        assert result == text
+        assert corrections == []
+
+    def test_a_players_goals_are_not_a_division_wide_total(self, aggregates):
+        text = self._narrative("Two goals and an assist made the afternoon his.")
+        result, corrections = validate_research_counts(text, aggregates)
+        assert result == text
+        assert corrections == []
+
+    def test_only_the_narrative_is_scanned(self, aggregates):
+        text = (
+            "## GW3 Narrative\n"
+            "A quiet week, all told.\n"
+            "\n"
+            "## Match Analysis\n"
+            "Four clean sheets tell you how cautious the division has become.\n"
+        )
+        result, corrections = validate_research_counts(text, aggregates)
+        assert result == text
+        assert corrections == []
+
+    def test_no_fixture_data_means_nothing_to_check_against(self):
+        text = self._narrative("Four clean sheets and two goalless draws.")
+        result, corrections = validate_research_counts(text, FixtureAggregates())
+        assert result == text
+        assert corrections == []
+
+    def test_missing_narrative_header_is_a_no_op(self, aggregates):
+        text = "## Standout Performers\nFour clean sheets, apparently.\n"
+        result, corrections = validate_research_counts(text, aggregates)
+        assert result == text
+        assert corrections == []
+
+    def test_corrects_several_counts_on_one_line(self, aggregates):
+        text = self._narrative("Nine fixtures, four clean sheets and three goalless draws.")
+        result, corrections = validate_research_counts(text, aggregates)
+        assert "Ten fixtures, six clean sheets and two goalless draws." in result
+        assert len(corrections) == 3
+
+    def test_singular_claim_is_corrected_to_the_plural_truth(self, aggregates):
+        text = self._narrative("One clean sheet was all the weekend could muster.")
+        result, corrections = validate_research_counts(text, aggregates)
+        assert "Six clean sheets" in result
+        assert len(corrections) == 1
+
+    def test_a_fenced_heading_neither_opens_nor_closes_the_narrative(self, aggregates):
+        """A '#' line inside a fence is an example, not a section boundary."""
+        text = (
+            "```\n"
+            "## GW3 Narrative\n"
+            "```\n"
+            "\n"
+            "## GW3 Narrative\n"
+            "```\n"
+            "## Standout Performers\n"
+            "```\n"
+            "Four clean sheets across a weekend of held breath.\n"
+            "\n"
+            "## Standout Performers\n"
+        )
+        result, corrections = validate_research_counts(text, aggregates)
+        # The real narrative opens at the unfenced header and runs to the
+        # unfenced heading, so the sentence between the fences is in scope.
+        assert "Six clean sheets across a weekend of held breath." in result
+        assert len(corrections) == 1
+
+
+class TestResearchPromptForbidsDerivedCounts:
+    """#324: the prompt tells the model not to derive an aggregate itself."""
+
+    def test_summary_line_named_as_the_only_authority(self):
+        assert 'The "Summary:" line' in REVIEW_RESEARCH_SYSTEM_PROMPT
+        assert "clean sheets and goalless draws" in REVIEW_RESEARCH_SYSTEM_PROMPT
+
+    def test_forbids_counting_the_scorelines(self):
+        assert "Never count, total, average or otherwise infer a summary statistic" in (
+            REVIEW_RESEARCH_SYSTEM_PROMPT
+        )
+
+    def test_forbids_a_figure_the_summary_line_does_not_carry(self):
+        assert "never state a division-wide figure the Summary line does not carry" in (
+            REVIEW_RESEARCH_SYSTEM_PROMPT
+        )
+
+    def test_keeps_a_catch_all_beyond_the_enumerated_counts(self):
+        """A derived rate or average is no statistic the validator can check."""
+        assert "count, rate, average, share or other numeric summary statistic" in (
+            REVIEW_RESEARCH_SYSTEM_PROMPT
+        )
 
 
 class TestNamesFromFixtureStrings:
