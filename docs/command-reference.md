@@ -972,8 +972,11 @@ from before that version has the name corrected on the way in.
 
 On the league's first scored gameweek there is no previous table, so
 `previous_league_position` is empty rather than repeating the current position, which
-would be indistinguishable from a manager who genuinely held their place. And a draft row
-leaves `transfer_cost` empty rather than zero: draft charges nothing for a squad change,
+would be indistinguishable from a manager who genuinely held their place. Nothing fills it
+in afterwards either: neither the carry that stops a replay erasing recorded standings nor
+the repair sweep that heals an already-damaged ledger writes that field at a first
+gameweek, so a partition that still holds lines from before this rule cannot become the
+source that puts one back. And a draft row leaves `transfer_cost` empty rather than zero: draft charges nothing for a squad change,
 so there is no hit to have avoided.
 
 Two rank fields carry the manager's FPL-wide standing, distinct from any position
@@ -1082,7 +1085,7 @@ they share the channel: `synthesis_provider_unavailable` and `league_standings_m
 | `league_history_identity_carried` | A finished gameweek kept the name, club or position it already had recorded for one or more players rather than the ones today's bootstrap gives them, or restored a player reference this capture had lost. Raised by a re-capture of a finished gameweek as well as by a replay; any one of the four on its own raises it |
 | `league_history_club_rederived` | A finished gameweek replaced the club it already had recorded for one or more players with the one that gameweek's own fixtures place them at. The recorded club was stamped from a bootstrap that had already moved on — a first capture or a coarse-tier upgrade has no earlier row to carry a club from — so unlike name and position it is superseded rather than kept |
 | `league_history_standings_carried` | A finished gameweek kept a league position or cumulative total it already had recorded rather than the nothing this run could re-derive. Draft raises it on any replay: with no per-manager history endpoint and standings that describe a later gameweek, a replayed draft gameweek derives neither figure, and writing that out would erase the ones the live capture recorded |
-| `league_history_standings_repaired` | A gameweek whose recorded positions an *earlier* run had already erased was restored from the ledger itself — the superseded line below the damaged one, or, on draft, a cumulative total re-summed from earlier gameweeks. Nothing is re-fetched, so this needs neither `--backfill-detail` nor a network call, and it stops once the damage is repaired |
+| `league_history_standings_repaired` | A gameweek whose recorded positions an *earlier* run had already erased was restored from the ledger itself — the superseded line below the damaged one, or, on draft, a cumulative total re-summed from earlier gameweeks. Nothing is re-fetched, so this needs neither `--backfill-detail` nor a network call, and it stops once the damage is repaired. The count is the managers whose league position or cumulative total actually changed — a row rewritten only to restate a fine's player names is not one of them |
 | `synthesis_provider_unavailable` | `--summarise` was asked for but the synthesis provider had no usable key; everything else in the recap, the capture included, ran normally |
 | `synthesis_stopped_early` | The provider reported that the editorial stopped for a reason other than finishing (a token ceiling, a refusal), so `synthesis_summary` may be cut off mid-sentence. Everything else in the recap is unaffected |
 | `league_standings_moved_on` | The recapped gameweek is the most recently finished one, but a later gameweek has started, so the league table no longer describes it. The gameweek is recapped and recorded from each manager's own gameweek history instead — see [When to run it](#league-recap) |
