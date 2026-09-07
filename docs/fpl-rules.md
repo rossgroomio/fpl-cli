@@ -145,6 +145,9 @@ Captain's score is doubled. If captain doesn't play, vice-captain becomes captai
 ### Transfers
 Unlimited free transfers before your first deadline. After that: 1 free transfer per GW, unused transfers roll over up to a **maximum of 5**. Extra transfers cost **4 points** each. Max 20 transfers per GW (does not apply when playing Wildcard or Free Hit).
 
+### AFCON Transfers
+Does not apply in 2026-27. AFCON is biennial: the 2025 edition ran Dec 2025 into Jan 2026 and fell inside the 2025-26 season, and the next is Jun-Jul 2027, in the off-season. There is no mid-season top-up to 5 free transfers this year.
+
 ### Player Prices
 Prices fluctuate based on transfer market popularity (changes begin when the season starts). Selling price includes a **50% sell-on fee** (rounded up to nearest £0.1m) on any profit.
 
