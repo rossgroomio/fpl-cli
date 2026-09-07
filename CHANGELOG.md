@@ -1,6 +1,14 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [2.6.1] - 2026-09-07
+
+### Bug Fixes
+
+- raise synthesis max_tokens default to 8000 (#321)
+- say in the saved review when the analysis call never landed (#322)
+- keep team ratings through a season that overruns the July cutover (#323)
+
 ## [2.6.0] - 2026-09-07
 
 ### Bug Fixes
