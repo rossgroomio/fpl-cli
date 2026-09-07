@@ -1737,6 +1737,9 @@ class TestRatingsUpdateRefreshPrior:
 
         assert "did not improve on the saved prior" in result.stderr.replace("\n", "")
         assert "Calculated Team Ratings" in result.output
+        # Regression guard for #309: the reason is already logged above this
+        # line, and `-v` is not a flag this command (or any other) defines.
+        assert "-v" not in result.stderr
 
     def test_no_prior_at_all_is_not_reported_as_a_kept_copy(self):
         """There is no saved copy to carry on with, so it must not claim one."""

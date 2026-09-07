@@ -154,7 +154,7 @@ def ratings_update(
                 if rebuild.outcome == PRIOR_KEPT_CACHE:
                     error_console.print(
                         "[yellow]The rebuild did not improve on the saved prior - "
-                        "keeping it. Run with -v for the reason.[/yellow]\n"
+                        "keeping it.[/yellow]\n"
                     )
                 elif rebuild.outcome == PRIOR_UNAVAILABLE:
                     error_console.print(
