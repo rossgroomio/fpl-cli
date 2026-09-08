@@ -443,8 +443,13 @@ async def _review_classic_league(
         # here records, leaving the same gameweek placing the same tie two
         # different ways depending on whether you read the review or the
         # recap's ledger (#337, the defect #163 and #230 fixed elsewhere).
+        #
+        # An entry with no total is omitted rather than passed a placeholder,
+        # per the helper's contract -- a substituted 0 would tie it with a
+        # manager who really has scored 0.
         league_positions = derive_point_in_time_positions([
-            (e["entry"], e.get("total", 0)) for e in standings if e.get("entry") is not None
+            (e["entry"], e["total"]) for e in standings
+            if e.get("entry") is not None and e.get("total") is not None
         ])
         user_entry = next((e for e in standings if e.get("entry") == entry_id), None)
         if user_entry:

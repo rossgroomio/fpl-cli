@@ -1583,6 +1583,18 @@ class TestReviewClassicLeagueNearbyRivalsPositions:
         assert [r["rank"] for r in result["nearby_rivals"]] == [1, 2, 3]
         assert result["user_position"] == 2
 
+    async def test_null_total_on_another_row_still_leaves_the_reader_their_position(self, capsys):
+        # Positions are derived before the reader's own line is printed, so a
+        # row carrying no total must not cost them that line. The helper asks
+        # for members with a known total only; passing a placeholder instead
+        # raised on the null and took the whole section down.
+        standings = self._standings([205, 204, 203])
+        standings[2]["total"] = None
+
+        await _review_classic_league(self._client(standings), 999, 1, 5, 5)
+
+        assert "Position: 1 of 3" in capsys.readouterr().out
+
 
 class TestClassicPositionFields:
 

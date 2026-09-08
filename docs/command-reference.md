@@ -750,7 +750,7 @@ fpl review --dry-run              # Build prompts without calling LLMs
 
 **Classic:** team summary, player-by-player breakdown (captain doubled/tripled), transfer assessment, league standings with nearby rivals, best/worst performers.
 
-**League position:** your own position and the `Pos` column of Nearby Rivals are competition-ranked from the cumulative totals, the same numbering `fpl league-recap` writes to the ledger: managers level on points share a place and the next distinct total skips the places they consumed (1, 2, 2, 4). The standings API hands out strictly sequential ranks instead, splitting a tie on fewest transfers season-to-date — a figure no column here shows — so the same gameweek used to place the same tie differently depending on which report you read.
+**League position:** your own position and the `Pos` column of Nearby Rivals are competition-ranked from the cumulative totals, the same numbering `fpl league`'s table shows and `fpl league-recap` writes to the ledger: managers level on points share a place and the next distinct total skips the places they consumed (1, 2, 2, 4). The standings API hands out strictly sequential ranks instead, splitting a tie on fewest transfers season-to-date — a figure no column here shows — so the same gameweek used to place the same tie differently depending on which report you read.
 
 **Draft:** squad breakdown, transaction assessment, league standings, best/worst performers.
 
