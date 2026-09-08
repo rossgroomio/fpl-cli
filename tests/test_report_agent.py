@@ -3,7 +3,8 @@
 from pathlib import Path
 
 from fpl_cli.agents.base import AgentStatus
-from fpl_cli.agents.orchestration.report import ReportAgent
+from fpl_cli.agents.orchestration.report import ReportAgent, build_report_environment
+from fpl_cli.paths import TEMPLATE_DIR
 
 # ---------------------------------------------------------------------------
 # Minimal data helpers
@@ -806,3 +807,44 @@ class TestSummaryUnavailableCallout:
 
     def test_a_run_that_never_asked_for_a_summary_adds_no_callout(self):
         assert "requested summary is missing" not in self._render()
+
+
+# ---------------------------------------------------------------------------
+# Group 3: one environment the templates are written against
+# ---------------------------------------------------------------------------
+
+class TestReportEnvironmentIsShared:
+    """Templates may use anything `build_report_environment()` registers, so
+    that has to be the environment they are rendered through -- everywhere.
+
+    Both directions have already broken CI: a template reaching for a filter
+    (`kind_label`, #329) against a test that built its own bare `Environment`
+    (#326's blanker test). Neither side is wrong on its own; the pairing is,
+    and neither file's author can see the other.
+    """
+
+    def test_every_shipped_template_compiles(self):
+        """A global or filter a template uses but the environment does not
+        register fails at compile time -- which is report-writing time, long
+        after the change that caused it."""
+        env = build_report_environment()
+        for template in sorted(TEMPLATE_DIR.glob("*.j2")):
+            env.get_template(template.name)
+
+    def test_no_test_builds_its_own_template_environment(self):
+        """A bare `Environment` renders the same templates without what they
+        are written against, so it breaks for whoever registers the next
+        filter rather than for whoever wrote it."""
+        here = Path(__file__)
+        offenders = sorted(
+            # This file names the loader in the check itself, so skip it.
+            path.name
+            for path in here.parent.glob("*.py")
+            if path.name != here.name and "FileSystemLoader" in path.read_text()
+        )
+        assert offenders == [], (
+            "These tests build their own Jinja environment for the report "
+            "templates: " + ", ".join(offenders) + ". Use "
+            "build_report_environment() so they render through the same "
+            "globals and filters the templates are written against."
+        )
