@@ -118,6 +118,13 @@ _PICKS_CONCURRENCY = 10
 # the transfer/waiver, captain, and bench-haul awards so a wide tie in a large
 # league cannot sprawl.
 _DETAIL_CAP = 3
+# Fewest managers who must have claimed one player before the draft recap
+# hands out Most Contested (issue #330). Two is every lost claim by
+# definition -- the loser plus the winner -- so the award would fire on any
+# week with a waiver denied and read as routine; three means at least two
+# managers were beaten to the same player, which is a pile-up worth a
+# headline. Every race, this threshold or not, still reaches the editorial.
+MOST_CONTESTED_MIN_CLAIMANTS = 3
 
 
 def _omitted_suffix(omitted: int, noun: str | None = None) -> str:
@@ -1832,22 +1839,25 @@ def _compute_most_contested_award(
     awards: RecapAwards,
 ) -> None:
     """The draft's third waiver award (issue #330): the player the most
-    managers claimed, with who won him and who was beaten to him.
+    managers claimed, with who won him and who was beaten to him -- but only
+    on a week where `MOST_CONTESTED_MIN_CLAIMANTS` of them did.
 
     Waiver Genius and Waiver Disaster each say something about one manager;
     this one says something about the league. Scarcity is the format's
     distinguishing feature, and a race four managers entered used to reach
-    the recap as one unremarkable pickup by the winner. Computed apart from
-    the two net-points awards because it needs no accepted move to exist: a
-    race whose winner could not be fetched still had losers, and is still
-    the week's story.
+    the recap as one unremarkable pickup by the winner. It is a set-piece
+    rather than a weekly fixture: a two-way race is any lost claim, and the
+    editorial already sees every one of those in its waiver roster, so the
+    award waits for a genuine pile-up. Computed apart from the two
+    net-points awards because it needs no accepted move to exist: a race
+    whose winner could not be fetched still had losers.
 
     A tie on claimants names every player tied, bounded like the other
     awards' ties. Each race's sentence names every beaten manager unbounded
     -- a draft league holds at most 16, where a classic tie can hold fifty.
     """
     contests = contested_draft_claims(managers)
-    if not contests:
+    if not contests or contests[0]["claimants"] < MOST_CONTESTED_MIN_CLAIMANTS:
         return
 
     top_count = contests[0]["claimants"]
@@ -2341,7 +2351,7 @@ async def collect_draft_recap_data(
         _compute_standings_movement(managers, league_rows, allow_standings_fallback=is_live_gw)
     awards = _compute_shared_awards(managers, format_name="draft", total_managers=len(standings))
 
-    data = LeagueRecapData(
+    return LeagueRecapData(
         gameweek=gw,
         league_name=league_name,
         fpl_format="draft",
@@ -2355,13 +2365,3 @@ async def collect_draft_recap_data(
         standings_truncated=len(cohort) < len(league_entries),
         league_size=len(league_entries),
     )
-    # The report's Contested Claims section (issue #330): every race, where
-    # the Most Contested award headlines only the biggest -- the second race
-    # of the week is exactly the one an award cannot see. Absent rather than
-    # empty when there was none, so the template omits the section. Derived
-    # here rather than in the command so the collector's answer is complete
-    # on its own, the way its awards are.
-    contested = contested_draft_claims(managers)
-    if contested:
-        data["contested_claims_lines"] = [format_contested_claim(c) for c in contested]
-    return data

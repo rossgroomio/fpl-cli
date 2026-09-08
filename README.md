@@ -94,10 +94,10 @@ kept apart from the moves that landed, so being outbid is never written into the
 as sitting the week out. Gameweeks recorded before that existed are named on stderr;
 `fpl league-recap --draft --backfill-detail` re-records them while the draft API still
 serves the season's transactions. Those lost claims also make the waiver wire's races
-visible: every player more than one manager claimed is listed under Contested Claims in
-the saved report — who won him, who was beaten to him and at what priority — and the
-biggest race is the Most Contested award beside Waiver Genius and Waiver Disaster, so a
-pickup four managers fought over no longer reads as an unremarkable move.
+visible to the editorial — every player more than one manager claimed, who won him, who
+was beaten to him and at what priority — and a week where three or more managers claimed
+the same player gets a Most Contested award beside Waiver Genius and Waiver Disaster, so
+a pickup four managers fought over no longer reads as an unremarkable move.
 
 The recap prints the season table only at GW19 and at the finale, so the set-piece
 stays a set-piece — though with `--summarise` its editorial knows the running totals

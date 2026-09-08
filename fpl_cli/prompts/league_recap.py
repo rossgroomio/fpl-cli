@@ -447,10 +447,12 @@ def format_recap_waivers_context(data: LeagueRecapData) -> str:
     using the same labels the awards print. Empty for classic (transfers,
     not waivers) and when nobody moved.
 
-    The contested block closes the section, in the same sentence the Most
-    Contested award and the report's Contested Claims section print, so the
-    editorial can say who else wanted a player -- the outbid group says a
-    manager lost a race, and this says which one and to whom. It can only be
+    The contested block closes the section: every race, in the sentence the
+    Most Contested award prints for the biggest, so the editorial can say
+    who else wanted a player -- the outbid group says a manager lost a race,
+    and this says which one and to whom. Every race reaches it, where the
+    award waits for a pile-up (`MOST_CONTESTED_MIN_CLAIMANTS`): a two-way
+    race is colour the editorial may use, not a headline. It can only be
     present when the section is: a race needs a lost claim, and a lost claim
     puts its manager in the outbid group or on a mover's tail.
     """

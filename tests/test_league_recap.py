@@ -14,6 +14,7 @@ import pytest
 from fpl_cli.agents.orchestration.report import ReportAgent, _format_standings_block
 from fpl_cli.cli._league_recap_data import (
     _PICKS_CONCURRENCY,
+    MOST_CONTESTED_MIN_CLAIMANTS,
     RecapReconciliationError,
     _apply_league_start_offset,
     _assign_point_in_time_positions,
@@ -2693,7 +2694,13 @@ class TestContestedDraftClaims:
 
 class TestMostContestedAward:
     """Issue #330: the third waiver award, about the league rather than one
-    manager -- the player the most managers claimed."""
+    manager -- the player the most managers claimed, on a week where enough
+    of them did to make a pile-up."""
+
+    def test_the_threshold_is_a_pile_up_not_any_lost_claim(self):
+        """Two claimants is every lost claim by definition; the award waits
+        for at least two managers to have been beaten to the same player."""
+        assert MOST_CONTESTED_MIN_CLAIMANTS == 3
 
     def _week(self) -> list[RecapManagerEntry]:
         return [
@@ -2722,6 +2729,23 @@ class TestMostContestedAward:
         _compute_most_contested_award(managers, awards)
         assert "most_contested" not in awards
 
+    def test_a_two_way_race_is_below_the_threshold_and_stays_editorial_colour(self):
+        """One manager beaten to a player is the routine outcome of a waiver
+        round, not a headline: no award, but the editorial's waiver roster
+        still carries the race."""
+        managers = [
+            _make_manager_with_txns("Eve", [_txn("Isidor", 5, "Bowen", 2)], entry_id=5),
+            _lost_by(_make_manager(name="Cam", entry_id=3), _lost("Isidor", "Richarlison", priority=1)),
+        ]
+        awards: RecapAwards = {}  # type: ignore[typeddict-item]
+        _compute_most_contested_award(managers, awards)
+        assert "most_contested" not in awards
+        data = _make_recap_data(managers=managers)
+        data["fpl_format"] = "draft"
+        assert (
+            "- Isidor was claimed by 2 managers: Eve won him; Cam (priority 1) was beaten to him."
+        ) in format_recap_waivers_context(data)
+
     def test_the_shared_awards_carry_it_for_draft_only(self):
         assert "most_contested" in _compute_shared_awards(self._week(), format_name="draft")
         assert "most_contested" not in _compute_shared_awards(self._week(), format_name="classic")
@@ -2730,30 +2754,41 @@ class TestMostContestedAward:
         """`_compute_waiver_awards` returns early with no movers at all; this
         award must not -- a race whose winner could not be fetched still had
         losers, and nobody is named as the winner rather than a placeholder."""
-        managers = [_lost_by(_make_manager(name="Bob", entry_id=2), _lost("Elanga", "Savio"))]
+        managers = [
+            _lost_by(_make_manager(name="Bob", entry_id=2), _lost("Elanga", "Savio")),
+            _lost_by(_make_manager(name="Cam", entry_id=3), _lost("Elanga", "Wood", priority=2)),
+        ]
         awards = _compute_shared_awards(managers, format_name="draft")
         assert "waiver_genius" not in awards
         assert awards["most_contested"]["manager_name"] == ""
         assert awards["most_contested"]["detail"] == (
-            "Elanga was claimed by 2 managers: the winner could not be identified; "
-            "Bob (priority 1) was beaten to him."
+            "Elanga was claimed by 3 managers: the winner could not be identified; "
+            "Bob (priority 1) and Cam (priority 2) were beaten to him."
         )
 
     def test_a_tie_on_claimants_names_every_player_tied(self):
         managers = [
             _make_manager_with_txns("Dan", [_txn("Elanga", 2, "Gravenberch", 2)], entry_id=4),
             _make_manager_with_txns("Eve", [_txn("Isidor", 5, "Bowen", 2)], entry_id=5),
-            _lost_by(_make_manager(name="Alice", entry_id=1), _lost("Elanga", "Savio", priority=1)),
-            _lost_by(_make_manager(name="Bob", entry_id=2), _lost("Isidor", "Dango", priority=1)),
+            _lost_by(
+                _make_manager(name="Alice", entry_id=1),
+                _lost("Elanga", "Savio", priority=1), _lost("Isidor", "Savio", priority=2),
+            ),
+            _lost_by(
+                _make_manager(name="Bob", entry_id=2),
+                _lost("Isidor", "Dango", priority=1), _lost("Elanga", "Dango", priority=2),
+            ),
         ]
         awards: RecapAwards = {}  # type: ignore[typeddict-item]
         _compute_most_contested_award(managers, awards)
         award = awards["most_contested"]
         assert award["manager_name"] == "Dan and Eve"
-        assert award["value"] == 2
+        assert award["value"] == 3
         assert award["detail"] == (
-            "Elanga was claimed by 2 managers: Dan won him; Alice (priority 1) was beaten to him. "
-            "Isidor was claimed by 2 managers: Eve won him; Bob (priority 1) was beaten to him."
+            "Elanga was claimed by 3 managers: Dan won him; "
+            "Alice (priority 1) and Bob (priority 2) were beaten to him. "
+            "Isidor was claimed by 3 managers: Eve won him; "
+            "Bob (priority 1) and Alice (priority 2) were beaten to him."
         )
 
     def test_a_wide_tie_is_capped_like_the_other_awards(self):
@@ -2762,14 +2797,17 @@ class TestMostContestedAward:
                 "Win", [_txn(player, 2, f"out{i}", 1) for i, player in enumerate("ABCD")], entry_id=9,
             ),
         ] + [
-            _lost_by(_make_manager(name=f"Loser{i}", entry_id=i), _lost(player, "Z", priority=1))
-            for i, player in enumerate("ABCD", start=1)
+            _lost_by(
+                _make_manager(name=f"Loser{i}", entry_id=i),
+                *(_lost(player, "Z", priority=1) for player in "ABCD"),
+            )
+            for i in (1, 2)
         ]
         awards: RecapAwards = {}  # type: ignore[typeddict-item]
         _compute_most_contested_award(managers, awards)
         detail = awards["most_contested"]["detail"]
-        assert detail.count("was claimed by 2 managers") == 3
-        assert detail.endswith(" 1 more player claimed by 2 managers omitted.")
+        assert detail.count("was claimed by 3 managers") == 3
+        assert detail.endswith(" 1 more player claimed by 3 managers omitted.")
 
 
 class TestContractDraftTxnChains:
@@ -4252,15 +4290,15 @@ class TestLeagueRecapTemplateRender:
         assert "```" in standings_section
 
 
-class TestLeagueRecapContestedClaimsRender:
-    """Issue #330: the saved draft report lists every race, where the award
-    headlines only the biggest."""
+class TestLeagueRecapMostContestedRender:
+    """Issue #330: the saved draft report carries the award beside the other
+    two waiver awards, and nothing more about the week's races -- every race
+    is editorial context, not report furniture."""
 
     _ELANGA = (
         "Elanga was claimed by 4 managers: Dan won him; "
         "Alice (priority 1), Bob (priority 1) and Cam (priority 2) were beaten to him."
     )
-    _ISIDOR = "Isidor was claimed by 2 managers: Eve won him; Cam (priority 5) was beaten to him."
 
     async def _render(self, tmp_path, data):
         agent = ReportAgent(config={"output_dir": str(tmp_path)})
@@ -4280,20 +4318,16 @@ class TestLeagueRecapContestedClaimsRender:
             **extra,
         }
 
-    async def test_the_award_and_every_race_reach_the_report(self, tmp_path):
+    async def test_the_award_renders_under_awards_and_nowhere_else(self, tmp_path):
         content = await self._render(tmp_path, self._draft_data(
             awards={"most_contested": {"manager_name": "Dan", "value": 4, "detail": self._ELANGA}},
-            contested_claims_lines=[self._ELANGA, self._ISIDOR],
         ))
         assert f"**Most Contested:** {self._ELANGA}" in content
-        section = content[content.index("# Contested Claims"):content.index("# Contested Claims") + 600]
-        assert f"- {self._ELANGA}" in section
-        assert f"- {self._ISIDOR}" in section
-        assert content.index("# GW Standings") < content.index("# Contested Claims")
-
-    async def test_the_section_is_omitted_when_nothing_was_contested(self, tmp_path):
-        content = await self._render(tmp_path, self._draft_data())
+        assert content.count("Elanga was claimed by") == 1
         assert "Contested Claims" not in content
+
+    async def test_no_award_means_no_mention(self, tmp_path):
+        content = await self._render(tmp_path, self._draft_data())
         assert "Most Contested" not in content
 
 
@@ -4994,8 +5028,8 @@ class TestDraftLostClaims:
 
 
 class TestDraftContestedClaimsCollection:
-    """Issue #330: the race reaches the collector's awards and report lines
-    from the raw feed, with the winner read off the accepted row."""
+    """Issue #330: the race reaches the collector's awards from the raw
+    feed, with the winner read off the accepted row."""
 
     _TEAMS = {
         1: make_team(id=1, name="Alpha", short_name="ALP"),
@@ -5016,15 +5050,18 @@ class TestDraftContestedClaimsCollection:
             "standings": [
                 {"league_entry": 10, "event_total": 0, "total": 0},
                 {"league_entry": 20, "event_total": 0, "total": 0},
+                {"league_entry": 30, "event_total": 0, "total": 0},
             ],
             "league_entries": [
                 {"id": 10, "entry_id": 1, "player_first_name": "Alice", "player_last_name": "A"},
                 {"id": 20, "entry_id": 2, "player_first_name": "Bob", "player_last_name": "B"},
+                {"id": 30, "entry_id": 3, "player_first_name": "Cam", "player_last_name": "C"},
             ],
         }
         picks = {
             1: {"picks": [{"element": 900, "position": 1}], "subs": []},
             2: {"picks": [{"element": 902, "position": 1}], "subs": []},
+            3: {"picks": [{"element": 901, "position": 1}], "subs": []},
         }
         client = MagicMock()
         client.__aenter__ = AsyncMock(return_value=client)
@@ -5041,28 +5078,38 @@ class TestDraftContestedClaimsCollection:
                 players=main_players, teams=self._TEAMS, is_live_gw=False,
             )
 
-    async def test_a_race_reaches_the_award_and_the_report_lines(self):
-        data = await self._collect([
-            {
-                "event": 3, "result": "a", "entry": 1, "kind": "w", "priority": 2,
-                "element_in": 900, "element_out": 901,
-            },
-            {
-                "event": 3, "result": "di", "entry": 2, "kind": "w", "priority": 1,
-                "element_in": 900, "element_out": 902,
-            },
-        ])
-        sentence = "Elanga was claimed by 2 managers: Alice A won him; Bob B (priority 1) was beaten to him."
-        assert data["contested_claims_lines"] == [sentence]
-        award = data["awards"]["most_contested"]
-        assert (award["manager_name"], award["value"], award["detail"]) == ("Alice A", 2, sentence)
+    _ACCEPTED = {
+        "event": 3, "result": "a", "entry": 1, "kind": "w", "priority": 2,
+        "element_in": 900, "element_out": 901,
+    }
+    _BOB_LOST = {
+        "event": 3, "result": "di", "entry": 2, "kind": "w", "priority": 1,
+        "element_in": 900, "element_out": 902,
+    }
+    _CAM_LOST = {
+        "event": 3, "result": "di", "entry": 3, "kind": "w", "priority": 3,
+        "element_in": 900, "element_out": 901,
+    }
 
-    async def test_nothing_contested_leaves_no_lines_and_no_award(self):
-        data = await self._collect([{
-            "event": 3, "result": "a", "entry": 1, "kind": "w", "priority": 1,
-            "element_in": 900, "element_out": 901,
-        }])
+    async def test_a_pile_up_reaches_the_award(self):
+        data = await self._collect([self._ACCEPTED, self._BOB_LOST, self._CAM_LOST])
+        award = data["awards"]["most_contested"]
+        assert (award["manager_name"], award["value"], award["detail"]) == (
+            "Alice A", 3,
+            "Elanga was claimed by 3 managers: Alice A won him; "
+            "Bob B (priority 1) and Cam C (priority 3) were beaten to him.",
+        )
         assert "contested_claims_lines" not in data
+
+    async def test_a_two_way_race_is_no_award_but_still_reaches_the_editorial(self):
+        data = await self._collect([self._ACCEPTED, self._BOB_LOST])
+        assert "most_contested" not in data["awards"]
+        assert (
+            "- Elanga was claimed by 2 managers: Alice A won him; Bob B (priority 1) was beaten to him."
+        ) in format_recap_waivers_context(data)
+
+    async def test_nothing_contested_leaves_no_award(self):
+        data = await self._collect([self._ACCEPTED])
         assert "most_contested" not in data["awards"]
 
 

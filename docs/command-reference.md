@@ -856,29 +856,26 @@ has to keep working while the next one plays.
 **Awards:** GW winner/loser, biggest bench haul, best/worst captain, transfer/waiver genius and disaster.
 The draft waiver awards count and label waiver claims and free-agent signings separately (e.g. "across
 2 moves: 1 waiver, 1 free agent") rather than folding both into "waivers". A draft recap has a third
-waiver award, **Most Contested**: the player the most managers claimed, with who won him and every
-manager beaten to him at the priority they gave the claim ("Elanga was claimed by 4 managers: Dan won
-him; Alice (priority 1), Bob (priority 1) and Cam (priority 2) were beaten to him"). A tie on claimants
-names every player tied, capped like the other awards' ties. It needs no accepted move to exist — a
-race whose winner's picks could not be fetched still had losers, and is reported with its winner
-unidentified rather than dropped.
+waiver award, **Most Contested**, on a week where at least three managers claimed the same player:
+the player the most managers claimed, with who won him and every manager beaten to him at the
+priority they gave the claim ("Elanga was claimed by 4 managers: Dan won him; Alice (priority 1),
+Bob (priority 1) and Cam (priority 2) were beaten to him"). A two-way race is every lost claim by
+definition, so it earns no award — the editorial still sees it (below). A tie on claimants names every
+player tied, capped like the other awards' ties. The award needs no accepted move to exist — a race
+whose winner's picks could not be fetched still had losers, and is reported with its winner
+unidentified rather than dropped. Races are derived from the lost claims the recap already records,
+grouped by player, with the winner read off the accepted move that brought him in (the raw move, so a
+winner who moved him on again the same gameweek still won him); a manager who lost several claims on
+one player — a conditional chain offering different drops for him — is named once, at the highest
+priority they gave him. A beaten manager's priority is their own ranking of the claims they submitted
+that week, not the league's waiver order. Nothing about races reaches `--format json`, whose rows
+already carry the `lost_claims` and `transactions` they are regrouped from.
 A tied award records every manager who tied but bounds the prose it prints them in: at most three
 picks, at most three managers named under each, and the rest counted rather than listed, so the line
 is the same length whether five managers tied or fifty. A captain tie the whole league is in is not
 an award at all — it collapses to one line counting each pick and naming no manager ("Captaincy was
 a wash — all 19 captains scored 2 pts (Haaland ×14, Salah ×5)"), and where Best and Worst Captain
 cover the same managers only Best is reported: the same fact under two headings is printed once.
-
-**Contested claims** (draft): the saved report carries a `# Contested Claims` section listing every
-player more than one manager claimed this gameweek, most contested first — the award headlines only
-the biggest race, and the second race of the week is exactly the one an award cannot see. Derived
-from the lost claims the recap already records, grouped by player, with the winner read off the
-accepted move that brought him in (the raw move, so a winner who moved him on again the same gameweek
-still won him); a manager who lost several claims on one player — a conditional chain offering
-different drops for him — is named once, at the highest priority they gave him. A beaten manager's
-priority is their own ranking of the claims they submitted that week, not the league's waiver order.
-Absent when nothing was contested. Not in `--format json`, whose rows already carry the `lost_claims`
-and `transactions` the section is regrouped from.
 
 **Standings movement:** position changes derived from point differentials, per-manager highlights. Both tables — this gameweek's and the one before it — are ranked the same way, so managers level on points share a place on each and no arrow is reported for a tie nobody left.
 
@@ -909,7 +906,7 @@ names the gap and forbids numbering the fine instead. `--format json` is
 ungated too — `metadata.season_fines` is emitted every
 week, so a scripted consumer never sees it appear and disappear on a calendar it cannot see.
 
-**LLM editorial** (`--summarise`): Newsletter-style narrative via synthesis provider. Names names, calls out decisions. Captain picks, chips and transfers each reach it as a full per-manager roster with an explicit count, never through the awards alone — the awards name only the best and worst, so a manager whose pick or move was neither would otherwise be invented or miscounted. The transfer roster carries every move with its points swing, the hit and the post-hit net, names the managers who made none, and lists a manager whose moves could not be fetched as having moved with the moves unknown rather than as standing still. A draft recap gets the same roster for its waivers and free-agent signings: every move as it was made (a rebuild chain is listed move by move, not as the endpoint pair the award prints), each tagged `[waiver]` or `[free agent]` with the labels the waiver awards use, the net per manager, the count of movers, who claimed a player and lost him to a rival — with the priority they spent on him — and who did neither, then every contested player with who won him and who was beaten to him, in the sentence the Most Contested award and the report's Contested Claims section print (the one thing it may say of anyone's waiver position is that the winner stood higher in it) — so the editorial can say who else wanted a player and no longer sees only the Waiver Genius and Waiver Disaster and is no longer told to say nothing about moves because draft has no `## Transfers` section. The editorial is an add-on: if the synthesis provider has no usable API key the recap still renders, still saves its report and still captures the ledger, with the reason on stderr and a `synthesis_provider_unavailable` warning in JSON. `synthesis_summary` is `null` on such a run — the warning is what distinguishes it from a run that never asked for an editorial. An editorial the provider stopped generating early (a token ceiling, a refusal) is written out as it stands, with the reason on stderr and a `synthesis_stopped_early` warning in JSON — a truncated editorial is otherwise indistinguishable from a whole one.
+**LLM editorial** (`--summarise`): Newsletter-style narrative via synthesis provider. Names names, calls out decisions. Captain picks, chips and transfers each reach it as a full per-manager roster with an explicit count, never through the awards alone — the awards name only the best and worst, so a manager whose pick or move was neither would otherwise be invented or miscounted. The transfer roster carries every move with its points swing, the hit and the post-hit net, names the managers who made none, and lists a manager whose moves could not be fetched as having moved with the moves unknown rather than as standing still. A draft recap gets the same roster for its waivers and free-agent signings: every move as it was made (a rebuild chain is listed move by move, not as the endpoint pair the award prints), each tagged `[waiver]` or `[free agent]` with the labels the waiver awards use, the net per manager, the count of movers, who claimed a player and lost him to a rival — with the priority they spent on him — and who did neither, then every contested player with who won him and who was beaten to him — every race, the two-way ones the Most Contested award never headlines included, in the sentence that award prints (the one thing it may say of anyone's waiver position is that the winner stood higher in it) — so the editorial can say who else wanted a player and no longer sees only the Waiver Genius and Waiver Disaster and is no longer told to say nothing about moves because draft has no `## Transfers` section. The editorial is an add-on: if the synthesis provider has no usable API key the recap still renders, still saves its report and still captures the ledger, with the reason on stderr and a `synthesis_provider_unavailable` warning in JSON. `synthesis_summary` is `null` on such a run — the warning is what distinguishes it from a run that never asked for an editorial. An editorial the provider stopped generating early (a token ceiling, a refusal) is written out as it stands, with the reason on stderr and a `synthesis_stopped_early` warning in JSON — a truncated editorial is otherwise indistinguishable from a whole one.
 
 **Streaks:** notable open streaks print under `Streaks:` on console — leaders only, so console stays a highlights view — and in full as a `# League History` section in the saved report. Each is reported as an observed count over its true span (e.g. "3 in the last 11, with 8 not recorded") rather than a bare "in a row" once any gameweek went uncaptured. A streak surfaces once its run reaches the condition's own minimum: 2 gameweeks for weeks on top, gameweek wins, last-place finishes, captain blanks and transfer hits; 3 for waiver hauls and backfires. Bottom-half gameweeks and green-arrow droughts never surface as streaks at all — both restate where the table already shows a manager is, so their run exists to drive the season count's firing rule rather than to be read on its own.
 

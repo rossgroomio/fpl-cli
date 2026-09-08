@@ -128,9 +128,11 @@ class RecapContestedClaim(TypedDict):
     a rival, so every player any manager lost a claim on was claimed by at
     least two, and the winner is whichever manager's accepted move brought
     him in the same gameweek. Nothing here is absent from the manager rows
-    the ledger already records -- this regroups them by player, so the recap
-    can say who wanted whom instead of reporting the winner's pickup as an
-    unremarkable move. Built by `contested_draft_claims()`.
+    the ledger already records -- this regroups them by player, so the
+    editorial can say who wanted whom instead of reading the winner's pickup
+    as an unremarkable move, and the biggest race can be the week's Most
+    Contested award. Built by `contested_draft_claims()`; never written to
+    the report on its own, whose per-move detail stays in the awards.
     """
 
     player: str
@@ -316,10 +318,12 @@ class RecapAwards(TypedDict, total=False):
     waiver_genius: RecapAwardEntry
     waiver_disaster: RecapAwardEntry
     # Draft only (issue #330): the player the most managers claimed this
-    # gameweek. `manager_name` is the manager who won him -- joined with
-    # " and " across a tie, and empty where no race's winner could be
-    # identified -- and `value` is how many claimed him. The detail names
-    # every manager beaten to him and the priority each gave the claim.
+    # gameweek, on a week where enough of them did to make a pile-up
+    # (`MOST_CONTESTED_MIN_CLAIMANTS`). `manager_name` is the manager who won
+    # him -- joined with " and " across a tie, and empty where no race's
+    # winner could be identified -- and `value` is how many claimed him. The
+    # detail names every manager beaten to him and the priority each gave
+    # the claim.
     most_contested: RecapAwardEntry
 
 
@@ -436,13 +440,6 @@ class LeagueRecapData(TypedDict):
     # absent outside the league's opening gameweek, when nothing was fetched.
     prior_seasons_lines: NotRequired[list[str]]
     prior_seasons_coverage_lines: NotRequired[list[str]]
-    # Report-surfaced contested waiver claims (issue #330), draft only: one
-    # sentence per player more than one manager claimed, most contested
-    # first, from `contested_draft_claims()` -- every race, where the Most
-    # Contested award headlines only the biggest. Absent when no claim was
-    # contested, and always absent for classic, so the report omits the
-    # section rather than heading an empty one.
-    contested_claims_lines: NotRequired[list[str]]
 
 
 # ---------------------------------------------------------------------------
@@ -763,9 +760,8 @@ def format_contested_claim(contest: RecapContestedClaim) -> str:
     """"Elanga was claimed by 4 managers: Alice won him; Bob (priority 1),
     Cam (priority 1) and Dan (priority 2) were beaten to him."
 
-    One sentence for every surface -- the Most Contested award, the report's
-    Contested Claims section and the editorial's roster -- so no race is
-    told two ways. Each beaten manager carries the priority they gave the
+    One sentence for both surfaces -- the Most Contested award and the
+    editorial's roster -- so no race is told two ways. Each beaten manager carries the priority they gave the
     claim, which is the point of naming them: three first-choice claims on
     one player is the week's story, and a fifth-choice claim that missed is
     a different thing from a first. Where the winner could not be identified
