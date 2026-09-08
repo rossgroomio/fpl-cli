@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import NotRequired, TypedDict
 
@@ -662,10 +662,11 @@ def _priority_rank(priority: int | None) -> tuple[int, int]:
 
 
 def _contest_winner(
-    accepted: Sequence[tuple[str, str]], losers: Sequence[RecapContestedClaimant],
-) -> str | None:
-    """The manager whose accepted move won the race, from the (manager,
-    kind) pairs that brought the player in this gameweek.
+    accepted: Sequence[tuple[int, str]], claimants: Iterable[RecapContestedClaimant],
+) -> int | None:
+    """The manager whose accepted move won the race, as a position in the
+    managers list, from the (position, kind) pairs that brought the player
+    in this gameweek.
 
     Normally exactly one. Where the feed holds more -- the waiver winner
     moved him on and a rival signed him as a free agent before the deadline
@@ -673,10 +674,10 @@ def _contest_winner(
     """
     if not accepted:
         return None
-    kinds = {c["kind"] for c in losers}
-    for manager_name, kind in accepted:
+    kinds = {c["kind"] for c in claimants}
+    for position, kind in accepted:
         if kind in kinds:
-            return manager_name
+            return position
     return accepted[0][0]
 
 
@@ -696,16 +697,24 @@ def contested_draft_claims(
 
     A manager who lost several claims on one player -- a conditional chain
     offering different drops for him -- wanted him once, and is named once,
-    at the highest priority they gave him. Empty for classic, whose rows
+    at the highest priority they gave him. The winner is never also among
+    the beaten: once a manager's first claim for a player lands, any later
+    claim of theirs for him is denied on the incoming side (a `di`, since it
+    is the incoming player that is gone), and a manager who lost the waiver
+    and signed him as a free agent later the same gameweek carries both
+    rows too. Either way they wanted him once and got him, and a player
+    nobody else wanted is then no race at all. Empty for classic, whose rows
     carry no claims.
     """
     players: dict[_ContestedPlayerKey, RecapDraftLostClaim] = {}
-    losers: dict[_ContestedPlayerKey, list[RecapContestedClaimant]] = {}
-    accepted: dict[_ContestedPlayerKey, list[tuple[str, str]]] = {}
-    for m in managers:
-        name = m["manager_name"]
+    # Claimants are keyed by the manager's position in `managers`, never by
+    # name: two managers can share a display name, and the one who won has
+    # to be told apart from the one who lost.
+    claimants: dict[_ContestedPlayerKey, dict[int, RecapContestedClaimant]] = {}
+    accepted: dict[_ContestedPlayerKey, list[tuple[int, str]]] = {}
+    for position, m in enumerate(managers):
         for move in m.get("transactions") or []:
-            accepted.setdefault(_contested_player_key(move), []).append((name, move["kind"]))
+            accepted.setdefault(_contested_player_key(move), []).append((position, move["kind"]))
         best: dict[_ContestedPlayerKey, RecapDraftLostClaim] = {}
         for claim in m.get("lost_claims") or []:
             key = _contested_player_key(claim)
@@ -714,25 +723,28 @@ def contested_draft_claims(
                 best[key] = claim
         for key, claim in best.items():
             players.setdefault(key, claim)
-            losers.setdefault(key, []).append(RecapContestedClaimant(
-                manager_name=name, kind=claim["kind"], priority=claim["priority"],
-            ))
+            claimants.setdefault(key, {})[position] = RecapContestedClaimant(
+                manager_name=m["manager_name"], kind=claim["kind"], priority=claim["priority"],
+            )
 
     contests: list[RecapContestedClaim] = []
     for key, claim in players.items():
+        wanted = claimants[key]
+        winner = _contest_winner(accepted.get(key, []), wanted.values())
         beaten = sorted(
-            losers[key], key=lambda c: (_priority_rank(c["priority"]), c["manager_name"]),
+            (c for position, c in wanted.items() if position != winner),
+            key=lambda c: (_priority_rank(c["priority"]), c["manager_name"]),
         )
+        if not beaten:
+            continue
         contest = RecapContestedClaim(
             player=claim["player_in"],
             player_team=claim["player_in_team"],
             player_team_name=claim.get("player_in_team_name"),
-            winner=_contest_winner(accepted.get(key, []), beaten),
+            winner=None if winner is None else managers[winner]["manager_name"],
             losers=beaten,
-            claimants=len(beaten),
+            claimants=len(beaten) + (0 if winner is None else 1),
         )
-        if contest["winner"] is not None:
-            contest["claimants"] += 1
         code = claim.get("player_in_code")
         if code is not None:
             contest["player_code"] = code

@@ -2659,6 +2659,42 @@ class TestContestedDraftClaims:
             for c in contests
         ] == [(100, "Alice", ["Cam"]), (200, "Alice", ["Bob"])]
 
+    def test_the_winner_is_never_also_among_the_beaten(self):
+        """#341 review: once a manager's first claim for a player lands, any
+        later claim of theirs for him is denied on the incoming side -- a
+        `di`, since it is the incoming player that is gone -- so one manager
+        can carry both an accepted move and a lost claim for one player.
+        They wanted him once and got him; counting them twice read a two-way
+        race as three claimants and named them on both sides."""
+        managers = [
+            _make_manager_with_txns("Alice", [_txn("Elanga", 2, "Savio", 1)], entry_id=1),
+            _lost_by(_make_manager(name="Bob", entry_id=2), _lost("Elanga", "Dango", priority=1)),
+        ]
+        _lost_by(managers[0], _lost("Elanga", "Wood", priority=2))
+        [contest] = contested_draft_claims(managers)
+        assert contest["claimants"] == 2
+        assert [c["manager_name"] for c in contest["losers"]] == ["Bob"]
+        assert format_contested_claim(contest) == (
+            "Elanga was claimed by 2 managers: Alice won him; Bob (priority 1) was beaten to him."
+        )
+
+    def test_a_manager_beaten_only_by_their_own_accepted_claim_is_no_race(self):
+        managers = [_make_manager_with_txns("Alice", [_txn("Elanga", 2, "Savio", 1)], entry_id=1)]
+        _lost_by(managers[0], _lost("Elanga", "Wood", priority=2))
+        assert contested_draft_claims(managers) == []
+
+    def test_two_managers_sharing_a_name_are_told_apart(self):
+        """Keyed by row, not display name: the winner's namesake still lost."""
+        managers = [
+            _make_manager_with_txns("Sam", [_txn("Elanga", 2, "Savio", 1)], entry_id=1),
+            _lost_by(_make_manager(name="Sam", entry_id=2), _lost("Elanga", "Dango", priority=1)),
+            _lost_by(_make_manager(name="Bob", entry_id=3), _lost("Elanga", "Wood", priority=1)),
+        ]
+        [contest] = contested_draft_claims(managers)
+        assert contest["winner"] == "Sam"
+        assert contest["claimants"] == 3
+        assert [c["manager_name"] for c in contest["losers"]] == ["Bob", "Sam"]
+
     def test_a_winner_who_moved_the_player_on_again_still_won_him(self):
         """Read off the raw move list, not the awards' contracted one: B in
         for A and then C in for B is still a win of B."""
@@ -2792,6 +2828,16 @@ class TestMostContestedAward:
         assert award["detail"].startswith("Isidor was claimed by 3 managers: Eve won him;")
         assert "Elanga" not in award["detail"]
 
+    def test_a_winners_own_denied_claim_never_lifts_a_race_over_the_threshold(self):
+        """#341 review: counted twice, a two-way race cleared the threshold
+        and took the headline it exists to withhold."""
+        managers = [
+            _make_manager_with_txns("Alice", [_txn("Elanga", 2, "Savio", 1)], entry_id=1),
+            _lost_by(_make_manager(name="Bob", entry_id=2), _lost("Elanga", "Dango", priority=1)),
+        ]
+        _lost_by(managers[0], _lost("Elanga", "Wood", priority=2))
+        assert "most_contested" not in _compute_shared_awards(managers, format_name="draft")
+
     def test_a_tie_on_claimants_names_every_player_tied(self):
         managers = [
             _make_manager_with_txns("Dan", [_txn("Elanga", 2, "Gravenberch", 2)], entry_id=4),
@@ -2834,6 +2880,9 @@ class TestMostContestedAward:
         detail = awards["most_contested"]["detail"]
         assert detail.count("was claimed by 3 managers") == 3
         assert detail.endswith(" 1 more player claimed by 3 managers omitted.")
+        # One manager won every tied race: named once, never once per race,
+        # and never for the race the cap dropped (#341 review).
+        assert awards["most_contested"]["manager_name"] == "Win"
 
 
 class TestContractDraftTxnChains:
@@ -3767,7 +3816,10 @@ class TestPromptFormatting:
             awards_text="x", standings_text="| t |", fines_text="",
         )
         assert '"Contested players" lines' in system
-        assert "stood higher in the league's waiver order" in system
+        assert "standing higher in the league's waiver order" in system
+        # The licence is for waiver races alone: a free-agent race was
+        # first-come-first-served (#341 review).
+        assert "tagged (free agent) was first-come-first-served" in system
         assert "Most Contested only the player the most managers claimed" in system
 
     def test_waivers_context_omits_the_stayed_line_when_everyone_moved(self):

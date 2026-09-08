@@ -1872,8 +1872,13 @@ def _compute_most_contested_award(
             f" {omitted} more player{'s' if omitted != 1 else ''} claimed by "
             f"{top_count} managers omitted."
         )
+    # Names the winners the detail actually prints, each once: a manager
+    # who won several tied races is one winner, and a race the cap dropped
+    # is not summarised by a name the reader cannot find in the detail
+    # (#341 review).
+    winners = [c["winner"] for c in shown if c["winner"] is not None]
     awards["most_contested"] = RecapAwardEntry(
-        manager_name=" and ".join(c["winner"] for c in top if c["winner"]),
+        manager_name=" and ".join(dict.fromkeys(winners)),
         value=top_count,
         detail=detail,
     )

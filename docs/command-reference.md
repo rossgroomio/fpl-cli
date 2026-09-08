@@ -868,7 +868,8 @@ recap can see counted, rather than being dropped. Races are derived from the los
 grouped by player, with the winner read off the accepted move that brought him in (the raw move, so a
 winner who moved him on again the same gameweek still won him); a manager who lost several claims on
 one player — a conditional chain offering different drops for him — is named once, at the highest
-priority they gave him. A beaten manager's priority is their own ranking of the claims they submitted
+priority they gave him, and the winner is never also among the beaten, however many of their later
+claims for him were denied once the first landed. A beaten manager's priority is their own ranking of the claims they submitted
 that week, not the league's waiver order. Nothing about races reaches `--format json`, whose rows
 already carry the `lost_claims` and `transactions` they are regrouped from.
 A tied award records every manager who tied but bounds the prose it prints them in: at most three
