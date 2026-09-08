@@ -1127,6 +1127,8 @@ they share the channel: `synthesis_provider_unavailable` and `league_standings_m
 | `league_history_club_rederived` | A finished gameweek replaced the club it already had recorded for one or more players with the one that gameweek's own fixtures place them at. The recorded club was stamped from a bootstrap that had already moved on — a first capture or a coarse-tier upgrade has no earlier row to carry a club from — so unlike name and position it is superseded rather than kept |
 | `league_history_standings_carried` | A finished gameweek kept a league position or cumulative total it already had recorded rather than the nothing this run could re-derive. Draft raises it on any replay: with no per-manager history endpoint and standings that describe a later gameweek, a replayed draft gameweek derives neither figure, and writing that out would erase the ones the live capture recorded |
 | `league_history_claims_carried` | A finished draft gameweek kept the lost waiver claims it already had recorded for one or more managers rather than the fewer this run found. A replay drops a claim whose player it can no longer place, and a gameweek the league's transaction feed has stopped serving yields none at all; the recorded list is the more complete one either way, and a longer replayed list still lands as a correction |
+| `league_history_tied_last_place_repaired` | A gameweek recorded its `last-place` fine against one manager of a tie, leaving the others recorded as owing nothing. The managers level on the same score now carry the same ruling — the one that gameweek wrote, penalty text and all, re-keyed to them. Nothing is re-fetched and nothing is re-ruled, so this needs neither `--backfill-detail` nor a network call, and it stops once the gameweek is repaired. It is skipped where the row data cannot settle who was level: the gameweek does not record whether it was ruled on gross or net points, so where the two measures name different managers as tied, the gameweek is left exactly as recorded |
+| `league_history_tied_last_place_ambiguous` | A gameweek looks to have left a manager out of its `last-place` fine, but it does not record whether it was ruled on gross or net points and the two measures disagree about whether that manager was level. Nothing is written for them — fining a manager who was level only on the measure that did *not* rule would invent a fine rather than restore one. Raised on every run, because the state is permanent and only you can settle it: add the fine by hand if you know how that gameweek was ruled. It can appear alongside `league_history_tied_last_place_repaired` for the same gameweek, where some of the tie was settled and some was not |
 | `league_history_standings_repaired` | A gameweek whose recorded positions an *earlier* run had already erased was restored from the ledger itself — the last superseded line that recorded them, or, on draft, a cumulative total re-summed from earlier gameweeks. The *last* one, not the first: a gameweek captured several times while bonus and late results were still landing recorded a stale position early and the settled one last, and only the latest recorded value is the one the damage destroyed. Nothing is re-fetched, so this needs neither `--backfill-detail` nor a network call, and it stops once the damage is repaired. The count is the managers whose league position or cumulative total actually changed — a row rewritten only to restate a fine's player names is not one of them |
 | `synthesis_provider_unavailable` | `--summarise` was asked for but the synthesis provider had no usable key; everything else in the recap, the capture included, ran normally |
 | `synthesis_stopped_early` | The provider reported that the editorial stopped for a reason other than finishing (a token ceiling, a refusal), so `synthesis_summary` may be cut off mid-sentence. Everything else in the recap is unaffected |
@@ -1178,8 +1180,18 @@ so changing a `below-threshold` value in settings moves future rulings and leave
 alone. Backfill holds the same line — a repair carries an already-recorded ruling forward
 untouched, and re-rules a gameweek only when it genuinely fills something in (a manager
 repaired out of an unknown row, or a coarse gameweek upgraded to a fidelity that can rule
-more), in which case it re-rules the whole cohort together so a cohort-relative rule like
-`last-place` cannot end up recorded against two managers in one gameweek.
+more), in which case it re-rules the whole cohort together, so a cohort-relative rule like
+`last-place` is never ruled half under one cohort and half under another.
+
+**A tie for last is shared.** Every manager level on the lowest score that gameweek is
+fined, not whichever of them the cohort's arrival order reached first — the same reading
+the league table already takes, where managers level on points share the position. Because
+the ledger is append-only, gameweeks recorded before this was true cannot be edited: every
+`league-recap` run instead sweeps the gameweeks it targets and appends the recorded ruling
+against the managers it left out, reported as `league_history_tied_last_place_repaired`. A
+manager the sweep cannot place — level under one measure of a gameweek that does not record
+which measure ruled it — is named by `league_history_tied_last_place_ambiguous` rather than
+fined on a guess.
 
 **A block it cannot read stops the command.** An unknown `type:`, a rule missing one, a
 `below-threshold` without its `threshold:`, a non-string `penalty:`, a `threshold:` that
@@ -1491,6 +1503,11 @@ export FPL_SYNTHESIS_BASE_URL=http://localhost:11434/v1
 ### Fine Rule Types
 
 `last-place`, `red-card`, `below-threshold`. The `use_net_points` setting controls whether transfer hits are included in GW points rankings across `league`, `review`, and fines (classic only).
+
+`last-place` is the one rule ruled against the whole league rather than against your score
+alone, so it is the one a tie can fall on. Managers level on the lowest score of the
+gameweek are all fined — the tie is shared, the way the league table shares a position,
+rather than settled by whichever of them the standings happened to list first.
 
 ### Other API Keys
 

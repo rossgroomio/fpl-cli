@@ -2741,6 +2741,39 @@ class TestEvaluateLeagueFines:
         assert ruling.ruled_manager_keys == frozenset({1})
         assert ruling.fines == []
 
+    def test_a_tie_for_last_fines_every_manager_level_on_it(self):
+        """Which of a tied pair `min()` reached first used to decide who paid,
+        and the other was recorded owing nothing (#336)."""
+        squad = [_make_squad_player(name=f"P{i}") for i in range(11)]
+        managers = [
+            _make_manager(name="Alice", entry_id=1, gw_points=80, squad=squad),
+            _make_manager(name="Bob", entry_id=2, gw_points=37, squad=squad),
+            _make_manager(name="Cara", entry_id=3, gw_points=37, squad=squad),
+        ]
+
+        result = evaluate_league_fines(managers, self._settings_with_fines(), "classic").fines
+
+        assert sorted(f["manager_key"] for f in result) == [2, 3]
+        assert {f["rule_type"] for f in result} == {"last-place"}
+
+    def test_a_tie_for_last_is_read_on_net_points_when_they_are_tracked(self):
+        """Bob's hit is what levelled him with Cara, so gross would miss it."""
+        squad = [_make_squad_player(name=f"P{i}") for i in range(11)]
+        managers = [
+            _make_manager(name="Alice", entry_id=1, gw_points=80, gross_points=80, squad=squad),
+            _make_manager(
+                name="Bob", entry_id=2, gw_points=37, gross_points=41,
+                transfer_cost=4, squad=squad,
+            ),
+            _make_manager(name="Cara", entry_id=3, gw_points=37, gross_points=37, squad=squad),
+        ]
+        settings = self._settings_with_fines()
+        settings["use_net_points"] = True
+
+        result = evaluate_league_fines(managers, settings, "classic").fines
+
+        assert sorted(f["manager_key"] for f in result) == [2, 3]
+
     def test_an_unconfigured_league_still_reports_every_manager_as_ruled(self):
         """"No rule was configured" is itself a ruling -- of nothing. Leaving
         the managers out would record silence instead."""

@@ -74,6 +74,93 @@ class TestLastPlace:
         assert results[0].triggered is True
 
 
+class TestLastPlaceTies:
+    """A tie for last is shared, not resolved by who arrives first (#336)."""
+
+    def _tied(self, user_first: bool) -> FinesLeagueData:
+        alice: dict = {"is_user": False, "name": "Alice", "points": 37, "gross_points": 37}
+        you: dict = {"is_user": True, "name": "You", "points": 37, "gross_points": 37}
+        order = [you, alice] if user_first else [alice, you]
+        return {"user_gw_points": 37, "worst_performers": order}
+
+    def test_user_tied_for_last_is_fined_whatever_their_position_in_the_list(self):
+        for user_first in (True, False):
+            results = evaluate_fines(
+                _config(classic=[LAST_PLACE_RULE]), "classic", self._tied(user_first=user_first), [],
+            )
+            assert results[0].triggered is True, f"user_first={user_first}"
+
+    def test_the_fine_names_who_the_user_is_level_with(self):
+        results = evaluate_fines(
+            _config(classic=[LAST_PLACE_RULE]), "classic", self._tied(user_first=False), [],
+        )
+        assert "level with Alice" in results[0].message
+
+    def test_a_sole_last_place_message_is_unchanged(self):
+        league: FinesLeagueData = {
+            "user_gw_points": 30,
+            "worst_performers": [{"is_user": True, "name": "You", "points": 30, "gross_points": 30}],
+        }
+        results = evaluate_fines(_config(classic=[LAST_PLACE_RULE]), "classic", league, [])
+        assert "level with" not in results[0].message
+
+    def test_the_no_fine_message_names_everyone_tied(self):
+        league: FinesLeagueData = {
+            "user_gw_points": 60,
+            "worst_performers": [
+                {"is_user": False, "name": "Alice", "points": 37, "gross_points": 37},
+                {"is_user": False, "name": "Bob", "points": 37, "gross_points": 37},
+            ],
+        }
+        results = evaluate_fines(_config(classic=[LAST_PLACE_RULE]), "classic", league, [])
+        assert results[0].triggered is False
+        assert "Alice, Bob finished bottom with 37 pts" in results[0].message
+
+    def test_a_bottom_five_slice_only_fines_the_managers_on_the_lowest_score(self):
+        """`fpl review` hands over its display list, user row appended and all."""
+        league: FinesLeagueData = {
+            "user_gw_points": 45,
+            "worst_performers": [
+                {"is_user": False, "name": "Alice", "points": 37, "gross_points": 37},
+                {"is_user": False, "name": "Bob", "points": 37, "gross_points": 37},
+                {"is_user": True, "name": "You", "points": 45, "gross_points": 45},
+            ],
+        }
+        results = evaluate_fines(_config(classic=[LAST_PLACE_RULE]), "classic", league, [])
+        assert results[0].triggered is False
+
+    def test_a_net_tie_is_read_on_net_when_net_points_are_tracked(self):
+        """Level on net, apart on gross: the hit is what put them together."""
+        league: FinesLeagueData = {
+            "user_gw_points": 41,
+            "user_gw_net_points": 37,
+            "worst_performers": [
+                {"is_user": False, "name": "Alice", "points": 37, "gross_points": 37},
+                {"is_user": True, "name": "You", "points": 37, "gross_points": 41},
+            ],
+        }
+        net = evaluate_fines(
+            _config(classic=[LAST_PLACE_RULE]), "classic", league, [], use_net_points=True,
+        )
+        assert net[0].triggered is True
+        assert "37 net pts" in net[0].message
+
+        gross = evaluate_fines(_config(classic=[LAST_PLACE_RULE]), "classic", league, [])
+        assert gross[0].triggered is False
+
+    def test_draft_entries_carrying_only_points_still_share_a_tie(self):
+        league: FinesLeagueData = {
+            "user_gw_points": 40,
+            "worst_performers": [
+                {"name": "Alice", "points": 40, "is_user": False},  # type: ignore[typeddict-item]
+                {"name": "You", "points": 40, "is_user": True},  # type: ignore[typeddict-item]
+            ],
+        }
+        results = evaluate_fines(_config(draft=[LAST_PLACE_RULE]), "draft", league, [])
+        assert results[0].triggered is True
+        assert "40 pts" in results[0].message
+
+
 class TestRedCard:
     def test_red_card_starter_triggers_fine(self):
         team: list[FinesTeamPlayer] = [{"name": "Trent", "red_cards": 1, "contributed": True, "auto_sub_out": False}]

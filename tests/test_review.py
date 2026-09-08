@@ -507,6 +507,44 @@ class TestFixtureGroundTruth:
         assert "Blank Gameweek teams (did not play): none this gameweek" in prompt
 
 
+class TestReviewLastPlaceFineOnATie:
+    """`fpl review` hands the fine rules its own bottom-of-the-table display
+    list, so a tie for last has to be read out of that (#336)."""
+
+    def _fines(self, worst_performers):
+        from fpl_cli.cli._review_summarisation import _format_league_context
+
+        return _format_league_context(
+            classic_league_data={
+                "league_name": "League", "user_gw_points": 37,
+                "user_found_in_standings": True,
+                "worst_performers": worst_performers,
+            },
+            draft_league_data=None, team_points_data=[], draft_squad_points_data=[],
+            settings={"fines": {"classic": [
+                {"type": "last-place", "penalty": "Pint on video"},
+            ]}},
+        )["fine_results"]
+
+    def _tied_bottom(self, user_first):
+        rival = {"name": "Alice", "points": 37, "gross_points": 37, "is_user": False}
+        you = {"name": "You", "points": 37, "gross_points": 37, "is_user": True}
+        return ([you, rival] if user_first else [rival, you]) + [
+            {"name": "Bob", "points": 39, "gross_points": 39, "is_user": False},
+        ]
+
+    def test_a_user_tied_for_last_is_fined_wherever_they_sit_in_the_list(self):
+        for user_first in (True, False):
+            assert "FINE TRIGGERED" in self._fines(self._tied_bottom(user_first=user_first))
+
+    def test_a_user_merely_in_the_bottom_five_is_not_fined(self):
+        worst = [
+            {"name": "Alice", "points": 30, "gross_points": 30, "is_user": False},
+            {"name": "You", "points": 37, "gross_points": 37, "is_user": True},
+        ]
+        assert "No last-place fine. Alice finished bottom" in self._fines(worst)
+
+
 class TestCaptainHindsight:
     """Verify the hindsight-best-captain string is computed raw-to-raw."""
 

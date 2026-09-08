@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 from fpl_cli.cli._context import error_console
 from fpl_cli.cli._fines import (
     COHORT_ONLY_RULE_TYPES,
+    LAST_PLACE_RULE_TYPE,
     RED_CARD_RULE_TYPE,
     FinesLeagueData,
     FinesTeamPlayer,
@@ -101,6 +102,8 @@ HISTORY_WARNING_CLUB_REDERIVED = "league_history_club_rederived"
 HISTORY_WARNING_STANDINGS_CARRIED = "league_history_standings_carried"
 HISTORY_WARNING_CLAIMS_CARRIED = "league_history_claims_carried"
 HISTORY_WARNING_STANDINGS_REPAIRED = "league_history_standings_repaired"
+HISTORY_WARNING_TIED_LAST_PLACE_REPAIRED = "league_history_tied_last_place_repaired"
+HISTORY_WARNING_TIED_LAST_PLACE_AMBIGUOUS = "league_history_tied_last_place_ambiguous"
 
 
 @dataclass
@@ -767,24 +770,27 @@ def _apply_coarse_fines(
         gross = row.gross_points or 0
         return gross - (row.transfer_cost or 0) if use_net_points else gross
 
-    # Same measure and same single-winner tie-break the live path uses
-    # (`evaluate_league_fines`): whichever manager `min` reaches first is the
-    # one fined, so a tie for last does not fine everyone tied. With no
-    # rules to run this is wasted but harmless -- `evaluate_rules([], ...)`
-    # returns `[]`, so every row still lands on the recorded "no rule covers
-    # this row" that a special case here would have written by hand.
-    worst = min(ruled, key=_gameweek_points)
-    worst_points = _gameweek_points(worst)
-
+    # The whole ruled cohort, handed over as it stands: `_eval_last_place`
+    # narrows to the managers level on the lowest score itself
+    # (`_joint_last`), so this shares the live path's tie rule rather than
+    # re-deriving it (PR #340 review) -- and shares last place between
+    # everyone on the minimum rather than giving it to whichever of them
+    # `min` reached first (issue #336). With no rules to run this is wasted
+    # but harmless -- `evaluate_rules([], ...)` returns `[]`, so every row
+    # still lands on the recorded "no rule covers this row" that a special
+    # case here would have written by hand.
     for row in ruled:
         league_data = FinesLeagueData(
             user_gw_points=row.gross_points or 0,
-            worst_performers=[WorstPerformer(
-                is_user=row.manager_key == worst.manager_key,
-                points=worst_points,
-                gross_points=worst.gross_points or 0,
-                name=worst.manager_name,
-            )],
+            worst_performers=[
+                WorstPerformer(
+                    is_user=row.manager_key == w.manager_key,
+                    points=_gameweek_points(w),
+                    gross_points=w.gross_points or 0,
+                    name=w.manager_name,
+                )
+                for w in ruled
+            ],
         )
         if use_net_points:
             league_data["user_gw_net_points"] = _gameweek_points(row)
@@ -1929,6 +1935,200 @@ def _repair_recorded_standings(
     return repaired
 
 
+# The two measures a `last-place` rule can have been ruled on, since
+# `use_net_points` decides which and is not recorded on the row.
+def _measured_gross(row: LeagueHistoryRow) -> int:
+    return row.gross_points or 0
+
+
+def _measured_net(row: LeagueHistoryRow) -> int:
+    return (row.gross_points or 0) - (row.transfer_cost or 0)
+
+
+@dataclass(frozen=True)
+class _TiedLastPlaceReading:
+    """What the ledger can, and cannot, settle about one gameweek's tie.
+
+    `ambiguous` is not a lesser kind of `peers`. A manager lands there when
+    the two measures disagree about whether they were level at all, which is
+    a question the row data cannot answer -- so they are named rather than
+    repaired, and named rather than dropped in silence, which is the state a
+    fully repaired gameweek would otherwise be indistinguishable from.
+    """
+
+    peers: list[tuple[LeagueHistoryRow, list[LedgerFine]]]
+    ambiguous: list[LeagueHistoryRow]
+
+    def __bool__(self) -> bool:
+        return bool(self.peers or self.ambiguous)
+
+
+def _tied_last_place_peers(rows: list[LeagueHistoryRow]) -> _TiedLastPlaceReading:
+    """Managers a recorded last-place ruling left out because they tied for it.
+
+    Until issue #336 the rule fined whichever of a tied pair `min()` reached
+    first, and the ledger is append-only -- so the manager it skipped is
+    recorded with `fines: []`, a positive "nothing was owed here" that no
+    amount of re-running corrects on its own. `_freeze_recorded_fines` carries
+    the recorded ruling forward verbatim precisely so a config change cannot
+    rewrite history, which means the fix has to reach back as a repair, the
+    way `_repair_fine_identity` does.
+
+    Which measure ruled the gameweek is not on the row -- `use_net_points` is
+    a live setting, and reading today's value would let a setting changed
+    since capture invent a fine nobody owed. It is *inferred* instead, from
+    what the record already asserts: a measure under which some ruled manager
+    scored lower than the manager the gameweek fined cannot be the measure
+    that gameweek used. Where only one measure survives that test the tie is
+    read under it. Where both do, only a manager level under both is
+    repaired: one level under just the one is level on a measure that may not
+    have ruled, and fining them would invent a fine rather than restore one,
+    so they come back as `ambiguous` for the caller to name. Where neither
+    measure survives, the row data and the ruling disagree outright and the
+    gameweek is left exactly as recorded.
+
+    Rows nothing ruled `last-place` against are not candidates and do not
+    count towards the minimum: an unknown capture reached nobody, and a
+    gameweek's own `fine_rules_evaluated` is the record of what it measured.
+
+    Counted per *manager*, never per recorded fine. Nothing rejects a
+    `fines:` block configuring `last-place` twice (`_fines_config.py` checks
+    the rule type, not how often it appears), and `evaluate_rules` rules each
+    instance separately -- so one manager can hold several last-place fines
+    for one gameweek. Comparing raw fine counts against the cohort size read
+    two fines on one manager as two managers fined and returned "nothing to
+    repair" for the very gameweek this exists to fix (PR #340 review). For
+    the same reason a peer inherits *every* last-place fine the reference
+    manager carries, not just the first: they owed what that manager owed.
+    """
+    ruled = [
+        row for row in rows
+        if row.capture_status is CaptureStatus.OK
+        and row.gross_points is not None
+        and LAST_PLACE_RULE_TYPE in (row.fine_rules_evaluated or ())
+    ]
+    empty = _TiedLastPlaceReading(peers=[], ambiguous=[])
+    if not ruled:
+        return empty
+
+    fined: dict[int, list[LedgerFine]] = {}
+    for row in ruled:
+        recorded = [f for f in row.fines if f.rule_type == LAST_PLACE_RULE_TYPE]
+        if recorded:
+            fined[row.manager_key] = recorded
+    if not fined or len(fined) == len(ruled):
+        return empty
+
+    consistent: list[Callable[[LeagueHistoryRow], int]] = []
+    for measure in (_measured_gross, _measured_net):
+        lowest = min(measure(row) for row in ruled)
+        if all(measure(row) == lowest for row in ruled if row.manager_key in fined):
+            consistent.append(measure)
+    if not consistent:
+        return empty
+
+    reference = next(row for row in ruled if row.manager_key in fined)
+    recorded = fined[reference.manager_key]
+    peers: list[tuple[LeagueHistoryRow, list[LedgerFine]]] = []
+    ambiguous: list[LeagueHistoryRow] = []
+    for row in ruled:
+        if row.manager_key in fined:
+            continue
+        level = [measure(row) == measure(reference) for measure in consistent]
+        if all(level):
+            peers.append((row, recorded))
+        elif any(level):
+            ambiguous.append(row)
+    return _TiedLastPlaceReading(peers=peers, ambiguous=ambiguous)
+
+
+def _repair_tied_last_place(
+    store: LeagueHistoryStore,
+    *,
+    gameweeks: list[int],
+    warnings: list[dict[str, str]],
+) -> set[int]:
+    """Record the last-place fine against every manager who tied for it.
+
+    Re-fetches nothing and re-rules nothing: the fines written onto a peer
+    are the ones the gameweek already recorded against the manager it did
+    fine, penalty text and all, re-keyed to the manager who shared the place.
+    So a settings change since capture cannot reach it, which is the same
+    line `_freeze_recorded_fines` holds.
+
+    Idempotent. Once the peer's row carries the fine, `_tied_last_place_peers`
+    finds nobody left out and this writes nothing; on the run after that the
+    freeze carries the repaired ruling forward like any other.
+
+    A manager the two measures disagree about is named rather than repaired,
+    and named on every run, because the state is permanent and actionable:
+    unlike a field with no source anywhere in the gameweek (which
+    `_repair_recorded_standings` stays silent about, since it reads the same
+    whether a replay erased it or nothing ever recorded it), this is a
+    manager the ledger positively shows level under one reading of a gameweek
+    it does not say how it read. Left unsaid, a gameweek that repaired some
+    of its tie would be indistinguishable from one that repaired all of it.
+
+    Rebuilds rather than mutates, for the reason `_repair_fine_identity`
+    gives: `resolved_gameweek` memoizes the rows it hands out, so editing one
+    in place would rewrite the ledger's cached view of the gameweek.
+    """
+    repaired: set[int] = set()
+    for gameweek in gameweeks:
+        try:
+            winners = store.resolved_gameweek(gameweek)
+        except LeagueHistoryError:
+            # Reported by `_warn_unreadable`, and never overwritten (R4).
+            continue
+        reading = _tied_last_place_peers([winners[key] for key in sorted(winners)])
+        if not reading:
+            continue
+
+        if reading.ambiguous:
+            names = ", ".join(row.manager_name for row in reading.ambiguous)
+            _warn(
+                warnings, HISTORY_WARNING_TIED_LAST_PLACE_AMBIGUOUS,
+                f"League history: GW{gameweek} may have left {names} out of its "
+                f"last-place fine, but the gameweek does not record whether it was "
+                f"ruled on gross or net points, and the two disagree about whether "
+                f"they were level. Nothing was written for them -- add the fine by "
+                f"hand if you know how that gameweek was ruled.",
+            )
+
+        if not reading.peers:
+            continue
+
+        captured_at = datetime.now(tz=timezone.utc)
+        changed: list[LeagueHistoryRow] = []
+        for row, recorded in reading.peers:
+            candidate = row.model_copy()
+            candidate.fines = [
+                *row.fines,
+                *(f.model_copy(update={"manager_key": row.manager_key}) for f in recorded),
+            ]
+            # The copy inherits the recorded row's timestamp, and resolution
+            # breaks a tier tie on the later capture -- so without this the
+            # appended line loses to the very row it repairs.
+            candidate.captured_at = captured_at
+            changed.append(candidate)
+
+        try:
+            written = store.append_rows(gameweek, changed)
+        except LeagueHistoryError as exc:
+            _warn(warnings, HISTORY_WARNING_BACKFILL_WRITE_FAILED, str(exc))
+            continue
+        if written:
+            repaired.add(gameweek)
+            _warn(
+                warnings, HISTORY_WARNING_TIED_LAST_PLACE_REPAIRED,
+                f"League history: GW{gameweek} recorded its last-place fine against "
+                f"one manager of a tie; {len(written)} manager(s) level on the same "
+                f"score now carry it too. The ruling itself is the one that gameweek "
+                f"wrote -- nothing was re-fetched and nothing was re-ruled.",
+            )
+    return repaired
+
+
 async def _backfill(
     data: LeagueRecapData,
     *,
@@ -2001,9 +2201,16 @@ async def _backfill(
     # from scratch is what lets the next one sum a cumulative total, and a
     # gameweek only this pass can repair is what lets a replayed later one do
     # the same. Ascending within the sweep settles both in one go.
-    return repaired | _repair_recorded_standings(
+    repaired |= _repair_recorded_standings(
         store, fpl_format=fpl_format, gameweeks=targets,
         start_gameweek=start_gameweek, warnings=warnings,
+    )
+    # Last of all, and unconditional for the same reason: it reads the ledger
+    # and writes the ledger, so it costs one already-memoized parse per
+    # gameweek on a healthy league. Running it after the sweep above means it
+    # sees whatever that just wrote rather than a view one append stale.
+    return repaired | _repair_tied_last_place(
+        store, gameweeks=targets, warnings=warnings,
     )
 
 
