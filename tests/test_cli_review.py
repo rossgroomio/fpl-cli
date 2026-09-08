@@ -1133,7 +1133,79 @@ class TestReviewCompareRecsWaivers:
         assert waivers[0]["followed"] is False
         assert waivers[0].get("lost_claim") is True
         assert waivers[0].get("claimed_in") == "Nyoni"
+        assert waivers[0].get("different_claim") is False
         assert "not_executed" not in waivers[0]
+
+    def test_two_recs_sharing_a_drop_do_not_both_claim_the_same_row(self):
+        """Conditional chains share a drop by design. Matching on the drop
+        alone let one lost claim answer for every rec that named it."""
+        recs = _make_recs(waivers=[
+            {"priority": 1, "in": "Elanga", "out": "Doku"},
+            {"priority": 2, "in": "Mbeumo", "out": "Doku"},
+        ])
+        collected = _make_collected(draft_transactions=[], draft_lost_claims=[
+            {"player_in": "Elanga", "player_out": "Doku", "kind": "w", "priority": 1},
+            {"player_in": "Mbeumo", "player_out": "Doku", "kind": "w", "priority": 2},
+        ])
+        waivers = _review_compare_recs(recs, collected, {}, {})["draft"]["waivers"]
+        assert [w["claimed_in"] for w in waivers] == ["Elanga", "Mbeumo"]
+        assert [w.get("different_claim") for w in waivers] == [False, False]
+
+    def test_a_rec_whose_drop_was_won_elsewhere_is_not_called_a_lost_claim(self):
+        """P1 lost, P2 won on the same drop. The accepted row is consumed by
+        P1; P2 must not then find P1's lost claim and read as beaten when it
+        was followed exactly."""
+        recs = _make_recs(waivers=[
+            {"priority": 1, "in": "Elanga", "out": "Doku"},
+            {"priority": 2, "in": "Mbeumo", "out": "Doku"},
+        ])
+        collected = _make_collected(
+            draft_transactions=[{
+                "player_in": "Mbeumo", "player_in_team": "BRE", "player_in_points": 6,
+                "player_out": "Doku", "player_out_team": "MCI", "player_out_points": 1,
+                "net": 5, "verdict": "✓ Hit",
+            }],
+            draft_lost_claims=[
+                {"player_in": "Elanga", "player_out": "Doku", "kind": "w", "priority": 1},
+            ],
+        )
+        waivers = _review_compare_recs(recs, collected, {}, {})["draft"]["waivers"]
+        by_priority = {w["priority"]: w for w in waivers}
+        assert by_priority[1]["different_replacement"] is True
+        assert by_priority[1]["actual_in"] == "Mbeumo"
+        assert by_priority[2].get("lost_claim") is None
+        assert by_priority[2].get("not_executed") is True
+
+    def test_a_claim_for_a_different_player_is_marked_as_a_different_claim(self):
+        """Rec Nyoni, claimed Elanga on the same drop. Reporting that as
+        "claimed, lost" asserts they went in for Nyoni."""
+        recs = _make_recs(waivers=[{"priority": 1, "in": "Nyoni", "out": "Wirtz"}])
+        collected = _make_collected(draft_transactions=[], draft_lost_claims=[
+            {"player_in": "Elanga", "player_out": "Wirtz", "kind": "w", "priority": 1},
+        ])
+        waiver = _review_compare_recs(recs, collected, {}, {})["draft"]["waivers"][0]
+        assert waiver["lost_claim"] is True
+        assert waiver["claimed_in"] == "Elanga"
+        assert waiver["different_claim"] is True
+
+    def test_a_claim_lost_then_covered_by_a_fallback_is_still_reported(self):
+        """The accepted loop matches first, so the attempt used to vanish
+        behind the move that replaced it -- issue #329 one step over."""
+        recs = _make_recs(waivers=[{"priority": 1, "in": "Nyoni", "out": "Wirtz"}])
+        collected = _make_collected(
+            draft_transactions=[{
+                "player_in": "Gordon", "player_in_team": "NEW", "player_in_points": 7,
+                "player_out": "Wirtz", "player_out_team": "LIV", "player_out_points": 0,
+                "net": 7, "verdict": "✓ Hit",
+            }],
+            draft_lost_claims=[
+                {"player_in": "Nyoni", "player_out": "Wirtz", "kind": "w", "priority": 1},
+            ],
+        )
+        waiver = _review_compare_recs(recs, collected, {}, {})["draft"]["waivers"][0]
+        assert waiver["different_replacement"] is True
+        assert waiver["actual_in"] == "Gordon"
+        assert waiver["claimed_and_lost"] is True
 
     def test_an_unrelated_lost_claim_leaves_the_rec_not_executed(self):
         recs = _make_recs(waivers=[{"priority": 1, "in": "Nyoni", "out": "Wirtz"}])
@@ -1683,7 +1755,7 @@ class TestReviewDraftLostClaims:
         assert data["draft_lost_claims_data"] == [{
             "player_in": "Elanga", "player_in_team": "NEW", "player_in_team_name": "Newcastle",
             "player_out": "Sávio", "player_out_team": "MCI", "player_out_team_name": "Man City",
-            "kind": "w", "kind_label": "waiver", "priority": 1,
+            "kind": "w", "priority": 1,
         }]
 
     async def test_a_do_row_is_not_recorded_as_a_lost_claim(self):

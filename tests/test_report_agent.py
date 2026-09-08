@@ -223,7 +223,7 @@ class TestTemplateRendering:
         data["draft_lost_claims"] = [{
             "player_in": "Elanga", "player_in_team": "NEW",
             "player_out": "Sávio", "player_out_team": "MCI",
-            "kind": "w", "kind_label": "waiver", "priority": 1,
+            "kind": "w", "priority": 1,
         }]
         output = self.agent._generate_review_report(29, data)
         assert "## Claims Lost" in output
@@ -250,6 +250,43 @@ class TestTemplateRendering:
         output = self.agent._generate_review_report(29, data)
         assert "| 1 | Elanga | Sávio | Claimed, lost |" in output
         assert "Not exec" not in output
+
+    def test_review_report_names_the_player_actually_claimed(self):
+        """The console prints `claimed_in`; the saved report used to print the
+        recommended player, so the two surfaces disagreed in exactly the case
+        the field exists for -- and the update-gw-prep second pass reads the
+        file."""
+        data = _review_data()
+        data["recs_comparison"] = {
+            "classic": {},
+            "draft": {
+                "waivers": [{
+                    "priority": 1, "rec_in": "Nyoni", "rec_out": "Wirtz",
+                    "actual_in": None, "actual_out": None, "followed": False,
+                    "lost_claim": True, "claimed_in": "Elanga", "different_claim": True,
+                }],
+                "unadvised_waivers": [],
+            },
+        }
+        output = self.agent._generate_review_report(29, data)
+        assert "| 1 | Nyoni | Wirtz | Different claim, lost | Elanga |" in output
+
+    def test_review_report_marks_a_claim_lost_behind_the_move_that_covered_it(self):
+        data = _review_data()
+        data["recs_comparison"] = {
+            "classic": {},
+            "draft": {
+                "waivers": [{
+                    "priority": 1, "rec_in": "Nyoni", "rec_out": "Wirtz",
+                    "actual_in": "Gordon", "actual_out": "Wirtz", "followed": False,
+                    "different_replacement": True, "claimed_and_lost": True,
+                    "actual_net": 7, "actual_verdict": "✓ Hit",
+                }],
+                "unadvised_waivers": [],
+            },
+        }
+        output = self.agent._generate_review_report(29, data)
+        assert "| 1 | Nyoni | Wirtz | Different (claimed, lost) | Gordon |" in output
 
     def test_review_unused_bench_marker(self):
         data = _review_data()

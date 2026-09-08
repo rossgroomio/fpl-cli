@@ -1882,11 +1882,9 @@ class TestTripleCaptainDetection:
 
     def test_template_renders_tc_marker(self):
         """Jinja2 template renders (TC) for triple captain players."""
-        from jinja2 import Environment, FileSystemLoader
+        from fpl_cli.agents.orchestration.report import build_report_environment
 
-        from fpl_cli.paths import TEMPLATE_DIR
-
-        env = Environment(loader=FileSystemLoader(str(TEMPLATE_DIR)))
+        env = build_report_environment()
         template = env.get_template("gw_review.md.j2")
 
         data = {

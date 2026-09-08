@@ -16,7 +16,6 @@ from fpl_cli.cli._helpers import (
     _net_transfer_ids,
     _slice_with_ties,
 )
-from fpl_cli.cli._league_recap_types import draft_transaction_kind_label
 from fpl_cli.models.player import POSITION_MAP
 from fpl_cli.services.fixture_predictions import is_blank_gameweek, is_double_gameweek
 
@@ -387,11 +386,11 @@ async def _review_draft(
                             "player_out": lost_out.get("web_name", "Unknown"),
                             "player_out_team": lost_out_team.short_name if lost_out_team else "???",
                             "player_out_team_name": lost_out_team.name if lost_out_team else None,
-                            # Stored verbatim, with the shared reader-facing
-                            # label alongside it -- one vocabulary for one
-                            # move, the same the recap's waiver roster uses.
+                            # Stored verbatim, never a label: the reader-facing
+                            # wording is derived where it is printed, from the
+                            # one shared mapping, so the prompt and the saved
+                            # report cannot describe a move two ways.
                             "kind": txn.get("kind", ""),
-                            "kind_label": draft_transaction_kind_label(txn.get("kind", "")),
                             "priority": priority,
                         })
 

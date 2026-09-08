@@ -1292,6 +1292,32 @@ def _find_player_gw_points(name: str, team_points_data: list[dict], pts_key: str
     return None
 
 
+def _match_lost_claim(
+    claims: list[dict[str, Any]], rec_in: str, rec_out: str, used: set[int],
+) -> tuple[int, dict[str, Any]] | None:
+    """The best unconsumed lost claim for one recommendation, or None.
+
+    Matched the way an accepted move is: both sides first, the drop alone as a
+    fallback, and never a claim another recommendation already took. Draft
+    conditional chains share a drop by design -- two claims nominating the
+    same player to drop is the normal shape -- so matching on the drop alone
+    would let one lost claim answer for every recommendation that named it,
+    and would call a claim for a different player the one that was advised.
+    The caller reads the returned claim's own `player_in` to tell the two
+    apart rather than assuming the recommendation's.
+    """
+    def _candidates(both_sides: bool) -> tuple[int, dict[str, Any]] | None:
+        for i, claim in enumerate(claims):
+            if i in used or not _names_match(claim.get("player_out") or "", rec_out):
+                continue
+            if both_sides and not _names_match(claim.get("player_in") or "", rec_in):
+                continue
+            return i, claim
+        return None
+
+    return _candidates(both_sides=True) or _candidates(both_sides=False)
+
+
 def _review_compare_recs(
     recs: dict, collected_data: dict, player_map: dict, teams: dict, gameweek: int | None = None,
 ) -> dict:
@@ -1406,6 +1432,8 @@ def _review_compare_recs(
     waiver_comparisons = []
     matched_txn_indices: set[int] = set()
 
+    matched_claim_indices: set[int] = set()
+
     for rec_w in rec_waivers:
         rec_in = rec_w["in"]
         rec_out = rec_w["out"]
@@ -1418,7 +1446,7 @@ def _review_compare_recs(
             if _names_match(act_out, rec_out):
                 matched_txn_indices.add(i)
                 same_in = _names_match(act_t.get("player_in", ""), rec_in)
-                waiver_comparisons.append({
+                entry = {
                     "priority": priority,
                     "rec_in": rec_in,
                     "rec_out": rec_out,
@@ -1430,17 +1458,42 @@ def _review_compare_recs(
                     "actual_out_pts": act_t.get("player_out_points", 0),
                     "actual_net": act_t.get("net", 0),
                     "actual_verdict": act_t.get("verdict", ""),
-                })
+                }
+                # A manager who claimed exactly what was advised, lost him,
+                # and covered the drop with someone else did follow the
+                # advice -- the league overruled them. Without this the move
+                # that landed is all that is reported and the attempt is
+                # invisible, which is issue #329 one step over.
+                claimed = _match_lost_claim(
+                    draft_lost_claims, rec_in, rec_out, matched_claim_indices,
+                )
+                if claimed is not None and _names_match(
+                    claimed[1].get("player_in") or "", rec_in,
+                ):
+                    matched_claim_indices.add(claimed[0])
+                    entry["claimed_and_lost"] = True
+                waiver_comparisons.append(entry)
                 matched = True
                 break
         if not matched:
             # A claim a rival won was executed -- it just lost. Reporting it
             # as "not executed" reads back as advice the manager ignored
-            # (issue #329).
-            lost = next(
-                (c for c in draft_lost_claims if _names_match(c.get("player_out", "") or "", rec_out)),
-                None,
+            # (issue #329). A claim that shares only the drop is a different
+            # claim, and says so, rather than borrowing the advised player's
+            # name for a player the manager never went in for.
+            lost = _match_lost_claim(
+                draft_lost_claims, rec_in, rec_out, matched_claim_indices,
             )
+            outcome: dict[str, Any] = {"not_executed": True}
+            if lost is not None:
+                index, claim = lost
+                matched_claim_indices.add(index)
+                claimed_in = claim.get("player_in")
+                outcome = {
+                    "lost_claim": True,
+                    "claimed_in": claimed_in,
+                    "different_claim": not _names_match(claimed_in or "", rec_in),
+                }
             waiver_comparisons.append({
                 "priority": priority,
                 "rec_in": rec_in,
@@ -1448,11 +1501,7 @@ def _review_compare_recs(
                 "actual_in": None,
                 "actual_out": None,
                 "followed": False,
-                **(
-                    {"lost_claim": True, "claimed_in": lost.get("player_in")}
-                    if lost is not None
-                    else {"not_executed": True}
-                ),
+                **outcome,
             })
 
     unadvised_waivers = []

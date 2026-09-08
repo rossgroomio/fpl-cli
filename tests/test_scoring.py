@@ -4933,8 +4933,8 @@ class TestGkAttainableCeiling:
         from fpl_cli.services.scoring import TARGET_QUALITY_WEIGHTS, gk_ceiling_attainability
         from fpl_cli.services.scoring.constants import (
             _OWNERSHIP_HEADROOM,
-            _ownership_ceiling_for,
             QUALITY_CEILINGS,
+            _ownership_ceiling_for,
         )
         frac = gk_ceiling_attainability(2, TARGET_QUALITY_WEIGHTS)
         early = _ownership_ceiling_for("target", "GK", next_gw_id=2)

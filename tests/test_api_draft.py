@@ -450,17 +450,22 @@ class TestFPLDraftClientReleases:
             # Player 5 exists in bootstrap (Unavailable), but 10 and 11 don't
             assert isinstance(result, list)
 
-    @pytest.mark.asyncio
-    async def test_get_recent_releases_filters_by_gameweek(
-        self, mock_draft_bootstrap, mock_game_data, mock_element_status
+    @staticmethod
+    async def _releases_for_gameweek(
+        event, mock_draft_bootstrap, mock_game_data, mock_element_status,
     ):
-        """Test that old releases are filtered out."""
-        client = FPLDraftClient()
+        """Run get_recent_releases over one release in gameweek `event`.
 
-        # Current GW is 25, max_gameweeks_back=4 means only GW 22+ included
-        mock_old_transactions = {
+        Element 4 (Gabriel) is both in the bootstrap and unowned, so nothing
+        but the gameweek window can exclude it -- with a player the bootstrap
+        does not carry, the row is dropped before the window is ever
+        evaluated and an "it was filtered out" assertion holds vacuously.
+        """
+        client = FPLDraftClient()
+        txns = {
             "transactions": [
-                {"element_in": 3, "element_out": 10, "entry": 100, "event": 20, "kind": "w"},  # Too old
+                {"element_in": 3, "element_out": 4, "entry": 100,
+                 "event": event, "kind": "w", "result": "a"},
             ]
         }
 
@@ -473,15 +478,35 @@ class TestFPLDraftClientReleases:
                 elif endpoint == "league/12345/element-status":
                     return mock_element_status
                 elif endpoint == "draft/league/12345/transactions":
-                    return mock_old_transactions
+                    return txns
                 return {}
 
             mock_get.side_effect = side_effect
+            return await client.get_recent_releases(
+                12345, mock_draft_bootstrap, max_gameweeks_back=4,
+            )
 
-            result = await client.get_recent_releases(12345, mock_draft_bootstrap, max_gameweeks_back=4)
+    @pytest.mark.asyncio
+    async def test_get_recent_releases_filters_by_gameweek(
+        self, mock_draft_bootstrap, mock_game_data, mock_element_status
+    ):
+        """Test that old releases are filtered out."""
+        # Current GW is 25, max_gameweeks_back=4 means only GW 22+ included
+        result = await self._releases_for_gameweek(
+            20, mock_draft_bootstrap, mock_game_data, mock_element_status,
+        )
+        assert len(result) == 0
 
-            # GW 20 is outside the window (25 - 4 = 21 minimum)
-            assert len(result) == 0
+    @pytest.mark.asyncio
+    async def test_get_recent_releases_keeps_a_release_inside_the_window(
+        self, mock_draft_bootstrap, mock_game_data, mock_element_status
+    ):
+        """The positive control for the gameweek filter: the same release one
+        gameweek inside the window is reported."""
+        result = await self._releases_for_gameweek(
+            22, mock_draft_bootstrap, mock_game_data, mock_element_status,
+        )
+        assert [r["player"]["id"] for r in result] == [4]
 
 
 class TestFPLDraftClientParsePlayer:

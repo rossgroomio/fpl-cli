@@ -495,17 +495,30 @@ def review_command(
                     rd = recs_comparison["draft"]
                     for w in rd.get("waivers", []):
                         p = w["priority"]
+                        # A claim they made and lost is activity either way,
+                        # so it qualifies whichever branch the move itself
+                        # landed in rather than replacing it.
+                        lost_note = " after claiming him and losing him" if w.get("claimed_and_lost") else ""
                         if w.get("followed"):
                             console.print(
                                 f"  Waiver P{p}: [green]✓[/green] "
                                 f"{w['rec_in']} ← {w['rec_out']}"
-                                f" (followed, net {w.get('actual_net', 0)})"
+                                f" (followed{lost_note}, net {w.get('actual_net', 0)})"
                             )
                         elif w.get("lost_claim"):
+                            # Name the player they actually claimed, which is
+                            # not always the one advised -- a claim matched on
+                            # the drop alone is a different claim.
+                            claimed_in = w.get("claimed_in") or w["rec_in"]
+                            detail = (
+                                f"claimed {claimed_in} instead, lost to a rival"
+                                if w.get("different_claim")
+                                else "claimed, lost to a rival"
+                            )
                             console.print(
                                 f"  Waiver P{p}: [yellow]✗[/yellow] "
-                                f"{w.get('claimed_in') or w['rec_in']} ← {w['rec_out']}"
-                                f" (claimed, lost to a rival)"
+                                f"{claimed_in} ← {w['rec_out']}"
+                                f" ({detail})"
                             )
                         elif w.get("not_executed"):
                             console.print(
@@ -518,7 +531,7 @@ def review_command(
                                 f"  Waiver P{p}: [yellow]~[/yellow] "
                                 f"Dropped {w['rec_out']} but got "
                                 f"{w.get('actual_in')} instead of "
-                                f"rec {w['rec_in']}"
+                                f"rec {w['rec_in']}{lost_note}"
                             )
 
                     for w in rd.get("unadvised_waivers", []):
