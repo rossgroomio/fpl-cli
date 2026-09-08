@@ -19,6 +19,7 @@ from fpl_cli.cli._helpers import (
     _net_transfer_ids,
     _slice_with_ties,
 )
+from fpl_cli.cli._league_recap_data import derive_point_in_time_positions
 from fpl_cli.services.fixture_predictions import is_blank_gameweek, is_double_gameweek
 from fpl_cli.utils.gameweek import is_opening_gameweek
 
@@ -435,9 +436,19 @@ async def _review_classic_league(
         total_entries = len(standings)
         nearby_window: list = []
         nearby_omitted = 0
+        # Position the cohort the way the ledger does rather than trusting the
+        # standings' own `rank`. That rank is strictly sequential, so managers
+        # level on points are handed distinct numbers by a tie-break -- fewest
+        # transfers season-to-date -- that no column here shows and nothing
+        # here records, leaving the same gameweek placing the same tie two
+        # different ways depending on whether you read the review or the
+        # recap's ledger (#337, the defect #163 and #230 fixed elsewhere).
+        league_positions = derive_point_in_time_positions([
+            (e["entry"], e.get("total", 0)) for e in standings if e.get("entry") is not None
+        ])
         user_entry = next((e for e in standings if e.get("entry") == entry_id), None)
         if user_entry:
-            user_rank = user_entry.get("rank", "?")
+            user_rank = league_positions.get(entry_id, "?")
             user_total = user_entry.get("total", 0)
             user_gw_pts = user_entry.get("event_total", 0)
 
@@ -462,7 +473,7 @@ async def _review_classic_league(
 
                 console.print("\n[bold]### Nearby Rivals (+/- 25 pts)[/bold]")
                 for entry in nearby_window:
-                    rank = entry.get("rank", "?")
+                    rank = league_positions.get(entry.get("entry"), "?")
                     name = entry.get("player_name", "Unknown")
                     total = entry.get("total", 0)
                     diff = total - user_total
@@ -592,7 +603,7 @@ async def _review_classic_league(
             "user_found_in_standings": user_entry is not None,
             "nearby_rivals": [
                 {
-                    "rank": e.get("rank"),
+                    "rank": league_positions.get(e.get("entry"), "?"),
                     "manager_name": e.get("player_name", "Unknown"),
                     "total": e.get("total", 0),
                     "is_user": e.get("entry") == entry_id,

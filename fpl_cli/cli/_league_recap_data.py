@@ -659,8 +659,10 @@ def derive_point_in_time_positions(
     function is never consulted -- a live draft capture takes the league's
     own `rank`, which already applies the h2h points-for tie-break.
 
-    Reusable across both collectors and, per KTD12, by the coarse-backfill
-    path that has no collector to call.
+    Reusable across both collectors, by the coarse-backfill path that has
+    no collector to call (per KTD12), and by `fpl review`'s Nearby Rivals
+    window -- a slice of the same league table, which numbered its ties
+    from the standings' sequential `rank` until #337.
     """
     ordered = sorted(totals, key=lambda kv: -kv[1])
     positions: dict[int, int] = {}

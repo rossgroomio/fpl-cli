@@ -1479,6 +1479,88 @@ class TestReviewClassicLeagueNearbyRivals:
         assert "(-)" not in rivals_section
 
 
+class TestReviewClassicLeagueNearbyRivalsPositions:
+    """#337: the window's Pos is competition ranking, as the ledger records it."""
+
+    @staticmethod
+    def _standings(totals: list[int]) -> list[dict]:
+        # `rank` is what the real classic standings hand back: strictly
+        # sequential, so a tie is split by the API's own tie-break. Every
+        # assertion below is about not trusting it.
+        return [
+            {
+                "entry": i + 1,
+                "rank": i + 1,
+                "total": total,
+                "event_total": 50 - i,
+                "player_name": f"Manager{i + 1}",
+            }
+            for i, total in enumerate(totals)
+        ]
+
+    @staticmethod
+    def _client(standings: list[dict]) -> AsyncMock:
+        client = AsyncMock()
+        client.get_classic_league_standings = AsyncMock(return_value={
+            "league": {"name": "Tied League"},
+            "standings": {"results": standings},
+        })
+        return client
+
+    async def test_tied_rivals_share_a_position_and_the_next_total_skips(self):
+        # Nine managers sit clear of the window, so the pair level on 203
+        # land 12th together and 13th is consumed by the tie -- the next
+        # distinct total is 14th (1, 2, 2, 4 numbering).
+        standings = self._standings([300 - i for i in range(9)] + [205, 204, 203, 203, 202])
+
+        result = await _review_classic_league(self._client(standings), 999, 10, 5, 5)
+
+        rivals = {r["manager_name"]: r["rank"] for r in result["nearby_rivals"]}
+        assert rivals["Manager12"] == 12
+        assert rivals["Manager13"] == 12
+        # The place the tie consumed is skipped, so the next distinct total is
+        # 14th -- not the 13th that collapsing the tie on its own would give.
+        assert rivals["Manager14"] == 14
+        # An entry clear of the tie is numbered the same either way.
+        assert rivals["Manager11"] == 11
+
+    async def test_tied_rivals_share_a_position_in_the_console_table(self, capsys):
+        standings = self._standings([205, 203, 203])
+
+        await _review_classic_league(self._client(standings), 999, 1, 5, 5)
+
+        rivals_section = (
+            capsys.readouterr().out.split("Nearby Rivals")[1].split("Best GW Performers")[0]
+        )
+        assert "2. Manager2" in rivals_section
+        assert "2. Manager3" in rivals_section
+        # The API's sequential rank would have made the second of them 3rd.
+        assert "3. Manager3" not in rivals_section
+
+    async def test_users_own_position_matches_their_row_in_the_window(self, capsys):
+        # The user is the lower half of a tie: the standings call them 3rd,
+        # the ledger calls them 2nd. The "Position: N of M" line and the row
+        # in the table below it are the same number either way.
+        standings = self._standings([205, 203, 203])
+
+        result = await _review_classic_league(self._client(standings), 999, 3, 5, 5)
+
+        assert result["user_position"] == 2
+        user_row = next(r for r in result["nearby_rivals"] if r["is_user"])
+        assert user_row["rank"] == result["user_position"]
+        assert "Position: 2 of 3" in capsys.readouterr().out
+
+    async def test_untied_league_keeps_the_sequential_numbering(self):
+        # Competition ranking only differs where there is a tie -- a league
+        # of distinct totals must still read 1, 2, 3.
+        standings = self._standings([205, 204, 203])
+
+        result = await _review_classic_league(self._client(standings), 999, 2, 5, 5)
+
+        assert [r["rank"] for r in result["nearby_rivals"]] == [1, 2, 3]
+        assert result["user_position"] == 2
+
+
 class TestClassicPositionFields:
 
     def test_populated_league_annotates_position(self):
