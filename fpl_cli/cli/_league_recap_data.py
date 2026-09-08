@@ -1247,14 +1247,6 @@ def evaluate_league_fines(
 
     use_net_points = settings.get("use_net_points", False)
 
-    # Everyone on the lowest GW points, not whichever of them `min()` reached
-    # first: a tie for last is shared, and picking one of a tied pair by cohort
-    # arrival order left the other recorded as owing nothing (issue #336).
-    worst: list[RecapManagerEntry] = []
-    if managers:
-        lowest = min(m["gw_points"] for m in managers)
-        worst = [m for m in managers if m["gw_points"] == lowest]
-
     triggered: list[RecapFineResult] = []
     ruled: set[int] = set()
 
@@ -1262,13 +1254,19 @@ def evaluate_league_fines(
 
     for m in managers:
         try:
-
+            key = recap_manager_key(m)
+            # The whole cohort, not the bottom of it: `_eval_last_place`
+            # narrows to the managers level on the lowest score itself
+            # (`_joint_last`), so who counts as tied is decided in one place
+            # rather than re-derived here in `gw_points` terms and again in
+            # every other caller -- three copies of one rule was how #336
+            # reached three surfaces at once (PR #340 review).
             worst_list: list[WorstPerformer] = [
                 WorstPerformer(
                     # Keyed rather than compared on `entry_id`: every unclaimed
                     # draft team carries entry_id 0, so comparing on it fines
                     # all of them for one team's last place (KTD11).
-                    is_user=recap_manager_key(m) == recap_manager_key(w),
+                    is_user=key == recap_manager_key(w),
                     points=w["gw_points"],
                     # `gross_points` is already gross whatever `use_net_points`
                     # is set to; `gw_points` flips. Adding the hit back to
@@ -1279,7 +1277,7 @@ def evaluate_league_fines(
                     gross_points=w["gross_points"],
                     name=w["manager_name"],
                 )
-                for w in worst
+                for w in managers
             ]
 
             league_data = FinesLeagueData(

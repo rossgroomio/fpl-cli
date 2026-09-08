@@ -147,23 +147,24 @@ def _build_fines_context(
     the last-place rule is given no worst_performers to judge rather than a
     stand-in that could fine the wrong manager.
 
-    Every entry level on the bottom score is passed over, each carrying its
-    own `is_user` -- which is why the caller hands in a predicate rather than
-    one precomputed "am I last" boolean. A manager tied for last but sorted
-    second read as not-last and saw no fine at all (issue #336).
+    The whole table is passed over, each entry carrying its own `is_user` --
+    which is why the caller hands in a predicate rather than one precomputed
+    "am I last" boolean. `_eval_last_place` narrows to the managers level on
+    the lowest score itself, so who counts as tied is decided there rather
+    than here (PR #340 review); reading only `standings_sorted_asc[0]` used
+    to mean a manager tied for last but sorted second saw no fine at all
+    (issue #336).
     """
     league_data: FinesLeagueData = {"user_gw_points": user_gw_pts}
     if standings_sorted_asc and standings_complete:
-        bottom_pts = standings_sorted_asc[0].get("event_total", 0)
         league_data["worst_performers"] = [
             {
                 "is_user": is_user(entry),
-                "points": bottom_pts,
-                "gross_points": bottom_pts,
+                "points": entry.get("event_total", 0),
+                "gross_points": entry.get("event_total", 0),
                 "name": entry.get("player_name", entry.get("entry_name", "Unknown")),
             }
             for entry in standings_sorted_asc
-            if entry.get("event_total", 0) == bottom_pts
         ]
 
     bench_counts = active_chip == "bboost"

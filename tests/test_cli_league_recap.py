@@ -27,6 +27,7 @@ from fpl_cli.cli._league_recap_history import (
     HISTORY_WARNING_STANDINGS_REPAIRED,
     HISTORY_WARNING_STANDINGS_TRUNCATED,
     HISTORY_WARNING_STORE_UNREADABLE,
+    HISTORY_WARNING_TIED_LAST_PLACE_AMBIGUOUS,
     HISTORY_WARNING_TIED_LAST_PLACE_REPAIRED,
     HISTORY_WARNING_TRANSFER_DETAIL_SHORT,
     HISTORY_WARNING_UNMATCHED_PLAYERS,
@@ -1282,15 +1283,16 @@ class TestTiedLastPlaceRepair:
             self._row(3, 37),
         ]
 
-        peers = _tied_last_place_peers(rows)
+        reading = _tied_last_place_peers(rows)
 
-        assert [row.manager_key for row, _ in peers] == [3]
-        assert [fine.rule_type for _, fine in peers] == ["last-place"]
+        assert [row.manager_key for row, _ in reading.peers] == [3]
+        assert [f.rule_type for _, fines in reading.peers for f in fines] == ["last-place"]
+        assert reading.ambiguous == []
 
     def test_a_manager_who_merely_finished_near_the_bottom_is_left_alone(self):
         rows = [self._row(1, 60), self._row(2, 37, fines=[self.LAST_PLACE]), self._row(3, 38)]
 
-        assert _tied_last_place_peers(rows) == []
+        assert not _tied_last_place_peers(rows)
 
     def test_a_gameweek_already_recording_the_whole_tie_needs_nothing(self):
         rows = [
@@ -1298,7 +1300,7 @@ class TestTiedLastPlaceRepair:
             self._row(3, 37, fines=[self.LAST_PLACE.model_copy(update={"manager_key": 3})]),
         ]
 
-        assert _tied_last_place_peers(rows) == []
+        assert not _tied_last_place_peers(rows)
 
     def test_a_gameweek_nothing_ruled_last_place_against_is_left_alone(self):
         """Adding a fine to a row whose gameweek never measured the rule
@@ -1308,7 +1310,7 @@ class TestTiedLastPlaceRepair:
             self._row(3, 37, ruled=("below-threshold",)),
         ]
 
-        assert _tied_last_place_peers(rows) == []
+        assert not _tied_last_place_peers(rows)
 
     def test_an_unknown_row_is_neither_repaired_nor_counted(self):
         rows = [
@@ -1316,7 +1318,7 @@ class TestTiedLastPlaceRepair:
             self._row(3, None, capture_status="unknown", ruled=None),
         ]
 
-        assert _tied_last_place_peers(rows) == []
+        assert not _tied_last_place_peers(rows)
 
     def test_a_tie_only_one_measure_agrees_on_is_read_under_that_measure(self):
         """Manager 3 scored fewer gross points than the manager the gameweek
@@ -1328,17 +1330,21 @@ class TestTiedLastPlaceRepair:
             self._row(3, 37, cost=0),                            # gross 37, net 37
         ]
 
-        assert [row.manager_key for row, _ in _tied_last_place_peers(rows)] == [3]
+        assert [row.manager_key for row, _ in _tied_last_place_peers(rows).peers] == [3]
 
     def test_a_tie_the_two_measures_disagree_on_is_left_alone(self):
         """Both measures fit what the gameweek recorded, and they name
-        different managers as level -- so nothing here can settle it."""
+        different managers as level -- so nothing here can settle it, and the
+        manager is reported rather than dropped in silence."""
         rows = [
             self._row(2, 37, cost=0, fines=[self.LAST_PLACE]),   # gross 37, net 37
             self._row(3, 41, cost=4),                            # gross 41, net 37
         ]
 
-        assert _tied_last_place_peers(rows) == []
+        reading = _tied_last_place_peers(rows)
+
+        assert reading.peers == []
+        assert [row.manager_key for row in reading.ambiguous] == [3]
 
     def test_a_ruling_no_measure_agrees_with_is_left_alone(self):
         """Somebody scored lower on either measure than the manager fined, so
@@ -1349,7 +1355,81 @@ class TestTiedLastPlaceRepair:
             self._row(3, 37, cost=0),
         ]
 
-        assert _tied_last_place_peers(rows) == []
+        assert not _tied_last_place_peers(rows)
+
+    def test_two_fines_on_one_manager_do_not_read_as_two_managers_fined(self):
+        """Nothing rejects a `fines:` block configuring `last-place` twice, so
+        one manager can hold several for one gameweek. Counting fines rather
+        than managers read that as a fully-fined cohort and repaired nobody
+        (PR #340 review)."""
+        second = self.LAST_PLACE.model_copy(update={"message": "Finished last. Forfeit"})
+        rows = [
+            self._row(2, 37, fines=[self.LAST_PLACE, second], ruled=("last-place",) * 2),
+            self._row(3, 37, ruled=("last-place",) * 2),
+        ]
+
+        reading = _tied_last_place_peers(rows)
+
+        assert [row.manager_key for row, _ in reading.peers] == [3]
+
+    def test_a_peer_inherits_every_last_place_fine_the_gameweek_recorded(self):
+        """Two rules configured means two fines owed -- the peer owed what the
+        manager the gameweek fined owed, not the first of them."""
+        second = self.LAST_PLACE.model_copy(update={"message": "Finished last. Forfeit"})
+        store = _store()
+        store.append_rows(4, [
+            self._row(2, 37, fines=[self.LAST_PLACE, second], ruled=("last-place",) * 2),
+            self._row(3, 37, ruled=("last-place",) * 2),
+        ])
+
+        _repair_tied_last_place(store, gameweeks=[4], warnings=[])
+
+        repaired = _store().resolved_gameweek(4)[3].fines
+        assert [f.rule_type for f in repaired] == ["last-place", "last-place"]
+        assert {f.manager_key for f in repaired} == {3}
+        assert sorted(f.message for f in repaired) == sorted(
+            [self.LAST_PLACE.message, second.message],
+        )
+
+    def test_an_ambiguous_manager_is_named_even_when_another_is_repaired(self):
+        """Otherwise a gameweek that repaired half its tie is indistinguishable
+        from one that repaired all of it (PR #340 review)."""
+        store = _store()
+        store.append_rows(4, [
+            self._row(2, 37, cost=0, fines=[self.LAST_PLACE]),  # gross 37, net 37
+            self._row(3, 37, cost=0),                           # level on both
+            self._row(4, 41, cost=4),                           # level on net only
+        ])
+        warnings: list[dict[str, str]] = []
+
+        _repair_tied_last_place(store, gameweeks=[4], warnings=warnings)
+
+        resolved = _store().resolved_gameweek(4)
+        assert [f.rule_type for f in resolved[3].fines] == ["last-place"]
+        assert resolved[4].fines == []
+        codes = [w["code"] for w in warnings]
+        assert HISTORY_WARNING_TIED_LAST_PLACE_AMBIGUOUS in codes
+        assert HISTORY_WARNING_TIED_LAST_PLACE_REPAIRED in codes
+        assert "M4" in next(
+            w["message"] for w in warnings
+            if w["code"] == HISTORY_WARNING_TIED_LAST_PLACE_AMBIGUOUS
+        )
+
+    def test_an_ambiguous_manager_is_named_on_every_run_not_just_the_first(self):
+        """The state is permanent and there is nothing on disk to fix it, so
+        going quiet would leave the miss unfindable."""
+        store = _store()
+        store.append_rows(4, [
+            self._row(2, 37, cost=0, fines=[self.LAST_PLACE]),
+            self._row(3, 41, cost=4),
+        ])
+
+        for _ in range(2):
+            warnings: list[dict[str, str]] = []
+            assert _repair_tied_last_place(_store(), gameweeks=[4], warnings=warnings) == set()
+            assert [w["code"] for w in warnings] == [
+                HISTORY_WARNING_TIED_LAST_PLACE_AMBIGUOUS,
+            ]
 
     def test_the_repair_writes_the_recorded_ruling_onto_the_peer(self):
         store = _store()

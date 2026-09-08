@@ -23,11 +23,13 @@ class FinesLeagueData(TypedDict):
     # `_eval_last_place` reads the lowest score in this list as the league's
     # lowest, so a caller handing over a slice that starts above the real
     # bottom would move last place up to wherever its slice began. Everything
-    # above that is free -- callers pass the bottom five, the bottom three, or
-    # just the tied-last group, and the display lists append the user's own
-    # row from further up. Every manager level on the lowest score must be
-    # here, each with their own `is_user`: a single-element list decided by
-    # `min()` picked one of a tied pair by arrival order (issue #336).
+    # above that is free, and narrowing is the handler's job rather than the
+    # caller's -- `status` and `league-recap` pass the whole table, `review`
+    # passes the bottom five it is already displaying (with the user's own
+    # row appended from further up), and `_joint_last` finds the tie in any
+    # of them. Every manager level on the lowest score must be here, each
+    # with their own `is_user`: a single-element list decided by `min()`
+    # picked one of a tied pair by arrival order (issue #336).
     worst_performers: NotRequired[list[WorstPerformer]]
 
 
