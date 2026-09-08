@@ -1281,6 +1281,20 @@ class TestNamesMatchDiacritics:
     def test_mismatch_still_fails(self):
         assert not _names_match("Gyökeres", "Haaland")
 
+    def test_typographic_apostrophe(self):
+        """The recommendations file is LLM-written, so its apostrophe is whatever
+        the writer typed; the API's is always U+0027 (#343)."""
+        assert _names_match("O\u2019Reilly", "O'Reilly")
+
+    def test_typewriter_apostrophe_against_typographic(self):
+        assert _names_match("O'Reilly", "O\u2019Reilly")
+
+    def test_non_breaking_space(self):
+        assert _names_match("Bruno\u00a0Fernandes", "Bruno Fernandes")
+
+    def test_apostrophe_fold_does_not_collapse_distinct_names(self):
+        assert not _names_match("O\u2019Reilly", "O\u2019Brien")
+
 
 class TestNormaliseNameDiacritics:
     """Verify _normalise_name strips diacritics in its pipeline."""
@@ -1293,6 +1307,15 @@ class TestNormaliseNameDiacritics:
 
     def test_strips_initial_after_diacritics(self):
         assert _normalise_name("L. Díaz") == "diaz"
+
+    def test_folds_apostrophe_to_the_typewriter_form(self):
+        assert _normalise_name("O\u2019Reilly") == "o'reilly"
+
+    def test_strips_initial_left_unspaced_by_the_fold(self):
+        """`normalise_name` closes "B. Fernandes" up to "b.fernandes" - the
+        leading-initial strip has to still see an initial there."""
+        assert _normalise_name("B. Fernandes") == "fernandes"
+        assert _normalise_name("B.Fernandes") == "fernandes"
 
 
 # ---------------------------------------------------------------------------
