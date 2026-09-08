@@ -166,9 +166,9 @@ League standings not shown for historical GW{{ gameweek }} review - use `fpl lea
 
 {% if global_stats.blankers %}
 ### Blankers
-| Player | Team | Ownership | Pts |
-|--------|------|-----------|-----|
-{% for b in global_stats.blankers %}| {{ b.name }} | {{ b.team }} | {{ "%.1f"|format(b.ownership) }}% | {{ b.points }} |
+| Player | Team | Ownership | Mins | Pts |
+|--------|------|-----------|------|-----|
+{% for b in global_stats.blankers %}| {{ b.name }} | {{ b.team }} | {{ "%.1f"|format(b.ownership) }}% | {{ b.minutes | default(0) }} | {{ b.points }} |
 {% endfor %}{% endif %}
 {% endif %}
 {% endif %}

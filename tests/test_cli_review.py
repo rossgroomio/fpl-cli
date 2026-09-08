@@ -2066,6 +2066,73 @@ class TestReviewGlobalStatsTopPerformer:
         assert "top_performer" not in data
 
 
+class TestBlankersRequireMinutesPlayed:
+    """#326: the Blankers list names players whose owners were let down, and a
+    squad player who has never taken the pitch let nobody down -- his ownership
+    is high *because* nobody expects him to play. The gate is season minutes,
+    not the gameweek's, so a regular dropped for one week still surfaces."""
+
+    TEAMS = {1: make_team(id=1, short_name="TOT")}  # noqa: RUF012 — plain test data
+
+    @staticmethod
+    def _players():
+        return [
+            # 4.0m backup keeper: high ownership, never played a minute all season.
+            make_player(id=1, web_name="Backup", team_id=1, selected_by_percent=17.9, minutes=0),
+            # Plays sometimes, left out this week -- a selection worth surfacing.
+            make_player(id=2, web_name="Dropped", team_id=1, selected_by_percent=15.7, minutes=150),
+            # Played the full match and returned nothing -- the real blank.
+            make_player(id=3, web_name="Played", team_id=1, selected_by_percent=21.4, minutes=262),
+        ]
+
+    LIVE_STATS = {  # noqa: RUF012 — plain test data, not a mutable default
+        1: {"total_points": 0, "minutes": 0},
+        2: {"total_points": 0, "minutes": 0},
+        3: {"total_points": 1, "minutes": 90},
+    }
+
+    async def _global_stats(self):
+        from fpl_cli.cli._review_analysis import _review_global_stats
+
+        client = MagicMock()
+        client.get_dream_team = AsyncMock(return_value={"team": []})
+        return await _review_global_stats(
+            client, 3, {p.id: p for p in self._players()}, self.TEAMS, self.LIVE_STATS,
+        )
+
+    async def test_a_player_who_has_never_appeared_is_not_a_blanker(self):
+        data = await self._global_stats()
+        assert "Backup" not in [b["name"] for b in data["blankers"]]
+
+    async def test_a_player_who_appeared_and_returned_nothing_still_is(self):
+        data = await self._global_stats()
+        assert [b["name"] for b in data["blankers"]] == ["Played", "Dropped"]
+
+    async def test_every_blanker_carries_the_gameweeks_minutes(self):
+        """The zero and the ninety have to be told apart downstream, or the
+        narrative fills the gap itself."""
+        data = await self._global_stats()
+        assert {b["name"]: b["minutes"] for b in data["blankers"]} == {
+            "Played": 90, "Dropped": 0,
+        }
+
+    async def test_a_missing_minutes_stat_does_not_drop_the_row(self):
+        """The live payload is unvalidated API data; a row without `minutes`
+        still belongs on the list."""
+        from fpl_cli.cli._review_analysis import _review_global_stats
+
+        client = MagicMock()
+        client.get_dream_team = AsyncMock(return_value={"team": []})
+        data = await _review_global_stats(
+            client, 3, {p.id: p for p in self._players()}, self.TEAMS,
+            {3: {"total_points": 1}},
+        )
+        assert data["blankers"] == [{
+            "name": "Played", "team": "TOT", "position": "MID",
+            "ownership": 21.4, "points": 1, "minutes": 0,
+        }]
+
+
 class TestReviewThreadsTheGameweeksFixtureSet:
     """The fix is only worth anything if the command builds the set and hands
     it to all three sites, so pin the wiring rather than trusting the call."""

@@ -56,6 +56,15 @@ async def _review_global_stats(
     live data and takes precedence where it can, so reviewing a past gameweek
     does not read the blank off a club the player has since moved to
     (issue #174); `resolve_players_with_fixture` builds it.
+
+    A blanker also has to have played at some point this season. The list is
+    meant to name the players whose owners were let down, and a squad player
+    who has never taken the pitch let nobody down -- his ownership is high
+    *because* nobody expects him to play (issue #326). The gate is season
+    minutes rather than this gameweek's, so a regular starter dropped for one
+    week still surfaces; each entry carries the gameweek's minutes so the
+    narrative can tell that benching apart from a full ninety that returned
+    nothing.
     """
     global_data: GlobalReviewData = {}
     try:
@@ -152,17 +161,20 @@ async def _review_global_stats(
         except Exception as e:  # noqa: BLE001 — best-effort enrichment
             console.print(f"[dim]Could not fetch dream team: {rich_escape(str(e))}[/dim]")
 
-        # Blankers: High-ownership players (>5%) who scored ≤2 pts (excludes BGW teams)
+        # Blankers: High-ownership players (>5%) who scored ≤2 pts (excludes BGW
+        # teams and players who have never appeared this season)
         console.print("\n[bold]### Blankers[/bold]")
         try:
             # Build blankers list from live_stats and players data
             blankers_list = []
             for elem_id, stats in live_stats.items():
                 gw_pts = stats.get("total_points", 0)
+                gw_minutes = stats.get("minutes", 0)
                 player = player_map.get(elem_id)
                 if (
                     player
                     and gw_pts <= BLANK_POINTS_THRESHOLD
+                    and player.minutes > 0
                     and had_fixture(
                         player.id, player.team_id,
                         players_with_fixture=players_with_fixture,
@@ -179,6 +191,7 @@ async def _review_global_stats(
                             "position": POSITION_MAP.get(player.position.value, "???"),
                             "ownership": ownership,
                             "points": gw_pts,
+                            "minutes": gw_minutes,
                         })
 
             # Sort by ownership descending, take top 10
@@ -191,6 +204,7 @@ async def _review_global_stats(
                 blankers_table.add_column("Team")
                 blankers_table.add_column("Pos")
                 blankers_table.add_column("Own%", justify="right")
+                blankers_table.add_column("Mins", justify="right")
                 blankers_table.add_column("Pts", justify="right")
 
                 for b in blankers_list:
@@ -199,6 +213,7 @@ async def _review_global_stats(
                         b["team"],
                         b["position"],
                         f"{b['ownership']:.1f}%",
+                        str(b["minutes"]),
                         str(b["points"]),
                     )
                 console.print(blankers_table)

@@ -807,6 +807,16 @@ writes those marks per fixture as it finishes, so a gameweek with a fixture stil
 cannot answer; there the current clubs answer instead, which can differ from that gameweek's
 clubs once a transfer has happened in between.
 
+**Who counts as a blanker:** a high-ownership player who scored at most 2 points in a gameweek
+his club played — and who has played at least a minute this season. A squad player who has never
+taken the pitch is left out: his ownership is high precisely because nobody expects him to play,
+so a cheap backup keeper at a big club would otherwise clear the ownership bar every week of the
+season while disappointing nobody. The gate is season minutes rather than the gameweek's, so a
+regular starter dropped for one week still surfaces — that is a selection worth knowing about.
+Each row shows the minutes played in the gameweek, in the table, in the saved report and in the
+data the narrative is written from, so a benching reads differently from a full ninety that
+returned nothing.
+
 **A gameweek it will not review** — one still being played, an id the season does not have,
 a season with nothing finished yet — is refused with the reason on **stderr** and exit **1**.
 `review` has no `--format json`, so stdout carries the review or nothing at all, and `fpl review

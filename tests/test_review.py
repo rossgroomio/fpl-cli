@@ -993,6 +993,30 @@ class TestResearchPromptWithGWData:
         assert "Haaland | MCI | 74.1% | 2" in prompt
         assert "</gw_results>" in prompt
 
+    def test_research_prompt_explains_the_minutes_column(self):
+        """#326: the writer is told what 0 minutes means, or it explains the
+        zero as something that happened on a pitch the player never stood on."""
+        blankers = """| Player | Team | Pos | Ownership | Mins | Pts |
+|--------|------|-----|-----------|------|-----|
+| Palmer | CHE | MID | 21.4% | 90 | 1 |"""
+
+        prompt = get_review_research_prompt(gameweek=22, blankers=blankers)
+
+        assert "**Mins** is minutes played in GW22" in prompt
+        assert "A row on 0 minutes did not appear in the match at all" in prompt
+
+    def test_minutes_note_only_appears_with_blankers(self):
+        """No Blankers table, nothing to explain."""
+        prompt = get_review_research_prompt(gameweek=22, dream_team="| Dorgu | MUN | DEF | 15 |")
+
+        assert "**Mins** is minutes played" not in prompt
+
+    def test_research_system_prompt_forbids_pitch_causes_for_a_zero_minute_blank(self):
+        """The fabrication in #326 read a clean sheet the player was absent for
+        as a scoring-system injustice."""
+        assert "Narrate an on-pitch cause for a blank" in REVIEW_RESEARCH_SYSTEM_PROMPT
+        assert "0 minutes" in REVIEW_RESEARCH_SYSTEM_PROMPT
+
     def test_research_prompt_instructions_for_grounding(self):
         """Test research prompt includes explicit grounding instructions."""
         dream_team = "| Dorgu | MUN | DEF | 15 |"
@@ -1287,6 +1311,40 @@ class TestFormatResearchContext:
         assert "| Pos |" in result["blankers"]
         assert "| Haaland | MCI | FWD |" in result["blankers"]
         assert "| Van Hecke | BHA | DEF |" in result["blankers"]
+
+    def test_blankers_include_minutes_column(self):
+        """#326: without minutes the writer cannot tell a benching from a
+        played ninety that returned nothing, so it invents a reason."""
+        from fpl_cli.cli._review_analysis import GlobalReviewData
+        from fpl_cli.cli._review_summarisation import _format_research_context
+
+        global_data: GlobalReviewData = {
+            "blankers": [
+                {"name": "Palmer", "team": "CHE", "position": "MID", "ownership": 21.4,
+                 "points": 1, "minutes": 90},
+                {"name": "O'Reilly", "team": "MCI", "position": "DEF", "ownership": 15.7,
+                 "points": 0, "minutes": 0},
+            ],
+        }
+        result = _format_research_context(global_data, {})
+        assert "| Mins |" in result["blankers"]
+        assert "| Palmer | CHE | MID | 21.4% | 90 | 1 |" in result["blankers"]
+        assert "| O'Reilly | MCI | DEF | 15.7% | 0 | 0 |" in result["blankers"]
+
+    def test_blankers_without_minutes_still_render(self):
+        """A saved global_data from before minutes were carried must not crash
+        the prompt build."""
+        from fpl_cli.cli._review_analysis import GlobalReviewData
+        from fpl_cli.cli._review_summarisation import _format_research_context
+
+        global_data: GlobalReviewData = {
+            "blankers": [
+                {"name": "Palmer", "team": "CHE", "position": "MID", "ownership": 21.4,
+                 "points": 1},
+            ],
+        }
+        result = _format_research_context(global_data, {})
+        assert "| Palmer | CHE | MID | 21.4% | 0 | 1 |" in result["blankers"]
 
     def test_top_performer_formatted(self):
         """Issue #190: the Dream Team's top_player is threaded into the research prompt."""
@@ -1909,6 +1967,34 @@ class TestTripleCaptainDetection:
         assert "Gabriel (TC)" in result
         assert "Gabriel (C)" not in result
         assert "21" in result
+
+    def test_template_renders_blanker_minutes(self):
+        """#326: the saved report shows whether a blanker was on the pitch."""
+        from jinja2 import Environment, FileSystemLoader
+
+        from fpl_cli.paths import TEMPLATE_DIR
+
+        env = Environment(loader=FileSystemLoader(str(TEMPLATE_DIR)))
+        template = env.get_template("gw_review.md.j2")
+
+        result = template.render(
+            generated_at="2026-09-07",
+            global_stats={
+                "blankers": [
+                    {"name": "Palmer", "team": "CHE", "ownership": 21.4,
+                     "points": 1, "minutes": 90},
+                    {"name": "O'Reilly", "team": "MCI", "ownership": 15.7,
+                     "points": 0, "minutes": 0},
+                    # A report generated before minutes were carried.
+                    {"name": "Wissa", "team": "BRE", "ownership": 16.8, "points": 1},
+                ],
+            },
+        )
+
+        assert "| Player | Team | Ownership | Mins | Pts |" in result
+        assert "| Palmer | CHE | 21.4% | 90 | 1 |" in result
+        assert "| O'Reilly | MCI | 15.7% | 0 | 0 |" in result
+        assert "| Wissa | BRE | 16.8% | 0 | 1 |" in result
 
 
 class TestGwPositionWithHalf:

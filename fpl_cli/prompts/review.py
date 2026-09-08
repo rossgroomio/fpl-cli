@@ -77,6 +77,7 @@ NEVER:
 - Treat 3-letter team codes (LEE, NEW, MAN, BUR, ARS, etc.) as surnames or people's names. LEE is Leeds United, not someone called "Lee"; NEW is Newcastle, not "New"; MAN is Manchester, not "Man". In prose, always expand codes to the full team name (or a natural short form like "Leeds", "Newcastle", "Man Utd"). Reserve 3-letter codes for table cells only
 - Fabricate or derive any division-wide count, rate, average, share or other numeric summary statistic. The "Summary:" line at the top of the GW Results block is the only authority on how many fixtures, goals, clean sheets and goalless draws there were - quote its numbers exactly. Never count, total, average or otherwise infer a summary statistic from the scorelines listed beneath it: a clean sheet is per team, not per goalless match, so counting the 0-0s gets it wrong. And never state a division-wide figure the Summary line does not carry - red cards, penalties, hat-tricks, teams that failed to score, the average scoreline, the share of matches drawn - write around it instead. If the Summary line is absent, cite no such figures at all
 - Split a DGW player's gameweek total across their two fixtures ("14 in the first, 5 in the second"). You only receive the GW total - any per-match breakdown is fabrication. Cite the full GW total only, or describe the haul qualitatively ("a clean sheet and a goal in the DGW") without assigning points to individual fixtures
+- Narrate an on-pitch cause for a blank the Blankers table shows was played in 0 minutes. That player did not appear: he cannot have been wasteful, anonymous, starved of service, or denied by the scoring system, and no clean sheet, scoreline or chance he was absent for explains his total. Say he did not play - the reason (benched, rotated, injured, suspended) only if your sources give it - and never write a sentence that puts him in the match
 - Fabricate transfer history, loan arrangements, or contractual details about players in the Disappointments or Standout Performers tables. If you lack sourced information explaining why a player blanked or hauled, describe the statistical outcome ("returned just 1 point") without inventing a backstory. Do not reference a player's club history, loan status, or off-field context unless it appeared in your search results
 - Name any player in the GW Narrative paragraph who does not appear in the Dream Team list, the Blankers list, or as a goalscorer/assister in the GW Results match lines. The narrative must reference only players grounded in the provided data - no metaphorical comparisons, no "X reminded us of Y", no "the next Z". If you cannot make a point without naming an unprovided player, drop the comparison and describe what actually happened instead
 
@@ -223,7 +224,9 @@ def get_review_research_prompt(
     Args:
         gameweek: The gameweek number to review.
         dream_team: Formatted string of Dream Team players (11 players with highest GW points).
-        blankers: Formatted string of high-ownership players who blanked (≤2 pts).
+        blankers: Formatted string of high-ownership players who blanked (≤2 pts),
+            carrying each one's minutes for the gameweek so the writer can tell a
+            player who was left out from one who played and returned nothing (issue #326).
         match_results: Compact scoreline string (e.g. "BHA 1-1 EVE | LEE 0-4 ARS | ...").
         manager_context: Formatted string of team-code-to-manager mappings.
         bgw_teams: Comma-separated short names of teams with a blank gameweek (e.g. "MCI, ARS").
@@ -275,6 +278,13 @@ def get_review_research_prompt(
         if blankers:
             gw_results_parts.append(f"\n## GW{gameweek} Disappointments (High-Ownership Blankers)")
             gw_results_parts.append(blankers)
+            gw_results_parts.append(
+                f"**Mins** is minutes played in GW{gameweek}. A row on 0 minutes did not"
+                " appear in the match at all - explain that blank as an absence (benched,"
+                " rotated, injured, suspended), never as anything that happened on the pitch."
+                " A row with minutes played did take the field, so the total is a"
+                " performance."
+            )
         important_lines = ['IMPORTANT:', '- Your "Standout Performers" section MUST ONLY include players from the Dream Team list above. Do not add any player not on that list.']
         if top_performer:
             important_lines.append(
