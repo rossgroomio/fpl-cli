@@ -25,7 +25,7 @@ from fpl_cli.services.scoring import ATTACKING_POSITIONS
 from fpl_cli.services.team_ratings import api_difficulty_scale, fdr_columns_footer
 from fpl_cli.utils.gameweek import is_opening_gameweek
 from fpl_cli.utils.teams import describe_team_set_mismatch
-from fpl_cli.utils.text import strip_diacritics
+from fpl_cli.utils.text import normalise_name
 
 if TYPE_CHECKING:
     from fpl_cli.prompts.review import SynthesisCompleteness
@@ -1273,12 +1273,20 @@ async def _review_llm_summarise(
 
 
 def _normalise_name(name: str) -> str:
-    """Normalise a player name for fuzzy matching."""
-    import re
-    name = strip_diacritics(name).strip().lower()
+    """Normalise a player name for fuzzy matching.
+
+    One side of every comparison here is a name an LLM typed into the
+    recommendations markdown and the other is a `web_name` off the API, so the
+    fold has to survive the styling the writer applied on the way -- the
+    apostrophe family and whitespace runs included, via `normalise_name`. It
+    matters more here than in the table guard that shares it: a miss there
+    dropped a row, while a miss here reports a captain you *did* field as a
+    recommendation you ignored, and prices the difference against himself.
+    """
+    name = normalise_name(name)
     name = re.sub(r"\s*\(.*?\)\s*$", "", name)  # strip parentheticals
     name = re.sub(r"^[a-z]\.\s*", "", name)  # strip leading initials
-    return name
+    return name.strip()
 
 
 def _names_match(a: str, b: str) -> bool:
