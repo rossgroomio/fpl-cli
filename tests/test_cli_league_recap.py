@@ -2629,6 +2629,30 @@ class TestConsoleStreaks:
         assert "single blank" not in _stdout(capsys)
 
 
+class TestConsoleMostContested:
+    """Issue #330: the third waiver award prints beside the other two."""
+
+    _DETAIL = "Elanga was claimed by 4 managers: Dan won him; Alice (priority 1) was beaten to him."
+
+    def test_the_award_prints_for_a_draft_recap(self, capsys: pytest.CaptureFixture[str]):
+        from fpl_cli.cli.league_recap import _render_console_highlights
+
+        data = _recap_data(managers=[_manager()], fpl_format="draft")
+        data["awards"]["most_contested"] = {"manager_name": "Dan", "value": 4, "detail": self._DETAIL}
+        _render_console_highlights(data, None)
+
+        assert f"Most Contested: {self._DETAIL}" in _stdout(capsys)
+
+    def test_a_classic_recap_never_prints_it(self, capsys: pytest.CaptureFixture[str]):
+        from fpl_cli.cli.league_recap import _render_console_highlights
+
+        data = _recap_data(managers=[_manager()])
+        data["awards"]["most_contested"] = {"manager_name": "Dan", "value": 4, "detail": self._DETAIL}
+        _render_console_highlights(data, None)
+
+        assert "Most Contested" not in _stdout(capsys)
+
+
 class TestConsoleUnavailable:
     def test_ae8_a_manager_with_no_derivable_total_is_named_unavailable(self, capsys: pytest.CaptureFixture[str]):
         from fpl_cli.cli.league_recap import _render_console_highlights

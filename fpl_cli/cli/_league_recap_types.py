@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import NotRequired, TypedDict
 
@@ -108,6 +108,51 @@ class RecapDraftLostClaim(TypedDict):
     # None for a free-agent pickup, which is first-come-first-served and
     # carries no priority.
     priority: int | None
+
+
+class RecapContestedClaimant(TypedDict):
+    """One manager who claimed a contested player and was beaten to him."""
+
+    manager_name: str
+    kind: str
+    # Their own ranking of the claim, as on `RecapDraftLostClaim`: 1 is the
+    # first choice they submitted that week. None for a free-agent pickup.
+    priority: int | None
+
+
+class RecapContestedClaim(TypedDict):
+    """One player more than one manager claimed this gameweek, and who won
+    him (issue #330).
+
+    Derived, never recorded: a lost claim means the incoming player went to
+    a rival, so every player any manager lost a claim on was claimed by at
+    least two, and the winner is whichever manager's accepted move brought
+    him in the same gameweek. Nothing here is absent from the manager rows
+    the ledger already records -- this regroups them by player, so the
+    editorial can say who wanted whom instead of reading the winner's pickup
+    as an unremarkable move, and the biggest race can be the week's Most
+    Contested award. Built by `contested_draft_claims()`; never written to
+    the report on its own, whose per-move detail stays in the awards.
+    """
+
+    player: str
+    player_team: str
+    player_team_name: NotRequired[str | None]
+    player_code: NotRequired[int]
+    # The manager whose accepted move brought him in. None when no fetched
+    # manager's did -- their picks could not be fetched, or the row could not
+    # be placed -- and the race is then editorial context with its winner
+    # unnamed, never a Most Contested award: a race nobody can be seen to
+    # have won is not one the recap can hand a headline to.
+    winner: str | None
+    # Every manager beaten to him, first-choice claims first, then by name.
+    losers: list[RecapContestedClaimant]
+    # Everyone who claimed him: the losers plus the winner where one was
+    # identified, and the losers alone where not -- the recap does not count
+    # a manager it cannot name. Bounded by the league's size (a draft league
+    # holds at most 16), which is why no surface caps the managers a race
+    # names.
+    claimants: int
 
 
 # The Draft API's `kind` values, translated to reader-facing labels. A `kind`
@@ -275,6 +320,13 @@ class RecapAwards(TypedDict, total=False):
     transfer_disaster: RecapAwardEntry
     waiver_genius: RecapAwardEntry
     waiver_disaster: RecapAwardEntry
+    # Draft only (issue #330): the player the most managers claimed this
+    # gameweek, on a week where enough of them did to make a pile-up
+    # (`MOST_CONTESTED_MIN_CLAIMANTS`) and someone can be seen to have won
+    # him. `manager_name` is that manager -- joined with " and " across a tie
+    # -- and `value` is how many claimed him. The detail names every manager
+    # beaten to him and the priority each gave the claim.
+    most_contested: RecapAwardEntry
 
 
 class RecapFinePlayer(TypedDict):
@@ -581,3 +633,168 @@ def _join_names(names: Sequence[str]) -> str:
     if len(names) <= 1:
         return "".join(names)
     return f"{', '.join(names[:-1])} and {names[-1]}"
+
+
+# ---------------------------------------------------------------------------
+# Contested claims (issue #330)
+# ---------------------------------------------------------------------------
+
+
+# The stable player code where the collector resolved one, else the name and
+# club it printed. Both sides of every move and claim in one gameweek resolve
+# through the same match, so a player has the same key on the accepted row
+# that won him and the lost claims that did not.
+_ContestedPlayerKey = int | tuple[str, str]
+
+
+def _contested_player_key(
+    move: RecapDraftTransaction | RecapDraftLostClaim,
+) -> _ContestedPlayerKey:
+    code = move.get("player_in_code")
+    if code is not None:
+        return code
+    return (move["player_in"], move["player_in_team"])
+
+
+def _priority_rank(priority: int | None) -> tuple[int, int]:
+    """Sort key placing a numbered priority before none at all, 1 first."""
+    return (1, 0) if priority is None else (0, priority)
+
+
+def _contest_winner(
+    accepted: Sequence[tuple[int, str]], claimants: Iterable[RecapContestedClaimant],
+) -> int | None:
+    """The manager whose accepted move won the race, as a position in the
+    managers list, from the (position, kind) pairs that brought the player
+    in this gameweek.
+
+    Normally exactly one. Where the feed holds more -- the waiver winner
+    moved him on and a rival signed him as a free agent before the deadline
+    -- the one whose kind matches the losing claims is the race they lost.
+    """
+    if not accepted:
+        return None
+    kinds = {c["kind"] for c in claimants}
+    for position, kind in accepted:
+        if kind in kinds:
+            return position
+    return accepted[0][0]
+
+
+def contested_draft_claims(
+    managers: Sequence[RecapManagerEntry],
+) -> list[RecapContestedClaim]:
+    """Every player more than one manager claimed this gameweek, most
+    contested first: by claimant count, then by how early the beaten
+    managers ranked him (two first-choice claims outrank one), then by name.
+
+    Regrouped from the manager rows rather than fetched: a `di` row in the
+    feed means a rival won the player, so the gameweek's lost claims, bucketed
+    by player, are the races, and the accepted move that brought the same
+    player in names the winner (issue #330). Read off the raw move list, not
+    the awards' chain-contracted one, so a manager who won a player and moved
+    him on again the same gameweek still won him.
+
+    A manager who lost several claims on one player -- a conditional chain
+    offering different drops for him -- wanted him once, and is named once,
+    at the highest priority they gave him. The winner is never also among
+    the beaten: once a manager's first claim for a player lands, any later
+    claim of theirs for him is denied on the incoming side (a `di`, since it
+    is the incoming player that is gone), and a manager who lost the waiver
+    and signed him as a free agent later the same gameweek carries both
+    rows too. Either way they wanted him once and got him, and a player
+    nobody else wanted is then no race at all. Empty for classic, whose rows
+    carry no claims.
+    """
+    players: dict[_ContestedPlayerKey, RecapDraftLostClaim] = {}
+    # Claimants are keyed by the manager's position in `managers`, never by
+    # name: two managers can share a display name, and the one who won has
+    # to be told apart from the one who lost.
+    claimants: dict[_ContestedPlayerKey, dict[int, RecapContestedClaimant]] = {}
+    accepted: dict[_ContestedPlayerKey, list[tuple[int, str]]] = {}
+    for position, m in enumerate(managers):
+        for move in m.get("transactions") or []:
+            accepted.setdefault(_contested_player_key(move), []).append((position, move["kind"]))
+        best: dict[_ContestedPlayerKey, RecapDraftLostClaim] = {}
+        for claim in m.get("lost_claims") or []:
+            key = _contested_player_key(claim)
+            known = best.get(key)
+            if known is None or _priority_rank(claim["priority"]) < _priority_rank(known["priority"]):
+                best[key] = claim
+        for key, claim in best.items():
+            players.setdefault(key, claim)
+            claimants.setdefault(key, {})[position] = RecapContestedClaimant(
+                manager_name=m["manager_name"], kind=claim["kind"], priority=claim["priority"],
+            )
+
+    contests: list[RecapContestedClaim] = []
+    for key, claim in players.items():
+        wanted = claimants[key]
+        winner = _contest_winner(accepted.get(key, []), wanted.values())
+        beaten = sorted(
+            (c for position, c in wanted.items() if position != winner),
+            key=lambda c: (_priority_rank(c["priority"]), c["manager_name"]),
+        )
+        if not beaten:
+            continue
+        contest = RecapContestedClaim(
+            player=claim["player_in"],
+            player_team=claim["player_in_team"],
+            player_team_name=claim.get("player_in_team_name"),
+            winner=None if winner is None else managers[winner]["manager_name"],
+            losers=beaten,
+            claimants=len(beaten) + (0 if winner is None else 1),
+        )
+        code = claim.get("player_in_code")
+        if code is not None:
+            contest["player_code"] = code
+        contests.append(contest)
+
+    contests.sort(key=lambda c: (
+        -c["claimants"],
+        tuple(_priority_rank(loser["priority"]) for loser in c["losers"]),
+        c["player"],
+        c.get("player_code") or 0,
+    ))
+    return contests
+
+
+def _claimant_text(claimant: RecapContestedClaimant) -> str:
+    """"Bob (priority 1)", or "Bob (free agent)" for a claim of any kind but
+    a waiver -- the label the awards use -- and "Bob" alone for a waiver
+    claim the feed sent no priority for."""
+    parts: list[str] = []
+    label = draft_transaction_kind_label(claimant["kind"])
+    if label != DRAFT_TRANSACTION_KIND_LABELS["w"]:
+        parts.append(label)
+    if claimant["priority"] is not None:
+        parts.append(f"priority {claimant['priority']}")
+    return claimant["manager_name"] + (f" ({', '.join(parts)})" if parts else "")
+
+
+def format_contested_claim(contest: RecapContestedClaim) -> str:
+    """"Elanga was claimed by 4 managers: Alice won him; Bob (priority 1),
+    Cam (priority 1) and Dan (priority 2) were beaten to him."
+
+    One sentence for both surfaces -- the Most Contested award and the
+    editorial's roster -- so no race is told two ways. Each beaten manager carries the priority they gave the
+    claim, which is the point of naming them: three first-choice claims on
+    one player is the week's story, and a fifth-choice claim that missed is
+    a different thing from a first. Where the winner could not be identified
+    the sentence says so and counts nobody it cannot name -- "Elanga was
+    claimed by Alice (priority 1) and Bob (priority 1), who were beaten to
+    him; the winner could not be identified" -- rather than asserting a
+    winner and leaving the reader to infer that nobody won.
+    """
+    losers = contest["losers"]
+    beaten = _join_names([_claimant_text(c) for c in losers])
+    verb = "was" if len(losers) == 1 else "were"
+    if contest["winner"] is None:
+        return (
+            f"{contest['player']} was claimed by {beaten}, who {verb} beaten to him; "
+            f"the winner could not be identified."
+        )
+    return (
+        f"{contest['player']} was claimed by {contest['claimants']} managers: "
+        f"{contest['winner']} won him; {beaten} {verb} beaten to him."
+    )

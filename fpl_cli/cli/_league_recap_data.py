@@ -66,7 +66,9 @@ from fpl_cli.cli._league_recap_types import (
     RecapPriorSeason,
     RecapStandingsEntry,
     RecapTransfer,
+    contested_draft_claims,
     draft_transaction_kind_counts,
+    format_contested_claim,
     format_move_counts,
 )
 from fpl_cli.services.fixture_predictions import had_fixture
@@ -116,6 +118,13 @@ _PICKS_CONCURRENCY = 10
 # the transfer/waiver, captain, and bench-haul awards so a wide tie in a large
 # league cannot sprawl.
 _DETAIL_CAP = 3
+# Fewest managers who must have claimed one player before the draft recap
+# hands out Most Contested (issue #330). Two is every lost claim by
+# definition -- the loser plus the winner -- so the award would fire on any
+# week with a waiver denied and read as routine; three means at least two
+# managers were beaten to the same player, which is a pile-up worth a
+# headline. Every race, this threshold or not, still reaches the editorial.
+MOST_CONTESTED_MIN_CLAIMANTS = 3
 
 
 def _omitted_suffix(omitted: int, noun: str | None = None) -> str:
@@ -1554,6 +1563,7 @@ def _compute_shared_awards(
         _compute_transfer_awards(managers, awards)
     elif format_name == "draft":
         _compute_waiver_awards(managers, awards)
+        _compute_most_contested_award(managers, awards)
 
     return awards
 
@@ -1822,6 +1832,56 @@ def _compute_waiver_awards(
                 always_label_single=True,
             ),
         )
+
+
+def _compute_most_contested_award(
+    managers: list[RecapManagerEntry],
+    awards: RecapAwards,
+) -> None:
+    """The draft's third waiver award (issue #330): the player the most
+    managers claimed, with who won him and who was beaten to him -- but only
+    on a week where `MOST_CONTESTED_MIN_CLAIMANTS` of them did.
+
+    Waiver Genius and Waiver Disaster each say something about one manager;
+    this one says something about the league. Scarcity is the format's
+    distinguishing feature, and a race four managers entered used to reach
+    the recap as one unremarkable pickup by the winner. It is a set-piece
+    rather than a weekly fixture: a two-way race is any lost claim, and the
+    editorial already sees every one of those in its waiver roster, so the
+    award waits for a genuine pile-up. And someone has to have won him: a
+    race whose winner the recap cannot see -- their picks fetch failed, or
+    the row could not be placed -- stays editorial context, since a headline
+    that hands the player to nobody it can name is no headline, and the
+    lost claims alone cannot prove anyone got him.
+
+    A tie on claimants names every player tied, bounded like the other
+    awards' ties. Each race's sentence names every beaten manager unbounded
+    -- a draft league holds at most 16, where a classic tie can hold fifty.
+    """
+    won = [c for c in contested_draft_claims(managers) if c["winner"] is not None]
+    if not won or won[0]["claimants"] < MOST_CONTESTED_MIN_CLAIMANTS:
+        return
+
+    top_count = won[0]["claimants"]
+    top = [c for c in won if c["claimants"] == top_count]
+    shown = top[:_DETAIL_CAP]
+    omitted = len(top) - len(shown)
+    detail = " ".join(format_contested_claim(c) for c in shown)
+    if omitted:
+        detail += (
+            f" {omitted} more player{'s' if omitted != 1 else ''} claimed by "
+            f"{top_count} managers omitted."
+        )
+    # Names the winners the detail actually prints, each once: a manager
+    # who won several tied races is one winner, and a race the cap dropped
+    # is not summarised by a name the reader cannot find in the detail
+    # (#341 review).
+    winners = [c["winner"] for c in shown if c["winner"] is not None]
+    awards["most_contested"] = RecapAwardEntry(
+        manager_name=" and ".join(dict.fromkeys(winners)),
+        value=top_count,
+        detail=detail,
+    )
 
 
 # ---------------------------------------------------------------------------
