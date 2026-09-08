@@ -44,6 +44,9 @@
 {% if awards.waiver_disaster is defined %}
 **Waiver Disaster:** {{ awards.waiver_disaster.detail }}
 {% endif %}
+{% if awards.most_contested is defined %}
+**Most Contested:** {{ awards.most_contested.detail }}
+{% endif %}
 
 ---
 
@@ -53,6 +56,18 @@
 {{ standings_block }}
 ```
 
+{% if contested_claims_lines is defined and contested_claims_lines %}
+---
+
+# Contested Claims
+
+*Players more than one manager claimed this gameweek, and who won them. A beaten manager's priority is their own ranking of the claim among those they submitted that week.*
+
+{% for line in contested_claims_lines %}
+- {{ line }}
+{% endfor %}
+
+{% endif %}
 {% if (league_history_streak_lines is defined and league_history_streak_lines) or (league_history_season_count_lines is defined and league_history_season_count_lines) or (league_history_coverage_lines is defined and league_history_coverage_lines) %}
 ---
 

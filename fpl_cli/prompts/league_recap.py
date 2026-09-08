@@ -6,8 +6,10 @@ from fpl_cli.cli._league_recap_types import (
     LeagueRecapData,
     PriorSeasonsSummary,
     RecapDraftLostClaim,
+    contested_draft_claims,
     draft_transaction_kind_counts,
     draft_transaction_kind_label,
+    format_contested_claim,
     format_move_counts,
 )
 from fpl_cli.services.league_history_fines import SeasonFinesTally, format_fine_breakdown
@@ -51,8 +53,9 @@ Your audience is every member of this league. They want entertainment first, inf
 - If a manager played a chip, that's a big narrative hook. A chip that flopped deserves mockery; a chip that paid off deserves grudging respect. When referencing chip users, treat the "Chips Played" section as the source of truth — it includes an explicit total count; use that number verbatim. Do NOT count tags in the standings table. Do not name a subset as "the X wildcards" — either name all users of that chip or none.
 - When referencing captain choices, treat the "## Captains" section as the source of truth. It lists every manager grouped by their intended captain pick, with an explicit total count. Use those counts verbatim. NEVER name a captain "outlier", "dissenter", or "the manager(s) who picked Y" unless they appear under that captain in the section. If you describe N managers as picking the modal captain, it must match the section's group size for that player. Do NOT infer captain choices from the awards or standings — they are compressed and miss managers whose pick was neither the best nor the worst.
 - When referencing transfers, hits, or moves in and out, treat the "## Transfers" section as the source of truth. It lists every manager who made a transfer with each move and its points swing, the hit they paid, an explicit count of movers, and the managers who made none - use those counts verbatim. NEVER say a manager transferred, took a hit, or stood still unless that section says so of them, never describe a move it does not list, and where it says a manager's moves or net are unknown, supply neither. Do NOT infer transfer activity from the Awards section - it names only the single best and single worst mover, so it never tells you how many managers transferred or what anyone else did. If there is no "## Transfers" section, no "## Waivers and Free Agents" section and no transfers note, do not mention transfers, waivers, hits, or moves in and out at all - absence of transfer data means there is nothing to report, not licence to invent one.
-- In draft, the "## Waivers and Free Agents" section is the source of truth for waiver claims and free-agent signings, the same way. It lists every manager who made a move with each move as it was made, its points swing and its kind tag - [waiver] or [free agent] - an explicit count of movers, and the managers who made none - use those counts verbatim. NEVER say a manager claimed, signed, dropped, or stood still unless that section says so of them, never describe a move it does not list, and never call a move tagged [free agent] a waiver claim or a move tagged [waiver] a free-agent signing - the tag is the move's kind. Draft has no transfer hits, so never mention one. Do NOT infer waiver activity from the Awards section - Waiver Genius and Waiver Disaster name only the single best and single worst mover, so they never tell you how many managers moved or what anyone else did.
+- In draft, the "## Waivers and Free Agents" section is the source of truth for waiver claims and free-agent signings, the same way. It lists every manager who made a move with each move as it was made, its points swing and its kind tag - [waiver] or [free agent] - an explicit count of movers, and the managers who made none - use those counts verbatim. NEVER say a manager claimed, signed, dropped, or stood still unless that section says so of them, never describe a move it does not list, and never call a move tagged [free agent] a waiver claim or a move tagged [waiver] a free-agent signing - the tag is the move's kind. Draft has no transfer hits, so never mention one. Do NOT infer waiver activity from the Awards section - Waiver Genius and Waiver Disaster name only the single best and single worst mover, and Most Contested only the player the most managers claimed, so they never tell you how many managers moved, how many races there were, or what anyone else did.
 - A waiver is a competition, so a manager can be busy and still have no move to show for it. The "## Waivers and Free Agents" section separates the two cases and the distinction is not optional: only the managers it lists as having made no moves AND submitted no claims sat the waiver wire out. A manager it lists as having claimed a player and lost him to a rival WAS active - they spent a claim, at the priority the line states, and were beaten to the player. Say they tried and missed, never that they did nothing, "sat it out", "stayed put", "didn't bother", "kept their powder dry" or "showed restraint", and never assign a motive - discipline, laziness, apathy - to an absence from the movers list. The same goes for a mover's "also claimed and lost" tail: it is extra activity, not a move they made.
+- The "Contested players" lines at the end of that section are the only source for who else wanted a player. Each names one player, how many managers claimed him, who won him and who was beaten to him, with the priority each beaten manager gave the claim - their own ranking of the claims they submitted that week, not the league's waiver order. Use the count verbatim; never call a player contested, "in demand" or "wanted by half the league" unless a line lists him, and never say a manager wanted, chased or missed out on a player unless the line names them. The winner of a waiver race won because they stood higher in the league's waiver order - you may say that, and nothing else about anyone's waiver position, which the data does not state - and where a line says the winner could not be identified, name nobody as having won him.
 - NEVER claim a manager's bench outscored their team unless bench points are strictly greater than their GW points. Use the exact numbers provided.
 - NEVER alter player or manager names. Use the exact spelling provided in the data.
 - NEVER state a club for a player other than the club given for them in this data - the "## Player Clubs" section, or the club printed beside a name elsewhere. Players change clubs in the transfer windows and your own knowledge of who plays where goes a season out of date, so that section is the only authority. A player it does not list has no club you can state: name them alone ("Haaland's 2 points") rather than supplying one from memory.
@@ -161,7 +164,7 @@ def format_recap_awards_context(data: LeagueRecapData) -> str:
         "gw_winner", "gw_loser", "biggest_bench_haul",
         "best_captain", "worst_captain",
         "transfer_genius", "transfer_disaster",
-        "waiver_genius", "waiver_disaster",
+        "waiver_genius", "waiver_disaster", "most_contested",
     ):
         award = awards.get(key)
         if award:
@@ -413,8 +416,9 @@ def _format_lost_claims(claims: list[RecapDraftLostClaim]) -> str:
 def format_recap_waivers_context(data: LeagueRecapData) -> str:
     """Per-manager waiver and free-agent roster: every draft mover with each
     move as it was made, tagged by kind, plus the managers who claimed and
-    lost and the managers who did neither (issues #301, #329) -- the draft
-    half of `format_recap_transfers_context`.
+    lost and the managers who did neither (issues #301, #329), then every
+    player more than one manager claimed and who won him (issue #330) -- the
+    draft half of `format_recap_transfers_context`.
 
     Same enumerate-and-lock shape, simpler mechanics. Draft moves come from
     the league-wide transactions endpoint, already filtered to this gameweek,
@@ -442,6 +446,13 @@ def format_recap_waivers_context(data: LeagueRecapData) -> str:
     from a free-agent pickup instead of calling every move a waiver (#146),
     using the same labels the awards print. Empty for classic (transfers,
     not waivers) and when nobody moved.
+
+    The contested block closes the section, in the same sentence the Most
+    Contested award and the report's Contested Claims section print, so the
+    editorial can say who else wanted a player -- the outbid group says a
+    manager lost a race, and this says which one and to whom. It can only be
+    present when the section is: a race needs a lost claim, and a lost claim
+    puts its manager in the outbid group or on a mover's tail.
     """
     if data.get("fpl_format") != "draft":
         return ""
@@ -492,6 +503,13 @@ def format_recap_waivers_context(data: LeagueRecapData) -> str:
         lines.append(
             f"Made no moves and submitted no claims ({len(stayed)}): {', '.join(sorted(stayed))}"
         )
+    contests = contested_draft_claims(managers)
+    if contests:
+        lines.append(
+            f"Contested players ({len(contests)}) - claimed by more than one manager, "
+            f"so only one could have him:"
+        )
+        lines.extend(f"- {format_contested_claim(c)}" for c in contests)
     return "\n".join(lines)
 
 

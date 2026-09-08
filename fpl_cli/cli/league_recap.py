@@ -766,6 +766,8 @@ def _render_console_highlights(
         console.print(f"[green]Waiver Genius:[/green] {awards['waiver_genius']['detail']}")
     if fmt == "draft" and awards.get("waiver_disaster"):
         console.print(f"[red]Waiver Disaster:[/red] {awards['waiver_disaster']['detail']}")
+    if fmt == "draft" and awards.get("most_contested"):
+        console.print(f"[yellow]Most Contested:[/yellow] {awards['most_contested']['detail']}")
 
     # Fines
     fines = data.get("fines", [])
