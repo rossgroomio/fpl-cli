@@ -14,13 +14,13 @@ from fpl_cli.services.player_prior import (
     PlayerPrior,
     _compute_confidence,
     _extract_prev_season_pts_per_90,
-    percentile_rank,
     _save_prior_cache,
     early_season_quality_warning,
     generate_player_prior,
     load_cached_priors,
     load_or_generate_player_priors,
     observation_weight_range,
+    percentile_rank,
 )
 from tests.conftest import make_player
 

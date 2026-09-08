@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from fpl_cli.models.league_history import FidelityTier, LedgerCaptaincy, LedgerTransaction
 from fpl_cli.cli._league_recap_data import derive_point_in_time_positions
+from fpl_cli.models.league_history import FidelityTier, LedgerCaptaincy, LedgerTransaction
 from fpl_cli.services.league_history import LeagueHistoryStore
 from fpl_cli.services.league_history_notes import (
     GameweekWindow,

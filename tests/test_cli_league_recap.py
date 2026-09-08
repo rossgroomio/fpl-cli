@@ -127,7 +127,7 @@ def _manager(
         auto_subs=[],
     )
     for key in (
-        "transfers", "transactions", "league_entry_id",
+        "transfers", "transactions", "lost_claims", "league_entry_id",
         "team_value", "bank", "global_rank", "global_gw_rank", "transfers_made",
         "prior_seasons",
     ):
@@ -363,6 +363,32 @@ class TestBuildHistoryRows:
         ) == (None, None, None, None, None)
         assert row.transfer_detail_shortfall is None
         assert [t.player_in for t in row.transactions] == ["In"]
+
+    def test_lost_claims_never_reach_the_ledger(self):
+        """Issue #329: a lost claim is not a completed move, and
+        `LedgerTransaction` models moves only (extra="forbid"). Persisting
+        failed claims is a schema change, filed separately -- until then the
+        widened ingestion must leave the stored row exactly as it was."""
+        data = _recap_data(
+            fpl_format="draft",
+            managers=[_manager(
+                name="Alice", entry_id=1, league_entry_id=10,
+                transactions=[RecapDraftTransaction(
+                    player_in="In", player_in_team="ARS", player_in_points=8,
+                    player_out="Out", player_out_team="LIV", player_out_points=2,
+                    net=6, kind="w",
+                )],
+                lost_claims=[{
+                    "player_in": "Elanga", "player_in_team": "NEW",
+                    "player_out": "Savio", "player_out_team": "MCI",
+                    "kind": "w", "priority": 1,
+                }],
+            )],
+            cohort=_cohort((10, "Alice", 1, 60, 300)),
+        )
+        row = build_history_rows(data, season=SEASON, captured_at=CAPTURED_AT)[0]
+        assert [t.player_in for t in row.transactions] == ["In"]
+        assert "Elanga" not in row.model_dump_json()
 
     def test_the_first_gameweek_records_no_previous_position(self):
         """Issue #147: GW1 has no previous table, and a row claiming the
@@ -3197,7 +3223,7 @@ class TestEndToEndPromptThroughTheFullCommand:
             "Savinho (0 pts) in for Maddison (1 pt), -1 [waiver]; "
             "Dango (6 pts) in for Georginio (1 pt), +5 [free agent]"
         ) in user_prompt
-        assert "Made no moves (1): Bob" in user_prompt
+        assert "Made no moves and submitted no claims (1): Bob" in user_prompt
         assert "## Transfers" not in user_prompt
         assert 'the "## Waivers and Free Agents" section is the source of truth' in system_prompt
 

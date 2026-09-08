@@ -4,7 +4,12 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from fpl_cli.api.fpl_draft import FPLDraftClient, match_draft_to_main
+from fpl_cli.api.fpl_draft import (
+    FPLDraftClient,
+    is_accepted_transaction,
+    is_lost_claim,
+    match_draft_to_main,
+)
 from tests.conftest import (
     make_draft_league_entry,
     make_draft_player,
@@ -445,17 +450,22 @@ class TestFPLDraftClientReleases:
             # Player 5 exists in bootstrap (Unavailable), but 10 and 11 don't
             assert isinstance(result, list)
 
-    @pytest.mark.asyncio
-    async def test_get_recent_releases_filters_by_gameweek(
-        self, mock_draft_bootstrap, mock_game_data, mock_element_status
+    @staticmethod
+    async def _releases_for_gameweek(
+        event, mock_draft_bootstrap, mock_game_data, mock_element_status,
     ):
-        """Test that old releases are filtered out."""
-        client = FPLDraftClient()
+        """Run get_recent_releases over one release in gameweek `event`.
 
-        # Current GW is 25, max_gameweeks_back=4 means only GW 22+ included
-        mock_old_transactions = {
+        Element 4 (Gabriel) is both in the bootstrap and unowned, so nothing
+        but the gameweek window can exclude it -- with a player the bootstrap
+        does not carry, the row is dropped before the window is ever
+        evaluated and an "it was filtered out" assertion holds vacuously.
+        """
+        client = FPLDraftClient()
+        txns = {
             "transactions": [
-                {"element_in": 3, "element_out": 10, "entry": 100, "event": 20, "kind": "w"},  # Too old
+                {"element_in": 3, "element_out": 4, "entry": 100,
+                 "event": event, "kind": "w", "result": "a"},
             ]
         }
 
@@ -468,15 +478,35 @@ class TestFPLDraftClientReleases:
                 elif endpoint == "league/12345/element-status":
                     return mock_element_status
                 elif endpoint == "draft/league/12345/transactions":
-                    return mock_old_transactions
+                    return txns
                 return {}
 
             mock_get.side_effect = side_effect
+            return await client.get_recent_releases(
+                12345, mock_draft_bootstrap, max_gameweeks_back=4,
+            )
 
-            result = await client.get_recent_releases(12345, mock_draft_bootstrap, max_gameweeks_back=4)
+    @pytest.mark.asyncio
+    async def test_get_recent_releases_filters_by_gameweek(
+        self, mock_draft_bootstrap, mock_game_data, mock_element_status
+    ):
+        """Test that old releases are filtered out."""
+        # Current GW is 25, max_gameweeks_back=4 means only GW 22+ included
+        result = await self._releases_for_gameweek(
+            20, mock_draft_bootstrap, mock_game_data, mock_element_status,
+        )
+        assert len(result) == 0
 
-            # GW 20 is outside the window (25 - 4 = 21 minimum)
-            assert len(result) == 0
+    @pytest.mark.asyncio
+    async def test_get_recent_releases_keeps_a_release_inside_the_window(
+        self, mock_draft_bootstrap, mock_game_data, mock_element_status
+    ):
+        """The positive control for the gameweek filter: the same release one
+        gameweek inside the window is reported."""
+        result = await self._releases_for_gameweek(
+            22, mock_draft_bootstrap, mock_game_data, mock_element_status,
+        )
+        assert [r["player"]["id"] for r in result] == [4]
 
 
 class TestFPLDraftClientParsePlayer:
@@ -586,3 +616,73 @@ class TestMatchDraftToMain:
         main = make_player(id=5, code=0, web_name="Star", team_id=1)
 
         assert match_draft_to_main([draft], [main]) == {}
+
+
+class TestDraftTransactionResultCodes:
+    """Issue #329: the feed's two denial codes do not mean the same thing, and
+    collapsing them either loses a manager's attempt or invents one."""
+
+    def test_an_accepted_row_is_the_only_completed_move(self):
+        assert is_accepted_transaction({"result": "a"}) is True
+        assert is_accepted_transaction({"result": "di"}) is False
+        assert is_accepted_transaction({"result": "do"}) is False
+
+    def test_a_row_with_no_result_at_all_is_not_treated_as_accepted(self):
+        assert is_accepted_transaction({}) is False
+
+    def test_a_di_row_is_a_claim_a_rival_won(self):
+        assert is_lost_claim({"result": "di"}) is True
+
+    def test_a_do_row_is_not_an_attempt(self):
+        """`do` means the manager's own earlier accepted claim had already
+        used that drop. Counting it as a failed attempt would report the
+        manager who *won* the claim as having lost one."""
+        assert is_lost_claim({"result": "do"}) is False
+
+    def test_an_accepted_row_is_not_a_lost_claim(self):
+        assert is_lost_claim({"result": "a"}) is False
+
+
+class TestRecentReleasesIgnoreDeniedClaims:
+    """A denied claim names the player it would have dropped, but nobody was
+    released -- so it must not be reported as a release (issue #329)."""
+
+    @pytest.mark.asyncio
+    async def test_a_denied_claims_drop_is_not_a_release(self, mock_draft_bootstrap):
+        client = FPLDraftClient()
+        txns = {
+            "transactions": [
+                {"element_in": 1, "element_out": 4, "entry": 100, "event": 25, "kind": "w", "result": "di"},
+                {"element_in": 2, "element_out": 5, "entry": 100, "event": 25, "kind": "w", "result": "do"},
+            ]
+        }
+        with (
+            patch.object(client, "get_game_state", new_callable=AsyncMock) as mock_state,
+            patch.object(client, "get_league_ownership_status", new_callable=AsyncMock) as mock_status,
+            patch.object(client, "get_league_transactions", new_callable=AsyncMock) as mock_txns,
+        ):
+            mock_state.return_value = {"current_event": 25}
+            mock_status.return_value = {"element_status": []}
+            mock_txns.return_value = txns
+
+            assert await client.get_recent_releases(12345, mock_draft_bootstrap) == []
+
+    @pytest.mark.asyncio
+    async def test_an_accepted_claims_drop_is_still_a_release(self, mock_draft_bootstrap):
+        client = FPLDraftClient()
+        txns = {
+            "transactions": [
+                {"element_in": 1, "element_out": 4, "entry": 100, "event": 25, "kind": "w", "result": "a"},
+            ]
+        }
+        with (
+            patch.object(client, "get_game_state", new_callable=AsyncMock) as mock_state,
+            patch.object(client, "get_league_ownership_status", new_callable=AsyncMock) as mock_status,
+            patch.object(client, "get_league_transactions", new_callable=AsyncMock) as mock_txns,
+        ):
+            mock_state.return_value = {"current_event": 25}
+            mock_status.return_value = {"element_status": []}
+            mock_txns.return_value = txns
+
+            releases = await client.get_recent_releases(12345, mock_draft_bootstrap)
+            assert [r["player"]["id"] for r in releases] == [4]

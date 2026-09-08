@@ -11,11 +11,35 @@ import jinja2
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from fpl_cli.agents.base import Agent, AgentResult, AgentStatus
-from fpl_cli.cli._league_recap_types import RecapManagerEntry
+from fpl_cli.cli._league_recap_types import RecapManagerEntry, draft_transaction_kind_label
 from fpl_cli.paths import TEMPLATE_DIR
 from fpl_cli.services.team_ratings import fdr_columns_footer
 from fpl_cli.utils.text import ordinal_suffix
 from fpl_cli.utils.time import format_generated_at
+
+
+def build_report_environment() -> Environment:
+    """The Jinja environment every report template is rendered through.
+
+    The templates depend on what is registered here, so there is one
+    definition of it rather than one per caller -- a template rendered
+    through a bare `Environment` fails to compile on the first global or
+    filter it reaches, and would do so only at report-writing time.
+    """
+    env = Environment(
+        loader=FileSystemLoader(TEMPLATE_DIR),
+        autoescape=select_autoescape(default=False),
+        trim_blocks=True,
+        lstrip_blocks=True,
+    )
+    # Footer wording for FDR tables, shared with the CLI so the saved
+    # report and the terminal describe the columns the same way
+    env.globals["fdr_columns_footer"] = fdr_columns_footer
+    # The one draft `kind` vocabulary, so a row stores what the API sent and
+    # the label is derived at render -- here and in the prompt -- from the
+    # same mapping rather than from a second stored field that could drift
+    env.filters["kind_label"] = draft_transaction_kind_label
+    return env
 
 
 class ReportAgent(Agent):
@@ -44,16 +68,7 @@ class ReportAgent(Agent):
             config.get("output_dir", ".")
         ) if config else Path(".")
 
-        # Setup Jinja2 environment
-        self.jinja_env = Environment(
-            loader=FileSystemLoader(TEMPLATE_DIR),
-            autoescape=select_autoescape(default=False),
-            trim_blocks=True,
-            lstrip_blocks=True,
-        )
-        # Footer wording for FDR tables, shared with the CLI so the saved
-        # report and the terminal describe the columns the same way
-        self.jinja_env.globals["fdr_columns_footer"] = fdr_columns_footer
+        self.jinja_env = build_report_environment()
 
     async def run(self, context: dict[str, Any] | None = None) -> AgentResult:
         """Generate a report from provided data.

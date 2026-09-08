@@ -54,12 +54,18 @@ async def _review_draft(
     only joined later (issue #174). Both are keyed on main-game ids, so a
     draft player the main game never matched falls back to the club as before.
     """
-    from fpl_cli.api.fpl_draft import FPLDraftClient, match_draft_to_main
+    from fpl_cli.api.fpl_draft import (
+        FPLDraftClient,
+        is_accepted_transaction,
+        is_lost_claim,
+        match_draft_to_main,
+    )
 
     draft_league_data = None
     draft_league_name = "Draft League"
     draft_squad_points_data = []
     draft_transactions_data = []
+    draft_lost_claims_data = []
     draft_automatic_subs = []
     draft_player_map = {}  # Will be populated from Draft API bootstrap
 
@@ -68,6 +74,7 @@ async def _review_draft(
             "draft_league_data": draft_league_data,
             "draft_squad_points_data": draft_squad_points_data,
             "draft_transactions_data": draft_transactions_data,
+            "draft_lost_claims_data": draft_lost_claims_data,
             "draft_automatic_subs": draft_automatic_subs,
             "draft_player_map": draft_player_map,
         }
@@ -246,19 +253,30 @@ async def _review_draft(
 
                 # Fetch Draft transactions for this GW
                 draft_transactions_data = []
+                draft_lost_claims_data = []
                 try:
                     transactions = await draft_client.get_league_transactions(draft_league_id)
                     all_txns = transactions.get("transactions", [])
 
-                    # Filter to user's successful transactions for this GW
-                    # Note: transaction 'entry' field corresponds to entry_id (draft_entry_id)
-                    gw_txns = [
+                    # Filter to the user's own rows for this GW, accepted and
+                    # denied alike. Note: transaction 'entry' field
+                    # corresponds to entry_id (draft_entry_id).
+                    my_txns = [
                         t for t in all_txns
-                        if t.get("event") == gw
-                        and t.get("entry") == draft_entry_id
-                        and t.get("result") == "a"  # 'a' = accepted/successful
+                        if t.get("event") == gw and t.get("entry") == draft_entry_id
+                    ]
+                    gw_txns = [
+                        t for t in my_txns
+                        if is_accepted_transaction(t)
                         and t.get("element_in")  # Has a player coming in
                     ]
+                    # Claims a rival won. Nothing moved, so these stay out of
+                    # the net-delta table and its hits/misses arithmetic --
+                    # but a week whose only waiver activity was a claim the
+                    # user lost is not a week they sat out, and reporting it
+                    # as "no waivers this week" is the misattribution in
+                    # issue #329 pointed at the user's own review.
+                    lost_txns = [t for t in my_txns if is_lost_claim(t)]
 
                     # Collapse same-GW churn using net squad delta (Counter diff).
                     # Pair residual adds and drops by (position, web_name) for like-for-like rows.
@@ -348,6 +366,47 @@ async def _review_draft(
                         console.print(
                             f"\nHits: {hits} | Misses: {misses} | Net: [{net_style}]{net_sign}{total_net}[/{net_style}]"
                         )
+
+                    # Printed whether or not anything landed: a gameweek whose
+                    # only waiver activity was a lost claim has no
+                    # "## Transactions" block above this at all.
+                    for txn in lost_txns:
+                        lost_in = draft_player_map.get(txn.get("element_in"))
+                        lost_out = draft_player_map.get(txn.get("element_out"))
+                        if not lost_in or not lost_out:
+                            continue
+                        lost_in_team = teams.get(lost_in.get("team"))
+                        lost_out_team = teams.get(lost_out.get("team"))
+                        raw_priority = txn.get("priority")
+                        priority = raw_priority if isinstance(raw_priority, int) else None
+                        draft_lost_claims_data.append({
+                            "player_in": lost_in.get("web_name", "Unknown"),
+                            "player_in_team": lost_in_team.short_name if lost_in_team else "???",
+                            "player_in_team_name": lost_in_team.name if lost_in_team else None,
+                            "player_out": lost_out.get("web_name", "Unknown"),
+                            "player_out_team": lost_out_team.short_name if lost_out_team else "???",
+                            "player_out_team_name": lost_out_team.name if lost_out_team else None,
+                            # Stored verbatim, never a label: the reader-facing
+                            # wording is derived where it is printed, from the
+                            # one shared mapping, so the prompt and the saved
+                            # report cannot describe a move two ways.
+                            "kind": txn.get("kind", ""),
+                            "priority": priority,
+                        })
+
+                    if draft_lost_claims_data:
+                        console.print("\n[bold]## Claims Lost[/bold]")
+                        for claim in draft_lost_claims_data:
+                            prio = (
+                                f" [dim](priority {claim['priority']})[/dim]"
+                                if claim["priority"] is not None else ""
+                            )
+                            console.print(
+                                f"- {rich_escape(claim['player_in'])} "
+                                f"({claim['player_in_team']}) for "
+                                f"{rich_escape(claim['player_out'])} "
+                                f"({claim['player_out_team']}) - won by a rival{prio}"
+                            )
 
                 except Exception as e:  # noqa: BLE001 — display resilience
                     console.print(f"[dim]Could not fetch transactions: {rich_escape(str(e))}[/dim]")
@@ -453,6 +512,7 @@ async def _review_draft(
         "draft_league_name": draft_league_name,
         "draft_squad_points_data": draft_squad_points_data,
         "draft_transactions_data": draft_transactions_data,
+        "draft_lost_claims_data": draft_lost_claims_data,
         "draft_automatic_subs": draft_automatic_subs,
         "draft_player_map": draft_player_map,
     }

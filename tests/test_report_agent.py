@@ -3,7 +3,8 @@
 from pathlib import Path
 
 from fpl_cli.agents.base import AgentStatus
-from fpl_cli.agents.orchestration.report import ReportAgent
+from fpl_cli.agents.orchestration.report import ReportAgent, build_report_environment
+from fpl_cli.paths import TEMPLATE_DIR
 
 # ---------------------------------------------------------------------------
 # Minimal data helpers
@@ -215,6 +216,78 @@ class TestTemplateRendering:
         data["team_points"][1]["contributed"] = False
         output = self.agent._generate_review_report(29, data)
         assert "[DIDN'T PLAY]" in output
+
+    def test_review_report_lists_a_claim_a_rival_won(self):
+        """Issue #329: the saved report dropped unsuccessful claims with
+        everything else downstream of the accepted-only filter."""
+        data = _review_data()
+        data["draft_lost_claims"] = [{
+            "player_in": "Elanga", "player_in_team": "NEW",
+            "player_out": "Sávio", "player_out_team": "MCI",
+            "kind": "w", "priority": 1,
+        }]
+        output = self.agent._generate_review_report(29, data)
+        assert "## Claims Lost" in output
+        assert "| Elanga (NEW) | Sávio (MCI) | waiver | 1 |" in output
+
+    def test_review_report_omits_claims_lost_when_there_were_none(self):
+        assert "## Claims Lost" not in self.agent._generate_review_report(29, _review_data())
+
+    def test_review_report_marks_a_lost_claim_apart_from_an_ignored_one(self):
+        """"Different" would say the manager acted on the advice another way;
+        "Not exec" would say they ignored it. Neither is what happened."""
+        data = _review_data()
+        data["recs_comparison"] = {
+            "classic": {},
+            "draft": {
+                "waivers": [{
+                    "priority": 1, "rec_in": "Elanga", "rec_out": "Sávio",
+                    "actual_in": None, "actual_out": None, "followed": False,
+                    "lost_claim": True, "claimed_in": "Elanga",
+                }],
+                "unadvised_waivers": [],
+            },
+        }
+        output = self.agent._generate_review_report(29, data)
+        assert "| 1 | Elanga | Sávio | Claimed, lost |" in output
+        assert "Not exec" not in output
+
+    def test_review_report_names_the_player_actually_claimed(self):
+        """The console prints `claimed_in`; the saved report used to print the
+        recommended player, so the two surfaces disagreed in exactly the case
+        the field exists for -- and the update-gw-prep second pass reads the
+        file."""
+        data = _review_data()
+        data["recs_comparison"] = {
+            "classic": {},
+            "draft": {
+                "waivers": [{
+                    "priority": 1, "rec_in": "Nyoni", "rec_out": "Wirtz",
+                    "actual_in": None, "actual_out": None, "followed": False,
+                    "lost_claim": True, "claimed_in": "Elanga", "different_claim": True,
+                }],
+                "unadvised_waivers": [],
+            },
+        }
+        output = self.agent._generate_review_report(29, data)
+        assert "| 1 | Nyoni | Wirtz | Different claim, lost | Elanga |" in output
+
+    def test_review_report_marks_a_claim_lost_behind_the_move_that_covered_it(self):
+        data = _review_data()
+        data["recs_comparison"] = {
+            "classic": {},
+            "draft": {
+                "waivers": [{
+                    "priority": 1, "rec_in": "Nyoni", "rec_out": "Wirtz",
+                    "actual_in": "Gordon", "actual_out": "Wirtz", "followed": False,
+                    "different_replacement": True, "claimed_and_lost": True,
+                    "actual_net": 7, "actual_verdict": "✓ Hit",
+                }],
+                "unadvised_waivers": [],
+            },
+        }
+        output = self.agent._generate_review_report(29, data)
+        assert "| 1 | Nyoni | Wirtz | Different (claimed, lost) | Gordon |" in output
 
     def test_review_unused_bench_marker(self):
         data = _review_data()
@@ -734,3 +807,44 @@ class TestSummaryUnavailableCallout:
 
     def test_a_run_that_never_asked_for_a_summary_adds_no_callout(self):
         assert "requested summary is missing" not in self._render()
+
+
+# ---------------------------------------------------------------------------
+# Group 3: one environment the templates are written against
+# ---------------------------------------------------------------------------
+
+class TestReportEnvironmentIsShared:
+    """Templates may use anything `build_report_environment()` registers, so
+    that has to be the environment they are rendered through -- everywhere.
+
+    Both directions have already broken CI: a template reaching for a filter
+    (`kind_label`, #329) against a test that built its own bare `Environment`
+    (#326's blanker test). Neither side is wrong on its own; the pairing is,
+    and neither file's author can see the other.
+    """
+
+    def test_every_shipped_template_compiles(self):
+        """A global or filter a template uses but the environment does not
+        register fails at compile time -- which is report-writing time, long
+        after the change that caused it."""
+        env = build_report_environment()
+        for template in sorted(TEMPLATE_DIR.glob("*.j2")):
+            env.get_template(template.name)
+
+    def test_no_test_builds_its_own_template_environment(self):
+        """A bare `Environment` renders the same templates without what they
+        are written against, so it breaks for whoever registers the next
+        filter rather than for whoever wrote it."""
+        here = Path(__file__)
+        offenders = sorted(
+            # This file names the loader in the check itself, so skip it.
+            path.name
+            for path in here.parent.glob("*.py")
+            if path.name != here.name and "FileSystemLoader" in path.read_text()
+        )
+        assert offenders == [], (
+            "These tests build their own Jinja environment for the report "
+            "templates: " + ", ".join(offenders) + ". Use "
+            "build_report_environment() so they render through the same "
+            "globals and filters the templates are written against."
+        )

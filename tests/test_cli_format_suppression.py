@@ -332,11 +332,9 @@ class TestReviewTemplateFormatGating:
     """Template conditionally renders Classic/Draft sections."""
 
     def _render(self, fpl_format: str | None, **kwargs):
-        from jinja2 import Environment, FileSystemLoader
+        from fpl_cli.agents.orchestration.report import build_report_environment
 
-        from fpl_cli.paths import TEMPLATE_DIR
-
-        env = Environment(loader=FileSystemLoader(str(TEMPLATE_DIR)))
+        env = build_report_environment()
         template = env.get_template("gw_review.md.j2")
         defaults = {
             "generated_at": "2026-03-23 12:00",

@@ -6,7 +6,7 @@ import asyncio
 import functools
 import logging
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
@@ -56,6 +56,7 @@ from fpl_cli.cli._league_recap_types import (
     LeagueRecapData,
     RecapAwardEntry,
     RecapAwards,
+    RecapDraftLostClaim,
     RecapDraftTransaction,
     RecapFinePlayer,
     RecapFineResult,
@@ -1859,6 +1860,81 @@ def _bucket_draft_txns_by_league_entry(
     return out
 
 
+@dataclass(frozen=True)
+class _DraftTxnSides:
+    """Both players a draft transaction names, resolved to display identity.
+
+    One resolution for accepted moves and lost claims alike: the same club
+    lookup, the same `Unknown`/`???` fallbacks, the same stable codes. The two
+    loops differ only in what they build on top -- points and a net for a move
+    that happened, a priority for one that did not -- so a change to how a
+    side is placed (a club fallback, a default) lands in one place.
+    """
+
+    in_id: int
+    out_id: int
+    in_main_id: int | None
+    out_main_id: int | None
+    player_in: str
+    player_in_team: str
+    player_in_team_name: str | None
+    player_in_code: int | None
+    player_out: str
+    player_out_team: str
+    player_out_team_name: str | None
+    player_out_code: int | None
+
+
+def _resolve_draft_txn_sides(
+    txn: dict[str, Any],
+    what: str,
+    *,
+    draft_player_map: dict[int, dict[str, Any]],
+    draft_to_main_id: dict[int, int],
+    draft_to_main_code: dict[int, int],
+    club_of: Callable[..., Team | None],
+) -> _DraftTxnSides | None:
+    """Resolve a transaction's two sides, or None for a row we cannot place.
+
+    Both waivers and free agents always carry an element_out -- draft squads
+    are fixed at 15, so any add requires a simultaneous drop -- which makes a
+    row missing either side malformed rather than a shape to handle. `what`
+    names the row in the warning so an unplaceable move and an unplaceable
+    claim are distinguishable in the log.
+    """
+    in_id: int | None = txn.get("element_in")
+    out_id: int | None = txn.get("element_out")
+    dp_in = draft_player_map.get(in_id) if in_id else None
+    dp_out = draft_player_map.get(out_id) if out_id else None
+
+    if in_id is None or out_id is None or not dp_in or not dp_out:
+        logger.warning(
+            "Skipping malformed %s (entry=%s in=%s out=%s)",
+            what, txn.get("entry"), in_id, out_id,
+        )
+        return None
+
+    in_main_id = draft_to_main_id.get(in_id)
+    out_main_id = draft_to_main_id.get(out_id)
+    in_club = club_of(in_main_id, dp_in.get("team"))
+    out_club = club_of(out_main_id, dp_out.get("team"))
+
+    return _DraftTxnSides(
+        in_id=in_id,
+        out_id=out_id,
+        in_main_id=in_main_id,
+        out_main_id=out_main_id,
+        player_in=dp_in.get("web_name", "Unknown"),
+        player_in_team=in_club.short_name if in_club else "???",
+        player_in_team_name=in_club.name if in_club else None,
+        player_in_code=draft_to_main_code.get(in_id),
+        player_out=dp_out.get("web_name", "Unknown"),
+        player_out_team=out_club.short_name if out_club else "???",
+        player_out_team_name=out_club.name if out_club else None,
+        player_out_code=draft_to_main_code.get(out_id),
+    )
+
+
 async def collect_draft_recap_data(
     settings: dict[str, Any],
     gw: int,
@@ -1887,7 +1963,12 @@ async def collect_draft_recap_data(
     matched main-game player, so a draft pick the main game never matched
     keeps the draft bootstrap's current club -- there is no id to place him by.
     """
-    from fpl_cli.api.fpl_draft import FPLDraftClient, match_draft_to_main
+    from fpl_cli.api.fpl_draft import (
+        FPLDraftClient,
+        is_accepted_transaction,
+        is_lost_claim,
+        match_draft_to_main,
+    )
     from fpl_cli.models.player import POSITION_MAP
 
     draft_league_id: Any = fpl_config(settings).get("draft_league_id")
@@ -1919,14 +2000,21 @@ async def collect_draft_recap_data(
             if main_player.code
         }
 
-        # Fetch all transactions for the league, filter to this GW
+        # Fetch all transactions for the league, filter to this GW. The feed
+        # carries denied claims alongside accepted ones, and they answer
+        # different questions: what moved comes from the accepted rows alone,
+        # but who was active cannot -- a manager whose only claim a rival won
+        # has no accepted row and used to be indistinguishable from one who
+        # submitted nothing (issue #329). So both are kept, separately.
         txn_response = await draft_client.get_league_transactions(draft_league_id)
         all_txns: list[dict[str, Any]] = txn_response.get("transactions", [])
-        gw_txns = [
-            t for t in all_txns
-            if t.get("event") == gw and t.get("result") == "a"
-        ]
-        txns_by_entry = _bucket_draft_txns_by_league_entry(gw_txns, league_entries)
+        gw_txns = [t for t in all_txns if t.get("event") == gw]
+        txns_by_entry = _bucket_draft_txns_by_league_entry(
+            [t for t in gw_txns if is_accepted_transaction(t)], league_entries,
+        )
+        lost_by_entry = _bucket_draft_txns_by_league_entry(
+            [t for t in gw_txns if is_lost_claim(t)], league_entries,
+        )
 
         # Fetch picks for each manager
         sem = asyncio.Semaphore(_PICKS_CONCURRENCY)
@@ -2019,39 +2107,32 @@ async def collect_draft_recap_data(
                         f"{pin.get('web_name', '?')} on for {pout.get('web_name', '?')} ({pin_pts} pts)"
                     )
 
-            # Build transaction data for this manager. Both waivers and free
-            # agents always carry an element_out — draft squads are fixed at 15,
-            # so any add requires a simultaneous drop.
+            resolve_sides = functools.partial(
+                _resolve_draft_txn_sides,
+                draft_player_map=draft_player_map,
+                draft_to_main_id=draft_to_main_id,
+                draft_to_main_code=draft_to_main_code,
+                club_of=club_of,
+            )
+
+            # Build transaction data for this manager.
             manager_txns: list[RecapDraftTransaction] = []
             for txn in txns_by_entry.get(league_entry_id, []):
-                pin_id: int | None = txn.get("element_in")
-                pout_id: int | None = txn.get("element_out")
-                dp_in = draft_player_map.get(pin_id) if pin_id else None
-                dp_out = draft_player_map.get(pout_id) if pout_id else None
-
-                if not dp_in or not dp_out:
-                    logger.warning(
-                        "Skipping malformed draft txn (entry=%s in=%s out=%s)",
-                        txn.get("entry"), pin_id, pout_id,
-                    )
+                sides = resolve_sides(txn, "draft txn")
+                if sides is None:
                     continue
 
-                main_in_id = draft_to_main_id.get(pin_id) if pin_id else None
-                in_pts, _, _ = _live_player_stats(live_stats, main_in_id)
-                main_out_id = draft_to_main_id.get(pout_id) if pout_id else None
-                out_pts, _, _ = _live_player_stats(live_stats, main_out_id)
-
-                in_club = club_of(main_in_id, dp_in.get("team"))
-                out_club = club_of(main_out_id, dp_out.get("team"))
+                in_pts, _, _ = _live_player_stats(live_stats, sides.in_main_id)
+                out_pts, _, _ = _live_player_stats(live_stats, sides.out_main_id)
 
                 transaction = RecapDraftTransaction(
-                    player_in=dp_in.get("web_name", "Unknown"),
-                    player_in_team=in_club.short_name if in_club else "???",
-                    player_in_team_name=in_club.name if in_club else None,
+                    player_in=sides.player_in,
+                    player_in_team=sides.player_in_team,
+                    player_in_team_name=sides.player_in_team_name,
                     player_in_points=in_pts,
-                    player_out=dp_out.get("web_name", "Unknown"),
-                    player_out_team=out_club.short_name if out_club else "???",
-                    player_out_team_name=out_club.name if out_club else None,
+                    player_out=sides.player_out,
+                    player_out_team=sides.player_out_team,
+                    player_out_team_name=sides.player_out_team_name,
                     player_out_points=out_pts,
                     net=in_pts - out_pts,
                     # Store what the API sent verbatim -- defaulting a missing
@@ -2059,11 +2140,39 @@ async def collect_draft_recap_data(
                     # award breakdown instead of the honest "other move".
                     kind=txn.get("kind", ""),
                 )
-                if pin_id is not None and (in_code := draft_to_main_code.get(pin_id)):
-                    transaction["player_in_code"] = in_code
-                if pout_id is not None and (out_code := draft_to_main_code.get(pout_id)):
-                    transaction["player_out_code"] = out_code
+                if sides.player_in_code:
+                    transaction["player_in_code"] = sides.player_in_code
+                if sides.player_out_code:
+                    transaction["player_out_code"] = sides.player_out_code
                 manager_txns.append(transaction)
+
+            # Claims this manager lost to a rival. No points and no net --
+            # nothing moved -- so this stays a roster of attempts rather than
+            # a second ledger of moves.
+            lost_claims: list[RecapDraftLostClaim] = []
+            for txn in lost_by_entry.get(league_entry_id, []):
+                sides = resolve_sides(txn, "lost draft claim")
+                if sides is None:
+                    continue
+
+                raw_priority = txn.get("priority")
+                claim = RecapDraftLostClaim(
+                    player_in=sides.player_in,
+                    player_in_team=sides.player_in_team,
+                    player_in_team_name=sides.player_in_team_name,
+                    player_out=sides.player_out,
+                    player_out_team=sides.player_out_team,
+                    player_out_team_name=sides.player_out_team_name,
+                    # Stored verbatim for the same reason an accepted move's
+                    # is: a missing kind is an "other move", never a waiver.
+                    kind=txn.get("kind", ""),
+                    priority=raw_priority if isinstance(raw_priority, int) else None,
+                )
+                if sides.player_in_code:
+                    claim["player_in_code"] = sides.player_in_code
+                if sides.player_out_code:
+                    claim["player_out_code"] = sides.player_out_code
+                lost_claims.append(claim)
 
             gw_points = computed_gw_points
             if is_live_gw and computed_gw_points != standings_gw_pts:
@@ -2110,6 +2219,8 @@ async def collect_draft_recap_data(
                 auto_subs=auto_sub_descs,
                 transactions=manager_txns,
             )
+            if lost_claims:
+                result["lost_claims"] = lost_claims
             if is_live_gw:
                 result["total_points"] = standings_total
                 # On a live capture the standings *are* the point in time, so

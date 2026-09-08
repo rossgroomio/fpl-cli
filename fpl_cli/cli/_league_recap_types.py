@@ -76,6 +76,40 @@ class RecapDraftTransaction(TypedDict):
     kind: str
 
 
+class RecapDraftLostClaim(TypedDict):
+    """A waiver claim a manager submitted this gameweek and a rival won.
+
+    Evidence that the manager was active, which the accepted-only view cannot
+    carry: a manager whose whole gameweek was one claim they lost has no
+    transactions at all, and reading that absence as inactivity is what named
+    real people as having sat the waiver wire out (issue #329).
+
+    Only the feed's `di` rows reach here -- the incoming player went to
+    someone else. Its other denial code, `do`, means the manager's own earlier
+    accepted claim had already consumed the drop, which is a conditional-chain
+    cascade rather than a contest, and is never an attempt.
+
+    No points and no net: nothing moved, so there is no swing to score. Who
+    won the player is derivable from the same gameweek's accepted rows and is
+    left to the consumer.
+    """
+
+    player_in: str
+    player_in_team: str
+    player_in_team_name: NotRequired[str | None]
+    player_in_code: NotRequired[int]
+    player_out: str
+    player_out_team: str
+    player_out_team_name: NotRequired[str | None]
+    player_out_code: NotRequired[int]
+    kind: str
+    # The manager's own ordering of the claims they submitted that gameweek,
+    # 1 being their first choice -- the scarce resource in a draft league.
+    # None for a free-agent pickup, which is first-come-first-served and
+    # carries no priority.
+    priority: int | None
+
+
 # The Draft API's `kind` values, translated to reader-facing labels. A `kind`
 # outside this mapping (or the empty string collection stores when the API
 # sent none) is an "other move" -- never folded into the waiver/free-agent
@@ -178,6 +212,11 @@ class RecapManagerEntry(TypedDict):
     auto_subs: list[str]
     transfers: NotRequired[list[RecapTransfer]]
     transactions: NotRequired[list[RecapDraftTransaction]]
+    # Draft only: claims this manager submitted and lost to a rival. Absent
+    # when they lost none. Never merged into `transactions` -- that list is
+    # completed moves, and the ledger, the awards and every net figure are
+    # built from it.
+    lost_claims: NotRequired[list[RecapDraftLostClaim]]
     # Classic only: five figures the picks response's `entry_history` carries
     # and the season rollover destroys. Draft has no budget, no FPL-wide rank,
     # and acquires by waiver, so it omits all five.

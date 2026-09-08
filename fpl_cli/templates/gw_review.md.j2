@@ -66,7 +66,7 @@ Recommended roll but made transfers.
 {% if recs_comparison.draft.waivers %}
 | P | Rec In | Rec Out | Followed | Actual In | Net | Verdict |
 |---|--------|---------|----------|-----------|-----|---------|
-{% for w in recs_comparison.draft.waivers %}| {{ w.priority }} | {{ w.rec_in }} | {{ w.rec_out }} | {% if w.followed %}Yes{% elif w.not_executed is defined and w.not_executed %}Not exec{% else %}Different{% endif %} | {{ w.actual_in if w.actual_in else '-' }} | {{ w.actual_net if w.actual_net is defined else '-' }} | {{ w.actual_verdict if w.actual_verdict is defined else '-' }} |
+{% for w in recs_comparison.draft.waivers %}| {{ w.priority }} | {{ w.rec_in }} | {{ w.rec_out }} | {% if w.followed %}Yes{% elif w.lost_claim is defined and w.lost_claim %}{% if w.different_claim %}Different claim, lost{% else %}Claimed, lost{% endif %}{% elif w.not_executed is defined and w.not_executed %}Not exec{% else %}Different{% endif %}{% if w.claimed_and_lost is defined and w.claimed_and_lost %} (claimed, lost){% endif %} | {{ w.actual_in if w.actual_in else (w.claimed_in if w.claimed_in else '-') }} | {{ w.actual_net if w.actual_net is defined else '-' }} | {{ w.actual_verdict if w.actual_verdict is defined else '-' }} |
 {% endfor %}{% endif %}
 {% if recs_comparison.draft.unadvised_waivers %}
 **Unadvised waivers:**
@@ -201,6 +201,16 @@ League standings not shown for historical GW{{ gameweek }} review - use `fpl lea
 {% set misses = draft_transactions | selectattr('net', 'lt', -1) | list | length %}
 {% set total_net = draft_transactions | map(attribute='net') | sum %}
 **Hits:** {{ hits }} | **Misses:** {{ misses }} | **Net:** {% if total_net > 0 %}+{% endif %}{{ total_net }}
+{% endif %}
+
+{% if draft_lost_claims %}
+## Claims Lost
+Claims submitted and won by a rival - no move resulted, but these were made.
+
+| Claimed | For | Kind | Priority |
+|---------|-----|------|----------|
+{% for c in draft_lost_claims %}| {{ c.player_in }} ({{ c.player_in_team }}) | {{ c.player_out }} ({{ c.player_out_team }}) | {{ c.kind | kind_label }} | {{ c.priority if c.priority is not none else '-' }} |
+{% endfor %}
 {% endif %}
 
 {% if draft_league %}
