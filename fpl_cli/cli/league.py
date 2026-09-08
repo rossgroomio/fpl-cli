@@ -69,9 +69,15 @@ def league_command(ctx: click.Context) -> None:
                     # share a place with the last one on it without changing
                     # any number here: a shared place consumes the ones behind
                     # it, never the ones above.
+                    #
+                    # An entry with no total is omitted rather than passed a
+                    # placeholder, per the helper's contract: a substituted 0
+                    # would tie it with a manager who really has scored 0, and
+                    # an explicit null would take the whole section down here
+                    # rather than at the row it belongs to.
                     league_positions = derive_point_in_time_positions([
-                        (e["entry"], e.get("total", 0))
-                        for e in standings if e.get("entry") is not None
+                        (e["entry"], e["total"]) for e in standings
+                        if e.get("entry") is not None and e.get("total") is not None
                     ])
 
                     # Find user's entry

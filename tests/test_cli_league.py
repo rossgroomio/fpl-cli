@@ -133,3 +133,29 @@ class TestLeagueClassicTiePositions:
         assert result.exit_code == 0, result.output
         assert "Position: 2 of 3" in result.output
         assert _table_positions(result.output)["Manager3"] == "2"
+
+    def test_entry_with_no_total_is_left_unplaced_not_ranked_as_zero(self):
+        # `derive_point_in_time_positions` asks for members with a known total
+        # only. Substituting 0 would tie an entry carrying no total with a
+        # manager who really has scored 0, and shift everyone below them.
+        page = _standings_page([205, 203])
+        del page[1]["total"]
+
+        result = _run_league(_mock_fpl_client(page))
+
+        assert result.exit_code == 0, result.output
+        positions = _table_positions(result.output)
+        assert positions["Manager1"] == "1"
+        assert positions["Manager2"] == "?"
+
+    def test_null_total_on_another_row_still_leaves_the_reader_their_summary(self):
+        # The positions are derived before the summary is printed, so a row
+        # the helper cannot rank must not cost the reader the block about
+        # their own entry.
+        page = _standings_page([205, 203, 202])
+        page[2]["total"] = None
+
+        result = _run_league(_mock_fpl_client(page, rank_count=3))
+
+        assert result.exit_code == 0, result.output
+        assert "Position: 1 of 3" in result.output
