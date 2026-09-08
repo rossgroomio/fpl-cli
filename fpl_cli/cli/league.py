@@ -13,6 +13,7 @@ from rich.table import Table
 
 from fpl_cli.cli._context import Format, console, error_console, fpl_config, get_format, get_settings
 from fpl_cli.cli._helpers import _entry_league_meta, _fetch_standings_with_costs
+from fpl_cli.cli._league_recap_data import derive_point_in_time_positions
 
 logger = logging.getLogger(__name__)
 
@@ -58,10 +59,25 @@ def league_command(ctx: click.Context) -> None:
                     league_name = standings_data.get("league", {}).get("name", "Classic League")
                     standings = standings_data.get("standings", {}).get("results", [])
 
+                    # Classic `rank` is strictly sequential, so it splits a
+                    # points tie on fewest transfers season-to-date -- a figure
+                    # no column here shows and the ledger does not record.
+                    # Position the table the way `fpl review` and the ledger
+                    # do, so the same tie isn't numbered two ways depending on
+                    # which command the reader runs (#344, the defect #337
+                    # fixed one surface along). An entry below this page can
+                    # share a place with the last one on it without changing
+                    # any number here: a shared place consumes the ones behind
+                    # it, never the ones above.
+                    league_positions = derive_point_in_time_positions([
+                        (e["entry"], e.get("total", 0))
+                        for e in standings if e.get("entry") is not None
+                    ])
+
                     # Find user's entry
                     user_entry = next((e for e in standings if e.get("entry") == entry_id), None)
                     if user_entry:
-                        user_rank = user_entry.get("rank", "?")
+                        user_rank = league_positions.get(entry_id, "?")
                         user_total = user_entry.get("total", 0)
                         user_gw_pts = user_entry.get("event_total", 0)
                         # `standings` is one 50-entry page; a league bigger than
@@ -87,7 +103,7 @@ def league_command(ctx: click.Context) -> None:
                     table.add_column("Total", justify="right")
 
                     for entry in standings:
-                        rank = str(entry.get("rank", "?"))
+                        rank = str(league_positions.get(entry.get("entry"), "?"))
                         name = entry.get("player_name", "Unknown")
                         gw_pts = entry.get("event_total", 0)
                         total = entry.get("total", 0)
