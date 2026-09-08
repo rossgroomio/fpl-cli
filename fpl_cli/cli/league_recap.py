@@ -73,8 +73,8 @@ logger = logging.getLogger(__name__)
               help="Custom output directory for report (the season subdirectory is still added)")
 @click.option("--summarise", is_flag=True, help="Add LLM-generated editorial narrative (requires API keys)")
 @click.option("--backfill-detail", "backfill_detail", is_flag=True, default=False,
-              help="Rebuild earlier gameweeks in full detail (captains, squads, transfers) "
-                   "- one extra request per manager per gameweek")
+              help="Rebuild earlier gameweeks in full detail (captains, squads, transfers, "
+                   "waiver claims won and lost) - one extra request per manager per gameweek")
 @click.option("--debug", is_flag=True, help="Save LLM prompts and responses to data/debug/")
 @click.option("--dry-run", is_flag=True, help="Build and save prompts to data/debug/ without calling LLMs")
 @output_format_option
@@ -648,6 +648,7 @@ def _serialize_coverage(coverage: list[GameweekCoverage]) -> list[dict[str, Any]
             "tier_counts": dict(c.tier_counts),
             "unknown_count": c.unknown_count,
             "unknown_manager_keys": c.unknown_manager_keys,
+            "claims_unrecorded_count": c.claims_unrecorded_count,
         }
         for c in coverage
     ]

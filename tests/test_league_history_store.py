@@ -14,6 +14,7 @@ from fpl_cli.models.league_history import (
     LeagueHistoryRow,
     LedgerCaptaincy,
     LedgerFine,
+    LedgerLostClaim,
     LedgerPlayer,
     resolve_rows,
 )
@@ -119,6 +120,23 @@ class TestLeagueHistoryRowModel:
 
     def test_content_notices_a_changed_value(self):
         assert make_history_row(gross_points=50).content() != make_history_row(gross_points=51).content()
+
+    def test_lost_claims_are_unrecorded_until_a_draft_capture_records_them(self):
+        """Issue #332: `None` is the honest default. A classic row has no
+        waiver wire, an unknown row never reached the manager, and a row
+        written before schema version 6 recorded nothing either way -- none
+        of which is the "lost none" an empty list would assert."""
+        assert make_history_row().lost_claims is None
+        assert make_history_row(fpl_format="draft", lost_claims=[]).lost_claims == []
+
+    def test_content_notices_lost_claims_being_recorded(self):
+        """Recording that a manager lost nothing is a finding the earlier
+        line could not make, so the backfill that records it appends a
+        superseding line rather than reproducing the row."""
+        before = make_history_row(fpl_format="draft")
+        after = make_history_row(fpl_format="draft", lost_claims=[])
+        assert before.content() != after.content()
+        assert make_history_row(fpl_format="draft", lost_claims=[]).content() == after.content()
 
     def test_content_ignores_a_schema_version_bump_alone(self):
         """A schema bump is an install fact, not a gameweek fact: an
@@ -620,6 +638,100 @@ class TestStoreVersioning:
         assert row.fine_rules_evaluated is None
         assert row.version == 3
 
+    def test_a_version_5_row_without_lost_claims_still_reads(self):
+        """Issue #332: `lost_claims` is purely additive, and its `None` is
+        load-bearing the way `fine_rules_evaluated`'s is -- a version-5 draft
+        row genuinely does not record which claims its manager lost, and
+        reading it back as an empty list would write "lost none" over a
+        gameweek the feed can still correct."""
+        import json
+
+        from fpl_cli.services.league_history import LeagueHistoryStore
+
+        store = LeagueHistoryStore("2026-27", "draft", 1)
+        payload = make_history_row(
+            fpl_format="draft", gameweek=5, gross_points=50, lost_claims=[],
+        ).model_dump(mode="json")
+        payload["version"] = 5
+        del payload["lost_claims"]
+        path = store.gameweek_file(5)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+        row = store.load_gameweek(5)[0]
+        assert row.lost_claims is None
+        assert row.version == 5
+
+    def test_a_version_6_row_reads_its_lost_claims_back(self):
+        from fpl_cli.services.league_history import LeagueHistoryStore
+
+        store = LeagueHistoryStore("2026-27", "draft", 1)
+        claim = LedgerLostClaim(
+            player_in="Elanga", player_in_team="NEW", player_in_code=555,
+            player_out="Savio", player_out_team="MCI", player_out_code=666,
+            kind="w", priority=1,
+        )
+        store.append_rows(5, [make_history_row(fpl_format="draft", gameweek=5, lost_claims=[claim])])
+
+        row = store.load_gameweek(5)[0]
+        assert row.lost_claims == [claim]
+        assert row.version == LEAGUE_HISTORY_VERSION
+
+    def test_every_line_written_is_stamped_with_the_writing_installs_version(self):
+        """#339 review: a row parsed off disk keeps its stored version, so a
+        repair that copies one and appends it wrote a line stamped 5 carrying
+        a version-6 field -- which a version-5 install validates rather than
+        skips, and `extra="forbid"` then rejects the whole file. The line is
+        this install's, so it carries this install's version."""
+        import json
+
+        from fpl_cli.services.league_history import LeagueHistoryStore
+
+        store = LeagueHistoryStore("2026-27", "draft", 1)
+        payload = make_history_row(fpl_format="draft", gameweek=5, gross_points=50).model_dump(mode="json")
+        payload["version"] = 3
+        del payload["lost_claims"]
+        del payload["fine_rules_evaluated"]
+        path = store.gameweek_file(5)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+        stored = store.load_gameweek(5)[0]
+        assert stored.version == 3
+
+        repaired = stored.model_copy(update={"gross_points": 51})
+        written = store.append_rows(5, [repaired])
+
+        lines = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+        assert [line["version"] for line in lines] == [3, LEAGUE_HISTORY_VERSION]
+        assert "lost_claims" in lines[1]
+        assert written[0].version == LEAGUE_HISTORY_VERSION
+
+    def test_a_newer_line_is_skipped_before_it_is_validated(self, caplog):
+        """The property the stamp above relies on: the version check runs
+        before the row schema does, so a line carrying a field this install
+        has never heard of is skipped with the upgrade warning rather than
+        failing the file closed."""
+        import json
+        import logging
+
+        from fpl_cli.services.league_history import LeagueHistoryStore
+
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(5, [make_history_row(gameweek=5, manager_key=1, gross_points=50)])
+        future = make_history_row(gameweek=5, manager_key=1, gross_points=51).model_dump(mode="json")
+        future["version"] = LEAGUE_HISTORY_VERSION + 1
+        future["a_field_this_install_does_not_know"] = True
+        path = store.gameweek_file(5)
+        path.write_text(
+            path.read_text(encoding="utf-8") + json.dumps(future) + "\n", encoding="utf-8",
+        )
+
+        with caplog.at_level(logging.WARNING):
+            rows = store.load_gameweek(5)
+
+        assert [r.gross_points for r in rows] == [50]
+        assert "Upgrade fpl-cli" in caplog.text
+
     def test_a_future_version_line_is_skipped_with_a_warning_and_survives(self, caplog):
         import json
         import logging
@@ -793,6 +905,35 @@ class TestStoreCoverage:
         from fpl_cli.services.league_history import LeagueHistoryStore
 
         assert LeagueHistoryStore("2026-27", "classic", 1).coverage() == []
+
+    def test_coverage_counts_the_draft_rows_recording_nothing_about_lost_claims(self):
+        """Issue #332: the count is what makes a gameweek captured before
+        schema version 6 a `--backfill-detail` target. An unknown row never
+        reached the manager and is already re-attempted on its own account,
+        so it is not counted here."""
+        from fpl_cli.services.league_history import LeagueHistoryStore
+
+        store = LeagueHistoryStore("2026-27", "draft", 1)
+        store.append_rows(5, [
+            make_history_row(fpl_format="draft", gameweek=5, manager_key=1, gross_points=50),
+            make_history_row(fpl_format="draft", gameweek=5, manager_key=2, gross_points=40, lost_claims=[]),
+            make_history_row(fpl_format="draft", gameweek=5, manager_key=3, capture_status="unknown"),
+        ])
+
+        entry = store.coverage()[0]
+        assert entry.claims_unrecorded_count == 1
+        assert entry.tier_counts == {FidelityTier.DETAILED: 2}
+        assert entry.unknown_count == 1
+
+    def test_coverage_never_counts_lost_claims_on_a_classic_partition(self):
+        """A classic row carries no such field by design, so its `None` is
+        not a gap to fill."""
+        from fpl_cli.services.league_history import LeagueHistoryStore
+
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(5, [make_history_row(gameweek=5, manager_key=1, gross_points=50)])
+
+        assert store.coverage()[0].claims_unrecorded_count == 0
 
     def test_unknown_manager_keys_are_reported_so_a_gap_can_be_repaired(self):
         from fpl_cli.services.league_history import LeagueHistoryStore

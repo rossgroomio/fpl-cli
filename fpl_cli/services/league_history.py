@@ -123,6 +123,15 @@ class GameweekCoverage:
     # log so a caller reporting the gap can hand the user something actionable
     # (issue #224). None whenever `readable` is True.
     error: str | None = None
+    # Draft only: managers whose winning row records nothing about the waiver
+    # claims they lost -- captured before schema version 6, when the ledger
+    # held completed moves alone and an outbid manager read as one who never
+    # tried (issue #332). A backfill target rather than a gap: the row is
+    # complete for everything else, and `--backfill-detail` re-records it from
+    # the league's transaction feed while that still serves the gameweek.
+    # Always 0 on classic, whose rows carry no such field by design, and never
+    # counts an unknown row, which recorded nothing at all.
+    claims_unrecorded_count: int = 0
 
     @property
     def manager_count(self) -> int:
@@ -281,16 +290,20 @@ class LeagueHistoryStore:
                 continue
             tier_counts: dict[FidelityTier, int] = {}
             unknown_keys: list[int] = []
+            claims_unrecorded = 0
             for key, row in resolved.items():
                 if row.capture_status is CaptureStatus.UNKNOWN:
                     unknown_keys.append(key)
-                else:
-                    tier_counts[row.tier] = tier_counts.get(row.tier, 0) + 1
+                    continue
+                tier_counts[row.tier] = tier_counts.get(row.tier, 0) + 1
+                if self.fpl_format == "draft" and row.lost_claims is None:
+                    claims_unrecorded += 1
             out.append(GameweekCoverage(
                 gameweek=gameweek,
                 tier_counts=tier_counts,
                 unknown_count=len(unknown_keys),
                 unknown_manager_keys=sorted(unknown_keys),
+                claims_unrecorded_count=claims_unrecorded,
             ))
         return out
 
@@ -311,6 +324,16 @@ class LeagueHistoryStore:
         already-fully-captured manager on every single run. A row differing in
         any value that *could* become the winner appends a superseding line;
         no line is ever edited or removed (R3).
+
+        Every line written is stamped with this install's schema version,
+        whatever version the row was parsed under. `model_dump_json` emits
+        every field this install knows, so the line has this install's shape
+        -- but a row copied off disk keeps its stored version, which is how
+        the standings sweep came to append lines stamped 5 that carried a
+        version-6 field. An older install validates a line at its own version
+        rather than skipping it, and `extra="forbid"` then rejects the whole
+        gameweek file (#339 review). Stamped, the older install skips the line
+        with the upgrade warning and keeps reading the rest.
 
         Raises:
             LeagueHistoryError: the existing file is unreadable. Nothing is
@@ -333,6 +356,10 @@ class LeagueHistoryStore:
                     continue
                 if row.resolution_sort_key()[0] < current.resolution_sort_key()[0]:
                     continue
+            # In place, so the returned row and the winners below agree with
+            # the file. `content()` excludes the version, so this never makes
+            # an unchanged row look new.
+            row.version = LEAGUE_HISTORY_VERSION
             new_lines.append(row.model_dump_json())
             written.append(row)
             # Keep the batch internally consistent: a second row for the same

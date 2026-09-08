@@ -28,7 +28,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 # Bump whenever the row shape changes in a way older code cannot read. A line
 # carrying a *higher* version than this is skipped (with a warning) and
-# preserved byte-for-byte, so two installs can share one store.
+# preserved byte-for-byte, so two installs can share one store. That only
+# works because every line the store writes is stamped with the writing
+# install's version, whatever version the row was read under -- a line is then
+# readable by exactly the installs that know the fields it carries
+# (`LeagueHistoryStore.append_rows`).
 #
 # 2: `squad_value` renamed to `team_value`, the name the number always
 #    deserved -- it is the API's bank-inclusive `value` (issue #147).
@@ -42,7 +46,12 @@ from pydantic import BaseModel, ConfigDict, Field
 #    references so a stored ruling survives a rename instead of having to be
 #    parsed back out of its own prose (issue #176). Purely additive again, so
 #    a version-4 row still validates with it defaulting to None.
-LEAGUE_HISTORY_VERSION = 5
+# 6: `lost_claims` added -- the waiver claims a draft manager submitted and a
+#    rival won, kept apart from `transactions` because nothing moved. Purely
+#    additive, so a version-5 row still validates with it defaulting to None,
+#    which is the honest reading: that row recorded nothing about them either
+#    way (issue #332).
+LEAGUE_HISTORY_VERSION = 6
 
 # The oldest version this code can still parse. Raising this floor bricks every
 # store holding older lines, so it moves only alongside a one-time rewrite that
@@ -191,6 +200,37 @@ class LedgerTransaction(BaseModel):
     kind: str = "w"
 
 
+class LedgerLostClaim(BaseModel):
+    """One draft waiver claim a manager submitted and a rival won.
+
+    Kept apart from `LedgerTransaction`, which models a move that happened:
+    nothing moved here, so there are no points on either side and no net.
+    Folding it into `transactions` would put entries meaning "no move" in a
+    list every consumer reads as completed moves -- the waiver streaks sum
+    `net` over it, the identity carry pairs it slot for slot -- and each would
+    have to learn to skip them (issue #332).
+
+    Only the feed's lost-to-a-rival rows are recorded. Its other denial code
+    means the manager's own earlier accepted claim had already dropped the
+    nominated player, which is the cascade behind a claim that succeeded and
+    never an attempt (`fpl_cli/api/fpl_draft.py`).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    player_in: str
+    player_in_team: str
+    player_in_code: int | None = None
+    player_out: str
+    player_out_team: str
+    player_out_code: int | None = None
+    kind: str = "w"
+    # The manager's own ordering of the claims they submitted that gameweek,
+    # 1 being their first choice. None for a free-agent pickup, which is
+    # first-come-first-served and carries no priority.
+    priority: int | None = None
+
+
 class LedgerFinePlayer(BaseModel):
     """One player a fine names, recorded as a reference rather than as prose."""
 
@@ -297,6 +337,21 @@ class LeagueHistoryRow(BaseModel):
     squad: list[LedgerPlayer] = Field(default_factory=list)
     transfers: list[LedgerTransfer] = Field(default_factory=list)
     transactions: list[LedgerTransaction] = Field(default_factory=list)
+    # Draft only: the waiver claims this manager submitted and a rival won.
+    # Recorded because absence from `transactions` is not inactivity: a
+    # manager whose whole gameweek was one claim they lost has no completed
+    # move, and a ledger holding moves alone wrote them into the permanent
+    # record as having sat the week out (issue #332). Three states, all
+    # distinct:
+    #
+    # - a list: exactly these claims were lost, `[]` meaning the capture read
+    #   the league's transaction feed and found none for this manager.
+    # - `None`: nothing is recorded either way. A classic row, whose format
+    #   has no waiver wire to lose a claim on; an unknown-status row (R19),
+    #   which never reached the manager; or a row written before schema
+    #   version 6 -- the state `--backfill-detail` re-records from the feed
+    #   while it still serves the gameweek.
+    lost_claims: list[LedgerLostClaim] | None = None
 
     # -- gameweek shape (R20) ------------------------------------------------
     gameweek_blank: bool | None = None
