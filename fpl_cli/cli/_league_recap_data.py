@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from fpl_cli.cli._context import fpl_config
 from fpl_cli.cli._fines import (
+    LAST_PLACE_RULE_TYPE,
     RED_CARD_RULE_TYPE,
     FineResult,
     FinesLeagueData,
@@ -1159,7 +1160,7 @@ def _recap_fine_message(result: FineResult, manager_name: str) -> str:
         if len(parts) == 2:
             penalty = parts[1].rstrip(".")
 
-    if result.rule_type == "last-place":
+    if result.rule_type == LAST_PLACE_RULE_TYPE:
         return f"Finished last in the gameweek. {penalty}" if penalty else "Finished last in the gameweek."
     if result.rule_type == RED_CARD_RULE_TYPE:
         # The handler's own list of who it fined, not a re-read of the prose
@@ -1246,8 +1247,13 @@ def evaluate_league_fines(
 
     use_net_points = settings.get("use_net_points", False)
 
-    # Find the worst performer (lowest GW points) for last-place rule
-    worst = min(managers, key=lambda m: m["gw_points"]) if managers else None
+    # Everyone on the lowest GW points, not whichever of them `min()` reached
+    # first: a tie for last is shared, and picking one of a tied pair by cohort
+    # arrival order left the other recorded as owing nothing (issue #336).
+    worst: list[RecapManagerEntry] = []
+    if managers:
+        lowest = min(m["gw_points"] for m in managers)
+        worst = [m for m in managers if m["gw_points"] == lowest]
 
     triggered: list[RecapFineResult] = []
     ruled: set[int] = set()
@@ -1257,23 +1263,24 @@ def evaluate_league_fines(
     for m in managers:
         try:
 
-            worst_list: list[WorstPerformer] = []
-            if worst:
-                worst_list = [WorstPerformer(
+            worst_list: list[WorstPerformer] = [
+                WorstPerformer(
                     # Keyed rather than compared on `entry_id`: every unclaimed
                     # draft team carries entry_id 0, so comparing on it fines
                     # all of them for one team's last place (KTD11).
-                    is_user=recap_manager_key(m) == recap_manager_key(worst),
-                    points=worst["gw_points"],
+                    is_user=recap_manager_key(m) == recap_manager_key(w),
+                    points=w["gw_points"],
                     # `gross_points` is already gross whatever `use_net_points`
                     # is set to; `gw_points` flips. Adding the hit back to
                     # `gw_points` only reaches gross on the net side of that
                     # flip -- on the gross side it added the hit to a figure
                     # that never had it deducted, inflating the score a
                     # below-threshold rule is measured against (issue #136).
-                    gross_points=worst["gross_points"],
-                    name=worst["manager_name"],
-                )]
+                    gross_points=w["gross_points"],
+                    name=w["manager_name"],
+                )
+                for w in worst
+            ]
 
             league_data = FinesLeagueData(
                 user_gw_points=m["gross_points"],

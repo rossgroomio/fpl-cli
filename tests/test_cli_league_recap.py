@@ -27,11 +27,14 @@ from fpl_cli.cli._league_recap_history import (
     HISTORY_WARNING_STANDINGS_REPAIRED,
     HISTORY_WARNING_STANDINGS_TRUNCATED,
     HISTORY_WARNING_STORE_UNREADABLE,
+    HISTORY_WARNING_TIED_LAST_PLACE_REPAIRED,
     HISTORY_WARNING_TRANSFER_DETAIL_SHORT,
     HISTORY_WARNING_UNMATCHED_PLAYERS,
     _apply_recorded_standings,
     _pair_squads,
     _repair_fine_identity,
+    _repair_tied_last_place,
+    _tied_last_place_peers,
     build_history_rows,
     capture_recap_history,
 )
@@ -1251,6 +1254,166 @@ class TestFinesAreRecordedNotJustRendered:
         assert replayed[2].fine_rules_evaluated == ["last-place"]
 
 
+class TestTiedLastPlaceRepair:
+    """The ledger is append-only, so a tie missed at capture needs a repair.
+
+    Rulings are frozen at capture (`_freeze_recorded_fines`), so a re-run
+    carries the wrong ruling forward rather than correcting it (#336).
+    """
+
+    LAST_PLACE = LedgerFine(
+        manager_key=2, rule_type="last-place",
+        message="Finished last in the gameweek. Pint on video", players=[],
+    )
+
+    def _row(self, manager_key, gross, *, fines=None, cost=0, ruled=("last-place",), **kwargs):
+        return make_history_row(
+            season=SEASON, fpl_format="classic", league_id=42, gameweek=4,
+            manager_key=manager_key, manager_name=f"M{manager_key}",
+            gross_points=gross, transfer_cost=cost,
+            fines=list(fines or []), fine_rules_evaluated=list(ruled) if ruled else None,
+            **kwargs,
+        )
+
+    def test_a_manager_level_on_the_fined_score_is_named_too(self):
+        rows = [
+            self._row(1, 60),
+            self._row(2, 37, fines=[self.LAST_PLACE]),
+            self._row(3, 37),
+        ]
+
+        peers = _tied_last_place_peers(rows)
+
+        assert [row.manager_key for row, _ in peers] == [3]
+        assert [fine.rule_type for _, fine in peers] == ["last-place"]
+
+    def test_a_manager_who_merely_finished_near_the_bottom_is_left_alone(self):
+        rows = [self._row(1, 60), self._row(2, 37, fines=[self.LAST_PLACE]), self._row(3, 38)]
+
+        assert _tied_last_place_peers(rows) == []
+
+    def test_a_gameweek_already_recording_the_whole_tie_needs_nothing(self):
+        rows = [
+            self._row(2, 37, fines=[self.LAST_PLACE]),
+            self._row(3, 37, fines=[self.LAST_PLACE.model_copy(update={"manager_key": 3})]),
+        ]
+
+        assert _tied_last_place_peers(rows) == []
+
+    def test_a_gameweek_nothing_ruled_last_place_against_is_left_alone(self):
+        """Adding a fine to a row whose gameweek never measured the rule
+        would invent a ruling rather than repair one."""
+        rows = [
+            self._row(2, 37, fines=[self.LAST_PLACE]),
+            self._row(3, 37, ruled=("below-threshold",)),
+        ]
+
+        assert _tied_last_place_peers(rows) == []
+
+    def test_an_unknown_row_is_neither_repaired_nor_counted(self):
+        rows = [
+            self._row(2, 37, fines=[self.LAST_PLACE]),
+            self._row(3, None, capture_status="unknown", ruled=None),
+        ]
+
+        assert _tied_last_place_peers(rows) == []
+
+    def test_a_tie_only_one_measure_agrees_on_is_read_under_that_measure(self):
+        """Manager 3 scored fewer gross points than the manager the gameweek
+        fined, so the gameweek cannot have been ruled on gross -- which
+        settles that manager 3, level on net, shared last place."""
+        rows = [
+            self._row(1, 60, cost=0),                            # gross 60, net 60
+            self._row(2, 41, cost=4, fines=[self.LAST_PLACE]),   # gross 41, net 37
+            self._row(3, 37, cost=0),                            # gross 37, net 37
+        ]
+
+        assert [row.manager_key for row, _ in _tied_last_place_peers(rows)] == [3]
+
+    def test_a_tie_the_two_measures_disagree_on_is_left_alone(self):
+        """Both measures fit what the gameweek recorded, and they name
+        different managers as level -- so nothing here can settle it."""
+        rows = [
+            self._row(2, 37, cost=0, fines=[self.LAST_PLACE]),   # gross 37, net 37
+            self._row(3, 41, cost=4),                            # gross 41, net 37
+        ]
+
+        assert _tied_last_place_peers(rows) == []
+
+    def test_a_ruling_no_measure_agrees_with_is_left_alone(self):
+        """Somebody scored lower on either measure than the manager fined, so
+        the record and the row data disagree and guessing would be worse."""
+        rows = [
+            self._row(1, 20, cost=0),
+            self._row(2, 37, cost=0, fines=[self.LAST_PLACE]),
+            self._row(3, 37, cost=0),
+        ]
+
+        assert _tied_last_place_peers(rows) == []
+
+    def test_the_repair_writes_the_recorded_ruling_onto_the_peer(self):
+        store = _store()
+        store.append_rows(4, [
+            self._row(1, 60), self._row(2, 37, fines=[self.LAST_PLACE]), self._row(3, 37),
+        ])
+        warnings: list[dict[str, str]] = []
+
+        repaired = _repair_tied_last_place(store, gameweeks=[4], warnings=warnings)
+
+        assert repaired == {4}
+        resolved = _store().resolved_gameweek(4)
+        assert [f.rule_type for f in resolved[3].fines] == ["last-place"]
+        assert resolved[3].fines[0].manager_key == 3
+        assert resolved[3].fines[0].message == self.LAST_PLACE.message
+        assert resolved[2].fines[0].manager_key == 2
+        assert [w["code"] for w in warnings] == [HISTORY_WARNING_TIED_LAST_PLACE_REPAIRED]
+
+    def test_the_repair_is_idempotent(self):
+        store = _store()
+        store.append_rows(4, [
+            self._row(2, 37, fines=[self.LAST_PLACE]), self._row(3, 37),
+        ])
+        _repair_tied_last_place(store, gameweeks=[4], warnings=[])
+        lines_after_first = len(_store().load_gameweek(4))
+
+        warnings: list[dict[str, str]] = []
+        assert _repair_tied_last_place(_store(), gameweeks=[4], warnings=warnings) == set()
+        assert warnings == []
+        assert len(_store().load_gameweek(4)) == lines_after_first
+
+    def test_the_repaired_row_supersedes_the_one_it_repairs(self):
+        """The rows share a tier, so resolution breaks the tie on the later
+        capture -- an inherited timestamp would lose to the damaged row."""
+        store = _store()
+        store.append_rows(4, [
+            self._row(2, 37, fines=[self.LAST_PLACE]), self._row(3, 37),
+        ])
+
+        _repair_tied_last_place(store, gameweeks=[4], warnings=[])
+
+        lines = _store().load_gameweek(4)
+        assert len(lines) == 3  # the original pair, plus the superseding line
+        assert _store().resolved_gameweek(4)[3].fines != []
+
+    async def test_a_recap_run_repairs_an_earlier_gameweek_that_missed_a_tie(self):
+        """End to end: nothing is re-fetched and nothing is re-ruled."""
+        store = _store()
+        store.append_rows(4, [
+            self._row(1, 60), self._row(2, 37, fines=[self.LAST_PLACE]), self._row(3, 37),
+        ])
+        data = _recap_data(
+            gameweek=5,
+            managers=[_manager(name="M1", entry_id=1)],
+            cohort=_cohort((1, "M1", 1, 60, 300), (2, "M2", 2, 37, 200), (3, "M3", 3, 37, 200)),
+        )
+
+        await capture_recap_history(
+            data, season=SEASON, history_client=None, finished_gameweeks=[4, 5],
+        )
+
+        assert [f.rule_type for f in _store().resolved_gameweek(4)[3].fines] == ["last-place"]
+
+
 class TestCoarseTierFinesArePartialAndSaySo:
     async def test_the_cohort_only_rules_are_ruled_from_headline_points(self):
         from fpl_cli.cli._fines_config import parse_fines_config
@@ -1273,6 +1436,32 @@ class TestCoarseTierFinesArePartialAndSaySo:
         coarse = _store().resolved_gameweek(1)
         assert coarse[2].tier is FidelityTier.COARSE
         assert sorted(f.rule_type for f in coarse[2].fines) == ["below-threshold", "last-place"]
+        assert coarse[1].fines == []
+
+    async def test_a_tie_for_last_is_ruled_against_everyone_level_on_it(self):
+        """The coarse tier used to fine whichever of a tied pair `min()`
+        reached first, and record the other owing nothing (#336)."""
+        from fpl_cli.cli._fines_config import parse_fines_config
+
+        data = _recap_data(
+            gameweek=2,
+            managers=[_manager(name="Alice", entry_id=1)],
+            cohort=_cohort((1, "Alice", 1, 60, 300), (2, "Bob", 2, 37, 200), (3, "Cara", 3, 37, 200)),
+        )
+        client = _HistoryClient({
+            1: [_history_row(gw, 60, 60 * gw) for gw in (1, 2)],
+            2: [_history_row(gw, 37, 37 * gw) for gw in (1, 2)],
+            3: [_history_row(gw, 37, 37 * gw) for gw in (1, 2)],
+        })
+
+        await capture_recap_history(
+            data, season=SEASON, history_client=client, finished_gameweeks=[1, 2],
+            fines_config=parse_fines_config(_LAST_PLACE_ONLY),
+        )
+
+        coarse = _store().resolved_gameweek(1)
+        assert [f.rule_type for f in coarse[2].fines] == ["last-place"]
+        assert [f.rule_type for f in coarse[3].fines] == ["last-place"]
         assert coarse[1].fines == []
 
     async def test_red_card_is_recorded_as_unruled_rather_than_acquitted(self):

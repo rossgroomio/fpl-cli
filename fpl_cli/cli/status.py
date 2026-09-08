@@ -132,7 +132,7 @@ async def _draft_squad_if_drafted(
 
 def _build_fines_context(
     standings_sorted_asc: list[dict[str, Any]],
-    user_is_last: bool,
+    is_user: Callable[[dict[str, Any]], bool],
     user_gw_pts: int,
     pick_ids: list[int] | None,
     live_data: dict[str, Any] | None,
@@ -146,17 +146,25 @@ def _build_fines_context(
     larger league. The bottom of page one is not the bottom of the league, so
     the last-place rule is given no worst_performers to judge rather than a
     stand-in that could fine the wrong manager.
+
+    Every entry level on the bottom score is passed over, each carrying its
+    own `is_user` -- which is why the caller hands in a predicate rather than
+    one precomputed "am I last" boolean. A manager tied for last but sorted
+    second read as not-last and saw no fine at all (issue #336).
     """
     league_data: FinesLeagueData = {"user_gw_points": user_gw_pts}
     if standings_sorted_asc and standings_complete:
-        bottom = standings_sorted_asc[0]
-        bottom_pts = bottom.get("event_total", 0)
-        league_data["worst_performers"] = [{
-            "is_user": user_is_last,
-            "points": bottom_pts,
-            "gross_points": bottom_pts,
-            "name": bottom.get("player_name", bottom.get("entry_name", "Unknown")),
-        }]
+        bottom_pts = standings_sorted_asc[0].get("event_total", 0)
+        league_data["worst_performers"] = [
+            {
+                "is_user": is_user(entry),
+                "points": bottom_pts,
+                "gross_points": bottom_pts,
+                "name": entry.get("player_name", entry.get("entry_name", "Unknown")),
+            }
+            for entry in standings_sorted_asc
+            if entry.get("event_total", 0) == bottom_pts
+        ]
 
     bench_counts = active_chip == "bboost"
     team_data: list[FinesTeamPlayer] = []
@@ -433,7 +441,6 @@ async def _fetch_classic_data(
         if fines_config and fines_config.classic:
             rules = fines_config.classic
             sorted_standings = sorted(classic_standings, key=lambda s: s.get("event_total", 0))
-            user_is_last = bool(sorted_standings and sorted_standings[0].get("entry") == entry_id)
 
             live_data = None
             player_names: dict[int, str] | None = None
@@ -448,7 +455,7 @@ async def _fetch_classic_data(
             pick_id_list = [p["element"] for p in all_picks_list] if all_picks_list else None
 
             league_data, team_data = _build_fines_context(
-                sorted_standings, user_is_last, classic_user_gw_pts,
+                sorted_standings, lambda s: s.get("entry") == entry_id, classic_user_gw_pts,
                 pick_id_list, live_data, player_names,
                 active_chip=picks_data.get("active_chip"),
                 standings_complete=classic_standings_complete,
@@ -675,8 +682,11 @@ async def _fetch_draft_data(
             rules = fines_config.draft
             sorted_standings = sorted(standings, key=lambda s: s.get("event_total", 0))
 
-            bottom_entry_info = entry_map.get(sorted_standings[0].get("league_entry")) if sorted_standings else None
-            user_is_last = bool(bottom_entry_info and bottom_entry_info.get("entry_id") == draft_entry_id)
+            def _is_user(standing: dict[str, Any]) -> bool:
+                league_entry = standing.get("league_entry")
+                entry_info = entry_map.get(league_entry) if league_entry is not None else None
+                return bool(entry_info and entry_info.get("entry_id") == draft_entry_id)
+
             draft_user_gw_pts = user_standing.get("event_total", 0) if user_standing else 0
 
             live_data = None
@@ -690,7 +700,7 @@ async def _fetch_draft_data(
             draft_player_names = {p.id: p.web_name for p in squad_players} if squad_players else None
 
             league_data, team_data = _build_fines_context(
-                sorted_standings, user_is_last, draft_user_gw_pts,
+                sorted_standings, _is_user, draft_user_gw_pts,
                 pick_id_list, live_data, draft_player_names,
             )
 

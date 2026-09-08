@@ -19,6 +19,15 @@ class WorstPerformer(TypedDict):
 class FinesLeagueData(TypedDict):
     user_gw_points: NotRequired[int]
     user_gw_net_points: NotRequired[int]
+    # The bottom of the gameweek's cohort, and it has to *reach* the bottom:
+    # `_eval_last_place` reads the lowest score in this list as the league's
+    # lowest, so a caller handing over a slice that starts above the real
+    # bottom would move last place up to wherever its slice began. Everything
+    # above that is free -- callers pass the bottom five, the bottom three, or
+    # just the tied-last group, and the display lists append the user's own
+    # row from further up. Every manager level on the lowest score must be
+    # here, each with their own `is_user`: a single-element list decided by
+    # `min()` picked one of a tied pair by arrival order (issue #336).
     worst_performers: NotRequired[list[WorstPerformer]]
 
 
@@ -114,6 +123,38 @@ def evaluate_fines(
     )
 
 
+def _performer_points(performer: WorstPerformer, *, use_net_points: bool) -> int:
+    """One performer's score under the measure the rule is being ruled on.
+
+    `points` flips with the setting and `gross_points` never does, which is
+    why the gross side reads its own field and falls back rather than sharing
+    one lookup: a caller that carries only `points` (draft, which has no
+    transfers to deduct) still gets the score it recorded instead of a zero.
+    """
+    if use_net_points:
+        return performer.get("points", 0)
+    return performer.get("gross_points", performer.get("points", 0))
+
+
+def _joint_last(
+    worst: list[WorstPerformer], *, use_net_points: bool,
+) -> tuple[list[WorstPerformer], int]:
+    """Everyone level on the lowest score in `worst`, and that score.
+
+    Last place is a cohort fact, and a tie for it is one the gameweek's own
+    numbers cannot break -- classic settles a points tie on fewest transfers
+    season-to-date (`docs/fpl-rules.md`), which is not a gameweek fact at all.
+    So the place is shared, exactly as `derive_point_in_time_positions` shares
+    a league position and `_gw_loss_streak` already counts a last-place finish
+    for every manager on the minimum. Reading `worst[0]` instead fined
+    whichever of a tied pair the caller's `min()` reached first -- cohort
+    arrival order, which moves through the season (issue #336).
+    """
+    scores = [_performer_points(p, use_net_points=use_net_points) for p in worst]
+    lowest = min(scores)
+    return [p for p, pts in zip(worst, scores, strict=True) if pts == lowest], lowest
+
+
 def _eval_last_place(
     rule: FineRule,
     league_data: FinesLeagueData | None,
@@ -124,23 +165,28 @@ def _eval_last_place(
         return _no_league_data(rule)
 
     worst = league_data.get("worst_performers", [])
-    pts_field = "points" if use_net_points else "gross_points"
     pts_label = "net pts" if use_net_points else "pts"
+    tied, last_pts = _joint_last(worst, use_net_points=use_net_points)
 
-    if worst[0].get("is_user", False):
-        user_pts = worst[0].get(pts_field, worst[0].get("points", 0))
+    if any(p.get("is_user", False) for p in tied):
+        others = [p.get("name", "Unknown") for p in tied if not p.get("is_user", False)]
+        # Named before the penalty, never after: `_recap_fine_message` splits
+        # the penalty off the last ". " to normalise this into a ledger row.
+        level = f", level with {', '.join(others)}" if others else ""
         return FineResult(
             rule_type=rule.type,
             triggered=True,
-            message=f"FINE TRIGGERED: You finished last in the gameweek with {user_pts} {pts_label}. {rule.penalty}.",
+            message=(
+                f"FINE TRIGGERED: You finished last in the gameweek with"
+                f" {last_pts} {pts_label}{level}. {rule.penalty}."
+            ),
         )
 
-    last_name = worst[0].get("name", "Unknown")
-    last_pts = worst[0].get(pts_field, worst[0].get("points", 0))
+    last_names = ", ".join(p.get("name", "Unknown") for p in tied)
     return FineResult(
         rule_type=rule.type,
         triggered=False,
-        message=f"No last-place fine. {last_name} finished bottom with {last_pts} {pts_label}.",
+        message=f"No last-place fine. {last_names} finished bottom with {last_pts} {pts_label}.",
     )
 
 
@@ -241,8 +287,13 @@ class _Rule:
 # name instead of spelling the string out beside its own copy of the rule.
 RED_CARD_RULE_TYPE = "red-card"
 
+# The one rule ruled against the cohort rather than against the manager alone,
+# so it is the one a tie can be shared on. Named for the same reason: the
+# ledger's repair pass asks for it by name (issue #336).
+LAST_PLACE_RULE_TYPE = "last-place"
+
 _RULE_HANDLERS: dict[str, _Rule] = {
-    "last-place": _Rule(_eval_last_place, needs_squad=False),
+    LAST_PLACE_RULE_TYPE: _Rule(_eval_last_place, needs_squad=False),
     RED_CARD_RULE_TYPE: _Rule(_eval_red_card, needs_squad=True),
     "below-threshold": _Rule(_eval_below_threshold, needs_squad=False),
 }

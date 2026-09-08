@@ -84,7 +84,10 @@ in its own warning callout. `league-recap --summarise` does the same for its edi
 Fines are ruled per gameweek by `league-recap` and recorded against it, so `fpl
 league-fines` reads them straight back off disk — no network, and any season still
 on disk (`--season 2025-26`). Every gameweek that could not be ruled is named
-beneath the table, because a zero there means "not known", not "not fined".
+beneath the table, because a zero there means "not known", not "not fined". A tie for
+last is shared: everyone level on the lowest score of the gameweek pays, rather than
+whichever of them the standings listed first. The ledger is append-only, so gameweeks
+recorded before that was true are repaired by the next recap rather than re-ruled.
 
 For a draft league the recap also records the waiver claims each manager lost to a rival,
 kept apart from the moves that landed, so being outbid is never written into the ledger

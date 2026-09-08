@@ -1041,7 +1041,7 @@ class TestBuildFinesContextActiveChip:
         from fpl_cli.cli.status import _build_fines_context
 
         _, team_data = _build_fines_context(
-            standings_sorted_asc=[], user_is_last=False, user_gw_pts=50,
+            standings_sorted_asc=[], is_user=lambda s: False, user_gw_pts=50,
             pick_ids=self._pick_ids(),
             live_data=self._live_data_with_red_card(13),
             player_names={i: f"P{i}" for i in range(1, 16)},
@@ -1053,7 +1053,7 @@ class TestBuildFinesContextActiveChip:
         from fpl_cli.cli.status import _build_fines_context
 
         _, team_data = _build_fines_context(
-            standings_sorted_asc=[], user_is_last=False, user_gw_pts=50,
+            standings_sorted_asc=[], is_user=lambda s: False, user_gw_pts=50,
             pick_ids=self._pick_ids(),
             live_data=self._live_data_with_red_card(13),
             player_names={i: f"P{i}" for i in range(1, 16)},
@@ -1067,7 +1067,7 @@ class TestBuildFinesContextActiveChip:
 
         for chip in ("wildcard", "freehit", "3xc"):
             _, team_data = _build_fines_context(
-                standings_sorted_asc=[], user_is_last=False, user_gw_pts=50,
+                standings_sorted_asc=[], is_user=lambda s: False, user_gw_pts=50,
                 pick_ids=self._pick_ids(),
                 live_data=self._live_data_with_red_card(13),
                 player_names={i: f"P{i}" for i in range(1, 16)},
@@ -1082,7 +1082,7 @@ class TestBuildFinesContextActiveChip:
         from fpl_cli.cli.status import _build_fines_context
 
         _, team_data = _build_fines_context(
-            standings_sorted_asc=[], user_is_last=False, user_gw_pts=50,
+            standings_sorted_asc=[], is_user=lambda s: False, user_gw_pts=50,
             pick_ids=self._pick_ids(),
             live_data=self._live_data_with_red_card(13),  # bench slot 13
             player_names={i: f"P{i}" for i in range(1, 16)},
@@ -1103,7 +1103,7 @@ class TestBuildFinesContextActiveChip:
         from fpl_cli.cli.status import _build_fines_context
 
         _, team_data = _build_fines_context(
-            standings_sorted_asc=[], user_is_last=False, user_gw_pts=50,
+            standings_sorted_asc=[], is_user=lambda s: False, user_gw_pts=50,
             pick_ids=self._pick_ids(),
             live_data=self._live_data_with_red_card(13),
             player_names={i: f"P{i}" for i in range(1, 16)},
@@ -1122,7 +1122,7 @@ class TestBuildFinesContextActiveChip:
         from fpl_cli.cli.status import _build_fines_context
 
         _, team_data = _build_fines_context(
-            standings_sorted_asc=[], user_is_last=False, user_gw_pts=50,
+            standings_sorted_asc=[], is_user=lambda s: False, user_gw_pts=50,
             pick_ids=self._pick_ids(),
             live_data=self._live_data_with_red_card(5),  # slot 5 is a starter
             player_names={i: f"P{i}" for i in range(1, 16)},
@@ -1184,7 +1184,7 @@ class TestBuildFinesContextStandingsCompleteness:
         from fpl_cli.cli.status import _build_fines_context
 
         return _build_fines_context(
-            standings, kwargs.pop("user_is_last", True), 20, None, None, None, **kwargs,
+            standings, kwargs.pop("is_user", lambda s: True), 20, None, None, None, **kwargs,
         )
 
     def test_complete_standings_supply_a_worst_performer(self):
@@ -1200,7 +1200,7 @@ class TestBuildFinesContextStandingsCompleteness:
         assert league_data["user_gw_points"] == 20
 
     def test_empty_standings_supply_none_rather_than_a_placeholder(self):
-        league_data, _ = self._context([], user_is_last=False)
+        league_data, _ = self._context([], is_user=lambda s: False)
         assert "worst_performers" not in league_data
 
 
@@ -1239,6 +1239,43 @@ class TestStatusLastPlaceFineAcrossPages:
         result = _run(self._client(has_next=True), settings=self._settings())
         assert result.exit_code == 0
         assert "Fine:" not in result.output
+
+
+class TestStatusTiedLastPlaceFine:
+    """Tied for last is still last, whichever way the sort happened to fall."""
+
+    def _client(self, rival_entry):
+        # Both on 20. Whether the rival sorts above or below the user is
+        # arbitrary, and used to decide who saw a fine at all (#336).
+        standings = [
+            {"entry": rival_entry, "rank": 2, "event_total": 20, "total": 1500, "player_name": "Alice"},
+            {"entry": 123, "rank": 2, "event_total": 20, "total": 1500, "player_name": "You"},
+            {"entry": 789, "rank": 1, "event_total": 80, "total": 1800, "player_name": "Bob"},
+        ]
+        return _mock_client(
+            current_gw={"id": 30, "finished": True},
+            next_gw={"id": 31, "deadline_time": "2099-01-01T11:00:00Z"},
+            history={"current": [{"event": 30, "points": 20, "overall_rank": 100000}], "chips": []},
+            classic_league_standings={"standings": {"results": standings, "has_next": False}},
+            picks={"picks": [{"element": i} for i in range(1, 16)]},
+            players=[make_player(id=i, web_name=f"Player{i}", team_id=1) for i in range(1, 16)],
+            teams=[make_team(id=1, short_name="ARS")],
+        )
+
+    def _settings(self):
+        return {
+            "fpl": {"classic_entry_id": 123, "classic_league_id": 999},
+            "fines": {"classic": [{"type": "last-place", "penalty": "Wear the shirt"}]},
+        }
+
+    def test_a_user_tied_for_last_is_fined_whichever_side_of_the_rival_they_sort(self):
+        # Python's sort is stable, so the rival's entry id does not move them
+        # -- the first of the two equal scores stays first either way.
+        for rival_entry in (456, 1):
+            result = _run(self._client(rival_entry), settings=self._settings())
+            assert result.exit_code == 0, result.output
+            assert "Fine:" in result.output, f"rival_entry={rival_entry}"
+            assert "level with Alice" in result.output
 
 
 class TestEntryLeagueMeta:
