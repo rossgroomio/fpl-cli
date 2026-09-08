@@ -2576,23 +2576,23 @@ class TestBucketDraftTxns:
 
     def test_remaps_entry_id_to_league_entry_id(self):
         league_entries = [
-            {"id": 1528, "entry_id": 1528, "player_first_name": "Oliver"},
-            {"id": 94885, "entry_id": 97719, "player_first_name": "Alex"},
-            {"id": 93633, "entry_id": 96472, "player_first_name": "Jonathan"},
+            {"id": 10, "entry_id": 10, "player_first_name": "A"},
+            {"id": 20, "entry_id": 21, "player_first_name": "B"},
+            {"id": 30, "entry_id": 31, "player_first_name": "C"},
         ]
         gw_txns = [
-            {"entry": 1528, "element_in": 1, "element_out": 2, "kind": "w"},
-            {"entry": 97719, "element_in": 3, "element_out": 4, "kind": "w"},
-            {"entry": 97719, "element_in": 5, "element_out": 6, "kind": "w"},
-            {"entry": 96472, "element_in": 7, "element_out": 8, "kind": "w"},
+            {"entry": 10, "element_in": 1, "element_out": 2, "kind": "w"},
+            {"entry": 21, "element_in": 3, "element_out": 4, "kind": "w"},
+            {"entry": 21, "element_in": 5, "element_out": 6, "kind": "w"},
+            {"entry": 31, "element_in": 7, "element_out": 8, "kind": "w"},
         ]
 
         bucketed = _bucket_draft_txns_by_league_entry(gw_txns, league_entries)
 
-        assert set(bucketed.keys()) == {1528, 94885, 93633}
-        assert len(bucketed[94885]) == 2
-        assert len(bucketed[93633]) == 1
-        assert len(bucketed[1528]) == 1
+        assert set(bucketed.keys()) == {10, 20, 30}
+        assert len(bucketed[20]) == 2
+        assert len(bucketed[30]) == 1
+        assert len(bucketed[10]) == 1
 
     def test_drops_unknown_entry_ids(self):
         league_entries = [{"id": 100, "entry_id": 200}]

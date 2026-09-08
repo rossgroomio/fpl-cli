@@ -1309,7 +1309,7 @@ def _make_draft_client():
     mock = MagicMock()
     mock.get_league_details = AsyncMock(return_value={
         "league_entries": [
-            {"entry_id": 7, "player_first_name": "Ross", "player_last_name": "Groom"},
+            {"entry_id": 7, "player_first_name": "Alice", "player_last_name": "Smith"},
         ],
     })
     mock.get_bootstrap_static = AsyncMock(return_value={
@@ -1359,7 +1359,7 @@ class TestDraftFetchDeferral:
         client, fixture_agent, ratings_svc = _make_mocks()
         result, draft = self._invoke("Salah", client, fixture_agent, ratings_svc)
         assert result.exit_code == 0, result.output
-        assert "Ross Groom" in result.output
+        assert "Alice Smith" in result.output
         draft.get_league_ownership.assert_awaited_once()
 
     def test_league_details_fetched_once_and_reused(self):

@@ -308,7 +308,7 @@ class TestGetDraftOwnershipMapping:
         client = AsyncMock()
         client.get_league_details = AsyncMock(return_value={
             "league_entries": [
-                {"entry_id": 7, "player_first_name": "Ross", "player_last_name": "Groom"},
+                {"entry_id": 7, "player_first_name": "Alice", "player_last_name": "Smith"},
             ],
         })
         client.get_bootstrap_static = AsyncMock(return_value={
@@ -335,7 +335,7 @@ class TestGetDraftOwnershipMapping:
         )
 
         assert owned == {99: 7}
-        assert entries == {7: "Ross Groom"}
+        assert entries == {7: "Alice Smith"}
         assert main_to_draft == {1: 99}
 
 
