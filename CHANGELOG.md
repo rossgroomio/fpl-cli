@@ -1,6 +1,29 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [2.7.0] - 2026-09-08
+
+### Bug Fixes
+
+- never record rank movement out of a league's first gameweek (#325)
+- stop the gameweek review narrative inventing its own counts (#328)
+- keep the settled league position, not a mid-settlement one (#331)
+- keep players who have never appeared off the review's Blankers list (#333)
+- stop draft recaps reading an outbid manager as one who never tried (#334)
+- mark the reader's own row in the saved review's Nearby Rivals table (#335)
+- give managers level on points the same position in the review (#338)
+- record the waiver claims a draft manager lost in the league ledger (#339)
+- fine every manager who ties for last, not just one of them (#340)
+
+### Features
+
+- surface contested waiver claims in the draft recap (#341)
+
+### Other
+
+- No AFCON this season
+- add back mention of AFCON transfers
+
 ## [2.6.1] - 2026-09-07
 
 ### Bug Fixes
