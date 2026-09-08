@@ -511,7 +511,7 @@ class TestIdChecks:
     def test_dead_draft_entry_hint_mentions_init(self):
         result = _run(
             _mock_client(),
-            settings={"fpl": {"draft_entry_id": 90368}},
+            settings={"fpl": {"draft_entry_id": 456}},
             draft_client=_mock_draft_client(entry_error=_http_404()),
         )
         assert result.exit_code == 1
@@ -532,7 +532,7 @@ class TestIdChecks:
         }
         result = _run(
             _mock_client(),
-            settings={"fpl": {"draft_league_id": 4321, "draft_entry_id": 90368}},
+            settings={"fpl": {"draft_league_id": 4321, "draft_entry_id": 456}},
             draft_client=_mock_draft_client(entry_profile=profile),
         )
         assert result.exit_code == 1
@@ -542,7 +542,7 @@ class TestIdChecks:
     def test_draft_entry_in_configured_league_is_ok(self):
         result = _run(
             _mock_client(),
-            settings={"fpl": {"draft_league_id": 4321, "draft_entry_id": 90368}},
+            settings={"fpl": {"draft_league_id": 4321, "draft_entry_id": 456}},
             draft_client=_mock_draft_client(),
         )
         assert result.exit_code == 0
@@ -561,7 +561,7 @@ class TestIdChecks:
         }
         result = _run(
             _mock_client(),
-            settings={"fpl": {"draft_league_id": 4321, "draft_entry_id": 90368}},
+            settings={"fpl": {"draft_league_id": 4321, "draft_entry_id": 456}},
             draft_client=_mock_draft_client(entry_profile=profile),
         )
         assert result.exit_code == 0
@@ -580,7 +580,7 @@ class TestIdChecks:
         }
         result = _run(
             _mock_client(),
-            settings={"fpl": {"draft_league_id": 598, "draft_entry_id": 90368}},
+            settings={"fpl": {"draft_league_id": 598, "draft_entry_id": 456}},
             draft_client=_mock_draft_client(entry_profile=profile, league_error=_http_404()),
         )
         assert result.exit_code == 1  # the league row alone is broken
@@ -596,7 +596,7 @@ class TestIdChecks:
         error = httpx.ConnectError("boom", request=request)
         result = _run(
             _mock_client(),
-            settings={"fpl": {"draft_league_id": 4321, "draft_entry_id": 90368}},
+            settings={"fpl": {"draft_league_id": 4321, "draft_entry_id": 456}},
             draft_client=_mock_draft_client(league_error=error),
         )
         assert result.exit_code == 0
@@ -605,7 +605,7 @@ class TestIdChecks:
     def test_draft_entry_without_league_id_notes_unchecked_membership(self):
         result = _run(
             _mock_client(),
-            settings={"fpl": {"draft_entry_id": 90368}},
+            settings={"fpl": {"draft_entry_id": 456}},
             draft_client=_mock_draft_client(),
         )
         assert result.exit_code == 0

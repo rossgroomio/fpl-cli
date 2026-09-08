@@ -399,7 +399,7 @@ class TestFPLPriceScraper:
         scraper = FPLPriceScraper()
         page = MagicMock()
         page.evaluate = AsyncMock(side_effect=[
-            {"player": {"entry": 5955459}},
+            {"player": {"entry": 12345}},
             {"picks": [{"element": 253, "selling_price": 130, "purchase_price": 130}],
              "transfers": {"bank": 29, "limit": 1}},
         ])
@@ -408,7 +408,7 @@ class TestFPLPriceScraper:
         assert result is not None
         assert result["transfers"]["bank"] == 29
         # Second evaluate gets the entry id as a positional arg
-        assert page.evaluate.call_args_list[1].args[1] == 5955459
+        assert page.evaluate.call_args_list[1].args[1] == 12345
 
     async def test_fetch_my_team_returns_none_on_missing_entry(self):
         """If /api/me/ never returns a player.entry, abort and let DOM fallback take over."""
