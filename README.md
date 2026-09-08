@@ -86,6 +86,12 @@ league-fines` reads them straight back off disk — no network, and any season s
 on disk (`--season 2025-26`). Every gameweek that could not be ruled is named
 beneath the table, because a zero there means "not known", not "not fined".
 
+For a draft league the recap also records the waiver claims each manager lost to a rival,
+kept apart from the moves that landed, so being outbid is never written into the ledger
+as sitting the week out. Gameweeks recorded before that existed are named on stderr;
+`fpl league-recap --draft --backfill-detail` re-records them while the draft API still
+serves the season's transactions.
+
 The recap prints the season table only at GW19 and at the finale, so the set-piece
 stays a set-piece — though with `--summarise` its editorial knows the running totals
 every week and may work one into a sentence. `fpl league-fines` answers the season

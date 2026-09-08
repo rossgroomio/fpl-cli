@@ -12,6 +12,7 @@ from fpl_cli.models.league_history import (
     ConditionRunState,
     LeagueHistoryCountersProjection,
     LedgerCaptaincy,
+    LedgerLostClaim,
     LedgerTransaction,
 )
 from fpl_cli.services.league_history import LeagueHistoryStore
@@ -672,6 +673,29 @@ class TestWaiverConditions:
         assert views["waiver_win_run"].held_in_run == 0
         assert views["waiver_burn_run"].length == 0
         assert views["waiver_burn_run"].held_in_run == 0
+
+    def test_a_gameweek_of_only_lost_claims_holds_both_conditions(self):
+        """Issue #332: a claim a rival won is activity, but nothing moved, so
+        there is no net to swing either streak -- the gameweek holds exactly
+        as one with no moves does, rather than resetting a run."""
+        store = LeagueHistoryStore("2026-27", "draft", 1)
+        store.append_rows(1, [make_history_row(
+            gameweek=1, manager_key=1, fpl_format="draft", transactions=[_transaction(5)],
+        )])
+        store.append_rows(2, [make_history_row(
+            gameweek=2, manager_key=1, fpl_format="draft", transactions=[],
+            lost_claims=[LedgerLostClaim(
+                player_in="Elanga", player_in_team="NEW",
+                player_out="Savio", player_out_team="MCI", priority=1,
+            )],
+        )])
+
+        projection = rebuild_counters_through(store, 2)
+        views = manager_condition_views(projection, 1)
+
+        assert views["waiver_win_run"].length == 1
+        assert views["waiver_win_run"].held_in_run == 1
+        assert views["waiver_burn_run"].length == 0
 
     def test_net_is_summed_across_multiple_transactions_in_one_gameweek(self):
         store = LeagueHistoryStore("2026-27", "draft", 1)

@@ -57,6 +57,7 @@ from fpl_cli.models.league_history import (
     LedgerCaptaincy,
     LedgerFine,
     LedgerFinePlayer,
+    LedgerLostClaim,
     LedgerPlayer,
     LedgerTransaction,
     LedgerTransfer,
@@ -285,6 +286,25 @@ def _known_row(
         )
         for t in manager.get("transactions", [])
     ]
+    # A classic row has no waiver wire to lose a claim on, so it says nothing
+    # rather than "lost none" -- the same reading `transfer_cost` gives a
+    # draft row (issue #332). On draft the list is recorded even when empty:
+    # the collector read the league's transaction feed, so an empty list is a
+    # finding, where `None` would be indistinguishable from a row written
+    # before the field existed.
+    lost_claims = [
+        LedgerLostClaim(
+            player_in=c["player_in"],
+            player_in_team=c["player_in_team"],
+            player_in_code=c.get("player_in_code"),
+            player_out=c["player_out"],
+            player_out_team=c["player_out_team"],
+            player_out_code=c.get("player_out_code"),
+            kind=c["kind"],
+            priority=c.get("priority"),
+        )
+        for c in manager.get("lost_claims", [])
+    ] if fpl_format == "draft" else None
 
     transfers_made = manager.get("transfers_made")
     shortfall = None if transfers_made is None else max(0, transfers_made - len(transfers))
@@ -332,6 +352,7 @@ def _known_row(
         squad=squad,
         transfers=transfers,
         transactions=transactions,
+        lost_claims=lost_claims,
         gameweek_blank=data.get("is_bgw"),
         gameweek_double=data.get("is_dgw"),
         fines=_fines_for(data, manager_key, manager["manager_name"]),
@@ -611,10 +632,15 @@ class _Gaps:
     missing: list[int] = field(default_factory=list)
     incomplete: list[int] = field(default_factory=list)
     coarse: list[int] = field(default_factory=list)
+    # Draft gameweeks whose rows predate the lost-claims field: complete in
+    # every other respect, so a target for the detailed tier alone, and only
+    # behind its flag (issue #332).
+    claims_unrecorded: list[int] = field(default_factory=list)
 
 
 def _gaps(coverage: list[GameweekCoverage], targets: list[int]) -> _Gaps:
-    """Classify the target gameweeks: never captured, holding unknown rows, coarse.
+    """Classify the target gameweeks: never captured, holding unknown rows,
+    coarse, or recording nothing about lost waiver claims.
 
     An unreadable gameweek is in none of them: it is reported, not overwritten
     -- a repair that replaced it would destroy whatever it still holds (R4).
@@ -623,6 +649,7 @@ def _gaps(coverage: list[GameweekCoverage], targets: list[int]) -> _Gaps:
     missing: list[int] = []
     incomplete: list[int] = []
     coarse: list[int] = []
+    claims_unrecorded: list[int] = []
     for gameweek in targets:
         entry = by_gameweek.get(gameweek)
         if entry is None:
@@ -637,7 +664,12 @@ def _gaps(coverage: list[GameweekCoverage], targets: list[int]) -> _Gaps:
             incomplete.append(gameweek)
         if entry.lowest_tier is FidelityTier.COARSE:
             coarse.append(gameweek)
-    return _Gaps(missing=missing, incomplete=incomplete, coarse=coarse)
+        if entry.claims_unrecorded_count:
+            claims_unrecorded.append(gameweek)
+    return _Gaps(
+        missing=missing, incomplete=incomplete, coarse=coarse,
+        claims_unrecorded=claims_unrecorded,
+    )
 
 
 def _coarse_row(
@@ -976,6 +1008,23 @@ def _first_recorded(rows: list[LeagueHistoryRow]) -> dict[int, LeagueHistoryRow]
     for row in rows:
         if row.capture_status is CaptureStatus.OK and row.squad:
             earliest.setdefault(row.manager_key, row)
+    return earliest
+
+
+def _first_recorded_claims(rows: list[LeagueHistoryRow]) -> dict[int, list[LedgerLostClaim]]:
+    """Per manager, the earliest line that recorded lost waiver claims.
+
+    Read apart from `_first_recorded`, because the two earliest lines need not
+    be the same one: a gameweek captured before schema version 6 holds its
+    squad on a line that records nothing about lost claims, and the backfill
+    that recorded them wrote a later line. Reading the squad line's `None`
+    would leave every later replay restamping the claim from today's
+    bootstrap, which is the drift the carry exists to stop (issue #332).
+    """
+    earliest: dict[int, list[LedgerLostClaim]] = {}
+    for row in rows:
+        if row.capture_status is CaptureStatus.OK and row.lost_claims is not None:
+            earliest.setdefault(row.manager_key, row.lost_claims)
     return earliest
 
 
@@ -1322,6 +1371,7 @@ def _carry_recorded_identity(
         return 0
 
     recorded_rows = _first_recorded(previous)
+    recorded_claims = _first_recorded_claims(previous)
     carried = 0
     rederived = 0
     for row in rows:
@@ -1357,7 +1407,10 @@ def _carry_recorded_identity(
             if pick.code is None and old_pick.code is not None:
                 pick.code = old_pick.code
 
-        rederived += _carry_move_identity(row, recorded, derived_codes)
+        rederived += _carry_move_identity(
+            row, recorded, derived_codes,
+            recorded_claims=recorded_claims.get(row.manager_key),
+        )
 
     if carried:
         _warn(
@@ -1386,8 +1439,9 @@ _MOVE_SIDES = (
 
 def _carry_move_identity(
     row: LeagueHistoryRow, recorded: LeagueHistoryRow, derived_codes: frozenset[int],
+    *, recorded_claims: list[LedgerLostClaim] | None = None,
 ) -> int:
-    """Apply the same rule to the row's transfers and waiver moves.
+    """Apply the same rule to the row's transfers, waiver moves and lost claims.
 
     Slot-aligned like the squad, and for the same reason: a manager's moves in
     one gameweek come back in a fixed order, so equal-length lists pair
@@ -1400,12 +1454,20 @@ def _carry_move_identity(
     carries a name and club but cannot restore a code, since a move whose code
     the replay lost is exactly the one this path cannot identify.
 
+    A lost claim names two players the way a move does, and a replay resolves
+    both against today's bootstrap the same way, so it is carried the same
+    way. `recorded_claims` is read off the earliest line that recorded any
+    (`_first_recorded_claims`) rather than off `recorded`, whose line may
+    predate the field; where nothing recorded them at all, the player the
+    claim would have dropped is still in the recorded squad, so the fallback
+    still reaches him.
+
     `derived_codes` carries the same club exemption the squad carry makes,
     and the return is how many recorded clubs the derived one replaced.
     """
     known = {
         code: (name, team)
-        for source in (recorded.transfers, recorded.transactions)
+        for source in (recorded.transfers, recorded.transactions, recorded_claims or [])
         for move in source
         for name, team, code in (
             (move.player_in, move.player_in_team, move.player_in_code),
@@ -1418,6 +1480,7 @@ def _carry_move_identity(
     for replayed_moves, recorded_moves in (
         (row.transfers, recorded.transfers),
         (row.transactions, recorded.transactions),
+        (row.lost_claims or [], recorded_claims or []),
     ):
         aligned = len(replayed_moves) == len(recorded_moves)
         for index, move in enumerate(replayed_moves):
@@ -1839,7 +1902,14 @@ async def _backfill(
         # the whole season before printing anything (KTD6).
         detail_targets = set(gaps.incomplete)
         if backfill_detail:
-            detail_targets |= set(gaps.missing) | set(gaps.coarse)
+            # A draft gameweek captured before lost claims were recorded is
+            # complete in every other respect, so it sits behind the flag
+            # with the unbounded cases: re-recording it is one call per
+            # manager, and the replay reproduces everything else it holds
+            # (issue #332).
+            detail_targets |= (
+                set(gaps.missing) | set(gaps.coarse) | set(gaps.claims_unrecorded)
+            )
         if detail_targets:
             repaired |= await _detailed_backfill(
                 store=store, season=season, league_id=league_id, fpl_format=fpl_format,
@@ -1885,6 +1955,10 @@ def _report_coverage(
     by_gameweek = {c.gameweek: c for c in coverage}
     coarse = [gw for gw in targets if (c := by_gameweek.get(gw)) and c.lowest_tier is FidelityTier.COARSE]
     unknown = [gw for gw in targets if (c := by_gameweek.get(gw)) and c.readable and c.unknown_count]
+    claims_unrecorded = [
+        gw for gw in targets
+        if (c := by_gameweek.get(gw)) and c.readable and c.claims_unrecorded_count
+    ]
     uncaptured = [
         gw for gw in targets
         if gw not in by_gameweek
@@ -1917,6 +1991,15 @@ def _report_coverage(
             f"League history: {format_gameweek_list(unknown)} holds managers whose data could not "
             f"be fetched. They are recorded as unknown -- no streak is extended or broken "
             f"across them -- and every later run re-attempts them.",
+        )
+    if claims_unrecorded:
+        # Only ever non-empty on draft: `coverage()` counts the field's absence
+        # on draft rows alone, since a classic row has no such field by design.
+        lines.append(
+            f"League history: {format_gameweek_list(claims_unrecorded)} was captured before "
+            f"lost waiver claims were recorded, so a manager a rival outbid reads there as "
+            f"one who made no move. Re-run with {DETAIL_FLAG} to record them from the "
+            f"league's transaction feed while it still serves those gameweeks.",
         )
 
     for line in lines:

@@ -945,9 +945,10 @@ The green-arrow drought reads the current run rather than the season total, sinc
 **JSON:** `--format json` emits one row per manager — the same shape written to the
 ledger, built from the rows this run assembled, so manager data is present even when the
 store could not be written. `metadata` carries `coverage` (per gameweek: fidelity-tier
-counts, unknown managers, whether the file was readable — every gameweek with a file on
-disk appears there with a status, a damaged one as `readable: false`, so an empty list
-means only that nothing has been captured yet), `season_phase`, `notes_pack`
+counts, unknown managers, whether the file was readable, and on draft how many managers'
+rows still record nothing about lost waiver claims (`claims_unrecorded_count`) — every
+gameweek with a file on disk appears there with a status, a damaged one as
+`readable: false`, so an empty list means only that nothing has been captured yet), `season_phase`, `notes_pack`
 (every entry, including those below their reporting minimum and every nonzero season
 count whether or not it grew this gameweek), `season_fines` (the whole
 season tally, emitted every week regardless of the milestone gate the printed surfaces use), `synthesis_summary` (with
@@ -1018,6 +1019,21 @@ no rules were configured, no rule was ever checked), and
 the rules ruled, `[]` means nothing was configured, and empty means nothing is recorded
 either way: an unknown capture row, or a row written before schema version 4.
 
+A draft row also carries `lost_claims` (schema version 6): the waiver claims its manager
+submitted that gameweek and a rival won, each with both players, the kind of move and the
+priority it was made at. They sit apart from `transactions`, which stays the list of moves
+that happened — nothing moved here, so there are no points on either side and no net —
+because a manager whose whole gameweek was one claim they lost has no completed move,
+and a ledger holding moves alone wrote them into the permanent record as having sat the
+week out. Only claims lost to a rival are recorded: a claim denied because the manager's
+own earlier accepted claim had already dropped the nominated player is the cascade
+behind a claim that succeeded, not an attempt, and never appears (see
+[Conditional chains and outcomes](fpl-rules.md#waivers)). A list names exactly the
+claims lost, `[]` means the feed was read and held none for this manager, and empty
+means nothing is recorded either way: a classic row, whose format has no waiver wire; an
+unknown capture row; or a row written before schema version 6 — which is the one state
+`--backfill-detail` re-records, below.
+
 Rows are append-only. Re-running a gameweek that has not changed writes nothing; a
 re-run whose numbers differ (bonus points settled, a failed fetch repaired, a coarse
 gameweek filled in) appends a superseding row and leaves the old one in place. A file
@@ -1034,12 +1050,17 @@ Two fidelity tiers, both recorded on the row:
 | Tier | Source | Carries |
 |---|---|---|
 | Coarse | Classic manager-history endpoint, one request per manager for the whole season | Points, cumulative total, transfer count and cost, bench points, team value, bank, world rank (season and gameweek), and the fines derivable from cohort points alone (`last-place`, `below-threshold`) |
-| Detailed | A live recap run, or `--backfill-detail` replaying a past gameweek | Everything above plus captain, vice, full squad, and transfer or waiver detail |
+| Detailed | A live recap run, or `--backfill-detail` replaying a past gameweek | Everything above plus captain, vice, full squad, transfer or waiver detail, and the waiver claims a draft manager lost to a rival |
 
 Classic gaps fill at the coarse tier automatically. `--backfill-detail` upgrades them,
 at the cost of one request per manager per gameweek, which is why it is opt-in. Draft
 has no manager-history endpoint at all, so a draft gameweek that was never captured can
-only be rebuilt with `--backfill-detail`, and only while the season is live.
+only be rebuilt with `--backfill-detail`, and only while the season is live. The same
+flag re-records a draft gameweek captured before lost waiver claims were recorded
+(schema version 6): its rows are complete in every other respect, so nothing else
+touches them, and the coverage report names those gameweeks until it runs. That is
+time-sensitive in the same way — the claims come from the league's transaction feed,
+which nothing guarantees will serve a whole season indefinitely.
 
 When a gameweek is missing, coarse, unreadable, or holds a manager whose data could not
 be fetched, the run says so on stderr and names the remedy — for an unreadable gameweek
@@ -1087,7 +1108,7 @@ they share the channel: `synthesis_provider_unavailable` and `league_standings_m
 |---|---|
 | `league_history_league_id_missing` | No league id is configured for this format, so the gameweek was not recorded at all |
 | `league_history_store_unreadable` | The gameweek's file could not be read or written; it is left untouched and the recap still renders from live data. One warning per affected gameweek, and the message names the file and the `mv` that retires it |
-| `league_history_coverage` | One line per coverage gap: gameweeks missing, held at the coarse tier, or holding unknown managers. An unreadable gameweek is not a gap — it is reported as `league_history_store_unreadable`, and `--backfill-detail` skips it rather than writing to a file it cannot parse |
+| `league_history_coverage` | One line per coverage gap: gameweeks missing, held at the coarse tier, holding unknown managers, or (draft) captured before lost waiver claims were recorded. An unreadable gameweek is not a gap — it is reported as `league_history_store_unreadable`, and `--backfill-detail` skips it rather than writing to a file it cannot parse |
 | `league_history_unmatched_players` | A draft squad player could not be matched to a main-game player, so their recorded points are zero rather than a real score |
 | `league_history_transfer_detail_short` | Fewer transfers were captured than the manager's recorded count, so the stored list is incomplete rather than empty |
 | `league_history_standings_truncated` | The standings response covered only part of the league, so the gameweek is recorded for that subset only |
