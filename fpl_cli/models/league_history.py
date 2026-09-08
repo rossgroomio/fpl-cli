@@ -28,7 +28,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 # Bump whenever the row shape changes in a way older code cannot read. A line
 # carrying a *higher* version than this is skipped (with a warning) and
-# preserved byte-for-byte, so two installs can share one store.
+# preserved byte-for-byte, so two installs can share one store. That only
+# works because every line the store writes is stamped with the writing
+# install's version, whatever version the row was read under -- a line is then
+# readable by exactly the installs that know the fields it carries
+# (`LeagueHistoryStore.append_rows`).
 #
 # 2: `squad_value` renamed to `team_value`, the name the number always
 #    deserved -- it is the API's bank-inclusive `value` (issue #147).

@@ -19,6 +19,7 @@ from fpl_cli.cli._league_recap_history import (
     DETAIL_FLAG,
     HISTORY_WARNING_BACKFILL_MANAGER_UNREACHABLE,
     HISTORY_WARNING_BACKFILL_REPLAY_FAILED,
+    HISTORY_WARNING_CLAIMS_CARRIED,
     HISTORY_WARNING_CLUB_REDERIVED,
     HISTORY_WARNING_COVERAGE,
     HISTORY_WARNING_IDENTITY_CARRIED,
@@ -47,6 +48,7 @@ from fpl_cli.cli._league_recap_types import (
 )
 from fpl_cli.cli.league_recap import RECAP_WARNING_STANDINGS_MOVED_ON
 from fpl_cli.models.league_history import (
+    LEAGUE_HISTORY_VERSION,
     CaptureStatus,
     FidelityTier,
     LedgerCaptaincy,
@@ -5265,6 +5267,170 @@ class TestLostClaimsReachTheLedger:
 
         claim = (self._store().resolved_gameweek(1)[10].lost_claims or [])[0]
         assert (claim.player_in, claim.player_in_team) == ("Savinho", "MCI")
+
+    async def test_the_standings_sweep_stamps_the_line_it_rewrites_with_this_installs_version(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ):
+        """#339 review: the sweep repairs by copying a *stored* row, which
+        keeps the version it was parsed at, and `model_dump_json` emits every
+        field this install knows -- so the appended line was stamped 5 while
+        carrying `lost_claims`. A version-5 install validates a line at its
+        own version rather than skipping it, and `extra="forbid"` then
+        rejected the whole gameweek file. The sweep runs on every recap, so
+        one version-6 install was enough to brick a shared store for the
+        other. The line is this install's and carries its version, which the
+        older install skips before it validates anything."""
+        from fpl_cli.services import league_history as svc
+
+        await capture_recap_history(self._live_gw1(), season=SEASON, finished_gameweeks=[1])
+        store = self._store()
+        winner = store.resolved_gameweek(1)[10]
+        store.append_rows(1, [winner.model_copy(update={
+            "league_position": None, "captured_at": winner.captured_at + timedelta(days=1),
+        })])
+        _pre_v6(store, 1)
+        assert self._store().resolved_gameweek(1)[10].league_position is None
+
+        await capture_recap_history(self._live_gw2(), season=SEASON, finished_gameweeks=[1, 2])
+
+        lines = [
+            json.loads(line)
+            for line in self._store().gameweek_file(1).read_text(encoding="utf-8").splitlines()
+        ]
+        repaired = lines[-1]
+        assert (repaired["manager_key"], repaired["league_position"]) == (10, 1)
+        assert "lost_claims" in repaired
+        assert repaired["version"] == LEAGUE_HISTORY_VERSION
+        # What a version-5 install does with the file: skips this install's
+        # line at the version check, before the row schema ever sees the
+        # field it does not know, and keeps reading the rest.
+        monkeypatch.setattr(svc, "LEAGUE_HISTORY_VERSION", 5)
+        rows = self._store().load_gameweek(1)
+        assert rows
+        assert {r.version for r in rows} == {5}
+
+    async def test_a_replay_that_places_fewer_claims_keeps_the_recorded_list(self):
+        """#339 review: the collector drops a claim whose player it can no
+        longer place, so a replay comes back with a shorter list that would
+        supersede the full one at the same tier -- and a manager whose whole
+        gameweek was the dropped claim reads again as one who never tried.
+        The feed is a log, so a finished gameweek's claims are all in it and
+        fewer means lost, not corrected."""
+        both = [_lost_claim("Elanga"), _lost_claim("Isidor", "SUN", 777, priority=2)]
+        await capture_recap_history(
+            self._live_gw1(alice_lost=both), season=SEASON, finished_gameweeks=[1],
+        )
+        before = self._store().gameweek_file(1).read_bytes()
+
+        result = await capture_recap_history(
+            self._replay_gw1(alice_lost=[_lost_claim("Isidor", "SUN", 777, priority=2)]),
+            season=SEASON, is_live_gw=False, finished_gameweeks=[1],
+        )
+
+        claims = self._store().resolved_gameweek(1)[10].lost_claims or []
+        assert [c.player_in for c in claims] == ["Elanga", "Isidor"]
+        assert any(w["code"] == HISTORY_WARNING_CLAIMS_CARRIED for w in result.warnings)
+        # Carried in full, the replay reproduces the gameweek and writes nothing.
+        assert result.written == []
+        assert self._store().gameweek_file(1).read_bytes() == before
+
+    async def test_a_replay_that_finds_no_claims_keeps_the_recorded_list(self):
+        """The feed no longer serving the gameweek is the same shape: an
+        empty list is a real list, and it must not write an outbid manager
+        back out of the record."""
+        await capture_recap_history(self._live_gw1(), season=SEASON, finished_gameweeks=[1])
+
+        await capture_recap_history(
+            self._replay_gw1(alice_lost=[]),
+            season=SEASON, is_live_gw=False, finished_gameweeks=[1],
+        )
+
+        claims = self._store().resolved_gameweek(1)[10].lost_claims or []
+        assert [c.player_in for c in claims] == ["Elanga"]
+
+    async def test_a_replay_that_places_more_claims_supersedes_the_recorded_list(self):
+        """Only a shorter list is carried into: a player the feed once could
+        not place now resolving is a genuine correction, and it lands."""
+        await capture_recap_history(self._live_gw1(), season=SEASON, finished_gameweeks=[1])
+
+        result = await capture_recap_history(
+            self._replay_gw1(alice_lost=[
+                _lost_claim("Elanga"), _lost_claim("Isidor", "SUN", 777, priority=2),
+            ]),
+            season=SEASON, is_live_gw=False, finished_gameweeks=[1],
+        )
+
+        claims = self._store().resolved_gameweek(1)[10].lost_claims or []
+        assert [c.player_in for c in claims] == ["Elanga", "Isidor"]
+        assert not any(w["code"] == HISTORY_WARNING_CLAIMS_CARRIED for w in result.warnings)
+
+    async def test_the_carry_reads_the_longest_list_any_line_recorded(self):
+        """The fullest list is the most complete whichever line holds it:
+        a degraded replay that slipped in before this existed is on disk as
+        the winner, and the live capture below it is what to carry."""
+        store = self._store()
+        full = make_history_row(
+            season=SEASON, fpl_format="draft", league_id=42, gameweek=1,
+            manager_key=10, manager_name="Alice", gross_points=60,
+            league_position=1, total_points=60,
+            lost_claims=[
+                LedgerLostClaim(player_in="Elanga", player_in_team="NEW", player_in_code=555,
+                                player_out="Savio", player_out_team="MCI", player_out_code=666,
+                                priority=1),
+                LedgerLostClaim(player_in="Isidor", player_in_team="SUN", player_in_code=777,
+                                player_out="Savio", player_out_team="MCI", player_out_code=666,
+                                priority=2),
+            ],
+        )
+        store.append_rows(1, [full])
+        store.append_rows(1, [full.model_copy(update={
+            "lost_claims": [], "captured_at": full.captured_at + timedelta(days=1),
+        })])
+        assert self._store().resolved_gameweek(1)[10].lost_claims == []
+
+        await capture_recap_history(
+            self._replay_gw1(alice_lost=[_lost_claim("Elanga")]),
+            season=SEASON, is_live_gw=False, finished_gameweeks=[1],
+        )
+
+        claims = self._store().resolved_gameweek(1)[10].lost_claims or []
+        assert [c.player_in for c in claims] == ["Elanga", "Isidor"]
+
+    async def test_a_row_that_recorded_nothing_is_not_carried_into(self):
+        """`None` is the state the backfill exists to fill, not one to carry
+        into: the re-capture's list lands, empty or not, with no carry
+        reported."""
+        await capture_recap_history(self._live_gw1(), season=SEASON, finished_gameweeks=[1])
+        _pre_v6(self._store(), 1)
+
+        result = await capture_recap_history(
+            self._replay_gw1(alice_lost=[]),
+            season=SEASON, is_live_gw=False, finished_gameweeks=[1],
+        )
+
+        assert self._store().resolved_gameweek(1)[10].lost_claims == []
+        assert not any(w["code"] == HISTORY_WARNING_CLAIMS_CARRIED for w in result.warnings)
+
+    async def test_the_backfill_path_carries_recorded_claims_too(self):
+        """`--backfill-detail` replays through the same carries as a direct
+        re-capture; an unknown row is what makes a recorded gameweek a
+        target without the flag."""
+        live = self._live_gw1()
+        live["managers"] = [live["managers"][0]]  # Bob unreached: GW1 stays incomplete
+        await capture_recap_history(live, season=SEASON, finished_gameweeks=[1])
+        assert self._store().resolved_gameweek(1)[20].capture_status is CaptureStatus.UNKNOWN
+
+        async def _replay_gw(gameweek: int):
+            return self._replay_gw1(alice_lost=[]) if gameweek == 1 else None
+
+        result = await capture_recap_history(
+            self._live_gw2(), season=SEASON, finished_gameweeks=[1, 2],
+            replay_gameweek=_replay_gw,
+        )
+
+        claims = self._store().resolved_gameweek(1)[10].lost_claims or []
+        assert [c.player_in for c in claims] == ["Elanga"]
+        assert any(w["code"] == HISTORY_WARNING_CLAIMS_CARRIED for w in result.warnings)
 
     async def test_the_json_row_carries_the_claim_and_coverage_carries_the_count(self):
         """`--format json` emits the ledger row shape verbatim, so the claim

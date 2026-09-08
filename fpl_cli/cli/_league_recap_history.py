@@ -99,6 +99,7 @@ HISTORY_WARNING_BACKFILL_WRITE_FAILED = "league_history_backfill_write_failed"
 HISTORY_WARNING_IDENTITY_CARRIED = "league_history_identity_carried"
 HISTORY_WARNING_CLUB_REDERIVED = "league_history_club_rederived"
 HISTORY_WARNING_STANDINGS_CARRIED = "league_history_standings_carried"
+HISTORY_WARNING_CLAIMS_CARRIED = "league_history_claims_carried"
 HISTORY_WARNING_STANDINGS_REPAIRED = "league_history_standings_repaired"
 
 
@@ -1263,6 +1264,81 @@ def _carry_recorded_standings(
     return carried
 
 
+def _fullest_recorded_claims(rows: list[LeagueHistoryRow]) -> dict[int, list[LedgerLostClaim]]:
+    """Per manager, the longest list of lost claims any line recorded.
+
+    The transaction feed is a log of the claims the league processed, so a
+    gameweek's claims are all in it before any capture of that gameweek runs
+    and none is ever removed. A capture can therefore know as many claims as
+    the feed holds, or fewer -- one whose player it can no longer place is
+    dropped, not flagged (`_resolve_draft_txn_sides`), and a gameweek the
+    feed has stopped serving yields none at all. The longest recorded list is
+    the most complete, whichever line holds it; a tie goes to the latest
+    capture, which lines up with `_last_recorded_standings`.
+    """
+    fullest: dict[int, list[LedgerLostClaim]] = {}
+    for row in sorted(rows, key=lambda row: row.captured_at):
+        if row.capture_status is not CaptureStatus.OK or row.lost_claims is None:
+            continue
+        known = fullest.get(row.manager_key)
+        if known is None or len(row.lost_claims) >= len(known):
+            fullest[row.manager_key] = row.lost_claims
+    return fullest
+
+
+def _carry_recorded_claims(
+    store: LeagueHistoryStore, gameweek: int, rows: list[LeagueHistoryRow],
+    *, warnings: list[dict[str, str]],
+) -> int:
+    """Keep the lost claims the gameweek recorded where this run found fewer.
+
+    A replay rebuilds the list from the same feed, but drops a claim whose
+    player it can no longer place, and a feed that has stopped serving the
+    gameweek yields none at all. Either lands as a real list -- shorter, or
+    `[]` -- that supersedes the recorded one at the same tier, and a manager
+    whose whole gameweek was the dropped claim goes back to reading as one who
+    made no move: the regression the field exists to close (#339 review).
+    Same rule as `_carry_recorded_standings`: a row that knows less never
+    supersedes one that knows more.
+
+    Only a *shorter* list is carried into. A longer replayed list is a genuine
+    correction -- a player the feed once could not place now resolves -- and
+    stands, and a row that recorded nothing (`None`) is the state the backfill
+    exists to fill rather than one to carry into. Runs before the identity
+    carry, so what that pass corrects is the full list rather than the
+    remnant.
+
+    Returns how many managers kept their recorded list, so the caller can say
+    so.
+    """
+    try:
+        previous = store.load_gameweek(gameweek)
+    except LeagueHistoryError:
+        # Degrades silently for the reason `_freeze_recorded_fines` gives.
+        return 0
+    if not previous:
+        return 0
+
+    recorded = _fullest_recorded_claims(previous)
+    carried = 0
+    for row in rows:
+        known = recorded.get(row.manager_key)
+        if known is None or row.lost_claims is None or len(row.lost_claims) >= len(known):
+            continue
+        row.lost_claims = list(known)
+        carried += 1
+    if carried:
+        _warn(
+            warnings, HISTORY_WARNING_CLAIMS_CARRIED,
+            f"League history: GW{gameweek} kept the lost waiver claims already recorded "
+            f"for {carried} manager(s) rather than the fewer this run found. A claim is "
+            f"dropped where its player can no longer be placed, and a gameweek the "
+            f"league's transaction feed has stopped serving yields none at all; the "
+            f"recorded list is the more complete one either way.",
+        )
+    return carried
+
+
 def _fill_draft_standings(
     store: LeagueHistoryStore, rows: list[LeagueHistoryRow],
     *, gameweek: int, start_gameweek: int,
@@ -1682,6 +1758,8 @@ async def _detailed_backfill(
             tier=FidelityTier.DETAILED,
             is_live_gw=False,
         )
+        # Before the identity carry, so the list it corrects is the full one.
+        _carry_recorded_claims(store, gameweek, rows, warnings=warnings)
         _carry_recorded_identity(
             store, gameweek, rows,
             derived_codes=_derived_codes(replayed), warnings=warnings,
@@ -2176,6 +2254,11 @@ async def capture_recap_history(
     # `_carry_recorded_identity` already no-ops when nothing is recorded yet,
     # so a genuine first capture is unaffected.
     if data["gameweek"] in finished_gameweeks:
+        # Same gate as the two carries below, and before the identity carry
+        # so the list that pass corrects is the full one: a finished
+        # gameweek's claims are all in the feed, so a run that found fewer
+        # lost some, and must not write that loss over the record (#339).
+        _carry_recorded_claims(store, data["gameweek"], rows, warnings=warnings)
         _carry_recorded_identity(
             store, data["gameweek"], rows,
             derived_codes=_derived_codes(data), warnings=warnings,

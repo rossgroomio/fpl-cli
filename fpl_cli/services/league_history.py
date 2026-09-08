@@ -325,6 +325,16 @@ class LeagueHistoryStore:
         any value that *could* become the winner appends a superseding line;
         no line is ever edited or removed (R3).
 
+        Every line written is stamped with this install's schema version,
+        whatever version the row was parsed under. `model_dump_json` emits
+        every field this install knows, so the line has this install's shape
+        -- but a row copied off disk keeps its stored version, which is how
+        the standings sweep came to append lines stamped 5 that carried a
+        version-6 field. An older install validates a line at its own version
+        rather than skipping it, and `extra="forbid"` then rejects the whole
+        gameweek file (#339 review). Stamped, the older install skips the line
+        with the upgrade warning and keeps reading the rest.
+
         Raises:
             LeagueHistoryError: the existing file is unreadable. Nothing is
                 written, so a corrupt file is never overwritten by a repair
@@ -346,6 +356,10 @@ class LeagueHistoryStore:
                     continue
                 if row.resolution_sort_key()[0] < current.resolution_sort_key()[0]:
                     continue
+            # In place, so the returned row and the winners below agree with
+            # the file. `content()` excludes the version, so this never makes
+            # an unchanged row look new.
+            row.version = LEAGUE_HISTORY_VERSION
             new_lines.append(row.model_dump_json())
             written.append(row)
             # Keep the batch internally consistent: a second row for the same

@@ -677,6 +677,61 @@ class TestStoreVersioning:
         assert row.lost_claims == [claim]
         assert row.version == LEAGUE_HISTORY_VERSION
 
+    def test_every_line_written_is_stamped_with_the_writing_installs_version(self):
+        """#339 review: a row parsed off disk keeps its stored version, so a
+        repair that copies one and appends it wrote a line stamped 5 carrying
+        a version-6 field -- which a version-5 install validates rather than
+        skips, and `extra="forbid"` then rejects the whole file. The line is
+        this install's, so it carries this install's version."""
+        import json
+
+        from fpl_cli.services.league_history import LeagueHistoryStore
+
+        store = LeagueHistoryStore("2026-27", "draft", 1)
+        payload = make_history_row(fpl_format="draft", gameweek=5, gross_points=50).model_dump(mode="json")
+        payload["version"] = 3
+        del payload["lost_claims"]
+        del payload["fine_rules_evaluated"]
+        path = store.gameweek_file(5)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+        stored = store.load_gameweek(5)[0]
+        assert stored.version == 3
+
+        repaired = stored.model_copy(update={"gross_points": 51})
+        written = store.append_rows(5, [repaired])
+
+        lines = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+        assert [line["version"] for line in lines] == [3, LEAGUE_HISTORY_VERSION]
+        assert "lost_claims" in lines[1]
+        assert written[0].version == LEAGUE_HISTORY_VERSION
+
+    def test_a_newer_line_is_skipped_before_it_is_validated(self, caplog):
+        """The property the stamp above relies on: the version check runs
+        before the row schema does, so a line carrying a field this install
+        has never heard of is skipped with the upgrade warning rather than
+        failing the file closed."""
+        import json
+        import logging
+
+        from fpl_cli.services.league_history import LeagueHistoryStore
+
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(5, [make_history_row(gameweek=5, manager_key=1, gross_points=50)])
+        future = make_history_row(gameweek=5, manager_key=1, gross_points=51).model_dump(mode="json")
+        future["version"] = LEAGUE_HISTORY_VERSION + 1
+        future["a_field_this_install_does_not_know"] = True
+        path = store.gameweek_file(5)
+        path.write_text(
+            path.read_text(encoding="utf-8") + json.dumps(future) + "\n", encoding="utf-8",
+        )
+
+        with caplog.at_level(logging.WARNING):
+            rows = store.load_gameweek(5)
+
+        assert [r.gross_points for r in rows] == [50]
+        assert "Upgrade fpl-cli" in caplog.text
+
     def test_a_future_version_line_is_skipped_with_a_warning_and_survives(self, caplog):
         import json
         import logging

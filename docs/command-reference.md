@@ -1009,14 +1009,14 @@ identifies him after FPL renames him. A red-card fine's message spells out whate
 player was called when it was ruled, so a gameweek replayed months later would otherwise
 name him by today's name on a row whose squad records the name he actually played under.
 A list names exactly those players, `[]` means the rule names nobody (`last-place` and
-`below-threshold` describe a score), and empty means nothing is recorded either way: a
+`below-threshold` describe a score), and `null` means nothing is recorded either way: a
 row written before schema version 5, whose names are restated from its own squad the
 next time the gameweek is captured or replayed. Beside it, `fine_rules_evaluated` (schema
 version 4) records which rule types were actually ruled, whether or not any triggered —
 without it an empty `fines` list means three different things at once (nobody was fined,
 no rules were configured, no rule was ever checked), and
 [Season Fines](#season-fines) would score all three as innocence. A list names exactly
-the rules ruled, `[]` means nothing was configured, and empty means nothing is recorded
+the rules ruled, `[]` means nothing was configured, and `null` means nothing is recorded
 either way: an unknown capture row, or a row written before schema version 4.
 
 A draft row also carries `lost_claims` (schema version 6): the waiver claims its manager
@@ -1028,10 +1028,14 @@ and a ledger holding moves alone wrote them into the permanent record as having 
 week out. Only claims lost to a rival are recorded: a claim denied because the manager's
 own earlier accepted claim had already dropped the nominated player is the cascade
 behind a claim that succeeded, not an attempt, and never appears (see
-[Conditional chains and outcomes](fpl-rules.md#waivers)). A list names exactly the
-claims lost, `[]` means the feed was read and held none for this manager, and empty
-means nothing is recorded either way: a classic row, whose format has no waiver wire; an
-unknown capture row; or a row written before schema version 6 — which is the one state
+[Conditional chains and outcomes](fpl-rules.md#waivers)). A replay that finds fewer
+claims than the gameweek recorded keeps the recorded list and says so
+(`league_history_claims_carried`): a claim whose player can no longer be placed is
+dropped, and a gameweek the feed has stopped serving yields none, and neither is allowed
+to write an outbid manager back out of the record. A list names exactly the claims lost,
+`[]` means the feed was read and held none for this manager, and `null` means nothing
+is recorded either way: a classic row, whose format has no waiver wire; an unknown
+capture row; or a row written before schema version 6 — which is the one state
 `--backfill-detail` re-records, below.
 
 Rows are append-only. Re-running a gameweek that has not changed writes nothing; a
@@ -1040,10 +1044,12 @@ gameweek filled in) appends a superseding row and leaves the old one in place. A
 that cannot be parsed is never reset or overwritten: the run says which file and what to
 do about it, still prints the recap from live data, and exits 0.
 
-Each row carries the schema version it was written under. A row from an older version is
-brought up to the current shape as it is read, and the line on disk is left as it is; a
-row from a newer version — an install ahead of this one, sharing a synced data directory —
-is skipped with a warning and preserved untouched rather than read wrongly or discarded.
+Each row carries the schema version it was written under — the version of the install
+that wrote the line, whatever version the row it superseded was read at. A row from an
+older version is brought up to the current shape as it is read, and the line on disk is
+left as it is; a row from a newer version — an install ahead of this one, sharing a
+synced data directory — is skipped with a warning and preserved untouched rather than
+read wrongly or discarded.
 
 Two fidelity tiers, both recorded on the row:
 
@@ -1118,6 +1124,7 @@ they share the channel: `synthesis_provider_unavailable` and `league_standings_m
 | `league_history_identity_carried` | A finished gameweek kept the name, club or position it already had recorded for one or more players rather than the ones today's bootstrap gives them, or restored a player reference this capture had lost. Raised by a re-capture of a finished gameweek as well as by a replay; any one of the four on its own raises it |
 | `league_history_club_rederived` | A finished gameweek replaced the club it already had recorded for one or more players with the one that gameweek's own fixtures place them at. The recorded club was stamped from a bootstrap that had already moved on — a first capture or a coarse-tier upgrade has no earlier row to carry a club from — so unlike name and position it is superseded rather than kept |
 | `league_history_standings_carried` | A finished gameweek kept a league position or cumulative total it already had recorded rather than the nothing this run could re-derive. Draft raises it on any replay: with no per-manager history endpoint and standings that describe a later gameweek, a replayed draft gameweek derives neither figure, and writing that out would erase the ones the live capture recorded |
+| `league_history_claims_carried` | A finished draft gameweek kept the lost waiver claims it already had recorded for one or more managers rather than the fewer this run found. A replay drops a claim whose player it can no longer place, and a gameweek the league's transaction feed has stopped serving yields none at all; the recorded list is the more complete one either way, and a longer replayed list still lands as a correction |
 | `league_history_standings_repaired` | A gameweek whose recorded positions an *earlier* run had already erased was restored from the ledger itself — the last superseded line that recorded them, or, on draft, a cumulative total re-summed from earlier gameweeks. The *last* one, not the first: a gameweek captured several times while bonus and late results were still landing recorded a stale position early and the settled one last, and only the latest recorded value is the one the damage destroyed. Nothing is re-fetched, so this needs neither `--backfill-detail` nor a network call, and it stops once the damage is repaired. The count is the managers whose league position or cumulative total actually changed — a row rewritten only to restate a fine's player names is not one of them |
 | `synthesis_provider_unavailable` | `--summarise` was asked for but the synthesis provider had no usable key; everything else in the recap, the capture included, ran normally |
 | `synthesis_stopped_early` | The provider reported that the editorial stopped for a reason other than finishing (a token ceiling, a refusal), so `synthesis_summary` may be cut off mid-sentence. Everything else in the recap is unaffected |
