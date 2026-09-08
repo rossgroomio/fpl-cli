@@ -861,9 +861,10 @@ the player the most managers claimed, with who won him and every manager beaten 
 priority they gave the claim ("Elanga was claimed by 4 managers: Dan won him; Alice (priority 1),
 Bob (priority 1) and Cam (priority 2) were beaten to him"). A two-way race is every lost claim by
 definition, so it earns no award — the editorial still sees it (below). A tie on claimants names every
-player tied, capped like the other awards' ties. The award needs no accepted move to exist — a race
-whose winner's picks could not be fetched still had losers, and is reported with its winner
-unidentified rather than dropped. Races are derived from the lost claims the recap already records,
+player tied, capped like the other awards' ties. Someone has to have won him: a race whose winner's
+move the recap cannot see — their picks fetch failed, or the row could not be placed — never counts
+towards the award, and reaches the editorial with its winner unidentified and only the managers the
+recap can see counted, rather than being dropped. Races are derived from the lost claims the recap already records,
 grouped by player, with the winner read off the accepted move that brought him in (the raw move, so a
 winner who moved him on again the same gameweek still won him); a manager who lost several claims on
 one player — a conditional chain offering different drops for him — is named once, at the highest

@@ -2604,17 +2604,27 @@ class TestContestedDraftClaims:
             ("Elanga", 4), ("Wood", 2), ("Isidor", 2),
         ]
 
-    def test_a_race_whose_winner_was_not_fetched_is_still_reported(self):
+    def test_a_race_whose_winner_was_not_fetched_is_still_reported_and_counts_nobody_unseen(self):
         """The winner's picks fetch failed, so no fetched manager's moves
-        brought the player in. The race still had a loser, and is still the
-        week's story -- reported with the winner unnamed, not dropped."""
-        managers = [_lost_by(_make_manager(name="Bob", entry_id=2), _lost("Elanga", "Savio"))]
+        brought the player in. The race is still reported for the editorial
+        -- with the winner unnamed, not dropped -- and its claimant count is
+        the managers the recap can actually see, never a phantom winner."""
+        managers = [
+            _lost_by(_make_manager(name="Bob", entry_id=2), _lost("Elanga", "Savio")),
+            _lost_by(_make_manager(name="Cam", entry_id=3), _lost("Elanga", "Wood", priority=2)),
+        ]
         [contest] = contested_draft_claims(managers)
         assert contest["winner"] is None
         assert contest["claimants"] == 2
         assert format_contested_claim(contest) == (
-            "Elanga was claimed by 2 managers: the winner could not be identified; "
-            "Bob (priority 1) was beaten to him."
+            "Elanga was claimed by Bob (priority 1) and Cam (priority 2), who were beaten "
+            "to him; the winner could not be identified."
+        )
+        [alone] = contested_draft_claims(managers[:1])
+        assert alone["claimants"] == 1
+        assert format_contested_claim(alone) == (
+            "Elanga was claimed by Bob (priority 1), who was beaten to him; "
+            "the winner could not be identified."
         )
 
     def test_a_manager_who_lost_two_claims_on_one_player_is_named_once_at_their_best_priority(self):
@@ -2750,21 +2760,37 @@ class TestMostContestedAward:
         assert "most_contested" in _compute_shared_awards(self._week(), format_name="draft")
         assert "most_contested" not in _compute_shared_awards(self._week(), format_name="classic")
 
-    def test_the_award_stands_when_no_accepted_move_was_fetched(self):
-        """`_compute_waiver_awards` returns early with no movers at all; this
-        award must not -- a race whose winner could not be fetched still had
-        losers, and nobody is named as the winner rather than a placeholder."""
+    def test_a_race_nobody_can_be_seen_to_have_won_never_counts_towards_the_award(self):
+        """Someone has to have won the player. Three managers beaten to him
+        with no fetched manager's move bringing him in is editorial context,
+        not a headline handing him to nobody the recap can name."""
         managers = [
-            _lost_by(_make_manager(name="Bob", entry_id=2), _lost("Elanga", "Savio")),
-            _lost_by(_make_manager(name="Cam", entry_id=3), _lost("Elanga", "Wood", priority=2)),
+            _lost_by(_make_manager(name=f"Loser{i}", entry_id=i), _lost("Elanga", "Savio", priority=i))
+            for i in (1, 2, 3)
         ]
         awards = _compute_shared_awards(managers, format_name="draft")
-        assert "waiver_genius" not in awards
-        assert awards["most_contested"]["manager_name"] == ""
-        assert awards["most_contested"]["detail"] == (
-            "Elanga was claimed by 3 managers: the winner could not be identified; "
-            "Bob (priority 1) and Cam (priority 2) were beaten to him."
-        )
+        assert "most_contested" not in awards
+        data = _make_recap_data(managers=managers)
+        data["fpl_format"] = "draft"
+        assert (
+            "- Elanga was claimed by Loser1 (priority 1), Loser2 (priority 2) and "
+            "Loser3 (priority 3), who were beaten to him; the winner could not be identified."
+        ) in format_recap_waivers_context(data)
+
+    def test_an_unresolved_bigger_race_does_not_outrank_a_won_smaller_one(self):
+        managers = [
+            _make_manager_with_txns("Eve", [_txn("Isidor", 5, "Bowen", 2)], entry_id=5),
+            _lost_by(_make_manager(name="Alice", entry_id=1), _lost("Isidor", "Savio", priority=1)),
+            _lost_by(_make_manager(name="Bob", entry_id=2), _lost("Isidor", "Dango", priority=1)),
+        ] + [
+            _lost_by(_make_manager(name=f"Loser{i}", entry_id=10 + i), _lost("Elanga", "Wood", priority=1))
+            for i in range(1, 6)
+        ]
+        awards = _compute_shared_awards(managers, format_name="draft")
+        award = awards["most_contested"]
+        assert (award["manager_name"], award["value"]) == ("Eve", 3)
+        assert award["detail"].startswith("Isidor was claimed by 3 managers: Eve won him;")
+        assert "Elanga" not in award["detail"]
 
     def test_a_tie_on_claimants_names_every_player_tied(self):
         managers = [

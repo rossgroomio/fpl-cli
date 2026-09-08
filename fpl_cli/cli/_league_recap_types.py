@@ -141,14 +141,17 @@ class RecapContestedClaim(TypedDict):
     player_code: NotRequired[int]
     # The manager whose accepted move brought him in. None when no fetched
     # manager's did -- their picks could not be fetched, or the row could not
-    # be placed -- and the race is then reported with its winner unnamed
-    # rather than dropped for want of a name.
+    # be placed -- and the race is then editorial context with its winner
+    # unnamed, never a Most Contested award: a race nobody can be seen to
+    # have won is not one the recap can hand a headline to.
     winner: str | None
     # Every manager beaten to him, first-choice claims first, then by name.
     losers: list[RecapContestedClaimant]
-    # Everyone who claimed him: the losers plus the one who won, named or
-    # not. Bounded by the league's size (a draft league holds at most 16),
-    # which is why no surface caps the managers a race names.
+    # Everyone who claimed him: the losers plus the winner where one was
+    # identified, and the losers alone where not -- the recap does not count
+    # a manager it cannot name. Bounded by the league's size (a draft league
+    # holds at most 16), which is why no surface caps the managers a race
+    # names.
     claimants: int
 
 
@@ -319,11 +322,10 @@ class RecapAwards(TypedDict, total=False):
     waiver_disaster: RecapAwardEntry
     # Draft only (issue #330): the player the most managers claimed this
     # gameweek, on a week where enough of them did to make a pile-up
-    # (`MOST_CONTESTED_MIN_CLAIMANTS`). `manager_name` is the manager who won
-    # him -- joined with " and " across a tie, and empty where no race's
-    # winner could be identified -- and `value` is how many claimed him. The
-    # detail names every manager beaten to him and the priority each gave
-    # the claim.
+    # (`MOST_CONTESTED_MIN_CLAIMANTS`) and someone can be seen to have won
+    # him. `manager_name` is that manager -- joined with " and " across a tie
+    # -- and `value` is how many claimed him. The detail names every manager
+    # beaten to him and the priority each gave the claim.
     most_contested: RecapAwardEntry
 
 
@@ -727,8 +729,10 @@ def contested_draft_claims(
             player_team_name=claim.get("player_in_team_name"),
             winner=_contest_winner(accepted.get(key, []), beaten),
             losers=beaten,
-            claimants=len(beaten) + 1,
+            claimants=len(beaten),
         )
+        if contest["winner"] is not None:
+            contest["claimants"] += 1
         code = claim.get("player_in_code")
         if code is not None:
             contest["player_code"] = code
@@ -765,17 +769,20 @@ def format_contested_claim(contest: RecapContestedClaim) -> str:
     claim, which is the point of naming them: three first-choice claims on
     one player is the week's story, and a fifth-choice claim that missed is
     a different thing from a first. Where the winner could not be identified
-    the sentence says so, rather than naming nobody and leaving the reader to
-    infer that nobody won.
+    the sentence says so and counts nobody it cannot name -- "Elanga was
+    claimed by Alice (priority 1) and Bob (priority 1), who were beaten to
+    him; the winner could not be identified" -- rather than asserting a
+    winner and leaving the reader to infer that nobody won.
     """
     losers = contest["losers"]
     beaten = _join_names([_claimant_text(c) for c in losers])
     verb = "was" if len(losers) == 1 else "were"
-    winner = (
-        f"{contest['winner']} won him" if contest["winner"]
-        else "the winner could not be identified"
-    )
+    if contest["winner"] is None:
+        return (
+            f"{contest['player']} was claimed by {beaten}, who {verb} beaten to him; "
+            f"the winner could not be identified."
+        )
     return (
         f"{contest['player']} was claimed by {contest['claimants']} managers: "
-        f"{winner}; {beaten} {verb} beaten to him."
+        f"{contest['winner']} won him; {beaten} {verb} beaten to him."
     )

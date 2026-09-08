@@ -1848,20 +1848,22 @@ def _compute_most_contested_award(
     the recap as one unremarkable pickup by the winner. It is a set-piece
     rather than a weekly fixture: a two-way race is any lost claim, and the
     editorial already sees every one of those in its waiver roster, so the
-    award waits for a genuine pile-up. Computed apart from the two
-    net-points awards because it needs no accepted move to exist: a race
-    whose winner could not be fetched still had losers.
+    award waits for a genuine pile-up. And someone has to have won him: a
+    race whose winner the recap cannot see -- their picks fetch failed, or
+    the row could not be placed -- stays editorial context, since a headline
+    that hands the player to nobody it can name is no headline, and the
+    lost claims alone cannot prove anyone got him.
 
     A tie on claimants names every player tied, bounded like the other
     awards' ties. Each race's sentence names every beaten manager unbounded
     -- a draft league holds at most 16, where a classic tie can hold fifty.
     """
-    contests = contested_draft_claims(managers)
-    if not contests or contests[0]["claimants"] < MOST_CONTESTED_MIN_CLAIMANTS:
+    won = [c for c in contested_draft_claims(managers) if c["winner"] is not None]
+    if not won or won[0]["claimants"] < MOST_CONTESTED_MIN_CLAIMANTS:
         return
 
-    top_count = contests[0]["claimants"]
-    top = [c for c in contests if c["claimants"] == top_count]
+    top_count = won[0]["claimants"]
+    top = [c for c in won if c["claimants"] == top_count]
     shown = top[:_DETAIL_CAP]
     omitted = len(top) - len(shown)
     detail = " ".join(format_contested_claim(c) for c in shown)
@@ -1871,9 +1873,6 @@ def _compute_most_contested_award(
             f"{top_count} managers omitted."
         )
     awards["most_contested"] = RecapAwardEntry(
-        # Empty exactly when every race shown says its winner could not be
-        # identified: nobody is named rather than a placeholder that reads
-        # as a name.
         manager_name=" and ".join(c["winner"] for c in top if c["winner"]),
         value=top_count,
         detail=detail,
