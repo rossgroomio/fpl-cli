@@ -2033,8 +2033,8 @@ async def collect_draft_recap_data(
     from fpl_cli.api.fpl_draft import (
         FPLDraftClient,
         is_accepted_transaction,
-        is_lost_claim,
         match_draft_to_main,
+        resolve_lost_claims,
     )
     from fpl_cli.models.player import POSITION_MAP
 
@@ -2073,15 +2073,22 @@ async def collect_draft_recap_data(
         # but who was active cannot -- a manager whose only claim a rival won
         # has no accepted row and used to be indistinguishable from one who
         # submitted nothing (issue #329). So both are kept, separately.
+        #
+        # Bucketed by manager *before* either question is asked: what a
+        # manager lost is only answerable from his whole gameweek, since a
+        # claim denied on a player he went on to win is his own cascade
+        # rather than a defeat (issue #342).
         txn_response = await draft_client.get_league_transactions(draft_league_id)
         all_txns: list[dict[str, Any]] = txn_response.get("transactions", [])
         gw_txns = [t for t in all_txns if t.get("event") == gw]
-        txns_by_entry = _bucket_draft_txns_by_league_entry(
-            [t for t in gw_txns if is_accepted_transaction(t)], league_entries,
-        )
-        lost_by_entry = _bucket_draft_txns_by_league_entry(
-            [t for t in gw_txns if is_lost_claim(t)], league_entries,
-        )
+        by_entry = _bucket_draft_txns_by_league_entry(gw_txns, league_entries)
+        txns_by_entry = {
+            le_id: [t for t in rows if is_accepted_transaction(t)]
+            for le_id, rows in by_entry.items()
+        }
+        lost_by_entry = {
+            le_id: resolve_lost_claims(rows) for le_id, rows in by_entry.items()
+        }
 
         # Fetch picks for each manager
         sem = asyncio.Semaphore(_PICKS_CONCURRENCY)

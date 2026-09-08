@@ -1043,9 +1043,12 @@ priority it was made at. They sit apart from `transactions`, which stays the lis
 that happened — nothing moved here, so there are no points on either side and no net —
 because a manager whose whole gameweek was one claim they lost has no completed move,
 and a ledger holding moves alone wrote them into the permanent record as having sat the
-week out. Only claims lost to a rival are recorded: a claim denied because the manager's
-own earlier accepted claim had already dropped the nominated player is the cascade
-behind a claim that succeeded, not an attempt, and never appears (see
+week out. Only claims a rival won are recorded, which the feed's denial codes do not
+identify on their own: a claim denied because the manager's own earlier accepted claim
+had already dropped the nominated player is the cascade behind a success, and so is a
+claim denied because he had just won the incoming player himself — both are read against
+his whole gameweek and neither appears. A player he claimed several times against
+different drops is one claim, at the best priority he spent on him (see
 [Conditional chains and outcomes](fpl-rules.md#waivers)). A replay that finds fewer
 claims than the gameweek recorded keeps the recorded list and says so
 (`league_history_claims_carried`): a claim whose player can no longer be placed is

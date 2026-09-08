@@ -189,15 +189,19 @@ Processed **24 hours before the GW deadline**. After processing, **free agency**
 
 **Locked players** (unavailable for waivers): players added to the game within 24 hours of the waiver deadline, or players recently dropped from another squad. Locked players become available at the next waiver deadline.
 
-**Conditional chains and outcomes.** A manager submits several claims in their own priority order, and claims may share a drop, so only one of a group is ever expected to land. Each submitted claim ends in one of three states, and the last two are not the same thing:
+**Conditional chains and outcomes.** A manager submits several claims in their own priority order. Claims may share a drop, and may name one target against several drops, so only one of a group is ever expected to land. Claims are processed league-wide in a single order, and each ends in one of three states:
 
 | Outcome | Meaning |
 |---|---|
 | Accepted | The claim was processed; the incoming player joined the squad and the nominated player was dropped |
-| Lost to a rival | A manager with higher priority claimed the same player. A genuine attempt, and the manager ends with no move from it |
-| Drop already used | An earlier accepted claim by the same manager had already dropped the nominated player, so this one could not be processed. The cascade behind a claim that succeeded, not an attempt that failed - it cannot occur without that earlier accepted claim |
+| Incoming player gone | Someone had already taken him by the time this claim processed, so it could not be filled |
+| Drop already used | An earlier accepted claim by the same manager had already dropped the nominated player, so this one could not be processed. It cannot occur without that earlier accepted claim |
 
-Only accepted claims changed a squad, so only they belong in a record of moves. But a manager who submitted claims and lost them all was active, and reading their absence from the accepted set as inactivity misreports them.
+Neither denial says on its own whether the manager lost anything, because "someone" in the second row includes the manager himself. A manager who wins a player at one priority and listed him again lower down gets an "incoming player gone" for the player he just won — the same self-cascade the third row describes, arriving on the other side of the claim. Only a denial where a **different** manager took the player is a defeat.
+
+So a claim's outcome is only readable against the manager's whole gameweek, never from the claim alone. Two rules follow: a denial for a player the manager also won is his own cascade, not a loss; and a player he claimed several times and lost was wanted once, not once per drop he offered.
+
+Only accepted claims changed a squad, so only they belong in a record of moves. But a manager who submitted claims and genuinely lost them all was active, and reading their absence from the accepted set as inactivity misreports them.
 
 ### Free Agents
 Unclaimed players can be picked up first-come, first-served in the **24-hour window before each GW deadline**. Free agent pickups don't affect waiver priority.

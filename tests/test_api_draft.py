@@ -7,7 +7,8 @@ import pytest
 from fpl_cli.api.fpl_draft import (
     FPLDraftClient,
     is_accepted_transaction,
-    is_lost_claim,
+    is_denied_on_the_incoming_player,
+    resolve_lost_claims,
     match_draft_to_main,
 )
 from tests.conftest import (
@@ -630,17 +631,103 @@ class TestDraftTransactionResultCodes:
     def test_a_row_with_no_result_at_all_is_not_treated_as_accepted(self):
         assert is_accepted_transaction({}) is False
 
-    def test_a_di_row_is_a_claim_a_rival_won(self):
-        assert is_lost_claim({"result": "di"}) is True
+    def test_a_di_row_is_denied_on_the_incoming_player(self):
+        assert is_denied_on_the_incoming_player({"result": "di"}) is True
 
     def test_a_do_row_is_not_an_attempt(self):
         """`do` means the manager's own earlier accepted claim had already
         used that drop. Counting it as a failed attempt would report the
         manager who *won* the claim as having lost one."""
-        assert is_lost_claim({"result": "do"}) is False
+        assert is_denied_on_the_incoming_player({"result": "do"}) is False
 
-    def test_an_accepted_row_is_not_a_lost_claim(self):
-        assert is_lost_claim({"result": "a"}) is False
+    def test_an_accepted_row_is_not_denied(self):
+        assert is_denied_on_the_incoming_player({"result": "a"}) is False
+
+
+def _claim(element_in, result, priority=None, element_out=1):
+    return {
+        "element_in": element_in, "element_out": element_out,
+        "result": result, "priority": priority, "kind": "w",
+    }
+
+
+class TestResolveLostClaims:
+    """Issue #342: `di` says the incoming player was gone when the claim
+    processed, not who took him -- and a manager's own winning claim removes
+    him exactly as a rival's does."""
+
+    def test_a_di_for_a_player_the_manager_won_is_not_a_loss(self):
+        """The reported shape: won at priority 1, listed again at priority 4
+        against a different drop, denied because he had just taken the player
+        himself. Reporting it inverts the outcome for the manager who won."""
+        claims = resolve_lost_claims([
+            _claim(167, "a", priority=1, element_out=55),
+            _claim(167, "di", priority=4, element_out=222),
+        ])
+        assert claims == []
+
+    def test_a_di_for_a_player_a_rival_won_is_still_a_loss(self):
+        claims = resolve_lost_claims([
+            _claim(167, "a", priority=1),
+            _claim(569, "di", priority=2),
+        ])
+        assert [c["element_in"] for c in claims] == [569]
+
+    def test_one_player_claimed_several_times_is_one_loss(self):
+        """A conditional chain offering different drops for one target: he
+        wanted the player once, so three denials are not three defeats."""
+        claims = resolve_lost_claims([
+            _claim(569, "di", priority=2, element_out=55),
+            _claim(569, "di", priority=5, element_out=222),
+            _claim(569, "di", priority=8, element_out=333),
+        ])
+        assert len(claims) == 1
+        assert claims[0]["priority"] == 2
+
+    def test_the_best_priority_survives_whatever_order_the_feed_sends(self):
+        claims = resolve_lost_claims([
+            _claim(569, "di", priority=6),
+            _claim(569, "di", priority=3),
+        ])
+        assert claims[0]["priority"] == 3
+
+    def test_a_claim_with_no_priority_loses_to_a_numbered_one(self):
+        """A free-agent denial carries no priority; a numbered claim is the
+        more informative row to keep."""
+        claims = resolve_lost_claims([
+            _claim(569, "di", priority=None),
+            _claim(569, "di", priority=4),
+        ])
+        assert claims[0]["priority"] == 4
+
+    def test_a_do_row_is_still_never_an_attempt(self):
+        claims = resolve_lost_claims([
+            _claim(167, "a", priority=1, element_out=55),
+            _claim(569, "do", priority=2, element_out=55),
+        ])
+        assert claims == []
+
+    def test_the_full_reported_gameweek_resolves_to_the_distinct_losses(self):
+        """One manager's real gameweek: six denied rows, two players claimed
+        twice each, and one denial for the player he won."""
+        claims = resolve_lost_claims([
+            _claim(167, "a", priority=1, element_out=55),
+            _claim(569, "di", priority=2, element_out=55),
+            _claim(316, "di", priority=3, element_out=55),
+            _claim(167, "di", priority=4, element_out=222),
+            _claim(569, "di", priority=5, element_out=222),
+            _claim(316, "di", priority=6, element_out=222),
+            _claim(115, "di", priority=7, element_out=503),
+        ])
+        assert [(c["element_in"], c["priority"]) for c in claims] == [
+            (569, 2), (316, 3), (115, 7),
+        ]
+
+    def test_a_gameweek_with_nothing_denied_resolves_to_nothing(self):
+        assert resolve_lost_claims([_claim(167, "a", priority=1)]) == []
+
+    def test_a_row_with_no_incoming_player_is_skipped(self):
+        assert resolve_lost_claims([_claim(None, "di", priority=1)]) == []
 
 
 class TestRecentReleasesIgnoreDeniedClaims:
