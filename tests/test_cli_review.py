@@ -1458,13 +1458,12 @@ class TestReviewClassicLeagueNearbyRivals:
         rivals_section = out.split("Nearby Rivals")[1].split("Best GW Performers")[0]
         assert "Manager4" in rivals_section and "Manager5" in rivals_section
 
-    async def test_rival_tied_with_user_shows_dash_not_zero(self, capsys):
-        # A rival on the exact same total as the user is a diff of 0, which
-        # must render like the sibling report/template renderers ("-"), not
-        # the literal digit "0". The centred window pulls in a same-total
-        # rival more often than the old top-slice did, so this now surfaces
-        # more (report.py's _generate_review_inline and gw_review.md.j2
-        # both already special-case zero this way).
+    async def test_rival_tied_with_user_shows_zero_not_dash(self, capsys):
+        # A rival on the exact same total as the user is a diff of 0. This
+        # must render as the literal digit "0", matching the sibling
+        # report/template renderers (#327) -- "-" is reserved for the
+        # user's own row, which carries no diff at all, so a tied rival
+        # showing "-" would be indistinguishable from the self-row.
         standings = self._standings([1000, 1000])
         client = AsyncMock()
         client.get_classic_league_standings = AsyncMock(return_value={
@@ -1476,8 +1475,8 @@ class TestReviewClassicLeagueNearbyRivals:
 
         out = capsys.readouterr().out
         rivals_section = out.split("Nearby Rivals")[1].split("Best GW Performers")[0]
-        assert "(0)" not in rivals_section
-        assert "(-)" in rivals_section
+        assert "(0)" in rivals_section
+        assert "(-)" not in rivals_section
 
 
 class TestClassicPositionFields:

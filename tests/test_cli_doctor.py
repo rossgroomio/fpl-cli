@@ -72,8 +72,8 @@ def _mock_client(
             return_value=manager_entry
             or {
                 "name": "My Team",
-                "player_first_name": "Ross",
-                "player_last_name": "G",
+                "player_first_name": "Test",
+                "player_last_name": "Manager",
                 "leagues": {"classic": [{"id": 99}]},
             }
         )
@@ -106,8 +106,8 @@ def _mock_draft_client(league_details=None, entry_profile=None, league_error=Non
             or {
                 "entry": {
                     "name": "Draft Team",
-                    "player_first_name": "Ross",
-                    "player_last_name": "G",
+                    "player_first_name": "Test",
+                    "player_last_name": "Manager",
                     "league_set": [4321],
                 }
             }
@@ -378,7 +378,7 @@ class TestIdChecks:
         result = _run(_mock_client(), settings={"fpl": {"classic_entry_id": 123}})
         assert result.exit_code == 0
         assert "My Team" in result.output
-        assert "Ross G" in result.output
+        assert "Test Manager" in result.output
 
     def test_dead_classic_entry_is_broken(self):
         result = _run(
@@ -428,8 +428,8 @@ class TestIdChecks:
         # the league that is wrong, so the entry must not be condemned for it.
         entry = {
             "name": "My Team",
-            "player_first_name": "Ross",
-            "player_last_name": "G",
+            "player_first_name": "Test",
+            "player_last_name": "Manager",
             "leagues": {"classic": [{"id": 111}]},
         }
         result = _run(
@@ -454,7 +454,7 @@ class TestIdChecks:
     def test_classic_entry_without_listed_leagues_is_not_condemned(self):
         # An entry payload carrying no classic leagues is a shape change, not
         # proof the entry left the league.
-        entry = {"name": "My Team", "player_first_name": "Ross", "player_last_name": "G"}
+        entry = {"name": "My Team", "player_first_name": "Test", "player_last_name": "Manager"}
         result = _run(
             _mock_client(manager_entry=entry),
             settings={"fpl": {"classic_entry_id": 123, "classic_league_id": 99}},
@@ -511,7 +511,7 @@ class TestIdChecks:
     def test_dead_draft_entry_hint_mentions_init(self):
         result = _run(
             _mock_client(),
-            settings={"fpl": {"draft_entry_id": 90368}},
+            settings={"fpl": {"draft_entry_id": 456}},
             draft_client=_mock_draft_client(entry_error=_http_404()),
         )
         assert result.exit_code == 1
@@ -532,7 +532,7 @@ class TestIdChecks:
         }
         result = _run(
             _mock_client(),
-            settings={"fpl": {"draft_league_id": 4321, "draft_entry_id": 90368}},
+            settings={"fpl": {"draft_league_id": 4321, "draft_entry_id": 456}},
             draft_client=_mock_draft_client(entry_profile=profile),
         )
         assert result.exit_code == 1
@@ -542,7 +542,7 @@ class TestIdChecks:
     def test_draft_entry_in_configured_league_is_ok(self):
         result = _run(
             _mock_client(),
-            settings={"fpl": {"draft_league_id": 4321, "draft_entry_id": 90368}},
+            settings={"fpl": {"draft_league_id": 4321, "draft_entry_id": 456}},
             draft_client=_mock_draft_client(),
         )
         assert result.exit_code == 0
@@ -554,14 +554,14 @@ class TestIdChecks:
         profile = {
             "entry": {
                 "name": "My Team",
-                "player_first_name": "Ross",
-                "player_last_name": "G",
+                "player_first_name": "Test",
+                "player_last_name": "Manager",
                 "league_set": [],
             }
         }
         result = _run(
             _mock_client(),
-            settings={"fpl": {"draft_league_id": 4321, "draft_entry_id": 90368}},
+            settings={"fpl": {"draft_league_id": 4321, "draft_entry_id": 456}},
             draft_client=_mock_draft_client(entry_profile=profile),
         )
         assert result.exit_code == 0
@@ -573,14 +573,14 @@ class TestIdChecks:
         profile = {
             "entry": {
                 "name": "My Team",
-                "player_first_name": "Ross",
-                "player_last_name": "G",
+                "player_first_name": "Test",
+                "player_last_name": "Manager",
                 "league_set": [111],
             }
         }
         result = _run(
             _mock_client(),
-            settings={"fpl": {"draft_league_id": 598, "draft_entry_id": 90368}},
+            settings={"fpl": {"draft_league_id": 598, "draft_entry_id": 456}},
             draft_client=_mock_draft_client(entry_profile=profile, league_error=_http_404()),
         )
         assert result.exit_code == 1  # the league row alone is broken
@@ -596,7 +596,7 @@ class TestIdChecks:
         error = httpx.ConnectError("boom", request=request)
         result = _run(
             _mock_client(),
-            settings={"fpl": {"draft_league_id": 4321, "draft_entry_id": 90368}},
+            settings={"fpl": {"draft_league_id": 4321, "draft_entry_id": 456}},
             draft_client=_mock_draft_client(league_error=error),
         )
         assert result.exit_code == 0
@@ -605,7 +605,7 @@ class TestIdChecks:
     def test_draft_entry_without_league_id_notes_unchecked_membership(self):
         result = _run(
             _mock_client(),
-            settings={"fpl": {"draft_entry_id": 90368}},
+            settings={"fpl": {"draft_entry_id": 456}},
             draft_client=_mock_draft_client(),
         )
         assert result.exit_code == 0

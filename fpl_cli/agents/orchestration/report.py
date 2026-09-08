@@ -497,14 +497,18 @@ class ReportAgent(Agent):
             if cl.get("nearby_rivals"):
                 lines.extend([
                     "### Nearby Rivals (+/- 25 pts)",
-                    "| Pos | Manager | Total | Diff |",
-                    "|-----|---------|-------|------|",
+                    "| Pos | Manager | Total | Pts Diff |",
+                    "|-----|---------|-------|----------|",
                 ])
                 user_total = cl.get("user_total", 0)
                 for r in cl["nearby_rivals"]:
-                    diff = r.get("total", 0) - user_total
-                    diff_str = f"+{diff}" if diff > 0 else str(diff) if diff < 0 else "-"
-                    name = r.get("manager_name", "Unknown")
+                    if r.get("is_user"):
+                        name = "You"
+                        diff_str = ""
+                    else:
+                        diff = r.get("total", 0) - user_total
+                        diff_str = f"+{diff}" if diff > 0 else str(diff)
+                        name = r.get("manager_name", "Unknown")
                     lines.append(f"| {r.get('rank')} | {name} | {r.get('total'):,} | {diff_str} |")
                 if cl.get("nearby_rivals_omitted"):
                     lines.append(f"*...and {cl['nearby_rivals_omitted']} more within 25*")
