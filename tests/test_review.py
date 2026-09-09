@@ -2320,6 +2320,107 @@ class TestValidateResearchTeams:
         assert "Liverpool" in result
         assert corrections == []
 
+    def test_spaced_initial_survives_the_name_guard(self, players_and_teams):
+        """"B. Fernandes" for the supplied "B.Fernandes" is a reformat, not an invention (#343)."""
+        player_map, teams = players_and_teams
+        player_map[10] = make_player(id=10, web_name="B.Fernandes", team_id=13)
+        table = self._make_table(
+            "disappointments", [("B. Fernandes", "MCI", "2", "Anonymous")]
+        )
+        result, corrections = validate_research_teams(
+            table, player_map, teams, table_allowlist={"B.Fernandes"}
+        )
+        assert "B. Fernandes" in result
+        assert not any("stripped" in c for c in corrections)
+
+    def test_typographic_apostrophe_survives_the_name_guard(self, players_and_teams):
+        """U+2019 for the supplied U+0027 is a reformat, not an invention (#343)."""
+        player_map, teams = players_and_teams
+        player_map[11] = make_player(id=11, web_name="O'Reilly", team_id=13)
+        table = self._make_table(
+            "disappointments", [("O\u2019Reilly", "MCI", "0", "Did not feature at all")]
+        )
+        result, corrections = validate_research_teams(
+            table, player_map, teams, table_allowlist={"O'Reilly"}
+        )
+        assert "O\u2019Reilly" in result
+        assert not any("stripped" in c for c in corrections)
+
+    def test_reformatted_name_is_not_logged_as_a_correction(self, players_and_teams):
+        """A style difference alone is not a corruption - leave the cell and the log alone."""
+        player_map, teams = players_and_teams
+        player_map[10] = make_player(id=10, web_name="B.Fernandes", team_id=13)
+        table = self._make_table(
+            "disappointments", [("B. Fernandes", "MCI", "2", "Anonymous")]
+        )
+        _, corrections = validate_research_teams(
+            table, player_map, teams, table_allowlist={"B.Fernandes"}
+        )
+        assert corrections == []
+
+    def test_reformatted_name_still_gets_its_club_corrected(self, players_and_teams):
+        """The row survives *and* stays validated: a wrong club on it is still fixed."""
+        player_map, teams = players_and_teams
+        player_map[10] = make_player(id=10, web_name="B.Fernandes", team_id=13)
+        table = self._make_table(
+            "disappointments", [("B. Fernandes", "ARS", "2", "Anonymous")]
+        )
+        result, corrections = validate_research_teams(
+            table, player_map, teams, table_allowlist={"B.Fernandes"}
+        )
+        assert "| MCI |" in result
+        assert any("ARS -> MCI" in c for c in corrections)
+
+    def test_stripped_row_leaves_a_visible_note(self, players_and_teams):
+        """A shortened table says so in the report, not only on stderr (#343)."""
+        player_map, teams = players_and_teams
+        table = self._make_table(
+            "disappointments",
+            [
+                ("Salah", "LIV", "1", "Quiet game"),
+                ("Branthwaite", "EVE", "1", "Invented player"),
+            ],
+        )
+        result, _ = validate_research_teams(
+            table, player_map, teams, table_allowlist={"Salah"}
+        )
+        assert "[table trimmed: 1 unlisted row(s) removed]" in result
+        # Blank line between the last row and the stub, so markdown ends the
+        # table rather than absorbing the stub into it.
+        lines = result.split("\n")
+        assert lines[lines.index("[table trimmed: 1 unlisted row(s) removed]") - 1] == ""
+
+    def test_strip_note_counts_each_table_separately(self, players_and_teams):
+        """Two shortened tables get their own counts, not one running total."""
+        player_map, teams = players_and_teams
+        performers = self._make_table(
+            "performers",
+            [("Salah", "LIV", "12", "Two goals"), ("Branthwaite", "EVE", "9", "Invented")],
+        )
+        disappointments = self._make_table(
+            "disappointments",
+            [
+                ("Haaland", "MCI", "1", "Quiet"),
+                ("Mykolenko", "EVE", "1", "Invented"),
+                ("Tarkowski", "EVE", "1", "Invented"),
+            ],
+        )
+        text = f"{performers}\n\n{disappointments}\n"
+        result, _ = validate_research_teams(
+            text, player_map, teams, table_allowlist={"Salah", "Haaland"}
+        )
+        assert "[table trimmed: 1 unlisted row(s) removed]" in result
+        assert "[table trimmed: 2 unlisted row(s) removed]" in result
+
+    def test_no_strip_note_when_nothing_stripped(self, players_and_teams):
+        """A clean table gains nothing - the stub only appears when rows went."""
+        player_map, teams = players_and_teams
+        table = self._make_table("disappointments", [("Salah", "LIV", "1", "Quiet game")])
+        result, _ = validate_research_teams(
+            table, player_map, teams, table_allowlist={"Salah"}
+        )
+        assert "table trimmed" not in result
+
 
 class TestEnsureTopPerformerFirst:
     """Tests for ensure_top_performer_first (issue #190)."""
@@ -2372,6 +2473,19 @@ class TestEnsureTopPerformerFirst:
         result, _ = ensure_top_performer_first(table, top_performer)
         inserted_row = result.split("\n")[2]
         assert inserted_row.rstrip().endswith("| GW data |")
+
+    def test_reformatted_top_performer_is_moved_not_duplicated(self):
+        """"B. Fernandes" is the same row as "B.Fernandes" - move it, don't synthesise
+        a second one alongside it (#343)."""
+        table = self._table([
+            ("Cherki", "MCI", "14", "Brace"),
+            ("B. Fernandes", "MUN", "23", "Hat-trick"),
+        ])
+        top_performer = {"name": "B.Fernandes", "team": "MUN", "points": 23}
+        result, corrections = ensure_top_performer_first(table, top_performer)
+        assert result.count("Fernandes") == 1
+        assert "B. Fernandes" in result.split("\n")[2]
+        assert any("moved to first row" in c for c in corrections)
 
     def test_buried_row_is_moved_to_first(self):
         table = self._table([

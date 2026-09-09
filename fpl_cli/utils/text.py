@@ -1,5 +1,6 @@
 """Text utilities: cross-source name comparison, and number wording."""
 
+import re
 import unicodedata
 
 _LETTER_VARIANTS: dict[int, str] = {
@@ -24,6 +25,47 @@ def strip_diacritics(text: str) -> str:
     return "".join(
         c for c in unicodedata.normalize("NFD", text) if unicodedata.category(c) != "Mn"
     )
+
+
+# The apostrophe family, folded onto the typewriter one. None of these is a
+# diacritic, so `strip_diacritics` leaves them alone and "O’Reilly" never
+# matches "O'Reilly". Folded before NFKC deliberately: NFKC decomposes U+00B4
+# to a space plus a combining acute, which would leave a space where the
+# apostrophe was.
+_APOSTROPHE_VARIANTS: dict[int, str] = {
+    0x2018: "'",  # ‘ left single quotation mark
+    0x2019: "'",  # ’ right single quotation mark - what most editors autocorrect to
+    0x02BC: "'",  # ʼ modifier letter apostrophe
+    0x00B4: "'",  # ´ acute accent, typed as an apostrophe
+    0x0060: "'",  # ` grave accent, typed as an apostrophe
+}
+
+_WHITESPACE_RE = re.compile(r"\s+")
+# "B. Fernandes" -> "B.Fernandes". An initial is a single letter followed by a
+# full stop; the space after it is a rendering choice, and FPL's own web_names
+# make it either way ("B.Fernandes", "M.Salah"). `Jr.` and other multi-letter
+# abbreviations are excluded by the preceding word boundary.
+_INITIAL_SPACE_RE = re.compile(r"\b([a-z])\.\s+")
+
+
+def normalise_name(text: str) -> str:
+    """Fold a player name to the form both sides of a name comparison must share.
+
+    Diacritics and case, as `strip_diacritics` plus `lower` always did, and on
+    top of that the three things an LLM changes when it retypes a name it was
+    handed: the apostrophe style, runs of whitespace (non-breaking spaces
+    included, via NFKC), and the space after an initial. All of them are
+    cosmetic, none of them survives a `\b`-anchored regex search, and each one
+    cost a valid row in the review's Disappointments table (#343).
+
+    Apply it to both the canonical name and the text being searched: the point
+    is that they agree, not that either is authoritative.
+    """
+    text = text.translate(_APOSTROPHE_VARIANTS)
+    text = unicodedata.normalize("NFKC", text)
+    text = strip_diacritics(text).lower()
+    text = _WHITESPACE_RE.sub(" ", text)
+    return _INITIAL_SPACE_RE.sub(r"\1.", text).strip()
 
 
 _ORDINAL_SUFFIXES = {1: "st", 2: "nd", 3: "rd"}

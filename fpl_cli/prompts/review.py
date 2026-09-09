@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 from fpl_cli.utils.gameweek import is_opening_gameweek
 from fpl_cli.utils.markdown import fence_flags, has_heading, leaf_body, parse_heading
-from fpl_cli.utils.text import strip_diacritics
+from fpl_cli.utils.text import normalise_name, strip_diacritics
 
 logger = logging.getLogger(__name__)
 
@@ -755,6 +755,17 @@ _TEAM_CODE_SHAPE_RE = re.compile(r"^[A-Z]{2,4}$")
 _SEPARATOR_ROW_RE = re.compile(r"^\s*\|[-:|\s]*$")
 
 
+def _rows_stripped_stub(count: int) -> str:
+    """The visible marker a shortened table carries in the saved report.
+
+    Same reasoning as the narrative scrubber's stub: the strip notice reaches
+    stderr and `--debug` output only, both long gone by the time someone reads
+    the markdown, and a table three rows long reads as the model's own choice
+    rather than as one the guard cut down (#343).
+    """
+    return f"[table trimmed: {count} unlisted row(s) removed]"
+
+
 def validate_research_teams(
     text: str,
     player_map: dict[int, Player],
@@ -768,13 +779,22 @@ def validate_research_teams(
     rows for players absent from the list, and corrects corrupted names (e.g.
     "Beto (Ekitiké)" → "Ekitiké") where a known name appears within the cell.
 
+    Both sides of the name comparison go through `normalise_name`, so a model
+    that retyped a supplied name in a different but equivalent style -- "B.
+    Fernandes" for "B.Fernandes", "O’Reilly" for "O'Reilly" -- keeps its row
+    instead of being read as an invention (#343). A row that really is stripped
+    leaves a visible "[table trimmed: N unlisted row(s) removed]" line under the
+    table, so the shortened table explains itself to a reader of the report.
+
     Args:
         text: The research provider response text containing markdown tables.
         player_map: Mapping of player ID to Player model (from FPL API).
         teams: Mapping of team ID to Team model (from FPL API).
         table_allowlist: Canonical player names from the blankers/dream-team lists
             passed to the research prompt. When provided, rows for players not
-            in this set are stripped, and corrupted names are corrected.
+            in this set are stripped, and corrupted names are corrected. Style
+            differences alone (spacing, apostrophe, accents, case) are not
+            grounds for either -- the row passes through untouched.
 
     Returns:
         A tuple of (corrected_text, corrections_log) where corrections_log lists
@@ -783,7 +803,7 @@ def validate_research_teams(
     # Build name -> team short_name lookup, excluding ambiguous web_names
     name_counts: dict[str, list[int]] = {}
     for player in player_map.values():
-        key = strip_diacritics(player.web_name).lower()
+        key = normalise_name(player.web_name)
         name_counts.setdefault(key, []).append(player.team_id)
 
     name_to_team: dict[str, str] = {}
@@ -807,7 +827,7 @@ def validate_research_teams(
     # win over shorter prefixes (e.g. "Bruno") when both are present.
     normalised_known: list[tuple[str, str]] = (
         sorted(
-            ((strip_diacritics(n).lower(), n) for n in table_allowlist),
+            ((normalise_name(n), n) for n in table_allowlist),
             key=lambda kv: len(kv[0]),
             reverse=True,
         )
@@ -820,10 +840,17 @@ def validate_research_teams(
     corrected_lines: list[str] = []
     corrections: list[str] = []
     in_table = False
+    # Per-table, because the stub names a count and the two tables are
+    # separately shortened. A blank line precedes it so markdown ends the
+    # table at the stub rather than absorbing it as another row.
+    stripped_rows = 0
 
     for line in lines:
         # Check for table header
         if any(header in line for header in _TABLE_HEADERS):
+            if stripped_rows:
+                corrected_lines.extend(["", _rows_stripped_stub(stripped_rows)])
+                stripped_rows = 0
             in_table = True
             corrected_lines.append(line)
             continue
@@ -831,6 +858,9 @@ def validate_research_teams(
         # Exit table on blank line or non-table line
         if in_table and (not line.strip() or not line.strip().startswith("|")):
             in_table = False
+            if stripped_rows:
+                corrected_lines.extend(["", _rows_stripped_stub(stripped_rows)])
+                stripped_rows = 0
             corrected_lines.append(line)
             continue
 
@@ -851,7 +881,7 @@ def validate_research_teams(
                     # Strip markdown bold/italics anywhere in the cell before
                     # name comparison (handles "**Salah**", "**Salah** (note)").
                     plain_player = re.sub(r"\*+", "", player_cell).strip()
-                    normalised_player = strip_diacritics(plain_player).lower()
+                    normalised_player = normalise_name(plain_player)
 
                     # Name validation: strip unknown rows, correct corrupted names
                     if normalised_known:
@@ -865,8 +895,9 @@ def validate_research_teams(
                         )
                         if matched_canonical is None:
                             corrections.append(f"{plain_player}: stripped (not in provided list)")
+                            stripped_rows += 1
                             continue
-                        canonical_normalised = strip_diacritics(matched_canonical).lower()
+                        canonical_normalised = normalise_name(matched_canonical)
                         if canonical_normalised != normalised_player:
                             line = re.sub(r"^\|[^|]+\|", f"| {matched_canonical} |", line, count=1)
                             corrections.append(f"{player_cell}: name corrected -> {matched_canonical}")
@@ -888,6 +919,9 @@ def validate_research_teams(
 
         corrected_lines.append(line)
 
+    if stripped_rows:
+        corrected_lines.extend(["", _rows_stripped_stub(stripped_rows)])
+
     return "\n".join(corrected_lines), corrections
 
 
@@ -903,7 +937,10 @@ def ensure_top_performer_first(
     section exists to showcase (issue #190). Move their row to the top if the
     writer buried it further down, or synthesise one if they dropped it
     entirely. Run this after `validate_research_teams` so it operates on
-    already name/team-corrected rows.
+    already name/team-corrected rows. The row match folds through
+    `normalise_name` for the same reason that guard does: a top performer the
+    writer listed as "B. Fernandes" against a supplied "B.Fernandes" is that
+    row, and comparing the raw strings would synthesise a second one beside it.
 
     Args:
         text: Research provider response text.
@@ -918,7 +955,7 @@ def ensure_top_performer_first(
         return text, []
 
     name = top_performer["name"]
-    normalised_target = strip_diacritics(name).lower()
+    normalised_target = normalise_name(name)
 
     lines = text.split("\n")
     header_idx: int | None = None
@@ -949,7 +986,7 @@ def ensure_top_performer_first(
         if not match:
             continue
         plain_player = re.sub(r"\*+", "", match.group(1)).strip()
-        if strip_diacritics(plain_player).lower() == normalised_target:
+        if normalise_name(plain_player) == normalised_target:
             matched_idx = i
             break
 
