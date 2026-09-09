@@ -70,6 +70,18 @@ def draft_claim_priority_rank(priority: int | None) -> tuple[int, int]:
     return (1, 0) if priority is None else (0, priority)
 
 
+def _processing_position(txn: Mapping[str, Any], arrival: int) -> tuple[int, int, int]:
+    """Where one row sits in the order the league processed the gameweek.
+
+    Waivers run first, as a single batch the engine works through in `index`
+    order; free agency opens once that batch is done and its rows carry no
+    index at all. `arrival` is the row's place in the feed, which orders the
+    rows an index cannot separate.
+    """
+    index = txn.get("index")
+    return (0, index, arrival) if isinstance(index, int) else (1, 0, arrival)
+
+
 def resolve_lost_claims(txns: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
     """The claims one manager genuinely lost, from all their rows for one
     gameweek -- the question no single row can answer (issue #342).
@@ -77,24 +89,44 @@ def resolve_lost_claims(txns: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
     Two things a row-local read gets wrong, both consequences of managers
     submitting conditional chains rather than independent claims:
 
-    - A `di` for a player this manager also *won* is his own cascade, not a
-      defeat. He listed the same target twice with different drops, one
+    - A `di` for a player this manager had *already taken* is his own cascade,
+      not a defeat. He listed the same target twice with different drops, one
       landed, and every later claim for him was then denied on the incoming
       side. Reporting it inverts the outcome for the manager who won the race.
     - A player he claimed several times and lost was wanted once, so he is
       returned once, at the best priority he spent on him. Otherwise one
       target across three drops reads as three separate defeats.
 
-    Both rules are the ones `contested_draft_claims` already states and works
-    to; this brings the stored claims into line with them, so the two layers
-    cannot disagree about what a manager lost. Order follows the feed, by
-    the row kept for each player.
+    "Already taken" is a question about order, not merely about owning him by
+    the end of the gameweek: only a claim that landed *before* the denial can
+    have caused it. Free agency opens after the whole waiver batch, so a
+    manager who loses a waiver to a rival and signs the same player as a free
+    agent once the rival drops him still lost that waiver, and the loss is
+    still recorded -- clearing it on the later pickup would erase a real
+    defeat and contradict the case `contested_draft_claims` documents.
+
+    Both rules are the ones that function already states and works to; this
+    brings the stored claims into line with them, so the two layers cannot
+    disagree about what a manager lost. Order follows the feed, by the row
+    kept for each player.
     """
-    won = {t.get("element_in") for t in txns if is_accepted_transaction(t)}
-    best: dict[Any, dict[str, Any]] = {}
-    for txn in txns:
+    # The earliest point at which a claim of this manager's took each player.
+    taken_at: dict[Any, tuple[int, int, int]] = {}
+    for arrival, txn in enumerate(txns):
+        if not is_accepted_transaction(txn):
+            continue
         player = txn.get("element_in")
-        if player is None or player in won or not is_denied_on_the_incoming_player(txn):
+        at = _processing_position(txn, arrival)
+        if player not in taken_at or at < taken_at[player]:
+            taken_at[player] = at
+
+    best: dict[Any, dict[str, Any]] = {}
+    for arrival, txn in enumerate(txns):
+        player = txn.get("element_in")
+        if player is None or not is_denied_on_the_incoming_player(txn):
+            continue
+        taken = taken_at.get(player)
+        if taken is not None and taken < _processing_position(txn, arrival):
             continue
         known = best.get(player)
         if known is None or draft_claim_priority_rank(txn.get("priority")) < draft_claim_priority_rank(

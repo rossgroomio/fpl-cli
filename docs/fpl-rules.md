@@ -199,7 +199,9 @@ Processed **24 hours before the GW deadline**. After processing, **free agency**
 
 Neither denial says on its own whether the manager lost anything, because "someone" in the second row includes the manager himself. A manager who wins a player at one priority and listed him again lower down gets an "incoming player gone" for the player he just won — the same self-cascade the third row describes, arriving on the other side of the claim. Only a denial where a **different** manager took the player is a defeat.
 
-So a claim's outcome is only readable against the manager's whole gameweek, never from the claim alone. Two rules follow: a denial for a player the manager also won is his own cascade, not a loss; and a player he claimed several times and lost was wanted once, not once per drop he offered.
+So a claim's outcome is only readable against the manager's whole gameweek, never from the claim alone. Two rules follow: a denial for a player one of the manager's own claims had **already taken** is his own cascade, not a loss; and a player he claimed several times and lost was wanted once, not once per drop he offered.
+
+The first rule turns on order, not on who ends the gameweek owning the player. Waivers process as one batch and free agency opens only afterwards, so a manager who loses a waiver to a rival, and signs the same player once that rival drops him, still lost the waiver.
 
 Only accepted claims changed a squad, so only they belong in a record of moves. But a manager who submitted claims and genuinely lost them all was active, and reading their absence from the accepted set as inactivity misreports them.
 

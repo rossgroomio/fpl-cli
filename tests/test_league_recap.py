@@ -5117,16 +5117,35 @@ class TestDraftLostClaims:
         data = await self._collect([
             {
                 "event": 3, "result": "a", "entry": 1, "kind": "w", "priority": 1,
-                "element_in": 900, "element_out": 901,
+                "index": 2, "element_in": 900, "element_out": 901,
             },
             {
                 "event": 3, "result": "di", "entry": 1, "kind": "w", "priority": 3,
-                "element_in": 900, "element_out": 902,
+                "index": 9, "element_in": 900, "element_out": 902,
             },
         ])
         manager = data["managers"][0]
         assert [t["player_in"] for t in manager["transactions"]] == ["Elanga"]
         assert "lost_claims" not in manager
+
+    async def test_signing_the_player_as_a_free_agent_later_keeps_the_loss(self):
+        """The rival won the waiver and dropped him; the manager signed him in
+        free agency, which runs after the whole waiver batch and so cannot be
+        what denied the claim. He lost the waiver and got him another way, and
+        the roster has to carry both."""
+        data = await self._collect([
+            {
+                "event": 3, "result": "di", "entry": 1, "kind": "w", "priority": 1,
+                "index": 3, "element_in": 900, "element_out": 901,
+            },
+            {
+                "event": 3, "result": "a", "entry": 1, "kind": "f", "priority": None,
+                "index": None, "element_in": 900, "element_out": 902,
+            },
+        ])
+        manager = data["managers"][0]
+        assert [t["player_in"] for t in manager["transactions"]] == ["Elanga"]
+        assert [c["player_in"] for c in manager["lost_claims"]] == ["Elanga"]
 
     async def test_one_player_claimed_twice_and_lost_is_recorded_once(self):
         """A conditional chain naming one target against two drops. He wanted
