@@ -1,6 +1,14 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [2.7.1] - 2026-09-09
+
+### Bug Fixes
+
+- stop the review mismatching names over spacing or apostrophes (#346)
+- give managers level on points the same position in `fpl league` (#345)
+- stop a draft waiver a manager won reading as one he lost (#347)
+
 ## [2.7.0] - 2026-09-08
 
 ### Bug Fixes
