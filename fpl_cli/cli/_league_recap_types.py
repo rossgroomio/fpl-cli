@@ -6,6 +6,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import NotRequired, TypedDict
 
+from fpl_cli.api.fpl_draft import draft_claim_priority_rank
 from fpl_cli.utils.text import ordinal_word
 
 
@@ -656,11 +657,6 @@ def _contested_player_key(
     return (move["player_in"], move["player_in_team"])
 
 
-def _priority_rank(priority: int | None) -> tuple[int, int]:
-    """Sort key placing a numbered priority before none at all, 1 first."""
-    return (1, 0) if priority is None else (0, priority)
-
-
 def _contest_winner(
     accepted: Sequence[tuple[int, str]], claimants: Iterable[RecapContestedClaimant],
 ) -> int | None:
@@ -688,22 +684,27 @@ def contested_draft_claims(
     contested first: by claimant count, then by how early the beaten
     managers ranked him (two first-choice claims outrank one), then by name.
 
-    Regrouped from the manager rows rather than fetched: a `di` row in the
-    feed means a rival won the player, so the gameweek's lost claims, bucketed
-    by player, are the races, and the accepted move that brought the same
-    player in names the winner (issue #330). Read off the raw move list, not
+    Regrouped from the manager rows rather than fetched: a stored lost claim
+    is one a rival won, so the gameweek's lost claims, bucketed by player, are
+    the races, and the accepted move that brought the same player in names the
+    winner (issue #330). Only the stored claims carry that meaning -- the
+    feed's `di` code says the incoming player was gone, which the manager's
+    own winning claim also causes; `resolve_lost_claims()` settles that
+    upstream (issue #342). Read off the raw move list, not
     the awards' chain-contracted one, so a manager who won a player and moved
     him on again the same gameweek still won him.
 
     A manager who lost several claims on one player -- a conditional chain
     offering different drops for him -- wanted him once, and is named once,
     at the highest priority they gave him. The winner is never also among
-    the beaten: once a manager's first claim for a player lands, any later
-    claim of theirs for him is denied on the incoming side (a `di`, since it
-    is the incoming player that is gone), and a manager who lost the waiver
-    and signed him as a free agent later the same gameweek carries both
-    rows too. Either way they wanted him once and got him, and a player
-    nobody else wanted is then no race at all. Empty for classic, whose rows
+    the beaten: a manager who lost the waiver and signed him as a free agent
+    later the same gameweek carries both rows. Either way they wanted him
+    once and got him, and a player nobody else wanted is then no race at all.
+
+    Both rules now hold of the stored claims before this runs, since
+    `resolve_lost_claims()` applies them at ingestion -- these are kept as
+    the guarantee this function owns, so a caller handing it claims from
+    anywhere still gets one row per manager per race. Empty for classic, whose rows
     carry no claims.
     """
     players: dict[_ContestedPlayerKey, RecapDraftLostClaim] = {}
@@ -719,7 +720,9 @@ def contested_draft_claims(
         for claim in m.get("lost_claims") or []:
             key = _contested_player_key(claim)
             known = best.get(key)
-            if known is None or _priority_rank(claim["priority"]) < _priority_rank(known["priority"]):
+            if known is None or draft_claim_priority_rank(claim["priority"]) < draft_claim_priority_rank(
+                known["priority"],
+            ):
                 best[key] = claim
         for key, claim in best.items():
             players.setdefault(key, claim)
@@ -733,7 +736,7 @@ def contested_draft_claims(
         winner = _contest_winner(accepted.get(key, []), wanted.values())
         beaten = sorted(
             (c for position, c in wanted.items() if position != winner),
-            key=lambda c: (_priority_rank(c["priority"]), c["manager_name"]),
+            key=lambda c: (draft_claim_priority_rank(c["priority"]), c["manager_name"]),
         )
         if not beaten:
             continue
@@ -752,7 +755,7 @@ def contested_draft_claims(
 
     contests.sort(key=lambda c: (
         -c["claimants"],
-        tuple(_priority_rank(loser["priority"]) for loser in c["losers"]),
+        tuple(draft_claim_priority_rank(loser["priority"]) for loser in c["losers"]),
         c["player"],
         c.get("player_code") or 0,
     ))

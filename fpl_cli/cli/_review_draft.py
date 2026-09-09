@@ -57,8 +57,8 @@ async def _review_draft(
     from fpl_cli.api.fpl_draft import (
         FPLDraftClient,
         is_accepted_transaction,
-        is_lost_claim,
         match_draft_to_main,
+        resolve_lost_claims,
     )
 
     draft_league_data = None
@@ -275,8 +275,10 @@ async def _review_draft(
                     # but a week whose only waiver activity was a claim the
                     # user lost is not a week they sat out, and reporting it
                     # as "no waivers this week" is the misattribution in
-                    # issue #329 pointed at the user's own review.
-                    lost_txns = [t for t in my_txns if is_lost_claim(t)]
+                    # issue #329 pointed at the user's own review. Resolved
+                    # against the reader's whole gameweek, so a claim denied
+                    # on a player he went on to win is not one he lost (#342).
+                    lost_txns = resolve_lost_claims(my_txns)
 
                     # Collapse same-GW churn using net squad delta (Counter diff).
                     # Pair residual adds and drops by (position, web_name) for like-for-like rows.

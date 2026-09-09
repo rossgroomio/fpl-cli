@@ -17,22 +17,28 @@ logger = logging.getLogger(__name__)
 BASE_URL = "https://draft.premierleague.com/api"
 
 # The Draft API's transaction `result` codes. Every row the league processed
-# carries one, and the two denial codes do not mean the same thing -- reading
-# either as "no move happened" is right, reading either as "no attempt was
-# made" is wrong for one of them and right for the other (issue #329).
+# carries one, and the two denial codes say which side of the claim was
+# already gone -- not who took it (issues #329, #342).
 #
 # `a`  -- the league processed the claim into a completed move.
-# `di` -- denied because a rival won the incoming player. A genuine
-#         competitive loss: the manager tried and was beaten to him.
-# `do` -- denied because the outgoing player had already been used as the
-#         drop in an earlier accepted claim by the same manager. Managers
-#         submit several claims sharing one drop slot expecting only one to
-#         land, so this is the cascade behind a claim that succeeded, not an
-#         attempt that failed. It cannot occur without that earlier accepted
-#         claim, so a `do` row never stands alone as a manager's only
-#         activity.
+# `di` -- denied on the *incoming* side: the player was gone when this claim
+#         processed. Usually a rival won him, which is a genuine competitive
+#         loss. But the engine processes claims globally in `index` order and
+#         a manager's own earlier accepted claim removes him exactly as a
+#         rival's does, so a manager who wins a player and also listed him
+#         lower down gets a `di` for the player he just won.
+# `do` -- denied on the *outgoing* side: the player nominated as the drop had
+#         already been used as the drop in an earlier accepted claim by the
+#         same manager. It cannot occur without that earlier accepted claim,
+#         so a `do` row never stands alone as a manager's only activity.
+#
+# Both denials therefore cover a self-cascade as well as a real defeat, which
+# is why the code alone cannot say whether a manager lost anything: managers
+# submit several claims sharing one drop slot, or naming one target against
+# several drops, expecting only one to land. `resolve_lost_claims()` answers
+# that from the manager's whole gameweek; a single row cannot.
 DRAFT_TXN_ACCEPTED = "a"
-DRAFT_TXN_LOST_TO_RIVAL = "di"
+DRAFT_TXN_DENIED_PLAYER_GONE = "di"
 DRAFT_TXN_DROP_ALREADY_USED = "do"
 
 
@@ -45,14 +51,89 @@ def is_accepted_transaction(txn: Mapping[str, Any]) -> bool:
     return txn.get("result") == DRAFT_TXN_ACCEPTED
 
 
-def is_lost_claim(txn: Mapping[str, Any]) -> bool:
-    """Whether this row is a claim the manager submitted and a rival won.
+def is_denied_on_the_incoming_player(txn: Mapping[str, Any]) -> bool:
+    """Whether this row was denied because the incoming player was gone.
 
     True for `di` alone. A `do` row is deliberately excluded: counting it as
     a failed attempt would misreport the manager whose *winning* claim caused
     it, which is the misattribution this classification exists to prevent.
+
+    Row-local, and so not the same question as "did this manager lose the
+    player" -- his own winning claim makes him gone too. Callers wanting that
+    want `resolve_lost_claims()`.
     """
-    return txn.get("result") == DRAFT_TXN_LOST_TO_RIVAL
+    return txn.get("result") == DRAFT_TXN_DENIED_PLAYER_GONE
+
+
+def draft_claim_priority_rank(priority: int | None) -> tuple[int, int]:
+    """Sort key placing a numbered priority before none at all, 1 first."""
+    return (1, 0) if priority is None else (0, priority)
+
+
+def _processing_position(txn: Mapping[str, Any], arrival: int) -> tuple[int, int, int]:
+    """Where one row sits in the order the league processed the gameweek.
+
+    Waivers run first, as a single batch the engine works through in `index`
+    order; free agency opens once that batch is done and its rows carry no
+    index at all. `arrival` is the row's place in the feed, which orders the
+    rows an index cannot separate.
+    """
+    index = txn.get("index")
+    return (0, index, arrival) if isinstance(index, int) else (1, 0, arrival)
+
+
+def resolve_lost_claims(txns: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The claims one manager genuinely lost, from all their rows for one
+    gameweek -- the question no single row can answer (issue #342).
+
+    Two things a row-local read gets wrong, both consequences of managers
+    submitting conditional chains rather than independent claims:
+
+    - A `di` for a player this manager had *already taken* is his own cascade,
+      not a defeat. He listed the same target twice with different drops, one
+      landed, and every later claim for him was then denied on the incoming
+      side. Reporting it inverts the outcome for the manager who won the race.
+    - A player he claimed several times and lost was wanted once, so he is
+      returned once, at the best priority he spent on him. Otherwise one
+      target across three drops reads as three separate defeats.
+
+    "Already taken" is a question about order, not merely about owning him by
+    the end of the gameweek: only a claim that landed *before* the denial can
+    have caused it. Free agency opens after the whole waiver batch, so a
+    manager who loses a waiver to a rival and signs the same player as a free
+    agent once the rival drops him still lost that waiver, and the loss is
+    still recorded -- clearing it on the later pickup would erase a real
+    defeat and contradict the case `contested_draft_claims` documents.
+
+    Both rules are the ones that function already states and works to; this
+    brings the stored claims into line with them, so the two layers cannot
+    disagree about what a manager lost. Order follows the feed, by the row
+    kept for each player.
+    """
+    # The earliest point at which a claim of this manager's took each player.
+    taken_at: dict[Any, tuple[int, int, int]] = {}
+    for arrival, txn in enumerate(txns):
+        if not is_accepted_transaction(txn):
+            continue
+        player = txn.get("element_in")
+        at = _processing_position(txn, arrival)
+        if player not in taken_at or at < taken_at[player]:
+            taken_at[player] = at
+
+    best: dict[Any, dict[str, Any]] = {}
+    for arrival, txn in enumerate(txns):
+        player = txn.get("element_in")
+        if player is None or not is_denied_on_the_incoming_player(txn):
+            continue
+        taken = taken_at.get(player)
+        if taken is not None and taken < _processing_position(txn, arrival):
+            continue
+        known = best.get(player)
+        if known is None or draft_claim_priority_rank(txn.get("priority")) < draft_claim_priority_rank(
+            known.get("priority"),
+        ):
+            best[player] = txn
+    return list(best.values())
 
 
 class FPLDraftClient:

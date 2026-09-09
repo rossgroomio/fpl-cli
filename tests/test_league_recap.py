@@ -5001,21 +5001,35 @@ class TestDraftLostClaims:
         2: make_team(id=2, name="Beta", short_name="BET"),
     }
 
-    async def _collect(self, txns):
+    async def _collect(self, txns, *, rivals=0):
+        """One manager (entry 1) by default. `rivals` adds further league
+        members, so a test about another manager's winning claim exercises a
+        row the bucketing actually keeps -- an entry absent from
+        `league_entries` is dropped before any of this runs.
+        """
         elanga = make_draft_player(id=900, code=555, web_name="Elanga", team=1, element_type=3)
         savio = make_draft_player(id=901, code=666, web_name="Savio", team=2, element_type=3)
         keeper = make_draft_player(id=902, code=777, web_name="Keeper", team=1, element_type=1)
         main_elanga = make_player(id=5, code=555, web_name="Elanga", team_id=1)
         main_savio = make_player(id=6, code=666, web_name="Savio", team_id=2)
         main_keeper = make_player(id=7, code=777, web_name="Keeper", team_id=1)
+        entries = [{"id": 10, "entry_id": 1, "player_first_name": "A", "player_last_name": "B"}]
+        entries += [
+            {"id": 10 + n, "entry_id": 1 + n,
+             "player_first_name": f"Rival{n}", "player_last_name": "R"}
+            for n in range(1, rivals + 1)
+        ]
         league_details = {
             "league": {"name": "Draft League"},
-            "standings": [{"league_entry": 10, "event_total": 0, "total": 0}],
-            "league_entries": [
-                {"id": 10, "entry_id": 1, "player_first_name": "A", "player_last_name": "B"},
+            "standings": [
+                {"league_entry": e["id"], "event_total": 0, "total": 0} for e in entries
             ],
+            "league_entries": entries,
         }
-        picks = {1: {"picks": [{"element": 902, "position": 1}], "subs": []}}
+        picks = {
+            e["entry_id"]: {"picks": [{"element": 902, "position": 1}], "subs": []}
+            for e in entries
+        }
         client = MagicMock()
         client.__aenter__ = AsyncMock(return_value=client)
         client.__aexit__ = AsyncMock(return_value=False)
@@ -5094,6 +5108,82 @@ class TestDraftLostClaims:
             "element_in": 900, "element_out": 901,
         }])
         assert "lost_claims" not in data["managers"][0]
+
+    async def test_a_claim_denied_on_a_player_the_manager_won_is_not_a_loss(self):
+        """Issue #342: he took Elanga at priority 1, listed him again at
+        priority 3 against a different drop, and the second was denied
+        because he had just taken him himself. The stored claim reported a
+        race he won as one he was beaten to."""
+        data = await self._collect([
+            {
+                "event": 3, "result": "a", "entry": 1, "kind": "w", "priority": 1,
+                "index": 2, "element_in": 900, "element_out": 901,
+            },
+            {
+                "event": 3, "result": "di", "entry": 1, "kind": "w", "priority": 3,
+                "index": 9, "element_in": 900, "element_out": 902,
+            },
+        ])
+        manager = data["managers"][0]
+        assert [t["player_in"] for t in manager["transactions"]] == ["Elanga"]
+        assert "lost_claims" not in manager
+
+    async def test_signing_the_player_as_a_free_agent_later_keeps_the_loss(self):
+        """The rival won the waiver and dropped him; the manager signed him in
+        free agency, which runs after the whole waiver batch and so cannot be
+        what denied the claim. He lost the waiver and got him another way, and
+        the roster has to carry both."""
+        data = await self._collect([
+            {
+                "event": 3, "result": "di", "entry": 1, "kind": "w", "priority": 1,
+                "index": 3, "element_in": 900, "element_out": 901,
+            },
+            {
+                "event": 3, "result": "a", "entry": 1, "kind": "f", "priority": None,
+                "index": None, "element_in": 900, "element_out": 902,
+            },
+        ])
+        manager = data["managers"][0]
+        assert [t["player_in"] for t in manager["transactions"]] == ["Elanga"]
+        assert [c["player_in"] for c in manager["lost_claims"]] == ["Elanga"]
+
+    async def test_one_player_claimed_twice_and_lost_is_recorded_once(self):
+        """A conditional chain naming one target against two drops. He wanted
+        Elanga once, so the roster names him once, at the better priority --
+        the rule `contested_draft_claims` already works to."""
+        data = await self._collect([
+            {
+                "event": 3, "result": "di", "entry": 1, "kind": "w", "priority": 2,
+                "element_in": 900, "element_out": 901,
+            },
+            {
+                "event": 3, "result": "di", "entry": 1, "kind": "w", "priority": 5,
+                "element_in": 900, "element_out": 902,
+            },
+        ])
+        claims = data["managers"][0]["lost_claims"]
+        assert [(c["player_in"], c["priority"]) for c in claims] == [("Elanga", 2)]
+
+    async def test_a_rivals_win_still_leaves_the_claim_recorded(self):
+        """The self-cascade exclusion is per manager: the same accepted row
+        that clears the winner's own claim must leave the loser's standing --
+        otherwise the fix trades one misattribution for the reverse."""
+        data = await self._collect([
+            {
+                "event": 3, "result": "a", "entry": 2, "kind": "w", "priority": 1,
+                "element_in": 900, "element_out": 902,
+            },
+            {
+                "event": 3, "result": "di", "entry": 1, "kind": "w", "priority": 1,
+                "element_in": 900, "element_out": 901,
+            },
+        ], rivals=1)
+        by_name = {m["manager_name"]: m for m in data["managers"]}
+        winner, loser = by_name["Rival1 R"], by_name["A B"]
+        # The rival's win is visible to the collector, not merely unbucketed.
+        assert [t["player_in"] for t in winner["transactions"]] == ["Elanga"]
+        assert "lost_claims" not in winner
+        assert [c["player_in"] for c in loser["lost_claims"]] == ["Elanga"]
 
     async def test_a_free_agent_claim_records_no_priority(self):
         """Free agents are first-come-first-served and the feed sends a null

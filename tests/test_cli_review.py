@@ -1874,6 +1874,38 @@ class TestReviewDraftLostClaims:
             "kind": "w", "priority": 1,
         }]
 
+    async def test_a_claim_denied_on_a_player_i_won_is_not_reported_as_a_loss(self):
+        """Issue #342, on the reader's own review: he took Elanga at priority
+        1 and listed him again at priority 3, and `## Claims Lost` told him he
+        had been beaten to a player sitting in his squad."""
+        data = await self._run([
+            {
+                "event": 3, "result": "a", "entry": 1, "kind": "w", "priority": 1,
+                "element_in": 900, "element_out": 403,
+            },
+            {
+                "event": 3, "result": "di", "entry": 1, "kind": "w", "priority": 3,
+                "element_in": 900, "element_out": 403,
+            },
+        ])
+        assert [t["player_in"] for t in data["draft_transactions_data"]] == ["Elanga"]
+        assert data["draft_lost_claims_data"] == []
+
+    async def test_one_player_claimed_twice_and_lost_is_listed_once(self):
+        data = await self._run([
+            {
+                "event": 3, "result": "di", "entry": 1, "kind": "w", "priority": 2,
+                "element_in": 900, "element_out": 403,
+            },
+            {
+                "event": 3, "result": "di", "entry": 1, "kind": "w", "priority": 6,
+                "element_in": 900, "element_out": 403,
+            },
+        ])
+        assert [(c["player_in"], c["priority"]) for c in data["draft_lost_claims_data"]] == [
+            ("Elanga", 2),
+        ]
+
     async def test_a_do_row_is_not_recorded_as_a_lost_claim(self):
         data = await self._run([{
             "event": 3, "result": "do", "entry": 1, "kind": "w", "priority": 2,
