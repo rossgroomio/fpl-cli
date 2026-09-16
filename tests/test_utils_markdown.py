@@ -19,6 +19,7 @@ from fpl_cli.utils.markdown import (
     parse_heading,
     section_body,
     unescape_specials,
+    unwrap_emphasis,
 )
 
 # -- Drift shapes the matcher must tolerate -----------------------------------
@@ -238,6 +239,39 @@ def test_leaf_body_returns_full_body_when_no_nested_heading():
 
 def test_leaf_body_returns_none_when_absent():
     assert leaf_body(["## B", "x"], "## A") is None
+
+
+# -- unwrap_emphasis ------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("**Bench**", "Bench"),
+        ("*Bench*", "Bench"),
+        ("_Bench_", "Bench"),
+        ("`Bench`", "Bench"),
+        ("~~Bench~~", "Bench"),
+        ("***Bench***", "Bench"),
+        ("  **Bench**  ", "Bench"),
+        # Layered wraps come off one at a time; interior emphasis survives.
+        ("**_Bench_**", "Bench"),
+        ("**Bob's *big* day**", "Bob's *big* day"),
+        # Unlike the matcher's own strip, this feeds text that is printed
+        # again, so nothing that would leave the markdown malformed comes off:
+        # an unbalanced marker, or two spans that only look like one wrap.
+        ("**Bench", "**Bench"),
+        ("Bench**", "Bench**"),
+        ("**a*", "**a*"),
+        ("**a** and **b**", "**a** and **b**"),
+        ("`a` and `b`", "`a` and `b`"),
+        ("**GW4 Recap:** Chaos", "**GW4 Recap:** Chaos"),
+        ("plain", "plain"),
+        ("", ""),
+    ],
+)
+def test_unwrap_emphasis_takes_off_balanced_wrapping_only(text, expected):
+    assert unwrap_emphasis(text) == expected
 
 
 # -- unescape_specials ----------------------------------------------------

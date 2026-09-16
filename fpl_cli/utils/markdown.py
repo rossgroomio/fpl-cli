@@ -72,6 +72,7 @@ __all__ = [
     "parse_heading",
     "section_body",
     "unescape_specials",
+    "unwrap_emphasis",
 ]
 
 _FENCE_RE = re.compile(r"^(?:`{3,}|~{3,})")
@@ -125,6 +126,30 @@ def parse_heading(line: str) -> tuple[int, str] | None:
     if match is None:
         return None
     return len(match.group(1)), match.group(2) or ""
+
+
+# A run of one emphasis marker wrapping the whole text, closed by the same
+# run: "**Bench**", "_Bench_", "`Bench`", "~~Bench~~".
+_WRAPPING_EMPHASIS_RE = re.compile(r"^(\*{1,3}|_{1,3}|`+|~~)(.+)\1$", re.DOTALL)
+
+
+def unwrap_emphasis(text: str) -> str:
+    """Strip emphasis wrapping the whole of `text`, balanced pairs only.
+
+    For text that will be printed again, unlike `_EMPHASIS_RE` above, which
+    serves comparison and can afford to be greedy: a heading demoted into a
+    report has to stay well-formed markdown, so an unbalanced marker
+    ("**Bench") is left alone, and so is a pair that only looks like a wrap
+    because two separate spans share the line ("**a** and **b**"). Nested
+    wraps unwrap layer by layer.
+    """
+    text = text.strip()
+    while (match := _WRAPPING_EMPHASIS_RE.match(text)) is not None:
+        marker, inner = match.group(1), match.group(2)
+        if marker in inner:
+            break
+        text = inner.strip()
+    return text
 
 
 def _normalise(text: str) -> str:

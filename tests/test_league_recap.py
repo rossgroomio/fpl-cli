@@ -6465,3 +6465,200 @@ class TestPriorSeasonsPromptSection:
         from fpl_cli.prompts.league_recap import RECAP_SYNTHESIS_SYSTEM_PROMPT
 
         assert "Never derive a trajectory the section does not state" in RECAP_SYNTHESIS_SYSTEM_PROMPT
+
+
+class TestRecapTitleIsTheReportsNotTheModels:
+    """Issue #349: every recap used to land under a different H1. The
+    editorial invented one, restyled the gameweek, dropped or rewrote the
+    league's name, or wrote none at all and let `# Awards` become the
+    document's title. The title is the report writer's now, the prompt asks
+    for a headline beneath it rather than a title, and the reply is held to
+    that shape instead of trusted."""
+
+    def test_the_title_is_one_string_with_the_league_name_verbatim(self):
+        from fpl_cli.cli._league_recap_types import recap_title
+
+        assert recap_title(4, "Sunday League") == "Gameweek 4 Recap: Sunday League"
+        assert recap_title(4, "The Manager's Arms") == (
+            "Gameweek 4 Recap: The Manager's Arms"
+        )
+        assert recap_title(1, "   ") == "Gameweek 1 Recap"
+        # The collectors default the name only when the API omits it, not
+        # when it sends null; a crash here is swallowed by the report agent
+        # into a `--save` that exits 0 having written nothing (review).
+        assert recap_title(1, None) == "Gameweek 1 Recap"
+
+    def test_the_user_prompt_names_the_title_and_opens_with_no_heading(self):
+        from fpl_cli.cli._league_recap_types import recap_title
+
+        _, user = get_recap_synthesis_prompt(
+            gw=4, league_name="Sunday League", fpl_format="classic",
+            awards_text="x", standings_text="| t |", fines_text="",
+        )
+
+        assert f'Title: "{recap_title(4, "Sunday League")}"' in user
+        assert "do not repeat it" in user
+        assert "League: Sunday League" in user
+        # The old opening line was a `# ` heading the model mirrored, restyled
+        # or skipped -- context handed over as if it were an output contract.
+        assert not user.startswith("#")
+        assert "# Gameweek 4 Recap" not in user
+
+    def test_the_system_prompt_asks_for_a_headline_and_forbids_a_title(self):
+        from fpl_cli.prompts.league_recap import RECAP_SYNTHESIS_SYSTEM_PROMPT
+
+        assert "<output_format>" in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        assert 'never write a title or a "# " heading of your own' in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        assert 'Open with one headline as a "## " heading' in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        assert "the league's name is not yours to restyle" in RECAP_SYNTHESIS_SYSTEM_PROMPT
+
+    @pytest.mark.parametrize(
+        ("heading", "league_name", "expected"),
+        [
+            # The shapes the issue lists: one season of one league's recaps.
+            ("# GW2 Recap: Sunday League", "Sunday League", None),
+            ("# GW2 Recap: The Manager's Arms", "The Manager's Arms", None),
+            ("# The Manager's Arms: GW4 Recap", "The Manager's Arms", None),
+            (
+                "# Gameweek 4 Recap: Chaos, Chips, and a Captain Called Isak", "Sunday League",
+                "## Chaos, Chips, and a Captain Called Isak",
+            ),
+            (
+                "# GW3 Recap: The Arms Digest", "The Manager's Arms",
+                "## The Arms Digest",
+            ),
+            (
+                "# Gameweek 3 Recap: The Sunday League, or The Great Purge", "Sunday League",
+                "## The Sunday League, or The Great Purge",
+            ),
+            # And the shapes the guard has to hold beyond them.
+            ("# **GW4 Recap: Sunday League**", "Sunday League", None),
+            ("# The Sunday League", "Sunday League", None),
+            ("# Gameweek 4 Recap", "Sunday League", None),
+            ("# Gameweek 4 — Chaos", "Sunday League", "## Chaos"),
+            ("## Chaos and chips", "Sunday League", "## Chaos and chips"),
+            ("### Chaos", "Sunday League", "## Chaos"),
+            # A headline that happens to open with the league's name is a
+            # headline: only a colon, dash or pipe makes the name furniture.
+            ("# Sunday League Falls Apart", "Sunday League", "## Sunday League Falls Apart"),
+            # Emphasis of every kind, and emphasis on only part of the title,
+            # is unwrapped before the title is recognised (review).
+            ("# `GW4 Recap: Sunday League`", "Sunday League", None),
+            ("# ~~GW4 Recap: Sunday League~~", "Sunday League", None),
+            ("# GW4 Recap: **Sunday League**", "Sunday League", None),
+            ("# **Chaos** - GW4 Recap", "Sunday League", "## Chaos"),
+            # A gameweek callback in the hook is the hook's, a compound word
+            # is not a join, and "Recap" alone is not the title (review).
+            ("# Bob Never Learns - Gameweek 7", "Sunday League", "## Bob Never Learns - Gameweek 7"),
+            ("# Recap-worthy chaos this week", "Sunday League", "## Recap-worthy chaos this week"),
+            ("# Recap - Chaos this week", "Sunday League", "## Recap - Chaos this week"),
+            ("# Chaos: Gameweek 4 Recap", "Sunday League", "## Chaos"),
+        ],
+    )
+    def test_the_opening_heading_is_dropped_or_demoted(self, heading, league_name, expected):
+        from fpl_cli.prompts.league_recap import normalise_recap_editorial
+
+        result = normalise_recap_editorial(
+            f"{heading}\n\nAlice ran away with it.", league_name=league_name,
+        )
+
+        if expected is None:
+            assert result == "Alice ran away with it."
+        else:
+            assert result == f"{expected}\n\nAlice ran away with it."
+
+    def test_a_title_followed_by_a_headline_keeps_only_the_headline(self):
+        from fpl_cli.prompts.league_recap import normalise_recap_editorial
+
+        result = normalise_recap_editorial(
+            "# GW4 Recap: Sunday League\n\n## Chaos\n\nprose", league_name="Sunday League",
+        )
+
+        assert result == "## Chaos\n\nprose"
+
+    def test_no_h1_survives_anywhere_in_the_editorial(self):
+        from fpl_cli.prompts.league_recap import normalise_recap_editorial
+
+        result = normalise_recap_editorial(
+            "Alice ran away with it.\n\n# The bench\n\nBob benched 31.", league_name="Sunday League",
+        )
+
+        assert result == "Alice ran away with it.\n\n## The bench\n\nBob benched 31."
+
+    def test_a_title_restated_later_in_the_editorial_is_dropped_too(self):
+        """Review: the duplicate-title shape relocated one heading down is
+        still the duplicate-title shape, at whatever level it was written."""
+        from fpl_cli.prompts.league_recap import normalise_recap_editorial
+
+        result = normalise_recap_editorial(
+            "## Chaos and chips\n\nAlice ran away with it.\n\n"
+            "# Gameweek 4 Recap: Sunday League\n\nThanks for reading!\n\n"
+            "### Sunday League: GW4 Recap\n\nSee you next week.",
+            league_name="Sunday League",
+        )
+
+        assert result == (
+            "## Chaos and chips\n\nAlice ran away with it.\n\n"
+            "Thanks for reading!\n\nSee you next week."
+        )
+
+    def test_a_later_heading_with_a_hook_keeps_its_level_below_h1(self):
+        from fpl_cli.prompts.league_recap import normalise_recap_editorial
+
+        result = normalise_recap_editorial(
+            "## Chaos\n\nprose\n\n### Gameweek 4 - The bench\n\nmore",
+            league_name="Sunday League",
+        )
+
+        assert result == "## Chaos\n\nprose\n\n### The bench\n\nmore"
+
+    def test_a_hash_inside_a_fenced_block_is_code_not_a_heading(self):
+        """Review: the same fence-awareness every other heading scanner in
+        `fpl_cli.utils.markdown` keeps."""
+        from fpl_cli.prompts.league_recap import normalise_recap_editorial
+
+        text = "## Chaos\n\nprose\n\n```\n# Gameweek 4 Recap: Sunday League\n```\n\nmore"
+
+        assert normalise_recap_editorial(text, league_name="Sunday League") == text
+
+    def test_prose_with_no_heading_is_left_alone(self):
+        from fpl_cli.prompts.league_recap import normalise_recap_editorial
+
+        assert normalise_recap_editorial(
+            "Just prose.\n\nMore prose.", league_name="Sunday League",
+        ) == "Just prose.\n\nMore prose."
+        assert normalise_recap_editorial("", league_name="Sunday League") == ""
+
+    async def test_the_saved_report_opens_on_the_title(self, tmp_path):
+        agent = ReportAgent(config={"output_dir": str(tmp_path)})
+        data = {
+            "gameweek": 4, "league_name": "Sunday League", "fpl_format": "classic",
+            "managers": [], "awards": {},
+            "synthesis_summary": "## Chaos\n\nAlice ran away with it.",
+        }
+
+        result = await agent.run(context={"report_type": "league-recap", "gameweek": 4, "data": data})
+
+        assert result.data is not None
+        content = Path(result.data["report_path"]).read_text(encoding="utf-8")
+        assert content.splitlines()[0] == "# Gameweek 4 Recap: Sunday League"
+        # Title, the run's metadata, then the editorial under its own headline,
+        # then the data sections: the block pasted into the group chat is
+        # contiguous, and the line above it reads the same every week.
+        assert content.index("*Generated:") < content.index("## Chaos") < content.index("# Awards")
+
+    async def test_a_report_with_no_editorial_still_opens_on_the_title(self, tmp_path):
+        """GW1's recaps opened on `# Awards`: with no editorial heading, the
+        first section heading became the document's."""
+        agent = ReportAgent(config={"output_dir": str(tmp_path)})
+        data = {
+            "gameweek": 1, "league_name": "Draft League", "fpl_format": "draft",
+            "managers": [], "awards": {},
+        }
+
+        result = await agent.run(context={"report_type": "league-recap", "gameweek": 1, "data": data})
+
+        assert result.data is not None
+        content = Path(result.data["report_path"]).read_text(encoding="utf-8")
+        assert content.splitlines()[0] == "# Gameweek 1 Recap: Draft League"
+        assert result.data["report_path"].endswith("gw1-league-recap-draft.md")

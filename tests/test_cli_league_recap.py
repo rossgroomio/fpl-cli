@@ -6228,3 +6228,77 @@ class TestPriorSeasonsReportSection:
 
         content = Path(result.data["report_path"]).read_text(encoding="utf-8")
         assert "# Prior Seasons" not in content
+
+
+class TestRecapTitleThroughTheCommand:
+    """Issue #349, through the full command: the saved report's first line is
+    the writer's title whatever heading the editorial opened with, and the
+    JSON payload carries the editorial as it was saved."""
+
+    _EDITORIAL = "# GW5 Recap: Test League\n\n## Chaos and chips\n\nAlice ran away with it."
+
+    def _provider(self, content: str = _EDITORIAL):
+        from fpl_cli.api.providers import LLMResponse, TokenUsage
+
+        class _Stub:
+            async def query(self, prompt, system_prompt=None, **kwargs):
+                return LLMResponse(
+                    content=content,
+                    model="claude-sonnet-5",
+                    usage=TokenUsage(10, 20),
+                    stop_reason="end_turn",
+                )
+
+            def post_process(self, content):
+                return content
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return None
+
+        return patch("fpl_cli.api.providers.get_llm_provider", return_value=_Stub())
+
+    def test_the_saved_report_opens_on_the_title_without_an_editorial(self, tmp_path: Path):
+        result = _invoke_recap(_recap_data(), ["--save", "--output", str(tmp_path)])
+
+        assert result.exit_code == 0, result.output
+        content = (tmp_path / season_label() / "gw5-league-recap.md").read_text(encoding="utf-8")
+        assert content.splitlines()[0] == "# Gameweek 5 Recap: Test League"
+
+    def test_the_models_title_never_becomes_the_reports(self, tmp_path: Path):
+        with self._provider():
+            result = _invoke_recap(
+                _recap_data(), ["--summarise", "--save", "--output", str(tmp_path)],
+            )
+
+        assert result.exit_code == 0, result.output
+        content = (tmp_path / season_label() / "gw5-league-recap.md").read_text(encoding="utf-8")
+        assert content.splitlines()[0] == "# Gameweek 5 Recap: Test League"
+        assert "# GW5 Recap" not in content
+        assert content.count("Recap: Test League") == 1
+        assert content.index("## Chaos and chips") < content.index("# Awards")
+
+    def test_the_draft_report_carries_its_own_leagues_title(self, tmp_path: Path):
+        data = _recap_data(fpl_format="draft")
+        data["league_name"] = "Draft League"
+
+        result = _invoke_recap(
+            data, ["--draft", "--save", "--output", str(tmp_path)],
+            settings={"fpl": {"draft_league_id": 42}},
+        )
+
+        assert result.exit_code == 0, result.output
+        content = (tmp_path / season_label() / "gw5-league-recap-draft.md").read_text(encoding="utf-8")
+        assert content.splitlines()[0] == "# Gameweek 5 Recap: Draft League"
+
+    def test_json_carries_the_editorial_as_saved(self):
+        with self._provider():
+            result = _invoke_recap(_recap_data(), ["--summarise", "--format", "json"])
+
+        assert result.exit_code == 0, result.stderr
+        envelope = json.loads(result.stdout)
+        assert envelope["metadata"]["synthesis_summary"] == (
+            "## Chaos and chips\n\nAlice ran away with it."
+        )

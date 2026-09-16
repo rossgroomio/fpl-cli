@@ -81,6 +81,11 @@ so `review --summarise` with a key for one provider prints that half, says on st
 why the other was skipped, and still exits 0; a saved report names each skipped half
 in its own warning callout. `league-recap --summarise` does the same for its editorial.
 
+A saved recap opens with a fixed title — `# Gameweek 4 Recap: <league name>`, the league's name
+as configured — whether or not it has an editorial. The editorial's own headline sits beneath it
+as a `##` subheading, never as the title, so the first line you paste into the group chat reads
+the same every week and the name on it is the league's rather than one the model restyled.
+
 Fines are ruled per gameweek by `league-recap` and recorded against it, so `fpl
 league-fines` reads them straight back off disk — no network, and any season still
 on disk (`--season 2025-26`). Every gameweek that could not be ruled is named

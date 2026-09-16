@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from fpl_cli.cli._league_recap_types import (
     LeagueRecapData,
     PriorSeasonsSummary,
@@ -11,10 +13,12 @@ from fpl_cli.cli._league_recap_types import (
     draft_transaction_kind_label,
     format_contested_claim,
     format_move_counts,
+    recap_title,
 )
 from fpl_cli.services.league_history_fines import SeasonFinesTally, format_fine_breakdown
 from fpl_cli.services.league_history_notes import NotesPack, NoteSurface
 from fpl_cli.utils.gameweek import format_gameweek_list, is_opening_gameweek
+from fpl_cli.utils.markdown import fence_flags, parse_heading, unwrap_emphasis
 from fpl_cli.utils.text import ordinal_word
 
 # =============================================================================
@@ -35,6 +39,12 @@ Your audience is every member of this league. They want entertainment first, inf
 - Frame the recap around the season phase named in the "## League History" section: an opener (GW1) sets an early-season tone - and where a "## Prior Seasons" section is present, its returning-manager records are the opener's natural colour - a finale may reflect on the whole campaign using that section's season-spanning facts, and a midpoint or run-in gameweek should stay proportionate to where the season actually is - don't manufacture stakes the data doesn't support
 - Brief - 300-400 words max. Punchy paragraphs, not walls of text
 </tone>
+
+<output_format>
+- The report already carries its title above your editorial - "# Gameweek N Recap: <league name>", with the league's name exactly as configured - so never write a title or a "# " heading of your own
+- Open with one headline as a "## " heading: a hook for what happened this gameweek, in your own voice. It is a headline, not a title, so it never carries the gameweek number, the word "recap" or the league's name - the title above already has all three, and the league's name is not yours to restyle
+- Then the prose, in punchy paragraphs
+</output_format>
 
 <rules>
 - NEVER give advice or recommendations. This is a recap, not a preview
@@ -85,7 +95,11 @@ def get_recap_synthesis_prompt(
 ) -> tuple[str, str]:
     """Build the synthesis prompt for league recap. Returns (system, user)."""
     sections = [
-        f"# Gameweek {gw} Recap: {league_name}",
+        # Named, not written as a heading: the model used to mirror the "# "
+        # line that opened this prompt, restyle it, or skip it (#349).
+        f'Title: "{recap_title(gw, league_name)}" (already written above your'
+        " editorial - do not repeat it)",
+        f"League: {league_name}",
         f"Format: {fpl_format}",
         f"Season progress: GW{gw} of {season_length}",
     ]
@@ -148,6 +162,93 @@ def get_recap_synthesis_prompt(
     user_prompt += "\n\nWrite the recap newsletter for this gameweek."
 
     return RECAP_SYNTHESIS_SYSTEM_PROMPT, user_prompt
+
+
+# =============================================================================
+# Editorial shape
+# =============================================================================
+
+# The furniture a title is made of, as the model has written it, joined to the
+# rest of a heading by a colon, a pipe, or a dash set off by whitespace (an en
+# or em dash needs none). A bare hyphen with no space around it is a compound
+# word ("Recap-worthy"), and whitespace alone is not a join: "Sunday League
+# Falls Apart" is a headline that happens to open with the league's name, and
+# stays one. At the front the token is "GW4", "Gameweek 4" or either with
+# "Recap"; at the tail it must carry "Recap", since "Bob Never Learns -
+# Gameweek 7" is a callback the hook is entitled to, not a title. Everything
+# here is a match against a fixed shape, never an edit to the prose beside it.
+_TITLE_JOIN = r"(?:\s*[:|]\s*|\s+-\s+|\s*[\u2013\u2014]\s*)"
+_GAMEWEEK_TOKEN = r"(?:gameweek|gw)\s*\d+"
+_LEADING_TITLE_RE = re.compile(
+    rf"^{_GAMEWEEK_TOKEN}(?:\s+recap)?(?:{_TITLE_JOIN}|$)", re.IGNORECASE,
+)
+_TRAILING_TITLE_RE = re.compile(
+    rf"(?:{_TITLE_JOIN}|^){_GAMEWEEK_TOKEN}\s+recap$", re.IGNORECASE,
+)
+_WORD_RE = re.compile(r"\w")
+_BLANK_RUN_RE = re.compile(r"\n{3,}")
+
+
+def _headline(text: str, league_name: str) -> str:
+    """What is left of a heading once the title's parts are removed.
+
+    Empty when the heading was the title and nothing else -- "GW4 Recap:
+    Sunday League", "Sunday League: GW4 Recap", "Gameweek 4 Recap" -- and
+    the hook alone when the model wrote both: "Gameweek 4 Recap: Chaos,
+    Chips, and a Captain Called Isak" gives "Chaos, Chips, and a Captain
+    Called Isak". Emphasis is unwrapped on every pass, so a title the model
+    bolded only in part ("GW4 Recap: **Sunday League**") still reads as the
+    title once the rest is peeled.
+    """
+    name = re.escape(league_name.strip())
+    league_res = (
+        [
+            re.compile(rf"^(?:the\s+)?{name}(?:{_TITLE_JOIN}|$)", re.IGNORECASE),
+            re.compile(rf"(?:{_TITLE_JOIN}|^)(?:the\s+)?{name}$", re.IGNORECASE),
+        ]
+        if name else []
+    )
+    core = text.strip()
+    previous = None
+    while previous != core:  # "Sunday League: GW4 Recap" peels a part per pass
+        previous = core
+        core = unwrap_emphasis(core)
+        for pattern in (_LEADING_TITLE_RE, _TRAILING_TITLE_RE, *league_res):
+            core = pattern.sub("", core).strip()
+    return core if _WORD_RE.search(core) else ""
+
+
+def normalise_recap_editorial(summary: str, *, league_name: str) -> str:
+    """Hold the editorial to the shape beneath the report's own title (#349).
+
+    The saved report opens with `recap_title()` as its H1 and the prompt asks
+    for one "## " headline and no title, but an instruction is not a
+    contract: the model has mirrored the title, restyled it, replaced the
+    league's name with an invention, and left the heading out altogether, so
+    every recap landed under a different H1. Every heading outside a fenced
+    block is held to the same rule, wherever it sits: one that only restates
+    the title is dropped, the opening one is the "## " headline whatever
+    level it was written at, and a later "# " is demoted to "## " -- the
+    model's heading is never the document's. Prose is left as it is.
+    """
+    lines = summary.strip().splitlines()
+    out: list[str] = []
+    opening = True
+    for line, fenced in zip(lines, fence_flags(lines), strict=True):
+        parsed = None if fenced else parse_heading(line)
+        if parsed is None:
+            out.append(line)
+            if line.strip():
+                opening = False
+            continue
+        depth, text = parsed
+        headline = _headline(text, league_name)
+        if not headline:
+            continue  # the title restated -- the report already carries it
+        marks = "##" if opening else "#" * max(depth, 2)
+        out.append(f"{marks} {headline}")
+        opening = False
+    return _BLANK_RUN_RE.sub("\n\n", "\n".join(out)).strip()
 
 
 # =============================================================================
