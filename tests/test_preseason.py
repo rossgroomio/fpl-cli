@@ -7,6 +7,7 @@ TeamRatingsService, which pre-season has no results to rate teams on and would
 otherwise fall back to one neutral value for every team.
 """
 
+from datetime import datetime
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -297,7 +298,11 @@ class TestRatingsQualityWarnings:
             yaml.dump(
                 {
                     "metadata": {
-                        "last_updated": "2026-08-11",
+                        # Stamped today, never a literal: every test here is
+                        # about a warning other than age, and a fixed date
+                        # crossed the staleness threshold a month after it
+                        # was written and started failing the fresh case.
+                        "last_updated": datetime.now().strftime("%Y-%m-%d"),
                         "source": source,
                         "staleness_threshold_days": 30,
                         "based_on_gws": None,
