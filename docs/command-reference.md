@@ -853,6 +853,20 @@ a `league_standings_moved_on` warning under `--format json`. The gameweek is rec
 either way — an in-progress gameweek is never recappable, so the recap of the one before it
 has to keep working while the next one plays.
 
+**Report title:** a saved recap opens with `# Gameweek 4 Recap: <league name>` — the gameweek
+spelled out and the league's name exactly as configured — whether or not it carries an editorial,
+so the first line of every recap reads the same shape every week and in both formats
+([#349](https://github.com/rossgroomio/fpl-cli/issues/349)). The title is written by the report,
+never by the model: with `--summarise` the editorial is asked for one `##` headline beneath it — a
+hook for the gameweek, never the gameweek number, the word "recap" or the league's name — and
+every heading it writes anyway is held to that shape rather than trusted, wherever it sits. One
+that only restates the title (`# GW4 Recap: <league name>`, in any order, spelling or emphasis)
+is dropped, the opening one is kept as the `##` headline with the title's parts removed, a later
+`#` heading is demoted, and a fenced code block is left alone. Only a title-shaped part joined by
+a colon, pipe or spaced dash is removed — a gameweek callback inside a hook ("Bob Never Learns -
+Gameweek 7") stays. The metadata lines sit between the title and the headline, so the editorial —
+headline and prose — is one contiguous block to copy out.
+
 **Awards:** GW winner/loser, biggest bench haul, best/worst captain, transfer/waiver genius and disaster.
 The draft waiver awards count and label waiver claims and free-agent signings separately (e.g. "across
 2 moves: 1 waiver, 1 free agent") rather than folding both into "waivers". A draft recap has a third
@@ -970,7 +984,8 @@ gameweek with a file on disk appears there with a status, a damaged one as
 (every entry, including those below their reporting minimum and every nonzero season
 count whether or not it grew this gameweek), `season_fines` (the whole
 season tally, emitted every week regardless of the milestone gate the printed surfaces use), `synthesis_summary` (with
-`--summarise`), `warnings`, and `first_capture_store_path` — always present, carrying the
+`--summarise`, as it reaches the saved report — the model's heading already demoted beneath the
+report's title or dropped, see [Report title](#league-recap)), `warnings`, and `first_capture_store_path` — always present, carrying the
 partition directory on its first capture and `null` on every run after that. Warning
 codes are listed under [Capture warnings](#capture-warnings).
 

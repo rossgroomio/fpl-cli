@@ -11,7 +11,11 @@ import jinja2
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from fpl_cli.agents.base import Agent, AgentResult, AgentStatus
-from fpl_cli.cli._league_recap_types import RecapManagerEntry, draft_transaction_kind_label
+from fpl_cli.cli._league_recap_types import (
+    RecapManagerEntry,
+    draft_transaction_kind_label,
+    recap_title,
+)
 from fpl_cli.paths import TEMPLATE_DIR
 from fpl_cli.services.team_ratings import fdr_columns_footer
 from fpl_cli.utils.text import ordinal_suffix
@@ -657,6 +661,9 @@ class ReportAgent(Agent):
     def _generate_league_recap_report(self, gameweek: int, data: dict[str, Any]) -> str:
         """Generate a league recap report."""
         template = self.jinja_env.get_template("gw_league_recap.md.j2")
+        # The H1 is the report's, never the editorial's (#349): the same
+        # string the prompt names as already written, so the two agree.
+        data["title"] = recap_title(gameweek, data.get("league_name", ""))
         data.setdefault("generated_at", format_generated_at())
         data["standings_block"] = _format_standings_block(data.get("managers", []))
         return template.render(**data)
