@@ -73,6 +73,7 @@ from fpl_cli.cli._league_recap_types import (
 )
 from fpl_cli.services.fixture_predictions import had_fixture
 from fpl_cli.services.player_clubs import gameweek_club
+from fpl_cli.services.scoring.constants import VALID_FORMATIONS
 
 logger = logging.getLogger(__name__)
 
@@ -157,6 +158,122 @@ def _classic_pick_flags(
     if player_id in auto_sub_in_ids or is_bench_boost_player:
         contributed = True
     return is_bench, is_bench_boost_player, contributed
+
+
+@dataclass(frozen=True)
+class BestXISelection:
+    """The best legal XI from a recorded 15, set against the XI that counted.
+
+    `gain` is how many more points it would have scored -- what the Biggest
+    Bench award ranks on. `benched` are the players it brings in off the
+    bench and `dropped` the ones it leaves out of the XI that counted: the
+    two halves of one swap, each highest scorer first. Both are empty, and
+    the gain 0, when no legal XI beats the one that played -- or when the
+    recorded squad cannot field one at all (a pick the bootstrap could not
+    resolve leaves it a player short).
+    """
+
+    gain: int
+    benched: tuple[RecapManagerPlayer, ...]
+    dropped: tuple[RecapManagerPlayer, ...]
+
+
+_NO_BETTER_XI = BestXISelection(gain=0, benched=(), dropped=())
+
+
+def best_xi_selection(
+    squad: Sequence[RecapManagerPlayer],
+    *,
+    captain_played: bool,
+) -> BestXISelection:
+    """Reselect the best legal XI from a manager's 15 on the points they scored.
+
+    The bench's raw sum overstates what the bench cost every time (issue
+    #350): only one goalkeeper plays, so a bench keeper's points are worth
+    the difference against the one who did and nothing when he scored less;
+    and an outfielder can only come in for someone one of the eight legal
+    formations lets him replace. For each formation this takes the top
+    scorers by position and keeps the best total. Its gain over the XI that
+    counted -- the players who `contributed`, auto-subs applied -- is exactly
+    the points left on the bench, and nothing else is.
+
+    The player whose points were doubled stays in the XI: the captain when
+    he played, the vice-captain when he did not (and only where the vice
+    counted himself -- a vice auto-subbed out doubled nobody). Left free,
+    the reselection would quietly move the armband and count a multiplier
+    nobody could have had. Draft has no captain, so nothing is held.
+
+    Ties go the way of the XI that played: a bench player level with a
+    starter is never named as wrongly benched, a formation that only matches
+    the actual total is not a better one, and of two formations level on the
+    best total the one that changes fewer players is the one named -- so
+    nobody is named as benched for a swap that gained nothing. Bench Boost
+    has all 15 counting, so the gain is 0 by construction.
+
+    Two players are no pick at all. A starter auto-subbed out had no
+    minutes, so his zero could never have scored in any XI; left in the
+    pool he would be picked over a team-mate on a red card and printed as
+    "benched" when he started. And a draft player the main game could not
+    be matched to carries a false zero, not a score (`unmatched`), so a
+    squad holding one has no best XI to reselect: every bench player would
+    "beat" him and the gain would be points the manager never left behind.
+    """
+    if any(p["unmatched"] for p in squad):
+        return _NO_BETTER_XI
+
+    contributed = [p for p in squad if p["contributed"]]
+    actual_points = sum(p["points"] for p in contributed)
+
+    role = "is_captain" if captain_played else "is_vice_captain"
+    held = next((p for p in contributed if p[role]), None)
+
+    by_position: dict[str, list[RecapManagerPlayer]] = {"GK": [], "DEF": [], "MID": [], "FWD": []}
+    for p in squad:
+        if p["position"] in by_position and not p["auto_sub_out"]:
+            by_position[p["position"]].append(p)
+    # Highest scorer first, a starter ahead of a bench player on level points
+    # so the reselection never swaps for nothing.
+    for ranked in by_position.values():
+        ranked.sort(key=lambda p: (-p["points"], not p["contributed"]))
+
+    def _line(position: str, count: int) -> list[RecapManagerPlayer] | None:
+        ranked = by_position[position]
+        if len(ranked) < count:
+            return None
+        top = ranked[:count]
+        if held is None or held["position"] != position or any(p is held for p in top):
+            return top
+        return [held, *[p for p in ranked if p is not held][: count - 1]]
+
+    def _formation_xi(def_n: int, mid_n: int, fwd_n: int) -> list[RecapManagerPlayer] | None:
+        xi: list[RecapManagerPlayer] = []
+        for position, count in (("GK", 1), ("DEF", def_n), ("MID", mid_n), ("FWD", fwd_n)):
+            line = _line(position, count)
+            if line is None:
+                return None
+            xi.extend(line)
+        return xi
+
+    best_points = actual_points
+    best_xi: list[RecapManagerPlayer] | None = None
+    best_swaps = 0
+    for def_n, mid_n, fwd_n in VALID_FORMATIONS:
+        xi = _formation_xi(def_n, mid_n, fwd_n)
+        if xi is None:
+            continue
+        total = sum(p["points"] for p in xi)
+        swaps = sum(1 for p in xi if not p["contributed"])
+        if total > best_points or (total == best_points and best_xi is not None and swaps < best_swaps):
+            best_points, best_xi, best_swaps = total, xi, swaps
+    if best_xi is None:
+        return _NO_BETTER_XI
+
+    by_points = functools.partial(sorted, key=lambda p: -p["points"])
+    return BestXISelection(
+        gain=best_points - actual_points,
+        benched=tuple(by_points(p for p in best_xi if not p["contributed"])),
+        dropped=tuple(by_points(p for p in contributed if not any(p is q for q in best_xi))),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -455,6 +572,8 @@ async def _fetch_all_manager_data(
                 vice_captain_name = player.web_name
                 vice_captain_points = pts
 
+        best_xi = best_xi_selection(squad, captain_played=captain_played)
+
         # Human-readable auto-sub descriptions
         auto_sub_descriptions: list[str] = []
         for sub in automatic_subs:
@@ -518,6 +637,7 @@ async def _fetch_all_manager_data(
             active_chip=_CHIP_DISPLAY.get(active_chip, active_chip) if active_chip else None,
             squad=squad,
             bench_points=bench_points,
+            best_xi_gain=best_xi.gain,
             transfer_cost=transfer_cost,
             auto_subs=auto_sub_descriptions,
             transfers=transfers,
@@ -1442,6 +1562,14 @@ def _captain_detail(
     return detail + _omitted_suffix(omitted, "manager")
 
 
+def _name_points(players: Sequence[RecapManagerPlayer]) -> str:
+    """Render "Groß (17), Gvardiol (11) and Trafford (3)" for an award's prose."""
+    named = [f"{p['name']} ({p['points']})" for p in players]
+    if len(named) <= 1:
+        return "".join(named)
+    return ", ".join(named[:-1]) + " and " + named[-1]
+
+
 def _compute_shared_awards(
     managers: list[RecapManagerEntry],
     format_name: str = "classic",
@@ -1481,36 +1609,39 @@ def _compute_shared_awards(
     # Biggest bench haul — excludes Bench Boost managers (their bench counted).
     # Detect via per-player flag to avoid coupling to the display-form chip string
     # stored on RecapManagerEntry.active_chip (e.g. "BB" vs raw "bboost").
+    # Ranked on what the bench actually cost -- the best legal XI's gain over
+    # the one that played -- never on the bench's raw sum, which counts a
+    # keeper who could not have played and outfielders no formation had room
+    # for, and so overstated every week and picked the wrong manager (#350).
     bench_candidates = [
         m for m in managers
         if not any(p.get("is_bench_boost_player") for p in m.get("squad", []))
     ]
     if bench_candidates:
-        best_bench_pts = max(m["bench_points"] for m in bench_candidates)
-        if best_bench_pts > 0:
-            bench_kings = [m for m in bench_candidates if m["bench_points"] == best_bench_pts]
+        best_gain = max(m["best_xi_gain"] for m in bench_candidates)
+        if best_gain > 0:
+            bench_kings = [m for m in bench_candidates if m["best_xi_gain"] == best_gain]
             # Each entry is verbose, so a wide tie is capped the same way the
-            # transfer and captain awards are. Everyone tied here benched the
-            # same points, so name the managers it actually cost: leaving 12 on
-            # the bench stings more on a 40-point week than an 80-point one.
-            # Name is the secondary key so the choice stays deterministic.
+            # transfer and captain awards are. Everyone tied here left the
+            # same points behind, so name the managers it actually cost:
+            # leaving 12 on the bench stings more on a 40-point week than an
+            # 80-point one. Name is the secondary key so the choice stays
+            # deterministic.
             bench_kings.sort(key=lambda m: (m["gw_points"], m["manager_name"]))
             omitted = max(0, len(bench_kings) - _DETAIL_CAP)
             detail_parts = []
             for m in bench_kings[:_DETAIL_CAP]:
-                bench_players = [
-                    p for p in m["squad"]
-                    if not p["contributed"] and not p["auto_sub_out"] and p["points"] > 0
-                ]
-                player_detail = ", ".join(f"{p['name']} ({p['points']})" for p in bench_players)
+                swap = best_xi_selection(m["squad"], captain_played=m["captain_played"])
                 detail_parts.append(
-                    f"{m['manager_name']} left {m['bench_points']} pts on the bench"
-                    f" (team scored {m['gw_points']} pts): {player_detail}"
+                    f"{m['manager_name']} could have scored {m['best_xi_gain']} more with"
+                    f" their best XI (team scored {m['gw_points']} pts):"
+                    f" {_name_points(swap.benched)} benched while"
+                    f" {_name_points(swap.dropped)} played"
                 )
             detail = "; ".join(detail_parts) + _omitted_suffix(omitted, "manager")
             awards["biggest_bench_haul"] = RecapAwardEntry(
                 manager_name=" and ".join(m["manager_name"] for m in bench_kings),
-                value=best_bench_pts,
+                value=best_gain,
                 detail=detail,
             )
 
@@ -2169,6 +2300,8 @@ async def collect_draft_recap_data(
                     ),
                 ))
 
+            best_xi = best_xi_selection(squad, captain_played=False)
+
             # Build auto-sub descriptions
             auto_sub_descs: list[str] = []
             for s in subs:
@@ -2289,6 +2422,7 @@ async def collect_draft_recap_data(
                 active_chip=None,
                 squad=squad,
                 bench_points=bench_points,
+                best_xi_gain=best_xi.gain,
                 transfer_cost=0,
                 auto_subs=auto_sub_descs,
                 transactions=manager_txns,

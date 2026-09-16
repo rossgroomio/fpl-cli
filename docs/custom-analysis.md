@@ -218,7 +218,7 @@ For horizon >= 2, per-player, per-GW fixture coefficients use position-variant s
 
 ### ILP Solver
 
-Solves 7 independent ILPs (one per valid formation). The objective function maximises the weighted sum of expected contributions across all players and gameweeks:
+Solves 8 independent ILPs (one per valid formation). The objective function maximises the weighted sum of expected contributions across all players and gameweeks:
 
 ```
 max Σ(gw) Σ(p) discount[gw] × coeff[p][gw] × (starter[p] + bench_discount[p] × bench[p])

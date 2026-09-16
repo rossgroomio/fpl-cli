@@ -29,6 +29,7 @@ from fpl_cli.cli._league_recap_data import (
     _fetch_all_manager_data,
     _has_previous_gameweek,
     _reconcile_classic_headline_numbers,
+    best_xi_selection,
     collect_classic_recap_data,
     collect_draft_recap_data,
     collect_prior_seasons,
@@ -59,6 +60,7 @@ from fpl_cli.cli._league_recap_types import (
     format_prior_seasons_line,
     summarise_prior_seasons,
 )
+from fpl_cli.models.player import PlayerPosition
 from fpl_cli.prompts.league_recap import (
     collect_player_clubs,
     format_recap_awards_context,
@@ -105,6 +107,7 @@ def _make_manager(
     vice_captain: str = "Saka",
     vice_captain_points: int = 0,
     bench_points: int = 5,
+    best_xi_gain: int | None = None,
     transfer_cost: int = 0,
     active_chip: str | None = None,
     squad: list[RecapManagerPlayer] | None = None,
@@ -117,7 +120,11 @@ def _make_manager(
     doesn't care about the gross/net distinction. Pass `total_points`,
     `overall_rank`, or `previous_rank` as None to build an entry with that
     key absent, e.g. an unreconstructable draft replay (U2/U3).
+    `best_xi_gain` is derived from `squad` the way the collectors derive it,
+    so a fixture's award number can never disagree with its squad.
     """
+    if best_xi_gain is None:
+        best_xi_gain = best_xi_selection(squad or [], captain_played=captain_played).gain
     result = RecapManagerEntry(
         manager_name=name,
         entry_id=entry_id,
@@ -135,6 +142,7 @@ def _make_manager(
         active_chip=active_chip,
         squad=squad or [],
         bench_points=bench_points,
+        best_xi_gain=best_xi_gain,
         transfer_cost=transfer_cost,
         auto_subs=[],
     )
@@ -175,7 +183,7 @@ def _make_squad_player(
     return RecapManagerPlayer(
         name=name,
         team="ARS",
-        position="MID",
+        position=kwargs.get("position", "MID"),
         code=kwargs.get("code"),
         points=points,
         is_captain=kwargs.get("is_captain", False),
@@ -186,6 +194,52 @@ def _make_squad_player(
         auto_sub_out=auto_sub_out,
         red_cards=kwargs.get("red_cards", 0),
         unmatched=kwargs.get("unmatched", False),
+    )
+
+
+# A (position, points) pair, or (position, points, name) to name the player.
+_Slot = tuple[str, int] | tuple[str, int, str]
+
+
+def _squad(
+    xi: list[_Slot],
+    bench: list[_Slot] = [],  # noqa: B006 -- never mutated
+    *,
+    captain: str | None = None,
+    vice: str | None = None,
+) -> list[RecapManagerPlayer]:
+    """A recorded 15 from (position, points) slots, the XI first, the bench after.
+
+    An unnamed slot is called after its position and index ("MID3"), so a
+    test names only the players its assertions look for. `captain` and
+    `vice` name the armband holders, XI or bench alike.
+    """
+    squad: list[RecapManagerPlayer] = []
+    for contributed, slots in ((True, xi), (False, bench)):
+        for i, slot in enumerate(slots, start=1):
+            position, points = slot[0], slot[1]
+            name = slot[2] if len(slot) == 3 else f"{position}{i}{'' if contributed else 'b'}"
+            squad.append(_make_squad_player(
+                name=name, points=points, contributed=contributed, position=position,
+                is_captain=name == captain, is_vice_captain=name == vice,
+            ))
+    return squad
+
+
+# A 4-4-2 in which every starter scored `points`.
+def _flat_xi(points: int) -> list[_Slot]:
+    return [("GK", points)] + [("DEF", points)] * 4 + [("MID", points)] * 4 + [("FWD", points)] * 2
+
+
+def _overstated_bench() -> list[RecapManagerPlayer]:
+    """The shape of the squad #350 was raised on: 31 on the bench, of which
+    the keeper's 3 were never available (the one who played scored 5) and the
+    two outfielders replace a 3 and a 2 -- 23 gained, not 31."""
+    return _squad(
+        [("GK", 5)] + [("DEF", 4)] * 3 + [("DEF", 2, "Colwill")]
+        + [("MID", 6)] * 3 + [("MID", 3, "Rice"), ("FWD", 8), ("FWD", 7)],
+        [("GK", 3, "Trafford"), ("MID", 17, "Groß"), ("DEF", 11, "Gvardiol"), ("FWD", 0)],
+        captain="FWD1",
     )
 
 
@@ -260,16 +314,48 @@ class TestAwardsClearWinner:
         assert awards["gw_loser"]["value"] == 20
 
     def test_biggest_bench_haul(self):
-        bench_player = _make_squad_player(name="Benchman", points=15, contributed=False)
+        # Benchman (15) for a 0-point midfielder is the whole swap: 15 more.
+        alice = _squad(
+            [("GK", 2)] + [("DEF", 2)] * 4 + [("MID", 2)] * 3 + [("MID", 0, "Passenger"), ("FWD", 2), ("FWD", 2)],
+            [("GK", 0), ("MID", 15, "Benchman"), ("DEF", 0), ("FWD", 0)],
+        )
+        bob = _squad(_flat_xi(2), [("GK", 0), ("MID", 5), ("DEF", 0), ("FWD", 0)])
         managers = [
-            _make_manager(name="Alice", gw_points=29, bench_points=15, squad=[bench_player]),
-            _make_manager(name="Bob", bench_points=3),
+            _make_manager(name="Alice", gw_points=29, squad=alice),
+            _make_manager(name="Bob", squad=bob),
         ]
         awards = _compute_shared_awards(managers)
         assert awards["biggest_bench_haul"]["manager_name"] == "Alice"
-        assert "15 pts on the bench" in awards["biggest_bench_haul"]["detail"]
-        assert "team scored 29 pts" in awards["biggest_bench_haul"]["detail"]
-        assert "Benchman (15)" in awards["biggest_bench_haul"]["detail"]
+        assert awards["biggest_bench_haul"]["value"] == 15
+        detail = awards["biggest_bench_haul"]["detail"]
+        assert detail == (
+            "Alice could have scored 15 more with their best XI (team scored 29 pts):"
+            " Benchman (15) benched while Passenger (0) played"
+        )
+
+    def test_bench_award_ranks_on_the_best_xi_gain_not_the_raw_bench_sum(self):
+        """#350: the award went to the manager whose bench summed highest,
+        when another manager lost more by picking the wrong XI."""
+        # Alice: 31 on the bench, 23 gained.
+        alice = _overstated_bench()
+        # Bob: 30 on the bench, all of it outfield and all of it replacing
+        # a 1, a 1 and a 2 -- 26 gained.
+        bob = _squad(
+            [("GK", 5)] + [("DEF", 4)] * 3 + [("DEF", 1)]
+            + [("MID", 6)] * 3 + [("MID", 1), ("FWD", 8), ("FWD", 2)],
+            [("GK", 0), ("DEF", 12), ("MID", 10), ("FWD", 8)],
+            captain="FWD1",
+        )
+        managers = [
+            _make_manager(name="Alice", gw_points=82, bench_points=31, squad=alice),
+            _make_manager(name="Bob", gw_points=91, bench_points=30, squad=bob),
+        ]
+        assert managers[0]["best_xi_gain"] == 23
+        assert managers[1]["best_xi_gain"] == 26
+        awards = _compute_shared_awards(managers)
+        assert awards["biggest_bench_haul"]["manager_name"] == "Bob"
+        assert awards["biggest_bench_haul"]["value"] == 26
+        assert "Alice" not in awards["biggest_bench_haul"]["detail"]
 
     def test_best_captain_by_raw_points(self):
         managers = [
@@ -321,11 +407,15 @@ class TestAwardsTies:
         assert "Bob and Charlie" == awards["gw_loser"]["manager_name"]
 
     def test_tied_bench_haul(self):
-        bench_a = _make_squad_player(name="BenchA", points=12, contributed=False)
-        bench_b = _make_squad_player(name="BenchB", points=12, contributed=False)
+        def _twelve_behind(bench_name: str) -> list[RecapManagerPlayer]:
+            return _squad(
+                _flat_xi(2)[:-1] + [("FWD", 0)],
+                [("GK", 0), ("FWD", 12, bench_name), ("DEF", 0), ("MID", 0)],
+            )
+
         managers = [
-            _make_manager(name="Alice", gw_points=40, bench_points=12, squad=[bench_a]),
-            _make_manager(name="Bob", gw_points=55, bench_points=12, squad=[bench_b]),
+            _make_manager(name="Alice", gw_points=40, squad=_twelve_behind("BenchA")),
+            _make_manager(name="Bob", gw_points=55, squad=_twelve_behind("BenchB")),
         ]
         awards = _compute_shared_awards(managers)
         assert awards["biggest_bench_haul"]["value"] == 12
@@ -339,14 +429,17 @@ class TestAwardsTies:
         """Each bench entry is verbose, so a wide tie is capped like the other awards."""
         managers = [
             _make_manager(
-                name=f"M{i:02d}", entry_id=i, gw_points=60 - i, bench_points=12,
-                squad=[_make_squad_player(name=f"Bench{i:02d}", points=12, contributed=False)],
+                name=f"M{i:02d}", entry_id=i, gw_points=60 - i,
+                squad=_squad(
+                    _flat_xi(2)[:-1] + [("FWD", 0)],
+                    [("GK", 0), ("FWD", 12, f"Bench{i:02d}"), ("DEF", 0), ("MID", 0)],
+                ),
             )
             for i in range(6)
         ]
         awards = _compute_shared_awards(managers)
         detail = awards["biggest_bench_haul"]["detail"]
-        assert detail.count("left 12 pts on the bench") == 3
+        assert detail.count("could have scored 12 more") == 3
         assert "3 more managers omitted" in detail
         # The award still records every tied manager, only the prose is trimmed
         assert awards["biggest_bench_haul"]["manager_name"].count(" and ") == 5
@@ -643,6 +736,18 @@ class TestAwardsEdgeCases:
         awards = _compute_shared_awards(managers)
         assert "biggest_bench_haul" not in awards
 
+    def test_bench_points_nobody_could_have_played_earn_no_award(self):
+        """#350: five on the bench -- a keeper behind the one who played and a
+        defender no starter was below -- is not five points left anywhere."""
+        squad = _squad(
+            [("GK", 6)] + _flat_xi(2)[1:],
+            [("GK", 3), ("DEF", 2), ("MID", 0), ("FWD", 0)],
+        )
+        managers = [_make_manager(name="Alice", bench_points=5, squad=squad)]
+        assert managers[0]["best_xi_gain"] == 0
+        awards = _compute_shared_awards(managers)
+        assert "biggest_bench_haul" not in awards
+
     def test_all_captains_zero(self):
         managers = [
             _make_manager(name="Alice", captain="Salah", captain_points=0),
@@ -678,9 +783,10 @@ class TestAwardsChips:
         bb_player = _make_squad_player(
             name="AliceBench", points=0, contributed=True, is_bench_boost_player=True,
         )
+        bob = _squad(_flat_xi(2), [("GK", 0), ("MID", 12), ("DEF", 0), ("FWD", 0)])
         managers = [
             _make_manager(name="Alice", active_chip="BB", bench_points=0, squad=[bb_player]),
-            _make_manager(name="Bob", bench_points=10),
+            _make_manager(name="Bob", bench_points=12, squad=bob),
         ]
         awards = _compute_shared_awards(managers)
         assert awards["biggest_bench_haul"]["manager_name"] == "Bob"
@@ -692,13 +798,13 @@ class TestAwardsChips:
         bench_bb = _make_squad_player(
             name="BBBench", points=30, contributed=True, is_bench_boost_player=True,
         )
-        non_bb_bench = _make_squad_player(name="Benchman", points=15, contributed=False)
+        bob = _squad(_flat_xi(2), [("GK", 0), ("MID", 15, "Benchman"), ("DEF", 0), ("FWD", 0)])
         managers = [
             _make_manager(
                 name="Alice", active_chip="BB", gw_points=99,
-                bench_points=30, squad=[bench_bb],
+                bench_points=30, best_xi_gain=30, squad=[bench_bb],
             ),
-            _make_manager(name="Bob", gw_points=60, bench_points=15, squad=[non_bb_bench]),
+            _make_manager(name="Bob", gw_points=60, bench_points=15, squad=bob),
         ]
         awards = _compute_shared_awards(managers)
         assert awards["biggest_bench_haul"]["manager_name"] == "Bob"
@@ -4407,6 +4513,247 @@ class TestLeagueRecapMostContestedRender:
     async def test_no_award_means_no_mention(self, tmp_path):
         content = await self._render(tmp_path, self._draft_data())
         assert "Most Contested" not in content
+
+
+# ---------------------------------------------------------------------------
+# Best legal XI reselection (issue #350)
+# ---------------------------------------------------------------------------
+
+
+def _names(players: tuple[RecapManagerPlayer, ...]) -> list[str]:
+    return [p["name"] for p in players]
+
+
+class TestBestXISelection:
+    """#350: what the bench cost is the best legal XI's gain over the one
+    that played -- one keeper, eight formations, the doubled player held."""
+
+    def test_names_the_swap_highest_scorer_first(self):
+        pick = best_xi_selection(_overstated_bench(), captain_played=True)
+        assert pick.gain == 23
+        assert _names(pick.benched) == ["Groß", "Gvardiol"]
+        assert _names(pick.dropped) == ["Rice", "Colwill"]
+
+    def test_bench_keeper_is_worth_the_difference_over_the_one_who_played(self):
+        squad = _squad(
+            [("GK", 2, "Starter")] + _flat_xi(2)[1:],
+            [("GK", 8, "Spare"), ("DEF", 0), ("MID", 0), ("FWD", 0)],
+        )
+        pick = best_xi_selection(squad, captain_played=True)
+        assert pick.gain == 6
+        assert _names(pick.benched) == ["Spare"]
+        assert _names(pick.dropped) == ["Starter"]
+
+    def test_bench_keeper_behind_the_one_who_played_is_worth_nothing(self):
+        squad = _squad([("GK", 6)] + _flat_xi(2)[1:], [("GK", 3), ("DEF", 0), ("MID", 0), ("FWD", 0)])
+        pick = best_xi_selection(squad, captain_played=True)
+        assert (pick.gain, pick.benched, pick.dropped) == (0, (), ())
+
+    def test_outfielder_no_formation_has_room_for_is_worth_nothing(self):
+        # Five better defenders already: the bench defender outscored every
+        # midfielder and the forward, but no legal shape lets a sixth defender
+        # take one of their places.
+        squad = _squad(
+            [("GK", 2)] + [("DEF", 6)] * 5 + [("MID", 1)] * 4 + [("FWD", 1)],
+            [("GK", 0), ("DEF", 4), ("MID", 0), ("FWD", 0)],
+        )
+        assert best_xi_selection(squad, captain_played=True).gain == 0
+
+    def test_formation_change_brings_two_positions_in(self):
+        squad = _squad(
+            [("GK", 2)] + [("DEF", 4)] * 3 + [("MID", 4)] * 4
+            + [("FWD", 1, "F1"), ("FWD", 1, "F2"), ("FWD", 1, "F3")],
+            [("GK", 0), ("DEF", 6, "SpareDef"), ("MID", 5, "SpareMid"), ("FWD", 0)],
+        )
+        pick = best_xi_selection(squad, captain_played=True)
+        # 3-4-3 to 4-5-1: two forwards out, a defender and a midfielder in.
+        assert pick.gain == 9
+        assert _names(pick.benched) == ["SpareDef", "SpareMid"]
+        assert len(pick.dropped) == 2 and set(_names(pick.dropped)) < {"F1", "F2", "F3"}
+
+    # One squad, three armband situations. Unheld, the best XI swaps the
+    # 2-point captain for the 5-point bench midfielder (+3); held, the only
+    # improvement left is a defender making way for him in a 3-5-2 (+1).
+    # A 3-4-3 bringing the 4-point bench forward in for a 4-point defender
+    # matches the unheld total, and must not be the shape named.
+    def _armband_squad(self) -> list[RecapManagerPlayer]:
+        return _squad(
+            [("GK", 5)] + [("DEF", 4)] * 4
+            + [("MID", 2, "Skipper"), ("MID", 6, "Deputy"), ("MID", 6), ("MID", 6), ("FWD", 5), ("FWD", 5)],
+            [("GK", 1), ("DEF", 3), ("MID", 5, "SpareMid"), ("FWD", 4)],
+            captain="Skipper", vice="Deputy",
+        )
+
+    def test_the_captain_who_played_is_held_in_the_xi(self):
+        pick = best_xi_selection(self._armband_squad(), captain_played=True)
+        assert pick.gain == 1
+        assert _names(pick.benched) == ["SpareMid"]
+        assert [(p["position"], p["points"]) for p in pick.dropped] == [("DEF", 4)]
+
+    def test_the_vice_is_held_instead_when_the_captain_did_not_play(self):
+        pick = best_xi_selection(self._armband_squad(), captain_played=False)
+        assert pick.gain == 3
+        assert _names(pick.benched) == ["SpareMid"]
+        assert _names(pick.dropped) == ["Skipper"]
+
+    def test_draft_holds_nobody(self):
+        squad = self._armband_squad()
+        for p in squad:
+            p["is_captain"] = p["is_vice_captain"] = False
+        assert best_xi_selection(squad, captain_played=False).gain == 3
+
+    def test_a_vice_who_did_not_count_holds_nothing(self):
+        # The captain blanked and the vice was auto-subbed out: nobody was
+        # doubled, so forcing the vice's zero into the XI would understate.
+        squad = _squad(
+            [("GK", 2)] + [("DEF", 2)] * 4 + [("MID", 2)] * 3 + [("MID", 1, "Weak"), ("FWD", 2), ("FWD", 2)],
+            [("GK", 0), ("MID", 0, "Deputy"), ("MID", 5, "SpareMid"), ("FWD", 0)],
+            vice="Deputy",
+        )
+        pick = best_xi_selection(squad, captain_played=False)
+        assert pick.gain == 4
+        assert _names(pick.benched) == ["SpareMid"]
+        assert _names(pick.dropped) == ["Weak"]
+
+    def test_a_bench_player_level_with_a_starter_is_not_a_better_pick(self):
+        squad = _squad(_flat_xi(2), [("GK", 2), ("DEF", 2), ("MID", 2), ("FWD", 2)])
+        pick = best_xi_selection(squad, captain_played=True)
+        assert (pick.gain, pick.benched, pick.dropped) == (0, (), ())
+
+    def test_bench_boost_has_nothing_left_on_the_bench(self):
+        squad = _squad(_flat_xi(2) + [("GK", 9), ("DEF", 9), ("MID", 9), ("FWD", 9)])
+        assert best_xi_selection(squad, captain_played=True).gain == 0
+
+    def test_five_two_three_is_a_legal_shape(self):
+        """#352 review: 5-2-3 satisfies the formation limits but was missing
+        from `VALID_FORMATIONS`, so a squad whose best XI needs two
+        midfielders settled for 5-3-2 and understated the gain."""
+        squad = _squad(
+            [("GK", 2)] + [("DEF", 4)] * 3
+            + [("MID", 6), ("MID", 2), ("MID", 1, "M3"), ("MID", 0, "M4")]
+            + [("FWD", 8), ("FWD", 8), ("FWD", 8, "F3")],
+            [("GK", 0), ("DEF", 14, "D4"), ("DEF", 13, "D5"), ("MID", 0)],
+        )
+        pick = best_xi_selection(squad, captain_played=False)
+        # 5-2-3 brings both defenders in for the two weakest midfielders;
+        # 5-3-2 would have had to drop an 8-point forward for one of them.
+        assert pick.gain == 26
+        assert _names(pick.benched) == ["D4", "D5"]
+        assert _names(pick.dropped) == ["M3", "M4"]
+
+    def test_a_starter_auto_subbed_out_is_never_named_as_benched(self):
+        """#352 review: a starter auto-subbed out has no minutes and a zero,
+        which beats a team-mate on a red card -- and he started, so he must
+        not be printed as benched."""
+        squad = _squad(
+            [("GK", 2), ("DEF", 7), ("DEF", 6), ("DEF", -2, "RedCard"), ("DEF", -1, "CameOn")]
+            + [("MID", 4)] * 4 + [("FWD", 3)] * 2,
+            [("GK", 0), ("DEF", 0, "SubbedOut"), ("MID", -3), ("FWD", -3)],
+        )
+        subbed_out = next(p for p in squad if p["name"] == "SubbedOut")
+        subbed_out["auto_sub_out"] = True
+        pick = best_xi_selection(squad, captain_played=True)
+        assert (pick.gain, pick.benched, pick.dropped) == (0, (), ())
+
+    def test_an_unmatched_draft_player_has_no_score_to_reselect_on(self):
+        """#352 review: a draft player the main game could not be matched
+        to records a false zero, so a bench player on 5 would "beat" a
+        starter who may really have scored 9."""
+        squad = _squad(
+            _flat_xi(2)[:-1] + [("FWD", 0, "Unknown")],
+            [("GK", 0), ("DEF", 0), ("MID", 0), ("FWD", 5)],
+        )
+        next(p for p in squad if p["name"] == "Unknown")["unmatched"] = True
+        pick = best_xi_selection(squad, captain_played=False)
+        assert (pick.gain, pick.benched, pick.dropped) == (0, (), ())
+
+    def test_a_squad_that_cannot_field_a_legal_xi_has_no_gain(self):
+        # A pick the bootstrap could not resolve leaves the recorded squad
+        # short; here there is no keeper at all.
+        squad = _squad(_flat_xi(2)[1:], [("DEF", 9), ("MID", 9), ("FWD", 9)])
+        pick = best_xi_selection(squad, captain_played=True)
+        assert (pick.gain, pick.benched, pick.dropped) == (0, (), ())
+        assert best_xi_selection([], captain_played=True).gain == 0
+
+
+class TestCollectorBestXIGain:
+    """Both collectors stamp the gain beside the raw bench sum, which stays
+    what the API calls `points_on_bench` for the ledger's sake."""
+
+    # (position, points), picks order: a 4-4-2 with the captain up front and
+    # the #350 bench behind it -- 31 raw, 23 gained.
+    _SLOTS = [
+        (PlayerPosition.GOALKEEPER, 5),
+        (PlayerPosition.DEFENDER, 4), (PlayerPosition.DEFENDER, 4),
+        (PlayerPosition.DEFENDER, 4), (PlayerPosition.DEFENDER, 2),
+        (PlayerPosition.MIDFIELDER, 6), (PlayerPosition.MIDFIELDER, 6),
+        (PlayerPosition.MIDFIELDER, 6), (PlayerPosition.MIDFIELDER, 3),
+        (PlayerPosition.FORWARD, 8), (PlayerPosition.FORWARD, 7),
+        (PlayerPosition.GOALKEEPER, 3), (PlayerPosition.MIDFIELDER, 17),
+        (PlayerPosition.DEFENDER, 11), (PlayerPosition.FORWARD, 0),
+    ]
+    _CAPTAIN_SLOT = 10
+
+    async def test_classic_collector_stamps_the_gain(self):
+        player_map = {
+            i: make_player(id=i, code=100 + i, web_name=f"P{i}", team_id=1, position=position)
+            for i, (position, _) in enumerate(self._SLOTS, start=1)
+        }
+        live_stats = {
+            i: {"total_points": points, "minutes": 90 if points else 0}
+            for i, (_, points) in enumerate(self._SLOTS, start=1)
+        }
+        picks = _picks_response(points=63, total_points=63)
+        picks["picks"] = [
+            {
+                "element": i, "position": i,
+                "multiplier": (2 if i == self._CAPTAIN_SLOT else 1) if i <= 11 else 0,
+                "is_captain": i == self._CAPTAIN_SLOT, "is_vice_captain": i == 11,
+            }
+            for i in range(1, 16)
+        ]
+        standings = [{"entry": 1, "player_name": "Alice", "event_total": 63, "total": 63}]
+        client = _FakeClassicClient(_standings_response(standings), {1: picks})
+        data = await collect_classic_recap_data(
+            client, {"fpl": {"classic_league_id": 1}}, gw=4,
+            live_stats=live_stats, player_map=player_map, teams={}, is_live_gw=False,
+        )
+        m = data["managers"][0]
+        assert m["bench_points"] == 31
+        assert m["best_xi_gain"] == 23
+
+    async def test_draft_collector_stamps_the_gain(self):
+        draft_players = [
+            make_draft_player(id=900 + i, code=100 + i, web_name=f"P{i}", team=1, element_type=position.value)
+            for i, (position, _) in enumerate(self._SLOTS, start=1)
+        ]
+        main_players = [
+            make_player(id=i, code=100 + i, web_name=f"P{i}", team_id=1, position=position)
+            for i, (position, _) in enumerate(self._SLOTS, start=1)
+        ]
+        live_stats = {i: {"total_points": points} for i, (_, points) in enumerate(self._SLOTS, start=1)}
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        client.get_league_details = AsyncMock(return_value={
+            "league": {"name": "Draft League"},
+            "standings": [{"league_entry": 10, "event_total": 55, "total": 55}],
+            "league_entries": [{"id": 10, "entry_id": 1, "player_first_name": "A", "player_last_name": "B"}],
+        })
+        client.get_bootstrap_static = AsyncMock(return_value={"elements": draft_players})
+        client.get_league_transactions = AsyncMock(return_value={"transactions": []})
+        client.get_entry_picks = AsyncMock(return_value={
+            "picks": [{"element": 900 + i, "position": i} for i in range(1, 16)],
+            "subs": [],
+        })
+        with patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=client):
+            data = await collect_draft_recap_data(
+                {"fpl": {"draft_league_id": 1}}, gw=4, live_stats=live_stats,
+                players=main_players, teams={}, is_live_gw=False,
+            )
+        m = data["managers"][0]
+        assert m["bench_points"] == 31
+        assert m["best_xi_gain"] == 23
 
 
 # ---------------------------------------------------------------------------

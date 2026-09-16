@@ -292,7 +292,7 @@ fpl allocate --format json          # JSON output for scripting / skill integrat
 | `--sell-prices` | - | Path to sell-prices JSON file (from `fpl squad sell-prices --format json`). Solver uses sell prices for owned players in budget constraint. Budget auto-computed as `sum(sell_prices) + bank` unless `--budget` is explicitly set |
 | `--format` | table | `table` or `json` |
 
-Scores ~500 eligible players, adjusts for fixture difficulty over the planning horizon, then solves for the budget-constrained optimum across all 7 valid formations. See [Squad Allocator](custom-analysis.md#squad-allocator) for scoring methodology, fixture coefficients, and solver detail.
+Scores ~500 eligible players, adjusts for fixture difficulty over the planning horizon, then solves for the budget-constrained optimum across all 8 valid formations. See [Squad Allocator](custom-analysis.md#squad-allocator) for scoring methodology, fixture coefficients, and solver detail.
 
 **JSON output fields (horizon >= 2):** `id`, `web_name`, `team`, `position`, `price`, `quality_score` (0-100), `raw_quality` (float), `role` (starter/bench), `captain_gws`. Metadata includes `formation`, `budget_used`, `budget_remaining`, `captain_schedule`, `solver_status`, and `warnings` — the early-season quality notice before GW10 (`early_season_prior_informed`, or `early_season_small_sample` when last season's history could not be loaded and the solver ranked on pure observation), empty otherwise and at horizon 1; table mode prints it to stderr.
 
@@ -868,6 +868,18 @@ Gameweek 7") stays. The metadata lines sit between the title and the headline, s
 headline and prose — is one contiguous block to copy out.
 
 **Awards:** GW winner/loser, biggest bench haul, best/worst captain, transfer/waiver genius and disaster.
+Biggest Bench Haul ranks on what the bench actually cost: how many more points the best legal XI
+from the same 15 would have scored than the XI that counted, with the player whose points were
+doubled (the captain, or the vice when the captain did not play) held in place so the multiplier is
+never quietly reassigned — not on the bench's raw points sum, which counts a keeper who could not
+have played alongside the one who did and outfielders no legal formation had room for, and so
+overstated every week and could hand the award to the wrong manager (issue #350). A manager with
+points on the bench but no better XI is not a candidate, and the detail names the swap rather than
+the bench ("Groß (17) and Gvardiol (11) benched while Rice (3) and Colwill (2) played"). Ties go
+the way of the XI that played: a bench player level with a starter is never named, and of two
+formations level on points the one that changes fewer players is the one described. The ledger row
+and `--format json` keep `bench_points` as the raw sum — the API's own `points_on_bench`, the one
+figure the coarse tier can also record — and the gain is re-derived from `squad` rather than stored.
 The draft waiver awards count and label waiver claims and free-agent signings separately (e.g. "across
 2 moves: 1 waiver, 1 free agent") rather than folding both into "waivers". A draft recap has a third
 waiver award, **Most Contested**, on a week where at least three managers claimed the same player:

@@ -131,6 +131,7 @@ def _manager(
         active_chip=kwargs.get("active_chip"),
         squad=kwargs.get("squad", [_player(is_captain=True), _player(name="Saka", code=223_340, points=6, is_vice_captain=True)]),
         bench_points=kwargs.get("bench_points", 4),
+        best_xi_gain=kwargs.get("best_xi_gain", 0),
         transfer_cost=kwargs.get("transfer_cost", 0),
         auto_subs=[],
     )

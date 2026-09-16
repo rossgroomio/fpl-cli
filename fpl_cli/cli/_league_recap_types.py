@@ -253,7 +253,19 @@ class RecapManagerEntry(TypedDict):
     vice_captain_points: int
     active_chip: str | None
     squad: list[RecapManagerPlayer]
+    # The bench's raw points sum -- the API's own `points_on_bench`, which is
+    # what the ledger records at every tier. Not what the bench cost: only
+    # one keeper plays, and an outfielder can only come in for someone a
+    # legal formation lets him replace, so most of it was never available.
     bench_points: int
+    # How many more points the best legal XI from the same 15 would have
+    # scored than the XI that counted, the doubled player held in place so
+    # the multiplier is not silently reassigned (`best_xi_selection()` in
+    # `_league_recap_data.py`). Zero when no reselection beats the one that
+    # played, however many points the bench scored -- the Biggest Bench
+    # award ranks on this, never on `bench_points` (issue #350). Never
+    # written to the ledger: it is derivable from `squad`.
+    best_xi_gain: int
     transfer_cost: int
     auto_subs: list[str]
     transfers: NotRequired[list[RecapTransfer]]
