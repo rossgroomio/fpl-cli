@@ -6179,6 +6179,10 @@ class TestRecapTitleIsTheReportsNotTheModels:
             "Gameweek 4 Recap: The Manager's Arms"
         )
         assert recap_title(1, "   ") == "Gameweek 1 Recap"
+        # The collectors default the name only when the API omits it, not
+        # when it sends null; a crash here is swallowed by the report agent
+        # into a `--save` that exits 0 having written nothing (review).
+        assert recap_title(1, None) == "Gameweek 1 Recap"
 
     def test_the_user_prompt_names_the_title_and_opens_with_no_heading(self):
         from fpl_cli.cli._league_recap_types import recap_title
@@ -6233,6 +6237,18 @@ class TestRecapTitleIsTheReportsNotTheModels:
             # A headline that happens to open with the league's name is a
             # headline: only a colon, dash or pipe makes the name furniture.
             ("# Sunday League Falls Apart", "Sunday League", "## Sunday League Falls Apart"),
+            # Emphasis of every kind, and emphasis on only part of the title,
+            # is unwrapped before the title is recognised (review).
+            ("# `GW4 Recap: Sunday League`", "Sunday League", None),
+            ("# ~~GW4 Recap: Sunday League~~", "Sunday League", None),
+            ("# GW4 Recap: **Sunday League**", "Sunday League", None),
+            ("# **Chaos** - GW4 Recap", "Sunday League", "## Chaos"),
+            # A gameweek callback in the hook is the hook's, a compound word
+            # is not a join, and "Recap" alone is not the title (review).
+            ("# Bob Never Learns - Gameweek 7", "Sunday League", "## Bob Never Learns - Gameweek 7"),
+            ("# Recap-worthy chaos this week", "Sunday League", "## Recap-worthy chaos this week"),
+            ("# Recap - Chaos this week", "Sunday League", "## Recap - Chaos this week"),
+            ("# Chaos: Gameweek 4 Recap", "Sunday League", "## Chaos"),
         ],
     )
     def test_the_opening_heading_is_dropped_or_demoted(self, heading, league_name, expected):
@@ -6264,6 +6280,42 @@ class TestRecapTitleIsTheReportsNotTheModels:
         )
 
         assert result == "Alice ran away with it.\n\n## The bench\n\nBob benched 31."
+
+    def test_a_title_restated_later_in_the_editorial_is_dropped_too(self):
+        """Review: the duplicate-title shape relocated one heading down is
+        still the duplicate-title shape, at whatever level it was written."""
+        from fpl_cli.prompts.league_recap import normalise_recap_editorial
+
+        result = normalise_recap_editorial(
+            "## Chaos and chips\n\nAlice ran away with it.\n\n"
+            "# Gameweek 4 Recap: Sunday League\n\nThanks for reading!\n\n"
+            "### Sunday League: GW4 Recap\n\nSee you next week.",
+            league_name="Sunday League",
+        )
+
+        assert result == (
+            "## Chaos and chips\n\nAlice ran away with it.\n\n"
+            "Thanks for reading!\n\nSee you next week."
+        )
+
+    def test_a_later_heading_with_a_hook_keeps_its_level_below_h1(self):
+        from fpl_cli.prompts.league_recap import normalise_recap_editorial
+
+        result = normalise_recap_editorial(
+            "## Chaos\n\nprose\n\n### Gameweek 4 - The bench\n\nmore",
+            league_name="Sunday League",
+        )
+
+        assert result == "## Chaos\n\nprose\n\n### The bench\n\nmore"
+
+    def test_a_hash_inside_a_fenced_block_is_code_not_a_heading(self):
+        """Review: the same fence-awareness every other heading scanner in
+        `fpl_cli.utils.markdown` keeps."""
+        from fpl_cli.prompts.league_recap import normalise_recap_editorial
+
+        text = "## Chaos\n\nprose\n\n```\n# Gameweek 4 Recap: Sunday League\n```\n\nmore"
+
+        assert normalise_recap_editorial(text, league_name="Sunday League") == text
 
     def test_prose_with_no_heading_is_left_alone(self):
         from fpl_cli.prompts.league_recap import normalise_recap_editorial

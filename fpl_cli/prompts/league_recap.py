@@ -18,7 +18,7 @@ from fpl_cli.cli._league_recap_types import (
 from fpl_cli.services.league_history_fines import SeasonFinesTally, format_fine_breakdown
 from fpl_cli.services.league_history_notes import NotesPack, NoteSurface
 from fpl_cli.utils.gameweek import format_gameweek_list, is_opening_gameweek
-from fpl_cli.utils.markdown import parse_heading
+from fpl_cli.utils.markdown import fence_flags, parse_heading, unwrap_emphasis
 from fpl_cli.utils.text import ordinal_word
 
 # =============================================================================
@@ -168,27 +168,37 @@ def get_recap_synthesis_prompt(
 # Editorial shape
 # =============================================================================
 
-# The furniture a title is made of, as the model has written it: "GW4",
-# "Gameweek 4 Recap", a bare "Recap", and the league's name -- joined to the
-# rest of a heading by a colon, dash or pipe. Whitespace alone is not a join:
-# "Sunday League Falls Apart" is a headline that happens to open with the
-# league's name, and stays one.
-_TITLE_JOIN = r"\s*[:\-\u2013\u2014|]\s*"
-_TITLE_TOKEN = r"(?:(?:gameweek|gw)\s*\d+(?:\s+recap)?|recap)"
-_LEADING_TITLE_RE = re.compile(rf"^{_TITLE_TOKEN}(?:{_TITLE_JOIN}|$)", re.IGNORECASE)
-_TRAILING_TITLE_RE = re.compile(rf"(?:{_TITLE_JOIN}|^){_TITLE_TOKEN}$", re.IGNORECASE)
-_HEADING_EMPHASIS_RE = re.compile(r"^[*_]+|[*_]+$")
+# The furniture a title is made of, as the model has written it, joined to the
+# rest of a heading by a colon, a pipe, or a dash set off by whitespace (an en
+# or em dash needs none). A bare hyphen with no space around it is a compound
+# word ("Recap-worthy"), and whitespace alone is not a join: "Sunday League
+# Falls Apart" is a headline that happens to open with the league's name, and
+# stays one. At the front the token is "GW4", "Gameweek 4" or either with
+# "Recap"; at the tail it must carry "Recap", since "Bob Never Learns -
+# Gameweek 7" is a callback the hook is entitled to, not a title. Everything
+# here is a match against a fixed shape, never an edit to the prose beside it.
+_TITLE_JOIN = r"(?:\s*[:|]\s*|\s+-\s+|\s*[\u2013\u2014]\s*)"
+_GAMEWEEK_TOKEN = r"(?:gameweek|gw)\s*\d+"
+_LEADING_TITLE_RE = re.compile(
+    rf"^{_GAMEWEEK_TOKEN}(?:\s+recap)?(?:{_TITLE_JOIN}|$)", re.IGNORECASE,
+)
+_TRAILING_TITLE_RE = re.compile(
+    rf"(?:{_TITLE_JOIN}|^){_GAMEWEEK_TOKEN}\s+recap$", re.IGNORECASE,
+)
 _WORD_RE = re.compile(r"\w")
+_BLANK_RUN_RE = re.compile(r"\n{3,}")
 
 
 def _headline(text: str, league_name: str) -> str:
-    """What is left of an opening heading once the title's parts are removed.
+    """What is left of a heading once the title's parts are removed.
 
     Empty when the heading was the title and nothing else -- "GW4 Recap:
     Sunday League", "Sunday League: GW4 Recap", "Gameweek 4 Recap" -- and
     the hook alone when the model wrote both: "Gameweek 4 Recap: Chaos,
     Chips, and a Captain Called Isak" gives "Chaos, Chips, and a Captain
-    Called Isak".
+    Called Isak". Emphasis is unwrapped on every pass, so a title the model
+    bolded only in part ("GW4 Recap: **Sunday League**") still reads as the
+    title once the rest is peeled.
     """
     name = re.escape(league_name.strip())
     league_res = (
@@ -198,10 +208,11 @@ def _headline(text: str, league_name: str) -> str:
         ]
         if name else []
     )
-    core = _HEADING_EMPHASIS_RE.sub("", text.strip()).strip()
+    core = text.strip()
     previous = None
     while previous != core:  # "Sunday League: GW4 Recap" peels a part per pass
         previous = core
+        core = unwrap_emphasis(core)
         for pattern in (_LEADING_TITLE_RE, _TRAILING_TITLE_RE, *league_res):
             core = pattern.sub("", core).strip()
     return core if _WORD_RE.search(core) else ""
@@ -214,35 +225,30 @@ def normalise_recap_editorial(summary: str, *, league_name: str) -> str:
     for one "## " headline and no title, but an instruction is not a
     contract: the model has mirrored the title, restyled it, replaced the
     league's name with an invention, and left the heading out altogether, so
-    every recap landed under a different H1. Here the opening heading is
-    dropped when it only restates the title, kept as an H2 with the title's
-    parts taken off when it carries a hook of its own, and every other "# "
-    line is demoted to "## " -- the model's heading is never the document's.
-    Prose that opens with no heading is left as it is.
+    every recap landed under a different H1. Every heading outside a fenced
+    block is held to the same rule, wherever it sits: one that only restates
+    the title is dropped, the opening one is the "## " headline whatever
+    level it was written at, and a later "# " is demoted to "## " -- the
+    model's heading is never the document's. Prose is left as it is.
     """
     lines = summary.strip().splitlines()
     out: list[str] = []
-    index = 0
-    while index < len(lines):
-        line = lines[index]
-        parsed = parse_heading(line)
+    opening = True
+    for line, fenced in zip(lines, fence_flags(lines), strict=True):
+        parsed = None if fenced else parse_heading(line)
         if parsed is None:
-            if line.strip():
-                break
-            index += 1  # a blank between the model's title and its headline
-            continue
-        index += 1
-        headline = _headline(parsed[1], league_name)
-        if headline:
-            out.append(f"## {headline}")
-            break
-    for line in lines[index:]:
-        parsed = parse_heading(line)
-        if parsed is not None and parsed[0] == 1:
-            out.append(f"## {parsed[1]}".rstrip())
-        else:
             out.append(line)
-    return "\n".join(out).strip()
+            if line.strip():
+                opening = False
+            continue
+        depth, text = parsed
+        headline = _headline(text, league_name)
+        if not headline:
+            continue  # the title restated -- the report already carries it
+        marks = "##" if opening else "#" * max(depth, 2)
+        out.append(f"{marks} {headline}")
+        opening = False
+    return _BLANK_RUN_RE.sub("\n\n", "\n".join(out)).strip()
 
 
 # =============================================================================

@@ -859,11 +859,13 @@ so the first line of every recap reads the same shape every week and in both for
 ([#349](https://github.com/rossgroomio/fpl-cli/issues/349)). The title is written by the report,
 never by the model: with `--summarise` the editorial is asked for one `##` headline beneath it — a
 hook for the gameweek, never the gameweek number, the word "recap" or the league's name — and
-whatever heading it opens with anyway is held to that shape rather than trusted. One that only
-restates the title (`# GW4 Recap: <league name>`, in any order or spelling) is dropped, one that
-carries a hook is kept as the `##` headline with the title's parts removed, and no `#` heading of
-the model's survives anywhere in the editorial. The metadata lines sit between the title and the
-headline, so the editorial — headline and prose — is one contiguous block to copy out.
+every heading it writes anyway is held to that shape rather than trusted, wherever it sits. One
+that only restates the title (`# GW4 Recap: <league name>`, in any order, spelling or emphasis)
+is dropped, the opening one is kept as the `##` headline with the title's parts removed, a later
+`#` heading is demoted, and a fenced code block is left alone. Only a title-shaped part joined by
+a colon, pipe or spaced dash is removed — a gameweek callback inside a hook ("Bob Never Learns -
+Gameweek 7") stays. The metadata lines sit between the title and the headline, so the editorial —
+headline and prose — is one contiguous block to copy out.
 
 **Awards:** GW winner/loser, biggest bench haul, best/worst captain, transfer/waiver genius and disaster.
 The draft waiver awards count and label waiver claims and free-agent signings separately (e.g. "across
