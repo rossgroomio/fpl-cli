@@ -854,6 +854,18 @@ either way — an in-progress gameweek is never recappable, so the recap of the 
 has to keep working while the next one plays.
 
 **Awards:** GW winner/loser, biggest bench haul, best/worst captain, transfer/waiver genius and disaster.
+Biggest Bench Haul ranks on what the bench actually cost: how many more points the best legal XI
+from the same 15 would have scored than the XI that counted, with the player whose points were
+doubled (the captain, or the vice when the captain did not play) held in place so the multiplier is
+never quietly reassigned — not on the bench's raw points sum, which counts a keeper who could not
+have played alongside the one who did and outfielders no legal formation had room for, and so
+overstated every week and could hand the award to the wrong manager (issue #350). A manager with
+points on the bench but no better XI is not a candidate, and the detail names the swap rather than
+the bench ("Groß (17) and Gvardiol (11) benched while Rice (3) and Colwill (2) played"). Ties go
+the way of the XI that played: a bench player level with a starter is never named, and of two
+formations level on points the one that changes fewer players is the one described. The ledger row
+and `--format json` keep `bench_points` as the raw sum — the API's own `points_on_bench`, the one
+figure the coarse tier can also record — and the gain is re-derived from `squad` rather than stored.
 The draft waiver awards count and label waiver claims and free-agent signings separately (e.g. "across
 2 moves: 1 waiver, 1 free agent") rather than folding both into "waivers". A draft recap has a third
 waiver award, **Most Contested**, on a week where at least three managers claimed the same player:
