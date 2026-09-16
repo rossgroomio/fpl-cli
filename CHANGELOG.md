@@ -1,6 +1,13 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [2.7.2] - 2026-09-16
+
+### Bug Fixes
+
+- open every league recap on a title the editorial cannot rewrite (#351)
+- award Biggest Bench on the best XI's gain, not the raw bench sum (#352)
+
 ## [2.7.1] - 2026-09-09
 
 ### Bug Fixes
