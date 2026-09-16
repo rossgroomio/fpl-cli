@@ -513,14 +513,19 @@ def _consistency_phase(gw: int) -> float:
     return min(1.0, max(0.0, (gw - CONSISTENCY_PHASE_IN_START) / window))
 
 
-# Valid formations: (DEF, MID, FWD). GK always 1.
-# Ordered from most attacking to most defensive for deterministic tiebreaking.
+# Valid formations: (DEF, MID, FWD). GK always 1. Every combination the
+# FORMATION_LIMITS (3-5 DEF, 2-5 MID, 1-3 FWD) allow that sums to ten -- eight
+# of them, 5-2-3 included, which the list went without until #352 and which
+# left every consumer settling for 5-3-2 when two midfielders were the better
+# shape. Ordered from most attacking to most defensive for deterministic
+# tiebreaking.
 VALID_FORMATIONS: list[tuple[int, int, int]] = [
     (3, 4, 3),
     (3, 5, 2),
     (4, 3, 3),
     (4, 4, 2),
     (4, 5, 1),
+    (5, 2, 3),
     (5, 3, 2),
     (5, 4, 1),
 ]

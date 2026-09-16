@@ -191,7 +191,7 @@ def best_xi_selection(
     The bench's raw sum overstates what the bench cost every time (issue
     #350): only one goalkeeper plays, so a bench keeper's points are worth
     the difference against the one who did and nothing when he scored less;
-    and an outfielder can only come in for someone one of the seven legal
+    and an outfielder can only come in for someone one of the eight legal
     formations lets him replace. For each formation this takes the top
     scorers by position and keeps the best total. Its gain over the XI that
     counted -- the players who `contributed`, auto-subs applied -- is exactly
@@ -209,7 +209,18 @@ def best_xi_selection(
     best total the one that changes fewer players is the one named -- so
     nobody is named as benched for a swap that gained nothing. Bench Boost
     has all 15 counting, so the gain is 0 by construction.
+
+    Two players are no pick at all. A starter auto-subbed out had no
+    minutes, so his zero could never have scored in any XI; left in the
+    pool he would be picked over a team-mate on a red card and printed as
+    "benched" when he started. And a draft player the main game could not
+    be matched to carries a false zero, not a score (`unmatched`), so a
+    squad holding one has no best XI to reselect: every bench player would
+    "beat" him and the gain would be points the manager never left behind.
     """
+    if any(p["unmatched"] for p in squad):
+        return _NO_BETTER_XI
+
     contributed = [p for p in squad if p["contributed"]]
     actual_points = sum(p["points"] for p in contributed)
 
@@ -218,7 +229,7 @@ def best_xi_selection(
 
     by_position: dict[str, list[RecapManagerPlayer]] = {"GK": [], "DEF": [], "MID": [], "FWD": []}
     for p in squad:
-        if p["position"] in by_position:
+        if p["position"] in by_position and not p["auto_sub_out"]:
             by_position[p["position"]].append(p)
     # Highest scorer first, a starter ahead of a bench player on level points
     # so the reselection never swaps for nothing.

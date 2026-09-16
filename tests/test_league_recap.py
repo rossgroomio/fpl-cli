@@ -4526,7 +4526,7 @@ def _names(players: tuple[RecapManagerPlayer, ...]) -> list[str]:
 
 class TestBestXISelection:
     """#350: what the bench cost is the best legal XI's gain over the one
-    that played -- one keeper, seven formations, the doubled player held."""
+    that played -- one keeper, eight formations, the doubled player held."""
 
     def test_names_the_swap_highest_scorer_first(self):
         pick = best_xi_selection(_overstated_bench(), captain_played=True)
@@ -4623,6 +4623,49 @@ class TestBestXISelection:
     def test_bench_boost_has_nothing_left_on_the_bench(self):
         squad = _squad(_flat_xi(2) + [("GK", 9), ("DEF", 9), ("MID", 9), ("FWD", 9)])
         assert best_xi_selection(squad, captain_played=True).gain == 0
+
+    def test_five_two_three_is_a_legal_shape(self):
+        """#352 review: 5-2-3 satisfies the formation limits but was missing
+        from `VALID_FORMATIONS`, so a squad whose best XI needs two
+        midfielders settled for 5-3-2 and understated the gain."""
+        squad = _squad(
+            [("GK", 2)] + [("DEF", 4)] * 3
+            + [("MID", 6), ("MID", 2), ("MID", 1, "M3"), ("MID", 0, "M4")]
+            + [("FWD", 8), ("FWD", 8), ("FWD", 8, "F3")],
+            [("GK", 0), ("DEF", 14, "D4"), ("DEF", 13, "D5"), ("MID", 0)],
+        )
+        pick = best_xi_selection(squad, captain_played=False)
+        # 5-2-3 brings both defenders in for the two weakest midfielders;
+        # 5-3-2 would have had to drop an 8-point forward for one of them.
+        assert pick.gain == 26
+        assert _names(pick.benched) == ["D4", "D5"]
+        assert _names(pick.dropped) == ["M3", "M4"]
+
+    def test_a_starter_auto_subbed_out_is_never_named_as_benched(self):
+        """#352 review: a starter auto-subbed out has no minutes and a zero,
+        which beats a team-mate on a red card -- and he started, so he must
+        not be printed as benched."""
+        squad = _squad(
+            [("GK", 2), ("DEF", 7), ("DEF", 6), ("DEF", -2, "RedCard"), ("DEF", -1, "CameOn")]
+            + [("MID", 4)] * 4 + [("FWD", 3)] * 2,
+            [("GK", 0), ("DEF", 0, "SubbedOut"), ("MID", -3), ("FWD", -3)],
+        )
+        subbed_out = next(p for p in squad if p["name"] == "SubbedOut")
+        subbed_out["auto_sub_out"] = True
+        pick = best_xi_selection(squad, captain_played=True)
+        assert (pick.gain, pick.benched, pick.dropped) == (0, (), ())
+
+    def test_an_unmatched_draft_player_has_no_score_to_reselect_on(self):
+        """#352 review: a draft player the main game could not be matched
+        to records a false zero, so a bench player on 5 would "beat" a
+        starter who may really have scored 9."""
+        squad = _squad(
+            _flat_xi(2)[:-1] + [("FWD", 0, "Unknown")],
+            [("GK", 0), ("DEF", 0), ("MID", 0), ("FWD", 5)],
+        )
+        next(p for p in squad if p["name"] == "Unknown")["unmatched"] = True
+        pick = best_xi_selection(squad, captain_played=False)
+        assert (pick.gain, pick.benched, pick.dropped) == (0, (), ())
 
     def test_a_squad_that_cannot_field_a_legal_xi_has_no_gain(self):
         # A pick the bootstrap could not resolve leaves the recorded squad

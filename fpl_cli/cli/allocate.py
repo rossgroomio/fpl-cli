@@ -20,7 +20,7 @@ from fpl_cli.cli._json import (
     output_format_option,
 )
 from fpl_cli.services.player_prior import early_season_quality_warning
-from fpl_cli.services.scoring import normalise_score, pick_display_ceiling
+from fpl_cli.services.scoring import VALID_FORMATIONS, normalise_score, pick_display_ceiling
 
 if TYPE_CHECKING:
     from fpl_cli.services.squad_allocator import ScoredPlayer, SquadResult
@@ -160,7 +160,7 @@ def allocate_command(
                     raise SystemExit(1)
             bb_gw_idx = bench_boost_gw - start_gw
 
-        with console.status("Solving (7 formations)..."):
+        with console.status(f"Solving ({len(VALID_FORMATIONS)} formations)..."):
             result = solve_squad(
                 scored_players, coefficients, budget,
                 bench_discount=bd, bench_boost_gw_idx=bb_gw_idx,

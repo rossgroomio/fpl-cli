@@ -443,7 +443,7 @@ def select_starting_xi(
 ) -> dict[str, Any]:
     """Select optimal starting XI from 15 scored squad players.
 
-    Brute-force over 7 valid formations, picking top N per position,
+    Brute-force over the eight legal formations, picking top N per position,
     applying team exposure penalties. Deterministic: tied formations
     resolve to the most attacking option (fewest DEF).
 

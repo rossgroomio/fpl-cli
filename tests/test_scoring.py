@@ -3124,7 +3124,7 @@ class TestSelectStartingXI:
         # 3-4-3 should win: 3 DEF + 4 MID + 3 FWD
         assert result["formation"] == "3-4-3"
 
-    def test_picks_532_when_defs_outscore(self):
+    def test_picks_523_when_defs_outscore(self):
         squad = self._squad_15()
         # Boost DEFs, nerf FWDs and MIDs so 5 DEF preferred over extra MID/FWD
         for p in squad:
@@ -3135,7 +3135,10 @@ class TestSelectStartingXI:
             if p["position"] == "MID":
                 p["lineup_score_raw"] = 2.0
         result = select_starting_xi(squad)
-        assert result["formation"] == "5-3-2"
+        # Forwards on 3 outscore midfielders on 2, so of the five-at-the-back
+        # shapes the one with three forwards wins -- 5-2-3, which the list
+        # went without until #352 and which used to fall through to 5-3-2.
+        assert result["formation"] == "5-2-3"
 
     def test_tiebreak_prefers_fewer_def(self):
         squad = self._squad_15()
