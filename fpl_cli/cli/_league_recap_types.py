@@ -801,3 +801,16 @@ def format_contested_claim(contest: RecapContestedClaim) -> str:
         f"{contest['player']} was claimed by {contest['claimants']} managers: "
         f"{contest['winner']} won him; {beaten} {verb} beaten to him."
     )
+
+
+def recap_title(gameweek: int, league_name: str) -> str:
+    """The saved recap's H1: "Gameweek 4 Recap: Sunday League".
+
+    The one definition of the report's title, read by the template that
+    renders it and the prompt that tells the editorial not to write another
+    (issue #349). The league's name goes in exactly as configured -- it is
+    the line the reader identifies the recap by, so it is never the model's
+    to restyle. An empty name leaves just "Gameweek 4 Recap".
+    """
+    name = league_name.strip()
+    return f"Gameweek {gameweek} Recap: {name}" if name else f"Gameweek {gameweek} Recap"

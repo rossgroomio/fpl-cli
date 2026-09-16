@@ -879,6 +879,7 @@ async def _recap_llm_summarise(
         format_recap_transfers_context,
         format_recap_waivers_context,
         get_recap_synthesis_prompt,
+        normalise_recap_editorial,
     )
 
     # Setup debug directory
@@ -935,7 +936,14 @@ async def _recap_llm_summarise(
                 prompt=user_prompt,
                 system_prompt=system_prompt,
             )
-            collected_data["synthesis_summary"] = synthesis_provider.post_process(synthesis_result.content)
+            # The report writes its own title; whatever heading the model
+            # opened with anyway is demoted beneath it or, when it only
+            # restates the title, dropped (#349). The JSON payload carries
+            # the same text, so a consumer sees the editorial as saved.
+            collected_data["synthesis_summary"] = normalise_recap_editorial(
+                synthesis_provider.post_process(synthesis_result.content),
+                league_name=collected_data["league_name"],
+            )
             if synthesis_result.stopped_early:
                 # The recap's editorial goes into a saved report too, so a
                 # truncated one must not look finished. Recorded for the JSON
