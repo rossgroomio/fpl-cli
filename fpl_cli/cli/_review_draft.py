@@ -330,11 +330,7 @@ async def _review_draft(
                                 verdict = "[dim]→ Neutral[/dim]"
                                 verdict_plain = "→ Neutral"
 
-                            net_style = "green" if net > 0 else "red" if net < 0 else ""
-                            net_sign = '+' if net > 0 else ''
-                            net_display = (
-                                f"[{net_style}]{net_sign}{net}[/{net_style}]" if net_style else str(net)
-                            )
+                            net_display = signed_net_markup(net)
 
                             txn_table.add_row(
                                 f"{draft_player_in.get('web_name', 'Unknown')} ({in_abbr})",
@@ -410,7 +406,7 @@ async def _review_draft(
                             )
 
                 except Exception as e:  # noqa: BLE001 — display resilience
-                    console.print(f"[dim]Could not fetch transactions: {rich_escape(str(e))}[/dim]")
+                    error_console.print(f"[dim]Could not fetch transactions: {rich_escape(str(e))}[/dim]")
 
                 # ## League section - only show for current GW (live data)
                 is_historical_review = api_current_gw_id is not None and gw != api_current_gw_id

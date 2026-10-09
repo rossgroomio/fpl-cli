@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import TYPE_CHECKING, Any
 
+import httpx
 from rich.markup import escape as rich_escape
 from rich.table import Table
 
@@ -307,8 +309,8 @@ async def _review_classic_transfers(
 
     try:
         all_transfers = await client.get_manager_transfers(entry_id)
-    except Exception as e:  # noqa: BLE001 — display resilience
-        console.print(f"[dim]Could not fetch transfers: {rich_escape(str(e))}[/dim]")
+    except (httpx.HTTPError, json.JSONDecodeError) as e:
+        error_console.print(f"[dim]Could not fetch transfers: {rich_escape(str(e))}[/dim]")
         return classic_transfers_data
 
     gw_transfers = [t for t in all_transfers if t.get("event") == gw]
@@ -352,9 +354,9 @@ async def _review_classic_transfers(
                 net_display = signed_net_markup(net)
 
                 transfers_table.add_row(
-                    f"{player_in.web_name} ({in_abbr})",
+                    f"{rich_escape(player_in.web_name)} ({in_abbr})",
                     str(in_points),
-                    f"{player_out.web_name} ({out_abbr})",
+                    f"{rich_escape(player_out.web_name)} ({out_abbr})",
                     str(out_points),
                     net_display,
                     verdict,

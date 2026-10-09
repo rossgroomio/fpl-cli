@@ -3,6 +3,7 @@
 import pathlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 from click.testing import CliRunner
 
@@ -1408,10 +1409,31 @@ class TestReviewClassicTransfersNetZero:
 
     async def test_fetch_failure_is_still_reported_as_a_fetch_failure(self, capsys):
         client = AsyncMock()
-        client.get_manager_transfers = AsyncMock(side_effect=RuntimeError("boom"))
+        client.get_manager_transfers = AsyncMock(side_effect=httpx.ConnectError("boom"))
         result = await _review_classic_transfers(client, 123, 5, {}, {}, {})
+        captured = capsys.readouterr()
         assert result == []
-        assert "Could not fetch transfers: boom" in capsys.readouterr().out
+        assert "Could not fetch transfers: boom" in captured.err
+        assert "Could not fetch transfers" not in captured.out
+
+    async def test_a_programming_error_is_not_reported_as_a_fetch_failure(self):
+        client = AsyncMock()
+        client.get_manager_transfers = AsyncMock(side_effect=TypeError("bad"))
+        with pytest.raises(TypeError):
+            await _review_classic_transfers(client, 123, 5, {}, {}, {})
+
+    async def test_bracketed_player_names_do_not_break_the_table(self, capsys):
+        player_map, teams, live, transfers = self._world(2, 2)
+        player_map[10] = make_player(id=10, web_name="[Odd]", team_id=1)
+        await _review_classic_transfers(self._client(transfers), 123, 5, player_map, teams, live)
+        assert "[Odd]" in capsys.readouterr().out
+
+
+def test_styled_returns_text_bare_without_a_style():
+    from fpl_cli.cli._helpers import styled
+
+    assert styled("5/8", "") == "5/8"
+    assert styled("5/8", "green") == "[green]5/8[/green]"
 
 
 def test_signed_net_markup_never_emits_an_empty_tag():
