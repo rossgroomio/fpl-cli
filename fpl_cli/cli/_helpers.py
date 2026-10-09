@@ -198,6 +198,19 @@ def _center_window_with_ties(
     return items[start:end], n - (end - start)
 
 
+def signed_net_markup(net: int) -> str:
+    """A points delta as Rich markup: green when positive, red when negative.
+
+    Zero has no style, so it is returned bare. Wrapping it in an empty tag
+    (`[]0[/]`) raises MarkupError (#356).
+    """
+    if net > 0:
+        return f"[green]+{net}[/green]"
+    if net < 0:
+        return f"[red]{net}[/red]"
+    return str(net)
+
+
 def _fdr_style(fdr: int | float) -> str:
     """Get Rich style for FDR value on 1-7 scale."""
     if fdr <= FDR_EASY:

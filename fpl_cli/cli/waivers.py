@@ -87,7 +87,8 @@ def waivers_command(ctx: click.Context, output_format: str) -> None:
             pos = data["waiver_position"]
             total = data.get("total_waiver_teams", 0)
             style = "green" if pos <= 3 else "yellow" if pos <= 6 else ""
-            console.print(f"Your waiver position: [{style}]{pos}/{total}[/{style}]\n")
+            pos_display = f"[{style}]{pos}/{total}[/{style}]" if style else f"{pos}/{total}"
+            console.print(f"Your waiver position: {pos_display}\n")
 
         # Squad weaknesses
         if data.get("squad_weaknesses"):
