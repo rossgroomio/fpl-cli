@@ -760,6 +760,15 @@ A waiver claim a rival won is reported under **Claims Lost** rather than discard
 
 **LLM summary** (`--summarise`): Community narrative via research provider, personal analysis via synthesis provider. The summary is an add-on: the review itself needs no key, so a role whose provider has no usable key is skipped with the reason on stderr (`Community narrative skipped: ...` / `Personal analysis skipped: ...`) and the review still prints, still saves its report and still exits **0**. The two roles resolve independently, so one key buys the half it belongs to rather than nothing. A saved report generated from such a run names each skipped half and why in a warning callout above the summary, so a section absent for want of a key never reads as one deliberately left out.
 
+**Trimmed tables:** the community narrative's Standout Performers and Disappointments tables are
+checked against the player lists the research prompt was given. A row naming a player who is not
+on those lists is removed, and the table then carries `[table trimmed: N unlisted row(s)
+removed]` beneath it, counted per table. "Unlisted" means not on the supplied lists, and the
+guard removed the rows, not the model, so a shortened table is not the model's own choice.
+Style differences (spacing, apostrophes, accents, case) are never grounds for removal. Under
+`--debug`, each removed row is named in `data/debug/research_corrections.txt` as
+`<player>: stripped (not in provided list)`.
+
 **Next Week:** the personal analysis is given next gameweek's fixtures — every club's opponent
 and venue, and each of your own players' FDR for their own position — so the section's start,
 bench and transfer calls are grounded in what the squad actually plays rather than extrapolated
