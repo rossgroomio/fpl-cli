@@ -32,9 +32,6 @@ from fpl_cli.cli._json import (
     output_format_option,
 )
 from fpl_cli.cli._league_recap_types import (
-    RECAP_WARNING_CONTESTED_MISATTRIBUTION,
-    RECAP_WARNING_NET_MISATTRIBUTION,
-    RECAP_WARNING_UNSUPPORTED_TIE,
     LeagueRecapData,
     PriorSeasonsSummary,
     summarise_prior_seasons,
@@ -69,12 +66,6 @@ RECAP_WARNING_STANDINGS_MOVED_ON = "league_standings_moved_on"
 # report that states either as fact, and two attempts is where it stops, as
 # for `review`'s completeness check.
 _MAX_EDITORIAL_ATTEMPTS = 2
-# How each kind of surviving problem opens its JSON warning, one per code.
-_EDITORIAL_PROBLEM_LEADS = {
-    RECAP_WARNING_CONTESTED_MISATTRIBUTION: "The editorial contradicts the contested waiver claims it was given",
-    RECAP_WARNING_NET_MISATTRIBUTION: "The editorial pins a figure from a manager's line on the wrong move",
-    RECAP_WARNING_UNSUPPORTED_TIE: "The editorial claims a tie the scores and standings it was given do not show",
-}
 
 if TYPE_CHECKING:
     from fpl_cli.api.providers import LLMResponse
@@ -571,6 +562,8 @@ def league_recap_command(
                     console.print(f"\n[green]Report saved to {result.data['report_path']}[/green]")
 
             if output_format == "json":
+                from fpl_cli.prompts.league_recap_checks import editorial_warning_message
+
                 # From the in-memory rows this run built, not a re-read of
                 # the store: available whether or not the write succeeded,
                 # so a capture failure still produces manager data (KTD1's
@@ -629,10 +622,7 @@ def league_recap_command(
                             # warning per check, so a script can tell a
                             # misattributed race from a wrong net or tie
                             # (#357, #359).
-                            {
-                                "code": code,
-                                "message": f"{_EDITORIAL_PROBLEM_LEADS[code]}: {'; '.join(problems)}.",
-                            }
+                            {"code": code, "message": editorial_warning_message(code, problems)}
                             for code, problems in collected_data.get("synthesis_problems", {}).items()
                         ] + (
                             [{
@@ -900,10 +890,10 @@ async def _editorial_with_data_checks(
     first attempt standing rather than losing an editorial already in hand.
     The first call's failure is the caller's, as it always was.
     """
-    from fpl_cli.prompts.league_recap import (
+    from fpl_cli.prompts.league_recap import normalise_recap_editorial
+    from fpl_cli.prompts.league_recap_checks import (
         check_recap_editorial,
         get_recap_editorial_retry_prompt,
-        normalise_recap_editorial,
     )
 
     # A cut-off attempt ranks below any complete one: it may simply have
@@ -933,7 +923,18 @@ async def _editorial_with_data_checks(
             provider.post_process(response.content),
             league_name=collected_data["league_name"],
         )
-        candidate = (summary, check_recap_editorial(summary, collected_data), response)
+        try:
+            problems = check_recap_editorial(summary, collected_data)
+        except (KeyError, TypeError, ValueError, IndexError) as e:
+            # The checks are advisory: a bug in one (a row shape it did not
+            # expect) must cost the check, never an editorial already paid for.
+            logger.debug("Editorial check failed", exc_info=True)
+            error_console.print(
+                f"[yellow]  ⚠ The editorial could not be checked against its data ({type(e).__name__})"
+                " -- saving it unchecked[/yellow]"
+            )
+            problems = {}
+        candidate = (summary, problems, response)
         if best is None or damage(candidate) < damage(best):
             best = candidate
         if not best[1] or attempt == _MAX_EDITORIAL_ATTEMPTS:

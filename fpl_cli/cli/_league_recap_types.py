@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import NotRequired, TypedDict
 
 from fpl_cli.api.fpl_draft import draft_claim_priority_rank
-from fpl_cli.utils.text import ordinal_word
+from fpl_cli.utils.text import ordinal_suffix, ordinal_word
 
 
 class RecapManagerPlayer(TypedDict):
@@ -386,16 +386,6 @@ class RecapStandingsEntry(TypedDict):
     total_points: int
 
 
-# The JSON warning code each editorial check raises when a claim it caught
-# survives the retry -- one per check, so a script can tell which kind of
-# claim the saved editorial gets wrong. They key `synthesis_problems`, the
-# prompt builder's retry instructions and the command's warning prose alike,
-# which is why they live with the data rather than with any one of those.
-RECAP_WARNING_CONTESTED_MISATTRIBUTION = "synthesis_contested_misattribution"
-RECAP_WARNING_NET_MISATTRIBUTION = "synthesis_net_misattribution"
-RECAP_WARNING_UNSUPPORTED_TIE = "synthesis_unsupported_tie"
-
-
 class LeagueRecapData(TypedDict):
     """Top-level collected_data shape for league-recap."""
 
@@ -422,10 +412,10 @@ class LeagueRecapData(TypedDict):
     # cut off; absent means the provider either finished or said nothing.
     synthesis_stop_reason: NotRequired[str]
     # Every claim the editorial makes that its own data contradicts, keyed by
-    # the `RECAP_WARNING_*` code of the check that caught it and worded as
-    # `check_recap_editorial()` words it (#357, #359). Present means the
-    # editorial above is saved as written but is wrong there; only a code
-    # with at least one problem is a key.
+    # the warning code of the check that caught it and worded as
+    # `check_recap_editorial()` words it (`prompts/league_recap_checks.py`,
+    # #357, #359). Present means the editorial above is saved as written but
+    # is wrong there; only a code with at least one problem is a key.
     synthesis_problems: NotRequired[dict[str, list[str]]]
     # Ledger partition key and the league's own start gameweek (absent or 1
     # means it started at GW1, so there is nothing to offset or skip).
@@ -829,6 +819,16 @@ def format_contested_claim(contest: RecapContestedClaim) -> str:
         f"{contest['player']} was claimed by {contest['claimants']} managers: "
         f"{contest['winner']} won him; {beaten} {verb} beaten to him."
     )
+
+
+def points_label(points: int) -> str:
+    """A points figure with its unit: "1 pt", "0 pts", "12 pts"."""
+    return f"{points} pt" if points == 1 else f"{points} pts"
+
+
+def place_label(rank: int) -> str:
+    """A league position as the table reads it: "1st", "7th", "12th"."""
+    return f"{rank}{ordinal_suffix(rank)}"
 
 
 def recap_title(gameweek: int, league_name: str | None) -> str:

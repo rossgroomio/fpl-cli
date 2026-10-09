@@ -1462,6 +1462,9 @@ class TestNetAndTieClaims:
         assert "still contradicts the data it was given" in stderr
 
         warnings = {w["code"]: w["message"] for w in json.loads(result.stdout)["metadata"]["warnings"]}
+        assert warnings["synthesis_net_misattribution"].startswith(
+            "The editorial pins a figure from a manager's line on the wrong move. The editorial says"
+        )
         assert "Gibbs-White in for Wirtz" in warnings["synthesis_net_misattribution"]
         assert '"joint-lowest"' in warnings["synthesis_unsupported_tie"]
         assert "synthesis_contested_misattribution" not in warnings
@@ -1471,6 +1474,25 @@ class TestNetAndTieClaims:
         assert "contradicts the data it was given" in report
         assert '> - the editorial says "-6 net" of Gibbs-White in for Wirtz' in report
         assert '> - the editorial says "joint-lowest"' in report
+
+    def test_a_check_that_crashes_ships_the_editorial_unchecked(self, tmp_path: Path):
+        """PR #374 review: the checks are advisory, so a bug in one costs the
+        check, never an editorial already generated and paid for."""
+        with patch(
+            "fpl_cli.prompts.league_recap_checks.check_recap_editorial",
+            side_effect=KeyError("manager_name"),
+        ):
+            stub, result = self._invoke(["--format", "json", "--save", "--output", str(tmp_path)], self._NET)
+
+        assert result.exit_code == 0, result.stderr
+        assert len(stub.prompts) == 1
+        assert "could not be checked against its data (KeyError)" in result.stderr.replace("\n", " ")
+        envelope = json.loads(result.stdout)
+        assert self._NET in envelope["metadata"]["synthesis_summary"]
+        assert not [w for w in envelope["metadata"]["warnings"] if w["code"].startswith("synthesis_")]
+        report = next(tmp_path.rglob("gw5-league-recap.md")).read_text(encoding="utf-8")
+        assert self._NET in report
+        assert "> [!WARNING]" not in report
 
     def test_the_prompt_states_the_ties_and_the_overall_net(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.chdir(tmp_path)
