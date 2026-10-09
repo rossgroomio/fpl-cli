@@ -32,9 +32,11 @@ from fpl_cli.cli._json import (
     output_format_option,
 )
 from fpl_cli.cli._league_recap_types import (
+    RECAP_WARNING_CONTESTED_MISATTRIBUTION,
+    RECAP_WARNING_NET_MISATTRIBUTION,
+    RECAP_WARNING_UNSUPPORTED_TIE,
     LeagueRecapData,
     PriorSeasonsSummary,
-    contested_draft_claims,
     summarise_prior_seasons,
 )
 from fpl_cli.services.league_history import GameweekCoverage
@@ -61,12 +63,18 @@ _CONSOLE_STREAK_LIMIT = 5
 # `_league_recap_history.py`, the same way `synthesis_provider_unavailable`
 # does. Stable for scripts, like every other code on that channel.
 RECAP_WARNING_STANDINGS_MOVED_ON = "league_standings_moved_on"
-RECAP_WARNING_CONTESTED_MISATTRIBUTION = "synthesis_contested_misattribution"
-# The editorial gets one retry when it puts a manager in the wrong role of a
-# contested race: a second call is cheap next to a saved report that names
-# someone as beaten to a player they never claimed (#357), and two attempts
-# is where it stops, as for `review`'s completeness check.
+# The editorial gets one retry when it contradicts its own data -- a manager
+# in the wrong role of a contested race (#357), a manager's net pinned on one
+# move, a tie nobody shares (#359): a second call is cheap next to a saved
+# report that states either as fact, and two attempts is where it stops, as
+# for `review`'s completeness check.
 _MAX_EDITORIAL_ATTEMPTS = 2
+# How each kind of surviving problem opens its JSON warning, one per code.
+_EDITORIAL_PROBLEM_LEADS = {
+    RECAP_WARNING_CONTESTED_MISATTRIBUTION: "The editorial contradicts the contested waiver claims it was given",
+    RECAP_WARNING_NET_MISATTRIBUTION: "The editorial pins a figure from a manager's line on the wrong move",
+    RECAP_WARNING_UNSUPPORTED_TIE: "The editorial claims a tie the scores and standings it was given do not show",
+}
 
 if TYPE_CHECKING:
     from fpl_cli.api.providers import LLMResponse
@@ -614,20 +622,19 @@ def league_recap_command(
                                     " rather than finishing normally."
                                 ),
                             }] if collected_data.get("synthesis_stop_reason") else []
-                        ) + (
-                            # The editorial is saved as written, so a race it
-                            # misattributes is named here rather than left for
-                            # a consumer to spot against the rows (#357).
-                            [{
-                                "code": RECAP_WARNING_CONTESTED_MISATTRIBUTION,
-                                "message": (
-                                    "The editorial contradicts the contested waiver"
-                                    " claims it was given: "
-                                    + "; ".join(collected_data.get("synthesis_problems", []))
-                                    + "."
-                                ),
-                            }] if collected_data.get("synthesis_problems") else []
-                        ) + (
+                        ) + [
+                            # The editorial is saved as written, so a claim its
+                            # data contradicts is named here rather than left
+                            # for a consumer to spot against the rows -- one
+                            # warning per check, so a script can tell a
+                            # misattributed race from a wrong net or tie
+                            # (#357, #359).
+                            {
+                                "code": code,
+                                "message": f"{_EDITORIAL_PROBLEM_LEADS[code]}: {'; '.join(problems)}.",
+                            }
+                            for code, problems in collected_data.get("synthesis_problems", {}).items()
+                        ] + (
                             [{
                                 "code": RECAP_WARNING_STANDINGS_MOVED_ON,
                                 "message": (
@@ -874,40 +881,38 @@ def _render_console_highlights(
                 console.print(f"  {entry.text}")
 
 
-async def _editorial_with_attribution_check(
+async def _editorial_with_data_checks(
     provider: Any,
     *,
     prompt: str,
     system_prompt: str,
     collected_data: LeagueRecapData,
-) -> tuple[str, list[str], LLMResponse]:
-    """Query the editorial, retrying once if it misattributes a contested race.
+) -> tuple[str, dict[str, list[str]], LLMResponse]:
+    """Query the editorial, retrying once if it contradicts its own data.
 
-    Returns `(summary, problems, response)` for the attempt that ships. The
-    retry is told exactly which claims were wrong and what each race's line
-    says, rather than rolling the same prompt again (#357). It only displaces
-    the first attempt when it is strictly less damaged -- complete rather than
-    cut off, then fewer wrong claims -- so a worse second roll never ships
-    over a better one, and a retry that fails outright leaves the first
-    attempt standing rather than losing an editorial already in hand. The
-    first call's failure is the caller's, as it always was.
+    Returns `(summary, problems, response)` for the attempt that ships, the
+    problems keyed by warning code as `check_recap_editorial()` returns them.
+    The retry is told exactly which claims were wrong and what the data says
+    instead, rather than rolling the same prompt again (#357, #359). It only
+    displaces the first attempt when it is strictly less damaged -- complete
+    rather than cut off, then fewer wrong claims -- so a worse second roll
+    never ships over a better one, and a retry that fails outright leaves the
+    first attempt standing rather than losing an editorial already in hand.
+    The first call's failure is the caller's, as it always was.
     """
     from fpl_cli.prompts.league_recap import (
-        check_contested_attributions,
-        get_recap_attribution_retry_prompt,
+        check_recap_editorial,
+        get_recap_editorial_retry_prompt,
         normalise_recap_editorial,
     )
-
-    contests = contested_draft_claims(collected_data["managers"])
-    manager_names = [m["manager_name"] for m in collected_data["managers"]]
 
     # A cut-off attempt ranks below any complete one: it may simply have
     # stopped before reaching the claim the other got wrong, so its clean
     # check proves nothing. Among equals, fewer wrong claims wins.
-    def damage(attempt: tuple[str, list[str], LLMResponse]) -> tuple[bool, int]:
-        return attempt[2].stopped_early, len(attempt[1])
+    def damage(attempt: tuple[str, dict[str, list[str]], LLMResponse]) -> tuple[bool, int]:
+        return attempt[2].stopped_early, sum(len(found) for found in attempt[1].values())
 
-    best: tuple[str, list[str], LLMResponse] | None = None
+    best: tuple[str, dict[str, list[str]], LLMResponse] | None = None
     attempt_prompt = prompt
     for attempt in range(1, _MAX_EDITORIAL_ATTEMPTS + 1):
         try:
@@ -928,16 +933,15 @@ async def _editorial_with_attribution_check(
             provider.post_process(response.content),
             league_name=collected_data["league_name"],
         )
-        candidate = (summary, check_contested_attributions(summary, contests, manager_names), response)
+        candidate = (summary, check_recap_editorial(summary, collected_data), response)
         if best is None or damage(candidate) < damage(best):
             best = candidate
         if not best[1] or attempt == _MAX_EDITORIAL_ATTEMPTS:
             return best
         error_console.print(
-            "[yellow]  ⚠ The editorial misattributed a contested waiver claim"
-            " -- retrying once[/yellow]"
+            "[yellow]  ⚠ The editorial contradicts the data it was given -- retrying once[/yellow]"
         )
-        attempt_prompt = get_recap_attribution_retry_prompt(prompt, candidate[1])
+        attempt_prompt = get_recap_editorial_retry_prompt(prompt, candidate[1])
     raise AssertionError("unreachable: the loop returns on its last attempt")  # pragma: no cover
 
 
@@ -1022,7 +1026,7 @@ async def _recap_llm_summarise(
     elif synthesis_provider:
         try:
             console.print("[dim]  Generating league editorial...[/dim]")
-            summary, problems, synthesis_result = await _editorial_with_attribution_check(
+            summary, problems, synthesis_result = await _editorial_with_data_checks(
                 synthesis_provider,
                 prompt=user_prompt,
                 system_prompt=system_prompt,
@@ -1032,14 +1036,14 @@ async def _recap_llm_summarise(
             if problems:
                 # Kept, not scrubbed: the rest of the editorial is sound, and
                 # the saved report carries these lines above it so the wrong
-                # attribution is never read as fact weeks later (#357).
+                # claim is never read as fact weeks later (#357, #359).
                 collected_data["synthesis_problems"] = problems
                 error_console.print(
-                    "[yellow]  ⚠ The editorial still contradicts the contested waiver"
-                    " claims it was given:[/yellow]"
+                    "[yellow]  ⚠ The editorial still contradicts the data it was given:[/yellow]"
                 )
-                for problem in problems:
-                    error_console.print(f"[yellow]    - {rich_escape(problem)}[/yellow]")
+                for found in problems.values():
+                    for problem in found:
+                        error_console.print(f"[yellow]    - {rich_escape(problem)}[/yellow]")
             if synthesis_result.stopped_early:
                 # The recap's editorial goes into a saved report too, so a
                 # truncated one must not look finished. Recorded for the JSON

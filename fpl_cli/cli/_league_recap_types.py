@@ -386,6 +386,16 @@ class RecapStandingsEntry(TypedDict):
     total_points: int
 
 
+# The JSON warning code each editorial check raises when a claim it caught
+# survives the retry -- one per check, so a script can tell which kind of
+# claim the saved editorial gets wrong. They key `synthesis_problems`, the
+# prompt builder's retry instructions and the command's warning prose alike,
+# which is why they live with the data rather than with any one of those.
+RECAP_WARNING_CONTESTED_MISATTRIBUTION = "synthesis_contested_misattribution"
+RECAP_WARNING_NET_MISATTRIBUTION = "synthesis_net_misattribution"
+RECAP_WARNING_UNSUPPORTED_TIE = "synthesis_unsupported_tie"
+
+
 class LeagueRecapData(TypedDict):
     """Top-level collected_data shape for league-recap."""
 
@@ -411,10 +421,12 @@ class LeagueRecapData(TypedDict):
     # was not a normal completion (#266). Present means the text above may be
     # cut off; absent means the provider either finished or said nothing.
     synthesis_stop_reason: NotRequired[str]
-    # Every contested race the editorial puts a manager in the wrong role of,
-    # as `check_contested_attributions()` words it (#357). Present means the
-    # editorial above is saved as written but contradicts its own data there.
-    synthesis_problems: NotRequired[list[str]]
+    # Every claim the editorial makes that its own data contradicts, keyed by
+    # the `RECAP_WARNING_*` code of the check that caught it and worded as
+    # `check_recap_editorial()` words it (#357, #359). Present means the
+    # editorial above is saved as written but is wrong there; only a code
+    # with at least one problem is a key.
+    synthesis_problems: NotRequired[dict[str, list[str]]]
     # Ledger partition key and the league's own start gameweek (absent or 1
     # means it started at GW1, so there is nothing to offset or skip).
     league_id: NotRequired[int]

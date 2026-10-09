@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from fpl_cli.cli._league_recap_types import (
+    RECAP_WARNING_CONTESTED_MISATTRIBUTION,
+    RECAP_WARNING_NET_MISATTRIBUTION,
+    RECAP_WARNING_UNSUPPORTED_TIE,
     LeagueRecapData,
     PriorSeasonsSummary,
     RecapContestedClaim,
     RecapDraftLostClaim,
+    RecapManagerEntry,
     contested_draft_claims,
     draft_transaction_kind_counts,
     draft_transaction_kind_label,
@@ -22,7 +26,7 @@ from fpl_cli.services.league_history_fines import SeasonFinesTally, format_fine_
 from fpl_cli.services.league_history_notes import NotesPack, NoteSurface
 from fpl_cli.utils.gameweek import format_gameweek_list, is_opening_gameweek
 from fpl_cli.utils.markdown import fence_flags, parse_heading, unwrap_emphasis
-from fpl_cli.utils.text import ordinal_word
+from fpl_cli.utils.text import ordinal_suffix, ordinal_word
 
 # =============================================================================
 # SYNTHESIS PROMPT (Stage 2: League-wide editorial)
@@ -55,6 +59,7 @@ Your audience is every member of this league. They want entertainment first, inf
 - Stick to what happened this gameweek, with two exceptions: a historical claim (a streak, trend, or season-arc fact spanning more than this gameweek) is permitted only when it appears in the "## League History" section, stated using that section's own wording for counts, spans, and holds; and a manager's FPL seasons before this one are permitted only as the "## Prior Seasons" rule below allows. A streak, trend, or season-arc fact not listed there is forbidden to mention, however obvious it might seem. Do NOT infer history from the Awards or GW Standings sections - they are compressed and can misrepresent what actually happened over time
 - Every League History entry is about ONE named manager only. NEVER combine two managers into a shared record, streak, or "club" - phrasing like "joined by X", "joins Y in that club", or "the two of them share" is forbidden unless a single League History entry explicitly names both managers together. Two managers who each had a one-off gameweek in a different week (e.g. one finished last in GW1, a different one finished last in GW2) do not form a joint record for either of them - each stays a separate, single-gameweek fact, and under the previous rule a single gameweek's worth of an event is not itself a reportable streak at all
 - A claim that a manager "topped the table", "was previously top", "led before this gameweek", or "fell from the top/first place" must match the "Previous gameweek's leader" statement at the top of the GW Standings section exactly - never infer the previous leader yourself from the size of a fall, the Prev column, or anything else. If that statement names no leader, make no such claim about anyone
+- "Joint", "tied", "level", "shared", "equal" and every other tie word may only be used where the data states the tie. The GW Standings section names the gameweek's highest and lowest scores, says whether each was one manager's alone, and lists every gameweek score and every league position more than one manager holds: a score or position it does not list as shared belonged to one manager, so it is "the lowest", never "the joint-lowest". A tie on season totals in the table's Pos column is not a tie on gameweek scores, and a tie on gameweek scores is not one in the table. The same goes for superlatives: "the highest" or "the lowest" score of the week belongs only to the manager(s) that section names for it
 - A League History entry phrased as an observed count over a span (e.g. "3 in the last 11, with 8 not recorded") must be repeated that way, never simplified to "in a row" or "consecutive" unless the section itself already uses that phrasing
 - A League History season-count line (e.g. "4 gameweek wins this season") is optional colour in the Season Fines mould: use one when it sharpens something that happened this gameweek ("Bob's fourth gameweek win of the season"), or - when the section carries the season's full counts, at the halfway boundary and the finale - to ground a season retrospective. Take the count verbatim, repeat its "not judged" qualifier alongside it or leave the line out, and never derive or extrapolate a season total yourself from the weekly sections
 - A manager's FPL seasons before this one - how many they have played, how they finished last season, their best season, whether they are "returning", a "veteran" or a "newcomer", "entering their Nth season" - may be described only when the "## Prior Seasons" section is present and says so of that manager, with its season names, points, ranks, percentages and counts repeated verbatim. That record is FPL-wide, never this league's: write "their 11th season of FPL", never "their 11th season in this league", "a founder member" or "back for another year in this league" - the section cannot say when anyone joined this league, and neither can you. A manager it lists under "No prior FPL seasons on record" is in their first recorded season and has no past to describe; one it lists under "could not be fetched" gets no claim about their past in either direction. Never derive a trajectory the section does not state ("improving", "declining", "off the pace they set last year") - one gameweek's points against a full season's total is no comparison at all. Without a "## Prior Seasons" section, mention nobody's earlier seasons
@@ -70,6 +75,7 @@ Your audience is every member of this league. They want entertainment first, inf
 - A waiver is a competition, so a manager can be busy and still have no move to show for it. The "## Waivers and Free Agents" section separates the two cases and the distinction is not optional: only the managers it lists as having made no moves AND submitted no claims sat the waiver wire out. A manager it lists as having claimed a player and lost him to a rival WAS active - they spent a claim, at the priority the line states, and were beaten to the player. Say they tried and missed, never that they did nothing, "sat it out", "stayed put", "didn't bother", "kept their powder dry" or "showed restraint", and never assign a motive - discipline, laziness, apathy - to an absence from the movers list. The same goes for a mover's "also claimed and lost" tail: it is extra activity, not a move they made.
 - The "Contested players" lines at the end of that section are the only source for who else wanted a player. Each names one player, how many managers claimed him, who won him and who was beaten to him, with the priority each beaten manager gave the claim - their own ranking of the claims they submitted that week, not the league's waiver order. Use the count verbatim; never call a player contested, "in demand" or "wanted by half the league" unless a line lists him, and never say a manager wanted, chased or missed out on a player unless the line names them. Where the beaten managers on a line carry no (free agent) or (other move) tag, it was a waiver race and the winner won by standing higher in the league's waiver order - you may say that, and nothing else about anyone's waiver position, which the data does not state. A line whose beaten managers are tagged (free agent) was first-come-first-served, so say nothing about waiver order there at all. Where a line says the winner could not be identified, name nobody as having won him.
 - Each "Contested players" line is one race, and its roles are fixed: the manager it says won him won him, and only the managers it says were beaten to him were beaten to him. Write every race as its own clause, naming its winner and beaten managers in exactly those roles. NEVER fold two lines into one clause - no "respectively", no "X and Y were beaten to A and B", no list of managers set against a list of players - because a manager who won one race and lost the next is then easily put in the wrong role. One beaten manager may be named once against several players ("beaten to both A and B") only when every one of those lines names them as beaten.
+- A "## Transfers" or "## Waivers and Free Agents" line holds two kinds of figure, and they are never interchangeable. The figures in its brackets - the move count, the hit and the net overall - describe the manager's whole gameweek; the swing after each move describes that move alone. Attach a move's swing only to that move, and the overall net only to the manager or to their moves taken together ("-6 net overall", "-6 across both transfers after the hit") - NEVER to one named move, because on a line with more than one move or a hit it is a different number. The hit is charged for the gameweek's transfers together, never for any one of them: say a manager took a hit, never that they took it "to bring in", "for" or "on" a named player.
 - NEVER claim a manager's bench outscored their team unless bench points are strictly greater than their GW points. Use the exact numbers provided.
 - NEVER alter player or manager names. Use the exact spelling provided in the data.
 - NEVER state a club for a player other than the club given for them in this data - the "## Player Clubs" section, or the club printed beside a name elsewhere. Players change clubs in the transfer windows and your own knowledge of who plays where goes a season out of date, so that section is the only authority. A player it does not list has no club you can state: name them alone ("Haaland's 2 points") rather than supplying one from memory.
@@ -168,23 +174,44 @@ def get_recap_synthesis_prompt(
     return RECAP_SYNTHESIS_SYSTEM_PROMPT, user_prompt
 
 
+# What the retry is told to do about each kind of problem the checks found,
+# keyed by the warning code that kind raises if it survives the retry.
+_RETRY_INSTRUCTIONS = {
+    RECAP_WARNING_CONTESTED_MISATTRIBUTION: (
+        "Give every contested race its own clause, naming its winner and beaten managers "
+        'exactly as its line does, and never fold two races into one clause with "respectively" '
+        "or a shared list."
+    ),
+    RECAP_WARNING_NET_MISATTRIBUTION: (
+        "Attach each move's swing only to that move and a manager's net only to the manager, "
+        'called their net overall, never to one named move; the hit is the gameweek\'s, never '
+        "one transfer's."
+    ),
+    RECAP_WARNING_UNSUPPORTED_TIE: (
+        'Call a score or position "joint", "tied", "level" or "shared" only where the GW '
+        "Standings section lists it as shared."
+    ),
+}
 
-def get_recap_attribution_retry_prompt(user_prompt: str, problems: Sequence[str]) -> str:
-    """The user prompt again, followed by what the last draft got wrong (#357).
+
+def get_recap_editorial_retry_prompt(user_prompt: str, problems: Mapping[str, Sequence[str]]) -> str:
+    """The user prompt again, followed by what the last draft got wrong (#357, #359).
 
     A second roll of the identical prompt is the same gamble that already
-    failed once; naming each wrong claim beside the line it contradicts
-    gives the retry the one thing the first attempt lacked.
+    failed once; naming each wrong claim beside the data it contradicts, and
+    saying how to avoid that kind of mistake, gives the retry the one thing
+    the first attempt lacked. `problems` is `check_recap_editorial()`'s
+    answer, so only the kinds of mistake actually made get an instruction.
     """
-    corrections = "\n".join(f"- {problem}" for problem in problems)
+    corrections = "\n".join(f"- {problem}" for found in problems.values() for problem in found)
+    instructions = " ".join(_RETRY_INSTRUCTIONS[code] for code in problems)
     return (
         f"{user_prompt}\n\n"
-        "Your previous draft put managers in the wrong role of a contested race:\n"
+        "Your previous draft contradicted the data it was given:\n"
         f"{corrections}\n"
-        "Write the recap again from scratch. Give every contested race its own clause, "
-        "naming its winner and beaten managers exactly as its line does, and never fold "
-        'two races into one clause with "respectively" or a shared list.'
+        f"Write the recap again from scratch. {instructions}"
     )
+
 
 # =============================================================================
 # Editorial shape
@@ -615,6 +642,394 @@ def check_contested_attributions(
     return problems
 
 
+# A clause ends at sentence punctuation followed by a space (so "£4.5m" stays
+# whole), at a semicolon or colon, or at a line break. The net and tie checks
+# read a claim only against what its own clause names.
+_CLAUSE_END_RE = re.compile(r"[.!?;:](?=\s|$)|\n")
+
+
+def _clauses(text: str) -> list[str]:
+    return [_plain(part) for part in _CLAUSE_END_RE.split(text) if part.strip()]
+
+
+def _names_pattern(names: set[str]) -> re.Pattern[str] | None:
+    """One alternation over `names`, longest first, so "Gibbs-White" is read
+    whole rather than as a "White" inside it."""
+    if not names:
+        return None
+    return re.compile(
+        r"(?<!\w)(?:" + "|".join(re.escape(n) for n in sorted(names, key=len, reverse=True)) + r")(?!\w)",
+    )
+
+
+def _words_around(text: str, start: int, end: int, count: int) -> str:
+    """Up to `count` words either side of `text[start:end]`, the span itself excluded."""
+    return " ".join(text[:start].split()[-count:] + text[end:].split()[:count])
+
+
+# The minus signs a model writes: a hyphen, a true minus and an en dash.
+_MINUS_SIGNS = "-\u2212\u2013"
+_SIGNS = f"+{_MINUS_SIGNS}"
+# A points figure tied to the word "net": "-6 net", "6 net points", "net -6",
+# "net of -6", "a net loss of 6". A figure with no sign is compared without
+# one -- "lost 6 net" and "-6 net" make the same claim -- and none is ever
+# read off a place or a percentage ("a net gain of 3 places").
+_NET_FIGURE_RE = re.compile(
+    rf"(?<![\w.])(?P<before>[{re.escape(_SIGNS)}]?\d+)\s*(?:pts?\s+|points?\s+)?net(?!\w)"
+    rf"|(?<!\w)net\s+(?:(?:loss|gain|swing|return)\s+)?(?:of\s+)?(?P<after>[{re.escape(_SIGNS)}]?\d+)"
+    r"(?![\w.])(?!\s*(?:places?|spots?|positions?|%))",
+    re.IGNORECASE,
+)
+# Words that make a net figure the manager's whole gameweek rather than one
+# move's, wherever they sit in its clause: "-6 net overall", "-6 across both
+# transfers", "his transfers went -6 net".
+_NET_OVERALL_RE = re.compile(
+    r"(?<!\w)(?:overall|in total|total|all told|altogether|combined|across|both|transfers|moves"
+    r"|swaps|deals|waivers|claims|signings|pickups|business|dealings)(?!\w)",
+    re.IGNORECASE,
+)
+# ...and the week does the same, but only beside the figure ("ended the week
+# -6 net", "a -6 net gameweek"): further off it is the week something else
+# happened in ("-6 net, the worst move of the week").
+_NET_WEEK_RE = re.compile(r"(?<!\w)(?:week|gameweek|gw)(?!\w)", re.IGNORECASE)
+_NET_WEEK_WORDS = 4
+
+
+@dataclass(frozen=True)
+class _Move:
+    manager: str
+    player_in: str
+    player_out: str
+    net: int
+
+    @property
+    def label(self) -> str:
+        return f"{self.player_in} in for {self.player_out}"
+
+
+@dataclass(frozen=True)
+class _MoverLine:
+    """One manager's roster line, as the Transfers or Waivers section prints it."""
+
+    manager: str
+    moves: tuple[_Move, ...]
+    count: int
+    cost: int
+    noun: str
+
+    @property
+    def complete(self) -> bool:
+        return len(self.moves) >= self.count
+
+    @property
+    def raw(self) -> int:
+        return sum(move.net for move in self.moves)
+
+    def moves_text(self, count: int) -> str:
+        return f"{count} {self.noun}" + ("" if count == 1 else "s")
+
+    def misplaced(self, value: int, move: _Move, *, signed: bool) -> str | None:
+        """Which other figure on this line `value` is, said of `move` -- the
+        overall net, the swing before the hit, or another move's swing -- or
+        None when it is none of them and so came from somewhere else. A
+        `signed` value is matched with its sign first, so "+2" is read as the
+        move that went +2 before the -2 the line's moves came to."""
+        figures: list[tuple[int, str]] = []
+        if self.complete:
+            hit = f", -{self.cost} hit" if self.cost else ""
+            figures.append((self.raw - self.cost, (
+                f"{self.raw - self.cost:+d} is {self.manager}'s net for the whole gameweek "
+                f"({self.moves_text(self.count)}{hit})"
+            )))
+        if len(self.moves) > 1:
+            scope = "all" if self.complete else "the captured"
+            figures.append((self.raw, (
+                f"{self.raw:+d} is {self.manager}'s swing across {scope} "
+                f"{self.moves_text(len(self.moves))} before the hit"
+            )))
+        figures.extend((other.net, f"{other.net:+d} is the swing on {other.label}") for other in self.moves if other != move)
+        exact = [fact for figure, fact in figures if signed and figure == value]
+        loose = [fact for figure, fact in figures if abs(figure) == abs(value)]
+        return (exact or loose or [None])[0]
+
+
+def _mover_lines(managers: Sequence[RecapManagerEntry]) -> list[_MoverLine]:
+    lines: list[_MoverLine] = []
+    for m in managers:
+        name = m["manager_name"]
+        if transfers := m.get("transfers"):
+            moves = tuple(_Move(name, t["player_in"], t["player_out"], t["net"]) for t in transfers)
+            made = m.get("transfers_made")
+            count = len(moves) if made is None else max(made, len(moves))
+            lines.append(_MoverLine(name, moves, count, m.get("transfer_cost", 0), "transfer"))
+        elif transactions := m.get("transactions"):
+            moves = tuple(_Move(name, t["player_in"], t["player_out"], t["net"]) for t in transactions)
+            lines.append(_MoverLine(name, moves, len(moves), 0, "move"))
+    return lines
+
+
+def check_net_attributions(summary: str, managers: Sequence[RecapManagerEntry]) -> list[str]:
+    """Every net figure the editorial pins on one move that belongs to the
+    manager's whole gameweek or to another move (#359).
+
+    A roster line carries the manager's net beside each move's own swing, and
+    the editorial took the first for the second: "brought in Gibbs-White for
+    Wirtz and watched it backfire to the tune of -6 net", where that move was
+    -4 and the -6 only exists with the second transfer and the hit. Both the
+    moves and the figures are known, so the substitution is checkable.
+
+    Deliberately narrow, like the contested check: a clause is read only when
+    it names exactly one move -- both its players -- of exactly one manager,
+    names no other manager, and carries a figure tied to the word "net". The
+    figure is a problem only when it is not that move's swing but is another
+    figure on the same line, so a number from anywhere else is never guessed
+    at. A clause that marks the figure as the manager's ("overall", "across
+    both", "his transfers") passes. Returns one line per wrong figure, in the
+    order the editorial states them.
+    """
+    lines = _mover_lines(managers)
+    # A line with one move and no hit has no figure but that move's swing.
+    if not any(len(line.moves) > 1 or line.cost for line in lines):
+        return []
+    by_manager = {line.manager: line for line in lines}
+    players = {name for line in lines for move in line.moves for name in (move.player_in, move.player_out)}
+    player_re = _names_pattern(players)
+    aliases = {
+        alias: name
+        for alias, (name, is_manager) in _mention_aliases([m["manager_name"] for m in managers], players).items()
+        if is_manager
+    }
+    manager_re = _names_pattern(set(aliases))
+
+    problems: list[str] = []
+    for clause in _clauses(summary):
+        figures = list(_NET_FIGURE_RE.finditer(clause))
+        if not figures or player_re is None or _NET_OVERALL_RE.search(clause):
+            continue
+        named_players = set(player_re.findall(clause))
+        named = [
+            move for line in lines for move in line.moves
+            if {move.player_in, move.player_out} <= named_players
+        ]
+        if not named:
+            continue
+        named_managers = {aliases[alias] for alias in manager_re.findall(clause)} if manager_re else set()
+        owners = {move.manager for move in named}
+        if named_managers - owners:
+            # Another manager's net may be the figure meant.
+            continue
+        if len(owners) > 1:
+            # Two managers made a move both its players name: read it only
+            # where the clause says whose it was.
+            owners &= named_managers
+            named = [move for move in named if move.manager in owners]
+        if len(owners) != 1 or len({(m.player_in, m.player_out) for m in named}) != 1:
+            # Two of a manager's moves together may carry their combined net.
+            continue
+        move = named[0]
+        for figure in figures:
+            text = figure.group("before") or figure.group("after")
+            value = int(text.lstrip(_SIGNS)) * (-1 if text[0] in _MINUS_SIGNS else 1)
+            # An explicit sign is part of the claim: "-2" is not a +2 move's
+            # swing, whatever "lost 2" would have been.
+            signed = text[0] in _SIGNS
+            if (value == move.net if signed else abs(value) == abs(move.net)) or _NET_WEEK_RE.search(
+                _words_around(clause, figure.start(), figure.end(), _NET_WEEK_WORDS),
+            ):
+                continue
+            fact = by_manager[move.manager].misplaced(value, move, signed=signed)
+            if fact is None:
+                continue
+            problem = (
+                f'the editorial says "{figure.group(0).strip()}" of {move.label}, but {fact}; '
+                f"that move's own swing was {move.net:+d}"
+            )
+            if problem not in problems:
+                problems.append(problem)
+    return problems
+
+
+_ORDINAL_NUMBERS = {
+    word: n for n, word in enumerate((
+        "first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth",
+        "tenth", "eleventh", "twelfth", "thirteenth", "fourteenth", "fifteenth", "sixteenth",
+        "seventeenth", "eighteenth", "nineteenth", "twentieth",
+    ), start=1)
+}
+_TOP_RANK_WORDS = frozenset({"highest", "best", "top", "first"})
+_BOTTOM_RANK_WORDS = frozenset({"lowest", "worst", "bottom", "last"})
+# A tie word fused to a rank: "joint-lowest", "equal top", "tied for last",
+# "level at the top", "shared the lowest", "joint 7th", "joint-seventh".
+# "Level" counts only with a preposition, so "did his level best" is no tie.
+_TIE_RE = re.compile(
+    r"(?<!\w)(?:(?:joint|jointly|equal|tied|shared|sharing|shares?)(?:-|\s+)(?:(?:for|on|at|in)\s+)?"
+    r"|level\s+(?:for|on|at|in)\s+)(?:the\s+)?"
+    r"(?P<rank>highest|lowest|best|worst|top|bottom|last|\d+(?:st|nd|rd|th)|"
+    + "|".join(_ORDINAL_NUMBERS) + r")(?!\w)",
+    re.IGNORECASE,
+)
+# "joint-second lowest": a rank counted from the other end, or among
+# gameweek scores, which the check does not read.
+_RANK_DIRECTION_RE = re.compile(r"^[\s-]*(?:highest|lowest|best|worst)(?!\w)", re.IGNORECASE)
+# What the tie is about, read from a few words either side. A tie on anything
+# but a manager's gameweek score or league position -- a captain, a bench, a
+# player -- is not one this data can settle, so it is left alone. That subject
+# sits right before the tie or after it ("Bob's captain was the joint-lowest",
+# "the joint-lowest captain"), so it is looked for in a narrower window than
+# the score-or-table cue, which a clause may give anywhere near the tie.
+_TIE_WINDOW_WORDS = 6
+_TIE_SUBJECT_WORDS_BEFORE = 3
+_TIE_OTHER_SUBJECT_RE = re.compile(
+    r"(?<!\w)(?:(?:captain|armband|bench|transfer|swap|waiver|chip|signing|player|streak|haul"
+    r"|scorer|goal|assist|bonus|differential)\w*|(?:moves?|picks?|claims?|fines?)(?!\w))",
+    re.IGNORECASE,
+)
+_TIE_GAMEWEEK_RE = re.compile(r"(?<!\w)(?:scor\w*|tall(?:y|ies)|week\w*|gameweek\w*|gw\d*|round)(?!\w)", re.IGNORECASE)
+_TIE_TABLE_RE = re.compile(
+    r"(?<!\w)(?:table|standings|league|positions?|places?|spots?|overall|season\w*|totals?|summit|rank\w*)(?!\w)",
+    re.IGNORECASE,
+)
+_TIE_NEGATION_WORDS = 3
+
+
+def _rank_holders(ranks: Sequence[tuple[str, int]], rank: int | str) -> tuple[int, list[str]]:
+    """The rank `rank` names ("top", "bottom" or a number) and who holds it."""
+    values = [value for _, value in ranks]
+    target = min(values) if rank == "top" else max(values) if rank == "bottom" else int(rank)
+    return target, [name for name, value in ranks if value == target]
+
+
+def _place(rank: int) -> str:
+    return f"{rank}{ordinal_suffix(rank)}"
+
+
+def check_tie_claims(summary: str, managers: Sequence[RecapManagerEntry]) -> list[str]:
+    """Every tie the editorial claims at a rank no two managers share (#359).
+
+    The editorial called an outright lowest score "the joint-lowest score of
+    the week" -- "joint" was live in the table, whose season totals do share
+    positions, and was carried onto a gameweek score nobody shared. Who holds
+    each gameweek score and each league position is known, so a tie word
+    fused to a rank ("joint-lowest", "tied for last", "joint-seventh") is
+    checkable against both.
+
+    What the tie is about comes from the words around it: a gameweek score
+    ("score", "week") is ranked on `gw_points`, the column the prompt's table
+    prints; a league position ("table", "place") on the table's own `Pos` and
+    `Prev` columns, either of which holding the tie bears it out. A phrase
+    that names both, or neither, passes if either reading does; one about
+    something else (a captain, a bench, a player) is left alone, as is a
+    negated one and a numbered rank among gameweek scores ("joint-third
+    highest"), which the prompt never states. Returns one line per
+    unsupported tie, in the order the editorial claims them.
+    """
+    if len(managers) < 2:
+        return []
+    gameweek = [
+        (m["manager_name"], 1 + sum(o["gw_points"] > m["gw_points"] for o in managers)) for m in managers
+    ]
+    points = {m["manager_name"]: m["gw_points"] for m in managers}
+    # The table's Pos column, then its Prev column: a tie in either is one
+    # the prompt showed, so either bears a "joint" out.
+    tables = [
+        ranks for ranks in (
+            [(m["manager_name"], m.get("overall_rank") or 0) for m in managers if m.get("overall_rank")],
+            [(m["manager_name"], m.get("previous_rank") or 0) for m in managers if m.get("previous_rank")],
+        ) if ranks
+    ]
+    player_re = _names_pattern(_squad_player_names(managers))
+
+    # Each says why the tie does not hold in its reading, or None when it does
+    # (or the data cannot say).
+    def gameweek_fact(rank: int | str) -> str | None:
+        _, holders = _rank_holders(gameweek, rank)
+        if len(holders) != 1:
+            return None
+        which = "highest" if rank == "top" else "lowest"
+        return f"the {which} gameweek score, {_pts(points[holders[0]])}, was {holders[0]}'s alone"
+
+    def table_fact(rank: int | str) -> str | None:
+        if not tables or any(len(_rank_holders(ranks, rank)[1]) > 1 for ranks in tables):
+            return None
+        target, holders = _rank_holders(tables[0], rank)
+        if not holders:
+            return f"nobody is {_place(target)} in the table"
+        return f"{_place(target)} place in the table is {holders[0]}'s alone"
+
+    problems: list[str] = []
+    for clause in _clauses(summary):
+        for match in _TIE_RE.finditer(clause):
+            word = match.group("rank").lower()
+            before = " ".join(clause[:match.start()].split()[-_TIE_NEGATION_WORDS:])
+            if _NEGATION_RE.search(before) or "no longer" in before.lower():
+                continue
+            window = _words_around(clause, match.start(), match.end(), _TIE_WINDOW_WORDS)
+            subject = " ".join(
+                clause[:match.start()].split()[-_TIE_SUBJECT_WORDS_BEFORE:]
+                + clause[match.end():].split()[:_TIE_WINDOW_WORDS]
+            )
+            if _TIE_OTHER_SUBJECT_RE.search(subject) or (player_re and player_re.search(subject)):
+                continue
+            about_week = bool(_TIE_GAMEWEEK_RE.search(window))
+            about_table = bool(_TIE_TABLE_RE.search(window))
+            if word in _TOP_RANK_WORDS:
+                rank: int | str = "top"
+            elif word in _BOTTOM_RANK_WORDS:
+                rank = "bottom"
+            else:
+                rank = _ORDINAL_NUMBERS.get(word) or int(word[:-2])
+                if rank == 1:
+                    rank = "top"
+                elif about_week or _RANK_DIRECTION_RE.match(clause[match.end():]):
+                    continue
+                else:
+                    about_table = True
+            if about_week and not about_table:
+                fact = gameweek_fact(rank)
+            elif about_table and not about_week:
+                fact = table_fact(rank)
+            else:
+                week, table = gameweek_fact(rank), table_fact(rank)
+                fact = f"neither reading holds: {week}, and {table}" if week and table else None
+            if fact is None:
+                continue
+            problem = f'the editorial says "{match.group(0)}", but {fact}'
+            if problem not in problems:
+                problems.append(problem)
+    return problems
+
+
+def _squad_player_names(managers: Sequence[RecapManagerEntry]) -> set[str]:
+    """Every player name the recap data carries, so a tie said of a player
+    ("Salah, the joint-top scorer") is not read as one between managers."""
+    names: set[str] = set()
+    for m in managers:
+        names.update(p["name"] for p in m.get("squad", []))
+        for move in [*m.get("transfers", []), *m.get("transactions", []), *m.get("lost_claims", [])]:
+            names.update((move["player_in"], move["player_out"]))
+    return {name for name in names if name}
+
+
+def check_recap_editorial(summary: str, data: LeagueRecapData) -> dict[str, list[str]]:
+    """Every claim the editorial makes that its own data contradicts, keyed
+    by the warning code of the check that caught it (#357, #359).
+
+    Only a code with at least one problem is a key, so an empty answer is a
+    clean editorial. Each check is narrow by design -- it reads only the
+    clauses it can pin down and lets everything else pass -- so a problem
+    here is always a sentence the data says is wrong, never a guess.
+    """
+    managers = data["managers"]
+    found = {
+        RECAP_WARNING_CONTESTED_MISATTRIBUTION: check_contested_attributions(
+            summary, contested_draft_claims(managers), [m["manager_name"] for m in managers],
+        ),
+        RECAP_WARNING_NET_MISATTRIBUTION: check_net_attributions(summary, managers),
+        RECAP_WARNING_UNSUPPORTED_TIE: check_tie_claims(summary, managers),
+    }
+    return {code: problems for code, problems in found.items() if problems}
+
+
 # =============================================================================
 # Context formatting
 # =============================================================================
@@ -694,6 +1109,7 @@ def format_recap_standings_context(data: LeagueRecapData) -> str:
 
     lines = [
         leader_line,
+        *_standings_tie_lines(managers),
         "",
         "| Pos | Prev | Manager | GW Pts | Total |",
         "|-----|------|---------|--------|-------|",
@@ -716,6 +1132,63 @@ def format_recap_standings_context(data: LeagueRecapData) -> str:
             f"| {curr} | {prev} | {name}{chip_tag}{movement} | {m['gw_points']} | {total} |"
         )
     return "\n".join(lines)
+
+
+def _standings_tie_lines(managers: Sequence[RecapManagerEntry]) -> list[str]:
+    """Which gameweek scores and league positions are shared, said outright (#359).
+
+    The table holds both, and only the Pos column ever repeats a value the
+    eye can see: the editorial carried a three-way tie on season totals onto
+    a gameweek score nobody shared and called it "the joint-lowest score of
+    the week". So the extremes are named with whether each was one manager's
+    alone, and every shared score and position is listed, which gives the
+    tie rule a line to hold "joint" to -- the same enumerate-and-lock shape
+    as the previous-leader statement above them.
+    """
+    by_points: dict[int, list[str]] = {}
+    for m in sorted(managers, key=lambda m: m["manager_name"]):
+        by_points.setdefault(m["gw_points"], []).append(m["manager_name"])
+
+    def extreme(label: str, points: int) -> str:
+        holders = by_points[points]
+        who = f"{holders[0]} alone" if len(holders) == 1 else f"shared by {', '.join(holders)}"
+        return f"{label} gameweek score: {_pts(points)}, {who}"
+
+    lines = [extreme("Highest", max(by_points)), extreme("Lowest", min(by_points))]
+    shared_scores = [
+        f"{_pts(points)} ({', '.join(names)})"
+        for points, names in sorted(by_points.items(), reverse=True) if len(names) > 1
+    ]
+    lines.append(
+        f"Gameweek scores shared by more than one manager ({len(shared_scores)}): "
+        f"{'; '.join(shared_scores)} - every other gameweek score was one manager's alone"
+        if shared_scores else
+        "Gameweek scores shared by more than one manager: none - every gameweek score was one manager's alone"
+    )
+
+    by_rank: dict[int, list[RecapManagerEntry]] = {}
+    for m in sorted(managers, key=lambda m: m["manager_name"]):
+        if rank := m.get("overall_rank"):
+            by_rank.setdefault(rank, []).append(m)
+    if not by_rank:
+        return lines
+    shared_ranks = []
+    for rank, holders in sorted(by_rank.items()):
+        if len(holders) < 2:
+            continue
+        totals = {m.get("total_points") for m in holders}
+        on = f", all on {totals.pop()}" if len(totals) == 1 and None not in totals else ""
+        shared_ranks.append(
+            f"{rank}{ordinal_suffix(rank)} ({', '.join(m['manager_name'] for m in holders)}{on})"
+        )
+    lines.append(
+        f"League positions shared on season total ({len(shared_ranks)}): "
+        f"{'; '.join(shared_ranks)} - every other position is one manager's alone, and a shared "
+        "position is a tie on season totals, not on gameweek scores"
+        if shared_ranks else
+        "League positions shared on season total: none - every position is one manager's alone"
+    )
+    return lines
 
 
 def _pts(points: int) -> str:
@@ -844,7 +1317,9 @@ def format_recap_transfers_context(data: LeagueRecapData) -> str:
             continue
 
         true_net = raw - cost
-        net = f"net {true_net:+d}" + (" after the hit" if cost > 0 else "")
+        # "Overall" because the bracket is the manager's gameweek, never one
+        # of the moves after it, whose own swing is a different number (#359).
+        net = f"net {true_net:+d} overall" + (" after the hit" if cost > 0 else "")
         captured.append((true_net, name, f"- {label} ({count} {plural}, {hit}, {net}): {moves_text}"))
 
     if not captured and not partial and not uncaptured:
@@ -950,7 +1425,7 @@ def format_recap_waivers_context(data: LeagueRecapData) -> str:
             for t in moves
         )
         net = sum(t["net"] for t in moves)
-        line = f"- **{name}** ({summary}, net {net:+d}): {moves_text}"
+        line = f"- **{name}** ({summary}, net {net:+d} overall): {moves_text}"
         if lost:
             line += f" | also claimed and lost: {_format_lost_claims(lost)}"
         movers.append((net, name, line))
