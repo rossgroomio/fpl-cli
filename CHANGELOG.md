@@ -1,6 +1,14 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [2.7.4] - 2026-10-09
+
+### Bug Fixes
+
+- league-recap checks no longer misread part of one name as another (#380)
+- fpl league's best/worst GW performers now match fpl review (#385)
+- fpl review sends its notices to stderr instead of stdout (#386)
+
 ## [2.7.3] - 2026-10-09
 
 ### Bug Fixes
