@@ -6,9 +6,12 @@ import asyncio
 import logging
 from collections import Counter
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from fpl_cli.cli._context import error_console, fpl_config
+from rich.markup import escape as rich_escape
+
+from fpl_cli.cli._context import console, error_console, fpl_config
 
 if TYPE_CHECKING:
     from fpl_cli.api.fpl import FPLClient
@@ -131,6 +134,145 @@ def print_historical_league_notice(gw: int) -> None:
     """
     error_console.print(f"[dim]League standings not shown for historical GW{gw} review[/dim]")
     error_console.print("[dim]Use 'fpl league' for current standings[/dim]")
+
+
+def _performer_row(e: Mapping[str, Any]) -> dict[str, Any]:
+    """A classic standings entry as a Best/Worst GW Performers row.
+
+    Takes an entry from `_fetch_standings_with_costs` after `_assign_tie_ranks`.
+    `points` is the score the row was ranked on (net when the league plays
+    net), which is what `performer_score` and the last-place fine read.
+    """
+    return {
+        "name": e["name"],
+        "points": e["net_points"],
+        "gross_points": e["gross_points"],
+        "transfer_cost": e["transfer_cost"],
+        "rank_str": e["rank_str"],
+        "is_user": e.get("is_user", False),
+    }
+
+
+def _draft_performer_row(e: Mapping[str, Any], user_entry_id: int | None) -> dict[str, Any]:
+    """A draft standings entry as a Best/Worst GW Performers row.
+
+    Draft has no hits, so `points` is the gameweek score as it stands and
+    `performer_score` states it without a gross or a hit beside it.
+    """
+    return {
+        "name": e["manager_name"],
+        "points": e["event_total"],
+        "rank_str": e["rank_str"],
+        # An unset draft_entry_id must not match an entry the league details
+        # left without an entry id, which would print a rival as "You".
+        "is_user": user_entry_id is not None and e["entry_id"] == user_entry_id,
+    }
+
+
+def _print_performer(perf: Mapping[str, Any]) -> None:
+    """Print one Best/Worst GW Performers row to the terminal.
+
+    The one renderer `fpl review` and `fpl league` share, for both formats:
+    `fpl league` kept its own copy, which numbered a tie as a placing and
+    worded a hit its own way (#381).
+    """
+    name = "[bold cyan]You[/bold cyan]" if perf["is_user"] else rich_escape(perf["name"])
+    console.print(f"  {perf['rank_str']}. {name} - {performer_score(perf)}")
+
+
+@dataclass(frozen=True)
+class GwPerformers:
+    """A league's Best/Worst GW Performers, ranked for every command that shows them.
+
+    `best` and `worst` are performer rows. `user_gw_rank` is the user's
+    place on the gameweek ("3="), None when they are not in the standings
+    handed over. `user_context_row` is the user's own row when they sit
+    above the worst list: it is shown beside the list as a "Your GW rank"
+    line, never as a numbered row in it that reads as a bottom placing
+    (#360). `field_size` is None when the standings were one page of a
+    larger league.
+    """
+
+    best: list[dict[str, Any]]
+    worst: list[dict[str, Any]]
+    user_gw_rank: str | None
+    user_context_row: dict[str, Any] | None
+    field_size: int | None
+
+
+def _gw_performers(
+    entries: list[dict[str, Any]],
+    score_key: str,
+    to_row: Callable[[Mapping[str, Any]], dict[str, Any]],
+    *,
+    worst_n: int,
+    complete: bool,
+    with_context_row: bool,
+) -> GwPerformers:
+    """Rank *entries* on *score_key* into the top three and the bottom *worst_n*.
+
+    Each list runs past its cut to keep a tie whole, numbered as a shared
+    place. Both passes rank the same dicts in place, so each pass's rows
+    are built before the next one re-ranks them.
+    """
+    desc = sorted(entries, key=lambda e: e[score_key], reverse=True)
+    _assign_tie_ranks(desc, score_key)
+    best = [to_row(e) for e in _slice_with_ties(desc, 3)]
+    user_row = next((row for row in map(to_row, desc) if row["is_user"]), None)
+
+    asc = sorted(entries, key=lambda e: e[score_key])
+    _assign_tie_ranks(asc, score_key)
+    worst = [to_row(e) for e in _slice_with_ties(asc, worst_n)]
+
+    user_in_worst = any(row["is_user"] for row in worst)
+    return GwPerformers(
+        best=best,
+        worst=worst,
+        user_gw_rank=user_row["rank_str"] if user_row else None,
+        user_context_row=user_row if with_context_row and not user_in_worst else None,
+        field_size=len(entries) if complete else None,
+    )
+
+
+def classic_gw_performers(standings_with_costs: list[dict[str, Any]], *, complete: bool) -> GwPerformers:
+    """Classic Best/Worst GW Performers: top three and bottom five plus ties, on net points.
+
+    Takes `_fetch_standings_with_costs` output. `complete` is False when the
+    standings were one 50-entry page of a larger league: the GW ranks then
+    cover only that page, so no field size is named that would read as the
+    whole league. `fpl review` and `fpl league` both rank through here: they
+    each ran this sequence themselves and drifted apart on it (#381).
+    """
+    return _gw_performers(
+        standings_with_costs, "net_points", _performer_row,
+        worst_n=5, complete=complete, with_context_row=True,
+    )
+
+
+def draft_gw_performers(standings_with_names: list[dict[str, Any]], user_entry_id: int | None) -> GwPerformers:
+    """Draft Best/Worst GW Performers: top and bottom three plus ties, on the GW score.
+
+    Takes standings rows carrying `manager_name`, `entry_id` and
+    `event_total`. Draft review has never printed a "Your GW rank" line, so
+    neither does this, and `user_context_row` is always None.
+    """
+    return _gw_performers(
+        standings_with_names, "event_total", lambda e: _draft_performer_row(e, user_entry_id),
+        worst_n=3, complete=True, with_context_row=False,
+    )
+
+
+def _print_gw_performers(performers: GwPerformers, *, header_suffix: str = "") -> None:
+    """Print both performer lists, and the user's GW rank line when they sit above the worst one."""
+    console.print(f"\n[bold]### Best GW Performers{header_suffix}[/bold]")
+    for perf in performers.best:
+        _print_performer(perf)
+    console.print(f"\n[bold]### Worst GW Performers{header_suffix}[/bold]")
+    for perf in performers.worst:
+        _print_performer(perf)
+    if performers.user_context_row:
+        line = your_gw_rank_line(performers.user_gw_rank, performers.field_size, performers.user_context_row)
+        console.print(f"  {line}")
 
 
 def _gw_position_with_half(position: int | str, total: int) -> str:
