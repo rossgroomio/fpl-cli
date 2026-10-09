@@ -19,8 +19,9 @@ from fpl_cli.cli._helpers import (
     _format_review_player,
     _live_player_stats,
     _net_transfer_ids,
+    _performer_row,
+    _print_performer,
     _slice_with_ties,
-    performer_score,
     signed_net_markup,
     your_gw_rank_line,
 )
@@ -389,27 +390,6 @@ async def _review_classic_transfers(
         console.print("[dim]None - GW1 squads are bought pre-season, so there is nothing to review here[/dim]")
 
     return classic_transfers_data
-
-
-def _performer_row(e: dict[str, Any]) -> dict[str, Any]:
-    """A standings entry as a Best/Worst GW Performers row.
-
-    `points` is the score the row was ranked on (net when the league plays
-    net), which is what `performer_score` and the last-place fine read.
-    """
-    return {
-        "name": e["name"],
-        "points": e["net_points"],
-        "gross_points": e["gross_points"],
-        "transfer_cost": e["transfer_cost"],
-        "rank_str": e["rank_str"],
-        "is_user": e.get("is_user", False),
-    }
-
-
-def _print_performer(perf: dict[str, Any]) -> None:
-    name = "[bold cyan]You[/bold cyan]" if perf["is_user"] else rich_escape(perf["name"])
-    console.print(f"  {perf['rank_str']}. {name} - {performer_score(perf)}")
 
 
 async def _review_classic_league(

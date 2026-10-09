@@ -8,7 +8,9 @@ from collections import Counter
 from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any
 
-from fpl_cli.cli._context import fpl_config
+from rich.markup import escape as rich_escape
+
+from fpl_cli.cli._context import console, fpl_config
 
 if TYPE_CHECKING:
     from fpl_cli.api.fpl import FPLClient
@@ -119,6 +121,48 @@ def your_gw_rank_line(gw_rank: str | None, field_size: int | None, row: Mapping[
     """
     field = f" of {field_size}" if field_size else ""
     return f"Your GW rank: {gw_rank or '?'}{field} - {performer_score(row)}"
+
+
+def _performer_row(e: Mapping[str, Any]) -> dict[str, Any]:
+    """A classic standings entry as a Best/Worst GW Performers row.
+
+    Takes an entry from `_fetch_standings_with_costs` after `_assign_tie_ranks`.
+    `points` is the score the row was ranked on (net when the league plays
+    net), which is what `performer_score` and the last-place fine read.
+    """
+    return {
+        "name": e["name"],
+        "points": e["net_points"],
+        "gross_points": e["gross_points"],
+        "transfer_cost": e["transfer_cost"],
+        "rank_str": e["rank_str"],
+        "is_user": e.get("is_user", False),
+    }
+
+
+def _draft_performer_row(e: Mapping[str, Any], user_entry_id: int | None) -> dict[str, Any]:
+    """A draft standings entry as a Best/Worst GW Performers row.
+
+    Draft has no hits, so `points` is the gameweek score as it stands and
+    `performer_score` states it without a gross or a hit beside it.
+    """
+    return {
+        "name": e["manager_name"],
+        "points": e["event_total"],
+        "rank_str": e["rank_str"],
+        "is_user": e["entry_id"] == user_entry_id,
+    }
+
+
+def _print_performer(perf: Mapping[str, Any]) -> None:
+    """Print one Best/Worst GW Performers row to the terminal.
+
+    The one renderer `fpl review` and `fpl league` share, for both formats:
+    `fpl league` kept its own copy, which numbered a tie as a placing and
+    worded a hit its own way (#381).
+    """
+    name = "[bold cyan]You[/bold cyan]" if perf["is_user"] else rich_escape(perf["name"])
+    console.print(f"  {perf['rank_str']}. {name} - {performer_score(perf)}")
 
 
 def _gw_position_with_half(position: int | str, total: int) -> str:

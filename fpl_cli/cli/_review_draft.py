@@ -12,10 +12,12 @@ from rich.table import Table
 from fpl_cli.cli._context import console, error_console
 from fpl_cli.cli._helpers import (
     _assign_tie_ranks,
+    _draft_performer_row,
     _format_pts_display,
     _format_review_player,
     _live_player_stats,
     _net_transfer_ids,
+    _print_performer,
     _slice_with_ties,
     signed_net_markup,
 )
@@ -471,24 +473,16 @@ async def _review_draft(
                     # Best GW performers in draft league (top 3 + ties)
                     sorted_by_gw = sorted(standings_with_names, key=lambda x: x["event_total"], reverse=True)
                     _assign_tie_ranks(sorted_by_gw, "event_total")
-                    best_gw_display = _slice_with_ties(sorted_by_gw, 3)
-
-                    console.print("\n[bold]### Best GW Performers[/bold]")
-                    for entry in best_gw_display:
-                        name = entry["manager_name"]
-                        gw_pts = entry["event_total"]
-                        rank = entry["rank_str"]
-                        is_user = entry["entry_id"] == draft_entry_id
-                        if is_user:
-                            console.print(f"  {rank}. [bold cyan]You[/bold cyan] - {gw_pts} pts")
-                        else:
-                            console.print(f"  {rank}. {rich_escape(name)} - {gw_pts} pts")
 
                     # Snapshot best data and user GW rank before worst sort overwrites ranks
                     best_for_report = [
-                        {"name": e["manager_name"], "points": e["event_total"], "rank_str": e["rank_str"]}
-                        for e in best_gw_display
+                        _draft_performer_row(e, draft_entry_id) for e in _slice_with_ties(sorted_by_gw, 3)
                     ]
+
+                    console.print("\n[bold]### Best GW Performers[/bold]")
+                    for perf in best_for_report:
+                        _print_performer(perf)
+
                     user_entry = next(
                         (e for e in sorted_by_gw if e["entry_id"] == draft_entry_id),
                         None,
@@ -498,18 +492,13 @@ async def _review_draft(
                     # Worst performers: sorted ascending (bottom 3 + ties)
                     worst_sorted = sorted(standings_with_names, key=lambda x: x["event_total"])
                     _assign_tie_ranks(worst_sorted, "event_total")
-                    worst_gw_display = _slice_with_ties(worst_sorted, 3)
+                    worst_for_report = [
+                        _draft_performer_row(e, draft_entry_id) for e in _slice_with_ties(worst_sorted, 3)
+                    ]
 
                     console.print("\n[bold]### Worst GW Performers[/bold]")
-                    for entry in worst_gw_display:
-                        name = entry["manager_name"]
-                        gw_pts = entry["event_total"]
-                        rank = entry["rank_str"]
-                        is_user = entry["entry_id"] == draft_entry_id
-                        if is_user:
-                            console.print(f"  {rank}. [bold cyan]You[/bold cyan] - {gw_pts} pts")
-                        else:
-                            console.print(f"  {rank}. {rich_escape(name)} - {gw_pts} pts")
+                    for perf in worst_for_report:
+                        _print_performer(perf)
 
                     # Store for report (worst_performers sorted ascending - lowest first)
                     draft_league_data = {
@@ -520,15 +509,7 @@ async def _review_draft(
                         "user_gw_points": user_gw_pts,
                         "user_total": user_total,
                         "best_performers": best_for_report,
-                        "worst_performers": [
-                            {
-                                "name": e["manager_name"],
-                                "points": e["event_total"],
-                                "rank_str": e["rank_str"],
-                                "is_user": e["entry_id"] == draft_entry_id,
-                            }
-                            for e in worst_gw_display
-                        ],
+                        "worst_performers": worst_for_report,
                     }
 
             elif not draft_entry_id:

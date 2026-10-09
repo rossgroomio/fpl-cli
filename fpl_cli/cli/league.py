@@ -12,7 +12,16 @@ from rich.panel import Panel
 from rich.table import Table
 
 from fpl_cli.cli._context import Format, console, error_console, fpl_config, get_format, get_settings
-from fpl_cli.cli._helpers import _entry_league_meta, _fetch_standings_with_costs
+from fpl_cli.cli._helpers import (
+    _assign_tie_ranks,
+    _draft_performer_row,
+    _entry_league_meta,
+    _fetch_standings_with_costs,
+    _performer_row,
+    _print_performer,
+    _slice_with_ties,
+    your_gw_rank_line,
+)
 from fpl_cli.cli._league_recap_data import derive_point_in_time_positions
 
 logger = logging.getLogger(__name__)
@@ -132,61 +141,41 @@ def league_command(ctx: click.Context) -> None:
                         client, standings, entry_id, gw, fetch_costs=use_net_points,
                     )
 
-                    # Best 3 GW performers
+                    # Best/Worst GW Performers on the rows and renderer `fpl
+                    # review` uses, so the same gameweek reads the same way in
+                    # both (#381): managers level on points share a place
+                    # ("3=") and survive the cut together, and a hit is worded
+                    # the way the report and the synthesis prompt word it.
                     header_suffix = " (Net Points)" if use_net_points else ""
                     sorted_by_net_desc = sorted(standings_with_costs, key=lambda x: x["net_points"], reverse=True)
+                    _assign_tie_ranks(sorted_by_net_desc, "net_points")
+                    # Rows are snapshotted before the ascending pass re-ranks
+                    # the same dicts.
+                    best_performers = [_performer_row(e) for e in _slice_with_ties(sorted_by_net_desc, 3)]
+                    user_gw_entry = next((e for e in sorted_by_net_desc if e["is_user"]), None)
+                    user_gw_row = _performer_row(user_gw_entry) if user_gw_entry else None
+                    # One page of standings is 50 entries; past that the GW
+                    # ranks cover only the page fetched, so the line must not
+                    # name a field size that reads as the whole league.
+                    standings_complete = not standings_data.get("standings", {}).get("has_next", False)
+                    gw_field_size = len(sorted_by_net_desc) if standings_complete else None
+
                     console.print(f"\n[bold]### Best GW Performers{header_suffix}[/bold]")
-                    for i, perf in enumerate(sorted_by_net_desc[:3], 1):
-                        name = perf["name"]
-                        gross = perf["gross_points"]
-                        cost = perf["transfer_cost"]
-                        net = perf["net_points"]
+                    for perf in best_performers:
+                        _print_performer(perf)
 
-                        if perf["is_user"]:
-                            if cost > 0:
-                                console.print(
-                                    f"  {i}. [bold cyan]You[/bold cyan] - "
-                                    f"{gross} gross, -{cost} hit = {net} net"
-                                )
-                            else:
-                                console.print(f"  {i}. [bold cyan]You[/bold cyan] - {net} pts")
-                        else:
-                            if cost > 0:
-                                console.print(f"  {i}. {name} - {gross} gross, -{cost} hit = {net} net")
-                            else:
-                                console.print(f"  {i}. {name} - {net} pts")
-
-                    # Worst 5 GW performers
                     sorted_by_net_asc = sorted(standings_with_costs, key=lambda x: x["net_points"])
-
-                    # Get bottom 5, plus user if not already included
-                    worst_performers = sorted_by_net_asc[:5]
-                    user_in_worst = any(p["is_user"] for p in worst_performers)
-                    if not user_in_worst:
-                        user_data = next((p for p in standings_with_costs if p["is_user"]), None)
-                        if user_data:
-                            worst_performers.append(user_data)
+                    _assign_tie_ranks(sorted_by_net_asc, "net_points")
+                    worst_performers = [_performer_row(e) for e in _slice_with_ties(sorted_by_net_asc, 5)]
 
                     console.print(f"\n[bold]### Worst GW Performers{header_suffix}[/bold]")
-                    for i, perf in enumerate(worst_performers[:5], 1):
-                        name = perf["name"]
-                        gross = perf["gross_points"]
-                        cost = perf["transfer_cost"]
-                        net = perf["net_points"]
-
-                        if perf["is_user"]:
-                            if cost > 0:
-                                console.print(
-                                    f"  {i}. [bold cyan]You[/bold cyan] - "
-                                    f"{gross} gross, -{cost} hit = {net} net"
-                                )
-                            else:
-                                console.print(f"  {i}. [bold cyan]You[/bold cyan] - {net} pts")
-                        else:
-                            if cost > 0:
-                                console.print(f"  {i}. {name} - {gross} gross, -{cost} hit = {net} net")
-                            else:
-                                console.print(f"  {i}. {name} - {net} pts")
+                    for perf in worst_performers:
+                        _print_performer(perf)
+                    # The user above the bottom five gets their GW rank beside
+                    # the list, not a numbered row in it that reads as a bottom
+                    # placing (#360).
+                    if user_gw_row and not any(p["is_user"] for p in worst_performers):
+                        console.print(f"  {your_gw_rank_line(user_gw_row['rank_str'], gw_field_size, user_gw_row)}")
 
                 except Exception as e:  # noqa: BLE001 — display resilience
                     error_console.print(f"[yellow]Could not fetch classic league: {rich_escape(str(e))}[/yellow]")
@@ -268,29 +257,22 @@ def league_command(ctx: click.Context) -> None:
 
                 console.print(table)
 
-                # Best 3 GW performers
+                # Top and bottom three plus ties, as `fpl review` lists them
+                # (#381). Draft has no hits, so the score is the GW total.
                 sorted_by_gw = sorted(standings_with_names, key=lambda x: x["event_total"], reverse=True)
+                _assign_tie_ranks(sorted_by_gw, "event_total")
+                best_performers = [
+                    _draft_performer_row(e, draft_entry_id) for e in _slice_with_ties(sorted_by_gw, 3)
+                ]
                 console.print("\n[bold]### Best GW Performers[/bold]")
-                for i, entry in enumerate(sorted_by_gw[:3], 1):
-                    name = entry["manager_name"]
-                    gw_pts = entry["event_total"]
-                    is_user = entry["entry_id"] == draft_entry_id
-                    if is_user:
-                        console.print(f"  {i}. [bold cyan]You[/bold cyan] - {gw_pts} pts")
-                    else:
-                        console.print(f"  {i}. {name} - {gw_pts} pts")
+                for perf in best_performers:
+                    _print_performer(perf)
 
-                # Worst 3 GW performers (no transfer costs in draft)
-                worst_sorted = sorted(standings_with_names, key=lambda x: x["event_total"])[:3]
+                worst_sorted = sorted(standings_with_names, key=lambda x: x["event_total"])
+                _assign_tie_ranks(worst_sorted, "event_total")
                 console.print("\n[bold]### Worst GW Performers[/bold]")
-                for i, entry in enumerate(worst_sorted, 1):
-                    name = entry["manager_name"]
-                    gw_pts = entry["event_total"]
-                    is_user = entry["entry_id"] == draft_entry_id
-                    if is_user:
-                        console.print(f"  {i}. [bold cyan]You[/bold cyan] - {gw_pts} pts")
-                    else:
-                        console.print(f"  {i}. {name} - {gw_pts} pts")
+                for e in _slice_with_ties(worst_sorted, 3):
+                    _print_performer(_draft_performer_row(e, draft_entry_id))
 
             except Exception as e:  # noqa: BLE001 — display resilience
                 error_console.print(f"[yellow]Could not fetch draft league: {rich_escape(str(e))}[/yellow]")
