@@ -17,6 +17,7 @@ from fpl_cli.cli._helpers import (
     _live_player_stats,
     _net_transfer_ids,
     _slice_with_ties,
+    print_historical_league_notice,
     signed_net_markup,
 )
 from fpl_cli.models.player import POSITION_MAP
@@ -445,8 +446,7 @@ async def _review_draft(
                 is_historical_review = api_current_gw_id is not None and gw != api_current_gw_id
                 if is_historical_review:
                     console.print("\n[bold]## League[/bold]")
-                    console.print(f"[dim]League standings not shown for historical GW{gw} review[/dim]")
-                    console.print("[dim]Use 'fpl league' for current standings[/dim]")
+                    print_historical_league_notice(gw)
                 else:
                     console.print("\n[bold]## League[/bold]")
                     console.print(f"- Position: {user_rank} of {total_entries}")
@@ -532,7 +532,7 @@ async def _review_draft(
                     }
 
             elif not draft_entry_id:
-                console.print("[dim]Set draft_entry_id in config/settings.yaml to see your draft squad[/dim]")
+                error_console.print("[dim]Set draft_entry_id in config/settings.yaml to see your draft squad[/dim]")
 
     except Exception as e:  # noqa: BLE001 — display resilience
         error_console.print(f"[yellow]Could not fetch draft league data: {rich_escape(str(e))}[/yellow]")

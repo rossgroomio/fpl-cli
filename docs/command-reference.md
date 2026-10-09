@@ -835,6 +835,12 @@ a season with nothing finished yet — is refused with the reason on **stderr** 
 with the reason on stdout, as did `league-recap`, which shares the resolver. A missing provider
 key was refused the same way until it stopped being a refusal at all — see the LLM summary above.
 
+**Notices** — the line that says an entry id is not configured, the pair that says why a past
+gameweek has no league table, the note that a new mini-league's standings are not published yet,
+and the `Fetching your team data...` progress line — go to **stderr**, for classic and draft alike.
+The `## League` heading stays on stdout with the content it introduces, so `fpl review 2>/dev/null`
+is the review and nothing else.
+
 ### League Recap
 
 Entertainment-first post-gameweek report for the whole league.

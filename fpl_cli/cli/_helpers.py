@@ -8,7 +8,7 @@ from collections import Counter
 from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any
 
-from fpl_cli.cli._context import fpl_config
+from fpl_cli.cli._context import error_console, fpl_config
 
 if TYPE_CHECKING:
     from fpl_cli.api.fpl import FPLClient
@@ -119,6 +119,18 @@ def your_gw_rank_line(gw_rank: str | None, field_size: int | None, row: Mapping[
     """
     field = f" of {field_size}" if field_size else ""
     return f"Your GW rank: {gw_rank or '?'}{field} - {performer_score(row)}"
+
+
+def print_historical_league_notice(gw: int) -> None:
+    """Say why a past gameweek's review carries no league table (#377, #382).
+
+    The classic and draft blocks print the same two lines under their own
+    `## League` heading. They are commentary on the review, not part of it, so
+    they go to stderr and the heading stays on stdout with the content it
+    introduces.
+    """
+    error_console.print(f"[dim]League standings not shown for historical GW{gw} review[/dim]")
+    error_console.print("[dim]Use 'fpl league' for current standings[/dim]")
 
 
 def _gw_position_with_half(position: int | str, total: int) -> str:

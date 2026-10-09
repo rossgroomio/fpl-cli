@@ -21,6 +21,7 @@ from fpl_cli.cli._helpers import (
     _net_transfer_ids,
     _slice_with_ties,
     performer_score,
+    print_historical_league_notice,
     signed_net_markup,
     your_gw_rank_line,
 )
@@ -74,7 +75,7 @@ async def _review_classic_team(
 
     if entry_id:
         try:
-            console.print("[dim]Fetching your team data...[/dim]")
+            error_console.print("[dim]Fetching your team data...[/dim]")
             picks_response = await client.get_manager_picks(entry_id, gw)
 
             entry_history = picks_response.get("entry_history", {})
@@ -262,7 +263,7 @@ async def _review_classic_team(
     elif entry_id:
         error_console.print("[yellow]Could not fetch your team data[/yellow]")
     else:
-        console.print("[dim]Set classic_entry_id in config/settings.yaml to see your squad[/dim]")
+        error_console.print("[dim]Set classic_entry_id in config/settings.yaml to see your squad[/dim]")
 
     return {
         "my_entry_summary": my_entry_summary,
@@ -448,8 +449,7 @@ async def _review_classic_league(
         is_historical_review = api_current_gw_id is not None and gw != api_current_gw_id
         if is_historical_review:
             console.print("\n[bold]## League[/bold]")
-            console.print(f"[dim]League standings not shown for historical GW{gw} review[/dim]")
-            console.print("[dim]Use 'fpl league' for current standings[/dim]")
+            print_historical_league_notice(gw)
             return {"league_name": league_name}
 
         # FPL builds a mini-league's table for the first time only once the
@@ -458,11 +458,11 @@ async def _review_classic_league(
         # printed bare headings and handed the report a 0-point, 0-entry league.
         if not standings:
             console.print("\n[bold]## League[/bold]")
-            console.print(
+            error_console.print(
                 f"[dim]{rich_escape(league_name)}: standings not published yet"
                 " -- FPL builds mini-league tables after the opening gameweek is finalised[/dim]"
             )
-            console.print("[dim]Re-run once the table appears, or use 'fpl league'[/dim]")
+            error_console.print("[dim]Re-run once the table appears, or use 'fpl league'[/dim]")
             return {"league_name": league_name, "standings_pending": True}
 
         console.print("\n[bold]## League[/bold]")
