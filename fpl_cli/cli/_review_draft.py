@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Any
 
+import httpx
 from rich.markup import escape as rich_escape
 from rich.table import Table
 
@@ -257,6 +259,11 @@ async def _review_draft(
                 draft_lost_claims_data = []
                 try:
                     transactions = await draft_client.get_league_transactions(draft_league_id)
+                except (httpx.HTTPError, json.JSONDecodeError) as e:
+                    error_console.print(f"[dim]Could not fetch transactions: {rich_escape(str(e))}[/dim]")
+                    transactions = None
+
+                if transactions is not None:
                     all_txns = transactions.get("transactions", [])
 
                     # Filter to the user's own rows for this GW, accepted and
@@ -333,9 +340,9 @@ async def _review_draft(
                             net_display = signed_net_markup(net)
 
                             txn_table.add_row(
-                                f"{draft_player_in.get('web_name', 'Unknown')} ({in_abbr})",
+                                f"{rich_escape(draft_player_in.get('web_name', 'Unknown'))} ({in_abbr})",
                                 str(in_points),
-                                f"{draft_player_out.get('web_name', 'Unknown')} ({out_abbr})",
+                                f"{rich_escape(draft_player_out.get('web_name', 'Unknown'))} ({out_abbr})",
                                 str(out_points),
                                 net_display,
                                 verdict,
@@ -404,9 +411,6 @@ async def _review_draft(
                                 f"{rich_escape(claim['player_out'])} "
                                 f"({claim['player_out_team']}) - won by a rival{prio}"
                             )
-
-                except Exception as e:  # noqa: BLE001 — display resilience
-                    error_console.print(f"[dim]Could not fetch transactions: {rich_escape(str(e))}[/dim]")
 
                 # ## League section - only show for current GW (live data)
                 is_historical_review = api_current_gw_id is not None and gw != api_current_gw_id
