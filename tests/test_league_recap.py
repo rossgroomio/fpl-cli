@@ -6901,6 +6901,29 @@ class TestContestedAttributionCheck:
         assert "Alice Moss won him" in problems[0]
         assert "Cam Hart won him" in problems[0]
 
+    def test_a_bystander_surnamed_like_a_hyphenated_player_is_not_put_in_a_race(self):
+        """Issue #379: "White" read inside "Gibbs-White" listed a manager who
+        claimed nothing beside the one who lost, and a correct sentence was
+        flagged as saying the bystander was beaten too."""
+        summary = "After selling Gibbs-White, Bob Gale missed out on King."
+        contests, names = _reported_races()
+        assert check_contested_attributions(summary, contests, [*names, "Fay White"], ["Gibbs-White"]) == []
+        # The registry hands the check every player the data names.
+        managers = [
+            _make_manager_with_txns("Alice Moss", [_txn("King", 6, "A", 1)], entry_id=1),
+            _lost_by(_make_manager(name="Bob Gale", entry_id=2), _lost("King", "C")),
+            _make_manager(name="Fay White", entry_id=3),
+        ]
+        managers[1]["squad"] = [_make_squad_player(name="Gibbs-White")]
+        assert check_recap_editorial(summary, _make_recap_data(managers=managers)) == {}
+        # The race itself is still read: the wrong manager is still caught.
+        found = check_recap_editorial(
+            "After selling Gibbs-White, Alice Moss missed out on King.", _make_recap_data(managers=managers),
+        )
+        assert [p.split(", but")[0] for p in found[RECAP_WARNING_CONTESTED_MISATTRIBUTION]] == [
+            "the editorial says Alice Moss was beaten to King",
+        ]
+
     def test_the_retry_prompt_names_each_wrong_claim(self):
         prompt = get_recap_editorial_retry_prompt(
             "ORIGINAL", {RECAP_WARNING_CONTESTED_MISATTRIBUTION: ["the editorial says Bob won King"]},
@@ -6965,6 +6988,27 @@ class TestNetAttributionCheck:
             'the editorial says "-6 net" of Gibbs-White in for Wirtz, but -6 is Alice Lowe\'s net '
             "for the whole gameweek (2 transfers, -4 hit), not that move's own swing of -4"
         ]
+
+    @pytest.mark.parametrize("bystander, squad_player, summary", [
+        # The tail of the move's own player...
+        ("Dee White", None,
+         "Alice Lowe paid a 4-point hit to bring in Gibbs-White for Wirtz and watched it backfire "
+         "to the tune of -6 net."),
+        # ...or of any other player the data carries that the clause names.
+        ("Dee Lewin", "Calvert-Lewin",
+         "Alice Lowe brought in Gibbs-White for Wirtz and watched it sink to -6 net as Calvert-Lewin blanked."),
+    ])
+    def test_a_bystander_surnamed_like_a_hyphenated_player_does_not_hide_it(self, bystander, squad_player, summary):
+        """Issue #379: a manager who made no move and is not in the sentence,
+        surnamed like the tail of "Gibbs-White", was read inside the player's
+        name as a second manager named, so the check stood down on the very
+        sentence it was written for."""
+        managers = [*_reported_transfers(), _make_manager(name=bystander, entry_id=4, transfers_made=0, transfers=[])]
+        if squad_player:
+            managers[-1]["squad"] = [_make_squad_player(name=squad_player)]
+        problems = self._check(summary, managers)
+        assert len(problems) == 1
+        assert "-6 is Alice Lowe's net for the whole gameweek" in problems[0]
 
     @pytest.mark.parametrize("summary", [
         "Gibbs-White in for Wirtz went -4 net.",
@@ -7166,6 +7210,20 @@ class TestTieClaimCheck:
         managers = _reported_table()
         managers[0]["squad"] = [_make_squad_player(name="Haaland")]
         assert len(self._check(summary, managers)) == 1
+
+    def test_a_manager_whose_name_holds_a_players_is_still_the_subject(self):
+        """Issue #379, the other way round: the player "White" was read inside
+        "Ann White", so a tie said of the manager passed as one said of a
+        player. The subject window reaches back only to "White" here, so the
+        name has to be read across the whole clause, not inside the window."""
+        managers = _reported_table()
+        managers[0]["manager_name"] = "Ann White"
+        managers[1]["squad"] = [_make_squad_player(name="White")]
+        assert self._check("Ann White posted the joint-lowest score of the week.", managers) == [
+            'the editorial says "joint-lowest", but the lowest gameweek score, 29 pts, was Ann White\'s alone'
+        ]
+        # "White" alone is the player's name before it is the manager's.
+        assert self._check("White posted the joint-lowest score of the week.", managers) == []
 
     def test_level_totals_the_tie_break_split_bear_out_a_tie_at_the_top(self):
         """PR #374 review: a head-to-head draft table ranks managers level on
