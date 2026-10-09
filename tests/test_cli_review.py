@@ -2417,7 +2417,7 @@ class _StubSynthesisProvider:
 
 def _reply(content, stop_reason=None):
     return LLMResponse(
-        content=content, model="claude-sonnet-5", usage=TokenUsage(10, 20), stop_reason=stop_reason,
+        content=content, model="claude-sonnet-5-5", usage=TokenUsage(10, 20), stop_reason=stop_reason,
     )
 
 

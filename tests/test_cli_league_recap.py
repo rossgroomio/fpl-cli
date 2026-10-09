@@ -1137,7 +1137,7 @@ class TestTruncatedEditorial:
             async def query(self, prompt, system_prompt=None, **kwargs):
                 return LLMResponse(
                     content="Alice ran away with it, and then",
-                    model="claude-sonnet-5",
+                    model="claude-sonnet-5-5",
                     usage=TokenUsage(10, 20),
                     stop_reason=stop_reason,
                 )
@@ -6244,7 +6244,7 @@ class TestRecapTitleThroughTheCommand:
             async def query(self, prompt, system_prompt=None, **kwargs):
                 return LLMResponse(
                     content=content,
-                    model="claude-sonnet-5",
+                    model="claude-sonnet-5-5",
                     usage=TokenUsage(10, 20),
                     stop_reason="end_turn",
                 )

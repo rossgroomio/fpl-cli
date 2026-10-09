@@ -421,7 +421,7 @@ classDiagram
     }
 
     class AnthropicProvider {
-        +DEFAULT_MODEL: claude-sonnet-5
+        +DEFAULT_MODEL: claude-sonnet-5-5
         +query(prompt, system_prompt) LLMResponse
         +post_process(content) str
         +close()
