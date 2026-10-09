@@ -121,9 +121,16 @@ async def _review_draft(
                 user_gw_pts = user_standing.get("event_total", 0)
                 total_entries = len(standings)
 
-                # Fetch draft squad picks for this gameweek
+                # Fetch draft squad picks for this gameweek. Only the fetch is guarded:
+                # a rendering error below is not a fetch failure and escapes to the
+                # league handler, which names it.
                 try:
                     picks_data = await draft_client.get_entry_picks(draft_entry_id, gw)
+                except (httpx.HTTPError, json.JSONDecodeError) as e:
+                    error_console.print(f"[dim]Could not fetch draft picks: {rich_escape(str(e))}[/dim]")
+                    picks_data = None
+
+                if picks_data is not None:
                     draft_picks = picks_data.get("picks", [])
 
                     # Extract automatic subs from Draft API response
@@ -247,12 +254,12 @@ async def _review_draft(
                             pts_display = _format_pts_display(p, points_key="points")
                             if has_reds:
                                 red_card_display = "[bold red]🟥[/bold red]" if p.get("red_cards", 0) > 0 else ""
-                                table.add_row(p["name"], p["team"], p["position"], pts_display, red_card_display)
+                                table.add_row(
+                                    rich_escape(p["name"]), p["team"], p["position"], pts_display, red_card_display,
+                                )
                             else:
-                                table.add_row(p["name"], p["team"], p["position"], pts_display)
+                                table.add_row(rich_escape(p["name"]), p["team"], p["position"], pts_display)
                         console.print(table)
-                except Exception as e:  # noqa: BLE001 — display resilience
-                    console.print(f"[dim]Could not fetch draft picks: {rich_escape(str(e))}[/dim]")
 
                 # Fetch Draft transactions for this GW
                 draft_transactions_data = []
@@ -458,7 +465,7 @@ async def _review_draft(
                         if is_user:
                             console.print(f"  {rank}. [bold cyan]You[/bold cyan] - {gw_pts} pts")
                         else:
-                            console.print(f"  {rank}. {name} - {gw_pts} pts")
+                            console.print(f"  {rank}. {rich_escape(name)} - {gw_pts} pts")
 
                     # Snapshot best data and user GW rank before worst sort overwrites ranks
                     best_for_report = [
@@ -485,7 +492,7 @@ async def _review_draft(
                         if is_user:
                             console.print(f"  {rank}. [bold cyan]You[/bold cyan] - {gw_pts} pts")
                         else:
-                            console.print(f"  {rank}. {name} - {gw_pts} pts")
+                            console.print(f"  {rank}. {rich_escape(name)} - {gw_pts} pts")
 
                     # Store for report (worst_performers sorted ascending - lowest first)
                     draft_league_data = {

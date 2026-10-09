@@ -2150,6 +2150,85 @@ class TestReviewDraftTransactionsFetch:
         assert data["draft_transactions_data"] == []
 
 
+class TestReviewDraftPicksAndLeagueBlocks:
+    """Issue #371: the picks and league blocks passed raw names to Rich as
+    markup, and the picks handler labelled any error a fetch failure on
+    stdout."""
+
+    _TEAMS = {19: make_team(id=19, short_name="MCI", name="Man City")}
+
+    async def _run(self, *, player_name="Sávio", manager_name=("A", "B"), picks_error=None):
+        savio = make_draft_player(id=403, code=510281, web_name=player_name, team=19, element_type=3)
+        main_savio = make_player(id=403, code=510281, web_name=player_name, team_id=19)
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        client.get_league_details = AsyncMock(return_value={
+            "league": {"name": "Draft League"},
+            "standings": [
+                {"league_entry": 10, "event_total": 9, "total": 9, "rank": 1},
+                {"league_entry": 11, "event_total": 5, "total": 5, "rank": 2},
+            ],
+            "league_entries": [
+                {"id": 10, "entry_id": 1, "player_first_name": "A", "player_last_name": "B"},
+                {
+                    "id": 11, "entry_id": 2,
+                    "player_first_name": manager_name[0], "player_last_name": manager_name[1],
+                },
+            ],
+        })
+        client.get_bootstrap_static = AsyncMock(return_value={"elements": [savio]})
+        if picks_error is not None:
+            client.get_entry_picks = AsyncMock(side_effect=picks_error)
+        else:
+            client.get_entry_picks = AsyncMock(
+                return_value={"picks": [{"element": 403, "position": 1}], "subs": []}
+            )
+        client.get_league_transactions = AsyncMock(return_value={"transactions": []})
+        with patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=client):
+            return await _review_draft(
+                MagicMock(), 1, 1, gw=3, api_current_gw_id=3,
+                players=[main_savio], player_map={main_savio.id: main_savio},
+                teams=self._TEAMS, live_stats={403: {"total_points": 9, "minutes": 90}},
+            )
+
+    async def test_a_bracketed_player_name_renders_in_the_team_points_table(self, capsys):
+        data = await self._run(player_name="[bold]Sávio")
+        captured = capsys.readouterr()
+        assert "Could not fetch" not in captured.err
+        assert "[bold]Sávio" in captured.out
+        assert [p["name"] for p in data["draft_squad_points_data"]] == ["[bold]Sávio"]
+
+    async def test_a_bracketed_manager_name_renders_in_the_performer_lines(self, capsys):
+        # Brackets with a closing tag would raise MarkupError if left unescaped.
+        data = await self._run(manager_name=("[/bold]", "Smith"))
+        captured = capsys.readouterr()
+        assert "Could not fetch" not in captured.err
+        assert "1. You - 9 pts" in captured.out
+        assert "[/bold] Smith - 5 pts" in captured.out
+        assert data["draft_league_data"]["worst_performers"][0]["name"] == "[/bold] Smith"
+
+    @pytest.mark.parametrize(
+        "error",
+        [httpx.ConnectError("boom"), json.JSONDecodeError("bad json", "", 0)],
+    )
+    async def test_picks_fetch_failure_reports_the_notice_on_stderr(self, capsys, error):
+        data = await self._run(picks_error=error)
+        captured = capsys.readouterr()
+        assert "Could not fetch draft picks" in captured.err
+        assert "Could not fetch draft picks" not in captured.out
+        assert data["draft_squad_points_data"] == []
+        # The rest of the review carries on: the league block still prints.
+        assert "## League" in captured.out
+
+    async def test_a_non_http_error_is_not_reported_as_a_picks_fetch_failure(self, capsys):
+        with patch("fpl_cli.cli._review_draft._live_player_stats", side_effect=RuntimeError("render bug")):
+            await self._run()
+        err = capsys.readouterr().err
+        assert "Could not fetch draft picks" not in err
+        assert "render bug" in err
+
+
 class TestReviewDraftPlayerMatching:
     """#168: the draft→main ID map is what pulls a draft player's live stats,
     so a name the main game changed must not quietly zero their gameweek."""
