@@ -1845,7 +1845,7 @@ class TestReviewClassicBracketedNames:
         assert result["transfer_impact"] == "[/bold] Smith's -12 hit saved you from last place"
 
     async def test_a_render_error_is_not_reported_as_a_standings_fetch_failure(self, capsys):
-        with patch("fpl_cli.cli._review_classic._print_performer", side_effect=RuntimeError("render bug")):
+        with patch("fpl_cli.cli._review_classic._print_gw_performers", side_effect=RuntimeError("render bug")):
             result = await _review_classic_league(self._client(), 999, 1, 5, 5)
 
         err = capsys.readouterr().err

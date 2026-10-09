@@ -12,17 +12,15 @@ from rich.table import Table
 
 from fpl_cli.cli._context import console, error_console
 from fpl_cli.cli._helpers import (
-    _assign_tie_ranks,
     _center_window_with_ties,
     _fetch_standings_with_costs,
     _format_pts_display,
     _format_review_player,
     _live_player_stats,
     _net_transfer_ids,
-    _slice_with_ties,
-    performer_score,
+    _print_gw_performers,
+    classic_gw_performers,
     signed_net_markup,
-    your_gw_rank_line,
 )
 from fpl_cli.cli._league_recap_data import derive_point_in_time_positions
 from fpl_cli.services.fixture_predictions import is_blank_gameweek, is_double_gameweek
@@ -391,27 +389,6 @@ async def _review_classic_transfers(
     return classic_transfers_data
 
 
-def _performer_row(e: dict[str, Any]) -> dict[str, Any]:
-    """A standings entry as a Best/Worst GW Performers row.
-
-    `points` is the score the row was ranked on (net when the league plays
-    net), which is what `performer_score` and the last-place fine read.
-    """
-    return {
-        "name": e["name"],
-        "points": e["net_points"],
-        "gross_points": e["gross_points"],
-        "transfer_cost": e["transfer_cost"],
-        "rank_str": e["rank_str"],
-        "is_user": e.get("is_user", False),
-    }
-
-
-def _print_performer(perf: dict[str, Any]) -> None:
-    name = "[bold cyan]You[/bold cyan]" if perf["is_user"] else rich_escape(perf["name"])
-    console.print(f"  {perf['rank_str']}. {name} - {performer_score(perf)}")
-
-
 async def _review_classic_league(
     client: FPLClient,
     classic_league_id: int | None,
@@ -540,54 +517,20 @@ async def _review_classic_league(
             client, standings, entry_id, gw, fetch_costs=use_net_points,
         )
 
-        # Best GW performers (top 3 + ties)
-        header_suffix = " (Net Points)" if use_net_points else ""
-        sorted_by_net_desc = sorted(standings_with_costs, key=lambda x: x["net_points"], reverse=True)
-        _assign_tie_ranks(sorted_by_net_desc, "net_points")
-
-        # Snapshot best performer report data before ascending sort overwrites ranks
-        best_performers_for_report = [
-            _performer_row(e) for e in _slice_with_ties(sorted_by_net_desc, 3)
-        ]
-
-        console.print(f"\n[bold]### Best GW Performers{header_suffix}[/bold]")
-        for perf in best_performers_for_report:
-            _print_performer(perf)
-
-        # Capture user's GW rank within the classic league (by net points)
-        user_gw_entry = next(
-            (e for e in sorted_by_net_desc if e["is_user"]), None
-        )
-        classic_user_gw_rank = user_gw_entry["rank_str"] if user_gw_entry else None
-        # One page of standings is 50 entries; past that the ranks above
-        # cover only the page fetched, so the report must not name a field
-        # size that reads as the whole league
+        # One page of standings is 50 entries; past that the GW ranks cover
+        # only the page fetched (see `classic_gw_performers`)
         standings_complete = not standings_data.get("standings", {}).get("has_next", False)
-        gw_field_size = len(sorted_by_net_desc) if standings_complete else None
-
-        # Worst performers (bottom 5 + ties)
-        sorted_by_net_asc = sorted(standings_with_costs, key=lambda x: x["net_points"])
-        _assign_tie_ranks(sorted_by_net_asc, "net_points")
-
-        worst_performers_data = _slice_with_ties(sorted_by_net_asc, 5)
-        user_in_bottom = any(p["is_user"] for p in worst_performers_data)
+        performers = classic_gw_performers(standings_with_costs, complete=standings_complete)
         user_entry_data = next((p for p in standings_with_costs if p["is_user"]), None)
-        # The user's own row when they sit above the bottom five, shown beside
-        # the table rather than in it: a numbered row there read as a bottom
-        # placing (#360). Its `rank_str` is the ascending one, so it is
-        # labelled with the GW rank instead.
-        user_context_row = (
-            _performer_row(user_entry_data) if user_entry_data and not user_in_bottom else None
-        )
 
         # Calculate transfer impact narrative (only when net points are tracked)
         transfer_impact = None
-        if use_net_points and len(worst_performers_data) >= 2:
-            last_place = worst_performers_data[0]
+        if use_net_points and len(performers.worst) >= 2:
+            last_place = performers.worst[0]
 
             if user_entry_data:
                 user_transfer_cost = user_entry_data["transfer_cost"]
-                user_is_last = user_entry_data == last_place
+                user_is_last = last_place["is_user"]
                 if user_is_last and user_transfer_cost > 0:
                     sorted_by_gross = sorted(standings_with_costs, key=lambda x: x["gross_points"])
                     user_gross_rank = sorted_by_gross.index(user_entry_data)
@@ -600,13 +543,7 @@ async def _review_classic_league(
                             f"{last_place['name']}'s -{last_place['transfer_cost']} hit saved you from last place"
                         )
 
-        worst_performers_for_report = [_performer_row(e) for e in worst_performers_data]
-
-        console.print(f"\n[bold]### Worst GW Performers{header_suffix}[/bold]")
-        for perf in worst_performers_for_report:
-            _print_performer(perf)
-        if user_context_row:
-            console.print(f"  {your_gw_rank_line(classic_user_gw_rank, gw_field_size, user_context_row)}")
+        _print_gw_performers(performers, header_suffix=" (Net Points)" if use_net_points else "")
 
         if transfer_impact:
             error_console.print(f"\n[yellow]  ⚠ {rich_escape(transfer_impact)}[/yellow]")
@@ -615,8 +552,8 @@ async def _review_classic_league(
         classic_league_data = {
             "league_name": league_name,
             "user_position": user_rank,
-            "user_gw_rank": classic_user_gw_rank,
-            "gw_field_size": gw_field_size,
+            "user_gw_rank": performers.user_gw_rank,
+            "gw_field_size": performers.field_size,
             "total_entries": total_entries,
             "user_gw_points": user_gw_pts,
             "user_total": user_total,
@@ -635,9 +572,9 @@ async def _review_classic_league(
             ],
             "nearby_rivals_omitted": nearby_omitted,
             "use_net_points": use_net_points,
-            "best_performers": best_performers_for_report,
-            "worst_performers": worst_performers_for_report,
-            "user_context_row": user_context_row,
+            "best_performers": performers.best,
+            "worst_performers": performers.worst,
+            "user_context_row": performers.user_context_row,
             "transfer_impact": transfer_impact,
         }
         if use_net_points and user_entry_data:
