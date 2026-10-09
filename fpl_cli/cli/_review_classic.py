@@ -433,6 +433,12 @@ async def _review_classic_league(
         error_console.print(f"[yellow]Could not fetch classic league standings: {rich_escape(str(e))}[/yellow]")
         return None
 
+    # FPL answers 200 with a bare JSON string ("The game is being updated.")
+    # during its updates: that is a fetch problem, not something to render.
+    if not isinstance(standings_data, dict):
+        error_console.print("[yellow]Could not fetch classic league standings: unexpected response[/yellow]")
+        return None
+
     classic_league_data = None
     try:
         league_name = standings_data.get("league", {}).get("name", "Classic League")
@@ -494,9 +500,11 @@ async def _review_classic_league(
             console.print(f"- GW Points: {user_gw_pts} (Total: {user_total:,})")
 
             # Find nearby rivals (+/- 25 points)
+            # A row with no total is left out here as it is from the positions
+            # above, not given a placeholder 0 that could land it in the window.
             nearby = [
                 e for e in standings
-                if abs(e.get("total", 0) - user_total) <= 25
+                if e.get("total") is not None and abs(e["total"] - user_total) <= 25
             ]
             nearby.sort(key=lambda x: x.get("total", 0), reverse=True)
 

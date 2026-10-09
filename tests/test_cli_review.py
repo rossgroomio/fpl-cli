@@ -1729,9 +1729,16 @@ class TestReviewClassicLeagueNearbyRivalsPositions:
         standings = self._standings([205, 204, 203])
         standings[2]["total"] = None
 
-        await _review_classic_league(self._client(standings), 999, 1, 5, 5)
+        result = await _review_classic_league(self._client(standings), 999, 1, 5, 5)
 
-        assert "Position: 1 of 3" in capsys.readouterr().out
+        captured = capsys.readouterr()
+        assert "Position: 1 of 3" in captured.out
+        # The rest of the section completes too: the null row is left out of
+        # the rivals window rather than taking the whole league block down.
+        assert "Could not" not in captured.err
+        assert result is not None
+        assert [r["is_user"] for r in result["nearby_rivals"]] == [True, False]
+        assert "Worst GW Performers" in captured.out
 
 
 class TestReviewClassicBracketedNames:
@@ -1861,6 +1868,20 @@ class TestReviewClassicBracketedNames:
         assert "Could not fetch" not in captured.out
         assert result is None
 
+
+    @pytest.mark.parametrize("body", ["The game is being updated.", [], None])
+    async def test_a_non_dict_response_is_reported_as_a_fetch_problem(self, capsys, body):
+        # FPL answers 200 with a bare JSON string while the game is updating.
+        client = AsyncMock()
+        client.get_classic_league_standings = AsyncMock(return_value=body)
+
+        result = await _review_classic_league(client, 999, 1, 5, 5)
+
+        captured = capsys.readouterr()
+        assert "Could not fetch classic league standings: unexpected response" in captured.err
+        assert "Could not build" not in captured.err
+        assert "Could not fetch" not in captured.out
+        assert result is None
 
 class TestClassicPositionFields:
 
