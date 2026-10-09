@@ -62,6 +62,7 @@ from fpl_cli.cli._league_recap_types import (
 )
 from fpl_cli.models.player import PlayerPosition
 from fpl_cli.prompts.league_recap import (
+    check_contested_attributions,
     collect_player_clubs,
     format_recap_awards_context,
     format_recap_captains_context,
@@ -6705,3 +6706,111 @@ class TestRecapTitleIsTheReportsNotTheModels:
         content = Path(result.data["report_path"]).read_text(encoding="utf-8")
         assert content.splitlines()[0] == "# Gameweek 1 Recap: Draft League"
         assert result.data["report_path"].endswith("gw1-league-recap-draft.md")
+
+
+# ---------------------------------------------------------------------------
+# Contested attribution check (issue #357)
+# ---------------------------------------------------------------------------
+
+
+def _reported_races() -> tuple[list, list[str]]:
+    """The reported gameweek's three races: Alice Moss won King over Bob Gale,
+    Bob Gale won Bogle over Cam Hart, and Dan Ford won Giles over Cam Hart.
+    Bob Gale is the winner of one race and beaten in another, which is what
+    makes the folded sentence easy to get wrong."""
+    managers = [
+        _make_manager_with_txns("Alice Moss", [_txn("King", 6, "A", 1)], entry_id=1),
+        _lost_by(
+            _make_manager_with_txns("Bob Gale", [_txn("Bogle", 4, "B", 1)], entry_id=2),
+            _lost("King", "C", priority=2),
+        ),
+        _lost_by(
+            _make_manager(name="Cam Hart", entry_id=3),
+            _lost("Bogle", "D", priority=3), _lost("Giles", "E", priority=4),
+        ),
+        _make_manager_with_txns("Dan Ford", [_txn("Giles", 2, "F", 1)], entry_id=4),
+        _make_manager(name="Eve Ray", entry_id=5),
+    ]
+    return contested_draft_claims(managers), [m["manager_name"] for m in managers]
+
+
+class TestContestedAttributionCheck:
+    """Issue #357: the editorial folded two adjacent contested lines into one
+    "respectively" clause and drew the second beaten manager from the next
+    line's winner slot. The roles are known strings, so the check is
+    mechanical rather than another prompt line the model may ignore."""
+
+    def _check(self, summary: str) -> list[str]:
+        contests, names = _reported_races()
+        return check_contested_attributions(summary, contests, names)
+
+    def test_the_reported_respectively_sentence_is_caught(self):
+        problems = self._check(
+            "Spare a thought too for Cam Hart and Bob Gale, both beaten to Bogle and Giles "
+            "respectively in contested waiver scraps this week, alongside Alice Moss's "
+            "tussle with Bob Gale over King, which Moss won."
+        )
+        assert len(problems) == 1
+        assert problems[0].startswith("the editorial says Bob Gale was beaten to Giles")
+        # The contested line is quoted so the reader can see the right roles.
+        assert "Dan Ford won him; Cam Hart (priority 4) was beaten to him" in problems[0]
+
+    def test_each_race_written_as_its_own_clause_passes(self):
+        assert self._check(
+            "Bob Gale was beaten to King by Alice Moss. Cam Hart was beaten to Bogle, "
+            "and Cam Hart missed out on Giles too."
+        ) == []
+
+    def test_one_manager_beaten_in_two_races_may_be_named_once(self):
+        assert self._check("Cam Hart was beaten to both Bogle and Giles.") == []
+
+    def test_a_correct_respectively_pairing_is_not_flagged(self):
+        # Discouraged by the prompt, but not wrong: the check reports
+        # contradictions, not style.
+        assert self._check("Bob Gale and Cam Hart were beaten to King and Giles respectively.") == []
+
+    def test_lists_without_respectively_assert_every_pairing(self):
+        problems = self._check("Cam Hart and Bob Gale missed out on Bogle and Giles.")
+        assert [p.split(", but")[0] for p in problems] == [
+            "the editorial says Bob Gale was beaten to Bogle",
+            "the editorial says Bob Gale was beaten to Giles",
+        ]
+
+    def test_a_manager_who_claimed_nothing_cannot_be_beaten(self):
+        problems = self._check("Eve Ray lost out on Giles.")
+        assert len(problems) == 1
+        assert "Eve Ray was beaten to Giles" in problems[0]
+
+    def test_the_active_form_checks_winner_and_beaten_alike(self):
+        assert self._check("Alice Moss beat Bob Gale to King.") == []
+        problems = self._check("Dan Ford beat Bob Gale to King.")
+        assert [p.split(", but")[0] for p in problems] == [
+            "the editorial says Dan Ford won King",
+        ]
+        problems = self._check("Dan Ford pipped Bob Gale to Giles.")
+        assert [p.split(", but")[0] for p in problems] == [
+            "the editorial says Bob Gale was beaten to Giles",
+        ]
+
+    def test_a_unique_surname_or_first_name_counts_as_the_manager(self):
+        problems = self._check("Gale was pipped to **Giles**.")
+        assert len(problems) == 1
+        assert "Bob Gale was beaten to Giles" in problems[0]
+
+    def test_a_sentence_it_cannot_pin_to_a_role_is_left_alone(self):
+        assert self._check(
+            "Bob Gale lost 12 points to the bench, then won Bogle. "
+            "Giles went to Dan Ford, and Bob Gale was beaten by Alice Moss to King."
+        ) == []
+
+    def test_nothing_is_checked_without_a_contested_race(self):
+        assert check_contested_attributions("Bob was beaten to Isak.", [], ["Bob"]) == []
+
+    def test_the_system_prompt_forbids_folding_two_races_into_one_clause(self):
+        system, _ = get_recap_synthesis_prompt(
+            gw=3, league_name="Test", fpl_format="draft",
+            awards_text="x", standings_text="| t |", fines_text="",
+        )
+        assert "Each \"Contested players\" line is one race" in system
+        assert "NEVER fold two lines into one clause" in system
+        assert 'no "respectively"' in system

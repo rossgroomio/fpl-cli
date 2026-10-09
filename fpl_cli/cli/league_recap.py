@@ -13,7 +13,7 @@ import click
 from rich.markup import escape as rich_escape
 from rich.panel import Panel
 
-from fpl_cli.api.providers import ProviderError
+from fpl_cli.api.providers import LLMResponse, ProviderError
 from fpl_cli.cli._context import (
     Format,
     console,
@@ -34,6 +34,7 @@ from fpl_cli.cli._json import (
 from fpl_cli.cli._league_recap_types import (
     LeagueRecapData,
     PriorSeasonsSummary,
+    contested_draft_claims,
     summarise_prior_seasons,
 )
 from fpl_cli.services.league_history import GameweekCoverage
@@ -60,6 +61,12 @@ _CONSOLE_STREAK_LIMIT = 5
 # `_league_recap_history.py`, the same way `synthesis_provider_unavailable`
 # does. Stable for scripts, like every other code on that channel.
 RECAP_WARNING_STANDINGS_MOVED_ON = "league_standings_moved_on"
+RECAP_WARNING_CONTESTED_MISATTRIBUTION = "synthesis_contested_misattribution"
+# The editorial gets one retry when it puts a manager in the wrong role of a
+# contested race: a second call is cheap next to a saved report that names
+# someone as beaten to a player they never claimed (#357), and two attempts
+# is where it stops, as for `review`'s completeness check.
+_MAX_EDITORIAL_ATTEMPTS = 2
 
 logger = logging.getLogger(__name__)
 
@@ -605,6 +612,19 @@ def league_recap_command(
                                 ),
                             }] if collected_data.get("synthesis_stop_reason") else []
                         ) + (
+                            # The editorial is saved as written, so a race it
+                            # misattributes is named here rather than left for
+                            # a consumer to spot against the rows (#357).
+                            [{
+                                "code": RECAP_WARNING_CONTESTED_MISATTRIBUTION,
+                                "message": (
+                                    "The editorial contradicts the contested waiver"
+                                    " claims it was given: "
+                                    + "; ".join(collected_data.get("synthesis_problems", []))
+                                    + "."
+                                ),
+                            }] if collected_data.get("synthesis_problems") else []
+                        ) + (
                             [{
                                 "code": RECAP_WARNING_STANDINGS_MOVED_ON,
                                 "message": (
@@ -867,6 +887,7 @@ async def _recap_llm_summarise(
 ) -> None:
     """Run LLM summarisation for league recap. Mutates collected_data to add summaries."""
     from fpl_cli.prompts.league_recap import (
+        check_contested_attributions,
         collect_player_clubs,
         format_recap_awards_context,
         format_recap_captains_context,
@@ -933,23 +954,52 @@ async def _recap_llm_summarise(
     elif synthesis_provider:
         try:
             console.print("[dim]  Generating league editorial...[/dim]")
-            synthesis_result = await synthesis_provider.query(
-                prompt=user_prompt,
-                system_prompt=system_prompt,
-            )
-            # The report writes its own title; whatever heading the model
-            # opened with anyway is demoted beneath it or, when it only
-            # restates the title, dropped (#349). The JSON payload carries
-            # the same text, so a consumer sees the editorial as saved.
-            collected_data["synthesis_summary"] = normalise_recap_editorial(
-                synthesis_provider.post_process(synthesis_result.content),
-                league_name=collected_data["league_name"],
-            )
+            contests = contested_draft_claims(collected_data["managers"])
+            manager_names = [m["manager_name"] for m in collected_data["managers"]]
+            best: tuple[str, list[str], LLMResponse] | None = None
+            for attempt in range(1, _MAX_EDITORIAL_ATTEMPTS + 1):
+                synthesis_result = await synthesis_provider.query(
+                    prompt=user_prompt,
+                    system_prompt=system_prompt,
+                )
+                # The report writes its own title; whatever heading the model
+                # opened with anyway is demoted beneath it or, when it only
+                # restates the title, dropped (#349). The JSON payload carries
+                # the same text, so a consumer sees the editorial as saved.
+                summary = normalise_recap_editorial(
+                    synthesis_provider.post_process(synthesis_result.content),
+                    league_name=collected_data["league_name"],
+                )
+                problems = check_contested_attributions(summary, contests, manager_names)
+                # A retry only displaces the first attempt when it is strictly
+                # less wrong, so a worse second roll never ships over a better one.
+                if best is None or len(problems) < len(best[1]):
+                    best = (summary, problems, synthesis_result)
+                if not best[1] or attempt == _MAX_EDITORIAL_ATTEMPTS:
+                    break
+                error_console.print(
+                    "[yellow]  ⚠ The editorial misattributed a contested waiver claim"
+                    " -- retrying once[/yellow]"
+                )
+            assert best is not None  # the loop runs at least once
+            summary, problems, synthesis_result = best
+            collected_data["synthesis_summary"] = summary
+            if problems:
+                # Kept, not scrubbed: the rest of the editorial is sound, and
+                # the saved report carries these lines above it so the wrong
+                # attribution is never read as fact weeks later (#357).
+                collected_data["synthesis_problems"] = problems
+                error_console.print(
+                    "[yellow]  ⚠ The editorial still contradicts the contested waiver"
+                    f" claims after {_MAX_EDITORIAL_ATTEMPTS} attempts:[/yellow]"
+                )
+                for problem in problems:
+                    error_console.print(f"[yellow]    - {rich_escape(problem)}[/yellow]")
             if synthesis_result.stopped_early:
                 # The recap's editorial goes into a saved report too, so a
                 # truncated one must not look finished. Recorded for the JSON
                 # payload as well as said out loud here (#266).
-                collected_data["synthesis_stop_reason"] = synthesis_result.stop_reason
+                collected_data["synthesis_stop_reason"] = str(synthesis_result.stop_reason)
                 error_console.print(
                     "[yellow]  The editorial may be cut off: the provider stopped early"
                     f" (stop_reason: {rich_escape(str(synthesis_result.stop_reason))})[/yellow]"

@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
+from dataclasses import dataclass
 
 from fpl_cli.cli._league_recap_types import (
     LeagueRecapData,
     PriorSeasonsSummary,
+    RecapContestedClaim,
     RecapDraftLostClaim,
     contested_draft_claims,
     draft_transaction_kind_counts,
@@ -66,6 +69,7 @@ Your audience is every member of this league. They want entertainment first, inf
 - In draft, the "## Waivers and Free Agents" section is the source of truth for waiver claims and free-agent signings, the same way. It lists every manager who made a move with each move as it was made, its points swing and its kind tag - [waiver] or [free agent] - an explicit count of movers, and the managers who made none - use those counts verbatim. NEVER say a manager claimed, signed, dropped, or stood still unless that section says so of them, never describe a move it does not list, and never call a move tagged [free agent] a waiver claim or a move tagged [waiver] a free-agent signing - the tag is the move's kind. Draft has no transfer hits, so never mention one. Do NOT infer waiver activity from the Awards section - Waiver Genius and Waiver Disaster name only the single best and single worst mover, and Most Contested only the player the most managers claimed, so they never tell you how many managers moved, how many races there were, or what anyone else did.
 - A waiver is a competition, so a manager can be busy and still have no move to show for it. The "## Waivers and Free Agents" section separates the two cases and the distinction is not optional: only the managers it lists as having made no moves AND submitted no claims sat the waiver wire out. A manager it lists as having claimed a player and lost him to a rival WAS active - they spent a claim, at the priority the line states, and were beaten to the player. Say they tried and missed, never that they did nothing, "sat it out", "stayed put", "didn't bother", "kept their powder dry" or "showed restraint", and never assign a motive - discipline, laziness, apathy - to an absence from the movers list. The same goes for a mover's "also claimed and lost" tail: it is extra activity, not a move they made.
 - The "Contested players" lines at the end of that section are the only source for who else wanted a player. Each names one player, how many managers claimed him, who won him and who was beaten to him, with the priority each beaten manager gave the claim - their own ranking of the claims they submitted that week, not the league's waiver order. Use the count verbatim; never call a player contested, "in demand" or "wanted by half the league" unless a line lists him, and never say a manager wanted, chased or missed out on a player unless the line names them. Where the beaten managers on a line carry no (free agent) or (other move) tag, it was a waiver race and the winner won by standing higher in the league's waiver order - you may say that, and nothing else about anyone's waiver position, which the data does not state. A line whose beaten managers are tagged (free agent) was first-come-first-served, so say nothing about waiver order there at all. Where a line says the winner could not be identified, name nobody as having won him.
+- Each "Contested players" line is one race, and its roles are fixed: the manager it says won him won him, and only the managers it says were beaten to him were beaten to him. Write every race as its own clause, naming its winner and beaten managers in exactly those roles. NEVER fold two lines into one clause - no "respectively", no "X and Y were beaten to A and B", no list of managers set against a list of players - because a manager who won one race and lost the next is then easily put in the wrong role. One beaten manager may be named once against several players ("beaten to both A and B") only when every one of those lines names them as beaten.
 - NEVER claim a manager's bench outscored their team unless bench points are strictly greater than their GW points. Use the exact numbers provided.
 - NEVER alter player or manager names. Use the exact spelling provided in the data.
 - NEVER state a club for a player other than the club given for them in this data - the "## Player Clubs" section, or the club printed beside a name elsewhere. Players change clubs in the transfer windows and your own knowledge of who plays where goes a season out of date, so that section is the only authority. A player it does not list has no club you can state: name them alone ("Haaland's 2 points") rather than supplying one from memory.
@@ -249,6 +253,219 @@ def normalise_recap_editorial(summary: str, *, league_name: str) -> str:
         out.append(f"{marks} {headline}")
         opening = False
     return _BLANK_RUN_RE.sub("\n\n", "\n".join(out)).strip()
+
+
+# =============================================================================
+# Editorial checks
+# =============================================================================
+
+# The verbs that put a manager in a contested race's roles. A passive cue
+# makes the managers before it the beaten ones ("Bob was beaten to Isak",
+# "Bob lost the race for Isak"); an active one makes them the winner and the
+# managers after it the beaten ("Alice beat Bob to Isak"). The ambiguous ones
+# read by what follows: a manager means active, a player passive ("Alice
+# pipped Bob to Isak", "Bob was pipped to Isak").
+_ACTIVE_CUES = frozenset({"beat", "beats", "beating"})
+_PASSIVE_CUES = frozenset({"beaten", "missed out", "lost out", "lost"})
+_CUE_RE = re.compile(
+    r"(?<!\w)(beat|beats|beating|beaten|pipped|edged out|outbid|missed out|lost out|lost)(?!\w)",
+    re.IGNORECASE,
+)
+# What may sit between a cue and the names it governs, in words. Short on
+# purpose: "beaten to", "lost the race for", "beaten to the punch on" -- a
+# longer run is a different clause, and a missed check costs less than a
+# warning about a sentence that never said what it is accused of.
+_CUE_OBJECT_MAX_WORDS = 4
+_SUBJECT_CUE_MAX_WORDS = 6
+# Names in one list: "Alice, Bob and Cam", "Alice & Bob".
+_LIST_JOIN_RE = re.compile(r"^\s*(?:,|,?\s*(?:and|&))\s*$", re.IGNORECASE)
+_RESPECTIVELY_RE = re.compile(r"^\s*,?\s*respectively(?!\w)", re.IGNORECASE)
+_CLAUSE_BREAK_RE = re.compile(r"[.;:!?\n]")
+_EMPHASIS_RE = re.compile(r"[*_]")
+
+
+@dataclass(frozen=True)
+class _Mention:
+    start: int
+    end: int
+    name: str
+    is_manager: bool
+
+
+def _mention_aliases(manager_names: Sequence[str], players: set[str]) -> dict[str, tuple[str, bool]]:
+    """Every string the checker reads as a name, mapped to (canonical, is_manager).
+
+    Managers are matched by their full name, and by a first or last name no
+    other manager shares -- the editorial reaches for "Hill" on a second
+    mention -- so long as that short form is not also a contested player's
+    name. A full name that collides with a player stays the manager's.
+    """
+    names: dict[str, tuple[str, bool]] = {player: (player, False) for player in players}
+    full = {name.strip() for name in manager_names if name.strip()}
+    for name in full:
+        names[name] = (name, True)
+    counts: dict[str, int] = {}
+    owner: dict[str, str] = {}
+    for name in full:
+        parts = name.split()
+        if len(parts) < 2:
+            continue
+        for part in {parts[0], parts[-1]}:
+            counts[part] = counts.get(part, 0) + 1
+            owner[part] = name
+    for part, count in counts.items():
+        if count == 1 and len(part) >= 3 and part not in names:
+            names[part] = (owner[part], True)
+    return names
+
+
+def _find_mentions(text: str, names: dict[str, tuple[str, bool]]) -> list[_Mention]:
+    if not names:
+        return []
+    pattern = re.compile(
+        r"(?<!\w)(?:" + "|".join(re.escape(n) for n in sorted(names, key=len, reverse=True)) + r")(?!\w)",
+    )
+    mentions: list[_Mention] = []
+    for match in pattern.finditer(text):
+        canonical, is_manager = names[match.group(0)]
+        mentions.append(_Mention(match.start(), match.end(), canonical, is_manager))
+    return mentions
+
+
+def _plain(gap: str) -> str:
+    return _EMPHASIS_RE.sub("", gap)
+
+
+def _short(gap: str, max_words: int, *, commas: bool) -> bool:
+    """A gap the same clause runs through: no sentence or clause break, no
+    comma where the reading would not survive one, and only a few words."""
+    plain = _plain(gap)
+    if _CLAUSE_BREAK_RE.search(plain) or (not commas and "," in plain):
+        return False
+    return len(plain.split()) <= max_words
+
+
+def _group(
+    text: str, mentions: list[_Mention], index: int, *, step: int, is_manager: bool,
+) -> list[int]:
+    """The indices of the name list `mentions[index]` belongs to, walking in
+    `step`'s direction while each gap is a list join, in text order."""
+    if not 0 <= index < len(mentions) or mentions[index].is_manager is not is_manager:
+        return []
+    members = [index]
+    while True:
+        here, there = members[-1], members[-1] + step
+        if not 0 <= there < len(mentions) or mentions[there].is_manager is not is_manager:
+            break
+        left, right = (mentions[here], mentions[there]) if step > 0 else (mentions[there], mentions[here])
+        if not _LIST_JOIN_RE.match(_plain(text[left.end:right.start])):
+            break
+        members.append(there)
+    return sorted(members)
+
+
+def check_contested_attributions(
+    summary: str,
+    contests: Sequence[RecapContestedClaim],
+    manager_names: Sequence[str],
+) -> list[str]:
+    """Every race the editorial puts a manager in the wrong role of (#357).
+
+    The "Contested players" lines are the only source for who won a player
+    and who was beaten to him, and the prompt says so -- but the model has
+    still folded two adjacent lines into one "respectively" clause and drawn
+    the second beaten manager from the next line's winner. Both the player
+    and the manager names are known strings, so the assertion is checkable
+    without trusting the model to honour a rule it has already broken once.
+
+    Deliberately narrow: a statement is checked only where a cue verb sits
+    between a list of managers and a list of contested players inside one
+    clause ("Bob and Cam were beaten to Isak", "Alice beat Bob to Isak",
+    "Bob and Cam missed out on Isak and Wood respectively"). A sentence the
+    reading cannot pin to a role is left alone rather than guessed at, so
+    every problem returned is a sentence that said something the data
+    contradicts. A list of managers against a list of players without
+    "respectively" asserts every pairing, which is what the reader takes
+    from it too. Returns one line per wrong (manager, player, role), in the
+    order the editorial makes the claims.
+    """
+    if not contests:
+        return []
+    races = {c["player"]: c for c in contests}
+    mentions = _find_mentions(summary, _mention_aliases(manager_names, set(races)))
+
+    problems: list[str] = []
+
+    def assert_role(manager: str, player: str, *, won: bool) -> None:
+        race = races[player]
+        beaten = [c["manager_name"] for c in race["losers"]]
+        if won and race["winner"] == manager:
+            return
+        if not won and manager in beaten:
+            return
+        named = format_contested_claim(race)
+        problem = (
+            f"the editorial says {manager} {'won' if won else 'was beaten to'} {player}, "
+            f"but the contested line reads: \"{named}\""
+        )
+        if problem not in problems:
+            problems.append(problem)
+
+    for i in range(len(mentions) - 1):
+        left, right = mentions[i], mentions[i + 1]
+        gap = summary[left.end:right.start]
+        for cue_match in _CUE_RE.finditer(gap):
+            cue = cue_match.group(1).lower()
+            subjects = _group(summary, mentions, i, step=-1, is_manager=True)
+            if not subjects:
+                break  # the name before the cue is a player: no subject to check
+            if not _short(gap[:cue_match.start()], _SUBJECT_CUE_MAX_WORDS, commas=True):
+                continue
+            if _CUE_RE.search(gap, cue_match.end()):
+                continue  # a later cue in the same gap governs what follows
+            after = gap[cue_match.end():]
+            if not _short(after, _CUE_OBJECT_MAX_WORDS, commas=False):
+                continue
+            if right.is_manager:
+                if cue in _PASSIVE_CUES:
+                    continue  # "beaten by Alice to Isak": not read
+                objects = _group(summary, mentions, i + 1, step=1, is_manager=True)
+                after_objects = objects[-1] + 1
+                if after_objects >= len(mentions) or mentions[after_objects].is_manager:
+                    continue
+                link = summary[mentions[objects[-1]].end:mentions[after_objects].start]
+                if not _short(link, _CUE_OBJECT_MAX_WORDS, commas=False):
+                    continue
+                players = _group(summary, mentions, after_objects, step=1, is_manager=False)
+                pairs = _pairs(summary, mentions, objects, players)
+                for winner in subjects:
+                    for player in players:
+                        assert_role(mentions[winner].name, mentions[player].name, won=True)
+                for beaten, player in pairs:
+                    assert_role(mentions[beaten].name, mentions[player].name, won=False)
+                continue
+            players = _group(summary, mentions, i + 1, step=1, is_manager=False)
+            won = cue in _ACTIVE_CUES
+            for manager, player in _pairs(summary, mentions, subjects, players):
+                assert_role(mentions[manager].name, mentions[player].name, won=won)
+    return problems
+
+
+def _pairs(
+    text: str, mentions: list[_Mention], managers: list[int], players: list[int],
+) -> list[tuple[int, int]]:
+    """Which manager the sentence ties to which player: position by position
+    when the player list closes on "respectively" and the two lists match in
+    length, every pairing otherwise."""
+    last = mentions[players[-1]]
+    following = mentions[players[-1] + 1].start if players[-1] + 1 < len(mentions) else len(text)
+    if (
+        len(players) > 1
+        and len(managers) == len(players)
+        and _RESPECTIVELY_RE.match(_plain(text[last.end:following]))
+    ):
+        return list(zip(managers, players, strict=True))
+    return [(m, p) for m in managers for p in players]
 
 
 # =============================================================================
