@@ -137,17 +137,62 @@ def _mention_aliases(manager_names: Sequence[str], players: set[str]) -> dict[st
     return names
 
 
-def _find_mentions(text: str, names: dict[str, tuple[str, bool]]) -> list[_Mention]:
-    """Every name in `text`, in order. A player in the possessive ("King's
-    bonus") is not the player a race was for, so he is not read as one."""
-    if not names:
-        return []
-    pattern = re.compile(
-        r"(?<!\w)(?:" + "|".join(re.escape(n) for n in sorted(names, key=len, reverse=True)) + r")(?!\w)",
-    )
+def _player_names(managers: Sequence[RecapManagerEntry]) -> frozenset[str]:
+    """Every player name the recap data carries: squads, captains, moves and
+    lost claims. `auto_subs` adds none -- its lines are sentences ("King on
+    for Wood (6 pts)") about squad players already counted."""
+    names: set[str] = set()
+    for m in managers:
+        names.update(p["name"] for p in m.get("squad", []))
+        names.update((m.get("captain", ""), m.get("vice_captain", "")))
+        for move in [*m.get("transfers", []), *m.get("transactions", []), *m.get("lost_claims", [])]:
+            names.update((move["player_in"], move["player_out"]))
+    return frozenset(name for name in names if name)
+
+
+@dataclass(frozen=True)
+class RecapNames:
+    """Every name the recap data carries, read in one alternation (#379).
+
+    The alternation runs longest first, so a name is read whole rather than
+    as a shorter one inside it: "Gibbs-White" is not a "White", and "Bob
+    White" is not the player "White". That only holds against names in the
+    same alternation, so it is built once per editorial over every player,
+    every manager and every short form a manager goes by, and each check
+    keeps the matches it is after. A check that read only its own names
+    found a bystander's surname inside "Gibbs-White" and stood down on the
+    very sentence it was written for. Build one with `of()`.
+    """
+
+    managers: tuple[str, ...]
+    players: frozenset[str]
+    pattern: re.Pattern[str] | None
+
+    @classmethod
+    def of(cls, managers: Sequence[RecapManagerEntry]) -> RecapNames:
+        manager_names = tuple(m["manager_name"] for m in managers)
+        players = _player_names(managers)
+        names = {*players, *_mention_aliases(manager_names, set())}
+        pattern = re.compile(
+            r"(?<!\w)(?:" + "|".join(re.escape(n) for n in sorted(names, key=lambda n: (-len(n), n))) + r")(?!\w)",
+        ) if names else None
+        return cls(manager_names, players, pattern)
+
+    def find(self, text: str) -> list[re.Match[str]]:
+        """Every name in `text`, in order, each read whole."""
+        return list(self.pattern.finditer(text)) if self.pattern else []
+
+
+def _find_mentions(text: str, names: RecapNames, wanted: Mapping[str, tuple[str, bool]]) -> list[_Mention]:
+    """Every name in `text` that `wanted` maps, in order. Every other name
+    is read too and dropped, so none of `wanted` is found inside one. A
+    player in the possessive ("King's bonus") is not the player a race was
+    for, so he is not read as one."""
     mentions: list[_Mention] = []
-    for match in pattern.finditer(text):
-        canonical, is_manager = names[match.group(0)]
+    for match in names.find(text):
+        if match.group(0) not in wanted:
+            continue
+        canonical, is_manager = wanted[match.group(0)]
         if not is_manager and _POSSESSIVE_RE.match(text, match.end()):
             continue
         mentions.append(_Mention(match.start(), match.end(), canonical, is_manager))
@@ -323,7 +368,7 @@ def _read_claim(text: str, mentions: list[_Mention], i: int) -> _RaceClaim | Non
 def check_contested_attributions(
     summary: str,
     contests: Sequence[RecapContestedClaim],
-    manager_names: Sequence[str],
+    names: RecapNames,
 ) -> list[str]:
     """Every race the editorial puts a manager in the wrong role of (#357).
 
@@ -345,15 +390,16 @@ def check_contested_attributions(
     contradicts. A list of managers against a list of players without
     "respectively" asserts every pairing, which is what the reader takes
     from it too. Two contested players can share a name; a claim holds when
-    any race under that name bears it out. Returns one line per wrong
-    (manager, player, role), in the order the editorial makes the claims.
+    any race under that name bears it out. `names` is `RecapNames.of()` over
+    the managers the races came from. Returns one line per wrong (manager,
+    player, role), in the order the editorial makes the claims.
     """
     if not contests:
         return []
     races: dict[str, list[RecapContestedClaim]] = {}
     for contest in contests:
         races.setdefault(contest["player"], []).append(contest)
-    mentions = _find_mentions(summary, _mention_aliases(manager_names, set(races)))
+    mentions = _find_mentions(summary, names, _mention_aliases(names.managers, set(races)))
 
     problems: list[str] = []
 
@@ -393,22 +439,25 @@ def _clauses(text: str) -> list[str]:
     return [_plain(part) for part in _CLAUSE_BREAK_RE.split(text) if part.strip()]
 
 
-def _names_pattern(names: set[str]) -> re.Pattern[str] | None:
-    """One alternation over `names`, longest first, so "Gibbs-White" is read
-    whole rather than as a "White" inside it."""
-    if not names:
-        return None
-    return re.compile(
-        r"(?<!\w)(?:" + "|".join(re.escape(n) for n in sorted(names, key=len, reverse=True)) + r")(?!\w)",
-    )
+_WORD_RE = re.compile(r"\S+")
+
+
+def _window_start(text: str, end: int, count: int) -> int:
+    """Where the `count` words before `end` begin."""
+    return ([m.start() for m in _WORD_RE.finditer(text, 0, end)][-count:] or [end])[0]
+
+
+def _window_end(text: str, start: int, count: int) -> int:
+    """Where the `count` words after `start` end."""
+    return ([m.end() for m in _WORD_RE.finditer(text, start)][:count] or [start])[-1]
 
 
 def _words_before(text: str, end: int, count: int) -> str:
-    return " ".join(text[:end].split()[-count:])
+    return " ".join(text[_window_start(text, end, count):end].split())
 
 
 def _words_after(text: str, start: int, count: int) -> str:
-    return " ".join(text[start:].split()[:count])
+    return " ".join(text[start:_window_end(text, start, count)].split())
 
 
 # =============================================================================
@@ -536,7 +585,7 @@ def _mover_lines(managers: Sequence[RecapManagerEntry]) -> list[_MoverLine]:
     return lines
 
 
-def check_net_attributions(summary: str, managers: Sequence[RecapManagerEntry]) -> list[str]:
+def check_net_attributions(summary: str, managers: Sequence[RecapManagerEntry], names: RecapNames) -> list[str]:
     """Every net figure the editorial pins on one move that belongs to the
     manager's whole gameweek or to another move (#359).
 
@@ -563,20 +612,17 @@ def check_net_attributions(summary: str, managers: Sequence[RecapManagerEntry]) 
         return []
     by_manager = {line.manager: line for line in lines}
     players = {name for line in lines for move in line.moves for name in (move.player_in, move.player_out)}
-    player_re = _names_pattern(players)
     aliases = {
-        alias: name
-        for alias, (name, is_manager) in _mention_aliases([m["manager_name"] for m in managers], players).items()
-        if is_manager
+        alias: name for alias, (name, is_manager) in _mention_aliases(names.managers, players).items() if is_manager
     }
-    manager_re = _names_pattern(set(aliases))
 
     problems: list[str] = []
     for clause in _clauses(summary):
         figures = list(_NET_FIGURE_RE.finditer(clause))
-        if not figures or player_re is None or _NET_OVERALL_RE.search(clause):
+        if not figures or _NET_OVERALL_RE.search(clause):
             continue
-        player_mentions = list(player_re.finditer(clause))
+        mentions = names.find(clause)
+        player_mentions = [m for m in mentions if m.group(0) in players]
         named_players = {m.group(0) for m in player_mentions}
         named = [
             move for line in lines for move in line.moves
@@ -584,9 +630,7 @@ def check_net_attributions(summary: str, managers: Sequence[RecapManagerEntry]) 
         ]
         if not named:
             continue
-        manager_mentions = [
-            (m.start(), aliases[m.group(0)]) for m in manager_re.finditer(clause)
-        ] if manager_re else []
+        manager_mentions = [(m.start(), aliases[m.group(0)]) for m in mentions if m.group(0) in aliases]
         named_managers = {name for _, name in manager_mentions}
         owners = {move.manager for move in named}
         if named_managers - owners:
@@ -709,18 +753,7 @@ def _rank_holders(ranks: Sequence[tuple[str, int]], rank: int | str) -> tuple[in
     return target, [name for name, value in ranks if value == target]
 
 
-def _squad_player_names(managers: Sequence[RecapManagerEntry]) -> set[str]:
-    """Every player name the recap data carries, so a tie said of a player
-    ("Salah was joint-top") is not read as one between managers."""
-    names: set[str] = set()
-    for m in managers:
-        names.update(p["name"] for p in m.get("squad", []))
-        for move in [*m.get("transfers", []), *m.get("transactions", []), *m.get("lost_claims", [])]:
-            names.update((move["player_in"], move["player_out"]))
-    return {name for name in names if name}
-
-
-def check_tie_claims(summary: str, managers: Sequence[RecapManagerEntry]) -> list[str]:
+def check_tie_claims(summary: str, managers: Sequence[RecapManagerEntry], names: RecapNames) -> list[str]:
     """Every tie the editorial claims at a rank no two managers share (#359).
 
     The editorial called an outright lowest score "the joint-lowest score of
@@ -758,8 +791,6 @@ def check_tie_claims(summary: str, managers: Sequence[RecapManagerEntry]) -> lis
             ]),
         ) if ranks
     ]
-    player_re = _names_pattern(_squad_player_names(managers))
-
     # Each says why the tie does not hold in its reading, or None when it does
     # (or the data cannot say).
     def gameweek_fact(rank: int | str) -> str | None:
@@ -779,7 +810,14 @@ def check_tie_claims(summary: str, managers: Sequence[RecapManagerEntry]) -> lis
 
     problems: list[str] = []
     for clause in _clauses(summary):
-        for match in _TIE_RE.finditer(clause):
+        ties = list(_TIE_RE.finditer(clause))
+        if not ties:
+            continue
+        # Read across the whole clause, so a manager's name the subject window
+        # cuts in half is still the manager's ("Bob White" is not the player
+        # "White", #379).
+        player_spans = [m.span() for m in names.find(clause) if m.group(0) in names.players]
+        for match in ties:
             word = match.group("rank").lower()
             rest = clause[match.end():]
             if not _RANK_FOLLOWS_RE.match(rest) or (word in ("last", "first") and _RANK_IS_TIME_RE.match(rest)):
@@ -787,11 +825,10 @@ def check_tie_claims(summary: str, managers: Sequence[RecapManagerEntry]) -> lis
             before = _words_before(clause, match.start(), _TIE_NEGATION_WORDS)
             if _NEGATION_RE.search(before) or "no longer" in before.lower():
                 continue
-            subject = (
-                _words_before(clause, match.start(), _TIE_SUBJECT_WORDS_BEFORE) + " "
-                + _words_after(clause, match.end(), _TIE_SUBJECT_WORDS_AFTER)
-            )
-            if _TIE_OTHER_SUBJECT_RE.search(subject) or (player_re and player_re.search(subject)):
+            lo = _window_start(clause, match.start(), _TIE_SUBJECT_WORDS_BEFORE)
+            hi = _window_end(clause, match.end(), _TIE_SUBJECT_WORDS_AFTER)
+            subject = clause[lo:match.start()] + " " + clause[match.end():hi]
+            if _TIE_OTHER_SUBJECT_RE.search(subject) or any(lo <= s and e <= hi for s, e in player_spans):
                 continue
             window = (
                 _words_before(clause, match.start(), _TIE_WINDOW_WORDS) + " "
@@ -841,14 +878,11 @@ class EditorialCheck:
     lead: str
     # What the retry is told to do about it.
     retry_instruction: str
-    run: Callable[[str, LeagueRecapData], list[str]]
+    run: Callable[[str, LeagueRecapData, RecapNames], list[str]]
 
 
-def _contested(summary: str, data: LeagueRecapData) -> list[str]:
-    managers = data["managers"]
-    return check_contested_attributions(
-        summary, contested_draft_claims(managers), [m["manager_name"] for m in managers],
-    )
+def _contested(summary: str, data: LeagueRecapData, names: RecapNames) -> list[str]:
+    return check_contested_attributions(summary, contested_draft_claims(data["managers"]), names)
 
 
 EDITORIAL_CHECKS: tuple[EditorialCheck, ...] = (
@@ -870,7 +904,7 @@ EDITORIAL_CHECKS: tuple[EditorialCheck, ...] = (
             "called their net overall, never to one named move; the hit is the gameweek's, never "
             "one transfer's."
         ),
-        run=lambda summary, data: check_net_attributions(summary, data["managers"]),
+        run=lambda summary, data, names: check_net_attributions(summary, data["managers"], names),
     ),
     EditorialCheck(
         code=RECAP_WARNING_UNSUPPORTED_TIE,
@@ -879,7 +913,7 @@ EDITORIAL_CHECKS: tuple[EditorialCheck, ...] = (
             'Call a score or position "joint", "tied", "level" or "shared" only where the GW '
             "Standings section lists it as shared."
         ),
-        run=lambda summary, data: check_tie_claims(summary, data["managers"]),
+        run=lambda summary, data, names: check_tie_claims(summary, data["managers"], names),
     ),
 )
 _CHECKS_BY_CODE = {check.code: check for check in EDITORIAL_CHECKS}
@@ -892,7 +926,8 @@ def check_recap_editorial(summary: str, data: LeagueRecapData) -> dict[str, list
     Only a code with at least one problem is a key, so an empty answer is a
     clean editorial.
     """
-    found = {check.code: check.run(summary, data) for check in EDITORIAL_CHECKS}
+    names = RecapNames.of(data["managers"])
+    found = {check.code: check.run(summary, data, names) for check in EDITORIAL_CHECKS}
     return {code: problems for code, problems in found.items() if problems}
 
 
