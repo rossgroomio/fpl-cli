@@ -20,6 +20,7 @@ from fpl_cli.cli._helpers import (
     _net_transfer_ids,
     _print_gw_performers,
     classic_gw_performers,
+    print_historical_league_notice,
     signed_net_markup,
 )
 from fpl_cli.cli._league_recap_data import derive_point_in_time_positions
@@ -72,7 +73,7 @@ async def _review_classic_team(
 
     if entry_id:
         try:
-            console.print("[dim]Fetching your team data...[/dim]")
+            error_console.print("[dim]Fetching your team data...[/dim]")
             picks_response = await client.get_manager_picks(entry_id, gw)
 
             entry_history = picks_response.get("entry_history", {})
@@ -260,7 +261,7 @@ async def _review_classic_team(
     elif entry_id:
         error_console.print("[yellow]Could not fetch your team data[/yellow]")
     else:
-        console.print("[dim]Set classic_entry_id in config/settings.yaml to see your squad[/dim]")
+        error_console.print("[dim]Set classic_entry_id in config/settings.yaml to see your squad[/dim]")
 
     return {
         "my_entry_summary": my_entry_summary,
@@ -421,12 +422,12 @@ async def _review_classic_league(
         league_name = standings_data.get("league", {}).get("name", "Classic League")
         standings = standings_data.get("standings", {}).get("results", [])
 
-        # Check if we're reviewing a historical GW (league data would be stale)
+        # Check if we're reviewing a historical GW (league data would be stale).
+        # The heading is printed only on the path that has a table for it to
+        # introduce: the two below say why there is none, on stderr.
         is_historical_review = api_current_gw_id is not None and gw != api_current_gw_id
         if is_historical_review:
-            console.print("\n[bold]## League[/bold]")
-            console.print(f"[dim]League standings not shown for historical GW{gw} review[/dim]")
-            console.print("[dim]Use 'fpl league' for current standings[/dim]")
+            print_historical_league_notice(gw)
             return {"league_name": league_name}
 
         # FPL builds a mini-league's table for the first time only once the
@@ -434,12 +435,11 @@ async def _review_classic_league(
         # `new_entries` and `results` is empty. Rendering the sections anyway
         # printed bare headings and handed the report a 0-point, 0-entry league.
         if not standings:
-            console.print("\n[bold]## League[/bold]")
-            console.print(
+            error_console.print(
                 f"[dim]{rich_escape(league_name)}: standings not published yet"
                 " -- FPL builds mini-league tables after the opening gameweek is finalised[/dim]"
             )
-            console.print("[dim]Re-run once the table appears, or use 'fpl league'[/dim]")
+            error_console.print("[dim]Re-run once the table appears, or use 'fpl league'[/dim]")
             return {"league_name": league_name, "standings_pending": True}
 
         console.print("\n[bold]## League[/bold]")

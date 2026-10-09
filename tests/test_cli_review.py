@@ -1462,11 +1462,98 @@ class TestReviewClassicLeaguePendingStandings:
         })
         result = await _review_classic_league(client, 999, 123, 1, 1)
         assert result == {"league_name": "Office League", "standings_pending": True}
-        out = capsys.readouterr().out
-        assert "standings not published yet" in out
+        captured = capsys.readouterr()
+        assert "standings not published yet" in " ".join(captured.err.split())
         # No hollow performer tables when there are no entries to rank
-        assert "Best GW Performers" not in out
-        assert "Worst GW Performers" not in out
+        assert "Best GW Performers" not in captured.out
+        assert "Worst GW Performers" not in captured.out
+
+
+class TestReviewClassicNoticesStayOffStdout:
+    """Issues #377, #382: table mode puts the table on stdout and every other
+    line on stderr. A section heading stays on stdout only with the content it
+    introduces, so a League section with no table prints no heading there --
+    its explanation is on stderr, and a stdout reader gets no empty section."""
+
+    @staticmethod
+    def _standings_client(*, standings) -> AsyncMock:
+        client = AsyncMock()
+        client.get_classic_league_standings = AsyncMock(return_value={
+            "league": {"name": "Office League"},
+            "standings": {"results": standings},
+        })
+        return client
+
+    async def test_a_historical_review_explains_the_missing_league_on_stderr(self, capsys):
+        client = self._standings_client(standings=[
+            {"entry": 1, "rank": 1, "total": 500, "event_total": 60, "player_name": "Me"},
+        ])
+
+        result = await _review_classic_league(client, 999, 1, 3, 5)
+
+        captured = capsys.readouterr()
+        assert result == {"league_name": "Office League"}
+        assert "## League" not in captured.out
+        assert captured.out == ""
+        assert "League standings not shown for historical GW3 review" in captured.err
+        assert "Use 'fpl league' for current standings" in captured.err
+        assert "League standings not shown" not in captured.out
+        assert "Use 'fpl league'" not in captured.out
+
+    async def test_the_current_gameweek_prints_no_historical_notice(self, capsys):
+        client = self._standings_client(standings=[
+            {"entry": 1, "rank": 1, "total": 500, "event_total": 60, "player_name": "Me"},
+        ])
+
+        await _review_classic_league(client, 999, 1, 5, 5)
+
+        captured = capsys.readouterr()
+        assert "League standings not shown" not in captured.err
+        # The table is there, so its heading is too.
+        assert "## League" in captured.out
+
+    async def test_pending_standings_print_the_notice_on_stderr_and_no_empty_section_on_stdout(self, capsys):
+        client = self._standings_client(standings=[])
+
+        await _review_classic_league(client, 999, 1, 1, 1)
+
+        captured = capsys.readouterr()
+        assert "## League" not in captured.out
+        assert captured.out == ""
+        assert "standings not published yet" not in captured.out
+        assert "Re-run once the table appears" not in captured.out
+        err = " ".join(captured.err.split())
+        assert "Office League: standings not published yet" in err
+        assert "Re-run once the table appears, or use 'fpl league'" in err
+
+    async def test_a_missing_classic_entry_id_is_reported_on_stderr(self, capsys):
+        data = await _review_classic_team(
+            MagicMock(), None, 3, {}, {}, {"id": 3}, {},
+        )
+
+        captured = capsys.readouterr()
+        assert "Set classic_entry_id in config/settings.yaml to see your squad" in captured.err
+        assert "classic_entry_id" not in captured.out
+        assert data["my_picks_data"] == []
+
+    async def test_the_team_fetch_progress_notice_is_reported_on_stderr(self, capsys):
+        client = MagicMock()
+        client.get_manager_picks = AsyncMock(return_value={
+            "entry_history": {"points": 9},
+            "active_chip": None,
+            "automatic_subs": [],
+            "picks": [{"element": 401, "position": 1, "multiplier": 1}],
+        })
+        players = {401: make_player(id=401, web_name="Keeper", team_id=19)}
+        teams = {19: make_team(id=19, short_name="MCI", name="Man City")}
+
+        await _review_classic_team(client, 1, 3, players, teams, {"id": 3}, {})
+
+        captured = capsys.readouterr()
+        assert "Fetching your team data..." in captured.err
+        assert "Fetching your team data" not in captured.out
+        # The table it announces is still the stdout content.
+        assert "## Team Summary" in captured.out
 
 
 class TestReviewClassicLeagueUserNotOnPage:
@@ -1815,7 +1902,7 @@ class TestReviewClassicBracketedNames:
 
         captured = capsys.readouterr()
         assert "Could not" not in captured.err
-        assert "[/bold] League: standings not published yet" in captured.out
+        assert "[/bold] League: standings not published yet" in " ".join(captured.err.split())
         assert result == {"league_name": "[/bold] League", "standings_pending": True}
 
     async def test_a_bracketed_rival_name_renders_in_the_transfer_impact_warning(self, capsys):
@@ -2309,6 +2396,7 @@ class TestReviewDraftPicksAndLeagueBlocks:
 
     async def _run(
         self, *, player_name="Sávio", manager_name=("A", "B"), picks_error=None, picks_response=...,
+        draft_entry_id=1, api_current_gw_id=3,
     ):
         savio = make_draft_player(id=403, code=510281, web_name=player_name, team=19, element_type=3)
         main_savio = make_player(id=403, code=510281, web_name=player_name, team_id=19)
@@ -2339,7 +2427,7 @@ class TestReviewDraftPicksAndLeagueBlocks:
         client.get_league_transactions = AsyncMock(return_value={"transactions": []})
         with patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=client):
             return await _review_draft(
-                MagicMock(), 1, 1, gw=3, api_current_gw_id=3,
+                MagicMock(), 1, draft_entry_id, gw=3, api_current_gw_id=api_current_gw_id,
                 players=[main_savio], player_map={main_savio.id: main_savio},
                 teams=self._TEAMS, live_stats={403: {"total_points": 9, "minutes": 90}},
             )
@@ -2406,6 +2494,53 @@ class TestReviewDraftPicksAndLeagueBlocks:
         captured = capsys.readouterr()
         assert "Could not fetch draft picks: unexpected response" in captured.err
         assert data["draft_squad_points_data"] == []
+
+    async def test_a_historical_review_explains_the_missing_league_on_stderr(self, capsys):
+        # Issues #377, #382: the two lines that explain the missing table are
+        # commentary, and with no table there is no heading to introduce one.
+        await self._run(api_current_gw_id=5)
+
+        captured = capsys.readouterr()
+        assert "## League" not in captured.out
+        assert "League standings not shown for historical GW3 review" in captured.err
+        assert "Use 'fpl league' for current standings" in captured.err
+        assert "League standings not shown" not in captured.out
+        assert "Use 'fpl league'" not in captured.out
+
+    async def test_the_current_gameweek_prints_no_historical_notice(self, capsys):
+        await self._run(api_current_gw_id=3)
+
+        captured = capsys.readouterr()
+        assert "League standings not shown" not in captured.err
+        assert "## League" in captured.out
+        assert "- Position: 1 of 2" in captured.out
+
+    async def test_a_missing_draft_entry_id_is_reported_on_stderr(self, capsys):
+        data = await self._run(draft_entry_id=None)
+
+        captured = capsys.readouterr()
+        assert "Set draft_entry_id in config/settings.yaml to see your draft squad" in captured.err
+        assert "draft_entry_id" not in captured.out
+        assert data["draft_squad_points_data"] == []
+
+    async def test_an_entry_id_the_league_does_not_contain_is_reported_on_stderr(self, capsys):
+        # A wrong id (or the wrong league) matches nobody in the standings, so
+        # the squad and league sections were skipped without a word.
+        data = await self._run(draft_entry_id=99)
+
+        captured = capsys.readouterr()
+        err = " ".join(captured.err.split())
+        assert "Could not find draft_entry_id 99 in the standings of Draft League" in err
+        assert "check draft_entry_id and draft_league_id in config/settings.yaml" in err
+        assert "draft_entry_id" not in captured.out
+        assert "Could not fetch draft league data" not in captured.err
+        assert data["draft_squad_points_data"] == []
+        assert data["draft_league_data"] is None
+
+    async def test_a_matching_entry_id_reports_no_lookup_failure(self, capsys):
+        await self._run(draft_entry_id=1)
+
+        assert "Could not find draft_entry_id" not in capsys.readouterr().err
 
 
 class TestReviewDraftPlayerMatching:
