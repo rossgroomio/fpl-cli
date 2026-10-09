@@ -242,13 +242,13 @@ async def _review_classic_team(
 
             for p in team_points_data:
                 # Build player name with (C)/(TC) or (V) marker
-                name_display = p["name"]
+                name_display = rich_escape(p["name"])
                 if p.get("is_triple_captain"):
-                    name_display = f"{p['name']} [bold yellow](TC)[/bold yellow]"
+                    name_display = f"{name_display} [bold yellow](TC)[/bold yellow]"
                 elif p["is_captain"]:
-                    name_display = f"{p['name']} [bold yellow](C)[/bold yellow]"
+                    name_display = f"{name_display} [bold yellow](C)[/bold yellow]"
                 elif p["is_vice_active"]:
-                    name_display = f"{p['name']} [bold yellow](V)[/bold yellow]"
+                    name_display = f"{name_display} [bold yellow](V)[/bold yellow]"
 
                 pts_display = _format_pts_display(p, points_key="display_points")
 
@@ -408,7 +408,7 @@ def _performer_row(e: dict[str, Any]) -> dict[str, Any]:
 
 
 def _print_performer(perf: dict[str, Any]) -> None:
-    name = "[bold cyan]You[/bold cyan]" if perf["is_user"] else perf["name"]
+    name = "[bold cyan]You[/bold cyan]" if perf["is_user"] else rich_escape(perf["name"])
     console.print(f"  {perf['rank_str']}. {name} - {performer_score(perf)}")
 
 
@@ -424,9 +424,17 @@ async def _review_classic_league(
     if not (classic_league_id and entry_id):
         return None
 
-    classic_league_data = None
+    # The fetch is guarded for what a fetch raises; rendering is guarded
+    # separately, so a bug there is named for what it is rather than reported
+    # as a standings fetch failure when the standings arrived fine (#375).
     try:
         standings_data = await client.get_classic_league_standings(classic_league_id)
+    except (httpx.HTTPError, json.JSONDecodeError) as e:
+        error_console.print(f"[yellow]Could not fetch classic league standings: {rich_escape(str(e))}[/yellow]")
+        return None
+
+    classic_league_data = None
+    try:
         league_name = standings_data.get("league", {}).get("name", "Classic League")
         standings = standings_data.get("standings", {}).get("results", [])
 
@@ -445,7 +453,7 @@ async def _review_classic_league(
         if not standings:
             console.print("\n[bold]## League[/bold]")
             console.print(
-                f"[dim]{league_name}: standings not published yet"
+                f"[dim]{rich_escape(league_name)}: standings not published yet"
                 " -- FPL builds mini-league tables after the opening gameweek is finalised[/dim]"
             )
             console.print("[dim]Re-run once the table appears, or use 'fpl league'[/dim]")
@@ -481,7 +489,7 @@ async def _review_classic_league(
             user_total = user_entry.get("total", 0)
             user_gw_pts = user_entry.get("event_total", 0)
 
-            console.print(f"**{league_name}**")
+            console.print(f"**{rich_escape(league_name)}**")
             console.print(f"- Position: {user_rank} of {total_entries}")
             console.print(f"- GW Points: {user_gw_pts} (Total: {user_total:,})")
 
@@ -513,7 +521,10 @@ async def _review_classic_league(
                     else:
                         diff_str = f"+{diff}" if diff > 0 else str(diff)
                         diff_style = "red" if diff > 0 else "green"
-                        console.print(f"  {rank}. {name} - {total:,} pts ([{diff_style}]{diff_str}[/{diff_style}])")
+                        console.print(
+                            f"  {rank}. {rich_escape(name)} - {total:,} pts"
+                            f" ([{diff_style}]{diff_str}[/{diff_style}])"
+                        )
                 if nearby_omitted:
                     console.print(f"  [dim]...and {nearby_omitted} more within 25[/dim]")
 
@@ -590,7 +601,7 @@ async def _review_classic_league(
             console.print(f"  {your_gw_rank_line(classic_user_gw_rank, gw_field_size, user_context_row)}")
 
         if transfer_impact:
-            error_console.print(f"\n[yellow]  ⚠ {transfer_impact}[/yellow]")
+            error_console.print(f"\n[yellow]  ⚠ {rich_escape(transfer_impact)}[/yellow]")
 
         # Store for report
         classic_league_data = {
@@ -625,6 +636,6 @@ async def _review_classic_league(
             classic_league_data["user_gw_net_points"] = user_entry_data.get("net_points", user_gw_pts)
 
     except Exception as e:  # noqa: BLE001 — display resilience
-        error_console.print(f"[yellow]Could not fetch classic league standings: {rich_escape(str(e))}[/yellow]")
+        error_console.print(f"[yellow]Could not build classic league review: {rich_escape(str(e))}[/yellow]")
 
     return classic_league_data

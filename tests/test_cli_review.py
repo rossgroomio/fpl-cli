@@ -14,6 +14,7 @@ from fpl_cli.cli._helpers import _format_pts_display, _gw_position_with_half, _l
 from fpl_cli.cli._review_classic import (
     _format_review_classic_player,
     _review_classic_league,
+    _review_classic_team,
     _review_classic_transfers,
 )
 from fpl_cli.cli._review_draft import _format_review_draft_player, _review_draft
@@ -1731,6 +1732,134 @@ class TestReviewClassicLeagueNearbyRivalsPositions:
         await _review_classic_league(self._client(standings), 999, 1, 5, 5)
 
         assert "Position: 1 of 3" in capsys.readouterr().out
+
+
+class TestReviewClassicBracketedNames:
+    """Issue #375: the classic review passed player, rival and league names
+    to Rich as markup, so `[/bold] Smith` raised MarkupError -- and the league
+    block labelled that a standings fetch failure."""
+
+    @staticmethod
+    def _client(*, rival_name="Rival", league_name="Office League", standings=None) -> AsyncMock:
+        client = AsyncMock()
+        client.get_classic_league_standings = AsyncMock(return_value={
+            "league": {"name": league_name},
+            "standings": {"results": standings if standings is not None else [
+                {"entry": 1, "rank": 1, "total": 500, "event_total": 60, "player_name": "Me"},
+                {"entry": 2, "rank": 2, "total": 490, "event_total": 40, "player_name": rival_name},
+            ]},
+        })
+        return client
+
+    async def test_a_bracketed_player_name_renders_in_the_team_points_table(self, capsys):
+        client = MagicMock()
+        client.get_manager_picks = AsyncMock(return_value={
+            "entry_history": {"points": 9},
+            "active_chip": None,
+            "automatic_subs": [],
+            "picks": [
+                {"element": 401, "position": 1, "multiplier": 2, "is_captain": True},
+                {"element": 402, "position": 2, "multiplier": 1},
+            ],
+        })
+        players = {
+            401: make_player(id=401, web_name="[/bold]Cap", team_id=19),
+            402: make_player(id=402, web_name="[bold]Plain", team_id=19),
+        }
+        teams = {19: make_team(id=19, short_name="MCI", name="Man City")}
+
+        data = await _review_classic_team(client, 1, 3, players, teams, {"id": 3}, {})
+
+        captured = capsys.readouterr()
+        assert "Could not fetch" not in captured.err
+        assert "[/bold]Cap (C)" in captured.out
+        assert "[bold]Plain" in captured.out
+        # The report data carries the raw names, not the escaped ones.
+        assert {p["name"] for p in data["team_points_data"]} == {"[/bold]Cap", "[bold]Plain"}
+
+    async def test_a_bracketed_rival_name_renders_in_rivals_and_performers(self, capsys):
+        result = await _review_classic_league(
+            self._client(rival_name="[/bold] Smith"), 999, 1, 5, 5,
+        )
+
+        captured = capsys.readouterr()
+        assert "Could not" not in captured.err
+        assert "2. [/bold] Smith - 490 pts" in captured.out  # Nearby Rivals
+        assert "2. [/bold] Smith - 40" in captured.out  # Best/Worst GW Performers
+        assert result is not None
+        assert result["nearby_rivals"][1]["manager_name"] == "[/bold] Smith"
+        assert result["worst_performers"][0]["name"] == "[/bold] Smith"
+
+    async def test_a_bracketed_league_name_renders_in_the_heading(self, capsys):
+        result = await _review_classic_league(
+            self._client(league_name="[/bold] League"), 999, 1, 5, 5,
+        )
+
+        captured = capsys.readouterr()
+        assert "Could not" not in captured.err
+        assert "**[/bold] League**" in captured.out
+        assert result is not None
+        assert result["league_name"] == "[/bold] League"
+
+    async def test_a_bracketed_league_name_renders_when_standings_are_pending(self, capsys):
+        result = await _review_classic_league(
+            self._client(league_name="[/bold] League", standings=[]), 999, 1, 1, 1,
+        )
+
+        captured = capsys.readouterr()
+        assert "Could not" not in captured.err
+        assert "[/bold] League: standings not published yet" in captured.out
+        assert result == {"league_name": "[/bold] League", "standings_pending": True}
+
+    async def test_a_bracketed_rival_name_renders_in_the_transfer_impact_warning(self, capsys):
+        # The last-place rival's hit saved the user from last place.
+        client = AsyncMock()
+        client.get_classic_league_standings = AsyncMock(return_value={
+            "league": {"name": "Office League"},
+            "standings": {"results": [
+                {"entry": 1, "rank": 1, "total": 500, "event_total": 40, "player_name": "Me"},
+                {"entry": 2, "rank": 2, "total": 490, "event_total": 44, "player_name": "Other"},
+                {"entry": 3, "rank": 3, "total": 480, "event_total": 50, "player_name": "[/bold] Smith"},
+            ]},
+        })
+        hits = {1: 0, 2: 0, 3: 12}
+
+        async def _picks(entry_id, gw):
+            return {"entry_history": {"event_transfers_cost": hits[entry_id]}}
+
+        client.get_manager_picks = AsyncMock(side_effect=_picks)
+
+        result = await _review_classic_league(client, 999, 1, 5, 5, use_net_points=True)
+
+        captured = capsys.readouterr()
+        assert "Could not" not in captured.err
+        assert "[/bold] Smith's -12 hit saved you from last place" in captured.err
+        assert result is not None
+        assert result["transfer_impact"] == "[/bold] Smith's -12 hit saved you from last place"
+
+    async def test_a_render_error_is_not_reported_as_a_standings_fetch_failure(self, capsys):
+        with patch("fpl_cli.cli._review_classic._print_performer", side_effect=RuntimeError("render bug")):
+            result = await _review_classic_league(self._client(), 999, 1, 5, 5)
+
+        err = capsys.readouterr().err
+        assert "Could not fetch" not in err
+        assert "Could not build classic league review: render bug" in err
+        assert result is None
+
+    @pytest.mark.parametrize(
+        "error",
+        [httpx.ConnectError("boom"), json.JSONDecodeError("bad json", "", 0)],
+    )
+    async def test_a_standings_fetch_failure_is_still_reported_on_stderr(self, capsys, error):
+        client = AsyncMock()
+        client.get_classic_league_standings = AsyncMock(side_effect=error)
+
+        result = await _review_classic_league(client, 999, 1, 5, 5)
+
+        captured = capsys.readouterr()
+        assert "Could not fetch classic league standings" in captured.err
+        assert "Could not fetch" not in captured.out
+        assert result is None
 
 
 class TestClassicPositionFields:
