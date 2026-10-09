@@ -1,6 +1,21 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [2.7.3] - 2026-10-09
+
+### Bug Fixes
+
+- default synthesis model moves to claude-sonnet-5-5 (#362)
+- stop streak notes calling a fully recorded gameweek "not recorded" (#363)
+- show correct ranks and scores in the gameweek review report (#365)
+- review no longer drops the transfers summary on a net-zero total (#366)
+- draft review no longer misreports rendering errors as a failed fetch (#369)
+- stop gw-prep, squad-builder and FPL Mate ruling out a legal 5-2-3 (#370)
+- flag a recap editorial that misnames who lost a contested waiver (#368)
+- draft review no longer crashes on bracketed player or manager names (#373)
+- classic review no longer crashes on bracketed names (#378)
+- flag recap editorials that misplace a transfer net or invent a tie (#374)
+
 ## [2.7.2] - 2026-09-16
 
 ### Bug Fixes
