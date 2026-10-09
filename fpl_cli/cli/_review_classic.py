@@ -422,10 +422,11 @@ async def _review_classic_league(
         league_name = standings_data.get("league", {}).get("name", "Classic League")
         standings = standings_data.get("standings", {}).get("results", [])
 
+        console.print("\n[bold]## League[/bold]")
+
         # Check if we're reviewing a historical GW (league data would be stale)
         is_historical_review = api_current_gw_id is not None and gw != api_current_gw_id
         if is_historical_review:
-            console.print("\n[bold]## League[/bold]")
             print_historical_league_notice(gw)
             return {"league_name": league_name}
 
@@ -434,15 +435,12 @@ async def _review_classic_league(
         # `new_entries` and `results` is empty. Rendering the sections anyway
         # printed bare headings and handed the report a 0-point, 0-entry league.
         if not standings:
-            console.print("\n[bold]## League[/bold]")
             error_console.print(
                 f"[dim]{rich_escape(league_name)}: standings not published yet"
                 " -- FPL builds mini-league tables after the opening gameweek is finalised[/dim]"
             )
             error_console.print("[dim]Re-run once the table appears, or use 'fpl league'[/dim]")
             return {"league_name": league_name, "standings_pending": True}
-
-        console.print("\n[bold]## League[/bold]")
 
         # Find user's position and points
         user_rank: int | str = "?"

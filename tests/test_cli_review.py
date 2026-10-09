@@ -2516,6 +2516,25 @@ class TestReviewDraftPicksAndLeagueBlocks:
         assert "draft_entry_id" not in captured.out
         assert data["draft_squad_points_data"] == []
 
+    async def test_an_entry_id_the_league_does_not_contain_is_reported_on_stderr(self, capsys):
+        # A wrong id (or the wrong league) matches nobody in the standings, so
+        # the squad and league sections were skipped without a word.
+        data = await self._run(draft_entry_id=99)
+
+        captured = capsys.readouterr()
+        err = " ".join(captured.err.split())
+        assert "Could not find draft_entry_id 99 in the standings of Draft League" in err
+        assert "check draft_entry_id and draft_league_id in config/settings.yaml" in err
+        assert "draft_entry_id" not in captured.out
+        assert "Could not fetch draft league data" not in captured.err
+        assert data["draft_squad_points_data"] == []
+        assert data["draft_league_data"] is None
+
+    async def test_a_matching_entry_id_reports_no_lookup_failure(self, capsys):
+        await self._run(draft_entry_id=1)
+
+        assert "Could not find draft_entry_id" not in capsys.readouterr().err
+
 
 class TestReviewDraftPlayerMatching:
     """#168: the draft→main ID map is what pulls a draft player's live stats,

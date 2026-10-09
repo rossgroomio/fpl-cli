@@ -444,11 +444,10 @@ async def _review_draft(
 
                 # ## League section - only show for current GW (live data)
                 is_historical_review = api_current_gw_id is not None and gw != api_current_gw_id
+                console.print("\n[bold]## League[/bold]")
                 if is_historical_review:
-                    console.print("\n[bold]## League[/bold]")
                     print_historical_league_notice(gw)
                 else:
-                    console.print("\n[bold]## League[/bold]")
                     console.print(f"- Position: {user_rank} of {total_entries}")
                     console.print(f"- GW Points: {user_gw_pts} (Total: {user_total:,})")
 
@@ -487,6 +486,12 @@ async def _review_draft(
 
             elif not draft_entry_id:
                 error_console.print("[dim]Set draft_entry_id in config/settings.yaml to see your draft squad[/dim]")
+            else:
+                error_console.print(
+                    f"[yellow]Could not find draft_entry_id {draft_entry_id} in the standings of"
+                    f" {rich_escape(draft_league_name)} -- check draft_entry_id and draft_league_id"
+                    " in config/settings.yaml[/yellow]"
+                )
 
     except Exception as e:  # noqa: BLE001 — display resilience
         error_console.print(f"[yellow]Could not fetch draft league data: {rich_escape(str(e))}[/yellow]")
