@@ -1241,21 +1241,27 @@ class TestContestedMisattribution:
             ),
         )
 
-    def _provider(self, *contents: str):
+    def _provider(self, *replies: str | tuple[str, str] | Exception):
+        """A provider answering each call with the next reply in turn: a
+        string, a (string, stop_reason) pair, or an exception to raise."""
         from fpl_cli.api.providers import LLMResponse, TokenUsage
 
-        replies = list(contents)
+        queue = list(replies)
 
         class _Stub:
-            calls = 0
+            prompts: list[str] = []
 
             async def query(self, prompt, system_prompt=None, **kwargs):
-                _Stub.calls += 1
+                _Stub.prompts.append(prompt)
+                reply = queue.pop(0)
+                if isinstance(reply, Exception):
+                    raise reply
+                content, stop_reason = reply if isinstance(reply, tuple) else (reply, "end_turn")
                 return LLMResponse(
-                    content=f"## Waiver Wars\n\n{replies.pop(0)}",
+                    content=f"## Waiver Wars\n\n{content}",
                     model="claude-sonnet-5-5",
                     usage=TokenUsage(10, 20),
-                    stop_reason="end_turn",
+                    stop_reason=stop_reason,
                 )
 
             def post_process(self, content):
@@ -1269,8 +1275,8 @@ class TestContestedMisattribution:
 
         return _Stub, patch("fpl_cli.api.providers.get_llm_provider", return_value=_Stub())
 
-    def _invoke(self, args: list[str], *contents: str):
-        stub, provider = self._provider(*contents)
+    def _invoke(self, args: list[str], *replies: str | tuple[str, str] | Exception):
+        stub, provider = self._provider(*replies)
         with provider:
             result = _invoke_recap(
                 self._data(), ["--draft", "--summarise", *args],
@@ -1282,7 +1288,7 @@ class TestContestedMisattribution:
         stub, result = self._invoke(["--format", "json"], self._RIGHT)
 
         assert result.exit_code == 0, result.stderr
-        assert stub.calls == 1
+        assert len(stub.prompts) == 1
         envelope = json.loads(result.stdout)
         assert self._RIGHT in envelope["metadata"]["synthesis_summary"]
         codes = [w["code"] for w in envelope["metadata"]["warnings"]]
@@ -1292,7 +1298,7 @@ class TestContestedMisattribution:
         stub, result = self._invoke(["--format", "json"], self._WRONG, self._RIGHT)
 
         assert result.exit_code == 0, result.stderr
-        assert stub.calls == 2
+        assert len(stub.prompts) == 2
         assert "retrying once" in result.stderr
         envelope = json.loads(result.stdout)
         assert self._RIGHT in envelope["metadata"]["synthesis_summary"]
@@ -1305,7 +1311,7 @@ class TestContestedMisattribution:
         )
 
         assert result.exit_code == 0, result.stderr
-        assert stub.calls == 2
+        assert len(stub.prompts) == 2
         stderr = result.stderr.replace("\n", " ")
         assert "Bob was beaten to Giles" in stderr
 
@@ -1319,6 +1325,53 @@ class TestContestedMisattribution:
         callout = report.index("> [!WARNING]")
         assert callout < report.index(self._WRONG)
         assert "> - the editorial says Bob was beaten to Giles" in report
+
+    def test_the_retry_is_told_what_the_first_attempt_got_wrong(self):
+        stub, result = self._invoke([], self._WRONG, self._RIGHT)
+
+        assert result.exit_code == 0, result.output
+        first, retry = stub.prompts
+        assert retry.startswith(first)
+        assert "- the editorial says Bob was beaten to Giles" in retry[len(first):]
+
+    def test_a_retry_that_fails_keeps_the_first_attempt(self, tmp_path: Path):
+        """PR #368 review: the editorial in hand used to be lost with the retry."""
+        from fpl_cli.api.providers import ProviderError
+
+        stub, result = self._invoke(
+            ["--format", "json", "--save", "--output", str(tmp_path)],
+            self._WRONG, ProviderError("rate limited"),
+        )
+
+        assert result.exit_code == 0, result.stderr
+        assert len(stub.prompts) == 2
+        assert "rate limited" in result.stderr
+        envelope = json.loads(result.stdout)
+        assert self._WRONG in envelope["metadata"]["synthesis_summary"]
+        codes = [w["code"] for w in envelope["metadata"]["warnings"]]
+        assert "synthesis_contested_misattribution" in codes
+        report = next(tmp_path.rglob("gw5-league-recap-draft.md")).read_text(encoding="utf-8")
+        assert "> [!WARNING]" in report
+
+    def test_a_cut_off_attempt_loses_a_tie_on_wrong_claims(self):
+        _, result = self._invoke(["--format", "json"], (self._WRONG, "max_tokens"), self._WRONG)
+
+        envelope = json.loads(result.stdout)
+        codes = [w["code"] for w in envelope["metadata"]["warnings"]]
+        assert "synthesis_contested_misattribution" in codes
+        assert "synthesis_stopped_early" not in codes
+
+    def test_a_cut_off_retry_never_hides_the_first_attempt_s_problem(self):
+        # A retry cut off before it reached the race claims checks clean only
+        # because it stopped short, so the complete first attempt ships, with
+        # its misattribution named.
+        _, result = self._invoke(["--format", "json"], self._WRONG, ("Cam was", "max_tokens"))
+
+        envelope = json.loads(result.stdout)
+        assert self._WRONG in envelope["metadata"]["synthesis_summary"]
+        codes = [w["code"] for w in envelope["metadata"]["warnings"]]
+        assert "synthesis_contested_misattribution" in codes
+        assert "synthesis_stopped_early" not in codes
 
     def test_a_worse_retry_never_displaces_a_better_first_attempt(self):
         worse = "Cam and Bob were beaten to Bogle and Giles respectively, and Dan beat Bob to King."

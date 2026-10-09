@@ -75,6 +75,7 @@ from fpl_cli.prompts.league_recap import (
     format_recap_standings_context,
     format_recap_transfers_context,
     format_recap_waivers_context,
+    get_recap_attribution_retry_prompt,
     get_recap_synthesis_prompt,
 )
 from fpl_cli.services.league_history_fines import ManagerFineTally, SeasonFinesTally
@@ -6802,6 +6803,99 @@ class TestContestedAttributionCheck:
             "Bob Gale lost 12 points to the bench, then won Bogle. "
             "Giles went to Dan Ford, and Bob Gale was beaten by Alice Moss to King."
         ) == []
+
+    @pytest.mark.parametrize("summary", [
+        "Bob Gale was pipped by Alice Moss to King.",
+        "Bob Gale was edged out by Alice Moss for King.",
+        "Bob Gale was outbid by Alice Moss for King.",
+        "Bob Gale was beaten to King by Alice Moss.",
+        "Bob Gale lost the race for King.",
+    ])
+    def test_a_passive_with_its_winner_named_is_read_the_right_way_round(self, summary):
+        # PR #368 review: "pipped by" used to be read as the active voice,
+        # inverting both roles on a correct sentence.
+        assert self._check(summary) == []
+
+    @pytest.mark.parametrize("summary", [
+        "Bob Gale got beat to King.",
+        "Bob Gale was beat to King by Alice Moss.",
+        "Bob Gale was beat by Alice Moss to King.",
+    ])
+    def test_beat_as_a_participle_is_passive(self, summary):
+        assert self._check(summary) == []
+
+    def test_the_winner_named_after_by_is_checked_too(self):
+        problems = self._check("Bob Gale was pipped by Dan Ford to King.")
+        assert [p.split(", but")[0] for p in problems] == ["the editorial says Dan Ford won King"]
+
+    @pytest.mark.parametrize("summary", [
+        "Alice Moss lost 3 points on King.",
+        "Alice Moss lost King to a hamstring injury in the swap.",
+        "Alice Moss missed out on King's bonus.",
+        "Cam Hart beat Dan Ford thanks to Giles.",
+        "Bob Gale was never beaten to Bogle.",
+        "Bob Gale was not beaten to Bogle; he won it.",
+        "Bob Gale wasn't beaten to Bogle.",
+    ])
+    def test_a_sentence_that_is_not_a_race_claim_is_not_read_as_one(self, summary):
+        assert self._check(summary) == []
+
+    @pytest.mark.parametrize("summary", [
+        "Bob Gale missed out on King, and Bogle was the consolation.",
+        "Bob Gale was beaten to King and Bogle arrived as a consolation.",
+    ])
+    def test_a_player_opening_the_next_clause_is_not_in_the_list(self, summary):
+        assert self._check(summary) == []
+
+    def test_a_manager_closing_the_previous_clause_is_not_a_subject(self):
+        # Two names either side of ", and" are two clauses, not a list, and a
+        # singular "was" takes one subject however the names are joined.
+        assert self._check("Giles went to Dan Ford, and Cam Hart missed out on Bogle.") == []
+        assert self._check("Giles went to Dan Ford and Cam Hart was beaten to Bogle.") == []
+        problems = self._check("Dan Ford, Eve Ray, and Cam Hart were all beaten to Bogle.")
+        assert [p.split(", but")[0] for p in problems] == [
+            "the editorial says Dan Ford was beaten to Bogle",
+            "the editorial says Eve Ray was beaten to Bogle",
+        ]
+
+    def test_winners_pair_positionally_with_respectively(self):
+        assert self._check(
+            "Alice Moss and Dan Ford beat Bob Gale and Cam Hart to King and Giles respectively."
+        ) == []
+
+    def test_a_claim_holds_when_any_race_under_a_shared_name_bears_it_out(self):
+        managers = [
+            _make_manager_with_txns("Alice Moss", [_txn("Silva", 4, "A", 1)], entry_id=1),
+            _lost_by(_make_manager(name="Bob Gale", entry_id=2), _lost("Silva", "B")),
+            _make_manager_with_txns("Cam Hart", [_txn("Silva", 4, "C", 1)], entry_id=3),
+            _lost_by(_make_manager(name="Dan Ford", entry_id=4), _lost("Silva", "D")),
+            _make_manager(name="Eve Ray", entry_id=5),
+        ]
+        # Two different players called Silva: the keys are their codes.
+        for code, index in ((1, 0), (2, 2)):
+            managers[index]["transactions"][0]["player_in_code"] = code
+        managers[1]["lost_claims"][0]["player_in_code"] = 1
+        managers[3]["lost_claims"][0]["player_in_code"] = 2
+        contests = contested_draft_claims(managers)
+        assert len(contests) == 2
+        names = [m["manager_name"] for m in managers]
+
+        assert check_contested_attributions(
+            "Bob Gale was beaten to Silva. Alice Moss beat Bob Gale to Silva. "
+            "Cam Hart beat Dan Ford to Silva.",
+            contests, names,
+        ) == []
+        problems = check_contested_attributions("Eve Ray was beaten to Silva.", contests, names)
+        assert len(problems) == 1
+        # Both lines are quoted, since either could be the one meant.
+        assert "Alice Moss won him" in problems[0]
+        assert "Cam Hart won him" in problems[0]
+
+    def test_the_retry_prompt_names_each_wrong_claim(self):
+        prompt = get_recap_attribution_retry_prompt("ORIGINAL", ["the editorial says Bob won King"])
+        assert prompt.startswith("ORIGINAL\n\n")
+        assert "- the editorial says Bob won King" in prompt
+        assert '"respectively"' in prompt
 
     def test_nothing_is_checked_without_a_contested_race(self):
         assert check_contested_attributions("Bob was beaten to Isak.", [], ["Bob"]) == []

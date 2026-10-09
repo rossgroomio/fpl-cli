@@ -168,6 +168,24 @@ def get_recap_synthesis_prompt(
     return RECAP_SYNTHESIS_SYSTEM_PROMPT, user_prompt
 
 
+
+def get_recap_attribution_retry_prompt(user_prompt: str, problems: Sequence[str]) -> str:
+    """The user prompt again, followed by what the last draft got wrong (#357).
+
+    A second roll of the identical prompt is the same gamble that already
+    failed once; naming each wrong claim beside the line it contradicts
+    gives the retry the one thing the first attempt lacked.
+    """
+    corrections = "\n".join(f"- {problem}" for problem in problems)
+    return (
+        f"{user_prompt}\n\n"
+        "Your previous draft put managers in the wrong role of a contested race:\n"
+        f"{corrections}\n"
+        "Write the recap again from scratch. Give every contested race its own clause, "
+        "naming its winner and beaten managers exactly as its line does, and never fold "
+        'two races into one clause with "respectively" or a shared list.'
+    )
+
 # =============================================================================
 # Editorial shape
 # =============================================================================
@@ -259,29 +277,60 @@ def normalise_recap_editorial(summary: str, *, league_name: str) -> str:
 # Editorial checks
 # =============================================================================
 
-# The verbs that put a manager in a contested race's roles. A passive cue
-# makes the managers before it the beaten ones ("Bob was beaten to Isak",
-# "Bob lost the race for Isak"); an active one makes them the winner and the
-# managers after it the beaten ("Alice beat Bob to Isak"). The ambiguous ones
-# read by what follows: a manager means active, a player passive ("Alice
-# pipped Bob to Isak", "Bob was pipped to Isak").
-_ACTIVE_CUES = frozenset({"beat", "beats", "beating"})
-_PASSIVE_CUES = frozenset({"beaten", "missed out", "lost out", "lost"})
+# The verbs that put a manager in a contested race's roles. The voice comes
+# from the sentence, never the verb alone: "Alice beat Bob to Isak" and "Alice
+# pipped Bob to Isak" make Alice the winner, while "Bob was beat to Isak",
+# "Bob got pipped to Isak" and "Bob was outbid by Alice for Isak" make Bob the
+# beaten one. Only these three are passive whatever surrounds them. Bare
+# "lost" is not a cue at all -- "lost 3 points on Isak" and "lost Isak to
+# injury" are not races -- only "lost out" and "lost the race" are.
 _CUE_RE = re.compile(
-    r"(?<!\w)(beat|beats|beating|beaten|pipped|edged out|outbid|missed out|lost out|lost)(?!\w)",
+    r"(?<!\w)(beat|beats|beating|beaten|pipped|edged out|outbid|missed out|lost out"
+    r"|lost the (?:race|battle|scrap|tussle|fight))(?!\w)",
     re.IGNORECASE,
 )
-# What may sit between a cue and the names it governs, in words. Short on
-# purpose: "beaten to", "lost the race for", "beaten to the punch on" -- a
-# longer run is a different clause, and a missed check costs less than a
-# warning about a sentence that never said what it is accused of.
-_CUE_OBJECT_MAX_WORDS = 4
+_PASSIVE_CUE_PREFIXES = ("beaten", "missed out", "lost")
+# "beat" with nobody after it is no race claim ("Alice beat everyone to Isak"
+# names no rival); the cues that read passively bare ("Bob, pipped to Isak")
+# are the rest.
+_ACTIVE_ONLY_CUES = frozenset({"beat", "beats", "beating"})
+_AUXILIARY_RE = re.compile(
+    r"(?<!\w)(?:was|were|is|are|got|get|gets|getting|been|being)\s*$", re.IGNORECASE,
+)
+_BY_RE = re.compile(r"^\s*by\s*$", re.IGNORECASE)
+_NEGATION_RE = re.compile(r"(?<!\w)(?:not|never|nobody|no one)(?!\w)|n['’]t(?!\w)", re.IGNORECASE)
+# What may sit between a cue and the player it names: a race preposition, with
+# only the furniture of a race phrase before it ("to", "on", "the race for",
+# "to the punch on") and an optional "both" after. Anything else -- "3 points
+# on", "thanks to" -- is a different sentence about the same names.
+_RACE_PREPOSITIONS = frozenset({"to", "for", "on", "over"})
+_RACE_FILLER = _RACE_PREPOSITIONS | frozenset({
+    "the", "a", "race", "battle", "scrap", "tussle", "fight", "punch", "signing", "of", "waiver",
+})
+_RACE_LINK_MAX_WORDS = 4
 _SUBJECT_CUE_MAX_WORDS = 6
 # Names in one list: "Alice, Bob and Cam", "Alice & Bob".
 _LIST_JOIN_RE = re.compile(r"^\s*(?:,|,?\s*(?:and|&))\s*$", re.IGNORECASE)
+# A comma before "and" joins a list only inside one of three or more ("Alice,
+# Bob, and Cam"). Between two names it is a clause boundary: "Giles went to
+# Dan, and Bob was beaten to King" says nothing about Dan.
+_SERIAL_AND_RE = re.compile(r"^\s*,\s*(?:and|&)\s*$", re.IGNORECASE)
+# A singular verb before the cue takes a single subject, whatever list the
+# name before it might otherwise seem to close.
+_SINGULAR_AUXILIARY_RE = re.compile(
+    r"(?<!\w)(?:was|is|got|gets|has|wasn['\u2019]t|isn['\u2019]t)(?!\w)", re.IGNORECASE,
+)
+# What may follow a player for him to stay in a list: the list's end, its
+# next join, "respectively" or a trailing "by <winner>". "Bob missed out on
+# King, and Bogle was the consolation" opens a new clause with Bogle, and he
+# is not part of the race Bob lost.
+_PLAYER_LIST_CONTINUES_RE = re.compile(
+    r"^\s*(?:$|[,.;:!?)]|(?:and|&|respectively|by)(?!\w))", re.IGNORECASE,
+)
 _RESPECTIVELY_RE = re.compile(r"^\s*,?\s*respectively(?!\w)", re.IGNORECASE)
 _CLAUSE_BREAK_RE = re.compile(r"[.;:!?\n]")
 _EMPHASIS_RE = re.compile(r"[*_]")
+_POSSESSIVE_RE = re.compile(r"['’]s(?!\w)")
 
 
 @dataclass(frozen=True)
@@ -320,6 +369,8 @@ def _mention_aliases(manager_names: Sequence[str], players: set[str]) -> dict[st
 
 
 def _find_mentions(text: str, names: dict[str, tuple[str, bool]]) -> list[_Mention]:
+    """Every name in `text`, in order. A player in the possessive ("King's
+    bonus") is not the player a race was for, so he is not read as one."""
     if not names:
         return []
     pattern = re.compile(
@@ -328,6 +379,8 @@ def _find_mentions(text: str, names: dict[str, tuple[str, bool]]) -> list[_Menti
     mentions: list[_Mention] = []
     for match in pattern.finditer(text):
         canonical, is_manager = names[match.group(0)]
+        if not is_manager and _POSSESSIVE_RE.match(text, match.end()):
+            continue
         mentions.append(_Mention(match.start(), match.end(), canonical, is_manager))
     return mentions
 
@@ -336,32 +389,166 @@ def _plain(gap: str) -> str:
     return _EMPHASIS_RE.sub("", gap)
 
 
-def _short(gap: str, max_words: int, *, commas: bool) -> bool:
-    """A gap the same clause runs through: no sentence or clause break, no
-    comma where the reading would not survive one, and only a few words."""
+def _gap_after(text: str, mentions: list[_Mention], index: int) -> str:
+    following = mentions[index + 1].start if index + 1 < len(mentions) else len(text)
+    return text[mentions[index].end:following]
+
+
+def _race_link(gap: str) -> bool:
+    """Whether `gap` joins a cue (or the rival after it) to the player the
+    race was for: a few words of race phrasing ending on a preposition."""
     plain = _plain(gap)
-    if _CLAUSE_BREAK_RE.search(plain) or (not commas and "," in plain):
+    if _CLAUSE_BREAK_RE.search(plain) or "," in plain:
         return False
-    return len(plain.split()) <= max_words
+    words = plain.lower().split()
+    if words and words[-1] == "both":
+        words.pop()
+    return (
+        0 < len(words) <= _RACE_LINK_MAX_WORDS
+        and words[-1] in _RACE_PREPOSITIONS
+        and all(word in _RACE_FILLER for word in words)
+    )
 
 
-def _group(
-    text: str, mentions: list[_Mention], index: int, *, step: int, is_manager: bool,
-) -> list[int]:
-    """The indices of the name list `mentions[index]` belongs to, walking in
-    `step`'s direction while each gap is a list join, in text order."""
-    if not 0 <= index < len(mentions) or mentions[index].is_manager is not is_manager:
+def _manager_group(text: str, mentions: list[_Mention], index: int, *, step: int) -> list[int]:
+    """The indices of the manager list `mentions[index]` belongs to, walking
+    in `step`'s direction while each gap is a list join, in text order."""
+    if not 0 <= index < len(mentions) or not mentions[index].is_manager:
+        return []
+    def join(a: int, b: int) -> str:
+        left, right = sorted((a, b))
+        return _plain(text[mentions[left].end:mentions[right].start])
+
+    members = [index]
+    while True:
+        there = members[-1] + step
+        if not 0 <= there < len(mentions) or not mentions[there].is_manager:
+            break
+        gap = join(members[-1], there)
+        if not _LIST_JOIN_RE.match(gap):
+            break
+        if _SERIAL_AND_RE.match(gap):
+            # Only the last join of a list of three or more carries ", and":
+            # the name beyond it must be comma-joined to yet another.
+            further = there + step
+            if len(members) > 1 or not (
+                0 <= further < len(mentions)
+                and mentions[further].is_manager
+                and join(there, further).strip() == ","
+            ):
+                break
+        members.append(there)
+    return sorted(members)
+
+
+def _player_group(text: str, mentions: list[_Mention], index: int) -> list[int]:
+    """The indices of the player list that opens at `mentions[index]`. A
+    joined name only extends it when what follows him ends or continues the
+    list, so a later clause that merely opens on a player stays out."""
+    if not 0 <= index < len(mentions) or mentions[index].is_manager:
         return []
     members = [index]
     while True:
-        here, there = members[-1], members[-1] + step
-        if not 0 <= there < len(mentions) or mentions[there].is_manager is not is_manager:
+        there = members[-1] + 1
+        if there >= len(mentions) or mentions[there].is_manager:
             break
-        left, right = (mentions[here], mentions[there]) if step > 0 else (mentions[there], mentions[here])
-        if not _LIST_JOIN_RE.match(_plain(text[left.end:right.start])):
+        if not _LIST_JOIN_RE.match(_plain(text[mentions[members[-1]].end:mentions[there].start])):
+            break
+        if not _PLAYER_LIST_CONTINUES_RE.match(_plain(_gap_after(text, mentions, there))):
             break
         members.append(there)
-    return sorted(members)
+    return members
+
+
+def _pairs(
+    text: str, mentions: list[_Mention], managers: list[int], players: list[int],
+) -> list[tuple[int, int]]:
+    """Which manager the sentence ties to which player: position by position
+    when the player list closes on "respectively" and the two lists match in
+    length, every pairing otherwise."""
+    if (
+        len(players) > 1
+        and len(managers) == len(players)
+        and _RESPECTIVELY_RE.match(_plain(_gap_after(text, mentions, players[-1])))
+    ):
+        return list(zip(managers, players, strict=True))
+    return [(m, p) for m in managers for p in players]
+
+
+@dataclass(frozen=True)
+class _RaceClaim:
+    """One clause's reading: who it says won, who it says was beaten, and
+    the players it says the race was for -- all indices into the mentions."""
+
+    winners: list[int]
+    beaten: list[int]
+    players: list[int]
+
+
+def _read_claim(text: str, mentions: list[_Mention], i: int) -> _RaceClaim | None:
+    """The race claim a cue between `mentions[i]` and `mentions[i + 1]`
+    makes, or None when the clause cannot be pinned to roles.
+
+    The forms read: "Bob (was) beaten to / missed out on Isak (by Alice)",
+    "Alice beat / pipped Bob to Isak", and "Bob was pipped / beat by Alice to
+    Isak". The manager list before the cue is the subject; a negation there
+    ("was never beaten to") drops the clause.
+    """
+    gap = text[mentions[i].end:mentions[i + 1].start]
+    cues = list(_CUE_RE.finditer(gap))
+    if not cues:
+        return None
+    cue = cues[-1]  # the cue nearest the names after it governs them
+    subjects = _manager_group(text, mentions, i, step=-1)
+    if not subjects:
+        return None
+    before = _plain(gap[:cue.start()])
+    if (
+        _CLAUSE_BREAK_RE.search(before)
+        or len(before.split()) > _SUBJECT_CUE_MAX_WORDS
+        or _NEGATION_RE.search(before)
+    ):
+        return None
+    if _SINGULAR_AUXILIARY_RE.search(before):
+        subjects = subjects[-1:]
+    word = cue.group(1).lower()
+    after = gap[cue.end():]
+    by_follows = bool(_BY_RE.match(_plain(after)))
+    passive = word.startswith(_PASSIVE_CUE_PREFIXES) or bool(_AUXILIARY_RE.search(before)) or by_follows
+
+    nxt = mentions[i + 1]
+    if nxt.is_manager:
+        # A rival follows the cue: "beat Bob to", or "beaten by Alice to".
+        if passive and not by_follows:
+            return None
+        if not passive and after.strip():
+            return None
+        rivals = _manager_group(text, mentions, i + 1, step=1)
+        first_player = rivals[-1] + 1
+        if (
+            first_player >= len(mentions)
+            or mentions[first_player].is_manager
+            or not _race_link(text[mentions[rivals[-1]].end:mentions[first_player].start])
+        ):
+            return None
+        players = _player_group(text, mentions, first_player)
+        if passive:
+            return _RaceClaim(winners=rivals, beaten=subjects, players=players)
+        return _RaceClaim(winners=subjects, beaten=rivals, players=players)
+
+    if not _race_link(after) or (word in _ACTIVE_ONLY_CUES and not passive):
+        return None
+    players = _player_group(text, mentions, i + 1)
+    # "Bob was beaten to Isak by Alice": the winner trails the player list.
+    winners: list[int] = []
+    after_players = players[-1] + 1
+    if (
+        after_players < len(mentions)
+        and mentions[after_players].is_manager
+        and _BY_RE.match(_plain(_gap_after(text, mentions, players[-1])))
+    ):
+        winners = _manager_group(text, mentions, after_players, step=1)
+    return _RaceClaim(winners=winners, beaten=subjects, players=players)
 
 
 def check_contested_attributions(
@@ -378,94 +565,54 @@ def check_contested_attributions(
     and the manager names are known strings, so the assertion is checkable
     without trusting the model to honour a rule it has already broken once.
 
-    Deliberately narrow: a statement is checked only where a cue verb sits
-    between a list of managers and a list of contested players inside one
-    clause ("Bob and Cam were beaten to Isak", "Alice beat Bob to Isak",
-    "Bob and Cam missed out on Isak and Wood respectively"). A sentence the
-    reading cannot pin to a role is left alone rather than guessed at, so
+    Deliberately narrow: a clause is read only where a race verb sits between
+    a list of managers and a list of contested players, joined by race
+    phrasing ("to", "for", "on", "the race for"), in a voice the sentence
+    settles ("Bob was beaten to Isak", "Alice beat Bob to Isak", "Bob was
+    pipped by Alice to Isak", "Bob and Cam missed out on Isak and Wood
+    respectively"). A clause it cannot pin to roles -- a negation, a
+    possessive, a points swing -- is left alone rather than guessed at, so
     every problem returned is a sentence that said something the data
     contradicts. A list of managers against a list of players without
     "respectively" asserts every pairing, which is what the reader takes
-    from it too. Returns one line per wrong (manager, player, role), in the
-    order the editorial makes the claims.
+    from it too. Two contested players can share a name; a claim holds when
+    any race under that name bears it out. Returns one line per wrong
+    (manager, player, role), in the order the editorial makes the claims.
     """
     if not contests:
         return []
-    races = {c["player"]: c for c in contests}
+    races: dict[str, list[RecapContestedClaim]] = {}
+    for contest in contests:
+        races.setdefault(contest["player"], []).append(contest)
     mentions = _find_mentions(summary, _mention_aliases(manager_names, set(races)))
 
     problems: list[str] = []
 
     def assert_role(manager: str, player: str, *, won: bool) -> None:
-        race = races[player]
-        beaten = [c["manager_name"] for c in race["losers"]]
-        if won and race["winner"] == manager:
+        candidates = races[player]
+        if won and any(race["winner"] == manager for race in candidates):
             return
-        if not won and manager in beaten:
+        if not won and any(
+            manager in (c["manager_name"] for c in race["losers"]) for race in candidates
+        ):
             return
-        named = format_contested_claim(race)
+        lines = " / ".join(f'"{format_contested_claim(race)}"' for race in candidates)
         problem = (
             f"the editorial says {manager} {'won' if won else 'was beaten to'} {player}, "
-            f"but the contested line reads: \"{named}\""
+            f"but the contested line reads: {lines}"
         )
         if problem not in problems:
             problems.append(problem)
 
     for i in range(len(mentions) - 1):
-        left, right = mentions[i], mentions[i + 1]
-        gap = summary[left.end:right.start]
-        for cue_match in _CUE_RE.finditer(gap):
-            cue = cue_match.group(1).lower()
-            subjects = _group(summary, mentions, i, step=-1, is_manager=True)
-            if not subjects:
-                break  # the name before the cue is a player: no subject to check
-            if not _short(gap[:cue_match.start()], _SUBJECT_CUE_MAX_WORDS, commas=True):
-                continue
-            if _CUE_RE.search(gap, cue_match.end()):
-                continue  # a later cue in the same gap governs what follows
-            after = gap[cue_match.end():]
-            if not _short(after, _CUE_OBJECT_MAX_WORDS, commas=False):
-                continue
-            if right.is_manager:
-                if cue in _PASSIVE_CUES:
-                    continue  # "beaten by Alice to Isak": not read
-                objects = _group(summary, mentions, i + 1, step=1, is_manager=True)
-                after_objects = objects[-1] + 1
-                if after_objects >= len(mentions) or mentions[after_objects].is_manager:
-                    continue
-                link = summary[mentions[objects[-1]].end:mentions[after_objects].start]
-                if not _short(link, _CUE_OBJECT_MAX_WORDS, commas=False):
-                    continue
-                players = _group(summary, mentions, after_objects, step=1, is_manager=False)
-                pairs = _pairs(summary, mentions, objects, players)
-                for winner in subjects:
-                    for player in players:
-                        assert_role(mentions[winner].name, mentions[player].name, won=True)
-                for beaten, player in pairs:
-                    assert_role(mentions[beaten].name, mentions[player].name, won=False)
-                continue
-            players = _group(summary, mentions, i + 1, step=1, is_manager=False)
-            won = cue in _ACTIVE_CUES
-            for manager, player in _pairs(summary, mentions, subjects, players):
-                assert_role(mentions[manager].name, mentions[player].name, won=won)
+        claim = _read_claim(summary, mentions, i)
+        if claim is None:
+            continue
+        for winner, player in _pairs(summary, mentions, claim.winners, claim.players):
+            assert_role(mentions[winner].name, mentions[player].name, won=True)
+        for beaten, player in _pairs(summary, mentions, claim.beaten, claim.players):
+            assert_role(mentions[beaten].name, mentions[player].name, won=False)
     return problems
-
-
-def _pairs(
-    text: str, mentions: list[_Mention], managers: list[int], players: list[int],
-) -> list[tuple[int, int]]:
-    """Which manager the sentence ties to which player: position by position
-    when the player list closes on "respectively" and the two lists match in
-    length, every pairing otherwise."""
-    last = mentions[players[-1]]
-    following = mentions[players[-1] + 1].start if players[-1] + 1 < len(mentions) else len(text)
-    if (
-        len(players) > 1
-        and len(managers) == len(players)
-        and _RESPECTIVELY_RE.match(_plain(text[last.end:following]))
-    ):
-        return list(zip(managers, players, strict=True))
-    return [(m, p) for m in managers for p in players]
 
 
 # =============================================================================

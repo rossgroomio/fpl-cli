@@ -7,13 +7,13 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import click
 from rich.markup import escape as rich_escape
 from rich.panel import Panel
 
-from fpl_cli.api.providers import LLMResponse, ProviderError
+from fpl_cli.api.providers import ProviderError
 from fpl_cli.cli._context import (
     Format,
     console,
@@ -67,6 +67,9 @@ RECAP_WARNING_CONTESTED_MISATTRIBUTION = "synthesis_contested_misattribution"
 # someone as beaten to a player they never claimed (#357), and two attempts
 # is where it stops, as for `review`'s completeness check.
 _MAX_EDITORIAL_ATTEMPTS = 2
+
+if TYPE_CHECKING:
+    from fpl_cli.api.providers import LLMResponse
 
 logger = logging.getLogger(__name__)
 
@@ -871,6 +874,73 @@ def _render_console_highlights(
                 console.print(f"  {entry.text}")
 
 
+async def _editorial_with_attribution_check(
+    provider: Any,
+    *,
+    prompt: str,
+    system_prompt: str,
+    collected_data: LeagueRecapData,
+) -> tuple[str, list[str], LLMResponse]:
+    """Query the editorial, retrying once if it misattributes a contested race.
+
+    Returns `(summary, problems, response)` for the attempt that ships. The
+    retry is told exactly which claims were wrong and what each race's line
+    says, rather than rolling the same prompt again (#357). It only displaces
+    the first attempt when it is strictly less damaged -- complete rather than
+    cut off, then fewer wrong claims -- so a worse second roll never ships
+    over a better one, and a retry that fails outright leaves the first
+    attempt standing rather than losing an editorial already in hand. The
+    first call's failure is the caller's, as it always was.
+    """
+    from fpl_cli.prompts.league_recap import (
+        check_contested_attributions,
+        get_recap_attribution_retry_prompt,
+        normalise_recap_editorial,
+    )
+
+    contests = contested_draft_claims(collected_data["managers"])
+    manager_names = [m["manager_name"] for m in collected_data["managers"]]
+
+    # A cut-off attempt ranks below any complete one: it may simply have
+    # stopped before reaching the claim the other got wrong, so its clean
+    # check proves nothing. Among equals, fewer wrong claims wins.
+    def damage(attempt: tuple[str, list[str], LLMResponse]) -> tuple[bool, int]:
+        return attempt[2].stopped_early, len(attempt[1])
+
+    best: tuple[str, list[str], LLMResponse] | None = None
+    attempt_prompt = prompt
+    for attempt in range(1, _MAX_EDITORIAL_ATTEMPTS + 1):
+        try:
+            response = await provider.query(prompt=attempt_prompt, system_prompt=system_prompt)
+        except Exception as e:  # noqa: BLE001 — a failed retry keeps the attempt in hand
+            if best is None:
+                raise
+            error_console.print(
+                f"[yellow]  ⚠ The editorial retry failed ({rich_escape(str(e) or type(e).__name__)})"
+                " -- keeping the first attempt[/yellow]"
+            )
+            return best
+        # The report writes its own title; whatever heading the model opened
+        # with anyway is demoted beneath it or, when it only restates the
+        # title, dropped (#349). The JSON payload carries the same text, so a
+        # consumer sees the editorial as saved.
+        summary = normalise_recap_editorial(
+            provider.post_process(response.content),
+            league_name=collected_data["league_name"],
+        )
+        candidate = (summary, check_contested_attributions(summary, contests, manager_names), response)
+        if best is None or damage(candidate) < damage(best):
+            best = candidate
+        if not best[1] or attempt == _MAX_EDITORIAL_ATTEMPTS:
+            return best
+        error_console.print(
+            "[yellow]  ⚠ The editorial misattributed a contested waiver claim"
+            " -- retrying once[/yellow]"
+        )
+        attempt_prompt = get_recap_attribution_retry_prompt(prompt, candidate[1])
+    raise AssertionError("unreachable: the loop returns on its last attempt")  # pragma: no cover
+
+
 async def _recap_llm_summarise(
     collected_data: LeagueRecapData,
     gw: int,
@@ -887,7 +957,6 @@ async def _recap_llm_summarise(
 ) -> None:
     """Run LLM summarisation for league recap. Mutates collected_data to add summaries."""
     from fpl_cli.prompts.league_recap import (
-        check_contested_attributions,
         collect_player_clubs,
         format_recap_awards_context,
         format_recap_captains_context,
@@ -901,7 +970,6 @@ async def _recap_llm_summarise(
         format_recap_transfers_context,
         format_recap_waivers_context,
         get_recap_synthesis_prompt,
-        normalise_recap_editorial,
     )
 
     # Setup debug directory
@@ -954,35 +1022,12 @@ async def _recap_llm_summarise(
     elif synthesis_provider:
         try:
             console.print("[dim]  Generating league editorial...[/dim]")
-            contests = contested_draft_claims(collected_data["managers"])
-            manager_names = [m["manager_name"] for m in collected_data["managers"]]
-            best: tuple[str, list[str], LLMResponse] | None = None
-            for attempt in range(1, _MAX_EDITORIAL_ATTEMPTS + 1):
-                synthesis_result = await synthesis_provider.query(
-                    prompt=user_prompt,
-                    system_prompt=system_prompt,
-                )
-                # The report writes its own title; whatever heading the model
-                # opened with anyway is demoted beneath it or, when it only
-                # restates the title, dropped (#349). The JSON payload carries
-                # the same text, so a consumer sees the editorial as saved.
-                summary = normalise_recap_editorial(
-                    synthesis_provider.post_process(synthesis_result.content),
-                    league_name=collected_data["league_name"],
-                )
-                problems = check_contested_attributions(summary, contests, manager_names)
-                # A retry only displaces the first attempt when it is strictly
-                # less wrong, so a worse second roll never ships over a better one.
-                if best is None or len(problems) < len(best[1]):
-                    best = (summary, problems, synthesis_result)
-                if not best[1] or attempt == _MAX_EDITORIAL_ATTEMPTS:
-                    break
-                error_console.print(
-                    "[yellow]  ⚠ The editorial misattributed a contested waiver claim"
-                    " -- retrying once[/yellow]"
-                )
-            assert best is not None  # the loop runs at least once
-            summary, problems, synthesis_result = best
+            summary, problems, synthesis_result = await _editorial_with_attribution_check(
+                synthesis_provider,
+                prompt=user_prompt,
+                system_prompt=system_prompt,
+                collected_data=collected_data,
+            )
             collected_data["synthesis_summary"] = summary
             if problems:
                 # Kept, not scrubbed: the rest of the editorial is sound, and
@@ -991,7 +1036,7 @@ async def _recap_llm_summarise(
                 collected_data["synthesis_problems"] = problems
                 error_console.print(
                     "[yellow]  ⚠ The editorial still contradicts the contested waiver"
-                    f" claims after {_MAX_EDITORIAL_ATTEMPTS} attempts:[/yellow]"
+                    " claims it was given:[/yellow]"
                 )
                 for problem in problems:
                     error_console.print(f"[yellow]    - {rich_escape(problem)}[/yellow]")
