@@ -1,5 +1,6 @@
 """Tests for review-related CLI helpers."""
 
+import json
 import pathlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -2055,6 +2056,98 @@ class TestReviewDraftLostClaims:
             "element_in": 900, "element_out": 403,
         }])
         assert data["draft_lost_claims_data"] == []
+
+
+class TestReviewDraftTransactionsFetch:
+    """Issue #367: the draft transactions handler wrapped the fetch, the pairing
+    and the table build, so a rendering bug read as "Could not fetch
+    transactions" -- and `Exception` swallowed it all."""
+
+    _TEAMS = {
+        19: make_team(id=19, short_name="MCI", name="Man City"),
+        4: make_team(id=4, short_name="NEW", name="Newcastle"),
+    }
+
+    _ACCEPTED = [{
+        "event": 3, "result": "a", "entry": 1, "kind": "w", "priority": 1,
+        "element_in": 900, "element_out": 403,
+    }]
+
+    async def _run(self, *, transactions=None, fetch_error=None, in_name="Elanga"):
+        elanga = make_draft_player(id=900, code=555, web_name=in_name, team=4, element_type=3)
+        savio = make_draft_player(id=403, code=510281, web_name="Sávio", team=19, element_type=3)
+        main_elanga = make_player(id=900, code=555, web_name=in_name, team_id=4)
+        main_savio = make_player(id=403, code=510281, web_name="Sávio", team_id=19)
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        client.get_league_details = AsyncMock(return_value={
+            "league": {"name": "Draft League"},
+            "standings": [{"league_entry": 10, "event_total": 9, "total": 9, "rank": 1}],
+            "league_entries": [
+                {"id": 10, "entry_id": 1, "player_first_name": "A", "player_last_name": "B"},
+            ],
+        })
+        client.get_bootstrap_static = AsyncMock(return_value={"elements": [elanga, savio]})
+        client.get_entry_picks = AsyncMock(
+            return_value={"picks": [{"element": 403, "position": 1}], "subs": []}
+        )
+        if fetch_error is not None:
+            client.get_league_transactions = AsyncMock(side_effect=fetch_error)
+        else:
+            client.get_league_transactions = AsyncMock(return_value={"transactions": transactions or []})
+        players = [main_elanga, main_savio]
+        with patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=client):
+            return await _review_draft(
+                MagicMock(), 1, 1, gw=3, api_current_gw_id=3,
+                players=players, player_map={p.id: p for p in players},
+                teams=self._TEAMS,
+                live_stats={403: {"total_points": 2}, 900: {"total_points": 9}},
+            )
+
+    @pytest.mark.parametrize(
+        "error",
+        [httpx.ConnectError("boom"), json.JSONDecodeError("bad json", "", 0)],
+    )
+    async def test_fetch_failure_reports_the_notice_on_stderr(self, capsys, error):
+        data = await self._run(fetch_error=error)
+        captured = capsys.readouterr()
+        assert "Could not fetch transactions" in captured.err
+        assert "Could not fetch transactions" not in captured.out
+        assert data["draft_transactions_data"] == []
+        # The rest of the review carries on: the league block still prints.
+        assert "## League" in captured.out
+
+    async def test_a_bracketed_name_renders_in_the_table(self, capsys):
+        data = await self._run(transactions=self._ACCEPTED, in_name="[bold]Elanga")
+        captured = capsys.readouterr()
+        assert "Could not fetch transactions" not in captured.err
+        assert "[bold]Elanga" in captured.out
+        assert [t["player_in"] for t in data["draft_transactions_data"]] == ["[bold]Elanga"]
+
+    async def test_a_non_http_error_propagates_rather_than_posing_as_a_fetch_failure(self, capsys):
+        """It escapes the transactions block to the outer league handler, which
+        names the real error; the transactions notice stays reserved for fetches."""
+        with patch("fpl_cli.api.fpl_draft.resolve_lost_claims", side_effect=RuntimeError("render bug")):
+            data = await self._run(transactions=self._ACCEPTED)
+        err = capsys.readouterr().err
+        assert "Could not fetch transactions" not in err
+        assert "render bug" in err
+        assert data["draft_transactions_data"] == []
+
+    async def test_rows_are_not_published_when_the_table_fails_to_render(self, capsys):
+        from rich.table import Table
+
+        from fpl_cli.cli import _review_draft as module
+
+        def _fail_on_table(*args, **kwargs):
+            if any(isinstance(a, Table) for a in args):
+                raise RuntimeError("render bug")
+
+        with patch.object(module.console, "print", side_effect=_fail_on_table):
+            data = await self._run(transactions=self._ACCEPTED)
+        assert "Could not fetch transactions" not in capsys.readouterr().err
+        assert data["draft_transactions_data"] == []
 
 
 class TestReviewDraftPlayerMatching:

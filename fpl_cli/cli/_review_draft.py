@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Any
 
+import httpx
 from rich.markup import escape as rich_escape
 from rich.table import Table
 
@@ -257,6 +259,11 @@ async def _review_draft(
                 draft_lost_claims_data = []
                 try:
                     transactions = await draft_client.get_league_transactions(draft_league_id)
+                except (httpx.HTTPError, json.JSONDecodeError) as e:
+                    error_console.print(f"[dim]Could not fetch transactions: {rich_escape(str(e))}[/dim]")
+                    transactions = None
+
+                if transactions is not None:
                     all_txns = transactions.get("transactions", [])
 
                     # Filter to the user's own rows for this GW, accepted and
@@ -301,6 +308,10 @@ async def _review_draft(
                         txn_table.add_column("Net", justify="right")
                         txn_table.add_column("Verdict")
 
+                        # Built locally and published only once the table has rendered, so a
+                        # failure part-way through never leaves rows that were not shown.
+                        txn_rows: list[dict[str, Any]] = []
+
                         # Draft always drops a player per pickup, so net_in_ids and net_out_ids are equal length.
                         for player_in_id, player_out_id in zip(net_in_ids, net_out_ids, strict=True):
                             draft_player_in = draft_player_map.get(player_in_id)
@@ -333,15 +344,15 @@ async def _review_draft(
                             net_display = signed_net_markup(net)
 
                             txn_table.add_row(
-                                f"{draft_player_in.get('web_name', 'Unknown')} ({in_abbr})",
+                                f"{rich_escape(draft_player_in.get('web_name', 'Unknown'))} ({in_abbr})",
                                 str(in_points),
-                                f"{draft_player_out.get('web_name', 'Unknown')} ({out_abbr})",
+                                f"{rich_escape(draft_player_out.get('web_name', 'Unknown'))} ({out_abbr})",
                                 str(out_points),
                                 net_display,
                                 verdict,
                             )
 
-                            draft_transactions_data.append({
+                            txn_rows.append({
                                 "player_out": draft_player_out.get("web_name"),
                                 "player_out_team": out_abbr,
                                 "player_out_team_name": out_team.name if out_team else None,
@@ -357,12 +368,13 @@ async def _review_draft(
                         console.print(txn_table)
 
                         # Summary stats
-                        hits = sum(1 for t in draft_transactions_data if t["net"] > 1)
-                        misses = sum(1 for t in draft_transactions_data if t["net"] < -1)
-                        total_net = sum(t["net"] for t in draft_transactions_data)
+                        hits = sum(1 for t in txn_rows if t["net"] > 1)
+                        misses = sum(1 for t in txn_rows if t["net"] < -1)
+                        total_net = sum(t["net"] for t in txn_rows)
                         console.print(
                             f"\nHits: {hits} | Misses: {misses} | Net: {signed_net_markup(total_net)}"
                         )
+                        draft_transactions_data = txn_rows
 
                     # Printed whether or not anything landed: a gameweek whose
                     # only waiver activity was a lost claim has no
@@ -404,9 +416,6 @@ async def _review_draft(
                                 f"{rich_escape(claim['player_out'])} "
                                 f"({claim['player_out_team']}) - won by a rival{prio}"
                             )
-
-                except Exception as e:  # noqa: BLE001 — display resilience
-                    error_console.print(f"[dim]Could not fetch transactions: {rich_escape(str(e))}[/dim]")
 
                 # ## League section - only show for current GW (live data)
                 is_historical_review = api_current_gw_id is not None and gw != api_current_gw_id
