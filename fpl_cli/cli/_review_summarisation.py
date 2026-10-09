@@ -780,17 +780,24 @@ def _format_league_context(
     classic_worst_performers_str = ""
     if classic_league_data and classic_league_data.get("worst_performers"):
         lines = []
+        context_lines = []
         for p in classic_league_data["worst_performers"]:
+            # `points` is the score the row was ranked on -- net when the
+            # league plays net -- as `_performer_points` reads it for the
+            # last-place fine; there is no `net_points` on these rows (#364)
+            net = p.get("points", 0)
+            gross = p.get("gross_points", net)
+            cost = p.get("transfer_cost", 0)
+            score = f"{net} net pts ({gross} gross, -{cost} hit)" if cost > 0 else f"{net} pts"
+            if p.get("is_context"):
+                # The user's own row, appended from above the bottom: as a
+                # numbered line it read as a bottom placing (#360)
+                context_lines.append(f"You: not among the lowest scorers above ({score}) - see GW Position")
+                continue
             rank = p.get("rank_str", "?")
             name = "You" if p.get("is_user") else p.get("name", "Unknown")
-            gross = p.get("gross_points", 0)
-            cost = p.get("transfer_cost", 0)
-            net = p.get("net_points", gross)
-            if cost > 0:
-                lines.append(f"{rank}. {name} - {net} net pts ({gross} gross, -{cost} hit)")
-            else:
-                lines.append(f"{rank}. {name} - {net} pts")
-        classic_worst_performers_str = "\n".join(lines)
+            lines.append(f"{rank}. {name} - {score}")
+        classic_worst_performers_str = "\n".join(lines + context_lines)
 
     classic_transfer_impact_str = classic_league_data.get("transfer_impact") if classic_league_data else None
 

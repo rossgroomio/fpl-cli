@@ -744,6 +744,45 @@ class TestLeagueContextUserMasking:
         assert "7. You: 993 pts" in ctx["classic_rivals"]
         assert ctx["classic_rivals"].count("\n") == 6  # all 7 rows present, none dropped
 
+    # Rows as `_review_classic_league` stores them: `points` is the net score
+    # the row was ranked on, and there is no `net_points` key.
+
+    def test_classic_worst_performers_quotes_a_hit_takers_net_score(self):
+        # #364: the net side used to fall back to gross, so the model was told
+        # "33 net pts (33 gross, -4 hit)" while the fines line said 29
+        ctx = self._context(classic={
+            "worst_performers": [
+                {"rank_str": "1", "name": "Alex", "points": 29, "gross_points": 33,
+                 "transfer_cost": 4, "is_user": False, "is_context": False},
+            ],
+        })
+        assert ctx["classic_worst_performers"] == "1. Alex - 29 net pts (33 gross, -4 hit)"
+
+    def test_classic_worst_performers_context_row_is_not_a_bottom_placing(self):
+        # #360: the user's row appended from above the bottom five used to go
+        # out as "19. You - 63 pts" under the Worst GW Performers heading
+        ctx = self._context(classic={
+            "worst_performers": [
+                {"rank_str": "1", "name": "Alex", "points": 29, "gross_points": 29,
+                 "transfer_cost": 0, "is_user": False, "is_context": False},
+                {"rank_str": "19", "name": "Manager", "points": 63, "gross_points": 63,
+                 "transfer_cost": 0, "is_user": True, "is_context": True},
+            ],
+        })
+        assert ctx["classic_worst_performers"].splitlines() == [
+            "1. Alex - 29 pts",
+            "You: not among the lowest scorers above (63 pts) - see GW Position",
+        ]
+
+    def test_classic_worst_performers_user_in_the_bottom_keeps_their_rank(self):
+        ctx = self._context(classic={
+            "worst_performers": [
+                {"rank_str": "1", "name": "Manager", "points": 29, "gross_points": 29,
+                 "transfer_cost": 0, "is_user": True, "is_context": False},
+            ],
+        })
+        assert ctx["classic_worst_performers"] == "1. You - 29 pts"
+
 
 class TestAutoSubFormatting:
     """Tests for auto-sub player string formatting."""
