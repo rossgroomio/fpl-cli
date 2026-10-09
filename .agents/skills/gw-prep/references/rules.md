@@ -110,7 +110,7 @@ Every recommendation must include:
 
 For starting XI selection:
 - **11 players exactly:** 1 GK + 10 outfield
-- **Valid formations:** 3-4-3, 3-5-2, 4-3-3, 4-4-2, 4-5-1, 5-3-2, 5-4-1
+- **Valid formations:** 3-4-3, 3-5-2, 4-3-3, 4-4-2, 4-5-1, 5-2-3, 5-3-2, 5-4-1
 - **Positions are fixed:** Each player's Pos must match their actual position. Never reassign a player to fit a formation.
 - **Bench:** 4 players for both Classic and Draft
 - **Bench ordering:** Must use the bench-order script output. Do not manually order bench players.

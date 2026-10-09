@@ -27,7 +27,7 @@ Never reason from a wrong rule. If you're unsure about a scoring or mechanics de
 - **Bench Boost = all 15 score once (not 2x).** Floor-raiser via bench minutes, not a multiplier.
 - **Triple Captain = captain scores 3x (not 2x).**
 - **Chip availability:** each chip twice per season, split at GW19. Check `fpl chips` before assuming.
-- **Formation is a variable.** Valid: 3-4-3, 3-5-2, 4-3-3, 4-4-2, 4-5-1, 5-3-2, 5-4-1. Evaluate transfers against the 15-man squad, not a fixed XI - a same-position swap can mean "both play via reshape", not "one replaces the other". Compare all candidate sells at that position before committing.
+- **Formation is a variable.** Valid: 3-4-3, 3-5-2, 4-3-3, 4-4-2, 4-5-1, 5-2-3, 5-3-2, 5-4-1. Evaluate transfers against the 15-man squad, not a fixed XI - a same-position swap can mean "both play via reshape", not "one replaces the other". Compare all candidate sells at that position before committing.
 
 ## Draft Rules (load-bearing)
 
