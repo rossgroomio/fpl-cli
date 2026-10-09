@@ -1,7 +1,7 @@
 ## Squad Constraints
 - **15 players:** 2 GK, 5 DEF, 5 MID, 3 FWD
 - **Max 3 from any team**
-- **Valid formations:** 3-4-3, 3-5-2, 4-3-3, 4-4-2, 4-5-1, 5-3-2, 5-4-1
+- **Valid formations:** 3-4-3, 3-5-2, 4-3-3, 4-4-2, 4-5-1, 5-2-3, 5-3-2, 5-4-1
 - **Full stats required:** Run `fpl player "{name}" -f` for every player in the final squad and every serious alternative considered. Never recommend without data.
 
 ## pFDR (Positional FDR)
