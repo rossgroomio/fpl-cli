@@ -94,13 +94,18 @@ def ordinal_suffix(n: int) -> str:
     return "th" if 11 <= n % 100 <= 13 else _ORDINAL_SUFFIXES.get(n % 10, "th")
 
 
+# Every ordinal a mini-league's table reaches in words, for reading them back
+# out of prose ("joint-seventh"). Writing stops at the tenth (`ordinal_word`).
+ORDINAL_WORDS = (
+    "first", "second", "third", "fourth", "fifth",
+    "sixth", "seventh", "eighth", "ninth", "tenth",
+    "eleventh", "twelfth", "thirteenth", "fourteenth", "fifteenth",
+    "sixteenth", "seventeenth", "eighteenth", "nineteenth", "twentieth",
+)
 # Spelt out to the tenth, which covers every count the recap prose realistically
 # reaches -- fines in a season, seasons of FPL played; past that the numeral is
 # clearer than the word anyway.
-_ORDINAL_WORDS = (
-    "first", "second", "third", "fourth", "fifth",
-    "sixth", "seventh", "eighth", "ninth", "tenth",
-)
+_SPELT_OUT_ORDINALS = 10
 
 
 def ordinal_word(n: int) -> str:
@@ -110,6 +115,6 @@ def ordinal_word(n: int) -> str:
     of the season") and the prior-seasons line ("their third season of FPL")
     land in the same prompt and the same report, so they share one spelling.
     """
-    if 1 <= n <= len(_ORDINAL_WORDS):
-        return _ORDINAL_WORDS[n - 1]
+    if 1 <= n <= _SPELT_OUT_ORDINALS:
+        return ORDINAL_WORDS[n - 1]
     return f"{n}{ordinal_suffix(n)}"

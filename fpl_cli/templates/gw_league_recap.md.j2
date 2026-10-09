@@ -14,10 +14,12 @@
 {% if synthesis_summary is defined and synthesis_summary %}
 {% if synthesis_problems is defined and synthesis_problems %}
 > [!WARNING]
-> **The editorial below contradicts the waiver claims it was given.** Where
-> they differ, the claims are right:
-{% for problem in synthesis_problems %}
+> **The editorial below contradicts the data it was given.** Where they
+> differ, the data is right:
+{% for problems in synthesis_problems.values() %}
+{% for problem in problems %}
 > - {{ problem }}
+{% endfor %}
 {% endfor %}
 
 {% endif %}

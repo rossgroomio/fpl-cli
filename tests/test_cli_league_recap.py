@@ -1193,6 +1193,42 @@ class TestTruncatedEditorial:
         assert "[/yellow]cut" in result.stderr.replace("\n", "")
 
 
+def _queued_provider(*replies: str | tuple[str, str] | Exception):
+    """A provider answering each call with the next reply in turn: a string,
+    a (string, stop_reason) pair, or an exception to raise. Returns the stub
+    class, whose `prompts` records every prompt sent, and the patch."""
+    from fpl_cli.api.providers import LLMResponse, TokenUsage
+
+    queue = list(replies)
+
+    class _Stub:
+        prompts: list[str] = []
+
+        async def query(self, prompt, system_prompt=None, **kwargs):
+            _Stub.prompts.append(prompt)
+            reply = queue.pop(0)
+            if isinstance(reply, Exception):
+                raise reply
+            content, stop_reason = reply if isinstance(reply, tuple) else (reply, "end_turn")
+            return LLMResponse(
+                content=f"## Waiver Wars\n\n{content}",
+                model="claude-sonnet-5-5",
+                usage=TokenUsage(10, 20),
+                stop_reason=stop_reason,
+            )
+
+        def post_process(self, content):
+            return content
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return None
+
+    return _Stub, patch("fpl_cli.api.providers.get_llm_provider", return_value=_Stub())
+
+
 class TestContestedMisattribution:
     """#357: the editorial folded two contested lines into one "respectively"
     clause and named a race's winner as beaten in the next race. The run now
@@ -1241,42 +1277,8 @@ class TestContestedMisattribution:
             ),
         )
 
-    def _provider(self, *replies: str | tuple[str, str] | Exception):
-        """A provider answering each call with the next reply in turn: a
-        string, a (string, stop_reason) pair, or an exception to raise."""
-        from fpl_cli.api.providers import LLMResponse, TokenUsage
-
-        queue = list(replies)
-
-        class _Stub:
-            prompts: list[str] = []
-
-            async def query(self, prompt, system_prompt=None, **kwargs):
-                _Stub.prompts.append(prompt)
-                reply = queue.pop(0)
-                if isinstance(reply, Exception):
-                    raise reply
-                content, stop_reason = reply if isinstance(reply, tuple) else (reply, "end_turn")
-                return LLMResponse(
-                    content=f"## Waiver Wars\n\n{content}",
-                    model="claude-sonnet-5-5",
-                    usage=TokenUsage(10, 20),
-                    stop_reason=stop_reason,
-                )
-
-            def post_process(self, content):
-                return content
-
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, *exc):
-                return None
-
-        return _Stub, patch("fpl_cli.api.providers.get_llm_provider", return_value=_Stub())
-
     def _invoke(self, args: list[str], *replies: str | tuple[str, str] | Exception):
-        stub, provider = self._provider(*replies)
+        stub, provider = _queued_provider(*replies)
         with provider:
             result = _invoke_recap(
                 self._data(), ["--draft", "--summarise", *args],
@@ -1379,6 +1381,127 @@ class TestContestedMisattribution:
 
         envelope = json.loads(result.stdout)
         assert self._WRONG in envelope["metadata"]["synthesis_summary"]
+
+
+class TestNetAndTieClaims:
+    """#359: a classic editorial pinned a manager's whole-gameweek net on one
+    named transfer, and called an outright lowest score "joint-lowest". Both
+    are checked after generation the way contested races are (#357): one
+    retry told what was wrong, then a warning per check and a callout above
+    the editorial if the retry still gets it wrong."""
+
+    _NET = "Alice brought in Gibbs-White for Wirtz and watched it backfire to the tune of -6 net."
+    _TIE = "Bob posted the joint-lowest score of the week."
+    _RIGHT = "Alice finished -6 net overall after two transfers. Bob posted the lowest score of the week."
+
+    def _data(self) -> LeagueRecapData:
+        def _tr(name_in: str, name_out: str, in_pts: int, out_pts: int) -> RecapTransfer:
+            return RecapTransfer(
+                player_in=name_in, player_in_team="NFO", player_in_points=in_pts,
+                player_out=name_out, player_out_team="LIV", player_out_points=out_pts,
+                net=in_pts - out_pts, cost=4,
+            )
+
+        return _recap_data(
+            gameweek=5,
+            managers=[
+                _manager(
+                    name="Alice", entry_id=1, gross_points=30, overall_rank=1, previous_rank=1,
+                    total_points=300, transfer_cost=4, transfers_made=2,
+                    transfers=[_tr("Gibbs-White", "Wirtz", 2, 6), _tr("Ajayi", "Cash", 1, -1)],
+                ),
+                _manager(
+                    name="Bob", entry_id=2, gross_points=29, gw_rank=3, overall_rank=2,
+                    previous_rank=2, total_points=290, transfers_made=0, transfers=[],
+                ),
+                _manager(
+                    name="Cam", entry_id=3, gross_points=43, gw_rank=1, overall_rank=3,
+                    previous_rank=3, total_points=280, transfers_made=0, transfers=[],
+                ),
+            ],
+            cohort=_cohort(
+                (1, "Alice", 1, 30, 300), (2, "Bob", 2, 29, 290), (3, "Cam", 3, 43, 280),
+            ),
+        )
+
+    def _invoke(self, args: list[str], *replies: str):
+        stub, provider = _queued_provider(*replies)
+        with provider:
+            result = _invoke_recap(self._data(), ["--summarise", *args])
+        return stub, result
+
+    def test_a_clean_editorial_is_one_call_and_no_warning(self):
+        stub, result = self._invoke(["--format", "json"], self._RIGHT)
+
+        assert result.exit_code == 0, result.stderr
+        assert len(stub.prompts) == 1
+        codes = [w["code"] for w in json.loads(result.stdout)["metadata"]["warnings"]]
+        assert "synthesis_net_misattribution" not in codes
+        assert "synthesis_unsupported_tie" not in codes
+
+    def test_the_retry_is_told_about_both_and_a_clean_retry_ships(self):
+        stub, result = self._invoke(["--format", "json"], f"{self._NET} {self._TIE}", self._RIGHT)
+
+        assert result.exit_code == 0, result.stderr
+        assert "retrying once" in result.stderr
+        first, retry = stub.prompts
+        assert retry.startswith(first)
+        corrections = retry[len(first):]
+        assert "-6 is Alice's net for the whole gameweek (2 transfers, -4 hit)" in corrections
+        assert "the lowest gameweek score, 29 pts, was Bob's alone" in corrections
+        envelope = json.loads(result.stdout)
+        assert self._RIGHT in envelope["metadata"]["synthesis_summary"]
+        assert not [w for w in envelope["metadata"]["warnings"] if w["code"].startswith("synthesis_")]
+
+    def test_claims_that_survive_the_retry_get_a_warning_each(self, tmp_path: Path):
+        both = f"{self._NET} {self._TIE}"
+        _, result = self._invoke(["--format", "json", "--save", "--output", str(tmp_path)], both, both)
+
+        assert result.exit_code == 0, result.stderr
+        stderr = result.stderr.replace("\n", " ")
+        assert "still contradicts the data it was given" in stderr
+
+        warnings = {w["code"]: w["message"] for w in json.loads(result.stdout)["metadata"]["warnings"]}
+        assert warnings["synthesis_net_misattribution"].startswith(
+            "The editorial pins a figure from a manager's line on the wrong move. The editorial says"
+        )
+        assert "Gibbs-White in for Wirtz" in warnings["synthesis_net_misattribution"]
+        assert '"joint-lowest"' in warnings["synthesis_unsupported_tie"]
+        assert "synthesis_contested_misattribution" not in warnings
+
+        report = next(tmp_path.rglob("gw5-league-recap.md")).read_text(encoding="utf-8")
+        assert report.index("> [!WARNING]") < report.index(self._NET)
+        assert "contradicts the data it was given" in report
+        assert '> - the editorial says "-6 net" of Gibbs-White in for Wirtz' in report
+        assert '> - the editorial says "joint-lowest"' in report
+
+    def test_a_check_that_crashes_ships_the_editorial_unchecked(self, tmp_path: Path):
+        """PR #374 review: the checks are advisory, so a bug in one costs the
+        check, never an editorial already generated and paid for."""
+        with patch(
+            "fpl_cli.prompts.league_recap_checks.check_recap_editorial",
+            side_effect=KeyError("manager_name"),
+        ):
+            stub, result = self._invoke(["--format", "json", "--save", "--output", str(tmp_path)], self._NET)
+
+        assert result.exit_code == 0, result.stderr
+        assert len(stub.prompts) == 1
+        assert "could not be checked against its data (KeyError)" in result.stderr.replace("\n", " ")
+        envelope = json.loads(result.stdout)
+        assert self._NET in envelope["metadata"]["synthesis_summary"]
+        assert not [w for w in envelope["metadata"]["warnings"] if w["code"].startswith("synthesis_")]
+        report = next(tmp_path.rglob("gw5-league-recap.md")).read_text(encoding="utf-8")
+        assert self._NET in report
+        assert "> [!WARNING]" not in report
+
+    def test_the_prompt_states_the_ties_and_the_overall_net(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.chdir(tmp_path)
+        result = _invoke_recap(self._data(), ["--dry-run"])
+
+        assert result.exit_code == 0, result.output
+        user_prompt = (tmp_path / "data" / "debug" / "recap_prompt.txt").read_text(encoding="utf-8")
+        assert "Lowest gameweek score: 29 pts, Bob alone" in user_prompt
+        assert "(2 transfers, -4 hit, net -6 overall after the hit)" in user_prompt
 
 
 class TestFinesAreRecordedNotJustRendered:
@@ -3758,7 +3881,7 @@ class TestEndToEndPromptThroughTheFullCommand:
 
         assert "## Transfers" in user_prompt
         assert "Total managers who made transfers: 1 of 2" in user_prompt
-        assert "- **Alice** (2 transfers, -4 hit, net +5 after the hit): Haaland (12 pts) in for Isak (3 pts), +9" in user_prompt
+        assert "- **Alice** (2 transfers, -4 hit, net +5 overall after the hit): Haaland (12 pts) in for Isak (3 pts), +9" in user_prompt
         assert "Made no transfers (1): Bob" in user_prompt
         assert 'treat the "## Transfers" section as the source of truth' in system_prompt
 
@@ -3798,7 +3921,7 @@ class TestEndToEndPromptThroughTheFullCommand:
         assert "## Waivers and Free Agents" in user_prompt
         assert "Total managers who made waiver or free-agent moves: 1 of 2" in user_prompt
         assert (
-            "- **Alice** (2 moves: 1 waiver, 1 free agent, net +4): "
+            "- **Alice** (2 moves: 1 waiver, 1 free agent, net +4 overall): "
             "Savinho (0 pts) in for Maddison (1 pt), -1 [waiver]; "
             "Dango (6 pts) in for Georginio (1 pt), +5 [free agent]"
         ) in user_prompt

@@ -62,7 +62,6 @@ from fpl_cli.cli._league_recap_types import (
 )
 from fpl_cli.models.player import PlayerPosition
 from fpl_cli.prompts.league_recap import (
-    check_contested_attributions,
     collect_player_clubs,
     format_recap_awards_context,
     format_recap_captains_context,
@@ -75,8 +74,19 @@ from fpl_cli.prompts.league_recap import (
     format_recap_standings_context,
     format_recap_transfers_context,
     format_recap_waivers_context,
-    get_recap_attribution_retry_prompt,
     get_recap_synthesis_prompt,
+)
+from fpl_cli.prompts.league_recap_checks import (
+    EDITORIAL_CHECKS,
+    RECAP_WARNING_CONTESTED_MISATTRIBUTION,
+    RECAP_WARNING_NET_MISATTRIBUTION,
+    RECAP_WARNING_UNSUPPORTED_TIE,
+    check_contested_attributions,
+    check_net_attributions,
+    check_recap_editorial,
+    check_tie_claims,
+    editorial_warning_message,
+    get_recap_editorial_retry_prompt,
 )
 from fpl_cli.services.league_history_fines import ManagerFineTally, SeasonFinesTally
 from fpl_cli.services.league_history_notes import (
@@ -3639,10 +3649,10 @@ class TestPromptFormatting:
         lines = text.splitlines()
         assert lines[0] == "Total managers who made transfers: 2 of 3"
         assert (
-            "- **Alice** (2 transfers, -4 hit, net +5 after the hit): "
+            "- **Alice** (2 transfers, -4 hit, net +5 overall after the hit): "
             "Haaland (12 pts) in for Isak (3 pts), +9; Saka (2 pts) in for Palmer (2 pts), +0"
         ) in lines
-        assert "- **Cam** (1 transfer, no hit, net -8): Wood (1 pt) in for Watkins (9 pts), -8" in lines
+        assert "- **Cam** (1 transfer, no hit, net -8 overall): Wood (1 pt) in for Watkins (9 pts), -8" in lines
         assert lines[-1] == "Made no transfers (1): Bob"
 
     def test_transfers_context_orders_movers_best_net_first(self):
@@ -3666,7 +3676,7 @@ class TestPromptFormatting:
         ]
         text = format_recap_transfers_context(_make_recap_data(managers=managers))
         assert text.index("**Bob**") < text.index("**Alice**")
-        assert "net +1 after the hit" in text
+        assert "net +1 overall after the hit" in text
 
     def test_transfers_context_tags_the_chip_a_mover_played(self):
         managers = [
@@ -3676,7 +3686,7 @@ class TestPromptFormatting:
             ),
         ]
         text = format_recap_transfers_context(_make_recap_data(managers=managers))
-        assert "- **Alice** [WC] (2 transfers, no hit, net +7):" in text
+        assert "- **Alice** [WC] (2 transfers, no hit, net +7 overall):" in text
 
     def test_transfers_context_keeps_an_uncaptured_mover_among_the_movers(self):
         """A failed transfer fetch leaves the list empty while the API's count
@@ -3782,11 +3792,11 @@ class TestPromptFormatting:
         lines = text.splitlines()
         assert lines[0] == "Total managers who made waiver or free-agent moves: 2 of 3"
         assert (
-            "- **Alice** (2 moves: 1 waiver, 1 free agent, net +4): "
+            "- **Alice** (2 moves: 1 waiver, 1 free agent, net +4 overall): "
             "Savinho (0 pts) in for Maddison (1 pt), -1 [waiver]; "
             "Dango (6 pts) in for Georginio (1 pt), +5 [free agent]"
         ) in lines
-        assert "- **Cam** (1 waiver, net -8): Wood (1 pt) in for Watkins (9 pts), -8 [waiver]" in lines
+        assert "- **Cam** (1 waiver, net -8 overall): Wood (1 pt) in for Watkins (9 pts), -8 [waiver]" in lines
         assert lines[-1] == "Made no moves and submitted no claims (1): Bob"
 
     def test_waivers_context_lists_a_chain_as_the_raw_moves_not_the_contracted_pair(self):
@@ -3797,7 +3807,7 @@ class TestPromptFormatting:
         managers = [_make_manager_with_txns("Alice", [_txn("B", 4, "A", 1), _txn("C", 9, "B", 4)])]
         text = format_recap_waivers_context(self._draft_data(managers))
         assert (
-            "- **Alice** (2 waivers, net +8): "
+            "- **Alice** (2 waivers, net +8 overall): "
             "B (4 pts) in for A (1 pt), +3 [waiver]; C (9 pts) in for B (4 pts), +5 [waiver]"
         ) in text
         assert "C (9 pts) in for A" not in text
@@ -3817,7 +3827,7 @@ class TestPromptFormatting:
         it a waiver -- the same fallback the awards' headline count uses."""
         managers = [_make_manager_with_txns("Alice", [_txn("A", 2, "B", 5, kind="")])]
         text = format_recap_waivers_context(self._draft_data(managers))
-        assert "- **Alice** (1 other move, net -3): A (2 pts) in for B (5 pts), -3 [other move]" in text
+        assert "- **Alice** (1 other move, net -3 overall): A (2 pts) in for B (5 pts), -3 [other move]" in text
 
     def test_waivers_context_and_the_waiver_award_label_a_move_alike(self):
         """One vocabulary for one move (issue #301): the kind the roster tags
@@ -3830,7 +3840,7 @@ class TestPromptFormatting:
         awards: RecapAwards = {}  # type: ignore[typeddict-item]
         _compute_waiver_awards(managers, awards)
         text = format_recap_waivers_context(self._draft_data(managers))
-        assert "(1 free agent, net +8): A (9 pts) in for B (1 pt), +8 [free agent]" in text
+        assert "(1 free agent, net +8 overall): A (9 pts) in for B (1 pt), +8 [free agent]" in text
         assert "(1 free agent)" in awards["waiver_genius"]["detail"]
 
     def test_a_manager_whose_only_activity_was_a_lost_claim_is_not_listed_as_inactive(self):
@@ -6892,7 +6902,9 @@ class TestContestedAttributionCheck:
         assert "Cam Hart won him" in problems[0]
 
     def test_the_retry_prompt_names_each_wrong_claim(self):
-        prompt = get_recap_attribution_retry_prompt("ORIGINAL", ["the editorial says Bob won King"])
+        prompt = get_recap_editorial_retry_prompt(
+            "ORIGINAL", {RECAP_WARNING_CONTESTED_MISATTRIBUTION: ["the editorial says Bob won King"]},
+        )
         assert prompt.startswith("ORIGINAL\n\n")
         assert "- the editorial says Bob won King" in prompt
         assert '"respectively"' in prompt
@@ -6908,3 +6920,391 @@ class TestContestedAttributionCheck:
         assert "Each \"Contested players\" line is one race" in system
         assert "NEVER fold two lines into one clause" in system
         assert 'no "respectively"' in system
+
+
+# ---------------------------------------------------------------------------
+# Net figure and tie checks (issue #359)
+# ---------------------------------------------------------------------------
+
+
+def _reported_transfers() -> list[RecapManagerEntry]:
+    """The reported gameweek's shape: Alice Lowe made two transfers on a -4
+    hit -- Gibbs-White in for Wirtz (-4) and Ajayi in for Cash (+2), so -2
+    across both and -6 net overall -- and Bob Gale made one, with no hit."""
+    return [
+        _make_manager(
+            name="Alice Lowe", entry_id=1, gw_points=30, transfer_cost=4, transfers_made=2,
+            transfers=[
+                _make_transfer("Gibbs-White", "Wirtz", 2, 6, cost=4),
+                _make_transfer("Ajayi", "Cash", 1, -1, cost=4),
+            ],
+        ),
+        _make_manager(
+            name="Bob Gale", entry_id=2, gw_points=29, transfers_made=1,
+            transfers=[_make_transfer("Wood", "Watkins", 9, 3)],
+        ),
+        _make_manager(name="Cam Hart", entry_id=3, gw_points=43, transfers_made=0, transfers=[]),
+    ]
+
+
+class TestNetAttributionCheck:
+    """Issue #359: the editorial pinned a manager's net for the whole
+    gameweek on one named transfer -- "brought in Gibbs-White for Wirtz and
+    watched it backfire to the tune of -6 net", where that move was -4 and
+    the -6 only exists with the second transfer and the hit."""
+
+    def _check(self, summary: str, managers: list[RecapManagerEntry] | None = None) -> list[str]:
+        return check_net_attributions(summary, managers or _reported_transfers())
+
+    def test_the_reported_sentence_is_caught(self):
+        problems = self._check(
+            "Contrast that with Alice Lowe, who paid a 4-point hit to bring in Gibbs-White for "
+            "Wirtz and watched it backfire to the tune of -6 net."
+        )
+        assert problems == [
+            'the editorial says "-6 net" of Gibbs-White in for Wirtz, but -6 is Alice Lowe\'s net '
+            "for the whole gameweek (2 transfers, -4 hit), not that move's own swing of -4"
+        ]
+
+    @pytest.mark.parametrize("summary", [
+        "Gibbs-White in for Wirtz went -4 net.",
+        "Alice Lowe brought in Gibbs-White for Wirtz and finished -6 net overall.",
+        "Alice Lowe's transfers went -6 net, Gibbs-White for Wirtz the worst of them.",
+        "Gibbs-White for Wirtz and Ajayi for Cash left Alice Lowe -6 net.",
+        "Alice Lowe ended the week -6 net after bringing in Gibbs-White for Wirtz.",
+        "Gibbs-White for Wirtz went -4; Alice Lowe was -6 net once the hit landed.",
+        "Alice Lowe brought in Gibbs-White for Wirtz, -6 across both transfers after the hit.",
+        # PR #374 review: the manager named between the move and the figure,
+        # the move's own swing stated beside it, or the roster line's own
+        # "after the hit" makes the figure the manager's.
+        "Gibbs-White for Wirtz went -4, and Alice Lowe was -6 net once the hit landed.",
+        "Gibbs-White for Wirtz cost -4 and left Alice Lowe -6 net after the hit.",
+        "Alice Lowe lost 6 net pts, her worst move being Gibbs-White in for Wirtz (-4).",
+        "Alice Lowe took a hit to bring in Gibbs-White for Wirtz and ended -6 net after the hit.",
+        "Gibbs-White for Wirtz (-4) dragged Alice Lowe down to -6 net.",
+    ])
+    def test_a_figure_the_clause_gives_its_own_subject_passes(self, summary):
+        assert self._check(summary) == []
+
+    @pytest.mark.parametrize("summary", [
+        # The hit taken to make the move says nothing about whose the figure is.
+        "Alice Lowe paid a hit to bring in Gibbs-White for Wirtz and watched it sink to -6 net.",
+        # "A -4" is the hit in FPL slang, not the move's swing, even when they match.
+        "Alice Lowe took a -4 to bring in Gibbs-White for Wirtz and watched it backfire to the tune of -6 net.",
+        # A figure ahead of everything leads into the move it names.
+        "A -6 net swing on Gibbs-White for Wirtz sank Alice Lowe.",
+    ])
+    def test_a_figure_still_pinned_on_the_move_is_caught(self, summary):
+        problems = self._check(summary)
+        assert len(problems) == 1
+        assert "-6 is Alice Lowe's net for the whole gameweek" in problems[0]
+
+    def test_another_move_s_swing_is_caught_and_named(self):
+        problems = self._check("Gibbs-White in for Wirtz, +2 net, was a disaster.")
+        # "+2" is read as the move that went +2, not the -2 the two came to.
+        assert len(problems) == 1
+        assert "+2 is the swing on Ajayi in for Cash" in problems[0]
+
+    def test_the_swing_before_the_hit_is_caught(self):
+        problems = self._check("Ajayi for Cash came out at a net -2.")
+        assert len(problems) == 1
+        assert "-2 is Alice Lowe's swing across all 2 transfers before the hit" in problems[0]
+
+    @pytest.mark.parametrize("summary", [
+        # Another manager's net may be the figure meant.
+        "Unlike Cam Hart, Alice Lowe brought in Gibbs-White for Wirtz and went -6 net.",
+        # A figure that is nobody's on the line is not this check's to place.
+        "Gibbs-White for Wirtz went -9 net.",
+        # Not a net figure at all.
+        "Gibbs-White for Wirtz cost Alice Lowe a 4-point hit and 6 places.",
+        "Gibbs-White for Wirtz gave Alice Lowe a net gain of 2 places.",
+    ])
+    def test_a_clause_it_cannot_pin_down_is_left_alone(self, summary):
+        assert self._check(summary) == []
+
+    def test_an_unsigned_figure_matches_the_move_whichever_way_round(self):
+        # "Lost 2 net" on a +2 move is loose, not wrong in a way the data shows.
+        assert self._check("Ajayi for Cash lost Alice Lowe 2 net points.") == []
+
+    def test_a_line_with_one_move_and_no_hit_has_nothing_to_misplace(self):
+        assert self._check("Wood in for Watkins went +6 net.") == []
+
+    def test_a_draft_waiver_line_is_held_to_the_same_rule(self):
+        managers = [
+            _make_manager_with_txns("Dan Ford", [_txn("King", 9, "Dud", 1), _txn("Bogle", 1, "Wood", 5)]),
+            _make_manager(name="Eve Ray", entry_id=2),
+        ]
+        problems = self._check("Dan Ford's swoop for King in place of Dud paid off, +4 net.", managers)
+        assert len(problems) == 1
+        assert "+4 is Dan Ford's net for the whole gameweek (2 moves)" in problems[0]
+
+    def test_the_same_move_by_two_managers_is_read_only_when_the_clause_says_whose(self):
+        managers = _reported_transfers()
+        managers[2]["transfers"] = [_make_transfer("Gibbs-White", "Wirtz", 2, 6)]
+        managers[2]["transfers_made"] = 1
+        # Cam made the move alone, with no hit, so "-6" is not his figure;
+        # unnamed, the clause cannot say which manager's move it means.
+        assert self._check("Gibbs-White for Wirtz went -6 net.", managers) == []
+        problems = self._check("Alice Lowe's Gibbs-White for Wirtz went -6 net.", managers)
+        assert len(problems) == 1
+        assert "Alice Lowe's net for the whole gameweek" in problems[0]
+
+    def test_a_partially_captured_line_has_no_net_to_misplace(self):
+        managers = _reported_transfers()
+        managers[0]["transfers_made"] = 3
+        # The gameweek's net is unknown, so "-6" is no figure of the line's;
+        # the swing across the captured moves still is.
+        assert self._check("Gibbs-White for Wirtz went -6 net.", managers) == []
+        problems = self._check("Gibbs-White for Wirtz went -2 net.", managers)
+        assert len(problems) == 1
+        assert "swing across the captured 2 transfers before the hit" in problems[0]
+
+
+def _reported_table() -> list[RecapManagerEntry]:
+    """The reported gameweek's shape: the outright lowest score (29) belongs
+    to a manager in a table whose 7th place is shared three ways -- the tie
+    that got carried onto the wrong column -- and 43 is the one shared
+    gameweek score."""
+    rows = [
+        ("Ann Moss", 29, 7, 6, 340), ("Bea Gale", 33, 7, 7, 340), ("Cy Hart", 35, 7, 9, 340),
+        ("Dee Ford", 43, 1, 1, 400), ("Eli Ray", 43, 2, 2, 390), ("Fay Lund", 58, 10, 10, 300),
+    ]
+    return [
+        _make_manager(
+            name=name, entry_id=i, gw_points=pts, overall_rank=rank, previous_rank=prev, total_points=total,
+        )
+        for i, (name, pts, rank, prev, total) in enumerate(rows, start=1)
+    ]
+
+
+class TestTieClaimCheck:
+    """Issue #359: the editorial called an outright lowest gameweek score
+    "the joint-lowest score of the week", carrying a tie that was live in
+    the table's season totals onto a score nobody shared."""
+
+    def _check(self, summary: str, managers: list[RecapManagerEntry] | None = None) -> list[str]:
+        return check_tie_claims(summary, managers or _reported_table())
+
+    def test_the_reported_sentence_is_caught(self):
+        problems = self._check("The previous leader posted the joint-lowest score of the week (29 pts).")
+        assert problems == [
+            'the editorial says "joint-lowest", but the lowest gameweek score, 29 pts, was Ann Moss\'s alone'
+        ]
+
+    @pytest.mark.parametrize("summary", [
+        "Ann Moss posted the lowest score of the week.",
+        "Ann Moss, Bea Gale and Cy Hart sit joint-seventh in the table.",
+        "Ann Moss is now tied for 7th place.",
+        # The table carries the tie on its Prev column.
+        "Dee Ford, joint-top of the table last week, now leads alone.",
+    ])
+    def test_a_tie_the_data_states_passes(self, summary):
+        managers = _reported_table()
+        managers[4]["previous_rank"] = 1
+        assert self._check(summary, managers) == []
+
+    def test_a_shared_gameweek_score_bears_out_a_joint_highest(self):
+        managers = _reported_table()
+        managers[5]["gw_points"] = 43
+        managers[4]["gw_points"] = 58
+        managers[3]["gw_points"] = 58
+        assert self._check("Dee Ford posted the joint-highest score of the week.", managers) == []
+        problems = self._check("Fay Lund and Ann Moss were joint-lowest this week.", managers)
+        assert len(problems) == 1
+
+    def test_a_tie_in_the_table_is_not_a_tie_on_gameweek_scores(self):
+        problems = self._check("Ann Moss finished joint-bottom of the gameweek scores.")
+        assert len(problems) == 1
+        assert "the lowest gameweek score, 29 pts, was Ann Moss's alone" in problems[0]
+
+    def test_a_position_nobody_or_one_manager_holds_is_caught(self):
+        assert self._check("Fay Lund sits joint-eighth in the table.") == [
+            'the editorial says "joint-eighth", but nobody is 8th in the table'
+        ]
+        problems = self._check("Fay Lund is joint-tenth in the standings.")
+        assert problems == [
+            'the editorial says "joint-tenth", but 10th place in the table is Fay Lund\'s alone'
+        ]
+
+    def test_a_tie_with_no_subject_needs_both_readings_to_fail(self):
+        # Last place in the table is Fay Lund's alone too, so neither holds.
+        problems = self._check("Ann Moss finished joint-bottom.")
+        assert len(problems) == 1
+        assert problems[0].startswith('the editorial says "joint-bottom", but neither reading holds')
+        managers = _reported_table()
+        managers[0]["overall_rank"] = 10
+        assert self._check("Ann Moss finished joint-bottom.", managers) == []
+
+    @pytest.mark.parametrize("summary", [
+        "Ann Moss was not joint-lowest this week.",
+        "Ann Moss's captain was the joint-lowest scoring armband.",
+        "Salah was joint-top scorer of the week.",
+        "Ann Moss's bench was the joint-lowest.",
+        "Bea Gale posted the joint-second lowest score of the week.",
+        "Ann Moss did their level best to finish bottom.",
+        # PR #374 review: a word that is not a rank where it stands.
+        "Ann Moss and Bea Gale were tied last week at the foot of the table.",
+        "Ann Moss and Bea Gale shared last week's wooden spoon.",
+        "Ann Moss and Bea Gale shared first blood this week.",
+        "Ann Moss and Bea Gale shared the best fixture.",
+        # ...and a negation further back than the word before.
+        "Ann Moss never really posted the joint-lowest score.",
+    ])
+    def test_a_tie_on_something_else_is_left_alone(self, summary):
+        managers = _reported_table()
+        managers[0]["squad"] = [_make_squad_player(name="Salah")]
+        assert self._check(summary, managers) == []
+
+    @pytest.mark.parametrize("summary", [
+        "Ann Moss's captain blanked and the transfers flopped, so they posted the joint-lowest score of the week.",
+        # PR #374 review: a player named in the explanation is not what the
+        # tie is about, so he no longer hides it.
+        "Ann Moss posted the joint-lowest score of the week as Haaland blanked.",
+        "Ann Moss posted the joint-lowest score of the week, with Haaland to blame.",
+    ])
+    def test_a_subject_elsewhere_in_the_clause_does_not_hide_the_tie(self, summary):
+        managers = _reported_table()
+        managers[0]["squad"] = [_make_squad_player(name="Haaland")]
+        assert len(self._check(summary, managers)) == 1
+
+    def test_level_totals_the_tie_break_split_bear_out_a_tie_at_the_top(self):
+        """PR #374 review: a head-to-head draft table ranks managers level on
+        league points apart on points scored, so Pos reads 1/2 while Total
+        reads 21/21 -- the tie the Total column shows is one the data states."""
+        managers = [
+            _make_manager(name="Ann Moss", entry_id=1, gw_points=50, overall_rank=1, previous_rank=None, total_points=21),
+            _make_manager(name="Bea Gale", entry_id=2, gw_points=40, overall_rank=2, previous_rank=None, total_points=21),
+            _make_manager(name="Cy Hart", entry_id=3, gw_points=30, overall_rank=3, previous_rank=None, total_points=18),
+        ]
+        assert self._check("Ann Moss and Bea Gale are level at the top of the table on 21 points.", managers) == []
+        problems = self._check("Cy Hart is joint-bottom of the table.", managers)
+        assert problems == ['the editorial says "joint-bottom", but 3rd place in the table is Cy Hart\'s alone']
+
+    def test_a_lone_manager_has_nothing_to_tie_with(self):
+        assert self._check("The joint-lowest score of the week.", _reported_table()[:1]) == []
+
+
+class TestStandingsTieLines:
+    """Issue #359: the prompt states which scores and positions are shared,
+    so the tie rule has a line to hold "joint" to."""
+
+    def _text(self, managers: list[RecapManagerEntry]) -> str:
+        return format_recap_standings_context(_make_recap_data(managers=managers))
+
+    def test_outright_extremes_and_every_shared_score_and_position_are_named(self):
+        text = self._text(_reported_table())
+        assert "Highest gameweek score: 58 pts, Fay Lund alone" in text
+        assert "Lowest gameweek score: 29 pts, Ann Moss alone" in text
+        assert (
+            "Gameweek scores shared by more than one manager (1): 43 pts (Dee Ford, Eli Ray)"
+            " - every other gameweek score was one manager's alone"
+        ) in text
+        assert "League positions shared in the Pos column (1): 7th (Ann Moss, Bea Gale, Cy Hart, all on 340)" in text
+        assert "not on gameweek scores" in text
+        assert text.index("Lowest gameweek score") < text.index("| Pos |")
+
+    def test_a_shared_extreme_names_everyone_on_it(self):
+        managers = _reported_table()
+        managers[1]["gw_points"] = 29
+        assert "Lowest gameweek score: 29 pts, shared by Ann Moss, Bea Gale" in self._text(managers)
+
+    def test_nothing_shared_is_said_outright(self):
+        managers = [
+            _make_manager(name="Alice", entry_id=1, gw_points=60, overall_rank=1, previous_rank=2, total_points=500),
+            _make_manager(name="Bob", entry_id=2, gw_points=40, overall_rank=2, previous_rank=1, total_points=490),
+        ]
+        text = self._text(managers)
+        assert "Gameweek scores shared by more than one manager: none" in text
+        assert "League positions shared in the Pos column: none" in text
+        assert "Previous positions shared" not in text
+        assert "tie-break" not in text
+
+    def test_a_shared_prev_position_is_stated_too(self):
+        """PR #374 review: the Pos line said "none" above a Prev column that
+        showed a tie, which the tie check accepts."""
+        managers = _reported_table()
+        text = self._text(managers)
+        # Prev is 6, 7, 9, 1, 2, 10: nothing shared, so no line.
+        assert "Previous positions shared" not in text
+        managers[1]["previous_rank"] = 6
+        assert "Previous positions shared in the Prev column (1): 6th (Ann Moss, Bea Gale)" in self._text(managers)
+
+    def test_level_totals_placed_apart_are_stated(self):
+        managers = [
+            _make_manager(name="Ann Moss", entry_id=1, gw_points=50, overall_rank=1, total_points=21),
+            _make_manager(name="Bea Gale", entry_id=2, gw_points=40, overall_rank=2, total_points=21),
+        ]
+        assert (
+            "Level on season total but placed apart by the league's tie-break (1): "
+            "21 (Ann Moss 1st, Bea Gale 2nd) - they are level on points, not joint in position"
+        ) in self._text(managers)
+
+    def test_no_positions_line_without_positions(self):
+        managers = [
+            _make_manager(name="Alice", entry_id=1, overall_rank=None, previous_rank=None),
+            _make_manager(name="Bob", entry_id=2, overall_rank=None, previous_rank=None),
+        ]
+        assert "League positions shared" not in self._text(managers)
+
+
+class TestEditorialChecks:
+    """One entry point keyed by warning code, so the command reports each
+    check on its own channel and the retry is told only about what failed."""
+
+    def test_a_clean_editorial_has_no_keys(self):
+        data = _make_recap_data(managers=_reported_transfers())
+        assert check_recap_editorial("Alice Lowe finished -6 net overall.", data) == {}
+
+    def test_each_check_answers_under_its_own_code(self):
+        data = _make_recap_data(managers=_reported_transfers())
+        found = check_recap_editorial(
+            "Gibbs-White for Wirtz went -6 net. Bob Gale posted the joint-lowest score of the week.", data,
+        )
+        assert set(found) == {RECAP_WARNING_NET_MISATTRIBUTION, RECAP_WARNING_UNSUPPORTED_TIE}
+
+    def test_every_check_is_registered_once_with_everything_that_names_it(self):
+        """PR #374 review: one record per check, so a fourth is one edit."""
+        codes = [check.code for check in EDITORIAL_CHECKS]
+        assert sorted(codes) == sorted({
+            RECAP_WARNING_CONTESTED_MISATTRIBUTION, RECAP_WARNING_NET_MISATTRIBUTION, RECAP_WARNING_UNSUPPORTED_TIE,
+        })
+        assert all(check.lead and check.retry_instruction for check in EDITORIAL_CHECKS)
+
+    def test_the_warning_message_keeps_claims_apart_that_carry_semicolons(self):
+        """PR #374 review: claims joined with "; " could not be split when a
+        claim carried one itself, as a quoted contested line does."""
+        message = editorial_warning_message(
+            RECAP_WARNING_CONTESTED_MISATTRIBUTION,
+            ['the editorial says Bob won King, but the line reads: "Alice won him; Bob was beaten to him"',
+             "the editorial says Cam won Isak, but the line reads: \"Dan won him\""],
+        )
+        assert message.startswith("The editorial contradicts the contested waiver claims it was given. ")
+        assert message.count(". The editorial says ") == 2
+        assert message.endswith('"Dan won him".')
+
+    def test_a_check_that_crashes_is_not_the_editorial_s_problem(self):
+        # The command treats the checks as advisory; see the CLI test.
+        data = _make_recap_data(managers=_reported_transfers())
+        del data["managers"][0]["manager_name"]  # type: ignore[misc]
+        with pytest.raises(KeyError):
+            check_recap_editorial("Gibbs-White for Wirtz went -6 net.", data)
+
+    def test_the_retry_prompt_carries_an_instruction_only_for_what_failed(self):
+        prompt = get_recap_editorial_retry_prompt(
+            "ORIGINAL", {RECAP_WARNING_UNSUPPORTED_TIE: ['the editorial says "joint-lowest"']},
+        )
+        assert '- the editorial says "joint-lowest"' in prompt
+        assert "GW Standings section lists it as shared" in prompt
+        assert '"respectively"' not in prompt
+        assert "net overall" not in prompt
+
+    def test_the_system_prompt_pins_figures_and_ties_to_their_subjects(self):
+        system, _ = get_recap_synthesis_prompt(
+            gw=3, league_name="Test", fpl_format="classic",
+            awards_text="x", standings_text="| t |", fines_text="",
+        )
+        assert "they are never interchangeable" in system
+        assert "NEVER to one named move" in system
+        assert 'never that they took it "to bring in"' in system
+        assert "may only be used where the data states the tie" in system
+        assert 'never "the joint-lowest"' in system
