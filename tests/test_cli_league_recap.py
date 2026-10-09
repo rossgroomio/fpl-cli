@@ -3240,7 +3240,7 @@ class TestLeagueRecapJsonEnvelope:
 
         entry = NotesPackEntry(
             kind=NoteKind.STREAK,
-            text="Alice: 4 waiver hauls in the last 5 (GW1-GW5), with no moves made in 1.",
+            text="Alice: 4 waiver hauls in the last 5 (GW1-GW5), with no completed moves in 1.",
             surfaces=frozenset(),
             window=GameweekWindow(start_gameweek=1, end_gameweek=5),
             manager_key=1, manager_name="Alice", condition_key="waiver_win_run",

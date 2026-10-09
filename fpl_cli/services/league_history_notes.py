@@ -23,8 +23,8 @@ Two rules this module exists to enforce (R14, R20, R17):
   "3 in the last 11 gameweeks", not "3 in a row". Only a run holding nothing
   may use "in a row" phrasing. And only a gameweek the record lacks is
   "not recorded": one the condition had nothing to judge in -- a draft
-  manager who made no waiver moves -- is stated in the condition's own
-  words (issue #358).
+  manager with no completed waiver moves -- is stated in the condition's
+  own words (issue #358).
 - A claim is qualified "since GW X" only when the ledger's own coverage --
   for the partition, or for one manager -- actually begins later than the
   league's start gameweek. A bounded trailing read window (below) is a cost
@@ -246,9 +246,12 @@ class NotesPackEntry:
     held_count: int = 0
     # Streak entries only: gameweeks inside the run that the record ruled
     # completely and the condition had nothing to judge in -- a draft
-    # manager who made no waiver moves -- kept apart from `held_count` so a
-    # consumer never reads one as missing data (issue #358).
-    inapplicable_count: int = 0
+    # manager with no completed waiver moves -- kept apart from `held_count`
+    # so a consumer never reads one as missing data (issue #358). None for
+    # every other kind, as `occurrences` is outside season counts: a season
+    # count does not track them at all (they are judged non-occurrences,
+    # stated by its span), and a 0 there would claim there were none.
+    inapplicable_count: int | None = None
     excess: int | None = None
     # Season-count entries only (issue #164): how many gameweeks have ever
     # extended this condition this season, across every reset. For those
@@ -334,13 +337,6 @@ def _entry_tier(
     return weakest_tier(tiers)
 
 
-# The trailing clause's fallback for a condition that returns INAPPLICABLE
-# without naming what that means for it. Every registry entry that can
-# return it declares its own label; this only keeps a new one honest
-# before it does.
-_DEFAULT_INAPPLICABLE_LABEL = "nothing to judge"
-
-
 def _streak_text(
     manager_name: str,
     count_label_one: str,
@@ -348,6 +344,7 @@ def _streak_text(
     length: int,
     window: GameweekWindow,
     *,
+    held_count: int = 0,
     inapplicable_count: int = 0,
     inapplicable_label: str | None = None,
 ) -> str:
@@ -376,19 +373,30 @@ def _streak_text(
     window is one the record genuinely lacks for this condition -- an
     unknown row, a field the tier never captured, or no row at all -- and
     only those are "not recorded". Deriving that count from the window
-    rather than reading the held count is what lets an absent gameweek be
-    stated as the gap it is, instead of "with 0 not recorded"."""
+    rather than reading the held count alone is what lets an absent
+    gameweek be stated as the gap it is, instead of "with 0 not recorded"
+    -- but never below `held_count`, so a window and counters that ever
+    disagreed would still report every gameweek the fold itself saw held.
+
+    `inapplicable_label` is required whenever `inapplicable_count` is
+    nonzero. `_evaluate` already refuses an INAPPLICABLE from a condition
+    without one, so a missing label here is a defect, raised rather than
+    papered over with generic wording that would say nothing."""
     span = f"GW{window.start_gameweek}-GW{window.end_gameweek}"
     count_label = count_label_one if length == 1 else count_label_many
     if window.span_length == length:
         return f"{manager_name}: {length} {count_label} in a row ({span})."
-    not_recorded = max(0, window.span_length - length - inapplicable_count)
+    not_recorded = max(held_count, window.span_length - length - inapplicable_count)
     clauses: list[str] = []
     if not_recorded:
         clauses.append(f"{not_recorded} not recorded")
     if inapplicable_count:
-        label = inapplicable_label or _DEFAULT_INAPPLICABLE_LABEL
-        clauses.append(f"{label} in {inapplicable_count}")
+        if inapplicable_label is None:
+            raise ValueError(
+                f"{inapplicable_count} inapplicable gameweek(s) to render with no "
+                "inapplicable_label to name them.",
+            )
+        clauses.append(f"{inapplicable_label} in {inapplicable_count}")
     text = f"{manager_name}: {length} {count_label} in the last {window.span_length} ({span})"
     if clauses:
         text += ", with " + " and ".join(clauses)
@@ -438,6 +446,7 @@ def _streak_entries(
                     view.count_label_many,
                     view.length,
                     window,
+                    held_count=view.held_in_run,
                     inapplicable_count=view.inapplicable_in_run,
                     inapplicable_label=view.inapplicable_label,
                 ),
@@ -936,9 +945,11 @@ def build_notes_pack(
 
     The trailing window bounds *raw row reads* only -- e.g. for an entry's
     fidelity tier -- never the streak entries themselves: a run's `length`,
-    `held_in_run`, and `start_gameweek` always come from the counters
-    projection's true, current state, however far back the run actually
-    started.
+    `held_in_run`, `inapplicable_in_run`, and `start_gameweek` always come
+    from the counters projection's true, current state, however far back
+    the run actually started. `inapplicable_in_run` is load-bearing there:
+    a streak's "not recorded" count is what remains of its window once the
+    run and its inapplicable gameweeks are taken out (issue #358).
     """
     phase = derive_season_phase(gameweek, total_gameweeks, chip_split_gw)
     captured_gameweeks = store.captured_gameweeks()

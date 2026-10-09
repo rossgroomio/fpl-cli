@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+import pytest
+
 from fpl_cli.cli._league_recap_data import derive_point_in_time_positions
-from fpl_cli.models.league_history import FidelityTier, LedgerCaptaincy, LedgerTransaction
+from fpl_cli.models.league_history import (
+    FidelityTier,
+    LedgerCaptaincy,
+    LedgerLostClaim,
+    LedgerTransaction,
+)
 from fpl_cli.services.league_history import LeagueHistoryStore
 from fpl_cli.services.league_history_notes import (
     GameweekWindow,
     NoteSurface,
     SeasonPhase,
+    _streak_text,
     build_notes_pack,
     derive_season_phase,
     is_season_milestone,
@@ -227,12 +235,42 @@ class TestStreakEntries:
         assert entry.held_count == 0
         assert entry.inapplicable_count == 1
         assert entry.text == (
-            "Alice: 4 waiver hauls in the last 5 (GW1-GW5), with no moves made in 1."
+            "Alice: 4 waiver hauls in the last 5 (GW1-GW5), with no completed moves in 1."
         )
         haul_count = next(
             e for e in pack.season_count_entries if e.condition_key == "waiver_win_run"
         )
         assert "not judged" not in haul_count.text
+        # A season count does not track inapplicable gameweeks, so it carries
+        # no count of them rather than a 0 claiming there were none.
+        assert haul_count.inapplicable_count is None
+
+    def test_a_gameweek_of_only_lost_claims_is_not_called_inactive(self):
+        """Issue #358 review: a manager whose every claim a rival won was
+        active, so the clause states what is true of both them and a manager
+        who sat out -- nothing moved -- rather than implying no moves were
+        attempted (issues #329, #332)."""
+        store = LeagueHistoryStore("2026-27", "draft", 1)
+        for gw in (1, 3, 4):
+            store.append_rows(gw, [make_history_row(
+                gameweek=gw, manager_key=1, manager_name="Alice", fpl_format="draft",
+                transactions=[_transaction(4)],
+            )])
+        store.append_rows(2, [make_history_row(
+            gameweek=2, manager_key=1, manager_name="Alice", fpl_format="draft",
+            transactions=[],
+            lost_claims=[LedgerLostClaim(
+                player_in="Elanga", player_in_team="NEW",
+                player_out="Savio", player_out_team="MCI", priority=1,
+            )],
+        )])
+
+        pack = build_notes_pack(store, 4)
+
+        entry = next(e for e in pack.entries if e.condition_key == "waiver_win_run")
+        assert entry.text == (
+            "Alice: 3 waiver hauls in the last 4 (GW1-GW4), with no completed moves in 1."
+        )
 
     def test_a_run_crossing_both_kinds_of_gameweek_names_each(self):
         store = LeagueHistoryStore("2026-27", "draft", 1)
@@ -254,8 +292,32 @@ class TestStreakEntries:
         entry = next(e for e in pack.entries if e.condition_key == "waiver_win_run")
         assert entry.text == (
             "Alice: 3 waiver hauls in the last 5 (GW1-GW5), "
-            "with 1 not recorded and no moves made in 1."
+            "with 1 not recorded and no completed moves in 1."
         )
+
+    def test_not_recorded_never_reads_below_the_folds_own_held_count(self):
+        """Issue #358 review: "not recorded" is derived from the window so an
+        absent gameweek counts, but floored at the held count, so a window
+        that ever disagreed with the counters could not hide a hold."""
+        text = _streak_text(
+            "Alice", "captain blank", "captain blanks", 3,
+            GameweekWindow(start_gameweek=1, end_gameweek=4),
+            held_count=2, inapplicable_count=1, inapplicable_label="no captain fixture",
+        )
+
+        assert text == (
+            "Alice: 3 captain blanks in the last 4 (GW1-GW4), "
+            "with 2 not recorded and no captain fixture in 1."
+        )
+
+    def test_an_inapplicable_gameweek_with_no_label_is_refused(self):
+        """No generic stand-in wording: a missing label is a defect."""
+        with pytest.raises(ValueError, match="inapplicable_label"):
+            _streak_text(
+                "Alice", "thing", "things", 2,
+                GameweekWindow(start_gameweek=1, end_gameweek=3),
+                inapplicable_count=1, inapplicable_label=None,
+            )
 
     def test_a_run_at_exactly_zero_length_produces_no_entry(self):
         """A captain who never blanked opens no run at all -- skipped
