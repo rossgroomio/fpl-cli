@@ -179,6 +179,15 @@ class TestWaiversReliabilityRendering:
         assert result.exit_code == 0
         assert "Avail" in result.output
 
+    def test_waiver_position_beyond_sixth_prints_unstyled(self):
+        """A position past 6 has no colour; the empty style used to crash (#356)."""
+        agent_result = _make_agent_result()
+        agent_result.data["waiver_position"] = 8
+        agent_result.data["total_waiver_teams"] = 10
+        result = _run_waivers(agent_result=agent_result)
+        assert result.exit_code == 0, result.output
+        assert "Your waiver position: 8/10" in result.output
+
 
 _NOTICE = {
     "code": "early_season_prior_informed",

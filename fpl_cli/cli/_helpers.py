@@ -198,6 +198,21 @@ def _center_window_with_ties(
     return items[start:end], n - (end - start)
 
 
+def styled(text: str, style: str) -> str:
+    """Wrap `text` in Rich markup for `style`, or return it bare when there is none.
+
+    An empty style would otherwise build `[]text[/]`, which Rich rejects with a
+    MarkupError (#356).
+    """
+    return f"[{style}]{text}[/{style}]" if style else text
+
+
+def signed_net_markup(net: int) -> str:
+    """A points delta as Rich markup: green and signed when positive, red when negative."""
+    style = "green" if net > 0 else "red" if net < 0 else ""
+    return styled(f"{'+' if net > 0 else ''}{net}", style)
+
+
 def _fdr_style(fdr: int | float) -> str:
     """Get Rich style for FDR value on 1-7 scale."""
     if fdr <= FDR_EASY:

@@ -18,6 +18,7 @@ from fpl_cli.cli._context import (
     print_result_warnings,
     split_result_warnings,
 )
+from fpl_cli.cli._helpers import styled
 from fpl_cli.cli._json import (
     emit_failure,
     emit_json,
@@ -87,7 +88,7 @@ def waivers_command(ctx: click.Context, output_format: str) -> None:
             pos = data["waiver_position"]
             total = data.get("total_waiver_teams", 0)
             style = "green" if pos <= 3 else "yellow" if pos <= 6 else ""
-            console.print(f"Your waiver position: [{style}]{pos}/{total}[/{style}]\n")
+            console.print(f"Your waiver position: {styled(f'{pos}/{total}', style)}\n")
 
         # Squad weaknesses
         if data.get("squad_weaknesses"):

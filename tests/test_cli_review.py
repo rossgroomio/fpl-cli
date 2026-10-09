@@ -3,6 +3,7 @@
 import pathlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 from click.testing import CliRunner
 
@@ -1364,6 +1365,88 @@ class TestReviewClassicTransfersGw1:
         result = await _review_classic_transfers(client, 123, 7, {}, {}, {})
         assert result == []
         assert capsys.readouterr().out == ""
+
+
+class TestReviewClassicTransfersNetZero:
+    """Issue #356: a net of exactly zero used to render `[]0[/]`, which Rich
+    rejects, and the blanket handler reported it as a failed fetch."""
+
+    @staticmethod
+    def _client(transfers):
+        client = AsyncMock()
+        client.get_manager_transfers = AsyncMock(return_value=transfers)
+        return client
+
+    @staticmethod
+    def _world(in_pts, out_pts):
+        player_in = make_player(id=10, web_name="Haaland", team_id=1)
+        player_out = make_player(id=20, web_name="Watkins", team_id=1)
+        player_map = {10: player_in, 20: player_out}
+        live = {10: {"total_points": in_pts}, 20: {"total_points": out_pts}}
+        transfers = [
+            {"event": 5, "element_in": 10, "element_out": 20},
+        ]
+        return player_map, {1: make_team(id=1, short_name="TFC")}, live, transfers
+
+    async def test_zero_net_total_prints_summary_line(self, capsys):
+        player_map, teams, live, transfers = self._world(2, 2)
+        result = await _review_classic_transfers(
+            self._client(transfers), 123, 5, player_map, teams, live,
+        )
+        out = capsys.readouterr().out
+        assert "Could not fetch transfers" not in out
+        assert "Hits: 0 | Misses: 0 | Net: 0" in out
+        assert [t["net"] for t in result] == [0]
+
+    async def test_positive_and_negative_totals_still_signed(self, capsys):
+        player_map, teams, live, transfers = self._world(9, 2)
+        await _review_classic_transfers(self._client(transfers), 123, 5, player_map, teams, live)
+        assert "Net: +7" in capsys.readouterr().out
+
+        player_map, teams, live, transfers = self._world(2, 9)
+        await _review_classic_transfers(self._client(transfers), 123, 5, player_map, teams, live)
+        assert "Net: -7" in capsys.readouterr().out
+
+    async def test_fetch_failure_is_still_reported_as_a_fetch_failure(self, capsys):
+        client = AsyncMock()
+        client.get_manager_transfers = AsyncMock(side_effect=httpx.ConnectError("boom"))
+        result = await _review_classic_transfers(client, 123, 5, {}, {}, {})
+        captured = capsys.readouterr()
+        assert result == []
+        assert "Could not fetch transfers: boom" in captured.err
+        assert "Could not fetch transfers" not in captured.out
+
+    async def test_a_programming_error_is_not_reported_as_a_fetch_failure(self):
+        client = AsyncMock()
+        client.get_manager_transfers = AsyncMock(side_effect=TypeError("bad"))
+        with pytest.raises(TypeError):
+            await _review_classic_transfers(client, 123, 5, {}, {}, {})
+
+    async def test_bracketed_player_names_do_not_break_the_table(self, capsys):
+        player_map, teams, live, transfers = self._world(2, 2)
+        player_map[10] = make_player(id=10, web_name="[Odd]", team_id=1)
+        await _review_classic_transfers(self._client(transfers), 123, 5, player_map, teams, live)
+        assert "[Odd]" in capsys.readouterr().out
+
+
+def test_styled_returns_text_bare_without_a_style():
+    from fpl_cli.cli._helpers import styled
+
+    assert styled("5/8", "") == "5/8"
+    assert styled("5/8", "green") == "[green]5/8[/green]"
+
+
+def test_signed_net_markup_never_emits_an_empty_tag():
+    """Issue #356: zero must come back bare, not wrapped in `[]...[/]`."""
+    from rich.console import Console
+
+    from fpl_cli.cli._helpers import signed_net_markup
+
+    assert signed_net_markup(0) == "0"
+    assert signed_net_markup(3) == "[green]+3[/green]"
+    assert signed_net_markup(-3) == "[red]-3[/red]"
+    for n in (-3, 0, 3):
+        Console().print(signed_net_markup(n))
 
 
 class TestReviewClassicLeaguePendingStandings:

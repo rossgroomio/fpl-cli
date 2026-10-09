@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import TYPE_CHECKING, Any
 
+import httpx
 from rich.markup import escape as rich_escape
 from rich.table import Table
 
@@ -19,6 +21,7 @@ from fpl_cli.cli._helpers import (
     _net_transfer_ids,
     _slice_with_ties,
     performer_score,
+    signed_net_markup,
     your_gw_rank_line,
 )
 from fpl_cli.cli._league_recap_data import derive_point_in_time_positions
@@ -306,86 +309,84 @@ async def _review_classic_transfers(
 
     try:
         all_transfers = await client.get_manager_transfers(entry_id)
-        gw_transfers = [t for t in all_transfers if t.get("event") == gw]
+    except (httpx.HTTPError, json.JSONDecodeError) as e:
+        error_console.print(f"[dim]Could not fetch transfers: {rich_escape(str(e))}[/dim]")
+        return classic_transfers_data
 
-        paired = _collapse_transfer_churn(gw_transfers, player_map)
+    gw_transfers = [t for t in all_transfers if t.get("event") == gw]
 
-        if paired:
-            console.print("\n[bold]## Transfers[/bold]")
-            transfers_table = Table(show_header=True, header_style="bold")
-            transfers_table.add_column("In")
-            transfers_table.add_column("Pts", justify="right")
-            transfers_table.add_column("Out")
-            transfers_table.add_column("Pts", justify="right")
-            transfers_table.add_column("Net", justify="right")
-            transfers_table.add_column("Verdict")
+    paired = _collapse_transfer_churn(gw_transfers, player_map)
 
-            for player_in, player_out in paired:
-                if player_out and player_in:
-                    out_points, _, _ = _live_player_stats(live_stats, player_out.id)
-                    in_points, _, _ = _live_player_stats(live_stats, player_in.id)
+    if paired:
+        console.print("\n[bold]## Transfers[/bold]")
+        transfers_table = Table(show_header=True, header_style="bold")
+        transfers_table.add_column("In")
+        transfers_table.add_column("Pts", justify="right")
+        transfers_table.add_column("Out")
+        transfers_table.add_column("Pts", justify="right")
+        transfers_table.add_column("Net", justify="right")
+        transfers_table.add_column("Verdict")
 
-                    net = in_points - out_points
+        for player_in, player_out in paired:
+            if player_out and player_in:
+                out_points, _, _ = _live_player_stats(live_stats, player_out.id)
+                in_points, _, _ = _live_player_stats(live_stats, player_in.id)
 
-                    # Verdict: >1 = Hit, <-1 = Miss, else Neutral
-                    if net > 1:
-                        verdict = "[green]✓ Hit[/green]"
-                        verdict_plain = "✓ Hit"
-                    elif net < -1:
-                        verdict = "[red]✗ Miss[/red]"
-                        verdict_plain = "✗ Miss"
-                    else:
-                        verdict = "[dim]→ Neutral[/dim]"
-                        verdict_plain = "→ Neutral"
+                net = in_points - out_points
 
-                    out_team = teams.get(player_out.team_id)
-                    in_team = teams.get(player_in.team_id)
-                    out_abbr = out_team.short_name if out_team else "???"
-                    in_abbr = in_team.short_name if in_team else "???"
+                # Verdict: >1 = Hit, <-1 = Miss, else Neutral
+                if net > 1:
+                    verdict = "[green]✓ Hit[/green]"
+                    verdict_plain = "✓ Hit"
+                elif net < -1:
+                    verdict = "[red]✗ Miss[/red]"
+                    verdict_plain = "✗ Miss"
+                else:
+                    verdict = "[dim]→ Neutral[/dim]"
+                    verdict_plain = "→ Neutral"
 
-                    # Net display styling
-                    net_style = "green" if net > 0 else "red" if net < 0 else ""
-                    net_display = f"[{net_style}]{'+' if net > 0 else ''}{net}[/{net_style}]" if net_style else str(net)
+                out_team = teams.get(player_out.team_id)
+                in_team = teams.get(player_in.team_id)
+                out_abbr = out_team.short_name if out_team else "???"
+                in_abbr = in_team.short_name if in_team else "???"
 
-                    transfers_table.add_row(
-                        f"{player_in.web_name} ({in_abbr})",
-                        str(in_points),
-                        f"{player_out.web_name} ({out_abbr})",
-                        str(out_points),
-                        net_display,
-                        verdict,
-                    )
+                # Net display styling
+                net_display = signed_net_markup(net)
 
-                    classic_transfers_data.append({
-                        "player_out": player_out.web_name,
-                        "player_out_team": out_abbr,
-                        "player_out_team_name": out_team.name if out_team else None,
-                        "player_out_points": out_points,
-                        "player_in": player_in.web_name,
-                        "player_in_team": in_abbr,
-                        "player_in_team_name": in_team.name if in_team else None,
-                        "player_in_points": in_points,
-                        "net": net,
-                        "verdict": verdict_plain,
-                    })
+                transfers_table.add_row(
+                    f"{rich_escape(player_in.web_name)} ({in_abbr})",
+                    str(in_points),
+                    f"{rich_escape(player_out.web_name)} ({out_abbr})",
+                    str(out_points),
+                    net_display,
+                    verdict,
+                )
 
-            console.print(transfers_table)
+                classic_transfers_data.append({
+                    "player_out": player_out.web_name,
+                    "player_out_team": out_abbr,
+                    "player_out_team_name": out_team.name if out_team else None,
+                    "player_out_points": out_points,
+                    "player_in": player_in.web_name,
+                    "player_in_team": in_abbr,
+                    "player_in_team_name": in_team.name if in_team else None,
+                    "player_in_points": in_points,
+                    "net": net,
+                    "verdict": verdict_plain,
+                })
 
-            # Summary stats
-            hits = sum(1 for t in classic_transfers_data if t["net"] > 1)
-            misses = sum(1 for t in classic_transfers_data if t["net"] < -1)
-            total_net = sum(t["net"] for t in classic_transfers_data)
-            net_style = "green" if total_net > 0 else "red" if total_net < 0 else ""
-            net_sign = '+' if total_net > 0 else ''
-            console.print(f"\nHits: {hits} | Misses: {misses} | Net: [{net_style}]{net_sign}{total_net}[/{net_style}]")
-        elif is_opening_gameweek(gw):
-            # An empty GW1 transfer list is not a rolled transfer: the squad was
-            # bought pre-season and the first free transfer only arrives in GW2.
-            console.print("\n[bold]## Transfers[/bold]")
-            console.print("[dim]None - GW1 squads are bought pre-season, so there is nothing to review here[/dim]")
+        console.print(transfers_table)
 
-    except Exception as e:  # noqa: BLE001 — display resilience
-        console.print(f"[dim]Could not fetch transfers: {rich_escape(str(e))}[/dim]")
+        # Summary stats
+        hits = sum(1 for t in classic_transfers_data if t["net"] > 1)
+        misses = sum(1 for t in classic_transfers_data if t["net"] < -1)
+        total_net = sum(t["net"] for t in classic_transfers_data)
+        console.print(f"\nHits: {hits} | Misses: {misses} | Net: {signed_net_markup(total_net)}")
+    elif is_opening_gameweek(gw):
+        # An empty GW1 transfer list is not a rolled transfer: the squad was
+        # bought pre-season and the first free transfer only arrives in GW2.
+        console.print("\n[bold]## Transfers[/bold]")
+        console.print("[dim]None - GW1 squads are bought pre-season, so there is nothing to review here[/dim]")
 
     return classic_transfers_data
 
