@@ -44,6 +44,9 @@ dev = [
     # tests/test_dependencies.py compares version floors with packaging.version;
     # pytest pulls it in today, but a transitive import is not a declared one.
     "packaging>=23.0",
+    # tests/test_report_agent.py renders the review report through a CommonMark
+    # parser (#360); rich pulls it in today, same reasoning as packaging above.
+    "markdown-it-py>=2.2.0",
 ]
 
 [project.urls]

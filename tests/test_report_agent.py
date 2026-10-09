@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import pytest
+
 from fpl_cli.agents.base import AgentStatus
 from fpl_cli.agents.orchestration.report import ReportAgent, build_report_environment
 from fpl_cli.paths import TEMPLATE_DIR
@@ -473,6 +475,150 @@ class TestInlineFallback:
         output = self.agent._generate_review_inline(29, data)
         assert "Position:** 3 of 10" in output
         assert "Total: 720" in output
+
+
+class TestReviewMarkdownRendersAsWritten:
+    """#360: ranks and fixtures survive a CommonMark render, not just the raw text.
+
+    Every defect here was invisible in the raw markdown: `19.` is renumbered
+    by an ordered list, `3=.` is not a list marker at all, and fixtures with
+    no blank line between them are swallowed by the previous bullet list.
+    Both the template and the inline fallback are rendered, since either can
+    write the report.
+    """
+
+    @staticmethod
+    def _data() -> dict:
+        data = _review_data()
+        data["fpl_format"] = "both"
+        data["classic_league"] = {
+            "league_name": "Office League", "user_position": 3, "total_entries": 19,
+            "user_gw_points": 63, "user_total": 720, "user_gw_rank": "1", "gw_field_size": 19,
+            "nearby_rivals": [
+                {"rank": 2, "manager_name": "Rival", "total": 730, "is_user": False},
+                {"rank": 3, "manager_name": "Me", "total": 720, "is_user": True},
+            ],
+            "nearby_rivals_omitted": 2,
+            "best_performers": [
+                {"name": "Me", "points": 63, "gross_points": 63, "transfer_cost": 0, "rank_str": "1"},
+                {"name": "Second", "points": 60, "gross_points": 60, "transfer_cost": 0, "rank_str": "2"},
+                {"name": "TieA", "points": 58, "gross_points": 58, "transfer_cost": 0, "rank_str": "3="},
+                {"name": "TieB", "points": 58, "gross_points": 62, "transfer_cost": 4, "rank_str": "3="},
+            ],
+            "worst_performers": [
+                {"name": "Bottom", "points": 29, "gross_points": 33, "transfer_cost": 4,
+                 "rank_str": "1", "is_user": False, "is_context": False},
+                {"name": "Next", "points": 36, "gross_points": 36, "transfer_cost": 0,
+                 "rank_str": "2", "is_user": False, "is_context": False},
+                {"name": "Me", "points": 63, "gross_points": 63, "transfer_cost": 0,
+                 "rank_str": "19", "is_user": True, "is_context": True},
+            ],
+        }
+        data["draft_league"] = {
+            "user_position": 1, "total_entries": 8, "user_gw_points": 40, "user_total": 300,
+            "best_performers": [
+                {"name": "DraftA", "points": 50, "rank_str": "1="},
+                {"name": "DraftB", "points": 50, "rank_str": "1="},
+            ],
+            "worst_performers": [{"name": "DraftZ", "points": 10, "rank_str": "1", "is_user": False}],
+        }
+        data["fixtures"] = [
+            {"home_team": "BRE", "home_score": 3, "away_score": 0, "away_team": "CHE",
+             "goals": "Thiago (BRE)", "bonus": "Thiago (BRE, 3)"},
+            {"home_team": "TOT", "home_score": 2, "away_score": 3, "away_team": "AVL",
+             "goals": "Watkins (AVL)"},
+            {"home_team": "ARS", "home_score": 0, "away_score": 0, "away_team": "LIV"},
+        ]
+        return data
+
+    @staticmethod
+    def _tokens(markdown: str, heading: str) -> list:
+        """CommonMark (+ GFM tables) tokens of the section under `heading`."""
+        from markdown_it import MarkdownIt
+
+        tokens = MarkdownIt("commonmark").enable("table").parse(markdown)
+        start = next(
+            i for i, t in enumerate(tokens)
+            if t.type == "inline" and t.content == heading and tokens[i - 1].type == "heading_open"
+        ) + 2
+        level = tokens[start - 3].tag
+        end = next(
+            (i for i in range(start, len(tokens))
+             if tokens[i].type == "hr" or (tokens[i].type == "heading_open" and tokens[i].tag <= level)),
+            len(tokens),
+        )
+        return tokens[start:end]
+
+    @classmethod
+    def _table_rows(cls, markdown: str, heading: str) -> list[list[str]]:
+        rows: list[list[str]] = []
+        in_body = False
+        for t in cls._tokens(markdown, heading):
+            if t.type == "tbody_open":
+                in_body = True
+            elif t.type == "tbody_close":
+                in_body = False
+            elif in_body and t.type == "tr_open":
+                rows.append([])
+            elif in_body and t.type == "inline":
+                rows[-1].append(t.content)
+        return rows
+
+    @pytest.fixture(params=["template", "inline"])
+    def render(self, request):
+        agent = ReportAgent()
+        if request.param == "template":
+            return lambda data: agent._generate_review_report(5, data)
+        return lambda data: agent._generate_review_inline(5, data)
+
+    def test_no_performer_section_renders_as_an_ordered_list(self, render):
+        output = render(self._data())
+        for heading in ("Best GW Performers (Net)", "Worst GW Performers (Net)"):
+            assert not any(t.type == "ordered_list_open" for t in self._tokens(output, heading))
+
+    def test_tie_ranks_survive_with_every_tied_manager_on_its_own_row(self, render):
+        rows = self._table_rows(render(self._data()), "Best GW Performers (Net)")
+        assert [r[:2] for r in rows] == [["1", "Me"], ["2", "Second"], ["3=", "TieA"], ["3=", "TieB"]]
+        assert rows[3][2] == "58 net pts (62 gross, -4 hit)"
+
+    def test_draft_tie_ranks_survive(self, render):
+        rows = self._table_rows(render(self._data()), "Best GW Performers")
+        # The classic heading carries "(Net)", so this is the draft section
+        assert [r[:2] for r in rows] == [["1=", "DraftA"], ["1=", "DraftB"]]
+
+    def test_context_row_is_labelled_not_a_bottom_five_placing(self, render):
+        output = render(self._data())
+        rows = self._table_rows(output, "Worst GW Performers (Net)")
+        assert [r[:2] for r in rows] == [["1", "Bottom"], ["2", "Next"]]
+
+        paragraphs = [t.content for t in self._tokens(output, "Worst GW Performers (Net)") if t.type == "inline"]
+        assert "*Your GW rank: 1 of 19 - 63 pts*" in paragraphs
+
+    def test_omitted_rivals_note_is_not_absorbed_as_a_table_row(self, render):
+        output = render(self._data())
+        rows = self._table_rows(output, "Nearby Rivals (+/- 25 pts)")
+        assert len(rows) == 2
+        paragraphs = [t.content for t in self._tokens(output, "Nearby Rivals (+/- 25 pts)") if t.type == "inline"]
+        assert "*...and 2 more within 25*" in paragraphs
+
+    def test_each_fixture_is_its_own_block(self, render):
+        tokens = self._tokens(render(self._data()), "Results")
+        headers = [
+            tokens[i + 1].content for i, t in enumerate(tokens)
+            if t.type == "paragraph_open" and t.level == 0
+        ]
+        assert headers == ["**BRE 3-0 CHE**", "**TOT 2-3 AVL**", "**ARS 0-0 LIV**"]
+
+        lists: list[list[str]] = []
+        for i, t in enumerate(tokens):
+            if t.type == "bullet_list_open":
+                lists.append([])
+            elif t.type == "paragraph_open" and t.level > 0:
+                lists[-1].append(tokens[i + 1].content)
+        assert lists == [
+            ["Goals: Thiago (BRE)", "Bonus: Thiago (BRE, 3)"],
+            ["Goals: Watkins (AVL)"],
+        ]
 
 
 # ---------------------------------------------------------------------------

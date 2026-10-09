@@ -599,6 +599,7 @@ async def _review_classic_league(
             "league_name": league_name,
             "user_position": user_rank,
             "user_gw_rank": classic_user_gw_rank,
+            "gw_field_size": len(sorted_by_net_desc),
             "total_entries": total_entries,
             "user_gw_points": user_gw_pts,
             "user_total": user_total,
@@ -625,6 +626,10 @@ async def _review_classic_league(
                     "transfer_cost": e["transfer_cost"],
                     "rank_str": e["rank_str"],
                     "is_user": e.get("is_user", False),
+                    # The user's own row, appended for context when they are
+                    # not in the bottom five -- the report shows it beside the
+                    # table, not as a bottom-five placing (#360)
+                    "is_context": e.get("is_user", False) and not user_in_bottom,
                 }
                 for e in worst_performers_data
             ],

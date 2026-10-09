@@ -1405,6 +1405,49 @@ class TestReviewClassicLeagueUserNotOnPage:
         assert result["user_gw_points"] == 0
 
 
+class TestReviewClassicLeagueContextRow:
+    """#360: the user's row appended to the bottom five is flagged as context.
+
+    The report renders it beside the table rather than as a sixth placing,
+    so the flag has to distinguish the appended row from a user who really
+    is in the bottom five.
+    """
+
+    @staticmethod
+    def _client(event_totals: list[int]) -> AsyncMock:
+        client = AsyncMock()
+        client.get_classic_league_standings = AsyncMock(return_value={
+            "league": {"name": "Big League"},
+            "standings": {"results": [
+                {
+                    "entry": i + 1, "rank": i + 1, "total": 500 - i,
+                    "event_total": pts, "player_name": f"Manager{i + 1}",
+                }
+                for i, pts in enumerate(event_totals)
+            ]},
+        })
+        return client
+
+    async def test_gameweek_winner_outside_the_bottom_five_is_a_context_row(self):
+        client = self._client([63, 60, 58, 50, 45, 40, 36, 35])
+        result = await _review_classic_league(client, 999, 1, 5, 5)
+
+        worst = result["worst_performers"]
+        assert [p["is_context"] for p in worst] == [False] * 5 + [True]
+        assert worst[-1]["is_user"] is True
+        assert result["user_gw_rank"] == "1"
+        assert result["gw_field_size"] == 8
+
+    async def test_user_inside_the_bottom_five_is_a_real_placing(self):
+        client = self._client([63, 60, 58, 50, 45, 40, 36, 35])
+        result = await _review_classic_league(client, 999, 8, 5, 5)
+
+        worst = result["worst_performers"]
+        assert len(worst) == 5
+        assert not any(p["is_context"] for p in worst)
+        assert worst[0]["is_user"] is True
+
+
 class TestReviewClassicLeagueNearbyRivals:
     """#149: the rivals window must centre on the user, not top-slice the league."""
 

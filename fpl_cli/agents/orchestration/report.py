@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +20,28 @@ from fpl_cli.paths import TEMPLATE_DIR
 from fpl_cli.services.team_ratings import fdr_columns_footer
 from fpl_cli.utils.text import ordinal_suffix
 from fpl_cli.utils.time import format_generated_at
+
+
+def performer_points(p: Mapping[str, Any]) -> str:
+    """The points cell of a Best/Worst GW Performers row.
+
+    A row carrying a hit shows the net score with its gross and hit beside
+    it, so the rank (which is on net) reads against the number it was
+    ranked on.
+    """
+    cost = p.get("transfer_cost") or 0
+    if cost:
+        return f"{p.get('points', 0)} net pts ({p.get('gross_points', 0)} gross, -{cost} hit)"
+    return f"{p.get('points', 0)} pts"
+
+
+def _performers_table(performers: Sequence[Mapping[str, Any]]) -> list[str]:
+    """Best/Worst GW Performers rows as a markdown table, blank line after."""
+    rows = [
+        f"| {p.get('rank_str', '?')} | {p.get('name', 'Unknown')} | {performer_points(p)} |"
+        for p in performers
+    ]
+    return ["| Rank | Manager | Pts |", "|------|---------|-----|", *rows, ""]
 
 
 def build_report_environment() -> Environment:
@@ -43,6 +65,9 @@ def build_report_environment() -> Environment:
     # the label is derived at render -- here and in the prompt -- from the
     # same mapping rather than from a second stored field that could drift
     env.filters["kind_label"] = draft_transaction_kind_label
+    # Performer ranks render as a table cell, never as a list marker: markdown
+    # renumbers `19.` and cannot parse a tie's `3=.` at all (#360)
+    env.globals["performer_points"] = performer_points
     return env
 
 
@@ -515,26 +540,25 @@ class ReportAgent(Agent):
                         name = r.get("manager_name", "Unknown")
                     lines.append(f"| {r.get('rank')} | {name} | {r.get('total'):,} | {diff_str} |")
                 if cl.get("nearby_rivals_omitted"):
-                    lines.append(f"*...and {cl['nearby_rivals_omitted']} more within 25*")
+                    lines.extend(["", f"*...and {cl['nearby_rivals_omitted']} more within 25*"])
+                lines.append("")
 
             if cl.get("best_performers"):
-                lines.append("### Best GW Performers")
-                for p in cl["best_performers"]:
-                    rank = p.get("rank_str", "?")
-                    lines.append(f"{rank}. {p['name']} - {p['points']} pts")
+                lines.append("### Best GW Performers (Net)")
+                lines.extend(_performers_table(cl["best_performers"]))
 
             if cl.get("worst_performers"):
-                lines.append("### Worst GW Performers (Net Points)")
+                lines.append("### Worst GW Performers (Net)")
+                lines.extend(_performers_table(
+                    [p for p in cl["worst_performers"] if not p.get("is_context")],
+                ))
                 for p in cl["worst_performers"]:
-                    rank = p.get("rank_str", "?")
-                    name = "You" if p.get("is_user") else p.get("name", "Unknown")
-                    gross = p.get("gross_points", p.get("points", 0))
-                    cost = p.get("transfer_cost", 0)
-                    net = p.get("net_points", gross)
-                    if cost > 0:
-                        lines.append(f"{rank}. {name} - {gross} gross, -{cost} hit = {net} net")
-                    else:
-                        lines.append(f"{rank}. {name} - {net} pts")
+                    if p.get("is_context"):
+                        field = f" of {cl['gw_field_size']}" if cl.get("gw_field_size") else ""
+                        lines.extend([
+                            f"*Your GW rank: {cl.get('user_gw_rank')}{field} - {performer_points(p)}*",
+                            "",
+                        ])
                 if cl.get("transfer_impact"):
                     lines.append(f"\n⚠ {cl['transfer_impact']}")
             lines.append("")
@@ -606,15 +630,11 @@ class ReportAgent(Agent):
 
             if dl.get("best_performers"):
                 lines.append("### Best GW Performers")
-                for p in dl["best_performers"]:
-                    rank = p.get("rank_str", "?")
-                    lines.append(f"{rank}. {p['name']} - {p['points']} pts")
+                lines.extend(_performers_table(dl["best_performers"]))
 
             if dl.get("worst_performers"):
                 lines.append("### Worst GW Performers")
-                for p in dl["worst_performers"]:
-                    rank = p.get("rank_str", "?")
-                    lines.append(f"{rank}. {p['name']} - {p['points']} pts")
+                lines.extend(_performers_table(dl["worst_performers"]))
             lines.append("")
 
         # Results
@@ -624,7 +644,7 @@ class ReportAgent(Agent):
         ])
         if data.get("fixtures"):
             for f in data["fixtures"]:
-                lines.append(f"**{f['home_team']} {f['home_score']}-{f['away_score']} {f['away_team']}**")
+                lines.extend([f"**{f['home_team']} {f['home_score']}-{f['away_score']} {f['away_team']}**", ""])
                 if f.get("goals"):
                     lines.append(f"- Goals: {f['goals']}")
                 if f.get("assists"):
