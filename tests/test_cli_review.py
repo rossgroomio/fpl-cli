@@ -1405,6 +1405,59 @@ class TestReviewClassicLeagueUserNotOnPage:
         assert result["user_gw_points"] == 0
 
 
+class TestReviewClassicLeagueContextRow:
+    """#360: the user's row from above the bottom five is kept out of it.
+
+    It travels as its own `user_context_row` and is shown beside the table
+    as a "Your GW rank" note -- in the terminal as in the report -- so it
+    can never read as a bottom placing.
+    """
+
+    @staticmethod
+    def _client(event_totals: list[int], *, has_next: bool = False) -> AsyncMock:
+        client = AsyncMock()
+        client.get_classic_league_standings = AsyncMock(return_value={
+            "league": {"name": "Big League"},
+            "standings": {"has_next": has_next, "results": [
+                {
+                    "entry": i + 1, "rank": i + 1, "total": 500 - i,
+                    "event_total": pts, "player_name": f"Manager{i + 1}",
+                }
+                for i, pts in enumerate(event_totals)
+            ]},
+        })
+        return client
+
+    TOTALS = [63, 60, 58, 50, 45, 40, 36, 35]  # noqa: RUF012 — plain test data
+
+    async def test_gameweek_winner_is_a_context_row_not_a_sixth_placing(self, capsys):
+        result = await _review_classic_league(self._client(self.TOTALS), 999, 1, 5, 5)
+
+        assert len(result["worst_performers"]) == 5
+        assert not any(p["is_user"] for p in result["worst_performers"])
+        assert result["user_context_row"]["points"] == 63
+        assert result["user_gw_rank"] == "1"
+        assert result["gw_field_size"] == 8
+
+        worst = capsys.readouterr().out.split("Worst GW Performers")[1]
+        assert "Your GW rank: 1 of 8 - 63 pts" in worst
+        assert "You" not in worst.replace("Your GW rank", "")
+
+    async def test_user_inside_the_bottom_five_is_a_real_placing(self):
+        result = await _review_classic_league(self._client(self.TOTALS), 999, 8, 5, 5)
+
+        assert result["worst_performers"][0]["is_user"] is True
+        assert result["user_context_row"] is None
+
+    async def test_one_page_of_a_larger_league_names_no_field_size(self, capsys):
+        # `has_next` means the ranks cover page one only; "of 8" would pass
+        # a page off as the whole league
+        result = await _review_classic_league(self._client(self.TOTALS, has_next=True), 999, 1, 5, 5)
+
+        assert result["gw_field_size"] is None
+        assert "Your GW rank: 1 - 63 pts" in capsys.readouterr().out
+
+
 class TestReviewClassicLeagueNearbyRivals:
     """#149: the rivals window must centre on the user, not top-slice the league."""
 

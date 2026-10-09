@@ -744,6 +744,74 @@ class TestLeagueContextUserMasking:
         assert "7. You: 993 pts" in ctx["classic_rivals"]
         assert ctx["classic_rivals"].count("\n") == 6  # all 7 rows present, none dropped
 
+    # Rows as `_review_classic_league` stores them: `points` is the net score
+    # the row was ranked on, and there is no `net_points` key.
+
+    def test_classic_worst_performers_quotes_a_hit_takers_net_score(self):
+        # #364: the net side used to fall back to gross, so the model was told
+        # "33 net pts (33 gross, -4 hit)" while the fines line said 29
+        ctx = self._context(classic={
+            "worst_performers": [
+                {"rank_str": "1", "name": "Alex", "points": 29, "gross_points": 33,
+                 "transfer_cost": 4, "is_user": False},
+            ],
+        })
+        assert ctx["classic_worst_performers"] == "- Rank 1: Alex - 29 net pts (33 gross, -4 hit)"
+
+    def test_classic_worst_performers_context_row_is_not_a_bottom_placing(self):
+        # #360: the user's row from above the bottom five used to go out as
+        # "19. You - 63 pts" under the Worst GW Performers heading
+        ctx = self._context(classic={
+            "user_gw_rank": "1", "gw_field_size": 19,
+            "worst_performers": [
+                {"rank_str": "1", "name": "Alex", "points": 29, "gross_points": 29,
+                 "transfer_cost": 0, "is_user": False},
+            ],
+            "user_context_row": {"rank_str": "19", "name": "Manager", "points": 63, "gross_points": 63,
+                                 "transfer_cost": 0, "is_user": True},
+        })
+        assert ctx["classic_worst_performers"].splitlines() == [
+            "- Rank 1: Alex - 29 pts",
+            "Your GW rank: 1 of 19 - 63 pts (not among the lowest scorers above)",
+        ]
+
+    def test_tie_ranks_reach_the_model_as_labels_not_list_markers(self):
+        # "3=." is not a markdown list marker, and the model echoes what it is
+        # shown into the saved review
+        ctx = self._context(
+            classic={"worst_performers": [
+                {"rank_str": "1=", "name": "Alex", "points": 29, "gross_points": 29,
+                 "transfer_cost": 0, "is_user": False},
+                {"rank_str": "1=", "name": "Manager", "points": 29, "gross_points": 29,
+                 "transfer_cost": 0, "is_user": True},
+            ]},
+            draft={"worst_performers": [{"rank_str": "1=", "name": "Sam", "points": 20, "is_user": False}]},
+        )
+        assert ctx["classic_worst_performers"].splitlines() == [
+            "- Rank 1=: Alex - 29 pts",
+            "- Rank 1=: You - 29 pts",
+        ]
+        assert ctx["draft_worst_performers"] == "- Rank 1=: Sam - 20 pts"
+
+
+class TestPerformerScore:
+    """The one wording for a performer's score, shared by every writer."""
+
+    def test_a_hit_shows_net_then_gross_and_hit(self):
+        from fpl_cli.cli._helpers import performer_score
+        assert performer_score({"points": 29, "gross_points": 33, "transfer_cost": 4}) == (
+            "29 net pts (33 gross, -4 hit)"
+        )
+
+    def test_a_missing_gross_is_derived_not_stated_as_zero(self):
+        from fpl_cli.cli._helpers import performer_score
+        assert performer_score({"points": 40, "transfer_cost": 4}) == "40 net pts (44 gross, -4 hit)"
+
+    def test_no_hit_is_plain_points(self):
+        from fpl_cli.cli._helpers import performer_score
+        assert performer_score({"points": 40, "transfer_cost": 0}) == "40 pts"
+        assert performer_score({"points": 40}) == "40 pts"
+
 
 class TestAutoSubFormatting:
     """Tests for auto-sub player string formatting."""

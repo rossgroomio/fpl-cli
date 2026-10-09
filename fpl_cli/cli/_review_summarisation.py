@@ -13,7 +13,7 @@ from rich.markup import escape as rich_escape
 from fpl_cli.cli._context import console, error_console
 from fpl_cli.cli._fines import FinesLeagueData, FinesTeamPlayer, compute_bench_analysis, evaluate_fines
 from fpl_cli.cli._fines_config import parse_fines_config
-from fpl_cli.cli._helpers import _gw_position_with_half
+from fpl_cli.cli._helpers import _gw_position_with_half, performer_score, your_gw_rank_line
 from fpl_cli.cli._league_recap_types import draft_transaction_kind_label
 from fpl_cli.cli._review_analysis import GlobalReviewData, NextGameweekOutlook, TeamNextFixture
 from fpl_cli.cli._review_classic import _format_review_classic_player
@@ -777,19 +777,22 @@ def _format_league_context(
             lines.append(f"- {r.get('rank', '?')}. {name}: {r.get('total', 0):,} pts")
         classic_rivals_str = "\n".join(lines)
 
+    # Ranks go to the model as "Rank 3=:", never as "3=." list markers: a
+    # tie's marker is not valid markdown and the model echoes what it is
+    # shown into the saved review (#360)
     classic_worst_performers_str = ""
     if classic_league_data and classic_league_data.get("worst_performers"):
-        lines = []
-        for p in classic_league_data["worst_performers"]:
-            rank = p.get("rank_str", "?")
-            name = "You" if p.get("is_user") else p.get("name", "Unknown")
-            gross = p.get("gross_points", 0)
-            cost = p.get("transfer_cost", 0)
-            net = p.get("net_points", gross)
-            if cost > 0:
-                lines.append(f"{rank}. {name} - {net} net pts ({gross} gross, -{cost} hit)")
-            else:
-                lines.append(f"{rank}. {name} - {net} pts")
+        lines = [
+            f"- Rank {p.get('rank_str', '?')}: {'You' if p.get('is_user') else p.get('name', 'Unknown')}"
+            f" - {performer_score(p)}"
+            for p in classic_league_data["worst_performers"]
+        ]
+        if classic_league_data.get("user_context_row"):
+            lines.append(your_gw_rank_line(
+                classic_league_data.get("user_gw_rank"),
+                classic_league_data.get("gw_field_size"),
+                classic_league_data["user_context_row"],
+            ) + " (not among the lowest scorers above)")
         classic_worst_performers_str = "\n".join(lines)
 
     classic_transfer_impact_str = classic_league_data.get("transfer_impact") if classic_league_data else None
@@ -798,10 +801,8 @@ def _format_league_context(
     if draft_league_data and draft_league_data.get("worst_performers"):
         lines = []
         for p in draft_league_data["worst_performers"]:
-            rank = p.get("rank_str", "?")
             name = "You" if p.get("is_user") else p.get("name", "Unknown")
-            pts = p.get("points", 0)
-            lines.append(f"{rank}. {name} - {pts} pts")
+            lines.append(f"- Rank {p.get('rank_str', '?')}: {name} - {performer_score(p)}")
         draft_worst_performers_str = "\n".join(lines)
 
     captain_pick = next((p for p in team_points_data if p.get("is_captain")), None)
