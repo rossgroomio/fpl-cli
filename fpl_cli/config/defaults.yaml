@@ -45,7 +45,7 @@ llm:
       search_recency_filter: week
   synthesis:
     provider: anthropic
-    model: claude-sonnet-5
+    model: claude-sonnet-5-5
     timeout: 60
     query_defaults:
       max_tokens: 8000  # thinking + output share this ceiling (#316); 4096 left no room for prose once the model reasoned first

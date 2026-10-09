@@ -23,7 +23,7 @@ _PROVIDER_LABEL = "Anthropic"
 class AnthropicProvider:
     """LLM provider for the Anthropic Messages API."""
 
-    DEFAULT_MODEL: ClassVar[str] = "claude-sonnet-5"
+    DEFAULT_MODEL: ClassVar[str] = "claude-sonnet-5-5"
     DEFAULT_TIMEOUT: ClassVar[float] = 60.0
     API_KEY_ENV_VAR: ClassVar[str] = "ANTHROPIC_API_KEY"
     KEY_SETUP_URL: ClassVar[str] = "https://console.anthropic.com/"

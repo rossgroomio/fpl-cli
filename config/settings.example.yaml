@@ -22,7 +22,7 @@ reports:
 #     model: sonar-pro
 #   synthesis:
 #     provider: anthropic
-#     model: claude-sonnet-5
+#     model: claude-sonnet-5-5
 #
 # Switch synthesis to OpenAI:
 #   synthesis:

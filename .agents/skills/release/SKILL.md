@@ -56,6 +56,7 @@ or stale build.
     `head_sha` matches `origin/main` and `conclusion="success"`. For
     per-job detail on a failing run, re-call with
     `method="list_workflow_jobs"` and the run ID as `resource_id`.
+- The default synthesis model is still current: `llm.synthesis.model` in `fpl_cli/config/defaults.yaml` and `DEFAULT_MODEL` in `fpl_cli/api/providers/anthropic.py` should name the newest Sonnet. If a newer one exists, flag it to the user (bumping needs a live-key run of the synthesis commands and a recheck of `max_tokens`, #316) rather than bumping silently.
 - Local checks pass, mirroring CI (run in parallel; check each exit status
   individually — a `| tail` pipe hides failures):
 

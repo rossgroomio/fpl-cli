@@ -1518,7 +1518,7 @@ llm:
       search_recency_filter: week
   synthesis:
     provider: anthropic
-    model: claude-sonnet-5
+    model: claude-sonnet-5-5
     timeout: 60
     query_defaults:
       max_tokens: 8000
