@@ -838,8 +838,9 @@ key was refused the same way until it stopped being a refusal at all — see the
 **Notices** — the line that says an entry id is not configured or not found in the draft league,
 the pair that says why a past gameweek has no league table, the note that a new mini-league's
 standings are not published yet, and the `Fetching your team data...` progress line — go to
-**stderr**, for classic and draft alike. The `## League` heading stays on stdout, so silencing
-stderr leaves that heading in place without the explanation.
+**stderr**, for classic and draft alike. A section heading stays on stdout only with the content it
+introduces: for a past gameweek, or a mini-league whose table is not published yet, there is no
+League section on stdout at all and stderr says why.
 
 ### League Recap
 

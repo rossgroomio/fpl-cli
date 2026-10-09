@@ -1471,8 +1471,9 @@ class TestReviewClassicLeaguePendingStandings:
 
 class TestReviewClassicNoticesStayOffStdout:
     """Issues #377, #382: table mode puts the table on stdout and every other
-    line on stderr, so `fpl review 2>/dev/null` is the review alone. The
-    section headings stay on stdout with the content they introduce."""
+    line on stderr. A section heading stays on stdout only with the content it
+    introduces, so a League section with no table prints no heading there --
+    its explanation is on stderr, and a stdout reader gets no empty section."""
 
     @staticmethod
     def _standings_client(*, standings) -> AsyncMock:
@@ -1492,7 +1493,8 @@ class TestReviewClassicNoticesStayOffStdout:
 
         captured = capsys.readouterr()
         assert result == {"league_name": "Office League"}
-        assert "## League" in captured.out
+        assert "## League" not in captured.out
+        assert captured.out == ""
         assert "League standings not shown for historical GW3 review" in captured.err
         assert "Use 'fpl league' for current standings" in captured.err
         assert "League standings not shown" not in captured.out
@@ -1505,15 +1507,19 @@ class TestReviewClassicNoticesStayOffStdout:
 
         await _review_classic_league(client, 999, 1, 5, 5)
 
-        assert "League standings not shown" not in capsys.readouterr().err
+        captured = capsys.readouterr()
+        assert "League standings not shown" not in captured.err
+        # The table is there, so its heading is too.
+        assert "## League" in captured.out
 
-    async def test_pending_standings_keep_the_heading_on_stdout_and_the_notice_on_stderr(self, capsys):
+    async def test_pending_standings_print_the_notice_on_stderr_and_no_empty_section_on_stdout(self, capsys):
         client = self._standings_client(standings=[])
 
         await _review_classic_league(client, 999, 1, 1, 1)
 
         captured = capsys.readouterr()
-        assert "## League" in captured.out
+        assert "## League" not in captured.out
+        assert captured.out == ""
         assert "standings not published yet" not in captured.out
         assert "Re-run once the table appears" not in captured.out
         err = " ".join(captured.err.split())
@@ -2490,12 +2496,12 @@ class TestReviewDraftPicksAndLeagueBlocks:
         assert data["draft_squad_points_data"] == []
 
     async def test_a_historical_review_explains_the_missing_league_on_stderr(self, capsys):
-        # Issues #377, #382: the heading introduces the section and stays on
-        # stdout; the two lines that explain its absence are commentary.
+        # Issues #377, #382: the two lines that explain the missing table are
+        # commentary, and with no table there is no heading to introduce one.
         await self._run(api_current_gw_id=5)
 
         captured = capsys.readouterr()
-        assert "## League" in captured.out
+        assert "## League" not in captured.out
         assert "League standings not shown for historical GW3 review" in captured.err
         assert "Use 'fpl league' for current standings" in captured.err
         assert "League standings not shown" not in captured.out
@@ -2506,6 +2512,7 @@ class TestReviewDraftPicksAndLeagueBlocks:
 
         captured = capsys.readouterr()
         assert "League standings not shown" not in captured.err
+        assert "## League" in captured.out
         assert "- Position: 1 of 2" in captured.out
 
     async def test_a_missing_draft_entry_id_is_reported_on_stderr(self, capsys):

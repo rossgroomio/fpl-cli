@@ -422,9 +422,9 @@ async def _review_classic_league(
         league_name = standings_data.get("league", {}).get("name", "Classic League")
         standings = standings_data.get("standings", {}).get("results", [])
 
-        console.print("\n[bold]## League[/bold]")
-
-        # Check if we're reviewing a historical GW (league data would be stale)
+        # Check if we're reviewing a historical GW (league data would be stale).
+        # The heading is printed only on the path that has a table for it to
+        # introduce: the two below say why there is none, on stderr.
         is_historical_review = api_current_gw_id is not None and gw != api_current_gw_id
         if is_historical_review:
             print_historical_league_notice(gw)
@@ -441,6 +441,8 @@ async def _review_classic_league(
             )
             error_console.print("[dim]Re-run once the table appears, or use 'fpl league'[/dim]")
             return {"league_name": league_name, "standings_pending": True}
+
+        console.print("\n[bold]## League[/bold]")
 
         # Find user's position and points
         user_rank: int | str = "?"

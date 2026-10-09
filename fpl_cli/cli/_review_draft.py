@@ -444,10 +444,10 @@ async def _review_draft(
 
                 # ## League section - only show for current GW (live data)
                 is_historical_review = api_current_gw_id is not None and gw != api_current_gw_id
-                console.print("\n[bold]## League[/bold]")
                 if is_historical_review:
                     print_historical_league_notice(gw)
                 else:
+                    console.print("\n[bold]## League[/bold]")
                     console.print(f"- Position: {user_rank} of {total_entries}")
                     console.print(f"- GW Points: {user_gw_pts} (Total: {user_total:,})")
 
