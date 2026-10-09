@@ -669,6 +669,7 @@ def _serialize_notes_pack_entry(entry: NotesPackEntry) -> dict[str, Any]:
         "condition_key": entry.condition_key,
         "length": entry.length,
         "held_count": entry.held_count,
+        "inapplicable_count": entry.inapplicable_count,
         "excess": entry.excess,
         "occurrences": entry.occurrences,
     }

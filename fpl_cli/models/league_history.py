@@ -476,7 +476,12 @@ def resolve_rows(rows: list[LeagueHistoryRow]) -> dict[int, LeagueHistoryRow]:
 # and green_arrow_drought holds instead of extending for a gameweek that
 # began at first place, where climbing was impossible and the absent green
 # arrow is therefore no failure (issue #164 review).
-LEAGUE_HISTORY_COUNTERS_VERSION = 4
+# 5: `inapplicable_in_run` added to `ConditionRunState`, and the gameweeks a
+# condition had nothing to judge in -- a draft manager who made no waiver
+# moves, a captain with no fixture, a fully tied cohort, a drought gameweek
+# begun at first place -- moved off `held_in_run`/`held_total` onto it, so a
+# streak no longer reports a complete gameweek as "not recorded" (issue #358).
+LEAGUE_HISTORY_COUNTERS_VERSION = 5
 
 
 class ConditionRunState(BaseModel):
@@ -485,12 +490,16 @@ class ConditionRunState(BaseModel):
     Persisted so the weekly path can fold in one new gameweek without
     rescanning the whole ledger. `length` and `start_gameweek` describe the
     run currently open (both reset together); `held_in_run` counts
-    gameweeks that held -- R19's unknown rows, R20's fixture-less blanks,
-    a condition that did not apply that gameweek -- while this run stayed
-    open. A run does not have to hold on *consecutive* gameweeks to
-    accumulate this count: three non-held extends that held eight
-    gameweeks somewhere in between is still reported as length 3, held 8,
-    not silently rounded down to "3, consecutive" (KTD7, consumed by U9).
+    gameweeks that held -- R19's unknown rows, a field the row's tier never
+    captured -- while this run stayed open, and `inapplicable_in_run` the
+    gameweeks the record ruled completely but the condition had nothing to
+    judge in (R20's fixture-less blanks, a draft manager who made no waiver
+    moves), which leave the run open just the same but are no gap in the
+    record (issue #358). A run does not have to hold on *consecutive*
+    gameweeks to accumulate either count: three non-held extends that held
+    eight gameweeks somewhere in between is still reported as length 3,
+    held 8, not silently rounded down to "3, consecutive" (KTD7, consumed
+    by U9).
 
     The remaining four fields are season-wide and survive a reset, which
     is what makes a season total representable at all (issue #164):
@@ -513,6 +522,7 @@ class ConditionRunState(BaseModel):
     length: int = 0
     start_gameweek: int | None = None
     held_in_run: int = 0
+    inapplicable_in_run: int = 0
     occurrences: int = 0
     held_total: int = 0
     last_occurrence_gameweek: int | None = None

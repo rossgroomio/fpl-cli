@@ -3232,6 +3232,26 @@ class TestLeagueRecapJsonEnvelope:
             for entry in pack["season_count_entries"]
         )
 
+    def test_a_streak_entry_serializes_its_inapplicable_gameweeks_apart_from_held_ones(self):
+        """Issue #358: a JSON consumer reading `held_count` as missing data
+        must not be handed a gameweek the record holds completely -- the
+        two counts travel separately, as they do in the text."""
+        from fpl_cli.cli.league_recap import _serialize_notes_pack_entry
+
+        entry = NotesPackEntry(
+            kind=NoteKind.STREAK,
+            text="Alice: 4 waiver hauls in the last 5 (GW1-GW5), with no moves made in 1.",
+            surfaces=frozenset(),
+            window=GameweekWindow(start_gameweek=1, end_gameweek=5),
+            manager_key=1, manager_name="Alice", condition_key="waiver_win_run",
+            length=4, held_count=0, inapplicable_count=1, excess=1,
+        )
+
+        serialized = _serialize_notes_pack_entry(entry)
+
+        assert serialized["held_count"] == 0
+        assert serialized["inapplicable_count"] == 1
+
     def test_a_partial_coverage_run_reports_tiers_and_unknowns_per_gameweek(self):
         """U11's own Definition of Done row: the payload parses cleanly on a
         partial-coverage run too, with manager data still present -- a mix

@@ -21,7 +21,10 @@ Two rules this module exists to enforce (R14, R20, R17):
 - A streak with any held gameweek is rendered as an observed count over its
   true span, never as a consecutive run -- a length-3 run that held 8 is
   "3 in the last 11 gameweeks", not "3 in a row". Only a run holding nothing
-  may use "in a row" phrasing.
+  may use "in a row" phrasing. And only a gameweek the record lacks is
+  "not recorded": one the condition had nothing to judge in -- a draft
+  manager who made no waiver moves -- is stated in the condition's own
+  words (issue #358).
 - A claim is qualified "since GW X" only when the ledger's own coverage --
   for the partition, or for one manager -- actually begins later than the
   league's start gameweek. A bounded trailing read window (below) is a cost
@@ -215,11 +218,12 @@ class NotesPackEntry:
 
     `text` is written to be reused verbatim or near-verbatim on whichever
     surfaces `surfaces` names -- kept factual and neutral, not editorialised,
-    since a later unit renders it directly. `window`, `held_count`, and
-    `tier` are the entry's provenance: the computation span, how much of
-    that span held rather than extended, and the weakest fidelity tier among
-    the rows actually read for it (`None` when no row read underlies the
-    entry at all, as for the season-phase marker).
+    since a later unit renders it directly. `window`, `held_count`,
+    `inapplicable_count`, and `tier` are the entry's provenance: the
+    computation span, how much of that span held rather than extended, how
+    much of it the condition had nothing to judge in (issue #358), and the
+    weakest fidelity tier among the rows actually read for it (`None` when
+    no row read underlies the entry at all, as for the season-phase marker).
     """
 
     kind: NoteKind
@@ -231,14 +235,20 @@ class NotesPackEntry:
     manager_name: str | None = None
     condition_key: str | None = None
     # The run's own length -- gameweeks that genuinely extended it, as
-    # opposed to `window.span_length`, which also counts `held_count`. Equal
-    # to `window.span_length - held_count` only when every gameweek in the
-    # window folded in as an extend or a hold; a manager genuinely *absent*
+    # opposed to `window.span_length`, which also counts `held_count` and
+    # `inapplicable_count`. Equal to `window.span_length - held_count -
+    # inapplicable_count` only when every gameweek in the window folded in
+    # as an extend, a hold or an inapplicable; a manager genuinely *absent*
     # from a gameweek (as opposed to unknown) breaks that equality without
-    # affecting either counter, which is exactly why this is stored directly
+    # affecting any counter, which is exactly why this is stored directly
     # rather than derived from the window (see `_streak_entries`).
     length: int = 0
     held_count: int = 0
+    # Streak entries only: gameweeks inside the run that the record ruled
+    # completely and the condition had nothing to judge in -- a draft
+    # manager who made no waiver moves -- kept apart from `held_count` so a
+    # consumer never reads one as missing data (issue #358).
+    inapplicable_count: int = 0
     excess: int | None = None
     # Season-count entries only (issue #164): how many gameweeks have ever
     # extended this condition this season, across every reset. For those
@@ -324,13 +334,22 @@ def _entry_tier(
     return weakest_tier(tiers)
 
 
+# The trailing clause's fallback for a condition that returns INAPPLICABLE
+# without naming what that means for it. Every registry entry that can
+# return it declares its own label; this only keeps a new one honest
+# before it does.
+_DEFAULT_INAPPLICABLE_LABEL = "nothing to judge"
+
+
 def _streak_text(
     manager_name: str,
     count_label_one: str,
     count_label_many: str,
     length: int,
-    held_count: int,
     window: GameweekWindow,
+    *,
+    inapplicable_count: int = 0,
+    inapplicable_label: str | None = None,
 ) -> str:
     """Render a run as an observed count over its true span. Built on the
     condition's `count_label_one`/`count_label_many` (issue #188), not its
@@ -341,26 +360,39 @@ def _streak_text(
     ("2 gameweeks on top of the league") also lets the number appear once
     rather than twice.
 
-    A run with any held gameweek is never rendered as consecutive (R14,
-    R20): a length-3 run holding 8 is "3 in the last 11", not "3 in a row".
-    "In a row" also requires `window.span_length == length`, not
-    `held_count == 0` alone: a manager wholly *absent* (not merely unknown)
-    from one gameweek inside an otherwise-continuous run also leaves
-    `held_count` at 0 (`_fold_gameweek` skips a wholly-absent manager
-    without counting a hold), but widens `window` past `length`
-    (`_streak_entries` anchors `end_gameweek` on the pack's own target
-    gameweek, not on `start + length + held - 1`) -- so without this second
-    check a real gap would still be claimed as consecutive. That case falls
-    through to the same observed-count phrasing as any other held run,
-    since it is the same situation: the window is wider than the count."""
+    A run whose window is wider than its length is never rendered as
+    consecutive (R14, R20): a length-3 run holding 8 is "3 in the last 11",
+    not "3 in a row". The test is `window.span_length == length` alone,
+    which also catches a manager wholly *absent* (not merely unknown) from
+    one gameweek inside an otherwise-continuous run: `_fold_gameweek` skips
+    a wholly-absent manager without counting a hold, but `_streak_entries`
+    anchors `end_gameweek` on the pack's own target gameweek, so the gap
+    still widens `window` past `length`.
+
+    The trailing clause then says what the rest of the window was, and
+    there are two different answers (issue #358). A gameweek the condition
+    had nothing to judge in is a fact the record holds -- "with no moves
+    made in 1", in the condition's own words. Every other gameweek in the
+    window is one the record genuinely lacks for this condition -- an
+    unknown row, a field the tier never captured, or no row at all -- and
+    only those are "not recorded". Deriving that count from the window
+    rather than reading the held count is what lets an absent gameweek be
+    stated as the gap it is, instead of "with 0 not recorded"."""
     span = f"GW{window.start_gameweek}-GW{window.end_gameweek}"
     count_label = count_label_one if length == 1 else count_label_many
-    if held_count == 0 and window.span_length == length:
+    if window.span_length == length:
         return f"{manager_name}: {length} {count_label} in a row ({span})."
-    return (
-        f"{manager_name}: {length} {count_label} in the last {window.span_length} ({span}), "
-        f"with {held_count} not recorded."
-    )
+    not_recorded = max(0, window.span_length - length - inapplicable_count)
+    clauses: list[str] = []
+    if not_recorded:
+        clauses.append(f"{not_recorded} not recorded")
+    if inapplicable_count:
+        label = inapplicable_label or _DEFAULT_INAPPLICABLE_LABEL
+        clauses.append(f"{label} in {inapplicable_count}")
+    text = f"{manager_name}: {length} {count_label} in the last {window.span_length} ({span})"
+    if clauses:
+        text += ", with " + " and ".join(clauses)
+    return text + "."
 
 
 def _streak_entries(
@@ -405,8 +437,9 @@ def _streak_entries(
                     view.count_label_one,
                     view.count_label_many,
                     view.length,
-                    view.held_in_run,
                     window,
+                    inapplicable_count=view.inapplicable_in_run,
+                    inapplicable_label=view.inapplicable_label,
                 ),
                 surfaces=surfaces,
                 tier=_entry_tier(window, manager_key, rows_by_gameweek),
@@ -416,6 +449,7 @@ def _streak_entries(
                 condition_key=condition_key,
                 length=view.length,
                 held_count=view.held_in_run,
+                inapplicable_count=view.inapplicable_in_run,
                 excess=view.excess,
             ))
 
@@ -450,9 +484,9 @@ def _season_count_text(
     Same honesty rules as `_streak_text`: the count is never a bare number.
     The span is stated inline, a held gameweek is stated as unjudged rather
     than silently rounded into innocence (a hold means the gameweek could
-    not be ruled either way -- an unknown capture, a fixture-less blank, a
-    condition that did not apply -- and #136 documents why that is not the
-    same as "it didn't happen"), and the "this gameweek" marker appears
+    not be ruled either way -- an unknown capture, a field the tier never
+    captured -- and #136 documents why that is not the same as "it didn't
+    happen"), and the "this gameweek" marker appears
     exactly when the fold's own `last_occurrence_gameweek` says the count
     grew now, so a consumer quoting the line can tell fresh colour from a
     stale total.
@@ -464,8 +498,13 @@ def _season_count_text(
     leads and the season total follows as context. Both numbers are still
     stated: dropping either would make the line answer a question it was
     not asked. "In a row" obeys the same rule it does in `_streak_text`:
-    only a run that held nothing may claim it, since a run crossing an
-    unjudged gameweek is a count over a span, not a consecutive sequence.
+    only a run that crossed nothing may claim it, since a run crossing an
+    unjudged gameweek -- or one the condition had nothing to judge in -- is
+    a count over a span, not a consecutive sequence.
+
+    A gameweek the condition had nothing to judge in is not in
+    `held_total` at all (issue #358): the record rules it, and it simply was
+    not an occurrence, which the span already says without a qualifier.
     """
     label = label_one if occurrences == 1 else label_many
     span = f"GW{window.start_gameweek}-GW{window.end_gameweek}"
@@ -585,7 +624,9 @@ def _season_count_entries(
                 window,
                 occurred_this_gameweek=occurred_this_gameweek,
                 run_length=view.length,
-                run_held=view.held_in_run,
+                # Either kind of gameweek the run crossed stops it reading
+                # "in a row"; the line never names which, so one sum serves.
+                run_held=view.held_in_run + view.inapplicable_in_run,
                 # A run-milestone condition is one whose whole point is the
                 # unbroken sequence, so its line leads with the run it
                 # actually fired on rather than a season total that would

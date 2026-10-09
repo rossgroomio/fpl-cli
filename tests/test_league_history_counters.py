@@ -127,6 +127,25 @@ class TestConditionRegistry:
             "green_arrow_drought": CountSurfacePolicy(run_milestones=frozenset({5, 10})),
         }
 
+    def test_every_condition_that_can_find_nothing_to_judge_names_it(self):
+        """Issue #358: a gameweek the condition had nothing to judge in is
+        rendered in the condition's own words, never as "not recorded". The
+        three conditions left out only ever hold on a gameweek the record
+        genuinely lacks -- `hit_run` included, since a captured classic row
+        stores a no-transfer gameweek's cost as 0, which resets."""
+        labels = {c.key: c.inapplicable_label for c in CONDITIONS}
+        assert labels == {
+            "weeks_on_top": None,
+            "bottom_half_run": None,
+            "gw_win_streak": "the whole league level on points",
+            "gw_loss_streak": "the whole league level on points",
+            "green_arrow_drought": "no room to climb from first place",
+            "captain_blank_run": "no captain fixture",
+            "hit_run": None,
+            "waiver_win_run": "no moves made",
+            "waiver_burn_run": "no moves made",
+        }
+
     def test_the_waiver_counts_name_the_outcome_they_actually_measure(self):
         """Both waiver conditions key off whether the week's moves netted
         points, not off winning a claim -- so the count labels say haul and
@@ -195,7 +214,10 @@ class TestCaptainBlankRun:
         after = manager_condition_views(rebuild_counters_through(store, 8), 1)["captain_blank_run"]
         assert (after.length, after.held_in_run) == (3, 0)
 
-    def test_captain_with_no_fixture_holds_neither_extends_nor_resets(self):
+    def test_captain_with_no_fixture_neither_extends_nor_resets(self):
+        """A known fixture-less blank leaves the run open, but on its own
+        count rather than as a hold: nothing is missing from the record, so
+        it must never render as "not recorded" (issue #358)."""
         store = LeagueHistoryStore("2026-27", "classic", 1)
         store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, captain=_captain(1))])
         store.append_rows(2, [
@@ -208,7 +230,9 @@ class TestCaptainBlankRun:
 
         assert view.length == 2
         assert view.start_gameweek == 1
-        assert view.held_in_run == 1
+        assert view.held_in_run == 0
+        assert view.inapplicable_in_run == 1
+        assert view.held_total == 0
 
     def test_captain_had_fixture_unset_also_holds(self):
         """`had_fixture=None` (not recorded) must hold too, not be treated as True."""
@@ -238,7 +262,7 @@ class TestCaptainBlankRun:
         assert views["weeks_on_top"].length == 1
         assert views["weeks_on_top"].start_gameweek == 1
 
-    def test_a_run_spanning_eight_held_gameweeks_reports_its_held_count(self):
+    def test_a_run_spanning_eight_fixtureless_gameweeks_reports_them(self):
         store = LeagueHistoryStore("2026-27", "classic", 1)
         store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, captain=_captain(1))])
         for gw in range(2, 10):  # GW2..GW9 inclusive: 8 held gameweeks
@@ -251,7 +275,8 @@ class TestCaptainBlankRun:
         view = manager_condition_views(projection, 1)["captain_blank_run"]
 
         assert view.length == 2
-        assert view.held_in_run == 8
+        assert view.inapplicable_in_run == 8
+        assert view.held_in_run == 0
         assert view.start_gameweek == 1
 
     def test_captain_blank_run_reads_the_shared_blank_threshold(self):
@@ -315,12 +340,13 @@ class TestGwRankStreaks:
         assert manager_condition_views(projection, 2)["gw_win_streak"].length == 2
         assert manager_condition_views(projection, 3)["gw_loss_streak"].length == 2
 
-    def test_a_fully_tied_cohort_holds_both_streaks_instead_of_extending_both(self):
+    def test_a_fully_tied_cohort_leaves_both_streaks_open_instead_of_extending_both(self):
         """When every known cohort member scores the same, there is no
         winner to distinguish from a loser -- extending both would credit
         the same manager with a win streak and a loss streak in the same
-        gameweek. This must hold rather than reset, so a genuine run open
-        before the tie survives it."""
+        gameweek. This must not reset either, so a genuine run open before
+        the tie survives it -- and since the scores are known, the tie is
+        inapplicable rather than held (issue #358)."""
         store = LeagueHistoryStore("2026-27", "classic", 1)
         store.append_rows(1, [
             make_history_row(gameweek=1, manager_key=1, gross_points=60),
@@ -335,13 +361,11 @@ class TestGwRankStreaks:
         projection = rebuild_counters_through(store, 4)
 
         # GW1 opens a win streak for manager 1 and a loss streak for
-        # manager 2; GW2-4 tie every week and must hold, not reset, either.
+        # manager 2; GW2-4 tie every week and must not reset either.
         win_view = manager_condition_views(projection, 1)["gw_win_streak"]
         loss_view = manager_condition_views(projection, 2)["gw_loss_streak"]
-        assert win_view.length == 1
-        assert win_view.held_in_run == 3
-        assert loss_view.length == 1
-        assert loss_view.held_in_run == 3
+        assert (win_view.length, win_view.held_in_run, win_view.inapplicable_in_run) == (1, 0, 3)
+        assert (loss_view.length, loss_view.held_in_run, loss_view.inapplicable_in_run) == (1, 0, 3)
 
         # Neither manager is credited with the opposite streak from the tie.
         assert manager_condition_views(projection, 1)["gw_loss_streak"].length == 0
@@ -507,7 +531,7 @@ class TestPositionConditions:
 
         assert view.length == 0
 
-    def test_green_arrow_drought_holds_while_top_of_the_table(self):
+    def test_green_arrow_drought_does_not_count_while_top_of_the_table(self):
         """First place has nowhere to climb, so a gameweek that began there
         could not have produced a green arrow however well it went. That is
         a structural impossibility rather than a failure to improve, and
@@ -521,9 +545,10 @@ class TestPositionConditions:
 
         assert view.length == 0
         assert view.occurrences == 0
-        # Held, not silently ignored: the gameweeks are stated as unjudged
-        # rather than counted as clean.
-        assert view.held_total == 4
+        # Only GW1, with no previous gameweek to compare against, is
+        # unjudged. GW2-4 are judged: the positions are known, and they
+        # left nothing to climb (issue #358).
+        assert view.held_total == 1
 
     def test_climbing_to_first_still_breaks_a_drought(self):
         """Gated on where the gameweek *began*, not where it ended: gating
@@ -541,7 +566,7 @@ class TestPositionConditions:
         assert third.length == 2  # GW2 and GW3 failed to improve on 4th
         assert fourth.length == 0  # climbing to the summit resets it
 
-    def test_falling_off_the_top_holds_rather_than_extending(self):
+    def test_falling_off_the_top_does_not_extend(self):
         """They had nowhere to climb from either, so the gameweek is still
         unjudgeable for this condition -- and the drop is already told by
         standings movement and by `weeks_on_top` resetting."""
@@ -554,7 +579,7 @@ class TestPositionConditions:
         view = manager_condition_views(rebuild_counters_through(store, 3), 1)["green_arrow_drought"]
 
         assert view.occurrences == 0
-        assert view.held_total == 3
+        assert view.held_total == 1  # GW1 alone: no previous gameweek
 
     def test_a_drought_resumes_normally_once_off_the_top(self):
         store = LeagueHistoryStore("2026-27", "classic", 1)
@@ -660,7 +685,7 @@ class TestHitRun:
 
 
 class TestWaiverConditions:
-    def test_no_transactions_holds_both_conditions(self):
+    def test_no_transactions_leaves_both_conditions_untouched(self):
         store = LeagueHistoryStore("2026-27", "draft", 1)
         store.append_rows(1, [
             make_history_row(gameweek=1, manager_key=1, fpl_format="draft", transactions=[]),
@@ -674,10 +699,10 @@ class TestWaiverConditions:
         assert views["waiver_burn_run"].length == 0
         assert views["waiver_burn_run"].held_in_run == 0
 
-    def test_a_gameweek_of_only_lost_claims_holds_both_conditions(self):
+    def test_a_gameweek_of_only_lost_claims_leaves_both_conditions_open(self):
         """Issue #332: a claim a rival won is activity, but nothing moved, so
-        there is no net to swing either streak -- the gameweek holds exactly
-        as one with no moves does, rather than resetting a run."""
+        there is no net to swing either streak -- the gameweek is treated
+        exactly as one with no moves is, rather than resetting a run."""
         store = LeagueHistoryStore("2026-27", "draft", 1)
         store.append_rows(1, [make_history_row(
             gameweek=1, manager_key=1, fpl_format="draft", transactions=[_transaction(5)],
@@ -694,8 +719,33 @@ class TestWaiverConditions:
         views = manager_condition_views(projection, 1)
 
         assert views["waiver_win_run"].length == 1
-        assert views["waiver_win_run"].held_in_run == 1
+        assert views["waiver_win_run"].inapplicable_in_run == 1
         assert views["waiver_burn_run"].length == 0
+
+    def test_a_gameweek_with_no_moves_is_inapplicable_not_held(self):
+        """Issue #358: an empty transaction list on a captured draft row is
+        a finding -- the manager made no moves -- not a gap. The run stays
+        open on its own count, and the season count's "not judged"
+        qualifier is reserved for gameweeks the record really lacks."""
+        store = LeagueHistoryStore("2026-27", "draft", 1)
+        nets: dict[int, list[LedgerTransaction]] = {
+            1: [_transaction(9)], 2: [], 3: [_transaction(3)],
+        }
+        for gw, transactions in nets.items():
+            store.append_rows(gw, [make_history_row(
+                gameweek=gw, manager_key=1, fpl_format="draft", transactions=transactions,
+            )])
+        store.append_rows(4, [make_history_row(
+            gameweek=4, manager_key=1, fpl_format="draft", capture_status="unknown",
+        )])
+
+        view = manager_condition_views(rebuild_counters_through(store, 4), 1)["waiver_win_run"]
+
+        assert view.length == 2
+        assert view.inapplicable_in_run == 1  # GW2: no moves made
+        assert view.held_in_run == 1  # GW4: never reached
+        assert view.held_total == 1
+        assert view.inapplicable_label == "no moves made"
 
     def test_net_is_summed_across_multiple_transactions_in_one_gameweek(self):
         store = LeagueHistoryStore("2026-27", "draft", 1)
@@ -1154,9 +1204,9 @@ def _view(occurrences: int = 1, length: int = 1) -> ConditionRunView:
     """A view carrying only what `CountSurfacePolicy` reads."""
     return ConditionRunView(
         condition_key="k", length=length, start_gameweek=1, held_in_run=0,
-        min_run=2, occurrences=occurrences, held_total=0, last_occurrence_gameweek=1,
+        inapplicable_in_run=0, min_run=2, occurrences=occurrences, held_total=0, last_occurrence_gameweek=1,
         first_evaluated_gameweek=1, count_label_one="thing", count_label_many="things",
-        count_policy=CountSurfacePolicy(),
+        count_policy=CountSurfacePolicy(), inapplicable_label=None,
     )
 
 
