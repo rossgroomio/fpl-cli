@@ -3,26 +3,32 @@
 Conditions are a declarative registry, not hand-written counters (KTD7):
 each entry declares its key, the formats it applies to, the minimum run
 length worth reporting, the row fields it reads, a predicate that returns
-extend, reset, or hold for one manager's row that gameweek, and the
-one/many labels a single occurrence renders under (issue #188). A
+extend, reset, hold, or inapplicable for one manager's row that gameweek,
+and the one/many labels a single occurrence renders under (issue #188). A
 predicate receives the row, the manager's row for the previous gameweek
 (or None), and the full set of rows recorded for that gameweek -- so a
 cohort-relative condition (who's top, who's last) has its denominator
 without a second query.
 
-Hold is what makes R19 and R20 work: an unknown row, a fixture-less blank,
-a condition that plainly does not apply that gameweek (a draft manager who
-made no waiver moves) all hold, leaving the run untouched rather than
-lying in either direction. R19 specifically -- an unknown row never
-advances or breaks a streak -- is enforced centrally in :func:`_evaluate`
-rather than trusted to every predicate.
+Hold and inapplicable are what make R19 and R20 work: both leave the run
+untouched rather than lying in either direction, and they differ only in
+what the gameweek is known to say (issue #358). A hold is a gameweek the
+record cannot rule -- an unknown row, a field this tier never captured --
+so it is "not recorded". Inapplicable is a gameweek the record rules
+completely and finds the condition had nothing to judge: a draft
+manager with no completed waiver moves, a captain whose club had no
+fixture. Rendering the second as the first tells a reader the record has
+a gap it does not have. R19 specifically -- an unknown row never advances or breaks a
+streak -- is enforced centrally in :func:`_evaluate` rather than trusted
+to every predicate.
 
 Alongside the currently-open run, each condition's state accumulates
 season-wide occurrence totals (issue #164): every extending gameweek
 counts once, a reset wipes only the open run, and holds are tallied
 separately as the count's coverage qualifier -- a held gameweek was never
 judged, and "un-ruled is not innocent" applies to a season count exactly
-as it does to the fines tally. So "their fourth gameweek win of the
+as it does to the fines tally. An inapplicable gameweek is not tallied
+there: it was judged, and simply was not an occurrence. So "their fourth gameweek win of the
 season" is derivable from the projection, not just "three gameweeks
 running".
 
@@ -69,7 +75,13 @@ class RunAction(str, Enum):
 
     EXTEND = "extend"
     RESET = "reset"
+    # The record cannot rule this gameweek: rendered as "not recorded".
     HOLD = "hold"
+    # The record rules this gameweek completely, and the condition had
+    # nothing to judge in it -- the run neither extends nor breaks, as for a
+    # hold, but nothing is missing (issue #358). Rendered with the
+    # condition's own `inapplicable_label`.
+    INAPPLICABLE = "inapplicable"
 
 
 ConditionPredicate = Callable[
@@ -196,6 +208,15 @@ class ConditionDefinition:
     half, green-arrow drought) needs a strict one or it wallpapers every
     report. U9 consumes it; the milestone set-pieces and `--format json`
     ignore it.
+
+    `inapplicable_label` names what an `INAPPLICABLE` gameweek inside a run
+    actually was, for the streak line's trailing clause ("with no completed
+    moves in 1") -- the condition knows why it had nothing to judge, where a bare
+    "not recorded" would claim a gap in a complete record (issue #358).
+    None for a condition whose predicate never returns `INAPPLICABLE`.
+    Required on every entry, None included, so adding a condition means
+    stating it; `_evaluate` refuses an `INAPPLICABLE` from a condition that
+    left it None, rather than letting the streak line render it unnamed.
     """
 
     key: str
@@ -212,6 +233,7 @@ class ConditionDefinition:
     count_label_one: str
     count_label_many: str
     count_policy: CountSurfacePolicy
+    inapplicable_label: str | None
 
 
 # ---------------------------------------------------------------------------
@@ -266,6 +288,23 @@ def _cohort_known_points(cohort: list[LeagueHistoryRow]) -> list[int]:
     return [p for member in cohort if (p := _net_gw_points(member)) is not None]
 
 
+def _level_cohort_action(cohort: list[LeagueHistoryRow], known_points: list[int]) -> RunAction:
+    """What a gameweek-rank condition does when every *known* score is equal.
+
+    Neither streak extends or resets: a level cohort has no winner to tell
+    from a loser, and without this a manager would satisfy both `== best`
+    and `== worst` at once, crediting a win streak and a loss streak in the
+    same gameweek. Whether that is a fact or a gap depends on what the
+    equality was measured over (issue #358 review). Every score known, with
+    more than one manager to compare, says the whole league really was level
+    -- inapplicable. A missing score could have won or lost the gameweek,
+    and a lone manager has nobody to be level with, so either one holds.
+    """
+    if len(cohort) > 1 and len(known_points) == len(cohort):
+        return RunAction.INAPPLICABLE
+    return RunAction.HOLD
+
+
 def _gw_win_streak(
     row: LeagueHistoryRow, previous_row: LeagueHistoryRow | None, cohort: list[LeagueHistoryRow],
 ) -> RunAction:
@@ -277,14 +316,8 @@ def _gw_win_streak(
     if not known_points:
         return RunAction.HOLD
     best, worst = max(known_points), min(known_points)
-    # Every known cohort member scored the same this gameweek -- there is no
-    # winner to distinguish from a loser, so this holds rather than
-    # extending (or resetting) either streak. Without this, a fully tied
-    # cohort would satisfy both `row_points == best` and `row_points ==
-    # worst` at once, crediting the same manager with a win streak and a
-    # loss streak in the same gameweek.
     if best == worst:
-        return RunAction.HOLD
+        return _level_cohort_action(cohort, known_points)
     return RunAction.EXTEND if row_points == best else RunAction.RESET
 
 
@@ -299,8 +332,8 @@ def _gw_loss_streak(
     if not known_points:
         return RunAction.HOLD
     best, worst = max(known_points), min(known_points)
-    if best == worst:  # see _gw_win_streak
-        return RunAction.HOLD
+    if best == worst:
+        return _level_cohort_action(cohort, known_points)
     return RunAction.EXTEND if row_points == worst else RunAction.RESET
 
 
@@ -322,8 +355,8 @@ def _green_arrow_drought(
     # first place could not have produced a green arrow however well it
     # went: that is a structural impossibility, not a failure to improve,
     # and counting it would score the league leader as the worst offender
-    # in the league. It holds, like any other gameweek the condition
-    # cannot rule (R20's fixture-less blank is the same shape).
+    # in the league. Inapplicable, like R20's fixture-less blank: the
+    # positions are known, and they leave nothing to judge.
     #
     # Gated on where they *started*, not where they finished. Gating on
     # this gameweek's position would suppress the biggest green arrow
@@ -332,7 +365,7 @@ def _green_arrow_drought(
     # they had nowhere to climb from either, and the drop is already told
     # by standings movement and by `weeks_on_top` resetting.
     if previous_row.league_position == 1:
-        return RunAction.HOLD
+        return RunAction.INAPPLICABLE
     improved = row.league_position < previous_row.league_position
     return RunAction.RESET if improved else RunAction.EXTEND
 
@@ -344,10 +377,13 @@ def _captain_blank_run(
     if row.captain is None:
         return RunAction.HOLD
     # R20: the captain's own had_fixture flag gates this condition. Only
-    # True proceeds -- False and None (not recorded) both hold, since
-    # neither lets us say the blank was a real one.
-    if row.captain.had_fixture is not True:
+    # True proceeds. False is a known fixture-less blank, so the condition
+    # has nothing to judge; None was never recorded, so it holds. Neither
+    # lets us say the blank was a real one.
+    if row.captain.had_fixture is None:
         return RunAction.HOLD
+    if row.captain.had_fixture is False:
+        return RunAction.INAPPLICABLE
     return RunAction.EXTEND if row.captain.points <= BLANK_POINTS_THRESHOLD else RunAction.RESET
 
 
@@ -355,6 +391,9 @@ def _hit_run(
     row: LeagueHistoryRow, previous_row: LeagueHistoryRow | None, cohort: list[LeagueHistoryRow],
 ) -> RunAction:
     del previous_row, cohort
+    # A genuine hold: every captured classic row records the gameweek's
+    # cost, a no-transfer gameweek included (as 0, which resets), so None
+    # only ever means the capture did not reach it.
     if row.transfer_cost is None:
         return RunAction.HOLD
     return RunAction.EXTEND if row.transfer_cost > 0 else RunAction.RESET
@@ -363,7 +402,16 @@ def _hit_run(
 def _net_transaction_total(row: LeagueHistoryRow) -> int | None:
     """Sum of this gameweek's transaction nets, or `None` for a manager who
     made no moves at all -- shared by both waiver conditions, which differ
-    only in which side of zero counts as extending."""
+    only in which side of zero counts as extending.
+
+    An empty list on a captured draft row is a finding, not a gap: the
+    collector reads the league's whole transaction feed, and a feed it
+    could not read fails the capture rather than recording none. So `None`
+    here is inapplicable, never held (issue #358). Inapplicable is not
+    "inactive", though: a manager whose every claim a rival won has an empty
+    list too (`lost_claims`, issue #332), which is why the conditions' label
+    says "no completed moves" rather than anything implying they sat the
+    gameweek out."""
     if not row.transactions:
         return None
     return sum(transaction.net for transaction in row.transactions)
@@ -375,7 +423,7 @@ def _waiver_win_run(
     del previous_row, cohort
     net_total = _net_transaction_total(row)
     if net_total is None:
-        return RunAction.HOLD
+        return RunAction.INAPPLICABLE
     return RunAction.EXTEND if net_total > 0 else RunAction.RESET
 
 
@@ -385,7 +433,7 @@ def _waiver_burn_run(
     del previous_row, cohort
     net_total = _net_transaction_total(row)
     if net_total is None:
-        return RunAction.HOLD
+        return RunAction.INAPPLICABLE
     return RunAction.EXTEND if net_total < 0 else RunAction.RESET
 
 
@@ -407,6 +455,7 @@ CONDITIONS: tuple[ConditionDefinition, ...] = (
         count_label_one="gameweek on top of the league",
         count_label_many="gameweeks on top of the league",
         count_policy=CountSurfacePolicy(step=5),
+        inapplicable_label=None,
     ),
     ConditionDefinition(
         key="bottom_half_run", formats=_BOTH, min_run=None,
@@ -416,6 +465,7 @@ CONDITIONS: tuple[ConditionDefinition, ...] = (
         count_policy=CountSurfacePolicy(
             step=10, ride_along_within=5, second_half_only=True,
         ),
+        inapplicable_label=None,
     ),
     ConditionDefinition(
         key="gw_win_streak", formats=_BOTH, min_run=2,
@@ -423,6 +473,7 @@ CONDITIONS: tuple[ConditionDefinition, ...] = (
         count_label_one="gameweek win",
         count_label_many="gameweek wins",
         count_policy=CountSurfacePolicy(step=3, first_in_second_half=True),
+        inapplicable_label="the whole league level on points",
     ),
     ConditionDefinition(
         key="gw_loss_streak", formats=_BOTH, min_run=2,
@@ -430,6 +481,7 @@ CONDITIONS: tuple[ConditionDefinition, ...] = (
         count_label_one="last-place finish",
         count_label_many="last-place finishes",
         count_policy=CountSurfacePolicy(step=3, first_in_second_half=True),
+        inapplicable_label="the whole league level on points",
     ),
     ConditionDefinition(
         key="green_arrow_drought", formats=_BOTH, min_run=None,
@@ -440,6 +492,7 @@ CONDITIONS: tuple[ConditionDefinition, ...] = (
         # story, and a manager parked at the very top (structurally unable
         # to improve) or rooted to the bottom must not re-fire it forever.
         count_policy=CountSurfacePolicy(run_milestones=frozenset({5, 10})),
+        inapplicable_label="no room to climb from first place",
     ),
     ConditionDefinition(
         key="captain_blank_run", formats=_CLASSIC_ONLY, min_run=2,
@@ -447,6 +500,7 @@ CONDITIONS: tuple[ConditionDefinition, ...] = (
         count_label_one="captain blank",
         count_label_many="captain blanks",
         count_policy=CountSurfacePolicy(step=5, ride_along_min=3),
+        inapplicable_label="no captain fixture",
     ),
     ConditionDefinition(
         key="hit_run", formats=_CLASSIC_ONLY, min_run=2,
@@ -454,6 +508,7 @@ CONDITIONS: tuple[ConditionDefinition, ...] = (
         count_label_one="gameweek with a transfer hit",
         count_label_many="gameweeks with a transfer hit",
         count_policy=CountSurfacePolicy(step=3, ride_along_min=2),
+        inapplicable_label=None,
     ),
     ConditionDefinition(
         key="waiver_win_run", formats=_DRAFT_ONLY, min_run=3,
@@ -461,6 +516,7 @@ CONDITIONS: tuple[ConditionDefinition, ...] = (
         count_label_one="waiver haul",
         count_label_many="waiver hauls",
         count_policy=CountSurfacePolicy(step=5),
+        inapplicable_label="no completed moves",
     ),
     ConditionDefinition(
         key="waiver_burn_run", formats=_DRAFT_ONLY, min_run=3,
@@ -468,6 +524,7 @@ CONDITIONS: tuple[ConditionDefinition, ...] = (
         count_label_one="waiver backfire",
         count_label_many="waiver backfires",
         count_policy=CountSurfacePolicy(step=5),
+        inapplicable_label="no completed moves",
     ),
 )
 
@@ -494,12 +551,29 @@ def _evaluate(
     """
     if row.capture_status is CaptureStatus.UNKNOWN:
         return RunAction.HOLD
-    return definition.predicate(row, previous_row, cohort)
+    action = definition.predicate(row, previous_row, cohort)
+    if action is RunAction.INAPPLICABLE and definition.inapplicable_label is None:
+        # A registry defect, not a data problem: raised rather than folded so
+        # it surfaces as a traceback the first time the predicate fires,
+        # instead of a streak line that cannot say what the gameweek was.
+        raise RuntimeError(
+            f"Condition {definition.key!r} returned INAPPLICABLE but declares no "
+            "inapplicable_label to render it with.",
+        )
+    return action
 
 
 # ---------------------------------------------------------------------------
 # Folding one gameweek into run state
 # ---------------------------------------------------------------------------
+
+
+# The fields describing the currently-open run, as opposed to the season-wide
+# ones: the set RESET returns to defaults and a newly opened run starts from.
+# A new run field belongs here; a new season-wide field must not.
+_RUN_FIELDS: frozenset[str] = frozenset({
+    "length", "start_gameweek", "held_in_run", "inapplicable_in_run",
+})
 
 
 def _next_state(current: ConditionRunState, gameweek: int, action: RunAction) -> ConditionRunState:
@@ -511,9 +585,17 @@ def _next_state(current: ConditionRunState, gameweek: int, action: RunAction) ->
     `held_total` every held one. A HOLD counts towards `held_total` whether
     or not a run is open: the season count's qualifier is "how many
     gameweeks were never judged", and a hold before any run has opened is
-    exactly as unjudged as one inside a run. `first_evaluated_gameweek` is
-    set by the first action of any kind and never moved -- the span the
-    season fields have actually been folded over.
+    exactly as unjudged as one inside a run. An INAPPLICABLE gameweek never
+    does -- it was judged, and was not an occurrence -- so it only annotates
+    an open run (issue #358). `first_evaluated_gameweek` is set by the first
+    action of any kind and never moved -- the span the season fields have
+    actually been folded over.
+
+    Each branch names only the fields it changes and copies the rest, so
+    a field added to `ConditionRunState` is carried through every action
+    without touching this function (issue #358 review). RESET and the
+    opening of a run are the exceptions, rebuilding `_RUN_FIELDS` from
+    their defaults on purpose.
     """
     first_evaluated = (
         current.first_evaluated_gameweek
@@ -521,44 +603,41 @@ def _next_state(current: ConditionRunState, gameweek: int, action: RunAction) ->
         else gameweek
     )
     if action is RunAction.EXTEND:
+        season = {
+            "occurrences": current.occurrences + 1,
+            "last_occurrence_gameweek": gameweek,
+            "first_evaluated_gameweek": first_evaluated,
+        }
         if current.length == 0:
-            return ConditionRunState(
-                length=1, start_gameweek=gameweek, held_in_run=0,
-                occurrences=current.occurrences + 1,
-                held_total=current.held_total,
-                last_occurrence_gameweek=gameweek,
-                first_evaluated_gameweek=first_evaluated,
-            )
-        return ConditionRunState(
-            length=current.length + 1,
-            start_gameweek=current.start_gameweek,
-            held_in_run=current.held_in_run,
-            occurrences=current.occurrences + 1,
-            held_total=current.held_total,
-            last_occurrence_gameweek=gameweek,
-            first_evaluated_gameweek=first_evaluated,
-        )
+            # Opening a run: every run field starts fresh, whatever a hold
+            # before the run left behind.
+            fresh_run = ConditionRunState().model_dump(include=set(_RUN_FIELDS))
+            return current.model_copy(update={
+                **fresh_run, "length": 1, "start_gameweek": gameweek, **season,
+            })
+        return current.model_copy(update={"length": current.length + 1, **season})
     if action is RunAction.RESET:
-        return ConditionRunState(
-            occurrences=current.occurrences,
-            held_total=current.held_total,
-            last_occurrence_gameweek=current.last_occurrence_gameweek,
-            first_evaluated_gameweek=first_evaluated,
-        )
+        # Wipes the open run and nothing else: every run field back to its
+        # default, every season-wide field carried.
+        fresh_run = ConditionRunState().model_dump(include=set(_RUN_FIELDS))
+        return current.model_copy(update={**fresh_run, "first_evaluated_gameweek": first_evaluated})
+    if action is RunAction.INAPPLICABLE:
+        # The run is annotated exactly as a hold annotates it, but on its
+        # own count, and the season-wide hold count is left alone.
+        return current.model_copy(update={
+            "inapplicable_in_run": current.inapplicable_in_run + 1 if current.length else 0,
+            "first_evaluated_gameweek": first_evaluated,
+        })
     # HOLD: before any run has opened there is no *run* to annotate, only
     # the season-wide hold count. Once one is open, a hold extends its
     # held-gameweek count without touching length or where it started
     # (KTD7) -- the run is not "broken" by a hold, only annotated as
     # having crossed one.
-    return ConditionRunState(
-        length=current.length,
-        start_gameweek=current.start_gameweek,
-        held_in_run=current.held_in_run + 1 if current.length else 0,
-        occurrences=current.occurrences,
-        held_total=current.held_total + 1,
-        last_occurrence_gameweek=current.last_occurrence_gameweek,
-        first_evaluated_gameweek=first_evaluated,
-    )
+    return current.model_copy(update={
+        "held_in_run": current.held_in_run + 1 if current.length else 0,
+        "held_total": current.held_total + 1,
+        "first_evaluated_gameweek": first_evaluated,
+    })
 
 
 def _fold_gameweek(
@@ -867,6 +946,7 @@ class ConditionRunView:
     length: int
     start_gameweek: int | None
     held_in_run: int
+    inapplicable_in_run: int
     min_run: int | None
     occurrences: int
     held_total: int
@@ -875,6 +955,7 @@ class ConditionRunView:
     count_label_one: str
     count_label_many: str
     count_policy: CountSurfacePolicy
+    inapplicable_label: str | None
 
     @property
     def is_reportable(self) -> bool:
@@ -910,6 +991,7 @@ def manager_condition_views(
             length=state.length,
             start_gameweek=state.start_gameweek,
             held_in_run=state.held_in_run,
+            inapplicable_in_run=state.inapplicable_in_run,
             min_run=condition.min_run,
             occurrences=state.occurrences,
             held_total=state.held_total,
@@ -918,6 +1000,7 @@ def manager_condition_views(
             count_label_one=condition.count_label_one,
             count_label_many=condition.count_label_many,
             count_policy=condition.count_policy,
+            inapplicable_label=condition.inapplicable_label,
         )
     return views
 
