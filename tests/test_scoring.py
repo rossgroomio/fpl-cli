@@ -6,7 +6,7 @@ from typing import Any, cast
 import pytest
 
 from fpl_cli.api.core_insights import MatchRecord
-from fpl_cli.models.player import PlayerPosition, PlayerStatus
+from fpl_cli.models.player import FORMATION_LIMITS, PlayerPosition, PlayerStatus
 from fpl_cli.services.player_prior import PlayerPrior
 from fpl_cli.services.scoring import (
     ATTACKING_POSITIONS,
@@ -3073,6 +3073,28 @@ class TestCalculateLineupScore:
         )
         # Same core but different availability adjustment patterns
         assert lineup["lineup_score_raw"] != bench["priority_score_raw"]
+
+
+class TestValidFormations:
+    """The constant against the rule it is derived from."""
+
+    def test_covers_every_shape_the_formation_limits_allow(self):
+        # #352: 5-2-3 satisfied FORMATION_LIMITS but was missing from the
+        # list, so every consumer settled for 5-3-2. Deriving the legal set
+        # from the limits makes a missing (or invented) shape fail here
+        # rather than surface as a worse squad.
+        (def_lo, def_hi), (mid_lo, mid_hi), (fwd_lo, fwd_hi) = (
+            FORMATION_LIMITS[pos] for pos in ("DEF", "MID", "FWD")
+        )
+        legal = [
+            (d, m, f)
+            for d in range(def_lo, def_hi + 1)
+            for m in range(mid_lo, mid_hi + 1)
+            for f in range(fwd_lo, fwd_hi + 1)
+            if d + m + f == 10
+        ]
+
+        assert sorted(VALID_FORMATIONS) == sorted(legal)
 
 
 class TestSelectStartingXI:
