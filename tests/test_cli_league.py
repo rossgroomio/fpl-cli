@@ -268,12 +268,40 @@ class TestLeagueClassicPerformers:
         assert result.exit_code == 0, result.output
         assert _section(result.output, "Worst GW Performers")[-1] == "Your GW rank: 1 - 63 pts"
 
+    def test_user_beyond_the_first_page_gets_no_rank_line(self):
+        # The page holds no row for the user, so there is no GW rank to give
+        # them -- and no "You" to mark on anyone else's row.
+        result = _run_league(_performer_client(_ISSUE_ROWS, has_next=True), entry_id=99, use_net_points=True)
 
-def _run_draft_league(event_totals, *, draft_entry_id=1001):
+        assert result.exit_code == 0, result.output
+        assert "Your GW rank" not in result.output
+        listed = _section(result.output, "Best GW Performers") + _section(result.output, "Worst GW Performers")
+        assert not any("You" in row for row in listed)
+
+    def test_gross_points_league_keeps_a_tie_at_the_cut_and_fetches_no_hits(self):
+        # Without net points no picks are fetched, so a hit the API would
+        # report never reaches the rows: every score is the gross one.
+        client = _performer_client(_ISSUE_ROWS)
+
+        result = _run_league(client)
+
+        assert result.exit_code == 0, result.output
+        client.get_manager_picks.assert_not_called()
+        assert "### Best GW Performers\n" in result.output
+        assert _section(result.output, "Best GW Performers")[2:] == [
+            "3=. Cam Cole - 58 pts",
+            "3=. Dan Drew - 58 pts",
+        ]
+        assert _section(result.output, "Worst GW Performers")[0] == "1. Eve Evans - 33 pts"
+
+
+def _run_draft_league(event_totals, *, draft_entry_id=1001, unlisted=()):
     """`fpl league` in draft format over managers scoring `event_totals` this GW.
 
     Manager i (1-based) has league entry i, entry id 1000 + i and the name
     "First{i} Last{i}"; totals descend with the order so the table is untied.
+    A manager in `unlisted` has a standing but no league entry, so carries
+    no entry id or name.
     """
     from fpl_cli.cli.league import league_command
 
@@ -290,6 +318,7 @@ def _run_draft_league(event_totals, *, draft_entry_id=1001):
         "league_entries": [
             {"id": i, "entry_id": 1000 + i, "player_first_name": f"First{i}", "player_last_name": f"Last{i}"}
             for i in range(1, len(event_totals) + 1)
+            if i not in unlisted
         ],
     })
     with (
@@ -325,3 +354,23 @@ class TestLeagueDraftPerformers:
             "2=. First4 Last4 - 40 pts",
             "2=. First5 Last5 - 40 pts",
         ]
+
+    def test_user_outside_the_top_and_bottom_three_gets_no_row_and_no_rank_line(self):
+        # `fpl review`'s draft block has no "Your GW rank" line, so neither
+        # does this one: a mid-table user is simply not listed.
+        result = _run_draft_league([70, 60, 50, 45, 40, 30, 20], draft_entry_id=1004)
+
+        assert result.exit_code == 0, result.output
+        listed = _section(result.output, "Best GW Performers") + _section(result.output, "Worst GW Performers")
+        assert not any("You" in row for row in listed)
+        assert "Your GW rank" not in result.output
+
+    def test_no_draft_entry_id_marks_no_unnamed_manager_as_you(self):
+        # With no draft_entry_id set, a standing the league details carry no
+        # entry for has no entry id either; None must not match None.
+        result = _run_draft_league([70, 55, 40, 30], draft_entry_id=None, unlisted=(4,))
+
+        assert result.exit_code == 0, result.output
+        assert _section(result.output, "Worst GW Performers")[0] == "1. Unknown - 30 pts"
+        listed = _section(result.output, "Best GW Performers") + _section(result.output, "Worst GW Performers")
+        assert not any("You" in row for row in listed)

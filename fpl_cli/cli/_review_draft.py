@@ -11,14 +11,12 @@ from rich.table import Table
 
 from fpl_cli.cli._context import console, error_console
 from fpl_cli.cli._helpers import (
-    _assign_tie_ranks,
-    _draft_performer_row,
     _format_pts_display,
     _format_review_player,
     _live_player_stats,
     _net_transfer_ids,
-    _print_performer,
-    _slice_with_ties,
+    _print_gw_performers,
+    draft_gw_performers,
     signed_net_markup,
 )
 from fpl_cli.models.player import POSITION_MAP
@@ -470,46 +468,21 @@ async def _review_draft(
                             "event_total": s.get("event_total", 0),
                         })
 
-                    # Best GW performers in draft league (top 3 + ties)
-                    sorted_by_gw = sorted(standings_with_names, key=lambda x: x["event_total"], reverse=True)
-                    _assign_tie_ranks(sorted_by_gw, "event_total")
-
-                    # Snapshot best data and user GW rank before worst sort overwrites ranks
-                    best_for_report = [
-                        _draft_performer_row(e, draft_entry_id) for e in _slice_with_ties(sorted_by_gw, 3)
-                    ]
-
-                    console.print("\n[bold]### Best GW Performers[/bold]")
-                    for perf in best_for_report:
-                        _print_performer(perf)
-
-                    user_entry = next(
-                        (e for e in sorted_by_gw if e["entry_id"] == draft_entry_id),
-                        None,
-                    )
-                    user_gw_rank = user_entry["rank_str"] if user_entry else None
-
-                    # Worst performers: sorted ascending (bottom 3 + ties)
-                    worst_sorted = sorted(standings_with_names, key=lambda x: x["event_total"])
-                    _assign_tie_ranks(worst_sorted, "event_total")
-                    worst_for_report = [
-                        _draft_performer_row(e, draft_entry_id) for e in _slice_with_ties(worst_sorted, 3)
-                    ]
-
-                    console.print("\n[bold]### Worst GW Performers[/bold]")
-                    for perf in worst_for_report:
-                        _print_performer(perf)
+                    # Top and bottom three plus ties, ranked and printed by the
+                    # code `fpl league` uses (#381)
+                    performers = draft_gw_performers(standings_with_names, draft_entry_id)
+                    _print_gw_performers(performers)
 
                     # Store for report (worst_performers sorted ascending - lowest first)
                     draft_league_data = {
                         "league_name": draft_league_name,
                         "user_position": user_rank,
-                        "user_gw_rank": user_gw_rank,
+                        "user_gw_rank": performers.user_gw_rank,
                         "total_entries": total_entries,
                         "user_gw_points": user_gw_pts,
                         "user_total": user_total,
-                        "best_performers": best_for_report,
-                        "worst_performers": worst_for_report,
+                        "best_performers": performers.best,
+                        "worst_performers": performers.worst,
                     }
 
             elif not draft_entry_id:
