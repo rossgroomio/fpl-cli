@@ -2157,7 +2157,9 @@ class TestReviewDraftPicksAndLeagueBlocks:
 
     _TEAMS = {19: make_team(id=19, short_name="MCI", name="Man City")}
 
-    async def _run(self, *, player_name="Sávio", manager_name=("A", "B"), picks_error=None):
+    async def _run(
+        self, *, player_name="Sávio", manager_name=("A", "B"), picks_error=None, picks_response=...,
+    ):
         savio = make_draft_player(id=403, code=510281, web_name=player_name, team=19, element_type=3)
         main_savio = make_player(id=403, code=510281, web_name=player_name, team_id=19)
         client = MagicMock()
@@ -2181,9 +2183,9 @@ class TestReviewDraftPicksAndLeagueBlocks:
         if picks_error is not None:
             client.get_entry_picks = AsyncMock(side_effect=picks_error)
         else:
-            client.get_entry_picks = AsyncMock(
-                return_value={"picks": [{"element": 403, "position": 1}], "subs": []}
-            )
+            if picks_response is ...:
+                picks_response = {"picks": [{"element": 403, "position": 1}], "subs": []}
+            client.get_entry_picks = AsyncMock(return_value=picks_response)
         client.get_league_transactions = AsyncMock(return_value={"transactions": []})
         with patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=client):
             return await _review_draft(
@@ -2225,8 +2227,35 @@ class TestReviewDraftPicksAndLeagueBlocks:
         with patch("fpl_cli.cli._review_draft._live_player_stats", side_effect=RuntimeError("render bug")):
             await self._run()
         err = capsys.readouterr().err
-        assert "Could not fetch draft picks" not in err
-        assert "render bug" in err
+        assert "Could not fetch" not in err
+        assert "Could not build draft team points: render bug" in err
+
+    async def test_a_picks_processing_error_does_not_abort_the_league_block(self, capsys):
+        with patch("fpl_cli.cli._review_draft._live_player_stats", side_effect=RuntimeError("render bug")):
+            data = await self._run()
+        assert "## League" in capsys.readouterr().out
+        assert data["draft_league_data"] is not None
+
+    async def test_rows_are_not_published_when_the_picks_table_fails_to_render(self, capsys):
+        from rich.table import Table
+
+        from fpl_cli.cli import _review_draft as module
+
+        def _fail_on_table(*args, **kwargs):
+            if any(isinstance(a, Table) for a in args):
+                raise RuntimeError("render bug")
+
+        with patch.object(module.console, "print", side_effect=_fail_on_table):
+            data = await self._run()
+        assert "Could not build draft team points" in capsys.readouterr().err
+        assert data["draft_squad_points_data"] == []
+        assert data["draft_automatic_subs"] == []
+
+    async def test_an_empty_picks_response_is_reported_rather_than_silent(self, capsys):
+        data = await self._run(picks_response=None)
+        captured = capsys.readouterr()
+        assert "Could not fetch draft picks: unexpected response" in captured.err
+        assert data["draft_squad_points_data"] == []
 
 
 class TestReviewDraftPlayerMatching:

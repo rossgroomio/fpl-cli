@@ -121,145 +121,162 @@ async def _review_draft(
                 user_gw_pts = user_standing.get("event_total", 0)
                 total_entries = len(standings)
 
-                # Fetch draft squad picks for this gameweek. Only the fetch is guarded:
-                # a rendering error below is not a fetch failure and escapes to the
-                # league handler, which names it.
+                # Fetch draft squad picks for this gameweek. The fetch is guarded for what
+                # a fetch raises; building and rendering the table is guarded separately,
+                # so a bug there is named for what it is and the rest of the review runs.
+                picks_data = None
                 try:
-                    picks_data = await draft_client.get_entry_picks(draft_entry_id, gw)
+                    fetched_picks = await draft_client.get_entry_picks(draft_entry_id, gw)
                 except (httpx.HTTPError, json.JSONDecodeError) as e:
                     error_console.print(f"[dim]Could not fetch draft picks: {rich_escape(str(e))}[/dim]")
-                    picks_data = None
+                else:
+                    if isinstance(fetched_picks, dict):
+                        picks_data = fetched_picks
+                    else:
+                        error_console.print("[dim]Could not fetch draft picks: unexpected response[/dim]")
 
                 if picks_data is not None:
-                    draft_picks = picks_data.get("picks", [])
+                    try:
+                        squad_rows: list[dict[str, Any]] = []
+                        draft_picks = picks_data.get("picks", [])
 
-                    # Extract automatic subs from Draft API response
-                    # Note: Draft API uses "subs" key, not "automatic_subs"
-                    draft_automatic_subs = picks_data.get("subs", [])
-                    draft_auto_sub_in_ids = {
-                        sub["element_in"] for sub in draft_automatic_subs
-                    }
-                    draft_auto_sub_out_ids = {
-                        sub["element_out"] for sub in draft_automatic_subs
-                    }
+                        # Extract automatic subs from Draft API response
+                        # Note: Draft API uses "subs" key, not "automatic_subs"
+                        auto_subs = list(picks_data.get("subs", []))
+                        draft_auto_sub_in_ids = {
+                            sub["element_in"] for sub in auto_subs
+                        }
+                        draft_auto_sub_out_ids = {
+                            sub["element_out"] for sub in auto_subs
+                        }
 
-                    if draft_picks:
-                        for pick in draft_picks:
-                            draft_elem_id = pick.get("element")
-                            draft_player = draft_player_map.get(draft_elem_id)
-                            if draft_player:
-                                # Look up Main FPL API element ID for GW history
-                                main_elem_id = draft_to_main_id.get(draft_elem_id)
+                        if draft_picks:
+                            for pick in draft_picks:
+                                draft_elem_id = pick.get("element")
+                                draft_player = draft_player_map.get(draft_elem_id)
+                                if draft_player:
+                                    # Look up Main FPL API element ID for GW history
+                                    main_elem_id = draft_to_main_id.get(draft_elem_id)
 
-                                gw_points, gw_minutes, red_cards = _live_player_stats(live_stats, main_elem_id)
+                                    gw_points, gw_minutes, red_cards = _live_player_stats(live_stats, main_elem_id)
 
-                                # Club names: short code for tables, full name for LLM prompts
-                                player_team_id = draft_player.get("team")
-                                player_team = teams.get(player_team_id)
-                                team_short = player_team.short_name if player_team else "???"
-                                # None, never a placeholder -- see _review_classic.py.
-                                team_name = player_team.name if player_team else None
+                                    # Club names: short code for tables, full name for LLM prompts
+                                    player_team_id = draft_player.get("team")
+                                    player_team = teams.get(player_team_id)
+                                    team_short = player_team.short_name if player_team else "???"
+                                    # None, never a placeholder -- see _review_classic.py.
+                                    team_name = player_team.name if player_team else None
 
-                                # Get position name from element_type
-                                pos_name = POSITION_MAP.get(draft_player.get("element_type"), "???")
+                                    # Get position name from element_type
+                                    pos_name = POSITION_MAP.get(draft_player.get("element_type"), "???")
 
-                                # In draft, position 1-11 are starting XI, 12-15 are bench
-                                squad_position = pick.get("position", 1)
-                                is_starter = squad_position <= 11
+                                    # In draft, position 1-11 are starting XI, 12-15 are bench
+                                    squad_position = pick.get("position", 1)
+                                    is_starter = squad_position <= 11
 
-                                draft_squad_points_data.append({
-                                    "id": draft_elem_id,
-                                    "name": draft_player.get("web_name", "Unknown"),
-                                    "team": team_short,
-                                    "team_name": team_name,
-                                    "position": pos_name,
-                                    "points": gw_points,
-                                    "minutes": gw_minutes,
-                                    "squad_position": squad_position,
-                                    "is_starter": is_starter,
-                                    "contributed": is_starter,  # Will be updated after auto-sub inference
-                                    "red_cards": red_cards,
-                                    "auto_sub_in": draft_elem_id in draft_auto_sub_in_ids,
-                                    "auto_sub_out": draft_elem_id in draft_auto_sub_out_ids,
-                                    "bgw": is_blank_gameweek(
-                                        main_elem_id, player_team_id,
-                                        players_with_fixture=players_with_fixture,
-                                        bgw_team_ids=bgw_team_ids,
-                                    ),
-                                    "dgw": is_double_gameweek(
-                                        main_elem_id, player_team_id,
-                                        players_with_double=players_with_double,
-                                        dgw_team_ids=dgw_team_ids,
-                                    ),
-                                })
+                                    squad_rows.append({
+                                        "id": draft_elem_id,
+                                        "name": draft_player.get("web_name", "Unknown"),
+                                        "team": team_short,
+                                        "team_name": team_name,
+                                        "position": pos_name,
+                                        "points": gw_points,
+                                        "minutes": gw_minutes,
+                                        "squad_position": squad_position,
+                                        "is_starter": is_starter,
+                                        "contributed": is_starter,  # Will be updated after auto-sub inference
+                                        "red_cards": red_cards,
+                                        "auto_sub_in": draft_elem_id in draft_auto_sub_in_ids,
+                                        "auto_sub_out": draft_elem_id in draft_auto_sub_out_ids,
+                                        "bgw": is_blank_gameweek(
+                                            main_elem_id, player_team_id,
+                                            players_with_fixture=players_with_fixture,
+                                            bgw_team_ids=bgw_team_ids,
+                                        ),
+                                        "dgw": is_double_gameweek(
+                                            main_elem_id, player_team_id,
+                                            players_with_double=players_with_double,
+                                            dgw_team_ids=dgw_team_ids,
+                                        ),
+                                    })
 
-                        # Infer auto-subs if Draft API didn't return them
-                        if not draft_automatic_subs:
-                            # Find starters who didn't play (0 minutes)
-                            starters_out = [p for p in draft_squad_points_data if p["is_starter"] and p["minutes"] == 0]
-                            # Bench players sorted by bench position (12, 13, 14, 15)
-                            bench = sorted(
-                                [p for p in draft_squad_points_data if not p["is_starter"]],
-                                key=lambda x: x["squad_position"]
-                            )
+                            # Infer auto-subs if Draft API didn't return them
+                            if not auto_subs:
+                                # Find starters who didn't play (0 minutes)
+                                starters_out = [p for p in squad_rows if p["is_starter"] and p["minutes"] == 0]
+                                # Bench players sorted by bench position (12, 13, 14, 15)
+                                bench = sorted(
+                                    [p for p in squad_rows if not p["is_starter"]],
+                                    key=lambda x: x["squad_position"]
+                                )
 
-                            # Simple auto-sub: for each starter who didn't play, sub in first available bench player
-                            # (FPL has formation rules, but for simplicity we just match by order)
-                            bench_idx = 0
-                            for starter in starters_out:
-                                # GK can only be replaced by GK (position 12 is usually backup GK)
-                                if starter["position"] == "GK":
-                                    bench_gk = next(
-                                        (p for p in bench if p["position"] == "GK" and not p.get("auto_sub_in")), None
-                                    )
-                                    if bench_gk:
-                                        starter["auto_sub_out"] = True
-                                        starter["contributed"] = False
-                                        bench_gk["auto_sub_in"] = True
-                                        bench_gk["contributed"] = True
-                                        draft_automatic_subs.append({
-                                            "element_in": bench_gk["id"],
-                                            "element_out": starter["id"]
-                                        })
-                                else:
-                                    # Find next available outfield bench player
-                                    while bench_idx < len(bench):
-                                        bench_player = bench[bench_idx]
-                                        bench_idx += 1
-                                        if bench_player["position"] != "GK" and not bench_player.get("auto_sub_in"):
+                                # Simple auto-sub: for each starter who didn't play, sub in first available bench player
+                                # (FPL has formation rules, but for simplicity we just match by order)
+                                bench_idx = 0
+                                for starter in starters_out:
+                                    # GK can only be replaced by GK (position 12 is usually backup GK)
+                                    if starter["position"] == "GK":
+                                        bench_gk = next(
+                                            (p for p in bench if p["position"] == "GK" and not p.get("auto_sub_in")),
+                                None,
+                                        )
+                                        if bench_gk:
                                             starter["auto_sub_out"] = True
                                             starter["contributed"] = False
-                                            bench_player["auto_sub_in"] = True
-                                            bench_player["contributed"] = True
-                                            draft_automatic_subs.append({
-                                                "element_in": bench_player["id"],
+                                            bench_gk["auto_sub_in"] = True
+                                            bench_gk["contributed"] = True
+                                            auto_subs.append({
+                                                "element_in": bench_gk["id"],
                                                 "element_out": starter["id"]
                                             })
-                                            break
+                                    else:
+                                        # Find next available outfield bench player
+                                        while bench_idx < len(bench):
+                                            bench_player = bench[bench_idx]
+                                            bench_idx += 1
+                                            if bench_player["position"] != "GK" and not bench_player.get("auto_sub_in"):
+                                                starter["auto_sub_out"] = True
+                                                starter["contributed"] = False
+                                                bench_player["auto_sub_in"] = True
+                                                bench_player["contributed"] = True
+                                                auto_subs.append({
+                                                    "element_in": bench_player["id"],
+                                                    "element_out": starter["id"]
+                                                })
+                                                break
 
-                        # Sort: contributing first (by points desc), then non-contributing
-                        draft_squad_points_data.sort(key=lambda p: (not p["contributed"], -p["points"]))
+                            # Sort: contributing first (by points desc), then non-contributing
+                            squad_rows.sort(key=lambda p: (not p["contributed"], -p["points"]))
 
-                        console.print("\n[bold]## Team Points[/bold]")
-                        has_reds = any(p.get("red_cards", 0) > 0 for p in draft_squad_points_data)
-                        table = Table(show_header=True, header_style="bold")
-                        table.add_column("Player")
-                        table.add_column("Team")
-                        table.add_column("Pos")
-                        table.add_column("Pts", justify="right")
-                        if has_reds:
-                            table.add_column("🟥", justify="center")
-
-                        for p in draft_squad_points_data:
-                            pts_display = _format_pts_display(p, points_key="points")
+                            console.print("\n[bold]## Team Points[/bold]")
+                            has_reds = any(p.get("red_cards", 0) > 0 for p in squad_rows)
+                            table = Table(show_header=True, header_style="bold")
+                            table.add_column("Player")
+                            table.add_column("Team")
+                            table.add_column("Pos")
+                            table.add_column("Pts", justify="right")
                             if has_reds:
-                                red_card_display = "[bold red]🟥[/bold red]" if p.get("red_cards", 0) > 0 else ""
-                                table.add_row(
-                                    rich_escape(p["name"]), p["team"], p["position"], pts_display, red_card_display,
-                                )
-                            else:
-                                table.add_row(rich_escape(p["name"]), p["team"], p["position"], pts_display)
-                        console.print(table)
+                                table.add_column("🟥", justify="center")
+
+                            for p in squad_rows:
+                                pts_display = _format_pts_display(p, points_key="points")
+                                if has_reds:
+                                    red_card_display = "[bold red]🟥[/bold red]" if p.get("red_cards", 0) > 0 else ""
+                                    table.add_row(
+                                        rich_escape(p["name"]), p["team"], p["position"], pts_display, red_card_display,
+                                    )
+                                else:
+                                    table.add_row(rich_escape(p["name"]), p["team"], p["position"], pts_display)
+                            console.print(table)
+
+                        # Published only once the table has rendered, so a failure part-way
+                        # through never leaves rows (or inferred subs) that were not shown.
+                        draft_squad_points_data = squad_rows
+                        draft_automatic_subs = auto_subs
+                    except Exception as e:  # noqa: BLE001 — display resilience
+                        error_console.print(
+                            f"[yellow]Could not build draft team points: {rich_escape(str(e))}[/yellow]"
+                        )
 
                 # Fetch Draft transactions for this GW
                 draft_transactions_data = []
