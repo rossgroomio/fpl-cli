@@ -753,35 +753,64 @@ class TestLeagueContextUserMasking:
         ctx = self._context(classic={
             "worst_performers": [
                 {"rank_str": "1", "name": "Alex", "points": 29, "gross_points": 33,
-                 "transfer_cost": 4, "is_user": False, "is_context": False},
+                 "transfer_cost": 4, "is_user": False},
             ],
         })
-        assert ctx["classic_worst_performers"] == "1. Alex - 29 net pts (33 gross, -4 hit)"
+        assert ctx["classic_worst_performers"] == "- Rank 1: Alex - 29 net pts (33 gross, -4 hit)"
 
     def test_classic_worst_performers_context_row_is_not_a_bottom_placing(self):
-        # #360: the user's row appended from above the bottom five used to go
-        # out as "19. You - 63 pts" under the Worst GW Performers heading
+        # #360: the user's row from above the bottom five used to go out as
+        # "19. You - 63 pts" under the Worst GW Performers heading
         ctx = self._context(classic={
+            "user_gw_rank": "1", "gw_field_size": 19,
             "worst_performers": [
                 {"rank_str": "1", "name": "Alex", "points": 29, "gross_points": 29,
-                 "transfer_cost": 0, "is_user": False, "is_context": False},
-                {"rank_str": "19", "name": "Manager", "points": 63, "gross_points": 63,
-                 "transfer_cost": 0, "is_user": True, "is_context": True},
+                 "transfer_cost": 0, "is_user": False},
             ],
+            "user_context_row": {"rank_str": "19", "name": "Manager", "points": 63, "gross_points": 63,
+                                 "transfer_cost": 0, "is_user": True},
         })
         assert ctx["classic_worst_performers"].splitlines() == [
-            "1. Alex - 29 pts",
-            "You: not among the lowest scorers above (63 pts) - see GW Position",
+            "- Rank 1: Alex - 29 pts",
+            "Your GW rank: 1 of 19 - 63 pts (not among the lowest scorers above)",
         ]
 
-    def test_classic_worst_performers_user_in_the_bottom_keeps_their_rank(self):
-        ctx = self._context(classic={
-            "worst_performers": [
-                {"rank_str": "1", "name": "Manager", "points": 29, "gross_points": 29,
-                 "transfer_cost": 0, "is_user": True, "is_context": False},
-            ],
-        })
-        assert ctx["classic_worst_performers"] == "1. You - 29 pts"
+    def test_tie_ranks_reach_the_model_as_labels_not_list_markers(self):
+        # "3=." is not a markdown list marker, and the model echoes what it is
+        # shown into the saved review
+        ctx = self._context(
+            classic={"worst_performers": [
+                {"rank_str": "1=", "name": "Alex", "points": 29, "gross_points": 29,
+                 "transfer_cost": 0, "is_user": False},
+                {"rank_str": "1=", "name": "Manager", "points": 29, "gross_points": 29,
+                 "transfer_cost": 0, "is_user": True},
+            ]},
+            draft={"worst_performers": [{"rank_str": "1=", "name": "Sam", "points": 20, "is_user": False}]},
+        )
+        assert ctx["classic_worst_performers"].splitlines() == [
+            "- Rank 1=: Alex - 29 pts",
+            "- Rank 1=: You - 29 pts",
+        ]
+        assert ctx["draft_worst_performers"] == "- Rank 1=: Sam - 20 pts"
+
+
+class TestPerformerScore:
+    """The one wording for a performer's score, shared by every writer."""
+
+    def test_a_hit_shows_net_then_gross_and_hit(self):
+        from fpl_cli.cli._helpers import performer_score
+        assert performer_score({"points": 29, "gross_points": 33, "transfer_cost": 4}) == (
+            "29 net pts (33 gross, -4 hit)"
+        )
+
+    def test_a_missing_gross_is_derived_not_stated_as_zero(self):
+        from fpl_cli.cli._helpers import performer_score
+        assert performer_score({"points": 40, "transfer_cost": 4}) == "40 net pts (44 gross, -4 hit)"
+
+    def test_no_hit_is_plain_points(self):
+        from fpl_cli.cli._helpers import performer_score
+        assert performer_score({"points": 40, "transfer_cost": 0}) == "40 pts"
+        assert performer_score({"points": 40}) == "40 pts"
 
 
 class TestAutoSubFormatting:

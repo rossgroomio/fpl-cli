@@ -11,6 +11,7 @@ import jinja2
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from fpl_cli.agents.base import Agent, AgentResult, AgentStatus
+from fpl_cli.cli._helpers import performer_score, your_gw_rank_line
 from fpl_cli.cli._league_recap_types import (
     RecapManagerEntry,
     draft_transaction_kind_label,
@@ -18,27 +19,15 @@ from fpl_cli.cli._league_recap_types import (
 )
 from fpl_cli.paths import TEMPLATE_DIR
 from fpl_cli.services.team_ratings import fdr_columns_footer
-from fpl_cli.utils.text import ordinal_suffix
+from fpl_cli.utils.text import md_table_cell, ordinal_suffix
 from fpl_cli.utils.time import format_generated_at
-
-
-def performer_points(p: Mapping[str, Any]) -> str:
-    """The points cell of a Best/Worst GW Performers row.
-
-    A row carrying a hit shows the net score with its gross and hit beside
-    it, so the rank (which is on net) reads against the number it was
-    ranked on.
-    """
-    cost = p.get("transfer_cost") or 0
-    if cost:
-        return f"{p.get('points', 0)} net pts ({p.get('gross_points', 0)} gross, -{cost} hit)"
-    return f"{p.get('points', 0)} pts"
 
 
 def _performers_table(performers: Sequence[Mapping[str, Any]]) -> list[str]:
     """Best/Worst GW Performers rows as a markdown table, blank line after."""
     rows = [
-        f"| {p.get('rank_str', '?')} | {p.get('name', 'Unknown')} | {performer_points(p)} |"
+        f"| {p.get('rank_str', '?')} | {'You' if p.get('is_user') else md_table_cell(p.get('name', 'Unknown'))}"
+        f" | {performer_score(p)} |"
         for p in performers
     ]
     return ["| Rank | Manager | Pts |", "|------|---------|-----|", *rows, ""]
@@ -66,8 +55,13 @@ def build_report_environment() -> Environment:
     # same mapping rather than from a second stored field that could drift
     env.filters["kind_label"] = draft_transaction_kind_label
     # Performer ranks render as a table cell, never as a list marker: markdown
-    # renumbers `19.` and cannot parse a tie's `3=.` at all (#360)
-    env.globals["performer_points"] = performer_points
+    # renumbers `19.` and cannot parse a tie's `3=.` at all (#360). The score
+    # and the user's rank note share their wording with the terminal and the
+    # synthesis prompt.
+    env.globals["performer_score"] = performer_score
+    env.globals["your_gw_rank_line"] = your_gw_rank_line
+    # Free-text names in a table cell: a `|` would split the row
+    env.filters["md_cell"] = md_table_cell
     return env
 
 
@@ -537,28 +531,23 @@ class ReportAgent(Agent):
                     else:
                         diff = r.get("total", 0) - user_total
                         diff_str = f"+{diff}" if diff > 0 else str(diff)
-                        name = r.get("manager_name", "Unknown")
+                        name = md_table_cell(r.get("manager_name", "Unknown"))
                     lines.append(f"| {r.get('rank')} | {name} | {r.get('total'):,} | {diff_str} |")
                 if cl.get("nearby_rivals_omitted"):
                     lines.extend(["", f"*...and {cl['nearby_rivals_omitted']} more within 25*"])
                 lines.append("")
 
+            net_suffix = " (Net)" if cl.get("use_net_points") else ""
             if cl.get("best_performers"):
-                lines.append("### Best GW Performers (Net)")
+                lines.append(f"### Best GW Performers{net_suffix}")
                 lines.extend(_performers_table(cl["best_performers"]))
 
             if cl.get("worst_performers"):
-                lines.append("### Worst GW Performers (Net)")
-                lines.extend(_performers_table(
-                    [p for p in cl["worst_performers"] if not p.get("is_context")],
-                ))
-                for p in cl["worst_performers"]:
-                    if p.get("is_context"):
-                        field = f" of {cl['gw_field_size']}" if cl.get("gw_field_size") else ""
-                        lines.extend([
-                            f"*Your GW rank: {cl.get('user_gw_rank')}{field} - {performer_points(p)}*",
-                            "",
-                        ])
+                lines.append(f"### Worst GW Performers{net_suffix}")
+                lines.extend(_performers_table(cl["worst_performers"]))
+                if cl.get("user_context_row"):
+                    note = your_gw_rank_line(cl.get("user_gw_rank"), cl.get("gw_field_size"), cl["user_context_row"])
+                    lines.extend([f"*{note}*", ""])
                 if cl.get("transfer_impact"):
                     lines.append(f"\n⚠ {cl['transfer_impact']}")
             lines.append("")

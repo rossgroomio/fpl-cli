@@ -133,32 +133,32 @@ League standings not shown for historical GW{{ gameweek }} review - use `fpl lea
 ### Nearby Rivals (+/- 25 pts)
 | Pos | Manager | Total | Pts Diff |
 |-----|---------|-------|----------|
-{% for r in classic_league.nearby_rivals %}{% set diff = r.total - classic_league.user_total %}| {{ r.rank }} | {% if r.is_user %}You{% else %}{{ r.manager_name }}{% endif %} | {{ "{:,}".format(r.total) }} | {% if r.is_user %}{% elif diff > 0 %}+{{ diff }}{% else %}{{ diff }}{% endif %} |
+{% for r in classic_league.nearby_rivals %}{% set diff = r.total - classic_league.user_total %}| {{ r.rank }} | {% if r.is_user %}You{% else %}{{ r.manager_name | md_cell }}{% endif %} | {{ "{:,}".format(r.total) }} | {% if r.is_user %}{% elif diff > 0 %}+{{ diff }}{% else %}{{ diff }}{% endif %} |
 {% endfor %}{% if classic_league.nearby_rivals_omitted %}
 
 *...and {{ classic_league.nearby_rivals_omitted }} more within 25*
 {% endif %}
 
 {% endif %}
+{% set net_suffix = ' (Net)' if classic_league.use_net_points else '' %}
 {% if classic_league.best_performers %}
-### Best GW Performers (Net)
+### Best GW Performers{{ net_suffix }}
 | Rank | Manager | Pts |
 |------|---------|-----|
-{% for p in classic_league.best_performers %}| {{ p.rank_str }} | {{ p.name }} | {{ performer_points(p) }} |
+{% for p in classic_league.best_performers %}| {{ p.rank_str }} | {{ p.name | md_cell }} | {{ performer_score(p) }} |
 {% endfor %}
 
 {% endif %}
 {% if classic_league.worst_performers %}
-{% set context_rows = classic_league.worst_performers | selectattr('is_context') | list %}
-### Worst GW Performers (Net)
+### Worst GW Performers{{ net_suffix }}
 | Rank | Manager | Pts |
 |------|---------|-----|
-{% for p in classic_league.worst_performers | rejectattr('is_context') %}| {{ p.rank_str }} | {{ p.name }} | {{ performer_points(p) }} |
+{% for p in classic_league.worst_performers %}| {{ p.rank_str }} | {{ p.name | md_cell }} | {{ performer_score(p) }} |
 {% endfor %}
-{% for p in context_rows %}
+{% if classic_league.user_context_row %}
 
-*Your GW rank: {{ classic_league.user_gw_rank }}{% if classic_league.gw_field_size %} of {{ classic_league.gw_field_size }}{% endif %} - {{ performer_points(p) }}*
-{% endfor %}
+*{{ your_gw_rank_line(classic_league.user_gw_rank, classic_league.gw_field_size, classic_league.user_context_row) }}*
+{% endif %}
 
 {% endif %}
 {% endif %}
@@ -235,7 +235,7 @@ Claims submitted and won by a rival - no move resulted, but these were made.
 ### Best GW Performers
 | Rank | Manager | Pts |
 |------|---------|-----|
-{% for p in draft_league.best_performers %}| {{ p.rank_str }} | {{ p.name }} | {{ performer_points(p) }} |
+{% for p in draft_league.best_performers %}| {{ p.rank_str }} | {{ p.name | md_cell }} | {{ performer_score(p) }} |
 {% endfor %}
 
 {% endif %}
@@ -243,7 +243,7 @@ Claims submitted and won by a rival - no move resulted, but these were made.
 ### Worst GW Performers
 | Rank | Manager | Pts |
 |------|---------|-----|
-{% for p in draft_league.worst_performers %}| {{ p.rank_str }} | {{ p.name }} | {{ performer_points(p) }} |
+{% for p in draft_league.worst_performers %}| {{ p.rank_str }} | {{ p.name | md_cell }} | {{ performer_score(p) }} |
 {% endfor %}
 
 {% endif %}

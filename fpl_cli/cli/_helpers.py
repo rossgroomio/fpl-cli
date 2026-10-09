@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any
 
 from fpl_cli.cli._context import fpl_config
@@ -90,6 +90,35 @@ def _assign_tie_ranks(sorted_items: list[dict], score_key: str) -> None:
         rank_counts[item["rank"]] = rank_counts.get(item["rank"], 0) + 1
     for item in sorted_items:
         item["rank_str"] = f"{item['rank']}=" if rank_counts[item["rank"]] > 1 else str(item["rank"])
+
+
+def performer_score(p: Mapping[str, Any]) -> str:
+    """A Best/Worst GW Performers row's score, as every writer states it.
+
+    The one wording for the terminal, the saved report and the synthesis
+    prompt: three copies had already drifted apart, and the prompt's read a
+    key the rows never carry and quoted gross as net (#364). `points` is the
+    score the row was ranked on -- net when the league plays net, as
+    `_fines._performer_points` reads it -- and a row carrying a hit shows its
+    gross and hit beside it. A row missing `gross_points` derives it from the
+    net and the hit rather than stating a gross of 0.
+    """
+    net = p.get("points", 0)
+    cost = p.get("transfer_cost") or 0
+    if cost > 0:
+        gross = p.get("gross_points", net + cost)
+        return f"{net} net pts ({gross} gross, -{cost} hit)"
+    return f"{net} pts"
+
+
+def your_gw_rank_line(gw_rank: str | None, field_size: int | None, row: Mapping[str, Any]) -> str:
+    """The note that stands in for the user's row beside the bottom five (#360).
+
+    `field_size` is None when the standings were one page of a larger
+    league, and the "of N" is dropped rather than naming a page as the field.
+    """
+    field = f" of {field_size}" if field_size else ""
+    return f"Your GW rank: {gw_rank or '?'}{field} - {performer_score(row)}"
 
 
 def _gw_position_with_half(position: int | str, total: int) -> str:

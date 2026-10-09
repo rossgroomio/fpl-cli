@@ -494,6 +494,7 @@ class TestReviewMarkdownRendersAsWritten:
         data["classic_league"] = {
             "league_name": "Office League", "user_position": 3, "total_entries": 19,
             "user_gw_points": 63, "user_total": 720, "user_gw_rank": "1", "gw_field_size": 19,
+            "use_net_points": True,
             "nearby_rivals": [
                 {"rank": 2, "manager_name": "Rival", "total": 730, "is_user": False},
                 {"rank": 3, "manager_name": "Me", "total": 720, "is_user": True},
@@ -507,12 +508,12 @@ class TestReviewMarkdownRendersAsWritten:
             ],
             "worst_performers": [
                 {"name": "Bottom", "points": 29, "gross_points": 33, "transfer_cost": 4,
-                 "rank_str": "1", "is_user": False, "is_context": False},
+                 "rank_str": "1", "is_user": False},
                 {"name": "Next", "points": 36, "gross_points": 36, "transfer_cost": 0,
-                 "rank_str": "2", "is_user": False, "is_context": False},
-                {"name": "Me", "points": 63, "gross_points": 63, "transfer_cost": 0,
-                 "rank_str": "19", "is_user": True, "is_context": True},
+                 "rank_str": "2", "is_user": False},
             ],
+            "user_context_row": {"name": "Me", "points": 63, "gross_points": 63, "transfer_cost": 0,
+                                 "rank_str": "19", "is_user": True},
         }
         data["draft_league"] = {
             "user_position": 1, "total_entries": 8, "user_gw_points": 40, "user_total": 300,
@@ -600,6 +601,36 @@ class TestReviewMarkdownRendersAsWritten:
         assert len(rows) == 2
         paragraphs = [t.content for t in self._tokens(output, "Nearby Rivals (+/- 25 pts)") if t.type == "inline"]
         assert "*...and 2 more within 25*" in paragraphs
+
+    def test_a_pipe_in_a_manager_name_stays_in_its_cell(self, render):
+        # Manager names are free text; an unescaped `|` split the row and
+        # pushed the score out of its column
+        data = self._data()
+        data["classic_league"]["best_performers"][1]["name"] = "A | B"
+        data["classic_league"]["nearby_rivals"][0]["manager_name"] = "C | D"
+        output = render(data)
+
+        best = self._table_rows(output, "Best GW Performers (Net)")
+        assert best[1] == ["2", "A | B", "60 pts"]
+        rivals = self._table_rows(output, "Nearby Rivals (+/- 25 pts)")
+        assert rivals[0][:2] == ["2", "C | D"]
+
+    def test_a_league_without_net_points_is_not_labelled_net(self, render):
+        data = self._data()
+        data["classic_league"]["use_net_points"] = False
+        output = render(data)
+
+        assert "(Net)" not in output
+        assert len(self._table_rows(output, "Best GW Performers")) == 4
+
+    def test_a_user_in_the_bottom_five_is_marked_you_in_the_inline_report(self):
+        # The fallback writer always labelled the user's own row "You"
+        data = self._data()
+        data["classic_league"]["worst_performers"][1]["is_user"] = True
+        output = ReportAgent()._generate_review_inline(5, data)
+
+        rows = self._table_rows(output, "Worst GW Performers (Net)")
+        assert rows[1][:2] == ["2", "You"]
 
     def test_each_fixture_is_its_own_block(self, render):
         tokens = self._tokens(render(self._data()), "Results")

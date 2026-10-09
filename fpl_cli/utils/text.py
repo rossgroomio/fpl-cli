@@ -68,6 +68,16 @@ def normalise_name(text: str) -> str:
     return _INITIAL_SPACE_RE.sub(r"\1.", text).strip()
 
 
+def md_table_cell(text: object) -> str:
+    """Text made safe for one cell of a markdown table.
+
+    Manager and team names are free text, and a `|` in one ends the cell
+    early: the name splits and every later value shifts a column. GFM reads
+    `\\|` as a literal pipe inside a cell.
+    """
+    return str(text).replace("|", "\\|")
+
+
 _ORDINAL_SUFFIXES = {1: "st", 2: "nd", 3: "rd"}
 
 

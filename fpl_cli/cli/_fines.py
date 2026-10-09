@@ -25,8 +25,8 @@ class FinesLeagueData(TypedDict):
     # bottom would move last place up to wherever its slice began. Everything
     # above that is free, and narrowing is the handler's job rather than the
     # caller's -- `status` and `league-recap` pass the whole table, `review`
-    # passes the bottom five it is already displaying (with the user's own
-    # row appended from further up), and `_joint_last` finds the tie in any
+    # passes the bottom five (and ties) it is already displaying, and
+    # `_joint_last` finds the tie in any
     # of them. Every manager level on the lowest score must be here, each
     # with their own `is_user`: a single-element list decided by `min()`
     # picked one of a tied pair by arrival order (issue #336).
