@@ -2125,10 +2125,29 @@ class TestReviewDraftTransactionsFetch:
         assert "[bold]Elanga" in captured.out
         assert [t["player_in"] for t in data["draft_transactions_data"]] == ["[bold]Elanga"]
 
-    async def test_a_non_http_error_is_not_reported_as_a_fetch_failure(self, capsys):
+    async def test_a_non_http_error_propagates_rather_than_posing_as_a_fetch_failure(self, capsys):
+        """It escapes the transactions block to the outer league handler, which
+        names the real error; the transactions notice stays reserved for fetches."""
         with patch("fpl_cli.api.fpl_draft.resolve_lost_claims", side_effect=RuntimeError("render bug")):
-            await self._run(transactions=self._ACCEPTED)
+            data = await self._run(transactions=self._ACCEPTED)
+        err = capsys.readouterr().err
+        assert "Could not fetch transactions" not in err
+        assert "render bug" in err
+        assert data["draft_transactions_data"] == []
+
+    async def test_rows_are_not_published_when_the_table_fails_to_render(self, capsys):
+        from rich.table import Table
+
+        from fpl_cli.cli import _review_draft as module
+
+        def _fail_on_table(*args, **kwargs):
+            if any(isinstance(a, Table) for a in args):
+                raise RuntimeError("render bug")
+
+        with patch.object(module.console, "print", side_effect=_fail_on_table):
+            data = await self._run(transactions=self._ACCEPTED)
         assert "Could not fetch transactions" not in capsys.readouterr().err
+        assert data["draft_transactions_data"] == []
 
 
 class TestReviewDraftPlayerMatching:

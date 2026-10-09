@@ -308,6 +308,10 @@ async def _review_draft(
                         txn_table.add_column("Net", justify="right")
                         txn_table.add_column("Verdict")
 
+                        # Built locally and published only once the table has rendered, so a
+                        # failure part-way through never leaves rows that were not shown.
+                        txn_rows: list[dict[str, Any]] = []
+
                         # Draft always drops a player per pickup, so net_in_ids and net_out_ids are equal length.
                         for player_in_id, player_out_id in zip(net_in_ids, net_out_ids, strict=True):
                             draft_player_in = draft_player_map.get(player_in_id)
@@ -348,7 +352,7 @@ async def _review_draft(
                                 verdict,
                             )
 
-                            draft_transactions_data.append({
+                            txn_rows.append({
                                 "player_out": draft_player_out.get("web_name"),
                                 "player_out_team": out_abbr,
                                 "player_out_team_name": out_team.name if out_team else None,
@@ -364,12 +368,13 @@ async def _review_draft(
                         console.print(txn_table)
 
                         # Summary stats
-                        hits = sum(1 for t in draft_transactions_data if t["net"] > 1)
-                        misses = sum(1 for t in draft_transactions_data if t["net"] < -1)
-                        total_net = sum(t["net"] for t in draft_transactions_data)
+                        hits = sum(1 for t in txn_rows if t["net"] > 1)
+                        misses = sum(1 for t in txn_rows if t["net"] < -1)
+                        total_net = sum(t["net"] for t in txn_rows)
                         console.print(
                             f"\nHits: {hits} | Misses: {misses} | Net: {signed_net_markup(total_net)}"
                         )
+                        draft_transactions_data = txn_rows
 
                     # Printed whether or not anything landed: a gameweek whose
                     # only waiver activity was a lost claim has no
