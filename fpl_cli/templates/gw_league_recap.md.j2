@@ -12,6 +12,15 @@
 {% endif %}
 
 {% if synthesis_summary is defined and synthesis_summary %}
+{% if synthesis_problems is defined and synthesis_problems %}
+> [!WARNING]
+> **The editorial below contradicts the waiver claims it was given.** Where
+> they differ, the claims are right:
+{% for problem in synthesis_problems %}
+> - {{ problem }}
+{% endfor %}
+
+{% endif %}
 {{ synthesis_summary }}
 
 ---

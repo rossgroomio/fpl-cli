@@ -1193,6 +1193,194 @@ class TestTruncatedEditorial:
         assert "[/yellow]cut" in result.stderr.replace("\n", "")
 
 
+class TestContestedMisattribution:
+    """#357: the editorial folded two contested lines into one "respectively"
+    clause and named a race's winner as beaten in the next race. The run now
+    checks every such claim against the races it was given, retries once,
+    and says so -- on stderr, on the JSON warnings channel, and above the
+    editorial in the saved report -- when the second roll is still wrong."""
+
+    _WRONG = "Cam and Bob were beaten to Bogle and Giles respectively."
+    _RIGHT = "Cam was beaten to both Bogle and Giles, and Bob missed out on King."
+
+    def _data(self) -> LeagueRecapData:
+        # A race is keyed on the player's code, so a winning move carries the
+        # same code as the lost claims on him.
+        def _txn(name_in: str, code: int) -> RecapDraftTransaction:
+            return RecapDraftTransaction(
+                player_in=name_in, player_in_team="MCI", player_in_points=5, player_in_code=code,
+                player_out="Dud", player_out_team="TOT", player_out_points=1,
+                net=4, kind="w",
+            )
+
+        return _recap_data(
+            gameweek=5, fpl_format="draft",
+            managers=[
+                _manager(name="Alice", entry_id=1, league_entry_id=10, transactions=[_txn("King", 1)]),
+                _manager(
+                    name="Bob", entry_id=2, league_entry_id=20, gw_rank=2, overall_rank=2,
+                    transactions=[_txn("Bogle", 2)],
+                    lost_claims=[_lost_claim("King", player_in_code=1, priority=2)],
+                ),
+                _manager(
+                    name="Cam", entry_id=3, league_entry_id=30, gw_rank=3, overall_rank=3,
+                    transactions=[],
+                    lost_claims=[
+                        _lost_claim("Bogle", player_in_code=2, priority=3),
+                        _lost_claim("Giles", player_in_code=3, priority=4),
+                    ],
+                ),
+                _manager(
+                    name="Dan", entry_id=4, league_entry_id=40, gw_rank=4, overall_rank=4,
+                    transactions=[_txn("Giles", 3)],
+                ),
+            ],
+            cohort=_cohort(
+                (10, "Alice", 1, 60, 300), (20, "Bob", 2, 50, 290),
+                (30, "Cam", 3, 40, 280), (40, "Dan", 4, 30, 270),
+            ),
+        )
+
+    def _provider(self, *replies: str | tuple[str, str] | Exception):
+        """A provider answering each call with the next reply in turn: a
+        string, a (string, stop_reason) pair, or an exception to raise."""
+        from fpl_cli.api.providers import LLMResponse, TokenUsage
+
+        queue = list(replies)
+
+        class _Stub:
+            prompts: list[str] = []
+
+            async def query(self, prompt, system_prompt=None, **kwargs):
+                _Stub.prompts.append(prompt)
+                reply = queue.pop(0)
+                if isinstance(reply, Exception):
+                    raise reply
+                content, stop_reason = reply if isinstance(reply, tuple) else (reply, "end_turn")
+                return LLMResponse(
+                    content=f"## Waiver Wars\n\n{content}",
+                    model="claude-sonnet-5-5",
+                    usage=TokenUsage(10, 20),
+                    stop_reason=stop_reason,
+                )
+
+            def post_process(self, content):
+                return content
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return None
+
+        return _Stub, patch("fpl_cli.api.providers.get_llm_provider", return_value=_Stub())
+
+    def _invoke(self, args: list[str], *replies: str | tuple[str, str] | Exception):
+        stub, provider = self._provider(*replies)
+        with provider:
+            result = _invoke_recap(
+                self._data(), ["--draft", "--summarise", *args],
+                settings={"fpl": {"draft_league_id": 42}},
+            )
+        return stub, result
+
+    def test_a_clean_editorial_is_one_call_and_no_warning(self):
+        stub, result = self._invoke(["--format", "json"], self._RIGHT)
+
+        assert result.exit_code == 0, result.stderr
+        assert len(stub.prompts) == 1
+        envelope = json.loads(result.stdout)
+        assert self._RIGHT in envelope["metadata"]["synthesis_summary"]
+        codes = [w["code"] for w in envelope["metadata"]["warnings"]]
+        assert "synthesis_contested_misattribution" not in codes
+
+    def test_a_misattribution_is_retried_and_the_clean_retry_ships(self):
+        stub, result = self._invoke(["--format", "json"], self._WRONG, self._RIGHT)
+
+        assert result.exit_code == 0, result.stderr
+        assert len(stub.prompts) == 2
+        assert "retrying once" in result.stderr
+        envelope = json.loads(result.stdout)
+        assert self._RIGHT in envelope["metadata"]["synthesis_summary"]
+        codes = [w["code"] for w in envelope["metadata"]["warnings"]]
+        assert "synthesis_contested_misattribution" not in codes
+
+    def test_a_misattribution_that_survives_the_retry_is_named_everywhere(self, tmp_path: Path):
+        stub, result = self._invoke(
+            ["--format", "json", "--save", "--output", str(tmp_path)], self._WRONG, self._WRONG,
+        )
+
+        assert result.exit_code == 0, result.stderr
+        assert len(stub.prompts) == 2
+        stderr = result.stderr.replace("\n", " ")
+        assert "Bob was beaten to Giles" in stderr
+
+        envelope = json.loads(result.stdout)
+        warnings = {w["code"]: w["message"] for w in envelope["metadata"]["warnings"]}
+        assert "Bob was beaten to Giles" in warnings["synthesis_contested_misattribution"]
+        # Saved as written, not scrubbed: the warning is what tells it apart.
+        assert self._WRONG in envelope["metadata"]["synthesis_summary"]
+
+        report = next(tmp_path.rglob("gw5-league-recap-draft.md")).read_text(encoding="utf-8")
+        callout = report.index("> [!WARNING]")
+        assert callout < report.index(self._WRONG)
+        assert "> - the editorial says Bob was beaten to Giles" in report
+
+    def test_the_retry_is_told_what_the_first_attempt_got_wrong(self):
+        stub, result = self._invoke([], self._WRONG, self._RIGHT)
+
+        assert result.exit_code == 0, result.output
+        first, retry = stub.prompts
+        assert retry.startswith(first)
+        assert "- the editorial says Bob was beaten to Giles" in retry[len(first):]
+
+    def test_a_retry_that_fails_keeps_the_first_attempt(self, tmp_path: Path):
+        """PR #368 review: the editorial in hand used to be lost with the retry."""
+        from fpl_cli.api.providers import ProviderError
+
+        stub, result = self._invoke(
+            ["--format", "json", "--save", "--output", str(tmp_path)],
+            self._WRONG, ProviderError("rate limited"),
+        )
+
+        assert result.exit_code == 0, result.stderr
+        assert len(stub.prompts) == 2
+        assert "rate limited" in result.stderr
+        envelope = json.loads(result.stdout)
+        assert self._WRONG in envelope["metadata"]["synthesis_summary"]
+        codes = [w["code"] for w in envelope["metadata"]["warnings"]]
+        assert "synthesis_contested_misattribution" in codes
+        report = next(tmp_path.rglob("gw5-league-recap-draft.md")).read_text(encoding="utf-8")
+        assert "> [!WARNING]" in report
+
+    def test_a_cut_off_attempt_loses_a_tie_on_wrong_claims(self):
+        _, result = self._invoke(["--format", "json"], (self._WRONG, "max_tokens"), self._WRONG)
+
+        envelope = json.loads(result.stdout)
+        codes = [w["code"] for w in envelope["metadata"]["warnings"]]
+        assert "synthesis_contested_misattribution" in codes
+        assert "synthesis_stopped_early" not in codes
+
+    def test_a_cut_off_retry_never_hides_the_first_attempt_s_problem(self):
+        # A retry cut off before it reached the race claims checks clean only
+        # because it stopped short, so the complete first attempt ships, with
+        # its misattribution named.
+        _, result = self._invoke(["--format", "json"], self._WRONG, ("Cam was", "max_tokens"))
+
+        envelope = json.loads(result.stdout)
+        assert self._WRONG in envelope["metadata"]["synthesis_summary"]
+        codes = [w["code"] for w in envelope["metadata"]["warnings"]]
+        assert "synthesis_contested_misattribution" in codes
+        assert "synthesis_stopped_early" not in codes
+
+    def test_a_worse_retry_never_displaces_a_better_first_attempt(self):
+        worse = "Cam and Bob were beaten to Bogle and Giles respectively, and Dan beat Bob to King."
+        _, result = self._invoke(["--format", "json"], self._WRONG, worse)
+
+        envelope = json.loads(result.stdout)
+        assert self._WRONG in envelope["metadata"]["synthesis_summary"]
+
+
 class TestFinesAreRecordedNotJustRendered:
     def test_a_live_capture_records_what_was_ruled_even_when_nothing_triggered(self):
         """`fines == []` says three different things at once without this; the

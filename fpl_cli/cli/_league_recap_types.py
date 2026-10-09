@@ -411,6 +411,10 @@ class LeagueRecapData(TypedDict):
     # was not a normal completion (#266). Present means the text above may be
     # cut off; absent means the provider either finished or said nothing.
     synthesis_stop_reason: NotRequired[str]
+    # Every contested race the editorial puts a manager in the wrong role of,
+    # as `check_contested_attributions()` words it (#357). Present means the
+    # editorial above is saved as written but contradicts its own data there.
+    synthesis_problems: NotRequired[list[str]]
     # Ledger partition key and the league's own start gameweek (absent or 1
     # means it started at GW1, so there is nothing to offset or skip).
     league_id: NotRequired[int]
