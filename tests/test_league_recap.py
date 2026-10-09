@@ -81,6 +81,7 @@ from fpl_cli.prompts.league_recap_checks import (
     RECAP_WARNING_CONTESTED_MISATTRIBUTION,
     RECAP_WARNING_NET_MISATTRIBUTION,
     RECAP_WARNING_UNSUPPORTED_TIE,
+    RecapNames,
     check_contested_attributions,
     check_net_attributions,
     check_recap_editorial,
@@ -6724,7 +6725,7 @@ class TestRecapTitleIsTheReportsNotTheModels:
 # ---------------------------------------------------------------------------
 
 
-def _reported_races() -> tuple[list, list[str]]:
+def _reported_races() -> tuple[list, RecapNames]:
     """The reported gameweek's three races: Alice Moss won King over Bob Gale,
     Bob Gale won Bogle over Cam Hart, and Dan Ford won Giles over Cam Hart.
     Bob Gale is the winner of one race and beaten in another, which is what
@@ -6742,7 +6743,7 @@ def _reported_races() -> tuple[list, list[str]]:
         _make_manager_with_txns("Dan Ford", [_txn("Giles", 2, "F", 1)], entry_id=4),
         _make_manager(name="Eve Ray", entry_id=5),
     ]
-    return contested_draft_claims(managers), [m["manager_name"] for m in managers]
+    return contested_draft_claims(managers), RecapNames.of(managers)
 
 
 class TestContestedAttributionCheck:
@@ -6888,7 +6889,7 @@ class TestContestedAttributionCheck:
         managers[3]["lost_claims"][0]["player_in_code"] = 2
         contests = contested_draft_claims(managers)
         assert len(contests) == 2
-        names = [m["manager_name"] for m in managers]
+        names = RecapNames.of(managers)
 
         assert check_contested_attributions(
             "Bob Gale was beaten to Silva. Alice Moss beat Bob Gale to Silva. "
@@ -6905,21 +6906,16 @@ class TestContestedAttributionCheck:
         """Issue #379: "White" read inside "Gibbs-White" listed a manager who
         claimed nothing beside the one who lost, and a correct sentence was
         flagged as saying the bystander was beaten too."""
-        summary = "After selling Gibbs-White, Bob Gale missed out on King."
-        contests, names = _reported_races()
-        assert check_contested_attributions(summary, contests, [*names, "Fay White"], ["Gibbs-White"]) == []
-        # The registry hands the check every player the data names.
         managers = [
             _make_manager_with_txns("Alice Moss", [_txn("King", 6, "A", 1)], entry_id=1),
             _lost_by(_make_manager(name="Bob Gale", entry_id=2), _lost("King", "C")),
             _make_manager(name="Fay White", entry_id=3),
         ]
         managers[1]["squad"] = [_make_squad_player(name="Gibbs-White")]
-        assert check_recap_editorial(summary, _make_recap_data(managers=managers)) == {}
+        data = _make_recap_data(managers=managers)
+        assert check_recap_editorial("After selling Gibbs-White, Bob Gale missed out on King.", data) == {}
         # The race itself is still read: the wrong manager is still caught.
-        found = check_recap_editorial(
-            "After selling Gibbs-White, Alice Moss missed out on King.", _make_recap_data(managers=managers),
-        )
+        found = check_recap_editorial("After selling Gibbs-White, Alice Moss missed out on King.", data)
         assert [p.split(", but")[0] for p in found[RECAP_WARNING_CONTESTED_MISATTRIBUTION]] == [
             "the editorial says Alice Moss was beaten to King",
         ]
@@ -6933,7 +6929,7 @@ class TestContestedAttributionCheck:
         assert '"respectively"' in prompt
 
     def test_nothing_is_checked_without_a_contested_race(self):
-        assert check_contested_attributions("Bob was beaten to Isak.", [], ["Bob"]) == []
+        assert check_contested_attributions("Bob was beaten to Isak.", [], RecapNames.of([_make_manager(name="Bob")])) == []
 
     def test_the_system_prompt_forbids_folding_two_races_into_one_clause(self):
         system, _ = get_recap_synthesis_prompt(
@@ -6977,7 +6973,8 @@ class TestNetAttributionCheck:
     the -6 only exists with the second transfer and the hit."""
 
     def _check(self, summary: str, managers: list[RecapManagerEntry] | None = None) -> list[str]:
-        return check_net_attributions(summary, managers or _reported_transfers())
+        managers = managers or _reported_transfers()
+        return check_net_attributions(summary, managers, RecapNames.of(managers))
 
     def test_the_reported_sentence_is_caught(self):
         problems = self._check(
@@ -7127,7 +7124,8 @@ class TestTieClaimCheck:
     the table's season totals onto a score nobody shared."""
 
     def _check(self, summary: str, managers: list[RecapManagerEntry] | None = None) -> list[str]:
-        return check_tie_claims(summary, managers or _reported_table())
+        managers = managers or _reported_table()
+        return check_tie_claims(summary, managers, RecapNames.of(managers))
 
     def test_the_reported_sentence_is_caught(self):
         problems = self._check("The previous leader posted the joint-lowest score of the week (29 pts).")
@@ -7224,6 +7222,14 @@ class TestTieClaimCheck:
         ]
         # "White" alone is the player's name before it is the manager's.
         assert self._check("White posted the joint-lowest score of the week.", managers) == []
+
+    def test_a_player_only_partly_inside_the_subject_window_does_not_hide_the_tie(self):
+        """PR #380 review: the window reaches two words past the tie, to "Mac",
+        so "Mac Allister" only starts inside it. A player is the subject only
+        when his whole name is in the window, as it was before #379."""
+        managers = _reported_table()
+        managers[1]["squad"] = [_make_squad_player(name="Mac Allister")]
+        assert len(self._check("Ann Moss finished joint-lowest after Mac Allister blanked.", managers)) == 1
 
     def test_level_totals_the_tie_break_split_bear_out_a_tie_at_the_top(self):
         """PR #374 review: a head-to-head draft table ranks managers level on
@@ -7339,6 +7345,21 @@ class TestEditorialChecks:
         assert message.startswith("The editorial contradicts the contested waiver claims it was given. ")
         assert message.count(". The editorial says ") == 2
         assert message.endswith('"Dan won him".')
+
+    def test_the_names_every_check_reads_take_in_every_player_the_data_carries(self):
+        """PR #380 review: captains are names too, while an auto-sub line is a
+        sentence about squad players already counted, not a name."""
+        manager = _make_manager(
+            name="Ann Moss", captain="Calvert-Lewin", vice_captain="Ward-Prowse",
+            squad=[_make_squad_player(name="King")],
+        )
+        manager["auto_subs"] = ["King on for Wood (6 pts)"]
+        names = RecapNames.of([manager])
+        assert names.players == {"Calvert-Lewin", "Ward-Prowse", "King"}
+        assert names.managers == ("Ann Moss",)
+        assert [m.group(0) for m in names.find("Moss watched Calvert-Lewin and Ann Moss's King.")] == [
+            "Moss", "Calvert-Lewin", "Ann Moss", "King",
+        ]
 
     def test_a_check_that_crashes_is_not_the_editorial_s_problem(self):
         # The command treats the checks as advisory; see the CLI test.
