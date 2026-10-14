@@ -47,6 +47,23 @@
 ### Transfers
 {% if recs_comparison.classic.no_transfers_possible %}
 No transfers exist in GW1 - squads are bought pre-season, so there was no transfer decision to compare.
+{% elif recs_comparison.classic.squad %}
+{% set sq = recs_comparison.classic.squad %}
+Recommended a {% if sq.mode == "freehit" %}Free Hit{% elif sq.mode == "wildcard" %}Wildcard{% else %}full{% endif %} squad of {{ sq.size }}{% if sq.fielded is not none %}, and **{{ sq.fielded }}** of them were fielded{% endif %}. Each player brought in is graded against that squad.
+{% if sq.incoming %}
+
+| Rec | In | Out | In Squad | Net | Verdict |
+|-----|----|-----|----------|-----|---------|
+{% for t in sq.incoming %}| {% if t.advised %}✓{% else %}⚠{% endif %} | {{ t.actual_in }} | {{ t.actual_out }} | {% if t.advised %}Yes{% else %}No{% endif %} | {{ t.actual_net }} | {{ t.actual_verdict }} |
+{% endfor %}
+{% else %}
+
+No transfers made.
+{% endif %}
+{% if sq.missed %}
+
+Recommended but not fielded: {{ sq.missed | join(", ") }}
+{% endif %}
 {% elif recs_comparison.classic.rec_roll and recs_comparison.classic.actual_roll %}
 Recommended roll. Rolled. **Aligned.**
 {% elif recs_comparison.classic.rec_roll and not recs_comparison.classic.actual_roll %}
@@ -74,6 +91,13 @@ Recommended roll but made transfers.
 {% endfor %}{% endif %}
 {% if not recs_comparison.draft.waivers and not recs_comparison.draft.unadvised_waivers %}
 No waiver recommendations or transactions.
+{% endif %}
+{% if recs_comparison.ambiguous_names %}
+
+_Not graded, because the name fits more than one player:_
+{% for a in recs_comparison.ambiguous_names %}
+- _"{{ a.name }}"{% if a.team %} ({{ a.team }}){% endif %} could be {{ a.candidates | join(" or ") }}_
+{% endfor %}
 {% endif %}
 
 ---

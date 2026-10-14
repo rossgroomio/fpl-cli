@@ -291,6 +291,45 @@ class TestTemplateRendering:
         output = self.agent._generate_review_report(29, data)
         assert "| 1 | Nyoni | Wirtz | Different (claimed, lost) | Gordon |" in output
 
+    def test_review_report_grades_a_wildcard_against_the_recommended_squad(self):
+        """#354: a wildcard recommendation names a squad, not moves, so each
+        player brought in is graded against it instead of read as unadvised."""
+        data = _review_data()
+        data["recs_comparison"] = {
+            "classic": {
+                "rec_roll": False, "actual_roll": False, "no_transfers_possible": False,
+                "transfers": [], "unadvised_transfers": [],
+                "squad": {
+                    "mode": "wildcard", "size": 15, "fielded": 12, "missed": ["Gabriel", "Salah"],
+                    "incoming": [
+                        {"actual_in": "Raya", "actual_out": "Pickford", "advised": True,
+                         "actual_net": 2, "actual_verdict": "\u2713 Hit"},
+                        {"actual_in": "Verbruggen", "actual_out": "Sanchez", "advised": False,
+                         "actual_net": -1, "actual_verdict": "\u2192 Neutral"},
+                    ],
+                },
+            },
+            "draft": {"waivers": [], "unadvised_waivers": []},
+        }
+        output = self.agent._generate_review_report(29, data)
+        assert "Recommended a Wildcard squad of 15, and **12** of them were fielded." in output
+        assert "| \u2713 | Raya | Pickford | Yes | 2 | \u2713 Hit |" in output
+        assert "| \u26a0 | Verbruggen | Sanchez | No | -1 | \u2192 Neutral |" in output
+        assert "Recommended but not fielded: Gabriel, Salah" in output
+        assert "Unadvised" not in output
+
+    def test_review_report_names_a_recommendation_it_could_not_grade(self):
+        data = _review_data()
+        data["recs_comparison"] = {
+            "classic": {},
+            "draft": {"waivers": [], "unadvised_waivers": []},
+            "ambiguous_names": [
+                {"name": "Murphy", "team": "NEW", "candidates": ["A.Murphy (NEW)", "J.Murphy (NEW)"]},
+            ],
+        }
+        output = self.agent._generate_review_report(29, data)
+        assert '"Murphy" (NEW) could be A.Murphy (NEW) or J.Murphy (NEW)' in output
+
     def test_review_unused_bench_marker(self):
         data = _review_data()
         data["team_points"][1]["contributed"] = False

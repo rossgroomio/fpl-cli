@@ -27,12 +27,13 @@ from fpl_cli.cli._review_summarisation import (
     _normalise_name,
     _report_research_corrections,
     _report_synthesis_completeness,
+    _resolve_name,
     _review_compare_recs,
     _review_llm_summarise,
     _synthesise_with_completeness_check,
 )
 from fpl_cli.cli.preview import _preview_build_fixture_map
-from fpl_cli.cli.review import GameweekResolutionError, _review_resolve_gw, review_command
+from fpl_cli.cli.review import GameweekResolutionError, _print_squad_comparison, _review_resolve_gw, review_command
 from fpl_cli.prompts.review import check_synthesis_completeness
 from tests.conftest import make_agent, make_draft_player, make_fixture, make_player, make_team
 
@@ -1299,6 +1300,170 @@ class TestReviewCompareRecsWaivers:
         assert result["draft"]["waivers"][0].get("not_executed") is True
 
 
+def _transfer(player_in, player_out, in_team=None, out_team=None, net=0):
+    return {
+        "player_in": player_in, "player_in_team": in_team or "???", "player_in_points": 0,
+        "player_out": player_out, "player_out_team": out_team or "???", "player_out_points": 0,
+        "net": net, "verdict": "\u2192 Neutral",
+    }
+
+
+class TestReviewCompareRecsNameMatching:
+    """#354: the initial strip made a bare surname match any initialled
+    player, and two initialled players match each other."""
+
+    def test_initialled_rec_prices_its_own_player_not_the_first_same_surname(self):
+        recs = _make_recs(captain="B. Fernandes")
+        recs["classic"]["captain_team"] = "MUN"
+        collected = _make_collected(team_points=[
+            _classic_player(name="J.Fernandes", team="MUN", display_points=1),
+            _classic_player(name="B.Fernandes", team="MUN", display_points=9),
+            _classic_player(name="Haaland", team="MCI", display_points=4, is_captain=True),
+        ])
+        result = _review_compare_recs(recs, collected, {}, {})
+        assert result["classic"]["captain_followed"] is False
+        assert result["classic"]["rec_captain_pts"] == 9
+
+    def test_same_club_pair_needs_the_initial(self):
+        """A.Murphy and J.Murphy are both NEW, so the club cannot separate them."""
+        recs = _make_recs(captain="J. Murphy")
+        recs["classic"]["captain_team"] = "NEW"
+        collected = _make_collected(team_points=[
+            _classic_player(name="A.Murphy", team="NEW", display_points=2),
+            _classic_player(name="J.Murphy", team="NEW", display_points=7, is_captain=True),
+        ])
+        result = _review_compare_recs(recs, collected, {}, {})
+        assert result["classic"]["captain_followed"] is True
+        assert result["ambiguous_names"] == []
+
+    def test_bare_surname_with_two_candidates_is_reported_not_guessed(self):
+        recs = _make_recs(captain="Murphy")
+        recs["classic"]["captain_team"] = "NEW"
+        collected = _make_collected(team_points=[
+            _classic_player(name="A.Murphy", team="NEW", display_points=2, is_captain=True),
+            _classic_player(name="J.Murphy", team="NEW", display_points=7),
+        ])
+        result = _review_compare_recs(recs, collected, {}, {})
+        assert result["classic"]["captain_followed"] is False
+        assert result["ambiguous_names"] == [{
+            "name": "Murphy", "team": "NEW", "candidates": ["A.Murphy (NEW)", "J.Murphy (NEW)"],
+        }]
+
+    def test_bare_surname_finds_the_only_initialled_player(self):
+        recs = _make_recs(captain="Fernandes")
+        collected = _make_collected(team_points=[
+            _classic_player(name="B.Fernandes", team="MUN", display_points=9, is_captain=True),
+        ])
+        assert _review_compare_recs(recs, collected, {}, {})["classic"]["captain_followed"] is True
+
+    def test_club_code_separates_names_the_accent_fold_merges(self):
+        """Munoz (LIV) and Muñoz (NFO) fold to one key; the club tells them apart."""
+        recs = _make_recs(transfers=[{"in": "Gordon", "in_team": "NEW", "out": "Munoz", "out_team": "LIV"}])
+        collected = _make_collected(classic_transfers=[_transfer("Gordon", "Mu\u00f1oz", "NEW", "NFO")])
+        result = _review_compare_recs(recs, collected, {}, {})
+        assert result["classic"]["transfers"][0].get("not_made") is True
+        assert result["classic"]["unadvised_transfers"][0]["actual_out"] == "Mu\u00f1oz"
+
+    def test_non_breaking_hyphen_matches_the_ascii_one(self):
+        recs = _make_recs(transfers=[{"in": "Ait\u2011Nouri", "out": "Gvardiol"}])
+        collected = _make_collected(classic_transfers=[_transfer("Ait-Nouri", "Gvardiol", "MCI", "MCI")])
+        assert _review_compare_recs(recs, collected, {}, {})["classic"]["transfers"][0]["followed"] is True
+
+    def test_the_same_player_listed_twice_is_not_a_tie(self):
+        ambiguous: list = []
+        assert _resolve_name("Doku", None, [("Doku", "MCI"), ("Doku", "MCI")], ambiguous) == 0
+        assert ambiguous == []
+
+    def test_two_different_initials_never_match(self):
+        assert not _names_match("B.Fernandes", "J.Fernandes")
+        assert _names_match("B. Fernandes", "B.Fernandes")
+
+
+class TestReviewCompareRecsFromAFile:
+
+    def test_a_move_made_exactly_as_recommended_is_followed(self, tmp_path):
+        """The issue's own case: Tzolis -> Gibbs-White was Priority 1 in the
+        table and was graded unadvised."""
+        from fpl_cli.parsers.recommendations import parse_recommendations
+
+        path = tmp_path / "gw5-recommendations.md"
+        path.write_text(
+            "---\ngameweek: 5\nmode: transfer\n---\n"
+            "## Classic League\n"
+            "### Transfer Recommendations\n"
+            "| Priority | Out | In | Outlook | This GW | Net Cost | Rationale |\n"
+            "|----------|-----|----|---------|---------|----------|-----------|\n"
+            "| 1 | Tzolis (ARS) | Gibbs-White (NFO) | +3 | +1 | 0 | |\n"
+            "## Draft League\n",
+            encoding="utf-8",
+        )
+        recs = parse_recommendations(path)
+        collected = _make_collected(classic_transfers=[_transfer("Gibbs-White", "Tzolis", "NFO", "ARS")])
+        result = _review_compare_recs(recs, collected, {}, {}, gameweek=5)
+        assert result["classic"]["transfers"][0]["followed"] is True
+        assert result["classic"]["unadvised_transfers"] == []
+
+
+class TestReviewCompareRecsSquad:
+    """A wildcard or free hit recommendation is a squad, not moves."""
+
+    def _recs(self):
+        recs = _make_recs(captain=None)
+        recs["classic"]["mode"] = "wildcard"
+        recs["classic"]["squad"] = [
+            {"name": "Raya", "team": "ARS"},
+            {"name": "Saka", "team": "ARS"},
+            {"name": "Haaland", "team": "MCI"},
+            {"name": "Gabriel", "team": "ARS"},
+            {"name": "Salah", "team": "LIV"},
+        ]
+        return recs
+
+    def test_each_player_brought_in_is_graded_against_the_squad(self):
+        collected = _make_collected(
+            team_points=[
+                _classic_player(name="Raya", team="ARS"),
+                _classic_player(name="Saka", team="ARS"),
+                _classic_player(name="Haaland", team="MCI"),
+                _classic_player(name="Verbruggen", team="BHA"),
+            ],
+            classic_transfers=[
+                _transfer("Raya", "Pickford", "ARS", "EVE"),
+                _transfer("Verbruggen", "Sanchez", "BHA", "CHE"),
+                _transfer("Saka", "Semenyo", "ARS", "BOU"),
+            ],
+        )
+        result = _review_compare_recs(self._recs(), collected, {}, {}, gameweek=6)
+        squad = result["classic"]["squad"]
+        assert [(t["actual_in"], t["advised"]) for t in squad["incoming"]] == [
+            ("Raya", True), ("Verbruggen", False), ("Saka", True),
+        ]
+        assert squad["fielded"] == 3
+        assert squad["missed"] == ["Gabriel", "Salah"]
+        assert result["classic"]["unadvised_transfers"] == []
+        assert result["classic"]["transfers"] == []
+        assert result["classic"]["rec_roll"] is False
+
+    def test_unknown_fielded_squad_is_not_reported_as_none_fielded(self):
+        result = _review_compare_recs(self._recs(), _make_collected(), {}, {}, gameweek=6)
+        assert result["classic"]["squad"]["fielded"] is None
+        assert result["classic"]["squad"]["missed"] == []
+
+    def test_console_lines(self, capsys):
+        _print_squad_comparison({
+            "mode": "freehit", "size": 15, "fielded": 12, "missed": ["Gabriel"],
+            "incoming": [
+                {"actual_in": "Raya", "actual_out": "Pickford", "advised": True, "actual_net": 2},
+                {"actual_in": "Verbruggen", "actual_out": "Sanchez", "advised": False, "actual_net": -1},
+            ],
+        })
+        out = capsys.readouterr().out
+        assert "Free Hit squad recommended: 12 of 15 fielded" in out
+        assert "Raya \u2190 Pickford (in recommended squad, net 2)" in out
+        assert "Verbruggen \u2190 Sanchez (not in recommended squad, net -1)" in out
+        assert "Recommended but not fielded: Gabriel" in out
+
+
 class TestReviewCompareRecsNoFile:
 
     def test_no_recs_returns_none(self):
@@ -1386,17 +1551,18 @@ class TestNormaliseNameDiacritics:
     def test_strips_parenthetical_after_diacritics(self):
         assert _normalise_name("Raúl (FUL)") == "raul"
 
-    def test_strips_initial_after_diacritics(self):
-        assert _normalise_name("L. Díaz") == "diaz"
+    def test_keeps_initial_after_diacritics(self):
+        assert _normalise_name("L. Díaz") == "l.diaz"
 
     def test_folds_apostrophe_to_the_typewriter_form(self):
         assert _normalise_name("O\u2019Reilly") == "o'reilly"
 
-    def test_strips_initial_left_unspaced_by_the_fold(self):
-        """`normalise_name` closes "B. Fernandes" up to "b.fernandes" - the
-        leading-initial strip has to still see an initial there."""
-        assert _normalise_name("B. Fernandes") == "fernandes"
-        assert _normalise_name("B.Fernandes") == "fernandes"
+    def test_keeps_the_initial_so_two_fernandes_stay_two_players(self):
+        """Stripping it made `B.Fernandes` and `J.Fernandes` one key (#354).
+        The spaced and unspaced spellings still fold together."""
+        assert _normalise_name("B. Fernandes") == "b.fernandes"
+        assert _normalise_name("B.Fernandes") == "b.fernandes"
+        assert _normalise_name("B.Fernandes") != _normalise_name("J.Fernandes")
 
 
 # ---------------------------------------------------------------------------

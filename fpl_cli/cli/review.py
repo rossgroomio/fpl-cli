@@ -116,6 +116,33 @@ async def _review_resolve_gw(client: FPLClient, gameweek: int | None) -> dict[st
     return {"gw": gw, "gw_data": gw_data, "api_current_gw_id": api_current_gw_id}
 
 
+_SQUAD_MODE_LABELS = {"wildcard": "Wildcard", "freehit": "Free Hit"}
+
+
+def _print_squad_comparison(sq: dict[str, Any]) -> None:
+    """The `--compare-recs` lines for a week whose recommendation was a squad.
+
+    Each player brought in is graded against the recommended 15 rather than
+    paired with a recommended move, because a wildcard or free hit
+    recommendation names none.
+    """
+    label = _SQUAD_MODE_LABELS.get(sq.get("mode") or "", "Full")
+    fielded = sq.get("fielded")
+    tally = f": {fielded} of {sq['size']} fielded" if fielded is not None else f" of {sq['size']}"
+    console.print(f"  Squad: {label} squad recommended{tally}")
+    for t in sq.get("incoming", []):
+        move = f"{rich_escape(str(t['actual_in']))} ← {rich_escape(str(t['actual_out']))}"
+        net = t.get("actual_net", 0)
+        if t.get("advised"):
+            console.print(f"  Transfer: [green]✓[/green] {move} (in recommended squad, net {net})")
+        else:
+            console.print(f"  Transfer: [dim]⚠ Unadvised:[/dim] {move} (not in recommended squad, net {net})")
+    if not sq.get("incoming"):
+        console.print("  Transfers: [yellow]✗[/yellow] No transfers made")
+    if sq.get("missed"):
+        console.print(f"  Recommended but not fielded: {rich_escape(', '.join(sq['missed']))}")
+
+
 @click.command("review")
 @click.option("--gameweek", "-g", type=int, help="Specific gameweek to review (default: last completed)")
 @click.option("--save", "-s", is_flag=True, help="Save report to output directory")
@@ -453,6 +480,8 @@ def review_command(
 
                     if rc.get("no_transfers_possible"):
                         console.print("  Transfers: [dim]n/a - no transfers exist in GW1[/dim]")
+                    elif sq := rc.get("squad"):
+                        _print_squad_comparison(sq)
                     elif rc.get("rec_roll") and rc.get("actual_roll"):
                         console.print("  Transfers: [green]✓[/green] Rolled (aligned)")
                     elif rc.get("rec_roll") and not rc.get("actual_roll"):
@@ -535,6 +564,15 @@ def review_command(
                             f"  Waiver: [dim]⚠ Unadvised:[/dim] "
                             f"{w['actual_in']} ← {w['actual_out']}"
                             f" (net {w.get('actual_net', 0)})"
+                        )
+
+                    # A warning, so stderr: the move it belongs to went
+                    # ungraded, and the reason is the recommendation's wording.
+                    for a in recs_comparison.get("ambiguous_names", []):
+                        club = f" ({a['team']})" if a.get("team") else ""
+                        error_console.print(
+                            f"[yellow]  Not graded: \"{rich_escape(a['name'])}\"{club} could be "
+                            f"{rich_escape(' or '.join(a['candidates']))}[/yellow]"
                         )
 
             # Generate report if requested

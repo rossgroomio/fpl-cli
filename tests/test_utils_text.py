@@ -55,6 +55,11 @@ def test_strip_diacritics_preserves_case() -> None:
         ("Bruno Fernandes", "  Bruno   Fernandes  "),
         # Both halves of the initial rule, in either direction.
         ("J.Ramsey", "J. Ramsey"),
+        # The hyphen family. NFKC maps U+2011 to U+2010, not to U+002D (#354).
+        ("Ait-Nouri", "Ait\u2011Nouri"),
+        ("Ait-Nouri", "Ait\u2010Nouri"),
+        ("Ait-Nouri", "Ait\u2013Nouri"),
+        ("Ait-Nouri", "Ait\u2212Nouri"),
     ],
 )
 def test_normalise_name_folds_equivalent_spellings(a: str, b: str) -> None:

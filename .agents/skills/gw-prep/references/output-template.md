@@ -195,6 +195,8 @@ The **Data quality** sub-section carries `data_caveat` from gw-prep Phase B1 -- 
 
 Every recommendation in this file that leans on fixture difficulty rests on those ratings, so this belongs with the recommendations rather than only in the terminal scrollback the run scrolled past.
 
+**Read back by `fpl review --compare-recs`.** The review grades what was done against this file, through the column headers of Transfer Recommendations (`Out`, `In`) and Waiver Recommendations (`Drop`, `Claim`), the `**Recommended captain:**` line, and on embed-mode runs the Classic Squad's `#### Starting XI` and `#### Bench` tables. Write them exactly as above, with the club code in brackets after each player (`Tzolis (ARS)`) and the initial left on (`B.Fernandes`, not `Fernandes`): a renamed column grades every move as unadvised, and a bare surname cannot be told apart from a same-club namesake. `tests/test_recommendations_parser.py` parses this template, so change it and `fpl_cli/parsers/recommendations.py` together.
+
 ---
 
 ## Fallback Banners (Wildcard/Free Hit re-derivation)

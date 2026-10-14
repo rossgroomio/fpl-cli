@@ -1280,31 +1280,114 @@ def _normalise_name(name: str) -> str:
     One side of every comparison here is a name an LLM typed into the
     recommendations markdown and the other is a `web_name` off the API, so the
     fold has to survive the styling the writer applied on the way -- the
-    apostrophe family and whitespace runs included, via `normalise_name`. It
-    matters more here than in the table guard that shares it: a miss there
-    dropped a row, while a miss here reports a captain you *did* field as a
-    recommendation you ignored, and prices the difference against himself.
+    apostrophe and hyphen families and whitespace runs included, via
+    `normalise_name`. It matters more here than in the table guard that shares
+    it: a miss there dropped a row, while a miss here reports a captain you
+    *did* field as a recommendation you ignored, and prices the difference
+    against himself.
+
+    The initial stays on. Stripping it made `B.Fernandes` and `J.Fernandes`
+    the same player, and a list holding both priced the comparison against
+    whichever came first (#354). A bare surname still finds an initialled
+    player, but in `_find_name`, which can see whether it found only one.
     """
     name = normalise_name(name)
     name = re.sub(r"\s*\(.*?\)\s*$", "", name)  # strip parentheticals
-    name = re.sub(r"^[a-z]\.\s*", "", name)  # strip leading initials
     return name.strip()
 
 
-def _names_match(a: str, b: str) -> bool:
-    return _normalise_name(a) == _normalise_name(b)
+_LEADING_INITIALS_RE = re.compile(r"^(?:[a-z]\.)+")
+_CLUB_CODE_RE = re.compile(r"[A-Z]{3}")
 
 
-def _find_player_gw_points(name: str, team_points_data: list[dict], pts_key: str = "points") -> int | None:
-    """Find a player's GW points from team_points_data by name."""
-    for p in team_points_data:
-        if _names_match(p.get("name", ""), name):
-            return p.get(pts_key, 0)
+def _without_initials(normalised: str) -> str:
+    return _LEADING_INITIALS_RE.sub("", normalised).strip()
+
+
+def _club_code(team: str | None) -> str | None:
+    """A club code fit to compare, or None -- the review writes "???" for a club it could not resolve."""
+    if not team:
+        return None
+    code = team.strip().upper()
+    return code if _CLUB_CODE_RE.fullmatch(code) else None
+
+
+def _find_name(
+    name: str | None, team: str | None, candidates: Sequence[tuple[str | None, str | None]],
+) -> list[int]:
+    """Indices of the candidates `name` could be: one is a match, more is a tie.
+
+    An exact match on the folded name wins outright. Failing that, a bare
+    surname finds an initialled player and an initialled name finds a bare
+    one ("Fernandes" may be `B.Fernandes`) -- but two different initials never
+    match ("J.Fernandes" is never `B.Fernandes`). The club code, where both
+    sides have one, rules a candidate out: it is what separates `Munoz` (LIV)
+    from `Muñoz` (NFO), and `Fernandes` (TOT) from `B.Fernandes` (MUN). It
+    cannot separate `A.Murphy` from `J.Murphy`, both NEW, which is why the
+    initial has to survive.
+    """
+    key = _normalise_name(name or "")
+    if not key:
+        return []
+    bare = _without_initials(key)
+    club = _club_code(team)
+
+    def _same_club(candidate_team: str | None) -> bool:
+        other = _club_code(candidate_team)
+        return club is None or other is None or club == other
+
+    keys = [_normalise_name(candidate or "") for candidate, _ in candidates]
+    hits = [i for i, k in enumerate(keys) if k == key and _same_club(candidates[i][1])]
+    if hits:
+        return hits
+    return [
+        i for i, k in enumerate(keys)
+        if k and k != key and _without_initials(k) == bare
+        and (k == _without_initials(k) or key == bare)
+        and _same_club(candidates[i][1])
+    ]
+
+
+def _names_match(a: str | None, b: str | None, a_team: str | None = None, b_team: str | None = None) -> bool:
+    return len(_find_name(a, a_team, [(b, b_team)])) == 1
+
+
+def _resolve_name(
+    name: str | None,
+    team: str | None,
+    candidates: Sequence[tuple[str | None, str | None]],
+    ambiguous: list[dict[str, Any]],
+) -> int | None:
+    """The one candidate `name` names, or None.
+
+    A tie is not settled by taking the first: with `J.Fernandes` listed
+    before `B.Fernandes`, "Fernandes" priced the comparison against the wrong
+    player. It is recorded in `ambiguous` instead, once per name, so the
+    review can say which recommendation it could not grade and why.
+    """
+    hits = _find_name(name, team, candidates)
+    # The same player listed twice is one player, not a tie.
+    if len({(_normalise_name(candidates[i][0] or ""), _club_code(candidates[i][1])) for i in hits}) == 1:
+        return hits[0]
+    if len(hits) > 1 and not any(a["name"] == name and a["team"] == team for a in ambiguous):
+        ambiguous.append({
+            "name": name,
+            "team": team,
+            "candidates": [
+                f"{candidates[i][0]} ({code})" if (code := _club_code(candidates[i][1])) else str(candidates[i][0])
+                for i in hits
+            ],
+        })
     return None
 
 
+def _drop_side(moves: list[dict[str, Any]], indices: Sequence[int]) -> list[tuple[str | None, str | None]]:
+    """The (name, club) each listed move dropped, for `_resolve_name`."""
+    return [(moves[i].get("player_out"), moves[i].get("player_out_team")) for i in indices]
+
+
 def _match_lost_claim(
-    claims: list[dict[str, Any]], rec_in: str, rec_out: str, used: set[int],
+    claims: list[dict[str, Any]], rec: dict[str, Any], used: set[int],
 ) -> tuple[int, dict[str, Any]] | None:
     """The best unconsumed lost claim for one recommendation, or None.
 
@@ -1319,9 +1402,13 @@ def _match_lost_claim(
     """
     def _candidates(both_sides: bool) -> tuple[int, dict[str, Any]] | None:
         for i, claim in enumerate(claims):
-            if i in used or not _names_match(claim.get("player_out") or "", rec_out):
+            if i in used or not _names_match(
+                rec["out"], claim.get("player_out"), rec.get("out_team"), claim.get("player_out_team"),
+            ):
                 continue
-            if both_sides and not _names_match(claim.get("player_in") or "", rec_in):
+            if both_sides and not _names_match(
+                rec["in"], claim.get("player_in"), rec.get("in_team"), claim.get("player_in_team"),
+            ):
                 continue
             return i, claim
         return None
@@ -1329,11 +1416,62 @@ def _match_lost_claim(
     return _candidates(both_sides=True) or _candidates(both_sides=False)
 
 
+def _compare_rec_squad(
+    rec_squad: list[dict[str, Any]],
+    mode: str | None,
+    team_points: list[dict[str, Any]],
+    classic_transfers: list[dict[str, Any]],
+    ambiguous: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Grade a wildcard or free hit week against the recommended 15.
+
+    There are no in/out pairs to match on those weeks -- the recommendation is
+    a squad -- so pairing transfers graded every move unadvised, including the
+    nine of twelve that landed in the recommended squad. Each player brought
+    in is advised when the recommended 15 names him, and the squad actually
+    fielded is set against the recommended one.
+    """
+    incoming_pool = [(t.get("player_in"), t.get("player_in_team")) for t in classic_transfers]
+    fielded_pool = [(p.get("name"), p.get("team")) for p in team_points]
+    advised: set[int] = set()
+    missed: list[str] = []
+    for rec in rec_squad:
+        index = _resolve_name(rec["name"], rec.get("team"), incoming_pool, ambiguous)
+        if index is not None:
+            advised.add(index)
+        if team_points and _resolve_name(rec["name"], rec.get("team"), fielded_pool, ambiguous) is None:
+            missed.append(rec["name"])
+
+    return {
+        "mode": mode,
+        "size": len(rec_squad),
+        # None, never 0, when the squad fielded is unknown: 0 of 15 reads as
+        # a recommendation ignored wholesale.
+        "fielded": len(rec_squad) - len(missed) if team_points else None,
+        "missed": missed,
+        "incoming": [
+            {
+                "actual_in": t.get("player_in"),
+                "actual_out": t.get("player_out"),
+                "advised": i in advised,
+                "actual_in_pts": t.get("player_in_points", 0),
+                "actual_out_pts": t.get("player_out_points", 0),
+                "actual_net": t.get("net", 0),
+                "actual_verdict": t.get("verdict", ""),
+            }
+            for i, t in enumerate(classic_transfers)
+        ],
+    }
+
+
 def _review_compare_recs(
     recs: dict, collected_data: dict, player_map: dict, teams: dict, gameweek: int | None = None,
 ) -> dict:
     """Compare recommendations against actuals. Returns comparison dict."""
-    comparison: dict = {"classic": {}, "draft": {}}
+    # Names a recommendation gave that fit more than one player, so the move
+    # they belong to was left ungraded rather than graded against a guess.
+    ambiguous: list[dict[str, Any]] = []
+    comparison: dict = {"classic": {}, "draft": {}, "ambiguous_names": ambiguous}
 
     team_points = collected_data.get("team_points", [])
     classic_transfers = collected_data.get("classic_transfers", [])
@@ -1350,14 +1488,14 @@ def _review_compare_recs(
         actual_captain = actual_captain_entry["name"] if actual_captain_entry else None
         actual_captain_pts = actual_captain_entry.get("display_points", 0) if actual_captain_entry else 0
 
-        followed = bool(actual_captain and _names_match(rec_captain, actual_captain))
-        rec_captain_pts = _find_player_gw_points(rec_captain, team_points, "display_points")
-        # If rec captain not in team (was sold), try player_map
-        if rec_captain_pts is None:
-            for p in player_map.values():
-                if _names_match(p.web_name, rec_captain):
-                    rec_captain_pts = 0  # can't easily get GW points for non-squad player here
-                    break
+        rec_index = _resolve_name(
+            rec_captain, recs["classic"].get("captain_team"),
+            [(p.get("name"), p.get("team")) for p in team_points], ambiguous,
+        )
+        rec_entry = team_points[rec_index] if rec_index is not None else None
+        followed = rec_entry is not None and rec_entry is actual_captain_entry
+        # A recommended captain no longer in the squad scored nothing for it.
+        rec_captain_pts = rec_entry.get("display_points", 0) if rec_entry is not None else None
 
         comparison["classic"]["captain_followed"] = followed
         comparison["classic"]["rec_captain"] = rec_captain
@@ -1378,7 +1516,11 @@ def _review_compare_recs(
     # that was followed. Scoring either as alignment credits a decision that
     # could not be taken.
     no_transfers_possible = is_opening_gameweek(gameweek)
-    rec_roll = bool(recs["classic"].get("roll_transfer", False)) and not no_transfers_possible
+    rec_squad = recs["classic"].get("squad") or []
+    # A squad recommendation has no roll in it to follow or to ignore.
+    rec_roll = (
+        bool(recs["classic"].get("roll_transfer", False)) and not no_transfers_possible and not rec_squad
+    )
     actual_roll = len(classic_transfers) == 0 and not no_transfers_possible
     comparison["classic"]["rec_roll"] = rec_roll
     comparison["classic"]["actual_roll"] = actual_roll
@@ -1388,31 +1530,41 @@ def _review_compare_recs(
     transfer_comparisons = []
     matched_actual_indices: set[int] = set()
 
+    if rec_squad:
+        comparison["classic"]["squad"] = _compare_rec_squad(
+            rec_squad, recs["classic"].get("mode"), team_points, classic_transfers, ambiguous,
+        )
+        # Every move was graded against the squad, so none is left over to
+        # read as unadvised.
+        matched_actual_indices = set(range(len(classic_transfers)))
+
     for rec_t in rec_transfers:
         rec_in = rec_t["in"]
         rec_out = rec_t["out"]
         # Find matching actual transfer by OUT player
-        matched = False
-        for i, act_t in enumerate(classic_transfers):
-            if i in matched_actual_indices:
-                continue
-            if _names_match(act_t.get("player_out", ""), rec_out):
-                matched_actual_indices.add(i)
-                same_in = _names_match(act_t.get("player_in", ""), rec_in)
-                transfer_comparisons.append({
-                    "rec_in": rec_in,
-                    "rec_out": rec_out,
-                    "actual_in": act_t.get("player_in"),
-                    "actual_out": act_t.get("player_out"),
-                    "followed": same_in,
-                    "actual_in_pts": act_t.get("player_in_points", 0),
-                    "actual_out_pts": act_t.get("player_out_points", 0),
-                    "actual_net": act_t.get("net", 0),
-                    "actual_verdict": act_t.get("verdict", ""),
-                })
-                matched = True
-                break
-        if not matched:
+        open_indices = [i for i in range(len(classic_transfers)) if i not in matched_actual_indices]
+        found = _resolve_name(
+            rec_out, rec_t.get("out_team"),
+            _drop_side(classic_transfers, open_indices),
+            ambiguous,
+        )
+        if found is not None:
+            i = open_indices[found]
+            act_t = classic_transfers[i]
+            matched_actual_indices.add(i)
+            same_in = _names_match(rec_in, act_t.get("player_in"), rec_t.get("in_team"), act_t.get("player_in_team"))
+            transfer_comparisons.append({
+                "rec_in": rec_in,
+                "rec_out": rec_out,
+                "actual_in": act_t.get("player_in"),
+                "actual_out": act_t.get("player_out"),
+                "followed": same_in,
+                "actual_in_pts": act_t.get("player_in_points", 0),
+                "actual_out_pts": act_t.get("player_out_points", 0),
+                "actual_net": act_t.get("net", 0),
+                "actual_verdict": act_t.get("verdict", ""),
+            })
+        else:
             transfer_comparisons.append({
                 "rec_in": rec_in,
                 "rec_out": rec_out,
@@ -1449,52 +1601,49 @@ def _review_compare_recs(
         rec_in = rec_w["in"]
         rec_out = rec_w["out"]
         priority = rec_w["priority"]
-        matched = False
-        for i, act_t in enumerate(draft_transactions):
-            if i in matched_txn_indices:
-                continue
-            act_out = act_t.get("player_out", "") or ""
-            if _names_match(act_out, rec_out):
-                matched_txn_indices.add(i)
-                same_in = _names_match(act_t.get("player_in", ""), rec_in)
-                entry = {
-                    "priority": priority,
-                    "rec_in": rec_in,
-                    "rec_out": rec_out,
-                    "actual_in": act_t.get("player_in"),
-                    "actual_out": act_t.get("player_out"),
-                    "followed": same_in,
-                    "different_replacement": not same_in,
-                    "actual_in_pts": act_t.get("player_in_points", 0),
-                    "actual_out_pts": act_t.get("player_out_points", 0),
-                    "actual_net": act_t.get("net", 0),
-                    "actual_verdict": act_t.get("verdict", ""),
-                }
-                # A manager who claimed exactly what was advised, lost him,
-                # and covered the drop with someone else did follow the
-                # advice -- the league overruled them. Without this the move
-                # that landed is all that is reported and the attempt is
-                # invisible, which is issue #329 one step over.
-                claimed = _match_lost_claim(
-                    draft_lost_claims, rec_in, rec_out, matched_claim_indices,
-                )
-                if claimed is not None and _names_match(
-                    claimed[1].get("player_in") or "", rec_in,
-                ):
-                    matched_claim_indices.add(claimed[0])
-                    entry["claimed_and_lost"] = True
-                waiver_comparisons.append(entry)
-                matched = True
-                break
-        if not matched:
+        open_indices = [i for i in range(len(draft_transactions)) if i not in matched_txn_indices]
+        found = _resolve_name(
+            rec_out, rec_w.get("out_team"),
+            _drop_side(draft_transactions, open_indices),
+            ambiguous,
+        )
+        if found is not None:
+            i = open_indices[found]
+            act_t = draft_transactions[i]
+            matched_txn_indices.add(i)
+            same_in = _names_match(rec_in, act_t.get("player_in"), rec_w.get("in_team"), act_t.get("player_in_team"))
+            entry = {
+                "priority": priority,
+                "rec_in": rec_in,
+                "rec_out": rec_out,
+                "actual_in": act_t.get("player_in"),
+                "actual_out": act_t.get("player_out"),
+                "followed": same_in,
+                "different_replacement": not same_in,
+                "actual_in_pts": act_t.get("player_in_points", 0),
+                "actual_out_pts": act_t.get("player_out_points", 0),
+                "actual_net": act_t.get("net", 0),
+                "actual_verdict": act_t.get("verdict", ""),
+            }
+            # A manager who claimed exactly what was advised, lost him,
+            # and covered the drop with someone else did follow the
+            # advice -- the league overruled them. Without this the move
+            # that landed is all that is reported and the attempt is
+            # invisible, which is issue #329 one step over.
+            claimed = _match_lost_claim(draft_lost_claims, rec_w, matched_claim_indices)
+            if claimed is not None and _names_match(
+                rec_in, claimed[1].get("player_in"), rec_w.get("in_team"), claimed[1].get("player_in_team"),
+            ):
+                matched_claim_indices.add(claimed[0])
+                entry["claimed_and_lost"] = True
+            waiver_comparisons.append(entry)
+        else:
             # A claim a rival won was executed -- it just lost. Reporting it
             # as "not executed" reads back as advice the manager ignored
             # (issue #329). A claim that shares only the drop is a different
             # claim, and says so, rather than borrowing the advised player's
             # name for a player the manager never went in for.
-            lost = _match_lost_claim(
-                draft_lost_claims, rec_in, rec_out, matched_claim_indices,
-            )
+            lost = _match_lost_claim(draft_lost_claims, rec_w, matched_claim_indices)
             outcome: dict[str, Any] = {"not_executed": True}
             if lost is not None:
                 index, claim = lost
@@ -1503,7 +1652,9 @@ def _review_compare_recs(
                 outcome = {
                     "lost_claim": True,
                     "claimed_in": claimed_in,
-                    "different_claim": not _names_match(claimed_in or "", rec_in),
+                    "different_claim": not _names_match(
+                        rec_in, claimed_in, rec_w.get("in_team"), claim.get("player_in_team"),
+                    ),
                 }
             waiver_comparisons.append({
                 "priority": priority,
