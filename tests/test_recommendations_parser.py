@@ -573,3 +573,162 @@ class TestParseTables:
             {"name": "Haaland", "team": "MCI"},
             {"name": "Verbruggen", "team": "BHA"},
         ]
+
+
+# ---------------------------------------------------------------------------
+# Review findings on #401
+# ---------------------------------------------------------------------------
+
+class TestParseRobustness:
+
+    @pytest.mark.parametrize(("cell", "team"), [
+        ("Salah (vs WHU)", None),
+        ("Salah (home vs WHU)", None),
+        ("Salah (FDR 2)", None),
+        ("Hermansen (WHU, GK)", "WHU"),
+        ("Haaland (MCI) (C)", "MCI"),
+    ])
+    def test_a_club_is_read_only_from_a_bracket_of_codes(self, tmp_recs, cell, team):
+        """The squad-builder captain line puts a rationale in the bracket, so
+        an opponent there is not the player's club."""
+        path = tmp_recs(f"""\
+            ---
+            gameweek: 6
+            ---
+            ## Classic League
+            **Captain:** {cell} | **Vice:** Saka
+        """)
+        result = parse_recommendations(path)
+        assert result["classic"]["captain"] in {"Salah", "Hermansen", "Haaland"}
+        assert result["classic"]["captain_team"] == team
+
+    def test_a_dash_only_placeholder_row_does_not_cost_the_row_above(self, tmp_recs):
+        path = tmp_recs("""\
+            ---
+            gameweek: 5
+            mode: transfer
+            ---
+            ## Classic League
+            ### Transfer Recommendations
+            | Priority | Out | In |
+            |----------|-----|----|
+            | 1 | Tzolis (ARS) | Gibbs-White (NFO) |
+            | - | - | - |
+            ## Draft League
+        """)
+        transfers = parse_recommendations(path)["classic"]["transfers"]
+        assert [(t["out"], t["in"]) for t in transfers] == [("Tzolis", "Gibbs-White")]
+
+    def test_a_gw_update_appended_after_the_draft_section_is_not_read(self, tmp_recs):
+        """update-gw-prep appends `## GW Update` with a revised Transfers table."""
+        path = tmp_recs("""\
+            ---
+            gameweek: 5
+            mode: transfer
+            ---
+            ## Classic League
+            ### Transfer Recommendations
+            | Priority | Out | In |
+            |----------|-----|----|
+            | 1 | Tzolis (ARS) | Gibbs-White (NFO) |
+            ## Draft League
+            ### Waiver Recommendations
+            | Priority | Drop | Claim | Position |
+            |----------|------|-------|----------|
+            | 1 | Wirtz (LIV) | Nyoni (LIV) | MID |
+
+            ## GW Update
+            ### Transfers
+            | Out | In | Why |
+            |-----|----|-----|
+            | Tzolis (ARS) | Palmer (CHE) | late news |
+        """)
+        result = parse_recommendations(path)
+        assert [w["in"] for w in result["draft"]["waivers"]] == ["Nyoni"]
+        assert [t["in"] for t in result["classic"]["transfers"]] == ["Gibbs-White"]
+
+    def test_a_gw_update_on_a_classic_only_file_is_not_read(self, tmp_recs):
+        path = tmp_recs("""\
+            ---
+            gameweek: 5
+            mode: transfer
+            ---
+            ## Classic League
+            ### Transfer Recommendations
+            | Priority | Out | In |
+            |----------|-----|----|
+            | 1 | Tzolis (ARS) | Gibbs-White (NFO) |
+
+            ## GW Update
+            ### Transfers
+            | Out | In | Why |
+            |-----|----|-----|
+            | Tzolis (ARS) | Palmer (CHE) | late news |
+        """)
+        assert [t["in"] for t in parse_recommendations(path)["classic"]["transfers"]] == ["Gibbs-White"]
+
+    @pytest.mark.parametrize("line", [
+        "> **Captain:** Salah | **Vice:** Haaland",
+        "1. **Captain:** Salah | **Vice:** Haaland",
+        "**Formation:** 3-4-3 | **Captain:** Salah | **Vice:** Haaland",
+    ])
+    def test_captain_line_is_found_wherever_it_sits(self, tmp_recs, line):
+        path = tmp_recs(f"""\
+            ---
+            gameweek: 6
+            ---
+            ## Classic League
+            {line}
+        """)
+        result = parse_recommendations(path)
+        assert result["classic"]["captain"] == "Salah"
+        assert result["classic"]["vice_captain"] == "Haaland"
+
+    def test_a_rolled_ankle_in_a_rationale_is_not_a_roll(self, tmp_recs):
+        """No move parsed is exactly what an unrecognised column produces, so
+        the roll test must not fire on any "rolled" in the section."""
+        path = tmp_recs("""\
+            ---
+            gameweek: 5
+            mode: transfer
+            ---
+            ## Classic League
+            ### Transfer Recommendations
+            | Priority | Sell | Bring in | Rationale |
+            |----------|------|----------|-----------|
+            | 1 | Saka (ARS) | Palmer (CHE) | Saka rolled his ankle in training |
+            ## Draft League
+        """)
+        assert parse_recommendations(path)["classic"]["roll_transfer"] is False
+
+    def test_rolling_the_free_transfer_said_in_prose_is_a_roll(self, tmp_recs):
+        path = tmp_recs("""\
+            ---
+            gameweek: 5
+            mode: transfer
+            ---
+            ## Classic League
+            ### Transfer Recommendations
+            Nothing clears the bar, so we are rolling the free transfer into GW6.
+            ## Draft League
+        """)
+        assert parse_recommendations(path)["classic"]["roll_transfer"] is True
+
+    def test_an_undemoted_squad_block_stays_inside_the_classic_section(self, tmp_recs):
+        path = tmp_recs("""\
+            ---
+            gameweek: 6
+            mode: wildcard
+            ---
+            ## Classic League
+            ## Classic Squad
+            ### Starting XI
+            | Pos | Player | Team |
+            |-----|--------|------|
+            | GK | Raya | ARS |
+            **Captain:** Haaland | **Vice:** Saka
+            ## Draft League
+        """)
+        result = parse_recommendations(path)
+        assert result["classic"]["squad"] == [{"name": "Raya", "team": "ARS"}]
+        assert result["classic"]["captain"] == "Haaland"

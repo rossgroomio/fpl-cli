@@ -1063,7 +1063,7 @@ class TestReviewCompareRecsCaptain:
             _classic_player(name="Salah", display_points=12, is_captain=True),
             _classic_player(name="Rice", display_points=6),
         ])
-        result = _review_compare_recs(recs, collected, {}, {})
+        result = _review_compare_recs(recs, collected)
         assert result["classic"]["captain_followed"] is True
         assert result["classic"]["captain_pts_delta"] == 0
 
@@ -1073,7 +1073,7 @@ class TestReviewCompareRecsCaptain:
             _classic_player(name="Salah", display_points=3),
             _classic_player(name="Haaland", display_points=15, is_captain=True),
         ])
-        result = _review_compare_recs(recs, collected, {}, {})
+        result = _review_compare_recs(recs, collected)
         assert result["classic"]["captain_followed"] is False
         assert result["classic"]["rec_captain"] == "Salah"
         assert result["classic"]["actual_captain"] == "Haaland"
@@ -1096,7 +1096,7 @@ class TestReviewCompareRecsTransfers:
             "net": 8,
             "verdict": "✓ Hit",
         }])
-        result = _review_compare_recs(recs, collected, {}, {})
+        result = _review_compare_recs(recs, collected)
         transfers = result["classic"]["transfers"]
         assert len(transfers) == 1
         assert transfers[0]["followed"] is True
@@ -1104,7 +1104,7 @@ class TestReviewCompareRecsTransfers:
     def test_roll_aligned(self):
         recs = _make_recs(roll=True)
         collected = _make_collected(classic_transfers=[])
-        result = _review_compare_recs(recs, collected, {}, {})
+        result = _review_compare_recs(recs, collected)
         assert result["classic"]["rec_roll"] is True
         assert result["classic"]["actual_roll"] is True
 
@@ -1120,7 +1120,7 @@ class TestReviewCompareRecsTransfers:
             "net": 5,
             "verdict": "✓ Hit",
         }])
-        result = _review_compare_recs(recs, collected, {}, {})
+        result = _review_compare_recs(recs, collected)
         assert result["classic"]["rec_roll"] is True
         assert result["classic"]["actual_roll"] is False
 
@@ -1148,7 +1148,7 @@ class TestReviewCompareRecsTransfers:
                 "verdict": "✗ Miss",
             },
         ])
-        result = _review_compare_recs(recs, collected, {}, {})
+        result = _review_compare_recs(recs, collected)
         assert len(result["classic"]["unadvised_transfers"]) == 1
         assert result["classic"]["unadvised_transfers"][0]["actual_in"] == "Palmer"
 
@@ -1167,7 +1167,7 @@ class TestReviewCompareRecsWaivers:
             "net": 4,
             "verdict": "✓ Hit",
         }])
-        result = _review_compare_recs(recs, collected, {}, {})
+        result = _review_compare_recs(recs, collected)
         waivers = result["draft"]["waivers"]
         assert len(waivers) == 1
         assert waivers[0]["followed"] is True
@@ -1184,7 +1184,7 @@ class TestReviewCompareRecsWaivers:
             "net": 7,
             "verdict": "✓ Hit",
         }])
-        result = _review_compare_recs(recs, collected, {}, {})
+        result = _review_compare_recs(recs, collected)
         waivers = result["draft"]["waivers"]
         assert len(waivers) == 1
         assert waivers[0]["followed"] is False
@@ -1194,7 +1194,7 @@ class TestReviewCompareRecsWaivers:
     def test_waiver_not_executed(self):
         recs = _make_recs(waivers=[{"priority": 1, "in": "Nyoni", "out": "Wirtz"}])
         collected = _make_collected(draft_transactions=[])
-        result = _review_compare_recs(recs, collected, {}, {})
+        result = _review_compare_recs(recs, collected)
         waivers = result["draft"]["waivers"]
         assert len(waivers) == 1
         assert waivers[0]["followed"] is False
@@ -1209,7 +1209,7 @@ class TestReviewCompareRecsWaivers:
             "player_out": "Wirtz", "player_out_team": "LIV",
             "kind": "w", "priority": 1,
         }])
-        result = _review_compare_recs(recs, collected, {}, {})
+        result = _review_compare_recs(recs, collected)
         waivers = result["draft"]["waivers"]
         assert len(waivers) == 1
         assert waivers[0]["followed"] is False
@@ -1229,7 +1229,7 @@ class TestReviewCompareRecsWaivers:
             {"player_in": "Elanga", "player_out": "Doku", "kind": "w", "priority": 1},
             {"player_in": "Mbeumo", "player_out": "Doku", "kind": "w", "priority": 2},
         ])
-        waivers = _review_compare_recs(recs, collected, {}, {})["draft"]["waivers"]
+        waivers = _review_compare_recs(recs, collected)["draft"]["waivers"]
         assert [w["claimed_in"] for w in waivers] == ["Elanga", "Mbeumo"]
         assert [w.get("different_claim") for w in waivers] == [False, False]
 
@@ -1251,7 +1251,7 @@ class TestReviewCompareRecsWaivers:
                 {"player_in": "Elanga", "player_out": "Doku", "kind": "w", "priority": 1},
             ],
         )
-        waivers = _review_compare_recs(recs, collected, {}, {})["draft"]["waivers"]
+        waivers = _review_compare_recs(recs, collected)["draft"]["waivers"]
         by_priority = {w["priority"]: w for w in waivers}
         assert by_priority[1]["different_replacement"] is True
         assert by_priority[1]["actual_in"] == "Mbeumo"
@@ -1265,7 +1265,7 @@ class TestReviewCompareRecsWaivers:
         collected = _make_collected(draft_transactions=[], draft_lost_claims=[
             {"player_in": "Elanga", "player_out": "Wirtz", "kind": "w", "priority": 1},
         ])
-        waiver = _review_compare_recs(recs, collected, {}, {})["draft"]["waivers"][0]
+        waiver = _review_compare_recs(recs, collected)["draft"]["waivers"][0]
         assert waiver["lost_claim"] is True
         assert waiver["claimed_in"] == "Elanga"
         assert waiver["different_claim"] is True
@@ -1284,7 +1284,7 @@ class TestReviewCompareRecsWaivers:
                 {"player_in": "Nyoni", "player_out": "Wirtz", "kind": "w", "priority": 1},
             ],
         )
-        waiver = _review_compare_recs(recs, collected, {}, {})["draft"]["waivers"][0]
+        waiver = _review_compare_recs(recs, collected)["draft"]["waivers"][0]
         assert waiver["different_replacement"] is True
         assert waiver["actual_in"] == "Gordon"
         assert waiver["claimed_and_lost"] is True
@@ -1296,7 +1296,7 @@ class TestReviewCompareRecsWaivers:
             "player_out": "Savio", "player_out_team": "MCI",
             "kind": "w", "priority": 1,
         }])
-        result = _review_compare_recs(recs, collected, {}, {})
+        result = _review_compare_recs(recs, collected)
         assert result["draft"]["waivers"][0].get("not_executed") is True
 
 
@@ -1320,7 +1320,7 @@ class TestReviewCompareRecsNameMatching:
             _classic_player(name="B.Fernandes", team="MUN", display_points=9),
             _classic_player(name="Haaland", team="MCI", display_points=4, is_captain=True),
         ])
-        result = _review_compare_recs(recs, collected, {}, {})
+        result = _review_compare_recs(recs, collected)
         assert result["classic"]["captain_followed"] is False
         assert result["classic"]["rec_captain_pts"] == 9
 
@@ -1332,7 +1332,7 @@ class TestReviewCompareRecsNameMatching:
             _classic_player(name="A.Murphy", team="NEW", display_points=2),
             _classic_player(name="J.Murphy", team="NEW", display_points=7, is_captain=True),
         ])
-        result = _review_compare_recs(recs, collected, {}, {})
+        result = _review_compare_recs(recs, collected)
         assert result["classic"]["captain_followed"] is True
         assert result["ambiguous_names"] == []
 
@@ -1343,8 +1343,11 @@ class TestReviewCompareRecsNameMatching:
             _classic_player(name="A.Murphy", team="NEW", display_points=2, is_captain=True),
             _classic_player(name="J.Murphy", team="NEW", display_points=7),
         ])
-        result = _review_compare_recs(recs, collected, {}, {})
-        assert result["classic"]["captain_followed"] is False
+        result = _review_compare_recs(recs, collected)
+        # Ungraded, not "not followed": no delta priced against either Murphy.
+        assert result["classic"]["captain_ungraded"] is True
+        assert result["classic"]["captain_followed"] is None
+        assert "captain_pts_delta" not in result["classic"]
         assert result["ambiguous_names"] == [{
             "name": "Murphy", "team": "NEW", "candidates": ["A.Murphy (NEW)", "J.Murphy (NEW)"],
         }]
@@ -1354,24 +1357,71 @@ class TestReviewCompareRecsNameMatching:
         collected = _make_collected(team_points=[
             _classic_player(name="B.Fernandes", team="MUN", display_points=9, is_captain=True),
         ])
-        assert _review_compare_recs(recs, collected, {}, {})["classic"]["captain_followed"] is True
+        assert _review_compare_recs(recs, collected)["classic"]["captain_followed"] is True
 
     def test_club_code_separates_names_the_accent_fold_merges(self):
         """Munoz (LIV) and Muñoz (NFO) fold to one key; the club tells them apart."""
-        recs = _make_recs(transfers=[{"in": "Gordon", "in_team": "NEW", "out": "Munoz", "out_team": "LIV"}])
-        collected = _make_collected(classic_transfers=[_transfer("Gordon", "Mu\u00f1oz", "NEW", "NFO")])
-        result = _review_compare_recs(recs, collected, {}, {})
-        assert result["classic"]["transfers"][0].get("not_made") is True
-        assert result["classic"]["unadvised_transfers"][0]["actual_out"] == "Mu\u00f1oz"
+        recs = _make_recs(captain="Munoz")
+        recs["classic"]["captain_team"] = "LIV"
+        collected = _make_collected(team_points=[
+            _classic_player(name="Mu\u00f1oz", team="NFO", display_points=2),
+            _classic_player(name="Munoz", team="LIV", display_points=8),
+            _classic_player(name="Haaland", team="MCI", display_points=10, is_captain=True),
+        ])
+        assert _review_compare_recs(recs, collected)["classic"]["rec_captain_pts"] == 8
+
+    def test_club_code_prefers_the_initialled_namesake_at_that_club(self):
+        """"Fernandes (MUN)" is B.Fernandes, past an exact-name Fernandes (TOT)."""
+        recs = _make_recs(captain="Fernandes")
+        recs["classic"]["captain_team"] = "MUN"
+        collected = _make_collected(team_points=[
+            _classic_player(name="Fernandes", team="TOT", display_points=2),
+            _classic_player(name="B.Fernandes", team="MUN", display_points=9, is_captain=True),
+        ])
+        assert _review_compare_recs(recs, collected)["classic"]["captain_followed"] is True
+
+    def test_a_wrong_club_code_never_rules_out_the_only_fit(self):
+        """A stale or mistyped code (NOT for NFO) must not turn a move made as
+        advised back into an unadvised one."""
+        recs = _make_recs(transfers=[{"in": "Wood", "in_team": "NOT", "out": "Isak", "out_team": "LIV"}])
+        collected = _make_collected(classic_transfers=[_transfer("Wood", "Isak", "NFO", "LIV")])
+        result = _review_compare_recs(recs, collected)
+        assert result["classic"]["transfers"][0]["followed"] is True
+        assert result["classic"]["unadvised_transfers"] == []
+
+    def test_an_ambiguous_drop_is_ungraded_not_unadvised(self):
+        """One of the tied moves is the recommendation's, so neither reads as
+        not made, and neither real move as unadvised."""
+        recs = _make_recs(transfers=[{"in": "Palmer", "out": "Murphy", "out_team": "NEW"}])
+        collected = _make_collected(classic_transfers=[
+            _transfer("Palmer", "A.Murphy", "CHE", "NEW"),
+            _transfer("Saka", "J.Murphy", "ARS", "NEW"),
+        ])
+        result = _review_compare_recs(recs, collected)
+        assert result["classic"]["transfers"] == [{
+            "rec_in": "Palmer", "rec_out": "Murphy", "actual_in": None, "actual_out": None,
+            "followed": None, "ungraded": True,
+        }]
+        assert result["classic"]["unadvised_transfers"] == []
+
+    def test_an_ambiguous_waiver_drop_is_ungraded(self):
+        recs = _make_recs(waivers=[{"priority": 1, "in": "Nyoni", "out": "Murphy"}])
+        collected = _make_collected(draft_transactions=[
+            _transfer("Nyoni", "A.Murphy", "LIV", "NEW"),
+            _transfer("Elanga", "J.Murphy", "NEW", "NEW"),
+        ])
+        result = _review_compare_recs(recs, collected)
+        assert result["draft"]["waivers"][0]["ungraded"] is True
+        assert result["draft"]["unadvised_waivers"] == []
 
     def test_non_breaking_hyphen_matches_the_ascii_one(self):
         recs = _make_recs(transfers=[{"in": "Ait\u2011Nouri", "out": "Gvardiol"}])
         collected = _make_collected(classic_transfers=[_transfer("Ait-Nouri", "Gvardiol", "MCI", "MCI")])
-        assert _review_compare_recs(recs, collected, {}, {})["classic"]["transfers"][0]["followed"] is True
+        assert _review_compare_recs(recs, collected)["classic"]["transfers"][0]["followed"] is True
 
     def test_the_same_player_listed_twice_is_not_a_tie(self):
         ambiguous: list = []
-        assert _resolve_name("Doku", None, [("Doku", "MCI"), ("Doku", "MCI")], ambiguous) == 0
+        assert _resolve_name("Doku", None, [("Doku", "MCI"), ("Doku", "MCI")], ambiguous) == [0]
         assert ambiguous == []
 
     def test_two_different_initials_never_match(self):
@@ -1399,7 +1449,7 @@ class TestReviewCompareRecsFromAFile:
         )
         recs = parse_recommendations(path)
         collected = _make_collected(classic_transfers=[_transfer("Gibbs-White", "Tzolis", "NFO", "ARS")])
-        result = _review_compare_recs(recs, collected, {}, {}, gameweek=5)
+        result = _review_compare_recs(recs, collected, gameweek=5)
         assert result["classic"]["transfers"][0]["followed"] is True
         assert result["classic"]["unadvised_transfers"] == []
 
@@ -1433,7 +1483,7 @@ class TestReviewCompareRecsSquad:
                 _transfer("Saka", "Semenyo", "ARS", "BOU"),
             ],
         )
-        result = _review_compare_recs(self._recs(), collected, {}, {}, gameweek=6)
+        result = _review_compare_recs(self._recs(), collected, gameweek=6)
         squad = result["classic"]["squad"]
         assert [(t["actual_in"], t["advised"]) for t in squad["incoming"]] == [
             ("Raya", True), ("Verbruggen", False), ("Saka", True),
@@ -1444,8 +1494,21 @@ class TestReviewCompareRecsSquad:
         assert result["classic"]["transfers"] == []
         assert result["classic"]["rec_roll"] is False
 
+    def test_a_tied_squad_name_is_neither_fielded_nor_missed(self):
+        recs = self._recs()
+        recs["classic"]["squad"].append({"name": "Murphy", "team": "NEW"})
+        collected = _make_collected(team_points=[
+            _classic_player(name="Raya", team="ARS"),
+            _classic_player(name="A.Murphy", team="NEW"),
+            _classic_player(name="J.Murphy", team="NEW"),
+        ])
+        squad = _review_compare_recs(recs, collected, gameweek=6)["classic"]["squad"]
+        assert "Murphy" not in squad["missed"]
+        assert squad["ungraded"] == ["Murphy"]
+        assert squad["fielded"] == 1  # Raya; the tie counts as neither
+
     def test_unknown_fielded_squad_is_not_reported_as_none_fielded(self):
-        result = _review_compare_recs(self._recs(), _make_collected(), {}, {}, gameweek=6)
+        result = _review_compare_recs(self._recs(), _make_collected(), gameweek=6)
         assert result["classic"]["squad"]["fielded"] is None
         assert result["classic"]["squad"]["missed"] == []
 
@@ -1462,6 +1525,14 @@ class TestReviewCompareRecsSquad:
         assert "Raya \u2190 Pickford (in recommended squad, net 2)" in out
         assert "Verbruggen \u2190 Sanchez (not in recommended squad, net -1)" in out
         assert "Recommended but not fielded: Gabriel" in out
+
+    def test_console_without_the_fielded_squad(self, capsys):
+        _print_squad_comparison({"mode": "wildcard", "size": 15, "fielded": None, "missed": [], "incoming": [
+            {"actual_in": "Raya", "actual_out": "Pickford", "advised": None, "actual_net": 2},
+        ]})
+        out = capsys.readouterr().out
+        assert "Wildcard squad recommended (15 players)" in out
+        assert "Raya \u2190 Pickford (not graded, net 2)" in out
 
 
 class TestReviewCompareRecsNoFile:
@@ -2302,7 +2373,7 @@ class TestReviewCompareRecsGw1:
     def test_gw1_does_not_score_absent_transfers_as_a_roll(self):
         recs = _make_recs(roll=True)
         collected = _make_collected(classic_transfers=[])
-        result = _review_compare_recs(recs, collected, {}, {}, gameweek=1)
+        result = _review_compare_recs(recs, collected, gameweek=1)
         assert result["classic"]["no_transfers_possible"] is True
         assert result["classic"]["rec_roll"] is False
         assert result["classic"]["actual_roll"] is False
@@ -2310,14 +2381,14 @@ class TestReviewCompareRecsGw1:
     def test_later_gw_still_scores_a_roll_as_aligned(self):
         recs = _make_recs(roll=True)
         collected = _make_collected(classic_transfers=[])
-        result = _review_compare_recs(recs, collected, {}, {}, gameweek=12)
+        result = _review_compare_recs(recs, collected, gameweek=12)
         assert result["classic"]["no_transfers_possible"] is False
         assert result["classic"]["rec_roll"] is True
         assert result["classic"]["actual_roll"] is True
 
     def test_gameweek_omitted_keeps_previous_behaviour(self):
         recs = _make_recs(roll=True)
-        result = _review_compare_recs(recs, _make_collected(), {}, {})
+        result = _review_compare_recs(recs, _make_collected())
         assert result["classic"]["actual_roll"] is True
 
 

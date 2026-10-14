@@ -318,6 +318,27 @@ class TestTemplateRendering:
         assert "Recommended but not fielded: Gabriel, Salah" in output
         assert "Unadvised" not in output
 
+    def test_review_report_marks_an_ungraded_move_apart_from_one_not_made(self):
+        data = _review_data()
+        data["recs_comparison"] = {
+            "classic": {
+                "rec_captain": "Murphy", "actual_captain": "Haaland", "actual_captain_pts": 14,
+                "captain_followed": None, "captain_ungraded": True,
+                "rec_roll": False, "actual_roll": False, "no_transfers_possible": False,
+                "transfers": [{
+                    "rec_in": "Palmer", "rec_out": "Murphy", "actual_in": None, "actual_out": None,
+                    "followed": None, "ungraded": True,
+                }],
+                "unadvised_transfers": [],
+            },
+            "draft": {"waivers": [], "unadvised_waivers": []},
+        }
+        output = self.agent._generate_review_report(29, data)
+        assert "| _Not graded_ | Murphy | - | - |" in output
+        assert "_If followed_" not in output
+        assert "| ? | Palmer | Murphy | Not graded |" in output
+        assert "Not made" not in output
+
     def test_review_report_names_a_recommendation_it_could_not_grade(self):
         data = _review_data()
         data["recs_comparison"] = {

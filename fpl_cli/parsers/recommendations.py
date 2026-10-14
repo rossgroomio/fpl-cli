@@ -38,7 +38,7 @@ from fpl_cli.utils.markdown import HeadingMatcher, fence_flags, parse_heading, s
 # too, so those are named and skipped: the waiver template's cells read
 # "Nyoni (LIV, MID)".
 _TEAM_CODE_RE = re.compile(r"[A-Z]{3}")
-_POSITION_CODES = frozenset({"GKP", "DEF", "MID", "FWD"})
+_POSITION_CODES = frozenset({"GK", "GKP", "DEF", "MID", "FWD"})
 _TRAILING_PAREN_RE = re.compile(r"\s*\(([^()]*)\)\s*$")
 _EMPHASIS_RE = re.compile(r"^[*_`]+|[*_`]+$")
 # The lineup template appends "⚡ Override: {reason}" to a player it forced in
@@ -57,11 +57,13 @@ _CELL_SPLIT_RE = re.compile(r"(?<!\\)\|")
 
 # Column names, lowercased. Several per column because the draft section's
 # free-agent table, written once the waiver run has processed, heads its
-# columns "# | Drop | Pick up" rather than "Priority | Drop | Claim".
+# columns "# | Drop | Pick up" rather than "Priority | Drop | Claim". The draft
+# sets leave out a bare Out/In: that is a classic transfer table's heading,
+# and one turning up below the draft section is not a waiver.
 _TRANSFER_OUT = frozenset({"out", "transfer out", "player out", "sell"})
 _TRANSFER_IN = frozenset({"in", "transfer in", "player in", "buy"})
-_WAIVER_DROP = frozenset({"drop", "out", "release"})
-_WAIVER_CLAIM = frozenset({"claim", "pick up", "pick-up", "pickup", "add", "in", "target"})
+_WAIVER_DROP = frozenset({"drop", "release"})
+_WAIVER_CLAIM = frozenset({"claim", "pick up", "pick-up", "pickup", "add"})
 _PRIORITY = frozenset({"priority", "#", "p", "rank"})
 _PLAYER = frozenset({"player", "name"})
 _TEAM = frozenset({"team", "club"})
@@ -80,8 +82,11 @@ _HEADING_TRANSFER_RECS = HeadingMatcher("### Transfer Recommendations")
 
 _SQUAD_MODES = frozenset({"wildcard", "freehit"})
 
+# Unanchored, as the regex it replaced was: the line can sit in a blockquote,
+# a numbered list, or behind a Formation clause ("**Formation:** 3-4-3 |
+# **Captain:** Salah | **Vice:** Haaland").
 _CAPTAIN_RE = re.compile(
-    r"^\s*(?:[-*+]\s+)?\*\*(?:Recommended\s+)?Captain\s*:?\s*\*\*\s*:?\s*(?P<value>.+)$",
+    r"\*\*(?:Recommended\s+)?Captain\s*:?\s*\*\*\s*:?\s*(?P<value>.+)$",
     re.IGNORECASE | re.MULTILINE,
 )
 _VICE_LABEL_RE = re.compile(
@@ -106,7 +111,15 @@ _LEGACY_ROLL_RE = re.compile(
     r"##### Recommended Transfer.*:\s*Roll|No transfers? (?:this gameweek|recommended)",
     re.IGNORECASE,
 )
-_ROLL_WORD_RE = re.compile(r"\broll(?:ing|ed)?\b", re.IGNORECASE)
+# A roll said as the recommendation: a line or table cell that opens with
+# "Roll" or "No transfer", or rolling the transfer named outright. A bare
+# "rolled" in a rationale ("rolled his ankle") or a chip being rolled to a
+# later week is neither.
+_ROLL_LINE_RE = re.compile(
+    r"(?:^|\|)\s*(?:[-*+>]\s*|\d+\.\s*)*(?:\*\*|__|_|\*)?\s*(?:roll\b|no transfers?\b)"
+    r"|\broll(?:ing)?\s+(?:over\s+)?(?:the\s+|your\s+|a\s+)?(?:free\s+transfer|ft)\b",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -114,6 +127,32 @@ class _Table:
     headers: list[str]
     rows: list[list[str]]
     heading: str | None
+
+
+def club_code(text: str | None) -> str | None:
+    """`text` as a club code fit to compare ("ARS"), or None.
+
+    None for a position code, and for the "???" the review writes when it
+    could not resolve a club.
+    """
+    if not text:
+        return None
+    code = text.strip().upper()
+    return code if _TEAM_CODE_RE.fullmatch(code) and code not in _POSITION_CODES else None
+
+
+def _parenthetical_club(inner: str) -> str | None:
+    """The club in a bracket that holds only codes: "(ARS)", "(LIV, MID)".
+
+    Every token has to be a code. A bracket of prose, which the squad-builder
+    captain line puts there by design ("Salah (home vs WHU)"), names an
+    opponent or a tag as often as a club, and reading "WHU" off it ruled the
+    real Salah out of his own captaincy.
+    """
+    tokens = [t for t in re.split(r"[\s,/;]+", inner.strip()) if t]
+    if not tokens or not all(_TEAM_CODE_RE.fullmatch(t) or t in _POSITION_CODES for t in tokens):
+        return None
+    return next((club_code(t) for t in tokens if club_code(t) is not None), None)
 
 
 def _split_name_team(cell: str) -> tuple[str, str | None]:
@@ -128,9 +167,7 @@ def _split_name_team(cell: str) -> tuple[str, str | None]:
     text = _EMPHASIS_RE.sub("", text).strip()
     team: str | None = None
     while (match := _TRAILING_PAREN_RE.search(text)) is not None:
-        for token in re.split(r"[\s,/;]+", match.group(1)):
-            if team is None and _TEAM_CODE_RE.fullmatch(token) and token not in _POSITION_CODES:
-                team = token
+        team = team or _parenthetical_club(match.group(1))
         text = text[: match.start()].strip()
     return _EMPHASIS_RE.sub("", text).strip(), team
 
@@ -160,8 +197,10 @@ def _iter_tables(lines: Sequence[str]) -> Iterator[_Table]:
     """Every markdown table in `lines`, with the heading it sits under.
 
     Fence-aware, so a table quoted inside a code block is not read as one.
-    A header row is a pipe row followed by a separator row, which is also what
-    ends a table stacked directly under another.
+    A header row is a pipe row followed by a separator row. Inside the body a
+    separator-shaped row is skipped, never read as the start of a new table:
+    a placeholder row of bare dashes (`| - | - | - |`) looks like one, and
+    taking it for a separator re-read the real row above it as a header.
     """
     fenced = list(fence_flags(lines))
     heading: str | None = None
@@ -180,9 +219,8 @@ def _iter_tables(lines: Sequence[str]) -> Iterator[_Table]:
             rows: list[list[str]] = []
             j = i + 2
             while j < len(lines) and not fenced[j] and lines[j].strip().startswith("|"):
-                if j + 1 < len(lines) and _is_separator(lines[j + 1]):
-                    break
-                rows.append(_cells(lines[j]))
+                if not _is_separator(lines[j]):
+                    rows.append(_cells(lines[j]))
                 j += 1
             yield _Table(headers=headers, rows=rows, heading=heading)
             i = j
@@ -225,7 +263,11 @@ def parse_recommendations(path: Path) -> dict[str, Any] | None:
         },
     }
 
-    _parse_captain(text, result)
+    # The Classic section first, so a revised captain in an appended
+    # `## GW Update` never stands in for the baseline's; then the whole file,
+    # for an older one that kept the line elsewhere.
+    if not _parse_captain(sections["classic"], result):
+        _parse_captain(text, result)
     # A wildcard or free hit week recommends a squad, not moves: the template
     # suppresses the transfer table, so there is nothing to pair in and out.
     result["classic"]["squad"] = _parse_squad(sections["classic"], mode)
@@ -278,7 +320,7 @@ def _parse_mode(text: str, frontmatter: dict[str, Any]) -> str | None:
     return None
 
 
-def _parse_captain(text: str, result: dict[str, Any]) -> None:
+def _parse_captain(text: str, result: dict[str, Any]) -> bool:
     """Extract captain and vice captain.
 
     Two lines carry them. The transfer-mode template writes
@@ -288,7 +330,7 @@ def _parse_captain(text: str, result: dict[str, Any]) -> None:
     """
     match = _CAPTAIN_RE.search(text)
     if not match:
-        return
+        return False
     captain_part, _, vice_part = match.group("value").partition("|")
     captain, captain_team = _split_name_team(_RATIONALE_SPLIT_RE.split(captain_part, maxsplit=1)[0])
     if captain and not _is_placeholder(captain):
@@ -302,22 +344,25 @@ def _parse_captain(text: str, result: dict[str, Any]) -> None:
         if vice and not _is_placeholder(vice):
             result["classic"]["vice_captain"] = vice
             result["classic"]["vice_captain_team"] = vice_team
+    return True
 
 
 def _get_section(text: str) -> dict[str, str]:
-    """Split text into classic/draft sections."""
+    """Split text into classic/draft sections.
+
+    Each runs to the next `## ` heading that is not its own, not to the end of
+    the file: update-gw-prep appends a `## GW Update` whose revised Transfers
+    table would otherwise read as more of the baseline's moves. "Its own"
+    takes in a `## Classic Squad` block embedded without being demoted, which
+    must not cut the Classic section off above the squad.
+    """
     sections: dict[str, str] = {"classic": "", "draft": ""}
-    classic_start = re.search(r"^## Classic\b", text, re.MULTILINE)
-    draft_start = re.search(r"^## Draft\b", text, re.MULTILINE)
-
-    if classic_start and draft_start:
-        sections["classic"] = text[classic_start.start():draft_start.start()]
-        sections["draft"] = text[draft_start.start():]
-    elif classic_start:
-        sections["classic"] = text[classic_start.start():]
-    elif draft_start:
-        sections["draft"] = text[draft_start.start():]
-
+    for key, word in (("classic", "Classic"), ("draft", "Draft")):
+        start = re.search(rf"^## {word}\b", text, re.MULTILINE)
+        if start is None:
+            continue
+        end = re.search(rf"^## (?!{word}\b)", text[start.end():], re.MULTILINE)
+        sections[key] = text[start.start():start.end() + end.start()] if end else text[start.start():]
     return sections
 
 
@@ -356,9 +401,7 @@ def _parse_squad(classic: str, mode: str | None) -> list[dict[str, Any]]:
             if _is_placeholder(name):
                 continue
             if team_col is not None:
-                team_cell = _cell(row, team_col).strip().upper()
-                if _TEAM_CODE_RE.fullmatch(team_cell):
-                    team = team_cell
+                team = club_code(_cell(row, team_col)) or team
             if (name, team) in seen:
                 continue
             seen.add((name, team))
@@ -406,7 +449,7 @@ def _recommends_roll(classic: str, lines: list[str]) -> bool:
     if _LEGACY_ROLL_RE.search(classic):
         return True
     body = section_body(lines, _HEADING_TRANSFER_RECS) or []
-    return any(_ROLL_WORD_RE.search(line) for line in body)
+    return any(_ROLL_LINE_RE.search(line.strip()) for line in body)
 
 
 def _priority(cell: str) -> int | None:
