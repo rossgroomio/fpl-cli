@@ -79,10 +79,12 @@ from fpl_cli.prompts.league_recap import (
 from fpl_cli.prompts.league_recap_checks import (
     EDITORIAL_CHECKS,
     RECAP_WARNING_CONTESTED_MISATTRIBUTION,
+    RECAP_WARNING_KIND_NET_MISATTRIBUTION,
     RECAP_WARNING_NET_MISATTRIBUTION,
     RECAP_WARNING_UNSUPPORTED_TIE,
     RecapNames,
     check_contested_attributions,
+    check_kind_net_scopes,
     check_net_attributions,
     check_recap_editorial,
     check_tie_claims,
@@ -2655,7 +2657,7 @@ class TestFormatMoveCounts:
         rendered = format_move_counts(draft_transaction_kind_counts(txns))
         assert rendered == "2 moves: 1 waiver, 1 free agent"
         assert f"across {rendered}" in awards["waiver_genius"]["detail"]
-        assert f"**Alice** ({rendered}, net" in format_recap_waivers_context(data)
+        assert f"**Alice** ({rendered}; waivers +8, free agents +2, net" in format_recap_waivers_context(data)
 
 
 def _lost_by(manager: RecapManagerEntry, *claims: RecapDraftLostClaim) -> RecapManagerEntry:
@@ -3793,7 +3795,7 @@ class TestPromptFormatting:
         lines = text.splitlines()
         assert lines[0] == "Total managers who made waiver or free-agent moves: 2 of 3"
         assert (
-            "- **Alice** (2 moves: 1 waiver, 1 free agent, net +4 overall): "
+            "- **Alice** (2 moves: 1 waiver, 1 free agent; waivers -1, free agents +5, net +4 overall): "
             "Savinho (0 pts) in for Maddison (1 pt), -1 [waiver]; "
             "Dango (6 pts) in for Georginio (1 pt), +5 [free agent]"
         ) in lines
@@ -7100,6 +7102,160 @@ class TestNetAttributionCheck:
         assert len(problems) == 1
         assert "swing across the captured 2 transfers before the hit" in problems[0]
 
+    def test_netted_is_a_net_figure(self):
+        """Issue #390: "netted" is the verb the model reaches for, and the
+        pattern keyed on "net" alone never read it."""
+        problems = self._check("Gibbs-White in for Wirtz netted -6.")
+        assert len(problems) == 1
+        assert "-6 is Alice Lowe's net for the whole gameweek" in problems[0]
+
+    def test_a_player_who_netted_goals_is_no_net_figure(self):
+        # Unsigned after the verb is goals, not points: Ajayi's +2 is not
+        # what "netted 2" said of Gibbs-White.
+        assert self._check("Gibbs-White in for Wirtz netted 2 against Spurs.") == []
+        assert self._check("Gibbs-White in for Wirtz netted Alice Lowe 2 points.") == []
+
+    def test_a_kind_s_net_said_of_one_of_its_moves_is_caught(self):
+        """Issue #390: a line that mixes kinds now prints each kind's net, so
+        that is another figure the line holds."""
+        problems = self._check("King in for Dud went +10 net.", _mixed_waivers())
+        assert len(problems) == 1
+        assert "+10 is the net across Fay Lund's 2 waivers" in problems[0]
+
+
+def _mixed_waivers() -> list[RecapManagerEntry]:
+    """The reported gameweek's shape (issue #390): Dan Ford made one waiver
+    (-1) and one free-agent pickup (+4), +3 overall, and lost a claim on
+    Kostoulas; Eve Ray made two waivers (+8); Fay Lund made two waivers
+    (+10) and a free-agent pickup (-3), +7 overall; Gus Hill made none."""
+    dan = _make_manager_with_txns("Dan Ford", [
+        _txn("Hinshelwood", 0, "M.Sangaré", 1),
+        _txn("Manzambi", 5, "Yalcouyé", 1, kind="f"),
+    ], entry_id=1)
+    dan["lost_claims"] = [_lost("Kostoulas", "Gray")]
+    return [
+        dan,
+        _make_manager_with_txns("Eve Ray", [_txn("Wood", 6, "Watkins", 1), _txn("Bogle", 4, "Lamptey", 1)], entry_id=2),
+        _make_manager_with_txns("Fay Lund", [
+            _txn("King", 9, "Dud", 1), _txn("Isak", 4, "Cash", 2), _txn("Mateta", 1, "Ings", 4, kind="f"),
+        ], entry_id=3),
+        _make_manager(name="Gus Hill", entry_id=4),
+    ]
+
+
+class TestKindNetScopeCheck:
+    """Issue #390: the editorial said of a manager who made one waiver (-1)
+    and one free-agent pickup (+4) that "his waiver moves netted +3
+    overall" -- the two moves' combined net, hiding a losing claim behind
+    the pickup's gain."""
+
+    _LEAD = "Dan Ford had a week to forget. "
+
+    def _check(self, summary: str, managers: list[RecapManagerEntry] | None = None) -> list[str]:
+        managers = managers or _mixed_waivers()
+        return check_kind_net_scopes(summary, managers, RecapNames.of(managers))
+
+    def test_the_reported_sentence_is_caught(self):
+        problems = self._check(
+            self._LEAD + "His Kostoulas claim failed, and his waiver moves netted +3 overall, "
+            "which did nothing to rescue him."
+        )
+        assert problems == [
+            'the editorial says "waiver moves netted +3" of Dan Ford, but +3 is Dan Ford\'s net for the '
+            "whole gameweek (2 moves: 1 waiver, 1 free agent), not the waivers' own net of -1"
+        ]
+
+    @pytest.mark.parametrize("summary", [
+        "Dan Ford's waiver moves netted +3 overall.",
+        # A short form the manager goes by.
+        "Ford's waivers came to +3.",
+        # The figure ahead of the kind it is said of.
+        "Dan Ford netted +3 overall from his waivers.",
+        # Unsigned, as points.
+        "Dan Ford's waiver claims netted him 3 points.",
+        "Dan Ford's free-agent pickups netted +3 overall.",
+    ])
+    def test_the_net_overall_said_of_one_kind_is_caught(self, summary):
+        problems = self._check(summary)
+        assert len(problems) == 1
+        assert "+3 is Dan Ford's net for the whole gameweek (2 moves: 1 waiver, 1 free agent)" in problems[0]
+
+    def test_the_other_kind_s_figure_is_caught_and_named(self):
+        problems = self._check("Dan Ford's waivers went +4.")
+        assert problems == [
+            'the editorial says "waivers went +4" of Dan Ford, but +4 is the swing on Manzambi in for '
+            "Yalcouyé [free agent], not the waivers' own net of -1"
+        ]
+        problems = self._check("Fay Lund's free agents netted +10.")
+        assert len(problems) == 1
+        assert "+10 is the net across Fay Lund's 2 waivers, not the free agents' own net of -3" in problems[0]
+
+    @pytest.mark.parametrize("summary", [
+        # Kind-neutral scopes.
+        "Dan Ford's moves netted +3 overall.",
+        "Dan Ford's claims netted +3 overall.",
+        "Dan Ford's pickups netted +3 overall.",
+        "Dan Ford's waiver-wire business netted +3 overall.",
+        "Dan Ford went +3 overall on the waiver wire.",
+        "Dan Ford's waiver and free-agent moves netted +3 overall.",
+        "Dan Ford's waivers and free agents came to +3.",
+        "Dan Ford went +3 overall across his waivers and free agents.",
+        # Each kind its own figure.
+        "Dan Ford's waivers netted -1, his free agents +4.",
+        "Dan Ford's waiver went -1 and his free-agent pickup +4, +3 overall.",
+        "Dan Ford's free-agent pickup came to +4.",
+        # The kind and the overall net in the same clause, kept apart.
+        "Dan Ford's one waiver lost a point (-1), and his moves netted +3 overall.",
+        "Manzambi in for Yalcouyé as a free agent (+4) left Dan Ford's moves +3 net overall.",
+        "Dan Ford's waiver flopped but he still netted +3 overall.",
+        # A figure that is nobody's on the line.
+        "Dan Ford's waiver moves netted +9.",
+        # Loose but not wrong: "1 point" either way round is the waiver's.
+        "Dan Ford's waiver netted him 1 point.",
+        # One of the kind's own moves' swings.
+        "Fay Lund's waivers netted +8.",
+    ])
+    def test_a_figure_the_data_bears_out_or_cannot_place_passes(self, summary):
+        assert self._check(summary) == []
+
+    def test_a_manager_whose_moves_are_one_kind_is_not_read(self):
+        # Eve Ray's waivers are every move she made: their net is the net.
+        assert self._check("Eve Ray's waiver moves netted +8 overall.") == []
+        assert self._check("Eve Ray's waiver moves netted +3 overall.") == []
+
+    @pytest.mark.parametrize("summary", [
+        # Two managers in the clause: the figure could be either's.
+        "Unlike Eve Ray, Dan Ford's waiver moves netted +3 overall.",
+        # Two in the clause before: "his" could be either's.
+        "Dan Ford beat Eve Ray to Isak. His waiver moves netted +3 overall.",
+        # A new paragraph: "his" is nobody's the check can see.
+        "Dan Ford had a week to forget.\n\nHis waiver moves netted +3 overall.",
+        # Nobody named at all.
+        "His waiver moves netted +3 overall.",
+    ])
+    def test_a_clause_whose_manager_is_unclear_is_left_alone(self, summary):
+        assert self._check(summary) == []
+
+    def test_the_nearest_manager_named_earlier_in_the_paragraph_is_the_one_read(self):
+        summary = "Dan Ford had a week to forget. Gus Hill sat it out. His waiver moves netted +3 overall."
+        # Gus Hill made no moves, so the clause is about nobody it can check.
+        assert self._check(summary) == []
+        summary = "Gus Hill sat it out. Dan Ford had a week to forget: his waiver moves netted +3 overall."
+        assert len(self._check(summary)) == 1
+
+    def test_nothing_is_read_when_nobody_mixed_kinds(self):
+        managers = [m for m in _mixed_waivers() if m["manager_name"] in ("Eve Ray", "Gus Hill")]
+        assert self._check("Eve Ray's waiver moves netted +3 overall.", managers) == []
+
+    def test_the_registry_runs_it_on_a_draft_editorial(self):
+        data = _make_recap_data(managers=_mixed_waivers())
+        data["fpl_format"] = "draft"
+        found = check_recap_editorial("Dan Ford's waiver moves netted +3 overall.", data)
+        assert list(found) == [RECAP_WARNING_KIND_NET_MISATTRIBUTION]
+        prompt = get_recap_editorial_retry_prompt("ORIGINAL", found)
+        assert "never their waivers' or their free agents'" in prompt
+        assert "NEVER to one named move" not in prompt
+
 
 def _reported_table() -> list[RecapManagerEntry]:
     """The reported gameweek's shape: the outright lowest score (29) belongs
@@ -7330,7 +7486,8 @@ class TestEditorialChecks:
         """PR #374 review: one record per check, so a fourth is one edit."""
         codes = [check.code for check in EDITORIAL_CHECKS]
         assert sorted(codes) == sorted({
-            RECAP_WARNING_CONTESTED_MISATTRIBUTION, RECAP_WARNING_NET_MISATTRIBUTION, RECAP_WARNING_UNSUPPORTED_TIE,
+            RECAP_WARNING_CONTESTED_MISATTRIBUTION, RECAP_WARNING_NET_MISATTRIBUTION,
+            RECAP_WARNING_KIND_NET_MISATTRIBUTION, RECAP_WARNING_UNSUPPORTED_TIE,
         })
         assert all(check.lead and check.retry_instruction for check in EDITORIAL_CHECKS)
 
@@ -7384,6 +7541,7 @@ class TestEditorialChecks:
         )
         assert "they are never interchangeable" in system
         assert "NEVER to one named move" in system
+        assert "NEVER their waivers' or their free agents'" in system
         assert 'never that they took it "to bring in"' in system
         assert "may only be used where the data states the tie" in system
         assert 'never "the joint-lowest"' in system

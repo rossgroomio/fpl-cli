@@ -1,4 +1,4 @@
-"""Checks the league-recap editorial against the data its prompt carried (#357, #359).
+"""Checks the league-recap editorial against the data its prompt carried (#357, #359, #390).
 
 The prompt states every rule these read, and the model has broken each of
 them anyway: a manager named as beaten in a waiver race they won, a
@@ -22,11 +22,14 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
 from fpl_cli.cli._league_recap_types import (
+    DRAFT_TRANSACTION_LABEL_ORDER,
     LeagueRecapData,
     RecapContestedClaim,
     RecapManagerEntry,
     contested_draft_claims,
+    draft_transaction_kind_label,
     format_contested_claim,
+    format_move_counts,
     place_label,
     points_label,
 )
@@ -36,6 +39,7 @@ from fpl_cli.utils.text import ORDINAL_WORDS
 # the retry. Stable for scripts, like every code on that channel.
 RECAP_WARNING_CONTESTED_MISATTRIBUTION = "synthesis_contested_misattribution"
 RECAP_WARNING_NET_MISATTRIBUTION = "synthesis_net_misattribution"
+RECAP_WARNING_KIND_NET_MISATTRIBUTION = "synthesis_kind_net_misattribution"
 RECAP_WARNING_UNSUPPORTED_TIE = "synthesis_unsupported_tie"
 
 
@@ -468,13 +472,19 @@ def _words_after(text: str, start: int, count: int) -> str:
 _MINUS_SIGNS = "-−–"
 _SIGNS = f"+{_MINUS_SIGNS}"
 # A points figure tied to the word "net": "-6 net", "6 net points", "net -6",
-# "net of -6", "a net loss of 6". A figure with no sign is compared without
-# one -- "lost 6 net" and "-6 net" make the same claim -- and none is ever
-# read off a place or a percentage ("a net gain of 3 places").
+# "net of -6", "a net loss of 6", and the verb: "netted +3", "nets him -1",
+# "netted 3 points". A figure with no sign is compared without one -- "lost
+# 6 net" and "-6 net" make the same claim -- and none is ever read off a
+# place or a percentage ("a net gain of 3 places"). The verb takes an
+# unsigned figure only as points, because in a football recap "Isak netted
+# 2" is goals (#390).
 _NET_FIGURE_RE = re.compile(
     rf"(?<![\w.])(?P<before>[{re.escape(_SIGNS)}]?\d+)\s*(?:pts?\s+|points?\s+)?net(?!\w)"
     rf"|(?<!\w)net\s+(?:(?:loss|gain|swing|return)\s+)?(?:of\s+)?(?P<after>[{re.escape(_SIGNS)}]?\d+)"
-    r"(?![\w.])(?!\s*(?:places?|spots?|positions?|%))",
+    r"(?![\w.])(?!\s*(?:places?|spots?|positions?|%))"
+    r"|(?<!\w)net(?:s|ted|ting)\s+(?:(?:him|her|them)\s+)?(?:(?:a|an)\s+)?"
+    rf"(?:(?P<verb>[{re.escape(_SIGNS)}]\d+)(?![\w.])(?!\s*(?:places?|spots?|positions?|%))"
+    r"|(?P<verb_points>\d+)(?=\s*(?:pts?|points?)(?!\w)))",
     re.IGNORECASE,
 )
 # Words that make a net figure the manager's whole gameweek rather than one
@@ -510,12 +520,28 @@ def _signed_value(text: str) -> int:
     return int(text.lstrip(_SIGNS)) * (-1 if text[0] in _MINUS_SIGNS else 1)
 
 
+def _net_figure_text(match: re.Match[str]) -> str:
+    """The figure a `_NET_FIGURE_RE` match read, sign and all."""
+    return next(text for text in match.group("before", "after", "verb", "verb_points") if text)
+
+
+def _pick(figures: Sequence[tuple[int, str]], value: int, *, signed: bool) -> str | None:
+    """The fact for the first figure `value` is: with its sign first when it
+    carries one, so "+2" is read as the move that went +2 before the -2 two
+    moves came to, then whichever way round. None when it is none of them."""
+    exact = [fact for figure, fact in figures if signed and figure == value]
+    loose = [fact for figure, fact in figures if abs(figure) == abs(value)]
+    return (exact or loose or [None])[0]
+
+
 @dataclass(frozen=True)
 class _Move:
     manager: str
     player_in: str
     player_out: str
     net: int
+    # A draft move's kind label ("waiver", "free agent"); "" for a transfer.
+    kind: str = ""
 
     @property
     def label(self) -> str:
@@ -543,31 +569,68 @@ class _MoverLine:
     def moves_text(self, count: int) -> str:
         return f"{count} {self.noun}" + ("" if count == 1 else "s")
 
+    @property
+    def kinds(self) -> dict[str, tuple[_Move, ...]]:
+        """The line's moves by kind, in the order the roster prints them, for
+        the kinds present; a transfer line has none."""
+        grouped = {label: tuple(m for m in self.moves if m.kind == label) for label in DRAFT_TRANSACTION_LABEL_ORDER}
+        return {label: moves for label, moves in grouped.items() if moves}
+
+    def _whole_gameweek(self) -> tuple[int, str]:
+        hit = f", -{self.cost} hit" if self.cost else ""
+        kinds = self.kinds
+        made = (
+            format_move_counts([(label, len(moves)) for label, moves in kinds.items()])
+            if len(kinds) > 1 else self.moves_text(self.count)
+        )
+        net = self.raw - self.cost
+        return net, f"{net:+d} is {self.manager}'s net for the whole gameweek ({made}{hit})"
+
+    def _kind_nets(self, *, besides: str = "") -> list[tuple[int, str]]:
+        """The net of each kind of more than one move on a line that mixes
+        kinds, other than `besides` -- the figures the roster prints beside
+        the net overall (#390). A kind of one move nets that move's swing."""
+        kinds = self.kinds
+        if len(kinds) < 2:
+            return []
+        nets: list[tuple[int, str]] = []
+        for label, moves in kinds.items():
+            if label == besides or len(moves) < 2:
+                continue
+            net = sum(m.net for m in moves)
+            nets.append((net, f"{net:+d} is the net across {self.manager}'s {len(moves)} {label}s"))
+        return nets
+
     def misplaced(self, value: int, move: _Move, *, signed: bool) -> str | None:
         """Which other figure on this line `value` is, said of `move` -- the
-        overall net, the swing before the hit, or another move's swing -- or
-        None when it is none of them and so came from somewhere else. A
-        `signed` value is matched with its sign first, so "+2" is read as the
-        move that went +2 before the -2 the line's moves came to."""
+        overall net, the swing before the hit, a kind's net, or another move's
+        swing -- or None when it is none of them and so came from somewhere
+        else. A `signed` value is matched with its sign first."""
         figures: list[tuple[int, str]] = []
         if self.complete:
-            hit = f", -{self.cost} hit" if self.cost else ""
-            figures.append((self.raw - self.cost, (
-                f"{self.raw - self.cost:+d} is {self.manager}'s net for the whole gameweek "
-                f"({self.moves_text(self.count)}{hit})"
-            )))
+            figures.append(self._whole_gameweek())
         if len(self.moves) > 1:
             scope = "all" if self.complete else "the captured"
             figures.append((self.raw, (
                 f"{self.raw:+d} is {self.manager}'s swing across {scope} "
                 f"{self.moves_text(len(self.moves))} before the hit"
             )))
+        figures.extend(self._kind_nets())
         figures.extend(
             (other.net, f"{other.net:+d} is the swing on {other.label}") for other in self.moves if other != move
         )
-        exact = [fact for figure, fact in figures if signed and figure == value]
-        loose = [fact for figure, fact in figures if abs(figure) == abs(value)]
-        return (exact or loose or [None])[0]
+        return _pick(figures, value, signed=signed)
+
+    def misplaced_kind(self, value: int, kind: str, *, signed: bool) -> str | None:
+        """Which figure on this line `value` is, said of the manager's moves
+        of `kind` alone -- the net overall, another kind's net, or the swing
+        on a move of another kind -- or None when it is none of them."""
+        figures = [self._whole_gameweek(), *self._kind_nets(besides=kind)]
+        figures.extend(
+            (other.net, f"{other.net:+d} is the swing on {other.label} [{label}]")
+            for label, moves in self.kinds.items() if label != kind for other in moves
+        )
+        return _pick(figures, value, signed=signed)
 
 
 def _mover_lines(managers: Sequence[RecapManagerEntry]) -> list[_MoverLine]:
@@ -580,7 +643,10 @@ def _mover_lines(managers: Sequence[RecapManagerEntry]) -> list[_MoverLine]:
             count = len(moves) if made is None else max(made, len(moves))
             lines.append(_MoverLine(name, moves, count, m.get("transfer_cost", 0), "transfer"))
         elif transactions := m.get("transactions"):
-            moves = tuple(_Move(name, t["player_in"], t["player_out"], t["net"]) for t in transactions)
+            moves = tuple(
+                _Move(name, t["player_in"], t["player_out"], t["net"], draft_transaction_kind_label(t["kind"]))
+                for t in transactions
+            )
             lines.append(_MoverLine(name, moves, len(moves), 0, "move"))
     return lines
 
@@ -655,7 +721,7 @@ def check_net_attributions(summary: str, managers: Sequence[RecapManagerEntry], 
         move_starts = [m.start() for m in player_mentions if m.group(0) in (move.player_in, move.player_out)]
         owner_starts = [start for start, name in manager_mentions if name == move.manager]
         for figure in figures:
-            text = figure.group("before") or figure.group("after")
+            text = _net_figure_text(figure)
             value = _signed_value(text)
             # An explicit sign is part of the claim: "-2" is not a +2 move's
             # swing, whatever "lost 2" would have been.
@@ -683,6 +749,175 @@ def check_net_attributions(summary: str, managers: Sequence[RecapManagerEntry], 
             )
             if problem not in problems:
                 problems.append(problem)
+    return problems
+
+
+# =============================================================================
+# Kind-scoped nets (#390)
+# =============================================================================
+
+# A draft move's kind named as what a figure is about: "his waiver moves",
+# "her waivers", "the free-agent pickups", "his free agency". Only the kind
+# word scopes the figure. The nouns after it -- "moves", "claims",
+# "pickups", "signings" -- cover both kinds on their own (the roster's own
+# lost-claims line says a free agent was claimed), and "the waiver wire" is
+# the pool of unowned players, free agents included.
+_KIND_SCOPE_RE = re.compile(
+    r"(?<!\w)(?:(?P<waiver>waivers?(?![-\s]+wire))|(?P<free_agent>free[-\s]+agen(?:ts?|cy)))"
+    r"(?:[-\s]+(?:moves?|claims?|pick-?ups?|signings?|business|deals?|dealings|activity|swaps?"
+    r"|additions?|acquisitions?|transactions?|market))?(?!\w)",
+    re.IGNORECASE,
+)
+_KIND_GROUP_LABELS = {"waiver": "waiver", "free_agent": "free agent"}
+# Two kinds named together ("waiver and free-agent moves", "waivers, free
+# agents") are every move the manager made, which is no kind at all.
+_KIND_JOIN_RE = re.compile(r"^\s*(?:,\s*(?:and|or|&|plus)?|and|or|&|plus|/)\s*$", re.IGNORECASE)
+# What may sit between a kind and the figure it scopes: the verb that carries
+# one to the other and its furniture, never a word that names or counts
+# anything else. "His waiver moves netted +3 overall" scopes +3 to his
+# waivers; "his one waiver lost a point and his moves netted +3" does not,
+# and neither does "Manzambi arrived as a free agent (+4) and left his moves
+# +3", where another figure stands nearer.
+_KIND_LINK_BEFORE = frozenset({
+    "net", "nets", "netted", "netting", "went", "go", "goes", "going", "came", "come", "comes", "coming",
+    "to", "out", "at", "in", "up", "were", "was", "are", "is", "be", "been", "finished", "finishing",
+    "ended", "ending", "totalled", "totaled", "totalling", "totaling", "added", "adding", "returned",
+    "returning", "yielded", "yielding", "brought", "bringing", "delivered", "delivering", "produced",
+    "producing", "earned", "earning", "gave", "giving", "left", "leaving", "made", "swung", "he", "she",
+    "they", "him", "her", "them", "a", "an", "of", "for", "with", "worth", "only", "just", "overall",
+    "combined", "together", "altogether", "all", "told", "still", "between",
+})
+_KIND_LINK_AFTER = frozenset({
+    "net", "overall", "pts", "pt", "points", "point", "from", "on", "across", "over", "through", "via",
+    "in", "with", "for", "his", "her", "their", "its", "the", "a", "all", "of", "both", "between",
+})
+_KIND_LINK_MAX_WORDS = 5
+_KIND_LINK_BREAK_RE = re.compile(r",|\d|[–—]|\s-\s")
+_LINK_WORD_RE = re.compile(r"[a-z]+(?:['’][a-z]+)?")
+# A signed figure that is not points: places climbed, a percentage.
+_NOT_POINTS_RE = re.compile(r"\s*(?:places?|spots?|positions?|%)", re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class _KindScope:
+    """A run of kind words joined into one scope, and the kinds it names."""
+
+    start: int
+    end: int
+    kinds: frozenset[str]
+
+
+def _kind_scopes(clause: str) -> list[_KindScope]:
+    scopes: list[_KindScope] = []
+    for match in _KIND_SCOPE_RE.finditer(clause):
+        kind = _KIND_GROUP_LABELS[next(group for group in _KIND_GROUP_LABELS if match.group(group))]
+        if scopes and _KIND_JOIN_RE.match(_plain(clause[scopes[-1].end:match.start()])):
+            last = scopes.pop()
+            scopes.append(_KindScope(last.start, match.end(), last.kinds | {kind}))
+        else:
+            scopes.append(_KindScope(match.start(), match.end(), frozenset({kind})))
+    return scopes
+
+
+def _kind_link(gap: str, words: frozenset[str]) -> bool:
+    """Whether `gap` joins a kind to a figure: a few words, all from `words`."""
+    plain = _plain(gap)
+    if _KIND_LINK_BREAK_RE.search(plain):
+        return False
+    found = _LINK_WORD_RE.findall(plain.lower())
+    return len(found) <= _KIND_LINK_MAX_WORDS and all(word in words for word in found)
+
+
+def _clause_figures(clause: str) -> list[tuple[int, int, str]]:
+    """Every points figure in `clause` -- a net figure, or a signed one on
+    its own -- as (start, end, figure text), in order."""
+    figures = [(m.start(), m.end(), _net_figure_text(m)) for m in _NET_FIGURE_RE.finditer(clause)]
+    for m in _SIGNED_FIGURE_RE.finditer(clause):
+        if any(start <= m.start() < end for start, end, _ in figures) or _NOT_POINTS_RE.match(clause, m.end()):
+            continue
+        figures.append((m.start(), m.end(), m.group(0)))
+    return sorted(figures)
+
+
+def check_kind_net_scopes(summary: str, managers: Sequence[RecapManagerEntry], names: RecapNames) -> list[str]:
+    """Every figure the editorial says of one kind of a draft manager's moves
+    that belongs to all of them, or to the other kind (#390).
+
+    A manager made one waiver (-1) and one free-agent pickup (+4), and the
+    editorial wrote "his waiver moves netted +3 overall": the +3 is the two
+    together, so the sentence hid a losing claim behind the pickup's gain.
+    For a manager whose moves are all one kind the kind is every move and
+    the net overall is that kind's, so only a line that mixes kinds can be
+    wrong this way, and its per-kind nets and swings are known.
+
+    A figure is read when a kind word scopes it -- "waivers", "waiver
+    moves", "free agents", "free-agent pickups", joined to the figure by a
+    few words of verb ("netted", "came to", "left him") with nothing between
+    them that names or counts anything else -- and the scope names one kind.
+    Kind-neutral scopes ("moves", "claims", "pickups", "the waiver wire",
+    "waivers and free agents") pass. Whose moves they are is the one manager
+    the clause names, or, in a clause that names none ("his waiver moves"),
+    the one manager the nearest earlier clause of the paragraph named; a
+    clause naming two managers, or following one that did, is left alone.
+    The figure is then a problem only when it is not that kind's net nor the
+    swing of a move of that kind, and is another figure on the manager's
+    line: the net overall, another kind's net, or another kind's move's
+    swing. Returns one line per wrong figure, in the order the editorial
+    states them.
+    """
+    mixed = {line.manager: line for line in _mover_lines(managers) if len(line.kinds) > 1}
+    if not mixed:
+        return []
+    aliases = {
+        alias: name
+        for alias, (name, is_manager) in _mention_aliases(names.managers, set(names.players)).items()
+        if is_manager
+    }
+
+    problems: list[str] = []
+    for paragraph in summary.splitlines():
+        carried: str | None = None
+        for clause in _clauses(paragraph):
+            named = {aliases[m.group(0)] for m in names.find(clause) if m.group(0) in aliases}
+            if named:
+                # Two managers named: the next clause's "his" could be either's.
+                carried = next(iter(named)) if len(named) == 1 else None
+            manager = carried
+            line = mixed.get(manager or "")
+            if line is None:
+                continue
+            kinds = line.kinds
+            scopes = _kind_scopes(clause)
+            for start, end, text in _clause_figures(clause):
+                before = [s for s in scopes if s.end <= start]
+                after = [s for s in scopes if s.start >= end]
+                if before and _kind_link(clause[before[-1].end:start], _KIND_LINK_BEFORE):
+                    scope, quoted = before[-1], clause[before[-1].start:end]
+                elif after and _kind_link(clause[end:after[0].start], _KIND_LINK_AFTER):
+                    scope, quoted = after[0], clause[start:after[0].end]
+                else:
+                    continue
+                if len(scope.kinds) != 1:
+                    continue
+                [kind] = scope.kinds
+                if kind not in kinds:
+                    continue
+                own = kinds[kind]
+                own_net = sum(move.net for move in own)
+                value = _signed_value(text)
+                signed = text[0] in _SIGNS
+                allowed = {own_net, *(move.net for move in own)}
+                if value in allowed if signed else abs(value) in {abs(figure) for figure in allowed}:
+                    continue
+                fact = line.misplaced_kind(value, kind, signed=signed)
+                if fact is None:
+                    continue
+                problem = (
+                    f'the editorial says "{" ".join(_plain(quoted).split())}" of {manager}, but {fact}, '
+                    f"not the {kind}s' own net of {own_net:+d}"
+                )
+                if problem not in problems:
+                    problems.append(problem)
     return problems
 
 
@@ -905,6 +1140,17 @@ EDITORIAL_CHECKS: tuple[EditorialCheck, ...] = (
             "one transfer's."
         ),
         run=lambda summary, data, names: check_net_attributions(summary, data["managers"], names),
+    ),
+    EditorialCheck(
+        code=RECAP_WARNING_KIND_NET_MISATTRIBUTION,
+        lead="The editorial gives one kind of a manager's moves a figure that is not that kind's own",
+        retry_instruction=(
+            "Say a figure is a manager's waivers' or free agents' only when it is that kind's own net "
+            "from the brackets of their line, or one of that kind's moves' swings; where a line mixes "
+            "kinds, the net overall is all the moves together, so call it their moves' net, never their "
+            "waivers' or their free agents'."
+        ),
+        run=lambda summary, data, names: check_kind_net_scopes(summary, data["managers"], names),
     ),
     EditorialCheck(
         code=RECAP_WARNING_UNSUPPORTED_TIE,
