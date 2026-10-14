@@ -1493,7 +1493,21 @@ def _review_compare_recs(recs: dict, collected_data: dict, gameweek: int | None 
             None,
         )
         actual_captain = actual_captain_entry["name"] if actual_captain_entry else None
-        actual_captain_pts = actual_captain_entry.get("display_points", 0) if actual_captain_entry else 0
+        # Both sides are captain points: a raw score times the multiplier that
+        # applied that week. `display_points` carries it for the armband holder
+        # alone, so reading it for both sides set a doubled score against an
+        # undoubled one (#400) -- and the vice who stood in would be doubled
+        # twice.
+        multiplier = 3 if actual_captain_entry and actual_captain_entry.get("is_triple_captain") else 2
+        # A captain who did not play hands the armband to the vice, so what it
+        # earned is the vice's score, not the captain's 0.
+        armband_entry = actual_captain_entry
+        if actual_captain_entry is not None and not actual_captain_entry.get("contributed", True):
+            armband_entry = next(
+                (p for p in team_points if p.get("is_vice_active") and p.get("contributed", True)),
+                None,
+            )
+        actual_captain_pts = armband_entry.get("points", 0) * multiplier if armband_entry else 0
 
         hits = _resolve_name(
             rec_captain, recs["classic"].get("captain_team"),
@@ -1502,6 +1516,8 @@ def _review_compare_recs(recs: dict, collected_data: dict, gameweek: int | None 
         comparison["classic"]["rec_captain"] = rec_captain
         comparison["classic"]["actual_captain"] = actual_captain
         comparison["classic"]["actual_captain_pts"] = actual_captain_pts
+        if armband_entry is not None and armband_entry is not actual_captain_entry:
+            comparison["classic"]["actual_armband"] = armband_entry["name"]
 
         if len(hits) > 1:
             # Which player was meant is unknown, so there is no followed or
@@ -1511,13 +1527,17 @@ def _review_compare_recs(recs: dict, collected_data: dict, gameweek: int | None 
         else:
             rec_entry = team_points[hits[0]] if hits else None
             followed = rec_entry is not None and rec_entry is actual_captain_entry
-            # A recommended captain no longer in the squad scored nothing for it.
-            rec_captain_pts = rec_entry.get("display_points", 0) if rec_entry is not None else 0
-
             comparison["classic"]["captain_followed"] = followed
-            comparison["classic"]["rec_captain_pts"] = rec_captain_pts
-            # Delta: difference in captain points (doubled effect)
-            comparison["classic"]["captain_pts_delta"] = 0 if followed else actual_captain_pts - rec_captain_pts
+            # A recommended captain outside the squad has no score here to
+            # price, and a 0 would read as one who blanked.
+            comparison["classic"]["rec_captain_in_squad"] = rec_entry is not None
+            if rec_entry is not None:
+                rec_captain_pts = rec_entry.get("points", 0) * multiplier
+                comparison["classic"]["rec_captain_pts"] = rec_captain_pts
+                # What the armband earned less what it would have earned on
+                # the recommended player: the gap between the two figures the
+                # report prints, not the change to the team total.
+                comparison["classic"]["captain_pts_delta"] = 0 if followed else actual_captain_pts - rec_captain_pts
 
     # --- Classic Transfers ---
     # GW1 has no transfers to make, so an empty transfer list is not a rolled

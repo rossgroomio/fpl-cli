@@ -147,6 +147,36 @@ def _print_squad_comparison(sq: dict[str, Any]) -> None:
         console.print(f"  Recommended but not fielded: {rich_escape(', '.join(sq['missed']))}")
 
 
+def _print_captain_comparison(rc: dict[str, Any]) -> None:
+    """The `--compare-recs` captain line.
+
+    Both figures are captain points, the raw score times that week's
+    multiplier, so the delta between them is like for like (#400).
+    """
+    rec = rich_escape(str(rc["rec_captain"]))
+    actual = rich_escape(str(rc["actual_captain"]))
+    if rc.get("captain_ungraded"):
+        console.print(f"  Captain: [dim]?[/dim] Rec {rec} → Actual {actual} (not graded)")
+        return
+    if rc["captain_followed"]:
+        console.print(f"  Captain: [green]✓[/green] {rec} (followed)")
+        return
+    if rc.get("actual_armband"):
+        actual += f", vice {rich_escape(str(rc['actual_armband']))} took the armband"
+    actual += f" ({rc['actual_captain_pts']} pts)"
+    if not rc.get("rec_captain_in_squad"):
+        console.print(f"  Captain: [yellow]✗[/yellow] Rec {rec} (not in squad) → Actual {actual}")
+        return
+    delta = rc["captain_pts_delta"]
+    sign = "+" if delta > 0 else ""
+    style = "green" if delta > 0 else "red" if delta < 0 else ""
+    d = f"[{style}]{sign}{delta}[/{style}]" if style else str(delta)
+    console.print(
+        f"  Captain: [yellow]✗[/yellow] Rec {rec} ({rc['rec_captain_pts']} pts)"
+        f" → Actual {actual} [{d} captain pts]"
+    )
+
+
 @click.command("review")
 @click.option("--gameweek", "-g", type=int, help="Specific gameweek to review (default: last completed)")
 @click.option("--save", "-s", is_flag=True, help="Save report to output directory")
@@ -463,27 +493,7 @@ def review_command(
 
                     rc = recs_comparison["classic"]
                     if rc.get("rec_captain"):
-                        if rc.get("captain_ungraded"):
-                            console.print(
-                                f"  Captain: [dim]?[/dim] Rec {rc['rec_captain']}"
-                                f" → Actual {rc['actual_captain']} (not graded)"
-                            )
-                        elif rc["captain_followed"]:
-                            console.print(
-                                f"  Captain: [green]✓[/green] "
-                                f"{rc['rec_captain']} (followed)"
-                            )
-                        else:
-                            delta = rc.get("captain_pts_delta", 0)
-                            sign = "+" if delta > 0 else ""
-                            style = "green" if delta > 0 else "red" if delta < 0 else ""
-                            d = f"[{style}]{sign}{delta}[/{style}]" if style else str(delta)
-                            console.print(
-                                f"  Captain: [yellow]✗[/yellow] "
-                                f"Rec {rc['rec_captain']} ({rc['rec_captain_pts']} pts)"
-                                f" → Actual {rc['actual_captain']}"
-                                f" ({rc['actual_captain_pts']} pts) [{d} delta]"
-                            )
+                        _print_captain_comparison(rc)
 
                     if rc.get("no_transfers_possible"):
                         console.print("  Transfers: [dim]n/a - no transfers exist in GW1[/dim]")
