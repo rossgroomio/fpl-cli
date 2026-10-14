@@ -1257,10 +1257,19 @@ class TestTruncatedEditorial:
 
         assert len(stub.prompts) == 1
         assert "retrying once" not in result.stderr
-        codes = [w["code"] for w in json.loads(result.stdout)["metadata"]["warnings"]]
-        assert "synthesis_stopped_early" in codes
+        warnings = {w["code"]: w["message"] for w in json.loads(result.stdout)["metadata"]["warnings"]}
         report = next(tmp_path.rglob("gw*-league-recap.md")).read_text(encoding="utf-8")
-        assert f"> `{stop_reason}`." in report
+        # #399 review: said as a refusal everywhere, never as "may be cut off"
+        # -- a reader told it was cut off would re-run for the rest, and a
+        # re-run usually draws the same refusal.
+        assert "The provider refused the editorial" in " ".join(result.stderr.split())
+        assert warnings["synthesis_stopped_early"].startswith("The provider refused the editorial")
+        assert (
+            "**The provider refused the editorial below:** it stopped with\n"
+            f"> `{stop_reason}`, so it may be incomplete." in report
+        )
+        for surface in (result.stderr, warnings["synthesis_stopped_early"], report):
+            assert "cut off" not in surface
 
     def test_a_stop_reason_cannot_break_out_of_the_callout(self, tmp_path: Path):
         # PR #396 review: an OpenAI-compatible endpoint can send any string.
@@ -1486,17 +1495,19 @@ class TestContestedMisattribution:
         assert "cut off before it finished" in corrections
         assert "- the editorial says Bob was beaten to Giles" in corrections
 
-    def test_a_refused_wrong_attempt_is_retried_for_the_claim_alone(self):
-        # The wrong claim earns the retry; the refusal was not a cut-off, so
-        # the retry is never told it was.
-        stub, result = self._invoke([], (self._WRONG, "refusal"), self._RIGHT)
+    def test_a_refused_wrong_attempt_is_not_retried(self):
+        # #397: re-sending a refused request to the same model usually draws
+        # another refusal, so the editorial ships with both the refusal and
+        # its wrong claim named rather than spending a call to change nothing.
+        stub, result = self._invoke(["--format", "json"], (self._WRONG, "refusal"), self._RIGHT)
 
-        assert len(stub.prompts) == 2
-        assert "cut off" not in result.stderr
-        first, retry = stub.prompts
-        corrections = retry[len(first):]
-        assert "cut off" not in corrections
-        assert "- the editorial says Bob was beaten to Giles" in corrections
+        assert len(stub.prompts) == 1
+        assert "not retrying" in result.stderr.replace("\n", " ")
+        envelope = json.loads(result.stdout)
+        assert self._WRONG in envelope["metadata"]["synthesis_summary"]
+        codes = [w["code"] for w in envelope["metadata"]["warnings"]]
+        assert "synthesis_contested_misattribution" in codes
+        assert "synthesis_stopped_early" in codes
 
     def test_the_callout_names_a_cut_off_and_a_wrong_claim_together(self, tmp_path: Path):
         stub, result = self._invoke(

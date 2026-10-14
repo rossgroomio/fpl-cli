@@ -47,6 +47,7 @@ SCANNED_MODULES = (
     "_review_classic.py",
     "_review_draft.py",
     "_review_summarisation.py",
+    "_synthesis_retry.py",
     "_helpers.py",
 )
 

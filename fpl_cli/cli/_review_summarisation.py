@@ -18,6 +18,7 @@ from fpl_cli.cli._league_recap_types import draft_transaction_kind_label
 from fpl_cli.cli._review_analysis import GlobalReviewData, NextGameweekOutlook, TeamNextFixture
 from fpl_cli.cli._review_classic import _format_review_classic_player
 from fpl_cli.cli._review_draft import _format_review_draft_player
+from fpl_cli.cli._synthesis_retry import synthesise_with_retry
 from fpl_cli.models.player import POSITION_MAP, Player
 from fpl_cli.models.team import Team
 from fpl_cli.paths import SHIPPED_CONFIG_DIR, user_config_file
@@ -28,6 +29,8 @@ from fpl_cli.utils.teams import describe_team_set_mismatch
 from fpl_cli.utils.text import normalise_name
 
 if TYPE_CHECKING:
+    from fpl_cli.api.providers import LLMResponse
+    from fpl_cli.cli._synthesis_retry import SynthesisAttempt
     from fpl_cli.prompts.review import SynthesisCompleteness
 
 # Goals/assists strings: "Damsgaard (BRE), Thiago x2 (BRE)".
@@ -123,57 +126,51 @@ def _report_research_corrections(
     return str(corrections_file)
 
 
-# The synthesis gets one retry when it comes back detectably incomplete: a
-# second call is cheap next to a saved report that quietly lost a verdict, and
-# two attempts is where it stops -- a model that stops early twice is telling
-# us something a third roll will not fix.
-_MAX_SYNTHESIS_ATTEMPTS = 2
-
-
 async def _synthesise_with_completeness_check(
     provider: Any,
     *,
     prompt: str,
     system_prompt: str,
     omit_sections: Sequence[str],
-) -> tuple[str, SynthesisCompleteness, int]:
+) -> tuple[SynthesisAttempt[SynthesisCompleteness], int]:
     """Query the synthesis provider, retrying once if the answer looks incomplete.
 
-    Returns `(content, completeness, attempts)`. The retry only replaces the
-    first attempt when it is strictly less damaged, so a worse second roll can
-    never displace a better first one -- and when both are whole the first is
-    what ships, unchanged from the single-call behaviour.
+    Returns the attempt that ships -- its text, its `SynthesisCompleteness`,
+    and the prompt that drew it -- and the number of answers judged. The
+    attempt loop is the one `league-recap` shares (`synthesise_with_retry`);
+    what this command adds is its judge -- the sections its prompt asked for,
+    a sentence that stops dead, an answer with no text -- and its ranking,
+    `SynthesisCompleteness.severity`. The retry is told what the first attempt
+    lacked. It only replaces the first
+    attempt when it is strictly less damaged, so when both are whole the first
+    is what ships, unchanged from the single-call behaviour.
     """
-    from fpl_cli.prompts.review import check_synthesis_completeness
+    from fpl_cli.prompts.review import check_synthesis_completeness, get_synthesis_retry_prompt
 
-    best_content = ""
-    best: SynthesisCompleteness | None = None
-    for attempt in range(1, _MAX_SYNTHESIS_ATTEMPTS + 1):
-        result = await provider.query(prompt=prompt, system_prompt=system_prompt)
-        # Post-processed before it is judged, like the research stage beside it
-        # and `league-recap`'s editorial: the synthesis role is not restricted
-        # to one provider, so a Perplexity-backed run arrives with citation
-        # markers and a trailing source list. Checking the raw text would judge
-        # a string the report never carries -- and read that source list as a
-        # sentence that stops dead.
-        content = provider.post_process(result.content)
-        completeness = check_synthesis_completeness(
+    def judge(content: str, response: LLMResponse) -> SynthesisCompleteness:
+        return check_synthesis_completeness(
             content,
             system_prompt,
             # Only an abnormal stop reaches the checker: a provider that says
             # nothing, or says it finished normally, is not evidence either way.
-            stop_reason=result.stop_reason if result.stopped_early else None,
+            stop_reason=response.stop_reason if response.stopped_early else None,
             omit_sections=omit_sections,
         )
-        if best is None or completeness.severity < best.severity:
-            best_content, best = content, completeness
-        if best.complete or attempt == _MAX_SYNTHESIS_ATTEMPTS:
-            return best_content, best, attempt
-        error_console.print(
-            "[yellow]  ⚠ Personal analysis looks incomplete "
-            f"({rich_escape('; '.join(completeness.problems()))}) -- retrying once[/yellow]"
-        )
-    raise AssertionError("unreachable: the loop returns on its last attempt")  # pragma: no cover
+
+    def retry_reason(completeness: SynthesisCompleteness) -> str | None:
+        problems = completeness.text_problems()
+        return f"looks incomplete ({'; '.join(problems)})" if problems else None
+
+    return await synthesise_with_retry(
+        provider,
+        prompt=prompt,
+        system_prompt=system_prompt,
+        subject="The personal analysis",
+        judge=judge,
+        retry_reason=retry_reason,
+        damage=lambda attempt: attempt.verdict.severity,
+        retry_prompt=get_synthesis_retry_prompt,
+    )
 
 
 def _report_synthesis_completeness(
@@ -1213,12 +1210,13 @@ async def _review_llm_summarise(
             # throw away the good summary it had already been handed (#322
             # review).
             try:
-                synthesis_summary, completeness, attempts = await _synthesise_with_completeness_check(
+                shipped, attempts = await _synthesise_with_completeness_check(
                     synthesis_provider,
                     prompt=synthesis_prompt,
                     system_prompt=synthesis_system,
                     omit_sections=omit_sections,
                 )
+                synthesis_summary, completeness = shipped.text, shipped.verdict
             except Exception as e:  # noqa: BLE001 — graceful degradation
                 error_console.print(f"[red]  ✗ Synthesis failed: {rich_escape(str(e))}[/red]")
                 synthesis_summary = ""
@@ -1256,8 +1254,11 @@ async def _review_llm_summarise(
                     )
 
                 if debug and debug_dir:
+                    # The prompt that drew the response saved beside it, so
+                    # the pair replays: once the retry ships, that is the
+                    # first prompt plus what the first draft lacked (#397).
                     (debug_dir / "synthesis_system.txt").write_text(synthesis_system, encoding="utf-8")
-                    (debug_dir / "synthesis_prompt.txt").write_text(synthesis_prompt, encoding="utf-8")
+                    (debug_dir / "synthesis_prompt.txt").write_text(shipped.prompt, encoding="utf-8")
                     (debug_dir / "synthesis_response.txt").write_text(synthesis_summary, encoding="utf-8")
                     error_console.print("[dim]    → Saved synthesis_*.txt[/dim]")
 
