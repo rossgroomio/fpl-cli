@@ -40,6 +40,21 @@ _APOSTROPHE_VARIANTS: dict[int, str] = {
     0x0060: "'",  # ` grave accent, typed as an apostrophe
 }
 
+# The hyphen family, folded onto the ASCII one for the same reason. NFKC does
+# not do it: it maps U+2011 (non-breaking hyphen) to U+2010, not to U+002D, so
+# "Ait‑Nouri" stayed a different name from "Ait-Nouri". The em dash is left
+# out on purpose: nobody hyphenates a surname with one, and it is what an LLM
+# reaches for to separate a name from what follows it.
+_HYPHEN_VARIANTS: dict[int, str] = {
+    0x2010: "-",  # ‐ hyphen
+    0x2011: "-",  # ‑ non-breaking hyphen
+    0x2012: "-",  # ‒ figure dash
+    0x2013: "-",  # – en dash
+    0x2212: "-",  # − minus sign
+}
+
+_PUNCTUATION_VARIANTS = {**_APOSTROPHE_VARIANTS, **_HYPHEN_VARIANTS}
+
 _WHITESPACE_RE = re.compile(r"\s+")
 # "B. Fernandes" -> "B.Fernandes". An initial is a single letter followed by a
 # full stop; the space after it is a rendering choice, and FPL's own web_names
@@ -52,16 +67,17 @@ def normalise_name(text: str) -> str:
     """Fold a player name to the form both sides of a name comparison must share.
 
     Diacritics and case, as `strip_diacritics` plus `lower` always did, and on
-    top of that the three things an LLM changes when it retypes a name it was
-    handed: the apostrophe style, runs of whitespace (non-breaking spaces
-    included, via NFKC), and the space after an initial. All of them are
-    cosmetic, none of them survives a `\b`-anchored regex search, and each one
-    cost a valid row in the review's Disappointments table (#343).
+    top of that the four things an LLM changes when it retypes a name it was
+    handed: the apostrophe style, the hyphen style, runs of whitespace
+    (non-breaking spaces included, via NFKC), and the space after an initial.
+    All of them are cosmetic, none of them survives a `\b`-anchored regex
+    search, and each one cost a valid row in the review's Disappointments
+    table (#343) or a followed move in `--compare-recs` (#354).
 
     Apply it to both the canonical name and the text being searched: the point
     is that they agree, not that either is authoritative.
     """
-    text = text.translate(_APOSTROPHE_VARIANTS)
+    text = text.translate(_PUNCTUATION_VARIANTS)
     text = unicodedata.normalize("NFKC", text)
     text = strip_diacritics(text).lower()
     text = _WHITESPACE_RE.sub(" ", text)

@@ -42,11 +42,29 @@
 | | Recommended | Actual | GW Pts |
 |--|-------------|--------|--------|
 | Captain | {{ recs_comparison.classic.rec_captain }} | {{ recs_comparison.classic.actual_captain }} | {{ recs_comparison.classic.actual_captain_pts }} |
-{% if not recs_comparison.classic.captain_followed %}| _If followed_ | {{ recs_comparison.classic.rec_captain }} | - | {{ recs_comparison.classic.rec_captain_pts }} |
+{% if recs_comparison.classic.captain_ungraded %}| _Not graded_ | {{ recs_comparison.classic.rec_captain }} | - | - |
+{% elif not recs_comparison.classic.captain_followed %}| _If followed_ | {{ recs_comparison.classic.rec_captain }} | - | {{ recs_comparison.classic.rec_captain_pts }} |
 {% endif %}
 ### Transfers
 {% if recs_comparison.classic.no_transfers_possible %}
 No transfers exist in GW1 - squads are bought pre-season, so there was no transfer decision to compare.
+{% elif recs_comparison.classic.squad %}
+{% set sq = recs_comparison.classic.squad %}
+Recommended a {% if sq.mode == "freehit" %}Free Hit{% elif sq.mode == "wildcard" %}Wildcard{% else %}full{% endif %} squad of {{ sq.size }}{% if sq.fielded is not none %}, and **{{ sq.fielded }}** of them were fielded{% endif %}. Each player brought in is graded against that squad.
+{% if sq.incoming %}
+
+| Rec | In | Out | In Squad | Net | Verdict |
+|-----|----|-----|----------|-----|---------|
+{% for t in sq.incoming %}| {% if t.advised is none %}?{% elif t.advised %}✓{% else %}⚠{% endif %} | {{ t.actual_in }} | {{ t.actual_out }} | {% if t.advised is none %}Not graded{% elif t.advised %}Yes{% else %}No{% endif %} | {{ t.actual_net }} | {{ t.actual_verdict }} |
+{% endfor %}
+{% else %}
+
+No transfers made.
+{% endif %}
+{% if sq.missed %}
+
+Recommended but not fielded: {{ sq.missed | join(", ") }}
+{% endif %}
 {% elif recs_comparison.classic.rec_roll and recs_comparison.classic.actual_roll %}
 Recommended roll. Rolled. **Aligned.**
 {% elif recs_comparison.classic.rec_roll and not recs_comparison.classic.actual_roll %}
@@ -54,7 +72,7 @@ Recommended roll but made transfers.
 {% elif recs_comparison.classic.transfers %}
 | Rec | Rec In | Rec Out | Followed | Actual In | Net | Verdict |
 |-----|--------|---------|----------|-----------|-----|---------|
-{% for t in recs_comparison.classic.transfers %}| {% if t.followed %}✓{% elif t.not_made is defined and t.not_made %}✗{% else %}~{% endif %} | {{ t.rec_in }} | {{ t.rec_out }} | {% if t.followed %}Yes{% elif t.not_made is defined and t.not_made %}Not made{% else %}Different{% endif %} | {{ t.actual_in if t.actual_in else '-' }} | {{ t.actual_net if t.actual_net is defined else '-' }} | {{ t.actual_verdict if t.actual_verdict is defined else '-' }} |
+{% for t in recs_comparison.classic.transfers %}| {% if t.ungraded %}?{% elif t.followed %}✓{% elif t.not_made is defined and t.not_made %}✗{% else %}~{% endif %} | {{ t.rec_in }} | {{ t.rec_out }} | {% if t.ungraded %}Not graded{% elif t.followed %}Yes{% elif t.not_made is defined and t.not_made %}Not made{% else %}Different{% endif %} | {{ t.actual_in if t.actual_in else '-' }} | {{ t.actual_net if t.actual_net is defined else '-' }} | {{ t.actual_verdict if t.actual_verdict is defined else '-' }} |
 {% endfor %}{% endif %}
 {% if recs_comparison.classic.unadvised_transfers %}
 **Unadvised transfers:**
@@ -66,7 +84,7 @@ Recommended roll but made transfers.
 {% if recs_comparison.draft.waivers %}
 | P | Rec In | Rec Out | Followed | Actual In | Net | Verdict |
 |---|--------|---------|----------|-----------|-----|---------|
-{% for w in recs_comparison.draft.waivers %}| {{ w.priority }} | {{ w.rec_in }} | {{ w.rec_out }} | {% if w.followed %}Yes{% elif w.lost_claim is defined and w.lost_claim %}{% if w.different_claim %}Different claim, lost{% else %}Claimed, lost{% endif %}{% elif w.not_executed is defined and w.not_executed %}Not exec{% else %}Different{% endif %}{% if w.claimed_and_lost is defined and w.claimed_and_lost %} (claimed, lost){% endif %} | {{ w.actual_in if w.actual_in else (w.claimed_in if w.claimed_in else '-') }} | {{ w.actual_net if w.actual_net is defined else '-' }} | {{ w.actual_verdict if w.actual_verdict is defined else '-' }} |
+{% for w in recs_comparison.draft.waivers %}| {{ w.priority }} | {{ w.rec_in }} | {{ w.rec_out }} | {% if w.ungraded %}Not graded{% elif w.followed %}Yes{% elif w.lost_claim is defined and w.lost_claim %}{% if w.different_claim %}Different claim, lost{% else %}Claimed, lost{% endif %}{% elif w.not_executed is defined and w.not_executed %}Not exec{% else %}Different{% endif %}{% if w.claimed_and_lost is defined and w.claimed_and_lost %} (claimed, lost){% endif %} | {{ w.actual_in if w.actual_in else (w.claimed_in if w.claimed_in else '-') }} | {{ w.actual_net if w.actual_net is defined else '-' }} | {{ w.actual_verdict if w.actual_verdict is defined else '-' }} |
 {% endfor %}{% endif %}
 {% if recs_comparison.draft.unadvised_waivers %}
 **Unadvised waivers:**
@@ -74,6 +92,13 @@ Recommended roll but made transfers.
 {% endfor %}{% endif %}
 {% if not recs_comparison.draft.waivers and not recs_comparison.draft.unadvised_waivers %}
 No waiver recommendations or transactions.
+{% endif %}
+{% if recs_comparison.ambiguous_names %}
+
+_Not graded, because the name fits more than one player:_
+{% for a in recs_comparison.ambiguous_names %}
+- _"{{ a.name }}"{% if a.team %} ({{ a.team }}){% endif %} could be {{ a.candidates | join(" or ") }}_
+{% endfor %}
 {% endif %}
 
 ---

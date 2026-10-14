@@ -116,6 +116,37 @@ async def _review_resolve_gw(client: FPLClient, gameweek: int | None) -> dict[st
     return {"gw": gw, "gw_data": gw_data, "api_current_gw_id": api_current_gw_id}
 
 
+_SQUAD_MODE_LABELS = {"wildcard": "Wildcard", "freehit": "Free Hit"}
+
+
+def _print_squad_comparison(sq: dict[str, Any]) -> None:
+    """The `--compare-recs` lines for a week whose recommendation was a squad.
+
+    Each player brought in is graded against the recommended 15 rather than
+    paired with a recommended move, because a wildcard or free hit
+    recommendation names none.
+    """
+    label = _SQUAD_MODE_LABELS.get(sq.get("mode") or "", "Full")
+    fielded = sq.get("fielded")
+    if fielded is not None:
+        console.print(f"  Squad: {label} squad recommended: {fielded} of {sq['size']} fielded")
+    else:
+        console.print(f"  Squad: {label} squad recommended ({sq['size']} players)")
+    for t in sq.get("incoming", []):
+        move = f"{rich_escape(str(t['actual_in']))} ← {rich_escape(str(t['actual_out']))}"
+        net = t.get("actual_net", 0)
+        if t.get("advised") is None:
+            console.print(f"  Transfer: [dim]?[/dim] {move} (not graded, net {net})")
+        elif t.get("advised"):
+            console.print(f"  Transfer: [green]✓[/green] {move} (in recommended squad, net {net})")
+        else:
+            console.print(f"  Transfer: [dim]⚠ Unadvised:[/dim] {move} (not in recommended squad, net {net})")
+    if not sq.get("incoming"):
+        console.print("  Transfers: [yellow]✗[/yellow] No transfers made")
+    if sq.get("missed"):
+        console.print(f"  Recommended but not fielded: {rich_escape(', '.join(sq['missed']))}")
+
+
 @click.command("review")
 @click.option("--gameweek", "-g", type=int, help="Specific gameweek to review (default: last completed)")
 @click.option("--save", "-s", is_flag=True, help="Save report to output directory")
@@ -423,9 +454,7 @@ def review_command(
                 if recs is None:
                     error_console.print(f"\n[yellow]No recommendations file found at {recs_path}[/yellow]")
                 else:
-                    recs_comparison = _review_compare_recs(
-                        recs, collected_data, player_map, teams, gameweek=gw,
-                    )
+                    recs_comparison = _review_compare_recs(recs, collected_data, gameweek=gw)
                     collected_data["recs_comparison"] = recs_comparison
 
                     # Print comparison summary to console
@@ -434,7 +463,12 @@ def review_command(
 
                     rc = recs_comparison["classic"]
                     if rc.get("rec_captain"):
-                        if rc["captain_followed"]:
+                        if rc.get("captain_ungraded"):
+                            console.print(
+                                f"  Captain: [dim]?[/dim] Rec {rc['rec_captain']}"
+                                f" → Actual {rc['actual_captain']} (not graded)"
+                            )
+                        elif rc["captain_followed"]:
                             console.print(
                                 f"  Captain: [green]✓[/green] "
                                 f"{rc['rec_captain']} (followed)"
@@ -453,6 +487,8 @@ def review_command(
 
                     if rc.get("no_transfers_possible"):
                         console.print("  Transfers: [dim]n/a - no transfers exist in GW1[/dim]")
+                    elif sq := rc.get("squad"):
+                        _print_squad_comparison(sq)
                     elif rc.get("rec_roll") and rc.get("actual_roll"):
                         console.print("  Transfers: [green]✓[/green] Rolled (aligned)")
                     elif rc.get("rec_roll") and not rc.get("actual_roll"):
@@ -461,7 +497,12 @@ def review_command(
                         )
                     else:
                         for t in rc.get("transfers", []):
-                            if t.get("followed"):
+                            if t.get("ungraded"):
+                                console.print(
+                                    f"  Transfer: [dim]?[/dim] "
+                                    f"{t['rec_in']} ← {t['rec_out']} (not graded)"
+                                )
+                            elif t.get("followed"):
                                 net = t.get("actual_net", 0)
                                 console.print(
                                     f"  Transfer: [green]✓[/green] "
@@ -495,7 +536,12 @@ def review_command(
                         # so it qualifies whichever branch the move itself
                         # landed in rather than replacing it.
                         lost_note = " after claiming him and losing him" if w.get("claimed_and_lost") else ""
-                        if w.get("followed"):
+                        if w.get("ungraded"):
+                            console.print(
+                                f"  Waiver P{p}: [dim]?[/dim] "
+                                f"{w['rec_in']} ← {w['rec_out']} (not graded)"
+                            )
+                        elif w.get("followed"):
                             console.print(
                                 f"  Waiver P{p}: [green]✓[/green] "
                                 f"{w['rec_in']} ← {w['rec_out']}"
@@ -535,6 +581,15 @@ def review_command(
                             f"  Waiver: [dim]⚠ Unadvised:[/dim] "
                             f"{w['actual_in']} ← {w['actual_out']}"
                             f" (net {w.get('actual_net', 0)})"
+                        )
+
+                    # A warning, so stderr: the move it belongs to went
+                    # ungraded, and the reason is the recommendation's wording.
+                    for a in recs_comparison.get("ambiguous_names", []):
+                        club = f" ({a['team']})" if a.get("team") else ""
+                        error_console.print(
+                            f"[yellow]  Not graded: \"{rich_escape(a['name'])}\"{club} could be "
+                            f"{rich_escape(' or '.join(a['candidates']))}[/yellow]"
                         )
 
             # Generate report if requested
