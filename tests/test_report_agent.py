@@ -351,6 +351,20 @@ class TestTemplateRendering:
         output = self.agent._generate_review_report(29, data)
         assert "| Captain | Salah | Haaland (didn't play; vice Saka took the armband) | 10 |" in output
 
+    def test_review_report_says_did_not_play_rather_than_zero(self):
+        data = _review_data()
+        data["recs_comparison"] = {
+            "classic": {
+                "rec_captain": "Salah", "actual_captain": "Haaland", "actual_captain_pts": 14,
+                "captain_followed": False, "rec_captain_in_squad": True, "rec_captain_played": False,
+                "rec_roll": False, "actual_roll": False, "no_transfers_possible": False,
+                "transfers": [], "unadvised_transfers": [],
+            },
+            "draft": {"waivers": [], "unadvised_waivers": []},
+        }
+        output = self.agent._generate_review_report(29, data)
+        assert "| _If followed_ | Salah | - | Didn't play |" in output
+
     def test_review_report_says_not_in_squad_rather_than_zero(self):
         data = _review_data()
         data["recs_comparison"] = {

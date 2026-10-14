@@ -167,6 +167,9 @@ def _print_captain_comparison(rc: dict[str, Any]) -> None:
     if not rc.get("rec_captain_in_squad"):
         console.print(f"  Captain: [yellow]✗[/yellow] Rec {rec} (not in squad) → Actual {actual}")
         return
+    if rc.get("rec_captain_played") is False:
+        console.print(f"  Captain: [yellow]✗[/yellow] Rec {rec} (didn't play) → Actual {actual}")
+        return
     delta = rc["captain_pts_delta"]
     sign = "+" if delta > 0 else ""
     style = "green" if delta > 0 else "red" if delta < 0 else ""

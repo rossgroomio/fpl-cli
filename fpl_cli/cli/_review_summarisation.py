@@ -1532,12 +1532,21 @@ def _review_compare_recs(recs: dict, collected_data: dict, gameweek: int | None 
             # price, and a 0 would read as one who blanked.
             comparison["classic"]["rec_captain_in_squad"] = rec_entry is not None
             if rec_entry is not None:
-                rec_captain_pts = rec_entry.get("points", 0) * multiplier
-                comparison["classic"]["rec_captain_pts"] = rec_captain_pts
-                # What the armband earned less what it would have earned on
-                # the recommended player: the gap between the two figures the
-                # report prints, not the change to the team total.
-                comparison["classic"]["captain_pts_delta"] = 0 if followed else actual_captain_pts - rec_captain_pts
+                # Nor one who did not play: the armband would have passed to
+                # a vice, and a transfer week's recommendation names none, so
+                # any price for it is a guess at who that would have been.
+                rec_played = rec_entry.get("minutes") != 0
+                comparison["classic"]["rec_captain_played"] = rec_played
+                if followed or rec_played:
+                    rec_captain_pts = rec_entry.get("points", 0) * multiplier
+                    comparison["classic"]["rec_captain_pts"] = rec_captain_pts
+                    # What the armband earned less what it would have earned
+                    # on the recommended player: the gap between the two
+                    # figures the report prints, not the change to the team
+                    # total.
+                    comparison["classic"]["captain_pts_delta"] = (
+                        0 if followed else actual_captain_pts - rec_captain_pts
+                    )
 
     # --- Classic Transfers ---
     # GW1 has no transfers to make, so an empty transfer list is not a rolled

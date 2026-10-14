@@ -62,6 +62,7 @@ def _classic_player(
     dgw=False,
     points=None,
     is_vice_active=False,
+    minutes=None,
 ):
     return {
         "name": name,
@@ -69,6 +70,7 @@ def _classic_player(
         "position": position,
         # Raw score; display_points carries the armband multiplier on top
         "points": display_points if points is None else points,
+        "minutes": minutes,
         "display_points": display_points,
         "contributed": contributed,
         "is_captain": is_captain,
@@ -1160,6 +1162,45 @@ class TestReviewCompareRecsCaptain:
         assert "captain_pts_delta" not in result["classic"]
         assert result["classic"]["actual_captain_pts"] == 14
 
+    def test_recommended_captain_who_did_not_play_is_not_priced(self):
+        """His armband would have gone to a vice the recommendation never
+        named, so any figure for it is a guess."""
+        recs = _make_recs(captain="Salah")
+        collected = _make_collected(team_points=[
+            _classic_player(name="Salah", points=0, display_points=0, minutes=0),
+            _classic_player(name="Haaland", points=7, display_points=14, is_captain=True, minutes=90),
+        ])
+        result = _review_compare_recs(recs, collected)
+        assert result["classic"]["captain_followed"] is False
+        assert result["classic"]["rec_captain_in_squad"] is True
+        assert result["classic"]["rec_captain_played"] is False
+        assert "rec_captain_pts" not in result["classic"]
+        assert "captain_pts_delta" not in result["classic"]
+
+    def test_a_cameo_that_nets_zero_is_still_priced(self):
+        """0 points is not 0 minutes: a cameo and a yellow card net to 0."""
+        recs = _make_recs(captain="Salah")
+        collected = _make_collected(team_points=[
+            _classic_player(name="Salah", points=0, display_points=0, minutes=12),
+            _classic_player(name="Haaland", points=7, display_points=14, is_captain=True, minutes=90),
+        ])
+        result = _review_compare_recs(recs, collected)
+        assert result["classic"]["rec_captain_played"] is True
+        assert result["classic"]["rec_captain_pts"] == 0
+        assert result["classic"]["captain_pts_delta"] == 14
+
+    def test_a_followed_captain_who_did_not_play_has_no_delta(self):
+        recs = _make_recs(captain="Haaland")
+        collected = _make_collected(team_points=[
+            _classic_player(name="Salah", points=6, display_points=12, is_vice_active=True, minutes=90),
+            _classic_player(
+                name="Haaland", points=0, display_points=0, is_captain=True, contributed=False, minutes=0,
+            ),
+        ])
+        result = _review_compare_recs(recs, collected)
+        assert result["classic"]["captain_followed"] is True
+        assert result["classic"]["captain_pts_delta"] == 0
+
     def test_console_names_the_delta_as_captain_points(self, capsys):
         recs = _make_recs(captain="Salah")
         collected = _make_collected(team_points=[
@@ -1180,6 +1221,17 @@ class TestReviewCompareRecsCaptain:
         _print_captain_comparison(_review_compare_recs(recs, collected)["classic"])
         out = " ".join(capsys.readouterr().out.split())  # undo Rich's wrap at 80 columns
         assert "Actual Haaland, vice Saka took the armband (10 pts) [-6 captain pts]" in out
+
+    def test_console_says_did_not_play_rather_than_zero(self, capsys):
+        recs = _make_recs(captain="Salah")
+        collected = _make_collected(team_points=[
+            _classic_player(name="Salah", points=0, display_points=0, minutes=0),
+            _classic_player(name="Haaland", points=7, display_points=14, is_captain=True, minutes=90),
+        ])
+        _print_captain_comparison(_review_compare_recs(recs, collected)["classic"])
+        out = " ".join(capsys.readouterr().out.split())  # undo Rich's wrap at 80 columns
+        assert "Rec Salah (didn't play) \u2192 Actual Haaland (14 pts)" in out
+        assert "captain pts]" not in out
 
     def test_console_says_not_in_squad_rather_than_zero(self, capsys):
         recs = _make_recs(captain="Palmer")
@@ -1960,6 +2012,32 @@ class TestReviewClassicNoticesStayOffStdout:
         assert "Set classic_entry_id in config/settings.yaml to see your squad" in captured.err
         assert "classic_entry_id" not in captured.out
         assert data["my_picks_data"] == []
+
+    async def test_team_points_carry_minutes_apart_from_points(self):
+        """#400: --compare-recs needs to tell a player who did not play from
+        one whose cameo netted 0."""
+        client = MagicMock()
+        client.get_manager_picks = AsyncMock(return_value={
+            "entry_history": {"points": 0},
+            "active_chip": None,
+            "automatic_subs": [],
+            "picks": [
+                {"element": 401, "position": 1, "multiplier": 1},
+                {"element": 402, "position": 2, "multiplier": 1},
+            ],
+        })
+        players = {
+            401: make_player(id=401, web_name="Cameo", team_id=19),
+            402: make_player(id=402, web_name="Absent", team_id=19),
+        }
+        teams = {19: make_team(id=19, short_name="MCI", name="Man City")}
+        live_stats = {401: {"total_points": 0, "minutes": 12}}
+
+        data = await _review_classic_team(client, 1, 3, players, teams, {"id": 3}, live_stats)
+
+        assert {p["name"]: (p["points"], p["minutes"]) for p in data["team_points_data"]} == {
+            "Cameo": (0, 12), "Absent": (0, 0),
+        }
 
     async def test_the_team_fetch_progress_notice_is_reported_on_stderr(self, capsys):
         client = MagicMock()
