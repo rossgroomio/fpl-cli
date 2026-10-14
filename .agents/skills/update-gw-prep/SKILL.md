@@ -119,7 +119,7 @@ Agent tool parameters:
   description: "Update GW prep - gameweek {N}"
 ```
 
-**Model and effort:** `opus` at `high` for the orchestrator and the sub-agent alike. The update revises the classic and draft recommendations against new information, so it inherits the classic analysis's trade-offs (transfers, hits, chips, captaincy). A judgement call, not a measurement. The reasoning, and how far each override reaches, is in `.agents/README.md` (Model and effort).
+**Model and effort:** the frontmatter pins the orchestrator's model and effort and the block above pins the sub-agent's, both at the effort of a trade-off step rather than an extraction step: the update revises the classic and draft recommendations against new information, so it inherits the classic analysis's trade-offs (transfers, hits, chips, captaincy). A judgement call, not a measurement; the levels, the reasoning and how far each override reaches are in `.agents/README.md` (Model and effort).
 
 **Other agents:** apply the brief inline in the same context.
 

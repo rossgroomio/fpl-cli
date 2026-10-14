@@ -39,7 +39,7 @@ Get it wrong and the scripts say so: each one exits 1 with `{"error": true, "mes
 
 **In all cases** the final output format is identical: Classic section followed by Draft section (or whichever formats are active).
 
-**Model and effort:** the frontmatter pins `opus` at `high` effort for the orchestrator, and each Phase C block pins its own pair: classic at `opus` / `high` because it weighs transfers, hits, chips and captaincy against each other; draft at `sonnet` / `medium` because it has no budget, chips or captains to trade off. These are judgement calls, not measurements. The reasoning, and how far each override reaches, is in `.agents/README.md` (Model and effort).
+**Model and effort:** the frontmatter pins the orchestrator's model and effort, and each Phase C block pins its own pair. Classic gets more effort than draft because it weighs transfers, hits, chips and captaincy against each other, while draft has no budget, chips or captains to trade off. These are judgement calls, not measurements; the levels, the reasoning and how far each override reaches are in `.agents/README.md` (Model and effort).
 
 ---
 
@@ -361,9 +361,13 @@ Each sub-agent receives the JSON output from Phase B commands as context.
 
 ### C1 -- Classic League Analysis (skip if format is "draft")
 
-- **model**: opus
-- **effort**: high
-- **subagent_type**: general-purpose
+```
+Agent tool parameters:
+  subagent_type: general-purpose
+  model: opus
+  effort: high
+  description: "GW prep - classic analysis"
+```
 
 Branch on `squad_builder_result` (set in Phase A3; unset on transfer weeks):
 
@@ -593,9 +597,13 @@ Proceed immediately (non-interactive).
 
 ### C2 -- Draft League Analysis (skip if format is "classic")
 
-- **model**: sonnet
-- **effort**: medium
-- **subagent_type**: general-purpose
+```
+Agent tool parameters:
+  subagent_type: general-purpose
+  model: sonnet
+  effort: medium
+  description: "GW prep - draft analysis"
+```
 
 **Prompt structure:**
 

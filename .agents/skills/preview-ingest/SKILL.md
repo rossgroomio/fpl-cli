@@ -63,7 +63,7 @@ Agent tool parameters (per agent):
   description: "Preview ingest - {TEAM}"
 ```
 
-**Model and effort:** `opus` at `medium` for the orchestrator and every per-team agent. Extraction is a reading task: the schema fixes what to look for, so the work is finding it in the prose, not weighing options. A judgement call, not a measurement. The reasoning, and how far each override reaches, is in `.agents/README.md` (Model and effort).
+**Model and effort:** the frontmatter pins the orchestrator's model and effort and the block above pins each per-team agent's, both at the effort of an extraction step rather than a trade-off step: the schema fixes what to look for, so the work is finding it in the prose, not weighing options. A judgement call, not a measurement; the levels, the reasoning and how far each override reaches are in `.agents/README.md` (Model and effort).
 
 **Other agents:** run Phases B–D sequentially per team.
 
