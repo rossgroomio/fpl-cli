@@ -36,7 +36,7 @@ from fpl_cli.cli._league_recap_types import (
     PriorSeasonsSummary,
     summarise_prior_seasons,
 )
-from fpl_cli.cli._synthesis_retry import SynthesisAttempt, synthesise_with_retry
+from fpl_cli.cli._synthesis_retry import synthesise_with_retry
 from fpl_cli.services.league_history import GameweekCoverage
 from fpl_cli.services.league_history_fines import (
     ManagerFineTally,
@@ -64,6 +64,7 @@ RECAP_WARNING_STANDINGS_MOVED_ON = "league_standings_moved_on"
 
 if TYPE_CHECKING:
     from fpl_cli.api.providers import LLMResponse
+    from fpl_cli.cli._synthesis_retry import SynthesisAttempt
 
 logger = logging.getLogger(__name__)
 
@@ -604,6 +605,11 @@ def league_recap_command(
                             [{
                                 "code": "synthesis_stopped_early",
                                 "message": (
+                                    "The provider refused the editorial: it"
+                                    " stopped with stop_reason"
+                                    f" {collected_data['synthesis_stop_reason']!r},"
+                                    " so the text may be incomplete."
+                                ) if collected_data.get("synthesis_refused") else (
                                     "The editorial may be cut off: the provider"
                                     " stopped with stop_reason"
                                     f" {collected_data['synthesis_stop_reason']!r}"
@@ -1034,10 +1040,20 @@ async def _recap_llm_summarise(
                 # payload and the report's callout as well as said out loud
                 # here (#266, #372).
                 collected_data["synthesis_stop_reason"] = str(synthesis_result.stop_reason)
-                error_console.print(
-                    "[yellow]  The editorial may be cut off: the provider stopped early"
-                    f" (stop_reason: {rich_escape(str(synthesis_result.stop_reason))})[/yellow]"
-                )
+                stop_reason = rich_escape(str(synthesis_result.stop_reason))
+                if synthesis_result.refused:
+                    # Not "cut off": a refusal was declined, not truncated,
+                    # and re-running usually draws the same refusal (#399).
+                    collected_data["synthesis_refused"] = True
+                    error_console.print(
+                        "[yellow]  The provider refused the editorial, so it may be incomplete"
+                        f" (stop_reason: {stop_reason})[/yellow]"
+                    )
+                else:
+                    error_console.print(
+                        "[yellow]  The editorial may be cut off: the provider stopped early"
+                        f" (stop_reason: {stop_reason})[/yellow]"
+                    )
             else:
                 console.print("[green]  Done[/green] League editorial complete")
         except ProviderError as e:

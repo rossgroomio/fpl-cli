@@ -1864,20 +1864,26 @@ def get_synthesis_retry_prompt(
     be described as if it were.
     """
     feedback: list[str] = []
+    instructions = ["Write the analysis again from scratch."]
     if stop_reason:
         feedback.append(
             f"Your previous draft was cut off before it finished (the provider stopped with {stop_reason})."
         )
+    # Only the sections the check found missing are ever named, never "every
+    # section the output format asks for": the check already leaves out a
+    # verdict the run has no data for, and the system prompt tells the model
+    # to skip it, so asking for all of them would draw a verdict invented to
+    # fill the gap (#399 review).
+    sections = ", ".join(f"## {s}" for s in completeness.missing_sections)
     if completeness.empty:
         feedback.append("Your previous draft came back with no text at all.")
-    elif completeness.missing_sections:
-        sections = ", ".join(f"## {s}" for s in completeness.missing_sections)
+        if sections:
+            instructions.append(f"Include these sections: {sections}.")
+    elif sections:
         feedback.append(f"Your previous draft was missing these sections: {sections}.")
+        instructions.append("Include those sections this time.")
     if completeness.unterminated:
         feedback.append("Your previous draft stopped mid-sentence.")
-    instructions = ["Write the analysis again from scratch."]
-    if completeness.empty or completeness.missing_sections:
-        instructions.append("Include every section the output format asks for.")
     if stop_reason or completeness.empty or completeness.unterminated:
         instructions.append("Keep it tight enough to finish, ending every section on a complete sentence.")
     return f"{user_prompt}\n\n" + "\n".join(feedback) + "\n" + " ".join(instructions)

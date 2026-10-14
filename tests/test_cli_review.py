@@ -3126,10 +3126,11 @@ def _reply(content, stop_reason=None):
 
 
 async def _synthesise(provider, omit_sections=()):
-    return await _synthesise_with_completeness_check(
+    shipped, attempts = await _synthesise_with_completeness_check(
         provider, prompt="analyse this", system_prompt=_SYNTHESIS_SYSTEM,
         omit_sections=omit_sections,
     )
+    return shipped.text, shipped.verdict, attempts
 
 
 class TestSynthesiseWithCompletenessCheck:
@@ -3176,9 +3177,23 @@ class TestSynthesiseWithCompletenessCheck:
         await _synthesise(provider)
         feedback = provider.calls[1]["prompt"]
         assert "came back with no text at all" in feedback
-        # Every heading is absent from nothing; naming them all would read as
-        # four faults rather than the one.
+        # Every heading is absent from nothing; naming them all as missing
+        # would read as four faults rather than the one.
         assert "missing these sections" not in feedback
+        assert "Include these sections: ## Summary, ## Classic Verdict, ## Draft Verdict, ## Next Week." in feedback
+
+    @pytest.mark.parametrize("first", [_WHOLE.replace("## Next Week\nMove Virgil on.\n", ""), ""])
+    async def test_the_retry_never_asks_for_a_section_the_run_omits(self, first):
+        # #399 review: "include every section the output format asks for" told
+        # a classic-only run to write the Draft Verdict its system prompt says
+        # to skip -- drawing one invented to fill the gap.
+        classic_only = first.replace("## Draft Verdict\nThe waiver paid off.\n\n", "")
+        provider = _StubSynthesisProvider(_reply(classic_only), _reply(_WHOLE))
+        await _synthesise(provider, omit_sections=["Draft Verdict"])
+        feedback = provider.calls[1]["prompt"][len(provider.calls[0]["prompt"]):]
+        assert "## Next Week" in feedback
+        assert "Draft Verdict" not in feedback
+        assert "every section the output format" not in feedback
 
     async def test_it_stops_after_the_retry_rather_than_looping(self):
         provider = _StubSynthesisProvider(_reply(_TRUNCATED))
@@ -3255,11 +3270,17 @@ class TestSynthesiseWithCompletenessCheck:
         assert completeness.complete is True
         assert attempts == 1
 
-    @pytest.mark.parametrize("stop_reason", ["refusal", "content_filter", "[/yellow]oops"])
-    async def test_a_refusal_on_a_whole_answer_is_reported_but_not_retried(self, stop_reason, capsys):
-        # #397: the same prompt usually draws the same refusal, and it was not
-        # cut off, so the stop alone no longer costs a second call -- as in
-        # `league-recap` since #396. It still reaches the report as a problem.
+    @pytest.mark.parametrize(
+        "stop_reason", ["refusal", "content_filter", "model_context_window_exceeded", "[/yellow]oops"],
+    )
+    async def test_a_stop_other_than_the_ceiling_on_a_whole_answer_is_reported_not_retried(
+        self, stop_reason, capsys,
+    ):
+        # #397: only a token-ceiling stop earns a retry on its own, as in
+        # `league-recap` since #396. Before, any abnormal stop did: a refusal
+        # usually draws the same refusal, and one the code does not recognise
+        # gives no reason to expect a second roll to differ. Either still
+        # reaches the report as a problem.
         provider = _StubSynthesisProvider(_reply(_WHOLE, stop_reason))
         content, completeness, attempts = await _synthesise(provider)
         assert attempts == 1
@@ -3290,9 +3311,10 @@ class TestSynthesiseWithCompletenessCheck:
         content, completeness, attempts = await _synthesise(provider)
         assert content == _TRUNCATED
         assert completeness.missing_sections == ("Draft Verdict", "Next Week")
-        assert attempts == 2
-        err = capsys.readouterr().err.replace("\n", "")
-        assert "retry failed (timed out) -- keeping the first attempt" in err
+        # One answer judged, so the report never reads as two incomplete drafts.
+        assert attempts == 1
+        err = " ".join(capsys.readouterr().err.split())
+        assert "retry failed (ProviderError: timed out) -- keeping the first attempt" in err
 
     async def test_a_first_call_that_fails_is_still_the_caller_s(self):
         from fpl_cli.api.providers import ProviderError
@@ -3418,6 +3440,17 @@ class TestReviewLlmSummariseSurfacesAnIncompleteSynthesis:
         assert pathlib.Path(result["synthesis_corrections_path"]).resolve() == written.resolve()
         assert "## Draft Verdict" in written.read_text(encoding="utf-8")
 
+    async def test_debug_saves_the_prompt_that_drew_the_saved_response(self, capsys, tmp_path, monkeypatch):
+        # #399 review: the retry is sent a different prompt now, so saving the
+        # first one beside the retry's response gave a pair that never replays.
+        monkeypatch.chdir(tmp_path)
+        provider = _StubSynthesisProvider(_reply(_TRUNCATED), _reply(_WHOLE))
+        await _review_llm_summarise(**self._kwargs(provider, debug=True))
+
+        debug = tmp_path / "data" / "debug"
+        assert (debug / "synthesis_response.txt").read_text(encoding="utf-8") == _WHOLE
+        assert (debug / "synthesis_prompt.txt").read_text(encoding="utf-8") == provider.calls[1]["prompt"]
+
     async def test_a_call_that_never_landed_is_reported_like_one_that_did(self, capsys):
         # #317: this used to assert the opposite, on the reasoning that an
         # empty summary was visible on its own. #306 disproved that -- an empty
@@ -3470,7 +3503,7 @@ class TestReviewLlmSummariseSurfacesAnIncompleteSynthesis:
         problems = result["synthesis_problems"]
         assert any("## Draft Verdict" in p for p in problems)
         assert not any("the synthesis call failed" in p for p in problems)
-        assert "incomplete after 2 attempt(s)" in capsys.readouterr().err.replace("\n", "")
+        assert "incomplete after 1 attempt(s)" in capsys.readouterr().err.replace("\n", "")
 
     async def test_an_exception_carrying_no_message_names_only_its_type(self):
         class _Silent:

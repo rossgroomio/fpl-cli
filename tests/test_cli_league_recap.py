@@ -1257,10 +1257,19 @@ class TestTruncatedEditorial:
 
         assert len(stub.prompts) == 1
         assert "retrying once" not in result.stderr
-        codes = [w["code"] for w in json.loads(result.stdout)["metadata"]["warnings"]]
-        assert "synthesis_stopped_early" in codes
+        warnings = {w["code"]: w["message"] for w in json.loads(result.stdout)["metadata"]["warnings"]}
         report = next(tmp_path.rglob("gw*-league-recap.md")).read_text(encoding="utf-8")
-        assert f"> `{stop_reason}`." in report
+        # #399 review: said as a refusal everywhere, never as "may be cut off"
+        # -- a reader told it was cut off would re-run for the rest, and a
+        # re-run usually draws the same refusal.
+        assert "The provider refused the editorial" in " ".join(result.stderr.split())
+        assert warnings["synthesis_stopped_early"].startswith("The provider refused the editorial")
+        assert (
+            "**The provider refused the editorial below:** it stopped with\n"
+            f"> `{stop_reason}`, so it may be incomplete." in report
+        )
+        for surface in (result.stderr, warnings["synthesis_stopped_early"], report):
+            assert "cut off" not in surface
 
     def test_a_stop_reason_cannot_break_out_of_the_callout(self, tmp_path: Path):
         # PR #396 review: an OpenAI-compatible endpoint can send any string.

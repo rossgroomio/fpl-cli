@@ -427,6 +427,10 @@ class LeagueRecapData(TypedDict):
     # Present means the text above may be cut off, which the report's callout
     # says; absent means the provider either finished or said nothing.
     synthesis_stop_reason: NotRequired[str]
+    # True when that stop was a refusal or content filter: the callout and the
+    # JSON warning then say the provider refused, not that the text may be cut
+    # off -- re-running is not how the reader gets the rest (#399 review).
+    synthesis_refused: NotRequired[bool]
     # Every claim the editorial makes that its own data contradicts, keyed by
     # the warning code of the check that caught it and worded as
     # `check_recap_editorial()` words it (`prompts/league_recap_checks.py`,

@@ -19,8 +19,13 @@
 {% if editorial_cut_off %}
 {# Provider-supplied: an OpenAI-compatible endpoint can send any string, and a
    newline or backtick in it would break out of the callout. #}
+{% if synthesis_refused is defined and synthesis_refused %}
+> **The provider refused the editorial below:** it stopped with
+> `{{ synthesis_stop_reason.split() | join(" ") | replace("`", "'") }}`, so it may be incomplete.
+{% else %}
 > **The editorial below may be cut off:** the provider stopped with
 > `{{ synthesis_stop_reason.split() | join(" ") | replace("`", "'") }}`.
+{% endif %}
 {% if editorial_wrong %}
 >
 {% endif %}

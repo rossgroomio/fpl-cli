@@ -30,6 +30,7 @@ from fpl_cli.utils.text import normalise_name
 
 if TYPE_CHECKING:
     from fpl_cli.api.providers import LLMResponse
+    from fpl_cli.cli._synthesis_retry import SynthesisAttempt
     from fpl_cli.prompts.review import SynthesisCompleteness
 
 # Goals/assists strings: "Damsgaard (BRE), Thiago x2 (BRE)".
@@ -131,14 +132,16 @@ async def _synthesise_with_completeness_check(
     prompt: str,
     system_prompt: str,
     omit_sections: Sequence[str],
-) -> tuple[str, SynthesisCompleteness, int]:
+) -> tuple[SynthesisAttempt[SynthesisCompleteness], int]:
     """Query the synthesis provider, retrying once if the answer looks incomplete.
 
-    Returns `(content, completeness, attempts)`. The attempt loop is the one
-    `league-recap` shares (`synthesise_with_retry`); what this command adds is
-    its judge -- the sections its prompt asked for, a sentence that stops dead,
-    an answer with no text -- and its ranking, `SynthesisCompleteness.severity`.
-    The retry is told what the first attempt lacked. It only replaces the first
+    Returns the attempt that ships -- its text, its `SynthesisCompleteness`,
+    and the prompt that drew it -- and the number of answers judged. The
+    attempt loop is the one `league-recap` shares (`synthesise_with_retry`);
+    what this command adds is its judge -- the sections its prompt asked for,
+    a sentence that stops dead, an answer with no text -- and its ranking,
+    `SynthesisCompleteness.severity`. The retry is told what the first attempt
+    lacked. It only replaces the first
     attempt when it is strictly less damaged, so when both are whole the first
     is what ships, unchanged from the single-call behaviour.
     """
@@ -158,7 +161,7 @@ async def _synthesise_with_completeness_check(
         problems = completeness.text_problems()
         return f"looks incomplete ({'; '.join(problems)})" if problems else None
 
-    best, attempts = await synthesise_with_retry(
+    return await synthesise_with_retry(
         provider,
         prompt=prompt,
         system_prompt=system_prompt,
@@ -168,7 +171,6 @@ async def _synthesise_with_completeness_check(
         damage=lambda attempt: attempt.verdict.severity,
         retry_prompt=get_synthesis_retry_prompt,
     )
-    return best.text, best.verdict, attempts
 
 
 def _report_synthesis_completeness(
@@ -1208,12 +1210,13 @@ async def _review_llm_summarise(
             # throw away the good summary it had already been handed (#322
             # review).
             try:
-                synthesis_summary, completeness, attempts = await _synthesise_with_completeness_check(
+                shipped, attempts = await _synthesise_with_completeness_check(
                     synthesis_provider,
                     prompt=synthesis_prompt,
                     system_prompt=synthesis_system,
                     omit_sections=omit_sections,
                 )
+                synthesis_summary, completeness = shipped.text, shipped.verdict
             except Exception as e:  # noqa: BLE001 — graceful degradation
                 error_console.print(f"[red]  ✗ Synthesis failed: {rich_escape(str(e))}[/red]")
                 synthesis_summary = ""
@@ -1251,8 +1254,11 @@ async def _review_llm_summarise(
                     )
 
                 if debug and debug_dir:
+                    # The prompt that drew the response saved beside it, so
+                    # the pair replays: once the retry ships, that is the
+                    # first prompt plus what the first draft lacked (#397).
                     (debug_dir / "synthesis_system.txt").write_text(synthesis_system, encoding="utf-8")
-                    (debug_dir / "synthesis_prompt.txt").write_text(synthesis_prompt, encoding="utf-8")
+                    (debug_dir / "synthesis_prompt.txt").write_text(shipped.prompt, encoding="utf-8")
                     (debug_dir / "synthesis_response.txt").write_text(synthesis_summary, encoding="utf-8")
                     error_console.print("[dim]    → Saved synthesis_*.txt[/dim]")
 

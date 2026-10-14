@@ -58,10 +58,13 @@ NORMAL_STOP_REASONS: frozenset[str] = frozenset({
 TRUNCATION_STOP_REASONS: frozenset[str] = frozenset({"max_tokens", "length"})
 
 # The abnormal stops that mean a policy check declined the answer, in the same
-# two dialects: the ones a second roll will not fix. Anthropic's own guidance
-# is that re-sending a refused request to the same model usually draws another
-# refusal, so a retry would spend a call, and up to a timeout, for the same
-# answer (#397). Neither was "cut off".
+# two dialects: the ones a same-model retry will not fix. Anthropic's docs say
+# re-sending a refused request to the same model usually draws another
+# refusal; the remedies they give are rephrasing the request or retrying on a
+# different model. Neither is attempted here -- a fallback model is out of
+# scope, and the prompt is ours, not the user's -- so the same-model retry is
+# simply not made: it would spend a call, and up to a timeout, for the same
+# answer (#397). Neither stop was "cut off".
 REFUSAL_STOP_REASONS: frozenset[str] = frozenset({"refusal", "content_filter"})
 
 
