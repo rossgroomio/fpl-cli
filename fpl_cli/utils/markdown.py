@@ -57,7 +57,8 @@ composes here.
 
 Once a section is found, what gw-prep and squad-builder put in it is mostly
 tables of players, so the module also reads those: `iter_tables` and
-`split_cells` for the rows, and `split_name_team` / `club_code` for the
+`split_cells` for the rows, `pipe_rows` to tell what a malformed table
+left unread, and `split_name_team` / `club_code` for the
 "Nyoni (LIV, MID)" cells in them. The recommendations parser behind
 `fpl review --compare-recs` and the gw-prep validator scripts each used to
 carry their own copy, and the copies disagreed on what ends a table and what a
@@ -73,7 +74,7 @@ from dataclasses import dataclass
 
 __all__ = [
     "HeadingMatcher",
-    "Table",
+    "MarkdownTable",
     "as_matcher",
     "club_code",
     "fence_flags",
@@ -83,9 +84,11 @@ __all__ = [
     "iter_tables",
     "leaf_body",
     "parse_heading",
+    "pipe_rows",
     "section_body",
     "split_cells",
     "split_name_team",
+    "strip_cell_emphasis",
     "unescape_specials",
     "unwrap_emphasis",
 ]
@@ -354,17 +357,21 @@ def leaf_body(lines: Sequence[str], heading: str | HeadingMatcher) -> list[str] 
 
 # A delimiter row: every cell a run of dashes, optionally colon-aligned.
 _SEPARATOR_RE = re.compile(r"^\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)*\|?$")
+# A delimiter written the way one is in practice, three dashes a cell or more.
+# Mid-table, only this shape starts a stacked table; anything shorter is a
+# placeholder row.
+_STACKED_DELIMITER_RE = re.compile(r"^\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)*\|?$")
 # A pipe that breaks a column, as opposed to an escaped `\|` inside a cell.
 _CELL_SPLIT_RE = re.compile(r"(?<!\\)\|")
 
 
 @dataclass(frozen=True)
-class Table:
+class MarkdownTable:
     """A markdown table found by `iter_tables`.
 
-    `headers` are the header cells as written, trimmed, so each caller decides
-    how loosely to match a column name. `heading` is the nearest heading line
-    above the table, or None.
+    `headers` are the header cells trimmed and with `\\|` unescaped, but
+    otherwise as written, so each caller decides how loosely to match a column
+    name. `heading` is the nearest heading line above the table, or None.
     """
 
     headers: list[str]
@@ -386,16 +393,23 @@ def _is_separator(line: str) -> bool:
     return _SEPARATOR_RE.match(line.strip()) is not None
 
 
-def iter_tables(lines: Sequence[str]) -> Iterator[Table]:
+def _is_pipe_row(line: str) -> bool:
+    return line.strip().startswith("|")
+
+
+def iter_tables(lines: Sequence[str]) -> Iterator[MarkdownTable]:
     """Every markdown table in `lines`, with the heading it sits under.
 
     A table opens on a pipe row followed by a delimiter row and runs to the
-    first line that is not a pipe row. Only the row after the header is taken
-    as a delimiter. A body row shaped like one is skipped, never read as a
-    stacked table starting: a placeholder row of bare dashes (`| - | - |`)
-    has that shape, and taking it for a delimiter ended the table a row early
-    and re-read the real row above it as a header (#402). A body row with
-    every cell empty is skipped too, as neither carries anything to read.
+    first line that is not a pipe row. Inside it, a row shaped like a delimiter
+    is a placeholder (`| - | - |`) and is skipped, so it never ends the table
+    and costs the real row above it (#402); a row with every cell empty is
+    skipped too. The exception is a row followed by a full delimiter, three
+    dashes a cell or more: that row heads a second table stacked straight
+    under the first, and reading it as more of the first fed a different
+    table's rows to whoever wanted the first. So a placeholder written as
+    `|---|---|` reads as a stacked header -- rarer than a stacked table, and
+    the price of telling the two apart at all.
 
     Fence-aware, so a table quoted inside a code block is not read as one.
     """
@@ -414,16 +428,38 @@ def iter_tables(lines: Sequence[str]) -> Iterator[Table]:
         if line.startswith("|") and i + 1 < len(lines) and _is_separator(lines[i + 1]):
             rows: list[list[str]] = []
             j = i + 2
-            while j < len(lines) and not fenced[j] and lines[j].strip().startswith("|"):
-                if not _is_separator(lines[j]):
-                    cells = split_cells(lines[j])
-                    if any(cells):
-                        rows.append(cells)
+            while j < len(lines) and not fenced[j] and _is_pipe_row(lines[j]):
+                if _is_separator(lines[j]):
+                    j += 1
+                    continue
+                if j + 1 < len(lines) and _STACKED_DELIMITER_RE.match(lines[j + 1].strip()):
+                    break  # row j heads a table stacked straight under this one
+                cells = split_cells(lines[j])
+                if any(cells):
+                    rows.append(cells)
                 j += 1
-            yield Table(headers=split_cells(line), rows=rows, heading=heading)
+            yield MarkdownTable(headers=split_cells(line), rows=rows, heading=heading)
             i = j
             continue
         i += 1
+
+
+def pipe_rows(lines: Sequence[str]) -> list[str]:
+    """Every table row in `lines` that carries a value, read into a table or not.
+
+    The rows `iter_tables` reads as headers and body rows, plus any it could
+    not place: a header with no `|---|` row under it (or an em-dash one), or
+    rows a blank line cut off from their header. A caller that reads one table
+    can set this against what it read, and say so when rows went unread rather
+    than report a clean result. Fenced lines, delimiter-shaped rows and rows
+    with every cell empty are left out, as `iter_tables` leaves them out.
+    """
+    fenced = list(fence_flags(lines))
+    return [
+        line
+        for i, line in enumerate(lines)
+        if not fenced[i] and _is_pipe_row(line) and not _is_separator(line) and any(split_cells(line))
+    ]
 
 
 # A club code is exactly three capitals in FPL ("ARS", "NFO"). Anything shorter
@@ -441,6 +477,15 @@ _CELL_EMPHASIS_RE = re.compile(r"^[*_`]+|[*_`]+$")
 # The lineup template appends "⚡ Override: {reason}" to a player it forced in
 # or out; the reason is prose, never part of the name.
 _OVERRIDE_RE = re.compile(r"\s*⚡.*$")
+
+
+def strip_cell_emphasis(text: str) -> str:
+    """`text` with the emphasis markers wrapping it taken off: "**Drop**" -> "Drop".
+
+    Greedy, unlike `unwrap_emphasis`: it serves comparison, never text that is
+    printed again.
+    """
+    return _CELL_EMPHASIS_RE.sub("", text.strip()).strip()
 
 
 def club_code(text: str | None) -> str | None:
@@ -479,13 +524,12 @@ def split_name_team(cell: str) -> tuple[str, str | None]:
     is what separates `Munoz` (LIV) from `Muñoz` (NFO) once the accent is
     folded. How far to fold the name itself is the caller's matching rule.
     """
-    text = _OVERRIDE_RE.sub("", cell).strip()
-    text = _CELL_EMPHASIS_RE.sub("", text).strip()
+    text = strip_cell_emphasis(_OVERRIDE_RE.sub("", cell))
     team: str | None = None
     while (match := _TRAILING_PAREN_RE.search(text)) is not None:
         team = team or _parenthetical_club(match.group(1))
         text = text[: match.start()].strip()
-    return _CELL_EMPHASIS_RE.sub("", text).strip(), team
+    return strip_cell_emphasis(text), team
 
 
 # -- HTML entity normalisation -------------------------------------------------

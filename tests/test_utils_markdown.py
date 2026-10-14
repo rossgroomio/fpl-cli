@@ -19,9 +19,11 @@ from fpl_cli.utils.markdown import (
     iter_tables,
     leaf_body,
     parse_heading,
+    pipe_rows,
     section_body,
     split_cells,
     split_name_team,
+    strip_cell_emphasis,
     unescape_specials,
     unwrap_emphasis,
 )
@@ -385,7 +387,7 @@ def test_iter_tables_reads_headers_rows_and_the_heading_above():
     ]
 
 
-@pytest.mark.parametrize("filler", ["| - | - | - |", "|---|---|---|", "| | | |"])
+@pytest.mark.parametrize("filler", ["| - | - | - |", "| -- | -- | -- |", "| | | |"])
 def test_iter_tables_skips_a_placeholder_row_without_ending_the_table(filler):
     lines = [
         "| Priority | Drop | Claim |",
@@ -436,3 +438,44 @@ def test_split_name_team(cell, expected):
 )
 def test_club_code(text, expected):
     assert club_code(text) == expected
+
+
+
+def test_iter_tables_splits_a_table_stacked_under_a_full_delimiter():
+    lines = [
+        "| Priority | Drop | Claim |",
+        "|---|---|---|",
+        "| 1 | Wirtz | Nyoni |",
+        "| Pos | Player | Team |",
+        "|:----|--------|-----:|",
+        "| GK | Raya | ARS |",
+    ]
+    assert [(t.headers, t.rows) for t in iter_tables(lines)] == [
+        (["Priority", "Drop", "Claim"], [["1", "Wirtz", "Nyoni"]]),
+        (["Pos", "Player", "Team"], [["GK", "Raya", "ARS"]]),
+    ]
+
+
+def test_pipe_rows_includes_rows_no_table_could_take_in():
+    lines = [
+        "| Pos | Player |",  # no delimiter: never a table
+        "| GK | Raya |",
+        "",
+        "| Pos | Player |",
+        "|---|---|",
+        "| - | - |",
+        "| | |",
+        "",
+        "| DEF | Gabriel |",  # cut off from its header by the blank line
+        "```",
+        "| MID | Fenced |",
+        "```",
+    ]
+    assert pipe_rows(lines) == ["| Pos | Player |", "| GK | Raya |", "| Pos | Player |", "| DEF | Gabriel |"]
+    [table] = iter_tables(lines)
+    assert table.rows == []
+
+
+@pytest.mark.parametrize(("text", "expected"), [("**Drop**", "Drop"), (" _Claim_ ", "Claim"), ("~~Salah~~", "~~Salah~~")])
+def test_strip_cell_emphasis(text, expected):
+    assert strip_cell_emphasis(text) == expected

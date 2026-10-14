@@ -1414,3 +1414,16 @@ def test_table_quoted_in_a_fence_is_not_counted():
         "```\n"
     )
     assert _count_table_rows_between(block, "#### Starting XI") == 1
+
+
+def test_table_with_no_delimiter_row_counts_no_rows():
+    """Without a `|---|` row under its header a pipe block is not a table, so
+    it counts 0 rows. Accepted: Phase E fails closed on the count, and the
+    file shows what is wrong with the table."""
+    block = (
+        "### Classic Squad\n#### Starting XI\n\n"
+        "| Pos | Player | Team |\n"
+        "| GK | Raya | ARS |\n"
+        "| DEF | Gabriel | ARS |\n"
+    )
+    assert _count_table_rows_between(block, "#### Starting XI") == 0

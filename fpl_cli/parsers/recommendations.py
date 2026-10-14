@@ -47,13 +47,13 @@ from fpl_cli.utils.markdown import (
     parse_heading,
     section_body,
     split_name_team,
+    strip_cell_emphasis,
 )
-
-_EMPHASIS_RE = re.compile(r"^[*_`]+|[*_`]+$")
 
 # A cell standing in for "no move here": the template's own empty rows, and
 # what a writer fills them with when it recommends nothing for that slot.
-_PLACEHOLDERS = frozenset({
+# Public because the gw-prep waiver validator skips the same cells.
+PLACEHOLDER_CELLS = frozenset({
     "", "-", "--", "—", "–", "...", "…", "n/a", "na", "tbd", "none", "nobody",
     "roll", "hold", "no transfer", "no claim",
 })
@@ -136,11 +136,11 @@ _NO_WAIVERS_RE = re.compile(
 
 
 def _is_placeholder(name: str) -> bool:
-    return name.strip().lower() in _PLACEHOLDERS
+    return name.strip().lower() in PLACEHOLDER_CELLS
 
 
 def _header_key(cell: str) -> str:
-    return " ".join(_EMPHASIS_RE.sub("", cell).split()).lower()
+    return " ".join(strip_cell_emphasis(cell).split()).lower()
 
 
 def _column(headers: Sequence[str], names: Collection[str]) -> int | None:
@@ -269,7 +269,7 @@ def _parse_mode(text: str, frontmatter: dict[str, Any]) -> str | None:
     if mode is not None:
         return mode
     for match in _MODE_LINE_RE.finditer(text):
-        mode = _normalise_mode(_EMPHASIS_RE.sub("", match.group(1).strip()))
+        mode = _normalise_mode(strip_cell_emphasis(match.group(1)))
         if mode in _SQUAD_MODES:
             return mode
     return None

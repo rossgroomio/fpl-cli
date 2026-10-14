@@ -35,7 +35,16 @@ from typing import NotRequired, TypedDict, cast
 # envelope instead of a ModuleNotFoundError traceback.
 import _bootstrap  # noqa: F401 — import guard, see module docstring
 
-from fpl_cli.utils.markdown import HeadingMatcher, find_section, iter_tables, leaf_body, split_name_team
+from fpl_cli.parsers.recommendations import PLACEHOLDER_CELLS
+from fpl_cli.utils.markdown import (
+    HeadingMatcher,
+    find_section,
+    has_heading,
+    iter_tables,
+    leaf_body,
+    pipe_rows,
+    split_name_team,
+)
 
 # ---------------------------------------------------------------------------
 # Types
@@ -54,6 +63,7 @@ class Flag(TypedDict, total=False):
 class Warning(TypedDict, total=False):
     type: str
     name: str
+    rows: int
 
 
 class ValidatorResult(TypedDict):
@@ -105,13 +115,12 @@ def normalise(name: str) -> str:
     return s
 
 
-# A cell that is nothing but a bracket ("(depth)") normalises to "", since
-# normalise takes every trailing bracket off a name.
-_PLACEHOLDER_VALUES = frozenset({"-", "—", "–", "", "hold", "tbd", "n/a"})
-
-
 def _is_placeholder(raw: str) -> bool:
-    return normalise(raw) in _PLACEHOLDER_VALUES
+    """A cell standing in for "no move here", by the cells `fpl review
+    --compare-recs` skips: "-", "hold", "No claim". A cell that is nothing but
+    a bracket ("(depth)") normalises to "", since normalise takes every
+    trailing bracket off a name."""
+    return normalise(raw) in PLACEHOLDER_CELLS
 
 
 # ---------------------------------------------------------------------------
@@ -244,7 +253,8 @@ def parse_waiver_table(
     Returns (headers, rows) where rows are dicts keyed by header name,
     or None if no table found. The table is read by the same rules as
     `fpl review --compare-recs` reads it (`iter_tables`): a placeholder row
-    of bare dashes is skipped rather than ending the table above it.
+    of bare dashes is skipped rather than ending the table above it, and a
+    table stacked straight under this one is its own table, not more rows.
     """
     table = next(iter_tables(section_lines), None)
     if table is None:
@@ -420,12 +430,29 @@ def _run(recommendations_file: str, waivers_json: str, squad_grid_json: str) -> 
 
     # Parse waiver table
     table = parse_waiver_table(waiver_lines)
+
+    # Rows under the heading that the waiver table did not take in -- a header
+    # with no `|---|` row under it, rows a blank line cut off, a table stacked
+    # beneath -- were never checked, so say so rather than pass a clean result.
+    # Only under the heading itself: the whole-section fallback holds the
+    # Starting XI and Bench tables too.
+    unread = 0
+    if has_heading(section_lines, _HEADING_WAIVERS):
+        read = 0 if table is None else 1 + len(table[1])
+        unread = len(pipe_rows(waiver_lines)) - read
+    if unread > 0:
+        warnings.append(Warning(type="waiver-rows-unread", rows=unread))
+
     if table is None:
-        warnings.append(Warning(type="waiver-table-not-found"))
+        if unread <= 0:
+            warnings.append(Warning(type="waiver-table-not-found"))
         result = {"ok": True, "flags": [], "warnings": warnings}
         json.dump(result, sys.stdout)
         return
 
+    # Exact column names, where `fpl review --compare-recs` takes aliases and
+    # any case: it also reads older and post-waiver files under other headers,
+    # while this checks gw-prep's own fresh output, written to the template's.
     headers, rows = table
     if "Drop" not in headers or "Claim" not in headers:
         warnings.append(Warning(type="drop-claim-columns-not-found"))
