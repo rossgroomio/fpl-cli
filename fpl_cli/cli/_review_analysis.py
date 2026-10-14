@@ -105,37 +105,42 @@ async def _review_global_stats(
             ],
         }
 
-        # Dream Team
-        console.print("\n[bold]### Dream Team[/bold]")
+        # Dream Team. Its heading prints only with the table it introduces: a
+        # missing dream team is explained on stderr, and stdout gets no empty
+        # section (#387).
         try:
             dream_team_data = await client.get_dream_team(gw)
             dream_team_players = dream_team_data.get("team", [])
 
-            if dream_team_players:
-                dt_table = Table(show_header=True, header_style="bold")
-                dt_table.add_column("Player")
-                dt_table.add_column("Team")
-                dt_table.add_column("Pos")
-                dt_table.add_column("Pts", justify="right")
+            dt_table = Table(show_header=True, header_style="bold")
+            dt_table.add_column("Player")
+            dt_table.add_column("Team")
+            dt_table.add_column("Pos")
+            dt_table.add_column("Pts", justify="right")
 
-                dream_team_list = []
-                dream_team_by_id: dict[int, dict[str, Any]] = {}
-                for dt_player in dream_team_players:
-                    player = player_map.get(dt_player.get("element"))
-                    if player:
-                        team = teams.get(player.team_id)
-                        team_abbr = team.short_name if team else "???"
-                        pts = dt_player.get("points", 0)
-                        entry = {
-                            "name": player.web_name,
-                            "team": team_abbr,
-                            "position": player.position_name,
-                            "points": pts,
-                        }
-                        dream_team_list.append(entry)
-                        dream_team_by_id[player.id] = entry
-                        dt_table.add_row(player.web_name, team_abbr, player.position_name, str(pts))
+            dream_team_list = []
+            dream_team_by_id: dict[int, dict[str, Any]] = {}
+            for dt_player in dream_team_players:
+                player = player_map.get(dt_player.get("element"))
+                if player:
+                    team = teams.get(player.team_id)
+                    team_abbr = team.short_name if team else "???"
+                    pts = dt_player.get("points", 0)
+                    entry = {
+                        "name": player.web_name,
+                        "team": team_abbr,
+                        "position": player.position_name,
+                        "points": pts,
+                    }
+                    dream_team_list.append(entry)
+                    dream_team_by_id[player.id] = entry
+                    dt_table.add_row(player.web_name, team_abbr, player.position_name, str(pts))
 
+            # Gated on the rows that resolved, not the raw response: a dream
+            # team naming only players the bootstrap does not know would
+            # otherwise print a heading over an empty table.
+            if dream_team_list:
+                console.print("\n[bold]### Dream Team[/bold]")
                 console.print(dt_table)
 
                 # Top player highlight
@@ -157,13 +162,14 @@ async def _review_global_stats(
 
                 global_data["dream_team"] = dream_team_list
             else:
-                console.print("[dim]Dream team not available[/dim]")
+                error_console.print("[dim]Dream team not available[/dim]")
         except Exception as e:  # noqa: BLE001 — best-effort enrichment
-            console.print(f"[dim]Could not fetch dream team: {rich_escape(str(e))}[/dim]")
+            error_console.print(f"[dim]Could not fetch dream team: {rich_escape(str(e))}[/dim]")
 
         # Blankers: High-ownership players (>5%) who scored ≤2 pts (excludes BGW
-        # teams and players who have never appeared this season)
-        console.print("\n[bold]### Blankers[/bold]")
+        # teams and players who have never appeared this season). "No
+        # high-ownership blankers" is the section's answer, so it stays on
+        # stdout under the heading; a failed calculation goes to stderr alone.
         try:
             # Build blankers list from live_stats and players data
             blankers_list = []
@@ -198,6 +204,7 @@ async def _review_global_stats(
             blankers_list.sort(key=lambda x: x["ownership"], reverse=True)
             blankers_list = blankers_list[:10]
 
+            console.print("\n[bold]### Blankers[/bold]")
             if blankers_list:
                 blankers_table = Table(show_header=True, header_style="bold")
                 blankers_table.add_column("Player")
@@ -221,7 +228,7 @@ async def _review_global_stats(
             else:
                 console.print("[dim]No high-ownership blankers this GW[/dim]")
         except Exception as e:  # noqa: BLE001 — best-effort enrichment
-            console.print(f"[dim]Could not calculate blankers: {rich_escape(str(e))}[/dim]")
+            error_console.print(f"[dim]Could not calculate blankers: {rich_escape(str(e))}[/dim]")
 
     except Exception as e:  # noqa: BLE001 — display resilience
         error_console.print(f"[yellow]Could not fetch global stats: {rich_escape(str(e))}[/yellow]")

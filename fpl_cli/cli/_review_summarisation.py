@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, cast
 import yaml
 from rich.markup import escape as rich_escape
 
-from fpl_cli.cli._context import console, error_console
+from fpl_cli.cli._context import error_console
 from fpl_cli.cli._fines import FinesLeagueData, FinesTeamPlayer, compute_bench_analysis, evaluate_fines
 from fpl_cli.cli._fines_config import parse_fines_config
 from fpl_cli.cli._helpers import _gw_position_with_half, performer_score, your_gw_rank_line
@@ -1006,9 +1006,9 @@ async def _review_llm_summarise(
     synthesis_corrections_path: str | None = None
 
     if dry_run:
-        console.print("\n[dim]Dry run: building prompts without calling LLMs...[/dim]")
+        error_console.print("\n[dim]Dry run: building prompts without calling LLMs...[/dim]")
     else:
-        console.print("\n[dim]Generating LLM summaries...[/dim]")
+        error_console.print("\n[dim]Generating LLM summaries...[/dim]")
 
     # Setup debug directory if needed (always for dry_run)
     debug_dir = None
@@ -1019,7 +1019,7 @@ async def _review_llm_summarise(
         debug_dir.mkdir(parents=True, exist_ok=True)
         if os.name != "nt":
             debug_dir.chmod(0o700)
-        console.print(f"[dim]  Debug output → {debug_dir}/[/dim]")
+        error_console.print(f"[dim]  Debug output → {debug_dir}/[/dim]")
 
     # Stage 1: Research - social + journalistic narrative
     research_ctx = _format_research_context(global_data, collected_data, teams)
@@ -1038,11 +1038,11 @@ async def _review_llm_summarise(
 
     if dry_run:
         # Save prompts without calling API
-        console.print("[dim]  Building research prompt...[/dim]")
+        error_console.print("[dim]  Building research prompt...[/dim]")
         if debug_dir:
             (debug_dir / "research_system.txt").write_text(REVIEW_RESEARCH_SYSTEM_PROMPT, encoding="utf-8")
             (debug_dir / "research_prompt.txt").write_text(research_prompt, encoding="utf-8")
-            console.print("[dim]    → Saved research_system.txt, research_prompt.txt[/dim]")
+            error_console.print("[dim]    → Saved research_system.txt, research_prompt.txt[/dim]")
         research_summary = "[DRY RUN - research provider not called]"
     elif research_provider is None:
         # None, deliberately, and not the "Community narrative unavailable"
@@ -1058,7 +1058,7 @@ async def _review_llm_summarise(
         from fpl_cli.api.providers import ProviderError
 
         try:
-            console.print("[dim]  Fetching community narrative...[/dim]")
+            error_console.print("[dim]  Fetching community narrative...[/dim]")
             research_result = await research_provider.query(
                 prompt=research_prompt,
                 system_prompt=REVIEW_RESEARCH_SYSTEM_PROMPT,
@@ -1099,7 +1099,7 @@ async def _review_llm_summarise(
                 debug_dir if debug else None,
             )
             if research_summary:
-                console.print("[green]  ✓[/green] Community narrative complete")
+                error_console.print("[green]  ✓[/green] Community narrative complete")
             else:
                 error_console.print("[yellow]  ⚠ Research provider returned empty response[/yellow]")
                 research_summary = "Community narrative unavailable: research provider returned an empty response."
@@ -1108,7 +1108,7 @@ async def _review_llm_summarise(
                 (debug_dir / "research_system.txt").write_text(REVIEW_RESEARCH_SYSTEM_PROMPT, encoding="utf-8")
                 (debug_dir / "research_prompt.txt").write_text(research_prompt, encoding="utf-8")
                 (debug_dir / "research_response.txt").write_text(research_result.content, encoding="utf-8")
-                console.print("[dim]    → Saved research_*.txt[/dim]")
+                error_console.print("[dim]    → Saved research_*.txt[/dim]")
         except ProviderError as e:
             error_console.print(f"[red]  ✗ Research failed: {rich_escape(str(e))}[/red]")
             research_summary = f"Community narrative unavailable: {e}"
@@ -1187,15 +1187,15 @@ async def _review_llm_summarise(
         synthesis_system, synthesis_prompt = synthesis_prompts
 
         if dry_run:
-            console.print("[dim]  Building synthesis prompt...[/dim]")
+            error_console.print("[dim]  Building synthesis prompt...[/dim]")
             if debug_dir:
                 (debug_dir / "synthesis_system.txt").write_text(synthesis_system, encoding="utf-8")
                 (debug_dir / "synthesis_prompt.txt").write_text(synthesis_prompt, encoding="utf-8")
-                console.print("[dim]    → Saved synthesis_system.txt, synthesis_prompt.txt[/dim]")
+                error_console.print("[dim]    → Saved synthesis_system.txt, synthesis_prompt.txt[/dim]")
             synthesis_summary = ""
-            console.print("[green]  ✓[/green] Prompts saved to data/debug/")
+            error_console.print("[green]  ✓[/green] Prompts saved to data/debug/")
         else:
-            console.print("[dim]  Generating personal analysis...[/dim]")
+            error_console.print("[dim]  Generating personal analysis...[/dim]")
             # The prompt asks for both formats' verdicts unconditionally, but
             # it also tells the model to analyse only the format it was given
             # data for -- so a verdict the run has no squad behind is an
@@ -1247,7 +1247,7 @@ async def _review_llm_summarise(
                     synthesis_summary, upcoming_fixtures,
                 )
                 if completeness.complete and not grounding_problems:
-                    console.print("[green]  ✓[/green] Personal analysis complete")
+                    error_console.print("[green]  ✓[/green] Personal analysis complete")
                 else:
                     synthesis_problems = completeness.problems() + grounding_problems
                     synthesis_corrections_path = _report_synthesis_completeness(
@@ -1259,7 +1259,7 @@ async def _review_llm_summarise(
                     (debug_dir / "synthesis_system.txt").write_text(synthesis_system, encoding="utf-8")
                     (debug_dir / "synthesis_prompt.txt").write_text(synthesis_prompt, encoding="utf-8")
                     (debug_dir / "synthesis_response.txt").write_text(synthesis_summary, encoding="utf-8")
-                    console.print("[dim]    → Saved synthesis_*.txt[/dim]")
+                    error_console.print("[dim]    → Saved synthesis_*.txt[/dim]")
 
     return {
         "research_summary": research_summary,

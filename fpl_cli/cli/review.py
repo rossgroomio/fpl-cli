@@ -539,7 +539,7 @@ def review_command(
 
             # Generate report if requested
             if save:
-                console.print("\n[dim]Generating report...[/dim]")
+                error_console.print("\n[dim]Generating report...[/dim]")
                 async with ReportAgent(config={"output_dir": output_dir}) as report_agent:
                     report_result = await report_agent.run(context={
                         "report_type": "review",
@@ -550,6 +550,6 @@ def review_command(
                 if report_result.success:
                     console.print(f"[green]✓[/green] Report saved to: {report_result.data['report_path']}")
                 else:
-                    console.print(f"[red]✗[/red] Failed to save report: {report_result.message}")
+                    emit_failure("review", f"Failed to save report: {report_result.message}", "table")
 
     asyncio.run(_review())
