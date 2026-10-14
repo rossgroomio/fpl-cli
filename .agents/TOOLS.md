@@ -83,7 +83,7 @@ with `2>/dev/null` without losing the table, whichever command it runs.
 
 ## Skills
 
-Agent playbooks in `.agents/skills/`. Each has a `SKILL.md` entry point. Claude Code discovers them via the `.claude/skills/` symlink.
+Agent playbooks in `.agents/skills/`. Each has a `SKILL.md` entry point. Claude Code discovers them via the `.claude/skills/` symlink. The four product skills (gw-prep, squad-builder, update-gw-prep, preview-ingest) pin a model and an effort level in their frontmatter and in every sub-agent parameter block; the levels and the reasons for them are in [README.md](README.md#model-and-effort).
 
 Skills write their own outputs (`gw{N}-recommendations.md`, `gw{N}-squad-builder.md`, `season-start-squad.md`) into the same `<output dir>/<season>/` directory, for the same reason.
 
