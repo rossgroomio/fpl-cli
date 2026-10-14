@@ -34,36 +34,29 @@ in, or one whose columns were renamed.
 from __future__ import annotations
 
 import re
-from collections.abc import Collection, Iterator, Sequence
-from dataclasses import dataclass
+from collections.abc import Collection, Sequence
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from fpl_cli.utils.markdown import HeadingMatcher, fence_flags, parse_heading, section_body
-
-# A club code is exactly three capitals in FPL ("ARS", "NFO"). Anything shorter
-# is a captaincy marker ("(C)", "(VC)"), and a position code is three capitals
-# too, so those are named and skipped: the waiver template's cells read
-# "Nyoni (LIV, MID)".
-_TEAM_CODE_RE = re.compile(r"[A-Z]{3}")
-_POSITION_CODES = frozenset({"GK", "GKP", "DEF", "MID", "FWD"})
-_TRAILING_PAREN_RE = re.compile(r"\s*\(([^()]*)\)\s*$")
-_EMPHASIS_RE = re.compile(r"^[*_`]+|[*_`]+$")
-# The lineup template appends "⚡ Override: {reason}" to a player it forced in
-# or out; the reason is prose, never part of the name.
-_OVERRIDE_RE = re.compile(r"\s*⚡.*$")
+from fpl_cli.utils.markdown import (
+    HeadingMatcher,
+    club_code,
+    iter_tables,
+    parse_heading,
+    section_body,
+    split_name_team,
+    strip_cell_emphasis,
+)
 
 # A cell standing in for "no move here": the template's own empty rows, and
 # what a writer fills them with when it recommends nothing for that slot.
-_PLACEHOLDERS = frozenset({
+# Public because the gw-prep waiver validator skips the same cells.
+PLACEHOLDER_CELLS = frozenset({
     "", "-", "--", "—", "–", "...", "…", "n/a", "na", "tbd", "none", "nobody",
     "roll", "hold", "no transfer", "no claim",
 })
-
-_SEPARATOR_RE = re.compile(r"^\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)*\|?$")
-_CELL_SPLIT_RE = re.compile(r"(?<!\\)\|")
 
 # Column names, lowercased. Several per column because the draft section's
 # free-agent table, written once the waiver run has processed, heads its
@@ -142,114 +135,16 @@ _NO_WAIVERS_RE = re.compile(
 )
 
 
-@dataclass(frozen=True)
-class _Table:
-    headers: list[str]
-    rows: list[list[str]]
-    heading: str | None
-
-
-def club_code(text: str | None) -> str | None:
-    """`text` as a club code fit to compare ("ARS"), or None.
-
-    None for a position code, and for the "???" the review writes when it
-    could not resolve a club.
-    """
-    if not text:
-        return None
-    code = text.strip().upper()
-    return code if _TEAM_CODE_RE.fullmatch(code) and code not in _POSITION_CODES else None
-
-
-def _parenthetical_club(inner: str) -> str | None:
-    """The club in a bracket that holds only codes: "(ARS)", "(LIV, MID)".
-
-    Every token has to be a code. A bracket of prose, which the squad-builder
-    captain line puts there by design ("Salah (home vs WHU)"), names an
-    opponent or a tag as often as a club, and reading "WHU" off it ruled the
-    real Salah out of his own captaincy.
-    """
-    tokens = [t for t in re.split(r"[\s,/;]+", inner.strip()) if t]
-    if not tokens or not all(_TEAM_CODE_RE.fullmatch(t) or t in _POSITION_CODES for t in tokens):
-        return None
-    return next((club_code(t) for t in tokens if club_code(t) is not None), None)
-
-
-def _split_name_team(cell: str) -> tuple[str, str | None]:
-    """A player cell as (name, club code), the initial left on the name.
-
-    Cells carry a club suffix ("Tzolis (ARS)", "Nyoni (LIV, MID)"), sometimes a
-    qualifier ("Haaland (if fit)") or a captaincy marker ("Salah (C)"), and in
-    the lineup tables an override note. The club code is worth keeping: it is
-    what separates `Munoz` (LIV) from `Muñoz` (NFO) once the accent is folded.
-    """
-    text = _OVERRIDE_RE.sub("", cell).strip()
-    text = _EMPHASIS_RE.sub("", text).strip()
-    team: str | None = None
-    while (match := _TRAILING_PAREN_RE.search(text)) is not None:
-        team = team or _parenthetical_club(match.group(1))
-        text = text[: match.start()].strip()
-    return _EMPHASIS_RE.sub("", text).strip(), team
-
-
 def _is_placeholder(name: str) -> bool:
-    return name.strip().lower() in _PLACEHOLDERS
-
-
-def _cells(line: str) -> list[str]:
-    inner = line.strip()
-    if inner.startswith("|"):
-        inner = inner[1:]
-    if inner.endswith("|") and not inner.endswith("\\|"):
-        inner = inner[:-1]
-    return [cell.strip().replace("\\|", "|") for cell in _CELL_SPLIT_RE.split(inner)]
+    return name.strip().lower() in PLACEHOLDER_CELLS
 
 
 def _header_key(cell: str) -> str:
-    return " ".join(_EMPHASIS_RE.sub("", cell).split()).lower()
-
-
-def _is_separator(line: str) -> bool:
-    return "-" in line and _SEPARATOR_RE.match(line.strip()) is not None
-
-
-def _iter_tables(lines: Sequence[str]) -> Iterator[_Table]:
-    """Every markdown table in `lines`, with the heading it sits under.
-
-    Fence-aware, so a table quoted inside a code block is not read as one.
-    A header row is a pipe row followed by a separator row. Inside the body a
-    separator-shaped row is skipped, never read as the start of a new table:
-    a placeholder row of bare dashes (`| - | - | - |`) looks like one, and
-    taking it for a separator re-read the real row above it as a header.
-    """
-    fenced = list(fence_flags(lines))
-    heading: str | None = None
-    i = 0
-    while i < len(lines):
-        line = lines[i].strip()
-        if fenced[i]:
-            i += 1
-            continue
-        if parse_heading(line) is not None:
-            heading = line
-            i += 1
-            continue
-        if line.startswith("|") and i + 1 < len(lines) and _is_separator(lines[i + 1]):
-            headers = [_header_key(cell) for cell in _cells(line)]
-            rows: list[list[str]] = []
-            j = i + 2
-            while j < len(lines) and not fenced[j] and lines[j].strip().startswith("|"):
-                if not _is_separator(lines[j]):
-                    rows.append(_cells(lines[j]))
-                j += 1
-            yield _Table(headers=headers, rows=rows, heading=heading)
-            i = j
-            continue
-        i += 1
+    return " ".join(strip_cell_emphasis(cell).split()).lower()
 
 
 def _column(headers: Sequence[str], names: Collection[str]) -> int | None:
-    return next((i for i, header in enumerate(headers) if header in names), None)
+    return next((i for i, header in enumerate(headers) if _header_key(header) in names), None)
 
 
 def _cell(row: Sequence[str], index: int) -> str:
@@ -374,7 +269,7 @@ def _parse_mode(text: str, frontmatter: dict[str, Any]) -> str | None:
     if mode is not None:
         return mode
     for match in _MODE_LINE_RE.finditer(text):
-        mode = _normalise_mode(_EMPHASIS_RE.sub("", match.group(1).strip()))
+        mode = _normalise_mode(strip_cell_emphasis(match.group(1)))
         if mode in _SQUAD_MODES:
             return mode
     return None
@@ -392,13 +287,13 @@ def _parse_captain(text: str, result: dict[str, Any]) -> bool:
     if not match:
         return False
     captain_part, _, vice_part = match.group("value").partition("|")
-    captain, captain_team = _split_name_team(_RATIONALE_SPLIT_RE.split(captain_part, maxsplit=1)[0])
+    captain, captain_team = split_name_team(_RATIONALE_SPLIT_RE.split(captain_part, maxsplit=1)[0])
     if captain and not _is_placeholder(captain):
         result["classic"]["captain"] = captain
         result["classic"]["captain_team"] = captain_team
     vice_label = _VICE_LABEL_RE.match(vice_part)
     if vice_label:
-        vice, vice_team = _split_name_team(
+        vice, vice_team = split_name_team(
             _RATIONALE_SPLIT_RE.split(vice_part[vice_label.end():], maxsplit=1)[0]
         )
         if vice and not _is_placeholder(vice):
@@ -445,7 +340,7 @@ def _parse_squad(classic: str, mode: str | None) -> list[dict[str, Any]]:
     squad: list[dict[str, Any]] = []
     seen: set[tuple[str, str | None]] = set()
     has_starting_xi = False
-    for table in _iter_tables(lines):
+    for table in iter_tables(lines):
         if table.heading is None:
             continue
         is_starting_xi = any(m.matches(table.heading) for m in _STARTING_XI_HEADINGS)
@@ -457,7 +352,7 @@ def _parse_squad(classic: str, mode: str | None) -> list[dict[str, Any]]:
         has_starting_xi = has_starting_xi or is_starting_xi
         team_col = _column(table.headers, _TEAM)
         for row in table.rows:
-            name, team = _split_name_team(_cell(row, player_col))
+            name, team = split_name_team(_cell(row, player_col))
             if _is_placeholder(name):
                 continue
             if team_col is not None:
@@ -477,22 +372,22 @@ def _parse_transfers(classic: str, result: dict[str, Any]) -> None:
     lines = classic.split("\n")
     transfers: list[dict[str, Any]] = result["classic"]["transfers"]
 
-    for table in _iter_tables(lines):
+    for table in iter_tables(lines):
         out_col = _column(table.headers, _TRANSFER_OUT)
         in_col = _column(table.headers, _TRANSFER_IN)
         if out_col is None or in_col is None:
             continue
         for row in table.rows:
-            player_out, out_team = _split_name_team(_cell(row, out_col))
-            player_in, in_team = _split_name_team(_cell(row, in_col))
+            player_out, out_team = split_name_team(_cell(row, out_col))
+            player_in, in_team = split_name_team(_cell(row, in_col))
             if _is_placeholder(player_out) or _is_placeholder(player_in):
                 continue
             transfers.append({"in": player_in, "in_team": in_team, "out": player_out, "out_team": out_team})
 
     if not transfers:
         for match in _LEGACY_TRANSFER_RE.finditer(classic):
-            player_in, in_team = _split_name_team(match.group(1))
-            player_out, out_team = _split_name_team(match.group(2))
+            player_in, in_team = split_name_team(match.group(1))
+            player_out, out_team = split_name_team(match.group(2))
             if player_in and player_out:
                 transfers.append({"in": player_in, "in_team": in_team, "out": player_out, "out_team": out_team})
 
@@ -530,15 +425,15 @@ def _parse_waivers(draft: str, result: dict[str, Any]) -> None:
         return
     waivers: list[dict[str, Any]] = result["draft"]["waivers"]
 
-    for table in _iter_tables(draft.split("\n")):
+    for table in iter_tables(draft.split("\n")):
         drop_col = _column(table.headers, _WAIVER_DROP)
         claim_col = _column(table.headers, _WAIVER_CLAIM)
         if drop_col is None or claim_col is None:
             continue
         priority_col = _column(table.headers, _PRIORITY)
         for row in table.rows:
-            player_out, out_team = _split_name_team(_cell(row, drop_col))
-            player_in, in_team = _split_name_team(_cell(row, claim_col))
+            player_out, out_team = split_name_team(_cell(row, drop_col))
+            player_in, in_team = split_name_team(_cell(row, claim_col))
             if _is_placeholder(player_out) or _is_placeholder(player_in):
                 continue
             priority = _priority(_cell(row, priority_col)) if priority_col is not None else None
@@ -553,8 +448,8 @@ def _parse_waivers(draft: str, result: dict[str, Any]) -> None:
     if waivers:
         return
     for match in _LEGACY_WAIVER_RE.finditer(draft):
-        player_in, in_team = _split_name_team(match.group(2))
-        player_out, out_team = _split_name_team(match.group(3))
+        player_in, in_team = split_name_team(match.group(2))
+        player_out, out_team = split_name_team(match.group(3))
         if player_in and player_out:
             waivers.append({
                 "priority": int(match.group(1)),

@@ -783,6 +783,10 @@ _Runs after Phase D file write, before Phase E. Not embed-gated._
      > Edit the file to fix the flagged row(s), then re-run `/gw-prep` to continue.
      
      **Stop the pipeline.** Do not proceed to Phase E. Do not mark the run as complete.
+   - Else, if a warning has `type == "waiver-rows-unread"` → emit this in-chat warning, followed by the pool-miss one below if any `waiver-not-in-pool` flags are present too:
+     > ⚠️ Phase D1: {rows} row(s) under Waiver Recommendations in `gw{N}-recommendations.md` were not read as waiver rows, so they were not checked for cross-position swaps. A table needs a `|---|` row straight under its header, no blank line inside it, and nothing stacked beneath it. Fix the table and re-run `/gw-prep` before submitting waivers.
+
+     Proceed to Phase E.
    - Else (only warnings and/or `waiver-not-in-pool` flags) → emit an in-chat warning:
      > ⚠️ Phase D1: {N} waiver pool miss(es) in `gw{N}-recommendations.md` — see managed block in the Draft section. Claims may be normaliser false positives; verify before submitting waivers.
      
