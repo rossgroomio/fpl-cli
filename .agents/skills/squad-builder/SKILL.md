@@ -1,6 +1,7 @@
 ---
 name: squad-builder
 model: opus
+effort: high
 description: >-
   Build an optimal 15-player FPL squad from scratch. Handles mid-season wildcard,
   free hit, and season-start squad selection for both Classic and Draft formats.
@@ -30,6 +31,8 @@ Build-from-scratch squad optimisation. Five modes, one pipeline.
 **Claude Code:** Orchestrator handles setup (Phase A), data gathering (Phase B), and candidate shortlisting (Phase B2). Phase C launches 4 parallel position-research agents (one per position). Phase D launches 1 assembly agent that merges results into the final squad. Total: 5 sub-agents across 2 waves.
 
 **Codex / Cursor / Copilot / other agents:** Run all phases sequentially in the same context. Phase B commands can be parallelised if the tool supports it. Phase B2 shortlisting and Phase C position research can be done inline per position. Use the Phase D assembly prompt as a direct instruction rather than dispatching a sub-agent.
+
+**Model and effort:** the frontmatter pins the orchestrator's model and effort, and the Phase C and Phase D blocks pin their own. Assembly gets more effort than position research because it enforces every cross-position constraint and settles the trade-offs the position agents only surface, whereas research gathers and ranks within one position. These are judgement calls, not measurements; the levels, the reasoning and how far each override reaches are in `.agents/README.md` (Model and effort).
 
 ---
 
@@ -250,6 +253,7 @@ Launch 4 position-research agents in a **single parallel Agent tool block**:
 Agent tool parameters (per agent):
   subagent_type: general-purpose
   model: opus
+  effort: medium
   description: "Squad builder - {POSITION} research"
 ```
 
@@ -377,6 +381,7 @@ Launch after all Phase C agents return (or fail with fallback):
 Agent tool parameters:
   subagent_type: general-purpose
   model: opus
+  effort: high
   description: "Squad builder - {mode} assembly"
 ```
 

@@ -6,6 +6,7 @@ description: >
   each league format. Use when the user asks to prepare for the next gameweek,
   get transfer/waiver recommendations, or review their squad.
 model: opus
+effort: high
 compatibility:
   claude-code: full (parallel Classic + Draft sub-agents via Agent tool)
   codex: partial (sequential execution - no sub-agent spawning)
@@ -37,6 +38,8 @@ Get it wrong and the scripts say so: each one exits 1 with `{"error": true, "mes
 **Codex / Cursor / Copilot / other agents:** Do not attempt to spawn sub-agents. Run Phase C-classic then Phase C-draft sequentially in the same context. Use the same prompts and output templates - just one after the other.
 
 **In all cases** the final output format is identical: Classic section followed by Draft section (or whichever formats are active).
+
+**Model and effort:** the frontmatter pins the orchestrator's model and effort, and each Phase C block pins its own pair. Classic gets more effort than draft because it weighs transfers, hits, chips and captaincy against each other, while draft has no budget, chips or captains to trade off. These are judgement calls, not measurements; the levels, the reasoning and how far each override reaches are in `.agents/README.md` (Model and effort).
 
 ---
 
@@ -358,8 +361,13 @@ Each sub-agent receives the JSON output from Phase B commands as context.
 
 ### C1 -- Classic League Analysis (skip if format is "draft")
 
-- **model**: opus
-- **subagent_type**: general-purpose
+```
+Agent tool parameters:
+  subagent_type: general-purpose
+  model: opus
+  effort: high
+  description: "GW prep - classic analysis"
+```
 
 Branch on `squad_builder_result` (set in Phase A3; unset on transfer weeks):
 
@@ -589,8 +597,13 @@ Proceed immediately (non-interactive).
 
 ### C2 -- Draft League Analysis (skip if format is "classic")
 
-- **model**: sonnet
-- **subagent_type**: general-purpose
+```
+Agent tool parameters:
+  subagent_type: general-purpose
+  model: sonnet
+  effort: medium
+  description: "GW prep - draft analysis"
+```
 
 **Prompt structure:**
 

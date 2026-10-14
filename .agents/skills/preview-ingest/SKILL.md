@@ -7,6 +7,7 @@ description: >
   "build my previews folder", or hands over a team preview article and wants it
   usable by squad-builder and gw-prep.
 model: opus
+effort: medium
 compatibility:
   claude-code: full (parallel per-team ingestion via Agent tool)
   codex: full (single sequential pass)
@@ -53,6 +54,16 @@ expires on a schedule the loader already knows (`fpl intel --show-decay`).
 **Claude Code:** with more than three sources, launch one ingestion agent per
 team in a single parallel Agent tool block, each running Phases B–D for its own
 team. They write to different files and do not interact.
+
+```
+Agent tool parameters (per agent):
+  subagent_type: general-purpose
+  model: opus
+  effort: medium
+  description: "Preview ingest - {TEAM}"
+```
+
+**Model and effort:** the frontmatter pins the orchestrator's model and effort and the block above pins each per-team agent's, both at the effort of an extraction step rather than a trade-off step: the schema fixes what to look for, so the work is finding it in the prose, not weighing options. A judgement call, not a measurement; the levels, the reasoning and how far each override reaches are in `.agents/README.md` (Model and effort).
 
 **Other agents:** run Phases B–D sequentially per team.
 

@@ -7,6 +7,7 @@ description: >
   file. Use when the user says "update gw prep", "second pass", "add gw
   update", or wants to revise recommendations with new information.
 model: opus
+effort: high
 compatibility:
   claude-code: full (single sub-agent via Agent tool)
   codex: full (single sequential pass)
@@ -109,6 +110,18 @@ Read the scoring and formatting rules:
 ### Phase C — Draft the update (sub-agent)
 
 Dispatch a single sub-agent with the following brief.
+
+```
+Agent tool parameters:
+  subagent_type: general-purpose
+  model: opus
+  effort: high
+  description: "Update GW prep - gameweek {N}"
+```
+
+**Model and effort:** the frontmatter pins the orchestrator's model and effort and the block above pins the sub-agent's, both at the effort of a trade-off step rather than an extraction step: the update revises the classic and draft recommendations against new information, so it inherits the classic analysis's trade-offs (transfers, hits, chips, captaincy). A judgement call, not a measurement; the levels, the reasoning and how far each override reaches are in `.agents/README.md` (Model and effort).
+
+**Other agents:** apply the brief inline in the same context.
 
 #### Sub-agent brief
 
