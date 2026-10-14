@@ -736,7 +736,7 @@ fpl preview --dry-run        # Build scout prompts without calling LLMs
 
 **Scout analysis** (`--scout`): Uses the research provider (LLM) to generate FPL expert-style BUY/SELL recommendations from web and social sources. Generates two versions: referenced (with citations) and clean (for LLM use).
 
-**A `--save` that did not save** exits **1** with `Failed to save report: <reason>` on stderr, after `--scout` has run if it was asked for: the scout writes to its own directory, so a failed report is no reason to skip it. It used to print that line on stdout and exit 0.
+**A `--save` that did not save** prints `Failed to save report: <reason>` on stderr as soon as it fails, still runs `--scout` if it was asked for (the scout writes to its own directory, so a failed report is no reason to skip it), and then exits **1**. It used to print that line on stdout and exit 0. `Generating report...` is on stderr too; preview's other progress lines are still on stdout.
 
 ### Gameweek Review
 

@@ -3986,6 +3986,16 @@ class TestReviewProgressAndFailureLinesStayOffStdout:
         assert "Could not fetch dream team" not in captured.out
         assert "### Dream Team" not in captured.out
 
+    async def test_a_dream_team_of_unknown_players_is_reported_on_stderr(self, capsys):
+        # #394 review: the heading was gated on the raw response, so a dream
+        # team naming no player the bootstrap knows printed an empty table.
+        data = await self._global_stats(dream_team={"team": [{"element": 999, "points": 20}]})
+
+        captured = capsys.readouterr()
+        assert "Dream team not available" in captured.err
+        assert "### Dream Team" not in captured.out
+        assert "dream_team" not in data
+
     async def test_a_dream_team_keeps_its_heading_and_table_on_stdout(self, capsys):
         data = await self._global_stats(dream_team={"team": [{"element": 401, "points": 9}]})
 

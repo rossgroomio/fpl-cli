@@ -8,6 +8,7 @@ import asyncio
 from typing import Any
 
 import click
+from rich.markup import escape as rich_escape
 from rich.panel import Panel
 from rich.table import Table
 
@@ -23,7 +24,6 @@ from fpl_cli.cli._context import (
     resolve_research_dir,
 )
 from fpl_cli.cli._helpers import _fdr_style
-from fpl_cli.cli._json import emit_failure
 from fpl_cli.models.player import POSITION_MAP
 from fpl_cli.season import season_label
 
@@ -280,11 +280,11 @@ def preview_command(ctx: click.Context, save: bool, output: str | None, scout: b
         _display_preview_summary(collected_data, custom_on=custom_on)
 
         # Generate report if requested
-        save_failure: str | None = None
+        save_failed = False
         if save:
             output_dir = resolve_output_dir(settings, output, season=season)
 
-            console.print("\n[dim]Generating report...[/dim]")
+            error_console.print("\n[dim]Generating report...[/dim]")
             async with ReportAgent(config={"output_dir": output_dir}) as report_agent:
                 report_result = await report_agent.run(context={
                     "report_type": "preview",
@@ -295,10 +295,15 @@ def preview_command(ctx: click.Context, save: bool, output: str | None, scout: b
             if report_result.success:
                 console.print(f"[green]✓[/green] Report saved to: {report_result.data['report_path']}")
             else:
-                # Reported once the scout has run: a report that failed to
-                # write is no reason to skip a separate LLM call the user also
-                # asked for, but the run still has to exit nonzero (#387).
-                save_failure = f"Failed to save report: {report_result.message}"
+                # Reported now, exit deferred until the scout has run: a
+                # report that failed to write is no reason to skip a separate
+                # LLM call the user also asked for, but the run still has to
+                # exit nonzero. Printing the reason here rather than at the
+                # exit keeps it if the scout block itself raises (#387).
+                error_console.print(
+                    f"[red]Failed to save report: {rich_escape(str(report_result.message))}[/red]"
+                )
+                save_failed = True
 
         # Run scout analysis if requested (or dry-run to preview prompts)
         if scout or dry_run:
@@ -373,8 +378,8 @@ def preview_command(ctx: click.Context, save: bool, output: str | None, scout: b
                 else:
                     error_console.print(f"[yellow]⚠[/yellow] Scout analysis: {scout_result.message}")
 
-        if save_failure:
-            emit_failure("preview", save_failure, "table")
+        if save_failed:
+            raise SystemExit(1)
 
     def _display_preview_summary(data: dict, *, custom_on: bool = True) -> None:
         """Display a summary of the preview analysis."""

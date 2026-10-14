@@ -112,31 +112,34 @@ async def _review_global_stats(
             dream_team_data = await client.get_dream_team(gw)
             dream_team_players = dream_team_data.get("team", [])
 
-            if dream_team_players:
-                dt_table = Table(show_header=True, header_style="bold")
-                dt_table.add_column("Player")
-                dt_table.add_column("Team")
-                dt_table.add_column("Pos")
-                dt_table.add_column("Pts", justify="right")
+            dt_table = Table(show_header=True, header_style="bold")
+            dt_table.add_column("Player")
+            dt_table.add_column("Team")
+            dt_table.add_column("Pos")
+            dt_table.add_column("Pts", justify="right")
 
-                dream_team_list = []
-                dream_team_by_id: dict[int, dict[str, Any]] = {}
-                for dt_player in dream_team_players:
-                    player = player_map.get(dt_player.get("element"))
-                    if player:
-                        team = teams.get(player.team_id)
-                        team_abbr = team.short_name if team else "???"
-                        pts = dt_player.get("points", 0)
-                        entry = {
-                            "name": player.web_name,
-                            "team": team_abbr,
-                            "position": player.position_name,
-                            "points": pts,
-                        }
-                        dream_team_list.append(entry)
-                        dream_team_by_id[player.id] = entry
-                        dt_table.add_row(player.web_name, team_abbr, player.position_name, str(pts))
+            dream_team_list = []
+            dream_team_by_id: dict[int, dict[str, Any]] = {}
+            for dt_player in dream_team_players:
+                player = player_map.get(dt_player.get("element"))
+                if player:
+                    team = teams.get(player.team_id)
+                    team_abbr = team.short_name if team else "???"
+                    pts = dt_player.get("points", 0)
+                    entry = {
+                        "name": player.web_name,
+                        "team": team_abbr,
+                        "position": player.position_name,
+                        "points": pts,
+                    }
+                    dream_team_list.append(entry)
+                    dream_team_by_id[player.id] = entry
+                    dt_table.add_row(player.web_name, team_abbr, player.position_name, str(pts))
 
+            # Gated on the rows that resolved, not the raw response: a dream
+            # team naming only players the bootstrap does not know would
+            # otherwise print a heading over an empty table.
+            if dream_team_list:
                 console.print("\n[bold]### Dream Team[/bold]")
                 console.print(dt_table)
 

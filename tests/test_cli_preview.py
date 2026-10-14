@@ -1,6 +1,7 @@
 """Tests for custom_analysis toggle on preview command."""
 from __future__ import annotations
 
+from contextlib import nullcontext
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from click.testing import CliRunner
@@ -414,7 +415,7 @@ class TestPreviewStatsWindow:
         assert "Performance Stats (Last 6 GWs)" in result.output
 
 
-def _run_preview_save(tmp_path, report_agent, *, scout=False):
+def _run_preview_save(tmp_path, report_agent, *, scout=False, research_dir_error=None):
     """Invoke `preview --save` with the report agent swapped for *report_agent*."""
     scout_agent = _make_agent(data={
         "content_referenced": "Scout body [1]",
@@ -437,6 +438,8 @@ def _run_preview_save(tmp_path, report_agent, *, scout=False):
         patch("fpl_cli.agents.data.price.PriceAgent", return_value=_make_agent(data={})),
         patch("fpl_cli.agents.data.scout.ScoutAgent", return_value=scout_agent),
         patch("fpl_cli.agents.orchestration.report.ReportAgent", return_value=report_agent),
+        patch("fpl_cli.cli.preview.resolve_research_dir", side_effect=research_dir_error)
+        if research_dir_error else nullcontext(),
     ):
         return CliRunner().invoke(preview_command, args, env={"PERPLEXITY_API_KEY": "test-key"})
 
@@ -452,14 +455,27 @@ class TestPreviewFailedSave:
         assert result.exit_code == 1
         assert "Failed to save report: disk full" in result.stderr
         assert "Failed to save report" not in result.stdout
+        assert "Generating report..." in result.stderr
+        assert "Generating report" not in result.stdout
 
     def test_a_failed_save_still_runs_the_scout_it_was_asked_for(self, tmp_path):
         result = _run_preview_save(tmp_path, make_agent(success=False, message="disk full"), scout=True)
 
         assert result.exit_code == 1
         assert any((tmp_path / "02_Research").rglob("gw25-scout-preview.md"))
-        # The reason is the last thing said, after the scout's own output.
-        assert result.stderr.rstrip().endswith("Failed to save report: disk full")
+        assert "Failed to save report: disk full" in result.stderr
+
+    def test_a_scout_that_crashes_does_not_swallow_the_save_failure(self, tmp_path):
+        # #394 review: the reason used to be held back until the scout had
+        # finished, so an exception there lost it.
+        result = _run_preview_save(
+            tmp_path, make_agent(success=False, message="disk full"), scout=True,
+            research_dir_error=PermissionError("read-only"),
+        )
+
+        assert result.exit_code == 1
+        assert isinstance(result.exception, PermissionError)
+        assert "Failed to save report: disk full" in result.stderr
 
     def test_a_successful_save_exits_0(self, tmp_path):
         report_path = str(tmp_path / "gw25-preview.md")
