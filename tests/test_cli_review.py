@@ -12,6 +12,7 @@ from fpl_cli.api.providers import LLMResponse, TokenUsage
 from fpl_cli.cli._context import ConfigError
 from fpl_cli.cli._helpers import _format_pts_display, _gw_position_with_half, _live_player_stats
 from fpl_cli.cli._review_classic import (
+    _empty_classic_team,
     _format_review_classic_player,
     _review_classic_league,
     _review_classic_team,
@@ -555,6 +556,11 @@ class TestReviewLlmSummariseSkipsTheHalfItCannotRun:
     `--save` -- the report as well.
     """
 
+    @pytest.fixture(autouse=True)
+    def _in_tmp_cwd(self, tmp_path, monkeypatch):
+        """Dry run writes `data/debug` relative to the cwd."""
+        monkeypatch.chdir(tmp_path)
+
     async def test_a_missing_research_provider_skips_only_that_half(self):
         synthesis = _StubSynthesisProvider(_reply(_WHOLE, "end_turn"))
         result = await _review_llm_summarise(
@@ -629,6 +635,11 @@ class TestReviewLlmSummariseWithNoDraftLeague:
     `KeyError` under classic, or under draft with no league id configured.
     """
 
+    @pytest.fixture(autouse=True)
+    def _in_tmp_cwd(self, tmp_path, monkeypatch):
+        """Dry run writes `data/debug` relative to the cwd."""
+        monkeypatch.chdir(tmp_path)
+
     async def _empty_from_review_draft(self):
         return await _review_draft(
             MagicMock(), None, None, 7, 7, [], {}, {}, {},
@@ -656,8 +667,36 @@ class TestReviewLlmSummariseWithNoDraftLeague:
 
         assert "DRY RUN" in result["research_summary"]
 
-    async def test_both_empty_shapes_are_the_same_shape(self):
-        assert await self._empty_from_review_draft() == _empty_draft_result()
+    async def test_the_empty_shape_has_every_key_of_a_populated_return(self):
+        """Against the return `_review_draft` builds after a fetch, not itself."""
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        client.get_league_details = AsyncMock(side_effect=httpx.ConnectError("down"))
+        with patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=client):
+            populated = await _review_draft(
+                MagicMock(), 1, 1, 7, 7, [], {}, {}, {},
+            )
+
+        assert set(_empty_draft_result()) == set(populated)
+
+    async def test_the_classic_stand_in_summarises_under_the_draft_format(self):
+        """The mirror image: a hidden classic section lacked `automatic_subs`."""
+        result = await _review_llm_summarise(
+            **_summarise_kwargs(classic_team=_empty_classic_team()),
+            dry_run=True,
+            research_provider=None,
+            synthesis_provider=None,
+        )
+
+        assert "DRY RUN" in result["research_summary"]
+
+    async def test_the_classic_stand_in_has_every_key_of_a_populated_return(self):
+        populated = await _review_classic_team(
+            MagicMock(), None, 7, {}, {}, {}, {},
+        )
+
+        assert set(_empty_classic_team()) == set(populated)
 
 
 class TestReportResearchCorrections:

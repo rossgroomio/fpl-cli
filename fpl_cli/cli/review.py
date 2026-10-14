@@ -28,7 +28,12 @@ from fpl_cli.cli._review_analysis import (
     _review_league_table,
     _review_next_gameweek,
 )
-from fpl_cli.cli._review_classic import _review_classic_league, _review_classic_team, _review_classic_transfers
+from fpl_cli.cli._review_classic import (
+    _empty_classic_team,
+    _review_classic_league,
+    _review_classic_team,
+    _review_classic_transfers,
+)
 from fpl_cli.cli._review_draft import _empty_draft_result, _review_draft
 from fpl_cli.cli._review_summarisation import _review_compare_recs, _review_llm_summarise
 from fpl_cli.season import season_label
@@ -294,10 +299,7 @@ def review_command(
                 )
             else:
                 # Must match return shape of _review_classic_team / _review_classic_transfers / _review_classic_league
-                classic_team = {
-                    "my_entry_summary": None, "active_chip": None,
-                    "team_points_data": [], "my_picks_data": [],
-                }
+                classic_team = _empty_classic_team()
                 classic_transfers_data = []
                 classic_league_data = None
 

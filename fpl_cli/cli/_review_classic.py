@@ -43,6 +43,23 @@ def _format_review_classic_player(p: dict) -> str:
     return _format_review_player(p, points_key="display_points", show_captain=True)
 
 
+def _empty_classic_team() -> dict[str, Any]:
+    """The `_review_classic_team` return shape with nothing in it.
+
+    The stand-in for a classic section that is not shown is built here, so the
+    keys `_review_llm_summarise` unpacks cannot drift from the real return --
+    `automatic_subs` once did, and `--summarise` under the draft format raised
+    `KeyError` (issue #376).
+    """
+    return {
+        "my_entry_summary": None,
+        "my_picks_data": [],
+        "team_points_data": [],
+        "automatic_subs": [],
+        "active_chip": None,
+    }
+
+
 async def _review_classic_team(
     client: FPLClient,
     entry_id: int | None,
@@ -264,6 +281,7 @@ async def _review_classic_team(
         error_console.print("[dim]Set classic_entry_id in config/settings.yaml to see your squad[/dim]")
 
     return {
+        **_empty_classic_team(),
         "my_entry_summary": my_entry_summary,
         "my_picks_data": my_picks_data,
         "team_points_data": team_points_data,

@@ -29,10 +29,10 @@ if TYPE_CHECKING:
     from fpl_cli.models.team import Team
 
 
-DEFAULT_DRAFT_LEAGUE_NAME = "Draft League"
+_DEFAULT_DRAFT_LEAGUE_NAME = "Draft League"
 
 
-def _empty_draft_result(draft_league_name: str = DEFAULT_DRAFT_LEAGUE_NAME) -> dict[str, Any]:
+def _empty_draft_result(draft_league_name: str = _DEFAULT_DRAFT_LEAGUE_NAME) -> dict[str, Any]:
     """The `_review_draft` return shape with nothing in it.
 
     Every path that stands in for a draft section -- no league configured, or
@@ -90,7 +90,7 @@ async def _review_draft(
         return _empty_draft_result()
 
     draft_league_data = None
-    draft_league_name = DEFAULT_DRAFT_LEAGUE_NAME
+    draft_league_name = _DEFAULT_DRAFT_LEAGUE_NAME
     draft_squad_points_data = []
     draft_transactions_data = []
     draft_lost_claims_data = []
@@ -117,7 +117,7 @@ async def _review_draft(
 
             # Get standings and entry mapping
             # Note: standings use 'league_entry' which maps to 'id' in league_entries
-            draft_league_name = league_details.get("league", {}).get("name", DEFAULT_DRAFT_LEAGUE_NAME)
+            draft_league_name = league_details.get("league", {}).get("name", _DEFAULT_DRAFT_LEAGUE_NAME)
             standings = league_details.get("standings", [])
             league_entries = league_details.get("league_entries", [])
             entry_map = {e.get("id"): e for e in league_entries}
@@ -511,8 +511,8 @@ async def _review_draft(
         error_console.print(f"[yellow]Could not fetch draft league data: {rich_escape(str(e))}[/yellow]")
 
     return {
+        **_empty_draft_result(draft_league_name),
         "draft_league_data": draft_league_data,
-        "draft_league_name": draft_league_name,
         "draft_squad_points_data": draft_squad_points_data,
         "draft_transactions_data": draft_transactions_data,
         "draft_lost_claims_data": draft_lost_claims_data,
