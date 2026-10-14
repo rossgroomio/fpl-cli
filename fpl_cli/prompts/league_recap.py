@@ -13,6 +13,7 @@ from fpl_cli.cli._league_recap_types import (
     contested_draft_claims,
     draft_transaction_kind_counts,
     draft_transaction_kind_label,
+    draft_transaction_kind_nets,
     format_contested_claim,
     format_move_counts,
     place_label,
@@ -72,7 +73,7 @@ Your audience is every member of this league. They want entertainment first, inf
 - A waiver is a competition, so a manager can be busy and still have no move to show for it. The "## Waivers and Free Agents" section separates the two cases and the distinction is not optional: only the managers it lists as having made no moves AND submitted no claims sat the waiver wire out. A manager it lists as having claimed a player and lost him to a rival WAS active - they spent a claim, at the priority the line states, and were beaten to the player. Say they tried and missed, never that they did nothing, "sat it out", "stayed put", "didn't bother", "kept their powder dry" or "showed restraint", and never assign a motive - discipline, laziness, apathy - to an absence from the movers list. The same goes for a mover's "also claimed and lost" tail: it is extra activity, not a move they made.
 - The "Contested players" lines at the end of that section are the only source for who else wanted a player. Each names one player, how many managers claimed him, who won him and who was beaten to him, with the priority each beaten manager gave the claim - their own ranking of the claims they submitted that week, not the league's waiver order. Use the count verbatim; never call a player contested, "in demand" or "wanted by half the league" unless a line lists him, and never say a manager wanted, chased or missed out on a player unless the line names them. Where the beaten managers on a line carry no (free agent) or (other move) tag, it was a waiver race and the winner won by standing higher in the league's waiver order - you may say that, and nothing else about anyone's waiver position, which the data does not state. A line whose beaten managers are tagged (free agent) was first-come-first-served, so say nothing about waiver order there at all. Where a line says the winner could not be identified, name nobody as having won him.
 - Each "Contested players" line is one race, and its roles are fixed: the manager it says won him won him, and only the managers it says were beaten to him were beaten to him. Write every race as its own clause, naming its winner and beaten managers in exactly those roles. NEVER fold two lines into one clause - no "respectively", no "X and Y were beaten to A and B", no list of managers set against a list of players - because a manager who won one race and lost the next is then easily put in the wrong role. One beaten manager may be named once against several players ("beaten to both A and B") only when every one of those lines names them as beaten.
-- A "## Transfers" or "## Waivers and Free Agents" line holds two kinds of figure, and they are never interchangeable. The figures in its brackets - the move count, the hit and the net overall - describe the manager's whole gameweek; the swing after each move describes that move alone. Attach a move's swing only to that move, and the overall net only to the manager or to their moves taken together ("-6 net overall", "-6 across both transfers after the hit") - NEVER to one named move, because on a line with more than one move or a hit it is a different number. The hit is charged for the gameweek's transfers together, never for any one of them: say a manager took a hit, never that they took it "to bring in", "for" or "on" a named player.
+- A "## Transfers" or "## Waivers and Free Agents" line holds two kinds of figure, and they are never interchangeable. The figures in its brackets - the move count, the hit and the net overall - describe the manager's whole gameweek; the swing after each move describes that move alone. Attach a move's swing only to that move, and the overall net only to the manager or to their moves taken together ("-6 net overall", "-6 across both transfers after the hit") - NEVER to one named move, because on a line with more than one move or a hit it is a different number. A draft line whose moves are of more than one kind also gives each kind's net in its brackets ("waivers -1, free agents +4"), which is that kind's moves alone: say a figure is a manager's waivers' or free agents' only when it is that kind's own, so on such a line the net overall is their moves' net ("their moves netted +3 overall"), NEVER their waivers' or their free agents'. The hit is charged for the gameweek's transfers together, never for any one of them: say a manager took a hit, never that they took it "to bring in", "for" or "on" a named player.
 - NEVER claim a manager's bench outscored their team unless bench points are strictly greater than their GW points. Use the exact numbers provided.
 - NEVER alter player or manager names. Use the exact spelling provided in the data.
 - NEVER state a club for a player other than the club given for them in this data - the "## Player Clubs" section, or the club printed beside a name elsewhere. Players change clubs in the transfer windows and your own knowledge of who plays where goes a season out of date, so that section is the only authority. A player it does not list has no club you can state: name them alone ("Haaland's 2 points") rather than supplying one from memory.
@@ -636,7 +637,10 @@ def format_recap_waivers_context(data: LeagueRecapData) -> str:
 
     Every move carries its kind, so the editorial can tell a waiver claim
     from a free-agent pickup instead of calling every move a waiver (#146),
-    using the same labels the awards print. Empty for classic (transfers,
+    using the same labels the awards print. A manager whose moves mix kinds
+    also gets each kind's net beside the net overall ("waivers -1, free
+    agents +4, net +3 overall"): given only the combined figure, the
+    editorial said it of the waivers (#390). Empty for classic (transfers,
     not waivers) and when nobody moved.
 
     The contested block closes the section: every race, in the sentence the
@@ -677,7 +681,15 @@ def format_recap_waivers_context(data: LeagueRecapData) -> str:
             for t in moves
         )
         net = sum(t["net"] for t in moves)
-        line = f"- **{name}** ({summary}, net {net:+d} overall): {moves_text}"
+        # A manager whose moves mix kinds gets each kind's net too, or the
+        # editorial has only the combined figure to say of their waivers and
+        # pins it there ("his waiver moves netted +3 overall", #390).
+        kind_nets = draft_transaction_kind_nets(moves)
+        by_kind = (
+            "; " + ", ".join(f"{label}s {kind_net:+d}" for label, kind_net in kind_nets)
+            if len(kind_nets) > 1 else ""
+        )
+        line = f"- **{name}** ({summary}{by_kind}, net {net:+d} overall): {moves_text}"
         if lost:
             line += f" | also claimed and lost: {_format_lost_claims(lost)}"
         movers.append((net, name, line))

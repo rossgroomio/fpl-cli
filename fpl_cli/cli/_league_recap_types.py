@@ -192,6 +192,21 @@ def draft_transaction_kind_counts(
     return [(label, counts[label]) for label in DRAFT_TRANSACTION_LABEL_ORDER]
 
 
+def draft_transaction_kind_nets(
+    txns: list[RecapDraftTransaction],
+) -> list[tuple[str, int]]:
+    """Each kind's net across a manager's raw draft transactions, in the
+    fixed display order, for the kinds present only. A manager whose moves
+    mix kinds gets these beside the net overall on the editorial's waiver
+    roster, so the editorial has a figure for their waivers alone rather
+    than only the combined one (issue #390)."""
+    nets: dict[str, int] = {}
+    for t in txns:
+        label = draft_transaction_kind_label(t["kind"])
+        nets[label] = nets.get(label, 0) + t["net"]
+    return [(label, nets[label]) for label in DRAFT_TRANSACTION_LABEL_ORDER if label in nets]
+
+
 def format_move_counts(breakdown: list[tuple[str, int]]) -> str:
     """Render a labelled count breakdown as prose: "2 transfers", "1 free
     agent", or across more than one kind "3 moves: 2 waivers, 1 free agent".

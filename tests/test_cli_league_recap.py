@@ -1504,6 +1504,72 @@ class TestNetAndTieClaims:
         assert "(2 transfers, -4 hit, net -6 overall after the hit)" in user_prompt
 
 
+class TestKindScopedNets:
+    """#390: a draft editorial said of a manager who made one waiver (-1) and
+    one free-agent pickup (+4) that "his waiver moves netted +3 overall", the
+    two moves' combined net. Checked like the other editorial claims: one
+    retry told what was wrong, then a warning if the retry still is."""
+
+    _WRONG = "Alice had a week to forget. Her waiver moves netted +3 overall."
+    _RIGHT = "Alice had a week to forget. Her waiver lost a point, and her moves netted +3 overall."
+
+    def _data(self) -> LeagueRecapData:
+        def _txn(name_in: str, in_pts: int, name_out: str, out_pts: int, kind: str) -> RecapDraftTransaction:
+            return RecapDraftTransaction(
+                player_in=name_in, player_in_team="MCI", player_in_points=in_pts,
+                player_out=name_out, player_out_team="TOT", player_out_points=out_pts,
+                net=in_pts - out_pts, kind=kind,
+            )
+
+        return _recap_data(
+            gameweek=5, fpl_format="draft",
+            managers=[
+                _manager(
+                    name="Alice", entry_id=1, league_entry_id=10,
+                    transactions=[_txn("Hinshelwood", 0, "Sangaré", 1, "w"), _txn("Manzambi", 5, "Yalcouyé", 1, "f")],
+                ),
+                _manager(
+                    name="Bob", entry_id=2, league_entry_id=20, gw_rank=2, overall_rank=2, transactions=[],
+                ),
+            ],
+            cohort=_cohort((10, "Alice", 1, 60, 300), (20, "Bob", 2, 50, 290)),
+        )
+
+    def _invoke(self, args: list[str], *replies: str):
+        stub, provider = _queued_provider(*replies)
+        with provider:
+            result = _invoke_recap(
+                self._data(), ["--draft", "--summarise", *args],
+                settings={"fpl": {"draft_league_id": 42}},
+            )
+        return stub, result
+
+    def test_the_retry_is_told_and_a_clean_retry_ships(self):
+        stub, result = self._invoke(["--format", "json"], self._WRONG, self._RIGHT)
+
+        assert result.exit_code == 0, result.stderr
+        first, retry = stub.prompts
+        assert "(2 moves: 1 waiver, 1 free agent; waivers -1, free agents +4, net +3 overall)" in first
+        corrections = retry[len(first):]
+        assert '"waiver moves netted +3" of Alice' in corrections
+        assert "never their waivers' or their free agents'" in corrections
+        envelope = json.loads(result.stdout)
+        assert self._RIGHT in envelope["metadata"]["synthesis_summary"]
+        assert not [w for w in envelope["metadata"]["warnings"] if w["code"].startswith("synthesis_")]
+
+    def test_a_claim_that_survives_the_retry_gets_a_warning(self):
+        _, result = self._invoke(["--format", "json"], self._WRONG, self._WRONG)
+
+        assert result.exit_code == 0, result.stderr
+        warnings = {w["code"]: w["message"] for w in json.loads(result.stdout)["metadata"]["warnings"]}
+        assert warnings["synthesis_kind_net_misattribution"] == (
+            "The editorial gives one kind of a manager's moves a figure that is not that kind's own. "
+            'The editorial says "waiver moves netted +3" of Alice, but +3 is Alice\'s net for the whole '
+            "gameweek (2 moves: 1 waiver, 1 free agent), not the waivers' own net of -1."
+        )
+        assert "synthesis_net_misattribution" not in warnings
+
+
 class TestFinesAreRecordedNotJustRendered:
     def test_a_live_capture_records_what_was_ruled_even_when_nothing_triggered(self):
         """`fines == []` says three different things at once without this; the
@@ -3921,7 +3987,7 @@ class TestEndToEndPromptThroughTheFullCommand:
         assert "## Waivers and Free Agents" in user_prompt
         assert "Total managers who made waiver or free-agent moves: 1 of 2" in user_prompt
         assert (
-            "- **Alice** (2 moves: 1 waiver, 1 free agent, net +4 overall): "
+            "- **Alice** (2 moves: 1 waiver, 1 free agent; waivers -1, free agents +5, net +4 overall): "
             "Savinho (0 pts) in for Maddison (1 pt), -1 [waiver]; "
             "Dango (6 pts) in for Georginio (1 pt), +5 [free agent]"
         ) in user_prompt
