@@ -754,6 +754,37 @@ def _classic_fines_league_data(
     return fallback
 
 
+def _did_not_play(entry: dict[str, Any]) -> bool:
+    """0 minutes; the pick multiplier stands in only where minutes are not carried.
+
+    The multiplier says whether he was subbed out, not whether he played: a
+    captain on 0 minutes whom no bench player could replace keeps his. The
+    league recap reads minutes for the same reason.
+    """
+    minutes = entry.get("minutes")
+    if minutes is None:
+        return not entry.get("contributed", True)
+    return minutes == 0
+
+
+def _armband(
+    team_points: Sequence[dict[str, Any]],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None, int]:
+    """The named captain, the player whose score the armband multiplied, and the multiplier.
+
+    The vice takes the armband when the captain does not play, and nobody
+    does when neither plays (docs/fpl-rules.md), so the holder is the
+    captain, the vice or None. One definition for the hindsight line the
+    LLM gets and the `--compare-recs` grade, so they cannot drift apart.
+    """
+    captain = next((p for p in team_points if p.get("is_captain")), None)
+    multiplier = 3 if captain and captain.get("is_triple_captain") else 2
+    if captain is None or not _did_not_play(captain):
+        return captain, captain, multiplier
+    vice = next((p for p in team_points if p.get("is_vice")), None)
+    return captain, (vice if vice is not None and not _did_not_play(vice) else None), multiplier
+
+
 def _format_league_context(
     classic_league_data: dict[str, Any] | None,
     draft_league_data: dict[str, Any] | None,
@@ -803,16 +834,13 @@ def _format_league_context(
             lines.append(f"- Rank {p.get('rank_str', '?')}: {name} - {performer_score(p)}")
         draft_worst_performers_str = "\n".join(lines)
 
-    captain_pick = next((p for p in team_points_data if p.get("is_captain")), None)
+    captain_pick, armband_pick, multiplier = _armband(team_points_data)
     captain_name = captain_pick["name"] if captain_pick else "Unknown"
     if captain_pick:
-        multiplier = 3 if captain_pick.get("is_triple_captain") else 2
         raw = captain_pick["points"]
         displayed = captain_pick["display_points"]
         captain_label = f"{captain_name} ({displayed} pts = {raw} raw × {multiplier})"
     else:
-        multiplier = 2
-        raw = 0
         captain_label = "Unknown (0 pts)"
     captain_points = captain_pick["display_points"] if captain_pick else 0
 
@@ -825,27 +853,21 @@ def _format_league_context(
     # holder), not the captain's 0, otherwise the swing is inflated.
     captain_hindsight = "N/A"
     if captain_pick and team_points_data:
-        captain_contributed = captain_pick.get("contributed", True)
-        if captain_contributed:
-            baseline_raw = raw
+        if armband_pick is captain_pick:
+            baseline_raw = captain_pick["points"]
             baseline_name = captain_name
             baseline_note = ""
-        else:
-            vice = next(
-                (p for p in team_points_data if p.get("is_vice_active")),
-                None,
+        elif armband_pick is not None:
+            baseline_raw = armband_pick["points"]
+            baseline_name = armband_pick["name"]
+            baseline_note = (
+                f" (captain {captain_name} didn't play; vice {baseline_name} "
+                f"auto-got the armband)"
             )
-            if vice and vice.get("contributed", True):
-                baseline_raw = vice["points"]
-                baseline_name = vice["name"]
-                baseline_note = (
-                    f" (captain {captain_name} didn't play; vice {baseline_name} "
-                    f"auto-got the armband)"
-                )
-            else:
-                baseline_raw = None
-                baseline_name = captain_name
-                baseline_note = ""
+        else:
+            baseline_raw = None
+            baseline_name = captain_name
+            baseline_note = ""
 
         if baseline_raw is None:
             captain_hindsight = (
@@ -856,8 +878,8 @@ def _format_league_context(
             contributed_players = [
                 p for p in team_points_data
                 if (p.get("contributed", True) or p.get("auto_sub_in"))
-                and not p.get("is_captain")
-                and not p.get("is_vice_active")
+                and p is not captain_pick
+                and p is not armband_pick
             ]
             best_alt = max(contributed_players, key=lambda p: p["points"], default=None)
             if best_alt and best_alt["points"] > baseline_raw:
@@ -1488,26 +1510,17 @@ def _review_compare_recs(recs: dict, collected_data: dict, gameweek: int | None 
     # --- Classic Captain ---
     rec_captain = recs["classic"].get("captain")
     if rec_captain:
-        actual_captain_entry = next(
-            (p for p in team_points if p.get("is_captain")),
-            None,
-        )
-        actual_captain = actual_captain_entry["name"] if actual_captain_entry else None
         # Both sides are captain points: a raw score times the multiplier that
         # applied that week. `display_points` carries it for the armband holder
         # alone, so reading it for both sides set a doubled score against an
         # undoubled one (#400) -- and the vice who stood in would be doubled
         # twice.
-        multiplier = 3 if actual_captain_entry and actual_captain_entry.get("is_triple_captain") else 2
-        # A captain who did not play hands the armband to the vice, so what it
-        # earned is the vice's score, not the captain's 0.
-        armband_entry = actual_captain_entry
-        if actual_captain_entry is not None and not actual_captain_entry.get("contributed", True):
-            armband_entry = next(
-                (p for p in team_points if p.get("is_vice_active") and p.get("contributed", True)),
-                None,
-            )
-        actual_captain_pts = armband_entry.get("points", 0) * multiplier if armband_entry else 0
+        actual_captain_entry, armband_entry, multiplier = _armband(team_points)
+        actual_captain = actual_captain_entry["name"] if actual_captain_entry else None
+        # What the armband earned: the vice's score when the captain did not
+        # play, and nobody's when neither did.
+        armband_raw = armband_entry.get("points", 0) if armband_entry else 0
+        actual_captain_pts = armband_raw * multiplier
 
         hits = _resolve_name(
             rec_captain, recs["classic"].get("captain_team"),
@@ -1516,12 +1529,16 @@ def _review_compare_recs(recs: dict, collected_data: dict, gameweek: int | None 
         comparison["classic"]["rec_captain"] = rec_captain
         comparison["classic"]["actual_captain"] = actual_captain
         comparison["classic"]["actual_captain_pts"] = actual_captain_pts
+        if actual_captain_entry is not None:
+            comparison["classic"]["actual_captain_played"] = armband_entry is actual_captain_entry
         if armband_entry is not None and armband_entry is not actual_captain_entry:
             comparison["classic"]["actual_armband"] = armband_entry["name"]
 
-        if len(hits) > 1:
-            # Which player was meant is unknown, so there is no followed or
-            # not, and no points to set against the actual captain.
+        if not team_points or len(hits) > 1:
+            # No squad to look in, or a name that fits more than one player in
+            # it: there is no followed or not, and no points to set against the
+            # actual captain. A squad that could not be read is not one the
+            # recommended captain is missing from.
             comparison["classic"]["captain_followed"] = None
             comparison["classic"]["captain_ungraded"] = True
         else:
@@ -1532,21 +1549,30 @@ def _review_compare_recs(recs: dict, collected_data: dict, gameweek: int | None 
             # price, and a 0 would read as one who blanked.
             comparison["classic"]["rec_captain_in_squad"] = rec_entry is not None
             if rec_entry is not None:
-                # Nor one who did not play: the armband would have passed to
-                # a vice, and a transfer week's recommendation names none, so
-                # any price for it is a guess at who that would have been.
+                # Nor one who did not play: his armband would have passed to a
+                # vice. A transfer week's recommendation names none, and pricing
+                # only the weeks that do would grade the same miss two ways.
+                # Minutes alone decide it here: off the bench, his multiplier is
+                # 0 whether he played or not.
                 rec_played = rec_entry.get("minutes") != 0
                 comparison["classic"]["rec_captain_played"] = rec_played
                 if followed or rec_played:
-                    rec_captain_pts = rec_entry.get("points", 0) * multiplier
+                    rec_raw = rec_entry.get("points", 0)
+                    rec_captain_pts = rec_raw * multiplier
                     comparison["classic"]["rec_captain_pts"] = rec_captain_pts
-                    # What the armband earned less what it would have earned
-                    # on the recommended player: the gap between the two
-                    # figures the report prints, not the change to the team
-                    # total.
+                    # The gap between the two figures the report prints.
                     comparison["classic"]["captain_pts_delta"] = (
                         0 if followed else actual_captain_pts - rec_captain_pts
                     )
+                    # The change to the team total is smaller: both raw scores
+                    # count once either way, so only the extra multiplier moves
+                    # -- the captain hindsight's arithmetic. It holds only when
+                    # he was in the side that scored; captaining a player left
+                    # on the bench would have changed the XI as well.
+                    if followed:
+                        comparison["classic"]["captain_total_delta"] = 0
+                    elif rec_entry.get("contributed", True):
+                        comparison["classic"]["captain_total_delta"] = (armband_raw - rec_raw) * (multiplier - 1)
 
     # --- Classic Transfers ---
     # GW1 has no transfers to make, so an empty transfer list is not a rolled

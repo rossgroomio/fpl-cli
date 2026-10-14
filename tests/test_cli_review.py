@@ -61,7 +61,7 @@ def _classic_player(
     bgw=False,
     dgw=False,
     points=None,
-    is_vice_active=False,
+    is_vice=False,
     minutes=None,
 ):
     return {
@@ -74,7 +74,7 @@ def _classic_player(
         "display_points": display_points,
         "contributed": contributed,
         "is_captain": is_captain,
-        "is_vice_active": is_vice_active,
+        "is_vice": is_vice,
         "is_triple_captain": is_triple_captain,
         "auto_sub_in": auto_sub_in,
         "auto_sub_out": auto_sub_out,
@@ -1096,6 +1096,8 @@ class TestReviewCompareRecsCaptain:
         assert result["classic"]["rec_captain_pts"] == 6  # 3 x 2
         assert result["classic"]["actual_captain_pts"] == 14  # 7 x 2
         assert result["classic"]["captain_pts_delta"] == 8  # 14 - 6
+        assert result["classic"]["captain_total_delta"] == 4  # (7 - 3) x (2 - 1)
+        assert result["classic"]["actual_captain_played"] is True
         assert "actual_armband" not in result["classic"]
 
     def test_triple_captain_triples_both_sides(self):
@@ -1110,13 +1112,14 @@ class TestReviewCompareRecsCaptain:
         assert result["classic"]["rec_captain_pts"] == 9
         assert result["classic"]["actual_captain_pts"] == 21
         assert result["classic"]["captain_pts_delta"] == 12
+        assert result["classic"]["captain_total_delta"] == 8  # (7 - 3) x (3 - 1)
 
     def test_recommended_vice_who_stood_in_is_not_doubled_twice(self):
         """The captain blanked, so the armband went to the vice -- the player
         recommended. The armband earned his score either way."""
         recs = _make_recs(captain="Salah")
         collected = _make_collected(team_points=[
-            _classic_player(name="Salah", points=6, display_points=12, is_vice_active=True),
+            _classic_player(name="Salah", points=6, display_points=12, is_vice=True),
             _classic_player(name="Haaland", points=0, display_points=0, is_captain=True, contributed=False),
         ])
         result = _review_compare_recs(recs, collected)
@@ -1130,7 +1133,7 @@ class TestReviewCompareRecsCaptain:
         recs = _make_recs(captain="Salah")
         collected = _make_collected(team_points=[
             _classic_player(name="Salah", points=8, display_points=8),
-            _classic_player(name="Saka", points=5, display_points=10, is_vice_active=True),
+            _classic_player(name="Saka", points=5, display_points=10, is_vice=True),
             _classic_player(name="Haaland", points=0, display_points=0, is_captain=True, contributed=False),
         ])
         result = _review_compare_recs(recs, collected)
@@ -1142,13 +1145,61 @@ class TestReviewCompareRecsCaptain:
         recs = _make_recs(captain="Salah")
         collected = _make_collected(team_points=[
             _classic_player(name="Salah", points=8, display_points=8),
-            _classic_player(name="Saka", points=0, display_points=0, contributed=False, is_vice_active=True),
+            _classic_player(name="Saka", points=0, display_points=0, contributed=False, is_vice=True),
             _classic_player(name="Haaland", points=0, display_points=0, is_captain=True, contributed=False),
         ])
         result = _review_compare_recs(recs, collected)
         assert "actual_armband" not in result["classic"]
         assert result["classic"]["actual_captain_pts"] == 0
         assert result["classic"]["captain_pts_delta"] == -16
+
+    def test_a_captain_on_zero_minutes_who_kept_his_multiplier_hands_over_the_armband(self):
+        """No bench player could replace him, so his pick multiplier stayed,
+        but the vice still took the armband: minutes decide, not the pick."""
+        recs = _make_recs(captain="Salah")
+        collected = _make_collected(team_points=[
+            _classic_player(name="Salah", points=8, display_points=8, minutes=90),
+            _classic_player(name="Saka", points=5, display_points=5, is_vice=True, minutes=90),
+            _classic_player(name="Haaland", points=0, display_points=0, is_captain=True, minutes=0),
+        ])
+        result = _review_compare_recs(recs, collected)
+        assert result["classic"]["actual_captain_played"] is False
+        assert result["classic"]["actual_armband"] == "Saka"
+        assert result["classic"]["actual_captain_pts"] == 10
+        assert result["classic"]["captain_pts_delta"] == -6
+
+    def test_a_captain_who_played_keeps_the_armband_whatever_the_vice_did(self):
+        recs = _make_recs(captain="Salah")
+        collected = _make_collected(team_points=[
+            _classic_player(name="Salah", points=8, display_points=8, minutes=90),
+            _classic_player(name="Saka", points=0, display_points=0, is_vice=True, minutes=0),
+            _classic_player(name="Haaland", points=1, display_points=2, is_captain=True, minutes=10),
+        ])
+        result = _review_compare_recs(recs, collected)
+        assert result["classic"]["actual_captain_played"] is True
+        assert "actual_armband" not in result["classic"]
+        assert result["classic"]["actual_captain_pts"] == 2
+
+    def test_a_benched_recommended_captain_has_no_total_delta(self):
+        """Captaining him would have meant starting him, so the XI changes
+        too and only the captain points can be compared."""
+        recs = _make_recs(captain="Salah")
+        collected = _make_collected(team_points=[
+            _classic_player(name="Salah", points=9, display_points=9, contributed=False, minutes=90),
+            _classic_player(name="Haaland", points=7, display_points=14, is_captain=True, minutes=90),
+        ])
+        result = _review_compare_recs(recs, collected)
+        assert result["classic"]["captain_pts_delta"] == -4  # 14 - 18
+        assert "captain_total_delta" not in result["classic"]
+
+    def test_an_unknown_squad_is_ungraded_not_missing_the_captain(self):
+        """No team data (no entry id, or the fetch failed) is not a squad the
+        recommended captain is absent from."""
+        result = _review_compare_recs(_make_recs(captain="Salah"), _make_collected(team_points=[]))
+        assert result["classic"]["captain_ungraded"] is True
+        assert result["classic"]["captain_followed"] is None
+        assert "rec_captain_in_squad" not in result["classic"]
+        assert "captain_pts_delta" not in result["classic"]
 
     def test_recommended_captain_outside_the_squad_is_not_priced_as_a_blank(self):
         recs = _make_recs(captain="Palmer")
@@ -1192,7 +1243,7 @@ class TestReviewCompareRecsCaptain:
     def test_a_followed_captain_who_did_not_play_has_no_delta(self):
         recs = _make_recs(captain="Haaland")
         collected = _make_collected(team_points=[
-            _classic_player(name="Salah", points=6, display_points=12, is_vice_active=True, minutes=90),
+            _classic_player(name="Salah", points=6, display_points=12, is_vice=True, minutes=90),
             _classic_player(
                 name="Haaland", points=0, display_points=0, is_captain=True, contributed=False, minutes=0,
             ),
@@ -1209,18 +1260,20 @@ class TestReviewCompareRecsCaptain:
         ])
         _print_captain_comparison(_review_compare_recs(recs, collected)["classic"])
         out = " ".join(capsys.readouterr().out.split())  # undo Rich's wrap at 80 columns
-        assert "Rec Salah (6 pts) → Actual Haaland (14 pts) [+8 captain pts]" in out
+        assert "Rec Salah (6 pts) → Actual Haaland (14 pts) [+8 captain pts, +4 on your total]" in out
 
     def test_console_names_the_vice_who_took_the_armband(self, capsys):
         recs = _make_recs(captain="Salah")
         collected = _make_collected(team_points=[
             _classic_player(name="Salah", points=8, display_points=8),
-            _classic_player(name="Saka", points=5, display_points=10, is_vice_active=True),
+            _classic_player(name="Saka", points=5, display_points=10, is_vice=True),
             _classic_player(name="Haaland", points=0, display_points=0, is_captain=True, contributed=False),
         ])
         _print_captain_comparison(_review_compare_recs(recs, collected)["classic"])
         out = " ".join(capsys.readouterr().out.split())  # undo Rich's wrap at 80 columns
-        assert "Actual Haaland, vice Saka took the armband (10 pts) [-6 captain pts]" in out
+        assert (
+            "Actual Haaland (didn't play; vice Saka took the armband, 10 pts) [-6 captain pts, -3 on your total]"
+        ) in out
 
     def test_console_says_did_not_play_rather_than_zero(self, capsys):
         recs = _make_recs(captain="Salah")
@@ -1232,6 +1285,37 @@ class TestReviewCompareRecsCaptain:
         out = " ".join(capsys.readouterr().out.split())  # undo Rich's wrap at 80 columns
         assert "Rec Salah (didn't play) \u2192 Actual Haaland (14 pts)" in out
         assert "captain pts]" not in out
+
+    def test_console_says_the_actual_captain_did_not_play(self, capsys):
+        recs = _make_recs(captain="Salah")
+        collected = _make_collected(team_points=[
+            _classic_player(name="Salah", points=8, display_points=8, minutes=90),
+            _classic_player(name="Saka", points=0, display_points=0, is_vice=True, minutes=0),
+            _classic_player(name="Haaland", points=0, display_points=0, is_captain=True, minutes=0),
+        ])
+        _print_captain_comparison(_review_compare_recs(recs, collected)["classic"])
+        out = " ".join(capsys.readouterr().out.split())  # undo Rich's wrap at 80 columns
+        assert "Actual Haaland (didn't play, 0 pts) [-16 captain pts, -8 on your total]" in out
+
+    def test_console_leaves_out_a_total_it_cannot_know(self, capsys):
+        recs = _make_recs(captain="Salah")
+        collected = _make_collected(team_points=[
+            _classic_player(name="Salah", points=9, display_points=9, contributed=False, minutes=90),
+            _classic_player(name="Haaland", points=7, display_points=14, is_captain=True, minutes=90),
+        ])
+        _print_captain_comparison(_review_compare_recs(recs, collected)["classic"])
+        out = " ".join(capsys.readouterr().out.split())  # undo Rich's wrap at 80 columns
+        assert "[-4 captain pts]" in out
+        assert "on your total" not in out
+
+    def test_console_with_no_squad_says_unknown_not_none(self, capsys):
+        _print_captain_comparison(
+            _review_compare_recs(_make_recs(captain="Salah"), _make_collected(team_points=[]))["classic"],
+        )
+        out = " ".join(capsys.readouterr().out.split())  # undo Rich's wrap at 80 columns
+        assert "Rec Salah → Actual unknown (not graded)" in out
+        assert "None" not in out
+        assert "not in squad" not in out
 
     def test_console_says_not_in_squad_rather_than_zero(self, capsys):
         recs = _make_recs(captain="Palmer")
