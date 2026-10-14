@@ -318,6 +318,116 @@ class TestTemplateRendering:
         assert "Recommended but not fielded: Gabriel, Salah" in output
         assert "Unadvised" not in output
 
+    def test_review_report_prices_the_captain_rows_like_for_like(self):
+        """#400: both rows are captain points, and the header says so."""
+        data = _review_data()
+        data["recs_comparison"] = {
+            "classic": {
+                "rec_captain": "Salah", "actual_captain": "Haaland", "actual_captain_pts": 14,
+                "captain_followed": False, "rec_captain_in_squad": True,
+                "rec_captain_pts": 6, "captain_pts_delta": 8,
+                "rec_roll": False, "actual_roll": False, "no_transfers_possible": False,
+                "transfers": [], "unadvised_transfers": [],
+            },
+            "draft": {"waivers": [], "unadvised_waivers": []},
+        }
+        output = self.agent._generate_review_report(29, data)
+        assert "| | Recommended | Actual | Captain Pts |" in output
+        assert "| Captain | Salah | Haaland | 14 |" in output
+        assert "| _If followed_ | Salah | - | 6 |" in output
+        # No total change known, so no sentence claiming one
+        assert "to your total" not in output
+
+    def test_review_report_states_the_change_to_the_total(self):
+        data = _review_data()
+        data["recs_comparison"] = {
+            "classic": {
+                "rec_captain": "Salah", "actual_captain": "Haaland", "actual_captain_pts": 14,
+                "actual_captain_played": True, "captain_followed": False, "rec_captain_in_squad": True,
+                "rec_captain_played": True, "rec_captain_pts": 6, "captain_pts_delta": 8,
+                "captain_total_delta": 4,
+                "rec_roll": False, "actual_roll": False, "no_transfers_possible": False,
+                "transfers": [], "unadvised_transfers": [],
+            },
+            "draft": {"waivers": [], "unadvised_waivers": []},
+        }
+        output = self.agent._generate_review_report(29, data)
+        assert "| _If followed_ | Salah | - | 6 |\n\nYour captain choice was worth +4 to your total" in output
+
+    def test_review_report_says_the_actual_captain_did_not_play(self):
+        data = _review_data()
+        data["recs_comparison"] = {
+            "classic": {
+                "rec_captain": "Salah", "actual_captain": "Haaland", "actual_captain_pts": 0,
+                "actual_captain_played": False, "captain_followed": False, "rec_captain_in_squad": True,
+                "rec_captain_pts": 16, "captain_pts_delta": -16,
+                "rec_roll": False, "actual_roll": False, "no_transfers_possible": False,
+                "transfers": [], "unadvised_transfers": [],
+            },
+            "draft": {"waivers": [], "unadvised_waivers": []},
+        }
+        output = self.agent._generate_review_report(29, data)
+        assert "| Captain | Salah | Haaland (didn't play) | 0 |" in output
+
+    def test_review_report_with_no_squad_prints_dashes_not_none(self):
+        data = _review_data()
+        data["recs_comparison"] = {
+            "classic": {
+                "rec_captain": "Salah", "actual_captain": None, "actual_captain_pts": 0,
+                "captain_followed": None, "captain_ungraded": True,
+                "rec_roll": False, "actual_roll": False, "no_transfers_possible": False,
+                "transfers": [], "unadvised_transfers": [],
+            },
+            "draft": {"waivers": [], "unadvised_waivers": []},
+        }
+        output = self.agent._generate_review_report(29, data)
+        assert "| Captain | Salah | - | - |" in output
+        assert "| _Not graded_ | Salah | - | - |" in output
+
+    def test_review_report_names_the_vice_who_took_the_armband(self):
+        data = _review_data()
+        data["recs_comparison"] = {
+            "classic": {
+                "rec_captain": "Salah", "actual_captain": "Haaland", "actual_captain_pts": 10,
+                "actual_captain_played": False, "actual_armband": "Saka",
+                "captain_followed": False, "rec_captain_in_squad": True,
+                "rec_captain_pts": 16, "captain_pts_delta": -6,
+                "rec_roll": False, "actual_roll": False, "no_transfers_possible": False,
+                "transfers": [], "unadvised_transfers": [],
+            },
+            "draft": {"waivers": [], "unadvised_waivers": []},
+        }
+        output = self.agent._generate_review_report(29, data)
+        assert "| Captain | Salah | Haaland (didn't play; vice Saka took the armband) | 10 |" in output
+
+    def test_review_report_says_did_not_play_rather_than_zero(self):
+        data = _review_data()
+        data["recs_comparison"] = {
+            "classic": {
+                "rec_captain": "Salah", "actual_captain": "Haaland", "actual_captain_pts": 14,
+                "captain_followed": False, "rec_captain_in_squad": True, "rec_captain_played": False,
+                "rec_roll": False, "actual_roll": False, "no_transfers_possible": False,
+                "transfers": [], "unadvised_transfers": [],
+            },
+            "draft": {"waivers": [], "unadvised_waivers": []},
+        }
+        output = self.agent._generate_review_report(29, data)
+        assert "| _If followed_ | Salah | - | Didn't play |" in output
+
+    def test_review_report_says_not_in_squad_rather_than_zero(self):
+        data = _review_data()
+        data["recs_comparison"] = {
+            "classic": {
+                "rec_captain": "Palmer", "actual_captain": "Haaland", "actual_captain_pts": 14,
+                "captain_followed": False, "rec_captain_in_squad": False,
+                "rec_roll": False, "actual_roll": False, "no_transfers_possible": False,
+                "transfers": [], "unadvised_transfers": [],
+            },
+            "draft": {"waivers": [], "unadvised_waivers": []},
+        }
+        output = self.agent._generate_review_report(29, data)
+        assert "| _If followed_ | Palmer | - | Not in squad |" in output
+
     def test_review_report_marks_an_ungraded_move_apart_from_one_not_made(self):
         data = _review_data()
         data["recs_comparison"] = {

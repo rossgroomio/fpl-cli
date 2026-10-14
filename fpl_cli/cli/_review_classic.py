@@ -124,7 +124,7 @@ async def _review_classic_team(
             for pick in picks:
                 player = player_map.get(pick["element"])
                 if player:
-                    gw_points, _, red_cards = _live_player_stats(live_stats, player.id)
+                    gw_points, minutes, red_cards = _live_player_stats(live_stats, player.id)
 
                     squad_slot = pick.get("position", 0)
                     multiplier = pick.get("multiplier", 1)
@@ -139,6 +139,7 @@ async def _review_classic_team(
                         "team_name": player_team.name if player_team else None,
                         "position": player.position_name,
                         "points": gw_points,
+                        "minutes": minutes,
                         "total_points": gw_points * multiplier,
                         "multiplier": multiplier,
                         "is_captain": pick.get("is_captain", False),
@@ -184,6 +185,9 @@ async def _review_classic_team(
                     "team_name": p["team_name"],
                     "position": p["position"],
                     "points": p["points"],
+                    # 0 points is not proof of 0 minutes: a cameo and a
+                    # yellow card net to 0
+                    "minutes": p["minutes"],
                     "display_points": display_points,
                     "contributed": contributed,
                     "is_captain": p["is_captain"],

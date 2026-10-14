@@ -39,11 +39,15 @@
 # Recommendations vs Actuals
 ## Classic
 ### Captain
-| | Recommended | Actual | GW Pts |
-|--|-------------|--------|--------|
-| Captain | {{ recs_comparison.classic.rec_captain }} | {{ recs_comparison.classic.actual_captain }} | {{ recs_comparison.classic.actual_captain_pts }} |
+| | Recommended | Actual | Captain Pts |
+|--|-------------|--------|-------------|
+| Captain | {{ recs_comparison.classic.rec_captain }} | {% if recs_comparison.classic.actual_captain is none %}- | -{% else %}{{ recs_comparison.classic.actual_captain }}{% if recs_comparison.classic.actual_captain_played is sameas false %} (didn't play{% if recs_comparison.classic.actual_armband %}; vice {{ recs_comparison.classic.actual_armband }} took the armband{% endif %}){% endif %} | {{ recs_comparison.classic.actual_captain_pts }}{% endif %} |
 {% if recs_comparison.classic.captain_ungraded %}| _Not graded_ | {{ recs_comparison.classic.rec_captain }} | - | - |
-{% elif not recs_comparison.classic.captain_followed %}| _If followed_ | {{ recs_comparison.classic.rec_captain }} | - | {{ recs_comparison.classic.rec_captain_pts }} |
+{% elif not recs_comparison.classic.captain_followed %}| _If followed_ | {{ recs_comparison.classic.rec_captain }} | - | {% if recs_comparison.classic.rec_captain_in_squad is sameas false %}Not in squad{% elif recs_comparison.classic.rec_captain_played is sameas false %}Didn't play{% else %}{{ recs_comparison.classic.rec_captain_pts }}{% endif %} |
+{% if recs_comparison.classic.captain_total_delta is defined %}
+
+Your captain choice was worth {{ "%+d"|format(recs_comparison.classic.captain_total_delta) }} to your total against the recommendation.
+{% endif %}
 {% endif %}
 ### Transfers
 {% if recs_comparison.classic.no_transfers_possible %}

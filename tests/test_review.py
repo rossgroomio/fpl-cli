@@ -640,6 +640,22 @@ class TestCaptainHindsight:
         s = self._ctx(team)["captain_hindsight"]
         assert "no raw baseline" in s
 
+    def test_captain_on_zero_minutes_who_kept_his_multiplier_baselines_off_vice(self):
+        """#400: no bench player replaced him, so his pick multiplier stayed,
+        but the vice still took the armband."""
+        team = [
+            {"name": "Salah", "points": 0, "display_points": 0, "contributed": True, "minutes": 0,
+             "is_captain": True, "is_vice": False, "is_triple_captain": False},
+            {"name": "Saka", "points": 9, "display_points": 9, "contributed": True, "minutes": 90,
+             "is_captain": False, "is_vice": True},
+            {"name": "Palmer", "points": 12, "display_points": 12, "contributed": True, "minutes": 90,
+             "is_captain": False, "is_vice": False},
+        ]
+        s = self._ctx(team)["captain_hindsight"]
+        assert "12 raw vs 9 raw for Saka" in s
+        assert "+3" in s
+        assert "vice Saka auto-got the armband" in s
+
     def test_captain_dnp_vice_optimal_no_swing(self):
         # Captain DNP'd; vice was actually the highest raw scorer — no better alt.
         team = [
