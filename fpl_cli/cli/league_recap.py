@@ -67,6 +67,12 @@ RECAP_WARNING_STANDINGS_MOVED_ON = "league_standings_moved_on"
 # fact or reads a cut-off editorial as whole, and two attempts is where it
 # stops, as for `review`'s completeness check.
 _MAX_EDITORIAL_ATTEMPTS = 2
+# The abnormal stops a retry can plausibly fix: a token ceiling, in Anthropic's
+# and the OpenAI-compatible dialects. The ceiling is shared with the model's
+# reasoning (#316), whose length varies run to run, so a second roll at the
+# same ceiling is a fresh draw. A refusal or content filter is not in here: the
+# same prompt usually draws the same answer, and it was not "cut off" (#372).
+_TRUNCATION_STOP_REASONS = frozenset({"max_tokens", "length"})
 
 if TYPE_CHECKING:
     from fpl_cli.api.providers import LLMResponse
@@ -872,6 +878,10 @@ def _render_console_highlights(
                 console.print(f"  {entry.text}")
 
 
+def _truncated(response: LLMResponse) -> bool:
+    return response.stop_reason in _TRUNCATION_STOP_REASONS
+
+
 async def _editorial_with_data_checks(
     provider: Any,
     *,
@@ -880,7 +890,7 @@ async def _editorial_with_data_checks(
     collected_data: LeagueRecapData,
 ) -> tuple[str, dict[str, list[str]], LLMResponse]:
     """Query the editorial, retrying once if it contradicts its own data or
-    the provider stopped it early.
+    the provider cut it off at its token ceiling.
 
     Returns `(summary, problems, response)` for the attempt that ships, the
     problems keyed by warning code as `check_recap_editorial()` returns them.
@@ -940,14 +950,14 @@ async def _editorial_with_data_checks(
         candidate = (summary, problems, response)
         if best is None or damage(candidate) < damage(best):
             best = candidate
-        # A cut-off attempt is retried even when its check came back clean:
+        # A truncated attempt is retried even when its check came back clean:
         # it may have stopped before the claims the check reads (#372).
-        if not (best[1] or best[2].stopped_early) or attempt == _MAX_EDITORIAL_ATTEMPTS:
+        if not (best[1] or _truncated(best[2])) or attempt == _MAX_EDITORIAL_ATTEMPTS:
             return best
-        stop_reason = str(response.stop_reason) if response.stopped_early else None
+        stop_reason = str(response.stop_reason) if _truncated(response) else None
         reasons = []
         if stop_reason:
-            reasons.append(f"was cut off (stop_reason: {rich_escape(stop_reason)})")
+            reasons.append(f"was cut off (stop_reason: {stop_reason})")
         if problems:
             reasons.append("contradicts the data it was given")
         error_console.print(

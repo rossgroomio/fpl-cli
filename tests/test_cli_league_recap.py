@@ -1237,6 +1237,40 @@ class TestTruncatedEditorial:
         assert "**The editorial below may be cut off:** the provider stopped with\n> `max_tokens`." in report
         assert "contradicts the data it was given" not in report
 
+    def test_an_openai_length_stop_is_retried_too(self):
+        stub, provider = _queued_provider(("Alice ran away with it, and then", "length"), self._WHOLE)
+        with provider:
+            result = _invoke_recap(_recap_data(), ["--summarise", "--format", "json"])
+
+        assert len(stub.prompts) == 2
+        assert self._WHOLE in json.loads(result.stdout)["metadata"]["synthesis_summary"]
+
+    @pytest.mark.parametrize("stop_reason", ["refusal", "content_filter"])
+    def test_a_refusal_is_flagged_but_not_retried(self, stop_reason: str, tmp_path: Path):
+        # PR #396 review: a refusal was not cut off, and the same prompt
+        # usually draws the same refusal, so a retry would only spend a call.
+        stub, provider = _queued_provider(("I can't help with that.", stop_reason))
+        with provider:
+            result = _invoke_recap(
+                _recap_data(), ["--summarise", "--format", "json", "--save", "--output", str(tmp_path)],
+            )
+
+        assert len(stub.prompts) == 1
+        assert "retrying once" not in result.stderr
+        codes = [w["code"] for w in json.loads(result.stdout)["metadata"]["warnings"]]
+        assert "synthesis_stopped_early" in codes
+        report = next(tmp_path.rglob("gw*-league-recap.md")).read_text(encoding="utf-8")
+        assert f"> `{stop_reason}`." in report
+
+    def test_a_stop_reason_cannot_break_out_of_the_callout(self, tmp_path: Path):
+        # PR #396 review: an OpenAI-compatible endpoint can send any string.
+        with self._provider("odd`\nreason"):
+            result = _invoke_recap(_recap_data(), ["--summarise", "--save", "--output", str(tmp_path)])
+
+        assert result.exit_code == 0, result.output
+        report = next(tmp_path.rglob("gw*-league-recap.md")).read_text(encoding="utf-8")
+        assert "> `odd' reason`." in report
+
     def test_a_whole_editorial_gets_no_callout(self, tmp_path: Path):
         with self._provider("end_turn"):
             result = _invoke_recap(_recap_data(), ["--summarise", "--save", "--output", str(tmp_path)])
@@ -1450,6 +1484,18 @@ class TestContestedMisattribution:
         first, retry = stub.prompts
         corrections = retry[len(first):]
         assert "cut off before it finished" in corrections
+        assert "- the editorial says Bob was beaten to Giles" in corrections
+
+    def test_a_refused_wrong_attempt_is_retried_for_the_claim_alone(self):
+        # The wrong claim earns the retry; the refusal was not a cut-off, so
+        # the retry is never told it was.
+        stub, result = self._invoke([], (self._WRONG, "refusal"), self._RIGHT)
+
+        assert len(stub.prompts) == 2
+        assert "cut off" not in result.stderr
+        first, retry = stub.prompts
+        corrections = retry[len(first):]
+        assert "cut off" not in corrections
         assert "- the editorial says Bob was beaten to Giles" in corrections
 
     def test_the_callout_names_a_cut_off_and_a_wrong_claim_together(self, tmp_path: Path):

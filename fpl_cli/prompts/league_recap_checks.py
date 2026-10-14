@@ -1255,9 +1255,10 @@ def get_recap_editorial_retry_prompt(
     saying how to avoid that kind of mistake, gives the retry the one thing
     the first attempt lacked. `problems` is `check_recap_editorial()`'s
     answer, so only the kinds of mistake actually made get an instruction.
-    `stop_reason` is the provider's, set only when the last draft stopped
-    early: that draft gets told it was cut off instead, since a clean check
-    on text that stopped short proves nothing (#372).
+    `stop_reason` is the provider's, set only when the last draft hit its
+    token ceiling: that draft gets told it was cut off, since a clean check on
+    text that stopped short proves nothing (#372). A refusal was not cut off,
+    so the caller never passes one.
     """
     feedback: list[str] = []
     if stop_reason:
