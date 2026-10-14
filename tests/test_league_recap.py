@@ -7114,6 +7114,9 @@ class TestNetAttributionCheck:
         # what "netted 2" said of Gibbs-White.
         assert self._check("Gibbs-White in for Wirtz netted 2 against Spurs.") == []
         assert self._check("Gibbs-White in for Wirtz netted Alice Lowe 2 points.") == []
+        # PR #392 review: nor is "points" -- that is the player's score, not
+        # the -6 the line's net overall happens to match.
+        assert self._check("Alice Lowe swapped Wirtz for Gibbs-White, who netted 6 points.") == []
 
     def test_a_kind_s_net_said_of_one_of_its_moves_is_caught(self):
         """Issue #390: a line that mixes kinds now prints each kind's net, so
@@ -7171,9 +7174,15 @@ class TestKindNetScopeCheck:
         "Ford's waivers came to +3.",
         # The figure ahead of the kind it is said of.
         "Dan Ford netted +3 overall from his waivers.",
-        # Unsigned, as points.
-        "Dan Ford's waiver claims netted him 3 points.",
         "Dan Ford's free-agent pickups netted +3 overall.",
+        # PR #392 review: a relative or participle clause, and the furniture
+        # of a figure.
+        "Dan Ford's waiver moves, netting +3 overall, did little.",
+        "Dan Ford's waiver moves, which netted +3 overall, did little.",
+        "Dan Ford's waiver moves netted a mere +3 overall.",
+        "Dan Ford's waiver work paid off to the tune of +3.",
+        # A determiner after a bare comma opens a new phrase, not a list.
+        "Dan Ford made two moves, his waivers netting +3 overall.",
     ])
     def test_the_net_overall_said_of_one_kind_is_caught(self, summary):
         problems = self._check(summary)
@@ -7200,6 +7209,18 @@ class TestKindNetScopeCheck:
         "Dan Ford's waiver and free-agent moves netted +3 overall.",
         "Dan Ford's waivers and free agents came to +3.",
         "Dan Ford went +3 overall across his waivers and free agents.",
+        # PR #392 review: both kinds named with a determiner each.
+        "Dan Ford's one waiver and one free agent netted +3 overall.",
+        "Dan Ford netted +3 from a waiver and a free agent.",
+        "Dan Ford's waiver and his free agent pickup combined for +3.",
+        # ...and a kind trailing after a figure that already has its subject,
+        # the phrasing the retry asks for.
+        "Dan Ford's moves netted +3 overall with a free agent doing the heavy lifting.",
+        "Dan Ford's moves netted +3 overall with a free agent carrying a losing waiver.",
+        "Dan Ford netted +3 overall with a free agent doing the heavy lifting.",
+        # A kind joined to a neutral noun names every move.
+        "Dan Ford netted +3 overall from a waiver and a pickup.",
+        "Dan Ford's moves netted +3 overall from a waiver and a pickup.",
         # Each kind its own figure.
         "Dan Ford's waivers netted -1, his free agents +4.",
         "Dan Ford's waiver went -1 and his free-agent pickup +4, +3 overall.",
@@ -7210,8 +7231,11 @@ class TestKindNetScopeCheck:
         "Dan Ford's waiver flopped but he still netted +3 overall.",
         # A figure that is nobody's on the line.
         "Dan Ford's waiver moves netted +9.",
-        # Loose but not wrong: "1 point" either way round is the waiver's.
-        "Dan Ford's waiver netted him 1 point.",
+        # Unsigned after the verb is a player's score, not a swing.
+        "Dan Ford's waiver claims netted him 3 points.",
+        # A comma that opens no clause about the figure.
+        "Dan Ford's waiver flopped, he netted +3 overall.",
+        "Dan Ford had no luck on waivers, overall he went +3.",
         # One of the kind's own moves' swings.
         "Fay Lund's waivers netted +8.",
     ])
