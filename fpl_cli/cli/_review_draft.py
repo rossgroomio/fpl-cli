@@ -29,6 +29,27 @@ if TYPE_CHECKING:
     from fpl_cli.models.team import Team
 
 
+DEFAULT_DRAFT_LEAGUE_NAME = "Draft League"
+
+
+def _empty_draft_result(draft_league_name: str = DEFAULT_DRAFT_LEAGUE_NAME) -> dict[str, Any]:
+    """The `_review_draft` return shape with nothing in it.
+
+    Every path that stands in for a draft section -- no league configured, or
+    the section not shown -- builds its result here, so the shape the summariser
+    unpacks cannot drift between them (issue #376).
+    """
+    return {
+        "draft_league_data": None,
+        "draft_league_name": draft_league_name,
+        "draft_squad_points_data": [],
+        "draft_transactions_data": [],
+        "draft_lost_claims_data": [],
+        "draft_automatic_subs": [],
+        "draft_player_map": {},
+    }
+
+
 def _format_review_draft_player(p: dict) -> str:
     """Format a draft squad player for LLM prompt."""
     return _format_review_player(p, points_key="points", show_captain=False)
@@ -65,23 +86,16 @@ async def _review_draft(
         resolve_lost_claims,
     )
 
+    if not draft_league_id:
+        return _empty_draft_result()
+
     draft_league_data = None
-    draft_league_name = "Draft League"
+    draft_league_name = DEFAULT_DRAFT_LEAGUE_NAME
     draft_squad_points_data = []
     draft_transactions_data = []
     draft_lost_claims_data = []
     draft_automatic_subs = []
     draft_player_map = {}  # Will be populated from Draft API bootstrap
-
-    if not draft_league_id:
-        return {
-            "draft_league_data": draft_league_data,
-            "draft_squad_points_data": draft_squad_points_data,
-            "draft_transactions_data": draft_transactions_data,
-            "draft_lost_claims_data": draft_lost_claims_data,
-            "draft_automatic_subs": draft_automatic_subs,
-            "draft_player_map": draft_player_map,
-        }
 
     console.print("\n" + "-" * 50)
     console.print("\n[bold cyan]# Draft[/bold cyan]")
@@ -103,7 +117,7 @@ async def _review_draft(
 
             # Get standings and entry mapping
             # Note: standings use 'league_entry' which maps to 'id' in league_entries
-            draft_league_name = league_details.get("league", {}).get("name", "Draft League")
+            draft_league_name = league_details.get("league", {}).get("name", DEFAULT_DRAFT_LEAGUE_NAME)
             standings = league_details.get("standings", [])
             league_entries = league_details.get("league_entries", [])
             entry_map = {e.get("id"): e for e in league_entries}

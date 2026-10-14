@@ -29,7 +29,7 @@ from fpl_cli.cli._review_analysis import (
     _review_next_gameweek,
 )
 from fpl_cli.cli._review_classic import _review_classic_league, _review_classic_team, _review_classic_transfers
-from fpl_cli.cli._review_draft import _review_draft
+from fpl_cli.cli._review_draft import _empty_draft_result, _review_draft
 from fpl_cli.cli._review_summarisation import _review_compare_recs, _review_llm_summarise
 from fpl_cli.season import season_label
 from fpl_cli.services.fixture_predictions import (
@@ -326,13 +326,7 @@ def review_command(
                     players_with_double=players_with_double,
                 )
             else:
-                # Must match return shape of _review_draft
-                draft_result = {
-                    "draft_squad_points_data": [], "draft_transactions_data": [],
-                    "draft_lost_claims_data": [],
-                    "draft_league_data": None, "draft_automatic_subs": [],
-                    "draft_player_map": {},
-                }
+                draft_result = _empty_draft_result()
 
             # Fixture results (reuses pre-fetched raw_fixtures to avoid second HTTP call)
             fixtures_data = await _review_fixtures(

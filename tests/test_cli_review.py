@@ -17,7 +17,7 @@ from fpl_cli.cli._review_classic import (
     _review_classic_team,
     _review_classic_transfers,
 )
-from fpl_cli.cli._review_draft import _format_review_draft_player, _review_draft
+from fpl_cli.cli._review_draft import _empty_draft_result, _format_review_draft_player, _review_draft
 from fpl_cli.cli._review_summarisation import (
     _classic_fines_league_data,
     _classic_position_fields,
@@ -619,6 +619,45 @@ class TestReviewLlmSummariseSkipsTheHalfItCannotRun:
 
         assert "DRY RUN" in result["research_summary"]
         assert result["synthesis_summary"] == ""
+
+
+class TestReviewLlmSummariseWithNoDraftLeague:
+    """#376: a draft result with no league behind it must still summarise.
+
+    `_review_draft`'s early return and `review.py`'s stand-in for a hidden
+    draft section both lacked `draft_league_name`, so `--summarise` ended in a
+    `KeyError` under classic, or under draft with no league id configured.
+    """
+
+    async def _empty_from_review_draft(self):
+        return await _review_draft(
+            MagicMock(), None, None, 7, 7, [], {}, {}, {},
+        )
+
+    async def test_the_early_return_of_review_draft_summarises(self):
+        draft_result = await self._empty_from_review_draft()
+
+        result = await _review_llm_summarise(
+            **_summarise_kwargs(draft_result=draft_result),
+            dry_run=True,
+            research_provider=None,
+            synthesis_provider=None,
+        )
+
+        assert "DRY RUN" in result["research_summary"]
+
+    async def test_the_stand_in_for_a_hidden_draft_section_summarises(self):
+        result = await _review_llm_summarise(
+            **_summarise_kwargs(draft_result=_empty_draft_result()),
+            dry_run=True,
+            research_provider=None,
+            synthesis_provider=None,
+        )
+
+        assert "DRY RUN" in result["research_summary"]
+
+    async def test_both_empty_shapes_are_the_same_shape(self):
+        assert await self._empty_from_review_draft() == _empty_draft_result()
 
 
 class TestReportResearchCorrections:
