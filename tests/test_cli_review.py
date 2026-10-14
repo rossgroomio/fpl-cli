@@ -1824,17 +1824,18 @@ class TestReviewCompareRecsUnread:
         recs["unread"] = ["transfers"]
         assert _review_compare_recs(recs, _make_collected(), gameweek=1)["unread"] == []
 
-    def test_nothing_read_when_the_file_yielded_nothing(self):
+    def test_nothing_read_is_the_parsers_call(self):
         recs = _make_recs(captain=None, vice=None)
         recs["unread"] = ["captain", "transfers", "waivers"]
+        recs["nothing_read"] = True
         collected = _make_collected(classic_transfers=[_transfer("Gibbs-White", "Tzolis", "NFO", "ARS")])
         result = _review_compare_recs(recs, collected, gameweek=6)
         assert result["nothing_read"] is True
         assert result["classic"]["unadvised_transfers"] == []
 
-    def test_no_waivers_said_in_words_is_something_read(self):
-        """The draft side said to make no claim, so a claim made anyway is
-        unadvised even though the classic side could not be read."""
+    def test_no_waivers_said_in_words_still_grades_a_claim_made_anyway(self):
+        """The classic side could not be read, but the draft side said to make
+        no claim, so a claim made anyway is unadvised."""
         recs = _make_recs(captain=None, vice=None)
         recs["unread"] = ["captain", "transfers"]
         recs["draft"]["no_waivers"] = True

@@ -855,8 +855,14 @@ class TestParseUnread:
         assert result["draft"]["no_waivers"] is True
         assert result["unread"] == []
 
-    def test_no_changes_to_the_xi_is_not_no_waivers(self, tmp_recs):
-        path = tmp_recs("""\
+    @pytest.mark.parametrize("line", [
+        "No changes to the XI.",
+        "| MID | Saka | No free agent beats him |",
+    ])
+    def test_no_waivers_is_read_only_under_waiver_recommendations(self, tmp_recs, line):
+        """A rationale elsewhere in the Draft section that happens to say "no
+        free agent" must not hide a waiver table that failed to parse."""
+        path = tmp_recs(f"""\
             ---
             gameweek: 6
             ---
@@ -866,7 +872,9 @@ class TestParseUnread:
             |------|---------|--------|
             | 1 | Wirtz | Nyoni |
             ### Starting XI
-            No changes to the XI.
+            | Pos | Player | Rationale |
+            |-----|--------|-----------|
+            {line}
         """)
         result = parse_recommendations(path)
         assert result["draft"]["no_waivers"] is False
@@ -884,6 +892,28 @@ class TestParseUnread:
             | Priority | Out | In |
             |----------|-----|----|
             | 1 | Tzolis (ARS) | Gibbs-White (NFO) |
+        """)
+        assert parse_recommendations(path)["unread"] == []
+
+    @pytest.mark.parametrize("stub", [
+        "_Not playing draft this season._",
+        "<!-- draft skipped: format is classic -->",
+    ])
+    def test_a_stub_section_is_not_unread(self, tmp_recs, stub):
+        """A section with no sub-heading and no table says the format was
+        skipped, not that its recommendations failed to parse."""
+        path = tmp_recs(f"""\
+            ---
+            gameweek: 6
+            ---
+            ## Classic League
+            **Recommended captain:** Haaland (MCI) -- home to Burnley
+            ### Transfer Recommendations
+            | Priority | Out | In |
+            |----------|-----|----|
+            | 1 | Tzolis (ARS) | Gibbs-White (NFO) |
+            ## Draft League
+            {stub}
         """)
         assert parse_recommendations(path)["unread"] == []
 
@@ -910,4 +940,26 @@ class TestParseUnread:
         "# Gameweek 6 Recommendations\n\nThe Classic and Draft sections were never written.\n",
     ])
     def test_a_file_with_neither_section_is_unread_throughout(self, tmp_recs, content):
-        assert parse_recommendations(tmp_recs(content))["unread"] == ["captain", "transfers", "waivers"]
+        result = parse_recommendations(tmp_recs(content))
+        assert result["unread"] == ["captain", "transfers", "waivers"]
+        assert result["nothing_read"] is True
+
+    def test_a_part_read_means_something_was_read(self, tmp_recs):
+        """No waivers said in words is a recommendation, so the file is not
+        one nothing could be read from, however broken the classic side."""
+        path = tmp_recs("""\
+            ---
+            gameweek: 6
+            ---
+            ## Classic League
+            ### Transfer Recommendations
+            | Rank | Outgoing | Incoming |
+            |------|----------|----------|
+            | 1 | Tzolis (ARS) | Gibbs-White (NFO) |
+            ## Draft League
+            ### Waiver Recommendations
+            No waiver claims this week.
+        """)
+        result = parse_recommendations(path)
+        assert result["unread"] == ["captain", "transfers"]
+        assert result["nothing_read"] is False

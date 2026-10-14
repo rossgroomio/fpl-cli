@@ -20,14 +20,15 @@ the initial made `B.Fernandes` and `J.Fernandes` one player, and five of the
 pairs it merges on a current bootstrap are the same club twice, so the club
 code alone could not have separated them again.
 
-A part the file has a section for but that yields nothing is named in
-`unread`, because finding nothing is not the same as recommending nothing
-(#355). The review graded every move unadvised against #354's empty parse for
-four gameweeks without anything saying the parse had failed, and a captain
-read on its own left the transfers just as wrong. So each part is judged
-separately, and only a recommendation of nothing said in words -- a roll, "no
-waivers" -- counts as one: an empty table is indistinguishable from a table
-nobody filled in, or one whose columns were renamed.
+A part the file writes a section for but that yields nothing is named in
+`unread`, and `nothing_read` says when that leaves nothing at all, because
+finding nothing is not the same as recommending nothing (#355). The review
+graded every move unadvised against #354's empty parse for four gameweeks
+without anything saying the parse had failed, and a captain read on its own
+left the transfers just as wrong. So each part is judged separately, and
+only a recommendation of nothing said in words -- a roll, "no waivers" --
+counts as one: an empty table is indistinguishable from a table nobody filled
+in, or one whose columns were renamed.
 """
 
 from __future__ import annotations
@@ -88,6 +89,9 @@ _STARTING_XI_HEADINGS = tuple(
 _BENCH_HEADINGS = tuple(HeadingMatcher(f"{'#' * depth} Bench") for depth in (3, 4, 5))
 _HEADING_CLASSIC_SQUAD = HeadingMatcher("### Classic Squad")
 _HEADING_TRANSFER_RECS = HeadingMatcher("### Transfer Recommendations")
+_HEADING_WAIVER_RECS = HeadingMatcher(
+    "### Waiver Recommendations", aliases=("Waivers", "Waiver Claims", "Free Agents", "Free Agent Recommendations"),
+)
 
 _SQUAD_MODES = frozenset({"wildcard", "freehit"})
 
@@ -130,13 +134,12 @@ _ROLL_LINE_RE = re.compile(
     re.IGNORECASE,
 )
 # The draft counterpart: a line or cell that opens by saying no claim is worth
-# making. Waiver words only, so "No changes to the XI" further down the Draft
-# section is not read as one.
+# making. Waiver words only, and looked for only under Waiver Recommendations,
+# as the roll is only under Transfer Recommendations.
 _NO_WAIVERS_RE = re.compile(
     r"(?:^|\|)\s*(?:[-*+>]\s*|\d+\.\s*)*(?:\*\*|__|_|\*)?\s*no\s+(?:waiver|claim|pick-?up|free[\s-]agent)s?\b",
     re.IGNORECASE,
 )
-_THEMATIC_BREAK_RE = re.compile(r"^(?:-{3,}|\*{3,}|_{3,})$")
 
 
 @dataclass(frozen=True)
@@ -280,6 +283,7 @@ def parse_recommendations(path: Path) -> dict[str, Any] | None:
             "no_waivers": False,
         },
         "unread": [],
+        "nothing_read": False,
     }
 
     # The Classic section first, so a revised captain in an appended
@@ -293,38 +297,45 @@ def parse_recommendations(path: Path) -> dict[str, Any] | None:
     if not result["classic"]["squad"]:
         _parse_transfers(sections["classic"], result)
     _parse_waivers(sections["draft"], result)
-    result["unread"] = _unread_parts(sections, result)
+    result["unread"], result["nothing_read"] = _unread_parts(sections, result)
 
     return result
 
 
-def _has_content(section: str) -> bool:
-    """Whether a section carries anything below its own heading line."""
+def _is_written(section: str) -> bool:
+    """Whether a section has the shape a recommendation takes: a sub-heading or a table.
+
+    Not just any text below its heading, because a stub ("_Not playing draft._")
+    says the format is skipped, and taking it for a section that failed to
+    parse put a false warning on every review.
+    """
     return any(
-        line.strip() and not _THEMATIC_BREAK_RE.match(line.strip())
+        parse_heading(line) is not None or line.strip().startswith("|")
         for line in section.split("\n")[1:]
     )
 
 
-def _unread_parts(sections: dict[str, str], result: dict[str, Any]) -> list[str]:
-    """The parts the file wrote that nothing could be read from.
+def _unread_parts(sections: dict[str, str], result: dict[str, Any]) -> tuple[list[str], bool]:
+    """The parts the file wrote that nothing could be read from, and whether
+    nothing at all was read.
 
-    A section that is absent is not unread: gw-prep leaves out the format a
-    manager does not play. A file with neither section is in no shape this
-    parser knows, so both count as written -- an empty file included, which
-    recommends nothing only in the sense that it says nothing.
+    One definition of a part being read, for both answers, so the review never
+    re-derives it. A section that is absent is not unread: gw-prep leaves out
+    the format a manager does not play. A file with neither section is in no
+    shape this parser knows, so both count as written -- an empty file
+    included, which recommends nothing only in the sense that it says nothing.
     """
-    neither = not sections["classic"] and not sections["draft"]
     classic, draft = result["classic"], result["draft"]
-    unread: list[str] = []
-    if neither or _has_content(sections["classic"]):
-        if classic["captain"] is None:
-            unread.append("captain")
-        if not (classic["transfers"] or classic["roll_transfer"] or classic["squad"]):
-            unread.append("transfers")
-    if (neither or _has_content(sections["draft"])) and not (draft["waivers"] or draft["no_waivers"]):
-        unread.append("waivers")
-    return unread
+    read = {
+        "captain": classic["captain"] is not None,
+        "transfers": bool(classic["transfers"] or classic["roll_transfer"] or classic["squad"]),
+        "waivers": bool(draft["waivers"] or draft["no_waivers"]),
+    }
+    neither = not sections["classic"] and not sections["draft"]
+    written = {key: neither or _is_written(section) for key, section in sections.items()}
+    section_of = {"captain": "classic", "transfers": "classic", "waivers": "draft"}
+    unread = [part for part, was_read in read.items() if written[section_of[part]] and not was_read]
+    return unread, bool(unread) and not any(read.values())
 
 
 def _parse_frontmatter(text: str) -> dict[str, Any]:
@@ -512,8 +523,8 @@ def _parse_waivers(draft: str, result: dict[str, Any]) -> None:
     Both draft tables are read: the waiver table (`Priority | Drop | Claim`)
     and the free-agent one a file written after the waiver run carries instead
     (`# | Drop | Pick up`). Drop comes first in both. When neither yields a
-    move, a line saying no claim is worth making sets `no_waivers`, as a roll
-    does on the classic side.
+    move, a line under Waiver Recommendations saying no claim is worth making
+    sets `no_waivers`, as a roll does on the classic side.
     """
     if not draft:
         return
@@ -554,4 +565,15 @@ def _parse_waivers(draft: str, result: dict[str, Any]) -> None:
             })
 
     if not waivers:
-        result["draft"]["no_waivers"] = any(_NO_WAIVERS_RE.search(line.strip()) for line in draft.split("\n"))
+        result["draft"]["no_waivers"] = _recommends_no_waivers(draft.split("\n"))
+
+
+def _recommends_no_waivers(lines: list[str]) -> bool:
+    """True when Waiver Recommendations says no claim is worth making.
+
+    Never the rest of the Draft section: a "No free agent beats him" rationale
+    in the Starting XI is not advice about waivers, and reading it as one hid a
+    waiver table that had failed to parse behind a deliberate nothing.
+    """
+    body = section_body(lines, _HEADING_WAIVER_RECS) or []
+    return any(_NO_WAIVERS_RE.search(line.strip()) for line in body)

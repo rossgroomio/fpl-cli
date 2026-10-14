@@ -507,6 +507,22 @@ class TestTemplateRendering:
         output = self.agent._generate_review_report(6, data)
         assert "### Captain" not in output
 
+    @pytest.mark.parametrize(("fpl_format", "shown", "hidden"), [
+        ("draft", "## Draft\n### Waivers", "## Classic\n"),
+        ("classic", "## Classic\n", "## Draft\n### Waivers"),
+    ])
+    def test_review_report_compares_only_the_format_played(self, fpl_format, shown, hidden):
+        """A draft-only file has no Classic section, so its half of the
+        comparison was a heading with nothing under it."""
+        data = _review_data()
+        data["fpl_format"] = fpl_format
+        data["recs_comparison"] = self._unread_comparison([])
+        output = self.agent._generate_review_report(6, data)
+        comparison = output[output.index("# Recommendations vs Actuals"):]
+        comparison = comparison[:comparison.index("\n---")]
+        assert shown in comparison
+        assert hidden not in comparison
+
     def test_review_report_with_nothing_read_compares_nothing(self):
         data = _review_data()
         data["recs_comparison"] = self._unread_comparison(["captain", "transfers", "waivers"], nothing_read=True)

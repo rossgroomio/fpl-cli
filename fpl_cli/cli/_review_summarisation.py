@@ -1596,6 +1596,10 @@ def _review_compare_recs(recs: dict, collected_data: dict, gameweek: int | None 
     # transfers to grade either way.
     unread = [part for part in recs.get("unread", []) if not (part == "transfers" and no_transfers_possible)]
     comparison["unread"] = unread
+    # Nothing came out of the file at all: no recommended side to set the
+    # actuals against, so the review leaves the comparison out. The parser's
+    # call, since it alone knows which sections the file wrote.
+    comparison["nothing_read"] = bool(recs.get("nothing_read"))
 
     rec_transfers = recs["classic"].get("transfers", [])
     transfer_comparisons = []
@@ -1776,12 +1780,5 @@ def _review_compare_recs(recs: dict, collected_data: dict, gameweek: int | None 
 
     comparison["draft"]["waivers"] = waiver_comparisons
     comparison["draft"]["unadvised_waivers"] = unadvised_waivers
-
-    # Nothing came out of the file at all: no recommended side to set the
-    # actuals against, so the review leaves the comparison out.
-    comparison["nothing_read"] = bool(unread) and not (
-        rec_captain or rec_transfers or recs["classic"].get("roll_transfer") or rec_squad
-        or rec_waivers or recs["draft"].get("no_waivers")
-    )
 
     return comparison
