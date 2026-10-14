@@ -449,6 +449,92 @@ class TestTemplateRendering:
         assert "| ? | Palmer | Murphy | Not graded |" in output
         assert "Not made" not in output
 
+    @staticmethod
+    def _unread_comparison(unread, nothing_read=False):
+        """What `_review_compare_recs` returns for a file a part of which
+        could not be read (#355): the captain read, a move made, none graded."""
+        return {
+            "classic": {
+                **({} if "captain" in unread else {
+                    "rec_captain": "Salah", "actual_captain": "Salah", "actual_captain_pts": 12,
+                    "captain_followed": True,
+                }),
+                "rec_roll": False, "actual_roll": False, "no_transfers_possible": False,
+                "transfers": [], "unadvised_transfers": [],
+            },
+            "draft": {"waivers": [], "unadvised_waivers": []},
+            "ambiguous_names": [],
+            "unread": unread,
+            "nothing_read": nothing_read,
+        }
+
+    def test_review_report_says_unread_transfers_were_not_graded(self):
+        data = _review_data()
+        data["recs_comparison"] = self._unread_comparison(["transfers"])
+        output = self.agent._generate_review_report(6, data)
+        assert "| Captain | Salah | Salah | 12 |" in output
+        assert (
+            "### Transfers\n_Not graded: no transfer recommendation could be read from "
+            "gw6-recommendations.md, so no move is marked unadvised._"
+        ) in output
+        assert "Unadvised" not in output
+
+    def test_review_report_says_unread_waivers_were_not_graded(self):
+        data = _review_data()
+        data["recs_comparison"] = self._unread_comparison(["waivers"])
+        output = self.agent._generate_review_report(6, data)
+        assert (
+            "### Waivers\n_Not graded: no waiver recommendation could be read from gw6-recommendations.md"
+        ) in output
+        # Not the line for a week with nothing to compare: there was.
+        assert "No waiver recommendations or transactions." not in output
+
+    def test_review_report_says_an_unread_captain_was_not_graded(self):
+        """The blank captain table #355 quoted, with its empty Recommended column."""
+        data = _review_data()
+        data["recs_comparison"] = self._unread_comparison(["captain"])
+        output = self.agent._generate_review_report(6, data)
+        assert "### Captain\n_Not graded: no captain could be read from gw6-recommendations.md._" in output
+        assert "| Captain |  |" not in output
+        assert "_If followed_" not in output
+
+    def test_review_report_leaves_out_a_captain_the_file_never_named(self):
+        """A draft-only file has no Classic section to read a captain from."""
+        data = _review_data()
+        comparison = self._unread_comparison(["captain"])
+        comparison["unread"] = []
+        data["recs_comparison"] = comparison
+        output = self.agent._generate_review_report(6, data)
+        assert "### Captain" not in output
+
+    @pytest.mark.parametrize(("fpl_format", "shown", "hidden"), [
+        ("draft", "## Draft\n### Waivers", "## Classic\n"),
+        ("classic", "## Classic\n", "## Draft\n### Waivers"),
+    ])
+    def test_review_report_compares_only_the_format_played(self, fpl_format, shown, hidden):
+        """A draft-only file has no Classic section, so its half of the
+        comparison was a heading with nothing under it."""
+        data = _review_data()
+        data["fpl_format"] = fpl_format
+        data["recs_comparison"] = self._unread_comparison([])
+        output = self.agent._generate_review_report(6, data)
+        comparison = output[output.index("# Recommendations vs Actuals"):]
+        comparison = comparison[:comparison.index("\n---")]
+        assert shown in comparison
+        assert hidden not in comparison
+
+    def test_review_report_with_nothing_read_compares_nothing(self):
+        data = _review_data()
+        data["recs_comparison"] = self._unread_comparison(["captain", "transfers", "waivers"], nothing_read=True)
+        output = self.agent._generate_review_report(6, data)
+        comparison = output[output.index("# Recommendations vs Actuals"):]
+        comparison = comparison[:comparison.index("\n---")]
+        assert comparison == (
+            "# Recommendations vs Actuals\n"
+            "_Not compared: no recommendation could be read from gw6-recommendations.md. "
+            "Its layout may no longer match the gw-prep template._\n"
+        )
+
     def test_review_report_names_a_recommendation_it_could_not_grade(self):
         data = _review_data()
         data["recs_comparison"] = {
