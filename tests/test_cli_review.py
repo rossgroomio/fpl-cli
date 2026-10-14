@@ -34,7 +34,7 @@ from fpl_cli.cli._review_summarisation import (
 from fpl_cli.cli.preview import _preview_build_fixture_map
 from fpl_cli.cli.review import GameweekResolutionError, _review_resolve_gw, review_command
 from fpl_cli.prompts.review import check_synthesis_completeness
-from tests.conftest import make_draft_player, make_fixture, make_player, make_team
+from tests.conftest import make_agent, make_draft_player, make_fixture, make_player, make_team
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -3918,7 +3918,7 @@ class TestGroundingProblemsRideTheCompletenessChannel:
         )
 
         assert result["synthesis_problems"] == []
-        assert "Personal analysis complete" in capsys.readouterr().out
+        assert "Personal analysis complete" in capsys.readouterr().err
 
     async def test_a_fixture_claim_with_no_block_is_reported(self, capsys):
         response = _WHOLE.replace("Move Virgil on.", "Start Salah, he's at home to Burnley.")
@@ -3945,3 +3945,158 @@ class TestGroundingProblemsRideTheCompletenessChannel:
         assert any("## Draft Verdict" in p for p in problems)
         assert any("max_tokens" in p for p in problems)
         assert any("6.6" in p for p in problems)
+
+
+class TestReviewProgressAndFailureLinesStayOffStdout:
+    """#387: the dream-team, blankers, report and LLM-summary lines are
+    commentary, so table mode puts them on stderr with the rest (#386). A
+    `--save` that did not save is a failure: its reason on stderr, exit 1."""
+
+    TEAMS = {19: make_team(id=19, short_name="MCI", name="Man City")}  # noqa: RUF012 — plain test data
+
+    async def _global_stats(self, *, dream_team=None, dream_team_error=None, live_stats=None):
+        from fpl_cli.cli._review_analysis import _review_global_stats
+
+        player = make_player(id=401, web_name="Owned", team_id=19, selected_by_percent=40.0, minutes=900)
+        client = MagicMock()
+        client.get_dream_team = AsyncMock(
+            return_value=dream_team if dream_team is not None else {"team": []},
+            side_effect=dream_team_error,
+        )
+        return await _review_global_stats(
+            client, 7, {401: player}, self.TEAMS,
+            live_stats if live_stats is not None else {401: {"total_points": 9, "minutes": 90}},
+        )
+
+    async def test_a_missing_dream_team_is_reported_on_stderr(self, capsys):
+        data = await self._global_stats(dream_team={"team": []})
+
+        captured = capsys.readouterr()
+        assert "Dream team not available" in captured.err
+        assert "Dream team not available" not in captured.out
+        # No table, so no heading on stdout either.
+        assert "### Dream Team" not in captured.out
+        assert "dream_team" not in data
+
+    async def test_a_failed_dream_team_fetch_is_reported_on_stderr(self, capsys):
+        await self._global_stats(dream_team_error=httpx.ConnectError("offline"))
+
+        captured = capsys.readouterr()
+        assert "Could not fetch dream team: offline" in captured.err
+        assert "Could not fetch dream team" not in captured.out
+        assert "### Dream Team" not in captured.out
+
+    async def test_a_dream_team_of_unknown_players_is_reported_on_stderr(self, capsys):
+        # #394 review: the heading was gated on the raw response, so a dream
+        # team naming no player the bootstrap knows printed an empty table.
+        data = await self._global_stats(dream_team={"team": [{"element": 999, "points": 20}]})
+
+        captured = capsys.readouterr()
+        assert "Dream team not available" in captured.err
+        assert "### Dream Team" not in captured.out
+        assert "dream_team" not in data
+
+    async def test_a_dream_team_keeps_its_heading_and_table_on_stdout(self, capsys):
+        data = await self._global_stats(dream_team={"team": [{"element": 401, "points": 9}]})
+
+        captured = capsys.readouterr()
+        assert "### Dream Team" in captured.out
+        assert "Owned" in captured.out
+        assert "Dream team not available" not in captured.err
+        assert data["dream_team"][0]["name"] == "Owned"
+
+    async def test_a_failed_blankers_calculation_is_reported_on_stderr(self, capsys, monkeypatch):
+        monkeypatch.setattr(
+            "fpl_cli.cli._review_analysis.had_fixture", MagicMock(side_effect=RuntimeError("bad fixture")),
+        )
+
+        data = await self._global_stats(live_stats={401: {"total_points": 1, "minutes": 90}})
+
+        captured = capsys.readouterr()
+        assert "Could not calculate blankers: bad fixture" in captured.err
+        assert "Could not calculate blankers" not in captured.out
+        assert "### Blankers" not in captured.out
+        assert "blankers" not in data
+
+    async def test_no_blankers_is_the_sections_answer_and_stays_on_stdout(self, capsys):
+        await self._global_stats()
+
+        captured = capsys.readouterr()
+        assert "### Blankers" in captured.out
+        assert "No high-ownership blankers this GW" in captured.out
+        assert "No high-ownership blankers" not in captured.err
+
+    async def test_llm_summary_progress_goes_to_stderr(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)  # --debug writes data/debug relative to the cwd
+        research = _StubSynthesisProvider(_reply("## GW7 Narrative\nIt happened.\n"))
+        synthesis = _StubSynthesisProvider(_reply(_WHOLE, "end_turn"))
+
+        await _review_llm_summarise(
+            **_summarise_kwargs(debug=True),
+            dry_run=False,
+            research_provider=research,
+            synthesis_provider=synthesis,
+        )
+
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        for line in (
+            "Generating LLM summaries...",
+            "Debug output → data/debug/",
+            "Fetching community narrative...",
+            "Community narrative complete",
+            "Saved research_*.txt",
+            "Generating personal analysis...",
+            "Saved synthesis_*.txt",
+        ):
+            assert line in captured.err, line
+
+    async def test_dry_run_progress_goes_to_stderr(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+
+        await _review_llm_summarise(
+            **_summarise_kwargs(),
+            dry_run=True,
+            research_provider=None,
+            synthesis_provider=None,
+        )
+
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        for line in (
+            "Dry run: building prompts without calling LLMs...",
+            "Building research prompt...",
+            "Saved research_system.txt, research_prompt.txt",
+            "Building synthesis prompt...",
+            "Saved synthesis_system.txt, synthesis_prompt.txt",
+            "Prompts saved to data/debug/",
+        ):
+            assert line in captured.err, line
+
+    def _save(self, monkeypatch, tmp_path, report_agent):
+        from fpl_cli.cli import review as review_module
+
+        _stub_review_run(monkeypatch)
+        monkeypatch.setattr("fpl_cli.agents.orchestration.report.ReportAgent", MagicMock(return_value=report_agent))
+        return CliRunner().invoke(
+            review_module.review_command, ["--gameweek", "2", "--save", "--output", str(tmp_path)],
+        )
+
+    def test_a_failed_save_exits_1_with_the_reason_on_stderr(self, monkeypatch, tmp_path):
+        result = self._save(monkeypatch, tmp_path, make_agent(success=False, message="disk full"))
+
+        assert result.exit_code == 1
+        assert "Failed to save report: disk full" in result.stderr
+        assert "Failed to save report" not in result.stdout
+        assert "Generating report..." in result.stderr
+        assert "Generating report" not in result.stdout
+        # The review itself still printed before the save was attempted.
+        assert "Gameweek 2 Review" in result.stdout
+
+    def test_a_successful_save_exits_0_and_names_the_file(self, monkeypatch, tmp_path):
+        report_path = str(tmp_path / "gw2-review.md")
+        result = self._save(monkeypatch, tmp_path, make_agent({"report_path": report_path}))
+
+        assert result.exit_code == 0
+        assert "Report saved to:" in result.stdout
+        assert "Failed to save report" not in result.stderr
