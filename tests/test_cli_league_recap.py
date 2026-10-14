@@ -1486,17 +1486,19 @@ class TestContestedMisattribution:
         assert "cut off before it finished" in corrections
         assert "- the editorial says Bob was beaten to Giles" in corrections
 
-    def test_a_refused_wrong_attempt_is_retried_for_the_claim_alone(self):
-        # The wrong claim earns the retry; the refusal was not a cut-off, so
-        # the retry is never told it was.
-        stub, result = self._invoke([], (self._WRONG, "refusal"), self._RIGHT)
+    def test_a_refused_wrong_attempt_is_not_retried(self):
+        # #397: re-sending a refused request to the same model usually draws
+        # another refusal, so the editorial ships with both the refusal and
+        # its wrong claim named rather than spending a call to change nothing.
+        stub, result = self._invoke(["--format", "json"], (self._WRONG, "refusal"), self._RIGHT)
 
-        assert len(stub.prompts) == 2
-        assert "cut off" not in result.stderr
-        first, retry = stub.prompts
-        corrections = retry[len(first):]
-        assert "cut off" not in corrections
-        assert "- the editorial says Bob was beaten to Giles" in corrections
+        assert len(stub.prompts) == 1
+        assert "not retrying" in result.stderr.replace("\n", " ")
+        envelope = json.loads(result.stdout)
+        assert self._WRONG in envelope["metadata"]["synthesis_summary"]
+        codes = [w["code"] for w in envelope["metadata"]["warnings"]]
+        assert "synthesis_contested_misattribution" in codes
+        assert "synthesis_stopped_early" in codes
 
     def test_the_callout_names_a_cut_off_and_a_wrong_claim_together(self, tmp_path: Path):
         stub, result = self._invoke(

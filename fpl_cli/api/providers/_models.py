@@ -54,10 +54,15 @@ NORMAL_STOP_REASONS: frozenset[str] = frozenset({
 # The abnormal stops that mean the text hit its output-token ceiling, in
 # Anthropic's and the OpenAI-compatible dialects: the ones a second roll can
 # plausibly fix. The ceiling is shared with the model's reasoning (#316), whose
-# length varies run to run, so a retry at the same ceiling is a fresh draw. A
-# refusal or content filter is not in here: the same prompt usually draws the
-# same answer, and it was not "cut off" (#372, #397).
+# length varies run to run, so a retry at the same ceiling is a fresh draw.
 TRUNCATION_STOP_REASONS: frozenset[str] = frozenset({"max_tokens", "length"})
+
+# The abnormal stops that mean a policy check declined the answer, in the same
+# two dialects: the ones a second roll will not fix. Anthropic's own guidance
+# is that re-sending a refused request to the same model usually draws another
+# refusal, so a retry would spend a call, and up to a timeout, for the same
+# answer (#397). Neither was "cut off".
+REFUSAL_STOP_REASONS: frozenset[str] = frozenset({"refusal", "content_filter"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +103,15 @@ class LLMResponse:
         cut off, not refused, so a second draw can come back whole.
         """
         return self.stop_reason in TRUNCATION_STOP_REASONS
+
+    @property
+    def refused(self) -> bool:
+        """True when a policy check declined the answer (a refusal or content filter).
+
+        The subset of `stopped_early` a retry should never chase: the same
+        request to the same model usually comes back refused again.
+        """
+        return self.stop_reason in REFUSAL_STOP_REASONS
 
 
 def log_abnormal_stop(response: LLMResponse, label: str) -> None:

@@ -102,9 +102,23 @@ class TestSynthesiseWithRetry:
         assert attempts == 1
         assert best.response.stop_reason == stop_reason
 
-    async def test_a_refused_faulty_answer_is_retried_for_the_fault_alone(self, capsys):
-        provider = _Provider(_reply("wrong.", "refusal"), _reply("All good."))
-        await _run(provider)
+    @pytest.mark.parametrize("stop_reason", ["refusal", "content_filter"])
+    async def test_a_refusal_rules_out_the_retry_whatever_the_judge_found(self, stop_reason, capsys):
+        # Re-sending a refused request to the same model usually draws another
+        # refusal, so the retry would spend a call to change nothing.
+        provider = _Provider(_reply("This is wrong.", stop_reason), _reply("All good."))
+        best, attempts = await _run(provider)
+        assert (best.text, attempts) == ("This is wrong.", 1)
+        assert len(provider.prompts) == 1
+        # Rich hard-wraps to the terminal width, so collapse it before matching.
+        err = " ".join(capsys.readouterr().err.split())
+        assert f"The thing says wrong things, but the provider refused it (stop_reason: {stop_reason})" in err
+        assert "not retrying" in err
+
+    async def test_an_unrecognised_stop_neither_earns_nor_rules_out_the_retry(self, capsys):
+        provider = _Provider(_reply("wrong.", "something_new"), _reply("All good."))
+        best, attempts = await _run(provider)
+        assert (best.text, attempts) == ("All good.", 2)
         assert provider.prompts[1] == "write it | 1 wrong | cut off: None"
         assert "cut off" not in capsys.readouterr().err
 

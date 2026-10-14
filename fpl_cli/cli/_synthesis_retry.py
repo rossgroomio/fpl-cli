@@ -4,8 +4,9 @@
 into a saved report, and both judge it before they do. Each used to run its
 own query-judge-retry loop, and every fix went into only one of them (#397).
 The parts that should not differ between them live here: the attempt cap,
-which stop reasons earn a retry on their own, telling the retry what went
-wrong, and keeping the attempt in hand when the retry itself fails. What
+which stop reasons earn a retry on their own and which rule one out, telling
+the retry what went wrong, and keeping the attempt in hand when the retry
+itself fails. What
 "damaged" means, and which of two damaged answers is the lesser evil, stays
 with each command.
 """
@@ -74,11 +75,13 @@ async def synthesise_with_retry(
     An attempt earns the retry when `retry_reason` names something its judge
     found, or when the provider cut it off at its token ceiling -- which is
     retried even when the judge found nothing, since the text may have stopped
-    before whatever the judge reads. Any other abnormal stop, a refusal or a
-    content filter, is not retried for the stop alone: the same prompt usually
-    draws the same answer. The retry is sent `retry_prompt(prompt, verdict,
-    stop_reason=...)`, `stop_reason` set only for a token-ceiling stop, so it
-    is told what was wrong instead of rolling the same gamble again.
+    before whatever the judge reads. A refusal or content filter is never
+    retried, whatever the judge found: re-sending a refused request to the same
+    model usually draws another refusal, so the retry would spend a call, and
+    up to a timeout, to change nothing. Any other abnormal stop neither earns
+    the retry nor rules it out. The retry is sent `retry_prompt(prompt,
+    verdict, stop_reason=...)`, `stop_reason` set only for a token-ceiling
+    stop, so it is told what was wrong instead of rolling the same gamble again.
 
     The retry only displaces the first attempt when `damage` ranks it strictly
     lower, so a worse second roll never ships over a better first one, and a
@@ -121,6 +124,15 @@ async def synthesise_with_retry(
         # Escaped, not interpolated raw: a reason can quote text the provider
         # or the prompt supplied, and an unescaped `[/yellow]` in it would
         # raise MarkupError and cost the reader the notice.
+        if best.response.refused:
+            # Said here, not left to the caller: without it a damaged answer
+            # that was not retried reads as a retry the loop forgot to make.
+            error_console.print(
+                f"[yellow]  ⚠ {subject} {rich_escape(' and '.join(reasons))}, but the provider refused it"
+                f" (stop_reason: {rich_escape(str(best.response.stop_reason))}) -- not retrying,"
+                " since a refused request is usually refused again[/yellow]"
+            )
+            return best, attempt
         error_console.print(
             f"[yellow]  ⚠ {subject} {rich_escape(' and '.join(reasons))} -- retrying once[/yellow]"
         )

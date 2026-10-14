@@ -40,6 +40,7 @@ def _rate_limited(retry_after: str | None = None):
 
 from fpl_cli.api.providers import (  # noqa: E402 — placed after module-level helper definition; no circular dependency
     NORMAL_STOP_REASONS,
+    REFUSAL_STOP_REASONS,
     TRUNCATION_STOP_REASONS,
     AnthropicProvider,
     LLMResponse,
@@ -162,9 +163,17 @@ class TestStopReason:
         # draws the same answer, so it is not worth a retry on its own (#397).
         assert self._response(reason).truncated is False
 
-    @pytest.mark.parametrize("reason", sorted(TRUNCATION_STOP_REASONS))
-    def test_every_truncation_is_an_early_stop(self, reason):
+    @pytest.mark.parametrize("reason", sorted(TRUNCATION_STOP_REASONS | REFUSAL_STOP_REASONS))
+    def test_every_truncation_and_refusal_is_an_early_stop(self, reason):
         assert self._response(reason).stopped_early is True
+
+    @pytest.mark.parametrize("reason", ["refusal", "content_filter"])
+    def test_a_policy_decline_in_either_dialect_is_a_refusal(self, reason):
+        assert self._response(reason).refused is True
+
+    @pytest.mark.parametrize("reason", ["max_tokens", "length", "end_turn", "something_new", "", None])
+    def test_anything_else_is_not_a_refusal(self, reason):
+        assert self._response(reason).refused is False
 
     def test_an_early_stop_is_logged_at_warning(self, caplog):
         with caplog.at_level("WARNING", logger="fpl_cli.api.providers._models"):

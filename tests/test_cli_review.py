@@ -3268,14 +3268,17 @@ class TestSynthesiseWithCompletenessCheck:
         assert completeness.problems() == [f"provider stopped early (stop_reason: {stop_reason})"]
         assert "retrying once" not in capsys.readouterr().err
 
-    async def test_a_refused_fragment_is_retried_for_what_the_text_lacks(self):
-        # The missing sections earn the retry, as a wrong claim does in the
-        # recap; the refusal was not a cut-off, so the retry is never told it was.
+    async def test_a_refused_fragment_is_not_retried_either(self, capsys):
+        # #397: re-sending a refused request to the same model usually draws
+        # another refusal, so the fragment ships with everything it lacks named.
         provider = _StubSynthesisProvider(_reply(_TRUNCATED, "refusal"), _reply(_WHOLE))
-        content, _, attempts = await _synthesise(provider)
-        assert attempts == 2
-        assert content == _WHOLE
-        assert "cut off" not in provider.calls[1]["prompt"]
+        content, completeness, attempts = await _synthesise(provider)
+        assert attempts == 1
+        assert len(provider.calls) == 1
+        assert content == _TRUNCATED
+        assert completeness.stop_reason == "refusal"
+        assert completeness.missing_sections == ("Draft Verdict", "Next Week")
+        assert "not retrying" in capsys.readouterr().err.replace("\n", "")
 
     async def test_a_retry_that_fails_keeps_the_first_attempt(self, capsys):
         # #397: a timeout or 500 on the retry used to propagate, and the caller

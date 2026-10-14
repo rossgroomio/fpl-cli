@@ -1671,9 +1671,9 @@ class SynthesisCompleteness:
     def text_problems(self) -> list[str]:
         """`problems()` without the provider's stop reason: what the text itself shows.
 
-        The retry decision reads these, because a stop reason earns a retry
-        only when it is a token ceiling, and the loop judges that itself -- a
-        refusal on an otherwise whole answer is reported, not re-rolled (#397).
+        The retry decision reads these, because the stop reason is the loop's
+        to weigh: a token ceiling earns a retry on its own, a refusal rules one
+        out, and anything else does neither (#397).
         """
         lines: list[str] = []
         if self.empty:
@@ -1860,7 +1860,8 @@ def get_synthesis_retry_prompt(
     stops mid-sentence or says nothing -- is as easy to state as a wrong claim
     (#397). `stop_reason` is the provider's, set only when the last draft hit
     its token ceiling; `completeness.stop_reason` is not read for it, because
-    a refusal was not cut off and must not be described as if it were.
+    an abnormal stop that was not the ceiling was not "cut off" and must not
+    be described as if it were.
     """
     feedback: list[str] = []
     if stop_reason:
