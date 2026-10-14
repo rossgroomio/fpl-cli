@@ -23,6 +23,7 @@ from fpl_cli.cli._context import (
     resolve_research_dir,
 )
 from fpl_cli.cli._helpers import _fdr_style
+from fpl_cli.cli._json import emit_failure
 from fpl_cli.models.player import POSITION_MAP
 from fpl_cli.season import season_label
 
@@ -279,6 +280,7 @@ def preview_command(ctx: click.Context, save: bool, output: str | None, scout: b
         _display_preview_summary(collected_data, custom_on=custom_on)
 
         # Generate report if requested
+        save_failure: str | None = None
         if save:
             output_dir = resolve_output_dir(settings, output, season=season)
 
@@ -293,7 +295,10 @@ def preview_command(ctx: click.Context, save: bool, output: str | None, scout: b
             if report_result.success:
                 console.print(f"[green]✓[/green] Report saved to: {report_result.data['report_path']}")
             else:
-                console.print(f"[red]✗[/red] Failed to save report: {report_result.message}")
+                # Reported once the scout has run: a report that failed to
+                # write is no reason to skip a separate LLM call the user also
+                # asked for, but the run still has to exit nonzero (#387).
+                save_failure = f"Failed to save report: {report_result.message}"
 
         # Run scout analysis if requested (or dry-run to preview prompts)
         if scout or dry_run:
@@ -367,6 +372,9 @@ def preview_command(ctx: click.Context, save: bool, output: str | None, scout: b
                     console.print(f"[green]✓[/green] Scout report (clean): {clean_path}")
                 else:
                     error_console.print(f"[yellow]⚠[/yellow] Scout analysis: {scout_result.message}")
+
+        if save_failure:
+            emit_failure("preview", save_failure, "table")
 
     def _display_preview_summary(data: dict, *, custom_on: bool = True) -> None:
         """Display a summary of the preview analysis."""

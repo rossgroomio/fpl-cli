@@ -736,6 +736,8 @@ fpl preview --dry-run        # Build scout prompts without calling LLMs
 
 **Scout analysis** (`--scout`): Uses the research provider (LLM) to generate FPL expert-style BUY/SELL recommendations from web and social sources. Generates two versions: referenced (with citations) and clean (for LLM use).
 
+**A `--save` that did not save** exits **1** with `Failed to save report: <reason>` on stderr, after `--scout` has run if it was asked for: the scout writes to its own directory, so a failed report is no reason to skip it. It used to print that line on stdout and exit 0.
+
 ### Gameweek Review
 
 Post-gameweek analysis covering both classic and draft.
@@ -841,6 +843,16 @@ standings are not published yet, and the `Fetching your team data...` progress l
 **stderr**, for classic and draft alike. A section heading stays on stdout only with the content it
 introduces: for a past gameweek, or a mini-league whose table is not published yet, there is no
 League section on stdout at all and stderr says why.
+
+The same holds for the global sections and the extras: `Dream team not available` and a failed
+dream-team fetch or blankers calculation go to stderr, and the `### Dream Team` / `### Blankers`
+heading is left off stdout when there is nothing under it. `No high-ownership blankers this GW` is
+the Blankers section's answer, so it stays on stdout. `Generating report...` and every progress
+line `--summarise` prints (including the `--debug` and `--dry-run` file notes) are on stderr too.
+`Report saved to:` stays on stdout for now.
+
+**A `--save` that did not save** exits **1** with `Failed to save report: <reason>` on stderr. It
+used to print that line on stdout and exit 0, so a script checking the exit code could not tell.
 
 ### League Recap
 
