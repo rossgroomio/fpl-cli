@@ -11,13 +11,17 @@ import pytest
 
 from fpl_cli.utils.markdown import (
     HeadingMatcher,
+    club_code,
     fence_flags,
     find_entities,
     find_section,
     has_heading,
+    iter_tables,
     leaf_body,
     parse_heading,
     section_body,
+    split_cells,
+    split_name_team,
     unescape_specials,
     unwrap_emphasis,
 )
@@ -356,3 +360,79 @@ def test_unescape_specials_decodes_inside_fenced_blocks_too():
 
 def test_find_entities_reports_inside_fenced_blocks_too():
     assert find_entities("```\n&nbsp;\n```") == [(2, "&nbsp;")]
+
+
+# -- Tables --------------------------------------------------------------------
+
+
+def test_iter_tables_reads_headers_rows_and_the_heading_above():
+    lines = [
+        "### Waiver Recommendations",
+        "",
+        "| Priority | Drop | Claim |",
+        "|:---------|------|------:|",
+        "| 1 | Hill (BOU) | Lacroix (CRY) |",
+        "",
+        "#### Bench",
+        "| Slot | Player |",
+        "|------|--------|",
+        "| GK | Raya |",
+    ]
+    tables = list(iter_tables(lines))
+    assert [(t.heading, t.headers, t.rows) for t in tables] == [
+        ("### Waiver Recommendations", ["Priority", "Drop", "Claim"], [["1", "Hill (BOU)", "Lacroix (CRY)"]]),
+        ("#### Bench", ["Slot", "Player"], [["GK", "Raya"]]),
+    ]
+
+
+@pytest.mark.parametrize("filler", ["| - | - | - |", "|---|---|---|", "| | | |"])
+def test_iter_tables_skips_a_placeholder_row_without_ending_the_table(filler):
+    lines = [
+        "| Priority | Drop | Claim |",
+        "|---|---|---|",
+        "| 1 | Wirtz | Nyoni |",
+        "| 2 | Saliba | Branthwaite |",
+        filler,
+        "| 3 | Gross | Rogers |",
+    ]
+    [table] = iter_tables(lines)
+    assert [row[2] for row in table.rows] == ["Nyoni", "Branthwaite", "Rogers"]
+
+
+def test_iter_tables_needs_a_separator_after_the_header():
+    assert list(iter_tables(["| Pos | Player |", "| GK | Raya |"])) == []
+
+
+def test_iter_tables_ignores_a_table_inside_a_fence():
+    lines = ["```markdown", "| Pos | Player |", "|---|---|", "| GK | Raya |", "```"]
+    assert list(iter_tables(lines)) == []
+
+
+def test_split_cells_keeps_an_escaped_pipe_inside_its_cell():
+    assert split_cells("| MID | Rice \\| Zubimendi | ARS |") == ["MID", "Rice | Zubimendi", "ARS"]
+
+
+@pytest.mark.parametrize(
+    ("cell", "expected"),
+    [
+        ("Tzolis (ARS)", ("Tzolis", "ARS")),
+        ("Nyoni (LIV, MID)", ("Nyoni", "LIV")),
+        ("Raya (ARS, GK)", ("Raya", "ARS")),
+        ("**B.Fernandes (MUN)**", ("B.Fernandes", "MUN")),
+        ("Salah (C)", ("Salah", None)),
+        ("Haaland (MCI) (if fit)", ("Haaland", "MCI")),
+        ("Salah (home vs WHU)", ("Salah", None)),
+        ("Gabriel (ARS) ⚡ Override: nailed", ("Gabriel", "ARS")),
+        ("(depth)", ("", None)),
+    ],
+)
+def test_split_name_team(cell, expected):
+    assert split_name_team(cell) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [("ars", "ARS"), (" NFO ", "NFO"), ("MID", None), ("GKP", None), ("???", None), ("", None), (None, None)],
+)
+def test_club_code(text, expected):
+    assert club_code(text) == expected

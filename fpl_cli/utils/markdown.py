@@ -54,23 +54,38 @@ gameweek number) should match that heading itself with its own regex, then use
 `fence_flags`/`parse_heading` directly to compute a fence-aware, same-or-
 shallower-depth section boundary from it -- the same primitives `_locate`
 composes here.
+
+Once a section is found, what gw-prep and squad-builder put in it is mostly
+tables of players, so the module also reads those: `iter_tables` and
+`split_cells` for the rows, and `split_name_team` / `club_code` for the
+"Nyoni (LIV, MID)" cells in them. The recommendations parser behind
+`fpl review --compare-recs` and the gw-prep validator scripts each used to
+carry their own copy, and the copies disagreed on what ends a table and what a
+club suffix looks like (#402). How a caller matches a column name or a player
+name stays with the caller, since those differ on purpose.
 """
 
 from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Iterator, Sequence
+from dataclasses import dataclass
 
 __all__ = [
     "HeadingMatcher",
+    "Table",
     "as_matcher",
+    "club_code",
     "fence_flags",
     "find_entities",
     "find_section",
     "has_heading",
+    "iter_tables",
     "leaf_body",
     "parse_heading",
     "section_body",
+    "split_cells",
+    "split_name_team",
     "unescape_specials",
     "unwrap_emphasis",
 ]
@@ -333,6 +348,144 @@ def leaf_body(lines: Sequence[str], heading: str | HeadingMatcher) -> list[str] 
         if not flags[i] and parse_heading(line) is not None:
             return body[:i]
     return body
+
+
+# -- Tables --------------------------------------------------------------------
+
+# A delimiter row: every cell a run of dashes, optionally colon-aligned.
+_SEPARATOR_RE = re.compile(r"^\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)*\|?$")
+# A pipe that breaks a column, as opposed to an escaped `\|` inside a cell.
+_CELL_SPLIT_RE = re.compile(r"(?<!\\)\|")
+
+
+@dataclass(frozen=True)
+class Table:
+    """A markdown table found by `iter_tables`.
+
+    `headers` are the header cells as written, trimmed, so each caller decides
+    how loosely to match a column name. `heading` is the nearest heading line
+    above the table, or None.
+    """
+
+    headers: list[str]
+    rows: list[list[str]]
+    heading: str | None
+
+
+def split_cells(line: str) -> list[str]:
+    """A table row's cells, trimmed, with an escaped `\\|` kept inside its cell."""
+    inner = line.strip()
+    if inner.startswith("|"):
+        inner = inner[1:]
+    if inner.endswith("|") and not inner.endswith("\\|"):
+        inner = inner[:-1]
+    return [cell.strip().replace("\\|", "|") for cell in _CELL_SPLIT_RE.split(inner)]
+
+
+def _is_separator(line: str) -> bool:
+    return _SEPARATOR_RE.match(line.strip()) is not None
+
+
+def iter_tables(lines: Sequence[str]) -> Iterator[Table]:
+    """Every markdown table in `lines`, with the heading it sits under.
+
+    A table opens on a pipe row followed by a delimiter row and runs to the
+    first line that is not a pipe row. Only the row after the header is taken
+    as a delimiter. A body row shaped like one is skipped, never read as a
+    stacked table starting: a placeholder row of bare dashes (`| - | - |`)
+    has that shape, and taking it for a delimiter ended the table a row early
+    and re-read the real row above it as a header (#402). A body row with
+    every cell empty is skipped too, as neither carries anything to read.
+
+    Fence-aware, so a table quoted inside a code block is not read as one.
+    """
+    fenced = list(fence_flags(lines))
+    heading: str | None = None
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        if fenced[i]:
+            i += 1
+            continue
+        if parse_heading(line) is not None:
+            heading = line
+            i += 1
+            continue
+        if line.startswith("|") and i + 1 < len(lines) and _is_separator(lines[i + 1]):
+            rows: list[list[str]] = []
+            j = i + 2
+            while j < len(lines) and not fenced[j] and lines[j].strip().startswith("|"):
+                if not _is_separator(lines[j]):
+                    cells = split_cells(lines[j])
+                    if any(cells):
+                        rows.append(cells)
+                j += 1
+            yield Table(headers=split_cells(line), rows=rows, heading=heading)
+            i = j
+            continue
+        i += 1
+
+
+# A club code is exactly three capitals in FPL ("ARS", "NFO"). Anything shorter
+# is a captaincy marker ("(C)", "(VC)"), and a position code is three capitals
+# too, so those are named and skipped: the waiver template's cells read
+# "Nyoni (LIV, MID)". `GK` is named as well, though no code could match it, so
+# that "(WHU, GK)" counts as a bracket of codes.
+_TEAM_CODE_RE = re.compile(r"[A-Z]{3}")
+_POSITION_CODES = frozenset({"GK", "GKP", "DEF", "MID", "FWD"})
+_TRAILING_PAREN_RE = re.compile(r"\s*\(([^()]*)\)\s*$")
+_CODE_SPLIT_RE = re.compile(r"[\s,/;]+")
+# Emphasis wrapping a whole cell. Without the `~` a heading's `_EMPHASIS_RE`
+# takes, so a struck-out name ("~~Salah~~") is never cleaned into a live one.
+_CELL_EMPHASIS_RE = re.compile(r"^[*_`]+|[*_`]+$")
+# The lineup template appends "⚡ Override: {reason}" to a player it forced in
+# or out; the reason is prose, never part of the name.
+_OVERRIDE_RE = re.compile(r"\s*⚡.*$")
+
+
+def club_code(text: str | None) -> str | None:
+    """`text` as a club code fit to compare ("ARS"), or None.
+
+    None for a position code, and for the "???" the review writes when it
+    could not resolve a club.
+    """
+    if not text:
+        return None
+    code = text.strip().upper()
+    return code if _TEAM_CODE_RE.fullmatch(code) and code not in _POSITION_CODES else None
+
+
+def _parenthetical_club(inner: str) -> str | None:
+    """The club in a bracket that holds only codes: "(ARS)", "(LIV, MID)".
+
+    Every token has to be a code. A bracket of prose, which the squad-builder
+    captain line puts there by design ("Salah (home vs WHU)"), names an
+    opponent or a tag as often as a club, and reading "WHU" off it ruled the
+    real Salah out of his own captaincy.
+    """
+    tokens = [t for t in _CODE_SPLIT_RE.split(inner.strip()) if t]
+    if not tokens or not all(_TEAM_CODE_RE.fullmatch(t) or t in _POSITION_CODES for t in tokens):
+        return None
+    return next((club_code(t) for t in tokens if club_code(t) is not None), None)
+
+
+def split_name_team(cell: str) -> tuple[str, str | None]:
+    """A player cell as (name, club code), the initial left on the name.
+
+    Cells carry a club suffix ("Tzolis (ARS)", "Nyoni (LIV, MID)"), sometimes a
+    qualifier ("Haaland (if fit)") or a captaincy marker ("Salah (C)"), and in
+    the lineup tables an override note. All of them come off the name, but
+    only a bracket of codes gives the club. The club code is worth keeping: it
+    is what separates `Munoz` (LIV) from `Muñoz` (NFO) once the accent is
+    folded. How far to fold the name itself is the caller's matching rule.
+    """
+    text = _OVERRIDE_RE.sub("", cell).strip()
+    text = _CELL_EMPHASIS_RE.sub("", text).strip()
+    team: str | None = None
+    while (match := _TRAILING_PAREN_RE.search(text)) is not None:
+        team = team or _parenthetical_club(match.group(1))
+        text = text[: match.start()].strip()
+    return _CELL_EMPHASIS_RE.sub("", text).strip(), team
 
 
 # -- HTML entity normalisation -------------------------------------------------

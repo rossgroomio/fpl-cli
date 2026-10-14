@@ -35,7 +35,7 @@ from typing import NotRequired, TypedDict, cast
 # envelope instead of a ModuleNotFoundError traceback.
 import _bootstrap  # noqa: F401 — import guard, see module docstring
 
-from fpl_cli.utils.markdown import HeadingMatcher, find_section, leaf_body
+from fpl_cli.utils.markdown import HeadingMatcher, find_section, iter_tables, leaf_body, split_name_team
 
 # ---------------------------------------------------------------------------
 # Types
@@ -81,18 +81,14 @@ class SquadEntry(TypedDict):
 
 _APOSTROPHE_RE = re.compile(r"[‘’ʼʹ`]")
 _HYPHEN_RE = re.compile(r"[–—‒‐‑]")
-_TEAM_SUFFIX_RE = re.compile(r"\s*\([A-Z]{2,4}\)\s*$")
-_MARKDOWN_WRAP_RE = re.compile(r"^[\*_`]+|[\*_`]+$")
 _WHITESPACE_RE = re.compile(r"\s+")
 
 
 def normalise(name: str) -> str:
     """Return a canonical key for name matching."""
-    s = name.strip()
-    # strip markdown bold/italic/code wrapping
-    s = _MARKDOWN_WRAP_RE.sub("", s).strip()
-    # strip trailing team suffix like "(CHE)" or "(TOT)"
-    s = _TEAM_SUFFIX_RE.sub("", s).strip()
+    # strip markdown wrapping and every trailing bracket: "(CHE)", "(LIV, MID)",
+    # "(if fit)" -- the same cell cleaning `fpl review --compare-recs` reads with
+    s, _ = split_name_team(name)
     # NFKD decompose then drop combining marks
     s = unicodedata.normalize("NFKD", s)
     s = "".join(c for c in s if not unicodedata.category(c).startswith("M"))
@@ -109,12 +105,13 @@ def normalise(name: str) -> str:
     return s
 
 
-_PLACEHOLDER_VALUES = frozenset({"-", "—", "–", "", "hold", "(depth)", "tbd", "n/a"})
+# A cell that is nothing but a bracket ("(depth)") normalises to "", since
+# normalise takes every trailing bracket off a name.
+_PLACEHOLDER_VALUES = frozenset({"-", "—", "–", "", "hold", "tbd", "n/a"})
 
 
 def _is_placeholder(raw: str) -> bool:
-    key = normalise(raw)
-    return key in _PLACEHOLDER_VALUES or (key.startswith("(") and key.endswith(")"))
+    return normalise(raw) in _PLACEHOLDER_VALUES
 
 
 # ---------------------------------------------------------------------------
@@ -245,44 +242,18 @@ def parse_waiver_table(
     """Parse the first markdown table in the section.
 
     Returns (headers, rows) where rows are dicts keyed by header name,
-    or None if no table found.
+    or None if no table found. The table is read by the same rules as
+    `fpl review --compare-recs` reads it (`iter_tables`): a placeholder row
+    of bare dashes is skipped rather than ending the table above it.
     """
-    headers: list[str] | None = None
-    rows: list[dict[str, str]] = []
-
-    lines_iter = list(section_lines)
-    for idx, line in enumerate(lines_iter):
-        stripped = line.strip()
-        if not stripped.startswith("|"):
-            # End table at first non-pipe line after rows started (e.g. blank line
-            # before the next ### subsection's table).
-            if rows:
-                break
-            continue
-        if headers is None:
-            # first pipe-delimited line is the header row
-            parts = [p.strip() for p in stripped.strip("|").split("|")]
-            headers = parts
-            continue
-        # skip separator row
-        if re.match(r"^\|[-| ]+\|", stripped):
-            continue
-        # Detect a new header row stacked directly after the current table:
-        # current line is pipe-delimited and the next line is a separator. Break
-        # before consuming it as a data row.
-        if rows and idx + 1 < len(lines_iter):
-            next_stripped = lines_iter[idx + 1].strip()
-            if re.match(r"^\|[-| ]+\|", next_stripped):
-                break
-        parts = [p.strip() for p in stripped.strip("|").split("|")]
-        row: dict[str, str] = {}
-        for i, h in enumerate(headers):
-            row[h] = parts[i] if i < len(parts) else ""
-        rows.append(row)
-
-    if headers is None:
+    table = next(iter_tables(section_lines), None)
+    if table is None:
         return None
-    return headers, rows
+    rows = [
+        {header: row[i] if i < len(row) else "" for i, header in enumerate(table.headers)}
+        for row in table.rows
+    ]
+    return table.headers, rows
 
 
 # ---------------------------------------------------------------------------

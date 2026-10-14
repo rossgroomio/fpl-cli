@@ -21,11 +21,11 @@ from fpl_cli.cli._review_draft import _format_review_draft_player
 from fpl_cli.cli._synthesis_retry import synthesise_with_retry
 from fpl_cli.models.player import POSITION_MAP, Player
 from fpl_cli.models.team import Team
-from fpl_cli.parsers.recommendations import club_code
 from fpl_cli.paths import SHIPPED_CONFIG_DIR, user_config_file
 from fpl_cli.services.scoring import ATTACKING_POSITIONS
 from fpl_cli.services.team_ratings import api_difficulty_scale, fdr_columns_footer
 from fpl_cli.utils.gameweek import is_opening_gameweek
+from fpl_cli.utils.markdown import club_code
 from fpl_cli.utils.teams import describe_team_set_mismatch
 from fpl_cli.utils.text import normalise_name
 

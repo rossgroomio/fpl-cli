@@ -31,6 +31,7 @@ from fpl_cli.utils.markdown import (
     fence_flags,
     find_section,
     has_heading,
+    iter_tables,
     leaf_body,
     parse_heading,
 )
@@ -325,9 +326,6 @@ def _validate_classic_squad_block(block: str) -> ValidationResult:
     }
 
 
-_TABLE_SEPARATOR_RE = re.compile(r"^\|[-:| ]+\|")
-
-
 def _lines_in_section(block: str, heading: str | HeadingMatcher) -> list[str]:
     """Return the body lines of `heading`'s section within `block`.
 
@@ -340,21 +338,7 @@ def _lines_in_section(block: str, heading: str | HeadingMatcher) -> list[str]:
 
 def _count_table_rows_between(block: str, start_heading: str | HeadingMatcher) -> int:
     """Count markdown table data rows between start_heading and the next heading of same depth."""
-    in_table = False
-    row_count = 0
-
-    for line in _lines_in_section(block, start_heading):
-        if line.startswith("|"):
-            if _TABLE_SEPARATOR_RE.match(line):
-                pass
-            elif not in_table:
-                in_table = True
-            else:
-                row_count += 1
-        elif in_table:
-            in_table = False
-
-    return row_count
+    return sum(len(table.rows) for table in iter_tables(_lines_in_section(block, start_heading)))
 
 
 def _parse_budget_total(block: str) -> float | None:
@@ -376,26 +360,13 @@ def _tally_teams_from_squad_tables(block: str) -> dict[str, int]:
     """Tally team counts from the Team column in Starting XI and Bench tables."""
     tally: dict[str, int] = {}
     for section_heading in (_HEADING_STARTING_XI, _HEADING_BENCH):
-        in_table = False
-        team_col: int | None = None
-        for line in _lines_in_section(block, section_heading):
-            if line.startswith("|"):
-                if _TABLE_SEPARATOR_RE.match(line):
-                    pass  # separator
-                elif not in_table:
-                    headers = [h.strip().lower() for h in line.strip("|").split("|")]
-                    team_col = next(
-                        (i for i, h in enumerate(headers) if h == "team"), None
-                    )
-                    in_table = True
-                else:
-                    if team_col is not None:
-                        parts = [p.strip() for p in line.strip("|").split("|")]
-                        if len(parts) > team_col and parts[team_col]:
-                            team = parts[team_col]
-                            tally[team] = tally.get(team, 0) + 1
-            elif in_table:
-                in_table = False
+        for table in iter_tables(_lines_in_section(block, section_heading)):
+            team_col = next((i for i, h in enumerate(table.headers) if h.lower() == "team"), None)
+            if team_col is None:
+                continue
+            for row in table.rows:
+                if team_col < len(row) and row[team_col]:
+                    tally[row[team_col]] = tally.get(row[team_col], 0) + 1
     return tally
 
 
@@ -407,18 +378,17 @@ def _parse_team_exposure(block: str) -> dict[str, int]:
     """
     exposure: dict[str, int] = {}
 
-    for line in _lines_in_section(block, _HEADING_TEAM_EXPOSURE):
-        if line.startswith("|") and not _TABLE_SEPARATOR_RE.match(line):
-            parts = [p.strip() for p in line.strip("|").split("|")]
-            if len(parts) >= 2:
-                team = parts[0].strip()
-                try:
-                    count = int(parts[1].strip().strip("*"))
-                    team_clean = team.strip("*").strip()
-                    if team_clean and team_clean.lower() not in ("team", "total"):
-                        exposure[team_clean] = count
-                except ValueError:
-                    pass
+    for table in iter_tables(_lines_in_section(block, _HEADING_TEAM_EXPOSURE)):
+        for row in table.rows:
+            if len(row) < 2:
+                continue
+            team = row[0].strip("*").strip()
+            try:
+                count = int(row[1].strip("*"))
+            except ValueError:
+                continue
+            if team and team.lower() != "total":
+                exposure[team] = count
 
     if not exposure:
         return _tally_teams_from_squad_tables(block)

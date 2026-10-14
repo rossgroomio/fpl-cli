@@ -1095,3 +1095,69 @@ def test_fenced_draft_heading_is_ignored(tmp_path, capsys):
     data = _parse(capsys)
     assert data["ok"] is True
     assert data["flags"] == []
+
+
+# ---- Shared table reader (#402) ----------------------------------------------
+
+
+@pytest.mark.parametrize("filler", ["| - | - | - | - |", "| | | | |"])
+def test_placeholder_row_does_not_drop_the_real_row_above_it(filler):
+    """A row of bare dashes, or of nothing, is shaped like a separator. Taking
+    it for the separator of a stacked table ended the waiver table one row
+    early, so the real row above it was never validated."""
+    rows = f"""\
+| Priority | Drop | Claim | Position |
+|----------|------|-------|----------|
+| 1 | Wirtz | Nyoni | MID |
+| 2 | Saliba | Branthwaite | DEF |
+{filler}""".split("\n")
+    table = _mod.parse_waiver_table(rows)
+    assert table is not None
+    assert [row["Claim"] for row in table[1]] == ["Nyoni", "Branthwaite"]
+
+
+def test_cross_position_claim_above_a_placeholder_row_still_blocks(tmp_path, capsys):
+    recs_content = """\
+## Draft
+
+### Waiver Recommendations
+
+| Priority | Drop | Claim | Position |
+|----------|------|-------|----------|
+| 1 | Hill (BOU) | Lacroix (CRY) | DEF |
+| 2 | Scott (BOU) | Canvot (CRY) | DEF |
+| - | - | - | - |
+"""
+    recs, w, s = _write_fixtures(tmp_path, recs_content)
+    _run(str(recs), str(w), str(s))
+    data = _parse(capsys)
+    assert data["ok"] is False
+    flag = next(f for f in data["flags"] if f["type"] == "cross-position-claim")
+    assert flag["row"] == 2
+    assert flag["drop_position"] == "MID"
+    assert flag["claim_position"] == "DEF"
+
+
+def test_club_and_position_bracket_is_stripped_from_the_name():
+    assert _mod.normalise("Nyoni (LIV, MID)") == "nyoni"
+    assert _mod.normalise("Raya (ARS, GK)") == "raya"
+
+
+def test_claim_carrying_its_position_beside_the_club_resolves(tmp_path, capsys):
+    """A cell read "Lacroix (CRY, DEF)" kept "(cry, def)" on the name, so the
+    claim was a false pool miss and the drop could not be found in the squad."""
+    recs_content = """\
+## Draft
+
+### Waiver Recommendations
+
+| Priority | Drop | Claim | Position |
+|----------|------|-------|----------|
+| 1 | Hill (BOU, DEF) | Lacroix (CRY, DEF) | DEF |
+"""
+    recs, w, s = _write_fixtures(tmp_path, recs_content)
+    _run(str(recs), str(w), str(s))
+    data = _parse(capsys)
+    assert data["ok"] is True
+    assert data["flags"] == []
+    assert data["warnings"] == []

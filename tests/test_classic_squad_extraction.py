@@ -1383,3 +1383,34 @@ def test_embedded_classic_squad_heading_matches_the_gw_prep_template():
     """
     lines = GW_PREP_TEMPLATE_PATH.read_text(encoding="utf-8").split("\n")
     assert any(_mod._HEADING_EMBEDDED_CLASSIC_SQUAD.matches(line) for line in lines)
+
+
+# -- Shared table reader (#402) --
+
+
+def test_escaped_pipe_in_a_cell_does_not_shift_the_team_column():
+    """A `\\|` inside a cell is text, not a column break, so the Team column
+    after it is still the Team column."""
+    block = (
+        "### Classic Squad\n#### Starting XI\n\n"
+        "| Pos | Player | Team |\n"
+        "|-----|--------|------|\n"
+        "| MID | Rice \\| Zubimendi | ARS |\n"
+        "| FWD | Haaland | MCI |\n"
+    )
+    assert _mod._tally_teams_from_squad_tables(block) == {"ARS": 1, "MCI": 1}
+
+
+def test_table_quoted_in_a_fence_is_not_counted():
+    block = (
+        "### Classic Squad\n#### Starting XI\n\n"
+        "| Pos | Player | Team |\n"
+        "|-----|--------|------|\n"
+        "| GK | Raya | ARS |\n\n"
+        "```markdown\n"
+        "| Pos | Player | Team |\n"
+        "|-----|--------|------|\n"
+        "| GK | Example | XXX |\n"
+        "```\n"
+    )
+    assert _count_table_rows_between(block, "#### Starting XI") == 1
