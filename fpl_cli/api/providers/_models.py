@@ -51,6 +51,14 @@ NORMAL_STOP_REASONS: frozenset[str] = frozenset({
     "end_turn", "stop_sequence", "tool_use", "stop", "tool_calls", "function_call",
 })
 
+# The abnormal stops that mean the text hit its output-token ceiling, in
+# Anthropic's and the OpenAI-compatible dialects: the ones a second roll can
+# plausibly fix. The ceiling is shared with the model's reasoning (#316), whose
+# length varies run to run, so a retry at the same ceiling is a fresh draw. A
+# refusal or content filter is not in here: the same prompt usually draws the
+# same answer, and it was not "cut off" (#372, #397).
+TRUNCATION_STOP_REASONS: frozenset[str] = frozenset({"max_tokens", "length"})
+
 
 @dataclass(frozen=True, slots=True)
 class LLMResponse:
@@ -81,6 +89,15 @@ class LLMResponse:
         costs a retry and a warning each time and says nothing true.
         """
         return bool(self.stop_reason) and self.stop_reason not in NORMAL_STOP_REASONS
+
+    @property
+    def truncated(self) -> bool:
+        """True when the provider stopped at its output-token ceiling.
+
+        The subset of `stopped_early` worth a retry on its own: the text was
+        cut off, not refused, so a second draw can come back whole.
+        """
+        return self.stop_reason in TRUNCATION_STOP_REASONS
 
 
 def log_abnormal_stop(response: LLMResponse, label: str) -> None:

@@ -3096,7 +3096,8 @@ Salah carried it. No transfers were made this week, so"""
 
 
 class _StubSynthesisProvider:
-    """Returns each queued response in turn, recording every call.
+    """Returns each queued response in turn, recording every call; a queued
+    exception is raised instead, like a call that never landed.
 
     `post_process` defaults to identity; pass one to stand in for a provider
     that rewrites its own output (Perplexity strips citation markers).
@@ -3109,7 +3110,10 @@ class _StubSynthesisProvider:
 
     async def query(self, prompt, system_prompt=None, **kwargs):
         self.calls.append({"prompt": prompt, "system_prompt": system_prompt})
-        return self._responses[min(len(self.calls) - 1, len(self._responses) - 1)]
+        response = self._responses[min(len(self.calls) - 1, len(self._responses) - 1)]
+        if isinstance(response, Exception):
+            raise response
+        return response
 
     def post_process(self, content):
         return self._post_process(content) if self._post_process else content
@@ -3147,10 +3151,34 @@ class TestSynthesiseWithCompletenessCheck:
         assert len(provider.calls) == 2
         assert "retrying once" in capsys.readouterr().err.replace("\n", "")
 
-    async def test_the_retry_resends_the_same_prompts(self):
+    async def test_the_retry_is_told_what_the_first_attempt_lacked(self):
+        # #397: resending the identical prompt is the same gamble that already
+        # failed once; the recap's retry has always been told what went wrong.
         provider = _StubSynthesisProvider(_reply(_TRUNCATED), _reply(_WHOLE))
         await _synthesise(provider)
-        assert provider.calls[0] == provider.calls[1]
+        first, retry = provider.calls
+        assert retry["system_prompt"] == first["system_prompt"]
+        assert retry["prompt"].startswith(first["prompt"])
+        feedback = retry["prompt"][len(first["prompt"]):]
+        assert "missing these sections: ## Draft Verdict, ## Next Week." in feedback
+        assert "stopped mid-sentence" in feedback
+        # The provider finished normally, so the retry is not told it was cut off.
+        assert "cut off" not in feedback
+
+    async def test_a_cut_off_retry_is_told_it_was_cut_off(self):
+        provider = _StubSynthesisProvider(_reply(_TRUNCATED, "max_tokens"), _reply(_WHOLE))
+        await _synthesise(provider)
+        first, retry = provider.calls
+        assert "cut off before it finished (the provider stopped with max_tokens)" in retry["prompt"]
+
+    async def test_an_empty_first_attempt_is_told_it_said_nothing(self):
+        provider = _StubSynthesisProvider(_reply("", "max_tokens"), _reply(_WHOLE))
+        await _synthesise(provider)
+        feedback = provider.calls[1]["prompt"]
+        assert "came back with no text at all" in feedback
+        # Every heading is absent from nothing; naming them all would read as
+        # four faults rather than the one.
+        assert "missing these sections" not in feedback
 
     async def test_it_stops_after_the_retry_rather_than_looping(self):
         provider = _StubSynthesisProvider(_reply(_TRUNCATED))
@@ -3227,15 +3255,47 @@ class TestSynthesiseWithCompletenessCheck:
         assert completeness.complete is True
         assert attempts == 1
 
-    async def test_a_stop_reason_carrying_rich_markup_does_not_break_the_notice(self, capsys):
-        # A custom OpenAI-compatible endpoint is free to send anything here;
-        # an unescaped "[/yellow]" would raise MarkupError and cost the reader
-        # the very message this guard exists to print.
-        provider = _StubSynthesisProvider(_reply(_WHOLE, "[/yellow]oops"), _reply(_WHOLE, "[bold]nope"))
-        _, completeness, attempts = await _synthesise(provider)
+    @pytest.mark.parametrize("stop_reason", ["refusal", "content_filter", "[/yellow]oops"])
+    async def test_a_refusal_on_a_whole_answer_is_reported_but_not_retried(self, stop_reason, capsys):
+        # #397: the same prompt usually draws the same refusal, and it was not
+        # cut off, so the stop alone no longer costs a second call -- as in
+        # `league-recap` since #396. It still reaches the report as a problem.
+        provider = _StubSynthesisProvider(_reply(_WHOLE, stop_reason))
+        content, completeness, attempts = await _synthesise(provider)
+        assert attempts == 1
+        assert content == _WHOLE
+        assert completeness.complete is False
+        assert completeness.problems() == [f"provider stopped early (stop_reason: {stop_reason})"]
+        assert "retrying once" not in capsys.readouterr().err
+
+    async def test_a_refused_fragment_is_retried_for_what_the_text_lacks(self):
+        # The missing sections earn the retry, as a wrong claim does in the
+        # recap; the refusal was not a cut-off, so the retry is never told it was.
+        provider = _StubSynthesisProvider(_reply(_TRUNCATED, "refusal"), _reply(_WHOLE))
+        content, _, attempts = await _synthesise(provider)
         assert attempts == 2
-        assert completeness.stop_reason == "[/yellow]oops"
-        assert "[/yellow]oops" in capsys.readouterr().err.replace("\n", "")
+        assert content == _WHOLE
+        assert "cut off" not in provider.calls[1]["prompt"]
+
+    async def test_a_retry_that_fails_keeps_the_first_attempt(self, capsys):
+        # #397: a timeout or 500 on the retry used to propagate, and the caller
+        # recorded "the synthesis call failed" with an empty summary -- losing
+        # an answer already in hand to the call meant to improve it.
+        from fpl_cli.api.providers import ProviderError
+
+        provider = _StubSynthesisProvider(_reply(_TRUNCATED), ProviderError("timed out"))
+        content, completeness, attempts = await _synthesise(provider)
+        assert content == _TRUNCATED
+        assert completeness.missing_sections == ("Draft Verdict", "Next Week")
+        assert attempts == 2
+        err = capsys.readouterr().err.replace("\n", "")
+        assert "retry failed (timed out) -- keeping the first attempt" in err
+
+    async def test_a_first_call_that_fails_is_still_the_caller_s(self):
+        from fpl_cli.api.providers import ProviderError
+
+        with pytest.raises(ProviderError, match="down"):
+            await _synthesise(_StubSynthesisProvider(ProviderError("down")))
 
 
 class TestReportSynthesisCompleteness:
@@ -3396,6 +3456,18 @@ class TestReviewLlmSummariseSurfacesAnIncompleteSynthesis:
 
         with pytest.raises(ZeroDivisionError):
             await _review_llm_summarise(**self._kwargs(provider))
+
+    async def test_a_retry_that_fails_reports_the_kept_attempt_not_a_failed_call(self, capsys):
+        # #397 end to end: the first attempt reaches the report with its own
+        # problems named, rather than an empty summary blamed on the call.
+        provider = _StubSynthesisProvider(_reply(_TRUNCATED), RuntimeError("provider exploded"))
+        result = await _review_llm_summarise(**self._kwargs(provider))
+
+        assert result["synthesis_summary"] == _TRUNCATED
+        problems = result["synthesis_problems"]
+        assert any("## Draft Verdict" in p for p in problems)
+        assert not any("the synthesis call failed" in p for p in problems)
+        assert "incomplete after 2 attempt(s)" in capsys.readouterr().err.replace("\n", "")
 
     async def test_an_exception_carrying_no_message_names_only_its_type(self):
         class _Silent:

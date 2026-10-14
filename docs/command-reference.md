@@ -794,9 +794,14 @@ stderr, and as a warning callout in the saved report.
 
 **Incomplete summaries:** the personal analysis is checked against the sections its own prompt
 asked for before anything is written. A response that comes back empty, is missing a `## `
-heading, ends without terminal punctuation, or that the provider reports it stopped early on is
-retried **once** — and if the second attempt is no better, the less damaged of the two stands
-and the run says so on stderr, naming what is missing. Under `--debug` the detail lands in
+heading, ends without terminal punctuation, or that the provider cut off at its token ceiling
+(`max_tokens`, or `length` from an OpenAI-compatible API) is retried **once**, with the prompt
+followed by what the last draft lacked — and if the second attempt is no better, the less damaged
+of the two stands and the run says so on stderr, naming what is missing. A refusal or content
+filter on an otherwise whole response is reported the same way but not retried for the stop
+alone, since the same prompt usually draws the same answer; a retry that fails outright keeps
+the first attempt rather than losing it. This is the same single retry `league-recap` gives its
+editorial. Under `--debug` the detail lands in
 `data/debug/synthesis_corrections.txt` alongside `research_corrections.txt`. A saved report
 generated from such a response carries the same list as a warning callout above the summary, so
 a verdict the model dropped never reads as one deliberately omitted. The callout does not depend
@@ -806,7 +811,7 @@ most needs explaining, and is reported as a single "the response is empty" findi
 as every section it happens to be short of. A verdict for a format the run has no squad data for is not counted as
 missing — the prompt tells the model to analyse only the format it was given.
 
-A call that never lands at all — a timeout, a 500, a 429 that outlasted its retries, a revoked
+A first call that never lands at all — a timeout, a 500, a 429 that outlasted its retries, a revoked
 key — is reported through the same callout, naming the failure. The run still exits **0** with
 the rest of the review intact, but the saved report says the analysis was attempted and lost
 rather than leaving a reader to wonder whether the template ever had one.

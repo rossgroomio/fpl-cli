@@ -36,6 +36,7 @@ from fpl_cli.cli._league_recap_types import (
     PriorSeasonsSummary,
     summarise_prior_seasons,
 )
+from fpl_cli.cli._synthesis_retry import SynthesisAttempt, synthesise_with_retry
 from fpl_cli.services.league_history import GameweekCoverage
 from fpl_cli.services.league_history_fines import (
     ManagerFineTally,
@@ -60,19 +61,6 @@ _CONSOLE_STREAK_LIMIT = 5
 # `_league_recap_history.py`, the same way `synthesis_provider_unavailable`
 # does. Stable for scripts, like every other code on that channel.
 RECAP_WARNING_STANDINGS_MOVED_ON = "league_standings_moved_on"
-# The editorial gets one retry when it contradicts its own data -- a manager
-# in the wrong role of a contested race (#357), a manager's net pinned on one
-# move, a tie nobody shares (#359) -- or when the provider stopped it early
-# (#372): a second call is cheap next to a saved report that states either as
-# fact or reads a cut-off editorial as whole, and two attempts is where it
-# stops, as for `review`'s completeness check.
-_MAX_EDITORIAL_ATTEMPTS = 2
-# The abnormal stops a retry can plausibly fix: a token ceiling, in Anthropic's
-# and the OpenAI-compatible dialects. The ceiling is shared with the model's
-# reasoning (#316), whose length varies run to run, so a second roll at the
-# same ceiling is a fresh draw. A refusal or content filter is not in here: the
-# same prompt usually draws the same answer, and it was not "cut off" (#372).
-_TRUNCATION_STOP_REASONS = frozenset({"max_tokens", "length"})
 
 if TYPE_CHECKING:
     from fpl_cli.api.providers import LLMResponse
@@ -878,10 +866,6 @@ def _render_console_highlights(
                 console.print(f"  {entry.text}")
 
 
-def _truncated(response: LLMResponse) -> bool:
-    return response.stop_reason in _TRUNCATION_STOP_REASONS
-
-
 async def _editorial_with_data_checks(
     provider: Any,
     *,
@@ -894,14 +878,13 @@ async def _editorial_with_data_checks(
 
     Returns `(summary, problems, response)` for the attempt that ships, the
     problems keyed by warning code as `check_recap_editorial()` returns them.
-    The retry is told exactly which claims were wrong and what the data says
-    instead, or that the last draft was cut off, rather than rolling the same
-    prompt again (#357, #359, #372). It only displaces the first attempt when
-    it is strictly less damaged -- complete rather than cut off, then fewer
-    wrong claims -- so a worse second roll never ships over a better one, and
-    a retry that fails outright leaves the first attempt standing rather than
-    losing an editorial already in hand.
-    The first call's failure is the caller's, as it always was.
+    The attempt loop is the one `review` shares (`synthesise_with_retry`):
+    the retry is told exactly which claims were wrong and what the data says
+    instead, or that the last draft was cut off (#357, #359, #372), and a
+    retry that fails outright leaves the first attempt standing. What this
+    command adds is its judge and its ranking -- complete rather than cut off,
+    then fewer wrong claims -- so a worse second roll never ships over a
+    better one. The first call's failure is the caller's, as it always was.
     """
     from fpl_cli.prompts.league_recap import normalise_recap_editorial
     from fpl_cli.prompts.league_recap_checks import (
@@ -909,35 +892,9 @@ async def _editorial_with_data_checks(
         get_recap_editorial_retry_prompt,
     )
 
-    # A cut-off attempt ranks below any complete one: it may simply have
-    # stopped before reaching the claim the other got wrong, so its clean
-    # check proves nothing. Among equals, fewer wrong claims wins.
-    def damage(attempt: tuple[str, dict[str, list[str]], LLMResponse]) -> tuple[bool, int]:
-        return attempt[2].stopped_early, sum(len(found) for found in attempt[1].values())
-
-    best: tuple[str, dict[str, list[str]], LLMResponse] | None = None
-    attempt_prompt = prompt
-    for attempt in range(1, _MAX_EDITORIAL_ATTEMPTS + 1):
+    def judge(summary: str, response: LLMResponse) -> dict[str, list[str]]:
         try:
-            response = await provider.query(prompt=attempt_prompt, system_prompt=system_prompt)
-        except Exception as e:  # noqa: BLE001 — a failed retry keeps the attempt in hand
-            if best is None:
-                raise
-            error_console.print(
-                f"[yellow]  ⚠ The editorial retry failed ({rich_escape(str(e) or type(e).__name__)})"
-                " -- keeping the first attempt[/yellow]"
-            )
-            return best
-        # The report writes its own title; whatever heading the model opened
-        # with anyway is demoted beneath it or, when it only restates the
-        # title, dropped (#349). The JSON payload carries the same text, so a
-        # consumer sees the editorial as saved.
-        summary = normalise_recap_editorial(
-            provider.post_process(response.content),
-            league_name=collected_data["league_name"],
-        )
-        try:
-            problems = check_recap_editorial(summary, collected_data)
+            return check_recap_editorial(summary, collected_data)
         except (KeyError, TypeError, ValueError, IndexError) as e:
             # The checks are advisory: a bug in one (a row shape it did not
             # expect) must cost the check, never an editorial already paid for.
@@ -946,25 +903,30 @@ async def _editorial_with_data_checks(
                 f"[yellow]  ⚠ The editorial could not be checked against its data ({type(e).__name__})"
                 " -- saving it unchecked[/yellow]"
             )
-            problems = {}
-        candidate = (summary, problems, response)
-        if best is None or damage(candidate) < damage(best):
-            best = candidate
-        # A truncated attempt is retried even when its check came back clean:
-        # it may have stopped before the claims the check reads (#372).
-        if not (best[1] or _truncated(best[2])) or attempt == _MAX_EDITORIAL_ATTEMPTS:
-            return best
-        stop_reason = str(response.stop_reason) if _truncated(response) else None
-        reasons = []
-        if stop_reason:
-            reasons.append(f"was cut off (stop_reason: {stop_reason})")
-        if problems:
-            reasons.append("contradicts the data it was given")
-        error_console.print(
-            f"[yellow]  ⚠ The editorial {' and '.join(reasons)} -- retrying once[/yellow]"
-        )
-        attempt_prompt = get_recap_editorial_retry_prompt(prompt, problems, stop_reason=stop_reason)
-    raise AssertionError("unreachable: the loop returns on its last attempt")  # pragma: no cover
+            return {}
+
+    # A cut-off attempt ranks below any complete one: it may simply have
+    # stopped before reaching the claim the other got wrong, so its clean
+    # check proves nothing. Among equals, fewer wrong claims wins.
+    def damage(attempt: SynthesisAttempt[dict[str, list[str]]]) -> tuple[int, int]:
+        return int(attempt.response.stopped_early), sum(len(found) for found in attempt.verdict.values())
+
+    best, _ = await synthesise_with_retry(
+        provider,
+        prompt=prompt,
+        system_prompt=system_prompt,
+        subject="The editorial",
+        judge=judge,
+        retry_reason=lambda problems: "contradicts the data it was given" if problems else None,
+        damage=damage,
+        retry_prompt=get_recap_editorial_retry_prompt,
+        # The report writes its own title; whatever heading the model opened
+        # with anyway is demoted beneath it or, when it only restates the
+        # title, dropped (#349). The JSON payload carries the same text, so a
+        # consumer sees the editorial as saved.
+        normalise=lambda text: normalise_recap_editorial(text, league_name=collected_data["league_name"]),
+    )
+    return best.text, best.verdict, best.response
 
 
 async def _recap_llm_summarise(

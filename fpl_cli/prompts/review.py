@@ -1665,9 +1665,17 @@ class SynthesisCompleteness:
 
     def problems(self) -> list[str]:
         """One line per problem, for the warning and the corrections file."""
+        stopped = [f"provider stopped early (stop_reason: {self.stop_reason})"] if self.stop_reason else []
+        return stopped + self.text_problems()
+
+    def text_problems(self) -> list[str]:
+        """`problems()` without the provider's stop reason: what the text itself shows.
+
+        The retry decision reads these, because a stop reason earns a retry
+        only when it is a token ceiling, and the loop judges that itself -- a
+        refusal on an otherwise whole answer is reported, not re-rolled (#397).
+        """
         lines: list[str] = []
-        if self.stop_reason:
-            lines.append(f"provider stopped early (stop_reason: {self.stop_reason})")
         if self.empty:
             # One fault, not one per section: with nothing in the response
             # every heading is trivially absent, and listing them all reads as
@@ -1836,3 +1844,39 @@ def check_synthesis_completeness(
         # only as the set of headings it happens to be short of (#306).
         empty=not response.strip(),
     )
+
+
+def get_synthesis_retry_prompt(
+    user_prompt: str,
+    completeness: SynthesisCompleteness,
+    *,
+    stop_reason: str | None = None,
+) -> str:
+    """The user prompt again, followed by what the last draft lacked.
+
+    The review's counterpart to `get_recap_editorial_retry_prompt`: a second
+    roll of the identical prompt is the same gamble that already failed once,
+    and what the completeness check found -- sections missing, a draft that
+    stops mid-sentence or says nothing -- is as easy to state as a wrong claim
+    (#397). `stop_reason` is the provider's, set only when the last draft hit
+    its token ceiling; `completeness.stop_reason` is not read for it, because
+    a refusal was not cut off and must not be described as if it were.
+    """
+    feedback: list[str] = []
+    if stop_reason:
+        feedback.append(
+            f"Your previous draft was cut off before it finished (the provider stopped with {stop_reason})."
+        )
+    if completeness.empty:
+        feedback.append("Your previous draft came back with no text at all.")
+    elif completeness.missing_sections:
+        sections = ", ".join(f"## {s}" for s in completeness.missing_sections)
+        feedback.append(f"Your previous draft was missing these sections: {sections}.")
+    if completeness.unterminated:
+        feedback.append("Your previous draft stopped mid-sentence.")
+    instructions = ["Write the analysis again from scratch."]
+    if completeness.empty or completeness.missing_sections:
+        instructions.append("Include every section the output format asks for.")
+    if stop_reason or completeness.empty or completeness.unterminated:
+        instructions.append("Keep it tight enough to finish, ending every section on a complete sentence.")
+    return f"{user_prompt}\n\n" + "\n".join(feedback) + "\n" + " ".join(instructions)
