@@ -119,6 +119,25 @@ async def _review_resolve_gw(client: FPLClient, gameweek: int | None) -> dict[st
 _SQUAD_MODE_LABELS = {"wildcard": "Wildcard", "freehit": "Free Hit"}
 
 
+def _unread_recs_warning(recs_comparison: dict[str, Any], recs_path: str) -> str:
+    """The stderr warning naming what nothing could be read from in a recommendations file.
+
+    Part by part, because a captain read on its own does not make the
+    transfers readable (#355). The likely cause is the gw-prep template moving
+    on without the parser, which is how #354 went unnoticed for four weeks, so
+    the warning says so.
+    """
+    where = rich_escape(recs_path)
+    hint = "Its layout may no longer match the gw-prep template."
+    if recs_comparison["nothing_read"]:
+        return f"[yellow]No recommendations could be read from {where}, so none are compared. {hint}[/yellow]"
+    unread = recs_comparison["unread"]
+    if len(unread) == 1:
+        return f"[yellow]Could not read the {unread[0]} from {where}, so it is not graded. {hint}[/yellow]"
+    parts = f"{', '.join(unread[:-1])} and {unread[-1]}"
+    return f"[yellow]Could not read the {parts} from {where}, so they are not graded. {hint}[/yellow]"
+
+
 def _print_squad_comparison(sq: dict[str, Any]) -> None:
     """The `--compare-recs` lines for a week whose recommendation was a squad.
 
@@ -495,12 +514,20 @@ def review_command(
 
                 recs_path = output_dir / f"gw{gw}-recommendations.md"
                 recs = parse_recommendations(recs_path)
+                recs_comparison: dict[str, Any] | None = None
 
                 if recs is None:
                     error_console.print(f"\n[yellow]No recommendations file found at {recs_path}[/yellow]")
                 else:
                     recs_comparison = _review_compare_recs(recs, collected_data, gameweek=gw)
                     collected_data["recs_comparison"] = recs_comparison
+                    if recs_comparison["unread"]:
+                        error_console.print(f"\n{_unread_recs_warning(recs_comparison, str(recs_path))}")
+
+                # A file nothing could be read from has no recommended side to
+                # print, so the comparison is left out rather than shown empty.
+                if recs_comparison is not None and not recs_comparison["nothing_read"]:
+                    unread = recs_comparison["unread"]
 
                     # Print comparison summary to console
                     console.print("\n" + "-" * 50)
@@ -509,9 +536,13 @@ def review_command(
                     rc = recs_comparison["classic"]
                     if rc.get("rec_captain"):
                         _print_captain_comparison(rc)
+                    elif "captain" in unread:
+                        console.print("  Captain: [dim]?[/dim] not graded (could not be read from the file)")
 
                     if rc.get("no_transfers_possible"):
                         console.print("  Transfers: [dim]n/a - no transfers exist in GW1[/dim]")
+                    elif "transfers" in unread:
+                        console.print("  Transfers: [dim]?[/dim] not graded (could not be read from the file)")
                     elif sq := rc.get("squad"):
                         _print_squad_comparison(sq)
                     elif rc.get("rec_roll") and rc.get("actual_roll"):
@@ -555,6 +586,8 @@ def review_command(
                         )
 
                     rd = recs_comparison["draft"]
+                    if "waivers" in unread:
+                        console.print("  Waivers: [dim]?[/dim] not graded (could not be read from the file)")
                     for w in rd.get("waivers", []):
                         p = w["priority"]
                         # A claim they made and lost is activity either way,

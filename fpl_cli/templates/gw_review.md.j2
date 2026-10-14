@@ -37,7 +37,11 @@
 {% endif %}
 {% if recs_comparison %}
 # Recommendations vs Actuals
+{% if recs_comparison.nothing_read %}
+_Not compared: no recommendation could be read from gw{{ gameweek }}-recommendations.md. Its layout may no longer match the gw-prep template._
+{% else %}
 ## Classic
+{% if recs_comparison.classic.rec_captain %}
 ### Captain
 | | Recommended | Actual | Captain Pts |
 |--|-------------|--------|-------------|
@@ -49,9 +53,15 @@
 Your captain choice was worth {{ "%+d"|format(recs_comparison.classic.captain_total_delta) }} to your total against the recommendation.
 {% endif %}
 {% endif %}
+{% elif "captain" in recs_comparison.unread %}
+### Captain
+_Not graded: no captain could be read from gw{{ gameweek }}-recommendations.md._
+{% endif %}
 ### Transfers
 {% if recs_comparison.classic.no_transfers_possible %}
 No transfers exist in GW1 - squads are bought pre-season, so there was no transfer decision to compare.
+{% elif "transfers" in recs_comparison.unread %}
+_Not graded: no transfer recommendation could be read from gw{{ gameweek }}-recommendations.md, so no move is marked unadvised._
 {% elif recs_comparison.classic.squad %}
 {% set sq = recs_comparison.classic.squad %}
 Recommended a {% if sq.mode == "freehit" %}Free Hit{% elif sq.mode == "wildcard" %}Wildcard{% else %}full{% endif %} squad of {{ sq.size }}{% if sq.fielded is not none %}, and **{{ sq.fielded }}** of them were fielded{% endif %}. Each player brought in is graded against that squad.
@@ -85,7 +95,9 @@ Recommended roll but made transfers.
 
 ## Draft
 ### Waivers
-{% if recs_comparison.draft.waivers %}
+{% if "waivers" in recs_comparison.unread %}
+_Not graded: no waiver recommendation could be read from gw{{ gameweek }}-recommendations.md, so no move is marked unadvised._
+{% elif recs_comparison.draft.waivers %}
 | P | Rec In | Rec Out | Followed | Actual In | Net | Verdict |
 |---|--------|---------|----------|-----------|-----|---------|
 {% for w in recs_comparison.draft.waivers %}| {{ w.priority }} | {{ w.rec_in }} | {{ w.rec_out }} | {% if w.ungraded %}Not graded{% elif w.followed %}Yes{% elif w.lost_claim is defined and w.lost_claim %}{% if w.different_claim %}Different claim, lost{% else %}Claimed, lost{% endif %}{% elif w.not_executed is defined and w.not_executed %}Not exec{% else %}Different{% endif %}{% if w.claimed_and_lost is defined and w.claimed_and_lost %} (claimed, lost){% endif %} | {{ w.actual_in if w.actual_in else (w.claimed_in if w.claimed_in else '-') }} | {{ w.actual_net if w.actual_net is defined else '-' }} | {{ w.actual_verdict if w.actual_verdict is defined else '-' }} |
@@ -94,7 +106,7 @@ Recommended roll but made transfers.
 **Unadvised waivers:**
 {% for w in recs_comparison.draft.unadvised_waivers %}| ⚠ | {{ w.actual_in }} | {{ w.actual_out }} | Unadvised | - | {{ w.actual_net }} | {{ w.actual_verdict }} |
 {% endfor %}{% endif %}
-{% if not recs_comparison.draft.waivers and not recs_comparison.draft.unadvised_waivers %}
+{% if not recs_comparison.draft.waivers and not recs_comparison.draft.unadvised_waivers and "waivers" not in recs_comparison.unread %}
 No waiver recommendations or transactions.
 {% endif %}
 {% if recs_comparison.ambiguous_names %}
@@ -103,6 +115,7 @@ _Not graded, because the name fits more than one player:_
 {% for a in recs_comparison.ambiguous_names %}
 - _"{{ a.name }}"{% if a.team %} ({{ a.team }}){% endif %} could be {{ a.candidates | join(" or ") }}_
 {% endfor %}
+{% endif %}
 {% endif %}
 
 ---

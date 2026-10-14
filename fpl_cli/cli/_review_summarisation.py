@@ -1590,6 +1590,13 @@ def _review_compare_recs(recs: dict, collected_data: dict, gameweek: int | None 
     comparison["classic"]["actual_roll"] = actual_roll
     comparison["classic"]["no_transfers_possible"] = no_transfers_possible
 
+    # Parts the file wrote that nothing could be read from (#355). Finding
+    # nothing is a parse that failed, not advice to do nothing, so the moves a
+    # part would have graded go ungraded rather than unadvised. GW1 has no
+    # transfers to grade either way.
+    unread = [part for part in recs.get("unread", []) if not (part == "transfers" and no_transfers_possible)]
+    comparison["unread"] = unread
+
     rec_transfers = recs["classic"].get("transfers", [])
     transfer_comparisons = []
     matched_actual_indices: set[int] = set()
@@ -1598,8 +1605,9 @@ def _review_compare_recs(recs: dict, collected_data: dict, gameweek: int | None 
         comparison["classic"]["squad"] = _compare_rec_squad(
             rec_squad, recs["classic"].get("mode"), team_points, classic_transfers, ambiguous,
         )
-        # Every move was graded against the squad, so none is left over to
-        # read as unadvised.
+    # Every move was graded against the squad, or there was nothing read to
+    # grade it against, so none is left over to read as unadvised.
+    if rec_squad or "transfers" in unread:
         matched_actual_indices = set(range(len(classic_transfers)))
 
     for rec_t in rec_transfers:
@@ -1669,7 +1677,8 @@ def _review_compare_recs(recs: dict, collected_data: dict, gameweek: int | None 
     # --- Draft Waivers ---
     rec_waivers = recs["draft"].get("waivers", [])
     waiver_comparisons = []
-    matched_txn_indices: set[int] = set()
+    # As with transfers: nothing read, so no move is unadvised.
+    matched_txn_indices: set[int] = set(range(len(draft_transactions))) if "waivers" in unread else set()
 
     matched_claim_indices: set[int] = set()
 
@@ -1767,5 +1776,12 @@ def _review_compare_recs(recs: dict, collected_data: dict, gameweek: int | None 
 
     comparison["draft"]["waivers"] = waiver_comparisons
     comparison["draft"]["unadvised_waivers"] = unadvised_waivers
+
+    # Nothing came out of the file at all: no recommended side to set the
+    # actuals against, so the review leaves the comparison out.
+    comparison["nothing_read"] = bool(unread) and not (
+        rec_captain or rec_transfers or recs["classic"].get("roll_transfer") or rec_squad
+        or rec_waivers or recs["draft"].get("no_waivers")
+    )
 
     return comparison

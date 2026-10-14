@@ -38,6 +38,7 @@ from fpl_cli.cli.review import (
     _print_captain_comparison,
     _print_squad_comparison,
     _review_resolve_gw,
+    _unread_recs_warning,
     review_command,
 )
 from fpl_cli.prompts.review import check_synthesis_completeness
@@ -1791,6 +1792,125 @@ class TestReviewCompareRecsNoFile:
 
         from fpl_cli.parsers.recommendations import parse_recommendations
         assert parse_recommendations(Path("/nonexistent/gw30-recommendations.md")) is None
+
+
+class TestReviewCompareRecsUnread:
+    """#355: a part of the file nothing could be read from leaves its moves
+    ungraded, rather than grading every one of them unadvised."""
+
+    def test_unread_transfers_mark_no_move_unadvised(self):
+        recs = _make_recs(captain="Salah")
+        recs["unread"] = ["transfers"]
+        collected = _make_collected(classic_transfers=[_transfer("Gibbs-White", "Tzolis", "NFO", "ARS")])
+        result = _review_compare_recs(recs, collected, gameweek=6)
+        assert result["unread"] == ["transfers"]
+        assert result["classic"]["transfers"] == []
+        assert result["classic"]["unadvised_transfers"] == []
+        assert result["nothing_read"] is False
+
+    def test_unread_waivers_leave_the_classic_side_graded(self):
+        recs = _make_recs(captain="Salah")
+        recs["unread"] = ["waivers"]
+        collected = _make_collected(
+            classic_transfers=[_transfer("Gibbs-White", "Tzolis", "NFO", "ARS")],
+            draft_transactions=[_transfer("Nyoni", "Wirtz", "LIV", "LIV")],
+        )
+        result = _review_compare_recs(recs, collected, gameweek=6)
+        assert result["draft"]["unadvised_waivers"] == []
+        assert [t["actual_in"] for t in result["classic"]["unadvised_transfers"]] == ["Gibbs-White"]
+
+    def test_gw1_has_no_transfers_to_leave_ungraded(self):
+        recs = _make_recs(captain="Salah")
+        recs["unread"] = ["transfers"]
+        assert _review_compare_recs(recs, _make_collected(), gameweek=1)["unread"] == []
+
+    def test_nothing_read_when_the_file_yielded_nothing(self):
+        recs = _make_recs(captain=None, vice=None)
+        recs["unread"] = ["captain", "transfers", "waivers"]
+        collected = _make_collected(classic_transfers=[_transfer("Gibbs-White", "Tzolis", "NFO", "ARS")])
+        result = _review_compare_recs(recs, collected, gameweek=6)
+        assert result["nothing_read"] is True
+        assert result["classic"]["unadvised_transfers"] == []
+
+    def test_no_waivers_said_in_words_is_something_read(self):
+        """The draft side said to make no claim, so a claim made anyway is
+        unadvised even though the classic side could not be read."""
+        recs = _make_recs(captain=None, vice=None)
+        recs["unread"] = ["captain", "transfers"]
+        recs["draft"]["no_waivers"] = True
+        collected = _make_collected(draft_transactions=[_transfer("Nyoni", "Wirtz", "LIV", "LIV")])
+        result = _review_compare_recs(recs, collected, gameweek=6)
+        assert result["nothing_read"] is False
+        assert [w["actual_in"] for w in result["draft"]["unadvised_waivers"]] == ["Nyoni"]
+
+    def test_a_file_read_in_full_names_nothing_unread(self):
+        result = _review_compare_recs(_make_recs(), _make_collected(), gameweek=6)
+        assert result["unread"] == []
+        assert result["nothing_read"] is False
+
+    @pytest.mark.parametrize(("unread", "nothing_read", "expected"), [
+        (["transfers"], False, "Could not read the transfers from gw6-recommendations.md, so it is not graded."),
+        (
+            ["captain", "transfers", "waivers"], False,
+            "Could not read the captain, transfers and waivers from gw6-recommendations.md, so they are not graded.",
+        ),
+        (
+            ["captain", "transfers", "waivers"], True,
+            "No recommendations could be read from gw6-recommendations.md, so none are compared.",
+        ),
+    ])
+    def test_warning_names_the_parts_and_the_file(self, unread, nothing_read, expected):
+        warning = _unread_recs_warning({"unread": unread, "nothing_read": nothing_read}, "gw6-recommendations.md")
+        assert expected in warning
+        assert "may no longer match the gw-prep template" in warning
+
+
+class TestReviewCommandWithAnUnreadableRecsFile:
+    """#355 end to end: the reason on stderr, and no move on stdout graded
+    against a recommendation that was never read."""
+
+    def _run(self, monkeypatch, tmp_path, recs_text):
+        from fpl_cli.cli import review as review_module
+
+        _stub_review_run(monkeypatch, gameweek=6)
+        monkeypatch.setattr(review_module, "_review_classic_transfers", AsyncMock(return_value=[
+            _transfer("Gibbs-White", "Tzolis", "NFO", "ARS"),
+        ]))
+        season_dir = tmp_path / "2026-27"
+        season_dir.mkdir()
+        (season_dir / "gw6-recommendations.md").write_text(recs_text, encoding="utf-8")
+        return CliRunner().invoke(
+            review_module.review_command, ["--gameweek", "6", "--compare-recs", "--output", str(tmp_path)],
+        )
+
+    def test_unread_transfers_are_not_graded_unadvised(self, monkeypatch, tmp_path):
+        result = self._run(monkeypatch, tmp_path, (
+            "---\ngameweek: 6\n---\n"
+            "## Classic League\n"
+            "**Captain:** Haaland | **Vice:** Salah\n"
+            "### Transfer Recommendations\n"
+            "| Rank | Outgoing | Incoming |\n"
+            "|------|----------|----------|\n"
+            "| 1 | Tzolis (ARS) | Gibbs-White (NFO) |\n"
+        ))
+
+        assert result.exit_code == 0, result.output
+        # Rich wraps the long path, mid-name included.
+        stderr = result.stderr.replace("\n", "")
+        assert "Could not read the transfers from" in stderr
+        assert "2026-27/gw6-recommendations.md, so it is not graded" in stderr
+        assert "Recommendations vs Actuals" in result.stdout
+        assert "Transfers: ? not graded (could not be read from the file)" in result.stdout
+        assert "Unadvised" not in result.stdout
+        assert "Could not read" not in result.stdout
+
+    def test_a_file_nothing_could_be_read_from_is_not_compared(self, monkeypatch, tmp_path):
+        result = self._run(monkeypatch, tmp_path, "# Gameweek 6 Recommendations\n\nNothing in a known shape.\n")
+
+        assert result.exit_code == 0, result.output
+        assert "No recommendations could be read from" in result.stderr
+        assert "Recommendations vs Actuals" not in result.stdout
+        assert "Unadvised" not in result.stdout
 
 
 class TestLivePlayerStats:
