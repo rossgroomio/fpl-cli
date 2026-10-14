@@ -423,8 +423,9 @@ class LeagueRecapData(TypedDict):
     fines_ruled_manager_keys: NotRequired[list[int]]
     synthesis_summary: NotRequired[str]
     # The provider's own stop reason for the editorial, recorded only when it
-    # was not a normal completion (#266). Present means the text above may be
-    # cut off; absent means the provider either finished or said nothing.
+    # was not a normal completion (#266), on the attempt that shipped (#372).
+    # Present means the text above may be cut off, which the report's callout
+    # says; absent means the provider either finished or said nothing.
     synthesis_stop_reason: NotRequired[str]
     # Every claim the editorial makes that its own data contradicts, keyed by
     # the warning code of the check that caught it and worded as

@@ -1242,23 +1242,37 @@ def check_recap_editorial(summary: str, data: LeagueRecapData) -> dict[str, list
     return {code: problems for code, problems in found.items() if problems}
 
 
-def get_recap_editorial_retry_prompt(user_prompt: str, problems: Mapping[str, Sequence[str]]) -> str:
-    """The user prompt again, followed by what the last draft got wrong.
+def get_recap_editorial_retry_prompt(
+    user_prompt: str,
+    problems: Mapping[str, Sequence[str]],
+    *,
+    stop_reason: str | None = None,
+) -> str:
+    """The user prompt again, followed by what was wrong with the last draft.
 
     A second roll of the identical prompt is the same gamble that already
     failed once; naming each wrong claim beside the data it contradicts, and
     saying how to avoid that kind of mistake, gives the retry the one thing
     the first attempt lacked. `problems` is `check_recap_editorial()`'s
     answer, so only the kinds of mistake actually made get an instruction.
+    `stop_reason` is the provider's, set only when the last draft hit its
+    token ceiling: that draft gets told it was cut off, since a clean check on
+    text that stopped short proves nothing (#372). A refusal was not cut off,
+    so the caller never passes one.
     """
-    corrections = "\n".join(f"- {problem}" for found in problems.values() for problem in found)
+    feedback: list[str] = []
+    if stop_reason:
+        feedback.append(
+            f"Your previous draft was cut off before it finished (the provider stopped with {stop_reason})."
+        )
+    if problems:
+        corrections = "\n".join(f"- {problem}" for found in problems.values() for problem in found)
+        feedback.append(f"Your previous draft contradicted the data it was given:\n{corrections}")
     instructions = " ".join(_CHECKS_BY_CODE[code].retry_instruction for code in problems)
-    return (
-        f"{user_prompt}\n\n"
-        "Your previous draft contradicted the data it was given:\n"
-        f"{corrections}\n"
-        f"Write the recap again from scratch. {instructions}"
-    )
+    if stop_reason:
+        instructions = f"{instructions} Keep it to the length asked for and finish it.".lstrip()
+    feedback_text = "\n".join(feedback)
+    return f"{user_prompt}\n\n{feedback_text}\nWrite the recap again from scratch. {instructions}"
 
 
 def editorial_warning_message(code: str, problems: Sequence[str]) -> str:

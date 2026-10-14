@@ -62,10 +62,17 @@ _CONSOLE_STREAK_LIMIT = 5
 RECAP_WARNING_STANDINGS_MOVED_ON = "league_standings_moved_on"
 # The editorial gets one retry when it contradicts its own data -- a manager
 # in the wrong role of a contested race (#357), a manager's net pinned on one
-# move, a tie nobody shares (#359): a second call is cheap next to a saved
-# report that states either as fact, and two attempts is where it stops, as
-# for `review`'s completeness check.
+# move, a tie nobody shares (#359) -- or when the provider stopped it early
+# (#372): a second call is cheap next to a saved report that states either as
+# fact or reads a cut-off editorial as whole, and two attempts is where it
+# stops, as for `review`'s completeness check.
 _MAX_EDITORIAL_ATTEMPTS = 2
+# The abnormal stops a retry can plausibly fix: a token ceiling, in Anthropic's
+# and the OpenAI-compatible dialects. The ceiling is shared with the model's
+# reasoning (#316), whose length varies run to run, so a second roll at the
+# same ceiling is a fresh draw. A refusal or content filter is not in here: the
+# same prompt usually draws the same answer, and it was not "cut off" (#372).
+_TRUNCATION_STOP_REASONS = frozenset({"max_tokens", "length"})
 
 if TYPE_CHECKING:
     from fpl_cli.api.providers import LLMResponse
@@ -871,6 +878,10 @@ def _render_console_highlights(
                 console.print(f"  {entry.text}")
 
 
+def _truncated(response: LLMResponse) -> bool:
+    return response.stop_reason in _TRUNCATION_STOP_REASONS
+
+
 async def _editorial_with_data_checks(
     provider: Any,
     *,
@@ -878,16 +889,18 @@ async def _editorial_with_data_checks(
     system_prompt: str,
     collected_data: LeagueRecapData,
 ) -> tuple[str, dict[str, list[str]], LLMResponse]:
-    """Query the editorial, retrying once if it contradicts its own data.
+    """Query the editorial, retrying once if it contradicts its own data or
+    the provider cut it off at its token ceiling.
 
     Returns `(summary, problems, response)` for the attempt that ships, the
     problems keyed by warning code as `check_recap_editorial()` returns them.
     The retry is told exactly which claims were wrong and what the data says
-    instead, rather than rolling the same prompt again (#357, #359). It only
-    displaces the first attempt when it is strictly less damaged -- complete
-    rather than cut off, then fewer wrong claims -- so a worse second roll
-    never ships over a better one, and a retry that fails outright leaves the
-    first attempt standing rather than losing an editorial already in hand.
+    instead, or that the last draft was cut off, rather than rolling the same
+    prompt again (#357, #359, #372). It only displaces the first attempt when
+    it is strictly less damaged -- complete rather than cut off, then fewer
+    wrong claims -- so a worse second roll never ships over a better one, and
+    a retry that fails outright leaves the first attempt standing rather than
+    losing an editorial already in hand.
     The first call's failure is the caller's, as it always was.
     """
     from fpl_cli.prompts.league_recap import normalise_recap_editorial
@@ -937,12 +950,20 @@ async def _editorial_with_data_checks(
         candidate = (summary, problems, response)
         if best is None or damage(candidate) < damage(best):
             best = candidate
-        if not best[1] or attempt == _MAX_EDITORIAL_ATTEMPTS:
+        # A truncated attempt is retried even when its check came back clean:
+        # it may have stopped before the claims the check reads (#372).
+        if not (best[1] or _truncated(best[2])) or attempt == _MAX_EDITORIAL_ATTEMPTS:
             return best
+        stop_reason = str(response.stop_reason) if _truncated(response) else None
+        reasons = []
+        if stop_reason:
+            reasons.append(f"was cut off (stop_reason: {stop_reason})")
+        if problems:
+            reasons.append("contradicts the data it was given")
         error_console.print(
-            "[yellow]  ⚠ The editorial contradicts the data it was given -- retrying once[/yellow]"
+            f"[yellow]  ⚠ The editorial {' and '.join(reasons)} -- retrying once[/yellow]"
         )
-        attempt_prompt = get_recap_editorial_retry_prompt(prompt, candidate[1])
+        attempt_prompt = get_recap_editorial_retry_prompt(prompt, problems, stop_reason=stop_reason)
     raise AssertionError("unreachable: the loop returns on its last attempt")  # pragma: no cover
 
 
@@ -1048,7 +1069,8 @@ async def _recap_llm_summarise(
             if synthesis_result.stopped_early:
                 # The recap's editorial goes into a saved report too, so a
                 # truncated one must not look finished. Recorded for the JSON
-                # payload as well as said out loud here (#266).
+                # payload and the report's callout as well as said out loud
+                # here (#266, #372).
                 collected_data["synthesis_stop_reason"] = str(synthesis_result.stop_reason)
                 error_console.print(
                     "[yellow]  The editorial may be cut off: the provider stopped early"

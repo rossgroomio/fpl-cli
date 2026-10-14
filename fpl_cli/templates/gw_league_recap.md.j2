@@ -12,8 +12,20 @@
 {% endif %}
 
 {% if synthesis_summary is defined and synthesis_summary %}
-{% if synthesis_problems is defined and synthesis_problems %}
+{% set editorial_cut_off = synthesis_stop_reason is defined and synthesis_stop_reason %}
+{% set editorial_wrong = synthesis_problems is defined and synthesis_problems %}
+{% if editorial_cut_off or editorial_wrong %}
 > [!WARNING]
+{% if editorial_cut_off %}
+{# Provider-supplied: an OpenAI-compatible endpoint can send any string, and a
+   newline or backtick in it would break out of the callout. #}
+> **The editorial below may be cut off:** the provider stopped with
+> `{{ synthesis_stop_reason.split() | join(" ") | replace("`", "'") }}`.
+{% if editorial_wrong %}
+>
+{% endif %}
+{% endif %}
+{% if editorial_wrong %}
 > **The editorial below contradicts the data it was given.** Where they
 > differ, the data is right:
 {% for problems in synthesis_problems.values() %}
@@ -21,6 +33,7 @@
 > - {{ problem }}
 {% endfor %}
 {% endfor %}
+{% endif %}
 
 {% endif %}
 {{ synthesis_summary }}

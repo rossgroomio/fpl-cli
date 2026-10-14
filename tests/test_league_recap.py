@@ -6930,6 +6930,21 @@ class TestContestedAttributionCheck:
         assert "- the editorial says Bob won King" in prompt
         assert '"respectively"' in prompt
 
+    def test_the_retry_prompt_says_a_cut_off_draft_was_cut_off(self):
+        # #372: a draft that stopped early has nothing wrong to list.
+        prompt = get_recap_editorial_retry_prompt("ORIGINAL", {}, stop_reason="max_tokens")
+        assert prompt.startswith("ORIGINAL\n\n")
+        assert "cut off before it finished (the provider stopped with max_tokens)" in prompt
+        assert "contradicted the data" not in prompt
+        assert prompt.endswith("Write the recap again from scratch. Keep it to the length asked for and finish it.")
+
+    def test_the_retry_prompt_without_a_stop_reason_says_nothing_of_one(self):
+        prompt = get_recap_editorial_retry_prompt(
+            "ORIGINAL", {RECAP_WARNING_CONTESTED_MISATTRIBUTION: ["the editorial says Bob won King"]},
+        )
+        assert "cut off" not in prompt
+        assert "length asked for" not in prompt
+
     def test_nothing_is_checked_without_a_contested_race(self):
         assert check_contested_attributions("Bob was beaten to Isak.", [], RecapNames.of([_make_manager(name="Bob")])) == []
 
