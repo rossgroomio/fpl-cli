@@ -1192,6 +1192,59 @@ class TestTruncatedEditorial:
         assert result.exit_code == 0, result.output
         assert "[/yellow]cut" in result.stderr.replace("\n", "")
 
+    # #372: a cut-off editorial is retried, and one that ships cut off says so
+    # in the saved report, which outlives the stderr warning.
+
+    _WHOLE = "Alice ran away with it, and Bob never recovered."
+
+    def test_a_cut_off_editorial_is_retried_and_a_whole_retry_ships(self):
+        stub, provider = _queued_provider(("Alice ran away with it, and then", "max_tokens"), self._WHOLE)
+        with provider:
+            result = _invoke_recap(_recap_data(), ["--summarise", "--format", "json"])
+
+        assert result.exit_code == 0, result.stderr
+        assert len(stub.prompts) == 2
+        assert "was cut off (stop_reason: max_tokens) -- retrying once" in result.stderr.replace("\n", " ")
+        first, retry = stub.prompts
+        assert retry.startswith(first)
+        assert "cut off before it finished (the provider stopped with max_tokens)" in retry[len(first):]
+        envelope = json.loads(result.stdout)
+        assert self._WHOLE in envelope["metadata"]["synthesis_summary"]
+        codes = [w["code"] for w in envelope["metadata"]["warnings"]]
+        assert "synthesis_stopped_early" not in codes
+
+    def test_two_cut_off_attempts_keep_the_first_and_still_warn(self):
+        stub, provider = _queued_provider(
+            ("Alice ran away with it, and then", "max_tokens"), ("Alice", "max_tokens"),
+        )
+        with provider:
+            result = _invoke_recap(_recap_data(), ["--summarise", "--format", "json"])
+
+        assert len(stub.prompts) == 2
+        envelope = json.loads(result.stdout)
+        assert "Alice ran away with it, and then" in envelope["metadata"]["synthesis_summary"]
+        codes = [w["code"] for w in envelope["metadata"]["warnings"]]
+        assert "synthesis_stopped_early" in codes
+
+    def test_a_cut_off_editorial_is_flagged_in_the_saved_report(self, tmp_path: Path):
+        with self._provider("max_tokens"):
+            result = _invoke_recap(_recap_data(), ["--summarise", "--save", "--output", str(tmp_path)])
+
+        assert result.exit_code == 0, result.output
+        report = next(tmp_path.rglob("gw*-league-recap.md")).read_text(encoding="utf-8")
+        callout = report.index("> [!WARNING]")
+        assert callout < report.index("Alice ran away with it, and then")
+        assert "**The editorial below may be cut off:** the provider stopped with\n> `max_tokens`." in report
+        assert "contradicts the data it was given" not in report
+
+    def test_a_whole_editorial_gets_no_callout(self, tmp_path: Path):
+        with self._provider("end_turn"):
+            result = _invoke_recap(_recap_data(), ["--summarise", "--save", "--output", str(tmp_path)])
+
+        assert result.exit_code == 0, result.output
+        report = next(tmp_path.rglob("gw*-league-recap.md")).read_text(encoding="utf-8")
+        assert "> [!WARNING]" not in report
+
 
 def _queued_provider(*replies: str | tuple[str, str] | Exception):
     """A provider answering each call with the next reply in turn: a string,
@@ -1374,6 +1427,44 @@ class TestContestedMisattribution:
         codes = [w["code"] for w in envelope["metadata"]["warnings"]]
         assert "synthesis_contested_misattribution" in codes
         assert "synthesis_stopped_early" not in codes
+
+    def test_a_cut_off_clean_attempt_is_retried_and_a_whole_retry_ships(self):
+        # #372: an attempt cut off before it reached the races checks clean
+        # only because it stopped short, so it is retried, and a whole retry
+        # ships over it even with its wrong claim named.
+        stub, result = self._invoke(["--format", "json"], ("Cam was", "max_tokens"), self._WRONG)
+
+        assert len(stub.prompts) == 2
+        envelope = json.loads(result.stdout)
+        assert self._WRONG in envelope["metadata"]["synthesis_summary"]
+        codes = [w["code"] for w in envelope["metadata"]["warnings"]]
+        assert "synthesis_contested_misattribution" in codes
+        assert "synthesis_stopped_early" not in codes
+
+    def test_a_cut_off_wrong_attempt_is_told_both(self):
+        stub, result = self._invoke([], (self._WRONG, "max_tokens"), self._RIGHT)
+
+        assert result.exit_code == 0, result.output
+        stderr = result.stderr.replace("\n", " ")
+        assert "was cut off (stop_reason: max_tokens) and contradicts the data it was given" in stderr
+        first, retry = stub.prompts
+        corrections = retry[len(first):]
+        assert "cut off before it finished" in corrections
+        assert "- the editorial says Bob was beaten to Giles" in corrections
+
+    def test_the_callout_names_a_cut_off_and_a_wrong_claim_together(self, tmp_path: Path):
+        stub, result = self._invoke(
+            ["--save", "--output", str(tmp_path)],
+            (self._WRONG, "max_tokens"), (self._WRONG, "max_tokens"),
+        )
+
+        assert result.exit_code == 0, result.output
+        report = next(tmp_path.rglob("gw5-league-recap-draft.md")).read_text(encoding="utf-8")
+        assert report.count("> [!WARNING]") == 1
+        cut_off = report.index("**The editorial below may be cut off:**")
+        wrong = report.index("**The editorial below contradicts the data it was given.**")
+        assert cut_off < wrong < report.index(self._WRONG)
+        assert "> - the editorial says Bob was beaten to Giles" in report
 
     def test_a_worse_retry_never_displaces_a_better_first_attempt(self):
         worse = "Cam and Bob were beaten to Bogle and Giles respectively, and Dan beat Bob to King."
