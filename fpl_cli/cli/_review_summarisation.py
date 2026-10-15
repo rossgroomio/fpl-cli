@@ -1428,6 +1428,9 @@ def _group_alternatives(rec_transfers: list[dict[str, Any]]) -> list[list[dict[s
     Alternatives across different sales ("sell Tzolis, or else Ballard") read
     the same as two distinct moves and stay separate rows.
 
+    Draft waivers group the same way, into the conditional chain that shares a
+    drop, but stay one row per claim (#416): see the waiver grading below.
+
     A row joins a group only when it is the same sale as every row already in
     it, and only when exactly one group takes it. `_same_sale` is not
     transitive: a bare "Sarr" matches both "Sarr (CRY)" and "Sarr (TOT)",
@@ -1445,7 +1448,7 @@ def _group_alternatives(rec_transfers: list[dict[str, Any]]) -> list[list[dict[s
 
 
 def _match_lost_claim(
-    claims: list[dict[str, Any]], rec: dict[str, Any], used: set[int],
+    claims: list[dict[str, Any]], rec: dict[str, Any], used: set[int], *, drop_alone: bool = True,
 ) -> tuple[int, dict[str, Any]] | None:
     """The best unconsumed lost claim for one recommendation, or None.
 
@@ -1457,6 +1460,10 @@ def _match_lost_claim(
     and would call a claim for a different player the one that was advised.
     The caller reads the returned claim's own `player_in` to tell the two
     apart rather than assuming the recommendation's.
+
+    `drop_alone=False` skips the fallback, for a caller matching every row on
+    both sides before any row falls back: otherwise a chain's top row takes
+    the claim its own fallback made, and the fallback finds none.
     """
     def _candidates(both_sides: bool) -> tuple[int, dict[str, Any]] | None:
         for i, claim in enumerate(claims):
@@ -1471,7 +1478,7 @@ def _match_lost_claim(
             return i, claim
         return None
 
-    return _candidates(both_sides=True) or _candidates(both_sides=False)
+    return _candidates(both_sides=True) or (_candidates(both_sides=False) if drop_alone else None)
 
 
 def _compare_rec_squad(
@@ -1739,91 +1746,140 @@ def _review_compare_recs(recs: dict, collected_data: dict, gameweek: int | None 
 
     # --- Draft Waivers ---
     rec_waivers = recs["draft"].get("waivers", [])
-    waiver_comparisons = []
     # As with transfers: nothing read, so no move is unadvised.
     matched_txn_indices: set[int] = set(range(len(draft_transactions))) if "waivers" in unread else set()
 
     matched_claim_indices: set[int] = set()
 
+    # Each row's own claim, where a rival won it: matched on both sides for
+    # every row before any row falls back to the drop alone.
+    own_lost: dict[int, dict[str, Any]] = {}
     for rec_w in rec_waivers:
-        rec_in = rec_w["in"]
-        rec_out = rec_w["out"]
-        priority = rec_w["priority"]
-        open_indices = [i for i in range(len(draft_transactions)) if i not in matched_txn_indices]
-        hits = _resolve_name(
-            rec_out, rec_w.get("out_team"),
-            _drop_side(draft_transactions, open_indices),
-            ambiguous,
+        own = _match_lost_claim(draft_lost_claims, rec_w, matched_claim_indices, drop_alone=False)
+        if own is not None:
+            matched_claim_indices.add(own[0])
+            own_lost[id(rec_w)] = own[1]
+
+    def _waiver_row(rec_w: dict[str, Any], **outcome: Any) -> dict[str, Any]:
+        return {
+            "priority": rec_w["priority"],
+            "rec_in": rec_w["in"],
+            "rec_out": rec_w["out"],
+            "actual_in": None,
+            "actual_out": None,
+            **outcome,
+        }
+
+    def _lost_row(rec_w: dict[str, Any], claim: dict[str, Any]) -> dict[str, Any]:
+        # A claim a rival won was executed -- it just lost. Reporting it as
+        # "not executed" reads back as advice the manager ignored (issue
+        # #329). A claim that shares only the drop is a different claim, and
+        # says so, rather than borrowing the advised player's name for a
+        # player the manager never went in for.
+        claimed_in = claim.get("player_in")
+        return _waiver_row(
+            rec_w,
+            followed=False,
+            lost_claim=True,
+            claimed_in=claimed_in,
+            different_claim=not _names_match(
+                rec_w["in"], claimed_in, rec_w.get("in_team"), claim.get("player_in_team"),
+            ),
         )
+
+    # Rows that share a drop are one conditional chain: "drop Wirtz, claim
+    # Nyoni; failing that, Elanga". Only one of them can ever land -- the API
+    # denies the rest as "drop already used" -- so grading each row on its own
+    # gave the accepted move to whichever came first and called every other
+    # claim on that drop not executed, the one that actually landed included
+    # (#416). Every row is still a claim with an outcome of its own, so each
+    # keeps its row, but the chain's drop is matched once and the move it
+    # made is given to the claim it filled.
+    graded: dict[int, dict[str, Any]] = {}
+    for chain in _group_alternatives(rec_waivers):
+        top = chain[0]
+        out_team = next((r.get("out_team") for r in chain if r.get("out_team")), None)
+        open_indices = [i for i in range(len(draft_transactions)) if i not in matched_txn_indices]
+        hits = _resolve_name(top["out"], out_team, _drop_side(draft_transactions, open_indices), ambiguous)
         if len(hits) > 1:
             matched_txn_indices.update(open_indices[h] for h in hits)
-            waiver_comparisons.append({
-                "priority": priority,
-                "rec_in": rec_in,
-                "rec_out": rec_out,
-                "actual_in": None,
-                "actual_out": None,
-                "followed": None,
-                "ungraded": True,
-            })
+            for rec_w in chain:
+                graded[id(rec_w)] = _waiver_row(rec_w, followed=None, ungraded=True)
         elif hits:
             i = open_indices[hits[0]]
             act_t = draft_transactions[i]
             matched_txn_indices.add(i)
-            same_in = _names_match(rec_in, act_t.get("player_in"), rec_w.get("in_team"), act_t.get("player_in_team"))
-            entry = {
-                "priority": priority,
-                "rec_in": rec_in,
-                "rec_out": rec_out,
-                "actual_in": act_t.get("player_in"),
-                "actual_out": act_t.get("player_out"),
-                "followed": same_in,
-                "different_replacement": not same_in,
-                "actual_in_pts": act_t.get("player_in_points", 0),
-                "actual_out_pts": act_t.get("player_out_points", 0),
-                "actual_net": act_t.get("net", 0),
-                "actual_verdict": act_t.get("verdict", ""),
-            }
-            # A manager who claimed exactly what was advised, lost him,
-            # and covered the drop with someone else did follow the
-            # advice -- the league overruled them. Without this the move
-            # that landed is all that is reported and the attempt is
-            # invisible, which is issue #329 one step over.
-            claimed = _match_lost_claim(draft_lost_claims, rec_w, matched_claim_indices)
-            if claimed is not None and _names_match(
-                rec_in, claimed[1].get("player_in"), rec_w.get("in_team"), claimed[1].get("player_in_team"),
-            ):
-                matched_claim_indices.add(claimed[0])
-                entry["claimed_and_lost"] = True
-            waiver_comparisons.append(entry)
+            landed = next(
+                (r for r in chain
+                 if _names_match(r["in"], act_t.get("player_in"), r.get("in_team"), act_t.get("player_in_team"))),
+                None,
+            )
+            # The claim the move filled; failing that, a player no row named
+            # took the drop, which is the chain's top row answered another way.
+            mover = landed if landed is not None else top
+            for rec_w in chain:
+                lost = own_lost.get(id(rec_w))
+                if rec_w is mover:
+                    entry = _waiver_row(
+                        rec_w,
+                        actual_in=act_t.get("player_in"),
+                        actual_out=act_t.get("player_out"),
+                        followed=landed is not None,
+                        different_replacement=landed is None,
+                        actual_in_pts=act_t.get("player_in_points", 0),
+                        actual_out_pts=act_t.get("player_out_points", 0),
+                        actual_net=act_t.get("net", 0),
+                        actual_verdict=act_t.get("verdict", ""),
+                    )
+                    # A manager who claimed exactly what was advised, lost
+                    # him, and covered the drop with someone else did follow
+                    # the advice -- the league overruled them. Without this
+                    # the move that landed is all that is reported and the
+                    # attempt is invisible, which is issue #329 one step over.
+                    if lost is not None:
+                        entry["claimed_and_lost"] = True
+                elif lost is not None:
+                    entry = _lost_row(rec_w, lost)
+                else:
+                    # The drop was already used, so this claim could not
+                    # land: neither followed nor ignored.
+                    entry = _waiver_row(
+                        rec_w,
+                        followed=None,
+                        superseded=True,
+                        superseded_by=landed["priority"] if landed is not None else None,
+                        dropped_for=act_t.get("player_in"),
+                    )
+                graded[id(rec_w)] = entry
         else:
-            # A claim a rival won was executed -- it just lost. Reporting it
-            # as "not executed" reads back as advice the manager ignored
-            # (issue #329). A claim that shares only the drop is a different
-            # claim, and says so, rather than borrowing the advised player's
-            # name for a player the manager never went in for.
-            lost = _match_lost_claim(draft_lost_claims, rec_w, matched_claim_indices)
-            outcome: dict[str, Any] = {"not_executed": True}
-            if lost is not None:
-                index, claim = lost
-                matched_claim_indices.add(index)
-                claimed_in = claim.get("player_in")
-                outcome = {
-                    "lost_claim": True,
-                    "claimed_in": claimed_in,
-                    "different_claim": not _names_match(
-                        rec_in, claimed_in, rec_w.get("in_team"), claim.get("player_in_team"),
-                    ),
-                }
-            waiver_comparisons.append({
-                "priority": priority,
-                "rec_in": rec_in,
-                "rec_out": rec_out,
-                "actual_in": None,
-                "actual_out": None,
-                "followed": False,
-                **outcome,
-            })
+            # Nothing used the drop. A claim lost on it that no row named
+            # goes to the first row without one of its own.
+            claims: dict[int, dict[str, Any]] = {}
+            for rec_w in chain:
+                claim = own_lost.get(id(rec_w))
+                if claim is None:
+                    other = _match_lost_claim(draft_lost_claims, rec_w, matched_claim_indices)
+                    if other is not None:
+                        matched_claim_indices.add(other[0])
+                        claim = other[1]
+                if claim is not None:
+                    claims[id(rec_w)] = claim
+            # One miss per chain: its first claim not made. A fallback below
+            # it was only needed had that claim been made and lost, so it is
+            # not a second miss for the same drop.
+            missed: int | None = None
+            for rec_w in chain:
+                claim = claims.get(id(rec_w))
+                if claim is not None:
+                    entry = _lost_row(rec_w, claim)
+                elif missed is None:
+                    missed = rec_w["priority"]
+                    entry = _waiver_row(rec_w, followed=False, not_executed=True)
+                else:
+                    entry = _waiver_row(rec_w, followed=None, fallback_to=missed)
+                graded[id(rec_w)] = entry
+
+    waiver_comparisons = [graded[id(rec_w)] for rec_w in rec_waivers]
 
     unadvised_waivers = []
     for i, act_t in enumerate(draft_transactions):

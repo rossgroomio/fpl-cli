@@ -291,6 +291,57 @@ class TestTemplateRendering:
         output = self.agent._generate_review_report(29, data)
         assert "| 1 | Nyoni | Wirtz | Different (claimed, lost) | Gordon |" in output
 
+    def test_review_report_marks_a_waiver_chains_fallbacks_as_neither_hit_nor_miss(self):
+        """#416: a claim behind one that landed on the same drop, and one
+        below a chain's single miss, used to print "Not exec" each."""
+        data = _review_data()
+        data["recs_comparison"] = {
+            "classic": {},
+            "draft": {
+                "waivers": [
+                    {
+                        "priority": 1, "rec_in": "Nyoni", "rec_out": "Wirtz",
+                        "actual_in": "Nyoni", "actual_out": "Wirtz", "followed": True,
+                        "actual_net": 4, "actual_verdict": "✓ Hit",
+                    },
+                    {
+                        "priority": 2, "rec_in": "Elanga", "rec_out": "Wirtz",
+                        "actual_in": None, "actual_out": None, "followed": None,
+                        "superseded": True, "superseded_by": 1, "dropped_for": "Nyoni",
+                    },
+                    {
+                        "priority": 3, "rec_in": "Gordon", "rec_out": "Sávio",
+                        "actual_in": None, "actual_out": None, "followed": False, "not_executed": True,
+                    },
+                    {
+                        "priority": 4, "rec_in": "Doku", "rec_out": "Sávio",
+                        "actual_in": None, "actual_out": None, "followed": None, "fallback_to": 3,
+                    },
+                ],
+                "unadvised_waivers": [],
+            },
+        }
+        output = self.agent._generate_review_report(29, data)
+        assert "| 2 | Elanga | Wirtz | Not needed (P1 landed) | - |" in output
+        assert "| 4 | Doku | Sávio | Fallback to P3 | - |" in output
+        assert output.count("Not exec") == 1
+
+    def test_review_report_names_where_a_chains_drop_went(self):
+        data = _review_data()
+        data["recs_comparison"] = {
+            "classic": {},
+            "draft": {
+                "waivers": [{
+                    "priority": 2, "rec_in": "Elanga", "rec_out": "Wirtz",
+                    "actual_in": None, "actual_out": None, "followed": None,
+                    "superseded": True, "superseded_by": None, "dropped_for": "Gordon",
+                }],
+                "unadvised_waivers": [],
+            },
+        }
+        output = self.agent._generate_review_report(29, data)
+        assert "| 2 | Elanga | Wirtz | Not needed (dropped for Gordon) | - |" in output
+
     def test_review_report_grades_a_wildcard_against_the_recommended_squad(self):
         """#354: a wildcard recommendation names a squad, not moves, so each
         player brought in is graded against it instead of read as unadvised."""

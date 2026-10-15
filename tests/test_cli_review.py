@@ -1481,9 +1481,9 @@ class TestReviewCompareRecsWaivers:
         assert [w.get("different_claim") for w in waivers] == [False, False]
 
     def test_a_rec_whose_drop_was_won_elsewhere_is_not_called_a_lost_claim(self):
-        """P1 lost, P2 won on the same drop. The accepted row is consumed by
-        P1; P2 must not then find P1's lost claim and read as beaten when it
-        was followed exactly."""
+        """P1 lost, P2 won on the same drop. P2 must not find P1's lost claim
+        and read as beaten when it was followed exactly -- nor, since #416,
+        lose its accepted move to P1 and read as never executed."""
         recs = _make_recs(waivers=[
             {"priority": 1, "in": "Elanga", "out": "Doku"},
             {"priority": 2, "in": "Mbeumo", "out": "Doku"},
@@ -1500,10 +1500,12 @@ class TestReviewCompareRecsWaivers:
         )
         waivers = _review_compare_recs(recs, collected)["draft"]["waivers"]
         by_priority = {w["priority"]: w for w in waivers}
-        assert by_priority[1]["different_replacement"] is True
-        assert by_priority[1]["actual_in"] == "Mbeumo"
+        assert by_priority[1]["lost_claim"] is True
+        assert by_priority[1]["claimed_in"] == "Elanga"
+        assert by_priority[1]["actual_in"] is None
         assert by_priority[2].get("lost_claim") is None
-        assert by_priority[2].get("not_executed") is True
+        assert by_priority[2]["followed"] is True
+        assert by_priority[2]["actual_in"] == "Mbeumo"
 
     def test_a_claim_for_a_different_player_is_marked_as_a_different_claim(self):
         """Rec Nyoni, claimed Elanga on the same drop. Reporting that as
@@ -1545,6 +1547,216 @@ class TestReviewCompareRecsWaivers:
         }])
         result = _review_compare_recs(recs, collected)
         assert result["draft"]["waivers"][0].get("not_executed") is True
+
+
+def _lost(player_in, player_out, priority=1):
+    return {
+        "player_in": player_in, "player_in_team": "???", "player_out": player_out, "player_out_team": "???",
+        "kind": "w", "priority": priority,
+    }
+
+
+class TestReviewCompareRecsWaiverChains:
+    """#416: waiver rows that share a drop are one conditional chain, of which
+    only one claim can land. Grading each row on its own gave the accepted
+    move to whichever came first and called every other claim on that drop
+    not executed, the one that landed included."""
+
+    @staticmethod
+    def _rec(priority, out, into):
+        return {"priority": priority, "out": out, "in": into, "out_team": None, "in_team": None}
+
+    def _waivers(self, rec_rows, made=(), lost=()):
+        recs = _make_recs(waivers=list(rec_rows))
+        collected = _make_collected(draft_transactions=list(made), draft_lost_claims=list(lost))
+        return _review_compare_recs(recs, collected, gameweek=5)["draft"]
+
+    def test_a_fallback_behind_the_claim_that_landed_is_not_a_miss(self):
+        draft = self._waivers(
+            [self._rec(1, "Wirtz", "Nyoni"), self._rec(2, "Wirtz", "Elanga")],
+            made=[_transfer("Nyoni", "Wirtz")],
+        )
+        top, fallback = draft["waivers"]
+        assert top["followed"] is True
+        assert fallback == {
+            "priority": 2, "rec_in": "Elanga", "rec_out": "Wirtz", "actual_in": None, "actual_out": None,
+            "followed": None, "superseded": True, "superseded_by": 1, "dropped_for": "Nyoni",
+        }
+        assert draft["unadvised_waivers"] == []
+
+    def test_a_chain_nothing_was_claimed_from_is_one_miss(self):
+        top, fallback = self._waivers([self._rec(1, "Wirtz", "Nyoni"), self._rec(2, "Wirtz", "Elanga")])["waivers"]
+        assert top["not_executed"] is True
+        assert fallback == {
+            "priority": 2, "rec_in": "Elanga", "rec_out": "Wirtz", "actual_in": None, "actual_out": None,
+            "followed": None, "fallback_to": 1,
+        }
+
+    def test_the_fallback_that_landed_after_a_lost_claim_is_followed(self):
+        """The case the issue calls worst: the manager followed the chain
+        exactly, and the claim that landed read as not executed."""
+        top, fallback = self._waivers(
+            [self._rec(1, "Wirtz", "Nyoni"), self._rec(2, "Wirtz", "Elanga")],
+            made=[_transfer("Elanga", "Wirtz")],
+            lost=[_lost("Nyoni", "Wirtz")],
+        )["waivers"]
+        assert top["lost_claim"] is True
+        assert top["claimed_in"] == "Nyoni"
+        assert top["different_claim"] is False
+        assert "different_replacement" not in top
+        assert fallback["followed"] is True
+        assert fallback["actual_in"] == "Elanga"
+        assert "not_executed" not in fallback
+
+    def test_a_top_claim_above_the_one_that_landed_is_not_a_miss(self):
+        top, fallback = self._waivers(
+            [self._rec(1, "Wirtz", "Nyoni"), self._rec(2, "Wirtz", "Elanga")],
+            made=[_transfer("Elanga", "Wirtz")],
+        )["waivers"]
+        assert top["superseded"] is True
+        assert top["superseded_by"] == 2
+        assert fallback["followed"] is True
+
+    def test_a_drop_spent_on_a_player_no_row_named_is_one_different_move(self):
+        top, fallback = self._waivers(
+            [self._rec(1, "Wirtz", "Nyoni"), self._rec(2, "Wirtz", "Elanga")],
+            made=[_transfer("Gordon", "Wirtz")],
+        )["waivers"]
+        assert top["different_replacement"] is True
+        assert top["actual_in"] == "Gordon"
+        assert fallback["superseded"] is True
+        assert fallback["superseded_by"] is None
+        assert fallback["dropped_for"] == "Gordon"
+
+    def test_a_fallback_lost_beside_a_different_move_keeps_its_own_loss(self):
+        top, fallback = self._waivers(
+            [self._rec(1, "Wirtz", "Nyoni"), self._rec(2, "Wirtz", "Elanga")],
+            made=[_transfer("Gordon", "Wirtz")],
+            lost=[_lost("Elanga", "Wirtz", priority=2)],
+        )["waivers"]
+        assert top["different_replacement"] is True
+        assert "claimed_and_lost" not in top
+        assert fallback["lost_claim"] is True
+        assert fallback["claimed_in"] == "Elanga"
+
+    def test_a_fallback_not_made_after_a_lost_claim_is_the_chains_miss(self):
+        """The fallback was needed once the top claim lost, so leaving it out
+        is advice not taken -- and the claim below it is not a second miss."""
+        waivers = self._waivers(
+            [self._rec(1, "Wirtz", "Nyoni"), self._rec(2, "Wirtz", "Elanga"), self._rec(3, "Wirtz", "Doku")],
+            lost=[_lost("Nyoni", "Wirtz")],
+        )["waivers"]
+        assert waivers[0]["lost_claim"] is True
+        assert waivers[1]["not_executed"] is True
+        assert waivers[2]["fallback_to"] == 2
+
+    def test_the_top_row_does_not_take_its_fallbacks_lost_claim(self):
+        """Matched row by row, the drop alone let P1 claim P2's loss as a
+        different claim, and P2 then read as never made."""
+        top, fallback = self._waivers(
+            [self._rec(1, "Wirtz", "Nyoni"), self._rec(2, "Wirtz", "Elanga")],
+            lost=[_lost("Elanga", "Wirtz", priority=2)],
+        )["waivers"]
+        assert top["not_executed"] is True
+        assert fallback["lost_claim"] is True
+        assert fallback["claimed_in"] == "Elanga"
+        assert fallback["different_claim"] is False
+
+    def test_a_claim_no_row_named_still_lands_on_the_chain(self):
+        top, fallback = self._waivers(
+            [self._rec(1, "Wirtz", "Nyoni"), self._rec(2, "Wirtz", "Elanga")],
+            lost=[_lost("Gordon", "Wirtz")],
+        )["waivers"]
+        assert top["lost_claim"] is True
+        assert top["different_claim"] is True
+        assert top["claimed_in"] == "Gordon"
+        assert fallback["not_executed"] is True
+
+    def test_interleaved_chains_keep_the_files_order(self):
+        waivers = self._waivers(
+            [self._rec(1, "Wirtz", "Nyoni"), self._rec(2, "Savio", "Gordon"), self._rec(3, "Wirtz", "Elanga")],
+            made=[_transfer("Elanga", "Wirtz")],
+        )["waivers"]
+        assert [w["priority"] for w in waivers] == [1, 2, 3]
+        assert waivers[0]["superseded_by"] == 3
+        assert waivers[1]["not_executed"] is True
+        assert waivers[2]["followed"] is True
+
+    def test_a_tie_on_the_chains_drop_leaves_every_row_ungraded(self):
+        draft = self._waivers(
+            [self._rec(1, "Murphy", "Nyoni"), self._rec(2, "Murphy", "Elanga")],
+            made=[_transfer("Nyoni", "A.Murphy"), _transfer("Elanga", "J.Murphy")],
+        )
+        assert [w.get("ungraded") for w in draft["waivers"]] == [True, True]
+        assert draft["unadvised_waivers"] == []
+
+    def test_a_move_on_another_drop_is_still_unadvised(self):
+        draft = self._waivers(
+            [self._rec(1, "Wirtz", "Nyoni"), self._rec(2, "Wirtz", "Elanga")],
+            made=[_transfer("Nyoni", "Wirtz"), _transfer("Gordon", "Savio")],
+        )
+        assert [w["actual_in"] for w in draft["unadvised_waivers"]] == ["Gordon"]
+
+
+class TestReviewCommandWithAWaiverChain:
+    """#416 end to end: the console grades a chain once."""
+
+    def _run(self, monkeypatch, tmp_path, made, lost=()):
+        from fpl_cli.cli import review as review_module
+
+        _stub_review_run(monkeypatch, gameweek=6)
+        monkeypatch.setattr(review_module, "_review_draft", AsyncMock(return_value={
+            "draft_squad_points_data": [], "draft_transactions_data": made,
+            "draft_lost_claims_data": list(lost),
+            "draft_league_data": None, "draft_league_name": "Draft League",
+            "draft_automatic_subs": [], "draft_player_map": {},
+        }))
+        season_dir = tmp_path / "2026-27"
+        season_dir.mkdir()
+        (season_dir / "gw6-recommendations.md").write_text(
+            "---\ngameweek: 6\n---\n"
+            "## Draft League\n"
+            "### Waiver Recommendations\n"
+            "| Priority | Drop | Claim |\n"
+            "|----------|------|-------|\n"
+            "| 1 | Wirtz (LIV) | Nyoni (LIV) |\n"
+            "| 2 | Wirtz (LIV) | Elanga (NEW) |\n",
+            encoding="utf-8",
+        )
+        result = CliRunner().invoke(
+            review_module.review_command, ["--gameweek", "6", "--compare-recs", "--output", str(tmp_path)],
+        )
+        assert result.exit_code == 0, result.output
+        return result.stdout
+
+    def test_a_landed_top_claim_marks_its_fallback_not_needed(self, monkeypatch, tmp_path):
+        stdout = self._run(monkeypatch, tmp_path, [_transfer("Nyoni", "Wirtz", "LIV", "LIV")])
+        assert "Waiver P1: ✓ Nyoni ← Wirtz (followed, net 0)" in stdout
+        assert "Waiver P2: · Elanga ← Wirtz (not needed: P1 landed)" in stdout
+        assert "not executed" not in stdout
+
+    def test_an_untouched_chain_prints_one_miss(self, monkeypatch, tmp_path):
+        stdout = self._run(monkeypatch, tmp_path, [])
+        assert stdout.count("not executed") == 1
+        assert "Waiver P1: ✗ Nyoni ← Wirtz (not executed)" in stdout
+        assert "Waiver P2: · Elanga ← Wirtz (fallback to P1, not reached)" in stdout
+
+    def test_a_fallback_that_landed_after_a_lost_claim_reads_as_followed(self, monkeypatch, tmp_path):
+        stdout = self._run(
+            monkeypatch, tmp_path, [_transfer("Elanga", "Wirtz", "NEW", "LIV")],
+            lost=[{
+                "player_in": "Nyoni", "player_in_team": "LIV", "player_out": "Wirtz", "player_out_team": "LIV",
+                "kind": "w", "priority": 1,
+            }],
+        )
+        assert "Waiver P1: ✗ Nyoni ← Wirtz (claimed, lost to a rival)" in stdout
+        assert "Waiver P2: ✓ Elanga ← Wirtz (followed, net 0)" in stdout
+        assert "not executed" not in stdout
+
+    def test_a_different_move_names_where_the_drop_went(self, monkeypatch, tmp_path):
+        stdout = self._run(monkeypatch, tmp_path, [_transfer("Gordon", "Wirtz", "NEW", "LIV")])
+        assert "Dropped Wirtz but got Gordon instead of rec Nyoni" in stdout
+        assert "Waiver P2: · Elanga ← Wirtz (not needed: Wirtz already dropped for Gordon)" in stdout
 
 
 def _transfer(player_in, player_out, in_team=None, out_team=None, net=0):

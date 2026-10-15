@@ -623,6 +623,25 @@ def review_command(
                                 f"{claimed_in} ← {w['rec_out']}"
                                 f" ({detail})"
                             )
+                        # Neither a hit nor a miss: another claim on the same
+                        # drop answers for this one (#416).
+                        elif w.get("superseded"):
+                            reason = (
+                                f"P{w['superseded_by']} landed"
+                                if w.get("superseded_by") is not None
+                                else f"{w['rec_out']} already dropped for {w.get('dropped_for')}"
+                            )
+                            console.print(
+                                f"  Waiver P{p}: [dim]·[/dim] "
+                                f"{w['rec_in']} ← {w['rec_out']}"
+                                f" (not needed: {reason})"
+                            )
+                        elif w.get("fallback_to") is not None:
+                            console.print(
+                                f"  Waiver P{p}: [dim]·[/dim] "
+                                f"{w['rec_in']} ← {w['rec_out']}"
+                                f" (fallback to P{w['fallback_to']}, not reached)"
+                            )
                         elif w.get("not_executed"):
                             console.print(
                                 f"  Waiver P{p}: [yellow]✗[/yellow] "
