@@ -22,7 +22,7 @@ from fpl_cli.cli._context import (
     save_failure_message,
     warn_prediction_problems,
 )
-from fpl_cli.cli._helpers import rec_in_options
+from fpl_cli.cli._helpers import rec_in_options, waiver_superseded_reason
 from fpl_cli.cli._json import config_failure_boundary, emit_failure
 from fpl_cli.cli._review_analysis import (
     _review_fixtures,
@@ -626,21 +626,16 @@ def review_command(
                         # Neither a hit nor a miss: another claim on the same
                         # drop answers for this one (#416).
                         elif w.get("superseded"):
-                            reason = (
-                                f"P{w['superseded_by']} landed"
-                                if w.get("superseded_by") is not None
-                                else f"{w['rec_out']} already dropped for {w.get('dropped_for')}"
-                            )
                             console.print(
                                 f"  Waiver P{p}: [dim]·[/dim] "
                                 f"{w['rec_in']} ← {w['rec_out']}"
-                                f" (not needed: {reason})"
+                                f" (not needed: {waiver_superseded_reason(w)})"
                             )
-                        elif w.get("fallback_to") is not None:
+                        elif w.get("fallback_to"):
                             console.print(
                                 f"  Waiver P{p}: [dim]·[/dim] "
                                 f"{w['rec_in']} ← {w['rec_out']}"
-                                f" (fallback to P{w['fallback_to']}, not reached)"
+                                f" (fallback to {w['fallback_to']}, not reached)"
                             )
                         elif w.get("not_executed"):
                             console.print(

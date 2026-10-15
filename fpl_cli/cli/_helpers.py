@@ -105,6 +105,20 @@ def rec_in_options(t: Mapping[str, Any]) -> str:
     return f"{t['rec_in']} (or {', '.join(alternatives)})" if alternatives else str(t["rec_in"])
 
 
+def waiver_superseded_reason(w: Mapping[str, Any]) -> str:
+    """Why a graded waiver claim was not needed: its drop was already gone.
+
+    The one wording for the terminal and the saved report (#416). Named by
+    player, never priority: the waiver and free-agent tables number their
+    rows separately, so "P1" can be two rows.
+    """
+    if w.get("superseded_by"):
+        return f"{w['superseded_by']} landed"
+    if w.get("dropped_for"):
+        return f"{w['rec_out']} already dropped for {w['dropped_for']}"
+    return f"{w['rec_out']} already dropped"
+
+
 def performer_score(p: Mapping[str, Any]) -> str:
     """A Best/Worst GW Performers row's score, as every writer states it.
 

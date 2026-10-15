@@ -1580,7 +1580,7 @@ class TestReviewCompareRecsWaiverChains:
         assert top["followed"] is True
         assert fallback == {
             "priority": 2, "rec_in": "Elanga", "rec_out": "Wirtz", "actual_in": None, "actual_out": None,
-            "followed": None, "superseded": True, "superseded_by": 1, "dropped_for": "Nyoni",
+            "followed": None, "superseded": True, "superseded_by": "Nyoni", "dropped_for": "Nyoni",
         }
         assert draft["unadvised_waivers"] == []
 
@@ -1589,7 +1589,7 @@ class TestReviewCompareRecsWaiverChains:
         assert top["not_executed"] is True
         assert fallback == {
             "priority": 2, "rec_in": "Elanga", "rec_out": "Wirtz", "actual_in": None, "actual_out": None,
-            "followed": None, "fallback_to": 1,
+            "followed": None, "fallback_to": "Nyoni",
         }
 
     def test_the_fallback_that_landed_after_a_lost_claim_is_followed(self):
@@ -1608,14 +1608,26 @@ class TestReviewCompareRecsWaiverChains:
         assert fallback["actual_in"] == "Elanga"
         assert "not_executed" not in fallback
 
-    def test_a_top_claim_above_the_one_that_landed_is_not_a_miss(self):
+    def test_a_top_claim_skipped_above_the_one_that_landed_is_a_miss(self):
+        """Only a claim below the one that landed is not needed. One above it
+        that was never claimed is one the manager went past."""
         top, fallback = self._waivers(
             [self._rec(1, "Wirtz", "Nyoni"), self._rec(2, "Wirtz", "Elanga")],
             made=[_transfer("Elanga", "Wirtz")],
         )["waivers"]
-        assert top["superseded"] is True
-        assert top["superseded_by"] == 2
+        assert top["not_executed"] is True
+        assert "superseded" not in top
         assert fallback["followed"] is True
+
+    def test_a_fallback_skipped_after_a_lost_claim_is_a_miss_though_a_lower_one_landed(self):
+        waivers = self._waivers(
+            [self._rec(1, "Wirtz", "Nyoni"), self._rec(2, "Wirtz", "Elanga"), self._rec(3, "Wirtz", "Doku")],
+            made=[_transfer("Doku", "Wirtz")],
+            lost=[_lost("Nyoni", "Wirtz")],
+        )["waivers"]
+        assert waivers[0]["lost_claim"] is True
+        assert waivers[1]["not_executed"] is True
+        assert waivers[2]["followed"] is True
 
     def test_a_drop_spent_on_a_player_no_row_named_is_one_different_move(self):
         top, fallback = self._waivers(
@@ -1628,16 +1640,33 @@ class TestReviewCompareRecsWaiverChains:
         assert fallback["superseded_by"] is None
         assert fallback["dropped_for"] == "Gordon"
 
-    def test_a_fallback_lost_beside_a_different_move_keeps_its_own_loss(self):
+    def test_a_different_move_after_every_claim_was_lost_lands_on_the_last(self):
+        """Skipped Nyoni, lost Elanga, then took Gordon: the skip is a miss,
+        and Gordon answers the claim he replaced, which was lost."""
         top, fallback = self._waivers(
             [self._rec(1, "Wirtz", "Nyoni"), self._rec(2, "Wirtz", "Elanga")],
             made=[_transfer("Gordon", "Wirtz")],
             lost=[_lost("Elanga", "Wirtz", priority=2)],
         )["waivers"]
-        assert top["different_replacement"] is True
-        assert "claimed_and_lost" not in top
-        assert fallback["lost_claim"] is True
-        assert fallback["claimed_in"] == "Elanga"
+        assert top["not_executed"] is True
+        assert fallback["different_replacement"] is True
+        assert fallback["actual_in"] == "Gordon"
+        assert fallback["claimed_and_lost"] is True
+
+    def test_a_fallback_skipped_after_a_lost_claim_takes_the_different_move(self):
+        """P1 lost, P2 never claimed, and the drop went to a player no row
+        named: P2 was the claim needed, so it is the one answered another
+        way, not one the drop made unnecessary."""
+        waivers = self._waivers(
+            [self._rec(1, "Wirtz", "Nyoni"), self._rec(2, "Wirtz", "Elanga"), self._rec(3, "Wirtz", "Doku")],
+            made=[_transfer("Gordon", "Wirtz")],
+            lost=[_lost("Nyoni", "Wirtz")],
+        )["waivers"]
+        assert waivers[0]["lost_claim"] is True
+        assert waivers[1]["different_replacement"] is True
+        assert waivers[1]["actual_in"] == "Gordon"
+        assert waivers[2]["superseded"] is True
+        assert waivers[2]["dropped_for"] == "Gordon"
 
     def test_a_fallback_not_made_after_a_lost_claim_is_the_chains_miss(self):
         """The fallback was needed once the top claim lost, so leaving it out
@@ -1648,7 +1677,27 @@ class TestReviewCompareRecsWaiverChains:
         )["waivers"]
         assert waivers[0]["lost_claim"] is True
         assert waivers[1]["not_executed"] is True
-        assert waivers[2]["fallback_to"] == 2
+        assert waivers[2]["fallback_to"] == "Elanga"
+
+    def test_a_claim_needed_after_a_lower_loss_is_a_miss_not_a_fallback(self):
+        """Skipped P1, lost P2, skipped P3: P3 was the claim needed once P2
+        lost, and P1 one the manager went past. Neither was "not reached"."""
+        waivers = self._waivers(
+            [self._rec(1, "Wirtz", "Nyoni"), self._rec(2, "Wirtz", "Elanga"), self._rec(3, "Wirtz", "Doku")],
+            lost=[_lost("Elanga", "Wirtz", priority=2)],
+        )["waivers"]
+        assert waivers[0]["not_executed"] is True
+        assert waivers[1]["lost_claim"] is True
+        assert waivers[2]["not_executed"] is True
+        assert all("fallback_to" not in w for w in waivers)
+
+    def test_claims_skipped_on_the_way_to_one_made_are_each_a_miss(self):
+        waivers = self._waivers(
+            [self._rec(1, "Wirtz", "Nyoni"), self._rec(2, "Wirtz", "Elanga"), self._rec(3, "Wirtz", "Doku")],
+            lost=[_lost("Doku", "Wirtz", priority=3)],
+        )["waivers"]
+        assert [w.get("not_executed") for w in waivers] == [True, True, None]
+        assert waivers[2]["lost_claim"] is True
 
     def test_the_top_row_does_not_take_its_fallbacks_lost_claim(self):
         """Matched row by row, the drop alone let P1 claim P2's loss as a
@@ -1678,9 +1727,18 @@ class TestReviewCompareRecsWaiverChains:
             made=[_transfer("Elanga", "Wirtz")],
         )["waivers"]
         assert [w["priority"] for w in waivers] == [1, 2, 3]
-        assert waivers[0]["superseded_by"] == 3
+        assert waivers[0]["not_executed"] is True
         assert waivers[1]["not_executed"] is True
         assert waivers[2]["followed"] is True
+
+    def test_a_free_agent_row_numbered_like_a_waiver_is_named_by_player(self):
+        """The waiver and free-agent tables number their rows separately, so
+        "P1 landed" could name either row sharing the drop."""
+        fallback = self._waivers(
+            [self._rec(1, "Wirtz", "Nyoni"), self._rec(1, "Wirtz", "Elanga")],
+            made=[_transfer("Nyoni", "Wirtz")],
+        )["waivers"][1]
+        assert fallback["superseded_by"] == "Nyoni"
 
     def test_a_tie_on_the_chains_drop_leaves_every_row_ungraded(self):
         draft = self._waivers(
@@ -1732,14 +1790,14 @@ class TestReviewCommandWithAWaiverChain:
     def test_a_landed_top_claim_marks_its_fallback_not_needed(self, monkeypatch, tmp_path):
         stdout = self._run(monkeypatch, tmp_path, [_transfer("Nyoni", "Wirtz", "LIV", "LIV")])
         assert "Waiver P1: ✓ Nyoni ← Wirtz (followed, net 0)" in stdout
-        assert "Waiver P2: · Elanga ← Wirtz (not needed: P1 landed)" in stdout
+        assert "Waiver P2: · Elanga ← Wirtz (not needed: Nyoni landed)" in stdout
         assert "not executed" not in stdout
 
     def test_an_untouched_chain_prints_one_miss(self, monkeypatch, tmp_path):
         stdout = self._run(monkeypatch, tmp_path, [])
         assert stdout.count("not executed") == 1
         assert "Waiver P1: ✗ Nyoni ← Wirtz (not executed)" in stdout
-        assert "Waiver P2: · Elanga ← Wirtz (fallback to P1, not reached)" in stdout
+        assert "Waiver P2: · Elanga ← Wirtz (fallback to Nyoni, not reached)" in stdout
 
     def test_a_fallback_that_landed_after_a_lost_claim_reads_as_followed(self, monkeypatch, tmp_path):
         stdout = self._run(
