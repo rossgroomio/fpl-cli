@@ -3229,6 +3229,7 @@ class TestReviewDraftPicksAndLeagueBlocks:
         captured = capsys.readouterr()
         assert "Set draft_entry_id in config/settings.yaml to see your draft squad" in captured.err
         assert "draft_entry_id" not in captured.out
+        assert "# Draft" not in captured.out
         assert data["draft_squad_points_data"] == []
 
     async def test_an_entry_id_the_league_does_not_contain_is_reported_on_stderr(self, capsys):
@@ -3241,9 +3242,30 @@ class TestReviewDraftPicksAndLeagueBlocks:
         assert "Could not find draft_entry_id 99 in the standings of Draft League" in err
         assert "check draft_entry_id and draft_league_id in config/settings.yaml" in err
         assert "draft_entry_id" not in captured.out
+        assert "# Draft" not in captured.out
         assert "Could not fetch draft league data" not in captured.err
         assert data["draft_squad_points_data"] == []
         assert data["draft_league_data"] is None
+
+    async def test_a_failed_league_fetch_leaves_no_banner_on_stdout(self, capsys):
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        client.get_league_details = AsyncMock(side_effect=RuntimeError("boom"))
+        with patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=client):
+            await _review_draft(
+                MagicMock(), 1, 1, gw=3, api_current_gw_id=3,
+                players=[], player_map={}, teams=self._TEAMS, live_stats={},
+            )
+
+        captured = capsys.readouterr()
+        assert "Could not fetch draft league data: boom" in captured.err
+        assert "# Draft" not in captured.out
+
+    async def test_a_matching_entry_id_prints_the_banner_on_stdout(self, capsys):
+        await self._run(draft_entry_id=1)
+
+        assert "# Draft" in capsys.readouterr().out
 
     async def test_a_matching_entry_id_reports_no_lookup_failure(self, capsys):
         await self._run(draft_entry_id=1)
