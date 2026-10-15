@@ -774,7 +774,7 @@ _Runs after Phase D file write, before Phase E. Not embed-gated._
      > - {one line per flag/warning, e.g. "Row 1: cross-position-claim (Drop: João Pedro FWD → Claim: Pedro Porro DEF)"}
      <!-- phase-d1:end -->
      ```
-     For `waiver-table-unreadable` and `waiver-rows-unread`, the line names the unchecked rows rather than giving a count: `{type} ({rows} line(s) unchecked): {lines joined with "; "}`, adding `, and {rows - len(lines)} more` when `rows` exceeds the lines quoted. Wrap each quoted line in backticks so its pipes do not break the block.
+     For `waiver-table-unreadable` and `waiver-rows-unread`, the line names the unchecked rows rather than giving a count: `{type} ({rows} line(s) unchecked): {lines joined with "; "}`, then ` and {rows - len(lines)} more` when `rows` exceeds the lines quoted. Quote each line as it comes, without adding code spans: the lines are LLM-written rows that can carry backticks of their own.
    - If both are empty: remove the block entirely (including sentinels) if present.
 
 5. **Split posture:**
@@ -784,15 +784,15 @@ _Runs after Phase D file write, before Phase E. Not embed-gated._
      > Edit the file to fix the flagged row(s), then re-run `/gw-prep` to continue.
      
      **Stop the pipeline.** Do not proceed to Phase E. Do not mark the run as complete.
-   - Any flag with `type == "waiver-table-unreadable"` present → emit a **red error** in chat. The validator read no waiver row at all, so no claim was checked for a cross-position swap; this fails closed like the swap itself:
+   - Any flag with `type == "waiver-table-unreadable"` present → emit a **red error** in chat. The validator read no waiver row at all -- rows with no `Drop`/`Claim` table to hold them, or an empty one beside rows no table took in -- so no claim was checked for a cross-position swap; this fails closed like the swap itself:
      > ❌ Phase D1 blocked: the Waiver Recommendations table in `gw{N}-recommendations.md` could not be read, so no claim in it was checked for a cross-position swap. Unread line(s):
-     > - `{line}` (one per entry in `lines`; then "…and {rows - len(lines)} more" if `rows` is larger)
-     > A table needs a `|---|` row straight under its header, no blank line inside it, and nothing stacked beneath it. Fix the table, then re-run `/gw-prep` to continue.
+     > - {line} (one per entry in `lines`, as it comes; then "and {rows - len(lines)} more" if `rows` is larger)
+     > A waiver table needs `Drop` and `Claim` columns, a `|---|` row straight under its header, no blank line inside it, nothing stacked beneath it, and no code fence or blockquote around it. Fix the table, then re-run `/gw-prep` to continue.
 
      **Stop the pipeline.** Do not proceed to Phase E. Do not mark the run as complete.
    - Else, if a warning has `type == "waiver-rows-unread"` → the table was read and its rows checked, but other rows beside it were not. Emit this in-chat warning, followed by the pool-miss one below if any `waiver-not-in-pool` flags are present too:
      > ⚠️ Phase D1: {rows} row(s) under Waiver Recommendations in `gw{N}-recommendations.md` were not read as waiver rows, so they were not checked for cross-position swaps:
-     > - `{line}` (one per entry in `lines`; then "…and {rows - len(lines)} more" if `rows` is larger)
+     > - {line} (one per entry in `lines`, as it comes; then "and {rows - len(lines)} more" if `rows` is larger)
      > A table needs a `|---|` row straight under its header, no blank line inside it, and nothing stacked beneath it. Fix the table and re-run `/gw-prep` before submitting waivers.
 
      Proceed to Phase E.
