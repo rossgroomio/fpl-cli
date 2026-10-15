@@ -372,11 +372,15 @@ class MarkdownTable:
     `headers` are the header cells trimmed and with `\\|` unescaped, but
     otherwise as written, so each caller decides how loosely to match a column
     name. `heading` is the nearest heading line above the table, or None.
+    `span` is the half-open range of indices into the lines it was read from,
+    header through the last line the table took, so a caller can find the
+    pipe rows on either side of it that no table took in (see `pipe_rows`).
     """
 
     headers: list[str]
     rows: list[list[str]]
     heading: str | None
+    span: tuple[int, int]
 
 
 def split_cells(line: str) -> list[str]:
@@ -438,7 +442,7 @@ def iter_tables(lines: Sequence[str]) -> Iterator[MarkdownTable]:
                 if any(cells):
                     rows.append(cells)
                 j += 1
-            yield MarkdownTable(headers=split_cells(line), rows=rows, heading=heading)
+            yield MarkdownTable(headers=split_cells(line), rows=rows, heading=heading, span=(i, j))
             i = j
             continue
         i += 1

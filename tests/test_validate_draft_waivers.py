@@ -1209,10 +1209,11 @@ def test_table_stacked_straight_under_the_waiver_table_is_not_read_as_waivers(tm
         "| 1 | Scott (BOU) | Canvot (CRY) | DEF |\n| - | - | - | - |",
     ],
 )
-def test_rows_no_table_holds_are_reported_unread(tmp_path, capsys, table):
+def test_a_table_that_yields_no_waiver_row_fails_closed(tmp_path, capsys, table):
     """Each of these hides an illegal swap (Scott is a MID) that the old
-    reader caught. The shared one reads no row of it, so the validator has to
-    say the rows went unchecked rather than pass a clean result."""
+    reader caught. The shared one reads no row of it, so not one claim was
+    checked: that blocks Phase D1 like the swap would, rather than warning and
+    proceeding (#409). The flag names the line that went unchecked."""
     recs_content = f"""\
 ## Draft
 
@@ -1223,10 +1224,73 @@ def test_rows_no_table_holds_are_reported_unread(tmp_path, capsys, table):
     recs, w, s = _write_fixtures(tmp_path, recs_content)
     _run(str(recs), str(w), str(s))
     data = _parse(capsys)
+    assert data["ok"] is False
+    [flag] = data["flags"]
+    assert flag["type"] == "waiver-table-unreadable"
+    assert "| 1 | Scott (BOU) | Canvot (CRY) | DEF |" in flag["lines"]
+    assert flag["rows"] == len(flag["lines"])
+    assert not any(w["type"] in {"waiver-table-not-found", "waiver-rows-unread"} for w in data["warnings"])
+
+
+def test_unreadable_table_quotes_the_first_few_lines_and_counts_them_all(tmp_path, capsys):
+    body = "\n".join(f"| {n} | Scott (BOU) | Canvot (CRY) | DEF |" for n in range(1, 9))
+    recs_content = f"""\
+## Draft
+
+### Waiver Recommendations
+
+| Priority | Drop | Claim | Position |
+{body}
+"""
+    recs, w, s = _write_fixtures(tmp_path, recs_content)
+    _run(str(recs), str(w), str(s))
+    data = _parse(capsys)
+    [flag] = data["flags"]
+    assert flag["rows"] == 9
+    assert flag["lines"] == [
+        "| Priority | Drop | Claim | Position |",
+        *(f"| {n} | Scott (BOU) | Canvot (CRY) | DEF |" for n in range(1, 5)),
+    ]
+
+
+def test_rows_beside_a_table_that_was_read_are_named_and_only_warn(tmp_path, capsys):
+    """A partial read still checked the rows it took, so the leftovers are
+    advisory -- but named, so the warning says which lines went unchecked."""
+    recs_content = """\
+## Draft
+
+### Waiver Recommendations
+
+| Priority | Drop | Claim | Position |
+|----------|------|-------|----------|
+| 1 | Hill (BOU) | Lacroix (CRY) | DEF |
+
+| 2 | Scott (BOU) | Canvot (CRY) | DEF |
+"""
+    recs, w, s = _write_fixtures(tmp_path, recs_content)
+    _run(str(recs), str(w), str(s))
+    data = _parse(capsys)
+    assert data["ok"] is True
     assert data["flags"] == []
-    unread = [w for w in data["warnings"] if w["type"] == "waiver-rows-unread"]
-    assert len(unread) == 1 and unread[0]["rows"] >= 1
-    assert not any(w["type"] == "waiver-table-not-found" for w in data["warnings"])
+    assert data["warnings"] == [
+        {"type": "waiver-rows-unread", "rows": 1, "lines": ["| 2 | Scott (BOU) | Canvot (CRY) | DEF |"]}
+    ]
+
+
+def test_a_header_with_no_rows_and_nothing_else_is_clean(tmp_path, capsys):
+    """An empty waiver table is a week with no claims, not an unreadable one."""
+    recs_content = """\
+## Draft
+
+### Waiver Recommendations
+
+| Priority | Drop | Claim | Position |
+|----------|------|-------|----------|
+"""
+    recs, w, s = _write_fixtures(tmp_path, recs_content)
+    _run(str(recs), str(w), str(s))
+    data = _parse(capsys)
+    assert data == {"ok": True, "flags": [], "warnings": []}
 
 
 @pytest.mark.parametrize("cell", ["No claim", "None", "--"])

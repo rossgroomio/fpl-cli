@@ -6,6 +6,11 @@ section, parses the waiver table, and cross-checks each row against:
   - waivers JSON: claim must be present in the pool (waiver-not-in-pool)
   - squad-grid JSON: drop position must match claim position (cross-position-claim)
 
+A table under ### Waiver Recommendations that yields no waiver row at all fails
+closed (waiver-table-unreadable): nothing in it was checked. Rows left over
+beside a table that was read are advisory (waiver-rows-unread). Both name the
+lines they mean, the first few of them.
+
 Emits JSON to stdout: {"ok": bool, "flags": [...], "warnings": [...]}
 Exit code is 0 whatever the validation finds; the orchestrator (Phase D1)
 interprets flag types for posture. The startup guard below is the one
@@ -38,6 +43,7 @@ import _bootstrap  # noqa: F401 — import guard, see module docstring
 from fpl_cli.parsers.recommendations import PLACEHOLDER_CELLS
 from fpl_cli.utils.markdown import (
     HeadingMatcher,
+    MarkdownTable,
     find_section,
     has_heading,
     iter_tables,
@@ -58,12 +64,15 @@ class Flag(TypedDict, total=False):
     drop: str
     drop_position: str
     claim_position: str
+    rows: int
+    lines: list[str]
 
 
 class Warning(TypedDict, total=False):
     type: str
     name: str
     rows: int
+    lines: list[str]
 
 
 class ValidatorResult(TypedDict):
@@ -245,6 +254,18 @@ def locate_waiver_subsection(section_lines: list[str]) -> list[str]:
     return section_lines if body is None else body
 
 
+# How many unread lines a flag or warning quotes; `rows` carries the full count.
+UNREAD_LINES_SHOWN = 5
+
+
+def _table_dicts(table: MarkdownTable) -> tuple[list[str], list[dict[str, str]]]:
+    rows = [
+        {header: row[i] if i < len(row) else "" for i, header in enumerate(table.headers)}
+        for row in table.rows
+    ]
+    return table.headers, rows
+
+
 def parse_waiver_table(
     section_lines: list[str],
 ) -> tuple[list[str], list[dict[str, str]]] | None:
@@ -257,13 +278,22 @@ def parse_waiver_table(
     table stacked straight under this one is its own table, not more rows.
     """
     table = next(iter_tables(section_lines), None)
+    return None if table is None else _table_dicts(table)
+
+
+def unread_lines(lines: list[str], table: MarkdownTable | None) -> list[str]:
+    """The pipe rows in `lines` that `table` did not take in, stripped.
+
+    Every pipe row when no table was read at all; otherwise those above and
+    below the table's span -- a header with no `|---|` row under it, rows a
+    blank line cut off, a table stacked beneath.
+    """
     if table is None:
-        return None
-    rows = [
-        {header: row[i] if i < len(row) else "" for i, header in enumerate(table.headers)}
-        for row in table.rows
-    ]
-    return table.headers, rows
+        rows = pipe_rows(lines)
+    else:
+        start, end = table.span
+        rows = pipe_rows(lines[:start]) + pipe_rows(lines[end:])
+    return [row.strip() for row in rows]
 
 
 # ---------------------------------------------------------------------------
@@ -429,26 +459,42 @@ def _run(recommendations_file: str, waivers_json: str, squad_grid_json: str) -> 
     waiver_lines = locate_waiver_subsection(section_lines)
 
     # Parse waiver table
-    table = parse_waiver_table(waiver_lines)
+    first_table = next(iter_tables(waiver_lines), None)
 
-    # Rows under the heading that the waiver table did not take in -- a header
-    # with no `|---|` row under it, rows a blank line cut off, a table stacked
-    # beneath -- were never checked, so say so rather than pass a clean result.
-    # Only under the heading itself: the whole-section fallback holds the
-    # Starting XI and Bench tables too.
-    unread = 0
+    # Rows under the heading that the waiver table did not take in were never
+    # checked, so say so rather than pass a clean result. Only under the
+    # heading itself: the whole-section fallback holds the Starting XI and
+    # Bench tables too.
+    unread: list[str] = []
     if has_heading(section_lines, _HEADING_WAIVERS):
-        read = 0 if table is None else 1 + len(table[1])
-        unread = len(pipe_rows(waiver_lines)) - read
-    if unread > 0:
-        warnings.append(Warning(type="waiver-rows-unread", rows=unread))
+        unread = unread_lines(waiver_lines, first_table)
 
-    if table is None:
-        if unread <= 0:
-            warnings.append(Warning(type="waiver-table-not-found"))
+    # No waiver row read, but rows there to read: the table is malformed and
+    # not one claim in it was checked for a cross-position swap. That fails
+    # closed like the swap itself, where a partial read below only warns, since
+    # the rows it did take were still checked (#409).
+    if unread and (first_table is None or not first_table.rows):
+        flags.append(
+            Flag(
+                type="waiver-table-unreadable",
+                rows=len(unread),
+                lines=unread[:UNREAD_LINES_SHOWN],
+            )
+        )
+        result = {"ok": False, "flags": flags, "warnings": warnings}
+        json.dump(result, sys.stdout)
+        return
+    if unread:
+        warnings.append(
+            Warning(type="waiver-rows-unread", rows=len(unread), lines=unread[:UNREAD_LINES_SHOWN])
+        )
+
+    if first_table is None:
+        warnings.append(Warning(type="waiver-table-not-found"))
         result = {"ok": True, "flags": [], "warnings": warnings}
         json.dump(result, sys.stdout)
         return
+    table = _table_dicts(first_table)
 
     # Exact column names, where `fpl review --compare-recs` takes aliases and
     # any case: it also reads older and post-waiver files under other headers,

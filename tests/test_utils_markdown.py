@@ -474,6 +474,14 @@ def test_pipe_rows_includes_rows_no_table_could_take_in():
     assert pipe_rows(lines) == ["| Pos | Player |", "| GK | Raya |", "| Pos | Player |", "| DEF | Gabriel |"]
     [table] = iter_tables(lines)
     assert table.rows == []
+    assert table.span == (3, 7)
+    start, end = table.span
+    assert pipe_rows(lines[:start]) + pipe_rows(lines[end:]) == ["| Pos | Player |", "| GK | Raya |", "| DEF | Gabriel |"]
+
+
+def test_iter_tables_span_stops_short_of_a_stacked_table():
+    lines = ["| A | B |", "|---|---|", "| 1 | 2 |", "| C | D |", "|---|---|", "| 3 | 4 |"]
+    assert [t.span for t in iter_tables(lines)] == [(0, 3), (3, 6)]
 
 
 @pytest.mark.parametrize(("text", "expected"), [("**Drop**", "Drop"), (" _Claim_ ", "Claim"), ("~~Salah~~", "~~Salah~~")])

@@ -759,7 +759,7 @@ _Runs after Phase D file write, before Phase E. Not embed-gated._
    ```
 
    Parse stdout as JSON: `{"ok": bool, "flags": [...], "warnings": [...]}`.
-   If the script cannot be found or exits non-zero unexpectedly, emit a warning and proceed to Phase E (fail-open for infrastructure errors, fail-closed only for confirmed rule violations). A non-zero exit whose stdout parses as `{"error": true, ...}` is the script reporting its own startup failure — quote `messages[0]` verbatim in that warning; it names the cause (a wrong interpreter is the common one).
+   If the script cannot be found or exits non-zero unexpectedly, emit a warning and proceed to Phase E (fail-open for infrastructure errors, fail-closed only for confirmed rule violations and for a waiver table the validator could not read at all). A non-zero exit whose stdout parses as `{"error": true, ...}` is the script reporting its own startup failure — quote `messages[0]` verbatim in that warning; it names the cause (a wrong interpreter is the common one).
 
 4. **Managed block update:** locate the sentinel block in the recommendations file:
    ```
@@ -774,6 +774,7 @@ _Runs after Phase D file write, before Phase E. Not embed-gated._
      > - {one line per flag/warning, e.g. "Row 1: cross-position-claim (Drop: João Pedro FWD → Claim: Pedro Porro DEF)"}
      <!-- phase-d1:end -->
      ```
+     For `waiver-table-unreadable` and `waiver-rows-unread`, the line names the unchecked rows rather than giving a count: `{type} ({rows} line(s) unchecked): {lines joined with "; "}`, adding `, and {rows - len(lines)} more` when `rows` exceeds the lines quoted. Wrap each quoted line in backticks so its pipes do not break the block.
    - If both are empty: remove the block entirely (including sentinels) if present.
 
 5. **Split posture:**
@@ -783,8 +784,16 @@ _Runs after Phase D file write, before Phase E. Not embed-gated._
      > Edit the file to fix the flagged row(s), then re-run `/gw-prep` to continue.
      
      **Stop the pipeline.** Do not proceed to Phase E. Do not mark the run as complete.
-   - Else, if a warning has `type == "waiver-rows-unread"` → emit this in-chat warning, followed by the pool-miss one below if any `waiver-not-in-pool` flags are present too:
-     > ⚠️ Phase D1: {rows} row(s) under Waiver Recommendations in `gw{N}-recommendations.md` were not read as waiver rows, so they were not checked for cross-position swaps. A table needs a `|---|` row straight under its header, no blank line inside it, and nothing stacked beneath it. Fix the table and re-run `/gw-prep` before submitting waivers.
+   - Any flag with `type == "waiver-table-unreadable"` present → emit a **red error** in chat. The validator read no waiver row at all, so no claim was checked for a cross-position swap; this fails closed like the swap itself:
+     > ❌ Phase D1 blocked: the Waiver Recommendations table in `gw{N}-recommendations.md` could not be read, so no claim in it was checked for a cross-position swap. Unread line(s):
+     > - `{line}` (one per entry in `lines`; then "…and {rows - len(lines)} more" if `rows` is larger)
+     > A table needs a `|---|` row straight under its header, no blank line inside it, and nothing stacked beneath it. Fix the table, then re-run `/gw-prep` to continue.
+
+     **Stop the pipeline.** Do not proceed to Phase E. Do not mark the run as complete.
+   - Else, if a warning has `type == "waiver-rows-unread"` → the table was read and its rows checked, but other rows beside it were not. Emit this in-chat warning, followed by the pool-miss one below if any `waiver-not-in-pool` flags are present too:
+     > ⚠️ Phase D1: {rows} row(s) under Waiver Recommendations in `gw{N}-recommendations.md` were not read as waiver rows, so they were not checked for cross-position swaps:
+     > - `{line}` (one per entry in `lines`; then "…and {rows - len(lines)} more" if `rows` is larger)
+     > A table needs a `|---|` row straight under its header, no blank line inside it, and nothing stacked beneath it. Fix the table and re-run `/gw-prep` before submitting waivers.
 
      Proceed to Phase E.
    - Else (only warnings and/or `waiver-not-in-pool` flags) → emit an in-chat warning:
