@@ -1866,6 +1866,117 @@ class TestReviewCompareRecsUnread:
         assert "may no longer match the gw-prep template" in warning
 
 
+class TestReviewCompareRecsRankedAlternatives:
+    """#410: rows that sell the same player are ranked alternatives for one
+    sale. Grading each on its own consumed the move with the first and called
+    every other candidate not made."""
+
+    @staticmethod
+    def _rec(out, into, out_team=None, in_team=None):
+        return {"out": out, "in": into, "out_team": out_team, "in_team": in_team}
+
+    def _transfers(self, rec_rows, made):
+        recs = _make_recs(transfers=rec_rows)
+        return _review_compare_recs(recs, _make_collected(classic_transfers=made), gameweek=5)["classic"]
+
+    def test_following_the_top_choice_is_not_a_miss_for_the_alternative(self):
+        result = self._transfers(
+            [self._rec("Tzolis", "Gibbs-White"), self._rec("Tzolis", "Rogers"), self._rec("Ballard", "De Cuyper")],
+            [_transfer("Gibbs-White", "Tzolis", "NFO", "ARS")],
+        )
+        transfers = result["transfers"]
+        assert [(t["rec_in"], t["rec_out"]) for t in transfers] == [("Gibbs-White", "Tzolis"), ("De Cuyper", "Ballard")]
+        assert transfers[0]["followed"] is True
+        assert transfers[0]["alternatives"] == ["Rogers"]
+        # A second sale in the same file is still graded as its own advice.
+        assert transfers[1]["not_made"] is True
+        assert "alternatives" not in transfers[1]
+        assert result["unadvised_transfers"] == []
+
+    def test_taking_a_lower_ranked_candidate_is_still_followed(self):
+        transfers = self._transfers(
+            [self._rec("Tzolis", "Gibbs-White"), self._rec("Tzolis", "Rogers")],
+            [_transfer("Rogers", "Tzolis", "AVL", "ARS")],
+        )["transfers"]
+        assert len(transfers) == 1
+        assert transfers[0]["followed"] is True
+        assert transfers[0]["rec_in"] == "Rogers"
+        assert transfers[0]["alternatives"] == ["Gibbs-White"]
+
+    def test_an_unmade_sale_is_one_miss_not_one_per_candidate(self):
+        transfers = self._transfers(
+            [self._rec("Sarr", "Hinshelwood"), self._rec("Sarr", "Tavernier"), self._rec("Sarr", "Ødegaard")],
+            [],
+        )["transfers"]
+        assert transfers == [{
+            "rec_in": "Hinshelwood", "rec_out": "Sarr", "actual_in": None, "actual_out": None,
+            "followed": False, "not_made": True, "alternatives": ["Tavernier", "Ødegaard"],
+        }]
+
+    def test_buying_none_of_the_candidates_is_one_different_move(self):
+        transfers = self._transfers(
+            [self._rec("Sarr", "Hinshelwood"), self._rec("Sarr", "Tavernier")],
+            [_transfer("Saka", "Sarr", "ARS", "CRY")],
+        )["transfers"]
+        assert len(transfers) == 1
+        assert transfers[0]["followed"] is False
+        assert "not_made" not in transfers[0]
+        assert transfers[0]["actual_in"] == "Saka"
+        assert transfers[0]["rec_in"] == "Hinshelwood"
+        assert transfers[0]["alternatives"] == ["Tavernier"]
+
+    def test_namesakes_at_different_clubs_are_two_sales(self):
+        transfers = self._transfers(
+            [self._rec("Sarr", "Hinshelwood", out_team="CRY"), self._rec("Sarr", "Kudus", out_team="TOT")],
+            [_transfer("Hinshelwood", "Sarr", "BHA", "CRY")],
+        )["transfers"]
+        assert [(t["rec_in"], t.get("followed"), t.get("not_made")) for t in transfers] == [
+            ("Hinshelwood", True, None), ("Kudus", False, True),
+        ]
+        assert all("alternatives" not in t for t in transfers)
+
+    def test_an_initialled_and_bare_name_for_one_player_group(self):
+        transfers = self._transfers(
+            [self._rec("B.Fernandes", "Palmer", out_team="MUN"), self._rec("Fernandes", "Saka")],
+            [_transfer("Palmer", "B.Fernandes", "CHE", "MUN")],
+        )["transfers"]
+        assert len(transfers) == 1
+        assert transfers[0]["followed"] is True
+        assert transfers[0]["alternatives"] == ["Saka"]
+
+
+class TestReviewCommandWithRankedAlternatives:
+    """#410 end to end: the console names every candidate on one line."""
+
+    def test_followed_top_choice_prints_one_tick_and_no_miss(self, monkeypatch, tmp_path):
+        from fpl_cli.cli import review as review_module
+
+        _stub_review_run(monkeypatch, gameweek=6)
+        monkeypatch.setattr(review_module, "_review_classic_transfers", AsyncMock(return_value=[
+            _transfer("Gibbs-White", "Tzolis", "NFO", "ARS"),
+        ]))
+        season_dir = tmp_path / "2026-27"
+        season_dir.mkdir()
+        (season_dir / "gw6-recommendations.md").write_text(
+            "---\ngameweek: 6\n---\n"
+            "## Classic League\n"
+            "### Transfer Recommendations\n"
+            "| Priority | Out | In |\n"
+            "|----------|-----|----|\n"
+            "| 1 | Tzolis (ARS) | Gibbs-White (NFO) |\n"
+            "| 2 | Tzolis (ARS) | Rogers (AVL) |\n",
+            encoding="utf-8",
+        )
+        result = CliRunner().invoke(
+            review_module.review_command, ["--gameweek", "6", "--compare-recs", "--output", str(tmp_path)],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "Transfer: ✓ Gibbs-White (or Rogers) ← Tzolis (followed, net 0)" in result.stdout
+        assert "not made" not in result.stdout
+        assert "Unadvised" not in result.stdout
+
+
 class TestReviewCommandWithAnUnreadableRecsFile:
     """#355 end to end: the reason on stderr, and no move on stdout graded
     against a recommendation that was never read."""

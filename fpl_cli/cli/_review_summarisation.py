@@ -1402,6 +1402,42 @@ def _drop_side(moves: list[dict[str, Any]], indices: Sequence[int]) -> list[tupl
     return [(moves[i].get("player_out"), moves[i].get("player_out_team")) for i in indices]
 
 
+def _same_sale(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    """Whether two recommended transfers sell the same player.
+
+    Two club codes that disagree are two players, even where the name alone
+    would let one find the other (Sarr at CRY is not Sarr at TOT).
+    """
+    a_club, b_club = club_code(a.get("out_team")), club_code(b.get("out_team"))
+    if a_club is not None and b_club is not None and a_club != b_club:
+        return False
+    return _names_match(a["out"], b["out"], a.get("out_team"), b.get("out_team"))
+
+
+def _group_alternatives(rec_transfers: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    """Recommended transfers grouped by the player they sell, in file order.
+
+    A player can be sold only once in a gameweek, so rows that share an Out
+    player are ranked alternatives for one sale, not a sequence: "Gibbs-White
+    or Rogers for Tzolis". Grading each row on its own consumed the actual
+    move with the first and called every other candidate not made -- a manager
+    who took the top choice was shown a miss for each option they were told
+    not to also take, and one who made none a miss per candidate (#410). A
+    group is graded once, against its first row's Out player.
+
+    Alternatives across different sales ("sell Tzolis, or else Ballard") read
+    the same as two distinct moves and stay separate rows.
+    """
+    groups: list[list[dict[str, Any]]] = []
+    for rec_t in rec_transfers:
+        group = next((g for g in groups if _same_sale(g[0], rec_t)), None)
+        if group is None:
+            groups.append([rec_t])
+        else:
+            group.append(rec_t)
+    return groups
+
+
 def _match_lost_claim(
     claims: list[dict[str, Any]], rec: dict[str, Any], used: set[int],
 ) -> tuple[int, dict[str, Any]] | None:
@@ -1493,6 +1529,12 @@ def _compare_rec_squad(
             for i, t in enumerate(classic_transfers)
         ],
     }
+
+
+def _rec_in_options(t: dict[str, Any]) -> str:
+    """The player a graded transfer recommended, with any ranked alternatives."""
+    alternatives = t.get("alternatives")
+    return f"{t['rec_in']} (or {', '.join(alternatives)})" if alternatives else t["rec_in"]
 
 
 def _review_compare_recs(recs: dict, collected_data: dict, gameweek: int | None = None) -> dict:
@@ -1614,13 +1656,17 @@ def _review_compare_recs(recs: dict, collected_data: dict, gameweek: int | None 
     if rec_squad or "transfers" in unread:
         matched_actual_indices = set(range(len(classic_transfers)))
 
-    for rec_t in rec_transfers:
-        rec_in = rec_t["in"]
-        rec_out = rec_t["out"]
+    for group in _group_alternatives(rec_transfers):
+        top = group[0]
+        rec_out = top["out"]
+        out_team = next((r.get("out_team") for r in group if r.get("out_team")), None)
+        # The candidates ranked below the first, so a sale read as one
+        # recommendation still shows every player it offered.
+        alternatives = [r["in"] for r in group[1:]]
         # Find matching actual transfer by OUT player
         open_indices = [i for i in range(len(classic_transfers)) if i not in matched_actual_indices]
         hits = _resolve_name(
-            rec_out, rec_t.get("out_team"),
+            rec_out, out_team,
             _drop_side(classic_transfers, open_indices),
             ambiguous,
         )
@@ -1628,39 +1674,50 @@ def _review_compare_recs(recs: dict, collected_data: dict, gameweek: int | None 
             # One of the tied moves is this recommendation's, so none of
             # them is reported as unadvised either.
             matched_actual_indices.update(open_indices[h] for h in hits)
-            transfer_comparisons.append({
-                "rec_in": rec_in,
+            entry: dict[str, Any] = {
+                "rec_in": top["in"],
                 "rec_out": rec_out,
                 "actual_in": None,
                 "actual_out": None,
                 "followed": None,
                 "ungraded": True,
-            })
+            }
         elif hits:
             i = open_indices[hits[0]]
             act_t = classic_transfers[i]
             matched_actual_indices.add(i)
-            same_in = _names_match(rec_in, act_t.get("player_in"), rec_t.get("in_team"), act_t.get("player_in_team"))
-            transfer_comparisons.append({
-                "rec_in": rec_in,
+            # Whichever candidate was bought is the one followed, so taking the
+            # second-ranked option is still advice taken.
+            chosen = next(
+                (r for r in group
+                 if _names_match(r["in"], act_t.get("player_in"), r.get("in_team"), act_t.get("player_in_team"))),
+                None,
+            )
+            if chosen is not None:
+                alternatives = [r["in"] for r in group if r is not chosen]
+            entry = {
+                "rec_in": (chosen or top)["in"],
                 "rec_out": rec_out,
                 "actual_in": act_t.get("player_in"),
                 "actual_out": act_t.get("player_out"),
-                "followed": same_in,
+                "followed": chosen is not None,
                 "actual_in_pts": act_t.get("player_in_points", 0),
                 "actual_out_pts": act_t.get("player_out_points", 0),
                 "actual_net": act_t.get("net", 0),
                 "actual_verdict": act_t.get("verdict", ""),
-            })
+            }
         else:
-            transfer_comparisons.append({
-                "rec_in": rec_in,
+            entry = {
+                "rec_in": top["in"],
                 "rec_out": rec_out,
                 "actual_in": None,
                 "actual_out": None,
                 "followed": False,
                 "not_made": True,
-            })
+            }
+        if alternatives:
+            entry["alternatives"] = alternatives
+        transfer_comparisons.append(entry)
 
     # Flag actual transfers not in recommendations
     unadvised = []

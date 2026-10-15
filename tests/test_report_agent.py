@@ -449,6 +449,24 @@ class TestTemplateRendering:
         assert "| ? | Palmer | Murphy | Not graded |" in output
         assert "Not made" not in output
 
+    def test_review_report_lists_ranked_alternatives_on_one_row(self):
+        """#410: a sale with ranked alternatives is one graded row."""
+        data = _review_data()
+        data["recs_comparison"] = {
+            "classic": {
+                "rec_roll": False, "actual_roll": False, "no_transfers_possible": False,
+                "transfers": [{
+                    "rec_in": "Hinshelwood", "rec_out": "Sarr", "actual_in": None, "actual_out": None,
+                    "followed": False, "not_made": True, "alternatives": ["Tavernier", "Ødegaard"],
+                }],
+                "unadvised_transfers": [],
+            },
+            "draft": {"waivers": [], "unadvised_waivers": []},
+        }
+        output = self.agent._generate_review_report(29, data)
+        assert "| ✗ | Hinshelwood (or Tavernier, Ødegaard) | Sarr | Not made |" in output
+        assert output.count("Not made") == 1
+
     @staticmethod
     def _unread_comparison(unread, nothing_read=False):
         """What `_review_compare_recs` returns for a file a part of which
