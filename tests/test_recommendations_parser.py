@@ -76,6 +76,30 @@ class TestParseCaptain:
         assert result["classic"]["captain"] == "Haaland"
         assert result["classic"]["vice_captain"] == "Salah"
 
+    @pytest.mark.parametrize("sep", [" - ", " – ", " — ", " -- "])
+    def test_separator_inside_squad_builder_bracket(self, tmp_recs, sep):
+        path = tmp_recs(f"""\
+            ## Classic League
+            ### Classic Squad
+            **Mode:** Free Hit
+            **Captain:** Haaland (MCI, home to Coventry{sep}the easiest fixture) | **Vice:** Saka (ARS{sep}on penalties)
+        """)
+        classic = parse_recommendations(path)["classic"]
+        assert classic["captain"] == "Haaland"
+        assert classic["captain_team"] is None
+        assert classic["vice_captain"] == "Saka"
+        assert classic["vice_captain_team"] is None
+
+    @pytest.mark.parametrize("sep", [" - ", " – ", " — ", " -- "])
+    def test_separator_after_bracket_still_cuts(self, tmp_recs, sep):
+        path = tmp_recs(f"""\
+            ## Classic
+            **Recommended captain:** Haaland (MCI){sep}easiest fixture (home)
+        """)
+        classic = parse_recommendations(path)["classic"]
+        assert classic["captain"] == "Haaland"
+        assert classic["captain_team"] == "MCI"
+
     def test_no_captain_line(self, tmp_recs):
         path = tmp_recs("""\
             ---

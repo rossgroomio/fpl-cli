@@ -275,6 +275,21 @@ def _parse_mode(text: str, frontmatter: dict[str, Any]) -> str | None:
     return None
 
 
+def _before_rationale(text: str) -> str:
+    """The part of a captain value ahead of its rationale separator.
+
+    Only a separator outside brackets counts: the squad-builder form writes
+    `Haaland (MCI, home to Coventry - the easiest fixture)`, where a spaced
+    hyphen inside the bracket belongs to the rationale and cutting there would
+    leave an unclosed `(` on the name.
+    """
+    for match in _RATIONALE_SPLIT_RE.finditer(text):
+        head = text[:match.start()]
+        if head.count("(") <= head.count(")"):
+            return head
+    return text
+
+
 def _parse_captain(text: str, result: dict[str, Any]) -> bool:
     """Extract captain and vice captain.
 
@@ -287,15 +302,13 @@ def _parse_captain(text: str, result: dict[str, Any]) -> bool:
     if not match:
         return False
     captain_part, _, vice_part = match.group("value").partition("|")
-    captain, captain_team = split_name_team(_RATIONALE_SPLIT_RE.split(captain_part, maxsplit=1)[0])
+    captain, captain_team = split_name_team(_before_rationale(captain_part))
     if captain and not _is_placeholder(captain):
         result["classic"]["captain"] = captain
         result["classic"]["captain_team"] = captain_team
     vice_label = _VICE_LABEL_RE.match(vice_part)
     if vice_label:
-        vice, vice_team = split_name_team(
-            _RATIONALE_SPLIT_RE.split(vice_part[vice_label.end():], maxsplit=1)[0]
-        )
+        vice, vice_team = split_name_team(_before_rationale(vice_part[vice_label.end():]))
         if vice and not _is_placeholder(vice):
             result["classic"]["vice_captain"] = vice
             result["classic"]["vice_captain_team"] = vice_team
