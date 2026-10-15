@@ -19,6 +19,7 @@ from fpl_cli.cli._context import (
     get_settings,
     is_custom_analysis_enabled,
     resolve_output_dir,
+    save_failure_message,
     warn_prediction_problems,
 )
 from fpl_cli.cli._json import config_failure_boundary, emit_failure
@@ -663,6 +664,6 @@ def review_command(
                 if report_result.success:
                     console.print(f"[green]✓[/green] Report saved to: {report_result.data['report_path']}")
                 else:
-                    emit_failure("review", f"Failed to save report: {report_result.message}", "table")
+                    emit_failure("review", f"Failed to save report: {save_failure_message(report_result)}", "table")
 
     asyncio.run(_review())

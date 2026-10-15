@@ -4853,6 +4853,18 @@ class TestReviewProgressAndFailureLinesStayOffStdout:
         # The review itself still printed before the save was attempted.
         assert "Gameweek 2 Review" in result.stdout
 
+    def test_a_failed_save_names_the_cause_the_agent_reports(self, monkeypatch, tmp_path):
+        # #411: ReportAgent puts a generic message in `message` and the errno
+        # in `errors`; the CLI line is the one a user reads.
+        agent = make_agent(
+            success=False, message="Failed to generate report",
+            errors=["[Errno 20] Not a directory"],
+        )
+        result = self._save(monkeypatch, tmp_path, agent)
+
+        assert result.exit_code == 1
+        assert "Failed to save report: Failed to generate report ([Errno 20] Not a directory)" in result.stderr
+
     def test_a_successful_save_exits_0_and_names_the_file(self, monkeypatch, tmp_path):
         report_path = str(tmp_path / "gw2-review.md")
         result = self._save(monkeypatch, tmp_path, make_agent({"report_path": report_path}))

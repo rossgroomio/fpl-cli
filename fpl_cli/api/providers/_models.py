@@ -127,10 +127,12 @@ def log_abnormal_stop(response: LLMResponse, label: str) -> None:
     """
     if not response.stopped_early:
         return
+    # A refusal was declined, not cut off: saying "may be cut off" beside the
+    # caller's own "refused" wording would make the two lines disagree (#411).
+    consequence = "the provider declined to answer" if response.refused else "the response may be cut off"
     logger.warning(
-        "%s stopped early (stop_reason=%r) after %d output token(s) -- "
-        "the response may be cut off",
-        label, response.stop_reason, response.usage.output_tokens,
+        "%s stopped early (stop_reason=%r) after %d output token(s) -- %s",
+        label, response.stop_reason, response.usage.output_tokens, consequence,
     )
 
 

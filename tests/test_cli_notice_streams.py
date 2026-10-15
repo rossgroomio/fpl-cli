@@ -127,7 +127,7 @@ FIXED_BY_HAND = (
     "[dim]Re-run once the table appears, or use 'fpl league'[/dim]",
     # #394
     "[dim]Generating report...[/dim]",
-    "[red]✗[/red] Failed to save report: {report_result.message}",
+    "[red]✗[/red] Failed to save report: {save_failure_message(report_result)}",
     "[dim]Dream team not available[/dim]",
     "[dim]Could not fetch dream team: {rich_escape(str(e))}[/dim]",
     "[dim]Could not calculate blankers: {rich_escape(str(e))}[/dim]",

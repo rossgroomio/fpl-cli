@@ -22,6 +22,7 @@ from fpl_cli.cli._context import (
     is_custom_analysis_enabled,
     resolve_output_dir,
     resolve_research_dir,
+    save_failure_message,
 )
 from fpl_cli.cli._helpers import _fdr_style
 from fpl_cli.models.player import POSITION_MAP
@@ -301,7 +302,7 @@ def preview_command(ctx: click.Context, save: bool, output: str | None, scout: b
                 # exit nonzero. Printing the reason here rather than at the
                 # exit keeps it if the scout block itself raises (#387).
                 error_console.print(
-                    f"[red]Failed to save report: {rich_escape(str(report_result.message))}[/red]"
+                    f"[red]Failed to save report: {rich_escape(save_failure_message(report_result))}[/red]"
                 )
                 save_failed = True
 
