@@ -95,6 +95,16 @@ def _assign_tie_ranks(sorted_items: list[dict], score_key: str) -> None:
         item["rank_str"] = f"{item['rank']}=" if rank_counts[item["rank"]] > 1 else str(item["rank"])
 
 
+def rec_in_options(t: Mapping[str, Any]) -> str:
+    """A graded transfer's recommended player, with any ranked alternatives.
+
+    The one wording for the terminal and the saved report (#410): the top
+    choice first, then the candidates ranked below it for the same sale.
+    """
+    alternatives = t.get("alternatives")
+    return f"{t['rec_in']} (or {', '.join(alternatives)})" if alternatives else str(t["rec_in"])
+
+
 def performer_score(p: Mapping[str, Any]) -> str:
     """A Best/Worst GW Performers row's score, as every writer states it.
 

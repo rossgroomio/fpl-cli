@@ -11,7 +11,7 @@ import jinja2
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from fpl_cli.agents.base import Agent, AgentResult, AgentStatus
-from fpl_cli.cli._helpers import performer_score, your_gw_rank_line
+from fpl_cli.cli._helpers import performer_score, rec_in_options, your_gw_rank_line
 from fpl_cli.cli._league_recap_types import (
     RecapManagerEntry,
     draft_transaction_kind_label,
@@ -60,6 +60,9 @@ def build_report_environment() -> Environment:
     # synthesis prompt.
     env.globals["performer_score"] = performer_score
     env.globals["your_gw_rank_line"] = your_gw_rank_line
+    # A transfer recommendation's player and its ranked alternatives, worded
+    # as the terminal prints them
+    env.filters["rec_in_options"] = rec_in_options
     # Free-text names in a table cell: a `|` would split the row
     env.filters["md_cell"] = md_table_cell
     return env
