@@ -6,6 +6,12 @@ section, parses the waiver table, and cross-checks each row against:
   - waivers JSON: claim must be present in the pool (waiver-not-in-pool)
   - squad-grid JSON: drop position must match claim position (cross-position-claim)
 
+Rows under ### Waiver Recommendations when no waiver row was read fail closed
+(waiver-table-unreadable): not one claim was checked. That is rows with no
+Drop/Claim table to hold them, or an empty Drop/Claim table beside rows no
+table took in. Rows left over beside a waiver table that was read are advisory
+(waiver-rows-unread). Both name the first few lines they mean.
+
 Emits JSON to stdout: {"ok": bool, "flags": [...], "warnings": [...]}
 Exit code is 0 whatever the validation finds; the orchestrator (Phase D1)
 interprets flag types for posture. The startup guard below is the one
@@ -38,6 +44,7 @@ import _bootstrap  # noqa: F401 — import guard, see module docstring
 from fpl_cli.parsers.recommendations import PLACEHOLDER_CELLS
 from fpl_cli.utils.markdown import (
     HeadingMatcher,
+    MarkdownTable,
     find_section,
     has_heading,
     iter_tables,
@@ -58,12 +65,15 @@ class Flag(TypedDict, total=False):
     drop: str
     drop_position: str
     claim_position: str
+    rows: int
+    lines: list[str]
 
 
 class Warning(TypedDict, total=False):
     type: str
     name: str
     rows: int
+    lines: list[str]
 
 
 class ValidatorResult(TypedDict):
@@ -245,25 +255,69 @@ def locate_waiver_subsection(section_lines: list[str]) -> list[str]:
     return section_lines if body is None else body
 
 
-def parse_waiver_table(
-    section_lines: list[str],
-) -> tuple[list[str], list[dict[str, str]]] | None:
-    """Parse the first markdown table in the section.
+# How many unread lines a flag or warning quotes; `rows` carries the full count.
+UNREAD_LINES_SHOWN = 5
 
-    Returns (headers, rows) where rows are dicts keyed by header name,
-    or None if no table found. The table is read by the same rules as
-    `fpl review --compare-recs` reads it (`iter_tables`): a placeholder row
-    of bare dashes is skipped rather than ending the table above it, and a
-    table stacked straight under this one is its own table, not more rows.
+# Blockquote markers ahead of a row: "> | 1 | Hill (BOU) |" is a table row quoted.
+_QUOTE_PREFIX_RE = re.compile(r"^\s*(?:>\s*)+")
+
+
+def find_waiver_table(lines: list[str]) -> MarkdownTable | None:
+    """The first table in `lines` with both a Drop and a Claim column, or None.
+
+    Chosen by its headers rather than its place, so a legend or watchlist
+    table above it is not taken for the waiver table. Tables are read by the
+    same rules as `fpl review --compare-recs` reads them (`iter_tables`): a
+    placeholder row of bare dashes is skipped rather than ending the table
+    above it, and a table stacked straight under this one is its own table.
+
+    Exact column names, where the review takes aliases and any case: it also
+    reads older and post-waiver files under other headers, while this checks
+    gw-prep's own fresh output, written to the template's.
     """
-    table = next(iter_tables(section_lines), None)
-    if table is None:
-        return None
-    rows = [
+    return next(
+        (table for table in iter_tables(lines) if "Drop" in table.headers and "Claim" in table.headers),
+        None,
+    )
+
+
+def waiver_rows(table: MarkdownTable) -> list[dict[str, str]]:
+    """The table's body rows as dicts keyed by header name."""
+    return [
         {header: row[i] if i < len(row) else "" for i, header in enumerate(table.headers)}
         for row in table.rows
     ]
-    return table.headers, rows
+
+
+def _is_row_line(line: str) -> bool:
+    """A table row carrying a value, by `pipe_rows`'s rule, but counted inside
+    a fence or a blockquote too: a waiver table wrapped in either is still rows
+    nobody checked."""
+    return bool(pipe_rows([_QUOTE_PREFIX_RE.sub("", line)]))
+
+
+def unread_rows(lines: list[str], waiver: MarkdownTable | None) -> tuple[list[str], list[str]]:
+    """The row lines in `lines` the waiver table did not take in, and the
+    orphans among them: those no table with a body took in either. Stripped.
+
+    An orphan is a header with no `|---|` row under it (or an em-dash one),
+    rows a blank line cut off, a table inside a fence or a blockquote. A line
+    of another table that has rows is not one: that table was read, it is
+    just not the waiver table. A table with no rows is no evidence it was read
+    as meant, since a cut-off row above a `| - | - |` placeholder reads as a
+    header-only table.
+    """
+    read = set(range(*waiver.span)) if waiver else set()
+    accounted = read | {i for table in iter_tables(lines) if table.rows for i in range(*table.span)}
+    unread: list[str] = []
+    orphans: list[str] = []
+    for i, line in enumerate(lines):
+        if i in read or not _is_row_line(line):
+            continue
+        unread.append(line.strip())
+        if i not in accounted:
+            orphans.append(line.strip())
+    return unread, orphans
 
 
 # ---------------------------------------------------------------------------
@@ -428,41 +482,54 @@ def _run(recommendations_file: str, waivers_json: str, squad_grid_json: str) -> 
     # rows from the Starting XI / Bench tables that follow it.
     waiver_lines = locate_waiver_subsection(section_lines)
 
-    # Parse waiver table
-    table = parse_waiver_table(waiver_lines)
+    waiver = find_waiver_table(waiver_lines)
 
-    # Rows under the heading that the waiver table did not take in -- a header
-    # with no `|---|` row under it, rows a blank line cut off, a table stacked
-    # beneath -- were never checked, so say so rather than pass a clean result.
-    # Only under the heading itself: the whole-section fallback holds the
-    # Starting XI and Bench tables too.
-    unread = 0
+    # Rows under the heading that the waiver table did not take in were never
+    # checked, so say so rather than pass a clean result. Only under the
+    # heading itself: the whole-section fallback holds the Starting XI and
+    # Bench tables too.
     if has_heading(section_lines, _HEADING_WAIVERS):
-        read = 0 if table is None else 1 + len(table[1])
-        unread = len(pipe_rows(waiver_lines)) - read
-    if unread > 0:
-        warnings.append(Warning(type="waiver-rows-unread", rows=unread))
+        unread, orphans = unread_rows(waiver_lines, waiver)
+        # No waiver row read, but rows there to read: not one claim was checked
+        # for a cross-position swap, so this fails closed like the swap itself
+        # (#409). With no Drop/Claim table at all, every row under the heading
+        # counts -- the template puts nothing else there, so a table under other
+        # headers is the waiver table with its columns renamed. With an empty
+        # one, a week with no claims, only orphans do: a second table that was
+        # read is extra, not the claims. A partial read only warns, since the
+        # rows it took were still checked.
+        if waiver is None:
+            unchecked = unread
+        elif not waiver.rows:
+            unchecked = orphans
+        else:
+            unchecked = []
+        if unchecked:
+            flags.append(
+                Flag(
+                    type="waiver-table-unreadable",
+                    rows=len(unchecked),
+                    lines=unchecked[:UNREAD_LINES_SHOWN],
+                )
+            )
+            result = {"ok": False, "flags": flags, "warnings": warnings}
+            json.dump(result, sys.stdout)
+            return
+        if unread:
+            warnings.append(
+                Warning(type="waiver-rows-unread", rows=len(unread), lines=unread[:UNREAD_LINES_SHOWN])
+            )
 
-    if table is None:
-        if unread <= 0:
-            warnings.append(Warning(type="waiver-table-not-found"))
-        result = {"ok": True, "flags": [], "warnings": warnings}
-        json.dump(result, sys.stdout)
-        return
-
-    # Exact column names, where `fpl review --compare-recs` takes aliases and
-    # any case: it also reads older and post-waiver files under other headers,
-    # while this checks gw-prep's own fresh output, written to the template's.
-    headers, rows = table
-    if "Drop" not in headers or "Claim" not in headers:
-        warnings.append(Warning(type="drop-claim-columns-not-found"))
+    if waiver is None:
+        any_table = next(iter_tables(waiver_lines), None) is not None
+        warnings.append(Warning(type="drop-claim-columns-not-found" if any_table else "waiver-table-not-found"))
         result = {"ok": True, "flags": [], "warnings": warnings}
         json.dump(result, sys.stdout)
         return
 
     # Validate rows
     row_flags, row_warnings = validate_rows(
-        rows, pool, squad, squad_shape_ok, waivers_shape_ok
+        waiver_rows(waiver), pool, squad, squad_shape_ok, waivers_shape_ok
     )
     flags.extend(row_flags)
     warnings.extend(row_warnings)

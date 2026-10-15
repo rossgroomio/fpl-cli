@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -1111,9 +1112,9 @@ def test_placeholder_row_does_not_drop_the_real_row_above_it(filler):
 | 1 | Wirtz | Nyoni | MID |
 | 2 | Saliba | Branthwaite | DEF |
 {filler}""".split("\n")
-    table = _mod.parse_waiver_table(rows)
+    table = _mod.find_waiver_table(rows)
     assert table is not None
-    assert [row["Claim"] for row in table[1]] == ["Nyoni", "Branthwaite"]
+    assert [row["Claim"] for row in _mod.waiver_rows(table)] == ["Nyoni", "Branthwaite"]
 
 
 def test_cross_position_claim_above_a_placeholder_row_still_blocks(tmp_path, capsys):
@@ -1209,10 +1210,11 @@ def test_table_stacked_straight_under_the_waiver_table_is_not_read_as_waivers(tm
         "| 1 | Scott (BOU) | Canvot (CRY) | DEF |\n| - | - | - | - |",
     ],
 )
-def test_rows_no_table_holds_are_reported_unread(tmp_path, capsys, table):
+def test_a_table_that_yields_no_waiver_row_fails_closed(tmp_path, capsys, table):
     """Each of these hides an illegal swap (Scott is a MID) that the old
-    reader caught. The shared one reads no row of it, so the validator has to
-    say the rows went unchecked rather than pass a clean result."""
+    reader caught. The shared one reads no row of it, so not one claim was
+    checked: that blocks Phase D1 like the swap would, rather than warning and
+    proceeding (#409). The flag names the line that went unchecked."""
     recs_content = f"""\
 ## Draft
 
@@ -1223,10 +1225,153 @@ def test_rows_no_table_holds_are_reported_unread(tmp_path, capsys, table):
     recs, w, s = _write_fixtures(tmp_path, recs_content)
     _run(str(recs), str(w), str(s))
     data = _parse(capsys)
+    assert data["ok"] is False
+    [flag] = data["flags"]
+    assert flag["type"] == "waiver-table-unreadable"
+    assert "| 1 | Scott (BOU) | Canvot (CRY) | DEF |" in flag["lines"]
+    assert flag["rows"] == len(flag["lines"])
+    assert not any(w["type"] in {"waiver-table-not-found", "waiver-rows-unread"} for w in data["warnings"])
+
+
+def test_unreadable_table_quotes_the_first_few_lines_and_counts_them_all(tmp_path, capsys):
+    body = "\n".join(f"| {n} | Scott (BOU) | Canvot (CRY) | DEF |" for n in range(1, 9))
+    recs_content = f"""\
+## Draft
+
+### Waiver Recommendations
+
+| Priority | Drop | Claim | Position |
+{body}
+"""
+    recs, w, s = _write_fixtures(tmp_path, recs_content)
+    _run(str(recs), str(w), str(s))
+    data = _parse(capsys)
+    [flag] = data["flags"]
+    assert flag["rows"] == 9
+    assert flag["lines"] == [
+        "| Priority | Drop | Claim | Position |",
+        *(f"| {n} | Scott (BOU) | Canvot (CRY) | DEF |" for n in range(1, 5)),
+    ]
+
+
+def test_rows_beside_a_table_that_was_read_are_named_and_only_warn(tmp_path, capsys):
+    """A partial read still checked the rows it took, so the leftovers are
+    advisory -- but named, so the warning says which lines went unchecked."""
+    recs_content = """\
+## Draft
+
+### Waiver Recommendations
+
+| Priority | Drop | Claim | Position |
+|----------|------|-------|----------|
+| 1 | Hill (BOU) | Lacroix (CRY) | DEF |
+
+| 2 | Scott (BOU) | Canvot (CRY) | DEF |
+"""
+    recs, w, s = _write_fixtures(tmp_path, recs_content)
+    _run(str(recs), str(w), str(s))
+    data = _parse(capsys)
+    assert data["ok"] is True
     assert data["flags"] == []
-    unread = [w for w in data["warnings"] if w["type"] == "waiver-rows-unread"]
-    assert len(unread) == 1 and unread[0]["rows"] >= 1
-    assert not any(w["type"] == "waiver-table-not-found" for w in data["warnings"])
+    assert data["warnings"] == [
+        {"type": "waiver-rows-unread", "rows": 1, "lines": ["| 2 | Scott (BOU) | Canvot (CRY) | DEF |"]}
+    ]
+
+
+_SCOTT_SWAP = "| 1 | Scott (BOU) | Canvot (CRY) | DEF |"
+_WAIVER_TABLE = f"| Priority | Drop | Claim | Position |\n|---|---|---|---|\n{_SCOTT_SWAP}"
+
+
+@pytest.mark.parametrize(
+    "table",
+    [
+        f"```markdown\n{_WAIVER_TABLE}\n```",
+        "\n".join(f"> {line}" for line in _WAIVER_TABLE.split("\n")),
+        # Columns renamed: the template puts nothing but the waiver table here.
+        f"| Priority | Drop | Pick up | Position |\n|---|---|---|---|\n{_SCOTT_SWAP}",
+    ],
+    ids=["fenced", "blockquoted", "renamed-columns"],
+)
+def test_a_waiver_table_no_reader_can_see_fails_closed(tmp_path, capsys, table):
+    recs_content = f"""\
+## Draft
+
+### Waiver Recommendations
+
+{table}
+"""
+    recs, w, s = _write_fixtures(tmp_path, recs_content)
+    _run(str(recs), str(w), str(s))
+    data = _parse(capsys)
+    assert data["ok"] is False
+    [flag] = data["flags"]
+    assert flag["type"] == "waiver-table-unreadable"
+    assert any("Scott (BOU)" in line for line in flag["lines"])
+
+
+def test_an_empty_waiver_table_beside_another_table_only_warns(tmp_path, capsys):
+    """A week with no claims is a valid read. A second table under the heading
+    was read too -- it is just not the waiver table -- so its rows are named
+    as unchecked without stopping Phase D1."""
+    recs_content = """\
+## Draft
+
+### Waiver Recommendations
+
+| Priority | Drop | Claim | Position |
+|----------|------|-------|----------|
+
+| Player | Team | Score |
+|--------|------|-------|
+| Canvot | CRY | 41 |
+"""
+    recs, w, s = _write_fixtures(tmp_path, recs_content)
+    _run(str(recs), str(w), str(s))
+    data = _parse(capsys)
+    assert data["ok"] is True
+    assert data["flags"] == []
+    assert data["warnings"] == [
+        {
+            "type": "waiver-rows-unread",
+            "rows": 2,
+            "lines": ["| Player | Team | Score |", "| Canvot | CRY | 41 |"],
+        }
+    ]
+
+
+def test_the_waiver_table_is_found_by_its_columns_not_its_place(tmp_path, capsys):
+    """A legend above the waiver table is not read as it, so the swap below is
+    still checked and still blocks."""
+    recs_content = f"""\
+## Draft
+
+### Waiver Recommendations
+
+| Key | Meaning |
+|-----|---------|
+
+{_WAIVER_TABLE}
+"""
+    recs, w, s = _write_fixtures(tmp_path, recs_content)
+    _run(str(recs), str(w), str(s))
+    data = _parse(capsys)
+    assert [f["type"] for f in data["flags"]] == ["cross-position-claim"]
+
+
+def test_a_header_with_no_rows_and_nothing_else_is_clean(tmp_path, capsys):
+    """An empty waiver table is a week with no claims, not an unreadable one."""
+    recs_content = """\
+## Draft
+
+### Waiver Recommendations
+
+| Priority | Drop | Claim | Position |
+|----------|------|-------|----------|
+"""
+    recs, w, s = _write_fixtures(tmp_path, recs_content)
+    _run(str(recs), str(w), str(s))
+    data = _parse(capsys)
+    assert data == {"ok": True, "flags": [], "warnings": []}
 
 
 @pytest.mark.parametrize("cell", ["No claim", "None", "--"])
@@ -1244,3 +1389,44 @@ def test_review_placeholder_words_are_not_pool_misses(tmp_path, capsys, cell):
     _run(str(recs), str(w), str(s))
     data = _parse(capsys)
     assert data == {"ok": True, "flags": [], "warnings": []}
+
+
+# ---- Phase D1 posture (SKILL.md) ----------------------------------------------
+
+SKILL_PATH = SCRIPT_PATH.parents[1] / "SKILL.md"
+# The flag types Phase D1 stops the pipeline on. The rest proceed to Phase E.
+BLOCKING_FLAGS = {"cross-position-claim", "waiver-table-unreadable"}
+
+
+def _posture_bullets() -> list[tuple[set[str], bool]]:
+    """Phase D1 step 5's bullets, each as (types its condition names, stops)."""
+    text = SKILL_PATH.read_text(encoding="utf-8")
+    phase = text[text.index("## Phase D1:") :]
+    step = phase[phase.index("5. **Split posture:**") : phase.index("\n---")]
+    bullets = re.split(r"^   - ", step, flags=re.MULTILINE)[1:]
+    return [
+        (set(re.findall(r'type == "([^"]+)"', bullet)), "**Stop the pipeline.**" in bullet)
+        for bullet in bullets
+    ]
+
+
+def test_skill_names_every_flag_the_validator_emits():
+    """The stop-or-proceed split is prose; a flag type it never names falls to
+    the proceed branch by default, which is how an unreadable table once went
+    on to Phase E (#409)."""
+    emitted = set(re.findall(r'Flag\(\s*type="([^"]+)"', SCRIPT_PATH.read_text(encoding="utf-8")))
+    assert BLOCKING_FLAGS <= emitted
+    step = SKILL_PATH.read_text(encoding="utf-8").split("5. **Split posture:**")[1]
+    assert {t for t in emitted if t not in step} == set()
+
+
+def test_skill_stops_on_exactly_the_blocking_flags_and_checks_them_first():
+    bullets = _posture_bullets()
+    stopping = [types for types, stops in bullets if stops]
+    assert set().union(*stopping) == BLOCKING_FLAGS
+    # Every stopping branch sits above the first "Else", so a proceed branch
+    # cannot match first and wave a blocking flag through.
+    first_proceed = next(i for i, (_, stops) in enumerate(bullets) if not stops)
+    assert all(stops for _, stops in bullets[:first_proceed])
+    assert not any(stops for _, stops in bullets[first_proceed:])
+    assert any("waiver-rows-unread" in types for types, stops in bullets if not stops)
