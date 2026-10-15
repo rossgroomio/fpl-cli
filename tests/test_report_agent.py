@@ -467,6 +467,23 @@ class TestTemplateRendering:
         assert "| ✗ | Hinshelwood (or Tavernier, Ødegaard) | Sarr | Not made |" in output
         assert output.count("Not made") == 1
 
+    def test_review_report_marks_a_followed_alternative(self):
+        data = _review_data()
+        data["recs_comparison"] = {
+            "classic": {
+                "rec_roll": False, "actual_roll": False, "no_transfers_possible": False,
+                "transfers": [{
+                    "rec_in": "Gibbs-White", "rec_out": "Tzolis", "actual_in": "Rogers", "actual_out": "Tzolis",
+                    "followed": True, "followed_in": "Rogers", "alternatives": ["Rogers"],
+                    "actual_net": 3, "actual_verdict": "✓ Hit",
+                }],
+                "unadvised_transfers": [],
+            },
+            "draft": {"waivers": [], "unadvised_waivers": []},
+        }
+        output = self.agent._generate_review_report(29, data)
+        assert "| ✓ | Gibbs-White (or Rogers) | Tzolis | Yes (alternative) | Rogers | 3 | ✓ Hit |" in output
+
     @staticmethod
     def _unread_comparison(unread, nothing_read=False):
         """What `_review_compare_recs` returns for a file a part of which

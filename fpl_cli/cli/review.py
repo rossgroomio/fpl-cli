@@ -22,6 +22,7 @@ from fpl_cli.cli._context import (
     save_failure_message,
     warn_prediction_problems,
 )
+from fpl_cli.cli._helpers import rec_in_options
 from fpl_cli.cli._json import config_failure_boundary, emit_failure
 from fpl_cli.cli._review_analysis import (
     _review_fixtures,
@@ -36,7 +37,7 @@ from fpl_cli.cli._review_classic import (
     _review_classic_transfers,
 )
 from fpl_cli.cli._review_draft import _empty_draft_result, _review_draft
-from fpl_cli.cli._review_summarisation import _rec_in_options, _review_compare_recs, _review_llm_summarise
+from fpl_cli.cli._review_summarisation import _review_compare_recs, _review_llm_summarise
 from fpl_cli.season import season_label
 from fpl_cli.services.fixture_predictions import (
     FixturePredictionsService,
@@ -557,26 +558,27 @@ def review_command(
                             if t.get("ungraded"):
                                 console.print(
                                     f"  Transfer: [dim]?[/dim] "
-                                    f"{_rec_in_options(t)} ← {t['rec_out']} (not graded)"
+                                    f"{rec_in_options(t)} ← {t['rec_out']} (not graded)"
                                 )
                             elif t.get("followed"):
                                 net = t.get("actual_net", 0)
+                                taken = f" with {t['followed_in']}" if t.get("followed_in") else ""
                                 console.print(
                                     f"  Transfer: [green]✓[/green] "
-                                    f"{_rec_in_options(t)} ← {t['rec_out']}"
-                                    f" (followed, net {net})"
+                                    f"{rec_in_options(t)} ← {t['rec_out']}"
+                                    f" (followed{taken}, net {net})"
                                 )
                             elif t.get("not_made"):
                                 console.print(
                                     f"  Transfer: [yellow]✗[/yellow] "
-                                    f"{_rec_in_options(t)} ← {t['rec_out']} (not made)"
+                                    f"{rec_in_options(t)} ← {t['rec_out']} (not made)"
                                 )
                             else:
                                 console.print(
                                     f"  Transfer: [yellow]~[/yellow] "
                                     f"Sold {t['rec_out']} but got "
                                     f"{t.get('actual_in')} instead of "
-                                    f"rec {_rec_in_options(t)}"
+                                    f"rec {rec_in_options(t)}"
                                 )
 
                     for t in rc.get("unadvised_transfers", []):

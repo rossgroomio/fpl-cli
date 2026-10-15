@@ -1427,14 +1427,20 @@ def _group_alternatives(rec_transfers: list[dict[str, Any]]) -> list[list[dict[s
 
     Alternatives across different sales ("sell Tzolis, or else Ballard") read
     the same as two distinct moves and stay separate rows.
+
+    A row joins a group only when it is the same sale as every row already in
+    it, and only when exactly one group takes it. `_same_sale` is not
+    transitive: a bare "Sarr" matches both "Sarr (CRY)" and "Sarr (TOT)",
+    which do not match each other, and checking the first row alone let the
+    bare one pull two different sales into one.
     """
     groups: list[list[dict[str, Any]]] = []
     for rec_t in rec_transfers:
-        group = next((g for g in groups if _same_sale(g[0], rec_t)), None)
-        if group is None:
-            groups.append([rec_t])
+        fits = [g for g in groups if all(_same_sale(member, rec_t) for member in g)]
+        if len(fits) == 1:
+            fits[0].append(rec_t)
         else:
-            group.append(rec_t)
+            groups.append([rec_t])
     return groups
 
 
@@ -1529,12 +1535,6 @@ def _compare_rec_squad(
             for i, t in enumerate(classic_transfers)
         ],
     }
-
-
-def _rec_in_options(t: dict[str, Any]) -> str:
-    """The player a graded transfer recommended, with any ranked alternatives."""
-    alternatives = t.get("alternatives")
-    return f"{t['rec_in']} (or {', '.join(alternatives)})" if alternatives else t["rec_in"]
 
 
 def _review_compare_recs(recs: dict, collected_data: dict, gameweek: int | None = None) -> dict:
@@ -1660,8 +1660,8 @@ def _review_compare_recs(recs: dict, collected_data: dict, gameweek: int | None 
         top = group[0]
         rec_out = top["out"]
         out_team = next((r.get("out_team") for r in group if r.get("out_team")), None)
-        # The candidates ranked below the first, so a sale read as one
-        # recommendation still shows every player it offered.
+        # The candidates ranked below the first, in file order, so a sale read
+        # as one recommendation still shows every player it offered.
         alternatives = [r["in"] for r in group[1:]]
         # Find matching actual transfer by OUT player
         open_indices = [i for i in range(len(classic_transfers)) if i not in matched_actual_indices]
@@ -1693,10 +1693,8 @@ def _review_compare_recs(recs: dict, collected_data: dict, gameweek: int | None 
                  if _names_match(r["in"], act_t.get("player_in"), r.get("in_team"), act_t.get("player_in_team"))),
                 None,
             )
-            if chosen is not None:
-                alternatives = [r["in"] for r in group if r is not chosen]
             entry = {
-                "rec_in": (chosen or top)["in"],
+                "rec_in": top["in"],
                 "rec_out": rec_out,
                 "actual_in": act_t.get("player_in"),
                 "actual_out": act_t.get("player_out"),
@@ -1706,6 +1704,10 @@ def _review_compare_recs(recs: dict, collected_data: dict, gameweek: int | None 
                 "actual_net": act_t.get("net", 0),
                 "actual_verdict": act_t.get("verdict", ""),
             }
+            # `rec_in` stays the top choice in every branch, so a lower-ranked
+            # candidate taken is recorded beside it rather than in its place.
+            if chosen is not None and chosen is not top:
+                entry["followed_in"] = chosen["in"]
         else:
             entry = {
                 "rec_in": top["in"],

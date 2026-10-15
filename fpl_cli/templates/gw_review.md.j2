@@ -87,7 +87,7 @@ Recommended roll but made transfers.
 {% elif recs_comparison.classic.transfers %}
 | Rec | Rec In | Rec Out | Followed | Actual In | Net | Verdict |
 |-----|--------|---------|----------|-----------|-----|---------|
-{% for t in recs_comparison.classic.transfers %}| {% if t.ungraded %}?{% elif t.followed %}✓{% elif t.not_made is defined and t.not_made %}✗{% else %}~{% endif %} | {{ t.rec_in }}{% if t.alternatives %} (or {{ t.alternatives | join(', ') }}){% endif %} | {{ t.rec_out }} | {% if t.ungraded %}Not graded{% elif t.followed %}Yes{% elif t.not_made is defined and t.not_made %}Not made{% else %}Different{% endif %} | {{ t.actual_in if t.actual_in else '-' }} | {{ t.actual_net if t.actual_net is defined else '-' }} | {{ t.actual_verdict if t.actual_verdict is defined else '-' }} |
+{% for t in recs_comparison.classic.transfers %}| {% if t.ungraded %}?{% elif t.followed %}✓{% elif t.not_made is defined and t.not_made %}✗{% else %}~{% endif %} | {{ t | rec_in_options }} | {{ t.rec_out }} | {% if t.ungraded %}Not graded{% elif t.followed %}Yes{% if t.followed_in %} (alternative){% endif %}{% elif t.not_made is defined and t.not_made %}Not made{% else %}Different{% endif %} | {{ t.actual_in if t.actual_in else '-' }} | {{ t.actual_net if t.actual_net is defined else '-' }} | {{ t.actual_verdict if t.actual_verdict is defined else '-' }} |
 {% endfor %}{% endif %}
 {% if recs_comparison.classic.unadvised_transfers %}
 **Unadvised transfers:**
