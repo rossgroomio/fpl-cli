@@ -97,9 +97,6 @@ async def _review_draft(
     draft_automatic_subs = []
     draft_player_map = {}  # Will be populated from Draft API bootstrap
 
-    console.print("\n" + "-" * 50)
-    console.print("\n[bold cyan]# Draft[/bold cyan]")
-
     try:
         async with FPLDraftClient() as draft_client:
             league_details = await draft_client.get_league_details(draft_league_id)
@@ -131,6 +128,10 @@ async def _review_draft(
                     break
 
             if user_standing and draft_entry_id:
+                # Banner goes out with the first draft content, so a failure
+                # path leaves nothing on stdout (#408)
+                console.print("\n" + "-" * 50)
+                console.print("\n[bold cyan]# Draft[/bold cyan]")
                 user_rank = user_standing.get("rank", "?")
                 user_total = user_standing.get("total", 0)
                 user_gw_pts = user_standing.get("event_total", 0)
