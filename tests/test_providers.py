@@ -181,6 +181,21 @@ class TestStopReason:
         assert "Anthropic" in caplog.text
         assert "max_tokens" in caplog.text
 
+    @pytest.mark.parametrize("reason", ["refusal", "content_filter"])
+    def test_a_refusal_is_logged_as_declined_not_cut_off(self, caplog, reason):
+        # #411: the recap's own wording says refused, so this line must not
+        # say the opposite.
+        with caplog.at_level("WARNING", logger="fpl_cli.api.providers._models"):
+            log_abnormal_stop(self._response(reason), "Anthropic")
+        assert reason in caplog.text
+        assert "declined" in caplog.text
+        assert "cut off" not in caplog.text
+
+    def test_a_truncation_is_still_logged_as_cut_off(self, caplog):
+        with caplog.at_level("WARNING", logger="fpl_cli.api.providers._models"):
+            log_abnormal_stop(self._response("max_tokens"), "Anthropic")
+        assert "may be cut off" in caplog.text
+
     def test_a_normal_stop_logs_nothing(self, caplog):
         with caplog.at_level("WARNING", logger="fpl_cli.api.providers._models"):
             log_abnormal_stop(self._response("end_turn"), "Anthropic")

@@ -296,6 +296,19 @@ def _warn_if_stale_season_dir(base: Path, season: str | None = None) -> None:
         )
 
 
+def save_failure_message(result: AgentResult) -> str:
+    """The line for a report that did not save: the agent's message plus its reason.
+
+    `ReportAgent` puts a generic message in `message` and the cause (the
+    errno) in `errors`, and the line a user or script reads is the CLI's own,
+    so the first error is appended to it rather than left on the agent's
+    stderr line (#411).
+    """
+    if result.errors:
+        return f"{result.message} ({result.errors[0]})"
+    return result.message
+
+
 def resolve_output_dir(
     settings: dict[str, Any], output: str | None = None, season: str | None = None,
 ) -> Path:

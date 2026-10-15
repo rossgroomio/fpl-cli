@@ -740,6 +740,7 @@ def make_agent(
     *,
     success: bool = True,
     message: str = "",
+    errors: list[str] | None = None,
 ) -> MagicMock:
     """Async-context-manager stand-in for any `agents/base.py:Agent`.
 
@@ -763,7 +764,7 @@ def make_agent(
     agent.__aenter__ = AsyncMock(return_value=agent)
     agent.__aexit__ = AsyncMock(return_value=False)
     agent.run = AsyncMock(
-        return_value=MagicMock(success=success, data=data or {}, message=message)
+        return_value=MagicMock(success=success, data=data or {}, message=message, errors=errors or [])
     )
     return agent
 

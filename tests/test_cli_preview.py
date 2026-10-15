@@ -458,6 +458,17 @@ class TestPreviewFailedSave:
         assert "Generating report..." in result.stderr
         assert "Generating report" not in result.stdout
 
+    def test_a_failed_save_names_the_cause_the_agent_reports(self, tmp_path):
+        # #411: the reason lives in `errors`, not `message`.
+        agent = make_agent(
+            success=False, message="Failed to generate report",
+            errors=["[Errno 20] Not a directory"],
+        )
+        result = _run_preview_save(tmp_path, agent)
+
+        assert result.exit_code == 1
+        assert "Failed to save report: Failed to generate report ([Errno 20] Not a directory)" in result.stderr
+
     def test_a_failed_save_still_runs_the_scout_it_was_asked_for(self, tmp_path):
         result = _run_preview_save(tmp_path, make_agent(success=False, message="disk full"), scout=True)
 
