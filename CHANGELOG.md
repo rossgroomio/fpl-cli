@@ -1,6 +1,24 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [2.8.0] - 2026-10-14
+
+### Bug Fixes
+
+- fpl review --summarise no longer fails when a section is empty (#391)
+- flag a draft recap that credits waivers with the combined net (#392)
+- failed review/preview --save exits 1; review notices go to stderr (#394)
+- league-recap retries a cut-off editorial and flags it in the report (#396)
+- --summarise keeps its first draft if a retry fails, skips refusals (#399)
+- review --compare-recs grades moves from the current gw-prep tables (#401)
+- review --compare-recs prices both captains with the armband (#403)
+- review --compare-recs no longer grades unreadable recs as Unadvised (#404)
+- gw-prep waiver check no longer skips rows or misreads (LIV, MID) (#405)
+
+### Features
+
+- product skills pin an effort level alongside their model (#395)
+
 ## [2.7.4] - 2026-10-09
 
 ### Bug Fixes
