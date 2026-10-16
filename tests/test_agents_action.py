@@ -994,11 +994,11 @@ class TestWaiverAgentIdSpace:
     ):
         """#418: the pool's ``id`` is the draft's, and ``code`` is the join key.
 
-        The gw-prep skill matches the returnee radar's rows, which carry
-        main-game ids, against this roster. A late addition holds a different
-        id in each game, so a join on bare id does not miss -- it lands on
-        whichever main player happens to hold the draft id, here "Somebody
-        Else". The code reaches the right player; the ranked rows carry it too.
+        The gw-prep skill's ``claimable_returnees.py`` matches the returnee
+        radar's rows, which carry main-game ids, against this roster on
+        ``code``; the join itself is tested in ``test_claimable_returnees.py``.
+        Here: the row carries the draft id and the code, not the main id, and
+        the ranked rows carry the code too.
         """
         _, result = await self._run(mock_draft_bootstrap, mock_league_details)
 
@@ -1008,12 +1008,6 @@ class TestWaiverAgentIdSpace:
             "player_name": "Semenyo", "position": "MID", "team_short": "ARS",
         }
         assert result.data["top_targets"][0]["code"] == self.CODE
-
-        main_players = [self._main_player(), self._id_sharer()]
-        by_code = {p.code: p for p in main_players}
-        by_id = {p.id: p for p in main_players}
-        assert by_code[row["code"]].id == self.MAIN_ID
-        assert by_id[row["id"]].web_name == "Somebody Else"
 
     @pytest.mark.asyncio
     async def test_unmatched_draft_element_keeps_missing(

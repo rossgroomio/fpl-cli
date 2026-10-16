@@ -92,7 +92,8 @@ class PlayerStats(TypedDict):
 
 class WaiverTarget(TypedDict):
     player_name: str
-    id: int
+    id: int  # the draft game's element id
+    code: int | None  # cross-game key; see WaiverPoolEntry
     price: int
     position: str
     team_id: int

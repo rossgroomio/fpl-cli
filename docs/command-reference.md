@@ -168,7 +168,7 @@ The gw-prep scripts (`bench_order.py`, `starting_xi.py`, `transfer_eval.py`) tak
 on the command line, resolve it against the main game and emit main ids without `code`
 (#419); `validate_draft_waivers.py` matches a claim to the pool on normalised name at a
 position and never reads `id`. The gw-prep skill's one cross-command join — the returnee
-radar against the waiver pool — is on `code`. Every row that emits `id` without `code` is
+radar against the waiver pool — is done by `claimable_returnees.py`, on `code`. Every row that emits `id` without `code` is
 listed in #419; a new payload with player rows carries `code` from the start.
 
 ## Player Analysis
@@ -280,7 +280,7 @@ Identifies squad weaknesses by position, ranks available free agents by waiver s
 
 Waiver score combines xGI, form, PPG, 3-GW matchup quality, and consistency (CV-xGI percentile bonus, phased in GW6-10), attenuated by position multiplier (GK 0.7, DEF 0.85), and normalised to 0-100. Keepers swap the xGI term for saves/90, defensive quality and clean-sheet rate, read from the main-game player each draft element is joined to. Uses a stricter minutes factor than target/differential because draft waivers are a season commitment. Before GW10 the quality half of the score carries the [early-season prior blend](custom-analysis.md#early-season-confidence-gw1-10); the matchup, position-need, team-stacking and consistency terms stay pure observation. The command carries the same early-season notice as `fpl targets` (`metadata.warnings` in JSON, stderr in table mode), naming `waiver_score`. On this path the prior can go missing two ways — last season's history could not be loaded, or the draft element found no main-game counterpart to join to — and either reads as `early_season_small_sample`. See [Waiver Score](custom-analysis.md#waiver-score) for the full formula.
 
-JSON `data` carries `top_targets` and `targets_by_position` (ranked), `pool` (every unowned player, one `{id, code, player_name, position, team_short}` row each, unranked and untruncated), `current_squad`, `recommendations` and `recent_releases`. On every one of those rows `id` is the **draft** game's element id and `code` the identifier both games share. A consumer matching the pool against a main-game payload — the gw-prep skill does, against `fpl returnees` — joins on `code`: the two games number their elements independently, and a player added mid-season holds a different id in each, so an `id` join lands on a different player rather than missing (#418). See [Player identifiers](#player-identifiers).
+JSON `data` carries `top_targets` and `targets_by_position` (ranked), `pool` (every unowned player, one `{id, code, player_name, position, team_short}` row each, unranked and untruncated), `current_squad` and `recent_releases`, every row of which carries `id`, the **draft** game's element id, and `code`, the identifier both games share. (`recommendations[].target` / `.drop` name a player by name, club and position and carry neither.) A consumer matching the pool against a main-game payload — the gw-prep skill does, against `fpl returnees` — joins on `code`: the two games number their elements independently, and a player added mid-season holds a different id in each, so an `id` join lands on a different player rather than missing (#418). See [Player identifiers](#player-identifiers).
 
 ### Injury Returnees
 
