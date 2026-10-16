@@ -216,11 +216,19 @@ def make_draft_player(
     clean_sheets: int = 2,
     news: str = "",
     chance_of_playing_next_round: int | None = 100,
+    code: int | None = None,
     **kwargs,
 ) -> dict[str, Any]:
-    """Factory for raw draft API player data (dict format)."""
+    """Factory for raw draft API player data (dict format).
+
+    ``code`` defaults to a value that is not the draft ``id``, as a real
+    element's is: the two games number mid-season additions independently,
+    so a fixture where id and code coincide cannot catch a row that put the
+    one where the other belongs (#418).
+    """
     return {
         "id": id,
+        "code": 10_000 + id if code is None else code,
         "web_name": web_name,
         "first_name": first_name,
         "second_name": second_name,

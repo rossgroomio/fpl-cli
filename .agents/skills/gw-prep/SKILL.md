@@ -335,12 +335,32 @@ returns the FPL-sourced watchlist -- so this step is never a reason to abort the
 own retries; the answers it did get are cached, so re-run the command once before settling for the
 partial payload.
 
-Store the payload as `returnee_radar` and inline it into both Phase C prompts as a labelled
-section. C1 renders it as an informational watchlist and is barred from naming its players in
-transfer recommendations; C2 renders the subset still in the waiver pool and may escalate an entry
-to a stash claim. The Returning Soon section quotes this payload, which is inlined into the prompt
+Store the payload as `returnee_radar` and inline it into the C1 prompt as a labelled section. C1
+renders it as an informational watchlist and is barred from naming its players in transfer
+recommendations. The Returning Soon section quotes this payload, which is inlined into the prompt
 like every other cited source -- so its numbers are grounded the same way every other cited number
 is.
+
+On a draft run (format `draft` or `both`), join the radar to the waiver pool here rather than
+leaving the match to the C2 sub-agent: the radar's `id` is the main game's element id and the
+pool's is the draft's, and the two differ for players added mid-season, so a model matching the two
+payloads by eye is the step that failed in #418. Write B10's payload to
+`/tmp/gw-prep-returnees-{N}.json` and B3's to `/tmp/gw-prep-waivers-{N}.json` (the file Phase D1
+reads), then:
+
+```bash
+[YOUR_PYTHON] "${CLAUDE_SKILL_DIR}/scripts/claimable_returnees.py" \
+  --returnees-json /tmp/gw-prep-returnees-{N}.json \
+  --waivers-json /tmp/gw-prep-waivers-{N}.json
+```
+
+Store its output as `returnee_radar_draft`. It carries the radar's `metadata` and the subset of its
+`entries` whose `code` matches a pool row -- joined on `code`, never on `id` -- with everyone else
+under `excluded` and why (`owned`, or `no-code`). `ok: false` means the pool could not be read (no
+`data.pool`, or rows without `code` from an older fpl-cli) and `entries` is then empty, so no stash
+claim can be made from it. If the script fails (exit 1) treat it the same way: Returning Soon says
+the pool could not be read, lists nobody, and C2 makes no stash claim. Never fall back to matching
+the raw payloads yourself.
 
 <!-- ADAPT: Add your own further supplementary data sources here. Examples:
   - `fpl preview --save --scout` generates a GW preview with fixture analysis and scout insights.
@@ -625,7 +645,7 @@ Agent tool parameters:
 >
 > **WAIVER POOL IS AUTHORITATIVE:** `fpl waivers` output is the only source for available players. All other data (stats, form tables, squad context) is for analysis only. Never recommend a claim not present in the waivers output — Phase D1 will flag pool misses as a warning. Cross-position recommendations (e.g. dropping a MID to claim a DEF) are structurally illegal and will be blocked by Phase D1.
 >
-> **`data.pool` is an availability roster, not a shortlist.** It lists every unowned player in the league — one `{id, player_name, position, team_short}` row each, unranked and untruncated — so membership answers only "may this player be claimed at all". Ranked claims come from `data.top_targets` and `data.targets_by_position`; presence in `data.pool` is never on its own a reason to recommend someone. The single claim allowed to rest on pool membership alone is a stash claim for a tracked returnee, which the waiver scoring suppresses by design and which therefore cannot reach the ranked targets.
+> **`data.pool` is an availability roster, not a shortlist.** It lists every unowned player in the league — one `{id, code, player_name, position, team_short}` row each, unranked and untruncated — so membership answers only "may this player be claimed at all". Its `id` is the draft game's element id; `code` is the key every other command's player rows share, and the only field to match another payload on. Ranked claims come from `data.top_targets` and `data.targets_by_position`; presence in `data.pool` is never on its own a reason to recommend someone. The single claim allowed to rest on pool membership alone is a stash claim for a tracked returnee, which the waiver scoring suppresses by design and which therefore cannot reach the ranked targets.
 >
 > - Waivers: {B3 output}
 > - Squad: {B4 output}
@@ -637,11 +657,16 @@ Agent tool parameters:
 >   ("Transfer Flow projects him starting"), never assert it. Under `negative_filter_only` use it
 >   only to downgrade. A player with no intel is not a worse player.
 >
-> - Returning soon: {returnee_radar} (from B10)
->   Render the Returning Soon section of the Draft output template from this payload, restricted to
->   tracked returnees whose `id` appears in the waivers `data.pool` list. A returnee missing from
->   the pool is already owned by a rival and is not actionable — leave it out rather than listing it
->   as unavailable. Quote only fields present in this payload.
+> - Returning soon: {returnee_radar_draft} (from B10, the radar joined to the waiver pool by
+>   `claimable_returnees.py`)
+>   Render the Returning Soon section of the Draft output template from its `entries`. Every entry
+>   there is a tracked returnee whose `code` matches a row in the waivers `data.pool`, so each one
+>   is claimable and no returnee outside the list is. Do not re-derive membership from the waivers
+>   payload, and never match on `id`: the radar's `id` is the main game's element id and the pool's
+>   is the draft's, and the two differ for players added mid-season. The `excluded` list names the
+>   returnees a rival already owns — leave them out rather than listing them as unavailable. If `ok`
+>   is false the pool could not be read: say so in the section, list nobody, and make no stash
+>   claim. Quote only fields present in this payload.
 >
 > **STASH CLAIMS:** a Returning Soon row escalates into the Waiver Recommendations table only when
 > **all four** gates below hold. Any one failing means watchlist only — no claim.
@@ -651,8 +676,9 @@ Agent tool parameters:
 >    `metadata.escalation_window` and the citation gate, so do not re-derive the timing yourself:
 >    an enrichment date counts here only when it arrived cited, and `escalation_basis` names which
 >    source the verdict rests on (`fpl-news` or `ai-search`).
-> 3. **Claimable and position-for-position:** the returnee's `id` is in the waivers `data.pool`, and
->    the player dropped for them plays the returnee's own position.
+> 3. **Claimable and position-for-position:** the returnee is one of `returnee_radar_draft`'s
+>    `entries` (the script has already joined on `code`; never re-match on `id`), and the player
+>    dropped for them plays the returnee's own position.
 > 4. **Beats the incumbent by the configured margin:** take the drop candidate your squad analysis
 >    already ranks lowest at that position, run C2.5's `transfer_eval.py --out "{that player}"
 >    --in "{returnee}"`, and require `outlook_delta` to exceed the radar's
@@ -745,7 +771,7 @@ Present a brief summary to the user:
 
 _Runs after Phase D file write, before Phase E. Not embed-gated._
 
-1. Write Phase B's waivers JSON (from orchestrator context, B3 output) to `/tmp/gw-prep-waivers-{N}.json`.
+1. Write Phase B's waivers JSON (from orchestrator context, B3 output) to `/tmp/gw-prep-waivers-{N}.json` (B10 already wrote it on a draft run; writing it again is harmless).
 2. Write Phase B's draft squad-grid JSON (from orchestrator context, B4 draft output) to `/tmp/gw-prep-squad-grid-{N}.json`.
    - For draft-only runs, this is the `fpl squad grid --format json` output from B4.
    - For `both` format runs, this is the `fpl squad grid --draft --format json` output from B4.

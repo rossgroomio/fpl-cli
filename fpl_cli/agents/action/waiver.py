@@ -296,10 +296,17 @@ class WaiverAgent(Agent):
         can never surface there. Draft validation checks pool membership against
         this full roster instead, so a claim staked on a returnee is not
         reported as a pool miss.
+
+        Each row carries ``code`` beside the draft ``id`` because the one
+        consumer that joins this roster to another command's rows -- the
+        gw-prep skill, matching the returnee radar's main-game entries against
+        it -- has no key in common otherwise: the radar emits main ids, and a
+        mid-season addition holds a different id in each game (#418).
         """
         return [
             WaiverPoolEntry(
                 id=int(p["id"] or 0),
+                code=p.get("code"),
                 player_name=p["player_name"],
                 position=p["position"],
                 team_short=p["team_short"],

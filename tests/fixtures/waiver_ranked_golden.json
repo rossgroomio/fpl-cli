@@ -2,6 +2,7 @@
   "top_targets": [
     {
       "id": 1,
+      "code": 1001,
       "player_name": "Player01",
       "first_name": "Test",
       "second_name": "Player",
@@ -33,6 +34,7 @@
     },
     {
       "id": 2,
+      "code": 1002,
       "player_name": "Player02",
       "first_name": "Test",
       "second_name": "Player",
@@ -64,6 +66,7 @@
     },
     {
       "id": 5,
+      "code": 1005,
       "player_name": "Player05",
       "first_name": "Test",
       "second_name": "Player",
@@ -95,6 +98,7 @@
     },
     {
       "id": 6,
+      "code": 1006,
       "player_name": "Player06",
       "first_name": "Test",
       "second_name": "Player",
@@ -126,6 +130,7 @@
     },
     {
       "id": 9,
+      "code": 1009,
       "player_name": "Player09",
       "first_name": "Test",
       "second_name": "Player",
@@ -157,6 +162,7 @@
     },
     {
       "id": 10,
+      "code": 1010,
       "player_name": "Player10",
       "first_name": "Test",
       "second_name": "Player",
@@ -188,6 +194,7 @@
     },
     {
       "id": 13,
+      "code": 1013,
       "player_name": "Player13",
       "first_name": "Test",
       "second_name": "Player",
@@ -218,6 +225,7 @@
     },
     {
       "id": 3,
+      "code": 1003,
       "player_name": "Player03",
       "first_name": "Test",
       "second_name": "Player",
@@ -249,6 +257,7 @@
     },
     {
       "id": 14,
+      "code": 1014,
       "player_name": "Player14",
       "first_name": "Test",
       "second_name": "Player",
@@ -279,6 +288,7 @@
     },
     {
       "id": 7,
+      "code": 1007,
       "player_name": "Player07",
       "first_name": "Test",
       "second_name": "Player",
@@ -310,6 +320,7 @@
     },
     {
       "id": 11,
+      "code": 1011,
       "player_name": "Player11",
       "first_name": "Test",
       "second_name": "Player",
@@ -340,6 +351,7 @@
     },
     {
       "id": 17,
+      "code": 1017,
       "player_name": "Player17",
       "first_name": "Test",
       "second_name": "Player",
@@ -370,6 +382,7 @@
     },
     {
       "id": 4,
+      "code": 1004,
       "player_name": "Player04",
       "first_name": "Test",
       "second_name": "Player",
@@ -401,6 +414,7 @@
     },
     {
       "id": 8,
+      "code": 1008,
       "player_name": "Player08",
       "first_name": "Test",
       "second_name": "Player",
@@ -432,6 +446,7 @@
     },
     {
       "id": 18,
+      "code": 1018,
       "player_name": "Player18",
       "first_name": "Test",
       "second_name": "Player",
@@ -465,6 +480,7 @@
     "GK": [
       {
         "id": 4,
+        "code": 1004,
         "player_name": "Player04",
         "first_name": "Test",
         "second_name": "Player",
@@ -496,6 +512,7 @@
       },
       {
         "id": 8,
+        "code": 1008,
         "player_name": "Player08",
         "first_name": "Test",
         "second_name": "Player",
@@ -527,6 +544,7 @@
       },
       {
         "id": 12,
+        "code": 1012,
         "player_name": "Player12",
         "first_name": "Test",
         "second_name": "Player",
@@ -557,6 +575,7 @@
       },
       {
         "id": 16,
+        "code": 1016,
         "player_name": "Player16",
         "first_name": "Test",
         "second_name": "Player",
@@ -589,6 +608,7 @@
     "DEF": [
       {
         "id": 1,
+        "code": 1001,
         "player_name": "Player01",
         "first_name": "Test",
         "second_name": "Player",
@@ -620,6 +640,7 @@
       },
       {
         "id": 5,
+        "code": 1005,
         "player_name": "Player05",
         "first_name": "Test",
         "second_name": "Player",
@@ -651,6 +672,7 @@
       },
       {
         "id": 9,
+        "code": 1009,
         "player_name": "Player09",
         "first_name": "Test",
         "second_name": "Player",
@@ -682,6 +704,7 @@
       },
       {
         "id": 13,
+        "code": 1013,
         "player_name": "Player13",
         "first_name": "Test",
         "second_name": "Player",
@@ -712,6 +735,7 @@
       },
       {
         "id": 17,
+        "code": 1017,
         "player_name": "Player17",
         "first_name": "Test",
         "second_name": "Player",
@@ -744,6 +768,7 @@
     "MID": [
       {
         "id": 2,
+        "code": 1002,
         "player_name": "Player02",
         "first_name": "Test",
         "second_name": "Player",
@@ -775,6 +800,7 @@
       },
       {
         "id": 6,
+        "code": 1006,
         "player_name": "Player06",
         "first_name": "Test",
         "second_name": "Player",
@@ -806,6 +832,7 @@
       },
       {
         "id": 10,
+        "code": 1010,
         "player_name": "Player10",
         "first_name": "Test",
         "second_name": "Player",
@@ -837,6 +864,7 @@
       },
       {
         "id": 14,
+        "code": 1014,
         "player_name": "Player14",
         "first_name": "Test",
         "second_name": "Player",
@@ -867,6 +895,7 @@
       },
       {
         "id": 18,
+        "code": 1018,
         "player_name": "Player18",
         "first_name": "Test",
         "second_name": "Player",
@@ -897,6 +926,7 @@
       },
       {
         "id": 99,
+        "code": 1099,
         "player_name": "Returnee",
         "first_name": "Test",
         "second_name": "Player",
@@ -928,6 +958,7 @@
     "FWD": [
       {
         "id": 3,
+        "code": 1003,
         "player_name": "Player03",
         "first_name": "Test",
         "second_name": "Player",
@@ -959,6 +990,7 @@
       },
       {
         "id": 7,
+        "code": 1007,
         "player_name": "Player07",
         "first_name": "Test",
         "second_name": "Player",
@@ -990,6 +1022,7 @@
       },
       {
         "id": 11,
+        "code": 1011,
         "player_name": "Player11",
         "first_name": "Test",
         "second_name": "Player",
@@ -1020,6 +1053,7 @@
       },
       {
         "id": 15,
+        "code": 1015,
         "player_name": "Player15",
         "first_name": "Test",
         "second_name": "Player",
