@@ -144,7 +144,7 @@ _Tracked returnees still unowned in the league. Omit the section when nothing qu
 |--------|------|-----|---------|-----------------|--------|--------|---------|
 | | | | | | | | |
 
-Rows are the `fpl returnees` payload (`data.entries`) intersected with the waivers `data.pool` by `id` — a returnee already owned by a rival is not listed at all. Columns as Classic. Verdict = `Stash` when every escalation gate in SKILL.md Phase C2 is met, in which case the player also appears in Waiver Recommendations above with their expected return and its `escalation_basis` in the Rationale; otherwise `Watch`.
+Rows are the `fpl returnees` payload (`data.entries`) intersected with the waivers `data.pool` by `code`, never by `id` (the radar's `id` is a main-game element id, the pool's a draft one, and they differ for mid-season additions) — a returnee already owned by a rival is not listed at all. Columns as Classic. Verdict = `Stash` when every escalation gate in SKILL.md Phase C2 is met, in which case the player also appears in Waiver Recommendations above with their expected return and its `escalation_basis` in the Rationale; otherwise `Watch`.
 
 Every number here comes from the radar payload inlined into the sub-agent prompt, so the Momentum Alerts grounding rule is satisfied by citing it — but nothing beyond those fields may be asserted.
 

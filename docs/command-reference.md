@@ -119,6 +119,58 @@ fpl stats >players.txt          # players in the file, any complaint on the term
 fpl stats 2>/dev/null           # quiet, and empty if it failed
 ```
 
+### Player identifiers
+
+The main game and the draft game number their players independently. The two numberings
+agree for most of the pool and part ways over the players each game registered after the
+other — in 2026-27 every mismatch sat at draft id 555 or above, 53 players by GW7 — so an id
+read across the boundary does not miss, it lands on someone else
+(#209 inside the waiver scoring; #418 where the gw-prep skill kept a returnee only if its
+`fpl returnees` id appeared in the `fpl waivers` pool, so an unowned late addition read as
+rival-owned). Every payload therefore follows one convention:
+
+- A bare `id` on a player row is the element id of **the game the command serves**: the
+  draft game's for a draft command (`fpl waivers`), the main game's for every classic or
+  format-agnostic command, whatever `metadata.format` says.
+- `code` is the identifier both games share, and the only field to join two commands'
+  player rows on. Never join on `id`, and never on name and club: the main game renamed
+  Savinho to Sávio mid-season while the draft game kept the old spelling (#168).
+
+Which namespace each payload's `id` is in, and whether the row carries `code`:
+
+| Command | Player rows | `id` is | `code` |
+|---|---|---|---|
+| `waivers` | `data.pool[]`, `top_targets[]`, `targets_by_position.*[]`, `current_squad[]`, `recent_releases[]` | draft | yes |
+| `waivers` | `data.recommendations[].target` / `.drop` | no id (name, club, position) | no |
+| `returnees` | `data.entries[]` | main | yes |
+| `returnees` | `data.departures[]` | main | no (#419) |
+| `stats` | `data[]` | main, under a draft config too | no (#419) |
+| `player` | `data[].info` | main, under a draft config too | no (#419) |
+| `captain` | `top_picks[]`, `differential_picks[]`, `all_candidates[]`, `recommendation` | main | no (#419) |
+| `differentials` | `differentials.*[]`, `differential_captains[]` | main | no (#419) |
+| `targets` | `targets.*[]`, `players[]` | main | no (#419) |
+| `xg` | `players[]` | main | no (#419) |
+| `xg` | `underperformers[]`, `overperformers[]`, `value_picks[]`, `top_xgi_per_90[]` | no id | no |
+| `allocate` | `data[]` | main | no (#419) |
+| `squad sell-prices` | `data[]` | main (the picks `element`) | no (#419) |
+| `transfer-eval` | `data.out_player`, `data.in_players[]` | main, in draft format too | no (#419) |
+| `price-history` | `data[]` | main, named `element` | no (#419) |
+| `history` | `data[]` | no id | yes |
+| `league-recap` | `squad[]`, `captain`, `vice_captain`, `transfers[]`, `transactions[]`, `lost_claims[]`, `fines[].players[]` | no id | yes (`code`, `player_in_code`, `player_out_code`) |
+| `intel` | player notes, `intel resolve` rows | no id | yes, null where unresolved |
+| `squad grid` (classic and `--draft`) | `data[]` | no id (name, position, club) | no |
+| `squad` | `position_analysis.*.players[]`, `injury_risks[]`, `form_analysis.*[]` | no id | no |
+| `fdr --my-squad` (classic and `--draft`) | `squad_exposure[].players` | no id (names) | no |
+| `chips timing` | `data[].players` | no id (names) | no |
+| `status` | `classic.flagged_players[]`, `draft.flagged_players[]` | no id | no |
+
+The gw-prep scripts (`bench_order.py`, `starting_xi.py`, `transfer_eval.py`) take `Name (CLUB)`
+on the command line, resolve it against the main game and emit main ids without `code`
+(#419); `validate_draft_waivers.py` matches a claim to the pool on normalised name at a
+position and never reads `id`. The gw-prep skill's one cross-command join — the returnee
+radar against the waiver pool — is on `code`. Every row that emits `id` without `code` is
+listed in #419; a new payload with player rows carries `code` from the start.
+
 ## Player Analysis
 
 ### Captain Picks
@@ -227,6 +279,8 @@ fpl waivers --format json
 Identifies squad weaknesses by position, ranks available free agents by waiver score, suggests who to drop for each pickup. This covers the waiver wire (unclaimed players) only - trade recommendations between managers are not in scope.
 
 Waiver score combines xGI, form, PPG, 3-GW matchup quality, and consistency (CV-xGI percentile bonus, phased in GW6-10), attenuated by position multiplier (GK 0.7, DEF 0.85), and normalised to 0-100. Keepers swap the xGI term for saves/90, defensive quality and clean-sheet rate, read from the main-game player each draft element is joined to. Uses a stricter minutes factor than target/differential because draft waivers are a season commitment. Before GW10 the quality half of the score carries the [early-season prior blend](custom-analysis.md#early-season-confidence-gw1-10); the matchup, position-need, team-stacking and consistency terms stay pure observation. The command carries the same early-season notice as `fpl targets` (`metadata.warnings` in JSON, stderr in table mode), naming `waiver_score`. On this path the prior can go missing two ways — last season's history could not be loaded, or the draft element found no main-game counterpart to join to — and either reads as `early_season_small_sample`. See [Waiver Score](custom-analysis.md#waiver-score) for the full formula.
+
+JSON `data` carries `top_targets` and `targets_by_position` (ranked), `pool` (every unowned player, one `{id, code, player_name, position, team_short}` row each, unranked and untruncated), `current_squad`, `recommendations` and `recent_releases`. On every one of those rows `id` is the **draft** game's element id and `code` the identifier both games share. A consumer matching the pool against a main-game payload — the gw-prep skill does, against `fpl returnees` — joins on `code`: the two games number their elements independently, and a player added mid-season holds a different id in each, so an `id` join lands on a different player rather than missing (#418). See [Player identifiers](#player-identifiers).
 
 ### Injury Returnees
 

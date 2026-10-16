@@ -504,6 +504,12 @@ class FPLDraftClient:
         """
         return {
             "id": player_data.get("id"),
+            # The draft game's own element id above, and the cross-game key
+            # beside it: every row this feeds (the waiver pool and ranked
+            # targets among them) is read by consumers that also hold main-game
+            # ids, and the two numberings diverge for mid-season additions
+            # (#209, #418). `code` is what a join across the boundary uses.
+            "code": player_data.get("code"),
             "player_name": player_data.get("web_name", ""),
             "first_name": player_data.get("first_name", ""),
             "second_name": player_data.get("second_name", ""),

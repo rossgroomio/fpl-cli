@@ -237,7 +237,11 @@ Failures come back on the same stream: `{"command", "error"}` on stdout with exi
 Parse stdout either way, and read the message from `error` rather than from stderr — see
 [JSON Output](docs/command-reference.md#json-output). Where a payload names a club by number
 (`team` in each season of `fpl history` and `fpl player --history`), it is the FPL club code
-that stays fixed across seasons, not a season's 1-20 team id.
+that stays fixed across seasons, not a season's 1-20 team id. Where it names a player, `id` is
+the element id of the game the command serves (the draft game for draft commands such as
+`fpl waivers`, the main game otherwise) and `code` the identifier both games share — join two
+commands' player rows on `code`, since a mid-season addition holds a different id in each game
+(see [Player identifiers](docs/command-reference.md#player-identifiers)).
 
 Without `--format json` it is the other way round: the table is on stdout, and the reason a
 command exited nonzero is on stderr — the same for every command, so `2>/dev/null` quietens

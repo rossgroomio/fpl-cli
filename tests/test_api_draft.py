@@ -547,6 +547,20 @@ class TestFPLDraftClientParsePlayer:
         assert result["player_name"] == ""
         assert result["total_points"] == 0
         assert result["form"] == 0.0
+        assert result["code"] is None
+
+    def test_parse_player_keeps_the_cross_game_code(self):
+        """#418: ``id`` is the draft game's own; ``code`` is the key both games share.
+
+        A mid-season addition holds a different id in each game, so a consumer
+        joining a draft row to a main-game row needs the code on the row.
+        """
+        client = FPLDraftClient()
+
+        result = client.parse_player(make_draft_player(id=575, code=9575))
+
+        assert result["id"] == 575
+        assert result["code"] == 9575
 
     def test_parse_player_converts_string_fields(self):
         """Test that string fields are converted to appropriate types."""

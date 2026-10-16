@@ -118,9 +118,16 @@ class WaiverPoolEntry(TypedDict):
     a consumer checking pool membership resolves a name at a position, so
     carrying availability or scoring fields here would only grow a second,
     divergent copy of the ranked ``WaiverTarget``.
+
+    ``id`` is the draft game's element id, and ``code`` the cross-game key: a
+    consumer holding main-game rows (the returnee radar's, say) joins on
+    ``code``, never on ``id`` -- the two numberings agree for most of the pool
+    and part ways over mid-season additions, so an id join silently lands on
+    a different player (#418).
     """
 
     id: int
+    code: int | None
     player_name: str
     position: str
     team_short: str
@@ -128,6 +135,7 @@ class WaiverPoolEntry(TypedDict):
 
 class EnrichedPlayer(TypedDict):
     id: int
+    code: int | None  # cross-game key beside the draft id; see WaiverPoolEntry
     player_name: str
     first_name: str
     second_name: str

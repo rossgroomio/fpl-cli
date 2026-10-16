@@ -410,10 +410,14 @@ def _wide_bootstrap() -> dict[str, Any]:
     it below every one of them, so the returnee is reachable only through the
     full ``pool`` roster. Player 50 stands in for a rival-owned player: it is
     never offered as available.
+
+    Every element's ``code`` differs from its draft ``id``, as a real element's
+    does, so a row that carried the id where the code belongs fails here.
     """
     elements = [
         make_draft_player(
             id=i,
+            code=1000 + i,
             web_name=f"Player{i:02d}",
             team=_POOL_TEAM_IDS[i % len(_POOL_TEAM_IDS)],
             element_type=(i % 4) + 1,
@@ -426,6 +430,7 @@ def _wide_bootstrap() -> dict[str, Any]:
     elements.append(
         make_draft_player(
             id=99,
+            code=1099,
             web_name="Returnee",
             team=1,
             element_type=3,
@@ -437,7 +442,7 @@ def _wide_bootstrap() -> dict[str, Any]:
             chance_of_playing_next_round=25,
         )
     )
-    elements.append(make_draft_player(id=50, web_name="Owned", team=5, element_type=2))
+    elements.append(make_draft_player(id=50, code=1050, web_name="Owned", team=5, element_type=2))
     return {
         "elements": elements,
         "teams": [
@@ -510,12 +515,16 @@ class TestWaiverAgentPool:
         assert {p["id"] for p in result.data["pool"]} == set(_ALL_AVAILABLE)
 
     @pytest.mark.asyncio
-    async def test_pool_entry_is_lean_id_name_position_team(self):
-        """The roster is an identity record, not a second copy of the scored target."""
+    async def test_pool_entry_is_lean_id_code_name_position_team(self):
+        """The roster is an identity record, not a second copy of the scored target.
+
+        ``id`` is the draft's; ``code`` rides beside it as the key a consumer
+        holding main-game rows joins on (#418).
+        """
         result = await _run_waivers([99])
 
         assert result.data["pool"] == [
-            {"id": 99, "player_name": "Returnee", "position": "MID", "team_short": "ARS"},
+            {"id": 99, "code": 1099, "player_name": "Returnee", "position": "MID", "team_short": "ARS"},
         ]
 
     @pytest.mark.asyncio
@@ -532,7 +541,9 @@ class TestWaiverAgentPool:
 
         The fixture was generated from the agent as it stood before ``pool``
         existed, so any drift in ``top_targets`` or ``targets_by_position``
-        fails here rather than in the skill scripts that read them.
+        fails here rather than in the skill scripts that read them. It was
+        regenerated once, when every draft row gained ``code`` beside its
+        draft ``id`` (#418) -- the one deliberate, additive change since.
         """
         result = await _run_waivers(_ALL_AVAILABLE)
         golden = json.loads(GOLDEN_RANKED.read_text(encoding="utf-8"))
@@ -976,6 +987,33 @@ class TestWaiverAgentIdSpace:
         assert agent._player_priors == {self.DRAFT_ID: prior}
         assert agent._adjusted_npxg_lookup == {self.DRAFT_ID: 0.55}
         assert agent._consistency_lookup == {self.DRAFT_ID: signals}
+
+    @pytest.mark.asyncio
+    async def test_pool_row_carries_code_so_a_main_keyed_consumer_can_join_it(
+        self, mock_draft_bootstrap, mock_league_details,
+    ):
+        """#418: the pool's ``id`` is the draft's, and ``code`` is the join key.
+
+        The gw-prep skill matches the returnee radar's rows, which carry
+        main-game ids, against this roster. A late addition holds a different
+        id in each game, so a join on bare id does not miss -- it lands on
+        whichever main player happens to hold the draft id, here "Somebody
+        Else". The code reaches the right player; the ranked rows carry it too.
+        """
+        _, result = await self._run(mock_draft_bootstrap, mock_league_details)
+
+        [row] = result.data["pool"]
+        assert row == {
+            "id": self.DRAFT_ID, "code": self.CODE,
+            "player_name": "Semenyo", "position": "MID", "team_short": "ARS",
+        }
+        assert result.data["top_targets"][0]["code"] == self.CODE
+
+        main_players = [self._main_player(), self._id_sharer()]
+        by_code = {p.code: p for p in main_players}
+        by_id = {p.id: p for p in main_players}
+        assert by_code[row["code"]].id == self.MAIN_ID
+        assert by_id[row["id"]].web_name == "Somebody Else"
 
     @pytest.mark.asyncio
     async def test_unmatched_draft_element_keeps_missing(

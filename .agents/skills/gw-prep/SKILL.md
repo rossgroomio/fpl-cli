@@ -625,7 +625,7 @@ Agent tool parameters:
 >
 > **WAIVER POOL IS AUTHORITATIVE:** `fpl waivers` output is the only source for available players. All other data (stats, form tables, squad context) is for analysis only. Never recommend a claim not present in the waivers output — Phase D1 will flag pool misses as a warning. Cross-position recommendations (e.g. dropping a MID to claim a DEF) are structurally illegal and will be blocked by Phase D1.
 >
-> **`data.pool` is an availability roster, not a shortlist.** It lists every unowned player in the league — one `{id, player_name, position, team_short}` row each, unranked and untruncated — so membership answers only "may this player be claimed at all". Ranked claims come from `data.top_targets` and `data.targets_by_position`; presence in `data.pool` is never on its own a reason to recommend someone. The single claim allowed to rest on pool membership alone is a stash claim for a tracked returnee, which the waiver scoring suppresses by design and which therefore cannot reach the ranked targets.
+> **`data.pool` is an availability roster, not a shortlist.** It lists every unowned player in the league — one `{id, code, player_name, position, team_short}` row each, unranked and untruncated — so membership answers only "may this player be claimed at all". Its `id` is the draft game's element id; `code` is the key every other command's player rows share, and the only field to match another payload on. Ranked claims come from `data.top_targets` and `data.targets_by_position`; presence in `data.pool` is never on its own a reason to recommend someone. The single claim allowed to rest on pool membership alone is a stash claim for a tracked returnee, which the waiver scoring suppresses by design and which therefore cannot reach the ranked targets.
 >
 > - Waivers: {B3 output}
 > - Squad: {B4 output}
@@ -639,9 +639,12 @@ Agent tool parameters:
 >
 > - Returning soon: {returnee_radar} (from B10)
 >   Render the Returning Soon section of the Draft output template from this payload, restricted to
->   tracked returnees whose `id` appears in the waivers `data.pool` list. A returnee missing from
->   the pool is already owned by a rival and is not actionable — leave it out rather than listing it
->   as unavailable. Quote only fields present in this payload.
+>   tracked returnees whose `code` matches the `code` of a row in the waivers `data.pool` list. Match
+>   on `code`, never on `id`: the radar's `id` is the main game's element id and the pool's is the
+>   draft's, and the two differ for players added mid-season, so an `id` join drops an unowned
+>   returnee as rival-owned and can pass an owned one as claimable. A returnee whose `code` is not
+>   in the pool is already owned by a rival and is not actionable — leave it out rather than listing
+>   it as unavailable. Quote only fields present in this payload.
 >
 > **STASH CLAIMS:** a Returning Soon row escalates into the Waiver Recommendations table only when
 > **all four** gates below hold. Any one failing means watchlist only — no claim.
@@ -651,8 +654,9 @@ Agent tool parameters:
 >    `metadata.escalation_window` and the citation gate, so do not re-derive the timing yourself:
 >    an enrichment date counts here only when it arrived cited, and `escalation_basis` names which
 >    source the verdict rests on (`fpl-news` or `ai-search`).
-> 3. **Claimable and position-for-position:** the returnee's `id` is in the waivers `data.pool`, and
->    the player dropped for them plays the returnee's own position.
+> 3. **Claimable and position-for-position:** the returnee's `code` matches the `code` of a row in
+>    the waivers `data.pool` (never its `id` — see Returning Soon above), and the player dropped for
+>    them plays the returnee's own position.
 > 4. **Beats the incumbent by the configured margin:** take the drop candidate your squad analysis
 >    already ranks lowest at that position, run C2.5's `transfer_eval.py --out "{that player}"
 >    --in "{returnee}"`, and require `outlook_delta` to exceed the radar's
