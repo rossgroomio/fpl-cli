@@ -407,6 +407,7 @@ def stats_command(
                     records = [
                         {
                             "id": p.id,
+                            "code": p.code,
                             "name": p.web_name,
                             "team": (t.short_name if (t := team_map.get(p.team_id)) else "???"),
                             "position": p.position_name,

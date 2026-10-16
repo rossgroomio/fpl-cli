@@ -1095,7 +1095,7 @@ class TestStatsAgent:
     def test_calculate_player_stats(self, agent):
         """Test player stats calculation."""
         player = make_player(
-            id=1, web_name="Salah", team_id=14,
+            id=1, code=118748, web_name="Salah", team_id=14,
             minutes=900, goals_scored=6, assists=4,
             expected_goals=5.5, expected_assists=3.8,
             form=7.0, total_points=80, points_per_game=6.5,
@@ -1105,6 +1105,7 @@ class TestStatsAgent:
         stats = agent._calculate_player_stats(player, team_map)
 
         assert stats["id"] == 1
+        assert stats["code"] == 118748
         assert stats["player_name"] == "Salah"
         assert stats["team_short"] == "LIV"
         assert stats["minutes"] == 900
@@ -1212,15 +1213,15 @@ class TestStatsAgent:
     def test_find_differentials(self, agent):
         """Test finding differential players."""
         players = [
-            {"id": 1, "player_name": "Template", "team_short": "MCI", "position": "FWD", "price": 15.0,
+            {"id": 1, "code": 10001, "player_name": "Template", "team_short": "MCI", "position": "FWD", "price": 15.0,
              "ownership": 85.0, "xGI_per_90": 1.0, "form": 8.0, "ppg": 7.0,
              "total_points": 140, "goals": 20, "assists": 5, "GI_minus_xGI": 2.0,
              "minutes": 1800, "matchup_score": 6.0, "next_opponent": "SHU(H)"},
-            {"id": 2, "player_name": "Elite Diff", "team_short": "BHA", "position": "MID", "price": 6.0,
+            {"id": 2, "code": 10002, "player_name": "Elite Diff", "team_short": "BHA", "position": "MID", "price": 6.0,
              "ownership": 2.0, "xGI_per_90": 0.6, "form": 6.0, "ppg": 5.0,
              "total_points": 80, "goals": 5, "assists": 5, "GI_minus_xGI": -1.5,
              "minutes": 1500, "matchup_score": 7.0, "next_opponent": "SHU(H)"},
-            {"id": 3, "player_name": "Value Diff", "team_short": "NFO", "position": "DEF", "price": 4.5,
+            {"id": 3, "code": 10003, "player_name": "Value Diff", "team_short": "NFO", "position": "DEF", "price": 4.5,
              "ownership": 8.0, "xGI_per_90": 0.3, "form": 5.0, "ppg": 4.5,
              "total_points": 70, "goals": 2, "assists": 3, "GI_minus_xGI": 0.5,
              "minutes": 1600, "matchup_score": 5.5, "next_opponent": "LIV(A)"},
@@ -1242,6 +1243,7 @@ class TestStatsAgent:
         # Check tier assignment
         elite_diff = next(p for p in differentials["all"] if p["player_name"] == "Elite Diff")
         assert elite_diff["tier"] == "elite"
+        assert (elite_diff["id"], elite_diff["code"]) == (2, 10002)
 
         value_diff = next(p for p in differentials["all"] if p["player_name"] == "Value Diff")
         assert value_diff["tier"] == "value"
@@ -1265,15 +1267,15 @@ class TestStatsAgent:
     def test_find_targets(self, agent):
         """Test finding transfer targets."""
         players = [
-            {"id": 1, "player_name": "Template", "team_short": "MCI", "position": "FWD", "price": 15.0,
+            {"id": 1, "code": 10001, "player_name": "Template", "team_short": "MCI", "position": "FWD", "price": 15.0,
              "ownership": 50.0, "xGI_per_90": 1.0, "form": 8.0, "ppg": 7.0,
              "total_points": 140, "goals": 20, "assists": 5, "GI_minus_xGI": 0.0,
              "minutes": 1800, "matchup_score": 6.0, "next_opponent": "SHU(H)"},
-            {"id": 2, "player_name": "Popular", "team_short": "LIV", "position": "MID", "price": 12.0,
+            {"id": 2, "code": 10002, "player_name": "Popular", "team_short": "LIV", "position": "MID", "price": 12.0,
              "ownership": 20.0, "xGI_per_90": 0.8, "form": 7.0, "ppg": 6.0,
              "total_points": 100, "goals": 10, "assists": 8, "GI_minus_xGI": -1.0,
              "minutes": 1700, "matchup_score": 7.0, "next_opponent": "BOU(H)"},
-            {"id": 3, "player_name": "Differential", "team_short": "BHA", "position": "MID", "price": 6.0,
+            {"id": 3, "code": 10003, "player_name": "Differential", "team_short": "BHA", "position": "MID", "price": 6.0,
              "ownership": 5.0, "xGI_per_90": 0.5, "form": 5.0, "ppg": 4.5,
              "total_points": 70, "goals": 4, "assists": 4, "GI_minus_xGI": 0.0,
              "minutes": 1500, "matchup_score": 5.0, "next_opponent": "MCI(A)"},
@@ -1291,6 +1293,7 @@ class TestStatsAgent:
 
         popular_target = next(p for p in targets["all"] if p["player_name"] == "Popular")
         assert popular_target["tier"] == "popular"
+        assert (popular_target["id"], popular_target["code"]) == (2, 10002)
 
         diff_target = next(p for p in targets["all"] if p["player_name"] == "Differential")
         assert diff_target["tier"] == "differential"

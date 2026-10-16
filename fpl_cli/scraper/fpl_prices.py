@@ -29,6 +29,7 @@ class PlayerSellPrice:
     position: str = ""
     purchase_price: float = 0.0
     element_id: int | None = None
+    code: int | None = None  # cross-game key; None on a cache scraped before it was stored
 
     @property
     def profit_loss(self) -> float:
@@ -107,6 +108,7 @@ class TeamFinances:
                     "position": p.position,
                     "purchase_price": p.purchase_price,
                     "element_id": p.element_id,
+                    "code": p.code,
                 }
                 for p in ordered_squad(self.squad)
             ],
@@ -125,6 +127,7 @@ class TeamFinances:
                 position=p.get("position", ""),
                 purchase_price=p.get("purchase_price", 0.0),
                 element_id=p.get("element_id"),
+                code=p.get("code"),
             )
             for p in data.get("squad", [])
         ]
@@ -524,6 +527,7 @@ class FPLPriceScraper:
                 position=position,
                 purchase_price=purchase_price,
                 element_id=element_id,
+                code=player.get("code"),
             ))
 
         if not squad:

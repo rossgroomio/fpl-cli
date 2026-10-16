@@ -12,7 +12,8 @@ class FixtureDetail(TypedDict):
 
 
 class CaptainCandidate(TypedDict):
-    id: int
+    id: int  # the main game's element id
+    code: int | None  # cross-game key; None only for a player built without one
     player_name: str
     team_short: str
     position: str
@@ -44,7 +45,8 @@ class CaptainCandidate(TypedDict):
 
 
 class PlayerStats(TypedDict):
-    id: int
+    id: int  # the main game's element id
+    code: int  # cross-game key; join another command's rows on this, never on id
     player_name: str
     team_short: str
     position: str

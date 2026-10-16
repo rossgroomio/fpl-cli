@@ -676,7 +676,9 @@ class TestBenchOrderAgentRun:
              patch.object(agent.client, "get_next_gameweek", new_callable=AsyncMock) as mock_next_gw, \
              patch.object(agent.client, "get_fixtures", new_callable=AsyncMock) as mock_get_fixtures:
 
-            mock_get_players.return_value = mock_players
+            mock_get_players.return_value = [
+                p.model_copy(update={"code": 10_000 + p.id}) for p in mock_players
+            ]
             mock_get_teams.return_value = mock_teams
             mock_next_gw.return_value = {"id": 25}
             mock_get_fixtures.return_value = mock_fixtures
@@ -685,6 +687,9 @@ class TestBenchOrderAgentRun:
 
             assert result.status == AgentStatus.SUCCESS
             assert "optimal_order" in result.data
+            # The cross-game key rides beside the main id into the gw-prep script's output (#419).
+            assert all(row["code"] == 10_000 + row["id"] for row in result.data["optimal_order"])
+            assert all(row["code"] == 10_000 + row["id"] for row in result.data["availability_risks"])
             assert "availability_risks" in result.data
             assert "formation_context" in result.data
             assert "warnings" in result.data
@@ -721,9 +726,12 @@ class TestBenchOrderAgentScoring:
         team_map = {t.id: t for t in mock_teams}
 
         # 25% chance = risk level 3
-        player_25 = make_player(id=1, team_id=1, status=PlayerStatus.DOUBTFUL, chance_of_playing_next_round=25)
+        player_25 = make_player(
+            id=1, code=10_001, team_id=1, status=PlayerStatus.DOUBTFUL, chance_of_playing_next_round=25,
+        )
         risks = agent._analyze_availability_risk([player_25], team_map)
         assert risks[0]["risk_level"] == 3
+        assert (risks[0]["id"], risks[0]["code"]) == (1, 10_001)
 
         # 50% chance = risk level 2
         player_50 = make_player(id=2, team_id=1, status=PlayerStatus.DOUBTFUL, chance_of_playing_next_round=50)
@@ -949,13 +957,14 @@ class TestBenchOrderFormationContext:
     def test_343_one_bench_def_sole_coverage(self, agent):
         """3-4-3 with one bench DEF: DEF is sole coverage for constrained position."""
         xi, bench = _make_squad((3, 4, 3), [PlayerPosition.DEFENDER, PlayerPosition.MIDFIELDER, PlayerPosition.FORWARD],
-                                bench_overrides={1: {"web_name": "BenchDEF"}})
+                                bench_overrides={1: {"web_name": "BenchDEF", "code": 55_555}})
 
         ctx = agent._analyze_formation_context(xi, bench)
 
         assert "DEF" in ctx["constrained_positions"]
         assert len(ctx["sole_coverage"]) == 1
         assert ctx["sole_coverage"][0]["name"] == "BenchDEF"
+        assert ctx["sole_coverage"][0]["code"] == 55_555
         assert ctx["coverage_gaps"] == []
 
     def test_433_def_above_minimum(self, agent):

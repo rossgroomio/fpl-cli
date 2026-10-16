@@ -15,11 +15,11 @@ def _make_finances(*, with_element_ids: bool = True) -> TeamFinances:
     squad = [
         PlayerSellPrice(
             name="Salah", sell_price=13.0, position="MID",
-            purchase_price=12.5, element_id=253 if with_element_ids else None,
+            purchase_price=12.5, element_id=253 if with_element_ids else None, code=118748,
         ),
         PlayerSellPrice(
             name="Haaland", sell_price=14.5, position="FWD",
-            purchase_price=15.0, element_id=355 if with_element_ids else None,
+            purchase_price=15.0, element_id=355 if with_element_ids else None, code=223094,
         ),
     ]
     return TeamFinances(
@@ -40,6 +40,7 @@ class TestSellPricesJson:
         assert envelope["command"] == "sell-prices"
         assert len(envelope["data"]) == 2
         assert envelope["data"][0]["id"] == 253
+        assert envelope["data"][0]["code"] == 118748
         assert envelope["data"][0]["sell_price"] == 13.0
         assert envelope["metadata"]["bank"] == 1.5
         assert envelope["metadata"]["total_sell_value"] == 27.5

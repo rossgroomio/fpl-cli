@@ -489,6 +489,25 @@ class TestFPLPriceScraper:
         assert result is dom_result
         assert any("api/me" in err.lower() for err in result.extraction_errors)
 
+    async def test_intercepted_picks_carry_code_from_the_bootstrap(self):
+        """Each pick takes its element's `code`, which the picks payload itself lacks (#419)."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        scraper = FPLPriceScraper()
+        page = MagicMock()
+        page.evaluate = AsyncMock(return_value={
+            "elements": [{"id": 253, "code": 118748, "web_name": "Salah", "element_type": 3}],
+            "element_types": [{"id": 3, "singular_name_short": "MID"}],
+        })
+        result = await scraper._extract_from_intercepted(page, {
+            "picks": [{"element": 253, "selling_price": 130, "purchase_price": 125}],
+            "transfers": {"bank": 10, "limit": 1},
+        })
+
+        assert result is not None
+        assert result.squad[0].element_id == 253
+        assert result.squad[0].code == 118748
+
     async def test_extract_finances_records_intercepted_failure_in_errors(self):
         """If /api/me/ succeeded but the intercepted payload is unusable, the DOM fallback still gets a hint."""
         from unittest.mock import AsyncMock, MagicMock
@@ -608,6 +627,21 @@ class TestTeamFinancesValidation:
 
         restored = TeamFinances.from_dict(data)
         assert restored.extraction_errors == ["Squad extraction failed: TimeoutError"]
+
+    def test_code_roundtrip(self):
+        """The cross-game key survives the cache, and a cache stored before it reads as None (#419)."""
+        original = TeamFinances(
+            bank=1.0, free_transfers=1, total_value=14.0,
+            squad=[PlayerSellPrice(name="Salah", sell_price=13.0, element_id=253, code=118748)],
+        )
+        restored = TeamFinances.from_dict(original.to_dict())
+        assert restored.squad[0].code == 118748
+
+        legacy = TeamFinances.from_dict({
+            "bank": 1.0, "free_transfers": 1, "total_value": 14.0,
+            "squad": [{"name": "Salah", "sell_price": 13.0, "element_id": 253}],
+        })
+        assert legacy.squad[0].code is None
 
     def test_from_dict_backwards_compatible(self):
         """Old cache format without extraction_errors loads cleanly."""

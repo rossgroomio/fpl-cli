@@ -53,17 +53,17 @@ def _sample_trends():
 def _sample_players():
     return [
         make_player(
-            id=100, web_name="Salah", team_id=14,
+            id=100, code=118748, web_name="Salah", team_id=14,
             position=PlayerPosition.MIDFIELDER, now_cost=135,
             cost_change_start=5,
         ),
         make_player(
-            id=200, web_name="Haaland", team_id=13,
+            id=200, code=223094, web_name="Haaland", team_id=13,
             position=PlayerPosition.FORWARD, now_cost=147,
             cost_change_start=-3,
         ),
         make_player(
-            id=300, web_name="Alexander-Arnold", team_id=14,
+            id=300, code=169187, web_name="Alexander-Arnold", team_id=14,
             position=PlayerPosition.DEFENDER, now_cost=87,
             cost_change_start=2,
         ),
@@ -274,6 +274,18 @@ class TestPriceHistoryJson:
             "gw_count", "latest_gw",
         }
         assert required.issubset(player.keys())
+
+    def test_json_rows_carry_code_from_the_player_list(self):
+        """The trend rows hold only the element id; `code` comes from the main game's list (#419)."""
+        result = _run(["--format", "json"])
+        codes = {row["element"]: row["code"] for row in json.loads(result.output)["data"]}
+        assert codes == {100: 118748, 200: 223094, 300: 169187}
+
+    def test_json_code_is_null_for_a_player_missing_from_the_list(self):
+        trends = {**_sample_trends(), 400: _make_trend(element=400, web_name="Gone")}
+        result = _run(["--format", "json"], trends=trends)
+        row = next(r for r in json.loads(result.output)["data"] if r["element"] == 400)
+        assert row["code"] is None
 
     def test_json_position_filter(self):
         result = _run(["--position", "FWD", "--format", "json"])

@@ -1362,6 +1362,35 @@ class TestDraftFetchDeferral:
         assert "Alice Smith" in result.output
         draft.get_league_ownership.assert_awaited_once()
 
+    def test_json_under_a_draft_config_emits_the_main_id_and_code(self):
+        """`id` stays the main game's whatever the format, with `code` the join key beside it (#419)."""
+        from fpl_cli.cli._context import Format
+
+        client, fixture_agent, ratings_svc = _make_mocks()
+        client.get_players = AsyncMock(return_value=[
+            make_player(id=1, code=118748, web_name="Salah", team_id=1, position=PlayerPosition.MIDFIELDER),
+        ])
+        draft_client = _make_draft_client()
+        draft_client.get_bootstrap_static = AsyncMock(return_value={
+            "elements": [{"id": 99, "code": 118748, "web_name": "Salah", "team": 1}],
+        })
+        runner = CliRunner()
+        with (
+            patch("fpl_cli.cli.resolve_format", return_value=Format.DRAFT),
+            patch("fpl_cli.cli.player.get_settings",
+                  return_value={"fpl": {"draft_league_id": 12345}}),
+            patch("fpl_cli.api.fpl.FPLClient", return_value=client),
+            patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=draft_client),
+            patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=fixture_agent),
+            patch("fpl_cli.services.team_ratings.TeamRatingsService", return_value=ratings_svc),
+            patch("fpl_cli.api.understat.UnderstatClient", return_value=_make_empty_understat()),
+        ):
+            result = runner.invoke(main, ["player", "Salah", "--format", "json"])
+
+        assert result.exit_code == 0, result.output
+        info = json.loads(result.output)["data"][0]["info"]
+        assert (info["id"], info["code"]) == (1, 118748)
+
     def test_league_details_fetched_once_and_reused(self):
         """get_league_details is not memoised on the client, so it is passed through."""
         client, fixture_agent, ratings_svc = _make_mocks()

@@ -249,6 +249,11 @@ class PlayerIdentity:
     """Display-only fields passed through to scoring output dicts.
 
     No scoring function reads these for arithmetic.
+
+    ``id`` is the main game's element id; ``code`` is the identifier both games
+    share, carried so every scoring row a ``--format json`` payload emits can be
+    joined to a draft command's rows (#419). None only for a player-shaped
+    mapping that never had one.
     """
 
     id: int
@@ -260,6 +265,7 @@ class PlayerIdentity:
     expected_goals: float = 0.0
     expected_assists: float = 0.0
     points_per_game: float = 0.0
+    code: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -372,8 +378,10 @@ def build_player_evaluation(
     )
 
     # Build identity
+    code = _get("code")
     identity = PlayerIdentity(
         id=int(_get("id", 0)),
+        code=int(code) if code is not None else None,
         web_name=str(_get("web_name", "")),
         team_short=str(_get("team_short", "")),
         position_name=position_name,

@@ -542,6 +542,32 @@ class TestBuildPlayerEvaluation:
         assert identity.id == 42
         assert identity.web_name == "Salah"
 
+    def test_identity_carries_code_from_a_player_model(self):
+        """`code` rides beside the main-game id into every scoring row (#419)."""
+        _, identity = build_player_evaluation(make_player(id=7, code=118748))
+
+        assert (identity.id, identity.code) == (7, 118748)
+
+    def test_identity_code_is_none_for_a_mapping_without_one(self):
+        _, identity = build_player_evaluation({"id": 42, "position": "MID"})
+
+        assert identity.code is None
+
+    @pytest.mark.parametrize("score", ["captain", "bench", "lineup"])
+    def test_scoring_rows_carry_the_identitys_code(self, score: str):
+        evaluation, identity = build_player_evaluation(
+            make_player(id=7, code=118748, minutes=900),
+            fixture_matchups=[FixtureMatchup(opponent_short="SHU", is_home=True, opponent_fdr=3.0, matchup_score=6.0)],
+        )
+        if score == "captain":
+            row: Any = calculate_captain_score(evaluation, identity, next_gw_id=20)
+        elif score == "bench":
+            row = calculate_bench_score(evaluation, identity, availability_risks=[], next_gw_id=20)
+        else:
+            row = calculate_lineup_score(evaluation, identity, next_gw_id=20)
+
+        assert (row["id"], row["code"]) == (7, 118748)
+
     def test_with_enrichment_overlay(self):
         player = make_player(form=4.0)
         enrichment = {
@@ -3826,7 +3852,7 @@ class TestTransferEvalAdjustedNpxgFields:
 
     def _make_target_entry_with_adjusted(self, adjusted: float | None, raw: float | None) -> dict:
         entry: dict = {
-            "id": 1, "web_name": "Salah", "team_short": "LIV", "position": "MID",
+            "id": 1, "code": 118748, "web_name": "Salah", "team_short": "LIV", "position": "MID",
             "target_score": 60, "fixture_matchups": [], "form": 7.0,
             "status": "a", "chance_of_playing": None, "reliability": None,
             "price": 13.5, "quality_score": 80, "quality_per_m": 5.9,
@@ -3847,6 +3873,7 @@ class TestTransferEvalAdjustedNpxgFields:
         result = TransferEvalAgent._build_player_dict(target, lineup, outlook_delta=5, gw_delta=2)
         assert "raw_npxg_per_90" in result
         assert result["raw_npxg_per_90"] == pytest.approx(0.30, abs=1e-4)
+        assert (result["id"], result["code"]) == (1, 118748)
 
     def test_transfer_player_dict_includes_adjusted_when_differs(self):
         from fpl_cli.agents.analysis.transfer_eval import TransferEvalAgent

@@ -103,6 +103,9 @@ def price_history_command(
 
                 records.append({
                     "element": element,
+                    # The cross-game key, which the trend rows lack: joined
+                    # through the main game's player list on the element id.
+                    "code": fpl_player.code if fpl_player else None,
                     "web_name": fpl_player.web_name if fpl_player else trend.web_name,
                     "position": pos,
                     "team": team_name,

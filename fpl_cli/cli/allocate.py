@@ -256,6 +256,7 @@ def _emit_result(
         score_key = "single_gw_score" if horizon == 1 else "quality_score"
         entry: dict[str, Any] = {
             "id": sp.player.id,
+            "code": sp.player.code,
             "web_name": sp.player.web_name,
             "team": team_short,
             "position": sp.position,

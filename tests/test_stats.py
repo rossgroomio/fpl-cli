@@ -178,6 +178,7 @@ class TestStatsAgentReliability:
     def _make_player(self, player_id: int, ownership: float, position: str = "MID") -> dict:
         return {
             "id": player_id,
+            "code": 10_000 + player_id,
             "player_name": f"Player{player_id}",
             "team_short": "TST",
             "position": position,
@@ -261,8 +262,8 @@ class TestStatsAgentEarlySeasonPriorBlend:
     @staticmethod
     def _fwd(player_id: int, *, form: float, ppg: float, xgi: float, minutes: int) -> dict:
         return {
-            "id": player_id, "player_name": f"Player{player_id}", "team_short": "TST",
-            "position": "FWD", "price": 80, "ownership": 8.0,
+            "id": player_id, "code": 10_000 + player_id,
+            "player_name": f"Player{player_id}", "team_short": "TST", "position": "FWD", "price": 80, "ownership": 8.0,
             "minutes": minutes, "goals": 0, "assists": 0, "GI": 0,
             "xG": 0.0, "xA": 0.0, "xGI": 0.0,
             "xG_per_90": 0.0, "xA_per_90": 0.0, "xGI_per_90": xgi,

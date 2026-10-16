@@ -227,6 +227,7 @@ def _emit_json_finances(finances: TeamFinances) -> None:
     squad_data = [
         {
             "id": p.element_id,
+            "code": p.code,
             "name": p.name,
             "position": p.position,
             "sell_price": p.sell_price,

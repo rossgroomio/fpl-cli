@@ -504,6 +504,7 @@ class StatsAgent(Agent):
 
         return {  # type: ignore[return-value]  # enrichment fields added by run()
             "id": player.id,
+            "code": player.code,
             "player_name": player.web_name,
             "team_short": team.short_name if team else "???",
             "position": player.position_name,
@@ -577,6 +578,7 @@ class StatsAgent(Agent):
 
         return {  # type: ignore[return-value]  # enrichment fields added by run()
             "id": player.id,
+            "code": player.code,
             "player_name": player.web_name,
             "team_short": team.short_name if team else "???",
             "position": player.position_name,
@@ -786,6 +788,7 @@ class StatsAgent(Agent):
 
             differentials.append({
                 "id": p["id"],
+                "code": p["code"],
                 "player_name": p["player_name"],
                 "team_short": p["team_short"],
                 "position": p["position"],
@@ -902,6 +905,7 @@ class StatsAgent(Agent):
 
             targets.append({
                 "id": p["id"],
+                "code": p["code"],
                 "player_name": p["player_name"],
                 "team_short": p["team_short"],
                 "position": p["position"],

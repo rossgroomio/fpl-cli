@@ -461,6 +461,15 @@ class TestJsonOutput:
         assert unknown["expected_return"] is None
         assert unknown["return_known"] is False
 
+    def test_departures_carry_code_beside_the_main_game_id(self):
+        """A departure joins to a draft payload on `code` like an entry does (#419)."""
+        _seed_store(NEXT_GW - 1)
+
+        payload = _json_run()
+
+        [departure] = payload["data"]["departures"]
+        assert (departure["id"], departure["code"]) == (5, 1005)
+
     def test_table_and_json_are_driven_from_the_same_assembled_data(self):
         players = _default_players()
         players[0] = _flagged(1, "Renamedplayer")

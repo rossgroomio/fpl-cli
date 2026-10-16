@@ -667,6 +667,7 @@ def assemble(
         "departures": [
             {
                 "id": departure.player_id,
+                "code": departure.code,
                 "web_name": departure.web_name,
                 "status": departure.status,
                 "transition": departure.transition,

@@ -333,6 +333,7 @@ def player_command(
                             is_gk = p.position_name == "GK"
                             info: dict = {
                                 "id": p.id,
+                                "code": p.code,
                                 "web_name": p.web_name,
                                 "full_name": p.full_name,
                                 "team": team_name,

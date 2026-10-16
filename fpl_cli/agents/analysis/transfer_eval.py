@@ -303,6 +303,7 @@ class TransferEvalAgent(Agent):
         target = calculate_target_score(evaluation, next_gw_id=next_gw_id, prior=prior)
         target_entry = {
             "id": identity.id,
+            "code": identity.code,
             "position": identity.position_name,
             "target_score": target,
         }
@@ -362,6 +363,7 @@ class TransferEvalAgent(Agent):
         """Build a unified player dict from target and lineup scoring results."""
         result: dict[str, Any] = {
             "id": target_entry["id"],
+            "code": target_entry["code"],
             "web_name": target_entry["web_name"],
             "team_short": target_entry["team_short"],
             "position": target_entry["position"],
