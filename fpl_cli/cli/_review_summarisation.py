@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Sequence
 from pathlib import Path
@@ -30,7 +31,7 @@ from fpl_cli.utils.teams import describe_team_set_mismatch
 from fpl_cli.utils.text import normalise_name
 
 if TYPE_CHECKING:
-    from fpl_cli.api.providers import LLMResponse
+    from fpl_cli.api.providers import LLMResponse, TokenUsage
     from fpl_cli.cli._synthesis_retry import SynthesisAttempt
     from fpl_cli.prompts.review import SynthesisCompleteness
 
@@ -133,11 +134,12 @@ async def _synthesise_with_completeness_check(
     prompt: str,
     system_prompt: str,
     omit_sections: Sequence[str],
-) -> tuple[SynthesisAttempt[SynthesisCompleteness], int]:
+) -> tuple[SynthesisAttempt[SynthesisCompleteness], int, TokenUsage]:
     """Query the synthesis provider, retrying once if the answer looks incomplete.
 
     Returns the attempt that ships -- its text, its `SynthesisCompleteness`,
-    and the prompt that drew it -- and the number of answers judged. The
+    and the prompt that drew it -- the number of answers judged, and the
+    tokens they spent between them. The
     attempt loop is the one `league-recap` shares (`synthesise_with_retry`);
     what this command adds is its judge -- the sections its prompt asked for,
     a sentence that stops dead, an answer with no text -- and its ranking,
@@ -1233,7 +1235,7 @@ async def _review_llm_summarise(
             # throw away the good summary it had already been handed (#322
             # review).
             try:
-                shipped, attempts = await _synthesise_with_completeness_check(
+                shipped, attempts, usage = await _synthesise_with_completeness_check(
                     synthesis_provider,
                     prompt=synthesis_prompt,
                     system_prompt=synthesis_system,
@@ -1283,7 +1285,22 @@ async def _review_llm_summarise(
                     (debug_dir / "synthesis_system.txt").write_text(synthesis_system, encoding="utf-8")
                     (debug_dir / "synthesis_prompt.txt").write_text(shipped.prompt, encoding="utf-8")
                     (debug_dir / "synthesis_response.txt").write_text(synthesis_summary, encoding="utf-8")
-                    error_console.print("[dim]    → Saved synthesis_*.txt[/dim]")
+                    # How many drafts were judged, which shipped, and what
+                    # they cost between them: `review` has no JSON envelope
+                    # to carry them, and without them a run that "feels
+                    # different" cannot be read against the last (#450).
+                    (debug_dir / "synthesis_meta.json").write_text(
+                        json.dumps({
+                            "attempts": attempts,
+                            "shipped_attempt": shipped.number,
+                            "usage": {
+                                "input_tokens": usage.input_tokens,
+                                "output_tokens": usage.output_tokens,
+                            },
+                        }, indent=2) + "\n",
+                        encoding="utf-8",
+                    )
+                    error_console.print("[dim]    → Saved synthesis_*.txt, synthesis_meta.json[/dim]")
 
     return {
         "research_summary": research_summary,

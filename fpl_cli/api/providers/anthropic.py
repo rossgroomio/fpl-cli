@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import os
+import re
 from typing import Any, ClassVar, Self
 
 import httpx
@@ -19,6 +21,18 @@ from fpl_cli.api.providers._models import (
 _BASE_URL = "https://api.anthropic.com/v1"
 _PROVIDER_LABEL = "Anthropic"
 
+logger = logging.getLogger(__name__)
+
+# Models that predate `output_config.effort` (it arrived with Claude Opus 4.5)
+# and answer it with a 400: Claude 3.x and older, Opus/Sonnet 4.0 and 4.1,
+# Sonnet 4.5 and Haiku 4.5, bare or date-suffixed. A closed set -- every model
+# since takes effort -- so unlike an allowlist this cannot go stale and
+# silently drop the pin on the next model, which is the drift pinning it
+# exists to stop (#450).
+_PRE_EFFORT_MODEL_RE = re.compile(
+    r"^claude-(?:[0-3]\b|instant|(?:opus|sonnet)-4(?:-[01])?(?:-\d{8})?$|(?:sonnet|haiku)-4-5\b)"
+)
+
 
 class AnthropicProvider:
     """LLM provider for the Anthropic Messages API."""
@@ -30,6 +44,12 @@ class AnthropicProvider:
     # A 429 is retried with backoff before it becomes a ProviderError; every
     # other status is terminal. Shared with OpenAICompatProvider via `_http`.
     RETRY_POLICY: ClassVar[RetryPolicy] = RetryPolicy()
+    # Used when a role's config carries no `max_tokens`. Thinking and output
+    # share this ceiling (#316), so a low fallback is spent before any text
+    # arrives: 1024 did exactly that to `FPL_RESEARCH_PROVIDER=anthropic`,
+    # whose shipped config has no `max_tokens` of its own. Matches the
+    # synthesis role's shipped value in `defaults.yaml`.
+    DEFAULT_MAX_TOKENS: ClassVar[int] = 8000
 
     def __init__(
         self,
@@ -65,7 +85,7 @@ class AnthropicProvider:
             )
 
         merged = {**self.query_defaults, **kwargs}
-        max_tokens = int(merged.get("max_tokens", 1024))
+        max_tokens = int(merged.get("max_tokens", self.DEFAULT_MAX_TOKENS))
 
         messages = [{"role": "user", "content": prompt}]
         payload: dict[str, Any] = {
@@ -75,6 +95,9 @@ class AnthropicProvider:
         }
         if system_prompt:
             payload["system"] = system_prompt
+        output_config = self._output_config(merged.get("output_config"))
+        if output_config:
+            payload["output_config"] = output_config
 
         headers = {
             "x-api-key": self.api_key,
@@ -120,10 +143,36 @@ class AnthropicProvider:
             # caller decides what an early stop means for its artefact. Blank
             # normalises to None, so "not told" has exactly one representation.
             stop_reason=data.get("stop_reason") or None,
+            stop_category=_stop_category(data),
         )
         log_abnormal_stop(response, _PROVIDER_LABEL)
         log_textless_response(response, _PROVIDER_LABEL, non_text_blocks)
         return response
+
+    def _output_config(self, configured: Any) -> dict[str, Any]:
+        """The `output_config` block to send, from the merged query defaults.
+
+        Effort lives here, so pinning it is a `settings.yaml` edit rather than
+        whatever the model's own default happens to be (#450). A key set to
+        null is dropped, which is how a user unpins one; an empty block sends
+        nothing. The shipped `effort` pin is left off for a model that
+        predates the parameter rather than turning every call into a 400.
+        A block that is not a mapping is refused by name: ignoring it would
+        leave effort at the model's default with nothing said, the very
+        drift the pin is there to prevent.
+        """
+        if configured is None:
+            return {}
+        if not isinstance(configured, dict):
+            raise ProviderError(
+                "query_defaults.output_config must be a mapping such as"
+                f" `output_config: {{effort: high}}`, not {configured!r}"
+            )
+        block = {k: v for k, v in configured.items() if v is not None}
+        if "effort" in block and _PRE_EFFORT_MODEL_RE.match(self.model):
+            logger.debug("%s predates output_config.effort -- not sending it", self.model)
+            del block["effort"]
+        return block
 
     def post_process(self, content: str) -> str:
         return content
@@ -137,3 +186,17 @@ class AnthropicProvider:
 
     async def __aexit__(self, *exc: Any) -> None:
         await self.close()
+
+
+def _stop_category(data: dict[str, Any]) -> str | None:
+    """The refusal's category from `stop_details`, when the API gave one.
+
+    Only a refusal carries `stop_details`; every other stop sends null or
+    omits it, and the category itself may be null. Read defensively, since
+    an absent or malformed block must cost the detail, never the response.
+    """
+    details = data.get("stop_details")
+    if not isinstance(details, dict):
+        return None
+    category = details.get("category")
+    return str(category) if category else None
