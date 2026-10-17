@@ -304,6 +304,34 @@ def read_player_field(source: Any, name: str, default: Any = None) -> Any:
     return default
 
 
+def read_chance_of_playing(
+    source: Any, *, overlay: Mapping[str, Any] | None = None,
+) -> int | None:
+    """Next-round chance of playing from a row of either spelling.
+
+    The draft parser and the enriched dicts carry ``chance_of_playing``; the
+    ``Player`` model and raw API rows carry ``chance_of_playing_next_round``.
+    A caller that reads only one spelling sees None for every row of the other
+    and silently loses the availability signal (#436), so every reader goes
+    through here.
+
+    0 is a real value ("ruled out of the next round"), not a missing one, so
+    the fall-through to the second spelling tests for None rather than
+    truthiness. A spelling that is present but None falls through too: it says
+    the same as an absent one, so it cannot shadow a value under the other.
+    Keys in *overlay* (``build_player_evaluation``'s enrichment) win over
+    *source*, spelling by spelling.
+    """
+    for name in ("chance_of_playing", "chance_of_playing_next_round"):
+        if overlay and name in overlay:
+            value = overlay[name]
+        else:
+            value = read_player_field(source, name)
+        if value is not None:
+            return value
+    return None
+
+
 def build_player_evaluation(
     player: Player | Mapping[str, Any],
     *,
@@ -326,14 +354,7 @@ def build_player_evaluation(
     minutes = _get("minutes", 0)
     appearances = _get("appearances", 0)
 
-    # Availability: 0 is a real value ("ruled out of the next round"), not a
-    # missing one, so the fallback to the model's field name tests for None
-    # rather than truthiness. An ``or`` here read every 0% player as "no
-    # availability information" — exactly inverting the signal, since the
-    # 25/50/75 doubts survived it and the definitely-out players did not.
-    chance_of_playing = _get("chance_of_playing")
-    if chance_of_playing is None:
-        chance_of_playing = _get("chance_of_playing_next_round")
+    chance_of_playing = read_chance_of_playing(player, overlay=enrichment)
 
     # Position: Player model stores as enum, dicts store as string
     position_raw = _get("position")

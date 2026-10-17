@@ -1417,6 +1417,62 @@ class TestWaiverAgentRecommendations:
         assert rec["target"]["name"] == "NewMID"
         assert rec["drop"]["name"] == "OldMID"
 
+    def test_drop_prefers_injured_player_built_by_draft_parser(self):
+        """An injured squad player is dropped ahead of a fit one with worse form.
+
+        The squad goes through the real draft parser and enrichment, as
+        ``run()`` builds it: the parser renames the availability field to
+        ``chance_of_playing``, and reading only the raw spelling made every
+        injured player look fit and the weakest-form fit player the drop (#436).
+        """
+        from fpl_cli.agents.common import enrich_player
+        from fpl_cli.api.fpl_draft import FPLDraftClient
+
+        client = FPLDraftClient()
+        team = make_draft_team(id=1, name="Arsenal", short_name="ARS")
+        injured = make_draft_player(
+            id=20, web_name="Injured", element_type=2, form=2.0,
+            status="i", chance_of_playing_next_round=0,
+        )
+        fit = make_draft_player(id=21, web_name="Fit", element_type=2, form=1.0)
+        squad = [
+            enrich_player(client.parse_player(raw, {1: 1}), team, include_availability=False)
+            for raw in (injured, fit)
+        ]
+
+        agent = WaiverAgent()
+        waiver_targets = [
+            {"position": "DEF", "player_name": "NewDEF", "team_short": "LIV", "form": 7.0, "waiver_score": 20, "reasons": []},
+        ]
+        squad_by_position = {"GK": [], "DEF": squad, "MID": [], "FWD": []}
+
+        recommendations = agent._generate_recommendations(waiver_targets, squad_by_position)
+
+        drop = recommendations[0]["drop"]
+        assert drop["name"] == "Injured"
+        assert drop["reason"] == "Unavailable (0%)"
+
+    @pytest.mark.parametrize("key", ["chance_of_playing", "chance_of_playing_next_round"])
+    def test_drop_priority_reads_either_availability_spelling(self, key):
+        """A doubt ranks above a fit player whichever spelling the row carries."""
+        agent = WaiverAgent()
+        doubt = {"status": "d", key: 25, "form": 6.0}
+        fit = {"status": "a", "form": 0.0}
+
+        assert agent._calculate_drop_priority(doubt) > agent._calculate_drop_priority(fit)
+
+    def test_drop_priority_reads_a_row_carrying_both_spellings(self):
+        """A parser row with no news under its own key still finds the raw one.
+
+        A key-presence test would stop at ``chance_of_playing=None`` and rank
+        the doubt as fit; only a None fall-through reaches the 25.
+        """
+        agent = WaiverAgent()
+        doubt = {"status": "d", "chance_of_playing": None, "chance_of_playing_next_round": 25, "form": 6.0}
+        fit = {"status": "a", "form": 0.0}
+
+        assert agent._calculate_drop_priority(doubt) > agent._calculate_drop_priority(fit)
+
     def test_generate_recommendations_limits_to_5(self):
         """Test recommendations are limited to 5."""
         agent = WaiverAgent()
