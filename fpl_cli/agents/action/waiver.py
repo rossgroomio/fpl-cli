@@ -220,18 +220,6 @@ class WaiverAgent(Agent):
                 team_id_map=team_id_map,
             )
             self._apply_main_dc_per_90(payload_rows)
-            unjoined_defenders = [
-                p["player_name"] for p in parsed_available
-                if p.get("position") == "DEF"
-                and int(p.get("id") or 0) not in self._main_player_map
-            ]
-            if unjoined_defenders:
-                self.log_warning(
-                    f"No main FPL match for {len(unjoined_defenders)} draft defender(s) "
-                    f"({', '.join(unjoined_defenders[:3])}"
-                    f"{', ...' if len(unjoined_defenders) > 3 else ''}) "
-                    "— scoring without defensive contribution",
-                )
 
             # Every lookup below arrives keyed by the main game's element id,
             # and the pool scored from here on is keyed by the draft's, so
@@ -308,6 +296,11 @@ class WaiverAgent(Agent):
             )
             if club_warning is not None:
                 warnings.append(club_warning)
+            # Table mode prints every entry here to stderr, so this is the one
+            # place the miss is reported for either format (#448).
+            unjoined_warning = self._unjoined_player_warning(parsed_available)
+            if unjoined_warning is not None:
+                warnings.append(unjoined_warning)
 
             return self._create_result(
                 AgentStatus.SUCCESS,
@@ -403,6 +396,47 @@ class WaiverAgent(Agent):
                 f"{len(affected)} player(s) at draft clubs the main game does not list"
                 f" ({', '.join(clubs) or 'unknown club'}) are ranked without fixture"
                 " difficulty or matchup. `fpl doctor --providers` compares the two club lists."
+            ),
+        }
+
+    def _unjoined_player_warning(
+        self, pool: list[EnrichedPlayer],
+    ) -> dict[str, str] | None:
+        """The notice for keepers and defenders the main-game join missed.
+
+        Both read a scoring input off the main-game player (a keeper's
+        saves/xGC block, a defender's DC/90), so a miss scores the player
+        without the term against an anchor calibrated with it. That ranks him
+        low for a reason that is not merit, and nothing in the payload would
+        otherwise tell a consumer so. An empty main-game player list misses
+        every keeper and defender at once, which is why the entry is one
+        aggregate naming counts and the first few names rather than a line per
+        player. Midfielders and forwards read nothing off the join, so they
+        are not counted.
+        """
+        missed = []
+        consequences = []
+        for position, noun, consequence in (
+            ("GK", "keeper", "without saves/xGC signals"),
+            ("DEF", "defender", "without defensive contribution"),
+        ):
+            names = [
+                p["player_name"] for p in pool
+                if p.get("position") == position
+                and int(p.get("id") or 0) not in self._main_player_map
+            ]
+            if names:
+                shown = ", ".join(names[:3]) + (", ..." if len(names) > 3 else "")
+                missed.append(f"{len(names)} draft {noun}(s) ({shown})")
+                consequences.append(f"{noun}s are scored {consequence}")
+        if not missed:
+            return None
+        return {
+            "code": "draft_player_unjoined",
+            "message": (
+                f"No main-game match for {' and '.join(missed)}: "
+                f"{' and '.join(consequences)}, against a waiver anchor calibrated "
+                "with those terms, so their rank is understated."
             ),
         }
 
@@ -540,15 +574,9 @@ class WaiverAgent(Agent):
         pid = int(player.get("id") or 0)
         apply_adjusted_npxg(enrichment, pid, self._adjusted_npxg_lookup)
         apply_consistency(enrichment, pid, self._consistency_lookup)
-        position = player.get("position")
         gk_signals_supplied = apply_gk_signals(
-            enrichment, pid, self._main_player_map, position=position,
+            enrichment, pid, self._main_player_map, position=player.get("position"),
         )
-        if position == "GK" and not gk_signals_supplied:
-            self.log_warning(
-                f"No main FPL match for draft keeper '{player.get('player_name')}' "
-                "— scoring without saves/xGC signals",
-            )
         evaluation, _ = build_player_evaluation(
             player,
             enrichment=enrichment,
