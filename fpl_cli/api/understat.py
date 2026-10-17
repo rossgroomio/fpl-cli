@@ -19,6 +19,24 @@ logger = logging.getLogger(__name__)
 
 BASE_URL = "https://understat.com"
 
+# Understat only lists a club once it has ingested a match for it, so early
+# season an unresolved name may be lag rather than a stale TEAM_NAME_MAP.
+# After this many finished gameweeks, every club must resolve. Read by the
+# `fpl doctor --providers` probe and by the runtime coverage floor
+# (`services.scoring.coverage`), so the two agree on when the pool has
+# settled (#438).
+UNDERSTAT_SETTLED_GWS = 3
+
+# The share of players FPL says have played that the live pool is allowed to
+# not join by name. A few percent always miss -- players Understat carries no
+# row for, cameos in a gameweek it has not ingested, a name the two sources
+# genuinely spell differently -- so the ceiling sits well above that: what it
+# catches is the two sides ceasing to agree about names wholesale, which is
+# what a renamed payload key or a laundered character class looks like. The
+# rate is reported either way, because a drift worth noticing shows up in the
+# number long before it crosses any threshold (#263).
+UNDERSTAT_NAME_MISS_CEILING = 0.20
+
 # Map FPL team names to Understat team names (the current season's 20 clubs)
 TEAM_NAME_MAP = {
     "Arsenal": "Arsenal",
@@ -416,7 +434,12 @@ class UnderstatClient:
         minutes = int(data.get("time", 0))
         xg = float(data.get("xG", 0))
         xa = float(data.get("xA", 0))
-        npxg = float(data.get("npxG", 0))
+        # Unknown rather than 0 when the payload has no npxG (#438): the
+        # quality score gates its attacking component on `npxG_per_90` being
+        # present, falling back to FPL's own xGI when it is not, and a 0 here
+        # would read as a measured nothing for every player and zero that
+        # component across the pool without a word.
+        npxg = _optional_stat(data.get("npxG"))
         xg_chain = float(data.get("xGChain", 0))
         xg_buildup = float(data.get("xGBuildup", 0))
 
@@ -441,14 +464,16 @@ class UnderstatClient:
             "xG_per_90": self._per_90(xg, minutes),
             "xA_per_90": self._per_90(xa, minutes),
             "xGI_per_90": self._per_90(xg + xa, minutes),
-            "npxG_per_90": self._per_90(npxg, minutes),
+            "npxG_per_90": self._per_90(npxg, minutes) if npxg is not None else None,
             "xGChain_per_90": self._per_90(xg_chain, minutes),
             "xGBuildup_per_90": self._per_90(xg_buildup, minutes),
             # Over/underperformance
             "goals_minus_xG": int(data.get("goals", 0)) - xg,
             "assists_minus_xA": int(data.get("assists", 0)) - xa,
-            "penalty_xG": round(xg - npxg, 2),
-            "penalty_xG_per_90": self._per_90(xg - npxg, minutes),
+            "penalty_xG": round(xg - npxg, 2) if npxg is not None else None,
+            "penalty_xG_per_90": (
+                self._per_90(xg - npxg, minutes) if npxg is not None else None
+            ),
         }
 
     def _per_90(self, stat: float, minutes: int) -> float:
@@ -464,6 +489,22 @@ class UnderstatClient:
         if minutes == 0:
             return 0.0
         return round((stat / minutes) * 90, 2)
+
+
+def _optional_stat(raw: object) -> float | None:
+    """A numeric Understat field, or None when the payload does not carry one.
+
+    Absent, None and blank are all "no value"; text that is not a number is
+    a format change and reads the same way, with a debug line, rather than
+    taking the whole pool down for one field.
+    """
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return None
+    try:
+        return float(raw)  # type: ignore[arg-type]  # str | int | float from JSON
+    except (TypeError, ValueError):
+        logger.debug("Non-numeric Understat stat %r", raw)
+        return None
 
 
 @lru_cache(maxsize=4096)

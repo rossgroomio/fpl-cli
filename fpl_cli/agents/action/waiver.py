@@ -40,6 +40,11 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
 
+# `metadata.warnings` code for rival squads the ownership read could not
+# fetch, whose players may be listed as available (#438).
+DRAFT_SQUADS_UNREAD = "draft_squads_unread"
+
+
 class WaiverAgent(Agent):
     """Agent for analyzing and recommending waiver claims.
 
@@ -308,6 +313,10 @@ class WaiverAgent(Agent):
             )
             if club_warning is not None:
                 warnings.append(club_warning)
+            squads_warning = self._unread_squads_warning()
+            if squads_warning is not None:
+                warnings.append(squads_warning)
+            warnings.extend(data.warnings)
 
             return self._create_result(
                 AgentStatus.SUCCESS,
@@ -380,6 +389,32 @@ class WaiverAgent(Agent):
             draft_teams.get(raw.get("team", 0)),
             include_availability=include_availability,
         )
+
+    def _unread_squads_warning(self) -> dict[str, str] | None:
+        """The `metadata.warnings` entry for rival squads the ownership read missed.
+
+        `get_league_ownership` fetches every entry's picks and skips one
+        that fails, so that rival's players are absent from the ownership
+        map and the pool lists them as available (#438). A claim on one
+        fails at the deadline; the ranking above has already spent a slot
+        on it. Nothing in the payload distinguishes such a player from a
+        free agent, so the entry is the only thing that does.
+        """
+        unread = dict(self.client.unread_squads)
+        if not unread:
+            return None
+        names = ", ".join(sorted(unread.values()))
+        plural = len(unread) > 1
+        return {
+            "code": DRAFT_SQUADS_UNREAD,
+            "message": (
+                f"The squad{'s' if plural else ''} of {len(unread)} league "
+                f"entr{'ies' if plural else 'y'} ({names}) could not be read, so "
+                f"{'their' if plural else 'its'} players may be listed as available "
+                "and a claim on one would fail. Re-run; if it persists, the draft API "
+                "may have changed."
+            ),
+        }
 
     @staticmethod
     def _untranslated_club_warning(

@@ -1414,3 +1414,58 @@ class TestDraftFetchDeferral:
         draft.get_league_details.assert_awaited_once()
         args = draft.get_league_ownership.await_args.args
         assert args[2] == draft.get_league_details.return_value
+
+
+class TestPlayerHistoryPriorCoverage:
+    """`fpl player` judges the one feed it reads over the whole pool (#438)."""
+
+    @staticmethod
+    def _client():
+        client, fixture_agent, ratings_svc = _make_mocks()
+        pool = [make_player(id=1, web_name="Salah", team_id=1, position=PlayerPosition.MIDFIELDER)] + [
+            make_player(id=i, web_name=f"Other{i}", team_id=1, minutes=900) for i in range(2, 31)
+        ]
+        client.get_players = AsyncMock(return_value=pool)
+        client.get_next_gameweek = AsyncMock(return_value={"id": 4})
+        client.get_player_detail = AsyncMock(return_value={"history": []})
+        return client, fixture_agent, ratings_svc
+
+    def _warnings(self, priors):
+        client, fixture_agent, ratings_svc = self._client()
+        with patch(
+            "fpl_cli.cli.player.load_or_generate_player_priors",
+            AsyncMock(return_value=priors),
+        ):
+            result = _run_with_us_match([], client, fixture_agent, ratings_svc, json_mode=True)
+        assert result.exit_code == 0, result.output
+        return json.loads(result.output)["metadata"]["warnings"]
+
+    def test_no_priors_before_the_cutoff_is_named_beside_the_notice(self):
+        codes = [w["code"] for w in self._warnings(None)]
+        assert "early_season_small_sample" in codes
+        assert "history_prior_coverage_low" in codes
+
+    def test_a_history_informed_pool_is_quiet(self):
+        from fpl_cli.services.player_prior import PlayerPrior
+
+        priors = {i: PlayerPrior(0.6, 0.5, "history") for i in range(1, 31)}
+        assert "history_prior_coverage_low" not in [w["code"] for w in self._warnings(priors)]
+
+    def test_table_mode_prints_the_entry_to_stderr(self):
+        client, fixture_agent, ratings_svc = self._client()
+        with patch(
+            "fpl_cli.cli.player.load_or_generate_player_priors", AsyncMock(return_value=None),
+        ):
+            result = _run_with_us_match([], client, fixture_agent, ratings_svc)
+        assert result.exit_code == 0, result.output
+        assert "Last season's history reached 0 of 30 player priors" in result.stderr
+
+
+class TestPlayerPanelWithoutNpxg:
+    def test_an_unknown_npxg_renders_as_not_available(self):
+        """The panel says n/a rather than crashing on, or printing, a 0 nobody measured (#438)."""
+        client, fixture_agent, ratings_svc = _make_mocks()
+        us_match = {**_make_us_match(), "npxG": None, "npxG_per_90": None, "xGChain": 8.0, "xGBuildup": 2.0}
+        result = _run_with_us_match([], client, fixture_agent, ratings_svc, us_match=us_match)
+        assert result.exit_code == 0, result.output
+        assert "npxG: n/a" in result.output

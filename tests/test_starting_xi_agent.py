@@ -261,3 +261,22 @@ class TestStartingXIAgent:
         assert result_none.status == AgentStatus.FAILED
         assert "squad" in result_none.errors[0].lower()
         assert result_empty.status == AgentStatus.FAILED
+
+
+async def test_bundle_coverage_warnings_reach_the_result():
+    """The XI payload carries the bundle's coverage entries; it had no warnings slot before (#438)."""
+    import dataclasses
+
+    marker = {"code": "fixture_ratings_coverage_low", "message": "Team ratings reached 0 of 10"}
+    players, _ = _build_squad_players()
+    scoring_data = _mock_scoring_data(players, _build_squad_players()[1])
+    with patch(
+        "fpl_cli.agents.analysis.starting_xi.prepare_scoring_data",
+        new_callable=AsyncMock,
+        return_value=dataclasses.replace(scoring_data, warnings=[marker]),
+    ):
+        async with StartingXIAgent() as agent:
+            result = await agent.run({"squad": [p.id for p in players]})
+
+    assert result.status == AgentStatus.SUCCESS
+    assert result.data["warnings"] == [marker]

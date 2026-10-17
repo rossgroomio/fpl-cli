@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 import click
 import httpx
+from rich.markup import escape as rich_escape
 from rich.panel import Panel
 
 from fpl_cli.cli._context import (
@@ -40,7 +41,9 @@ from fpl_cli.services.scoring import (
     compute_quality_value,
     compute_rolling_pts_per_m,
     compute_xgi_sustainability,
+    coverage_warnings,
     fetch_match_records,
+    history_prior_coverage,
 )
 
 if TYPE_CHECKING:
@@ -259,6 +262,7 @@ def player_command(
                 consistency_lookup: dict[int, ConsistencySignals] = {}
                 priors: dict[int, PlayerPrior] | None = None
                 quality_warning: dict[str, str] | None = None
+                prior_coverage_warnings: list[dict[str, str]] = []
                 if custom_on:
                     match_data = await fetch_match_records(next_gw_id)
                     if match_data:
@@ -321,6 +325,14 @@ def player_command(
                         quality_warning = early_season_quality_warning(
                             next_gw_id, blended=priors is not None,
                         )
+                    # The one feed this command reads over the whole pool
+                    # rather than the few players shown, so the one whose
+                    # reach can be judged here (#438). Understat and the
+                    # match data are joined per displayed player, and a
+                    # miss there is that player's, not the feed's.
+                    prior_coverage_warnings = coverage_warnings([
+                        history_prior_coverage(players, priors, next_gw_id=next_gw_id),
+                    ])
 
                 # JSON output mode
                 if output_format == "json":
@@ -455,6 +467,7 @@ def player_command(
 
                         warnings = [quality_warning] if quality_warning else []
                         warnings.extend(understat_join_warnings())
+                        warnings.extend(prior_coverage_warnings)
                         emit_json("player", players_data, metadata={
                             "query": name,
                             "matches": len(display),
@@ -464,6 +477,10 @@ def player_command(
 
                 if quality_warning:
                     error_console.print(f"[yellow]{quality_warning['message']}[/yellow]")
+                for coverage_warning in prior_coverage_warnings:
+                    error_console.print(
+                        f"[yellow]{rich_escape(coverage_warning['message'])}[/yellow]"
+                    )
 
                 # Render each player
                 for p in display:
@@ -485,8 +502,13 @@ def player_command(
                     understat_line = ""
                     us_match = us_matches.get(p.id)
                     if us_match:
+                        # npxG is None when Understat's payload stopped
+                        # carrying it (#438); the panel says so rather than
+                        # printing a zero nobody measured.
+                        npxg_total = us_match.get("npxG")
+                        npxg_text = f"{npxg_total:.2f}" if npxg_total is not None else "n/a"
                         understat_line = (
-                            f"npxG: {us_match['npxG']:.2f} | "
+                            f"npxG: {npxg_text} | "
                             f"xGChain: {us_match['xGChain']:.2f} | "
                             f"xGBuildup: {us_match['xGBuildup']:.2f}\n"
                         )

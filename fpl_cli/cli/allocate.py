@@ -202,6 +202,7 @@ def allocate_command(
 
         warnings = [quality_warning] if quality_warning else []
         warnings.extend(understat_join_warnings())
+        warnings.extend(scoring_data.warnings)
         warnings.extend(sell_price_warnings)
 
         _emit_result(

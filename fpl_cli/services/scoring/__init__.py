@@ -16,6 +16,7 @@ Module map:
 - ``display``       — 0-100 normalisation and display ceiling routing
 - ``shrinkage``     — early-season shrinkage toward position means
 - ``data_prep``     — ScoringContext / ScoringData and prepare_scoring_data
+- ``coverage``      — how much of the pool each signal reached, as metadata warnings
 """
 
 from fpl_cli.services.scoring.constants import (
@@ -77,6 +78,22 @@ from fpl_cli.services.scoring.constants import (
     gk_calendar_ramp,
     gk_ceiling_attainability,
     scoring_weights_fingerprint,
+)
+from fpl_cli.services.scoring.coverage import (
+    ADJUSTED_NPXG_COVERAGE_LOW,
+    CONSISTENCY_COVERAGE_LOW,
+    FIXTURE_RATINGS_COVERAGE_LOW,
+    GW_HISTORY_COVERAGE_LOW,
+    HISTORY_PRIOR_COVERAGE_LOW,
+    UNDERSTAT_COVERAGE_LOW,
+    SignalCoverage,
+    adjusted_npxg_coverage,
+    consistency_coverage,
+    coverage_warnings,
+    fixture_ratings_coverage,
+    gw_history_coverage,
+    history_prior_coverage,
+    understat_coverage,
 )
 from fpl_cli.services.scoring.data_prep import (
     ScoringContext,
@@ -267,6 +284,20 @@ __all__ = [
     # data_prep
     "ScoringContext",
     "ScoringData",
+    "SignalCoverage",
+    "ADJUSTED_NPXG_COVERAGE_LOW",
+    "CONSISTENCY_COVERAGE_LOW",
+    "FIXTURE_RATINGS_COVERAGE_LOW",
+    "GW_HISTORY_COVERAGE_LOW",
+    "HISTORY_PRIOR_COVERAGE_LOW",
+    "UNDERSTAT_COVERAGE_LOW",
+    "adjusted_npxg_coverage",
+    "consistency_coverage",
+    "coverage_warnings",
+    "fixture_ratings_coverage",
+    "gw_history_coverage",
+    "history_prior_coverage",
+    "understat_coverage",
     "build_fixture_matchups",
     "build_scoring_context",
     "build_understat_by_player_id",

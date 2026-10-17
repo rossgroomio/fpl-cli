@@ -6327,3 +6327,39 @@ class TestDefScoreSpreadNotClustered:
         ]
         spread = max(scores) - min(scores)
         assert spread >= self._SPREAD_FLOOR, f"DEF waiver pool compressed (spread {spread}): {scores}"
+
+
+class TestAdjustedNpxgUnknownPenalties:
+    """A match with unknown penalty counts cannot give an npxG (#438).
+
+    Reading the gap as 0 left penalties inside the rate and inflated every
+    taker; the match is left out before the window is cut instead.
+    """
+
+    def test_matches_with_unknown_penalties_are_left_out_of_the_window(self):
+        known = [_make_match(gw, xg=0.40, minutes_played=90, opponent_elo=MEDIAN_ELO)
+                 for gw in range(1, 5)]
+        unknown = [
+            _make_match(gw, xg=5.0, minutes_played=90, opponent_elo=MEDIAN_ELO,
+                        penalties_scored=None)  # type: ignore[arg-type]
+            for gw in range(5, 8)
+        ]
+        result = compute_adjusted_npxg([*known, *unknown], current_gw=10, median_elo=MEDIAN_ELO)
+        # The three 5.0 xG matches did not move the rate: only the known four counted.
+        assert result == pytest.approx(0.40, abs=1e-6)
+
+    def test_too_few_known_matches_falls_back_to_raw_npxg(self):
+        records = [
+            _make_match(gw, xg=0.40, minutes_played=90, opponent_elo=MEDIAN_ELO,
+                        penalties_missed=None)  # type: ignore[arg-type]
+            for gw in range(1, 8)
+        ]
+        assert compute_adjusted_npxg(records, current_gw=10, median_elo=MEDIAN_ELO) is None
+
+    def test_the_minimum_is_the_published_constant(self):
+        from fpl_cli.services.scoring.signals import ADJUSTED_NPXG_MIN_MATCHES
+
+        records = [_make_match(gw, xg=0.40, minutes_played=90, opponent_elo=MEDIAN_ELO)
+                   for gw in range(1, ADJUSTED_NPXG_MIN_MATCHES + 1)]
+        assert compute_adjusted_npxg(records, current_gw=10, median_elo=MEDIAN_ELO) is not None
+        assert compute_adjusted_npxg(records[1:], current_gw=10, median_elo=MEDIAN_ELO) is None

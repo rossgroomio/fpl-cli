@@ -160,6 +160,11 @@ class FPLDraftClient:
         self._bootstrap_data: dict[str, Any] | None = None
         self._game_state: dict[str, Any] | None = None
         self._http = httpx.AsyncClient(base_url=BASE_URL, timeout=self.timeout)
+        # League entries whose squad the last `get_league_ownership` could
+        # not read, as entry id -> entry name. Their players are absent
+        # from the ownership map and so read as available; a caller
+        # ranking claims must say so rather than offer them (#438).
+        self.unread_squads: dict[int, str] = {}
 
     async def close(self) -> None:
         """Close the underlying HTTP client."""
@@ -350,6 +355,9 @@ class FPLDraftClient:
 
         entries = league_details.get("league_entries", [])
         entry_ids = [e["entry_id"] for e in entries]
+        entry_names = {
+            e["entry_id"]: str(e.get("entry_name") or e["entry_id"]) for e in entries
+        }
 
         # Fetch all squads in parallel
         results = await asyncio.gather(
@@ -358,9 +366,20 @@ class FPLDraftClient:
         )
 
         ownership: dict[int, int] = {}
+        self.unread_squads = {}
         for entry_id, picks_result in zip(entry_ids, results):
             if isinstance(picks_result, BaseException):
-                logger.debug("Failed to fetch squad for team %s: %s", entry_id, picks_result)
+                # Recorded, not just logged: a squad this could not read
+                # leaves every one of its players looking unowned, and the
+                # waiver list built on that offers them as claims (#438).
+                self.unread_squads[entry_id] = entry_names[entry_id]
+                logger.warning(
+                    "Could not read the squad of %s (entry %s): %s — its players may "
+                    "read as available",
+                    entry_names[entry_id],
+                    entry_id,
+                    picks_result,
+                )
                 continue
             picks_data: dict[str, Any] = picks_result
             pick_ids = [p.get("element") for p in picks_data.get("picks", [])]

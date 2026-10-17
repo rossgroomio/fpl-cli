@@ -179,6 +179,12 @@ class ScoringData:
     adjusted_npxg_lookup: dict[int, float] | None = None
     consistency_lookup: dict[int, ConsistencySignals] | None = None
 
+    # `metadata.warnings` entries for every signal above that reached too
+    # little of the pool (`scoring.coverage`, #438). Every command built on
+    # this bundle carries them, so a half-failed feed is named where a JSON
+    # consumer reads rather than on a stderr nobody parses.
+    warnings: list[dict[str, str]] = dataclasses.field(default_factory=list)
+
 
 async def prepare_scoring_data(
     client: Any,
@@ -266,10 +272,12 @@ async def prepare_scoring_data(
         )
 
     player_histories: dict[int, list[dict[str, Any]]] | None = None
+    history_candidates: list[Player] = []
 
     if include_history:
         history_players = players if players is not None else await client.get_players()
-        candidates = [p for p in history_players if p.minutes > 0]
+        history_candidates = [p for p in history_players if p.minutes > 0]
+        candidates = history_candidates
 
         player_histories = {}
         batch_size = 50
@@ -305,6 +313,32 @@ async def prepare_scoring_data(
                 next_gw_id, median_elo,
             )
 
+    # Measured over the signals this call was asked for, so a bundle built
+    # without match data does not warn that match data is missing.
+    from fpl_cli.services.scoring.coverage import (
+        SignalCoverage,
+        adjusted_npxg_coverage,
+        consistency_coverage,
+        coverage_warnings,
+        fixture_ratings_coverage,
+        gw_history_coverage,
+        history_prior_coverage,
+        understat_coverage,
+    )
+
+    coverages: list[SignalCoverage] = [
+        fixture_ratings_coverage(next_gw_fixtures, team_map, ratings_service),
+    ]
+    if include_understat and players is not None:
+        coverages.append(understat_coverage(players, understat_lookup, next_gw_id=next_gw_id))
+    if include_history:
+        coverages.append(gw_history_coverage(history_candidates, player_histories))
+    if include_prior and players is not None:
+        coverages.append(history_prior_coverage(players, player_priors, next_gw_id=next_gw_id))
+    if include_match_data and players is not None:
+        coverages.append(adjusted_npxg_coverage(players, adjusted_npxg_lookup))
+        coverages.append(consistency_coverage(players, consistency_lookup))
+
     return ScoringData(
         teams=teams,
         team_map=scoring_ctx.team_map,
@@ -321,6 +355,7 @@ async def prepare_scoring_data(
         match_records=match_records,
         adjusted_npxg_lookup=adjusted_npxg_lookup,
         consistency_lookup=consistency_lookup,
+        warnings=coverage_warnings(coverages),
     )
 
 

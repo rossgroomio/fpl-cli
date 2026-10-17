@@ -194,7 +194,12 @@ def compute_xgi_sustainability(
 # Consistency signal computation
 # ---------------------------------------------------------------------------
 
-_CONSISTENCY_MIN_MATCHES = 6
+# Qualifying matches a player needs before a consistency signal is computed
+# and before an opponent-adjusted npxG rate is. `scoring.coverage` reads both
+# to know who the lookups could have reached (#438).
+CONSISTENCY_MIN_MATCHES = 6
+ADJUSTED_NPXG_MIN_MATCHES = 4
+_CONSISTENCY_MIN_MATCHES = CONSISTENCY_MIN_MATCHES
 
 
 def _usable_elo(value: object) -> TypeGuard[float]:
@@ -646,18 +651,30 @@ def compute_adjusted_npxg(
     a weaker one, capped at [0.80, 1.25]).
     npxG per match = xg - (penalties_scored + penalties_missed) * 0.76.
 
-    Returns None when fewer than 4 qualifying matches (same threshold as
-    form_trajectory), triggering fallback to raw Understat npxG_per_90.
+    Returns None when fewer than ``ADJUSTED_NPXG_MIN_MATCHES`` qualifying
+    matches (same threshold as form_trajectory), triggering fallback to raw
+    Understat npxG_per_90.
+
+    A match whose penalty counts are unknown (the column gone from
+    playermatchstats.csv, or the cell left blank, #438) cannot give an npxG
+    at all: reading the gap as 0 would leave penalties in the rate and
+    inflate every taker. Such matches are left out before the window is
+    cut, so a feed that drops the column empties the lookup and the raw
+    Understat rate, which has penalties removed, takes over for everyone.
     """
+    usable = [
+        m for m in match_records
+        if m.get("penalties_scored") is not None and m.get("penalties_missed") is not None
+    ]
     window = _rolling_window(
-        match_records,
+        usable,
         current_gw,
         gw_key="gameweek",
         minutes_key="minutes_played",
         min_minutes=1,
     )
 
-    if len(window) < 4:
+    if len(window) < ADJUSTED_NPXG_MIN_MATCHES:
         return None
 
     total_adjusted = 0.0
@@ -665,7 +682,7 @@ def compute_adjusted_npxg(
 
     for m in window:
         xg = m.get("xg", 0.0)
-        penalties = m.get("penalties_scored", 0) + m.get("penalties_missed", 0)
+        penalties = (m.get("penalties_scored") or 0) + (m.get("penalties_missed") or 0)
         npxg = xg - penalties * 0.76
         total_adjusted += npxg * _opponent_factor(m, median_elo)
         total_minutes += m.get("minutes_played", 0)

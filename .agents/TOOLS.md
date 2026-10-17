@@ -28,6 +28,13 @@ Table mode is the mirror image: the table on stdout, and warnings, progress and 
 for a nonzero exit on stderr — so a script reading table output can silence the commentary
 with `2>/dev/null` without losing the table, whichever command it runs.
 
+Every scoring command's `metadata.warnings` can carry a feed coverage entry — one of
+`understat_coverage_low`, `adjusted_npxg_coverage_low`, `consistency_coverage_low`,
+`history_prior_coverage_low`, `gw_history_coverage_low`, `fixture_ratings_coverage_low` —
+saying a data feed reached too little of the player pool and what the scores fall back to;
+`fpl waivers` adds `draft_squads_unread` for a rival squad it could not read. Read them
+before trusting a ranking: see [Feed coverage warnings](../docs/command-reference.md#json-output).
+
 ## CLI Commands
 
 | Command | Description | JSON | Format | Experimental | Pattern |
@@ -117,7 +124,7 @@ Python classes in `fpl_cli/agents/` that implement `async run(context) -> AgentR
 | ReportAgent | `agents/orchestration/report.py` | Orchestration | `preview`, `review`, `league-recap` | - |
 
 **Notes:**
-- BenchOrderAgent and StartingXIAgent have no CLI command - they are invoked by gw-prep skill wrapper scripts in `.agents/skills/gw-prep/scripts/`
+- BenchOrderAgent and StartingXIAgent have no CLI command - they are invoked by gw-prep skill wrapper scripts in `.agents/skills/gw-prep/scripts/`. Both payloads carry `warnings` as `{code, message}` entries: the feed coverage codes above, and for bench order `bench_cover_missing` per position the bench cannot cover
 - Every scoring family holds players known not to be playing out of its GW1-9 early-season device — the prior blend for the value family (`quality_score`, `fpl allocate`) and the ownership family (`targets`, `differentials`, `waivers`, transfer-eval's Outlook), position-mean shrinkage for the single-GW family (`captain`, `bench-order`, `starting-xi`, transfer-eval's This GW); bench and lineup order on raw scores, so for those two it changes the displayed score only
 - TransferEvalAgent is used by both `transfer-eval` CLI command and gw-prep skill
 - `bench_order.py`, `starting_xi.py` and `transfer_eval.py` (`.agents/skills/gw-prep/scripts/`) take player names, accept the `Name (TEAM)` disambiguator, and exit 1 naming both candidates when a name matches two players exactly (Dean and Jordan Henderson are both `Henderson`) rather than resolving to whichever the API lists first. Pass `Name (CLUB)` from the squad grid's `player`/`team` pair (issue #180). All three share that resolution with the `transfer-eval` CLI command through `resolve_player_or_report` / `resolve_players_or_report` (`fpl_cli/models/player.py`). Every player row they emit carries the main-game `id` and `code`, the cross-game key, beside it (#419), so a phase that combines one with a draft payload joins on `code`

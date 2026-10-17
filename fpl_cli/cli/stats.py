@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from fpl_cli.services.scoring import ConsistencySignals
 
 import click
+from rich.markup import escape as rich_escape
 from rich.table import Table
 
 from fpl_cli.cli._context import (
@@ -208,6 +209,7 @@ def stats_command(
             con_lookup: dict[int, ConsistencySignals] = {}
             value_active = False
             _early_season_warning: dict[str, str] | None = None
+            _coverage_warnings: list[dict[str, str]] = []
 
             if value and filtered:
                 import httpx
@@ -309,6 +311,28 @@ def stats_command(
                     else:
                         con_lookup = {}
 
+                    # How much of the pool each feed reached (#438): measured
+                    # over the filtered set before the limit cuts it, since
+                    # the scores were computed over that set. Both channels,
+                    # like the early-season notice above.
+                    from fpl_cli.services.scoring import (
+                        coverage_warnings,
+                        gw_history_coverage,
+                        history_prior_coverage,
+                        understat_coverage,
+                    )
+
+                    _coverage_warnings = coverage_warnings([
+                        understat_coverage(filtered, us_matches, next_gw_id=next_gw_id),
+                        history_prior_coverage(all_players, priors, next_gw_id=next_gw_id),
+                        gw_history_coverage(matched_players, player_histories),
+                    ])
+                    if output_format != "json":
+                        for _coverage_warning in _coverage_warnings:
+                            error_console.print(
+                                f"[yellow]{rich_escape(_coverage_warning['message'])}[/yellow]"
+                            )
+
             # Fall back from value sort if scoring failed. Surfaced in both
             # channels like the cross-position warning above: prose on stderr for
             # tables, a metadata entry for JSON, since a consumer reading
@@ -388,6 +412,7 @@ def stats_command(
             from fpl_cli.api.understat import understat_join_warnings
 
             warnings.extend(understat_join_warnings())
+            warnings.extend(_coverage_warnings)
 
             metadata = {"gameweek": None, "format": str(fmt) if fmt else None,
                         "custom_analysis": custom_on,

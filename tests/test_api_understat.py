@@ -1853,3 +1853,40 @@ class TestNameJoinStats:
             "miss_rate": 0.0,
             "unmatched": [],
         }
+
+
+class TestParsePlayerWithoutNpxg:
+    """A payload that stopped carrying npxG reads as unknown, not 0 (#438).
+
+    The quality score gates its attacking component on `npxG_per_90` being
+    present and falls back to FPL xGI when it is not; a 0 would have zeroed
+    that component for every player with no fallback and no notice.
+    """
+
+    def _parse(self, data):
+        return UnderstatClient()._parse_player(data)
+
+    def test_absent_npxg_leaves_the_npxg_family_unknown(self, mock_player_data):
+        data = {k: v for k, v in mock_player_data.items() if k != "npxG"}
+        result = self._parse(data)
+        assert result["npxG"] is None
+        assert result["npxG_per_90"] is None
+        assert result["penalty_xG"] is None
+        assert result["penalty_xG_per_90"] is None
+        # The fields the payload still carries are untouched.
+        assert result["xG_per_90"] == pytest.approx(0.62, abs=0.01)
+        assert result["xGChain_per_90"] == pytest.approx(0.93, abs=0.01)
+
+    @pytest.mark.parametrize("raw", ["", "  ", None, "n/a"])
+    def test_blank_or_non_numeric_npxg_is_unknown(self, mock_player_data, raw):
+        result = self._parse({**mock_player_data, "npxG": raw})
+        assert result["npxG_per_90"] is None
+
+    def test_a_present_npxg_still_parses(self, mock_player_data):
+        result = self._parse(mock_player_data)
+        assert result["npxG"] == 10.2
+        assert result["npxG_per_90"] == pytest.approx(0.51, abs=0.01)
+
+    def test_a_zero_npxg_is_a_measured_zero(self, mock_player_data):
+        result = self._parse({**mock_player_data, "npxG": "0"})
+        assert result["npxG_per_90"] == 0.0

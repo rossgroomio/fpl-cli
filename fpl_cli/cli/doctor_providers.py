@@ -37,6 +37,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 from fpl_cli.api.contract import missing_columns
+from fpl_cli.api.understat import UNDERSTAT_NAME_MISS_CEILING, UNDERSTAT_SETTLED_GWS
 from fpl_cli.cli.doctor import CheckResult, CheckStatus
 from fpl_cli.paths import UserDirError
 from fpl_cli.season import TOTAL_GAMEWEEKS, resolve_season_year
@@ -45,6 +46,7 @@ from fpl_cli.utils.teams import describe_team_set_mismatch
 if TYPE_CHECKING:
     from fpl_cli.api.core_insights import PlayerLookup
     from fpl_cli.api.dataset_fetcher import DatasetFetcher
+    from fpl_cli.api.fpl import FPLClient
 
 # Force revalidation on every probe: serving a cached copy inside its TTL
 # would validate our own cache, not the provider.
@@ -56,20 +58,9 @@ PROBE_TTL = timedelta(0)
 ELEMENTS_FLOOR = 400
 CSV_ROW_FLOOR = 400
 
-# Understat only lists a club once it has ingested a match for it, so early
-# season an unresolved name may be lag rather than a stale TEAM_NAME_MAP.
-# After this many finished gameweeks, every club must resolve.
-UNDERSTAT_SETTLED_GWS = 3
-
-# The share of players FPL says have played that the live pool is allowed to
-# not join by name. A few percent always miss -- players Understat carries no
-# row for, cameos in a gameweek it has not ingested, a name the two sources
-# genuinely spell differently -- so the ceiling sits well above that: what it
-# catches is the two sides ceasing to agree about names wholesale, which is
-# what a renamed payload key or a laundered character class looks like. The
-# rate is reported either way, because a drift worth noticing shows up in the
-# number long before it crosses any threshold (#263).
-UNDERSTAT_NAME_MISS_CEILING = 0.20
+# The Understat settling period and name-miss ceiling live beside the client
+# (`api/understat.py`) so the runtime coverage floor reads the same numbers
+# this probe does (#438).
 
 
 def _unreachable(exc: httpx.HTTPError) -> str:
@@ -125,6 +116,71 @@ def _expected_player_keys() -> list[str]:
     return [field.alias or name for name, field in Player.model_fields.items()]
 
 
+async def _player_history_check(
+    client: FPLClient, elements: list[dict[str, Any]], *, season_started: bool
+) -> CheckResult:
+    """Whether one `element-summary` carries the history rows scoring reads.
+
+    The per-gameweek history behind form trajectory, xGI sustainability,
+    rolling pts/£m and the consistency signals comes from one such call per
+    player, and nothing before this probed it: the runtime drops a failed
+    call and scores that player neutrally (#438). Probed with the player
+    who has played most, so mid-season an empty history is a broken
+    endpoint rather than a player who has not featured.
+    """
+    from fpl_cli.api.fpl import PLAYER_HISTORY_ROW_KEYS
+
+    name = "FPL player history"
+    if not elements:
+        return CheckResult(name, CheckStatus.UNCHECKED, "no players in the bootstrap to probe with")
+    probe = max(elements, key=lambda e: int(e.get("minutes") or 0))
+    label = f"{probe.get('web_name') or probe.get('id')} ({int(probe.get('minutes') or 0)}m)"
+    try:
+        detail = await client.get_player_detail(int(probe["id"]))
+    except httpx.HTTPError as exc:
+        return CheckResult(name, CheckStatus.UNCHECKED, _unreachable(exc))
+    except json.JSONDecodeError:
+        return CheckResult(
+            name,
+            CheckStatus.BROKEN,
+            "element-summary did not return JSON — the API shape may have changed",
+        )
+
+    history = detail.get("history") if isinstance(detail, dict) else None
+    if not isinstance(history, list):
+        return CheckResult(
+            name,
+            CheckStatus.BROKEN,
+            "element-summary carries no `history` list — every player would score with "
+            "neutral form trajectory and no consistency signal",
+        )
+    if not history:
+        if not season_started:
+            return CheckResult(
+                name, CheckStatus.SKIPPED, "no gameweek finished yet, so no history rows to check"
+            )
+        return CheckResult(
+            name,
+            CheckStatus.BROKEN,
+            f"element-summary for {label} has no history rows mid-season — every player "
+            "would score with neutral form trajectory and no consistency signal",
+        )
+    missing = [key for key in PLAYER_HISTORY_ROW_KEYS if key not in history[0]]
+    if missing:
+        return CheckResult(
+            name,
+            CheckStatus.BROKEN,
+            f"history rows are missing {', '.join(sorted(missing))} — these stats would "
+            "silently read as 0 for every gameweek of every player",
+        )
+    return CheckResult(
+        name,
+        CheckStatus.OK,
+        f"{len(history)} history rows for {label}, all {len(PLAYER_HISTORY_ROW_KEYS)} "
+        "expected fields present",
+    )
+
+
 async def _fpl_checks() -> tuple[list[CheckResult], dict[str, Any] | None]:
     from fpl_cli.api.fpl import FPLClient
 
@@ -142,6 +198,13 @@ async def _fpl_checks() -> tuple[list[CheckResult], dict[str, Any] | None]:
                     "bootstrap-static did not return JSON — the API shape may have changed",
                 )
             ], None
+        # Same client, so the probe below costs one request and no second
+        # connection; it needs the bootstrap to pick a player to ask about.
+        history_check = await _player_history_check(
+            client,
+            bootstrap.get("elements") or [],
+            season_started=any(e.get("finished") for e in (bootstrap.get("events") or [])),
+        )
 
     results: list[CheckResult] = []
     teams = bootstrap.get("teams") or []
@@ -187,6 +250,7 @@ async def _fpl_checks() -> tuple[list[CheckResult], dict[str, Any] | None]:
                     f"all {len(expected)} player fields present in the raw data",
                 )
             )
+    results.append(history_check)
     return results, bootstrap
 
 
@@ -1065,6 +1129,31 @@ async def _understat_checks(
     async with UnderstatClient() as client:
         try:
             players = await client.get_league_players()
+        except httpx.HTTPStatusError as exc:
+            # An HTTP status is the provider answering, not the network
+            # failing, and while it answers this way every scoring command
+            # falls back to FPL xGI for every player without a word (#438).
+            # A refusal needs a hand; anything else is the provider's to
+            # fix and self-corrects, which is what the stale row means.
+            status = exc.response.status_code
+            if status in (401, 403):
+                return [
+                    CheckResult(
+                        league_name,
+                        CheckStatus.BROKEN,
+                        f"Understat refused the request (HTTP {status}) — every scoring "
+                        "command silently falls back to FPL xGI for every player while "
+                        "it does; the client may be blocked",
+                    )
+                ]
+            return [
+                CheckResult(
+                    league_name,
+                    CheckStatus.STALE,
+                    f"Understat answered HTTP {status} — scoring runs on FPL xGI for "
+                    "every player until it recovers; broken if it persists",
+                )
+            ]
         except httpx.HTTPError as exc:
             return [CheckResult(league_name, CheckStatus.UNCHECKED, _unreachable(exc))]
         except json.JSONDecodeError:

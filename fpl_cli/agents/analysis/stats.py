@@ -23,7 +23,9 @@ from fpl_cli.services.scoring import (
     compute_aggregate_matchup,
     compute_form_trajectory,
     compute_xgi_sustainability,
+    coverage_warnings,
     prepare_scoring_data,
+    understat_coverage,
 )
 
 if TYPE_CHECKING:
@@ -464,6 +466,21 @@ class StatsAgent(Agent):
             # stderr, which a `--format json` consumer parsing stdout never
             # sees (#229) -- and this agent backs three of those commands.
             warnings.extend(understat_join_warnings())
+            # The bundle's coverage entries, plus this agent's own Understat
+            # join, which it runs itself rather than through the bundle:
+            # measured over the rows it scored, keyed back to their players.
+            warnings.extend(scoring_data.warnings)
+            understat_by_id = {
+                player_stats[i]["id"]: match for i, match in us_lookup.items()
+            }
+            scored_players = [
+                obj for ps in player_stats if (obj := player_obj_map.get(ps["id"])) is not None
+            ]
+            warnings.extend(coverage_warnings([
+                understat_coverage(
+                    scored_players, understat_by_id, next_gw_id=self._next_gw_id,
+                ),
+            ]))
             data["warnings"] = warnings
 
             self.log_success(f"Analyzed {len(player_stats)} players ({window_label})")

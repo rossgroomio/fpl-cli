@@ -13,6 +13,7 @@ from httpx import Response
 
 from fpl_cli.api.core_insights import (
     BASE_URL,
+    PLAYERSTATS_REQUIRED_COLUMNS,
     CoreInsightsClient,
     make_core_insights_fetcher,
     parse_match_records,
@@ -1008,8 +1009,12 @@ class TestMatchStats:
         assert gw1["recoveries"] == 0
 
     @respx.mock
-    async def test_missing_penalties_field_defaults_to_zero(self, tmp_path):
-        """Row without penalties_scored/missed defaults to 0."""
+    async def test_missing_penalties_field_reads_as_unknown(self, tmp_path):
+        """Row without penalties_scored/missed carries None, not 0 (#438).
+
+        A 0 left penalties inside npxG for every taker; None keeps the row
+        for the consistency signals and takes it out of the adjusted rate.
+        """
         stats_no_pen = (
             "player_id,match_id,minutes_played,xg\n"
             "100,m1,90,0.50\n"
@@ -1021,8 +1026,8 @@ class TestMatchStats:
             result = await client.get_match_stats(2)
 
         gw1 = result[100][0]
-        assert gw1["penalties_scored"] == 0
-        assert gw1["penalties_missed"] == 0
+        assert gw1["penalties_scored"] is None
+        assert gw1["penalties_missed"] is None
 
     @respx.mock
     async def test_orphaned_player_stat_row_skipped(self, tmp_path):
@@ -1365,3 +1370,96 @@ class TestContractTripwires:
         assert any(rows for rows in data.values())
         assert "missing expected column" not in caplog.text
         assert "none could be parsed" not in caplog.text
+
+
+class TestBlankMeansUnknown:
+    """Columns a score depends on read a blank as unknown, never as 0 (#438)."""
+
+    @respx.mock
+    async def test_blank_minutes_drops_the_row_rather_than_reading_zero(self, tmp_path):
+        # Salah's latest row loses its minutes: the prior would have read a
+        # season nobody played and handed him a price prior while saying
+        # pedigree. The row drops; Haaland's intact rows survive.
+        blanked = PLAYERSTATS_CSV.replace("100,13.5,10,265,2800,", "100,13.5,10,265,,")
+        respx.get(f"{BASE}/{CI_SEASON}/players.csv").mock(
+            return_value=Response(200, text=PLAYERS_CSV)
+        )
+        respx.get(f"{BASE}/{CI_SEASON}/playerstats.csv").mock(
+            return_value=Response(200, text=blanked)
+        )
+        async with CoreInsightsClient(_make_fetcher(tmp_path)) as client:
+            data = await client._fetch_season_data()
+
+        histories = [h for rows in data.values() for h in rows]
+        # Salah (code 80201) is gone rather than present with 0 minutes.
+        assert 80201 not in {h.element_code for h in histories}
+        assert all(h.minutes > 0 for h in histories)
+        assert histories
+
+    @respx.mock
+    async def test_every_minutes_cell_blank_trips_the_all_rows_skipped_tripwire(
+        self, tmp_path, caplog
+    ):
+        header = "id,now_cost,cost_change_start,total_points,minutes,gw\n"
+        blank = header + "100,13.5,10,265,,10\n200,14.0,5,230,,10\n"
+        respx.get(f"{BASE}/{CI_SEASON}/players.csv").mock(
+            return_value=Response(200, text=PLAYERS_CSV)
+        )
+        respx.get(f"{BASE}/{CI_SEASON}/playerstats.csv").mock(
+            return_value=Response(200, text=blank)
+        )
+        with caplog.at_level(logging.WARNING):
+            async with CoreInsightsClient(_make_fetcher(tmp_path)) as client:
+                data = await client._fetch_season_data()
+
+        assert all(rows == [] for rows in data.values())
+        assert "none could be parsed" in caplog.text
+
+    def test_minutes_is_part_of_the_playerstats_contract(self):
+        # So the header check and the doctor probe catch the column going.
+        assert "minutes" in PLAYERSTATS_REQUIRED_COLUMNS
+
+    @respx.mock
+    async def test_blank_penalty_cells_read_as_unknown(self, tmp_path):
+        stats = (
+            "player_id,match_id,minutes_played,xg,penalties_scored,penalties_missed\n"
+            "100,m1,90,0.50,,\n"
+            "200,m1,90,0.80,0,0\n"
+        )
+        _mock_players()
+        _mock_gw(1, GW1_MATCHES, stats)
+
+        async with CoreInsightsClient(_make_fetcher(tmp_path)) as client:
+            result = await client.get_match_stats(2)
+
+        assert result[100][0]["penalties_scored"] is None
+        assert result[100][0]["penalties_missed"] is None
+        assert result[200][0]["penalties_scored"] == 0
+
+    @respx.mock
+    async def test_every_gameweek_unavailable_is_a_warning_not_a_debug_line(
+        self, tmp_path, caplog
+    ):
+        _mock_players()
+        _mock_gw_404(1)
+        _mock_gw_404(2)
+
+        with caplog.at_level(logging.WARNING):
+            async with CoreInsightsClient(_make_fetcher(tmp_path)) as client:
+                result = await client.get_match_stats(3)
+
+        assert result == {}
+        assert "per-gameweek match files for GW1-2 could not be fetched" in caplog.text
+        assert "fpl doctor --providers" in caplog.text
+
+    @respx.mock
+    async def test_one_gameweek_loading_keeps_the_fetch_warning_quiet(self, tmp_path, caplog):
+        _mock_players()
+        _mock_gw(1, GW1_MATCHES, GW1_STATS)
+        _mock_gw_404(2)
+
+        with caplog.at_level(logging.WARNING):
+            async with CoreInsightsClient(_make_fetcher(tmp_path)) as client:
+                await client.get_match_stats(3)
+
+        assert "could not be fetched" not in caplog.text

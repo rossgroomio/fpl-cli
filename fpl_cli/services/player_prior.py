@@ -28,7 +28,7 @@ atomic writes, season-change invalidation.
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -53,6 +53,16 @@ CUTOFF_GW = 10
 PRICE_CONFIDENCE_FACTOR = 0.5
 MIN_MINUTES = 450
 
+# The least share of the pool last season's history must reach for a prior
+# set to count as history-informed. About half the pool has a qualifying
+# previous season (48% of 667 players on 2026-10-17, 63% of those with
+# minutes), and the rest take the price prior by design: promoted clubs'
+# players, signings from abroad, anyone under 450 minutes. A set under this
+# is not that mix but a feed that failed partway -- last season's file
+# missing, its minutes column blank, players.csv half joined -- and the
+# notice saying "pedigree" would be wrong for nearly everyone (#438).
+HISTORY_PRIOR_FLOOR = 0.25
+
 
 @dataclass(frozen=True)
 class PlayerPrior:
@@ -62,6 +72,29 @@ class PlayerPrior:
     confidence: float  # 0.0-1.0, how much to trust current-season data
     source: str  # "history", "price", "position-average"
     reliability: float | None = None  # recency-weighted historical availability (None = no history)
+
+
+def history_prior_share(priors: Mapping[int, PlayerPrior] | None) -> float | None:
+    """The share of *priors* sourced from last season's history, or None without any."""
+    if not priors:
+        return None
+    return sum(1 for p in priors.values() if p.source == "history") / len(priors)
+
+
+def priors_history_informed(priors: Mapping[int, PlayerPrior] | None) -> bool:
+    """Whether a prior set carries last season's pedigree for enough of the pool.
+
+    True at or above ``HISTORY_PRIOR_FLOOR``. An empty set is vacuously
+    informed: there is nobody it failed to reach, and treating it as a
+    collapse would send every caller back to the datasets for a pool with no
+    players in it. None is never informed.
+    """
+    if priors is None:
+        return False
+    if not priors:
+        return True
+    share = history_prior_share(priors)
+    return share is not None and share >= HISTORY_PRIOR_FLOOR
 
 
 def _extract_prev_season_pts_per_90(
@@ -143,8 +176,11 @@ def early_season_quality_warning(
 
     *blended* is whether the prior actually reached the score — the priors
     loaded — so the entry also tells a successful blend from a degraded run:
-    the loader swallows a failed history fetch and returns None, and without
-    this the same command, player and gameweek could print 76 or 59 with
+    the loader swallows a failed history fetch and returns None, and it
+    returns None too for a set last season's history reached too little of
+    (``priors_history_informed``, #438), so "loaded" means pedigree reached
+    the pool rather than a prior merely existing for everyone. Without this
+    the same command, player and gameweek could print 76 or 59 with
     identical metadata. Returns None once there is nothing to caveat: from the
     prior cutoff when blended, from GW6 when not.
     """
@@ -355,10 +391,19 @@ async def load_or_generate_player_priors(
     datasets cannot be reached, so a caller degrades to pure-observation
     scores and says so, rather than failing the command over a dataset the
     score can do without.
+
+    A set last season's history reached too little of is the same failure
+    partway (#438): a previous-season file that is missing, half joined or
+    publishing blank minutes gives every player a price prior, and the run
+    would blend with that and announce pedigree. So a set under
+    ``HISTORY_PRIOR_FLOOR`` is returned as None too, with a warning, and is
+    never written to the cache -- the next run retries the datasets rather
+    than serving the collapse for the rest of the gameweek. A cache written
+    with such a set is regenerated rather than trusted for the same reason.
     """
     try:
         cached = load_cached_priors(next_gw_id)
-        if cached is not None:
+        if cached is not None and priors_history_informed(cached):
             return cached
 
         from fpl_cli.api.historical import make_historical_provider
@@ -366,6 +411,16 @@ async def load_or_generate_player_priors(
         async with make_historical_provider() as historical:
             profiles = await historical.get_all_player_histories()
         priors = generate_player_prior(profiles, players, next_gw_id)
+        if not priors_history_informed(priors):
+            logger.warning(
+                "Last season's history reached only %d of %d player priors (under the "
+                "%.0f%% floor) — scores run on this season's observation alone and the "
+                "priors are not cached, so the next run retries the datasets",
+                sum(1 for p in priors.values() if p.source == "history"),
+                len(priors),
+                HISTORY_PRIOR_FLOOR * 100,
+            )
+            return None
         _save_prior_cache(priors, season_label(), next_gw_id)
         return priors
     except Exception as exc:  # noqa: BLE001 — graceful degradation: historical datasets unavailable
