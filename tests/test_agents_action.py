@@ -969,17 +969,20 @@ class TestWaiverAgentDefensiveContribution:
 
     async def _run_agent(
         self, mock_draft_bootstrap, mock_league_details, players,
-        *, squad=(), released=(), pool_player=None,
+        *, squad=(), released=(), pool_player=None, extra_pool=(),
     ):
-        """Drive ``run()`` with *squad* picked by entry 100 and *released* dropped."""
-        pool_player = pool_player or self._draft_defender()
+        """Drive ``run()`` with *squad* picked by entry 100 and *released* dropped.
+
+        *extra_pool* joins *pool_player* in the unowned roster.
+        """
+        pool = [pool_player or self._draft_defender(), *extra_pool]
         config: dict[str, Any] = {"draft_league_id": 12345}
         if squad:
             config["draft_entry_id"] = 100
         agent = WaiverAgent(config=config)
         bootstrap = {
             **mock_draft_bootstrap,
-            "elements": [pool_player, *squad, *released],
+            "elements": [*pool, *squad, *released],
         }
 
         with _stub_upstream_fetches(players=players), \
@@ -992,7 +995,7 @@ class TestWaiverAgentDefensiveContribution:
              patch.object(agent.client, "get_waiver_order", new_callable=AsyncMock) as mock_order:
 
             mock_bootstrap.return_value = bootstrap
-            mock_available.return_value = [pool_player]
+            mock_available.return_value = pool
             mock_releases.return_value = [
                 {"player": p, "dropped_by": 101, "gameweek": 24} for p in released
             ]
@@ -1049,20 +1052,140 @@ class TestWaiverAgentDefensiveContribution:
     ):
         """No main-game counterpart: DC stays at 0, never borrowed by id.
 
-        The miss is named on stderr, as a keeper's is, since the defender is
-        then scored against a DC-calibrated anchor without the term.
+        The miss is named in ``warnings``, which table mode prints to stderr
+        and JSON carries in ``metadata.warnings``, since the defender is then
+        scored against a DC-calibrated anchor without the term (#448).
         """
+        result = await self._run_agent(
+            mock_draft_bootstrap, mock_league_details,
+            players=[self._id_sharer()],
+        )
+
+        [target] = result.data["top_targets"]
+        assert target["dc_per_90"] == 0
+        [warning] = self._unjoined_warnings(result)
+        assert "1 draft defender(s) (Gabriel)" in warning["message"]
+
+    @staticmethod
+    def _unjoined_warnings(result):
+        return [w for w in result.data["warnings"] if w["code"] == "draft_player_unjoined"]
+
+    def _draft_keeper(self, **overrides):
+        fields = {
+            "id": 8, "web_name": "Raya", "team": 1, "element_type": 1,
+            "code": 9004, "form": 6.0, "minutes": 1800,
+        }
+        return make_draft_player(**{**fields, **overrides})
+
+    @pytest.mark.asyncio
+    async def test_a_keeper_and_a_defender_the_join_missed_share_one_entry(
+        self, mock_draft_bootstrap, mock_league_details,
+    ):
+        """One entry counts both positions, so a consumer keys on one code (#448).
+
+        The id-sharer holds the defender's draft id in the main game under a
+        different code, so the miss is the join's, not an absence of data.
+        """
+        result = await self._run_agent(
+            mock_draft_bootstrap, mock_league_details,
+            players=[self._id_sharer()], extra_pool=[self._draft_keeper()],
+        )
+
+        [warning] = self._unjoined_warnings(result)
+        assert "1 draft keeper(s) (Raya)" in warning["message"]
+        assert "keepers are scored without saves/xGC signals" in warning["message"]
+        assert "1 draft defender(s) (Gabriel)" in warning["message"]
+        assert "defenders are scored without defensive contribution" in warning["message"]
+
+    @pytest.mark.asyncio
+    async def test_an_empty_main_player_list_misses_every_keeper_and_defender(
+        self, mock_draft_bootstrap, mock_league_details,
+    ):
+        """The case the entry exists for: the payload still reads as a ranking."""
+        result = await self._run_agent(
+            mock_draft_bootstrap, mock_league_details,
+            players=[], extra_pool=[self._draft_keeper()],
+        )
+
+        [warning] = self._unjoined_warnings(result)
+        assert "keeper(s) (Raya)" in warning["message"]
+        assert "defender(s) (Gabriel)" in warning["message"]
+
+    @pytest.mark.asyncio
+    async def test_only_the_position_that_missed_is_named(
+        self, mock_draft_bootstrap, mock_league_details,
+    ):
+        result = await self._run_agent(
+            mock_draft_bootstrap, mock_league_details,
+            players=[self._main_defender()], extra_pool=[self._draft_keeper()],
+        )
+
+        [warning] = self._unjoined_warnings(result)
+        assert "keeper(s) (Raya)" in warning["message"]
+        assert "defender" not in warning["message"]
+
+    @pytest.mark.asyncio
+    async def test_no_entry_when_every_keeper_and_defender_joined(
+        self, mock_draft_bootstrap, mock_league_details,
+    ):
+        main_keeper = make_player(
+            id=800, code=9004, web_name="Raya", team_id=1,
+            position=PlayerPosition.GOALKEEPER, minutes=1800,
+        )
+        result = await self._run_agent(
+            mock_draft_bootstrap, mock_league_details,
+            players=[self._main_defender(), main_keeper],
+            extra_pool=[self._draft_keeper()],
+        )
+
+        assert self._unjoined_warnings(result) == []
+
+    @pytest.mark.asyncio
+    async def test_outfielders_that_read_nothing_off_the_join_are_not_counted(
+        self, mock_draft_bootstrap, mock_league_details,
+    ):
+        """A midfielder's score takes no term from the join, so a miss costs it none."""
+        midfielder = make_draft_player(
+            id=9, web_name="Rice", team=1, element_type=3, code=9005, minutes=1800,
+        )
+        result = await self._run_agent(
+            mock_draft_bootstrap, mock_league_details,
+            players=[self._main_defender()], extra_pool=[midfielder],
+        )
+
+        assert self._unjoined_warnings(result) == []
+
+    @pytest.mark.asyncio
+    async def test_the_miss_is_reported_once_not_also_logged(
+        self, mock_draft_bootstrap, mock_league_details,
+    ):
+        """Table mode prints ``warnings`` to stderr, so a log line would double it."""
         with patch.object(WaiverAgent, "log_warning") as warn:
-            target = await self._run(
+            await self._run_agent(
                 mock_draft_bootstrap, mock_league_details,
-                players=[self._id_sharer()],
+                players=[], extra_pool=[self._draft_keeper()],
             )
 
-        assert target["dc_per_90"] == 0
-        [message] = [
-            c.args[0] for c in warn.call_args_list if "defensive contribution" in c.args[0]
+        # The removed lines read "No main FPL match ..." and "... scoring
+        # without ...", so a restored one trips this and the new entry's own
+        # wording does too.
+        miss_wording = ("main FPL match", "main-game match", "scoring without")
+        assert not [
+            c for c in warn.call_args_list
+            if any(w in c.args[0] for w in miss_wording)
         ]
-        assert "1 draft defender(s) (Gabriel)" in message
+
+    def test_only_the_first_three_names_are_listed(self):
+        agent = WaiverAgent()
+        pool = [
+            {"id": n, "player_name": name, "position": "DEF"}
+            for n, name in enumerate(["A", "B", "C", "D"], start=1)
+        ]
+
+        warning = agent._unjoined_player_warning(pool)
+
+        assert warning is not None
+        assert "4 draft defender(s) (A, B, C, ...)" in warning["message"]
 
     @pytest.mark.asyncio
     async def test_midfielder_rate_is_display_only(
