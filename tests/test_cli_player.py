@@ -128,7 +128,7 @@ class TestPlayerHistory:
         mock_profile.minutes_per_start = [89.7, 90.3]
         mock_profile.seasons = [
             MagicMock(
-                season="2023-24", team_id=1, total_points=230, minutes=2600,
+                season="2023-24", team_code=1, total_points=230, minutes=2600,
                 starts=29, goals=15, assists=11,
                 expected_goal_involvements=23.0, start_cost=125, end_cost=125, position="MID",
             ),
@@ -640,7 +640,7 @@ class TestPlayerJsonOutput:
         mock_profile = MagicMock()
         mock_profile.seasons = [
             MagicMock(
-                season="2023-24", team_id=1, total_points=230, minutes=2600,
+                season="2023-24", team_code=1, total_points=230, minutes=2600,
                 starts=29, goals=15, assists=11,
                 expected_goal_involvements=23.0, start_cost=125, end_cost=125,
             ),
@@ -671,6 +671,7 @@ class TestPlayerJsonOutput:
         player_data = json.loads(result.output)["data"][0]
         assert "history" in player_data
         assert player_data["history"]["seasons"][0]["season"] == "2023-24"
+        assert player_data["history"]["seasons"][0]["team_code"] == 1
         assert "trends" in player_data["history"]
 
     def test_json_set_pieces_present_when_assigned(self):
