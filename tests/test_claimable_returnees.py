@@ -142,6 +142,7 @@ def test_error_envelope_from_a_failed_radar_run_fails_closed():
     assert result["entries"] == []
     assert result["excluded"] == []
     assert result["warnings"] == [{"type": "radar-unreadable"}]
+    assert result["metadata"]["pool_size"] == len(_POOL)
 
 
 def test_both_sides_unreadable_names_both():

@@ -360,7 +360,8 @@ under `excluded` and why (`owned`, or `no-code`). `ok: false` means the join cou
 `entries` is then empty, so no stash claim can be made from it; `warnings` says which side failed:
 `radar-unreadable` when the radar has no `data.entries` (for example the `{command, error}` envelope
 of a failed `fpl returnees` run), `pool-unreadable` or `pool-without-code` when the pool could not be
-read (no `data.pool`, or rows without `code` from an older fpl-cli). An empty list with `ok: false`
+read (no `data.pool`, or rows without `code` from an older fpl-cli), `envelope-unreadable` when
+either file is not a JSON object at all. An empty list with `ok: false`
 is never "nobody is returning". If the script fails (exit 1) treat it the same way: Returning Soon
 says the radar and pool could not be joined, lists nobody, and C2 makes no stash claim. Never fall
 back to matching the raw payloads yourself.
@@ -670,9 +671,10 @@ Agent tool parameters:
 >   returnees a rival already owns — leave them out rather than listing them as unavailable. If `ok`
 >   is false the join could not run: name what failed from `warnings` in the section ("the
 >   returnee radar could not be read" for `radar-unreadable`, "the waiver pool could not be read"
->   for `pool-unreadable` or `pool-without-code`; both when both appear), list nobody, and make no
->   stash claim. Never render an empty section as nobody returning when `ok` is false. Quote only
->   fields present in this payload.
+>   for `pool-unreadable` or `pool-without-code`; both when both appear; "the returnee data could
+>   not be read" for any other warning type, or none), list nobody, and make no stash claim.
+>   Never render an empty section as nobody returning when `ok` is false. Quote only fields
+>   present in this payload.
 >
 > **STASH CLAIMS:** a Returning Soon row escalates into the Waiver Recommendations table only when
 > **all four** gates below hold. Any one failing means watchlist only — no claim.

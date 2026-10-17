@@ -116,12 +116,13 @@ def join(radar: dict[str, Any], waivers: dict[str, Any]) -> JoinResult:
     entries, radar_warning = radar_entries(radar)
     codes, pool_warning = pool_codes(waivers)
     result["warnings"].extend(w for w in (radar_warning, pool_warning) if w is not None)
+    if codes is not None:
+        result["metadata"]["pool_size"] = len(codes)
     if radar_warning is not None or codes is None:
         # Nothing to claim rather than everything: the stash path fails closed,
         # and an unreadable radar is a failure, not an empty watchlist (#432).
         result["ok"] = False
         return result
-    result["metadata"]["pool_size"] = len(codes)
 
     for entry in entries:
         code = _as_code(entry.get("code"))
