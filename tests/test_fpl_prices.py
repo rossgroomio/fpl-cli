@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from fpl_cli.scraper.fpl_prices import PlayerSellPrice, TeamFinances
+from tests.conftest import make_player
 
 
 class TestPlayerSellPrice:
@@ -13,6 +14,29 @@ class TestPlayerSellPrice:
     def test_element_id_set(self):
         p = PlayerSellPrice(name="Salah", sell_price=13.0, element_id=253)
         assert p.element_id == 253
+
+
+class TestIsPlayer:
+    """A cache row is matched to a player on id, then on `code`, or on name without one."""
+
+    def test_same_id_and_code(self):
+        row = PlayerSellPrice(name="Salah", sell_price=13.0, element_id=253, code=118748)
+        assert row.is_player(make_player(id=253, code=118748, web_name="Salah"))
+
+    def test_an_earlier_seasons_row_under_the_same_id_is_another_footballer(self):
+        row = PlayerSellPrice(name="Salah", sell_price=13.0, element_id=253, code=118748)
+        assert not row.is_player(make_player(id=253, code=99999, web_name="Salah"))
+
+    def test_a_row_without_code_needs_the_name_to_agree_too(self):
+        """A cache from before codes were stored is also the likeliest to be last season's."""
+        row = PlayerSellPrice(name="Salah", sell_price=13.0, element_id=253)
+        assert row.is_player(make_player(id=253, code=118748, web_name="Salah"))
+        assert not row.is_player(make_player(id=253, code=99999, web_name="Gordon"))
+
+    def test_a_row_without_an_id_is_nobody(self):
+        """A DOM-fallback row: a name alone is never enough."""
+        row = PlayerSellPrice(name="Salah", sell_price=13.0)
+        assert not row.is_player(make_player(id=253, code=118748, web_name="Salah"))
 
 
 class TestTeamFinancesSerialisation:
@@ -40,6 +64,14 @@ class TestTeamFinancesSerialisation:
         }
         tf = TeamFinances.from_dict(data)
         assert tf.squad[0].element_id is None
+
+    def test_price_at_scrape_round_trips_and_an_older_cache_has_none(self):
+        squad = [PlayerSellPrice(name="Salah", sell_price=13.0, element_id=253, price_at_scrape=13.5)]
+        restored = TeamFinances.from_dict(TeamFinances(bank=0.0, free_transfers=1, squad=squad).to_dict())
+        assert restored.squad[0].price_at_scrape == 13.5
+
+        older = TeamFinances.from_dict({"squad": [{"name": "Salah", "sell_price": 13.0, "element_id": 253}]})
+        assert older.squad[0].price_at_scrape is None
 
     def test_roundtrip(self):
         squad = [
@@ -84,6 +116,8 @@ class TestExtractFromIntercepted:
         assert result is not None
         assert result.squad[0].element_id == 253
         assert result.squad[0].name == "Salah"
+        # The price the sell price was worked out at, for the next load to check the rule against.
+        assert result.squad[0].price_at_scrape == 13.0
 
     def test_dom_fallback_has_no_element_id(self):
         """DOM fallback produces PlayerSellPrice with element_id=None."""

@@ -712,6 +712,23 @@ def mock_fpl_client(mock_bootstrap_data, sample_fixtures):
     return client
 
 
+@pytest.fixture
+def todays_players():
+    """The player list `fpl squad sell-prices` reprices its cache against (#426).
+
+    Patches the one `FPLClient` fetch the cached path makes. Append players to
+    the list it yields to set today's prices; left empty, every cached row is
+    one it cannot check, so each comes back as scraped and warned about.
+    """
+    players: list[Player] = []
+    client = MagicMock()
+    client.get_players = AsyncMock(return_value=players)
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=False)
+    with patch("fpl_cli.api.fpl.FPLClient", return_value=client):
+        yield players
+
+
 # --- Agent factory ---
 
 class LoggingAgent(Agent):

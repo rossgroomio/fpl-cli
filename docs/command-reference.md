@@ -251,7 +251,7 @@ Output columns:
 - **Quality** - price-independent player quality (0-100), normalised against a position-specific ceiling. Elite-within-position index — cross-position comparisons not meaningful (GK/DEF/MID/FWD use different ceilings by design). See [Quality & Value Scores](custom-analysis.md#quality--value-scores). Null when no Understat match.
 - **Value** - quality per GBP million (`quality_score / price`). Higher = more output per pound. Null when no Understat match or price is 0. *(classic only)*
 - **Price** - current price *(classic only)*
-- **Budget** - affordability gap: `bank + sell_price - in_price` *(classic only, requires scraper cache)*
+- **Budget** - affordability gap: `bank + sell_price - in_price`, the OUT player's sell price recomputed at today's price (see [Sell Prices](#sell-prices--transfer-affordability)). `metadata.warnings` (stderr in table mode) carries `sell_prices_as_scraped` when that price could not be checked and `sell_prices_player_not_cached` when the OUT player is not in the cached squad *(classic only, requires scraper cache)*
 
 OUT player shows absolute scores. IN candidates show deltas for Outlook/This GW only (+15, -3); Quality and Value show absolute values for all players (no delta - value is a per-player efficiency metric). Sorted by Outlook delta descending.
 
@@ -348,7 +348,7 @@ fpl allocate --format json          # JSON output for scripting / skill integrat
 | `--bench-discount` | 0.15/0.05 | Bench player discount factor, applied uniformly (overrides per-position defaults) |
 | `--bench-boost-gw` | - | GW to play Bench Boost; bench discount overridden to 1.0 for that GW. Use `--horizon 3-4` for BB-focused planning |
 | `--free-transfers` | 1 | Banked free transfers (0-5). More FTs = solver weights near-term gameweeks more heavily, favouring short-term picks you can transfer out later |
-| `--sell-prices` | - | Path to sell-prices JSON file (from `fpl squad sell-prices --format json`). Solver uses sell prices for owned players in budget constraint. Budget auto-computed as `sum(sell_prices) + bank` unless `--budget` is explicitly set |
+| `--sell-prices` | - | Path to sell-prices JSON file (from `fpl squad sell-prices --format json`). Solver uses sell prices for owned players in budget constraint. Budget auto-computed as `sum(sell_prices) + bank` unless `--budget` is explicitly set. The file's `sell_prices_as_scraped` warnings are repeated in `metadata.warnings` (stderr in table mode), since the budget is built on those prices |
 | `--format` | table | `table` or `json` |
 
 Scores ~500 eligible players, adjusts for fixture difficulty over the planning horizon, then solves for the budget-constrained optimum across all 8 valid formations. See [Squad Allocator](custom-analysis.md#squad-allocator) for scoring methodology, fixture coefficients, and solver detail.
@@ -736,7 +736,25 @@ fpl squad sell-prices --refresh
 
 Disabling ECH may additionally require a browser-level managed policy (`EncryptedClientHelloEnabled: false`) since the flag alone does not always strip it. All four env vars are opt-in — leave them unset on trusted networks.
 
-Output: free transfers, bank balance, squad sell prices, total team value. Data cached to `team_finances.json` in the data directory (see [Directories](#directories)) for 12 hours.
+Output: free transfers, bank balance, squad sell prices, total team value. Data cached to `team_finances.json` in the data directory (see [Directories](#directories)) until the next `--refresh`.
+
+**Price changes since the scrape:** prices move overnight, so a cached run fetches today's
+prices and recomputes each sell price from its purchase price: keep half of any rise,
+rounded down, and take all of any fall. It applies the rule to a player only once it has
+checked it against FPL's own figure: the cache stores each player's price at the scrape,
+and the rule must reproduce the sell price FPL showed at that price. Each sell price that
+moved is named on stderr. JSON rows carry `scraped_sell_price` (FPL's figure) beside
+`sell_price` (the one to budget on). A player it cannot check keeps the scraped price and
+is named in a `sell_prices_as_scraped` warning, on stderr in both modes and in
+`metadata.warnings` under `--format json`: a price check that fails, an unknown purchase
+price, a player missing from today's list, or any player at all in a cache scraped before
+prices were stored, which one `--refresh` fixes. Not being able to fetch today's prices
+(the lookup waits 10 seconds) gives one such warning covering the whole squad and still
+exits 0. The squad, bank and free transfers stay as scraped, so a transfer made on the
+website since needs a `--refresh`. `fpl transfer-eval` uses the same recomputed sell price
+and warns when the OUT player's is unchecked or missing from the cache, and
+`fpl allocate --sell-prices` repeats the file's `sell_prices_as_scraped` warnings in its
+own output.
 
 **Suspect scrapes:** a scrape that returns far fewer players than a squad holds is
 refused rather than trusted — the page usually rendered late or the login silently
