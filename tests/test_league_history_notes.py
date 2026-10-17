@@ -310,6 +310,45 @@ class TestStreakEntries:
             "with 2 not recorded and no captain fixture in 1."
         )
 
+    def test_the_prompt_sentence_keeps_every_figure_of_the_ledger_line(self):
+        """Issue #452: the editorial prompt gets a sentence, not the ledger
+        row the model kept quoting, with the same count, span and both
+        qualifiers."""
+        text = _streak_text(
+            "Alice", "captain blank", "captain blanks", 3,
+            GameweekWindow(start_gameweek=1, end_gameweek=6),
+            held_count=2, inapplicable_count=1, inapplicable_label="no captain fixture",
+            for_prompt=True,
+        )
+
+        assert text == (
+            "Alice has 3 captain blanks in the last 6 (GW1-GW6), "
+            "with 2 of those gameweeks not recorded and no captain fixture in 1 of them."
+        )
+
+    def test_a_consecutive_run_keeps_in_a_row_in_its_prompt_sentence(self):
+        text = _streak_text(
+            "Alice", "captain blank", "captain blanks", 3,
+            GameweekWindow(start_gameweek=4, end_gameweek=6),
+            for_prompt=True,
+        )
+
+        assert text == "Alice has 3 captain blanks in a row (GW4-GW6)."
+
+    def test_a_streak_entry_carries_both_renderings(self):
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        for gw in (1, 2, 3):
+            store.append_rows(gw, [
+                make_history_row(gameweek=gw, manager_key=1, manager_name="Alice", captain=_captain(1)),
+            ])
+
+        entry = next(e for e in build_notes_pack(store, 3).entries if e.condition_key == "captain_blank_run")
+
+        assert entry.text == "Alice: 3 captain blanks in a row (GW1-GW3)."
+        assert entry.text_for(NoteSurface.REPORT) == entry.text
+        assert entry.text_for(NoteSurface.CONSOLE) == entry.text
+        assert entry.text_for(NoteSurface.PROMPT) == "Alice has 3 captain blanks in a row (GW1-GW3)."
+
     def test_an_inapplicable_gameweek_with_no_label_is_refused(self):
         """No generic stand-in wording: a missing label is a defect."""
         with pytest.raises(ValueError, match="inapplicable_label"):
@@ -866,6 +905,59 @@ class TestSeasonCountEntries:
         assert entry.text == (
             "Alice: 2 gameweeks on top of the league this season (GW1-GW3), "
             "the latest this gameweek, with 1 gameweek not judged either way."
+        )
+
+    def test_the_prompt_sentence_moves_the_unjudged_count_into_the_bracket(self):
+        """Issue #452: same scenario as above, rendered for the editorial.
+        The figures and the qualifier survive; "not judged either way", the
+        phrase the GW6 editorial copied whole, does not."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, manager_name="Alice", league_position=1)])
+        store.append_rows(2, [make_history_row(gameweek=2, manager_key=1, manager_name="Alice", capture_status="unknown")])
+        store.append_rows(3, [make_history_row(gameweek=3, manager_key=1, manager_name="Alice", league_position=1)])
+
+        entry = self._count_entry(build_notes_pack(store, 3), "Alice", "weeks_on_top")
+
+        assert entry.text_for(NoteSurface.PROMPT) == (
+            "Alice has 2 gameweeks on top of the league this season, the latest this gameweek "
+            "(GW1-GW3; 1 gameweek could not be judged)."
+        )
+        assert entry.text_for(NoteSurface.REPORT).startswith("Alice: 2 gameweeks on top")
+
+    def test_a_first_occurrence_this_gameweek_reads_as_a_sentence_for_the_prompt(self):
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, manager_name="Alice", league_position=2)])
+        store.append_rows(2, [make_history_row(gameweek=2, manager_key=1, manager_name="Alice", league_position=1)])
+
+        entry = self._count_entry(build_notes_pack(store, 2), "Alice", "weeks_on_top")
+
+        assert entry.text_for(NoteSurface.PROMPT) == (
+            "Alice has 1 gameweek on top of the league this season, and it came this gameweek (GW1-GW2)."
+        )
+
+    def test_a_stale_count_reads_as_a_bare_sentence_for_the_prompt(self):
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, manager_name="Alice", league_position=1)])
+        store.append_rows(2, [make_history_row(gameweek=2, manager_key=1, manager_name="Alice", league_position=2)])
+
+        entry = self._count_entry(build_notes_pack(store, 2), "Alice", "weeks_on_top")
+
+        assert entry.text_for(NoteSurface.PROMPT) == (
+            "Alice has 1 gameweek on top of the league this season (GW1-GW2)."
+        )
+
+    def test_a_run_framed_count_leads_its_prompt_sentence_with_the_run(self):
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        for gw in range(1, 7):
+            store.append_rows(gw, [
+                make_history_row(gameweek=gw, manager_key=3, manager_name="Zoe", league_position=1),
+                make_history_row(gameweek=gw, manager_key=1, manager_name="Alice", league_position=2),
+            ])
+
+        entry = self._count_entry(build_notes_pack(store, 6), "Alice", "green_arrow_drought")
+
+        assert entry.text_for(NoteSurface.PROMPT).startswith(
+            "Alice has 5 gameweeks without a green arrow in a row, and 5 this season (",
         )
 
     def test_a_zero_count_produces_no_entry(self):

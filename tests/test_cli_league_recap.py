@@ -4216,7 +4216,7 @@ class TestEndToEndPromptThroughTheFullCommand:
         assert "Alice" in user_prompt
         assert "gameweeks on top of the league" in user_prompt
         assert "Season phase:" in user_prompt
-        assert "Stick to what happened this gameweek, with two exceptions" in system_prompt
+        assert "Stick to what happened this gameweek. The only facts spanning more than this gameweek" in system_prompt
         assert "season phase" in system_prompt.lower()
 
     def test_a_dry_run_writes_a_prompt_with_the_transfer_roster(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -4329,7 +4329,7 @@ class TestEndToEndPromptThroughTheFullCommand:
 
         assert "## Season Fines" in user_prompt
         assert f"Bob: 1 (1 last-place; fined in GW{CHIP_SPLIT_GW})" in user_prompt
-        assert "NEVER add up fines yourself" in system_prompt
+        assert 'Season fine totals come from the "## Season Fines" section exactly' in system_prompt
         # This fixture's ledger holds only the gameweek under recap, so the
         # ordinal the model kept inventing cannot be asserted -- and the
         # section refuses it outright rather than guessing (issue #233).

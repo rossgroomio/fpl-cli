@@ -3962,10 +3962,10 @@ class TestPromptFormatting:
             awards_text="x", standings_text="| t |", fines_text="",
         )
         assert '"Contested players" lines' in system
-        assert "standing higher in the league's waiver order" in system
+        assert "the race was won on the league's waiver order" in system
         # The licence is for waiver races alone: a free-agent race was
-        # first-come-first-served (#341 review).
-        assert "tagged (free agent) was first-come-first-served" in system
+        # first come first served (#341 review).
+        assert "a race tagged (free agent) was first come first served" in system
         assert "Most Contested only the player the most managers claimed" in system
 
     def test_waivers_context_omits_the_stayed_line_when_everyone_moved(self):
@@ -4022,7 +4022,7 @@ class TestPromptFormatting:
             "and free-agent signings"
         ) in RECAP_SYNTHESIS_SYSTEM_PROMPT
         assert "never call a move tagged [free agent] a waiver claim" in RECAP_SYNTHESIS_SYSTEM_PROMPT
-        assert "Do NOT infer waiver activity from the Awards section" in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        assert "Do not infer waiver activity from the Awards section" in RECAP_SYNTHESIS_SYSTEM_PROMPT
         assert (
             'If there is no "## Transfers" section, no "## Waivers and Free Agents" section '
             "and no transfers note"
@@ -4081,7 +4081,7 @@ class TestPromptFormatting:
         from fpl_cli.prompts.league_recap import RECAP_SYNTHESIS_SYSTEM_PROMPT
 
         assert 'treat the "## Transfers" section as the source of truth' in RECAP_SYNTHESIS_SYSTEM_PROMPT
-        assert "Do NOT infer transfer activity from the Awards section" in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        assert "Do not infer transfer activity from the Awards section" in RECAP_SYNTHESIS_SYSTEM_PROMPT
         assert "not licence to invent" in RECAP_SYNTHESIS_SYSTEM_PROMPT
 
     def test_synthesis_system_prompt_binds_club_claims_to_the_data(self):
@@ -4090,7 +4090,7 @@ class TestPromptFormatting:
         from fpl_cli.prompts.league_recap import RECAP_SYNTHESIS_SYSTEM_PROMPT
 
         assert (
-            "NEVER state a club for a player other than the club given for them"
+            "Never state a club for a player other than the club given for them"
             in RECAP_SYNTHESIS_SYSTEM_PROMPT
         )
         assert "## Player Clubs" in RECAP_SYNTHESIS_SYSTEM_PROMPT
@@ -4302,6 +4302,31 @@ class TestLeagueHistoryPromptSection:
         assert "## League History" in user
         assert "GW4-GW6" in user
 
+    def test_the_section_reads_each_entrys_prompt_sentence_not_its_ledger_line(self):
+        """Issue #452: the model quotes what it is handed, so it is handed
+        the sentence; an entry with no prompt form falls back to its text."""
+        streak = NotesPackEntry(
+            kind=NoteKind.STREAK, text="Alice: 3 captain blanks in a row (GW4-GW6).",
+            prompt_text="Alice has 3 captain blanks in a row (GW4-GW6).",
+            surfaces=frozenset({NoteSurface.CONSOLE, NoteSurface.REPORT, NoteSurface.PROMPT}), length=3,
+        )
+        count = NotesPackEntry(
+            kind=NoteKind.SEASON_COUNT, text="Bob: 4 gameweek wins this season (GW1-GW6).",
+            prompt_text="Bob has 4 gameweek wins this season (GW1-GW6).",
+            surfaces=frozenset({NoteSurface.REPORT, NoteSurface.PROMPT}), occurrences=4,
+        )
+        bare = _history_entry("Carol: 2 last-place finishes in a row (GW5-GW6).")
+
+        text = format_recap_league_history_context(
+            _history_pack(entries=[streak, bare], season_count_entries=[count]),
+        )
+
+        assert "- Alice has 3 captain blanks in a row (GW4-GW6)." in text
+        assert "- Bob has 4 gameweek wins this season (GW1-GW6)." in text
+        assert "- Carol: 2 last-place finishes in a row (GW5-GW6)." in text
+        assert "Alice:" not in text
+        assert "Bob:" not in text
+
     def test_the_history_rules_appear_even_when_no_pack_was_supplied(self):
         """KTD9: the rule is unconditional -- present in the system prompt
         whether or not this call site even has a pack to inject."""
@@ -4315,13 +4340,20 @@ class TestLeagueHistoryPromptSection:
 
     def test_the_blanket_stick_to_gameweek_rule_names_its_bounded_exceptions(self):
         """League History for the league's own past; Prior Seasons (issue
-        #131) for a manager's FPL record before it. Both are named in the
-        blanket rule itself, so neither reads as a loophole in it."""
+        #131) for a manager's FPL record before it; Season Fines and Fines
+        for where a fine sits in a season (#452, which rules 8, 11 and 12
+        allowed while this rule forbade). Every one is named in the blanket
+        rule itself, so none reads as a loophole in it."""
         from fpl_cli.prompts.league_recap import RECAP_SYNTHESIS_SYSTEM_PROMPT
 
-        assert "Stick to what happened this gameweek, with two exceptions" in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        assert (
+            "Stick to what happened this gameweek. The only facts spanning more than this gameweek"
+            in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        )
         assert '"## League History" section' in RECAP_SYNTHESIS_SYSTEM_PROMPT
         assert '"## Prior Seasons" rule below' in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        assert 'season fine totals from the "## Season Fines" section' in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        assert "The Awards and GW Standings sections describe one gameweek" in RECAP_SYNTHESIS_SYSTEM_PROMPT
 
     def test_the_season_count_rule_frames_counts_as_optional_colour(self):
         from fpl_cli.prompts.league_recap import RECAP_SYNTHESIS_SYSTEM_PROMPT
@@ -6046,8 +6078,9 @@ class TestFinePlacement:
             awards_text="x", standings_text="| t |", fines_text="Bob fined",
         )
 
-        assert '"second"' in system
-        assert "Two managers each on 1 are two separate first offences" in system
+        assert 'their "another" or "again"' in system
+        assert "use that placement and no other" in system
+        assert "a bare total of 1 is one fine, this gameweek" in system
 
 
 # ---------------------------------------------------------------------------
@@ -7026,8 +7059,8 @@ class TestContestedAttributionCheck:
             awards_text="x", standings_text="| t |", fines_text="",
         )
         assert "Each \"Contested players\" line is one race" in system
-        assert "NEVER fold two lines into one clause" in system
-        assert 'no "respectively"' in system
+        assert "never fold two lines into one clause" in system
+        assert '"X and Y were beaten to A and B respectively"' in system
 
 
 # ---------------------------------------------------------------------------
@@ -7651,8 +7684,8 @@ class TestEditorialChecks:
             awards_text="x", standings_text="| t |", fines_text="",
         )
         assert "they are never interchangeable" in system
-        assert "NEVER to one named move" in system
-        assert "NEVER their waivers' or their free agents'" in system
+        assert "never to one named move" in system
+        assert "never their waivers' or their free agents'" in system
         assert 'never that they took it "to bring in"' in system
         assert "may only be used where the data states the tie" in system
         assert 'never "the joint-lowest"' in system

@@ -45,6 +45,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from enum import Enum
+from functools import partial
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -218,7 +219,12 @@ class NotesPackEntry:
 
     `text` is written to be reused verbatim or near-verbatim on whichever
     surfaces `surfaces` names -- kept factual and neutral, not editorialised,
-    since a later unit renders it directly. `window`, `held_count`,
+    since a later unit renders it directly. `prompt_text`, where set, is the
+    same fact as a sentence for the editorial prompt (issue #452): the
+    console and report read a ledger line, but the synthesis model quotes
+    whatever it is handed, so the line it reads is one a columnist could
+    have written, with every figure, span and qualifier of `text` kept.
+    Read it through `text_for()`. `window`, `held_count`,
     `inapplicable_count`, and `tier` are the entry's provenance: the
     computation span, how much of that span held rather than extended, how
     much of it the condition had nothing to judge in (issue #358), and the
@@ -259,6 +265,13 @@ class NotesPackEntry:
     # "how much of the span was never judged" meaning it has for a streak,
     # applied to the count's whole window. None for every other kind.
     occurrences: int | None = None
+    prompt_text: str | None = None
+
+    def text_for(self, surface: NoteSurface) -> str:
+        """The line this entry renders as on `surface`."""
+        if surface is NoteSurface.PROMPT and self.prompt_text is not None:
+            return self.prompt_text
+        return self.text
 
 
 @dataclass(frozen=True)
@@ -347,6 +360,7 @@ def _streak_text(
     held_count: int = 0,
     inapplicable_count: int = 0,
     inapplicable_label: str | None = None,
+    for_prompt: bool = False,
 ) -> str:
     """Render a run as an observed count over its true span. Built on the
     condition's `count_label_one`/`count_label_many` (issue #188), not its
@@ -381,23 +395,34 @@ def _streak_text(
     `inapplicable_label` is required whenever `inapplicable_count` is
     nonzero. `_evaluate` already refuses an INAPPLICABLE from a condition
     without one, so a missing label here is a defect, raised rather than
-    papered over with generic wording that would say nothing."""
+    papered over with generic wording that would say nothing.
+
+    `for_prompt` renders the same facts as the editorial prompt's sentence
+    ("Bob has 3 waiver hauls in the last 4 (GW3-GW6), with no completed
+    moves in 1 of them") rather than the ledger line."""
     span = f"GW{window.start_gameweek}-GW{window.end_gameweek}"
     count_label = count_label_one if length == 1 else count_label_many
+    lead = f"{manager_name} has" if for_prompt else f"{manager_name}:"
     if window.span_length == length:
-        return f"{manager_name}: {length} {count_label} in a row ({span})."
+        return f"{lead} {length} {count_label} in a row ({span})."
     not_recorded = max(held_count, window.span_length - length - inapplicable_count)
     clauses: list[str] = []
     if not_recorded:
-        clauses.append(f"{not_recorded} not recorded")
+        clauses.append(
+            f"{not_recorded} of those gameweeks not recorded" if for_prompt
+            else f"{not_recorded} not recorded",
+        )
     if inapplicable_count:
         if inapplicable_label is None:
             raise ValueError(
                 f"{inapplicable_count} inapplicable gameweek(s) to render with no "
                 "inapplicable_label to name them.",
             )
-        clauses.append(f"{inapplicable_label} in {inapplicable_count}")
-    text = f"{manager_name}: {length} {count_label} in the last {window.span_length} ({span})"
+        clauses.append(
+            f"{inapplicable_label} in {inapplicable_count} of them" if for_prompt
+            else f"{inapplicable_label} in {inapplicable_count}",
+        )
+    text = f"{lead} {length} {count_label} in the last {window.span_length} ({span})"
     if clauses:
         text += ", with " + " and ".join(clauses)
     return text + "."
@@ -438,18 +463,20 @@ def _streak_entries(
             # run's span actually is.
             window = GameweekWindow(start_gameweek=view.start_gameweek, end_gameweek=gameweek)
             surfaces = _STREAK_SURFACES if view.is_reportable else frozenset()
+            render = partial(
+                _streak_text,
+                manager_row.manager_name,
+                view.count_label_one,
+                view.count_label_many,
+                view.length,
+                window,
+                held_count=view.held_in_run,
+                inapplicable_count=view.inapplicable_in_run,
+                inapplicable_label=view.inapplicable_label,
+            )
             entries.append(NotesPackEntry(
                 kind=NoteKind.STREAK,
-                text=_streak_text(
-                    manager_row.manager_name,
-                    view.count_label_one,
-                    view.count_label_many,
-                    view.length,
-                    window,
-                    held_count=view.held_in_run,
-                    inapplicable_count=view.inapplicable_in_run,
-                    inapplicable_label=view.inapplicable_label,
-                ),
+                text=render(),
                 surfaces=surfaces,
                 tier=_entry_tier(window, manager_key, rows_by_gameweek),
                 window=window,
@@ -460,6 +487,7 @@ def _streak_entries(
                 held_count=view.held_in_run,
                 inapplicable_count=view.inapplicable_in_run,
                 excess=view.excess,
+                prompt_text=render(for_prompt=True),
             ))
 
     def _sort_key(entry: NotesPackEntry) -> tuple[int, str, str]:
@@ -487,6 +515,7 @@ def _season_count_text(
     run_length: int = 0,
     run_held: int = 0,
     run_framed: bool = False,
+    for_prompt: bool = False,
 ) -> str:
     """Render a season total as a count over the span it was computed on.
 
@@ -514,9 +543,20 @@ def _season_count_text(
     A gameweek the condition had nothing to judge in is not in
     `held_total` at all (issue #358): the record rules it, and it simply was
     not an occurrence, which the span already says without a qualifier.
+
+    `for_prompt` renders the editorial prompt's sentence instead of the
+    ledger line (issue #452), with the same figures and the same qualifier:
+    "Bob has 4 gameweek wins this season, the latest this gameweek (GW1-GW6;
+    1 gameweek could not be judged)".
     """
     label = label_one if occurrences == 1 else label_many
     span = f"GW{window.start_gameweek}-GW{window.end_gameweek}"
+    if for_prompt:
+        return _season_count_prompt_text(
+            manager_name, label_one, label_many, occurrences, held_total, span,
+            occurred_this_gameweek=occurred_this_gameweek,
+            run_length=run_length, run_held=run_held, run_framed=run_framed,
+        )
 
     if run_framed and run_length > 0:
         run_label = label_one if run_length == 1 else label_many
@@ -534,6 +574,44 @@ def _season_count_text(
         plural = "" if held_total == 1 else "s"
         text += f", with {held_total} gameweek{plural} not judged either way"
     return text + "."
+
+
+def _season_count_prompt_text(
+    manager_name: str,
+    label_one: str,
+    label_many: str,
+    occurrences: int,
+    held_total: int,
+    span: str,
+    *,
+    occurred_this_gameweek: bool,
+    run_length: int,
+    run_held: int,
+    run_framed: bool,
+) -> str:
+    """`_season_count_text`'s line as a sentence for the editorial prompt.
+
+    The ledger's "Bob: 4 gameweek wins this season (GW1-GW6), the latest
+    this gameweek, with 1 gameweek not judged either way" is a table row,
+    and the model told to keep its figures exact quoted it whole (issue
+    #452). Every figure and qualifier survives here; the span and the
+    unjudged count move into one bracket so the sentence reads on.
+    """
+    label = label_one if occurrences == 1 else label_many
+    bracket = span
+    if held_total:
+        plural = "" if held_total == 1 else "s"
+        bracket += f"; {held_total} gameweek{plural} could not be judged"
+
+    if run_framed and run_length > 0:
+        run_label = label_one if run_length == 1 else label_many
+        shape = "in a row" if run_held == 0 else "in their current run"
+        return f"{manager_name} has {run_length} {run_label} {shape}, and {occurrences} this season ({bracket})."
+    if not occurred_this_gameweek:
+        return f"{manager_name} has {occurrences} {label} this season ({bracket})."
+    if occurrences == 1:
+        return f"{manager_name} has 1 {label} this season, and it came this gameweek ({bracket})."
+    return f"{manager_name} has {occurrences} {label} this season, the latest this gameweek ({bracket})."
 
 
 def _season_count_entries(
@@ -622,26 +700,29 @@ def _season_count_entries(
             surfaces = _REPORT_AND_PROMPT
         else:
             surfaces = frozenset()
+        render = partial(
+            _season_count_text,
+            manager_row.manager_name,
+            view.count_label_one,
+            view.count_label_many,
+            view.occurrences,
+            view.held_total,
+            window,
+            occurred_this_gameweek=occurred_this_gameweek,
+            run_length=view.length,
+            # Either kind of gameweek the run crossed stops it reading
+            # "in a row"; the line never names which, so one sum serves.
+            run_held=view.held_in_run + view.inapplicable_in_run,
+            # A run-milestone condition is one whose whole point is the
+            # unbroken sequence, so its line leads with the run it
+            # actually fired on rather than a season total that would
+            # leave the reader wondering why this week.
+            run_framed=bool(view.count_policy.run_milestones),
+        )
         entries.append(NotesPackEntry(
             kind=NoteKind.SEASON_COUNT,
-            text=_season_count_text(
-                manager_row.manager_name,
-                view.count_label_one,
-                view.count_label_many,
-                view.occurrences,
-                view.held_total,
-                window,
-                occurred_this_gameweek=occurred_this_gameweek,
-                run_length=view.length,
-                # Either kind of gameweek the run crossed stops it reading
-                # "in a row"; the line never names which, so one sum serves.
-                run_held=view.held_in_run + view.inapplicable_in_run,
-                # A run-milestone condition is one whose whole point is the
-                # unbroken sequence, so its line leads with the run it
-                # actually fired on rather than a season total that would
-                # leave the reader wondering why this week.
-                run_framed=bool(view.count_policy.run_milestones),
-            ),
+            text=render(),
+            prompt_text=render(for_prompt=True),
             surfaces=surfaces,
             tier=_entry_tier(window, manager_key, rows_by_gameweek),
             window=window,
