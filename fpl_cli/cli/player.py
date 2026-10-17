@@ -1030,12 +1030,19 @@ def _build_detail_json(player_data: dict, position: str, teams: dict) -> list[di
 
 
 def _build_history_json(profile: PlayerProfile) -> dict:
-    """Build career history data for JSON output."""
+    """Build career history data for JSON output.
+
+    `team_code` is the club's permanent code. `team` carries the same number
+    for consumers written before it existed, and is deprecated: every other
+    payload's `team` is a short name like "ARS", so the name misdescribes the
+    value (#423).
+    """
     seasons = []
     for s in profile.seasons:
         seasons.append({
             "season": s.season,
-            "team": s.team_id,
+            "team_code": s.team_code,
+            "team": s.team_code,
             "total_points": s.total_points,
             "minutes": s.minutes,
             "starts": s.starts,
