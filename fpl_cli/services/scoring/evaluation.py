@@ -252,8 +252,8 @@ class PlayerIdentity:
 
     ``id`` is the main game's element id; ``code`` is the identifier both games
     share, carried so every scoring row a ``--format json`` payload emits can be
-    joined to a draft command's rows (#419). None only for a player-shaped
-    mapping that never had one.
+    joined to a draft command's rows (#419). None for a player without a usable
+    one (see ``usable_code``), never 0.
     """
 
     id: int
@@ -377,11 +377,14 @@ def build_player_evaluation(
         gk_consistency_percentile=float(_get("gk_consistency_percentile", 0.5) or 0.5),
     )
 
-    # Build identity
-    code = _get("code")
+    # Build identity. `code` goes through `usable_code` rather than `int()`:
+    # this function also serves the allocator, the returnee radar and the
+    # waiver path, none of which read `code`, so a blank one must not raise.
+    from fpl_cli.models.player import usable_code
+
     identity = PlayerIdentity(
         id=int(_get("id", 0)),
-        code=int(code) if code is not None else None,
+        code=usable_code(_get("code")),
         web_name=str(_get("web_name", "")),
         team_short=str(_get("team_short", "")),
         position_name=position_name,

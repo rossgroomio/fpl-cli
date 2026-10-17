@@ -507,6 +507,24 @@ class TestFPLPriceScraper:
         assert result is not None
         assert result.squad[0].element_id == 253
         assert result.squad[0].code == 118748
+        assert result.extraction_errors == []
+
+    async def test_a_failed_player_list_fetch_is_recorded_not_silent(self):
+        """The squad still comes back from the picks, but the missing names and codes say why (#419)."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        scraper = FPLPriceScraper()
+        page = MagicMock()
+        page.evaluate = AsyncMock(side_effect=RuntimeError("fetch failed"))
+        result = await scraper._extract_from_intercepted(page, {
+            "picks": [{"element": 253, "selling_price": 130, "purchase_price": 125}],
+            "transfers": {"bank": 10, "limit": 1},
+        })
+
+        assert result is not None
+        assert result.squad[0].element_id == 253
+        assert result.squad[0].code is None
+        assert any("player list" in err.lower() for err in result.extraction_errors)
 
     async def test_extract_finances_records_intercepted_failure_in_errors(self):
         """If /api/me/ succeeded but the intercepted payload is unusable, the DOM fallback still gets a hint."""

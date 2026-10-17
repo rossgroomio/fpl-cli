@@ -19,7 +19,7 @@ def _make_trend(
     price_start=130, price_current=135, price_change=5,
     price_slope=1.0, price_acceleration=0.1,
     transfer_momentum=50000,
-    gw_count=6, latest_gw=6, first_gw=1,
+    gw_count=6, latest_gw=6, first_gw=1, code=None,
 ) -> GwTrendProfile:
     return GwTrendProfile(
         element=element, web_name=web_name, position=position,
@@ -28,6 +28,7 @@ def _make_trend(
         price_slope=price_slope, price_acceleration=price_acceleration,
         transfer_momentum=transfer_momentum,
         gw_count=gw_count, latest_gw=latest_gw, first_gw=first_gw,
+        code=code,
     )
 
 
@@ -35,17 +36,17 @@ def _sample_trends():
     return {
         100: _make_trend(
             element=100, web_name="Salah", position="MID", team_name="Liverpool",
-            price_change=5, price_slope=1.0,
+            price_change=5, price_slope=1.0, code=118748,
         ),
         200: _make_trend(
             element=200, web_name="Haaland", position="FWD", team_name="Manchester City",
             price_start=150, price_current=147, price_change=-3,
-            price_slope=-0.5, transfer_momentum=-20000,
+            price_slope=-0.5, transfer_momentum=-20000, code=223094,
         ),
         300: _make_trend(
             element=300, web_name="Alexander-Arnold", position="DEF", team_name="Liverpool",
             price_start=85, price_current=87, price_change=2,
-            price_slope=0.3, transfer_momentum=10000,
+            price_slope=0.3, transfer_momentum=10000, code=169187,
         ),
     }
 
@@ -53,17 +54,17 @@ def _sample_trends():
 def _sample_players():
     return [
         make_player(
-            id=100, code=118748, web_name="Salah", team_id=14,
+            id=100, code=118749, web_name="Salah", team_id=14,
             position=PlayerPosition.MIDFIELDER, now_cost=135,
             cost_change_start=5,
         ),
         make_player(
-            id=200, code=223094, web_name="Haaland", team_id=13,
+            id=200, code=223095, web_name="Haaland", team_id=13,
             position=PlayerPosition.FORWARD, now_cost=147,
             cost_change_start=-3,
         ),
         make_player(
-            id=300, code=169187, web_name="Alexander-Arnold", team_id=14,
+            id=300, code=169188, web_name="Alexander-Arnold", team_id=14,
             position=PlayerPosition.DEFENDER, now_cost=87,
             cost_change_start=2,
         ),
@@ -275,15 +276,18 @@ class TestPriceHistoryJson:
         }
         assert required.issubset(player.keys())
 
-    def test_json_rows_carry_code_from_the_player_list(self):
-        """The trend rows hold only the element id; `code` comes from the main game's list (#419)."""
+    def test_json_rows_carry_the_trend_sources_code(self):
+        """`code` names the same player as `element`: both come from the trend source (#419)."""
         result = _run(["--format", "json"])
         codes = {row["element"]: row["code"] for row in json.loads(result.output)["data"]}
         assert codes == {100: 118748, 200: 223094, 300: 169187}
 
-    def test_json_code_is_null_for_a_player_missing_from_the_list(self):
+    def test_json_code_is_never_borrowed_from_the_live_player_list(self):
+        """Around the summer rollover the live list numbers a different season: element 400
+        there is someone else, so its code must not be read across (#419)."""
         trends = {**_sample_trends(), 400: _make_trend(element=400, web_name="Gone")}
-        result = _run(["--format", "json"], trends=trends)
+        players = [*_sample_players(), make_player(id=400, code=999_999, web_name="Stranger", team_id=14)]
+        result = _run(["--format", "json"], trends=trends, players=players)
         row = next(r for r in json.loads(result.output)["data"] if r["element"] == 400)
         assert row["code"] is None
 

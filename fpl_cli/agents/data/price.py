@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 from fpl_cli.agents.base import Agent, AgentResult, AgentStatus
 from fpl_cli.api.fpl import FPLClient
+from fpl_cli.models.player import usable_code
 
 if TYPE_CHECKING:
     from fpl_cli.models.player import Player
@@ -207,6 +208,7 @@ class PriceAgent(Agent):
 
         return {
             "id": player.id,
+            "code": usable_code(player.code),
             "name": player.web_name,
             "team": team.short_name if team else "???",
             "position": player.position_name,

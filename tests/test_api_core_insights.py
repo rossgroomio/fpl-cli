@@ -638,12 +638,26 @@ class TestGwTrends:
 
         salah = trends[100]
         assert salah.web_name == "Salah"
+        assert salah.code == 80201  # players.csv's player_code for the same season-local id
         assert salah.price_start == 130  # 13.0 * 10
         assert salah.price_current == 135  # 13.5 * 10
         assert salah.price_change == 5
         assert salah.gw_count == 6
         assert salah.latest_gw == 6
         assert salah.first_gw == 1
+
+    @respx.mock
+    async def test_a_player_missing_from_players_csv_has_no_code(self, tmp_path):
+        """No guess from elsewhere: a trend row's code comes from its own season's list or not at all (#419)."""
+        respx.get(f"{BASE}/{CI_SEASON}/players.csv").mock(
+            return_value=Response(200, text=PLAYERS_CSV)
+        )
+        _mock_gw_routes({1: _gw_rows([(777, 5.0, 100, 50, "Newcomer")])})
+
+        async with CoreInsightsClient(_make_fetcher(tmp_path)) as client:
+            trends = await client.get_gw_trends()
+
+        assert trends[777].code is None
 
     @respx.mock
     async def test_falling_price(self, tmp_path):

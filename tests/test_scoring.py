@@ -553,6 +553,19 @@ class TestBuildPlayerEvaluation:
 
         assert identity.code is None
 
+    def test_identity_code_is_none_not_zero_for_a_model_without_one(self):
+        """`Player.code` defaults to 0, which every such player would share as a join key."""
+        _, identity = build_player_evaluation(make_player(id=7, code=0))
+
+        assert identity.code is None
+
+    @pytest.mark.parametrize("code", ["", float("nan")])
+    def test_a_blank_code_on_a_mapping_does_not_raise(self, code):
+        """The allocator, radar and waiver paths share this builder and never read `code`."""
+        _, identity = build_player_evaluation({"id": 42, "position": "MID", "code": code})
+
+        assert identity.code is None
+
     @pytest.mark.parametrize("score", ["captain", "bench", "lineup"])
     def test_scoring_rows_carry_the_identitys_code(self, score: str):
         evaluation, identity = build_player_evaluation(
@@ -3130,7 +3143,7 @@ class TestSelectStartingXI:
     def _scored(pid, name, pos, team, raw, excluded=False):
         """Minimal scored player dict matching calculate_lineup_score() output."""
         return {
-            "id": pid, "name": name, "position": pos, "team": team,
+            "id": pid, "code": 10_000 + pid, "name": name, "position": pos, "team": team,
             "lineup_score": round(raw / 31.0 * 100), "lineup_score_raw": raw,
             "excluded": excluded, "exclusion_reason": None,
             "positional_fdr": None, "price": 6.0, "form": 5.0, "ppg": 5.0,
@@ -3165,6 +3178,17 @@ class TestSelectStartingXI:
         assert len(formation_parts) == 3
         d, m, f = (int(x) for x in formation_parts)
         assert (d, m, f) in VALID_FORMATIONS
+
+    def test_xi_and_bench_rows_keep_code_beside_id(self):
+        """The gw-prep starting XI script emits these rows as they are, so `code` must survive selection (#419)."""
+        squad = self._squad_15()
+        squad[6]["excluded"] = True  # DEF5: excluded rows land on the bench
+
+        result = select_starting_xi(squad)
+
+        rows = result["starting_xi"] + result["bench"]
+        assert len(rows) == 15
+        assert all(row["code"] == 10_000 + row["id"] for row in rows)
 
     def test_picks_343_when_fwds_outscore_extra_def(self):
         result = select_starting_xi(self._squad_15())

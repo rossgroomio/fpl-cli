@@ -135,6 +135,8 @@ rival-owned). Every payload therefore follows one convention:
 - `code` is the identifier both games share, and the only field to join two commands'
   player rows on. Never join on `id`, and never on name and club: the main game renamed
   Savinho to Sávio mid-season while the draft game kept the old spelling (#168).
+- A `code` that is not known is `null`, never `0` or a guess: a shared `0` would join every
+  such player to every other.
 
 Which namespace each payload's `id` is in, and whether the row carries `code`:
 
@@ -152,9 +154,9 @@ Which namespace each payload's `id` is in, and whether the row carries `code`:
 | `xg` | `players[]` | main | yes |
 | `xg` | `underperformers[]`, `overperformers[]`, `value_picks[]`, `top_xgi_per_90[]` | no id | no |
 | `allocate` | `data[]` | main | yes |
-| `squad sell-prices` | `data[]` | main (the picks `element`) | yes; null where the scrape could not read the player list, or on a cache scraped before `code` was recorded (re-run `--refresh`) |
+| `squad sell-prices` | `data[]` | main (the picks `element`) | yes; null where the scrape could not read the player list, or on a cache scraped before `code` was recorded, and `metadata.warnings` then carries `sell_prices_code_missing` (re-run `--refresh`) |
 | `transfer-eval` | `data.out_player`, `data.in_players[]` | main, in draft format too | yes |
-| `price-history` | `data[]` | main, named `element` | yes; null for a player the main game's player list no longer carries |
+| `price-history` | `data[]` | main, named `element` | yes, from the trend data's own player list for the same season; null for a player missing from it |
 | `history` | `data[]` | no id | yes |
 | `league-recap` | `squad[]`, `captain`, `vice_captain`, `transfers[]`, `transactions[]`, `lost_claims[]`, `fines[].players[]` | no id | yes (`code`, `player_in_code`, `player_out_code`) |
 | `intel` | player notes, `intel resolve` rows | no id | yes, null where unresolved |

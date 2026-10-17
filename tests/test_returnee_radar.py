@@ -1745,6 +1745,24 @@ def test_a_departure_that_left_the_pool_keeps_the_stored_code():
     assert [(d.player_id, d.code) for d in departures] == [(1, 4001)]
 
 
+def test_a_departure_never_emits_zero_for_a_missing_code():
+    """A live player without a code (`Player.code` 0) falls back to the record, and 0 is never a key."""
+    pool = [_flagged(pid=1, status=PlayerStatus.AVAILABLE, code=0)]
+
+    _, departures = _diff([], _snapshot(**{"1": _record(code=None)}), players=pool)
+
+    assert departures[0].code is None
+
+
+def test_a_stored_zero_code_reads_back_as_none():
+    returnee_radar.save_store(_store(current=_snapshot(gameweek=2, **{"1": _record(code=0)})))
+
+    loaded = returnee_radar.load_store(season="2026-27")
+
+    assert loaded is not None and loaded.current is not None
+    assert loaded.current.players[1].code is None
+
+
 def test_a_departure_stored_before_code_was_recorded_has_none():
     """A snapshot written before #419 has no `code`; with the player gone too there is none to give."""
     _, departures = _diff([], _snapshot(**{"1": _record()}), players=[])

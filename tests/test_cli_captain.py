@@ -19,6 +19,8 @@ def _make_agent_result(success=True, data=None, message=""):
         "my_squad_mode": True,
         "top_picks": [
             {
+                "id": 308,
+                "code": 118748,
                 "player_name": "Salah",
                 "team_short": "LIV",
                 "captain_score": 8.5,
@@ -70,6 +72,12 @@ class TestCaptainJsonFormat:
         data = json.loads(result.output)
         assert "top_picks" in data["data"]
         assert data["data"]["top_picks"][0]["player_name"] == "Salah"
+
+    def test_json_rows_keep_code_beside_id(self):
+        """The command hands the agent's rows over whole, `code` included (#419)."""
+        result = _run_captain(["--format", "json"])
+        pick = json.loads(result.output)["data"]["top_picks"][0]
+        assert (pick["id"], pick["code"]) == (308, 118748)
 
     def test_json_metadata_has_gameweek(self):
         result = _run_captain(["--format", "json"])

@@ -16,6 +16,8 @@ def _make_stats_result(success=True, data=None, message=""):
         "differentials": {
             "elite": [
                 {
+                    "id": 400,
+                    "code": 219847,
                     "player_name": "Isak",
                     "team_short": "NEW",
                     "position": "FWD",
@@ -42,6 +44,8 @@ def _make_captain_result(success=True, data=None, message=""):
     result.data = data or {
         "differential_picks": [
             {
+                "id": 400,
+                "code": 219847,
                 "player_name": "Isak",
                 "team_short": "NEW",
                 "ownership": 3.2,
@@ -111,6 +115,15 @@ class TestDifferentialsJsonFormat:
         data = json.loads(result.output)
         assert "differentials" in data["data"]
         assert "differential_captains" in data["data"]
+
+    def test_json_rebuilt_payload_keeps_code_beside_id(self):
+        """`data` is rebuilt from two agents' results, and neither side may drop `code` on the way (#419)."""
+        result = _run_differentials(["--format", "json"])
+        data = json.loads(result.output)["data"]
+        elite = data["differentials"]["elite"][0]
+        captain = data["differential_captains"][0]
+        assert (elite["id"], elite["code"]) == (400, 219847)
+        assert (captain["id"], captain["code"]) == (400, 219847)
 
     def test_json_metadata_has_gameweek(self):
         result = _run_differentials(["--format", "json"])

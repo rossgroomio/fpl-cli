@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 from fpl_cli.agents.base import Agent, AgentResult, AgentStatus
 from fpl_cli.api.fpl import FPLClient
-from fpl_cli.models.player import FORMATION_LIMITS, PlayerStatus
+from fpl_cli.models.player import FORMATION_LIMITS, PlayerStatus, usable_code
 from fpl_cli.services.scoring import (
     ConsistencySignals,
     ScoringContext,
@@ -189,7 +189,7 @@ class BenchOrderAgent(Agent):
                 team = team_map.get(player.team_id)
                 risks.append({
                     "id": player.id,
-                    "code": player.code,
+                    "code": usable_code(player.code),
                     "name": player.web_name,
                     "team": team.short_name if team else "???",
                     "position": player.position_name,
@@ -222,7 +222,7 @@ class BenchOrderAgent(Agent):
                 continue
             bench_by_position.setdefault(pos, []).append({
                 "id": player.id,
-                "code": player.code,
+                "code": usable_code(player.code),
                 "name": player.web_name,
                 "position": pos,
             })

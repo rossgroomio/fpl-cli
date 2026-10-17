@@ -46,7 +46,7 @@ class CaptainCandidate(TypedDict):
 
 class PlayerStats(TypedDict):
     id: int  # the main game's element id
-    code: int  # cross-game key; join another command's rows on this, never on id
+    code: int | None  # cross-game key (see usable_code); join on this, never on id
     player_name: str
     team_short: str
     position: str

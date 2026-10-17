@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 import keyring
 
+from fpl_cli.models.player import usable_code
 from fpl_cli.paths import user_data_file
 
 if TYPE_CHECKING:
@@ -127,7 +128,7 @@ class TeamFinances:
                 position=p.get("position", ""),
                 purchase_price=p.get("purchase_price", 0.0),
                 element_id=p.get("element_id"),
-                code=p.get("code"),
+                code=usable_code(p.get("code")),
             )
             for p in data.get("squad", [])
         ]
@@ -490,6 +491,11 @@ class FPLPriceScraper:
 
     async def _extract_from_intercepted(self, page: Page, my_entry_response: dict) -> TeamFinances | None:
         """Build TeamFinances from intercepted /api/my-team/ response data."""
+        # A failed player-list fetch still yields a usable squad (ids and sell
+        # prices come from the picks), so it is recorded rather than refused:
+        # without it the names, positions and `code` are all missing, and the
+        # cache would otherwise keep them missing with no reason on record.
+        extraction_errors: list[str] = []
         try:
             bootstrap = await page.evaluate("""
                 async () => {
@@ -504,6 +510,9 @@ class FPLPriceScraper:
             }
         except Exception as e:  # noqa: BLE001 — scraper resilience
             logger.debug("Failed to fetch bootstrap data: %s", e)
+            extraction_errors.append(
+                f"Player list fetch failed ({type(e).__name__}): names, positions and codes are missing",
+            )
             elements = {}
             element_types = {}
 
@@ -527,7 +536,7 @@ class FPLPriceScraper:
                 position=position,
                 purchase_price=purchase_price,
                 element_id=element_id,
-                code=player.get("code"),
+                code=usable_code(player.get("code")),
             ))
 
         if not squad:
@@ -541,6 +550,7 @@ class FPLPriceScraper:
             squad=squad,
             total_value=total_value,
             scraped_at=datetime.now().isoformat(),
+            extraction_errors=extraction_errors,
         )
 
     async def _extract_via_dom(self, page: Page) -> TeamFinances:

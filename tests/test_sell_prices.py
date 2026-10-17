@@ -41,10 +41,28 @@ class TestSellPricesJson:
         assert len(envelope["data"]) == 2
         assert envelope["data"][0]["id"] == 253
         assert envelope["data"][0]["code"] == 118748
+        assert envelope["metadata"]["warnings"] == []
         assert envelope["data"][0]["sell_price"] == 13.0
         assert envelope["metadata"]["bank"] == 1.5
         assert envelope["metadata"]["total_sell_value"] == 27.5
         assert envelope["metadata"]["free_transfers"] == 2
+
+    def test_rows_without_code_are_named_in_a_warning_not_an_error(self):
+        """A cache scraped before `code` was stored still budgets, so it is data with a warning (#419)."""
+        finances = _make_finances()
+        for player in finances.squad:
+            player.code = None
+        runner = CliRunner()
+        with patch("fpl_cli.scraper.fpl_prices.load_cache", return_value=finances):
+            result = runner.invoke(sell_prices_command, ["--format", "json"], catch_exceptions=False)
+
+        assert result.exit_code == 0
+        envelope = json.loads(result.output)
+        assert [row["code"] for row in envelope["data"]] == [None, None]
+        [warning] = envelope["metadata"]["warnings"]
+        assert warning["code"] == "sell_prices_code_missing"
+        assert "2 of 2" in warning["message"]
+        assert "--refresh" in warning["message"]
 
     def test_json_error_when_element_ids_missing(self):
         finances = _make_finances(with_element_ids=False)

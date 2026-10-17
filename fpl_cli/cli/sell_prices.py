@@ -25,6 +25,9 @@ from fpl_cli.scraper.fpl_prices import TeamFinances, ordered_squad
 
 COMMAND = "sell-prices"
 
+# `metadata.warnings` code for rows that carry an id but no cross-game key.
+CODE_MISSING = "sell_prices_code_missing"
+
 # Chromium error codes a TLS-inspecting proxy rejecting the ClientHello can surface as,
 # depending on whether it RSTs the connection or just drops/hangs it.
 _PROXY_TLS_ERROR_MARKERS = (
@@ -240,7 +243,29 @@ def _emit_json_finances(finances: TeamFinances) -> None:
         "total_sell_value": sell_total,
         "free_transfers": finances.free_transfers,
         "scraped_at": finances.scraped_at,
+        "warnings": _code_warnings(finances),
     })
+
+
+def _code_warnings(finances: TeamFinances) -> list[dict[str, str]]:
+    """Say so when rows lack `code`, rather than hand a joiner nulls with no reason.
+
+    Not an error like a missing id: `fpl allocate --sell-prices` budgets on id
+    and sell price alone, so the payload is still good for that. But a
+    consumer joining these rows to another command's on `code` would match
+    nothing, and only `--refresh` can fill it in (#419).
+    """
+    missing = sum(1 for p in finances.squad if p.code is None)
+    if not missing:
+        return []
+    return [{
+        "code": CODE_MISSING,
+        "message": (
+            f"{missing} of {len(finances.squad)} players carry no code: the cache was"
+            " scraped before codes were recorded, or the scrape could not read the"
+            " player list. Re-run with --refresh to fill them in."
+        ),
+    }]
 
 
 def _display_finances(finances: TeamFinances) -> None:

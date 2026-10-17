@@ -8,6 +8,7 @@ from fpl_cli.agents.base import Agent, AgentResult, AgentStatus
 from fpl_cli.agents.common import fetch_understat_lookup
 from fpl_cli.api.fpl import FPLClient, finished_gameweek_ids
 from fpl_cli.api.understat import understat_join_warnings
+from fpl_cli.models.player import usable_code
 from fpl_cli.models.types import PlayerStats
 from fpl_cli.services.matchup import calculate_matchup_score
 from fpl_cli.services.player_prior import early_season_quality_warning
@@ -504,7 +505,7 @@ class StatsAgent(Agent):
 
         return {  # type: ignore[return-value]  # enrichment fields added by run()
             "id": player.id,
-            "code": player.code,
+            "code": usable_code(player.code),
             "player_name": player.web_name,
             "team_short": team.short_name if team else "???",
             "position": player.position_name,
@@ -578,7 +579,7 @@ class StatsAgent(Agent):
 
         return {  # type: ignore[return-value]  # enrichment fields added by run()
             "id": player.id,
-            "code": player.code,
+            "code": usable_code(player.code),
             "player_name": player.web_name,
             "team_short": team.short_name if team else "???",
             "position": player.position_name,

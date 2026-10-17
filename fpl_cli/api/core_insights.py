@@ -30,6 +30,7 @@ from fpl_cli.api.historical_types import (
     compute_reliability,
     compute_trend,
 )
+from fpl_cli.models.player import usable_code
 from fpl_cli.season import core_insights_season, season_label, season_start_year
 
 logger = logging.getLogger(__name__)
@@ -284,13 +285,16 @@ def parse_gw_stat_rows(
             continue
 
         player = lookup.get(pid)
-        parsed[pid] = {
+        gw_row: _GwRow = {
             "value": now_cost,
             "transfers_balance": transfers_in - transfers_out,
             "web_name": player.web_name if player else row.get("web_name", "???"),
             "position": player.position if player else "???",
             "team_name": row.get("team_name", "???"),
         }
+        if player:
+            gw_row["code"] = player.player_code
+        parsed[pid] = gw_row
     return parsed, rows_read
 
 
@@ -758,6 +762,7 @@ class CoreInsightsClient:
                 gw_count=len(sorted_rounds),
                 latest_gw=sorted_rounds[-1],
                 first_gw=sorted_rounds[0],
+                code=usable_code(latest_row.get("code")),
             )
 
         return profiles

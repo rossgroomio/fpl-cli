@@ -133,7 +133,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from fpl_cli.api.understat import match_fpl_to_understat
-from fpl_cli.models.player import POSITION_MAP
+from fpl_cli.models.player import POSITION_MAP, usable_code
 from fpl_cli.paths import user_data_file
 from fpl_cli.season import TOTAL_GAMEWEEKS, get_season_year, season_label
 from fpl_cli.services.player_prior import MIN_MINUTES, PlayerPrior, percentile_rank
@@ -1101,7 +1101,7 @@ def _slot_from_payload(payload: Any, *, season: str) -> RadarSnapshot | None:
             return_date=_parse_date(value.get("return_date")),
             lapsed=bool(value.get("lapsed", False)),
             web_name=str(value.get("web_name", "") or ""),
-            code=_as_optional_int(value.get("code")),
+            code=usable_code(value.get("code")),
         )
     return RadarSnapshot(season=season, gameweek=gameweek, players=records)
 
@@ -1166,7 +1166,7 @@ def snapshot_from_entries(
                 return_date=entry.signal.return_date,
                 lapsed=entry.signal.lapsed,
                 web_name=entry.web_name,
-                code=entry.code,
+                code=usable_code(entry.code),
             )
             for entry in entries
         },
@@ -1327,7 +1327,7 @@ def _departure(
     """
     status = _status_code(player) if player is not None else record.status
     name = str(read_player_field(player, "web_name", "") or "") if player is not None else ""
-    live_code = _as_optional_int(read_player_field(player, "code")) if player is not None else None
+    live_code = usable_code(read_player_field(player, "code")) if player is not None else None
     if status == "a":
         transition, reason = TRANSITION_NOW_AVAILABLE, None
     else:
@@ -1339,7 +1339,7 @@ def _departure(
         status=status,
         transition=transition,
         reason=reason,
-        code=live_code or record.code,
+        code=live_code if live_code is not None else record.code,
     )
 
 
