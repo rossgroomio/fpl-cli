@@ -631,6 +631,12 @@ def league_recap_command(
                             if capture_result.fines_tally is not None else None
                         ),
                         "synthesis_summary": collected_data.get("synthesis_summary"),
+                        # Which draft shipped (1, or 2 after a retry) and the
+                        # tokens it spent; null whenever no editorial came
+                        # back -- not asked for, a dry run, or a failed call
+                        # (#450).
+                        "synthesis_attempts": collected_data.get("synthesis_attempts"),
+                        "synthesis_usage": collected_data.get("synthesis_usage"),
                         # The skipped editorial rides the same channel as the
                         # capture's own warnings: `synthesis_summary` being
                         # null does not say whether it was asked for.
@@ -654,8 +660,12 @@ def league_recap_command(
                                 "message": (
                                     "The provider refused the editorial: it"
                                     " stopped with stop_reason"
-                                    f" {collected_data['synthesis_stop_reason']!r},"
-                                    " so the text may be incomplete."
+                                    f" {collected_data['synthesis_stop_reason']!r}"
+                                    + (
+                                        f" (category {collected_data['synthesis_stop_category']!r})"
+                                        if collected_data.get("synthesis_stop_category") else ""
+                                    )
+                                    + ", so the text may be incomplete."
                                 ) if collected_data.get("synthesis_refused") else (
                                     "The editorial may be cut off: the provider"
                                     " stopped with stop_reason"
@@ -939,12 +949,14 @@ async def _editorial_with_data_checks(
     prompt: str,
     system_prompt: str,
     collected_data: LeagueRecapData,
-) -> tuple[str, dict[str, list[str]], LLMResponse]:
+) -> tuple[SynthesisAttempt[dict[str, list[str]]], int]:
     """Query the editorial, retrying once if it contradicts its own data or
     the provider cut it off at its token ceiling.
 
-    Returns `(summary, problems, response)` for the attempt that ships, the
-    problems keyed by warning code as `check_recap_editorial()` returns them.
+    Returns the attempt that ships and the number of answers judged, as
+    `synthesise_with_retry` does. The attempt's verdict is its problems keyed
+    by warning code as `check_recap_editorial()` returns them, and its prompt
+    is the one that drew it, so `--debug` saves a pair that replays (#450).
     The attempt loop is the one `review` shares (`synthesise_with_retry`):
     the retry is told exactly which claims were wrong and what the data says
     instead, or that the last draft was cut off (#357, #359, #372), and a
@@ -978,7 +990,7 @@ async def _editorial_with_data_checks(
     def damage(attempt: SynthesisAttempt[dict[str, list[str]]]) -> tuple[int, int]:
         return int(attempt.response.stopped_early), sum(len(found) for found in attempt.verdict.values())
 
-    best, _ = await synthesise_with_retry(
+    return await synthesise_with_retry(
         provider,
         prompt=prompt,
         system_prompt=system_prompt,
@@ -993,7 +1005,6 @@ async def _editorial_with_data_checks(
         # consumer sees the editorial as saved.
         normalise=lambda text: normalise_recap_editorial(text, league_name=collected_data["league_name"]),
     )
-    return best.text, best.verdict, best.response
 
 
 async def _recap_llm_summarise(
@@ -1067,6 +1078,11 @@ async def _recap_llm_summarise(
         season_length=season_length,
     )
 
+    # The prompt `--debug` saves: the one that drew the editorial that
+    # shipped, which after a retry is the first plus what it got wrong. A dry
+    # run, or a call that never landed, saves the prompt as built.
+    shipped_prompt = user_prompt
+
     if dry_run:
         console.print("[dim]  Dry run: saving prompts without calling LLMs...[/dim]")
         if debug_dir:
@@ -1077,13 +1093,23 @@ async def _recap_llm_summarise(
     elif synthesis_provider:
         try:
             console.print("[dim]  Generating league editorial...[/dim]")
-            summary, problems, synthesis_result = await _editorial_with_data_checks(
+            shipped, attempts = await _editorial_with_data_checks(
                 synthesis_provider,
                 prompt=user_prompt,
                 system_prompt=system_prompt,
                 collected_data=collected_data,
             )
+            summary, problems, synthesis_result = shipped.text, shipped.verdict, shipped.response
+            shipped_prompt = shipped.prompt
             collected_data["synthesis_summary"] = summary
+            # Which draft shipped and what it cost, so a recap that "feels
+            # different" can be read against the last one rather than
+            # guessed at (#450).
+            collected_data["synthesis_attempts"] = attempts
+            collected_data["synthesis_usage"] = {
+                "input_tokens": synthesis_result.usage.input_tokens,
+                "output_tokens": synthesis_result.usage.output_tokens,
+            }
             if problems:
                 # Kept, not scrubbed: the rest of the editorial is sound, and
                 # the saved report carries these lines above it so the wrong
@@ -1106,9 +1132,14 @@ async def _recap_llm_summarise(
                     # Not "cut off": a refusal was declined, not truncated,
                     # and re-running usually draws the same refusal (#399).
                     collected_data["synthesis_refused"] = True
+                    category = ""
+                    if synthesis_result.stop_category:
+                        # Which check declined it, when the provider said (#450).
+                        collected_data["synthesis_stop_category"] = synthesis_result.stop_category
+                        category = f", category: {rich_escape(synthesis_result.stop_category)}"
                     error_console.print(
                         "[yellow]  The provider refused the editorial, so it may be incomplete"
-                        f" (stop_reason: {stop_reason})[/yellow]"
+                        f" (stop_reason: {stop_reason}{category})[/yellow]"
                     )
                 else:
                     error_console.print(
@@ -1125,4 +1156,4 @@ async def _recap_llm_summarise(
 
     if debug and debug_dir:
         (debug_dir / "recap_system.txt").write_text(system_prompt, encoding="utf-8")
-        (debug_dir / "recap_prompt.txt").write_text(user_prompt, encoding="utf-8")
+        (debug_dir / "recap_prompt.txt").write_text(shipped_prompt, encoding="utf-8")

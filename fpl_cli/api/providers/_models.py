@@ -76,6 +76,12 @@ class LLMResponse:
     verbatim in whichever vocabulary it used. Without it a truncated response
     and a complete one are indistinguishable downstream, which is how a saved
     gameweek review shipped with a verdict missing and exit 0 (#266).
+
+    `stop_category` is the refusal's category when the provider names one
+    (Anthropic's `stop_details.category`: `cyber`, `general_harms` and so
+    on), so a refusal can say which check declined it rather than only that
+    one did (#450). None for every other stop, and for a refusal that came
+    without one.
     """
 
     content: str
@@ -83,6 +89,7 @@ class LLMResponse:
     usage: TokenUsage
     citations: list[str] = field(default_factory=list)
     stop_reason: str | None = None
+    stop_category: str | None = None
 
     @property
     def stopped_early(self) -> bool:
@@ -130,9 +137,10 @@ def log_abnormal_stop(response: LLMResponse, label: str) -> None:
     # A refusal was declined, not cut off: saying "may be cut off" beside the
     # caller's own "refused" wording would make the two lines disagree (#411).
     consequence = "the provider declined to answer" if response.refused else "the response may be cut off"
+    category = f", category={response.stop_category!r}" if response.stop_category else ""
     logger.warning(
-        "%s stopped early (stop_reason=%r) after %d output token(s) -- %s",
-        label, response.stop_reason, response.usage.output_tokens, consequence,
+        "%s stopped early (stop_reason=%r%s) after %d output token(s) -- %s",
+        label, response.stop_reason, category, response.usage.output_tokens, consequence,
     )
 
 

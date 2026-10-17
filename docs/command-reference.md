@@ -904,7 +904,9 @@ keeps the first attempt rather than losing it. This is the same single retry `le
 its editorial. Under `--debug` the detail lands in
 `data/debug/synthesis_corrections.txt` alongside `research_corrections.txt`, and
 `synthesis_prompt.txt` holds the prompt that drew the saved `synthesis_response.txt` — the
-retry's, feedback included, when the retry is the one kept. A saved report
+retry's, feedback included, when the retry is the one kept. `synthesis_meta.json` beside them
+records how many answers were judged (`attempts`: 1, or 2 after a retry) and the kept answer's
+token `usage` (`input_tokens`, `output_tokens`), so one run can be read against another. A saved report
 generated from such a response carries the same list as a warning callout above the summary, so
 a verdict the model dropped never reads as one deliberately omitted. The callout does not depend
 on there being a summary to qualify: a response that returned no text at all — the shape a hard
@@ -1157,7 +1159,10 @@ gameweek with a file on disk appears there with a status, a damaged one as
 count whether or not it grew this gameweek), `season_fines` (the whole
 season tally, emitted every week regardless of the milestone gate the printed surfaces use), `synthesis_summary` (with
 `--summarise`, as it reaches the saved report — the model's heading already demoted beneath the
-report's title or dropped, see [Report title](#league-recap)), `warnings`, and `first_capture_store_path` — always present, carrying the
+report's title or dropped, see [Report title](#league-recap)), `synthesis_attempts` (how many answers were
+judged before the editorial shipped: 1, or 2 after a retry) and `synthesis_usage` (the shipped answer's
+`input_tokens` and `output_tokens`) — both `null` whenever no editorial came back, whether it was not
+asked for, the run was `--dry-run`, or the call failed — `warnings`, and `first_capture_store_path` — always present, carrying the
 partition directory on its first capture and `null` on every run after that. Warning
 codes are listed under [Capture warnings](#capture-warnings).
 
@@ -1340,7 +1345,7 @@ and `league_tables_updating`.
 | `league_history_tied_last_place_ambiguous` | A gameweek looks to have left a manager out of its `last-place` fine, but it does not record whether it was ruled on gross or net points and the two measures disagree about whether that manager was level. Nothing is written for them — fining a manager who was level only on the measure that did *not* rule would invent a fine rather than restore one. Raised on every run, because the state is permanent and only you can settle it: add the fine by hand if you know how that gameweek was ruled. It can appear alongside `league_history_tied_last_place_repaired` for the same gameweek, where some of the tie was settled and some was not |
 | `league_history_standings_repaired` | A gameweek whose recorded positions an *earlier* run had already erased was restored from the ledger itself — the last superseded line that recorded them, or, on draft, a cumulative total re-summed from earlier gameweeks. The *last* one, not the first: a gameweek captured several times while bonus and late results were still landing recorded a stale position early and the settled one last, and only the latest recorded value is the one the damage destroyed. Nothing is re-fetched, so this needs neither `--backfill-detail` nor a network call, and it stops once the damage is repaired. The count is the managers whose league position or cumulative total actually changed — a row rewritten only to restate a fine's player names is not one of them |
 | `synthesis_provider_unavailable` | `--summarise` was asked for but the synthesis provider had no usable key; everything else in the recap, the capture included, ran normally |
-| `synthesis_stopped_early` | The provider reported that the editorial stopped for a reason other than finishing (a token ceiling, a refusal) on the attempt that shipped — a token ceiling only after one retry, a refusal never retried — so `synthesis_summary` may be cut off mid-sentence. The saved report says so in the warning callout above the editorial, naming the stop reason. For a refusal (`refusal`, `content_filter`) the message and the callout say the provider refused the editorial rather than that it may be cut off, since re-running usually draws the same refusal. Everything else in the recap is unaffected |
+| `synthesis_stopped_early` | The provider reported that the editorial stopped for a reason other than finishing (a token ceiling, a refusal) on the attempt that shipped — a token ceiling only after one retry, a refusal never retried — so `synthesis_summary` may be cut off mid-sentence. The saved report says so in the warning callout above the editorial, naming the stop reason. For a refusal (`refusal`, `content_filter`) the message and the callout say the provider refused the editorial rather than that it may be cut off, since re-running usually draws the same refusal, and name the refusal's category when the provider gave one (Anthropic's `stop_details.category`, e.g. `cyber`, `general_harms`). Everything else in the recap is unaffected |
 | `synthesis_contested_misattribution` | Draft only. The editorial still puts a manager in the wrong role of a contested waiver race after one retry — beaten to a player the race's line does not name them as beaten to, or winning one someone else won. The message quotes each wrong claim beside the contested line it contradicts. `synthesis_summary` is the editorial as written; the saved report carries the same lines in a warning callout above it |
 | `synthesis_net_misattribution` | Either format. The editorial still pins a figure from a manager's roster line on the wrong move after one retry — the net overall (or the swing before the hit, a kind's net on a draft line that mixes kinds, or another move's swing) said of one named move whose own swing differs. The message quotes each figure, says whose it is, and gives the move's own swing. Saved as written, with the same lines in the report's callout |
 | `synthesis_kind_net_misattribution` | Draft only. The editorial still says a figure of one kind of a manager's moves — their waivers, or their free agents — that is not that kind's own after one retry: the net overall of a line that mixes kinds, the other kind's net, or the swing on a move of the other kind. The message quotes each figure with the kind it was said of, says whose it is, and gives that kind's own net. Saved as written, with the same lines in the report's callout |
@@ -1695,7 +1700,16 @@ llm:
     timeout: 60
     query_defaults:
       max_tokens: 8000
+      output_config:
+        effort: high            # Anthropic only; null unpins it
 ```
+
+`output_config` is passed through to the Anthropic Messages API as written; the shipped
+`effort: high` is `claude-sonnet-5-5`'s own default, pinned so that switching models cannot
+change it silently (`claude-opus-5-5`, for one, defaults to `medium`). Change it in
+`settings.yaml` to sweep effort, or set `effort: null` for a model that rejects the parameter.
+An OpenAI-compatible provider ignores the block. A role whose config carries no `max_tokens`
+gets 8000 on Anthropic, since thinking and the answer share that ceiling.
 
 ### LLM Providers
 

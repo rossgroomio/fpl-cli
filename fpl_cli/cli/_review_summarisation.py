@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Sequence
 from pathlib import Path
@@ -1283,7 +1284,21 @@ async def _review_llm_summarise(
                     (debug_dir / "synthesis_system.txt").write_text(synthesis_system, encoding="utf-8")
                     (debug_dir / "synthesis_prompt.txt").write_text(shipped.prompt, encoding="utf-8")
                     (debug_dir / "synthesis_response.txt").write_text(synthesis_summary, encoding="utf-8")
-                    error_console.print("[dim]    → Saved synthesis_*.txt[/dim]")
+                    # Which draft shipped and what it cost: `review` has no
+                    # JSON envelope to carry them, and without them a run
+                    # that "feels different" cannot be read against the
+                    # last (#450).
+                    (debug_dir / "synthesis_meta.json").write_text(
+                        json.dumps({
+                            "attempts": attempts,
+                            "usage": {
+                                "input_tokens": shipped.response.usage.input_tokens,
+                                "output_tokens": shipped.response.usage.output_tokens,
+                            },
+                        }, indent=2) + "\n",
+                        encoding="utf-8",
+                    )
+                    error_console.print("[dim]    → Saved synthesis_*.txt, synthesis_meta.json[/dim]")
 
     return {
         "research_summary": research_summary,

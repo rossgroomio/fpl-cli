@@ -4666,6 +4666,15 @@ class TestReviewLlmSummariseSurfacesAnIncompleteSynthesis:
         assert (debug / "synthesis_response.txt").read_text(encoding="utf-8") == _WHOLE
         assert (debug / "synthesis_prompt.txt").read_text(encoding="utf-8") == provider.calls[1]["prompt"]
 
+    async def test_debug_records_the_attempt_count_and_usage(self, capsys, tmp_path, monkeypatch):
+        # #450: review has no JSON envelope, so the bundle carries them.
+        monkeypatch.chdir(tmp_path)
+        provider = _StubSynthesisProvider(_reply(_TRUNCATED), _reply(_WHOLE))
+        await _review_llm_summarise(**self._kwargs(provider, debug=True))
+
+        meta = json.loads((tmp_path / "data" / "debug" / "synthesis_meta.json").read_text(encoding="utf-8"))
+        assert meta == {"attempts": 2, "usage": {"input_tokens": 10, "output_tokens": 20}}
+
     async def test_a_call_that_never_landed_is_reported_like_one_that_did(self, capsys):
         # #317: this used to assert the opposite, on the reasoning that an
         # empty summary was visible on its own. #306 disproved that -- an empty

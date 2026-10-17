@@ -30,6 +30,12 @@ class AnthropicProvider:
     # A 429 is retried with backoff before it becomes a ProviderError; every
     # other status is terminal. Shared with OpenAICompatProvider via `_http`.
     RETRY_POLICY: ClassVar[RetryPolicy] = RetryPolicy()
+    # Used when a role's config carries no `max_tokens`. Thinking and output
+    # share this ceiling (#316), so a low fallback is spent before any text
+    # arrives: 1024 did exactly that to `FPL_RESEARCH_PROVIDER=anthropic`,
+    # whose shipped config has no `max_tokens` of its own. Matches the
+    # synthesis role's shipped value in `defaults.yaml`.
+    DEFAULT_MAX_TOKENS: ClassVar[int] = 8000
 
     def __init__(
         self,
@@ -65,7 +71,7 @@ class AnthropicProvider:
             )
 
         merged = {**self.query_defaults, **kwargs}
-        max_tokens = int(merged.get("max_tokens", 1024))
+        max_tokens = int(merged.get("max_tokens", self.DEFAULT_MAX_TOKENS))
 
         messages = [{"role": "user", "content": prompt}]
         payload: dict[str, Any] = {
@@ -75,6 +81,15 @@ class AnthropicProvider:
         }
         if system_prompt:
             payload["system"] = system_prompt
+        # Effort lives here, so pinning it is a `settings.yaml` edit rather
+        # than whatever the model's own default happens to be (#450). A key
+        # set to null is dropped, which is how a user unpins one for a model
+        # that rejects it; an empty block sends nothing.
+        output_config = merged.get("output_config")
+        if isinstance(output_config, dict):
+            output_config = {k: v for k, v in output_config.items() if v is not None}
+            if output_config:
+                payload["output_config"] = output_config
 
         headers = {
             "x-api-key": self.api_key,
@@ -120,6 +135,7 @@ class AnthropicProvider:
             # caller decides what an early stop means for its artefact. Blank
             # normalises to None, so "not told" has exactly one representation.
             stop_reason=data.get("stop_reason") or None,
+            stop_category=_stop_category(data),
         )
         log_abnormal_stop(response, _PROVIDER_LABEL)
         log_textless_response(response, _PROVIDER_LABEL, non_text_blocks)
@@ -137,3 +153,17 @@ class AnthropicProvider:
 
     async def __aexit__(self, *exc: Any) -> None:
         await self.close()
+
+
+def _stop_category(data: dict[str, Any]) -> str | None:
+    """The refusal's category from `stop_details`, when the API gave one.
+
+    Only a refusal carries `stop_details`; every other stop sends null or
+    omits it, and the category itself may be null. Read defensively, since
+    an absent or malformed block must cost the detail, never the response.
+    """
+    details = data.get("stop_details")
+    if not isinstance(details, dict):
+        return None
+    category = details.get("category")
+    return str(category) if category else None

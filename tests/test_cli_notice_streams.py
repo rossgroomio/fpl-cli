@@ -144,7 +144,7 @@ FIXED_BY_HAND = (
     "[green]  ✓[/green] Prompts saved to data/debug/",
     "[dim]  Generating personal analysis...[/dim]",
     "[green]  ✓[/green] Personal analysis complete",
-    "[dim]    → Saved synthesis_*.txt[/dim]",
+    "[dim]    → Saved synthesis_*.txt, synthesis_meta.json[/dim]",
 )
 
 
