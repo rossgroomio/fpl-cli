@@ -356,11 +356,15 @@ reads), then:
 
 Store its output as `returnee_radar_draft`. It carries the radar's `metadata` and the subset of its
 `entries` whose `code` matches a pool row -- joined on `code`, never on `id` -- with everyone else
-under `excluded` and why (`owned`, or `no-code`). `ok: false` means the pool could not be read (no
-`data.pool`, or rows without `code` from an older fpl-cli) and `entries` is then empty, so no stash
-claim can be made from it. If the script fails (exit 1) treat it the same way: Returning Soon says
-the pool could not be read, lists nobody, and C2 makes no stash claim. Never fall back to matching
-the raw payloads yourself.
+under `excluded` and why (`owned`, or `no-code`). `ok: false` means the join could not run and
+`entries` is then empty, so no stash claim can be made from it; `warnings` says which side failed:
+`radar-unreadable` when the radar has no `data.entries` (for example the `{command, error}` envelope
+of a failed `fpl returnees` run), `pool-unreadable` or `pool-without-code` when the pool could not be
+read (no `data.pool`, or rows without `code` from an older fpl-cli), `envelope-unreadable` when
+either file is not a JSON object at all. An empty list with `ok: false`
+is never "nobody is returning". If the script fails (exit 1) treat it the same way: Returning Soon
+says the radar and pool could not be joined, lists nobody, and C2 makes no stash claim. Never fall
+back to matching the raw payloads yourself.
 
 <!-- ADAPT: Add your own further supplementary data sources here. Examples:
   - `fpl preview --save --scout` generates a GW preview with fixture analysis and scout insights.
@@ -665,8 +669,12 @@ Agent tool parameters:
 >   payload, and never match on `id`: the radar's `id` is the main game's element id and the pool's
 >   is the draft's, and the two differ for players added mid-season. The `excluded` list names the
 >   returnees a rival already owns — leave them out rather than listing them as unavailable. If `ok`
->   is false the pool could not be read: say so in the section, list nobody, and make no stash
->   claim. Quote only fields present in this payload.
+>   is false the join could not run: name what failed from `warnings` in the section ("the
+>   returnee radar could not be read" for `radar-unreadable`, "the waiver pool could not be read"
+>   for `pool-unreadable` or `pool-without-code`; both when both appear; "the returnee data could
+>   not be read" for any other warning type, or none), list nobody, and make no stash claim.
+>   Never render an empty section as nobody returning when `ok` is false. Quote only fields
+>   present in this payload.
 >
 > **STASH CLAIMS:** a Returning Soon row escalates into the Waiver Recommendations table only when
 > **all four** gates below hold. Any one failing means watchlist only — no claim.

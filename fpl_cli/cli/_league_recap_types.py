@@ -437,6 +437,11 @@ class LeagueRecapData(TypedDict):
     # #357, #359). Present means the editorial above is saved as written but
     # is wrong there; only a code with at least one problem is a key.
     synthesis_problems: NotRequired[dict[str, list[str]]]
+    # Why FPL had not finished processing the gameweek when this live capture
+    # read the league table (issue #424), so the report can say its positions
+    # and totals may be stale. Absent when the feed said it had, or could not
+    # say.
+    league_tables_updating: NotRequired[str]
     # Ledger partition key and the league's own start gameweek (absent or 1
     # means it started at GW1, so there is nothing to offset or skip).
     league_id: NotRequired[int]

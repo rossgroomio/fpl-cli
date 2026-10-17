@@ -93,9 +93,13 @@ class RecapReconciliationError(RuntimeError):
     """A point-in-time headline number disagrees with a second, independent source.
 
     Raised only for the live/current gameweek, where both sources should
-    always agree. A mismatch means the point-in-time field mapping is wrong,
-    so every row a future capture would derive from it is wrong too -- this
-    must stop the run rather than degrade silently.
+    agree once FPL has refreshed the league tables. A mismatch then means the
+    point-in-time field mapping is wrong, so every row a future capture would
+    derive from it is wrong too -- this must stop the run rather than degrade
+    silently. The refresh can trail the gameweek's `finished` flag by hours,
+    and inside that window the table can disagree for no fault of the
+    mapping; `league-recap` reads FPL's processing feed and, when it says the
+    tables are still updating, puts that ahead of this message (issue #424).
     """
 
 

@@ -19,10 +19,14 @@ Emits JSON to stdout:
    "excluded": [{"web_name": ..., "code": ..., "reason": "owned" | "no-code"}],
    "warnings": [{"type": ...}]}
 
-`ok` is false only when the join could not run -- no usable `data.pool`, or a
-pool whose rows carry no `code` (an older fpl-cli) -- and `entries` is then
-empty: a join that cannot run offers nothing to claim rather than everything,
-so the stash path fails closed. Exit code is 0 whatever the join finds; the
+`ok` is false only when the join could not run -- no usable `data.pool`, a
+pool whose rows carry no `code` (an older fpl-cli), or a radar with no
+`data.entries` (such as the `{command, error}` envelope a failed `fpl
+returnees` run saves) -- and `entries` is then empty: a join that cannot run
+offers nothing to claim rather than everything, so the stash path fails
+closed. `warnings` says which side failed (`radar-unreadable`, or
+`pool-unreadable` / `pool-without-code`), so an unreadable radar is never
+reported as nobody returning (#432). Exit code is 0 whatever the join finds; the
 startup guard in `_bootstrap` is the one non-zero exit, and reports itself as
 {"error": true, "messages": [...]}.
 
@@ -47,6 +51,8 @@ from typing import Any, TypedDict
 # envelope instead of a ModuleNotFoundError traceback.
 import _bootstrap  # noqa: F401 — import guard, see module docstring
 
+from fpl_cli.models.player import usable_code
+
 
 class Excluded(TypedDict):
     web_name: str
@@ -54,7 +60,7 @@ class Excluded(TypedDict):
     reason: str
 
 
-class Warning(TypedDict):
+class JoinWarning(TypedDict):
     type: str
 
 
@@ -63,15 +69,10 @@ class JoinResult(TypedDict):
     metadata: dict[str, Any]
     entries: list[dict[str, Any]]
     excluded: list[Excluded]
-    warnings: list[Warning]
+    warnings: list[JoinWarning]
 
 
-def _as_code(value: object) -> int | None:
-    """A usable `code`, or None: the join never matches on a missing key."""
-    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
-
-
-def pool_codes(waivers: dict[str, Any]) -> tuple[set[int] | None, Warning | None]:
+def pool_codes(waivers: dict[str, Any]) -> tuple[set[int] | None, JoinWarning | None]:
     """The `code` of every row in the waivers `data.pool`, or None with the reason.
 
     None means the join cannot run: there is no pool list to read, or there
@@ -81,20 +82,20 @@ def pool_codes(waivers: dict[str, Any]) -> tuple[set[int] | None, Warning | None
     data = waivers.get("data")
     pool = data.get("pool") if isinstance(data, dict) else None
     if not isinstance(pool, list):
-        return None, Warning(type="pool-unreadable")
+        return None, JoinWarning(type="pool-unreadable")
     rows = [row for row in pool if isinstance(row, dict)]
-    codes = {code for row in rows if (code := _as_code(row.get("code"))) is not None}
+    codes = {code for row in rows if (code := usable_code(row.get("code"))) is not None}
     if rows and not codes:
-        return None, Warning(type="pool-without-code")
+        return None, JoinWarning(type="pool-without-code")
     return codes, None
 
 
-def radar_entries(radar: dict[str, Any]) -> tuple[list[dict[str, Any]], Warning | None]:
+def radar_entries(radar: dict[str, Any]) -> tuple[list[dict[str, Any]], JoinWarning | None]:
     """The radar's `data.entries`, or an empty list with the reason."""
     data = radar.get("data")
     entries = data.get("entries") if isinstance(data, dict) else None
     if not isinstance(entries, list):
-        return [], Warning(type="radar-unreadable")
+        return [], JoinWarning(type="radar-unreadable")
     return [entry for entry in entries if isinstance(entry, dict)], None
 
 
@@ -110,19 +111,18 @@ def join(radar: dict[str, Any], waivers: dict[str, Any]) -> JoinResult:
     }
 
     entries, radar_warning = radar_entries(radar)
-    if radar_warning is not None:
-        result["warnings"].append(radar_warning)
     codes, pool_warning = pool_codes(waivers)
-    if codes is None:
-        # Nothing to claim rather than everything: the stash path fails closed.
+    result["warnings"].extend(w for w in (radar_warning, pool_warning) if w is not None)
+    if codes is not None:
+        result["metadata"]["pool_size"] = len(codes)
+    if radar_warning is not None or codes is None:
+        # Nothing to claim rather than everything: the stash path fails closed,
+        # and an unreadable radar is a failure, not an empty watchlist (#432).
         result["ok"] = False
-        if pool_warning is not None:
-            result["warnings"].append(pool_warning)
         return result
-    result["metadata"]["pool_size"] = len(codes)
 
     for entry in entries:
-        code = _as_code(entry.get("code"))
+        code = usable_code(entry.get("code"))
         web_name = str(entry.get("web_name", ""))
         if code is None:
             result["excluded"].append(Excluded(web_name=web_name, code=None, reason="no-code"))
@@ -142,7 +142,7 @@ def _run(returnees_json: str, waivers_json: str) -> None:
         # Neither file is an envelope at all; say so in the same shape rather
         # than raise, since the orchestrator parses stdout either way.
         json.dump(
-            JoinResult(ok=False, metadata={}, entries=[], excluded=[], warnings=[Warning(type="envelope-unreadable")]),
+            JoinResult(ok=False, metadata={}, entries=[], excluded=[], warnings=[JoinWarning(type="envelope-unreadable")]),
             sys.stdout,
         )
         return

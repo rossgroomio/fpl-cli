@@ -69,7 +69,7 @@ class TestLoadSellPrices:
 
     def test_no_file_leaves_budget_untouched(self):
         """Without --sell-prices there are no overrides and the budget passes through."""
-        overrides, budget = load_sell_prices(None, 100.0, budget_from_command_line=False)
+        overrides, budget, _ = load_sell_prices(None, 100.0, budget_from_command_line=False)
 
         assert overrides is None
         assert budget == 100.0
@@ -84,7 +84,7 @@ class TestLoadSellPrices:
             bank=2.0,
         )
 
-        overrides, budget = load_sell_prices(path, 100.0, budget_from_command_line=False)
+        overrides, budget, _ = load_sell_prices(path, 100.0, budget_from_command_line=False)
 
         assert budget == pytest.approx(17.0)  # 10.0 + 5.0 + 2.0 bank
         assert overrides == {1: 10.0, 2: 5.0}
@@ -98,7 +98,7 @@ class TestLoadSellPrices:
             bank=10.0,
         )
 
-        overrides, budget = load_sell_prices(path, 80.0, budget_from_command_line=True)
+        overrides, budget, _ = load_sell_prices(path, 80.0, budget_from_command_line=True)
 
         assert budget == pytest.approx(80.0)  # not the auto-computed 60.0
         assert overrides == {1: 50.0}
@@ -116,7 +116,7 @@ class TestLoadSellPrices:
         json.dump(envelope, f)
         f.close()
 
-        _, budget = load_sell_prices(f.name, 100.0, budget_from_command_line=False)
+        _, budget, _ = load_sell_prices(f.name, 100.0, budget_from_command_line=False)
 
         assert budget == pytest.approx(7.5)
 

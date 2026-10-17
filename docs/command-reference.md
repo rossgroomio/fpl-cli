@@ -170,7 +170,7 @@ Which namespace each payload's `id` is in, and whether the row carries `code`:
 | `price-history` | `data[]` | main, named `element` | yes, from the trend data's own player list for the same season; null for a player missing from it |
 | `history` | `data[]` | no id | yes |
 | `league-recap` | `squad[]`, `captain`, `vice_captain`, `transfers[]`, `transactions[]`, `lost_claims[]`, `fines[].players[]` | no id | yes (`code`, `player_in_code`, `player_out_code`) |
-| `intel` | player notes, `intel resolve` rows | no id | yes, null where unresolved |
+| `intel`, `intel show`, `intel resolve` | player notes, `intel resolve` rows | no id | yes, null where unresolved |
 | `squad grid` (classic and `--draft`) | `data[]` | no id (name, position, club) | no |
 | `squad` | `position_analysis.*.players[]`, `injury_risks[]`, `form_analysis.*[]` | no id | no |
 | `fdr --my-squad` (classic and `--draft`) | `squad_exposure[].players` | no id (names) | no |
@@ -186,6 +186,13 @@ position and never reads `id`. The gw-prep skill's one cross-command join — th
 radar against the waiver pool — is done by `claimable_returnees.py`, on `code`. Every row
 above that emits `id` carries `code` beside it (#419), and a new payload with player rows
 carries `code` from the start.
+
+`tests/test_cli_json_contract.py` holds this table to the code (#422). Every `--format json`
+command has to be named in it or declared to carry no player rows, every row whose `id` is
+main or draft has to say `code` is carried, and each of those commands and gw-prep scripts
+needs a test that runs its real output through `assert_player_rows_carry_code()`
+(`tests/conftest.py`). A new command, or a JSON mode on one that has none today, fails
+there until it is classified here.
 
 ## Player Analysis
 
@@ -262,7 +269,7 @@ Output columns:
 - **Quality** - price-independent player quality (0-100), normalised against a position-specific ceiling. Elite-within-position index — cross-position comparisons not meaningful (GK/DEF/MID/FWD use different ceilings by design). See [Quality & Value Scores](custom-analysis.md#quality--value-scores). Null when no Understat match.
 - **Value** - quality per GBP million (`quality_score / price`). Higher = more output per pound. Null when no Understat match or price is 0. *(classic only)*
 - **Price** - current price *(classic only)*
-- **Budget** - affordability gap: `bank + sell_price - in_price` *(classic only, requires scraper cache)*
+- **Budget** - affordability gap: `bank + sell_price - in_price`, the OUT player's sell price recomputed at today's price (see [Sell Prices](#sell-prices--transfer-affordability)). `metadata.warnings` (stderr in table mode) carries `sell_prices_as_scraped` when that price could not be checked and `sell_prices_player_not_cached` when the OUT player is not in the cached squad *(classic only, requires scraper cache)*
 
 OUT player shows absolute scores. IN candidates show deltas for Outlook/This GW only (+15, -3); Quality and Value show absolute values for all players (no delta - value is a per-player efficiency metric). Sorted by Outlook delta descending.
 
@@ -359,7 +366,7 @@ fpl allocate --format json          # JSON output for scripting / skill integrat
 | `--bench-discount` | 0.15/0.05 | Bench player discount factor, applied uniformly (overrides per-position defaults) |
 | `--bench-boost-gw` | - | GW to play Bench Boost; bench discount overridden to 1.0 for that GW. Use `--horizon 3-4` for BB-focused planning |
 | `--free-transfers` | 1 | Banked free transfers (0-5). More FTs = solver weights near-term gameweeks more heavily, favouring short-term picks you can transfer out later |
-| `--sell-prices` | - | Path to sell-prices JSON file (from `fpl squad sell-prices --format json`). Solver uses sell prices for owned players in budget constraint. Budget auto-computed as `sum(sell_prices) + bank` unless `--budget` is explicitly set |
+| `--sell-prices` | - | Path to sell-prices JSON file (from `fpl squad sell-prices --format json`). Solver uses sell prices for owned players in budget constraint. Budget auto-computed as `sum(sell_prices) + bank` unless `--budget` is explicitly set. The file's `sell_prices_as_scraped` warnings are repeated in `metadata.warnings` (stderr in table mode), since the budget is built on those prices |
 | `--format` | table | `table` or `json` |
 
 Scores ~500 eligible players, adjusts for fixture difficulty over the planning horizon, then solves for the budget-constrained optimum across all 8 valid formations. See [Squad Allocator](custom-analysis.md#squad-allocator) for scoring methodology, fixture coefficients, and solver detail.
@@ -747,7 +754,25 @@ fpl squad sell-prices --refresh
 
 Disabling ECH may additionally require a browser-level managed policy (`EncryptedClientHelloEnabled: false`) since the flag alone does not always strip it. All four env vars are opt-in — leave them unset on trusted networks.
 
-Output: free transfers, bank balance, squad sell prices, total team value. Data cached to `team_finances.json` in the data directory (see [Directories](#directories)) for 12 hours.
+Output: free transfers, bank balance, squad sell prices, total team value. Data cached to `team_finances.json` in the data directory (see [Directories](#directories)) until the next `--refresh`.
+
+**Price changes since the scrape:** prices move overnight, so a cached run fetches today's
+prices and recomputes each sell price from its purchase price: keep half of any rise,
+rounded down, and take all of any fall. It applies the rule to a player only once it has
+checked it against FPL's own figure: the cache stores each player's price at the scrape,
+and the rule must reproduce the sell price FPL showed at that price. Each sell price that
+moved is named on stderr. JSON rows carry `scraped_sell_price` (FPL's figure) beside
+`sell_price` (the one to budget on). A player it cannot check keeps the scraped price and
+is named in a `sell_prices_as_scraped` warning, on stderr in both modes and in
+`metadata.warnings` under `--format json`: a price check that fails, an unknown purchase
+price, a player missing from today's list, or any player at all in a cache scraped before
+prices were stored, which one `--refresh` fixes. Not being able to fetch today's prices
+(the lookup waits 10 seconds) gives one such warning covering the whole squad and still
+exits 0. The squad, bank and free transfers stay as scraped, so a transfer made on the
+website since needs a `--refresh`. `fpl transfer-eval` uses the same recomputed sell price
+and warns when the OUT player's is unchecked or missing from the cache, and
+`fpl allocate --sell-prices` repeats the file's `sell_prices_as_scraped` warnings in its
+own output.
 
 **Suspect scrapes:** a scrape that returns far fewer players than a squad holds is
 refused rather than trusted — the page usually rendered late or the login silently
@@ -961,6 +986,31 @@ recorded unknown rather than filled in from the table. The run says so on stderr
 a `league_standings_moved_on` warning under `--format json`. The gameweek is recorded
 either way — an in-progress gameweek is never recappable, so the recap of the one before it
 has to keep working while the next one plays.
+
+The start of that window has a catch of its own. FPL marks a gameweek finished once bonus is
+confirmed, but refreshes the league tables afterwards, and the refresh can trail by hours, so a
+recap run straight after the last match may read a table that has not caught up: classic's
+totals, draft's ranks. Before a live capture collects, the recap reads the recapped game's
+processing feed (each game publishes its own, and they refresh separately) and, when the
+feed's own match days for the recapped gameweek show bonus unconfirmed or the tables still
+"Updating", says on stderr that positions and totals may be stale and to re-run before the
+next deadline, with a `league_tables_updating` warning under `--format json` and a warning
+callout at the top of a saved report, above any editorial. It warns rather than refuses: the
+refresh can sit on "Updating" for hours, a draft gameweek missed while live cannot be
+recaptured, and the later run supersedes this one in the ledger. Only a definite signal
+warns: a feed that cannot be read within five seconds, has been reshaped, reports a state
+other than "Updated" or "Updating" (the empty value seen between gameweeks among them) or
+holds no day for the recapped gameweek says nothing, and a replay does not read the feed at
+all, since by then it has moved on.
+
+`fpl status` reports the same two signals for the current gameweek, beside "Finished" and as
+`bonus_confirmed` / `league_tables_updated` in `data.gameweek_info`, so a script can wait on
+`league_tables_updated` before recapping. Each is `true` only when the feed of every game
+shown says so (the classic feed alone when no format is configured), `false` as soon as one
+says otherwise, and `null` otherwise: while the gameweek is still in progress (when the feed
+can report the days played so far as settled), and whenever some game's feed could not
+answer and none said no, so `null` with both formats configured can mean one game confirmed
+and the other could not be read.
 
 **Report title:** a saved recap opens with `# Gameweek 4 Recap: <league name>` — the gameweek
 spelled out and the league's name exactly as configured — whether or not it carries an editorial,
@@ -1264,10 +1314,11 @@ notes pack — an unreadable store, or no league id configured for the format.
 
 Every capture problem is reported on stderr as prose and, under `--format json`, in
 `metadata.warnings` as a `{"code", "message"}` pair. The prose is rewritable; the codes
-are stable, so scripts should key on those. Seven non-capture codes share the list, since
+are stable, so scripts should key on those. Eight non-capture codes share the list, since
 they share the channel: `synthesis_provider_unavailable`, `synthesis_stopped_early`,
 `synthesis_contested_misattribution`, `synthesis_net_misattribution`,
-`synthesis_kind_net_misattribution`, `synthesis_unsupported_tie` and `league_standings_moved_on`.
+`synthesis_kind_net_misattribution`, `synthesis_unsupported_tie`, `league_standings_moved_on`
+and `league_tables_updating`.
 
 | Code | Raised when |
 |---|---|
@@ -1294,6 +1345,7 @@ they share the channel: `synthesis_provider_unavailable`, `synthesis_stopped_ear
 | `synthesis_kind_net_misattribution` | Draft only. The editorial still says a figure of one kind of a manager's moves — their waivers, or their free agents — that is not that kind's own after one retry: the net overall of a line that mixes kinds, the other kind's net, or the swing on a move of the other kind. The message quotes each figure with the kind it was said of, says whose it is, and gives that kind's own net. Saved as written, with the same lines in the report's callout |
 | `synthesis_unsupported_tie` | Either format. The editorial still calls a gameweek score or league position "joint", "tied", "level" or "shared" after one retry where no two managers hold it. The message quotes the tie and says who holds the rank alone (or that nobody does). Saved as written, with the same lines in the report's callout |
 | `league_standings_moved_on` | The recapped gameweek is the most recently finished one, but a later gameweek has started, so the league table no longer describes it. The gameweek is recapped and recorded from each manager's own gameweek history instead — see [When to run it](#league-recap) |
+| `league_tables_updating` | FPL's processing feed for the recapped game covers the recapped gameweek and says bonus is not yet confirmed for every match day, or the league tables are still updating, so the positions and totals the recap read may be stale. The gameweek is recorded anyway; re-run before the next deadline and the later capture supersedes this one — see [When to run it](#league-recap) |
 
 None of these change the exit code — `league-recap` exits 0 whenever the recap itself
 rendered, and a skipped, truncated or self-contradicting editorial (`synthesis_provider_unavailable`,
@@ -1305,7 +1357,11 @@ under `--format json` (see [JSON Output](#json-output)) and the same message as 
 on stderr in table mode: an unreachable FPL API, a gameweek that could not be resolved at
 all, a reconciliation failure, and a `fines:` block that cannot be parsed (a bad rule, a
 mistyped `threshold:`, or an unrecognised key). The distinction matters when scripting a
-retry — an outage is worth retrying, the other three are not.
+retry — an outage is worth retrying, the other three are not, with one exception: a
+reconciliation failure raised while FPL is still processing the gameweek keeps its own
+diagnosis and adds that the mismatch may be timing instead, since the table it checked
+against may not have caught up. Re-run once FPL finishes; a failure after that points at
+the mapping.
 
 The second used to answer differently depending on how you asked: exit 1 with a generic
 `"Could not resolve a gameweek to recap."` under `--format json`, exit **0** in table mode

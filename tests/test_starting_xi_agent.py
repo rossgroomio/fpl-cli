@@ -13,7 +13,7 @@ from fpl_cli.agents.base import AgentStatus
 from fpl_cli.models.player import Player, PlayerPosition
 from fpl_cli.models.team import Team
 from fpl_cli.services.scoring import VALID_FORMATIONS, ScoringContext, ScoringData
-from tests.conftest import make_fixture, make_player, make_team
+from tests.conftest import assert_player_rows_carry_code, make_fixture, make_player, make_team
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -128,6 +128,8 @@ class TestStartingXIAgent:
         formation = tuple(int(x) for x in result.data["formation"].split("-"))
         assert formation in VALID_FORMATIONS
         assert result.data["total_score"] > 0
+        # The gw-prep script emits this data as it comes back (#422).
+        assert_player_rows_carry_code(result.data, command="starting_xi.py")
 
     async def test_player_without_understat_still_scores(self, squad_data):
         """Players missing Understat enrichment should still produce a score."""

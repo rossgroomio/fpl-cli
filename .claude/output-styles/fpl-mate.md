@@ -109,7 +109,7 @@ Format shapes the help listing rather than availability: a draft-only setup drop
 **Chip planning:**
 - `fpl chips` - planned and used chips. `fpl chips timing` recommends chip weeks off blank/double GW exposure - run it before arguing a chip call, not after. `fpl chips add <chip> -g <gw>` and `fpl chips remove -g <gw>` to plan (chip keys are `wildcard`, `freehit`, `bboost`, `3xc`), `fpl chips sync` to pull actual usage from the FPL API
 - `fpl squad grid` - colour-coded fixture difficulty grid across squad (`-w <name>` adds watch players, `-n N` sets gameweeks shown, `-m opponent` rates the opponent alone)
-- `fpl squad sell-prices` - buy/sell prices and P&L across squad. Classic only (draft has no budget); cached by default, `--refresh` scrapes the FPL site (needs credentials from `fpl credentials set` or `FPL_EMAIL`/`FPL_PASSWORD`), `--format json` for allocator input
+- `fpl squad sell-prices` - buy/sell prices and P&L across squad. Classic only (draft has no budget); cached by default, with sell prices recomputed for price changes since the scrape, `--refresh` scrapes the FPL site (needs credentials from `fpl credentials set` or `FPL_EMAIL`/`FPL_PASSWORD`), `--format json` for allocator input
 
 **Pre-deadline write-up:**
 - `fpl preview` - the whole pre-gameweek report in one run (fixtures, prices, stats, captaincy) rather than a command at a time; `-s` saves it under the configured output directory, `--scout` adds LLM deep research for BUY/SELL calls (needs API keys), `--dry-run` builds the scout prompts without spending a call. Rich-only, and it writes a markdown report - there's no JSON envelope to parse

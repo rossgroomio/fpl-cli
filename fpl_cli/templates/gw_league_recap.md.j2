@@ -10,6 +10,12 @@
 {% if league_history_phase_text is defined and league_history_phase_text %}
 *{{ league_history_phase_text }}*
 {% endif %}
+{% if league_tables_updating is defined and league_tables_updating %}
+
+> [!WARNING]
+> **FPL had not finished processing GW{{ gameweek }} when this recap ran:**
+> {{ league_tables_updating }}, so league positions and totals may be stale.
+{% endif %}
 
 {% if synthesis_summary is defined and synthesis_summary %}
 {% set editorial_cut_off = synthesis_stop_reason is defined and synthesis_stop_reason %}
