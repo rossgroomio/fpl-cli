@@ -9,7 +9,7 @@ from click.testing import CliRunner
 from fpl_cli.cli import main
 from fpl_cli.models.player import PlayerPosition
 from fpl_cli.services.squad_allocator import ScoredPlayer, SquadResult
-from tests.conftest import make_player
+from tests.conftest import assert_player_rows_carry_code, make_player
 
 
 def _make_squad_result(*, status="optimal", budget=100.0, formation=(4, 4, 2)):
@@ -146,6 +146,7 @@ class TestAllocateCommand:
         result = _run_allocate(_make_squad_result(), args=["--format", "json"])
         rows = json.loads(result.output)["data"]
         assert all(row["code"] == 10_000 + row["id"] for row in rows)
+        assert_player_rows_carry_code(rows, command="allocate")
 
     def test_json_metadata(self):
         """JSON metadata includes horizon, budget, formation, solver_status."""

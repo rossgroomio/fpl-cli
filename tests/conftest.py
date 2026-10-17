@@ -296,7 +296,7 @@ def make_draft_standing(
 
 def make_player(
     id: int = 1,
-    code: int = 0,
+    code: int | None = None,
     web_name: str = "TestPlayer",
     first_name: str = "Test",
     second_name: str = "Player",
@@ -316,10 +316,16 @@ def make_player(
     expected_goal_involvements: float = 7.3,
     **kwargs,
 ) -> Player:
-    """Factory function to create Player instances for testing."""
+    """Factory function to create Player instances for testing.
+
+    ``code`` defaults to a value that is not ``id``, as a real element's is
+    (the same rule as ``make_draft_player``): a fixture where the two
+    coincide cannot catch a row that put one where the other belongs (#418).
+    Pass ``code=0`` for a player the API left without one.
+    """
     return Player(
         id=id,
-        code=code,
+        code=10_000 + id if code is None else code,
         web_name=web_name,
         first_name=first_name,
         second_name=second_name,
@@ -875,3 +881,79 @@ def load_gw_prep_script(filename: str) -> ModuleType:
     finally:
         sys.path.remove(str(scripts_dir))
     return mod
+
+
+# --- JSON player-row identifiers ---
+
+# A player row names its element under one of these: `price-history` calls it
+# `element`, every other payload `id`.
+PLAYER_ID_KEYS = ("id", "element")
+
+
+def _is_player_row(row: dict[str, Any]) -> bool:
+    """Whether a dict carrying an id is a player rather than something else.
+
+    Gameweeks, fixtures, teams and league entries all carry an `id` too, so
+    the id alone says nothing. `web_name` is a player's field and nobody
+    else's; `player_name` and `name` are also a manager's or a gameweek's, so
+    they count only beside a `position`, which none of those carry.
+    """
+    if not any(key in row for key in PLAYER_ID_KEYS):
+        return False
+    if "web_name" in row:
+        return True
+    return "position" in row and ("player_name" in row or "name" in row)
+
+
+def player_rows(data: Any, path: str = "data") -> list[tuple[str, dict[str, Any]]]:
+    """Every player row with an id anywhere under `data`, with where it sits."""
+    found: list[tuple[str, dict[str, Any]]] = []
+    if isinstance(data, dict):
+        if _is_player_row(data):
+            found.append((path, data))
+        for key, value in data.items():
+            found.extend(player_rows(value, f"{path}.{key}"))
+    elif isinstance(data, list):
+        for i, value in enumerate(data):
+            found.extend(player_rows(value, f"{path}[{i}]"))
+    return found
+
+
+def assert_player_rows_carry_code(data: Any, *, command: str) -> list[dict[str, Any]]:
+    """Hold every player row in a payload's `data` to the #418 convention.
+
+    A row with an `id` (or `element`) carries `code` beside it, and that
+    `code` is a positive int or null -- never 0, which a consumer would join
+    every code-less player on, and never the row's own id, which is what a
+    row that put one where the other belongs looks like when the fixture's
+    two differ (`make_player` and `make_draft_player` both see to that).
+
+    Pass the envelope's `data` (or a gw-prep script's whole output, which has
+    no envelope), never the envelope: `metadata.warnings[]` uses `code` for
+    the warning's own identifier. `command` names the payload the rows feed
+    -- a command path, or a gw-prep script's filename -- and is how
+    `tests/test_cli_json_contract.py` finds which payloads have a check.
+
+    Fails when there is no player row at all, so a call cannot pass on a
+    payload that never reached its rows. Returns the rows for any further
+    assertions.
+    """
+    rows = player_rows(data)
+    assert rows, (
+        f"{command}: no player row with an id in the payload, so there was nothing to check"
+    )
+    for path, row in rows:
+        ident = next(row[key] for key in PLAYER_ID_KEYS if key in row)
+        assert "code" in row, (
+            f"{command}: {path} carries a player id ({ident}) but no `code` -- the only key "
+            f"a consumer can join it to another command's rows on (#418)"
+        )
+        code = row["code"]
+        assert code is None or (
+            isinstance(code, int) and not isinstance(code, bool) and code > 0
+        ), f"{command}: {path} has code {code!r}; an unknown code is null, never 0 or a guess"
+        assert code is None or code != ident, (
+            f"{command}: {path} has code == id ({code}); the fixture should give them different "
+            f"values, or the row put one where the other belongs"
+        )
+    return [row for _, row in rows]

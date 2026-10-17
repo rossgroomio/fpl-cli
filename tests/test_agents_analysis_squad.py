@@ -10,7 +10,7 @@ from fpl_cli.agents.base import AgentStatus
 from fpl_cli.models.player import PlayerPosition, PlayerStatus
 from fpl_cli.services.scoring import ScoringContext
 from fpl_cli.services.team_ratings import TeamRatingsService
-from tests.conftest import make_fixture, make_player, make_team
+from tests.conftest import assert_player_rows_carry_code, make_fixture, make_player, make_team
 
 
 @pytest.fixture(autouse=True)
@@ -690,6 +690,8 @@ class TestBenchOrderAgentRun:
             # The cross-game key rides beside the main id into the gw-prep script's output (#419).
             assert all(row["code"] == 10_000 + row["id"] for row in result.data["optimal_order"])
             assert all(row["code"] == 10_000 + row["id"] for row in result.data["availability_risks"])
+            # The script emits this data as it comes back (#422).
+            assert_player_rows_carry_code(result.data, command="bench_order.py")
             assert "availability_risks" in result.data
             assert "formation_context" in result.data
             assert "warnings" in result.data

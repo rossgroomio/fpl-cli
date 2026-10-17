@@ -11,7 +11,7 @@ from fpl_cli.agents.base import AgentStatus
 from fpl_cli.models.player import PlayerPosition
 from fpl_cli.services.scoring import ScoringContext
 from fpl_cli.services.team_ratings import TeamRating, TeamRatingsService
-from tests.conftest import make_fixture, make_player, make_team
+from tests.conftest import assert_player_rows_carry_code, make_fixture, make_player, make_team
 
 
 @pytest.fixture(autouse=True)
@@ -134,6 +134,9 @@ class TestCaptainAgent:
             assert "all_candidates" in result.data
             assert "my_squad_mode" in result.data
             assert result.data["my_squad_mode"] is False
+            # `fpl captain` emits these rows as they come back, and `fpl
+            # differentials` lifts `differential_picks` across whole (#422).
+            assert_player_rows_carry_code(result.data, command="captain")
 
     @pytest.mark.asyncio
     async def test_run_with_picks_context(self, agent, mock_players, mock_teams, mock_fixtures):

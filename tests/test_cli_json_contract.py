@@ -18,11 +18,19 @@ it, breaks a consumer here rather than in someone's script.
 the gw-prep helper scripts alongside the commands: the scripts are vendored
 into user vaults and parsed by an LLM orchestrator, so they owe a consumer
 the same clean stdout a command does (#226).
+
+The player-identifier tests at the end hold `docs/command-reference.md`'s
+*Player identifiers* table to the code (#422): every JSON command is in it or
+declared playerless, and every payload it says emits a player `id` has a test
+running real output through `assert_player_rows_carry_code()`.
 """
 
 from __future__ import annotations
 
+import ast
 import json
+import re
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import click
@@ -34,6 +42,7 @@ from click.testing import CliRunner
 from fpl_cli.cli import main
 from fpl_cli.models.player import PlayerPosition
 from tests.conftest import (
+    assert_player_rows_carry_code,
     load_gw_prep_script,
     make_logging_agent,
     make_player,
@@ -451,3 +460,238 @@ class TestSuccessPathsThatRunAnAgent:
         assert "LoggingTestAgent" in captured.err, (
             "the agent's progress lines went missing rather than moving to stderr"
         )
+
+
+# --- Player identifiers (#422) ---
+#
+# `docs/command-reference.md` (*Player identifiers*) lists every payload with
+# player rows, which namespace its `id` is in, and whether it carries `code`.
+# Two sweeps (#418, #419) brought the emitters into line with it by hand; the
+# tests below make the table a checked invariant instead. The check itself,
+# `assert_player_rows_carry_code()`, runs inside each emitter's own test on
+# real output -- these tests only make sure every surface the table says has
+# a player `id` is one of them, and that the table names every command.
+
+COMMAND_REFERENCE = Path(__file__).resolve().parents[1] / "docs" / "command-reference.md"
+TESTS_DIR = Path(__file__).resolve().parent
+CHECK_NAME = "assert_player_rows_carry_code"
+
+# `--format json` commands with no player row in their payload, and so no row
+# in the table. Anything that lists players belongs in the table instead.
+NO_PLAYER_ROWS: dict[str, str] = {
+    "doctor": "setup checks",
+    "fixtures": "fixtures and clubs",
+    "league-fines": "one tally per manager",
+    "chips": "chips used, planned and available",
+}
+
+# The gw-prep scripts emit their agent's data whole, so each is checked where
+# that agent's real output is, under the name below. `transfer_eval.py` runs
+# the same `TransferEvalAgent` as `fpl transfer-eval`, so one check covers both.
+SCRIPT_CHECKED_AS: dict[str, str] = {
+    "bench_order.py": "bench_order.py",
+    "starting_xi.py": "starting_xi.py",
+    "transfer_eval.py": "transfer-eval",
+}
+
+
+def _identifier_table() -> list[tuple[set[str], str, str]]:
+    """The table's rows as (commands named, `id is` cell, `code` cell).
+
+    A command cell can name several commands and carry flags beside them
+    (`fdr --my-squad`, `squad grid` (classic and `--draft`)); the flags are
+    dropped, so each backticked span reduces to the command path it names.
+    """
+    text = COMMAND_REFERENCE.read_text(encoding="utf-8")
+    section = text.split("### Player identifiers", 1)[1].split("\n## ", 1)[0]
+    rows: list[tuple[set[str], str, str]] = []
+    for line in section.splitlines():
+        if not line.startswith("| `"):
+            continue
+        command_cell, _rows_cell, id_cell, code_cell = (
+            cell.strip() for cell in line.strip().strip("|").split("|")
+        )
+        commands = {
+            " ".join(word for word in span.split() if not word.startswith("--"))
+            for span in re.findall(r"`([^`]+)`", command_cell)
+        } - {""}
+        rows.append((commands, id_cell, code_cell))
+    return rows
+
+
+IDENTIFIER_TABLE = _identifier_table()
+TABLED_COMMANDS = set().union(*(commands for commands, _, _ in IDENTIFIER_TABLE))
+COMMANDS_WITH_A_PLAYER_ID = set().union(*(
+    commands for commands, id_cell, _ in IDENTIFIER_TABLE if not id_cell.startswith("no id")
+))
+
+
+def _checked_surfaces() -> tuple[dict[str, list[str]], list[str]]:
+    """Every `command=` the test suite passes the check, with where it does.
+
+    Read from source rather than collected at run time, so the answer does not
+    depend on which tests a run selected. A `command` that is not a string
+    literal cannot be read this way, so its call site is returned beside the
+    rest for `test_every_check_names_its_command_literally` to report: raising
+    here, at import, would error every test in this module at collection.
+    This module is left out: its calls test the check, not a surface.
+    """
+    found: dict[str, list[str]] = {}
+    unreadable: list[str] = []
+    for path in sorted(TESTS_DIR.rglob("*.py")):
+        if path == Path(__file__).resolve():
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)
+            if name != CHECK_NAME:
+                continue
+            command = next((kw.value for kw in node.keywords if kw.arg == "command"), None)
+            where = f"{path.relative_to(TESTS_DIR)}:{node.lineno}"
+            if isinstance(command, ast.Constant) and isinstance(command.value, str):
+                found.setdefault(command.value, []).append(where)
+            else:
+                unreadable.append(where)
+    return found, unreadable
+
+
+CHECKED_SURFACES, UNREADABLE_CHECKS = _checked_surfaces()
+
+
+def test_every_check_names_its_command_literally():
+    """A check this contract cannot read counts for no surface."""
+    assert not UNREADABLE_CHECKS, (
+        f"{CHECK_NAME}() called without a string-literal `command=` at "
+        f"{', '.join(UNREADABLE_CHECKS)}; pass the command name literally so this "
+        f"contract can find the check"
+    )
+
+
+def test_the_identifier_table_was_read():
+    """Guard the parser: an empty table would make every test below vacuous."""
+    assert len(IDENTIFIER_TABLE) > 15
+    assert "waivers" in COMMANDS_WITH_A_PLAYER_ID
+    assert "squad sell-prices" in COMMANDS_WITH_A_PLAYER_ID
+    assert "squad grid" in TABLED_COMMANDS
+    assert "squad grid" not in COMMANDS_WITH_A_PLAYER_ID
+    assert "fdr" in TABLED_COMMANDS, "flags must be dropped from a command cell"
+
+
+@pytest.mark.parametrize(
+    "command", JSON_COMMANDS, ids=[" ".join(c) or "(root)" for c in JSON_COMMANDS],
+)
+def test_every_json_command_is_in_the_identifier_table(command):
+    """A new command, or a JSON mode on one that had none, is classified first.
+
+    The table is how a consumer knows whether a payload's `id` is draft or
+    main and whether it can join on `code`; a command missing from it leaves
+    them to guess, and leaves the check below with nothing to require.
+    """
+    name = " ".join(command)
+    assert name in TABLED_COMMANDS or name in NO_PLAYER_ROWS, (
+        f"`fpl {name} --format json` is not in the Player identifiers table in "
+        f"docs/command-reference.md. Add a row for each player list it emits, or add it "
+        f"to NO_PLAYER_ROWS here if it has none"
+    )
+
+
+def test_no_player_rows_allowlist_is_current():
+    """An entry that has been tabled, or whose command has gone, is stale."""
+    json_names = {" ".join(c) for c in JSON_COMMANDS}
+    assert set(NO_PLAYER_ROWS) <= json_names, set(NO_PLAYER_ROWS) - json_names
+    assert not set(NO_PLAYER_ROWS) & TABLED_COMMANDS, set(NO_PLAYER_ROWS) & TABLED_COMMANDS
+
+
+def test_the_table_names_only_real_commands():
+    json_names = {" ".join(c) for c in JSON_COMMANDS}
+    assert TABLED_COMMANDS <= json_names, TABLED_COMMANDS - json_names
+
+
+@pytest.mark.parametrize(
+    "commands,id_cell,code_cell", IDENTIFIER_TABLE,
+    ids=[", ".join(sorted(c)) for c, _, _ in IDENTIFIER_TABLE],
+)
+def test_a_documented_player_id_comes_with_code(commands, id_cell, code_cell):
+    """The rule itself, as the table states it: no `id` without `code` (#418)."""
+    if id_cell.startswith("no id"):
+        return
+    assert code_cell.startswith("yes"), (
+        f"{sorted(commands)} emit a player `id` ({id_cell}) but the table says `code` is "
+        f"{code_cell!r}"
+    )
+
+
+@pytest.mark.parametrize(
+    "surface",
+    sorted(COMMANDS_WITH_A_PLAYER_ID | set(SCRIPT_CHECKED_AS.values())),
+)
+def test_every_payload_with_a_player_id_has_a_check(surface):
+    """The table says these rows carry `code`; a test has to hold them to it.
+
+    The check runs on each surface's real emitter (the agent for a command
+    that runs one, the command for one that builds its own rows), so a new
+    field added there is held to the rule as soon as that test fills it.
+    """
+    assert surface in CHECKED_SURFACES, (
+        f"no test runs {surface!r} output through {CHECK_NAME}(..., command={surface!r}). "
+        f"Add the call to the test that drives its real emitter"
+    )
+
+
+def test_every_check_names_a_surface_the_table_knows():
+    """A typo in `command=` would leave the real surface unchecked."""
+    known = COMMANDS_WITH_A_PLAYER_ID | set(SCRIPT_CHECKED_AS.values())
+    unknown = {name: where for name, where in CHECKED_SURFACES.items() if name not in known}
+    assert not unknown, unknown
+
+
+def test_every_gw_prep_script_is_mapped_to_a_check():
+    """The scripts the success-path test above runs are the ones checked here."""
+    assert set(SCRIPT_CHECKED_AS) == {param.id for param in AGENT_SCRIPTS}
+
+
+class TestThePlayerRowCheck:
+    """`assert_player_rows_carry_code()` itself: what counts as a player row."""
+
+    def test_rows_that_are_not_players_are_left_alone(self):
+        """Gameweeks, clubs, fixtures and managers all carry an `id` too."""
+        data = {
+            "gameweek": {"id": 30, "name": "Gameweek 30"},
+            "teams": [{"id": 1, "name": "Arsenal", "short_name": "ARS"}],
+            "fixtures": [{"id": 9, "team_h": 1, "team_a": 2}],
+            "standings": [{"id": 5, "entry": 100, "player_name": "A Manager", "rank": 1}],
+            "warnings": [{"code": "early_season_small_sample", "message": "..."}],
+            "players": [{"id": 1, "code": 10_001, "web_name": "Salah"}],
+        }
+        rows = assert_player_rows_carry_code(data, command="test")
+        assert [row["web_name"] for row in rows] == ["Salah"]
+
+    @pytest.mark.parametrize("row", [
+        {"id": 1, "web_name": "Salah"},
+        {"id": 1, "player_name": "Salah", "position": "MID"},
+        {"id": 1, "name": "Salah", "position": "MID"},
+        {"element": 1, "web_name": "Salah"},
+    ], ids=["web_name", "player_name+position", "name+position", "element"])
+    def test_a_player_row_without_code_fails(self, row):
+        with pytest.raises(AssertionError, match="no `code`"):
+            assert_player_rows_carry_code({"nested": [row]}, command="test")
+
+    @pytest.mark.parametrize("code", [0, False, "118748", 1.0])
+    def test_a_code_that_is_not_a_positive_int_fails(self, code):
+        with pytest.raises(AssertionError, match="never 0 or a guess"):
+            assert_player_rows_carry_code([{"id": 1, "code": code, "web_name": "S"}], command="test")
+
+    def test_a_code_equal_to_the_id_fails(self):
+        with pytest.raises(AssertionError, match="code == id"):
+            assert_player_rows_carry_code([{"id": 7, "code": 7, "web_name": "S"}], command="test")
+
+    def test_null_code_is_allowed(self):
+        assert_player_rows_carry_code([{"id": 1, "code": None, "web_name": "S"}], command="test")
+
+    def test_a_payload_with_no_player_rows_fails(self):
+        """Otherwise a call on a payload that never reached its rows would pass."""
+        with pytest.raises(AssertionError, match="nothing to check"):
+            assert_player_rows_carry_code({"players": []}, command="test")
