@@ -9,6 +9,7 @@ from typing import Any, Self
 
 import httpx
 
+from fpl_cli.models.gameweek_status import GameweekStatus
 from fpl_cli.models.player import POSITION_MAP, Player, usable_code
 from fpl_cli.utils.text import strip_diacritics
 
@@ -270,6 +271,18 @@ class FPLDraftClient:
             data: dict[str, Any] = await self._get("game")
             self._game_state = data
         return self._game_state
+
+    async def get_gameweek_status(self) -> GameweekStatus:
+        """Get where FPL has got to in processing the latest gameweek.
+
+        The draft game's own copy of the main game's feed, reporting when the
+        draft league tables were refreshed, which happens separately from the
+        classic ones.
+
+        Returns:
+            The processing state of the gameweek the feed currently covers.
+        """
+        return GameweekStatus.model_validate(await self._get("pl/event-status"))
 
     async def get_squad(
         self,

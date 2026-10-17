@@ -527,6 +527,7 @@ fpl_cli/
 │   ├── __init__.py               # main() entry point, command registration
 │   ├── _context.py               # Format enum, CLIContext, FormatAwareGroup (format + experimental gating), settings loader, ctx accessors (get_format/get_settings/custom_analysis_enabled/settings_block/fpl_config)
 │   ├── _helpers.py               # Shared display utilities
+│   ├── _gameweek_status.py       # Reads FPL's post-gameweek processing feed for `league-recap` and `status` (#424): a fetch that degrades to None (unreachable, reshaped, or slower than a 5s advisory timeout) and `settled_flags()` (status's per-game three-valued AND). The still-processing decision itself is `GameweekStatus.still_processing()`, on the model
 │   ├── _json.py                  # JSON output serialisation
 │   ├── _banner.py                # Startup banner
 │   ├── _plan_grid.py             # Fixture grid rendering
@@ -590,6 +591,7 @@ fpl_cli/
 │   ├── player.py                 # Player, PlayerStatus, PlayerPosition, POSITION_MAP, BLANK_POINTS_THRESHOLD, name resolution (`resolve_players` / `resolve_player`, `AmbiguousPlayerError`, and the `_or_report` pair every name-taking command and script shares)
 │   ├── team.py                   # Team
 │   ├── fixture.py                # Fixture
+│   ├── gameweek_status.py        # GameweekStatus / MatchDayStatus: both games' `event-status` feed, returned by `get_gameweek_status()` on FPLClient and FPLDraftClient. Every question (`bonus_confirmed`, `league_tables_updated`, `still_processing`) is asked of one gameweek from that gameweek's own match days, and answers None wherever the feed cannot say
 │   ├── chip_plan.py              # ChipPlan, ChipType, PlannedChip, UsedChip
 │   ├── league_history.py         # LeagueHistoryRow + Ledger* sub-models, CaptureStatus, FidelityTier, schema version constants (v4 adds `fine_rules_evaluated`, which tells an unfined gameweek from an unruled one; v5 adds `LedgerFine.players`, so a ruling holds references to the players it names rather than only their names as prose; v6 adds `lost_claims`, the waiver claims a draft manager lost to a rival, kept apart from `transactions` because nothing moved and `None` wherever nothing was recorded); ConditionRunState + LeagueHistoryCountersProjection for the counters cache; ManagerEarliestGameweekCache for the first-captured-gameweek memo
 │   └── types.py                  # TypedDicts: CaptainCandidate, WaiverTarget, EnrichedPlayer, etc.

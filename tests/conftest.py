@@ -14,6 +14,7 @@ import yaml
 
 from fpl_cli.agents.base import Agent, AgentResult, AgentStatus
 from fpl_cli.models.fixture import Fixture
+from fpl_cli.models.gameweek_status import GameweekStatus
 from fpl_cli.models.player import Player, PlayerPosition, PlayerStatus
 from fpl_cli.models.team import Team
 from fpl_cli.paths import user_cache_dir, user_config_dir, user_data_dir
@@ -383,6 +384,30 @@ def make_team(
         points=points,
         **kwargs,
     )
+
+
+def make_gameweek_status(
+    gameweek: int = 10,
+    *,
+    match_days: int = 3,
+    bonus_added: bool = True,
+    leagues: str = "Updated",
+    leagues_updated: bool | None = None,
+) -> GameweekStatus:
+    """Factory for FPL's post-gameweek processing feed (`get_gameweek_status()`).
+
+    Defaults to the settled state both games showed for a finished gameweek:
+    bonus added on every match day and `leagues: "Updated"`. Pass
+    `leagues_updated` for the draft feed's per-day flag, which the classic
+    feed does not carry.
+    """
+    day: dict[str, Any] = {"event": gameweek, "bonus_added": bonus_added, "points": "r"}
+    if leagues_updated is not None:
+        day["leagues_updated"] = leagues_updated
+    return GameweekStatus.model_validate({
+        "status": [{**day, "date": f"2026-10-{10 + i:02d}"} for i in range(match_days)],
+        "leagues": leagues,
+    })
 
 
 def make_fixture(

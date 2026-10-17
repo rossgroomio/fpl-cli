@@ -951,6 +951,31 @@ a `league_standings_moved_on` warning under `--format json`. The gameweek is rec
 either way — an in-progress gameweek is never recappable, so the recap of the one before it
 has to keep working while the next one plays.
 
+The start of that window has a catch of its own. FPL marks a gameweek finished once bonus is
+confirmed, but refreshes the league tables afterwards, and the refresh can trail by hours, so a
+recap run straight after the last match may read a table that has not caught up: classic's
+totals, draft's ranks. Before a live capture collects, the recap reads the recapped game's
+processing feed (each game publishes its own, and they refresh separately) and, when the
+feed's own match days for the recapped gameweek show bonus unconfirmed or the tables still
+"Updating", says on stderr that positions and totals may be stale and to re-run before the
+next deadline, with a `league_tables_updating` warning under `--format json` and a warning
+callout at the top of a saved report, above any editorial. It warns rather than refuses: the
+refresh can sit on "Updating" for hours, a draft gameweek missed while live cannot be
+recaptured, and the later run supersedes this one in the ledger. Only a definite signal
+warns: a feed that cannot be read within five seconds, has been reshaped, reports a state
+other than "Updated" or "Updating" (the empty value seen between gameweeks among them) or
+holds no day for the recapped gameweek says nothing, and a replay does not read the feed at
+all, since by then it has moved on.
+
+`fpl status` reports the same two signals for the current gameweek, beside "Finished" and as
+`bonus_confirmed` / `league_tables_updated` in `data.gameweek_info`, so a script can wait on
+`league_tables_updated` before recapping. Each is `true` only when the feed of every game
+shown says so (the classic feed alone when no format is configured), `false` as soon as one
+says otherwise, and `null` otherwise: while the gameweek is still in progress (when the feed
+can report the days played so far as settled), and whenever some game's feed could not
+answer and none said no, so `null` with both formats configured can mean one game confirmed
+and the other could not be read.
+
 **Report title:** a saved recap opens with `# Gameweek 4 Recap: <league name>` — the gameweek
 spelled out and the league's name exactly as configured — whether or not it carries an editorial,
 so the first line of every recap reads the same shape every week and in both formats
@@ -1253,10 +1278,11 @@ notes pack — an unreadable store, or no league id configured for the format.
 
 Every capture problem is reported on stderr as prose and, under `--format json`, in
 `metadata.warnings` as a `{"code", "message"}` pair. The prose is rewritable; the codes
-are stable, so scripts should key on those. Seven non-capture codes share the list, since
+are stable, so scripts should key on those. Eight non-capture codes share the list, since
 they share the channel: `synthesis_provider_unavailable`, `synthesis_stopped_early`,
 `synthesis_contested_misattribution`, `synthesis_net_misattribution`,
-`synthesis_kind_net_misattribution`, `synthesis_unsupported_tie` and `league_standings_moved_on`.
+`synthesis_kind_net_misattribution`, `synthesis_unsupported_tie`, `league_standings_moved_on`
+and `league_tables_updating`.
 
 | Code | Raised when |
 |---|---|
@@ -1283,6 +1309,7 @@ they share the channel: `synthesis_provider_unavailable`, `synthesis_stopped_ear
 | `synthesis_kind_net_misattribution` | Draft only. The editorial still says a figure of one kind of a manager's moves — their waivers, or their free agents — that is not that kind's own after one retry: the net overall of a line that mixes kinds, the other kind's net, or the swing on a move of the other kind. The message quotes each figure with the kind it was said of, says whose it is, and gives that kind's own net. Saved as written, with the same lines in the report's callout |
 | `synthesis_unsupported_tie` | Either format. The editorial still calls a gameweek score or league position "joint", "tied", "level" or "shared" after one retry where no two managers hold it. The message quotes the tie and says who holds the rank alone (or that nobody does). Saved as written, with the same lines in the report's callout |
 | `league_standings_moved_on` | The recapped gameweek is the most recently finished one, but a later gameweek has started, so the league table no longer describes it. The gameweek is recapped and recorded from each manager's own gameweek history instead — see [When to run it](#league-recap) |
+| `league_tables_updating` | FPL's processing feed for the recapped game covers the recapped gameweek and says bonus is not yet confirmed for every match day, or the league tables are still updating, so the positions and totals the recap read may be stale. The gameweek is recorded anyway; re-run before the next deadline and the later capture supersedes this one — see [When to run it](#league-recap) |
 
 None of these change the exit code — `league-recap` exits 0 whenever the recap itself
 rendered, and a skipped, truncated or self-contradicting editorial (`synthesis_provider_unavailable`,
@@ -1294,7 +1321,11 @@ under `--format json` (see [JSON Output](#json-output)) and the same message as 
 on stderr in table mode: an unreachable FPL API, a gameweek that could not be resolved at
 all, a reconciliation failure, and a `fines:` block that cannot be parsed (a bad rule, a
 mistyped `threshold:`, or an unrecognised key). The distinction matters when scripting a
-retry — an outage is worth retrying, the other three are not.
+retry — an outage is worth retrying, the other three are not, with one exception: a
+reconciliation failure raised while FPL is still processing the gameweek keeps its own
+diagnosis and adds that the mismatch may be timing instead, since the table it checked
+against may not have caught up. Re-run once FPL finishes; a failure after that points at
+the mapping.
 
 The second used to answer differently depending on how you asked: exit 1 with a generic
 `"Could not resolve a gameweek to recap."` under `--format json`, exit **0** in table mode
