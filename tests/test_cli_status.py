@@ -10,16 +10,21 @@ from click.testing import CliRunner
 from fpl_cli.cli import main
 from fpl_cli.models.player import PlayerStatus
 from fpl_cli.season import get_season_year, season_label
-from tests.conftest import make_player, make_team
+from tests.conftest import make_gameweek_status, make_player, make_team
 
 
 def _mock_client(
     current_gw=None, next_gw=None, manager_entry=None,
     history=None, picks=None, players=None, teams=None,
-    classic_league_standings=None, gameweek_live=None,
+    classic_league_standings=None, gameweek_live=None, gameweek_status=None,
 ):
     client = MagicMock()
     client.get_current_gameweek = AsyncMock(return_value=current_gw)
+    # Settled for the current gameweek unless a test says otherwise: the
+    # state FPL reaches hours after a gameweek finishes (issue #424).
+    client.get_gameweek_status = AsyncMock(
+        return_value=gameweek_status or make_gameweek_status((current_gw or {}).get("id", 1)),
+    )
     client.get_next_gameweek = AsyncMock(return_value=next_gw)
     # Clock-derived default (matches the pre-#91 behaviour this mock used to
     # get for free): the season-overrun tests below override it explicitly.
@@ -36,8 +41,16 @@ def _mock_client(
     return client
 
 
-def _mock_draft_client(league_details=None, game_state=None, entry_picks=None, bootstrap=None):
+def _mock_draft_client(
+    league_details=None, game_state=None, entry_picks=None, bootstrap=None, gameweek_status=None,
+):
     client = MagicMock()
+    # The draft feed has no notion of the main game's current gameweek, so a
+    # test reading it sets the gameweek explicitly; by default it covers none
+    # and leaves the classic feed (or nothing) to answer.
+    client.get_gameweek_status = AsyncMock(
+        return_value=gameweek_status or make_gameweek_status(match_days=0),
+    )
     client.get_league_details = AsyncMock(return_value=league_details or {})
     client.get_game_state = AsyncMock(return_value=game_state or {"current_event": 30})
     client.get_entry_picks = AsyncMock(return_value=entry_picks or {"picks": []})
@@ -54,8 +67,11 @@ def _run(client, settings=None, draft_client=None, mock_draft_squad=None):
         stack.enter_context(patch("fpl_cli.cli.load_settings", return_value=settings))
         stack.enter_context(patch("fpl_cli.cli.status.get_settings", return_value=settings))
         stack.enter_context(patch("fpl_cli.api.fpl.FPLClient", return_value=client))
-        if draft_client is not None:
-            stack.enter_context(patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=draft_client))
+        # Always stubbed: a draft-format run reads the draft feed even when
+        # the test is about something else (issue #424).
+        stack.enter_context(patch(
+            "fpl_cli.api.fpl_draft.FPLDraftClient", return_value=draft_client or _mock_draft_client(),
+        ))
         if mock_draft_squad is not None:
             stack.enter_context(patch(
                 "fpl_cli.agents.common.get_draft_squad_players", new=mock_draft_squad,
@@ -686,8 +702,11 @@ def _run_json(client, settings=None, draft_client=None, mock_draft_squad=None):
         stack.enter_context(patch("fpl_cli.cli.load_settings", return_value=settings))
         stack.enter_context(patch("fpl_cli.cli.status.get_settings", return_value=settings))
         stack.enter_context(patch("fpl_cli.api.fpl.FPLClient", return_value=client))
-        if draft_client is not None:
-            stack.enter_context(patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=draft_client))
+        # Always stubbed: a draft-format run reads the draft feed even when
+        # the test is about something else (issue #424).
+        stack.enter_context(patch(
+            "fpl_cli.api.fpl_draft.FPLDraftClient", return_value=draft_client or _mock_draft_client(),
+        ))
         if mock_draft_squad is not None:
             stack.enter_context(patch(
                 "fpl_cli.agents.common.get_draft_squad_players", new=mock_draft_squad,
@@ -990,6 +1009,134 @@ class TestStatusJsonOutput:
         assert result.exit_code == 0
         assert "FPL Status" in result.output
         assert "Gameweek 30" in result.output
+
+
+class TestStatusProcessingFlags:
+    """`finished` is set hours before FPL refreshes the league tables (#424),
+    so on its own it cannot say whether a league recap would read a settled
+    table. Status says what FPL has done since, from the feed of each game
+    the user plays."""
+
+    _FINISHED = {"id": 30, "finished": True}
+    _DRAFT_ONLY = {"fpl": {"draft_entry_id": 456, "draft_league_id": 789}}
+    _BOTH = {"fpl": {"classic_entry_id": 123, "draft_entry_id": 456, "draft_league_id": 789}}
+
+    @staticmethod
+    def _gw_info(result) -> dict:
+        assert result.exit_code == 0, result.output
+        return json.loads(result.stdout)["data"]["gameweek_info"]
+
+    def _draft(self, settings, classic_status, draft_status):
+        client = _mock_client(current_gw=self._FINISHED, gameweek_status=classic_status)
+        draft_cl = _mock_draft_client(
+            league_details={"standings": [], "league_entries": []},
+            game_state={"current_event": 30, "waivers_processed": True},
+            gameweek_status=draft_status,
+        )
+        result = _run_json(
+            client, settings=settings, draft_client=draft_cl,
+            mock_draft_squad=AsyncMock(return_value=[]),
+        )
+        return client, draft_cl, result
+
+    def test_a_settled_gameweek_says_so_beside_finished(self):
+        result = _run(_mock_client(current_gw=self._FINISHED))
+
+        assert "Finished (bonus confirmed, league tables updated)" in result.output
+
+    def test_tables_still_updating_say_so(self):
+        client = _mock_client(
+            current_gw=self._FINISHED,
+            gameweek_status=make_gameweek_status(30, leagues="Updating"),
+        )
+
+        result = _run(client)
+
+        assert "Finished (bonus confirmed, league tables still updating)" in result.output
+
+    def test_an_unread_feed_leaves_plain_finished(self):
+        client = _mock_client(current_gw=self._FINISHED)
+        client.get_gameweek_status = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
+
+        result = _run(client)
+
+        assert result.exit_code == 0, result.output
+        assert "Gameweek 30 - Finished\n" in result.output
+
+    def test_a_gameweek_in_progress_shows_no_flags(self):
+        client = _mock_client(
+            current_gw={"id": 30, "finished": False},
+            gameweek_status=make_gameweek_status(30, bonus_added=False, leagues=""),
+        )
+
+        result = _run(client)
+
+        assert "In Progress" in result.output
+        assert "bonus" not in result.output
+
+    def test_json_carries_both_flags(self):
+        info = self._gw_info(_run_json(_mock_client(current_gw=self._FINISHED)))
+
+        assert info["bonus_confirmed"] is True
+        assert info["league_tables_updated"] is True
+
+    def test_json_updating_is_false(self):
+        client = _mock_client(
+            current_gw=self._FINISHED,
+            gameweek_status=make_gameweek_status(30, leagues="Updating"),
+        )
+
+        info = self._gw_info(_run_json(client))
+
+        assert info["bonus_confirmed"] is True
+        assert info["league_tables_updated"] is False
+
+    def test_json_unread_feed_is_null(self):
+        client = _mock_client(current_gw=self._FINISHED)
+        client.get_gameweek_status = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
+
+        info = self._gw_info(_run_json(client))
+
+        assert info["bonus_confirmed"] is None
+        assert info["league_tables_updated"] is None
+
+    def test_json_without_a_current_gameweek_is_null(self):
+        info = self._gw_info(_run_json(_mock_client(current_gw=None)))
+
+        assert info["bonus_confirmed"] is None
+        assert info["league_tables_updated"] is None
+
+    def test_draft_only_reads_the_draft_feed(self):
+        """The draft game refreshes its own tables, separately from classic."""
+        client, draft_cl, result = self._draft(
+            self._DRAFT_ONLY,
+            classic_status=make_gameweek_status(30),
+            draft_status=make_gameweek_status(30, leagues="Updating", leagues_updated=False),
+        )
+
+        assert self._gw_info(result)["league_tables_updated"] is False
+        client.get_gameweek_status.assert_not_awaited()
+        draft_cl.get_gameweek_status.assert_awaited_once()
+
+    def test_both_formats_are_updated_only_when_both_games_are(self):
+        _, _, result = self._draft(
+            self._BOTH,
+            classic_status=make_gameweek_status(30),
+            draft_status=make_gameweek_status(30, leagues="Updating", leagues_updated=False),
+        )
+
+        assert self._gw_info(result)["league_tables_updated"] is False
+
+    def test_both_formats_settled(self):
+        _, _, result = self._draft(
+            self._BOTH,
+            classic_status=make_gameweek_status(30),
+            draft_status=make_gameweek_status(30, leagues_updated=True),
+        )
+
+        info = self._gw_info(result)
+        assert info["bonus_confirmed"] is True
+        assert info["league_tables_updated"] is True
 
 
 class TestStatusDiscoveryNote:

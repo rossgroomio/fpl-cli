@@ -127,6 +127,9 @@ Transfer hits in the GW before a phase starts don't count against the phase scor
 
 **H2H Knock-out:** Optional final stage (up to 3 GWs). Average team replaced by next-placed team. Tiebreaks: most goals scored > fewest conceded > coin toss.
 
+### When the Tables Update
+Not documented by FPL; this is the common understanding. After a gameweek's last match: full time (fixture `finished_provisional`), then bonus confirmed (fixture `finished`, and once every fixture is, the gameweek's `finished`), then FPL's data checks and the league-table refresh (`data_checked`, and `leagues: "Updated"` in the `event-status` feed). The refresh can trail `finished` by hours, and classic and draft refresh their tables separately, each reporting it in its own feed. Until it lands, league standings can still describe the gameweek without its last match day.
+
 ## Cups
 Knockout competition running alongside leagues. Overall Cup: GW15-GW38. League Cups auto-created for Invitational Classic leagues (start date depends on league size). Fan League and Country Cups also auto-entered. All finals in GW38.
 

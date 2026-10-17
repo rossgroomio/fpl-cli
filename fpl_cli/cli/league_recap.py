@@ -61,6 +61,9 @@ _CONSOLE_STREAK_LIMIT = 5
 # `_league_recap_history.py`, the same way `synthesis_provider_unavailable`
 # does. Stable for scripts, like every other code on that channel.
 RECAP_WARNING_STANDINGS_MOVED_ON = "league_standings_moved_on"
+# Also a collection warning: FPL has not finished processing the recapped
+# gameweek, so the league table it read may not have caught up (issue #424).
+RECAP_WARNING_LEAGUE_TABLES_UPDATING = "league_tables_updating"
 
 if TYPE_CHECKING:
     from fpl_cli.api.providers import LLMResponse
@@ -264,6 +267,30 @@ def league_recap_command(
                     " for the fullest capture.[/yellow]"
                 )
 
+            # FPL marks a gameweek finished before it has refreshed the league
+            # tables, and the refresh can trail by hours (issue #424). Inside
+            # that window both collectors read a table that has not caught up:
+            # classic's totals and draft's ranks. Warned rather than refused,
+            # since the refresh can sit on "Updating" for hours and a draft
+            # gameweek missed while live cannot be recaptured; a later run
+            # supersedes this one in the ledger. Each game has its own feed,
+            # because the two refresh their tables separately.
+            from fpl_cli.cli._gameweek_status import (
+                fetch_draft_gameweek_status,
+                fetch_gameweek_status,
+                gameweek_still_processing,
+            )
+
+            update_status = (
+                await fetch_draft_gameweek_status() if is_draft
+                else await fetch_gameweek_status(client)
+            )
+            still_processing = gameweek_still_processing(update_status, gw)
+            if still_processing:
+                error_console.print(
+                    f"[yellow]{_still_processing_message(gw, still_processing)}[/yellow]"
+                )
+
             # Whether anything will read each manager's FPL record before
             # this season (issue #131): the saved report and the editorial
             # are its only surfaces, so a bare run or a JSON run does not
@@ -301,9 +328,19 @@ def league_recap_command(
                 # json that has to be the envelope -- `click.ClickException`
                 # writes its own prose to stderr and leaves stdout empty,
                 # which is the same silence in a different shape (#159 review).
+                message = str(e)
+                if still_processing:
+                    # The error blames the field mapping, which is the right
+                    # suspect only once the table has caught up (issue #424).
+                    message = (
+                        f"FPL has not finished processing GW{gw} ({still_processing}), so the"
+                        " league table this check reads has most likely not caught up yet,"
+                        " rather than the field mapping being wrong. Re-run the recap once"
+                        f" FPL finishes. {message}"
+                    )
                 if output_format == "json":
-                    emit_json_error("league-recap", str(e), file=stdout, cause=e)
-                raise click.ClickException(str(e)) from e
+                    emit_json_error("league-recap", message, file=stdout, cause=e)
+                raise click.ClickException(message) from e
 
             # Add context metadata
             collected_data["is_bgw"] = is_bgw
@@ -636,6 +673,11 @@ def league_recap_command(
                                     " derived or left unavailable."
                                 ),
                             }] if standings_moved_on else []
+                        ) + (
+                            [{
+                                "code": RECAP_WARNING_LEAGUE_TABLES_UPDATING,
+                                "message": _still_processing_message(gw, still_processing),
+                            }] if still_processing else []
                         ),
                         # Only set on this partition's very first capture --
                         # the one moment a container-local data directory is
@@ -652,6 +694,15 @@ def league_recap_command(
 
     with api_failure_boundary("league-recap", output_format):
         asyncio.run(_run())
+
+
+def _still_processing_message(gw: int, reason: str) -> str:
+    """The stderr line and the JSON warning's message, worded once for both."""
+    return (
+        f"FPL has not finished processing GW{gw}: {reason}, so league positions and"
+        " totals may be stale. Re-run the recap once FPL finishes, before the next"
+        " deadline, to record the settled table."
+    )
 
 
 def _serialize_coverage(coverage: list[GameweekCoverage]) -> list[dict[str, Any]]:

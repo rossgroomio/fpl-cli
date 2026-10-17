@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 from click.testing import CliRunner
 
@@ -50,7 +51,11 @@ from fpl_cli.cli._league_recap_types import (
     RecapStandingsEntry,
     RecapTransfer,
 )
-from fpl_cli.cli.league_recap import RECAP_WARNING_STANDINGS_MOVED_ON
+from fpl_cli.cli.league_recap import (
+    RECAP_WARNING_LEAGUE_TABLES_UPDATING,
+    RECAP_WARNING_STANDINGS_MOVED_ON,
+)
+from fpl_cli.models.gameweek_status import GameweekStatus
 from fpl_cli.models.league_history import (
     LEAGUE_HISTORY_VERSION,
     CaptureStatus,
@@ -73,7 +78,7 @@ from fpl_cli.services.league_history_notes import (
     SeasonPhase,
     build_notes_pack,
 )
-from tests.conftest import make_fixture, make_history_row, make_player
+from tests.conftest import make_fixture, make_gameweek_status, make_history_row, make_player
 
 SEASON = "2026-27"
 CAPTURED_AT = datetime(2026, 8, 22, 12, 0, tzinfo=timezone.utc)
@@ -835,6 +840,20 @@ def _fpl_client(gw: int = 5) -> MagicMock:
     # these tests assert against (`SEASON`, `season_label()`) still agree
     # with what the command actually resolves.
     client.get_season_year = AsyncMock(return_value=get_season_year())
+    # FPL has finished processing `gw`: bonus confirmed and league tables
+    # refreshed, so no run warns unless a test sets the feed otherwise.
+    client.get_gameweek_status = AsyncMock(return_value=make_gameweek_status(gw))
+    return client
+
+
+def _draft_feed_client(gw: int = 5, status: GameweekStatus | None = None) -> MagicMock:
+    """The draft client a `--draft` run opens for its own feed (issue #424)."""
+    client = MagicMock()
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=False)
+    client.get_gameweek_status = AsyncMock(
+        return_value=status or make_gameweek_status(gw, leagues_updated=True),
+    )
     return client
 
 
@@ -851,6 +870,7 @@ def _invoke_recap(
     replays: list[LeagueRecapData] | None = None,
     collector: AsyncMock | None = None,
     gw: int = 5,
+    draft_client: MagicMock | None = None,
 ):
     """Run the command with the collector stubbed.
 
@@ -861,6 +881,9 @@ def _invoke_recap(
     Pass `collector` to keep a handle on the stub and read back what the
     command decided before calling it -- `is_live_gw`, above all, which is
     derived here and nowhere else (issue #262).
+
+    `draft_client` answers the draft feed a `--draft` run reads before
+    collecting; the collector stub stands in for everything else it fetches.
     """
     client = client or _fpl_client()
     # The stubbed resolver answers `api_current_gw_id` off the same gameweeks
@@ -887,6 +910,10 @@ def _invoke_recap(
         # `--draft` routes to the other collector; the same stub answers both
         # so a draft run needs nothing beyond the flag.
         patch("fpl_cli.cli._league_recap_data.collect_draft_recap_data", collector),
+        patch(
+            "fpl_cli.api.fpl_draft.FPLDraftClient",
+            return_value=draft_client or _draft_feed_client(gw),
+        ),
     ):
         from fpl_cli.cli.league_recap import league_recap_command
 
@@ -5298,6 +5325,168 @@ class TestLiveGameweekDerivation:
 # ---------------------------------------------------------------------------
 # issue #223: a replay must not write a recorded league position away
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Issue #424: FPL has not finished processing the recapped gameweek
+# ---------------------------------------------------------------------------
+
+
+def _tables_updating_warnings(result: Any) -> list[dict[str, Any]]:
+    payload = json.loads(result.stdout)
+    return [
+        w for w in payload["metadata"]["warnings"]
+        if w["code"] == RECAP_WARNING_LEAGUE_TABLES_UPDATING
+    ]
+
+
+class TestLeagueTablesStillUpdating:
+    """FPL marks a gameweek finished before it refreshes the league tables,
+    and the refresh can trail by hours. A recap inside that window reads a
+    table that has not caught up -- classic's totals, draft's ranks -- so it
+    says so, and still records the gameweek: a draft gameweek missed while
+    live cannot be recaptured, and a later run supersedes this one."""
+
+    _UPDATING = make_gameweek_status(5, leagues="Updating")
+    _RECONCILIATION = (
+        "Gameweek-points reconciliation failed for the live gameweek "
+        "(Alice: entry_history=64 standings=60). The point-in-time field mapping "
+        "(gross vs net) is likely wrong -- every row derived from it would be wrong too."
+    )
+
+    @staticmethod
+    def _classic(
+        status: GameweekStatus | Exception, args: list[str] | None = None, **kwargs: Any,
+    ) -> Any:
+        client = _fpl_client()
+        if isinstance(status, Exception):
+            client.get_gameweek_status = AsyncMock(side_effect=status)
+        else:
+            client.get_gameweek_status = AsyncMock(return_value=status)
+        return _invoke_recap(_recap_data(), args, client=client, **kwargs)
+
+    @staticmethod
+    def _draft(draft_client: MagicMock, client: MagicMock | None = None) -> Any:
+        return _invoke_recap(
+            _recap_data(
+                managers=[_manager(league_entry_id=10)],
+                cohort=_cohort((10, "Alice", 1, 60, 300)),
+                fpl_format="draft",
+            ),
+            ["--draft", "--format", "json"],
+            client=client,
+            settings={"fpl": {"draft_league_id": 42}},
+            draft_client=draft_client,
+        )
+
+    def test_updating_tables_are_named_on_stderr(self):
+        result = self._classic(self._UPDATING)
+
+        assert result.exit_code == 0, result.output
+        stderr = result.stderr.replace("\n", "")
+        assert "FPL has not finished processing GW5: league tables are still updating" in stderr
+        assert "may be stale" in stderr
+        assert "Re-run the recap" in stderr
+
+    def test_updating_tables_reach_metadata_warnings_under_json(self):
+        result = self._classic(self._UPDATING, ["--format", "json"])
+
+        assert result.exit_code == 0, result.output
+        [warning] = _tables_updating_warnings(result)
+        assert "league tables are still updating" in warning["message"]
+        assert "may be stale" in warning["message"]
+
+    def test_the_gameweek_is_recorded_anyway(self):
+        """Warn, don't refuse."""
+        self._classic(self._UPDATING)
+
+        assert _store().captured_gameweeks() == [5]
+
+    def test_unconfirmed_bonus_warns_too(self):
+        result = self._classic(
+            make_gameweek_status(5, bonus_added=False, leagues="Updating"), ["--format", "json"],
+        )
+
+        [warning] = _tables_updating_warnings(result)
+        assert "bonus is not yet confirmed" in warning["message"]
+
+    def test_updated_tables_give_no_warning(self):
+        result = self._classic(make_gameweek_status(5), ["--format", "json"])
+
+        assert result.exit_code == 0, result.output
+        assert _tables_updating_warnings(result) == []
+        assert "not finished processing" not in result.stderr
+
+    def test_a_failed_fetch_gives_no_warning(self):
+        """An unread feed is not evidence of a stale table."""
+        result = self._classic(httpx.ConnectError("connection refused"), ["--format", "json"])
+
+        assert result.exit_code == 0, result.output
+        assert _tables_updating_warnings(result) == []
+        assert "not finished processing" not in result.stderr
+
+    def test_a_feed_on_the_next_gameweek_says_nothing_about_this_one(self):
+        """Past the next deadline the feed covers that gameweek, so a recap of
+        this one is not warned about the next one's refresh."""
+        result = self._classic(make_gameweek_status(6, leagues="Updating"), ["--format", "json"])
+
+        assert _tables_updating_warnings(result) == []
+
+    def test_draft_reads_the_draft_feed(self):
+        """The two games refresh their tables separately."""
+        draft = _draft_feed_client(
+            status=make_gameweek_status(5, leagues="Updating", leagues_updated=False),
+        )
+        client = _fpl_client()
+
+        result = self._draft(draft, client)
+
+        assert result.exit_code == 0, result.output
+        [warning] = _tables_updating_warnings(result)
+        assert "league tables are still updating" in warning["message"]
+        draft.get_gameweek_status.assert_awaited_once()
+        client.get_gameweek_status.assert_not_awaited()
+
+    def test_draft_is_not_warned_by_the_classic_feed(self):
+        client = _fpl_client()
+        client.get_gameweek_status = AsyncMock(return_value=self._UPDATING)
+
+        result = self._draft(_draft_feed_client(), client)
+
+        assert _tables_updating_warnings(result) == []
+
+    def test_a_reconciliation_failure_while_updating_points_at_timing(self):
+        result = self._classic(
+            self._UPDATING, ["--format", "json"],
+            collector=AsyncMock(side_effect=RecapReconciliationError(self._RECONCILIATION)),
+        )
+
+        assert result.exit_code == 1
+        error = json.loads(result.stdout)["error"]
+        assert error.startswith(
+            "FPL has not finished processing GW5 (league tables are still updating)",
+        )
+        assert "has most likely not caught up yet" in error
+        # The check's own detail is kept, after the likelier cause.
+        assert error.endswith(self._RECONCILIATION)
+
+    def test_table_mode_gives_the_same_reason(self):
+        result = self._classic(
+            self._UPDATING,
+            collector=AsyncMock(side_effect=RecapReconciliationError(self._RECONCILIATION)),
+        )
+
+        assert result.exit_code == 1
+        assert "has most likely not caught up yet" in result.stderr.replace("\n", "")
+
+    def test_a_reconciliation_failure_once_settled_is_left_as_it_was(self):
+        result = self._classic(
+            make_gameweek_status(5), ["--format", "json"],
+            collector=AsyncMock(side_effect=RecapReconciliationError(self._RECONCILIATION)),
+        )
+
+        assert result.exit_code == 1
+        assert json.loads(result.stdout)["error"] == self._RECONCILIATION
 
 
 class TestReplayKeepsRecordedStandings:
