@@ -251,7 +251,7 @@ Output columns:
 - **Quality** - price-independent player quality (0-100), normalised against a position-specific ceiling. Elite-within-position index — cross-position comparisons not meaningful (GK/DEF/MID/FWD use different ceilings by design). See [Quality & Value Scores](custom-analysis.md#quality--value-scores). Null when no Understat match.
 - **Value** - quality per GBP million (`quality_score / price`). Higher = more output per pound. Null when no Understat match or price is 0. *(classic only)*
 - **Price** - current price *(classic only)*
-- **Budget** - affordability gap: `bank + sell_price - in_price` *(classic only, requires scraper cache)*
+- **Budget** - affordability gap: `bank + sell_price - in_price`, the OUT player's sell price recomputed at today's price (see [Sell Prices](#sell-prices--transfer-affordability)) *(classic only, requires scraper cache)*
 
 OUT player shows absolute scores. IN candidates show deltas for Outlook/This GW only (+15, -3); Quality and Value show absolute values for all players (no delta - value is a per-player efficiency metric). Sorted by Outlook delta descending.
 
@@ -736,7 +736,21 @@ fpl squad sell-prices --refresh
 
 Disabling ECH may additionally require a browser-level managed policy (`EncryptedClientHelloEnabled: false`) since the flag alone does not always strip it. All four env vars are opt-in — leave them unset on trusted networks.
 
-Output: free transfers, bank balance, squad sell prices, total team value. Data cached to `team_finances.json` in the data directory (see [Directories](#directories)) for 12 hours.
+Output: free transfers, bank balance, squad sell prices, total team value. Data cached to `team_finances.json` in the data directory (see [Directories](#directories)) until the next `--refresh`.
+
+**Price changes since the scrape:** prices move overnight, so a cached run fetches today's
+prices and recomputes each sell price from its purchase price: keep half of any rise,
+rounded down, and take all of any fall. It applies the rule to a player only once it has
+checked it against FPL's own figure: the cache stores each player's price at the scrape,
+and the rule must reproduce the sell price FPL showed at that price. Table mode names each
+sell price that moved on stderr. JSON rows carry `scraped_sell_price` (FPL's figure) beside
+`sell_price` (the one to budget on), so a consumer can see which moved. A player it cannot
+check keeps the scraped price and is named in a `sell_prices_as_scraped` warning (stderr, or
+`metadata.warnings`): a price check that fails, an unknown purchase price, a player missing
+from today's list, or a cache scraped before prices were stored. Not being able to fetch
+today's prices gives the same warning for every player and still exits 0. The squad, bank
+and free transfers stay as scraped, so a transfer made on the website since needs a
+`--refresh`. `fpl transfer-eval` uses the same recomputed sell price.
 
 **Suspect scrapes:** a scrape that returns far fewer players than a squad holds is
 refused rather than trusted — the page usually rendered late or the login silently
