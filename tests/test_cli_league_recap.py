@@ -5463,12 +5463,12 @@ class TestLeagueTablesStillUpdating:
 
         assert result.exit_code == 1
         error = json.loads(result.stdout)["error"]
-        assert error.startswith(
-            "FPL has not finished processing GW5 (league tables are still updating)",
-        )
-        assert "has most likely not caught up yet" in error
-        # The check's own detail is kept, after the likelier cause.
-        assert error.endswith(self._RECONCILIATION)
+        # The check's own diagnosis comes first and stands: the refresh can
+        # sit on "Updating" for hours, and a real mapping regression landing
+        # in that window must not be explained away.
+        assert error.startswith(self._RECONCILIATION)
+        assert "FPL has not finished processing GW5, though, so this may be timing" in error
+        assert "a failure after that points at the mapping" in error
 
     def test_table_mode_gives_the_same_reason(self):
         result = self._classic(
@@ -5477,7 +5477,42 @@ class TestLeagueTablesStillUpdating:
         )
 
         assert result.exit_code == 1
-        assert "has most likely not caught up yet" in result.stderr.replace("\n", "")
+        assert "so this may be timing" in result.stderr.replace("\n", "")
+
+    def test_a_replay_does_not_read_the_feed(self):
+        """Only a live capture reads the league table, and by the time a
+        gameweek is replayed the feed has moved on to a later one."""
+        client = _fpl_client()
+        client.get_gameweeks = AsyncMock(
+            return_value=_gameweeks((5, True, False), (6, False, True)),
+        )
+        client.get_manager_history = AsyncMock(return_value={"current": []})
+        client.get_gameweek_status = AsyncMock(return_value=self._UPDATING)
+
+        result = _invoke_recap(_recap_data(), ["--format", "json"], client=client)
+
+        assert result.exit_code == 0, result.output
+        client.get_gameweek_status.assert_not_awaited()
+        assert _tables_updating_warnings(result) == []
+
+    def test_the_saved_report_carries_the_caveat(self, tmp_path: Path):
+        """The report is the copy pasted into the group chat."""
+        result = self._classic(self._UPDATING, ["--save", "--output", str(tmp_path)])
+
+        assert result.exit_code == 0, result.output
+        report = next(tmp_path.rglob("gw*-league-recap.md")).read_text(encoding="utf-8")
+        assert (
+            "> **FPL had not finished processing GW5 when this recap ran:**\n"
+            "> league tables are still updating, so league positions and totals may be stale."
+        ) in report
+        assert report.index("> [!WARNING]") < report.index("# Awards")
+
+    def test_a_settled_report_carries_no_caveat(self, tmp_path: Path):
+        result = self._classic(make_gameweek_status(5), ["--save", "--output", str(tmp_path)])
+
+        assert result.exit_code == 0, result.output
+        report = next(tmp_path.rglob("gw*-league-recap.md")).read_text(encoding="utf-8")
+        assert "had not finished processing" not in report
 
     def test_a_reconciliation_failure_once_settled_is_left_as_it_was(self):
         result = self._classic(

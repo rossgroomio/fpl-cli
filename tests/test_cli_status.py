@@ -1100,6 +1100,27 @@ class TestStatusProcessingFlags:
         assert info["bonus_confirmed"] is None
         assert info["league_tables_updated"] is None
 
+    def test_json_mid_gameweek_is_null_and_the_feed_unread(self):
+        """Mid-gameweek the feed can report the days played so far as
+        settled, and `league_tables_updated: true` would tell a script to
+        recap a gameweek still being played."""
+        client = _mock_client(current_gw={"id": 30, "finished": False})
+
+        info = self._gw_info(_run_json(client))
+
+        assert info["bonus_confirmed"] is None
+        assert info["league_tables_updated"] is None
+        client.get_gameweek_status.assert_not_awaited()
+
+    def test_no_configured_format_reads_the_classic_feed_alone(self):
+        client = _mock_client(current_gw=self._FINISHED)
+        draft_cl = _mock_draft_client()
+
+        info = self._gw_info(_run_json(client, settings={"fpl": {}}, draft_client=draft_cl))
+
+        assert info["league_tables_updated"] is True
+        draft_cl.get_gameweek_status.assert_not_awaited()
+
     def test_json_without_a_current_gameweek_is_null(self):
         info = self._gw_info(_run_json(_mock_client(current_gw=None)))
 

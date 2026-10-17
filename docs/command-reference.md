@@ -954,17 +954,27 @@ has to keep working while the next one plays.
 The start of that window has a catch of its own. FPL marks a gameweek finished once bonus is
 confirmed, but refreshes the league tables afterwards, and the refresh can trail by hours, so a
 recap run straight after the last match may read a table that has not caught up: classic's
-totals, draft's ranks. Before collecting, the recap reads the recapped game's processing feed
-(each game publishes its own, and they refresh separately) and, when it covers the recapped
-gameweek and bonus is unconfirmed or the tables are still updating, says on stderr that
-positions and totals may be stale and to re-run before the next deadline, with a
-`league_tables_updating` warning under `--format json`. It warns rather than refuses: the
+totals, draft's ranks. Before a live capture collects, the recap reads the recapped game's
+processing feed (each game publishes its own, and they refresh separately) and, when the
+feed's own match days for the recapped gameweek show bonus unconfirmed or the tables still
+"Updating", says on stderr that positions and totals may be stale and to re-run before the
+next deadline, with a `league_tables_updating` warning under `--format json` and a warning
+callout at the top of a saved report, above any editorial. It warns rather than refuses: the
 refresh can sit on "Updating" for hours, a draft gameweek missed while live cannot be
-recaptured, and the later run supersedes this one in the ledger. A feed that cannot be read
-says nothing, and one that has moved on to the next gameweek says nothing about this one.
+recaptured, and the later run supersedes this one in the ledger. Only a definite signal
+warns: a feed that cannot be read within five seconds, has been reshaped, reports a state
+other than "Updated" or "Updating" (the empty value seen between gameweeks among them) or
+holds no day for the recapped gameweek says nothing, and a replay does not read the feed at
+all, since by then it has moved on.
+
 `fpl status` reports the same two signals for the current gameweek, beside "Finished" and as
-`bonus_confirmed` / `league_tables_updated` in `data.gameweek_info` (`null` when no feed could
-answer), so a script can wait on them before recapping.
+`bonus_confirmed` / `league_tables_updated` in `data.gameweek_info`, so a script can wait on
+`league_tables_updated` before recapping. Each is `true` only when the feed of every game
+shown says so (the classic feed alone when no format is configured), `false` as soon as one
+says otherwise, and `null` otherwise: while the gameweek is still in progress (when the feed
+can report the days played so far as settled), and whenever some game's feed could not
+answer and none said no, so `null` with both formats configured can mean one game confirmed
+and the other could not be read.
 
 **Report title:** a saved recap opens with `# Gameweek 4 Recap: <league name>` — the gameweek
 spelled out and the league's name exactly as configured — whether or not it carries an editorial,
@@ -1312,9 +1322,10 @@ on stderr in table mode: an unreachable FPL API, a gameweek that could not be re
 all, a reconciliation failure, and a `fines:` block that cannot be parsed (a bad rule, a
 mistyped `threshold:`, or an unrecognised key). The distinction matters when scripting a
 retry — an outage is worth retrying, the other three are not, with one exception: a
-reconciliation failure raised while FPL is still updating the gameweek's league tables
-leads with that, since the table it checked against has most likely not caught up, and is
-worth retrying once FPL finishes.
+reconciliation failure raised while FPL is still processing the gameweek keeps its own
+diagnosis and adds that the mismatch may be timing instead, since the table it checked
+against may not have caught up. Re-run once FPL finishes; a failure after that points at
+the mapping.
 
 The second used to answer differently depending on how you asked: exit 1 with a generic
 `"Could not resolve a gameweek to recap."` under `--format json`, exit **0** in table mode

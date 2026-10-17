@@ -85,7 +85,8 @@ FPL marks a gameweek finished before it has refreshed the league tables, and the
 can trail by hours. `fpl status` says where it has got to beside "Finished" ("bonus
 confirmed, league tables updated", or "still updating"), and a `league-recap` run inside
 that window says on stderr that positions and totals may be stale and to re-run before the
-next deadline. It records the gameweek anyway, and the later run replaces it.
+next deadline, with the same caveat at the top of a saved report. It records the gameweek
+anyway, and the later run replaces it.
 
 A saved recap opens with a fixed title — `# Gameweek 4 Recap: <league name>`, the league's name
 as configured — whether or not it has an editorial. The editorial's own headline sits beneath it

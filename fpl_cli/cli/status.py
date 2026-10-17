@@ -236,9 +236,13 @@ def status_command(ctx: click.Context, output_format: str) -> None:
 
             # `finished` comes before FPL's league-table refresh, which can
             # trail it by hours (issue #424), so it cannot on its own say
-            # whether a league recap would read a settled table. Each game
-            # refreshes its own tables and publishes its own feed; read the
-            # ones for the games configured, the classic one when none is.
+            # whether a league recap would read a settled table. Asked only
+            # of a finished gameweek: mid-gameweek the feed can report the
+            # days played so far as settled, and a flag reading "updated"
+            # then would tell a script to recap a gameweek still being
+            # played. Each game refreshes its own tables and publishes its
+            # own feed; read the ones for the games shown, the classic one
+            # alone when no format is configured.
             from fpl_cli.cli._gameweek_status import (
                 fetch_draft_gameweek_status,
                 fetch_gameweek_status,
@@ -247,14 +251,14 @@ def status_command(ctx: click.Context, output_format: str) -> None:
 
             bonus_confirmed: bool | None = None
             league_tables_updated: bool | None = None
-            if current_gw:
-                update_statuses: list[GameweekStatus | None] = []
-                if fmt != Format.DRAFT:
-                    update_statuses.append(await fetch_gameweek_status(client))
-                if fmt in (Format.DRAFT, Format.BOTH):
-                    update_statuses.append(await fetch_draft_gameweek_status())
+            if current_gw and current_gw.get("finished"):
+                feed_reads: list[Awaitable[GameweekStatus | None]] = []
+                if show_classic:
+                    feed_reads.append(fetch_gameweek_status(client))
+                if show_draft and fmt is not None:
+                    feed_reads.append(fetch_draft_gameweek_status())
                 bonus_confirmed, league_tables_updated = settled_flags(
-                    update_statuses, current_gw["id"],
+                    await asyncio.gather(*feed_reads), current_gw["id"],
                 )
 
             # --- JSON early return ---

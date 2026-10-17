@@ -274,18 +274,21 @@ def league_recap_command(
             # since the refresh can sit on "Updating" for hours and a draft
             # gameweek missed while live cannot be recaptured; a later run
             # supersedes this one in the ledger. Each game has its own feed,
-            # because the two refresh their tables separately.
+            # because the two refresh their tables separately. Only a live
+            # capture reads the table at all, and by the time a gameweek is
+            # replayed the feed has moved on, so a replay does not ask.
             from fpl_cli.cli._gameweek_status import (
                 fetch_draft_gameweek_status,
                 fetch_gameweek_status,
-                gameweek_still_processing,
             )
 
-            update_status = (
-                await fetch_draft_gameweek_status() if is_draft
-                else await fetch_gameweek_status(client)
-            )
-            still_processing = gameweek_still_processing(update_status, gw)
+            update_status = None
+            if is_live_gw:
+                update_status = (
+                    await fetch_draft_gameweek_status() if is_draft
+                    else await fetch_gameweek_status(client)
+                )
+            still_processing = update_status.still_processing(gw) if update_status else None
             if still_processing:
                 error_console.print(
                     f"[yellow]{_still_processing_message(gw, still_processing)}[/yellow]"
@@ -330,19 +333,26 @@ def league_recap_command(
                 # which is the same silence in a different shape (#159 review).
                 message = str(e)
                 if still_processing:
-                    # The error blames the field mapping, which is the right
-                    # suspect only once the table has caught up (issue #424).
+                    # The check's own diagnosis stands; timing is offered
+                    # beside it, not instead of it, since the refresh can sit
+                    # on "Updating" for hours and a real mapping regression
+                    # landing in that window must not be explained away
+                    # (issue #424). Said here as well as on stderr because
+                    # the JSON error envelope carries no warnings.
                     message = (
-                        f"FPL has not finished processing GW{gw} ({still_processing}), so the"
-                        " league table this check reads has most likely not caught up yet,"
-                        " rather than the field mapping being wrong. Re-run the recap once"
-                        f" FPL finishes. {message}"
+                        f"{message} FPL has not finished processing GW{gw}, though, so this"
+                        " may be timing instead: the league table may not have caught up yet."
+                        " Re-run once FPL finishes; a failure after that points at the mapping."
                     )
                 if output_format == "json":
                     emit_json_error("league-recap", message, file=stdout, cause=e)
                 raise click.ClickException(message) from e
 
             # Add context metadata
+            if still_processing:
+                # The saved report is the copy pasted into the group chat, so
+                # it carries the caveat too, above the editorial it covers.
+                collected_data["league_tables_updating"] = still_processing
             collected_data["is_bgw"] = is_bgw
             collected_data["is_dgw"] = is_dgw
             # Which players the gameweek placed exactly, so the identity
