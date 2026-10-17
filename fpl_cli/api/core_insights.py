@@ -48,7 +48,9 @@ class MatchRecord(TypedDict):
     penalties_scored: int
     penalties_missed: int
     minutes_played: int
-    opponent_elo: float
+    # None when matches.csv carries no Elo for the opponent; scoring gives
+    # the match a neutral opponent factor (#431).
+    opponent_elo: float | None
     is_home: bool
     # Attacking involvement (FWD/MID)
     total_shots: int
@@ -134,6 +136,22 @@ def _optional_float(row: Mapping[str, str], column: str) -> float | None:
     return value
 
 
+def _elo(raw: str) -> float | None:
+    """One side's Elo from matches.csv, or None when the cell carries none.
+
+    Core-Insights publishes an Elo it has not filled in as a blank cell: at
+    the start of a season (#142), and for every match from GW3 of 2026-27
+    (#431). Dropping the row with it threw away the match's xG, minutes and
+    defensive stats too, so a blank Elo is unknown rather than fatal. A value
+    that is not a positive finite number is no rating either.
+    """
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    return value if isfinite(value) and value > 0 else None
+
+
 def make_core_insights_fetcher(ttl: timedelta = DEFAULT_TTL) -> DatasetFetcher:
     """Create a DatasetFetcher configured for the FPL-Core-Insights GitHub dataset."""
     from fpl_cli.paths import user_cache_dir
@@ -186,14 +204,19 @@ def parse_match_records(
     matches_text: str,
     stats_text: str,
     lookup: Mapping[int, PlayerLookup],
-) -> dict[int, list[MatchRecord]]:
+) -> tuple[dict[int, list[MatchRecord]], int]:
     """Join one gameweek's playermatchstats.csv onto its matches.csv.
 
+    Returns the records and the number of playermatchstats.csv data rows
+    read, so a caller can tell how much of the file survived the join.
+
     Every value a record depends on is converted here, so a column that is
-    present but blank upstream (Elo at the start of a season) drops the row
-    exactly as it does at runtime. The `fpl doctor --providers` per-GW probe
-    runs this same join rather than a weaker header check, so it cannot pass
-    a file the runtime reads as zero records (#142).
+    present but blank upstream drops the row exactly as it does at runtime.
+    The `fpl doctor --providers` per-GW probe runs this same join rather than
+    a weaker header check, so it cannot pass a file the runtime reads as zero
+    records (#142). Elo and xG are the exceptions (#431): the columns must
+    be there, but a blank Elo keeps the row with an unknown `opponent_elo`,
+    and a blank xG is a match with no shot, so it reads as 0.
     """
     matches: dict[str, dict[str, str]] = {}
     for row in csv.DictReader(io.StringIO(matches_text)):
@@ -202,7 +225,9 @@ def parse_match_records(
             matches[mid] = row
 
     result: dict[int, list[MatchRecord]] = {}
+    rows_read = 0
     for row in csv.DictReader(io.StringIO(stats_text)):
+        rows_read += 1
         try:
             pid = int(row["player_id"])
             mid = row["match_id"]
@@ -218,8 +243,8 @@ def parse_match_records(
             continue
 
         try:
-            home_elo = float(match["home_team_elo"])
-            away_elo = float(match["away_team_elo"])
+            home_elo = _elo(match["home_team_elo"])
+            away_elo = _elo(match["away_team_elo"])
             gameweek = int(float(match["gameweek"]))
             home_team_code = int(float(match["home_team"]))
         except (ValueError, KeyError):
@@ -229,7 +254,12 @@ def parse_match_records(
         opponent_elo = away_elo if is_home else home_elo
 
         try:
-            xg = float(row["xg"])
+            # Blank is how 2026-27 writes a match with no shot: 2025-26 wrote
+            # 0 for those, about half of every gameweek's appearances, and
+            # 2026-27 leaves xg and total_shots empty instead and never writes
+            # 0. Dropping the row kept only the matches a player shot in, so
+            # every per-90 figure built on them read high.
+            xg = float(row["xg"] or 0)
             minutes_played = int(float(row["minutes_played"]))
         except (ValueError, KeyError):
             continue
@@ -258,7 +288,7 @@ def parse_match_records(
         }
         result.setdefault(pid, []).append(record)
 
-    return result
+    return result, rows_read
 
 
 def parse_gw_stat_rows(
@@ -433,6 +463,7 @@ class CoreInsightsClient:
         # runs (#142). A gameweek missing either file contributes nothing.
         result: dict[int, list[MatchRecord]] = {}
         joined_gws = 0
+        rows_read = 0
         for i, gw in enumerate(gw_range):
             matches_result = raw_results[i * 2]
             stats_result = raw_results[i * 2 + 1]
@@ -443,16 +474,31 @@ class CoreInsightsClient:
                 logger.debug("GW%d playermatchstats.csv unavailable: %s", gw, stats_result)
                 continue
             joined_gws += 1
-            for pid, records in parse_match_records(
-                matches_result, stats_result, lookup
-            ).items():
+            gw_records, gw_rows_read = parse_match_records(matches_result, stats_result, lookup)
+            rows_read += gw_rows_read
+            for pid, records in gw_records.items():
                 result.setdefault(pid, []).extend(records)
 
+        kept = sum(len(records) for records in result.values())
         if joined_gws and not result:
             logger.warning(
                 "Core-Insights match stats parsed to 0 records from %d gameweek file(s) — "
                 "the upstream format may have changed; opponent-adjusted xG signals "
                 "are unavailable",
+                joined_gws,
+            )
+        elif kept * 2 < rows_read:
+            # A partial collapse is as silent as a total one at exactly zero:
+            # #431 kept GW1-2 alone, enough records to stay off the warning
+            # above and too few for any player to reach the adjusted-npxG
+            # minimum, so every score fell back without a word. This also
+            # caught the blank-xG drop above, which no warning had named.
+            logger.warning(
+                "Core-Insights match stats kept %d of %d player-match rows from %d "
+                "gameweek file(s) — the upstream format may have changed; "
+                "opponent-adjusted xG and consistency signals rest on what survived",
+                kept,
+                rows_read,
                 joined_gws,
             )
         self._match_records = result

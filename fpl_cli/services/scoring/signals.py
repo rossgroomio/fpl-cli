@@ -199,29 +199,41 @@ _CONSISTENCY_MIN_MATCHES = 6
 def compute_median_elo(
     match_records: dict[int, list[MatchRecord]],
 ) -> float:
-    """Median opponent Elo across all match records, or 1700.0 if empty."""
+    """Median opponent Elo across the match records that carry one, or 1700.0 if none do."""
     import statistics
 
     all_elos = [
-        r["opponent_elo"]
+        elo
         for records in match_records.values()
         for r in records
+        if (elo := r.get("opponent_elo")) is not None and elo > 0
     ]
     return statistics.median(all_elos) if all_elos else 1700.0
+
+
+def _opponent_factor(match: MatchRecord, median_elo: float) -> float:
+    """How far one match's output is scaled for the opponent's strength.
+
+    ``median_elo / opponent_elo``, capped at [0.80, 1.25] to limit
+    early-season noise. A match with no opponent Elo gets a neutral 1.0: it
+    still counts towards the window at face value rather than dropping out,
+    so while Core-Insights publishes Elo blank (#431) the adjusted figures
+    degrade towards unadjusted ones instead of vanishing.
+    """
+    opp_elo = match.get("opponent_elo")
+    if opp_elo is None or opp_elo <= 0:
+        return 1.0
+    return max(0.80, min(1.25, median_elo / opp_elo))
 
 
 def _elo_adjusted_xgis(
     window: list[MatchRecord], median_elo: float,
 ) -> list[float]:
     """Elo-adjusted xGI values for each match in the window."""
-    adjusted: list[float] = []
-    for m in window:
-        opp_elo = m.get("opponent_elo", median_elo)
-        if opp_elo <= 0:
-            opp_elo = median_elo
-        factor = max(0.80, min(1.25, median_elo / opp_elo))
-        adjusted.append((m.get("xg", 0.0) + m.get("xa", 0.0)) * factor)
-    return adjusted
+    return [
+        (m.get("xg", 0.0) + m.get("xa", 0.0)) * _opponent_factor(m, median_elo)
+        for m in window
+    ]
 
 
 _CONSISTENCY_MIN_MINUTES = 60
@@ -618,7 +630,7 @@ def compute_adjusted_npxg(
     """Opponent-adjusted npxG/90 over a rolling 7-match/12-GW window.
 
     Normalises each match's xG by the opponent's Elo relative to the league
-    median. Factor capped at [0.80, 1.25] to limit early-season noise.
+    median (``_opponent_factor``; a match with no Elo counts unadjusted).
     npxG per match = xg - (penalties_scored + penalties_missed) * 0.76.
 
     Returns None when fewer than 4 qualifying matches (same threshold as
@@ -639,15 +651,10 @@ def compute_adjusted_npxg(
     total_minutes = 0
 
     for m in window:
-        opp_elo = m.get("opponent_elo", median_elo)
-        if opp_elo <= 0:
-            opp_elo = median_elo
-        factor = max(0.80, min(1.25, median_elo / opp_elo))
-
         xg = m.get("xg", 0.0)
         penalties = m.get("penalties_scored", 0) + m.get("penalties_missed", 0)
         npxg = xg - penalties * 0.76
-        total_adjusted += npxg * factor
+        total_adjusted += npxg * _opponent_factor(m, median_elo)
         total_minutes += m.get("minutes_played", 0)
 
     if total_minutes == 0:

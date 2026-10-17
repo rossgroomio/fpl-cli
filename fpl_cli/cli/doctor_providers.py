@@ -13,7 +13,8 @@ Status mapping keeps #57's taxonomy honest for providers:
   - BROKEN: reachable but the wrong shape — needs a code or upstream fix,
     and is what the scheduled CI probe fails on.
   - STALE: a publishing lag that self-corrects (e.g. the newest gameweek
-    folder not uploaded yet).
+    folder not uploaded yet), or an upstream gap the runtime degrades
+    around rather than reads wrong (Elo published blank, #431).
   - UNCHECKED: the provider was unreachable, so drift could not be ruled
     out — transient, not actionable.
 
@@ -432,6 +433,9 @@ class _GwProbe:
     unknown: list[str]
     match_records: int
     gw_stat_rows: int
+    # Records the join kept with no opponent Elo (#431): not a parse failure,
+    # but each one scores with a neutral opponent factor.
+    unknown_elo_records: int
 
     @property
     def unusable_units(self) -> set[str]:
@@ -508,11 +512,15 @@ async def _ci_probe_gw(
     gw_stats_text = by_name["player_gameweek_stats.csv"]
 
     match_records = 0
+    unknown_elo_records = 0
     if matches_text is not None and stats_text is not None:
-        match_records = sum(
-            len(records)
-            for records in parse_match_records(matches_text, stats_text, lookup).values()
-        )
+        joined = [
+            record
+            for records in parse_match_records(matches_text, stats_text, lookup)[0].values()
+            for record in records
+        ]
+        match_records = len(joined)
+        unknown_elo_records = sum(1 for r in joined if r["opponent_elo"] is None)
     gw_stat_rows = 0
     if gw_stats_text is not None:
         gw_stat_rows = len(parse_gw_stat_rows(gw_stats_text, lookup)[0])
@@ -523,7 +531,38 @@ async def _ci_probe_gw(
     if gw_stats_text is not None and not gw_stat_rows:
         empty.append(GW_STATS_UNIT)
 
-    return _GwProbe(absent, column_problems, empty, unknown, match_records, gw_stat_rows)
+    return _GwProbe(
+        absent, column_problems, empty, unknown, match_records, gw_stat_rows,
+        unknown_elo_records,
+    )
+
+
+def _ci_elo_phrase(
+    probe: _GwProbe, previous: _GwProbe | None, previous_gw: int
+) -> str | None:
+    """Name an Elo gap in the match join, or None when every record carries one.
+
+    A blank Elo no longer empties the join (#431): the record is kept and
+    scores with a neutral opponent factor, so what it costs is the opponent
+    adjustment, not the signal. The previous gameweek tells a backfill in
+    progress from an upstream gap.
+    """
+    if not probe.unknown_elo_records:
+        return None
+    phrase = (
+        f"matches.csv carries no opponent Elo for {probe.unknown_elo_records} of "
+        f"{probe.match_records} player-match records, so those matches count "
+        "unadjusted in the opponent-adjusted xG signals"
+    )
+    if previous is None or not previous.match_records:
+        return phrase
+    if previous.unknown_elo_records:
+        return (
+            f"{phrase}; GW{previous_gw} has none for {previous.unknown_elo_records} "
+            f"of {previous.match_records} either, so this is an upstream gap rather "
+            "than a backfill in progress"
+        )
+    return f"{phrase}; GW{previous_gw} carries it, so this is likely a backfill in progress"
 
 
 def _ci_empty_phrase(units: list[str]) -> str:
@@ -548,7 +587,10 @@ async def _ci_gw_check(
     every expected column and still parsed to zero records (Elo published
     blank at the start of a season), so the probe reported ok while every
     scoring command warned the signal was gone. It runs the runtime parsers
-    here instead and asserts they yield something.
+    here instead and asserts they yield something. Since #431 a blank Elo
+    keeps its record, so it is reported as a gap of its own: stale, whether
+    it is a backfill in progress or open-ended upstream, because the runtime
+    degrades around it rather than reading anything wrong.
 
     A unit that yields nothing for the newest gameweek but is healthy for
     the previous one is a publishing lag (the dataset updates a few times a
@@ -575,7 +617,8 @@ async def _ci_gw_check(
 
     if probe.column_problems:
         return CheckResult(name, CheckStatus.BROKEN, "; ".join(probe.column_problems))
-    if not probe.absent and not probe.empty:
+    parsed = not probe.absent and not probe.empty
+    if parsed and not probe.unknown_elo_records:
         return CheckResult(
             name,
             CheckStatus.OK,
@@ -596,6 +639,10 @@ async def _ci_gw_check(
         previous = await _ci_probe_gw(
             fetcher, season, previous_gw, lookup, tolerate_errors=True
         )
+    elo_gap = _ci_elo_phrase(probe, previous, previous_gw)
+    elo_suffix = f"; {elo_gap}" if elo_gap else ""
+    if parsed:
+        return CheckResult(name, CheckStatus.STALE, f"GW{latest_finished_gw}: {elo_gap}")
 
     broken_units = probe.unusable_units & (
         previous.unusable_units if previous is not None else set()
@@ -622,7 +669,7 @@ async def _ci_gw_check(
             name,
             CheckStatus.BROKEN,
             f"GW{latest_finished_gw}: {'; '.join(problems)}; GW{previous_gw} yields "
-            f"nothing either{prev_cause}, so this is not publishing lag",
+            f"nothing either{prev_cause}, so this is not publishing lag{elo_suffix}",
         )
 
     lag = []
@@ -645,7 +692,7 @@ async def _ci_gw_check(
     return CheckResult(
         name,
         CheckStatus.STALE,
-        f"GW{latest_finished_gw}: {'; '.join(lag)} — {caveat}",
+        f"GW{latest_finished_gw}: {'; '.join(lag)} — {caveat}{elo_suffix}",
     )
 
 

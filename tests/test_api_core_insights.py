@@ -15,6 +15,8 @@ from fpl_cli.api.core_insights import (
     BASE_URL,
     CoreInsightsClient,
     make_core_insights_fetcher,
+    parse_match_records,
+    parse_player_lookup,
     season_dir,
 )
 from fpl_cli.api.dataset_fetcher import DatasetFetcher
@@ -859,6 +861,10 @@ def _mock_players():
     )
 
 
+def _lookup():
+    return parse_player_lookup(PLAYERS_CSV)[0]
+
+
 def _mock_standard_gws():
     """Mock GW1, GW2, GW4 with data; GW3, GW5 as 404 (not yet played)."""
     _mock_gw(1, GW1_MATCHES, GW1_STATS)
@@ -1135,9 +1141,10 @@ class TestContractTripwires:
         assert "none could be parsed" in caplog.text
 
     @respx.mock
-    async def test_blank_elo_column_yields_no_records_and_warns(self, tmp_path, caplog):
-        # #142 upstream: the columns are all there, the Elo values are blank
-        # at the start of a season, and every row drops out of the join.
+    async def test_blank_elo_keeps_the_record_with_unknown_elo(self, tmp_path, caplog):
+        # #142 / #431 upstream: the columns are all there and the Elo values
+        # are blank. Dropping the row threw away the match's xG and minutes
+        # too, so it stays, with an Elo scoring reads as a neutral opponent.
         blank_elo = (
             "match_id,gameweek,tournament,home_team,away_team,"
             "home_team_elo,away_team_elo\n"
@@ -1150,9 +1157,136 @@ class TestContractTripwires:
             async with CoreInsightsClient(_make_fetcher(tmp_path)) as client:
                 result = await client.get_match_stats(2)
 
+        assert result[100][0]["opponent_elo"] is None
+        assert result[100][0]["xg"] == 0.60
+        assert result[200][0]["opponent_elo"] is None
+        assert caplog.text == ""
+
+    @respx.mock
+    async def test_one_blank_side_leaves_only_its_opponents_unknown(self, tmp_path):
+        # Man City's Elo is blank: Liverpool's player loses his opponent's
+        # rating, City's player still has Liverpool's.
+        one_side = (
+            "match_id,gameweek,tournament,home_team,away_team,"
+            "home_team_elo,away_team_elo\n"
+            "m1,1,prem,14,13,1800.0,\n"
+        )
+        _mock_players()
+        _mock_gw(1, one_side, GW1_STATS)
+
+        async with CoreInsightsClient(_make_fetcher(tmp_path)) as client:
+            result = await client.get_match_stats(2)
+
+        assert result[100][0]["opponent_elo"] is None
+        assert result[200][0]["opponent_elo"] == 1800.0
+
+    @pytest.mark.parametrize("raw", ["n/a", "0", "-5", "nan", "inf"])
+    def test_elo_that_is_no_rating_reads_as_unknown(self, raw):
+        matches = (
+            "match_id,gameweek,tournament,home_team,away_team,"
+            f"home_team_elo,away_team_elo\nm1,1,prem,14,13,{raw},{raw}\n"
+        )
+        records, rows_read = parse_match_records(matches, GW1_STATS, _lookup())
+
+        assert rows_read == 2
+        assert [r["opponent_elo"] for rs in records.values() for r in rs] == [None, None]
+
+    @respx.mock
+    async def test_blank_xg_is_a_match_with_no_shot(self, tmp_path, caplog):
+        # #431: 2025-26 wrote xg 0 for a player who took no shot; 2026-27
+        # leaves it blank, along with total_shots. Dropping those rows kept
+        # only the matches a player shot in, so his npxG/90 read high.
+        no_shot = (
+            "player_id,match_id,minutes_played,xg,xa,total_shots\n"
+            "100,m1,90,,0.2,\n"
+            "200,m1,0.0,,,\n"
+        )
+        _mock_players()
+        _mock_gw(1, GW1_MATCHES, no_shot)
+
+        with caplog.at_level(logging.WARNING):
+            async with CoreInsightsClient(_make_fetcher(tmp_path)) as client:
+                result = await client.get_match_stats(2)
+
+        assert result[100][0]["xg"] == 0.0
+        assert result[100][0]["minutes_played"] == 90
+        assert result[100][0]["xa"] == 0.2
+        assert result[200][0]["minutes_played"] == 0
+        assert caplog.text == ""
+
+    @respx.mock
+    async def test_missing_elo_column_still_drops_the_row(self, tmp_path):
+        # The column is part of the contract (`fpl doctor --providers` names
+        # it as missing); only a blank cell is an Elo not filled in yet.
+        no_elo = (
+            "match_id,gameweek,tournament,home_team,away_team\n"
+            "m1,1,prem,14,13\n"
+        )
+        _mock_players()
+        _mock_gw(1, no_elo, GW1_STATS)
+
+        async with CoreInsightsClient(_make_fetcher(tmp_path)) as client:
+            result = await client.get_match_stats(2)
+
+        assert result == {}
+
+    @respx.mock
+    async def test_unjoinable_matches_yield_no_records_and_warn(self, tmp_path, caplog):
+        unjoinable = (
+            "match_id,gameweek,tournament,home_team,away_team,"
+            "home_team_elo,away_team_elo\n"
+            "m1,,prem,,13,1800.0,1750.0\n"
+        )
+        _mock_players()
+        _mock_gw(1, unjoinable, GW1_STATS)
+
+        with caplog.at_level(logging.WARNING):
+            async with CoreInsightsClient(_make_fetcher(tmp_path)) as client:
+                result = await client.get_match_stats(2)
+
         assert result == {}
         assert "parsed to 0 records" in caplog.text
         assert "opponent-adjusted xG signals" in caplog.text
+
+    @respx.mock
+    async def test_most_rows_dropping_warns_short_of_zero(self, tmp_path, caplog):
+        # #431's runtime shape: enough survived to stay clear of the
+        # zero-records warning, so the collapse went unannounced.
+        _mock_players()
+        _mock_gw(1, GW1_MATCHES, GW1_STATS)
+        unjoinable = (
+            "match_id,gameweek,tournament,home_team,away_team,"
+            "home_team_elo,away_team_elo\n"
+            "m2,,prem,,14,1760.0,1810.0\n"
+        )
+        stats = (
+            "player_id,match_id,minutes_played,xg\n"
+            "100,m2,90,0.2\n200,m2,90,0.3\n300,m2,90,0.0\n"
+        )
+        _mock_gw(2, unjoinable, stats)
+
+        with caplog.at_level(logging.WARNING):
+            async with CoreInsightsClient(_make_fetcher(tmp_path)) as client:
+                result = await client.get_match_stats(3)
+
+        assert sum(len(rs) for rs in result.values()) == 2
+        assert "kept 2 of 5 player-match rows from 2 gameweek file(s)" in caplog.text
+        assert "parsed to 0 records" not in caplog.text
+
+    @respx.mock
+    async def test_a_minority_of_rows_dropping_stays_quiet(self, tmp_path, caplog):
+        # A player missing from players.csv or an orphaned match row is
+        # ordinary; the tripwire is for most of the data going.
+        _mock_players()
+        stats = GW1_STATS + "999,m1,90,0.1,0,0,0,0,0,0,0,0,0,0,0,0,0,0\n"
+        _mock_gw(1, GW1_MATCHES, stats)
+
+        with caplog.at_level(logging.WARNING):
+            async with CoreInsightsClient(_make_fetcher(tmp_path)) as client:
+                result = await client.get_match_stats(2)
+
+        assert set(result) == {100, 200}
+        assert caplog.text == ""
 
     @respx.mock
     async def test_healthy_files_emit_no_contract_warning(self, tmp_path, caplog):
