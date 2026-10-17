@@ -4353,7 +4353,11 @@ class TestLeagueHistoryPromptSection:
         assert '"## League History" section' in RECAP_SYNTHESIS_SYSTEM_PROMPT
         assert '"## Prior Seasons" rule below' in RECAP_SYNTHESIS_SYSTEM_PROMPT
         assert 'season fine totals from the "## Season Fines" section' in RECAP_SYNTHESIS_SYSTEM_PROMPT
-        assert "The Awards and GW Standings sections describe one gameweek" in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        # The previous-leader statement is the one cross-gameweek fact the
+        # Standings section carries, so it is named as a source rather than
+        # left contradicting the previous-leader rule (#452 review).
+        assert "the GW Standings section's previous-leader statement" in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        assert "Beyond that statement, the Awards and GW Standings sections describe one gameweek" in RECAP_SYNTHESIS_SYSTEM_PROMPT
 
     def test_the_season_count_rule_frames_counts_as_optional_colour(self):
         from fpl_cli.prompts.league_recap import RECAP_SYNTHESIS_SYSTEM_PROMPT
@@ -6080,7 +6084,8 @@ class TestFinePlacement:
 
         assert 'their "another" or "again"' in system
         assert "use that placement and no other" in system
-        assert "a bare total of 1 is one fine, this gameweek" in system
+        assert '"second", "twice", "back-to-back", "in a row", "still"' in system
+        assert "two managers each on 1 are two first offences, not a repeat" in system
 
 
 # ---------------------------------------------------------------------------

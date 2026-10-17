@@ -350,6 +350,10 @@ def _entry_tier(
     return weakest_tier(tiers)
 
 
+def _gameweek_noun(count: int) -> str:
+    return "gameweek" if count == 1 else "gameweeks"
+
+
 def _streak_text(
     manager_name: str,
     count_label_one: str,
@@ -398,8 +402,10 @@ def _streak_text(
     papered over with generic wording that would say nothing.
 
     `for_prompt` renders the same facts as the editorial prompt's sentence
-    ("Bob has 3 waiver hauls in the last 4 (GW3-GW6), with no completed
-    moves in 1 of them") rather than the ledger line."""
+    ("Bob has 3 waiver hauls in the last 4 (GW3-GW6), with 1 gameweek with
+    no completed moves") rather than the ledger line. Each clause there
+    names its own gameweeks, so the two never read as one set inside the
+    other."""
     span = f"GW{window.start_gameweek}-GW{window.end_gameweek}"
     count_label = count_label_one if length == 1 else count_label_many
     lead = f"{manager_name} has" if for_prompt else f"{manager_name}:"
@@ -409,7 +415,7 @@ def _streak_text(
     clauses: list[str] = []
     if not_recorded:
         clauses.append(
-            f"{not_recorded} of those gameweeks not recorded" if for_prompt
+            f"{not_recorded} {_gameweek_noun(not_recorded)} not recorded" if for_prompt
             else f"{not_recorded} not recorded",
         )
     if inapplicable_count:
@@ -419,7 +425,7 @@ def _streak_text(
                 "inapplicable_label to name them.",
             )
         clauses.append(
-            f"{inapplicable_label} in {inapplicable_count} of them" if for_prompt
+            f"{inapplicable_count} {_gameweek_noun(inapplicable_count)} with {inapplicable_label}" if for_prompt
             else f"{inapplicable_label} in {inapplicable_count}",
         )
     text = f"{lead} {length} {count_label} in the last {window.span_length} ({span})"
@@ -600,8 +606,7 @@ def _season_count_prompt_text(
     label = label_one if occurrences == 1 else label_many
     bracket = span
     if held_total:
-        plural = "" if held_total == 1 else "s"
-        bracket += f"; {held_total} gameweek{plural} could not be judged"
+        bracket += f"; {held_total} {_gameweek_noun(held_total)} could not be judged"
 
     if run_framed and run_length > 0:
         run_label = label_one if run_length == 1 else label_many

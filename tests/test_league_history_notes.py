@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import re
+from functools import partial
+
 import pytest
 
 from fpl_cli.cli._league_recap_data import derive_point_in_time_positions
@@ -16,6 +19,7 @@ from fpl_cli.services.league_history_notes import (
     GameweekWindow,
     NoteSurface,
     SeasonPhase,
+    _season_count_text,
     _streak_text,
     build_notes_pack,
     derive_season_phase,
@@ -323,8 +327,29 @@ class TestStreakEntries:
 
         assert text == (
             "Alice has 3 captain blanks in the last 6 (GW1-GW6), "
-            "with 2 of those gameweeks not recorded and no captain fixture in 1 of them."
+            "with 2 gameweeks not recorded and 1 gameweek with no captain fixture."
         )
+
+    @pytest.mark.parametrize(("length", "end", "held", "inapplicable"), [
+        (3, 3, 0, 0),
+        (3, 6, 2, 1),
+        (1, 4, 3, 0),
+        (2, 5, 0, 3),
+        (4, 9, 1, 4),
+    ])
+    def test_the_prompt_sentence_states_the_same_figures_as_the_ledger_line(
+        self, length, end, held, inapplicable,
+    ):
+        """The two renderings are separate wordings of one fact, so a change
+        to either that drops or adds a figure fails here rather than
+        reaching the editorial as a different count (issue #452 review)."""
+        args = ("Alice", "captain blank", "captain blanks", length, GameweekWindow(start_gameweek=1, end_gameweek=end))
+        kwargs = {"held_count": held, "inapplicable_count": inapplicable, "inapplicable_label": "no captain fixture"}
+
+        ledger = _streak_text(*args, **kwargs)
+        prompt = _streak_text(*args, **kwargs, for_prompt=True)
+
+        assert sorted(re.findall(r"\d+", prompt)) == sorted(re.findall(r"\d+", ledger))
 
     def test_a_consecutive_run_keeps_in_a_row_in_its_prompt_sentence(self):
         text = _streak_text(
@@ -959,6 +984,28 @@ class TestSeasonCountEntries:
         assert entry.text_for(NoteSurface.PROMPT).startswith(
             "Alice has 5 gameweeks without a green arrow in a row, and 5 this season (",
         )
+
+    @pytest.mark.parametrize(("occurrences", "held", "occurred", "run_length", "run_held", "run_framed"), [
+        (1, 0, True, 0, 0, False),
+        (4, 0, True, 0, 0, False),
+        (4, 2, True, 0, 0, False),
+        (4, 1, False, 0, 0, False),
+        (22, 0, True, 5, 0, True),
+        (22, 3, True, 5, 1, True),
+    ])
+    def test_the_prompt_sentence_states_the_same_figures_as_the_ledger_line(
+        self, occurrences, held, occurred, run_length, run_held, run_framed,
+    ):
+        """Same guard as the streak one: the season-count prompt sentence is
+        its own function, so nothing but this ties its figures to the
+        ledger's (issue #452 review)."""
+        render = partial(
+            _season_count_text, "Alice", "gameweek win", "gameweek wins", occurrences, held,
+            GameweekWindow(start_gameweek=1, end_gameweek=30),
+            occurred_this_gameweek=occurred, run_length=run_length, run_held=run_held, run_framed=run_framed,
+        )
+
+        assert sorted(re.findall(r"\d+", render(for_prompt=True))) == sorted(re.findall(r"\d+", render()))
 
     def test_a_zero_count_produces_no_entry(self):
         store = LeagueHistoryStore("2026-27", "classic", 1)
