@@ -98,6 +98,7 @@ from fpl_cli.services.scoring.evaluation import (
     build_scoring_enrichment,
     gk_signal_enrichment,
     gk_xgc_quality,
+    read_chance_of_playing,
 )
 from fpl_cli.services.scoring.ownership import (
     calculate_differential_score,
@@ -107,7 +108,6 @@ from fpl_cli.services.scoring.ownership import (
 from fpl_cli.services.scoring.shrinkage import (
     apply_shrinkage,
     is_known_unavailable,
-    read_chance_of_playing,
     shrink_scores,
     unavailable_player_ids,
 )
@@ -238,6 +238,7 @@ __all__ = [
     "apply_gk_signals",
     "gk_signal_enrichment",
     "gk_xgc_quality",
+    "read_chance_of_playing",
     # display
     "normalise_score",
     "pick_display_ceiling",
@@ -250,7 +251,6 @@ __all__ = [
     # shrinkage
     "apply_shrinkage",
     "is_known_unavailable",
-    "read_chance_of_playing",
     "shrink_scores",
     "unavailable_player_ids",
     # ownership

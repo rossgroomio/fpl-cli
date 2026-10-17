@@ -1351,6 +1351,18 @@ class TestWaiverAgentRecommendations:
 
         assert agent._calculate_drop_priority(doubt) > agent._calculate_drop_priority(fit)
 
+    def test_drop_priority_reads_a_row_carrying_both_spellings(self):
+        """A parser row with no news under its own key still finds the raw one.
+
+        A key-presence test would stop at ``chance_of_playing=None`` and rank
+        the doubt as fit; only a None fall-through reaches the 25.
+        """
+        agent = WaiverAgent()
+        doubt = {"status": "d", "chance_of_playing": None, "chance_of_playing_next_round": 25, "form": 6.0}
+        fit = {"status": "a", "form": 0.0}
+
+        assert agent._calculate_drop_priority(doubt) > agent._calculate_drop_priority(fit)
+
     def test_generate_recommendations_limits_to_5(self):
         """Test recommendations are limited to 5."""
         agent = WaiverAgent()
