@@ -215,6 +215,14 @@ class WaiverAgent(Agent):
             # Enrich available players with matchup and FDR
             matchup_cache: dict[tuple[int, str], float] = {}
             for player in parsed_available:
+                # The draft bootstrap carries defensive contribution only as a
+                # season total, and the parser drops even that, so every
+                # defender would score with no DC term against a waiver anchor
+                # calibrated with it (#437). Read the rate off the joined main
+                # player, the same field classic scoring uses; a miss keeps 0.
+                main_player = self._main_player_map.get(int(player.get("id") or 0))
+                if main_player is not None:
+                    player["dc_per_90"] = main_player.defensive_contribution_per_90
                 tid = player.get("team_id", 0)
                 pos = player.get("position", "MID")
                 matchup_avg_3gw, positional_fdr = compute_aggregate_matchup(
