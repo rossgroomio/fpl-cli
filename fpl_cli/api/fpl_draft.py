@@ -140,6 +140,35 @@ def resolve_lost_claims(txns: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
     return list(best.values())
 
 
+DRAFT_SQUADS_UNREAD = "draft_squads_unread"
+
+
+def unread_squads_warning(unread: Mapping[int, str]) -> dict[str, str] | None:
+    """The `metadata.warnings` entry for rival squads an ownership read missed, else None.
+
+    *unread* is `FPLDraftClient.unread_squads` after `get_league_ownership`
+    (or `get_available_players`, which calls it): entry id to entry name.
+    One builder for every consumer of the ownership map -- `fpl waivers`,
+    whose pool offers such a player as a claim that fails at the deadline,
+    and the draft columns of `fpl player` and `fpl stats`, which label them
+    "Available" -- so the three cannot describe the same gap differently.
+    """
+    if not unread:
+        return None
+    names = ", ".join(sorted(unread.values()))
+    plural = len(unread) > 1
+    return {
+        "code": DRAFT_SQUADS_UNREAD,
+        "message": (
+            f"The squad{'s' if plural else ''} of {len(unread)} league "
+            f"entr{'ies' if plural else 'y'} ({names}) could not be read, so "
+            f"{'their' if plural else 'its'} players may be listed as available "
+            "and a claim on one would fail. Re-run; if it persists, the draft API "
+            "may have changed."
+        ),
+    }
+
+
 class FPLDraftClient:
     """Client for the FPL Draft API.
 
@@ -331,7 +360,11 @@ class FPLDraftClient:
         The element-status endpoint can return stale data. This method
         builds ownership by querying each team's actual squad.
 
-        Fetches game_state once then parallelises all entry_picks calls.
+        Fetches game_state once then parallelises all entry_picks calls. A
+        squad whose fetch fails is left out of the map and recorded on
+        ``unread_squads``; every caller reads that record and names it with
+        ``unread_squads_warning``, since the players of a squad this could
+        not read look exactly like free agents (#438).
 
         Args:
             league_id: The draft league ID.

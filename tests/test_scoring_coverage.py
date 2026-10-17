@@ -6,9 +6,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from fpl_cli.models.player import PlayerPosition
 from fpl_cli.services.player_prior import CUTOFF_GW, PlayerPrior
 from fpl_cli.services.scoring import prepare_scoring_data
+from fpl_cli.services.scoring.constants import SIGNAL_WINDOW_LOOKBACK_GWS
 from fpl_cli.services.scoring.coverage import (
     ADJUSTED_NPXG_COVERAGE_LOW,
     CONSISTENCY_COVERAGE_LOW,
@@ -26,7 +26,14 @@ from fpl_cli.services.scoring.coverage import (
     fixture_ratings_coverage,
     gw_history_coverage,
     history_prior_coverage,
+    recent_appearances,
     understat_coverage,
+    understat_join_coverage,
+)
+from fpl_cli.services.scoring.signals import (
+    ADJUSTED_NPXG_MIN_MATCHES,
+    CONSISTENCY_MIN_MATCHES,
+    CONSISTENCY_MIN_MINUTES,
 )
 from fpl_cli.services.team_ratings import TeamRating, TeamRatingsService
 from tests.conftest import make_fixture, make_player, make_team
@@ -35,6 +42,11 @@ from tests.conftest import make_fixture, make_player, make_team
 def _pool(n: int = 30, **kwargs):
     """*n* players with minutes, ids 1..n."""
     return [make_player(id=i, web_name=f"P{i}", team_id=1, minutes=900, **kwargs) for i in range(1, n + 1)]
+
+
+def _history(rounds, minutes: int = 90):
+    """Per-gameweek history rows, one per round, as element-summary serves them."""
+    return [{"round": r, "minutes": minutes} for r in rounds]
 
 
 def _coverage(covered: int, eligible: int, floor: float = 0.8, min_eligible: int = 1) -> SignalCoverage:
@@ -92,39 +104,108 @@ class TestUnderstatCoverage:
         assert understat_coverage([], {}, next_gw_id=3).floor == UNDERSTAT_EARLY_COVERAGE_FLOOR
         assert understat_coverage([], {}, next_gw_id=4).floor == UNDERSTAT_COVERAGE_FLOOR
 
+    def test_a_join_the_agent_made_itself_is_judged_over_the_rows_it_handed_over(self):
+        rows = [
+            {"player_name": "A", "minutes": 900},
+            {"player_name": "B", "minutes": 900},
+            {"player_name": "C", "minutes": 0},     # never joined: not eligible
+            {"player_name": "D", "minutes": None},  # the adapter's "no player object" row
+        ]
+        lookup = {0: {"npxG_per_90": 0.3}, 1: {"npxG_per_90": None}, 2: {"npxG_per_90": 0.1}}
+        c = understat_join_coverage(rows, lookup, next_gw_id=20)
+        assert (c.covered, c.eligible) == (1, 2)
+        assert c.code == UNDERSTAT_COVERAGE_LOW
+
     def test_a_failed_fetch_reads_as_nobody_reached(self):
         c = understat_coverage(_pool(), None, next_gw_id=10)
         assert c.covered == 0
         assert c.low
 
 
-class TestMatchDataCoverage:
-    def test_adjusted_npxg_is_judged_over_players_with_enough_starts(self):
-        players = [make_player(id=i, minutes=900, starts=s) for i, s in enumerate((4, 4, 3, 7), 1)]
-        c = adjusted_npxg_coverage(players, {1: 0.4, 3: 0.2})
-        assert (c.covered, c.eligible) == (1, 3)
-        assert c.code == ADJUSTED_NPXG_COVERAGE_LOW
-        assert "4+ starts" in c.eligible_label
+class TestRecentAppearances:
+    """Eligibility for a match-file signal is read off the per-gameweek history (#454 review)."""
 
-    def test_consistency_is_judged_over_players_with_six_starts(self):
-        players = [make_player(id=i, minutes=900, starts=s) for i, s in enumerate((6, 5, 9), 1)]
-        c = consistency_coverage(players, {1: object()})
+    def test_counts_rows_with_minutes_inside_the_lookback(self):
+        # Next GW 20: the signal reads rounds 9-19; the count stops at 18.
+        history = _history(range(1, 20))
+        assert recent_appearances(history, next_gw_id=20, min_minutes=1) == (
+            SIGNAL_WINDOW_LOOKBACK_GWS - 2
+        )
+
+    def test_the_latest_gameweek_does_not_count(self):
+        # GW4 in progress (next GW 5): FPL has written a row, Core-Insights has
+        # published nothing for it yet.
+        assert recent_appearances(_history([1, 2, 3, 4]), next_gw_id=5, min_minutes=1) == 3
+
+    def test_rows_under_the_minutes_floor_do_not_count(self):
+        history = [*_history([10, 11, 12], minutes=90), *_history([13, 14], minutes=45)]
+        assert recent_appearances(history, next_gw_id=20, min_minutes=60) == 3
+        assert recent_appearances(history, next_gw_id=20, min_minutes=1) == 5
+
+    def test_a_row_without_a_readable_round_is_skipped(self):
+        history = [{"minutes": 90}, {"round": None, "minutes": 90}, {"round": "12", "minutes": "90"}]
+        assert recent_appearances(history, next_gw_id=20, min_minutes=1) == 1
+
+
+class TestMatchDataCoverage:
+    def test_adjusted_npxg_is_judged_over_players_with_enough_recent_appearances(self):
+        histories = {
+            1: _history(range(10, 18)),
+            2: _history([14, 15, 16, 17]),
+            3: _history([15, 16, 17]),     # one short
+            4: _history(range(1, 9)),      # a full season's worth, all outside the lookback
+        }
+        c = adjusted_npxg_coverage(histories, {1: 0.4, 3: 0.2}, next_gw_id=20)
+        assert (c.covered, c.eligible) == (1, 2)
+        assert c.code == ADJUSTED_NPXG_COVERAGE_LOW
+        assert f"{ADJUSTED_NPXG_MIN_MATCHES}+ recent appearances" in c.eligible_label
+
+    def test_the_minimum_reached_only_with_the_latest_gameweek_is_not_yet_eligible(self):
+        # Next GW 5 with GW4 in progress: four FPL rows each, no GW4 match
+        # file. A count that included GW4 read a healthy feed as 0 of 30.
+        histories = {i: _history([1, 2, 3, 4]) for i in range(1, 31)}
+        c = adjusted_npxg_coverage(histories, {}, next_gw_id=5)
+        assert c.eligible == 0 and not c.low
+
+    def test_starts_outside_the_window_do_not_make_a_player_eligible(self):
+        # Ten starts by GW11 and injured since: unreachable at GW30 by design.
+        histories = {1: _history(range(1, 11))}
+        assert adjusted_npxg_coverage(histories, {}, next_gw_id=30).eligible == 0
+
+    def test_consistency_needs_six_recent_appearances_of_sixty_minutes(self):
+        histories = {
+            1: _history(range(10, 18)),              # eight full matches
+            2: _history(range(10, 18), minutes=45),  # eight cameos
+            3: _history([12, 13, 14, 15, 16]),       # five
+        }
+        c = consistency_coverage(histories, {}, next_gw_id=20)
+        assert c.eligible == 1
+        assert (
+            f"{CONSISTENCY_MIN_MATCHES}+ recent appearances of {CONSISTENCY_MIN_MINUTES}+ minutes"
+            in c.eligible_label
+        )
+
+    def test_consistency_is_covered_by_a_full_window_of_match_records(self):
+        histories = {1: _history(range(10, 18)), 2: _history(range(10, 18))}
+        full = [{"gameweek": gw, "minutes_played": 90} for gw in range(10, 18)]
+        short = [{"gameweek": gw, "minutes_played": 90} for gw in range(10, 15)]
+        c = consistency_coverage(histories, {1: full, 2: short}, next_gw_id=20)
         assert (c.covered, c.eligible) == (1, 2)
         assert c.code == CONSISTENCY_COVERAGE_LOW
+        assert "FPL history alone" in c.consequence
 
-    def test_an_empty_lookup_is_nobody_reached(self):
-        players = [make_player(id=i, minutes=900, starts=6) for i in range(1, 31)]
-        assert adjusted_npxg_coverage(players, None).low
-        assert consistency_coverage(players, {}).low
+    def test_an_empty_lookup_over_an_eligible_pool_is_nobody_reached(self):
+        histories = {i: _history(range(10, 18)) for i in range(1, 31)}
+        assert adjusted_npxg_coverage(histories, None, next_gw_id=20).low
+        assert consistency_coverage(histories, None, next_gw_id=20).low
 
-    def test_nobody_eligible_before_anyone_has_the_starts(self):
-        # GW2: no verdict rather than a false alarm.
-        c = adjusted_npxg_coverage([make_player(id=1, starts=1)], None)
-        assert c.eligible == 0 and not c.low
+    def test_a_bundle_without_the_history_has_nobody_to_judge(self):
+        assert adjusted_npxg_coverage(None, {1: 0.4}, next_gw_id=20).eligible == 0
+        assert consistency_coverage(None, {}, next_gw_id=20).eligible == 0
 
 
 class TestHistoryPriorCoverage:
-    def test_counts_history_sourced_priors_over_the_pool(self):
+    def test_counts_history_sourced_priors_over_the_set_as_loaded(self):
         players = _pool(4)
         priors = {
             1: PlayerPrior(0.7, 0.5, "history"),
@@ -132,8 +213,17 @@ class TestHistoryPriorCoverage:
             3: PlayerPrior(0.8, 0.5, "history"),
         }
         c = history_prior_coverage(players, priors, next_gw_id=2)
-        assert (c.covered, c.eligible) == (2, 4)
+        assert (c.covered, c.eligible) == (2, 3)
         assert c.code == HISTORY_PRIOR_COVERAGE_LOW
+
+    def test_a_short_set_reports_its_real_reach_rather_than_nobody(self):
+        # The loader hands a half-joined set back rather than None, so the
+        # entry can tell a partial join from a dataset outage (#454 review).
+        priors = {i: PlayerPrior(0.5, 0.5, "history" if i <= 3 else "price") for i in range(1, 31)}
+        c = history_prior_coverage(_pool(), priors, next_gw_id=5)
+        assert (c.covered, c.eligible) == (3, 30)
+        assert c.low
+        assert "3 of 30 player priors" in (c.warning() or {})["message"]
 
     def test_nobody_eligible_from_the_cutoff(self):
         c = history_prior_coverage(_pool(), None, next_gw_id=CUTOFF_GW)
@@ -224,7 +314,8 @@ def _client(players):
     client.get_fixtures.return_value = [make_fixture(id=1, gameweek=20, home_team_id=1, away_team_id=2)]
     client.get_next_gameweek.return_value = {"id": 20}
     client.get_players.return_value = players
-    client.get_player_detail.return_value = {"history": [{"round": 19, "minutes": 90}]}
+    # Nine full matches inside the window the match-file signals read.
+    client.get_player_detail.return_value = {"history": _history(range(10, 19))}
     return client
 
 
@@ -284,13 +375,33 @@ class TestPrepareScoringDataCoverage:
         message = next(w["message"] for w in data.warnings if w["code"] == GW_HISTORY_COVERAGE_LOW)
         assert "30 of 40 players with minutes" in message
 
-    async def test_empty_match_data_over_players_with_starts_is_named(self):
-        players = [make_player(id=i, team_id=1, minutes=900, starts=8) for i in range(1, 31)]
+    async def test_empty_match_data_over_players_with_recent_appearances_is_named(self):
         data = await prepare_scoring_data(
-            _client(players), include_players=True, include_match_data=True,
+            _client(_pool()), include_players=True, include_history=True, include_match_data=True,
         )
         assert ADJUSTED_NPXG_COVERAGE_LOW in _codes(data)
         assert CONSISTENCY_COVERAGE_LOW in _codes(data)
+
+    async def test_match_data_without_the_history_is_not_judged(self):
+        # Nothing says who could have been reached, so nothing is said.
+        data = await prepare_scoring_data(
+            _client(_pool()), include_players=True, include_match_data=True,
+        )
+        assert ADJUSTED_NPXG_COVERAGE_LOW not in _codes(data)
+        assert CONSISTENCY_COVERAGE_LOW not in _codes(data)
+
+    async def test_a_short_prior_set_is_gated_for_scoring_and_measured_as_loaded(self):
+        client = _client(_pool())
+        client.get_next_gameweek.return_value = {"id": 4}
+        short = {i: PlayerPrior(0.5, 0.5, "history" if i <= 3 else "price") for i in range(1, 31)}
+        with patch(
+            "fpl_cli.services.player_prior.load_or_generate_player_priors",
+            new_callable=AsyncMock, return_value=short,
+        ):
+            data = await prepare_scoring_data(client, include_players=True, include_prior=True)
+        assert data.player_priors is None
+        message = next(w["message"] for w in data.warnings if w["code"] == HISTORY_PRIOR_COVERAGE_LOW)
+        assert "3 of 30 player priors" in message
 
     async def test_missing_priors_before_the_cutoff_are_named(self):
         client = _client(_pool())
@@ -309,9 +420,3 @@ class TestPrepareScoringDataCoverage:
             ratings_service=MagicMock(),
         )
         assert bundle.warnings == []
-
-
-@pytest.mark.parametrize("position", [PlayerPosition.GOALKEEPER, PlayerPosition.FORWARD])
-def test_eligibility_does_not_depend_on_position(position):
-    players = [make_player(id=i, minutes=900, starts=6, position=position) for i in range(1, 4)]
-    assert consistency_coverage(players, {}).eligible == 3

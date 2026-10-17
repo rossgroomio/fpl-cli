@@ -1133,6 +1133,18 @@ class TestUnderstatStatusAnswers:
         assert "broken if it persists" in row["detail"]
 
     @respx.mock
+    @pytest.mark.parametrize("status", [404, 410])
+    def test_a_gone_endpoint_is_broken(self, monkeypatch, status):
+        # getLeagueData is undocumented and has moved before: this needs a
+        # code change, not a wait, and the weekly job must go red for it.
+        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
+        _register_routes(understat_response=Response(status))
+        row = self._row(_run(["--format", "json"]))
+        assert row["status"] == "broken"
+        assert f"HTTP {status}" in row["detail"]
+        assert "moved or gone" in row["detail"]
+
+    @respx.mock
     def test_a_network_failure_is_still_unchecked(self, monkeypatch):
         monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
         _register_routes()
@@ -1148,6 +1160,21 @@ class TestPlayerHistoryProbe:
 
     def _row(self, result):
         return _row(result, "FPL player history")
+
+    async def test_a_bootstrap_it_cannot_pick_a_probe_from_is_unchecked_not_a_traceback(self):
+        # The probe runs before the shape checks; a renamed id or minutes
+        # served as text must leave the player-fields row to report it.
+        from unittest.mock import AsyncMock, MagicMock
+
+        from fpl_cli.cli.doctor_providers import _player_history_check
+
+        client = MagicMock()
+        client.get_player_detail = AsyncMock()
+        for elements in ([{"element": 1, "minutes": 90}], [{"id": 1, "minutes": "90.0"}]):
+            result = await _player_history_check(client, elements, season_started=True)
+            assert result.status.value == "unchecked"
+            assert "FPL player fields" in result.detail
+        client.get_player_detail.assert_not_awaited()
 
     @respx.mock
     def test_a_healthy_history_is_ok(self, monkeypatch):

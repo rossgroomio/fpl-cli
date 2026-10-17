@@ -2053,6 +2053,30 @@ class TestWaiverAgentCarriesFeedWarnings:
         assert _COVERAGE_MARKER in result.data["warnings"]
 
     @pytest.mark.asyncio
+    async def test_an_understat_join_that_reached_none_of_the_pool_is_named(
+        self, mock_draft_bootstrap, mock_league_details,
+    ):
+        # The agent joins Understat over the draft pool itself, outside the
+        # bundle; the stubbed join answers nobody, as a 403 would.
+        agent = WaiverAgent(config={"draft_league_id": 12345})
+        pool = [
+            make_draft_player(id=i, web_name=f"P{i}", team=14, element_type=3, minutes=900)
+            for i in range(1, 31)
+        ]
+        with _stub_upstream_fetches(), ExitStack() as stack:
+            for p in self._run(agent, mock_draft_bootstrap, mock_league_details):
+                stack.enter_context(p)
+            stack.enter_context(patch.object(
+                agent.client, "get_available_players", new_callable=AsyncMock, return_value=pool,
+            ))
+            result = await agent.run()
+
+        assert result.status == AgentStatus.SUCCESS
+        understat = [w for w in result.data["warnings"] if w["code"] == "understat_coverage_low"]
+        assert len(understat) == 1
+        assert "0 of 30 players with minutes" in understat[0]["message"]
+
+    @pytest.mark.asyncio
     async def test_unread_rival_squads_are_named(self, mock_draft_bootstrap, mock_league_details):
         agent = WaiverAgent(config={"draft_league_id": 12345})
         # `get_available_players` is patched, so the record is set as the

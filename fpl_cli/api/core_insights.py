@@ -73,10 +73,13 @@ class MatchRecord(TypedDict):
 
 DEFAULT_TTL = timedelta(hours=4)
 
-# Columns the parsers below index directly (`row[...]`). The header checks
-# and the `fpl doctor --providers` probe both assert against these constants,
-# so the declared contract cannot drift from what the parsers consume.
-# Optional columns read via `row.get(...)` are deliberately not listed.
+# Columns the parsers below index directly (`row[...]`), plus the two
+# penalty counts: read via `row.get(...)` so a blank cell is unknown rather
+# than a dropped row, but load-bearing all the same, since a match without
+# them is left out of the adjusted-npxG rate (#438). The header checks and
+# the `fpl doctor --providers` probe both assert against these constants, so
+# the declared contract cannot drift from what the parsers consume. Every
+# other column read via `row.get(...)` is deliberately not listed.
 PLAYERS_CSV_REQUIRED_COLUMNS: frozenset[str] = frozenset({
     "player_id", "player_code", "web_name", "position", "team_code",
 })
@@ -88,7 +91,7 @@ MATCHES_REQUIRED_COLUMNS: frozenset[str] = frozenset({
     "match_id", "gameweek", "home_team", "home_team_elo", "away_team_elo",
 })
 PLAYERMATCHSTATS_REQUIRED_COLUMNS: frozenset[str] = frozenset({
-    "player_id", "match_id", "xg", "minutes_played",
+    "player_id", "match_id", "xg", "minutes_played", "penalties_scored", "penalties_missed",
 })
 
 # Core-Insights uses full position names; map to FPL abbreviations.
@@ -148,8 +151,9 @@ def _optional_count(row: Mapping[str, str | None], column: str) -> int | None:
     writes `0` in the penalty columns, never a blank), so a gap is a format
     change, and the one consumer that cannot live without the count, the
     adjusted-npxG rate, degrades visibly rather than crediting a penalty
-    taker with the penalty's xG (#438). Text that is not a number raises,
-    and the row drops with the other tripwires.
+    taker with the penalty's xG (#438). Text that is not a number raises
+    ValueError, which the caller's row try turns into a dropped row like
+    the other tripwires.
     """
     raw = row.get(column)
     if raw is None or not raw.strip():
@@ -332,6 +336,8 @@ def parse_match_records(
         try:
             xg = _match_xg(row)
             minutes_played = int(float(row["minutes_played"]))
+            penalties_scored = _optional_count(row, "penalties_scored")
+            penalties_missed = _optional_count(row, "penalties_missed")
         except (ValueError, KeyError, TypeError):
             continue
 
@@ -340,8 +346,8 @@ def parse_match_records(
             "gameweek": gameweek,
             "xg": xg,
             "xa": float(row.get("xa") or 0),
-            "penalties_scored": _optional_count(row, "penalties_scored"),
-            "penalties_missed": _optional_count(row, "penalties_missed"),
+            "penalties_scored": penalties_scored,
+            "penalties_missed": penalties_missed,
             "minutes_played": minutes_played,
             "opponent_elo": opponent_elo,
             "is_home": is_home,

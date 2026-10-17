@@ -35,6 +35,7 @@ from fpl_cli.cli._json import (
 from fpl_cli.services.player_prior import (
     CUTOFF_GW,
     early_season_quality_warning,
+    informed_priors,
     load_or_generate_player_priors,
 )
 
@@ -163,6 +164,7 @@ def stats_command(
             draft_owned: dict[int, int] = {}
             draft_entries: dict[int, str] = {}
             main_to_draft_id: dict[int, int] = {}
+            draft_warnings: list[dict[str, str]] = []
 
             if show_draft:
                 draft_league_id = fpl_config(settings).get("draft_league_id")
@@ -171,14 +173,23 @@ def stats_command(
                 else:
                     try:
                         from fpl_cli.agents.common import get_draft_ownership_mapping
-                        from fpl_cli.api.fpl_draft import FPLDraftClient
+                        from fpl_cli.api.fpl_draft import FPLDraftClient, unread_squads_warning
                         async with FPLDraftClient() as draft_client:
-                            draft_owned, draft_entries, main_to_draft_id = (
+                            draft_owned, draft_entries, main_to_draft_id, unread_squads = (
                                 await get_draft_ownership_mapping(
                                     draft_client, all_players, draft_league_id,
                                     main_teams=all_teams,
                                 )
                             )
+                        # A rival squad the read missed leaves its players
+                        # labelled Available below (#438): both channels.
+                        unread_warning = unread_squads_warning(unread_squads)
+                        if unread_warning is not None:
+                            draft_warnings.append(unread_warning)
+                            if output_format != "json":
+                                error_console.print(
+                                    f"[yellow]{rich_escape(unread_warning['message'])}[/yellow]"
+                                )
                     except Exception as e:  # noqa: BLE001 — best-effort enrichment
                         error_console.print(f"[yellow]Draft ownership lookup failed: {e}[/yellow]")
 
@@ -235,9 +246,15 @@ def stats_command(
                     # prior is a within-position percentile. Unreachable
                     # history degrades to pure observation, and the notice
                     # below says which of the two the reader is looking at.
+                    loaded_priors: dict[int, PlayerPrior] | None = None
                     priors: dict[int, PlayerPrior] | None = None
                     if next_gw_id < CUTOFF_GW:
-                        priors = await load_or_generate_player_priors(all_players, next_gw_id)
+                        loaded_priors = await load_or_generate_player_priors(
+                            all_players, next_gw_id,
+                        )
+                        # A set the history reached too little of scores as
+                        # none; the coverage entry below reads the real reach.
+                        priors = informed_priors(loaded_priors)
                     _early_season_warning = early_season_quality_warning(
                         next_gw_id, blended=priors is not None,
                     )
@@ -324,7 +341,7 @@ def stats_command(
 
                     _coverage_warnings = coverage_warnings([
                         understat_coverage(filtered, us_matches, next_gw_id=next_gw_id),
-                        history_prior_coverage(all_players, priors, next_gw_id=next_gw_id),
+                        history_prior_coverage(all_players, loaded_priors, next_gw_id=next_gw_id),
                         gw_history_coverage(matched_players, player_histories),
                     ])
                     if output_format != "json":
@@ -413,6 +430,7 @@ def stats_command(
 
             warnings.extend(understat_join_warnings())
             warnings.extend(_coverage_warnings)
+            warnings.extend(draft_warnings)
 
             metadata = {"gameweek": None, "format": str(fmt) if fmt else None,
                         "custom_analysis": custom_on,

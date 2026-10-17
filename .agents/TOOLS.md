@@ -32,8 +32,9 @@ Every scoring command's `metadata.warnings` can carry a feed coverage entry — 
 `understat_coverage_low`, `adjusted_npxg_coverage_low`, `consistency_coverage_low`,
 `history_prior_coverage_low`, `gw_history_coverage_low`, `fixture_ratings_coverage_low` —
 saying a data feed reached too little of the player pool and what the scores fall back to;
-`fpl waivers` adds `draft_squads_unread` for a rival squad it could not read. Read them
-before trusting a ranking: see [Feed coverage warnings](../docs/command-reference.md#json-output).
+`fpl waivers`, and the draft columns of `fpl player` and `fpl stats`, add `draft_squads_unread`
+for a rival squad the ownership read could not fetch. Read them before trusting a ranking:
+see [Feed coverage warnings](../docs/command-reference.md#json-output).
 
 ## CLI Commands
 

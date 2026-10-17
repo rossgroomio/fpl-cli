@@ -133,10 +133,22 @@ async def _player_history_check(
     name = "FPL player history"
     if not elements:
         return CheckResult(name, CheckStatus.UNCHECKED, "no players in the bootstrap to probe with")
-    probe = max(elements, key=lambda e: int(e.get("minutes") or 0))
-    label = f"{probe.get('web_name') or probe.get('id')} ({int(probe.get('minutes') or 0)}m)"
     try:
-        detail = await client.get_player_detail(int(probe["id"]))
+        probe = max(elements, key=lambda e: int(e.get("minutes") or 0))
+        probe_id = int(probe["id"])
+        probe_minutes = int(probe.get("minutes") or 0)
+    except (KeyError, TypeError, ValueError):
+        # The bootstrap's own drift: the player-fields row reports it, and
+        # this row must not take the whole run down on the way there.
+        return CheckResult(
+            name,
+            CheckStatus.UNCHECKED,
+            "bootstrap players carry no usable `id` and `minutes` to pick a probe with — "
+            "see the FPL player fields row",
+        )
+    label = f"{probe.get('web_name') or probe_id} ({probe_minutes}m)"
+    try:
+        detail = await client.get_player_detail(probe_id)
     except httpx.HTTPError as exc:
         return CheckResult(name, CheckStatus.UNCHECKED, _unreachable(exc))
     except json.JSONDecodeError:
@@ -1133,8 +1145,10 @@ async def _understat_checks(
             # An HTTP status is the provider answering, not the network
             # failing, and while it answers this way every scoring command
             # falls back to FPL xGI for every player without a word (#438).
-            # A refusal needs a hand; anything else is the provider's to
-            # fix and self-corrects, which is what the stale row means.
+            # A refusal needs a hand, and a gone endpoint needs a code
+            # change (`getLeagueData` is undocumented and has moved before);
+            # anything else is the provider's to fix and self-corrects,
+            # which is what the stale row means.
             status = exc.response.status_code
             if status in (401, 403):
                 return [
@@ -1144,6 +1158,17 @@ async def _understat_checks(
                         f"Understat refused the request (HTTP {status}) — every scoring "
                         "command silently falls back to FPL xGI for every player while "
                         "it does; the client may be blocked",
+                    )
+                ]
+            if status in (404, 410):
+                return [
+                    CheckResult(
+                        league_name,
+                        CheckStatus.BROKEN,
+                        f"Understat answered HTTP {status} for the league endpoint — it has "
+                        "moved or gone, and every scoring command silently falls back to "
+                        "FPL xGI for every player until the client is updated "
+                        "(fpl_cli/api/understat.py)",
                     )
                 ]
             return [

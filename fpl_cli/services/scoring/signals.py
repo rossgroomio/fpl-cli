@@ -253,10 +253,10 @@ def _elo_adjusted_xgis(
     ]
 
 
-_CONSISTENCY_MIN_MINUTES = 60
+CONSISTENCY_MIN_MINUTES = 60
 
 
-def _match_record_window(
+def match_record_window(
     match_records: list[MatchRecord], current_gw: int, size: int = 7,
 ) -> list[MatchRecord]:
     """Recent qualifying match records: minutes >= 60, within 12-GW lookback, most recent *size*.
@@ -270,7 +270,7 @@ def _match_record_window(
         current_gw,
         gw_key="gameweek",
         minutes_key="minutes_played",
-        min_minutes=_CONSISTENCY_MIN_MINUTES,
+        min_minutes=CONSISTENCY_MIN_MINUTES,
         size=size,
     )
 
@@ -286,7 +286,7 @@ def compute_cv_xgi(
     """
     import statistics
 
-    window = _match_record_window(match_records, current_gw)
+    window = match_record_window(match_records, current_gw)
     if len(window) < _CONSISTENCY_MIN_MATCHES:
         return None
 
@@ -349,7 +349,7 @@ def compute_floor_xgi(
 
     Returns None when fewer than 6 qualifying matches.
     """
-    window = _match_record_window(match_records, current_gw)
+    window = match_record_window(match_records, current_gw)
     if len(window) < _CONSISTENCY_MIN_MATCHES:
         return None
 
@@ -403,7 +403,7 @@ def compute_involvement_rate(
     if position in ATTACKING_POSITIONS:
         if not match_records:
             return None
-        window = _match_record_window(match_records, current_gw)
+        window = match_record_window(match_records, current_gw)
         if len(window) < _CONSISTENCY_MIN_MATCHES:
             return None
         involved = sum(
@@ -419,7 +419,7 @@ def compute_involvement_rate(
 
     # DEF
     if match_records:
-        window = _match_record_window(match_records, current_gw)
+        window = match_record_window(match_records, current_gw)
         if len(window) >= _CONSISTENCY_MIN_MATCHES:
             involved = sum(
                 1
@@ -459,7 +459,7 @@ def compute_gk_consistency(
     """
     import statistics
 
-    window = _match_record_window(match_records, current_gw)
+    window = match_record_window(match_records, current_gw)
     if len(window) < _CONSISTENCY_MIN_MATCHES:
         return None
 

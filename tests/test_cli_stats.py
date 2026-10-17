@@ -397,6 +397,43 @@ class TestStatsDraftOwnership:
             result = runner.invoke(main, ["stats"])
         assert "draft_league_id" in result.output
 
+    def test_a_rival_squad_the_ownership_read_missed_is_named(self):
+        """Its players read as Available, so the gap is said in both channels (#438)."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        players = [make_player(id=1, web_name="Salah", team_id=1,
+                               position=PlayerPosition.MIDFIELDER, minutes=2000)]
+        draft_client = MagicMock()
+        draft_client.__aenter__ = AsyncMock(return_value=draft_client)
+        draft_client.__aexit__ = AsyncMock(return_value=False)
+        settings = {"fpl": {"draft_league_id": 12345}}
+        for json_mode in (True, False):
+            client = _make_client(players, _sample_teams())
+            runner = CliRunner()
+            with (
+                patch("fpl_cli.api.fpl.FPLClient", return_value=client),
+                patch("fpl_cli.cli._context.load_settings", return_value=settings),
+                patch("fpl_cli.cli.load_settings", return_value=settings),
+                patch("fpl_cli.cli._context.resolve_format", return_value=Format.DRAFT),
+                patch("fpl_cli.cli.resolve_format", return_value=Format.DRAFT),
+                patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=draft_client),
+                patch(
+                    "fpl_cli.agents.common.get_draft_ownership_mapping",
+                    new=AsyncMock(return_value=({}, {}, {}, {8: "Team B"})),
+                ),
+            ):
+                args = ["stats"] + (["--format", "json"] if json_mode else [])
+                result = runner.invoke(main, args)
+
+            assert result.exit_code == 0, result.output
+            if json_mode:
+                warnings = json.loads(result.stdout)["metadata"]["warnings"]
+                unread = [w for w in warnings if w["code"] == "draft_squads_unread"]
+                assert len(unread) == 1 and "Team B" in unread[0]["message"]
+            else:
+                assert "Team B" in result.stderr
+                assert "could not be read" in result.stderr
+
     def test_classic_mode_no_draft_column(self):
         """CLASSIC format never shows Draft column."""
         client = _make_client(_sample_players(), _sample_teams())

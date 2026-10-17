@@ -17,6 +17,7 @@ from fpl_cli.api.fpl_draft import (
     FPLDraftClient,
     match_draft_teams_to_main,
     match_draft_to_main,
+    unread_squads_warning,
     untranslated_draft_teams,
 )
 from fpl_cli.models.player import Player
@@ -32,17 +33,14 @@ from fpl_cli.services.scoring import (
     compute_aggregate_matchup,
     compute_form_trajectory,
     compute_xgi_sustainability,
+    coverage_warnings,
     prepare_scoring_data,
     read_chance_of_playing,
+    understat_join_coverage,
 )
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-
-
-# `metadata.warnings` code for rival squads the ownership read could not
-# fetch, whose players may be listed as available (#438).
-DRAFT_SQUADS_UNREAD = "draft_squads_unread"
 
 
 class WaiverAgent(Agent):
@@ -306,10 +304,16 @@ class WaiverAgent(Agent):
             unjoined_warning = self._unjoined_player_warning(parsed_available)
             if unjoined_warning is not None:
                 warnings.append(unjoined_warning)
-            squads_warning = self._unread_squads_warning()
+            squads_warning = unread_squads_warning(self.client.unread_squads)
             if squads_warning is not None:
                 warnings.append(squads_warning)
+            # The bundle's coverage entries, plus this agent's own Understat
+            # join over the draft pool, which it runs itself rather than
+            # through the bundle, judged by the bundle's rule (#438).
             warnings.extend(data.warnings)
+            warnings.extend(coverage_warnings([
+                understat_join_coverage(parsed_available, us_lookup, next_gw_id=next_gw_id),
+            ]))
 
             return self._create_result(
                 AgentStatus.SUCCESS,
@@ -382,32 +386,6 @@ class WaiverAgent(Agent):
             draft_teams.get(raw.get("team", 0)),
             include_availability=include_availability,
         )
-
-    def _unread_squads_warning(self) -> dict[str, str] | None:
-        """The `metadata.warnings` entry for rival squads the ownership read missed.
-
-        `get_league_ownership` fetches every entry's picks and skips one
-        that fails, so that rival's players are absent from the ownership
-        map and the pool lists them as available (#438). A claim on one
-        fails at the deadline; the ranking above has already spent a slot
-        on it. Nothing in the payload distinguishes such a player from a
-        free agent, so the entry is the only thing that does.
-        """
-        unread = dict(self.client.unread_squads)
-        if not unread:
-            return None
-        names = ", ".join(sorted(unread.values()))
-        plural = len(unread) > 1
-        return {
-            "code": DRAFT_SQUADS_UNREAD,
-            "message": (
-                f"The squad{'s' if plural else ''} of {len(unread)} league "
-                f"entr{'ies' if plural else 'y'} ({names}) could not be read, so "
-                f"{'their' if plural else 'its'} players may be listed as available "
-                "and a claim on one would fail. Re-run; if it persists, the draft API "
-                "may have changed."
-            ),
-        }
 
     @staticmethod
     def _untranslated_club_warning(

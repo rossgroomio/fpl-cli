@@ -289,12 +289,21 @@ async def prepare_scoring_data(
                 if isinstance(result, dict):
                     player_histories[p.id] = result.get("history", [])
 
+    loaded_priors: dict[int, PlayerPrior] | None = None
     player_priors: dict[int, PlayerPrior] | None = None
 
     if include_prior and players is not None:
-        from fpl_cli.services.player_prior import load_or_generate_player_priors
+        from fpl_cli.services.player_prior import (
+            informed_priors,
+            load_or_generate_player_priors,
+        )
 
-        player_priors = await load_or_generate_player_priors(players, next_gw_id)
+        # A set last season's history reached too little of scores as no
+        # prior at all, so every consumer's `blended = priors is not None`
+        # stays honest; the coverage entry below reads the set as loaded, so
+        # it carries the real reach rather than nobody (#438).
+        loaded_priors = await load_or_generate_player_priors(players, next_gw_id)
+        player_priors = informed_priors(loaded_priors)
 
     match_records: dict[int, list[MatchRecord]] | None = None
     adjusted_npxg_lookup: dict[int, float] | None = None
@@ -314,7 +323,9 @@ async def prepare_scoring_data(
             )
 
     # Measured over the signals this call was asked for, so a bundle built
-    # without match data does not warn that match data is missing.
+    # without match data does not warn that match data is missing. The two
+    # match-file signals are judged against the per-gameweek history, so a
+    # bundle with match data and no history has nobody to judge them over.
     from fpl_cli.services.scoring.coverage import (
         SignalCoverage,
         adjusted_npxg_coverage,
@@ -334,10 +345,14 @@ async def prepare_scoring_data(
     if include_history:
         coverages.append(gw_history_coverage(history_candidates, player_histories))
     if include_prior and players is not None:
-        coverages.append(history_prior_coverage(players, player_priors, next_gw_id=next_gw_id))
+        coverages.append(history_prior_coverage(players, loaded_priors, next_gw_id=next_gw_id))
     if include_match_data and players is not None:
-        coverages.append(adjusted_npxg_coverage(players, adjusted_npxg_lookup))
-        coverages.append(consistency_coverage(players, consistency_lookup))
+        coverages.append(
+            adjusted_npxg_coverage(player_histories, adjusted_npxg_lookup, next_gw_id=next_gw_id)
+        )
+        coverages.append(
+            consistency_coverage(player_histories, match_records, next_gw_id=next_gw_id)
+        )
 
     return ScoringData(
         teams=teams,

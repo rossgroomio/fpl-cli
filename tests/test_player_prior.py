@@ -583,16 +583,30 @@ class TestPriorsHistoryInformed:
         assert not priors_history_informed(None)
         assert priors_history_informed({})
 
+    def test_reach_is_the_count_behind_the_share(self):
+        from fpl_cli.services.player_prior import history_prior_reach
 
-class TestLoaderRejectsACollapsedHistory:
-    """A previous season that reached nobody is a failed fetch, not a prior set (#438)."""
+        priors = {1: PlayerPrior(0.7, 0.5, "history"), 2: PlayerPrior(0.2, 0.3, "price")}
+        assert history_prior_reach(priors) == (1, 2)
+        assert history_prior_reach(None) == (0, 0)
+        assert history_prior_reach({}) == (0, 0)
 
-    @patch("fpl_cli.services.player_prior.previous_season_label", return_value="2024-25")
-    async def test_a_price_only_generation_returns_none_logs_and_caches_nothing(
-        self, _mock_season, caplog,
-    ):
-        import logging
+    def test_informed_priors_gates_a_short_set_to_none_and_passes_the_rest(self):
+        from fpl_cli.services.player_prior import informed_priors
 
+        short = {i: PlayerPrior(0.5, 0.5, "price") for i in range(1, 5)}
+        full = {i: PlayerPrior(0.5, 0.5, "history") for i in range(1, 5)}
+        assert informed_priors(short) is None
+        assert informed_priors(full) is full
+        assert informed_priors(None) is None
+        assert informed_priors({}) == {}
+
+
+class TestLoaderHandsBackACollapsedHistory:
+    """A previous season that reached nobody is returned, warned about, and never cached (#438)."""
+
+    @staticmethod
+    def _collapsed():
         players = [make_player(id=i, code=100 + i, now_cost=50 + i) for i in range(1, 5)]
         # Profiles exist but none has a qualifying previous season: the
         # shape a blank minutes column leaves behind.
@@ -600,6 +614,17 @@ class TestLoaderRejectsACollapsedHistory:
             100 + i: _make_profile(100 + i, [_make_season(100 + i, minutes=0)])
             for i in range(1, 5)
         }
+        return players, profiles
+
+    @patch("fpl_cli.services.player_prior.previous_season_label", return_value="2024-25")
+    async def test_a_price_only_generation_is_returned_logged_and_not_cached(
+        self, _mock_season, caplog,
+    ):
+        import logging
+
+        from fpl_cli.services.player_prior import informed_priors
+
+        players, profiles = self._collapsed()
         with patch(
             "fpl_cli.api.historical.make_historical_provider",
             return_value=_provider(profiles),
@@ -607,9 +632,28 @@ class TestLoaderRejectsACollapsedHistory:
             with caplog.at_level(logging.WARNING):
                 result = await load_or_generate_player_priors(players, 3)
 
-        assert result is None
+        # The set is there for a consumer that wants the price priors (the
+        # returnee radar); a scoring consumer gates it to none.
+        assert result is not None
+        assert {p.source for p in result.values()} == {"price"}
+        assert informed_priors(result) is None
         assert "reached only 0 of 4 player priors" in caplog.text
         assert load_cached_priors(3) is None
+
+    @patch("fpl_cli.services.player_prior.previous_season_label", return_value="2024-25")
+    async def test_the_attempt_is_remembered_for_the_rest_of_the_process(self, _mock_season):
+        # Not cached to disk, so the next process retries; within this one a
+        # second bundle must not re-read the multi-season datasets.
+        players, profiles = self._collapsed()
+        with patch(
+            "fpl_cli.api.historical.make_historical_provider",
+            return_value=_provider(profiles),
+        ) as make_provider:
+            first = await load_or_generate_player_priors(players, 3)
+            second = await load_or_generate_player_priors(players, 3)
+
+        assert first is second
+        make_provider.assert_called_once()
 
     @patch("fpl_cli.services.player_prior.previous_season_label", return_value="2024-25")
     async def test_a_collapsed_cache_is_regenerated_rather_than_served(self, _mock_season):

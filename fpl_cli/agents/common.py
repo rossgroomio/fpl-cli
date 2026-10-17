@@ -211,17 +211,21 @@ async def get_draft_ownership_mapping(
     draft_league_id: int,
     *,
     main_teams: Sequence[Team],
-) -> tuple[dict[int, int], dict[int, str], dict[int, int]]:
+) -> tuple[dict[int, int], dict[int, str], dict[int, int], dict[int, str]]:
     """Fetch draft ownership and build ID mapping to main FPL players.
 
     *main_teams* translates a draft club for the name fallback a code-less
     player needs.
 
     Returns:
-        (draft_owned, draft_entries, main_to_draft_id) where:
+        (draft_owned, draft_entries, main_to_draft_id, unread_squads) where:
         - draft_owned: draft_player_id -> owner_entry_id
         - draft_entries: entry_id -> manager display name
         - main_to_draft_id: main_player_id -> draft_player_id
+        - unread_squads: entry_id -> entry name, for every squad the
+          ownership read could not fetch; its players are absent from
+          draft_owned and read as available, so a caller names them with
+          `unread_squads_warning` (#438)
     """
     league_details = await draft_client.get_league_details(draft_league_id)
     draft_bootstrap = await draft_client.get_bootstrap_static()
@@ -249,7 +253,7 @@ async def get_draft_ownership_mapping(
         ).items()
     }
 
-    return draft_owned, draft_entries, main_to_draft_id
+    return draft_owned, draft_entries, main_to_draft_id, dict(draft_client.unread_squads)
 
 
 async def get_actual_squad_picks(

@@ -13,6 +13,7 @@ from httpx import Response
 
 from fpl_cli.api.core_insights import (
     BASE_URL,
+    PLAYERMATCHSTATS_REQUIRED_COLUMNS,
     PLAYERSTATS_REQUIRED_COLUMNS,
     CoreInsightsClient,
     make_core_insights_fetcher,
@@ -1418,6 +1419,27 @@ class TestBlankMeansUnknown:
     def test_minutes_is_part_of_the_playerstats_contract(self):
         # So the header check and the doctor probe catch the column going.
         assert "minutes" in PLAYERSTATS_REQUIRED_COLUMNS
+
+    def test_the_penalty_columns_are_part_of_the_match_stats_contract(self):
+        # A match without them is left out of adjusted npxG, so the doctor's
+        # per-gameweek probe must report their going rather than read healthy.
+        assert {"penalties_scored", "penalties_missed"} <= PLAYERMATCHSTATS_REQUIRED_COLUMNS
+
+    @respx.mock
+    async def test_a_non_numeric_penalty_cell_drops_the_row_not_the_gameweek(self, tmp_path):
+        stats = (
+            "player_id,match_id,minutes_played,xg,penalties_scored,penalties_missed\n"
+            "100,m1,90,0.50,nan,0\n"
+            "200,m1,90,0.80,0,0\n"
+        )
+        _mock_players()
+        _mock_gw(1, GW1_MATCHES, stats)
+
+        async with CoreInsightsClient(_make_fetcher(tmp_path)) as client:
+            result = await client.get_match_stats(2)
+
+        assert 100 not in result
+        assert result[200][0]["penalties_scored"] == 0
 
     @respx.mock
     async def test_blank_penalty_cells_read_as_unknown(self, tmp_path):

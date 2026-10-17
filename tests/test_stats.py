@@ -387,11 +387,14 @@ async def _run_stats(
     histories=None,
     bundle_warnings=(),
     understat_lookup=None,
+    bundle_kwargs=None,
 ):
     """Drive ``StatsAgent.run`` over one qualifying player with every seam stubbed.
 
     *bundle_warnings* ride in the stubbed bundle; *understat_lookup* is what
-    the agent's own Understat join answers, keyed by row index.
+    the agent's own Understat join answers, keyed by row index. A dict passed
+    as *bundle_kwargs* receives the keyword arguments the agent asked the
+    bundle for.
     """
     from unittest.mock import AsyncMock, patch
 
@@ -430,6 +433,12 @@ async def _run_stats(
             ],
         }
 
+    bundle = AsyncMock(
+        return_value=_scoring_data(
+            next_gw_id=next_gw_id, player_priors=player_priors, players=players,
+            warnings=bundle_warnings,
+        ),
+    )
     with (
         patch.object(agent.client, "get_players", new_callable=AsyncMock, return_value=players),
         patch.object(
@@ -451,16 +460,37 @@ async def _run_stats(
             "fpl_cli.agents.analysis.stats.fetch_understat_lookup",
             new_callable=AsyncMock, return_value=understat_lookup or {},
         ),
-        patch(
-            "fpl_cli.agents.analysis.stats.prepare_scoring_data",
-            new_callable=AsyncMock,
-            return_value=_scoring_data(
-                next_gw_id=next_gw_id, player_priors=player_priors, players=players,
-                warnings=bundle_warnings,
-            ),
-        ),
+        patch("fpl_cli.agents.analysis.stats.prepare_scoring_data", new=bundle),
     ):
-        return await agent.run()
+        result = await agent.run()
+    if bundle_kwargs is not None and bundle.await_args is not None:
+        bundle_kwargs.update(bundle.await_args.kwargs)
+    return result
+
+
+class TestStatsAgentBundleRequests:
+    """Only the ownership views read the prior and the match data (#454 review).
+
+    `fpl xg` and `fpl preview` score no prior-blended, adjusted-npxG or
+    consistency field, so they neither fetch those feeds nor carry a
+    coverage entry about them.
+    """
+
+    async def test_the_xg_views_request_neither_the_prior_nor_the_match_data(self):
+        kwargs = {}
+        await _run_stats(
+            {"underperformers", "overperformers", "value_picks", "top_xgi_per_90"},
+            next_gw_id=20, bundle_kwargs=kwargs,
+        )
+        assert kwargs["include_prior"] is False
+        assert kwargs["include_match_data"] is False
+
+    @pytest.mark.parametrize("view", ["targets", "differentials"])
+    async def test_an_ownership_view_requests_both(self, view):
+        kwargs = {}
+        await _run_stats({view}, next_gw_id=20, bundle_kwargs=kwargs)
+        assert kwargs["include_prior"] is True
+        assert kwargs["include_match_data"] is True
 
 
 class TestStatsAgentEarlySeasonNotice:

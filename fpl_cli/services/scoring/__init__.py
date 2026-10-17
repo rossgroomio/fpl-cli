@@ -94,6 +94,7 @@ from fpl_cli.services.scoring.coverage import (
     gw_history_coverage,
     history_prior_coverage,
     understat_coverage,
+    understat_join_coverage,
 )
 from fpl_cli.services.scoring.data_prep import (
     ScoringContext,
@@ -298,6 +299,7 @@ __all__ = [
     "gw_history_coverage",
     "history_prior_coverage",
     "understat_coverage",
+    "understat_join_coverage",
     "build_fixture_matchups",
     "build_scoring_context",
     "build_understat_by_player_id",

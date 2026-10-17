@@ -25,7 +25,7 @@ from fpl_cli.services.scoring import (
     compute_xgi_sustainability,
     coverage_warnings,
     prepare_scoring_data,
-    understat_coverage,
+    understat_join_coverage,
 )
 
 if TYPE_CHECKING:
@@ -311,12 +311,17 @@ class StatsAgent(Agent):
             for i, ps in enumerate(player_stats):
                 self._merge_understat_data(ps, us_lookup.get(i))
 
-            # Fetch fixture data and build shared scoring context
+            # Fetch fixture data and build shared scoring context. The prior
+            # and the match data feed the two ownership views alone (the
+            # blend, adjusted npxG, consistency), so a run without them --
+            # `fpl xg`, `fpl preview` -- neither fetches them nor carries a
+            # coverage entry about signals it never read.
+            blended_scores = self._blended_scores()
             needs_history = not hasattr(self, "_player_histories")
             scoring_data = await prepare_scoring_data(
                 self.client, include_players=True,
-                include_history=needs_history, include_prior=True,
-                include_match_data=True,
+                include_history=needs_history, include_prior=bool(blended_scores),
+                include_match_data=bool(blended_scores),
             )
             self._next_gw_id = scoring_data.next_gw_id
             self._player_priors = scoring_data.player_priors
@@ -440,13 +445,6 @@ class StatsAgent(Agent):
             # and without this the same command and gameweek could rank a
             # player 76th or 12th with identical metadata. The other views
             # score no prior-blended field, so they get no notice.
-            blended_scores = tuple(
-                score for view, score in (
-                    ("targets", "target_score"),
-                    ("differentials", "differential_score"),
-                )
-                if view in self.views
-            )
             warnings: list[dict[str, str]] = []
             if blended_scores:
                 warning = early_season_quality_warning(
@@ -468,18 +466,10 @@ class StatsAgent(Agent):
             warnings.extend(understat_join_warnings())
             # The bundle's coverage entries, plus this agent's own Understat
             # join, which it runs itself rather than through the bundle:
-            # measured over the rows it scored, keyed back to their players.
+            # measured over the rows it scored, by the bundle's rule.
             warnings.extend(scoring_data.warnings)
-            understat_by_id = {
-                player_stats[i]["id"]: match for i, match in us_lookup.items()
-            }
-            scored_players = [
-                obj for ps in player_stats if (obj := player_obj_map.get(ps["id"])) is not None
-            ]
             warnings.extend(coverage_warnings([
-                understat_coverage(
-                    scored_players, understat_by_id, next_gw_id=self._next_gw_id,
-                ),
+                understat_join_coverage(us_adapter, us_lookup, next_gw_id=self._next_gw_id),
             ]))
             data["warnings"] = warnings
 
@@ -1003,6 +993,16 @@ class StatsAgent(Agent):
             evaluation,
             next_gw_id=self._next_gw_id,
             prior=prior,
+        )
+
+    def _blended_scores(self) -> tuple[str, ...]:
+        """The prior-blended score fields the requested views show, in view order."""
+        return tuple(
+            score for view, score in (
+                ("targets", "target_score"),
+                ("differentials", "differential_score"),
+            )
+            if view in self.views
         )
 
     def _get_consistency_percentile(self, player_id: int | None) -> float | None:
