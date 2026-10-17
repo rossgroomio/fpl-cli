@@ -80,7 +80,7 @@ def player_command(
       fpl player Haaland --understat --history --format json
     """
     from fpl_cli.api.fpl import FPLClient
-    from fpl_cli.api.fpl_draft import FPLDraftClient, match_draft_to_main
+    from fpl_cli.api.fpl_draft import FPLDraftClient, match_draft_teams_to_main, match_draft_to_main
 
     fmt = get_format(ctx)
     show_draft = fmt != Format.CLASSIC
@@ -146,6 +146,9 @@ def player_command(
                                 main_player.id: draft_id
                                 for draft_id, main_player in match_draft_to_main(
                                     draft_players, display,
+                                    team_id_map=match_draft_teams_to_main(
+                                        draft_bootstrap.get("teams", []), team_list,
+                                    ),
                                 ).items()
                             })
                     except Exception as e:  # noqa: BLE001 — best-effort enrichment

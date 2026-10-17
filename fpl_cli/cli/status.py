@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
@@ -41,6 +41,7 @@ if TYPE_CHECKING:
     from fpl_cli.api.fpl import FPLClient
     from fpl_cli.api.fpl_draft import FPLDraftClient
     from fpl_cli.models.gameweek_status import GameweekStatus
+    from fpl_cli.models.team import Team
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +124,8 @@ async def _draft_squad_if_drafted(
     all_players: list[Player],
     draft_entry_id: int,
     gameweek: int,
+    *,
+    main_teams: Sequence[Team],
 ) -> list[Player]:
     """Draft squad, tolerating a gameweek whose picks do not exist yet.
 
@@ -138,7 +141,9 @@ async def _draft_squad_if_drafted(
     bootstrap-static payload must still surface as a real failure.
     """
     try:
-        return await get_draft_squad_fn(draft_client, all_players, draft_entry_id, gameweek)
+        return await get_draft_squad_fn(
+            draft_client, all_players, draft_entry_id, gameweek, main_teams=main_teams,
+        )
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code == 404:
             logger.debug(
@@ -686,6 +691,8 @@ async def _fetch_draft_data(
     data: dict[str, Any] = {}
     gw_for_picks = current_gw["id"] if current_gw else 1
     all_players = await client.get_players()
+    # Same cached bootstrap as the players: no second fetch
+    all_teams = await client.get_teams()
 
     # Gather all independent draft API calls
     coros: list[Awaitable[Any]] = []
@@ -694,6 +701,7 @@ async def _fetch_draft_data(
         coros.append(draft_client.get_game_state())
     coros.append(_draft_squad_if_drafted(
         get_draft_squad_fn, draft_client, all_players, draft_entry_id, gw_for_picks,
+        main_teams=all_teams,
     ))
 
     results = await asyncio.gather(*coros)

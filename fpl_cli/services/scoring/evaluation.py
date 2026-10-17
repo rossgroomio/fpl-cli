@@ -188,8 +188,9 @@ class PlayerEvaluation:
     status: str = "a"
     chance_of_playing: int | None = None
 
-    # Team context (waiver stacking)
-    team_id: int = 0
+    # Team context (waiver stacking). None when the club is not known: a
+    # draft player at a club the main game does not list has no main-game id
+    team_id: int | None = None
     team_short: str = ""
 
     # Set pieces
@@ -281,6 +282,11 @@ def _extract_status(val: Any) -> str:
     if isinstance(val, PlayerStatus):
         return val.value
     return str(val)
+
+
+def _optional_int(val: Any) -> int | None:
+    """An int field that may be absent, kept None rather than defaulted to 0."""
+    return None if val is None else int(val)
 
 
 def read_player_field(source: Any, name: str, default: Any = None) -> Any:
@@ -380,7 +386,7 @@ def build_player_evaluation(
         ownership=float(_get("ownership", 0) or _get("selected_by_percent", 0) or 0),
         status=_extract_status(_get("status", "a")),
         chance_of_playing=chance_of_playing,
-        team_id=int(_get("team_id", 0)),
+        team_id=_optional_int(_get("team_id")),
         team_short=str(_get("team_short", "")),
         penalties_order=_get("penalties_order"),
         corners_and_indirect_freekicks_order=_get("corners_and_indirect_freekicks_order"),

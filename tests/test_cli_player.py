@@ -9,7 +9,14 @@ from click.testing import CliRunner
 
 from fpl_cli.cli import main
 from fpl_cli.models.player import PlayerPosition
-from tests.conftest import assert_player_rows_carry_code, make_fixture, make_player, make_team
+from tests.conftest import (
+    assert_player_rows_carry_code,
+    make_draft_team,
+    make_fixture,
+    make_player,
+    make_team,
+    team_code_for,
+)
 
 
 def _make_mocks():
@@ -1305,7 +1312,12 @@ class TestUnderstatFetchDeferral:
 
 
 def _make_draft_client():
-    """FPLDraftClient mock owning Salah (draft id 99) via entry 7."""
+    """FPLDraftClient mock owning Salah (draft id 99) via entry 7.
+
+    The element carries no code, so it joins on name and club, and its club
+    is draft team 5, which is main-game team 1 by club code: the join only
+    lands if the draft club is translated first (#423).
+    """
     mock = MagicMock()
     mock.get_league_details = AsyncMock(return_value={
         "league_entries": [
@@ -1313,7 +1325,8 @@ def _make_draft_client():
         ],
     })
     mock.get_bootstrap_static = AsyncMock(return_value={
-        "elements": [{"id": 99, "web_name": "Salah", "team": 1}],
+        "elements": [{"id": 99, "web_name": "Salah", "team": 5}],
+        "teams": [make_draft_team(id=5, code=team_code_for(1), short_name="LIV")],
     })
     mock.get_league_ownership = AsyncMock(return_value={99: 7})
     mock.__aenter__ = AsyncMock(return_value=mock)

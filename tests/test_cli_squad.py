@@ -41,6 +41,7 @@ def _make_agent_result(is_draft=False):
 def _mock_fpl_client():
     client = MagicMock()
     client.get_players = AsyncMock(return_value=[])
+    client.get_teams = AsyncMock(return_value=[])
     client.get_next_gameweek = AsyncMock(return_value={"id": 25})
     client.get_manager_picks = AsyncMock(return_value={"picks": [], "active_chip": None})
     # The entry resolves: a picks 404 on this client means "no squad yet", not

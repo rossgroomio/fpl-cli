@@ -86,6 +86,7 @@ def grid_command(
                         squad_players = await get_draft_squad_players(
                             draft_client, players, draft_entry_id, start_gw,
                             log=lambda msg: error_console.print(f"[yellow]{msg}[/yellow]"),
+                            main_teams=teams,
                         )
                     except Exception as e:  # noqa: BLE001 — display resilience
                         emit_failure(
