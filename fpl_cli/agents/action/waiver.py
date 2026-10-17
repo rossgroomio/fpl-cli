@@ -33,6 +33,7 @@ from fpl_cli.services.scoring import (
     compute_form_trajectory,
     compute_xgi_sustainability,
     prepare_scoring_data,
+    read_chance_of_playing,
 )
 
 
@@ -607,7 +608,7 @@ class WaiverAgent(Agent):
         5. Available players sorted by form (lowest form = higher priority)
         """
         status = player.get("status", "a")
-        chance = player.get("chance_of_playing_next_round")
+        chance = read_chance_of_playing(player)
         form = player.get("form", 0)
 
         # Suspended players are highest priority to drop
@@ -658,7 +659,7 @@ class WaiverAgent(Agent):
                 drop_reason = None
                 if drop_candidate:
                     drop_status = drop_candidate.get("status", "a")
-                    drop_chance = drop_candidate.get("chance_of_playing_next_round")
+                    drop_chance = read_chance_of_playing(drop_candidate)
                     if drop_status == "s":
                         drop_reason = "Suspended"
                     elif drop_status != "a" and drop_chance == 0:

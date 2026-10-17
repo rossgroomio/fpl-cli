@@ -70,6 +70,7 @@ from fpl_cli.services.scoring import (
     is_known_unavailable,
     normalise_score,
     prepare_scoring_data,
+    read_chance_of_playing,
     select_starting_xi,
     shrink_scores,
     unavailable_player_ids,
@@ -2885,6 +2886,38 @@ class TestIsKnownUnavailable:
 
     def test_zero_chance_of_playing_applies_at_every_gameweek(self):
         assert is_known_unavailable(chance_of_playing=0, minutes=900, next_gw_id=1)
+
+
+class TestReadChanceOfPlaying:
+    """Tests for the shared either-spelling availability reader (#436)."""
+
+    def test_reads_the_draft_parser_spelling(self):
+        assert read_chance_of_playing({"chance_of_playing": 25}) == 25
+
+    def test_reads_the_model_spelling(self):
+        assert read_chance_of_playing(make_player(chance_of_playing_next_round=50)) == 50
+
+    def test_zero_does_not_fall_through_to_the_other_spelling(self):
+        """0 means ruled out; a truthiness fall-through would read it as the other key."""
+        row = {"chance_of_playing": 0, "chance_of_playing_next_round": 100}
+        assert read_chance_of_playing(row) == 0
+
+    def test_a_spelling_present_but_none_falls_through(self):
+        """The draft parser always writes its key, None when the API has no news."""
+        row = {"chance_of_playing": None, "chance_of_playing_next_round": 50}
+        assert read_chance_of_playing(row) == 50
+
+    def test_neither_spelling_is_none(self):
+        assert read_chance_of_playing({"status": "a"}) is None
+
+    def test_overlay_wins_over_the_source(self):
+        row = {"chance_of_playing": 100}
+        assert read_chance_of_playing(row, overlay={"chance_of_playing": 0}) == 0
+
+    def test_overlay_none_falls_through_to_the_source(self):
+        """An overlay key holding None is no news, as on the source itself."""
+        row = {"chance_of_playing_next_round": 75}
+        assert read_chance_of_playing(row, overlay={"chance_of_playing": None}) == 75
 
 
 class TestUnavailablePlayerIds:

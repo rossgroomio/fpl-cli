@@ -98,6 +98,7 @@ from fpl_cli.services.scoring.evaluation import (
     build_scoring_enrichment,
     gk_signal_enrichment,
     gk_xgc_quality,
+    read_chance_of_playing,
 )
 from fpl_cli.services.scoring.ownership import (
     calculate_differential_score,
@@ -237,6 +238,7 @@ __all__ = [
     "apply_gk_signals",
     "gk_signal_enrichment",
     "gk_xgc_quality",
+    "read_chance_of_playing",
     # display
     "normalise_score",
     "pick_display_ceiling",
