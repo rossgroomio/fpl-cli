@@ -961,25 +961,47 @@ class TestWaiverAgentDefensiveContribution:
             defensive_contribution_per_90=0.4,
         )
 
-    async def _run(self, mock_draft_bootstrap, mock_league_details, players):
-        agent = WaiverAgent(config={"draft_league_id": 12345})
+    async def _run_agent(
+        self, mock_draft_bootstrap, mock_league_details, players,
+        *, squad=(), released=(),
+    ):
+        """Drive ``run()`` with *squad* picked by entry 100 and *released* dropped."""
+        config: dict[str, Any] = {"draft_league_id": 12345}
+        if squad:
+            config["draft_entry_id"] = 100
+        agent = WaiverAgent(config=config)
+        bootstrap = {
+            **mock_draft_bootstrap,
+            "elements": [self._draft_defender(), *squad, *released],
+        }
 
         with _stub_upstream_fetches(players=players), \
              patch.object(agent.client, "get_bootstrap_static", new_callable=AsyncMock) as mock_bootstrap, \
              patch.object(agent.client, "get_available_players", new_callable=AsyncMock) as mock_available, \
              patch.object(agent.client, "get_recent_releases", new_callable=AsyncMock) as mock_releases, \
              patch.object(agent.client, "get_league_details", new_callable=AsyncMock) as mock_details, \
+             patch.object(agent.client, "get_game_state", new_callable=AsyncMock, return_value={"current_event": 25}), \
+             patch.object(agent.client, "get_entry_picks", new_callable=AsyncMock) as mock_picks, \
              patch.object(agent.client, "get_waiver_order", new_callable=AsyncMock) as mock_order:
 
-            mock_bootstrap.return_value = mock_draft_bootstrap
+            mock_bootstrap.return_value = bootstrap
             mock_available.return_value = [self._draft_defender()]
-            mock_releases.return_value = []
+            mock_releases.return_value = [
+                {"player": p, "dropped_by": 101, "gameweek": 24} for p in released
+            ]
             mock_details.return_value = mock_league_details
+            mock_picks.return_value = {
+                "picks": [{"element": p["id"], "position": n} for n, p in enumerate(squad, 1)],
+            }
             mock_order.return_value = []
 
             result = await agent.run()
 
         assert result.status == AgentStatus.SUCCESS
+        return result
+
+    async def _run(self, mock_draft_bootstrap, mock_league_details, players):
+        result = await self._run_agent(mock_draft_bootstrap, mock_league_details, players)
         [target] = result.data["top_targets"]
         return target
 
@@ -1023,6 +1045,42 @@ class TestWaiverAgentDefensiveContribution:
         )
 
         assert target["dc_per_90"] == 0
+
+    @pytest.mark.asyncio
+    async def test_squad_and_release_rows_carry_the_main_game_rate(
+        self, mock_draft_bootstrap, mock_league_details,
+    ):
+        """The rows beside the pool are joined too, not left at the parser's 0.
+
+        gw-prep hands the whole payload to a sub-agent, so a squad defender
+        left at 0 next to a target carrying its real rate reads as an upgrade
+        in DC that is an artefact of which list the player sits in.
+        """
+        squad_defender = make_draft_player(
+            id=6, web_name="Saliba", team=1, element_type=2, code=9002, minutes=1800,
+        )
+        released_defender = make_draft_player(
+            id=7, web_name="Timber", team=1, element_type=2, code=9003, minutes=1800,
+        )
+        players = [
+            self._main_defender(),
+            self._main_defender(
+                id=600, code=9002, web_name="Saliba", defensive_contribution_per_90=2.6,
+            ),
+            self._main_defender(
+                id=700, code=9003, web_name="Timber", defensive_contribution_per_90=1.9,
+            ),
+        ]
+
+        result = await self._run_agent(
+            mock_draft_bootstrap, mock_league_details, players,
+            squad=[squad_defender], released=[released_defender],
+        )
+
+        [squad_row] = result.data["current_squad"]
+        [release_row] = result.data["recent_releases"]
+        assert (squad_row["id"], squad_row["dc_per_90"]) == (6, 2.6)
+        assert (release_row["id"], release_row["dc_per_90"]) == (7, 1.9)
 
 
 class TestWaiverAgentIdSpace:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from fpl_cli.agents.base import Agent, AgentResult, AgentStatus
 from fpl_cli.agents.common import (
@@ -29,6 +29,9 @@ from fpl_cli.services.scoring import (
     prepare_scoring_data,
     read_chance_of_playing,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 
 class WaiverAgent(Agent):
@@ -94,6 +97,9 @@ class WaiverAgent(Agent):
 
             # Get recently released players (independent of entry_id)
             recent_releases: list[dict[str, Any]] = []
+            # Raw draft elements of every player the payload carries besides
+            # the pool, so the main-game join below reaches them too (#437).
+            joined_elements: list[dict[str, Any]] = list(available)
             league_details: dict[str, Any] = {}
             try:
                 releases = await self.client.get_recent_releases(league_id, bootstrap)
@@ -112,6 +118,7 @@ class WaiverAgent(Agent):
                     }
                     for r in releases[:20]
                 ]
+                joined_elements.extend(r["player"] for r in releases[:20])
             except Exception as e:  # noqa: BLE001 — best-effort enrichment
                 self.log_warning(f"Could not fetch recent releases: {e}")
 
@@ -163,6 +170,7 @@ class WaiverAgent(Agent):
                         player_map = {p["id"]: p for p in bootstrap.get("elements", [])}
                         for pid in player_ids:
                             if pid in player_map:
+                                joined_elements.append(player_map[pid])
                                 player = enrich_player(
                                     self.client.parse_player(player_map[pid]),
                                     team_map,
@@ -190,7 +198,9 @@ class WaiverAgent(Agent):
             # conceded, so a keeper's three scoring signals only exist on the
             # main game's player. Joined on `code`, never on (web_name,
             # team_id) — a mid-season rename breaks the name join (#168).
-            self._main_player_map = match_draft_to_main(available, data.players or [])
+            self._main_player_map = match_draft_to_main(joined_elements, data.players or [])
+            for players in (parsed_available, current_squad, recent_releases):
+                self._apply_main_dc_per_90(players)
 
             # Every lookup below arrives keyed by the main game's element id,
             # and the pool scored from here on is keyed by the draft's, so
@@ -215,14 +225,6 @@ class WaiverAgent(Agent):
             # Enrich available players with matchup and FDR
             matchup_cache: dict[tuple[int, str], float] = {}
             for player in parsed_available:
-                # The draft bootstrap carries defensive contribution only as a
-                # season total, and the parser drops even that, so every
-                # defender would score with no DC term against a waiver anchor
-                # calibrated with it (#437). Read the rate off the joined main
-                # player, the same field classic scoring uses; a miss keeps 0.
-                main_player = self._main_player_map.get(int(player.get("id") or 0))
-                if main_player is not None:
-                    player["dc_per_90"] = main_player.defensive_contribution_per_90
                 tid = player.get("team_id", 0)
                 pos = player.get("position", "MID")
                 matchup_avg_3gw, positional_fdr = compute_aggregate_matchup(
@@ -295,6 +297,24 @@ class WaiverAgent(Agent):
                 message="Failed to analyze waiver options",
                 errors=[str(e)],
             )
+
+    def _apply_main_dc_per_90(
+        self, players: Sequence[EnrichedPlayer | dict[str, Any]],
+    ) -> None:
+        """Overwrite each player's ``dc_per_90`` with its main-game rate.
+
+        The draft bootstrap carries defensive contribution only as a season
+        total, and the parser drops even that, so ``enrich_player`` leaves
+        every draft player at 0. In the pool that scored each defender with no
+        DC term against a waiver anchor calibrated with it (#437); beside the
+        pool, a squad or release row left at 0 reads as a defender who makes
+        no contributions next to a target carrying the real rate. Read off the
+        joined main player, the field classic scoring uses; a miss keeps 0.
+        """
+        for player in players:
+            main_player = self._main_player_map.get(int(player.get("id") or 0))
+            if main_player is not None:
+                player["dc_per_90"] = main_player.defensive_contribution_per_90
 
     @staticmethod
     def _build_pool(available: list[EnrichedPlayer]) -> list[WaiverPoolEntry]:
