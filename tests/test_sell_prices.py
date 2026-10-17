@@ -9,6 +9,7 @@ from click.testing import CliRunner
 
 from fpl_cli.cli.sell_prices import sell_prices_command
 from fpl_cli.scraper.fpl_prices import PlayerSellPrice, TeamFinances
+from tests.conftest import assert_player_rows_carry_code
 
 
 def _make_finances(*, with_element_ids: bool = True) -> TeamFinances:
@@ -41,6 +42,7 @@ class TestSellPricesJson:
         assert len(envelope["data"]) == 2
         assert envelope["data"][0]["id"] == 253
         assert envelope["data"][0]["code"] == 118748
+        assert_player_rows_carry_code(envelope["data"], command="squad sell-prices")
         assert envelope["metadata"]["warnings"] == []
         assert envelope["data"][0]["sell_price"] == 13.0
         assert envelope["metadata"]["bank"] == 1.5

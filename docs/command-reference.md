@@ -159,7 +159,7 @@ Which namespace each payload's `id` is in, and whether the row carries `code`:
 | `price-history` | `data[]` | main, named `element` | yes, from the trend data's own player list for the same season; null for a player missing from it |
 | `history` | `data[]` | no id | yes |
 | `league-recap` | `squad[]`, `captain`, `vice_captain`, `transfers[]`, `transactions[]`, `lost_claims[]`, `fines[].players[]` | no id | yes (`code`, `player_in_code`, `player_out_code`) |
-| `intel` | player notes, `intel resolve` rows | no id | yes, null where unresolved |
+| `intel`, `intel show`, `intel resolve` | player notes, `intel resolve` rows | no id | yes, null where unresolved |
 | `squad grid` (classic and `--draft`) | `data[]` | no id (name, position, club) | no |
 | `squad` | `position_analysis.*.players[]`, `injury_risks[]`, `form_analysis.*[]` | no id | no |
 | `fdr --my-squad` (classic and `--draft`) | `squad_exposure[].players` | no id (names) | no |
@@ -175,6 +175,13 @@ position and never reads `id`. The gw-prep skill's one cross-command join — th
 radar against the waiver pool — is done by `claimable_returnees.py`, on `code`. Every row
 above that emits `id` carries `code` beside it (#419), and a new payload with player rows
 carries `code` from the start.
+
+`tests/test_cli_json_contract.py` holds this table to the code (#422). Every `--format json`
+command has to be named in it or declared to carry no player rows, every row whose `id` is
+main or draft has to say `code` is carried, and each of those commands and gw-prep scripts
+needs a test that runs its real output through `assert_player_rows_carry_code()`
+(`tests/conftest.py`). A new command, or a JSON mode on one that has none today, fails
+there until it is classified here.
 
 ## Player Analysis
 

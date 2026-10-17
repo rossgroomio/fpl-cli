@@ -24,7 +24,7 @@ from fpl_cli.models.player import PlayerPosition, PlayerStatus
 from fpl_cli.season import season_label
 from fpl_cli.services import returnee_radar
 from fpl_cli.services.player_prior import PlayerPrior
-from tests.conftest import make_player, make_team
+from tests.conftest import assert_player_rows_carry_code, make_player, make_team
 
 # The radar reads the clock for lapsing and news age, and the season for
 # resolving a bare "5 Sep" into a year. Neither is a CLI flag, so the tests
@@ -469,6 +469,8 @@ class TestJsonOutput:
 
         [departure] = payload["data"]["departures"]
         assert (departure["id"], departure["code"]) == (5, 1005)
+        assert payload["data"]["entries"]
+        assert_player_rows_carry_code(payload["data"], command="returnees")
 
     def test_table_and_json_are_driven_from_the_same_assembled_data(self):
         players = _default_players()
