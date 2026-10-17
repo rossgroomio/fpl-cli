@@ -194,80 +194,7 @@ async def _fpl_checks() -> tuple[list[CheckResult], dict[str, Any] | None]:
 # ---------------------------------------------------------------------------
 
 
-def _draft_club_check(
-    draft_teams: list[dict[str, Any]],
-    main_teams: list[dict[str, Any]] | None,
-) -> CheckResult:
-    """Whether the two games' club lists agree by `code` (#423).
-
-    Every draft path translates a draft club id to the main game's through
-    the club's `code`, so a draft club whose code the main game does not
-    carry comes out as no club: its players lose their fixtures, form and
-    FDR, and nothing at runtime tells that apart from a quiet club. Clubs
-    the two games number differently are translated and so not a fault,
-    but they are named: the numberings have always agreed so far, and the
-    day they stop is worth seeing.
-    """
-    from fpl_cli.models.player import usable_code
-
-    name = "Draft club ids"
-    if main_teams is None:
-        return CheckResult(
-            name,
-            CheckStatus.UNCHECKED,
-            "the FPL bootstrap was unreachable, so there was no main-game club list to compare against",
-        )
-
-    main_by_code = {
-        code: team for team in main_teams if (code := usable_code(team.get("code"))) is not None
-    }
-    draft_by_code = {
-        code: team for team in draft_teams if (code := usable_code(team.get("code"))) is not None
-    }
-    unmatched_draft = sorted(
-        str(team.get("short_name", team.get("id")))
-        for team in draft_teams
-        if usable_code(team.get("code")) not in main_by_code
-    )
-    missing_from_draft = sorted(
-        str(team.get("short_name", team.get("id")))
-        for code, team in main_by_code.items()
-        if code not in draft_by_code
-    )
-    problems: list[str] = []
-    if unmatched_draft:
-        problems.append(
-            f"draft clubs with no main-game club of the same code: {', '.join(unmatched_draft)}"
-            " — their players are read with no club"
-        )
-    if missing_from_draft:
-        problems.append(f"main-game clubs missing from the draft list: {', '.join(missing_from_draft)}")
-    if problems:
-        return CheckResult(name, CheckStatus.BROKEN, "; ".join(problems))
-
-    renumbered = sorted(
-        str(team.get("short_name", team.get("id")))
-        for code, team in draft_by_code.items()
-        if team.get("id") != main_by_code[code].get("id")
-    )
-    if renumbered:
-        return CheckResult(
-            name,
-            CheckStatus.OK,
-            f"{len(draft_by_code)} clubs agree by code; {len(renumbered)} numbered differently"
-            f" in the two games ({', '.join(renumbered)}), translated by code",
-        )
-    return CheckResult(
-        name, CheckStatus.OK, f"all {len(draft_by_code)} clubs share their code and id in both games"
-    )
-
-
-async def _draft_checks(main_teams: list[dict[str, Any]] | None) -> list[CheckResult]:
-    """Probe the draft bootstrap, comparing its clubs with *main_teams*.
-
-    *main_teams* is the FPL bootstrap's raw `teams` list, None when that
-    bootstrap was unreachable.
-    """
+async def _draft_checks() -> list[CheckResult]:
     from fpl_cli.api.fpl_draft import FPLDraftClient
 
     name = "Draft bootstrap"
@@ -293,10 +220,10 @@ async def _draft_checks(main_teams: list[dict[str, Any]] | None) -> list[CheckRe
     if len(elements) < ELEMENTS_FLOOR:
         problems.append(f"{len(elements)} players (expected at least {ELEMENTS_FLOOR})")
     if problems:
-        shape = CheckResult(name, CheckStatus.BROKEN, "; ".join(problems))
-    else:
-        shape = CheckResult(name, CheckStatus.OK, f"{len(teams)} teams, {len(elements)} players")
-    return [shape, _draft_club_check(teams, main_teams)]
+        return [CheckResult(name, CheckStatus.BROKEN, "; ".join(problems))]
+    return [
+        CheckResult(name, CheckStatus.OK, f"{len(teams)} teams, {len(elements)} players")
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -1141,10 +1068,9 @@ async def _football_data_checks(short_names: list[str] | None) -> list[CheckResu
 async def provider_checks() -> tuple[list[CheckResult], int]:
     """Run every provider probe, containing per-provider failures.
 
-    The FPL bootstrap runs first because four later probes compare against
-    the live team list and gameweek state (the draft game's club list among
-    them); when it is unreachable those comparisons report unchecked rather
-    than guessing.
+    The FPL bootstrap runs first because three later probes compare against
+    the live team list and gameweek state; when it is unreachable those
+    comparisons report unchecked rather than guessing.
 
     Returns the season year alongside the results so `fpl doctor --providers`
     can label its report without a second `bootstrap-static/` download:
@@ -1175,9 +1101,7 @@ async def provider_checks() -> tuple[list[CheckResult], int]:
         finished_gws = len(finished)
         latest_finished_gw = max(finished) if finished else None
 
-    results += await _draft_checks(
-        (bootstrap.get("teams") or []) if bootstrap is not None else None,
-    )
+    results += await _draft_checks()
 
     # The dataset fetchers resolve the cache dir themselves; an unusable
     # FPL_CLI_CACHE_DIR override becomes that provider's row instead of

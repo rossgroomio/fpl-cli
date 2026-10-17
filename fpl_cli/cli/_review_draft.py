@@ -81,11 +81,12 @@ async def _review_draft(
     """
     from fpl_cli.api.fpl_draft import (
         FPLDraftClient,
-        draft_element_team_id,
+        draft_player_team_id,
         is_accepted_transaction,
         match_draft_teams_to_main,
         match_draft_to_main,
         resolve_lost_claims,
+        untranslated_draft_teams,
     )
 
     if not draft_league_id:
@@ -108,21 +109,26 @@ async def _review_draft(
             draft_elements = draft_bootstrap.get("elements", [])
             draft_player_map = {p["id"]: p for p in draft_elements}
 
-            # A draft element's `team` is the draft game's club id, and `teams`
+            # A draft player's `team` is the draft game's club id, and `teams`
             # and the blank/double sets are keyed by the main game's (#423)
-            draft_team_ids = match_draft_teams_to_main(draft_bootstrap.get("teams", []), teams.values())
-
-            def main_team_of(element: dict[str, Any]) -> Team | None:
-                team_id = draft_element_team_id(element, draft_team_ids)
-                return teams.get(team_id) if team_id is not None else None
+            draft_teams = draft_bootstrap.get("teams", [])
+            team_id_map = match_draft_teams_to_main(draft_teams, teams.values())
+            if untranslated := untranslated_draft_teams(draft_teams, team_id_map):
+                error_console.print(
+                    f"[dim]Draft clubs the main game does not list ({rich_escape(', '.join(untranslated))}):"
+                    " their unmatched players show no club[/dim]"
+                )
 
             # Map Draft element IDs to Main FPL element IDs for GW history lookup
-            draft_to_main_id = {
-                draft_id: main_player.id
-                for draft_id, main_player in match_draft_to_main(
-                    draft_elements, players, team_ids=draft_team_ids,
-                ).items()
-            }
+            matched_main = match_draft_to_main(draft_elements, players, team_id_map=team_id_map)
+            draft_to_main_id = {draft_id: main_player.id for draft_id, main_player in matched_main.items()}
+
+            def club_of(draft_player: dict[str, Any]) -> tuple[int | None, Team | None]:
+                """The main-game team id and Team for a draft player's club."""
+                team_id = draft_player_team_id(
+                    draft_player, team_id_map, main_player=matched_main.get(draft_player["id"]),
+                )
+                return team_id, teams.get(team_id) if team_id is not None else None
 
             # Get standings and entry mapping
             # Note: standings use 'league_entry' which maps to 'id' in league_entries
@@ -189,8 +195,7 @@ async def _review_draft(
                                     gw_points, gw_minutes, red_cards = _live_player_stats(live_stats, main_elem_id)
 
                                     # Club names: short code for tables, full name for LLM prompts
-                                    player_team_id = draft_element_team_id(draft_player, draft_team_ids)
-                                    player_team = teams.get(player_team_id) if player_team_id is not None else None
+                                    player_team_id, player_team = club_of(draft_player)
                                     team_short = player_team.short_name if player_team else "???"
                                     # None, never a placeholder -- see _review_classic.py.
                                     team_name = player_team.name if player_team else None
@@ -373,12 +378,12 @@ async def _review_draft(
 
                             main_in_id = draft_to_main_id.get(player_in_id)
                             in_points = _live_player_stats(live_stats, main_in_id)[0] if main_in_id else 0
-                            in_team = main_team_of(draft_player_in)
+                            _, in_team = club_of(draft_player_in)
                             in_abbr = in_team.short_name if in_team else "???"
 
                             main_out_id = draft_to_main_id.get(player_out_id)
                             out_points = _live_player_stats(live_stats, main_out_id)[0] if main_out_id else 0
-                            out_team = main_team_of(draft_player_out)
+                            _, out_team = club_of(draft_player_out)
                             out_abbr = out_team.short_name if out_team else "???"
 
                             net = in_points - out_points
@@ -436,8 +441,8 @@ async def _review_draft(
                         lost_out = draft_player_map.get(txn.get("element_out"))
                         if not lost_in or not lost_out:
                             continue
-                        lost_in_team = main_team_of(lost_in)
-                        lost_out_team = main_team_of(lost_out)
+                        _, lost_in_team = club_of(lost_in)
+                        _, lost_out_team = club_of(lost_out)
                         raw_priority = txn.get("priority")
                         priority = raw_priority if isinstance(raw_priority, int) else None
                         draft_lost_claims_data.append({

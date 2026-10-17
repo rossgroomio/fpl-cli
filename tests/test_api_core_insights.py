@@ -49,7 +49,7 @@ def _make_fetcher(tmp_path: Path) -> DatasetFetcher:
 PLAYERS_CSV = (
     "player_code,player_id,first_name,second_name,web_name,team_code,position\n"
     "80201,100,Mohamed,Salah,Salah,14,Midfielder\n"
-    "206325,200,Erling,Haaland,Haaland,43,Forward\n"
+    "206325,200,Erling,Haaland,Haaland,13,Forward\n"
     "500000,300,Test,Keeper,Keeper,1,Goalkeeper\n"
 )
 
@@ -74,7 +74,7 @@ PLAYERSTATS_CSV = (
 PLAYERS_PREV_CSV = (
     "player_code,player_id,first_name,second_name,web_name,team_code,position\n"
     "80201,7,Mohamed,Salah,Salah,14,Midfielder\n"
-    "206325,8,Erling,Haaland,Haaland,94,Forward\n"
+    "206325,8,Erling,Haaland,Haaland,43,Forward\n"
 )
 
 # A completed season: a mid-season snapshot and the final GW38 row per player.
@@ -277,7 +277,7 @@ class TestSeasonAggregates:
         salah = [r for r in rows if r.element_code == 80201][0]
         assert salah.position == "MID"
         assert salah.web_name == "Salah"
-        assert salah.team_code == 14
+        assert salah.team_id == 14
 
         haaland = [r for r in rows if r.element_code == 206325][0]
         assert haaland.position == "FWD"
@@ -512,8 +512,8 @@ class TestMultiSeason:
         assert (previous.total_points, previous.minutes, previous.starts) == (230, 3200, 36)
         assert (previous.end_cost, previous.start_cost) == (125, 130)
         assert current.total_points == 265
-        # Each season's team_code is that season's club.
-        assert [s.team_code for s in profiles[206325].seasons] == [94, 43]
+        # Each season's team_id is that season's club.
+        assert [s.team_id for s in profiles[206325].seasons] == [43, 13]
         assert len(profiles[80201].pts_per_90) == 2
 
     @respx.mock
@@ -794,16 +794,12 @@ class TestGwTrendWindowing:
 # Per-GW fixtures mirror the Core-Insights layout:
 #   By Tournament/Premier League/GW{n}/matches.csv
 #   By Tournament/Premier League/GW{n}/playermatchstats.csv
-#
-# matches.csv names its clubs by club code, as players.csv does, so the real
-# codes are used here. Man City's 43 and Burnley's 90 are impossible as 1-20
-# team ids, which keeps the fixture from passing for a list of ids (#423).
 
 _PL_PREFIX = f"{CI_SEASON}/By Tournament/Premier League"
 
 GW1_MATCHES = (
     "match_id,gameweek,tournament,home_team,away_team,home_team_elo,away_team_elo\n"
-    "m1,1,prem,14,43,1800.0,1750.0\n"  # Liverpool (14) home vs Man City (43)
+    "m1,1,prem,14,13,1800.0,1750.0\n"  # Liverpool (14) home vs Man City (13)
 )
 GW1_STATS = (
     "player_id,match_id,minutes_played,xg,xa,penalties_scored,penalties_missed,"
@@ -815,7 +811,7 @@ GW1_STATS = (
 
 GW2_MATCHES = (
     "match_id,gameweek,tournament,home_team,away_team,home_team_elo,away_team_elo\n"
-    "m2,2,prem,43,14,1760.0,1810.0\n"  # Man City home vs Liverpool
+    "m2,2,prem,13,14,1760.0,1810.0\n"  # Man City home vs Liverpool
 )
 GW2_STATS = (
     "player_id,match_id,minutes_played,xg,xa,penalties_scored,penalties_missed,"
@@ -825,7 +821,7 @@ GW2_STATS = (
 
 GW4_MATCHES = (
     "match_id,gameweek,tournament,home_team,away_team,home_team_elo,away_team_elo\n"
-    "m4,4,prem,90,14,1550.0,1820.0\n"  # Burnley (90) home vs Liverpool
+    "m4,4,prem,1,14,1550.0,1820.0\n"   # Weak team (1) home vs Liverpool
 )
 GW4_STATS = (
     "player_id,match_id,minutes_played,xg,xa,penalties_scored,penalties_missed,"
@@ -1145,7 +1141,7 @@ class TestContractTripwires:
         blank_elo = (
             "match_id,gameweek,tournament,home_team,away_team,"
             "home_team_elo,away_team_elo\n"
-            "m1,1,prem,14,43,,\n"
+            "m1,1,prem,14,13,,\n"
         )
         _mock_players()
         _mock_gw(1, blank_elo, GW1_STATS)

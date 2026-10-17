@@ -5342,6 +5342,44 @@ class TestCollectorGameweekClubs:
                 gameweek_clubs={5: 1, 6: 1},
             )
 
+    async def test_a_matched_pick_keeps_his_club_when_the_draft_club_is_unlisted(self, caplog):
+        """#423 review: at a rollover the draft list can carry a club whose
+        code the main game no longer lists. The matched main-game player's
+        club still answers, so the ledger row is not written club-less, and
+        the unlisted club is logged where the ledger is written."""
+        draft_player = make_draft_player(id=900, code=555, web_name="Star", team=30, element_type=3)
+        main_player = make_player(id=5, code=555, web_name="Star", team_id=2)
+        league_details = {
+            "league": {"name": "Draft League"},
+            "standings": [{"league_entry": 10, "event_total": 5, "total": 5}],
+            "league_entries": [
+                {"id": 10, "entry_id": 1, "player_first_name": "A", "player_last_name": "B"},
+            ],
+        }
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        client.get_league_details = AsyncMock(return_value=league_details)
+        client.get_bootstrap_static = AsyncMock(return_value={
+            "elements": [draft_player],
+            "teams": [*_SWAPPED_DRAFT_TEAMS, make_draft_team(id=30, code=999, short_name="NOW")],
+        })
+        client.get_league_transactions = AsyncMock(return_value={"transactions": []})
+        client.get_entry_picks = AsyncMock(
+            return_value={"picks": [{"element": 900, "position": 1}], "subs": []},
+        )
+
+        with caplog.at_level(logging.WARNING), \
+                patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=client):
+            data = await collect_draft_recap_data(
+                {"fpl": {"draft_league_id": 1}}, gw=15, live_stats={5: {"total_points": 5}},
+                players=[main_player], teams=self._TEAMS, is_live_gw=False,
+                gameweek_clubs=None,
+            )
+        squad_player = data["managers"][0]["squad"][0]
+        assert (squad_player["team"], squad_player["team_name"]) == ("BET", "Beta")
+        assert "Draft clubs with no main-game club of the same code (NOW)" in caplog.text
+
     async def test_an_unmatched_draft_player_keeps_the_draft_bootstraps_club(self):
         """No main-game id, so nothing to look the gameweek's answer up by.
 

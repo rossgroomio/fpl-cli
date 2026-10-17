@@ -114,6 +114,9 @@ def test_fdr_my_squad_draft_builds_context(mock_fixture_agent):
         # A club the main game does not list is no club, never the raw id
         {"team_id": None, "element_type": 2, "web_name": "Stranger"},
     ]
+    # Still in the squad total, so the shares understate: the notice says who
+    assert "1 squad player(s) at a draft club the main game does not list (Stranger)" in result.stderr
+    assert "Stranger" not in result.stdout
 
 
 def test_fdr_surfaces_ratings_warning_from_agent(mock_fixture_agent):

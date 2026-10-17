@@ -3481,6 +3481,81 @@ class TestReviewDraftLostClaims:
         assert data["draft_lost_claims_data"] == []
 
 
+class TestReviewDraftClubTranslation:
+    """#423: draft review reads every club in the main game's numbering.
+
+    The draft game numbers Newcastle 2 and Man City 7 here, where the main
+    game has 4 and 19; draft club 30 has no main-game club at all. A matched
+    player's club comes from his main-game player, an unmatched one's from
+    the draft club translated by code.
+    """
+
+    _TEAMS = {
+        19: make_team(id=19, short_name="MCI", name="Man City"),
+        4: make_team(id=4, short_name="NEW", name="Newcastle"),
+    }
+    _DRAFT_TEAMS = [
+        make_draft_team(id=2, code=team_code_for(4), short_name="NEW"),
+        make_draft_team(id=7, code=team_code_for(19), short_name="MCI"),
+        make_draft_team(id=30, code=999, short_name="NOW"),
+    ]
+
+    async def _run(self, draft_elements, main_players, picks, txns):
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        client.get_league_details = AsyncMock(return_value={
+            "league": {"name": "Draft League"},
+            "standings": [{"league_entry": 10, "event_total": 9, "total": 9, "rank": 1}],
+            "league_entries": [
+                {"id": 10, "entry_id": 1, "player_first_name": "A", "player_last_name": "B"},
+            ],
+        })
+        client.get_bootstrap_static = AsyncMock(
+            return_value={"elements": draft_elements, "teams": self._DRAFT_TEAMS},
+        )
+        client.get_entry_picks = AsyncMock(return_value={"picks": picks, "subs": []})
+        client.get_league_transactions = AsyncMock(return_value={"transactions": txns})
+        with patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=client):
+            return await _review_draft(
+                MagicMock(), 1, 1, gw=3, api_current_gw_id=3,
+                players=main_players, player_map={p.id: p for p in main_players},
+                teams=self._TEAMS, live_stats={900: {"total_points": 9}},
+            )
+
+    async def test_an_accepted_move_names_both_clubs_in_the_main_numbering(self):
+        """The incoming player is matched, the outgoing one is not: one club
+        comes from the main-game player, the other from the translation."""
+        elanga = make_draft_player(id=900, code=555, web_name="Elanga", team=2, element_type=3)
+        stranger = make_draft_player(id=403, code=777, web_name="Stranger", team=7, element_type=3)
+        data = await self._run(
+            [elanga, stranger],
+            [make_player(id=900, code=555, web_name="Elanga", team_id=4)],
+            [{"element": 900, "position": 1}],
+            [{"event": 3, "result": "a", "entry": 1, "kind": "w", "element_in": 900, "element_out": 403}],
+        )
+        [txn] = data["draft_transactions_data"]
+        assert (txn["player_in_team"], txn["player_in_team_name"]) == ("NEW", "Newcastle")
+        assert (txn["player_out_team"], txn["player_out_team_name"]) == ("MCI", "Man City")
+
+    async def test_a_matched_player_keeps_his_club_when_the_draft_club_is_unlisted(self, capsys):
+        """At a rollover the draft list can carry a club the main game has
+        dropped; the matched player's own club still answers, and the
+        unlisted club is named on stderr."""
+        elanga = make_draft_player(id=900, code=555, web_name="Elanga", team=30, element_type=3)
+        data = await self._run(
+            [elanga],
+            [make_player(id=900, code=555, web_name="Elanga", team_id=4)],
+            [{"element": 900, "position": 1}],
+            [],
+        )
+        [row] = data["draft_squad_points_data"]
+        assert (row["team"], row["team_name"]) == ("NEW", "Newcastle")
+        captured = capsys.readouterr()
+        assert "Draft clubs the main game does not list (NOW)" in captured.err
+        assert "NOW" not in captured.out
+
+
 class TestReviewDraftTransactionsFetch:
     """Issue #367: the draft transactions handler wrapped the fetch, the pairing
     and the table build, so a rendering bug read as "Could not fetch

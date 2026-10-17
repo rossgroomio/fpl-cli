@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Mapping
 from typing import Any, cast
 
 from fpl_cli.agents.base import Agent, AgentResult, AgentStatus
@@ -12,7 +13,12 @@ from fpl_cli.agents.common import (
     rekey_for_draft,
 )
 from fpl_cli.api.fpl import FPLClient
-from fpl_cli.api.fpl_draft import FPLDraftClient, match_draft_teams_to_main, match_draft_to_main
+from fpl_cli.api.fpl_draft import (
+    FPLDraftClient,
+    match_draft_teams_to_main,
+    match_draft_to_main,
+    untranslated_draft_teams,
+)
 from fpl_cli.models.player import Player
 from fpl_cli.models.types import EnrichedPlayer, WaiverPoolEntry, WaiverTarget
 from fpl_cli.services.player_prior import early_season_quality_warning
@@ -85,23 +91,15 @@ class WaiverAgent(Agent):
         try:
             # Fetch data
             bootstrap = await self.client.get_bootstrap_static()
-
-            # Fixture data and the shared scoring context, fetched first because
-            # its team list is what translates the draft game's club ids
-            data = await prepare_scoring_data(
-                self.fpl_client, include_players=True,
-                include_history=True, include_prior=True,
-                include_match_data=True,
-            )
-            next_gw_id = data.next_gw_id
-            scoring_ctx = data.scoring_ctx
+            teams_data = bootstrap.get("teams", [])
+            draft_teams = {t["id"]: t for t in teams_data}
 
             # Every parsed player carries the main game's team id, since that
-            # is what fixtures, form and FDR are keyed by (#423), so the club
-            # names are re-keyed onto the same ids for enrich_player to find.
-            teams_data = bootstrap.get("teams", [])
-            team_ids = match_draft_teams_to_main(teams_data, data.teams)
-            team_map = {team_ids[t["id"]]: t for t in teams_data if t.get("id") in team_ids}
+            # is what fixtures, form and FDR are keyed by (#423). Only the
+            # main team list is needed this early, and it costs nothing extra:
+            # the bootstrap it comes from is cached on the client, so
+            # prepare_scoring_data reads the same copy further down.
+            team_id_map = match_draft_teams_to_main(teams_data, await self.fpl_client.get_teams())
 
             # Get available players
             available = await self.client.get_available_players(league_id, bootstrap)
@@ -120,7 +118,7 @@ class WaiverAgent(Agent):
                 }
                 recent_releases = [
                     {
-                        **enrich_player(self.client.parse_player(r["player"], team_ids), team_map),
+                        **self._enrich(r["player"], team_id_map, draft_teams),
                         "dropped_by": entry_name_map.get(r["dropped_by"], str(r["dropped_by"])),
                         "gameweek": r["gameweek"],
                     }
@@ -131,7 +129,7 @@ class WaiverAgent(Agent):
 
             # Parse players
             parsed_available = [
-                enrich_player(self.client.parse_player(p, team_ids), team_map, include_availability=False)
+                self._enrich(p, team_id_map, draft_teams, include_availability=False)
                 for p in available
             ]
 
@@ -177,9 +175,8 @@ class WaiverAgent(Agent):
                         player_map = {p["id"]: p for p in bootstrap.get("elements", [])}
                         for pid in player_ids:
                             if pid in player_map:
-                                player = enrich_player(
-                                    self.client.parse_player(player_map[pid], team_ids),
-                                    team_map,
+                                player = self._enrich(
+                                    player_map[pid], team_id_map, draft_teams,
                                     include_availability=False,
                                 )
                                 current_squad.append(player)
@@ -191,12 +188,21 @@ class WaiverAgent(Agent):
                 except Exception as e:  # noqa: BLE001 — best-effort enrichment
                     self.log_warning(f"Could not fetch current squad: {e}")
 
+            # Fetch fixture data and build shared scoring context
+            data = await prepare_scoring_data(
+                self.fpl_client, include_players=True,
+                include_history=True, include_prior=True,
+                include_match_data=True,
+            )
+            next_gw_id = data.next_gw_id
+            scoring_ctx = data.scoring_ctx
+
             # The draft bootstrap carries neither saves nor expected goals
             # conceded, so a keeper's three scoring signals only exist on the
             # main game's player. Joined on `code`, never on (web_name,
             # team_id) — a mid-season rename breaks the name join (#168).
             self._main_player_map = match_draft_to_main(
-                available, data.players or [], team_ids=team_ids,
+                available, data.players or [], team_id_map=team_id_map,
             )
 
             # Every lookup below arrives keyed by the main game's element id,
@@ -268,11 +274,17 @@ class WaiverAgent(Agent):
                 blended=bool(self._player_priors),
                 score_names=("waiver_score",),
             )
+            warnings = [warning] if warning is not None else []
+            club_warning = self._untranslated_club_warning(
+                [*parsed_available, *current_squad], teams_data, team_id_map,
+            )
+            if club_warning is not None:
+                warnings.append(club_warning)
 
             return self._create_result(
                 AgentStatus.SUCCESS,
                 data={
-                    "warnings": [warning] if warning is not None else [],
+                    "warnings": warnings,
                     "league_id": league_id,
                     "entry_id": entry_id,
                     "waiver_position": our_waiver_position,
@@ -298,6 +310,53 @@ class WaiverAgent(Agent):
                 message="Failed to analyze waiver options",
                 errors=[str(e)],
             )
+
+    def _enrich(
+        self,
+        raw: dict[str, Any],
+        team_id_map: Mapping[int, int],
+        draft_teams: Mapping[int, dict[str, Any]],
+        *,
+        include_availability: bool = True,
+    ) -> EnrichedPlayer:
+        """Parse one draft player and attach his club's names.
+
+        ``team_id`` comes out in the main game's numbering, for fixtures and
+        form. The names are the draft list's own entry for his draft club, a
+        same-game lookup that needs no translation, so a club the main game
+        does not list keeps its name: Understat is asked about a real club,
+        and the exposure count keeps its players apart (#423).
+        """
+        return enrich_player(
+            self.client.parse_player(raw, team_id_map),
+            draft_teams.get(raw.get("team", 0)),
+            include_availability=include_availability,
+        )
+
+    @staticmethod
+    def _untranslated_club_warning(
+        players: list[EnrichedPlayer],
+        draft_teams: list[dict[str, Any]],
+        team_id_map: Mapping[int, int],
+    ) -> dict[str, str] | None:
+        """The notice for players whose draft club has no main-game id.
+
+        They are ranked without the matchup and FDR terms, which would
+        otherwise read as a quiet fixture list rather than a failed
+        translation, so the reader is told which clubs and how many players.
+        """
+        affected = [p for p in players if p.get("team_id") is None]
+        if not affected:
+            return None
+        clubs = untranslated_draft_teams(draft_teams, team_id_map)
+        return {
+            "code": "draft_club_untranslated",
+            "message": (
+                f"{len(affected)} player(s) at draft clubs the main game does not list"
+                f" ({', '.join(clubs) or 'unknown club'}) are ranked without fixture"
+                " difficulty or matchup. `fpl doctor --providers` compares the two club lists."
+            ),
+        }
 
     @staticmethod
     def _build_pool(available: list[EnrichedPlayer]) -> list[WaiverPoolEntry]:

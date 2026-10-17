@@ -55,7 +55,12 @@ def preview_command(ctx: click.Context, save: bool, output: str | None, scout: b
     from fpl_cli.agents.data.price import PriceAgent
     from fpl_cli.agents.orchestration.report import ReportAgent
     from fpl_cli.api.fpl import FPLClient
-    from fpl_cli.api.fpl_draft import FPLDraftClient, match_draft_teams_to_main, match_draft_to_main
+    from fpl_cli.api.fpl_draft import (
+        FPLDraftClient,
+        draft_player_team_id,
+        match_draft_teams_to_main,
+        match_draft_to_main,
+    )
     from fpl_cli.services.team_ratings import fdr_columns_footer
     from fpl_cli.utils.time import format_deadline, format_generated_at, format_kickoff
 
@@ -230,23 +235,25 @@ def preview_command(ctx: click.Context, save: bool, output: str | None, scout: b
                     async with FPLDraftClient() as draft_client:
                         draft_bootstrap = await draft_client.get_bootstrap_static()
                         draft_players = {dp["id"]: dp for dp in draft_bootstrap.get("elements", [])}
-                        draft_teams = {dt["id"]: dt for dt in draft_bootstrap.get("teams", [])}
 
                         # Get my squad from last completed gameweek
                         last_gw = gw - 1 if gw > 1 else 1
                         picks_response = await draft_client.get_entry_picks(draft_entry_id, last_gw)
                     picks = picks_response.get("picks", [])
+                    # The fixture map is keyed by main-game short names, so each
+                    # pick's club is read in the main game's numbering (#423)
+                    team_id_map = match_draft_teams_to_main(draft_bootstrap.get("teams", []), teams)
                     # O(1) lookup for draft→main FPL player mapping
                     matched_main = match_draft_to_main(
-                        draft_bootstrap.get("elements", []), all_players,
-                        team_ids=match_draft_teams_to_main(draft_bootstrap.get("teams", []), teams),
+                        draft_bootstrap.get("elements", []), all_players, team_id_map=team_id_map,
                     )
                     draft_squad = []
                     for pick in picks:
                         dp = draft_players.get(pick["element"])
                         if dp:
-                            dt = draft_teams.get(dp.get("team"))
                             main_player = matched_main.get(pick["element"])
+                            club_id = draft_player_team_id(dp, team_id_map, main_player=main_player)
+                            club = team_map.get(club_id) if club_id is not None else None
 
                             if main_player:
                                 cop = main_player.chance_of_playing_next_round
@@ -259,7 +266,7 @@ def preview_command(ctx: click.Context, save: bool, output: str | None, scout: b
                             else:
                                 status = "✓"
 
-                            team_short = dt.get("short_name", "???") if dt else "???"
+                            team_short = club.short_name if club else "???"
                             draft_squad.append({
                                 "name": dp.get("web_name", "???"),
                                 "team": team_short,

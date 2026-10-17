@@ -30,7 +30,7 @@ def _make_season(code: int, season: str, pts: int = 150, minutes: int = 2700) ->
         element_code=code, season=season, total_points=pts, minutes=minutes,
         starts=30, goals=10, assists=5, expected_goals=9.0, expected_assists=4.5,
         expected_goal_involvements=13.5, start_cost=80, end_cost=90,
-        position="MID", web_name="TestPlayer", team_code=1,
+        position="MID", web_name="TestPlayer", team_id=1,
     )
 
 
@@ -71,7 +71,7 @@ def _make_sh(code: int, season: str, starts: int, minutes: int = 2700) -> Season
         element_code=code, season=season, total_points=100, minutes=minutes,
         starts=starts, goals=0, assists=0, expected_goals=0.0, expected_assists=0.0,
         expected_goal_involvements=0.0, start_cost=80, end_cost=90,
-        position="MID", web_name="Test", team_code=1,
+        position="MID", web_name="Test", team_id=1,
     )
 
 

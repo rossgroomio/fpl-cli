@@ -146,7 +146,7 @@ def player_command(
                                 main_player.id: draft_id
                                 for draft_id, main_player in match_draft_to_main(
                                     draft_players, display,
-                                    team_ids=match_draft_teams_to_main(
+                                    team_id_map=match_draft_teams_to_main(
                                         draft_bootstrap.get("teams", []), team_list,
                                     ),
                                 ).items()
@@ -1030,19 +1030,12 @@ def _build_detail_json(player_data: dict, position: str, teams: dict) -> list[di
 
 
 def _build_history_json(profile: PlayerProfile) -> dict:
-    """Build career history data for JSON output.
-
-    `team_code` is the club's permanent code. `team` carries the same number
-    for consumers written before it existed, and is deprecated: every other
-    payload's `team` is a short name like "ARS", so the name misdescribes the
-    value (#423).
-    """
+    """Build career history data for JSON output."""
     seasons = []
     for s in profile.seasons:
         seasons.append({
             "season": s.season,
-            "team_code": s.team_code,
-            "team": s.team_code,
+            "team": s.team_id,
             "total_points": s.total_points,
             "minutes": s.minutes,
             "starts": s.starts,

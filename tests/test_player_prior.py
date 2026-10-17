@@ -50,7 +50,7 @@ def _make_season(
         end_cost=90,
         position="MID",
         web_name="TestPlayer",
-        team_code=1,
+        team_id=1,
     )
 
 

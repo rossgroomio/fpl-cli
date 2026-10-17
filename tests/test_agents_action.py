@@ -10,6 +10,7 @@ import pytest
 
 from fpl_cli.agents.action.waiver import WaiverAgent
 from fpl_cli.agents.base import AgentStatus
+from fpl_cli.api.fpl import FPLClient
 from fpl_cli.models.player import PlayerPosition
 from fpl_cli.services.player_prior import PlayerPrior
 from fpl_cli.services.scoring import ConsistencySignals, ScoringContext, ScoringData
@@ -170,24 +171,28 @@ def _mock_scoring_data(
 
 @contextmanager
 def _stub_upstream_fetches(players: list[Any] | None = None, **lookups: Any):
-    """Patch the two seams that reach past the draft client.
+    """Patch the seams that reach past the draft client.
 
     Shared by every test that drives ``WaiverAgent.run`` end to end.
-    *lookups* are forwarded to ``_mock_scoring_data``.
+    *lookups* are forwarded to ``_mock_scoring_data``. The main team list is
+    patched apart from the scoring bundle because the agent reads it first,
+    to translate the draft clubs, and serves the same teams the bundle holds.
     """
+    scoring = _mock_scoring_data(players, **lookups)
     with (
         patch(
             "fpl_cli.agents.action.waiver.prepare_scoring_data",
             new_callable=AsyncMock,
-            return_value=_mock_scoring_data(players, **lookups),
+            return_value=scoring,
         ),
+        patch.object(FPLClient, "get_teams", new_callable=AsyncMock, return_value=scoring.teams),
         patch(
             "fpl_cli.agents.action.waiver.fetch_understat_lookup",
             new_callable=AsyncMock,
             return_value={},
         ),
     ):
-        yield
+        yield scoring
 
 
 @pytest.fixture
@@ -927,19 +932,11 @@ class TestWaiverAgentClubIdSpace:
             ],
         }
 
-    async def _run(self):
+    async def _run(self, *, understat: AsyncMock | None = None):
         bootstrap = self._bootstrap()
-        scoring = _mock_scoring_data()
         agent = WaiverAgent(config={"draft_league_id": 12345})
         with (
-            patch(
-                "fpl_cli.agents.action.waiver.prepare_scoring_data",
-                new_callable=AsyncMock, return_value=scoring,
-            ),
-            patch(
-                "fpl_cli.agents.action.waiver.fetch_understat_lookup",
-                new_callable=AsyncMock, return_value={},
-            ),
+            _stub_upstream_fetches() as scoring,
             patch.object(agent.client, "get_bootstrap_static", new_callable=AsyncMock, return_value=bootstrap),
             patch.object(
                 agent.client, "get_available_players", new_callable=AsyncMock,
@@ -952,7 +949,11 @@ class TestWaiverAgentClubIdSpace:
             ),
             patch.object(agent.client, "get_waiver_order", new_callable=AsyncMock, return_value=[]),
         ):
-            result = await agent.run()
+            if understat is not None:
+                with patch("fpl_cli.agents.action.waiver.fetch_understat_lookup", understat):
+                    result = await agent.run()
+            else:
+                result = await agent.run()
         return result, scoring
 
     @pytest.mark.asyncio
@@ -961,7 +962,7 @@ class TestWaiverAgentClubIdSpace:
 
         assert result.status == AgentStatus.SUCCESS
         clubs = {t["player_name"]: (t["team_id"], t["team_short"]) for t in result.data["top_targets"]}
-        assert clubs == {"Haaland": (13, "MCI"), "Saka": (1, "ARS"), "Stranger": (None, "???")}
+        assert clubs == {"Haaland": (13, "MCI"), "Saka": (1, "ARS"), "Stranger": (None, "NOW")}
 
     @pytest.mark.asyncio
     async def test_each_player_is_scored_on_his_own_clubs_fixture(self):
@@ -981,6 +982,32 @@ class TestWaiverAgentClubIdSpace:
         stranger = next(t for t in result.data["top_targets"] if t["player_name"] == "Stranger")
         assert "positional_fdr" not in stranger
         assert "matchup_avg_3gw" not in stranger
+
+    @pytest.mark.asyncio
+    async def test_an_untranslated_club_is_named_in_a_warning(self):
+        """Ranked without its fixture terms, which would otherwise read as a
+        quiet fixture list rather than a failed translation."""
+        result, _ = await self._run()
+
+        warning = next(w for w in result.data["warnings"] if w["code"] == "draft_club_untranslated")
+        assert "1 player(s)" in warning["message"]
+        assert "(NOW)" in warning["message"]
+
+    @pytest.mark.asyncio
+    async def test_no_warning_when_every_club_translates(self):
+        result = await _run_waivers(_ALL_AVAILABLE)
+
+        assert all(w["code"] != "draft_club_untranslated" for w in result.data["warnings"])
+
+    @pytest.mark.asyncio
+    async def test_understat_is_asked_about_the_real_club(self):
+        """The name comes from the draft list by the draft id, so a club the
+        main game does not list is never sent to Understat as 'Unknown'."""
+        understat = AsyncMock(return_value={})
+        await self._run(understat=understat)
+
+        players, get_team_name = understat.call_args.args
+        assert sorted(get_team_name(p) for p in players) == ["Arsenal", "Man City", "Nowhere"]
 
 
 class TestWaiverAgentIdSpace:

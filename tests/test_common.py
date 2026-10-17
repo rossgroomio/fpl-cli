@@ -16,7 +16,14 @@ from fpl_cli.agents.common import (
     rekey_for_draft,
 )
 from fpl_cli.services.matchup import build_team_fixture_map
-from tests.conftest import make_draft_player, make_draft_team, make_fixture, make_player
+from tests.conftest import (
+    make_draft_player,
+    make_draft_team,
+    make_fixture,
+    make_player,
+    make_team,
+    team_code_for,
+)
 
 
 class TestBuildTeamFixtureMap:
@@ -52,7 +59,7 @@ class TestEnrichPlayer:
     def test_adds_team_name_and_position(self):
         player = {"team_id": 1, "position": "MID", "minutes": 100}
         team_map = {1: {"name": "Arsenal", "short_name": "ARS"}}
-        result = enrich_player(player, team_map)
+        result = enrich_player(player, team_map[player["team_id"]])
 
         assert result["team_name"] == "Arsenal"
         assert result["team_short"] == "ARS"
@@ -64,7 +71,7 @@ class TestEnrichPlayer:
             "expected_goals": 4.5, "expected_assists": 2.5,
         }
         team_map = {1: {"name": "Test", "short_name": "TST"}}
-        result = enrich_player(player, team_map)
+        result = enrich_player(player, team_map[player["team_id"]])
 
         expected = round(((4.5 + 2.5) / 900) * 90, 2)
         assert result["xGI_per_90"] == expected
@@ -72,13 +79,13 @@ class TestEnrichPlayer:
     def test_xgi_per_90_below_min_minutes(self):
         player = {"team_id": 1, "position": "GK", "minutes": 10}
         team_map = {1: {"name": "Test", "short_name": "TST"}}
-        result = enrich_player(player, team_map)
+        result = enrich_player(player, team_map[player["team_id"]])
         assert result["xGI_per_90"] == 0
 
     def test_availability_included_by_default(self):
         player = {"team_id": 1, "position": "GK", "minutes": 0, "chance_of_playing": 75, "news": "Knee injury"}
         team_map = {1: {"name": "Test", "short_name": "TST"}}
-        result = enrich_player(player, team_map)
+        result = enrich_player(player, team_map[player["team_id"]])
 
         assert result["availability"] == "75%"
         assert result["injury_news"] == "Knee injury"
@@ -86,13 +93,13 @@ class TestEnrichPlayer:
     def test_availability_excluded(self):
         player = {"team_id": 1, "position": "GK", "minutes": 0, "chance_of_playing": 0}
         team_map = {1: {"name": "Test", "short_name": "TST"}}
-        result = enrich_player(player, team_map, include_availability=False)
+        result = enrich_player(player, team_map[player["team_id"]], include_availability=False)
 
         assert "availability" not in result
 
     def test_missing_team_uses_defaults(self):
         player = {"team_id": 999, "position": "GK", "minutes": 0}
-        result = enrich_player(player, {})
+        result = enrich_player(player, None)
 
         assert result["team_name"] == "Unknown"
         assert result["team_short"] == "???"
@@ -101,37 +108,37 @@ class TestEnrichPlayer:
         """xGI/90 zeroed when minutes below threshold (Nyoni scenario)."""
         team_map = {14: {"name": "Liverpool", "short_name": "LIV"}}
         player = {"team_id": 14, "minutes": 6, "expected_goals": 0.3, "expected_assists": 0.07, "position": "MID"}
-        result = enrich_player(player, team_map, include_availability=False)
+        result = enrich_player(player, team_map[player["team_id"]], include_availability=False)
         assert result["xGI_per_90"] == 0
 
     def test_availability_checkmark_for_full(self):
         player = {"team_id": 1, "position": "GK", "minutes": 0, "chance_of_playing": 100}
-        result = enrich_player(player, {1: {"name": "T", "short_name": "T"}})
+        result = enrich_player(player, {"name": "T", "short_name": "T"})
         assert result["availability"] == "\u2713"
 
     def test_availability_cross_for_zero(self):
         player = {"team_id": 1, "position": "GK", "minutes": 0, "chance_of_playing": 0}
-        result = enrich_player(player, {1: {"name": "T", "short_name": "T"}})
+        result = enrich_player(player, {"name": "T", "short_name": "T"})
         assert result["availability"] == "\u2717"
 
     def test_injury_news_truncation(self):
         long_news = "This is a very long injury news message that should be truncated"
         player = {"team_id": 1, "position": "GK", "minutes": 0, "news": long_news}
-        result = enrich_player(player, {1: {"name": "T", "short_name": "T"}})
+        result = enrich_player(player, {"name": "T", "short_name": "T"})
         assert len(result["injury_news"]) <= 30
 
     def test_with_draft_player_integration(self):
         """Integration test using real draft API parse flow."""
         from fpl_cli.api.fpl_draft import FPLDraftClient
         client = FPLDraftClient()
-        # Keyed by the main-game id parse_player emits: draft club 14 is
-        # main-game club 12 here (#423)
-        team_map = {12: make_draft_team(id=14, name="Liverpool", short_name="LIV")}
+        # The club record comes from the draft list by the draft id, while
+        # team_id is the main game's: draft club 14 is main-game club 12 (#423)
+        team = make_draft_team(id=14, name="Liverpool", short_name="LIV")
         raw = make_draft_player(id=1, web_name="Salah", team=14, element_type=3, minutes=1800)
         player = client.parse_player(raw, {14: 12})
-        result = enrich_player(player, team_map)
+        result = enrich_player(player, team)
 
-        assert result["team_name"] == "Liverpool"
+        assert (result["team_id"], result["team_name"]) == (12, "Liverpool")
         assert result["position"] == "MID"
         assert result["xGI_per_90"] > 0
 
@@ -260,67 +267,69 @@ class TestGetActualSquadPicks:
 class TestGetDraftSquadPlayersDiacritics:
     """Verify draft-to-main mapping handles accented name mismatches.
 
-    The join is `code`, so a spelling difference between the two games
-    cannot break it (#168). The name fallback for an element with no code
-    needs the draft club translated to the main game's numbering (#423),
-    which this helper cannot do from main-game players alone, so such an
-    element is reported unmapped rather than paired on a guessed club.
+    These draft elements carry no code, so they join on folded name and club.
+    The draft game numbers the clubs 7, 8 and 9 where the main game has 1, 2
+    and 3, so the club only lines up once it is translated by code (#423).
     """
 
-    @staticmethod
-    def _mock_draft_client(draft_elements: list[dict], picks: list[dict]):
+    MAIN_TEAMS = (make_team(id=1), make_team(id=2), make_team(id=3))
+    DRAFT_TEAMS = (
+        make_draft_team(id=7, code=team_code_for(1)),
+        make_draft_team(id=8, code=team_code_for(2)),
+        make_draft_team(id=9, code=team_code_for(3)),
+    )
+
+    @classmethod
+    def _mock_draft_client(cls, draft_elements: list[dict], picks: list[dict]):
         client = AsyncMock()
         client.get_bootstrap_static = AsyncMock(
-            return_value={"elements": draft_elements}
+            return_value={"elements": draft_elements, "teams": list(cls.DRAFT_TEAMS)}
         )
         client.get_entry_picks = AsyncMock(
             return_value={"picks": picks}
         )
         return client
 
+    async def _squad(self, main_players, draft_elements, **kwargs):
+        picks = [{"element": e["id"]} for e in draft_elements]
+        client = self._mock_draft_client(draft_elements, picks)
+        return await get_draft_squad_players(
+            client, main_players, 1, 1, main_teams=self.MAIN_TEAMS, **kwargs,
+        )
+
     async def test_accented_main_ascii_draft(self):
         """Main FPL has 'Gyökeres', Draft API has 'Gyokeres' - should match."""
-        main_players = [make_player(id=10, code=4010, web_name="Gyökeres", team_id=1)]
-        draft_elements = [{"id": 100, "code": 4010, "web_name": "Gyokeres", "team": 1}]
-        picks = [{"element": 100}]
-
-        client = self._mock_draft_client(draft_elements, picks)
-        squad = await get_draft_squad_players(client, main_players, 1, 1)
-        assert len(squad) == 1
-        assert squad[0].id == 10
+        squad = await self._squad(
+            [make_player(id=10, web_name="Gyökeres", team_id=1)],
+            [{"id": 100, "web_name": "Gyokeres", "team": 7}],
+        )
+        assert [p.id for p in squad] == [10]
 
     async def test_ascii_main_accented_draft(self):
         """Main FPL has 'Raul', Draft API has 'Raúl' - should match."""
-        main_players = [make_player(id=20, code=4020, web_name="Raul", team_id=3)]
-        draft_elements = [{"id": 200, "code": 4020, "web_name": "Raúl", "team": 3}]
-        picks = [{"element": 200}]
-
-        client = self._mock_draft_client(draft_elements, picks)
-        squad = await get_draft_squad_players(client, main_players, 1, 1)
-        assert len(squad) == 1
-        assert squad[0].id == 20
+        squad = await self._squad(
+            [make_player(id=20, web_name="Raul", team_id=3)],
+            [{"id": 200, "web_name": "Raúl", "team": 9}],
+        )
+        assert [p.id for p in squad] == [20]
 
     async def test_non_accented_still_matches(self):
         """Plain ASCII names still match as before."""
-        main_players = [make_player(id=30, code=4030, web_name="Haaland", team_id=2)]
-        draft_elements = [{"id": 300, "code": 4030, "web_name": "Haaland", "team": 2}]
-        picks = [{"element": 300}]
+        squad = await self._squad(
+            [make_player(id=30, web_name="Haaland", team_id=2)],
+            [{"id": 300, "web_name": "Haaland", "team": 8}],
+        )
+        assert [p.id for p in squad] == [30]
 
-        client = self._mock_draft_client(draft_elements, picks)
-        squad = await get_draft_squad_players(client, main_players, 1, 1)
-        assert len(squad) == 1
-        assert squad[0].id == 30
-
-    async def test_a_codeless_element_is_reported_not_paired_on_its_club(self):
-        """Draft club 2 need not be main-game club 2, so the namesake there
-        is not evidence of the same player (#423)."""
-        main_players = [make_player(id=30, web_name="Haaland", team_id=2)]
-        draft_elements = [{"id": 300, "web_name": "Haaland", "team": 2}]
+    async def test_a_namesake_at_the_club_sharing_the_raw_number_is_not_matched(self):
+        """Draft club 9 is main-game club 3, so the namesake at main-game club
+        2 is someone else, however the draft id reads."""
         logged: list[str] = []
-
-        client = self._mock_draft_client(draft_elements, [{"element": 300}])
-        squad = await get_draft_squad_players(client, main_players, 1, 1, log=logged.append)
-
+        squad = await self._squad(
+            [make_player(id=30, web_name="Haaland", team_id=2)],
+            [{"id": 300, "web_name": "Haaland", "team": 9}],
+            log=logged.append,
+        )
         assert squad == []
         assert logged == ["Draft: could not map 'Haaland' to main FPL data"]
 
@@ -334,7 +343,10 @@ class TestGetDraftOwnershipMapping:
             ],
         })
         client.get_bootstrap_static = AsyncMock(return_value={
-            "elements": [{"id": 99, "code": 118748, "web_name": "Salah", "team": 1}],
+            # No code, so this joins on name and club: draft club 6 is
+            # main-game club 1 by code (#423)
+            "elements": [{"id": 99, "web_name": "Salah", "team": 6}],
+            "teams": [make_draft_team(id=6, code=team_code_for(1))],
         })
         client.get_league_ownership = AsyncMock(return_value={99: 7})
         return client
@@ -343,7 +355,10 @@ class TestGetDraftOwnershipMapping:
         """get_league_details is not memoised, so it must not be fetched twice."""
         client = self._make_client()
 
-        await get_draft_ownership_mapping(client, [make_player(id=1, web_name="Salah", team_id=1)], 12345)
+        await get_draft_ownership_mapping(
+            client, [make_player(id=1, web_name="Salah", team_id=1)], 12345,
+            main_teams=[make_team(id=1)],
+        )
 
         client.get_league_details.assert_awaited_once()
         args = client.get_league_ownership.await_args.args
@@ -353,7 +368,8 @@ class TestGetDraftOwnershipMapping:
         client = self._make_client()
 
         owned, entries, main_to_draft = await get_draft_ownership_mapping(
-            client, [make_player(id=1, code=118748, web_name="Salah", team_id=1)], 12345,
+            client, [make_player(id=1, web_name="Salah", team_id=1)], 12345,
+            main_teams=[make_team(id=1)],
         )
 
         assert owned == {99: 7}

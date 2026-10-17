@@ -43,7 +43,7 @@ def _make_profile(
     """Create a mock PlayerProfile."""
     season = MagicMock()
     season.season = "2024-25"
-    season.team_code = 14
+    season.team_id = 14
     season.total_points = 200
     season.minutes = 2800
     season.starts = 30
@@ -124,8 +124,6 @@ class TestHistoryJson:
         result = _run_history(["--format", "json"])
         season = json.loads(result.output)["data"][0]["seasons"][0]
         assert season["season"] == "2024-25"
-        assert season["team_code"] == 14
-        # Deprecated alias for team_code, kept for consumers written before it
         assert season["team"] == 14
         assert season["total_points"] == 200
         assert season["minutes"] == 2800

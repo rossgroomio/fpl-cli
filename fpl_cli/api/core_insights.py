@@ -568,7 +568,7 @@ class CoreInsightsClient:
                 end_cost=now_cost,
                 position=player.position,
                 web_name=player.web_name,
-                team_code=player.team_code,
+                team_id=player.team_code,
                 defensive_contribution_per_90=_optional_float(
                     row, "defensive_contribution_per_90"
                 ),

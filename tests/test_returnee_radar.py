@@ -545,7 +545,7 @@ def _season(
         end_cost=100,
         position=position,
         web_name="Flagged",
-        team_code=1,
+        team_id=1,
         defensive_contribution_per_90=defensive_contribution_per_90,
         saves_per_90=saves_per_90,
         clean_sheets_per_90=clean_sheets_per_90,

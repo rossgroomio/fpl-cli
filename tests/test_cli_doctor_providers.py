@@ -154,7 +154,6 @@ def _register_routes(
     gw_errors: frozenset[tuple[int, str]] = frozenset(),
     players_text: str | None = None,
     fd_tlas: list[str] | None = None,
-    draft_teams: list[dict] | None = None,
 ) -> None:
     bootstrap = _bootstrap(
         finished_gws=finished_gws,
@@ -167,8 +166,7 @@ def _register_routes(
         fpl_route.mock(side_effect=fpl_error)
     else:
         fpl_route.mock(return_value=Response(200, json=bootstrap))
-    draft_bootstrap = bootstrap if draft_teams is None else {**bootstrap, "teams": draft_teams}
-    respx.get(DRAFT_BOOTSTRAP_URL).mock(return_value=Response(200, json=draft_bootstrap))
+    respx.get(DRAFT_BOOTSTRAP_URL).mock(return_value=Response(200, json=bootstrap))
 
     overrides = vaastav_overrides or {}
     for season in VAASTAV_SEASONS:
@@ -802,74 +800,6 @@ class TestUnderstatNameJoin:
         row = self._row(result)
         assert row["status"] == "unchecked"
         assert "could not fetch the live" in row["detail"]
-
-
-def _main_teams() -> list[dict]:
-    """The club list `_bootstrap` serves: ids 1-20, each club's code its id."""
-    return _bootstrap()["teams"]
-
-
-def _row(result, name: str) -> dict:
-    payload = json.loads(result.output)
-    return next(c for c in payload["data"]["providers"] if c["name"] == name)
-
-
-class TestDraftClubIds:
-    """#423: draft paths translate a draft club id to the main game's by club
-    `code`, so the probe checks that the two lists agree by code."""
-
-    @respx.mock
-    def test_identical_lists_are_ok(self, monkeypatch):
-        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
-        _register_routes()
-        row = _row(_run(["--format", "json"]), "Draft club ids")
-        assert row["status"] == "ok"
-        assert row["detail"] == "all 20 clubs share their code and id in both games"
-
-    @respx.mock
-    def test_clubs_numbered_differently_are_named_but_ok(self, monkeypatch):
-        """Translated by code, so not a fault, but the change is visible."""
-        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
-        draft = _main_teams()
-        draft[0]["id"], draft[1]["id"] = 2, 1
-        _register_routes(draft_teams=draft)
-        row = _row(_run(["--format", "json"]), "Draft club ids")
-        assert row["status"] == "ok"
-        assert "2 numbered differently in the two games (T01, T02)" in row["detail"]
-
-    @respx.mock
-    def test_a_draft_club_with_no_main_game_counterpart_is_broken(self, monkeypatch):
-        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
-        draft = _main_teams()
-        draft[4]["code"] = 999
-        _register_routes(draft_teams=draft)
-        result = _run(["--format", "json"])
-        assert result.exit_code == 1
-        row = _row(result, "Draft club ids")
-        assert row["status"] == "broken"
-        assert "draft clubs with no main-game club of the same code: T05" in row["detail"]
-        assert "main-game clubs missing from the draft list: T05" in row["detail"]
-
-    @respx.mock
-    def test_a_draft_club_without_a_code_is_broken(self, monkeypatch):
-        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
-        draft = _main_teams()
-        del draft[0]["code"]
-        _register_routes(draft_teams=draft)
-        row = _row(_run(["--format", "json"]), "Draft club ids")
-        assert row["status"] == "broken"
-        assert "no main-game club of the same code: T01" in row["detail"]
-
-    @respx.mock
-    def test_unreachable_main_bootstrap_is_unchecked(self, monkeypatch):
-        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
-        _register_routes(
-            fpl_error=httpx.ConnectError(
-                "boom", request=httpx.Request("GET", FPL_BOOTSTRAP_URL)
-            )
-        )
-        row = _row(_run(["--format", "json"]), "Draft club ids")
-        assert row["status"] == "unchecked"
 
 
 class TestJsonOutput:
