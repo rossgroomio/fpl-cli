@@ -436,7 +436,7 @@ class WaiverAgent(Agent):
             "message": (
                 f"No main-game match for {' and '.join(missed)}: "
                 f"{' and '.join(consequences)}, against a waiver anchor calibrated "
-                "with those terms, so their rank is understated."
+                "with those terms."
             ),
         }
 

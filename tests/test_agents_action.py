@@ -1166,7 +1166,14 @@ class TestWaiverAgentDefensiveContribution:
                 players=[], extra_pool=[self._draft_keeper()],
             )
 
-        assert not [c for c in warn.call_args_list if "main-game match" in c.args[0]]
+        # The removed lines read "No main FPL match ..." and "... scoring
+        # without ...", so a restored one trips this and the new entry's own
+        # wording does too.
+        miss_wording = ("main FPL match", "main-game match", "scoring without")
+        assert not [
+            c for c in warn.call_args_list
+            if any(w in c.args[0] for w in miss_wording)
+        ]
 
     def test_only_the_first_three_names_are_listed(self):
         agent = WaiverAgent()
