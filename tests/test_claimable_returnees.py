@@ -125,12 +125,38 @@ def test_empty_pool_is_readable_and_matches_nobody():
     assert {e["reason"] for e in result["excluded"]} == {"owned", "no-code"}
 
 
-def test_radar_without_entries_warns_and_claims_nobody():
+def test_radar_without_entries_fails_closed_rather_than_reading_as_nobody_returning():
     result = join({"command": "returnees", "metadata": {}, "data": {}}, _WAIVERS)
+
+    assert result["ok"] is False
+    assert result["entries"] == []
+    assert result["warnings"] == [{"type": "radar-unreadable"}]
+
+
+def test_error_envelope_from_a_failed_radar_run_fails_closed():
+    radar = {"command": "returnees", "error": "upstream unreachable"}
+
+    result = join(radar, _WAIVERS)
+
+    assert result["ok"] is False
+    assert result["entries"] == []
+    assert result["excluded"] == []
+    assert result["warnings"] == [{"type": "radar-unreadable"}]
+
+
+def test_both_sides_unreadable_names_both():
+    result = join({"command": "returnees", "error": "x"}, {"command": "waivers", "error": "y"})
+
+    assert result["ok"] is False
+    assert result["warnings"] == [{"type": "radar-unreadable"}, {"type": "pool-unreadable"}]
+
+
+def test_readable_radar_with_no_entries_is_ok_and_empty():
+    result = join({"command": "returnees", "metadata": {}, "data": {"entries": []}}, _WAIVERS)
 
     assert result["ok"] is True
     assert result["entries"] == []
-    assert result["warnings"] == [{"type": "radar-unreadable"}]
+    assert result["warnings"] == []
 
 
 # ---- Entry point --------------------------------------------------------------

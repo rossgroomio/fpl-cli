@@ -19,10 +19,14 @@ Emits JSON to stdout:
    "excluded": [{"web_name": ..., "code": ..., "reason": "owned" | "no-code"}],
    "warnings": [{"type": ...}]}
 
-`ok` is false only when the join could not run -- no usable `data.pool`, or a
-pool whose rows carry no `code` (an older fpl-cli) -- and `entries` is then
-empty: a join that cannot run offers nothing to claim rather than everything,
-so the stash path fails closed. Exit code is 0 whatever the join finds; the
+`ok` is false only when the join could not run -- no usable `data.pool`, a
+pool whose rows carry no `code` (an older fpl-cli), or a radar with no
+`data.entries` (such as the `{command, error}` envelope a failed `fpl
+returnees` run saves) -- and `entries` is then empty: a join that cannot run
+offers nothing to claim rather than everything, so the stash path fails
+closed. `warnings` says which side failed (`radar-unreadable`, or
+`pool-unreadable` / `pool-without-code`), so an unreadable radar is never
+reported as nobody returning (#432). Exit code is 0 whatever the join finds; the
 startup guard in `_bootstrap` is the one non-zero exit, and reports itself as
 {"error": true, "messages": [...]}.
 
@@ -110,14 +114,12 @@ def join(radar: dict[str, Any], waivers: dict[str, Any]) -> JoinResult:
     }
 
     entries, radar_warning = radar_entries(radar)
-    if radar_warning is not None:
-        result["warnings"].append(radar_warning)
     codes, pool_warning = pool_codes(waivers)
-    if codes is None:
-        # Nothing to claim rather than everything: the stash path fails closed.
+    result["warnings"].extend(w for w in (radar_warning, pool_warning) if w is not None)
+    if radar_warning is not None or codes is None:
+        # Nothing to claim rather than everything: the stash path fails closed,
+        # and an unreadable radar is a failure, not an empty watchlist (#432).
         result["ok"] = False
-        if pool_warning is not None:
-            result["warnings"].append(pool_warning)
         return result
     result["metadata"]["pool_size"] = len(codes)
 
