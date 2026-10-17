@@ -61,14 +61,45 @@ async def _run(provider: _Provider, **overrides):
 
 class TestSynthesiseWithRetry:
 
+    # #450: which answer shipped, and what every judged answer cost.
+
+    @staticmethod
+    def _costing(content: str, input_tokens: int, output_tokens: int) -> LLMResponse:
+        return LLMResponse(
+            content=content, model="m", usage=TokenUsage(input_tokens, output_tokens), stop_reason="end_turn",
+        )
+
+    async def test_one_answer_reports_its_own_usage(self):
+        best, attempts, usage = await _run(_Provider(self._costing("All good.", 100, 40)))
+        assert (best.number, attempts, usage) == (1, 1, TokenUsage(100, 40))
+
+    async def test_a_better_retry_ships_and_both_answers_are_costed(self):
+        provider = _Provider(self._costing("This is wrong.", 100, 40), self._costing("All good.", 130, 50))
+        best, attempts, usage = await _run(provider)
+        assert (best.text, best.number, attempts) == ("All good.", 2, 2)
+        assert usage == TokenUsage(230, 90)
+
+    async def test_a_worse_retry_keeps_the_first_but_is_still_costed(self):
+        # Two answers judged, the first shipped: the count alone cannot say
+        # which, so the attempt carries its own number.
+        provider = _Provider(self._costing("wrong.", 100, 40), self._costing("wrong wrong.", 130, 50))
+        best, attempts, usage = await _run(provider)
+        assert (best.text, best.number, attempts) == ("wrong.", 1, 2)
+        assert usage == TokenUsage(230, 90)
+
+    async def test_a_retry_that_fails_costs_only_the_first(self):
+        provider = _Provider(self._costing("This is wrong.", 100, 40), ProviderError("timed out"))
+        best, attempts, usage = await _run(provider)
+        assert (best.number, attempts, usage) == (1, 1, TokenUsage(100, 40))
+
     async def test_a_clean_answer_is_one_call(self):
         provider = _Provider(_reply("All good."))
-        best, attempts = await _run(provider)
+        best, attempts, _ = await _run(provider)
         assert (best.text, best.verdict, attempts) == ("All good.", [], 1)
 
     async def test_a_fault_is_retried_once_and_the_retry_is_told_it(self, capsys):
         provider = _Provider(_reply("This is wrong."), _reply("All good."))
-        best, attempts = await _run(provider)
+        best, attempts, _ = await _run(provider)
         assert (best.text, attempts) == ("All good.", 2)
         assert provider.prompts == ["write it", "write it | 1 wrong | cut off: None"]
         assert provider.system_prompts == ["be brief", "be brief"]
@@ -76,7 +107,7 @@ class TestSynthesiseWithRetry:
 
     async def test_it_stops_after_one_retry_and_keeps_the_less_damaged(self):
         provider = _Provider(_reply("wrong."), _reply("wrong wrong."), _reply("All good."))
-        best, attempts = await _run(provider)
+        best, attempts, _ = await _run(provider)
         assert attempts == 2
         assert len(provider.prompts) == 2
         assert best.text == "wrong."
@@ -85,15 +116,15 @@ class TestSynthesiseWithRetry:
         # A debug bundle saves the shipped prompt beside the shipped text, so
         # the pair replays once the retry's answer is the one that ships.
         provider = _Provider(_reply("This is wrong."), _reply("All good."))
-        best, _ = await _run(provider)
+        best, *_ = await _run(provider)
         assert best.prompt == "write it | 1 wrong | cut off: None"
         provider = _Provider(_reply("wrong."), _reply("wrong wrong."))
-        best, _ = await _run(provider)
+        best, *_ = await _run(provider)
         assert best.prompt == "write it"
 
     async def test_a_tie_keeps_the_first_attempt(self):
         provider = _Provider(_reply("First wrong."), _reply("Second wrong."))
-        best, _ = await _run(provider)
+        best, *_ = await _run(provider)
         assert best.text == "First wrong."
 
     @pytest.mark.parametrize("stop_reason", ["max_tokens", "length"])
@@ -101,7 +132,7 @@ class TestSynthesiseWithRetry:
         # Retried even when the judge found nothing: the text may have stopped
         # before whatever the judge reads.
         provider = _Provider(_reply("All good so", stop_reason), _reply("All good."))
-        best, attempts = await _run(provider)
+        best, attempts, _ = await _run(provider)
         assert (best.text, attempts) == ("All good.", 2)
         assert provider.prompts[1] == f"write it | 0 wrong | cut off: {stop_reason}"
         assert f"was cut off (stop_reason: {stop_reason}) -- retrying once" in capsys.readouterr().err
@@ -109,7 +140,7 @@ class TestSynthesiseWithRetry:
     @pytest.mark.parametrize("stop_reason", ["refusal", "content_filter", "something_new"])
     async def test_any_other_abnormal_stop_alone_does_not(self, stop_reason):
         provider = _Provider(_reply("I can't help.", stop_reason))
-        best, attempts = await _run(provider)
+        best, attempts, _ = await _run(provider)
         assert attempts == 1
         assert best.response.stop_reason == stop_reason
 
@@ -118,7 +149,7 @@ class TestSynthesiseWithRetry:
         # Re-sending a refused request to the same model usually draws another
         # refusal, so the retry would spend a call to change nothing.
         provider = _Provider(_reply("This is wrong.", stop_reason), _reply("All good."))
-        best, attempts = await _run(provider)
+        best, attempts, _ = await _run(provider)
         assert (best.text, attempts) == ("This is wrong.", 1)
         assert len(provider.prompts) == 1
         # Rich hard-wraps to the terminal width, so collapse it before matching.
@@ -128,7 +159,7 @@ class TestSynthesiseWithRetry:
 
     async def test_an_unrecognised_stop_neither_earns_nor_rules_out_the_retry(self, capsys):
         provider = _Provider(_reply("wrong.", "something_new"), _reply("All good."))
-        best, attempts = await _run(provider)
+        best, attempts, _ = await _run(provider)
         assert (best.text, attempts) == ("All good.", 2)
         assert provider.prompts[1] == "write it | 1 wrong | cut off: None"
         assert "cut off" not in capsys.readouterr().err
@@ -142,7 +173,7 @@ class TestSynthesiseWithRetry:
 
     async def test_a_retry_that_fails_keeps_the_attempt_in_hand(self, capsys):
         provider = _Provider(_reply("This is wrong."), ProviderError("timed out"))
-        best, attempts = await _run(provider)
+        best, attempts, _ = await _run(provider)
         # One answer judged: a retry that never came back is not a draft.
         assert (best.text, best.verdict, attempts) == ("This is wrong.", ["wrong."], 1)
         err = " ".join(capsys.readouterr().err.split())
@@ -171,7 +202,7 @@ class TestSynthesiseWithRetry:
             },
         }[stage]
         provider = _Provider(_reply("This is wrong."), _reply("Boom."))
-        best, attempts = await _run(provider, **overrides)
+        best, attempts, _ = await _run(provider, **overrides)
         assert (best.text, attempts) == ("This is wrong.", 1)
         err = " ".join(capsys.readouterr().err.split())
         assert f"retry failed (AttributeError: {stage} tripped) -- keeping the first attempt" in err
@@ -190,7 +221,7 @@ class TestSynthesiseWithRetry:
             return []
 
         provider = _Provider(_reply("all good [1]"))
-        best, _ = await _run(provider, judge=judge, normalise=str.capitalize)
+        best, *_ = await _run(provider, judge=judge, normalise=str.capitalize)
         assert seen == ["All good"]
         assert best.text == "All good"
 

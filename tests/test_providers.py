@@ -201,6 +201,21 @@ class TestStopReason:
             log_abnormal_stop(self._response("end_turn"), "Anthropic")
         assert caplog.text == ""
 
+    def test_a_refusal_s_category_is_named_in_the_log(self, caplog):
+        # #450: "refused" alone cannot say which check declined it.
+        response = LLMResponse(
+            content="", model="m", usage=TokenUsage(0, 0),
+            stop_reason="refusal", stop_category="general_harms",
+        )
+        with caplog.at_level("WARNING", logger="fpl_cli.api.providers._models"):
+            log_abnormal_stop(response, "Anthropic")
+        assert "stop_reason='refusal', category='general_harms'" in caplog.text
+
+    def test_no_category_adds_nothing_to_the_log(self, caplog):
+        with caplog.at_level("WARNING", logger="fpl_cli.api.providers._models"):
+            log_abnormal_stop(self._response("refusal"), "Anthropic")
+        assert "category" not in caplog.text
+
 
 class TestLogTextlessResponse:
     """A response of nothing but thinking must not read as a model with nothing
@@ -365,6 +380,99 @@ class TestAnthropicProvider:
         await provider.query("test")
         call_payload = provider._http.post.call_args[1]["json"]
         assert call_payload["max_tokens"] == 2048
+
+    async def _payload(self, provider, mock_response):
+        provider._http = AsyncMock()
+        provider._http.post = AsyncMock(return_value=_make_httpx_response(mock_response))
+        await provider.query("test")
+        return provider._http.post.call_args[1]["json"]
+
+    async def test_output_config_reaches_the_payload(self, monkeypatch, mock_response):
+        # #450: effort used to be whatever the model's default was, since
+        # nothing in query_defaults but max_tokens reached the request.
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+        provider = AnthropicProvider(query_defaults={"output_config": {"effort": "high"}})
+        payload = await self._payload(provider, mock_response)
+        assert payload["output_config"] == {"effort": "high"}
+
+    async def test_no_output_config_sends_none(self, provider, mock_response):
+        payload = await self._payload(provider, mock_response)
+        assert "output_config" not in payload
+
+    async def test_a_null_effort_unpins_it(self, monkeypatch, mock_response):
+        # How a user drops the shipped pin for a model that rejects effort:
+        # settings.yaml's `effort: null` deep-merges over the default.
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+        provider = AnthropicProvider(query_defaults={"output_config": {"effort": None}})
+        payload = await self._payload(provider, mock_response)
+        assert "output_config" not in payload
+
+    @pytest.mark.parametrize("model", [
+        "claude-haiku-4-5", "claude-sonnet-4-5-20250929", "claude-opus-4-1", "claude-sonnet-4-20250514",
+        "claude-3-5-haiku-latest",
+    ])
+    async def test_the_effort_pin_is_left_off_a_model_that_predates_it(self, monkeypatch, mock_response, model):
+        # PR #451 review: these models answer `effort` with a 400, so the
+        # shipped pin would have cost every synthesis call on them. The rest
+        # of the block still goes.
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+        provider = AnthropicProvider(
+            model=model, query_defaults={"output_config": {"effort": "high", "format": {"type": "text"}}},
+        )
+        payload = await self._payload(provider, mock_response)
+        assert payload["output_config"] == {"format": {"type": "text"}}
+
+    @pytest.mark.parametrize("model", ["claude-opus-4-5", "claude-sonnet-4-6", "claude-opus-5-5", "claude-haiku-5-5"])
+    async def test_the_effort_pin_reaches_every_model_that_takes_it(self, monkeypatch, mock_response, model):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+        provider = AnthropicProvider(model=model, query_defaults={"output_config": {"effort": "high"}})
+        payload = await self._payload(provider, mock_response)
+        assert payload["output_config"] == {"effort": "high"}
+
+    @pytest.mark.parametrize("configured", ["high", ["effort", "high"], 3])
+    async def test_a_malformed_output_config_is_refused_by_name(self, monkeypatch, mock_response, configured):
+        # PR #451 review: ignoring it would leave effort at the model's
+        # default with nothing said -- the drift the pin exists to stop.
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+        provider = AnthropicProvider(query_defaults={"output_config": configured})
+        provider._http = AsyncMock()
+        provider._http.post = AsyncMock(return_value=_make_httpx_response(mock_response))
+
+        with pytest.raises(ProviderError, match="output_config must be a mapping"):
+            await provider.query("test")
+        provider._http.post.assert_not_called()
+
+    async def test_the_max_tokens_fallback_leaves_room_to_think(self, provider, mock_response):
+        # #450: 1024 was spent on thinking before any text arrived (#316's
+        # shape), reachable via FPL_RESEARCH_PROVIDER=anthropic, whose role
+        # config carries no max_tokens.
+        payload = await self._payload(provider, mock_response)
+        assert payload["max_tokens"] == AnthropicProvider.DEFAULT_MAX_TOKENS >= 8000
+
+    async def test_a_refusal_carries_its_category(self, provider, mock_response):
+        result = await self._query(provider, {
+            **mock_response, "stop_reason": "refusal",
+            "stop_details": {"type": "refusal", "category": "cyber", "explanation": "..."},
+        })
+        assert result.refused is True
+        assert result.stop_category == "cyber"
+
+    @pytest.mark.parametrize("stop_details", [None, {}, {"type": "refusal", "category": None}, "odd"])
+    async def test_a_missing_or_null_category_leaves_it_unset(self, provider, mock_response, stop_details):
+        result = await self._query(provider, {
+            **mock_response, "stop_reason": "refusal", "stop_details": stop_details,
+        })
+        assert result.stop_category is None
+
+    async def test_a_normal_stop_has_no_category(self, provider, mock_response):
+        result = await self._query(provider, {**mock_response, "stop_reason": "end_turn", "stop_details": None})
+        assert result.stop_category is None
+
+    @staticmethod
+    async def _query(provider, data):
+        provider._http = AsyncMock()
+        provider._http.post = AsyncMock(return_value=_make_httpx_response(data))
+        return await provider.query("test")
 
     async def test_stop_reason_is_carried_from_the_envelope(self, provider, mock_response):
         provider._http = AsyncMock()
@@ -619,6 +727,17 @@ class TestOpenAICompatProvider:
 
     def test_post_process_is_identity(self, provider):
         assert provider.post_process("hello [1]") == "hello [1]"
+
+    async def test_output_config_is_not_sent(self, monkeypatch, mock_response):
+        # Anthropic's effort block is not part of the chat-completions shape,
+        # so a synthesis role switched to `openai` must not send it (#450).
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+        provider = OpenAICompatProvider(query_defaults={"output_config": {"effort": "high"}})
+        provider._http = AsyncMock()
+        provider._http.post = AsyncMock(return_value=_make_httpx_response(mock_response))
+
+        await provider.query("test")
+        assert "output_config" not in provider._http.post.call_args[1]["json"]
 
 
 # ---------------------------------------------------------------------------
@@ -1079,3 +1198,15 @@ class TestShippedSynthesisMaxTokens:
         settings = load_settings()
         max_tokens = settings["llm"]["synthesis"]["query_defaults"]["max_tokens"]
         assert max_tokens >= 8000
+
+
+class TestShippedSynthesisEffort:
+    """#450: effort is pinned rather than left to the model's default, so a
+    model swap cannot move it silently (claude-opus-5-5 defaults to medium).
+    `high` is claude-sonnet-5-5's own default, so the pin changes nothing."""
+
+    def test_shipped_synthesis_effort_is_high(self):
+        from fpl_cli.cli._context import load_settings
+
+        settings = load_settings()
+        assert settings["llm"]["synthesis"]["query_defaults"]["output_config"] == {"effort": "high"}

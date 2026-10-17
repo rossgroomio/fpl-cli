@@ -22,7 +22,7 @@ from rich.markup import escape as rich_escape
 from fpl_cli.cli._context import error_console
 
 if TYPE_CHECKING:
-    from fpl_cli.api.providers import LLMResponse
+    from fpl_cli.api.providers import LLMResponse, TokenUsage
 
 logger = logging.getLogger(__name__)
 
@@ -45,12 +45,15 @@ class SynthesisAttempt(Generic[V]):
     """One answer: the prompt that drew it, the text as the caller will use
     it, what its judge found, and the response it came from, for the
     provider's stop reason. The prompt is kept so a debug bundle can save the
-    one that actually produced the text it saves beside it."""
+    one that actually produced the text it saves beside it. `number` is which
+    answer it was, 1 or 2, so a run that judged two can say which shipped:
+    the retry only ships when it ranks strictly better (#450)."""
 
     prompt: str
     text: str
     verdict: V
     response: LLMResponse
+    number: int
 
 
 async def synthesise_with_retry(
@@ -64,11 +67,13 @@ async def synthesise_with_retry(
     damage: Callable[[SynthesisAttempt[V]], tuple[int, ...]],
     retry_prompt: RetryPrompt[V],
     normalise: Callable[[str], str] | None = None,
-) -> tuple[SynthesisAttempt[V], int]:
+) -> tuple[SynthesisAttempt[V], int, TokenUsage]:
     """Query `provider`, retrying once if the answer comes back damaged.
 
-    Returns the attempt that ships and the number of answers judged: 2 only
-    when a retry came back, so one that failed is never counted as a draft.
+    Returns the attempt that ships, the number of answers judged -- 2 only
+    when a retry came back, so one that failed is never counted as a draft
+    -- and the tokens every judged answer spent between them, which after a
+    retry is the run's cost rather than the shipped answer's alone (#450).
     The text is the provider's own `post_process` of the content, then
     `normalise` when given, so `judge` reads the string the report will carry.
 
@@ -97,7 +102,7 @@ async def synthesise_with_retry(
     once".
     """
 
-    async def attempt(attempt_prompt: str) -> SynthesisAttempt[V]:
+    async def attempt(attempt_prompt: str, number: int) -> SynthesisAttempt[V]:
         response = await provider.query(prompt=attempt_prompt, system_prompt=system_prompt)
         # Post-processed before it is judged: the synthesis role is not
         # restricted to one provider, so a Perplexity-backed run arrives with
@@ -106,15 +111,15 @@ async def synthesise_with_retry(
         text = provider.post_process(response.content)
         if normalise is not None:
             text = normalise(text)
-        return SynthesisAttempt(attempt_prompt, text, judge(text, response), response)
+        return SynthesisAttempt(attempt_prompt, text, judge(text, response), response, number)
 
-    first = await attempt(prompt)
+    first = await attempt(prompt, 1)
     stop_reason = first.response.stop_reason if first.response.truncated else None
     reasons = [f"was cut off (stop_reason: {stop_reason})"] if stop_reason else []
     if found := retry_reason(first.verdict):
         reasons.append(found)
     if not reasons:
-        return first, 1
+        return first, 1, first.response.usage
     # Escaped, not interpolated raw: a reason can quote text the provider or
     # the prompt supplied, and an unescaped `[/yellow]` in it would raise
     # MarkupError and cost the reader the notice.
@@ -127,7 +132,7 @@ async def synthesise_with_retry(
             f" (stop_reason: {rich_escape(str(first.response.stop_reason))}) -- not retrying,"
             " since a refused request to the same model is usually refused again[/yellow]"
         )
-        return first, 1
+        return first, 1, first.response.usage
     error_console.print(f"[yellow]  ⚠ {subject} {what} -- retrying once[/yellow]")
     # Everything the retry touches is guarded, not only the call: an answer
     # is already in hand, and losing it to the retry meant to improve it is
@@ -135,7 +140,7 @@ async def synthesise_with_retry(
     # code tripped over the second answer's text. The trace stays at debug,
     # so a bug of ours still has somewhere to show.
     try:
-        retry = await attempt(retry_prompt(prompt, first.verdict, stop_reason=stop_reason))
+        retry = await attempt(retry_prompt(prompt, first.verdict, stop_reason=stop_reason), 2)
         retry_is_better = damage(retry) < damage(first)
     except Exception as e:  # noqa: BLE001 — a failed retry keeps the attempt in hand
         logger.debug("Synthesis retry failed", exc_info=True)
@@ -143,5 +148,5 @@ async def synthesise_with_retry(
         error_console.print(
             f"[yellow]  ⚠ {subject} retry failed ({rich_escape(detail)}) -- keeping the first attempt[/yellow]"
         )
-        return first, 1
-    return (retry if retry_is_better else first), 2
+        return first, 1, first.response.usage
+    return (retry if retry_is_better else first), 2, first.response.usage + retry.response.usage

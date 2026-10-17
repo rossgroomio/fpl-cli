@@ -49,6 +49,12 @@ llm:
     timeout: 60
     query_defaults:
       max_tokens: 8000  # thinking + output share this ceiling (#316); 4096 left no room for prose once the model reasoned first
+      # Pinned, not left to the model's default, so a model swap cannot move it
+      # silently (#450). `high` is claude-sonnet-5-5's own default. Anthropic
+      # only, and not sent to models that predate effort (Sonnet/Haiku 4.5 and
+      # older); `effort: null` in settings.yaml unpins it.
+      output_config:
+        effort: high
 
 # Fines: opt-in via settings.yaml or `fpl init`. Example config:
 #

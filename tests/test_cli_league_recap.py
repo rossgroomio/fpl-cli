@@ -1316,6 +1316,137 @@ class TestTruncatedEditorial:
         assert "> [!WARNING]" not in report
 
 
+class TestEditorialTelemetry:
+    """#450: which draft shipped, what it cost, and why a refusal refused, so
+    a recap that "feels different" can be read against the last one."""
+
+    _WHOLE = "Alice ran away with it, and Bob never recovered."
+
+    def test_json_carries_the_attempt_count_and_usage(self):
+        _, provider = _queued_provider(self._WHOLE)
+        with provider:
+            result = _invoke_recap(_recap_data(), ["--summarise", "--format", "json"])
+
+        assert result.exit_code == 0, result.stderr
+        metadata = json.loads(result.stdout)["metadata"]
+        assert metadata["synthesis_attempts"] == 1
+        assert metadata["synthesis_shipped_attempt"] == 1
+        assert metadata["synthesis_usage"] == {"input_tokens": 10, "output_tokens": 20}
+
+    def test_a_better_retry_ships_and_both_drafts_are_costed(self):
+        _, provider = _queued_provider(("Alice ran away with it, and then", "max_tokens"), self._WHOLE)
+        with provider:
+            result = _invoke_recap(_recap_data(), ["--summarise", "--format", "json"])
+
+        metadata = json.loads(result.stdout)["metadata"]
+        assert metadata["synthesis_attempts"] == 2
+        assert metadata["synthesis_shipped_attempt"] == 2
+        assert metadata["synthesis_usage"] == {"input_tokens": 20, "output_tokens": 40}
+
+    def test_a_retry_that_ranks_no_better_leaves_the_first_shipped(self):
+        # PR #451 review: two drafts judged does not mean the second shipped.
+        _, provider = _queued_provider(
+            ("Alice ran away with it, and then", "max_tokens"), ("Alice", "max_tokens"),
+        )
+        with provider:
+            result = _invoke_recap(_recap_data(), ["--summarise", "--format", "json"])
+
+        metadata = json.loads(result.stdout)["metadata"]
+        assert metadata["synthesis_attempts"] == 2
+        assert metadata["synthesis_shipped_attempt"] == 1
+        assert "Alice ran away with it, and then" in metadata["synthesis_summary"]
+
+    @pytest.mark.parametrize("args", [[], ["--dry-run"]])
+    def test_null_when_no_editorial_came_back(self, args, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.chdir(tmp_path)
+        result = _invoke_recap(_recap_data(), ["--format", "json", *args])
+
+        assert result.exit_code == 0, result.stderr
+        metadata = json.loads(result.stdout)["metadata"]
+        assert metadata["synthesis_attempts"] is None
+        assert metadata["synthesis_shipped_attempt"] is None
+        assert metadata["synthesis_usage"] is None
+
+    def test_a_failed_call_records_no_attempt(self):
+        from fpl_cli.api.providers import ProviderError
+
+        _, provider = _queued_provider(ProviderError("down"))
+        with provider:
+            result = _invoke_recap(_recap_data(), ["--summarise", "--format", "json"])
+
+        metadata = json.loads(result.stdout)["metadata"]
+        assert metadata["synthesis_attempts"] is None
+        assert metadata["synthesis_shipped_attempt"] is None
+        assert metadata["synthesis_usage"] is None
+
+    def test_debug_saves_the_prompt_that_drew_the_shipped_editorial(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ):
+        # Mirrors review's #399 fix: after a retry, saving the first prompt
+        # beside the second draft gave a pair that never replays.
+        monkeypatch.chdir(tmp_path)
+        stub, provider = _queued_provider(("Alice ran away with it, and then", "max_tokens"), self._WHOLE)
+        with provider:
+            result = _invoke_recap(_recap_data(), ["--summarise", "--debug"])
+
+        assert result.exit_code == 0, result.output
+        first, retry = stub.prompts
+        saved = (tmp_path / "data" / "debug" / "recap_prompt.txt").read_text(encoding="utf-8")
+        assert saved == retry != first
+
+    @staticmethod
+    def _refusing_provider(category: str | None):
+        from fpl_cli.api.providers import LLMResponse, TokenUsage
+
+        class _Stub:
+            async def query(self, prompt, system_prompt=None, **kwargs):
+                return LLMResponse(
+                    content="I can't help with that.",
+                    model="claude-sonnet-5-5",
+                    usage=TokenUsage(10, 20),
+                    stop_reason="refusal",
+                    stop_category=category,
+                )
+
+            def post_process(self, content):
+                return content
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return None
+
+        return patch("fpl_cli.api.providers.get_llm_provider", return_value=_Stub())
+
+    def test_a_refusal_names_its_category_everywhere(self, tmp_path: Path):
+        with self._refusing_provider("general_harms"):
+            result = _invoke_recap(
+                _recap_data(), ["--summarise", "--format", "json", "--save", "--output", str(tmp_path)],
+            )
+
+        assert result.exit_code == 0, result.stderr
+        assert "(stop_reason: refusal, category: general_harms)" in " ".join(result.stderr.split())
+        warnings = {w["code"]: w["message"] for w in json.loads(result.stdout)["metadata"]["warnings"]}
+        assert warnings["synthesis_stopped_early"] == (
+            "The provider refused the editorial: it stopped with stop_reason 'refusal'"
+            " (category 'general_harms'), so the text may be incomplete."
+        )
+        report = next(tmp_path.rglob("gw*-league-recap.md")).read_text(encoding="utf-8")
+        assert (
+            "**The provider refused the editorial below:** it stopped with\n"
+            "> `refusal` (category `general_harms`), so it may be incomplete." in report
+        )
+
+    def test_a_category_cannot_break_out_of_the_callout(self, tmp_path: Path):
+        with self._refusing_provider("odd`\ncategory"):
+            result = _invoke_recap(_recap_data(), ["--summarise", "--save", "--output", str(tmp_path)])
+
+        assert result.exit_code == 0, result.output
+        report = next(tmp_path.rglob("gw*-league-recap.md")).read_text(encoding="utf-8")
+        assert "> `refusal` (category `odd' category`), so it may be incomplete." in report
+
+
 def _queued_provider(*replies: str | tuple[str, str] | Exception):
     """A provider answering each call with the next reply in turn: a string,
     a (string, stop_reason) pair, or an exception to raise. Returns the stub
